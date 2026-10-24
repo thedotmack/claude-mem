@@ -57,7 +57,7 @@ import {
 } from '../cmem-memory-credentials.js';
 import { parseTeamBrainTeamRef, type TeamBrainTeamRef } from '../../shared/teambrain.js';
 import { relayedLine } from '../../shared/relayed-text.js';
-import { INITIAL_SETUP_STATE, readSetupState, setupStatePath, writeSetupState } from '../../shared/setup-state.js';
+import { endSetupSession, INITIAL_SETUP_STATE, readSetupState, startSetupSession, writeSetupState } from '../../shared/setup-state.js';
 import { intentCredentialHeaders, readIntentCredentials } from '../../shared/intent-credentials.js';
 import { runBrowserSetup, settingsChangesNeedingRestart, shouldUseBrowserSetup, waitForBackgroundWorkToFinish, type BrowserSetupOutcome } from '../install/browser-setup.js';
 
@@ -3022,23 +3022,22 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     runtime: selectedRuntime,
     setupComplete: readSetupState().status === 'complete',
   })) {
-    // Mark this GUI setup before the worker's first refresh tick: its scan uses hosted extraction,
-    // so existing prompts must not launch a local agent while the browser is still opening.
-    writeSetupState({ ...INITIAL_SETUP_STATE });
-    settingsBeforeBrowserSetup = readSettingsSnapshot();
-    await runTasks([{
-      title: 'Starting worker daemon',
-      task: async (message) => {
-        workerStartResult = await startInstallWorker(version, summary, message);
-        return describeWorkerStart(workerStartResult);
-      },
-    }]);
-    if ((workerStartResult as WorkerStartResult) === 'dead') {
-      // No browser hand-off started. Leave the terminal flow without a pending GUI marker that would pause future refreshes.
-      rmSync(setupStatePath(), { force: true });
-      log.warn('The setup page needs the worker, which did not start. Continuing setup here in the terminal.');
-    } else {
-      try {
+    startSetupSession();
+    try {
+      // Mark this GUI setup before the worker's first refresh tick: its scan uses hosted extraction,
+      // so existing prompts must not launch a local agent while the browser is still opening.
+      writeSetupState({ ...INITIAL_SETUP_STATE });
+      settingsBeforeBrowserSetup = readSettingsSnapshot();
+      await runTasks([{
+        title: 'Starting worker daemon',
+        task: async (message) => {
+          workerStartResult = await startInstallWorker(version, summary, message);
+          return describeWorkerStart(workerStartResult);
+        },
+      }]);
+      if ((workerStartResult as WorkerStartResult) === 'dead') {
+        log.warn('The setup page needs the worker, which did not start. Continuing setup here in the terminal.');
+      } else {
         browserOutcome = await runBrowserSetup({
           workerBaseUrl: `http://127.0.0.1:${getSetting('CLAUDE_MEM_WORKER_PORT')}`,
           openBrowser,
@@ -3076,11 +3075,10 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
             },
           },
         });
-      } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error);
-        p.cancel(message);
-        process.exit(1);
       }
+    } finally {
+      // Preserve saved choices and errors, but release the local-work pause on every hand-off exit.
+      endSetupSession();
     }
   }
 

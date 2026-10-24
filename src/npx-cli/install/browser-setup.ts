@@ -54,6 +54,17 @@ export function setupPageUrl(workerBaseUrl: string): string {
   return `${workerBaseUrl}/?setup=1`;
 }
 
+async function workerResponseError(response: Response, action: string): Promise<Error> {
+  const body = await response.text();
+  let detail = body.trim();
+  try {
+    const parsed = JSON.parse(body);
+    if (typeof parsed.message === 'string') detail = parsed.message;
+    else if (typeof parsed.error === 'string') detail = parsed.error;
+  } catch { /* A plain-text server error is useful too. */ }
+  return new Error(`${action} (HTTP ${response.status})${detail ? `: ${detail}` : '.'}`);
+}
+
 export async function runBrowserSetup(deps: BrowserSetupDeps): Promise<BrowserSetupOutcome> {
   const request = deps.fetch ?? fetch;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
@@ -71,8 +82,7 @@ export async function runBrowserSetup(deps: BrowserSetupDeps): Promise<BrowserSe
       unreachableNoted = true;
       return null;
     }
-    if (response.status >= 500) return null;
-    if (!response.ok) throw new Error(`The worker refused the setup state (HTTP ${response.status}).`);
+    if (!response.ok) throw await workerResponseError(response, 'The worker refused the setup state');
     unreachableNoted = false;
     return await response.json() as SetupStateView;
   };
@@ -89,7 +99,7 @@ export async function runBrowserSetup(deps: BrowserSetupDeps): Promise<BrowserSe
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(checkout ? { stage, error, checkout } : { stage, error }),
     });
-    if (!response.ok) throw new Error(`The worker did not take the installer stage ${stage} (HTTP ${response.status}).`);
+    if (!response.ok) throw await workerResponseError(response, `The worker did not take the installer stage ${stage}`);
   };
 
   const url = setupPageUrl(deps.workerBaseUrl);
@@ -181,21 +191,21 @@ export const BACKGROUND_WORK_LABELS: Record<NonNullable<SetupStateView['backgrou
 
 /**
  * Waits, with no time limit, until the worker runs no extraction or history import, so a restart cannot kill one.
- * A worker that cannot be reached runs nothing to protect, so the wait ends.
+ * Losing contact cannot prove work finished: fail visibly and leave the worker running.
  */
 export async function waitForBackgroundWorkToFinish(deps: Pick<BrowserSetupDeps, 'workerBaseUrl' | 'log' | 'fetch' | 'sleep' | 'pollIntervalMs'>): Promise<void> {
   const request = deps.fetch ?? fetch;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   let announced = '';
   for (;;) {
-    let running: NonNullable<SetupStateView['backgroundWorkRunning']>;
+    let response: Response;
     try {
-      const response = await request(`${deps.workerBaseUrl}/api/setup/state`, { cache: 'no-store' });
-      if (!response.ok) return;
-      running = ((await response.json()) as SetupStateView).backgroundWorkRunning ?? [];
-    } catch {
-      return;
+      response = await request(`${deps.workerBaseUrl}/api/setup/state`, { cache: 'no-store' });
+    } catch (error) {
+      throw new Error(`Could not read the worker's background work state: ${error instanceof Error ? error.message : String(error)}`);
     }
+    if (!response.ok) throw await workerResponseError(response, 'The worker refused the background work state');
+    const running = ((await response.json()) as SetupStateView).backgroundWorkRunning ?? [];
     if (!running.length) return;
     const doing = running.map(work => BACKGROUND_WORK_LABELS[work]).join(' and ');
     if (doing !== announced) {

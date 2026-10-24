@@ -59,6 +59,8 @@ export interface SetupChoice { branch: 'home' | 'go'; memoryBilling: 'hosted' | 
 export interface SetupSource {
   readonly kind: 'local' | 'sample'
   subscribe(onData: (data: SetupData) => void): () => void
+  /** Starts another scan only after the user chooses to retry a failure. */
+  retryScan(): Promise<void>
   /** Changes the hosted setup results preference without pausing the scan or upload. */
   setImproveProduct(improveProduct: boolean): Promise<void>
   /** Hands the storage choice to the installer waiting in the terminal (POST /api/setup/choice). */
@@ -138,6 +140,7 @@ let preferenceWrite: Promise<unknown> = Promise.resolve()
 let desiredImproveProduct: boolean | undefined
 let appliedImproveProduct: boolean | undefined
 let preferenceReady: Promise<void> = Promise.resolve()
+let retryLocalScan: (() => Promise<void>) | null = null
 
 /**
  * The local worker: the prompt scan (started here when it has not run, then followed on the work view's event
@@ -188,6 +191,13 @@ export const localSetupSource: SetupSource = {
     stream.addEventListener('setup-state', (event) => applyState(JSON.parse((event as MessageEvent<string>).data) as WorkerSetupState))
     stream.addEventListener('setup-import', (event) => publish({ historyImport: toHistoryImport(JSON.parse((event as MessageEvent<string>).data) as WorkerHistoryImport) }))
     stream.addEventListener('work-view', (event) => applySnapshot(JSON.parse((event as MessageEvent<string>).data) as SnapshotWithSetup))
+    const startScan = async () => {
+      const revision = scanRevision
+      const started = await postJson<WorkerScanState>('/api/setup/scan', desiredImproveProduct === undefined ? {} : { improveProduct: desiredImproveProduct })
+      if (!closed && scanRevision === revision) applyScan(started)
+    }
+    // Retrying may repeat hosted extraction, so only the page's explicit action invokes this.
+    retryLocalScan = startScan
     let requestedAtRevision = scanRevision
     void (async () => {
       const [scan, state] = await Promise.all([workerJson<WorkerScanState>('/api/setup/scan'), workerJson<WorkerSetupState>('/api/setup/state')])
@@ -199,8 +209,7 @@ export const localSetupSource: SetupSource = {
         requestedAtRevision = scanRevision
         // A click can precede the initial GET. Start with the latest choice, without
         // delaying the scan for the buffered preference request.
-        const started = await postJson<WorkerScanState>('/api/setup/scan', desiredImproveProduct === undefined ? {} : { improveProduct: desiredImproveProduct })
-        if (scanRevision === requestedAtRevision) applyScan(started)
+        await startScan()
       }
     })().catch((error: unknown) => {
       // A late startup error must not replace progress or results already received from the stream.
@@ -208,7 +217,16 @@ export const localSetupSource: SetupSource = {
         publish({ scan: { ...data.scan, phase: 'failed', error: error instanceof Error ? error.message : String(error) } })
       }
     }).finally(ready)
-    return () => { closed = true; stream.close(); ready() }
+    return () => {
+      closed = true
+      if (retryLocalScan === startScan) retryLocalScan = null
+      stream.close()
+      ready()
+    }
+  },
+  async retryScan() {
+    if (!retryLocalScan) throw new Error('The setup page is not connected to the worker. Reload it to try again.')
+    await retryLocalScan()
   },
   async setImproveProduct(improveProduct) {
     desiredImproveProduct = improveProduct

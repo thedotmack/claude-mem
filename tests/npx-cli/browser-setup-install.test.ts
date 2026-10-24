@@ -57,6 +57,7 @@ const port = await new Promise<number>((resolve) => {
 const workerBase = `http://127.0.0.1:${port}`;
 const settingsPath = join(data, 'settings.json');
 const statePath = join(data, 'setup-state.json');
+const sessionPath = join(data, 'setup-session.json');
 const intentCredentialsPath = join(data, 'intent-install.json');
 const intentCredentials = { install_id: '1'.repeat(32), intent_token: '2'.repeat(64) };
 // The worker is managed "externally" so the installer never tries to stop it: the fixture owns its lifecycle.
@@ -77,6 +78,7 @@ const ranTasks: string[] = [];
 const offeredTasks: string[] = [];
 let workerStarts = 0;
 const workerStartStates: unknown[] = [];
+const workerStartSessions: unknown[] = [];
 let fixtureWorkerResult: 'ready' | 'dead' = 'ready';
 mock.module('@clack/prompts', () => ({
   ...prompts,
@@ -142,6 +144,7 @@ mock.module('../../src/services/worker-spawner.js', () => ({
   ensureWorkerStarted: async () => {
     workerStarts++;
     workerStartStates.push(existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : null);
+    workerStartSessions.push(existsSync(sessionPath) ? JSON.parse(readFileSync(sessionPath, 'utf8')) : null);
     if (extraction.running) extraction.restartsWhileRunning++;
     if (fixtureWorkerResult === 'dead') return 'dead';
     await startFixtureWorker();
@@ -203,11 +206,13 @@ const { runInstallCommand } = await import('../../src/npx-cli/commands/install.j
 beforeEach(async () => {
   await stopFixtureWorker();
   rmSync(statePath, { force: true });
+  rmSync(sessionPath, { force: true });
   rmSync(intentCredentialsPath, { force: true });
   writeFileSync(settingsPath, JSON.stringify(baseSettings, null, 2));
   lines.length = 0; questions.length = 0; ranTasks.length = 0; offeredTasks.length = 0; opened.length = 0;
   pairingStarts.length = 0; pairingStartHeaders.length = 0; setupRequests.length = 0; unexpected.length = 0; workerStarts = 0; pollAnswers.length = 0;
   workerStartStates.length = 0;
+  workerStartSessions.length = 0;
   fixtureWorkerResult = 'ready';
   extraction.running = false; extraction.restartsWhileRunning = 0;
 });
@@ -245,6 +250,7 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     // The worker is up before any login or provider question, and the page is open.
     expect(workerStarts).toBe(1);
     expect(workerStartStates).toEqual([{ status: 'pending', choice: null, installer: null, checkout: null, tools: null, completedAt: null }]);
+    expect(workerStartSessions).toEqual([{ pid: process.pid }]);
     expect(opened).toEqual([`${workerBase}/?setup=1`]);
     expect(pairingStarts).toEqual([]);
 
@@ -261,6 +267,7 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     expect(JSON.parse(readFileSync(statePath, 'utf8'))).toMatchObject({ status: 'complete', choice: { branch: 'home' }, installer: { stage: 'home-ready' } });
     expect(lines.join('\n')).toContain('Not required (local provider)');
     expect(lines.join('\n')).toContain('claude-mem installed successfully!');
+    expect(existsSync(sessionPath)).toBe(false);
     expect(ranTasks).toContain('Claude Code: registering plugin');
     expect(unexpected).toEqual([]);
   });
@@ -417,18 +424,41 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     expect(JSON.parse(readFileSync(statePath, 'utf8'))).toEqual(completed);
   });
 
-  it('removes the pending GUI marker when the worker fails and setup falls back to the terminal', async () => {
+  it('releases the GUI session when the worker fails while preserving saved setup state', async () => {
     fixtureWorkerResult = 'dead';
     fetchSpy.mockImplementationOnce(async () => { throw new Error('OWNED_LOGIN_BOUNDARY'); });
     await expect(runInstallCommand({})).rejects.toThrow('EXIT_1');
     expect(workerStartStates[0]).toMatchObject({ status: 'pending' });
-    expect(existsSync(statePath)).toBe(false);
+    expect(workerStartSessions[0]).toEqual({ pid: process.pid });
+    expect(JSON.parse(readFileSync(statePath, 'utf8')).status).toBe('pending');
+    expect(existsSync(sessionPath)).toBe(false);
     expect(opened).toEqual([]);
     expect(lines.join('\n')).toContain('Continuing setup here in the terminal.');
+  });
+
+  it('releases the GUI session when the browser handoff fails and propagates the server error', async () => {
+    fetchSpy.mockImplementationOnce(async () => {
+      expect(JSON.parse(readFileSync(sessionPath, 'utf8'))).toEqual({ pid: process.pid });
+      return Response.json({ error: 'This setup session was refused by the worker.' }, { status: 403 });
+    });
+    await expect(runInstallCommand({})).rejects.toThrow('This setup session was refused by the worker.');
+    expect(JSON.parse(readFileSync(statePath, 'utf8')).status).toBe('pending');
+    expect(existsSync(sessionPath)).toBe(false);
   });
 });
 
 describe('install with --provider claude (interactive TTY)', () => {
+  it('preserves interrupted browser progress and leaves local work unpaused', async () => {
+    const saved = { status: 'pending', choice: { branch: 'home', memoryBilling: 'existing', chosenAt: 'earlier' },
+      installer: { stage: 'home-ready', error: null, updatedAt: 'earlier' }, checkout: null, tools: ['codex'], completedAt: null };
+    writeFileSync(statePath, JSON.stringify(saved));
+    writeFileSync(sessionPath, JSON.stringify({ pid: 2 ** 22 + 12345 }));
+    await runInstallCommand({ provider: 'claude', providerSource: 'flag' });
+    expect(opened).toEqual([]);
+    expect(JSON.parse(readFileSync(statePath, 'utf8'))).toEqual(saved);
+    expect((worker!.routes as unknown as { setupIsActive: () => boolean }).setupIsActive()).toBe(false);
+  });
+
   it('keeps the terminal flow: no setup page, no login, the model question in the terminal', async () => {
     await runInstallCommand({ provider: 'claude', providerSource: 'flag' });
     expect(opened).toEqual([]);

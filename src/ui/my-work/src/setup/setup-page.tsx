@@ -72,6 +72,22 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
     }
   }
 
+  const [retrying, setRetrying] = useState(false)
+  const [retryError, setRetryError] = useState<string | null>(null)
+  const retryPending = useRef(false)
+  const retryScan = async () => {
+    if (!source || retryPending.current) return
+    retryPending.current = true
+    setRetrying(true)
+    setRetryError(null)
+    try { await source.retryScan() } catch (error) {
+      setRetryError(error instanceof Error ? error.message : String(error))
+    } finally {
+      retryPending.current = false
+      setRetrying(false)
+    }
+  }
+
   const [flow, setFlow] = useState<SetupFlowState>(() => initialFlowState(false))
   const [requested, setRequested] = useState<SetupStep>('scan')
   const update = (changes: Partial<SetupFlowState>, next?: SetupStep) => { setFlow((current) => ({ ...current, ...changes })); if (next) setRequested(next) }
@@ -140,7 +156,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
   }
 
   const screens: Record<SetupStep, () => ReactNode> = {
-    scan: () => <ScanScreen scan={{ ...data.scan, improveProduct: improveProduct ?? data.scan.improveProduct }} onImproveProductChange={(checked) => void changeImproveProduct(checked)} preferenceError={preferenceError} />,
+    scan: () => <ScanScreen scan={{ ...data.scan, improveProduct: improveProduct ?? data.scan.improveProduct }} onImproveProductChange={(checked) => void changeImproveProduct(checked)} preferenceError={preferenceError} onRetry={() => void retryScan()} retrying={retrying} retryError={retryError} />,
     reveal: () => <RevealScreen agents={data.scan.agents} reveal={data.reveal} extraction={data.extraction} recentPrompts={data.recentPrompts} onContinue={() => update({ revealContinued: true }, 'choice')} />,
     choice: () => <ChoiceScreen branch={flow.branch} onChoose={(branch) => update({ branch, memoryBilling: branch === 'go' ? 'hosted' : 'existing', choiceContinued: true, savingsComplete: false, checkoutReviewed: false, setupComplete: false, finishTools: [] }, 'savings')} />,
     savings: () => (

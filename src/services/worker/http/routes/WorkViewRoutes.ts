@@ -30,7 +30,7 @@ import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { validateBody } from '../middleware/validateBody.js';
 import type { SetupScan, SetupScanState } from '../../../prompt-import/setup-scan.js';
 import { readHistoryCounts, type HistoryImport } from '../../../setup/history-import.js';
-import { hasProConfiguration, readSetupState, setupStatePath, writeSetupState, type SetupStateFile, type SetupStateView } from '../../../../shared/setup-state.js';
+import { hasActiveSetupSession, hasProConfiguration, readSetupState, setupStatePath, writeSetupState, type SetupStateFile, type SetupStateView } from '../../../../shared/setup-state.js';
 
 // A request is ready for a human check once its explicit lifecycle reports it complete, shipped, or waiting for review.
 // Statuses are compared lowercased with `_` and spaces read as `-`, matching the viewer's status normalization.
@@ -200,7 +200,7 @@ export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTIN
     dir: ledgerDir,
     openDatabase,
     // Setup's only extraction is hosted. Once setup is complete, ongoing refresh keeps its existing local path.
-    enabled: () => !setupActive() && (!existsSync(setupPath) || readSetupState(setupPath).status === 'complete')
+    enabled: () => !setupActive() && (readSetupState(setupPath).status === 'complete' || !hasActiveSetupSession(setupPath))
       && SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true }).CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH !== 'false',
     runJob: async ({ needs, reason }) => {
       const task = buildRefreshTask({ needs, reason, dataDir: DATA_DIR, ledgerDir, pluginRoot: getPackageRoot(), openDatabase });
@@ -301,8 +301,9 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   private setupIsActive(): boolean {
     const statePath = this.setupStatePath ?? setupStatePath();
-    if (readSetupState(statePath).status === 'complete') return false;
-    return existsSync(statePath) || Boolean(this.setupScan && this.setupScan.state().phase !== 'idle');
+    const scanPhase = this.setupScan?.state().phase ?? 'idle';
+    if (!['idle', 'done', 'failed'].includes(scanPhase)) return true;
+    return readSetupState(statePath).status !== 'complete' && hasActiveSetupSession(statePath);
   }
 
   private scheduleRulesFileRebuild(): void {

@@ -114,9 +114,13 @@ export class HostedIntent {
   async run(ownerPrompts: OwnerPrompt[], improveProduct: boolean): Promise<void> {
     this.current = { state: 'running', reason: 'setup-scan', step: 'goals', agent: null, startedAt: this.iso(), finishedAt: null, error: null };
     try {
+      // An empty scan has nothing to extract: finish without spending a hosted run or replacing saved work.
+      if (!ownerPrompts.length) {
+        this.current = { ...this.current, state: 'ok', step: null, finishedAt: this.iso() };
+        return;
+      }
       const { token, userId } = this.options.credentials();
       if (!!token !== !!userId) throw new Error('Hosted setup has incomplete CMEM account credentials. Repair the account connection before retrying.');
-      if (!ownerPrompts.length) throw new Error('No owner-typed prompts were found for hosted setup. No prompts were uploaded.');
       const keys = conversationKeys(ownerPrompts);
       const timezoneOffsetMinutes = this.options.timezoneOffsetMinutes?.() ?? new Date().getTimezoneOffset();
       const json = Buffer.from(JSON.stringify({ ownerPrompts, improveProduct, timezoneOffsetMinutes }));

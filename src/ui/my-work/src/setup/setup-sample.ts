@@ -107,6 +107,7 @@ export function createSampleSetupSource(newInstall: boolean, holdScanAtPercent: 
       if (!playing) play()
       return () => listeners.delete(onData)
     },
+    async retryScan() { if (!playing) play() },
     async setImproveProduct(improveProduct) { publish({ scan: { ...data.scan, improveProduct } }) },
     // Review fixtures hand nothing to an installer.
     async choose() {},

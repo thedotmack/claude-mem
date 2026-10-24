@@ -12,8 +12,8 @@ const compiled = buildSync({
       import { ScanScreen } from './src/setup/screens/scan-screen';
       export { localSetupSource, EMPTY_SETUP_DATA } from './src/setup/setup-data';
       export { createSampleSetupSource } from './src/setup/setup-sample';
-      export const renderScan = (scan, preferenceError = null) => renderToStaticMarkup(
-        <ScanScreen scan={scan} onImproveProductChange={() => {}} preferenceError={preferenceError} />
+      export const renderScan = (scan, preferenceError = null, retrying = false, retryError = null) => renderToStaticMarkup(
+        <ScanScreen scan={scan} onImproveProductChange={() => {}} preferenceError={preferenceError} onRetry={() => {}} retrying={retrying} retryError={retryError} />
       );
     `,
   },
@@ -92,6 +92,62 @@ describe('hosted setup scan control', () => {
     const message = 'Hosted setup failed (HTTP 503): The anonymous daily budget has been reached.';
     Stream.latest.send('setup-scan', scan({ phase: 'failed', error: message }));
     expect(app.renderScan(latest.scan)).toContain(`class="scan-error" role="alert">${message}`);
+    stop();
+  });
+
+  it('offers an explicit retry after a failed extraction and keeps a retry refusal visible', () => {
+    const app = fixture();
+    const failed = scan({ phase: 'failed', done: true, error: 'The anonymous daily budget has been reached.' });
+    const html = app.renderScan(failed);
+    expect(html).toContain('Try again');
+    expect(html).toContain('The anonymous daily budget has been reached.');
+    expect(app.renderScan(scan({ phase: 'uploading' }))).not.toContain('Try again');
+    expect(app.renderScan(failed, null, true)).toContain('disabled=""');
+    expect(app.renderScan(failed, null, false, 'The setup service is unavailable.')).toContain('role="alert">The setup service is unavailable.');
+  });
+
+  it('does not repeat a failed extraction until requested, then applies retry progress and results', async () => {
+    const app = fixture();
+    const posts: unknown[] = [];
+    useNetwork((url, init) => {
+      if (url === '/api/setup/state') return Response.json({ status: 'pending', alreadyPro: false });
+      if (init.method) {
+        posts.push(JSON.parse(String(init.body)));
+        return Response.json(scan({ phase: 'reading', improveProduct: false }));
+      }
+      return Response.json(scan({ phase: 'failed', done: true, improveProduct: false, error: 'Please try again.' }));
+    });
+    let latest: any;
+    const stop = app.localSetupSource.subscribe((data: any) => { latest = data; });
+    await until(() => latest.scan.phase === 'failed');
+    await settle();
+    expect(posts).toEqual([]);
+    await app.localSetupSource.retryScan();
+    expect(posts).toEqual([{}]);
+    expect(latest.scan).toMatchObject({ phase: 'reading', done: false, error: null, improveProduct: false });
+    Stream.latest.send('setup-scan', scan({ phase: 'done', done: true, percent: 100, improveProduct: false }));
+    expect(latest.scan.phase).toBe('done');
+    stop();
+  });
+
+  it('preserves newer streamed progress if it arrives before the retry response and returns server refusals', async () => {
+    const app = fixture();
+    let refused = false;
+    useNetwork((url, init) => {
+      if (url === '/api/setup/state') return Response.json({ status: 'pending', alreadyPro: false });
+      if (!init.method) return Response.json(scan({ phase: 'failed', done: true, error: 'Please try again.' }));
+      if (refused) return Response.json({ error: 'The setup service is unavailable.' }, { status: 503 });
+      Stream.latest.send('setup-scan', scan({ phase: 'uploading', percent: 99 }));
+      return Response.json(scan({ phase: 'reading' }));
+    });
+    let latest: any;
+    const stop = app.localSetupSource.subscribe((data: any) => { latest = data; });
+    await until(() => latest.scan.phase === 'failed');
+    await app.localSetupSource.retryScan();
+    expect(latest.scan.phase).toBe('uploading');
+    refused = true;
+    Stream.latest.send('setup-scan', scan({ phase: 'failed', done: true, error: 'Please try again.' }));
+    await expect(app.localSetupSource.retryScan()).rejects.toThrow('The setup service is unavailable.');
     stop();
   });
 

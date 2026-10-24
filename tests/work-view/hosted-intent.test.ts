@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { gunzipSync } from 'node:zlib';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { HostedIntent, INTENT_MAX_UPLOAD_BYTES, type HostedIntentResult } from '../../src/services/work-view/hosted-intent.js';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
@@ -138,12 +138,35 @@ describe('hosted setup extraction', () => {
     expect(calls).toBe(0);
   });
 
-  it('refuses incomplete account credentials, no prompts and ambiguous cross-agent ids before upload', async () => {
+  it.each([{ token: 'setup-token', userId: 'owner' }, { token: '', userId: '' }])('completes empty history without credentials or a Cloud call (%j)', async credentials => {
+    let calls = 0;
+    const { run, configPath, dir } = fixture((async () => { calls++; throw new Error('Empty history must not contact Cloud'); }) as typeof fetch, credentials);
+    await run.run([], true);
+    expect(run.state()).toMatchObject({ state: 'ok', step: null, error: null, finishedAt: new Date(at).toISOString() });
+    expect(calls).toBe(0);
+    expect(existsSync(configPath)).toBe(false);
+    expect(existsSync(join(dir, 'work-view'))).toBe(false);
+  });
+
+  it('preserves the previous extraction when a later scan has no owner prompts', async () => {
+    let calls = 0;
+    const { run, dir, databasePath } = fixture((async () => { calls++; return Response.json(answer()); }) as typeof fetch);
+    await run.run(prompts, true);
+    const before = readLedger(join(dir, 'work-view'));
+    await run.run([], false);
+    expect(calls).toBe(1);
+    expect(readLedger(join(dir, 'work-view'))).toEqual(before);
+    const database = new Database(databasePath, { readonly: true });
+    expect(readGoals(database).goals[0].title).toBe(answer().goals.goals.priorities[0].title);
+    database.close();
+    expect(run.state()).toMatchObject({ state: 'ok', error: null });
+  });
+
+  it('refuses incomplete account credentials and ambiguous cross-agent ids before upload', async () => {
     let calls = 0;
     const fetch = (async () => { calls++; return Response.json(answer()); }) as typeof globalThis.fetch;
     await expect(fixture(fetch, { token: 'explicit-token', userId: '' }).run.run(prompts, true)).rejects.toThrow('incomplete CMEM account credentials');
     await expect(fixture(fetch, { token: '', userId: 'explicit-user' }).run.run(prompts, true)).rejects.toThrow('incomplete CMEM account credentials');
-    await expect(fixture(fetch).run.run([], true)).rejects.toThrow('No owner-typed prompts');
     await expect(fixture(fetch).run.run([prompts[0], { ...prompts[0], platformSource: 'claude' }], true)).rejects.toThrow('shared by multiple agents');
     expect(calls).toBe(0);
   });

@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import express from 'express';
 import type { Server } from 'node:http';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { WorkViewRoutes } from '../../../../src/services/worker/http/routes/WorkViewRoutes.js';
 import { SetupScan } from '../../../../src/services/prompt-import/setup-scan.js';
@@ -34,12 +34,12 @@ function fakeRefresh() {
   return fake;
 }
 
-async function start(refresh: ReturnType<typeof fakeRefresh>, ledger: { dir: string; databasePath: string } | null = null, hostedIntent: Pick<HostedIntent, 'run' | 'state'> | null = null) {
+async function start(refresh: ReturnType<typeof fakeRefresh>, ledger: { dir: string; databasePath: string } | null = null, hostedIntent: Pick<HostedIntent, 'run' | 'state'> | null = null, homeDirectory = FIXTURE_HOME) {
   store = new SessionStore(ledger?.databasePath ?? ':memory:');
   let clock = Date.parse('2026-10-10T00:00:00.000Z');
   const setupScan = new SetupScan({
     getStore: () => store, now: () => (clock += 1000), progressIntervalMs: 0,
-    scanOptions: { homeDirectory: FIXTURE_HOME, resolveProject: () => 'fixture' },
+    scanOptions: { homeDirectory, resolveProject: () => 'fixture' },
   });
   routes = new WorkViewRoutes({
     databasePath: ledger?.databasePath ?? join(FIXTURE_HOME, 'no-work-state.db'), reviewPath: ':memory:', pollIntervalMs: 20,
@@ -65,6 +65,32 @@ const postScan = () => fetch(`${origin}/api/setup/scan`, { method: 'POST', heade
 const snapshot = async () => (await fetch(`${origin}/api/work-view`)).json() as Promise<any>;
 
 describe('setup extraction', () => {
+  it('finishes an empty-history setup without issuing credentials or calling Cloud', async () => {
+    const scratch = mkdtempSync(join(import.meta.dir, '..', '..', '..', '..', '.scratch', 'test-runs', 'empty-hosted-snapshot-'));
+    try {
+      const databasePath = join(scratch, 'claude-mem.db'), ledgerDir = join(scratch, 'work-view');
+      const intentConfigPath = join(scratch, 'intent-install.json');
+      let requests = 0;
+      const hosted = new HostedIntent({
+        origin: () => 'https://cloud.example', credentials: () => ({ token: '', userId: '' }), intentConfigPath,
+        ledgerDir, openDatabase: () => new Database(databasePath, { readonly: true }),
+        appendWorkStateEntry: entry => { store.appendWorkStateEntry(entry); }, homeProject: () => 'home',
+        fetch: (async () => { requests++; throw new Error('Empty setup must not contact Cloud'); }) as typeof fetch,
+      });
+      const refresh = fakeRefresh();
+      const scan = await start(refresh, { databasePath, dir: ledgerDir }, hosted, scratch);
+      expect((await postScan()).status).toBe(202);
+      await scan.finished();
+      const view = await snapshot();
+      expect(view.setup.scan).toMatchObject({ phase: 'done', done: true, error: null });
+      expect(view.setup.scan.agents.every((agent: { prompts: number }) => agent.prompts === 0)).toBe(true);
+      expect(view.setup.extraction).toMatchObject({ state: 'ok', error: null });
+      expect(requests).toBe(0);
+      expect(existsSync(intentConfigPath)).toBe(false);
+      expect(refresh.runs).toEqual([]);
+    } finally { rmSync(scratch, { recursive: true, force: true }); }
+  });
+
   it('waits for hosted extraction before done and never starts the local setup agent', async () => {
     const refresh = fakeRefresh();
     let complete!: () => void;

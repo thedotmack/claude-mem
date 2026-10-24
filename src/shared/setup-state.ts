@@ -1,6 +1,6 @@
 // The install funnel's state, shared by the worker (which the setup page talks to) and the installer (which waits
 // on it). One file per machine: the funnel shows until `status` is `complete`, for new installs and upgrades alike.
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { isCmemGatewayUrl } from './cmem-gateway.js';
 import { resolveDataDir } from './paths.js';
@@ -60,6 +60,42 @@ export function setupStatePath(): string {
   return join(resolveDataDir(), 'setup-state.json');
 }
 
+/** Saved progress outlives the installer. Only its separate live session pauses local work. */
+export function setupSessionPath(statePath: string = setupStatePath()): string {
+  return join(dirname(statePath), 'setup-session.json');
+}
+
+export function startSetupSession(statePath: string = setupStatePath()): void {
+  writeJsonAtomically(setupSessionPath(statePath), { pid: process.pid });
+}
+
+export function endSetupSession(statePath: string = setupStatePath()): void {
+  rmSync(setupSessionPath(statePath), { force: true });
+}
+
+/** No age limit: a live installer may wait for the browser indefinitely; a killed installer stops pausing work. */
+export function hasActiveSetupSession(statePath: string = setupStatePath()): boolean {
+  const path = setupSessionPath(statePath);
+  let saved: string;
+  try { saved = readFileSync(path, 'utf8'); }
+  catch (error) {
+    // The installer can finish between worker ticks; a removed session is inactive.
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+  const { pid } = JSON.parse(saved) as { pid?: unknown };
+  if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) throw new Error(`Setup session at ${path} has no valid installer PID.`);
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ESRCH') return false;
+    if (code === 'EPERM') return true;
+    throw error;
+  }
+}
+
 /** A missing file is a machine that has not finished setup. A corrupt one is an error, not a silent reset. */
 export function readSetupState(path: string = setupStatePath()): SetupStateFile {
   if (!existsSync(path)) return { ...INITIAL_SETUP_STATE };
@@ -79,9 +115,13 @@ export function readSetupState(path: string = setupStatePath()): SetupStateFile 
 
 /** Writes through a temp file beside it, so a reader never sees half a file. */
 export function writeSetupState(state: SetupStateFile, path: string = setupStatePath()): void {
+  writeJsonAtomically(path, state);
+}
+
+function writeJsonAtomically(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true });
   const temp = `${path}.${process.pid}.tmp`;
-  writeFileSync(temp, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+  writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
   renameSync(temp, path);
 }
 

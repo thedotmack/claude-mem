@@ -12,14 +12,17 @@ const STATUS: Record<SetupScanPhase, string> = {
   saving: 'Preparing your usage summary.',
   uploading: 'Finding your goals, work and rules.',
   done: 'Preparing your usage summary.',
-  failed: 'Preparing your usage summary.',
+  failed: 'Setup stopped. Try again when you are ready.',
 }
 
 /** Step 1: each detected agent ticks in and its prompt count climbs while the worker reads the last 30 days. */
-export function ScanScreen({ scan, onImproveProductChange, preferenceError }: {
+export function ScanScreen({ scan, onImproveProductChange, preferenceError, onRetry, retrying, retryError }: {
   scan: SetupScanView
   onImproveProductChange: (improveProduct: boolean) => void
   preferenceError: string | null
+  onRetry: () => void
+  retrying: boolean
+  retryError: string | null
 }) {
   const detected = scan.agents.filter((agent) => agent.detected)
   return (
@@ -51,6 +54,8 @@ export function ScanScreen({ scan, onImproveProductChange, preferenceError }: {
         <p className="scan-status" role="status" aria-live="polite">{STATUS[scan.phase]}</p>
         {preferenceError && <p className="scan-error" role="alert">{preferenceError}</p>}
         {scan.error && <p className="scan-error" role="alert">{scan.error}</p>}
+        {retryError && <p className="scan-error" role="alert">{retryError}</p>}
+        {scan.phase === 'failed' && <button type="button" className="scan-retry" onClick={onRetry} disabled={retrying}>{retrying ? 'Starting again…' : 'Try again'}</button>}
       </div>
     </section>
   )

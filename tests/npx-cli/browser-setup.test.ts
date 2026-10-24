@@ -43,6 +43,30 @@ function fakeWorker(script: { unreachableReads?: number }) {
 }
 
 describe('runBrowserSetup', () => {
+  for (const status of [403, 503]) {
+    it(`surfaces the worker's setup-state error on HTTP ${status}`, async () => {
+      await expect(runBrowserSetup({
+        workerBaseUrl: 'http://127.0.0.1:1234', openBrowser: () => {},
+        log: { info: () => {}, warn: () => {} },
+        fetch: (async () => Response.json({ error: 'setup_unavailable', message: 'Setup is unavailable for this installation.' }, { status })) as typeof fetch,
+        sleep: async () => { throw new Error('A refused request must not be silently retried.'); },
+        applyChoice: async () => 'home-ready',
+      })).rejects.toThrow('Setup is unavailable for this installation.');
+    });
+  }
+
+  it('surfaces the worker error when an installer report is refused', async () => {
+    const worker = fakeWorker({});
+    await expect(runBrowserSetup({
+      workerBaseUrl: 'http://127.0.0.1:1234', openBrowser: () => {},
+      log: { info: () => {}, warn: () => {} },
+      fetch: (async (url, init) => String(url).endsWith('/api/setup/installer')
+        ? Response.json({ message: 'This installer session cannot update setup.' }, { status: 409 })
+        : worker.fetch(url, init)) as typeof fetch,
+      applyChoice: async () => 'home-ready',
+    })).rejects.toThrow('This installer session cannot update setup.');
+  });
+
   it('opens the page, waits without a time limit for the worker and the choice, then for the finish', async () => {
     const worker = fakeWorker({ unreachableReads: 3 });
     const opened: string[] = [];
@@ -109,6 +133,25 @@ describe('settingsChangesNeedingRestart', () => {
 });
 
 describe('waitForBackgroundWorkToFinish', () => {
+  it('refuses to restart after losing contact with a running extraction', async () => {
+    let reads = 0;
+    await expect(waitForBackgroundWorkToFinish({
+      workerBaseUrl: 'http://w', log: { info: () => {}, warn: () => {} }, sleep: async () => {},
+      fetch: (async () => {
+        if (++reads === 1) return Response.json({ backgroundWorkRunning: ['extraction'] });
+        throw new Error('socket reset');
+      }) as typeof fetch,
+    })).rejects.toThrow('socket reset');
+    expect(reads).toBe(2);
+  });
+
+  it('surfaces a refused state request instead of treating running work as finished', async () => {
+    await expect(waitForBackgroundWorkToFinish({
+      workerBaseUrl: 'http://w', log: { info: () => {}, warn: () => {} },
+      fetch: (async () => Response.json({ error: 'Background work state could not be read.' }, { status: 503 })) as typeof fetch,
+    })).rejects.toThrow('Background work state could not be read.');
+  });
+
   it('waits, with no time limit, until no extraction or history import runs, and says why once per change', async () => {
     const answers = [['extraction'], ['extraction'], ['extraction', 'history-import'], []];
     let reads = 0, sleeps = 0;
@@ -126,9 +169,8 @@ describe('waitForBackgroundWorkToFinish', () => {
       'Setup is complete. The worker restarts to apply your settings once it finishes reading your goals, work and rules and bringing your memory to CMEM; that work keeps going until then.',
     ]);
   });
-  it('ends at once when nothing runs or the worker is gone (nothing left to protect)', async () => {
+  it('ends at once when the worker confirms nothing runs', async () => {
     const log = { info: () => {}, warn: () => {} };
     await waitForBackgroundWorkToFinish({ workerBaseUrl: 'http://w', log, fetch: (async () => Response.json({})) as unknown as typeof fetch, sleep: async () => { throw new Error('no wait'); } });
-    await waitForBackgroundWorkToFinish({ workerBaseUrl: 'http://w', log, fetch: (async () => { throw new TypeError('fetch failed'); }) as unknown as typeof fetch, sleep: async () => { throw new Error('no wait'); } });
   });
 });
