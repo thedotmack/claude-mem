@@ -19,7 +19,8 @@ import {
   vectorSearchMode,
   warmSharedEmbedder,
 } from '../services/ObservationEmbeddingService.js';
-import { ClaudeObservationProvider } from '../generation/providers/ClaudeObservationProvider.js';
+import { ClaudeObservationProvider, type ClaudeObservationProviderOptions } from '../generation/providers/ClaudeObservationProvider.js';
+import { resolveObserverThinkingOption } from '../../sdk/hardened-options.js';
 import { ServerClassifiedProviderError } from '../generation/providers/shared/error-classification.js';
 import { GEMINI_API_URL, GeminiObservationProvider } from '../generation/providers/GeminiObservationProvider.js';
 import { OpenRouterObservationProvider } from '../generation/providers/OpenRouterObservationProvider.js';
@@ -408,15 +409,53 @@ export async function loadCustomServerGenerationProvider(): Promise<ServerGenera
   });
 }
 
+/**
+ * CLAUDE_MEM_ANTHROPIC_CUSTOM_HEADERS, in the format of Claude Code's
+ * ANTHROPIC_CUSTOM_HEADERS: one `Name: Value` per line. A line that isn't a
+ * valid header is skipped with a warning that gives its position but never
+ * its text, since a header can carry a token; left in, it would make fetch
+ * throw on every request, with the value in the error.
+ */
+export function parseAnthropicCustomHeaders(raw: string | undefined): Record<string, string> | undefined {
+  if (!raw?.trim()) return undefined;
+  const headers: Record<string, string> = {};
+  raw.split(/\r?\n/).forEach((line, index) => {
+    if (!line.trim()) return;
+    const colon = line.indexOf(':');
+    const name = colon > 0 ? line.slice(0, colon).trim() : '';
+    const value = name ? line.slice(colon + 1).trim() : '';
+    try {
+      // Headers accepts control characters that fetch then refuses to send.
+      if (!name || !/^[\t\x20-\x7e\x80-\xff]*$/.test(value)) throw new Error('invalid header');
+      new Headers([[name, value]]);
+    } catch {
+      logger.warn('SYSTEM', `server: ignoring line ${index + 1} of CLAUDE_MEM_ANTHROPIC_CUSTOM_HEADERS: not a valid "Name: Value" header`);
+      return;
+    }
+    headers[name] = value;
+  });
+  return Object.keys(headers).length > 0 ? headers : undefined;
+}
+
 /** Exported for tests. */
 export async function instantiateServerGenerationProvider(provider: string): Promise<ServerGenerationProvider | null> {
   if (provider === 'claude' || provider === 'anthropic') {
     const apiKey = process.env.ANTHROPIC_API_KEY ?? process.env.CLAUDE_MEM_ANTHROPIC_API_KEY ?? '';
     if (!apiKey) return null;
-    const opts: { apiKey: string; model?: string; maxOutputTokens?: number } = { apiKey };
+    const opts: ClaudeObservationProviderOptions = {
+      apiKey,
+      thinking: resolveObserverThinkingOption(process.env.CLAUDE_MEM_OBSERVER_THINKING),
+    };
     if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
     const maxOutputTokens = resolveServerMaxOutputTokens();
     if (maxOutputTokens !== undefined) opts.maxOutputTokens = maxOutputTokens;
+    // An Anthropic-compatible gateway. Only the CLAUDE_MEM_ names: a server
+    // started from a shell inherits that shell's ANTHROPIC_BASE_URL and
+    // ANTHROPIC_CUSTOM_HEADERS (sanitizeEnv keeps them), which point Claude
+    // Code at its own gateway and would carry this key there (#2375).
+    if (process.env.CLAUDE_MEM_ANTHROPIC_BASE_URL) opts.baseUrl = process.env.CLAUDE_MEM_ANTHROPIC_BASE_URL;
+    const extraHeaders = parseAnthropicCustomHeaders(process.env.CLAUDE_MEM_ANTHROPIC_CUSTOM_HEADERS);
+    if (extraHeaders) opts.extraHeaders = extraHeaders;
     return new ClaudeObservationProvider(opts);
   }
   if (provider === 'gemini') {
