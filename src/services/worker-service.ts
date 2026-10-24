@@ -265,6 +265,8 @@ export class WorkerService implements WorkerRef {
   private isShuttingDown: boolean = false;
   private bootWatchdog: ReturnType<typeof setTimeout> | null = null;
   private pendingSessionResumeTimer: ReturnType<typeof setInterval> | null = null;
+  /** Registered with the resume timer; carries the #4580 startup orphan scan. */
+  private sessionRoutes: SessionRoutes | null = null;
   private readonly hookSpool = new HookSpool();
   private readonly hookSpoolDrainer = new HookSpoolDrainer(this.hookSpool);
 
@@ -491,9 +493,21 @@ export class WorkerService implements WorkerRef {
 
   private startPendingSessionResume(sessionRoutes: SessionRoutes): void {
     if (this.pendingSessionResumeTimer !== null || this.isShuttingDown) return;
+    // Kept for the startup scan (#4580): init-complete runs it once, and this
+    // is the handle it needs. No second timer — the resume sweep's contract is
+    // exactly one unref interval for the whole worker lifetime.
+    this.sessionRoutes = sessionRoutes;
     this.pendingSessionResumeTimer = setInterval(() => {
       if (!this.initializationCompleteFlag || this.isShuttingDown) return;
       sessionRoutes.resumePendingSessions('periodic-resume');
+      // The orphan recovery scan rides the same tick on purpose (#4580): its
+      // pacing gate makes it a no-op while a cooldown withholds, and the tick
+      // is what notices the window elapsing — the "cooldown ended" trigger —
+      // without another timer to keep alive.
+      Promise.resolve(sessionRoutes.scanOrphanedSessions('periodic-resume')).catch((error: unknown) => {
+        logger.warn('SESSION', 'Orphan recovery scan failed (non-blocking)', {},
+          error instanceof Error ? error : new Error(String(error)));
+      });
     }, 60_000);
     this.pendingSessionResumeTimer.unref?.();
   }
@@ -903,6 +917,18 @@ export class WorkerService implements WorkerRef {
       this.resolveInitialization();
       this.initPhaseTracker.setInitPhase('ready');
       logger.info('SYSTEM', 'Core initialization complete (DB + search ready)');
+
+      // Startup orphan recovery scan (#4580): a restart inside a quota
+      // cooldown is exactly the moment buffered work was dropped, so look
+      // once now instead of waiting for the first resume tick. Fire-and-
+      // forget — the scan is bounded, paced (a live cooldown makes it a
+      // no-op), and must never fail initialization over its own errors.
+      if (this.sessionRoutes) {
+        Promise.resolve(this.sessionRoutes.scanOrphanedSessions('startup')).catch((error: unknown) => {
+          logger.warn('SESSION', 'Orphan recovery startup scan failed (non-blocking)', {},
+            error instanceof Error ? error : new Error(String(error)));
+        });
+      }
 
       // Lifecycle telemetry (person profile = anonymous install UUID). ide is
       // this install's dominant client read from session history — a bounded
