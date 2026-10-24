@@ -15,7 +15,7 @@
  *   - Codex: `codex exec -s read-only --ephemeral --ignore-user-config --skip-git-repo-check -C <cwd> -o <file> [--output-schema <file>] [-m <model>] [-c model_reasoning_effort="<effort>"] -`
  *     (codex-cli 0.163.0 `exec --help`), prompt on stdin, no MCP servers. A step that names an answer
  *     schema gets it as `--output-schema`, so the final message is that JSON shape and nothing else.
- *   - Gemini: `gemini -p <line> --skip-trust --approval-mode plan -e none --allowed-mcp-server-names <none> -o json [-m <model>]`
+ *   - Gemini: `gemini -p <line> --approval-mode plan -e none --allowed-mcp-server-names <none> -o json [-m <model>]`
  *     (gemini 0.49.0 `--help`: plan = read-only mode), prompt on stdin, no extensions or MCP servers.
  *   Each step names its model per backend (the task's table); Claude Code takes it as the SDK `model` option.
  *
@@ -198,10 +198,11 @@ const CODEX_EXEC_ARGS = (cwd: string, answerPath: string, schemaPath: string | n
 ];
 
 /** Gemini with no extensions and no MCP server (none is named this), so plan mode is the only tool surface.
- * `--skip-trust` trusts only the task's own folder for this run: in an untrusted folder Gemini drops plan mode
- * to "default" and a headless run exits 55 (Oct 24, "Gemini CLI is not running in a trusted directory"). */
+ * Never `--skip-trust`: a non-interactive run that exits plan mode switches to YOLO (gemini 0.49.0
+ * ExitPlanModeTool.getAllowApprovalMode), so the folder-trust check is what keeps an unattended run read-only.
+ * In an untrusted folder Gemini refuses with exit 55, and that refusal is reported like any other failure. */
 export const GEMINI_NO_MCP_SERVERS = 'claude-mem-refresh-uses-no-mcp-servers';
-const GEMINI_ARGS = ['-p', 'Follow the instructions above.', '--skip-trust', '--approval-mode', 'plan', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json'];
+const GEMINI_ARGS = ['-p', 'Follow the instructions above.', '--approval-mode', 'plan', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json'];
 
 function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies): AskAgent {
   return async (prompt, models, answerSchema) => {
