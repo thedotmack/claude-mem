@@ -31,6 +31,18 @@ describe('go-grouped-types', () => {
     ]);
   }, 120000);
 
+  test('the first type or alias of a group without comments is listed once, as itself', () => {
+    const bare = [
+      'package geo', '', 'type (', '\tA int', '\tB = A', ')', '', 'type (', '\tC = A', '\tD string', ')',
+    ].join('\n');
+    const file = parseFile(bare, filename);
+    expect(file.symbols.map(s => [s.name, s.lineStart, s.lineEnd])).toEqual([
+      ['A', 3, 3], ['B', 4, 4], ['C', 8, 8], ['D', 9, 9],
+    ]);
+    expect(unfoldSymbol(bare, filename, 'A')).not.toContain('B = A');
+    expect(unfoldSymbol(bare, filename, 'C')).not.toContain('D string');
+  }, 120000);
+
   test('unfolding a grouped type returns that type, not the whole group', () => {
     const unfolded = unfoldSymbol(source, filename, 'Coord');
     expect(unfolded).toContain('Coord = Point');
