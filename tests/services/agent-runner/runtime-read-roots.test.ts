@@ -20,7 +20,7 @@ describe('Codex runtime read roots', () => {
     const wrapper = join(pkg, 'bin', 'codex.js'); file(wrapper, '#!/usr/bin/env node');
     file(join(pkg, 'package.json'), JSON.stringify({ name: '@openai/codex' }));
     const native = join(root, 'node_modules', '@openai', 'codex-darwin-arm64');
-    file(join(native, 'package.json'), JSON.stringify({ name: '@openai/codex-darwin-arm64' }));
+    file(join(native, 'package.json'), JSON.stringify({ name: '@openai/codex' }));
     const runtime = join(native, 'vendor', 'aarch64-apple-darwin'); file(join(runtime, 'bin', 'codex'));
     const command = join(root, 'bin', 'codex'); mkdirSync(dirname(command), { recursive: true }); symlinkSync(wrapper, command);
     const roots = runtimeReadRoots(command, 'darwin', 'arm64');

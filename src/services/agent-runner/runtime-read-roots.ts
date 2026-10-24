@@ -39,7 +39,8 @@ export function runtimeReadRoots(executable: string, platform: string = process.
     let vendor = join(dirname(manifest), 'vendor');
     try {
       const nativeManifest = require.resolve(`${target[0]}/package.json`);
-      if (packageName(nativeManifest) === target[0]) vendor = join(dirname(nativeManifest), 'vendor');
+      // npm publishes platform packages as aliases whose manifest name remains @openai/codex.
+      if ([target[0], '@openai/codex'].includes(packageName(nativeManifest) ?? '')) vendor = join(dirname(nativeManifest), 'vendor');
     } catch { /* Older distributions bundle vendor directly in @openai/codex. */ }
     const runtime = join(vendor, target[1]);
     if (existsSync(join(runtime, 'bin', platform === 'win32' ? 'codex.exe' : 'codex'))) roots.add(realPath(runtime));
