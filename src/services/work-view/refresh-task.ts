@@ -189,7 +189,12 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
           await runScript([paths.saveScript, '--goals', goalsPath, '--prompts', promptsPath, ...(mapPath ? ['--map', mapPath] : []), ...(since ? ['--carried-before', since] : [])]);
         };
         const previousMap = saved.mapPath && existsSync(saved.mapPath) ? saved.mapPath : null;
-        if (!since) {
+        if (!ownerPrompts) {
+          // No evidence needs no model call. Save the validated empty snapshot so
+          // the scheduler can continue grouping and will not retry every check.
+          await save({ generated_at: exportedAt, window_days: 31, human_summary: 'No owner prompts in this window.', priorities: [], open_asks: [] }, null);
+          done.push('goals empty');
+        } else if (!since) {
           await step('goals', [
             inlineSkill(paths.ownerGoalsSkill), '---', readOnly,
             `Step 1 is done: the owner's prompts are in ${promptsPath}. Do step 2 yourself (no subagent). Instead of writing owner-map.md and owner-goals.json, reply with only one JSON object: {"map": "<the owner-map.md markdown>", "goals": <the owner-goals.json object>}. The worker saves it with step 3.`,

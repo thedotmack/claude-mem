@@ -347,6 +347,19 @@ describe('incremental owner goals', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it('an empty history saves an empty snapshot without any model call', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-empty-goals-'));
+    try {
+      const database = fixtureDatabase();
+      writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
+      const calls: Array<{ args: string[]; goals?: any }> = [];
+      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl: fakePython(calls), writeOwnerPrompts: async (folder, sinceMinute) => ({ ...await fakeOwnerPrompts(0, [])(folder, sinceMinute), ownerPrompts: 0 }) });
+      await task.prepare!();
+      expect(await task.run(async () => { throw new Error('empty input must not call a model'); }, 'codex')).toBe('goals empty.');
+      expect(calls[0].goals).toMatchObject({ generated_at: new Date(NOW).toISOString(), source_prompt_count: 0, priorities: [], open_asks: [] });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('with no new prompts, re-saves the saved goals without asking an agent', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-goals-'));
     try {
