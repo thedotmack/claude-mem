@@ -529,7 +529,7 @@ describe('Plugin Distribution - package.json Files Field', () => {
     expect(result.status).toBe(0);
     const packed = JSON.parse(result.stdout);
     // npm 12 keys pack results by package name; older npm returns an array.
-    const artifact = Array.isArray(packed) ? packed[0] : packed[packageJson.name];
+    const artifact = Array.isArray(packed) ? packed[0] : packed[readJson('package.json').name];
     const filePaths = new Set(artifact.files.map((file: { path: string }) => file.path));
 
     expect(filePaths.has('dist/bug-report/index.js')).toBe(true);
