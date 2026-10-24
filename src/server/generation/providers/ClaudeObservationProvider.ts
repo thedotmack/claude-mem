@@ -164,10 +164,11 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
         'x-api-key': this.apiKey,
         'anthropic-version': ANTHROPIC_VERSION,
       },
+      // No temperature, as on the worker's Agent SDK path: Claude Haiku 5.5
+      // rejects any request that sets one.
       body: JSON.stringify({
         model: this.model,
         max_tokens: this.maxOutputTokens,
-        temperature: 0.3,
         messages: [{ role: 'user', content: prompt }],
       }),
       signal,

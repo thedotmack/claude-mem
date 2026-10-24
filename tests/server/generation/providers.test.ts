@@ -313,6 +313,13 @@ describe('ClaudeObservationProvider', () => {
     await expect(provider.generate(makeContext())).rejects.toBeInstanceOf(ServerClassifiedProviderError);
   });
 
+  it('sends no temperature', async () => {
+    const capturing = new CapturingFetch(jsonResponse(200, { content: [{ type: 'text', text: 'ok' }] }));
+    const provider = new ClaudeObservationProvider({ apiKey: 'sk-fake', fetchImpl: capturing.fetch });
+    await provider.generate(makeContext());
+    expect('temperature' in JSON.parse(String(capturing.lastInit?.body))).toBe(false);
+  });
+
   it('POSTs to api.anthropic.com when baseUrl is unset', async () => {
     const capturing = new CapturingFetch(jsonResponse(200, { content: [{ type: 'text', text: 'ok' }] }));
     const provider = new ClaudeObservationProvider({ apiKey: 'sk-fake', fetchImpl: capturing.fetch });
