@@ -88,6 +88,11 @@ export function resetStreamingEndpointMemoryForTests(): void {
   endpointsWarnedForMissingStreamUsage.clear();
 }
 
+/** Test hook: the next request to this URL is the non-streamed path. */
+export function markEndpointRefusesStreamingForTests(url: string): void {
+  endpointsThatRefuseStreaming.add(url);
+}
+
 /**
  * Whether requests to this endpoint are streamed. The cmem gateway calls its
  * upstream with stream:false and answers with one JSON body after the whole

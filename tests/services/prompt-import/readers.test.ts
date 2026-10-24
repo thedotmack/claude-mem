@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 import { join } from 'path';
+import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { writeOwnerPromptsFile } from '../../../src/services/prompt-import/owner-prompts-file.js';
 import { scanOwnerPrompts, type OwnerPrompt } from '../../../src/services/prompt-import/index.js';
 import { AgentTextIndex, isAgentWritten, normalize } from '../../../src/services/prompt-import/owner-prompt-filter.js';
 
@@ -15,6 +18,46 @@ function texts(prompts: OwnerPrompt[], agent: OwnerPrompt['agent']): string[] {
 }
 
 describe('prompt readers on recorded transcript lines', () => {
+  it('keeps excluded projects out of scan results, memory ids and extraction files', async () => {
+    const options = { sinceEpochMs: SINCE, homeDirectory: FIXTURE_HOME, excludedProjects: '/work/alpha/**',
+      resolveProject: (cwd: string | null) => cwd ?? 'unknown',
+      memoryPrompts: [{ id: 91, platformSource: 'claude', contentSessionId: 'old', project: 'alpha', cwd: '/work/alpha', promptText: 'excluded memory', createdAtEpoch: SINCE + 1 }] };
+    const result = await scanOwnerPrompts(options);
+    expect(result.ownerPrompts.length).toBeGreaterThan(0);
+    expect([...result.ownerPrompts, ...result.agentWritten].some(prompt => prompt.cwd === '/work/alpha')).toBe(false);
+    expect(result.ownerMemoryPromptIds.has(91)).toBe(false);
+    expect(result.agents.find(agent => agent.id === 'claude-code')!.typed).toBe(0);
+    const folder = mkdtempSync(join(tmpdir(), 'excluded-prompt-export-'));
+    try {
+      await writeOwnerPromptsFile({ folder, now: Date.parse('2026-10-10T00:00:00Z'), scanOptions: options });
+      for (const file of readdirSync(folder)) expect(readFileSync(join(folder, file), 'utf8')).not.toContain('make the scan screen');
+    } finally { rmSync(folder, { recursive: true, force: true }); }
+  });
+
+  it('removes private transcript content before scan results and extraction files leave the importer', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'private-prompt-scan-'));
+    try {
+      cpSync(FIXTURE_HOME, home, { recursive: true });
+      const patch = (folder: string) => {
+        for (const entry of readdirSync(folder, { withFileTypes: true })) {
+          const path = join(folder, entry.name);
+          if (entry.isDirectory()) patch(path);
+          else if (entry.name.endsWith('.jsonl')) {
+            const text = readFileSync(path, 'utf8');
+            writeFileSync(path, text.replaceAll('make the scan screen show each agent', 'make the scan screen <private>DO_NOT_EXPORT_SECRET</private>show each agent'));
+          }
+        }
+      };
+      patch(home);
+      const result = await scanOwnerPrompts({ sinceEpochMs: SINCE, homeDirectory: home, resolveProject: () => 'test' });
+      expect(JSON.stringify(result)).not.toContain('DO_NOT_EXPORT_SECRET');
+      expect(result.ownerPrompts.some(prompt => prompt.text === 'make the scan screen show each agent')).toBe(true);
+      const folder = join(home, 'export');
+      await writeOwnerPromptsFile({ folder, now: Date.parse('2026-10-10T00:00:00Z'), scanOptions: { homeDirectory: home } });
+      for (const file of readdirSync(folder)) expect(readFileSync(join(folder, file), 'utf8')).not.toContain('DO_NOT_EXPORT_SECRET');
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
   it('Claude Code: keeps typed prompts; drops subagent, meta, headless, task-notification, SDK and agent-written prompts', async () => {
     const result = await scan();
     expect(texts(result.ownerPrompts, 'claude-code')).toEqual([

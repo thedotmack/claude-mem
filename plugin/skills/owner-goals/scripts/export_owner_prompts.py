@@ -1,7 +1,7 @@
 """Export the prompts the owner typed personally in the last N days, minus prompts an agent wrote first.
 
 Step 1, owner-typed prompts, from the transcripts' own labels:
-  Claude Code (~/.claude/projects/*/*.jsonl): user messages with origin.kind == "human", entrypoint cli or
+  Claude Code ($CLAUDE_CONFIG_DIR or ~/.claude, projects/*/*.jsonl): user messages with origin.kind == "human", entrypoint cli or
     claude-desktop, not sidechain, not meta. Agent-launched runs (claude -p, SDK, subagents, observers) never
     carry origin "human".
   Codex (~/.codex/sessions): user messages from interactive sessions only. codex_exec runs and spawned
@@ -21,7 +21,7 @@ Usage: python3 export_owner_prompts.py --out <dir> [--days 31 | --start YYYY-MM-
   --start/--end read a past period instead: from local midnight on --start up to local midnight on --end.
   --since names the previous snapshot's local generated_at minute.
 """
-import argparse, glob, json, os, re, subprocess, sys, time
+import argparse, calendar, glob, json, os, re, subprocess, sys, time
 
 CODEX_INJECTED_PREFIXES = ("# AGENTS.md", "<environment_context", "<user_instructions", "<permissions", "<INSTRUCTIONS", "<turn_aborted")
 MINIMUM_CHECKABLE_LENGTH = 160
@@ -30,8 +30,55 @@ MAXIMUM_KEPT_PROMPT_CHARACTERS = 3000
 ROLE_ASSIGNMENT_OPENING = re.compile(r"(You are (the|a|an|one|on|in) |Task: |Branch: )")
 
 
+# The tags claude-mem strips before anything is stored (src/utils/tag-stripping.ts TAG_NAMES). Text the owner
+# marked <private> never reaches the prompts file, the refresh model or the saved goals.
+MEMORY_TAG_NAMES = {"private", "claude-mem-context", "system_instruction", "system-instruction", "persisted-output", "system-reminder"}
+OPEN_TAG_NAME = re.compile(r"<([A-Za-z_][A-Za-z0-9_-]*)")
+CLOSE_TAG = re.compile(r"</([A-Za-z_][A-Za-z0-9_-]*)\s*>")
+
+
+def strip_memory_tags(text):
+    """Remove every balanced memory-tag block, the same pairing as stripBalancedMemoryTags in tag-stripping.ts:
+    a close pairs with the earliest still-open tag of its name, a close inside an opener's own span is attribute
+    text, and an unclosed tag in prose is left alone."""
+    if "<" not in text:
+        return text
+    opens, removed, i = {}, [], 0
+    while i < len(text):
+        if text[i] != "<":
+            i += 1
+            continue
+        close = CLOSE_TAG.match(text, i)
+        if close:
+            pending = opens.get(close.group(1))
+            if pending and i >= pending[0][1]:
+                start, _ = pending.pop(0)
+                removed.append((start, close.end()))
+            i = close.end()
+            continue
+        opener = OPEN_TAG_NAME.match(text, i)
+        if opener and opener.group(1) in MEMORY_TAG_NAMES:
+            greater = text.find(">", opener.end())
+            opens.setdefault(opener.group(1), []).append((i, len(text) if greater < 0 else greater))
+            i = opener.end()
+            continue
+        i += 1
+    kept, cursor = [], 0
+    for start, end in sorted(removed):
+        if start > cursor:
+            kept.append(text[cursor:start])
+        cursor = max(cursor, end)
+    kept.append(text[cursor:])
+    return "".join(kept).strip()
+
+
 def iso_to_epoch(timestamp):
-    return time.mktime(time.strptime(timestamp[:19], "%Y-%m-%dT%H:%M:%S")) - time.timezone
+    """Transcript timestamps are UTC ("...Z"); timegm reads them as UTC, with no local daylight-saving shift."""
+    return calendar.timegm(time.strptime(timestamp[:19], "%Y-%m-%dT%H:%M:%S"))
+
+
+# Claude Code keeps transcripts under CLAUDE_CONFIG_DIR when it is set, like claude-mem's own paths.ts.
+CLAUDE_PROJECTS = os.path.join(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude"), "projects")
 
 
 def text_of(content, text_types):
@@ -51,7 +98,7 @@ def recent_files(pattern, cutoff_seconds):
 def read_owner_typed_prompts(cutoff_seconds):
     """(epoch, tool, project, session, text) for every prompt the transcripts label as typed by a person."""
     prompts, seen_keys = [], set()
-    for transcript_path in recent_files("~/.claude/projects/*/*.jsonl", cutoff_seconds):
+    for transcript_path in recent_files(os.path.join(CLAUDE_PROJECTS, "*", "*.jsonl"), cutoff_seconds):
         project_folder = os.path.basename(os.path.dirname(transcript_path))
         for line in open(transcript_path, errors="ignore"):
             if '"type":"user"' not in line:
@@ -60,7 +107,7 @@ def read_owner_typed_prompts(cutoff_seconds):
                 record = json.loads(line)
             except ValueError:
                 continue
-            text = text_of(record.get("message", {}).get("content"), {"text"}).strip()
+            text = strip_memory_tags(text_of(record.get("message", {}).get("content"), {"text"}).strip())
             is_owner_typed = ((record.get("origin") or {}).get("kind") == "human"
                               and record.get("entrypoint") in ("cli", "claude-desktop")
                               and not record.get("isSidechain") and not record.get("isMeta"))
@@ -94,7 +141,7 @@ def read_owner_typed_prompts(cutoff_seconds):
                 payload = record.get("payload") or {}
                 if record.get("type") != "response_item" or payload.get("role") != "user":
                     continue
-                text = text_of(payload.get("content"), {"input_text"}).strip()
+                text = strip_memory_tags(text_of(payload.get("content"), {"input_text"}).strip())
                 timestamp = record.get("timestamp", "")
                 if not text or text.startswith(CODEX_INJECTED_PREFIXES) or not timestamp or iso_to_epoch(timestamp) < cutoff_seconds:
                     continue
@@ -109,8 +156,8 @@ def read_owner_typed_prompts(cutoff_seconds):
 def read_agent_authored_text(cutoff_seconds):
     """(epoch, normalized text) for everything an agent wrote: assistant text, tool inputs, Codex function calls."""
     chunks = []
-    claude_paths = (recent_files("~/.claude/projects/*/*.jsonl", cutoff_seconds)
-                    + recent_files("~/.claude/projects/*/*/subagents/*.jsonl", cutoff_seconds))
+    claude_paths = (recent_files(os.path.join(CLAUDE_PROJECTS, "*", "*.jsonl"), cutoff_seconds)
+                    + recent_files(os.path.join(CLAUDE_PROJECTS, "*", "*", "subagents", "*.jsonl"), cutoff_seconds))
     for path in claude_paths:
         for line in open(path, errors="ignore"):
             if '"type":"assistant"' not in line:

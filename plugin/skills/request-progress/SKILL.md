@@ -5,7 +5,7 @@ description: Group recent conversations into overall requests, review each one's
 
 # Request Progress
 
-My Work groups records by **conversation**: one session's first substantive ask owns its follow-ups and agent work. People rarely finish a goal in one conversation, though. They `/clear`, switch worktrees, hand off to Codex, come back the next day. This skill works backwards from recorded work to join those conversations into one **overall request**, then reviews each request from memory and writes the build story.
+My Work shows one card per **human request**, built from the human's own prompts: a conversation's first substantive ask owns its follow-ups, and agent work, activity and progress sit beneath it, even before any work is recorded. People rarely finish a goal in one conversation, though. They `/clear`, switch worktrees, hand off to Codex, come back the next day. This skill checks each new conversation's opening ask against the open requests in its project to join those conversations into one **overall request**, then reviews each request from memory and writes the build story.
 
 `${CLAUDE_SKILL_DIR}` is the folder holding this file. Every step runs one CLI:
 
@@ -19,31 +19,27 @@ Default window: 14 days. Use the window the user asks for.
 
 ## 1. Group conversations into overall requests
 
+A human request is the top level of My Work: every conversation's opening ask either starts a request or continues one. Grouping decides **once per conversation**, from its opening substantive ask, and decisions already in the ledger are kept. Requests stay inside one project root (the project key before its first `/`, so worktrees of one repo share requests); a conversation never joins a request from another root, and `apply` refuses one that does.
+
 ```bash
-$CLI candidates --days 14 --brief
-# narrow a large window one project root at a time:
-$CLI candidates --days 14 --brief --project <root>
+$CLI grouping-input --days 14
 ```
 
-Each candidate is a conversation with a substantive human ask. The output includes:
+It returns one batch: up to 20 conversations the ledger has not decided yet, earliest first, all from one project `root`, each with its `openingAsk` and work lists; that root's `openRequests` (title, `anchor` conversation, `anchorAsk`, `recentAsks`; shipped and abandoned requests are left out); and `proposedLinks`, conversations code already linked because they wrote to the same work-state list or recorded the same `request_id` (keep these unless the list is obviously a generic bucket). `remaining` counts the undecided conversations left for later batches. Apply each batch, then run `grouping-input` again until `conversations` is empty.
 
-- `proposedGroups`: conversations already linked by code, because they wrote to the same work-state list or recorded the same `request_id`. Keep these unless the list is obviously a generic bucket.
-- `skippedLists`: lists touched by too many conversations to count as proof.
-- `currentGroup`: the group a conversation already belongs to. Do not reshuffle settled groups without new evidence.
+Decide every conversation in the batch:
 
-For every conversation without a deterministic link, decide:
-
-- **continue**: it serves an existing overall request.
+- **continue**: it serves one of the `openRequests` (or another conversation in the same batch).
 - **new**: it starts its own overall request (a group of one).
 - **ignore**: it is not a human goal (an automated naming prompt, a bot kickoff, a pasted transcript with no ask).
 
 Evidence for **continue**, strongest first:
 
 1. The ask refers back to earlier work: "this is excellent work, can you now …", "continue the X", a PR or branch name, a pasted handoff.
-2. The same named artifact (feature, page, skill, release, bug) appears in both asks, in the same project root, within a few days.
+2. The same named artifact (feature, page, skill, release, bug) appears in both asks within a few days.
 3. Memory confirms it: `mem_search` for the artifact finds observations from both conversations describing the same change.
 
-Similar wording alone is not evidence, and neither is sharing a repo. When unsure, make it **new**: a wrongly merged card hides work, a split card only shows up twice. Link across projects only on evidence 1 or 3.
+Similar wording alone is not evidence, and neither is sharing a repo. When unsure, make it **new**: a wrongly merged card hides work, a split card only shows up twice. To continue an open request, list its `anchor` first, then the new conversations, keep its title, and add a link with the evidence. List only conversations from the batch (and an open request's anchor first).
 
 Apply the decisions:
 
@@ -68,6 +64,7 @@ The command fails fast; fix the input and rerun. Its rules:
 - List `conversations` **earliest first**. The first one anchors the group id, so reviews survive later merges.
 - A group of more than one conversation needs at least one link (`shared-work-list`, `shared-request-id` or `agent-judgment`) with evidence text. Quote the human's words where you can.
 - `title` is the goal in plain words (≤120 chars), not the process.
+- Every conversation in a group comes from one project root.
 
 Then run `$CLI pending --days 14 --limit 48`. `ungroupedConversations` should be 0; `groups` lists the overall requests due for a review (new, or active since their last review).
 
@@ -77,7 +74,7 @@ Split the due groups into batches of about 8 and give each batch to a subagent, 
 
 > Review the progress of these overall requests from claude-mem memory. For EACH groupId:
 >
-> 1. Run `<CLI> show <groupId>` for its conversations, every human ask in full (with prompt ids and times), work lists, dates, any previous review and a `reviewBasis`. When `mode` is `"amend"`, the group has the same conversations as its `previousReview`, and `asks` holds only the asks after `amendSince`: start from `previousReview`, search memory only for what happened after `amendSince`, and change only what that new evidence moves (state, percent, dates, summary, new milestones, outcome, preferences). Keep the rest of the previous review as it is. When `mode` is `"full"` (no previous review, or the conversations changed), review from scratch.
+> 1. Run `<CLI> show <groupId>` for its conversations, every human ask in full (with prompt ids and times), each conversation's own observations (id, time, type, title), work lists, dates, any previous review and a `reviewBasis`. When `mode` is `"amend"`, the group has the same conversations as its `previousReview`, and `asks` holds only the asks after `amendSince`: start from `previousReview`, search memory only for what happened after `amendSince`, and change only what that new evidence moves (state, percent, dates, summary, new milestones, outcome, preferences). Keep the rest of the previous review as it is. When `mode` is `"full"` (no previous review, or the conversations changed), review from scratch.
 > 2. Search memory (`mem_search`, `timeline`, `get_observations`) for the outcome: merged PRs, releases, deploys, work-state items marked done, the owner confirming or rejecting the result, or work that stopped. Search for the named artifacts in the asks, not generic words. Fetch the observations you rely on.
 > 3. Decide from the evidence only:
 >    - `state`: `shipped` (merged and released or deployed, or the owner confirmed it done) | `in-progress` | `stalled` (no activity for 3+ days and not finished) | `abandoned` (explicitly dropped or replaced) | `unknown` (memory has too little).
@@ -99,7 +96,7 @@ Split the due groups into batches of about 8 and give each batch to a subagent, 
 
 Run this yourself after the reviews (it needs the reviews' summaries):
 
-1. Run `$CLI align-input`. It returns the owner's current goals (each with an exact `goal` key, title, product and the owner's own quotes, from the owner-goals list), the request groups still to align (title, first ask, progress state and summary: groups this step has not seen, or every group when the goals changed) and their previous links. If it lists no groups, skip this step: every group is already aligned, or the owner-goals skill has not run and every card keeps "Goal not linked yet".
+1. Run `$CLI align-input`. It returns the owner's current goals (each with an exact `goal` key, title, product and the owner's own quotes, from the owner-goals list), the request groups still to align (title, first ask, progress state and summary: groups this step has not seen, groups whose request changed since their decision, or every group when the goals changed) and their previous links. If it lists no groups, skip this step: every group is already aligned, or the owner-goals skill has not run and every card keeps "Goal not linked yet".
 2. For each listed group, pick the goals it directly advances: usually one, at most three. A request serves a goal when delivering it moves that goal forward. The same product area alone is not enough. Groups that serve no current goal go in `unaligned`. Keep a previous link unless the goals or the request changed.
 3. Each link needs `evidence` (≤300 chars): name what in the request advances the goal, quoting the goal's or the request's words.
 4. Record it. Every listed group must appear in `links` or `unaligned`; groups it did not list keep their earlier links. The command validates, so fix and retry if it rejects:
@@ -114,7 +111,7 @@ My Work shows the linked goal on each card, "No goal" for an unaligned group, an
 
 ## 4. Write the build story
 
-Run `$CLI story-input`. Without a previous story it returns every review; with one (`update: true`) it returns only the reviews whose state or percent changed since that story was written. If it lists no reviews, skip this step: the story still holds. When updating, keep the previous story's chapters and wording where they still hold and change only what the listed reviews move. Write:
+Run `$CLI story-input`. Without a previous story it returns every review; with one (`update: true`) it returns only the reviews whose facts (state, percent, dates, milestones, preferences or outcome) changed since that story was written. If it lists no reviews, skip this step: the story still holds. When updating, keep the previous story's chapters and wording where they still hold and change only what the listed reviews move. Write:
 
 - `narrative` (markdown, ≤12000 chars, blocks separated by blank lines, `## ` headings for chapters): a chronological build story. Lead with a short paragraph on shipping velocity (My Work shows it as the recap), then what was set out, what shipped and when, how long ask-to-ship took, where work stalled or was reworked, and what that teaches. Use only the dated facts in the reviews. Refer to the person as "the owner" or "they"; never guess pronouns.
 - `preferences` (≤30): merge the per-request preferences into distinct, actionable statements of how the owner likes to work with agents. `supportCount` is how many requests showed it; keep up to 3 verbatim quotes with dates. Drop one-off remarks.

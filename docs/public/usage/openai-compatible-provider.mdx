@@ -32,10 +32,13 @@ But it carries three things that belong to openrouter.ai specifically:
   and irrelevant to an endpoint you configured yourself, but you still share
   the same three settings keys with them.
 
-This provider has its own settings keys and sends a deliberately plain request
-body: `model`, `messages`, `temperature`, `max_tokens`, and nothing else. Strict
-servers (vLLM in particular) reject unknown fields. `max_tokens` is
-`CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS` (4096 by default); a model that only
+This provider has its own settings keys. The request body is `model`,
+`messages`, `temperature`, `max_tokens`, and `reasoning: { enabled: false }`
+by default, so a reasoning model cannot spend the output cap thinking and
+return an empty observation. Set `CLAUDE_MEM_OPENAI_COMPAT_REASONING` to `on`
+to leave reasoning to the endpoint. A strict server (vLLM in particular) that
+rejects the `reasoning` field gets the request once more without it. `max_tokens`
+is `CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS` (4096 by default); a model that only
 accepts `max_completion_tokens` gets the request again with that field.
 
 A claude-mem observer key (`cm_pro_…`) is never sent to these endpoints. Use the
@@ -141,6 +144,7 @@ work.
 | `CLAUDE_MEM_OPENAI_COMPAT_PRESET` | `''` (= `custom`) | Named endpoint preset from the table above |
 | `CLAUDE_MEM_OPENAI_COMPAT_BASE_URL` | preset's | OpenAI-compatible base URL. `/chat/completions` is appended if absent |
 | `CLAUDE_MEM_OPENAI_COMPAT_MODEL` | preset's | Model id, passed verbatim |
+| `CLAUDE_MEM_OPENAI_COMPAT_REASONING` | `''` (= off) | `off` sends `reasoning: { enabled: false }` on every request. `on` leaves reasoning to the endpoint |
 | `CLAUDE_MEM_OPENAI_COMPAT_API_KEY` | `''` | API key. Also read from `OPENAI_COMPAT_API_KEY` in `~/.claude-mem/.env` |
 | `CLAUDE_MEM_OPENAI_COMPAT_API_KEYS` | `''` | Extra keys for rotation — see [multi-key rotation](/usage/multi-key-rotation) |
 
@@ -158,11 +162,12 @@ use the preset that matches where your account lives. Both default to
 `MiniMax-M3`. Any model id MiniMax serves is passed verbatim, including legacy
 ids such as `MiniMax-M2.7`.
 
-To use M3.1 Flash instead, set its model id explicitly. The observer uses Chat
-Completions without overriding thinking or reasoning effort, so Flash runs with
-the API's adaptive thinking at its default `max` effort, which spends more
-tokens per observation. Flash may also need a MiniMax Token Plan rather than
-pay-as-you-go. See the [MiniMax OpenAI API reference](https://platform.minimax.io/docs/api-reference/text-openai-api).
+To use M3.1 Flash instead, set its model id explicitly. The observer sends
+`reasoning: { enabled: false }` by default, so Flash does not run its adaptive
+thinking at `max` effort on every observation. Set
+`CLAUDE_MEM_OPENAI_COMPAT_REASONING` to `on` to leave thinking to MiniMax.
+Flash may also need a MiniMax Token Plan rather than pay-as-you-go. See the
+[MiniMax OpenAI API reference](https://platform.minimax.io/docs/api-reference/text-openai-api).
 
 ```json
 {

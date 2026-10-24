@@ -2,11 +2,17 @@ import { strict as assert } from 'node:assert';
 import { spyOn } from 'bun:test';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.ts';
 import { SessionManager } from '../../../src/services/worker/SessionManager.ts';
-import { GeminiProvider } from '../../../src/services/worker/GeminiProvider.ts';
+import { GeminiProvider, GEMINI_RPM_LIMITS } from '../../../src/services/worker/GeminiProvider.ts';
 import { ModeManager } from '../../../src/services/domain/ModeManager.ts';
 import { SettingsDefaultsManager } from '../../../src/shared/SettingsDefaultsManager.ts';
 
 const stall = process.argv[2] === 'stalled';
+// The real pacing limiter at a higher per-model RPM: 60000 / 120 + 100 = a 600ms
+// minimum spacing instead of 4100ms, so the same ordering checks run in a
+// fraction of the time. The stall still outlasts two spacing slots.
+GEMINI_RPM_LIMITS['gemini-flash-lite-latest'] = 120;
+const minimumDelayMs = Math.ceil(60000 / 120) + 100;
+const stallMs = 2 * minimumDelayMs + 400;
 const store = new SessionStore(':memory:');
 const db: any = { getSessionStore: () => store, getSessionById: (id: number) => store.getSessionById(id), getChromaSync: () => null, getCloudSync: () => null };
 const manager = new SessionManager(db);
@@ -26,7 +32,7 @@ const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) 
   assert.ok(body.contents.length > 0);
   arrivals.push(performance.now());
   if (stall && arrivals.length === 1) timers.push(setTimeout(() => {
-    const until = performance.now() + 8600;
+    const until = performance.now() + stallMs;
     while (performance.now() < until) {} // Controlled worker suspension; no fake timers.
   }, 10));
   const session = sessions[arrivals.length - 1];
@@ -45,7 +51,7 @@ try {
   const gaps = arrivals.slice(1).map((at, i) => at - arrivals[i]);
   console.log(JSON.stringify({ arrivals, gaps, pending: manager.getTotalQueueDepth() }));
   assert.equal(arrivals.length, 3);
-  for (const gap of gaps) assert.ok(gap >= 4000, `Concurrent Gemini requests arrived only ${gap.toFixed(1)}ms apart`);
+  for (const gap of gaps) assert.ok(gap >= minimumDelayMs - 100, `Concurrent Gemini requests arrived only ${gap.toFixed(1)}ms apart`);
   assert.equal(manager.getTotalQueueDepth(), 3);
 } finally {
   for (const timer of timers) clearTimeout(timer);

@@ -17,6 +17,7 @@ import { classifySkillId, skillNameFromToolInput } from '../../telemetry/skill-i
 import { isRecursiveMemoryTool, isExplicitMemoryWrite } from '../../../shared/memory-retrieval-tools.js';
 import { workStateTool } from '../../../shared/work-state-telemetry.js';
 import { recordWorkStateTool, isPublicWorkStateTurn } from '../../telemetry/work-state.js';
+import { AGENT_LIFECYCLE_LIST, agentStopFields } from '../../work-view/agent-lifecycle.mjs';
 
 export interface IngestContext {
   sessionManager: SessionManager;
@@ -322,9 +323,16 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
     tool_response: cleanedToolResponse,
     prompt_number: promptNumber,
     cwd: cwd || (() => {
-      logger.error('INGEST', 'Missing cwd when ingesting observation', {
+      // A host with no checkout (ODS, other HTTP hosts) names its project at
+      // session init and never sends a cwd; that is expected. Without a
+      // project from init, a missing cwd is a capture fault.
+      const sessionProject = store.getSessionById(sessionDbId)?.project;
+      const hostHasNoCheckout = !!sessionProject && sessionProject !== 'unknown';
+      const log = hostHasNoCheckout ? logger.debug : logger.error;
+      log.call(logger, 'INGEST', 'Missing cwd when ingesting observation', {
         sessionId: sessionDbId,
         toolName: payload.toolName,
+        project: sessionProject,
       });
       return '';
     })(),
@@ -537,4 +545,44 @@ export function ingestAdvisorCalls(
   handoff.markHandedOff?.();
   logger.debug('WORKER', 'Advisor calls ingested', { contentSessionId, stored, duplicates, privateOnly });
   return { status: 'stored', stored, duplicates, privateOnly };
+}
+
+export interface SubagentStopPayload {
+  contentSessionId: string;
+  platformSource: string;
+  agentId: string;
+  agentType?: string;
+  cwd?: string;
+  stoppedAtEpoch: number;
+}
+
+/**
+ * Claude Code's SubagentStop: save one closed "agent-lifecycle" work-state row
+ * saying this subagent stopped at the hook's time. My Work reads it as the
+ * subagent's finish; a later tool call or observation from the same agent
+ * means it resumed.
+ */
+export function ingestSubagentStop(
+  payload: SubagentStopPayload,
+  handoff: IngestHandoff = {},
+  dbManager: DatabaseManager = requireIngestContext().dbManager,
+): { status: 'stored'; entryId: number } | { status: 'skipped'; reason: string } {
+  const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+  if (payload.cwd && isProjectExcluded(payload.cwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
+    return { status: 'skipped', reason: 'project_excluded' };
+  }
+  const project = typeof payload.cwd === 'string' && payload.cwd.trim() ? getProjectContext(payload.cwd).primary : 'unknown';
+  const fields = agentStopFields({
+    platformSource: normalizePlatformSource(payload.platformSource),
+    contentSessionId: payload.contentSessionId,
+    agentId: payload.agentId,
+    agentType: payload.agentType ?? null,
+    stoppedAtEpoch: payload.stoppedAtEpoch,
+    stopSource: 'subagent-stop-hook',
+  });
+  const entryId = dbManager.getSessionStore().appendWorkStateEntry({
+    project, listName: AGENT_LIFECYCLE_LIST, fields, createdAtEpoch: payload.stoppedAtEpoch,
+  });
+  handoff.markHandedOff?.();
+  return { status: 'stored', entryId };
 }

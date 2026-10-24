@@ -115,15 +115,21 @@ describe('setup extraction', () => {
     expect(scan.state()).toMatchObject({ phase: 'done', done: true });
   });
 
-  it('lands a mocked Cloud result in the live goals, rules and setup work snapshot', async () => {
+  it('issues anonymous credentials and lands a mocked Cloud result in the live goals, rules and setup work snapshot', async () => {
     const scratch = mkdtempSync(join(import.meta.dir, '..', '..', '..', '..', '.scratch', 'test-runs', 'hosted-snapshot-'));
     try {
       const databasePath = join(scratch, 'claude-mem.db'), ledgerDir = join(scratch, 'work-view');
+      const requests: string[] = [];
+      const install = { install_id: 'a'.repeat(32), intent_token: 'b'.repeat(64) };
       const hosted = new HostedIntent({
-        origin: () => 'https://cloud.example', credentials: () => ({ token: 'mock-token', userId: 'owner' }),
+        origin: () => 'https://cloud.example', credentials: () => ({ token: '', userId: '' }),
+        intentConfigPath: join(scratch, 'intent-install.json'),
         ledgerDir, openDatabase: () => new Database(databasePath, { readonly: true }),
         appendWorkStateEntry: entry => { store.appendWorkStateEntry(entry); }, homeProject: () => 'home',
-        fetch: (async (_url, init) => {
+        fetch: (async (url, init) => {
+          requests.push(String(url));
+          if (String(url).endsWith('/api/installer/intent')) return Response.json(install);
+          expect(init!.headers).toMatchObject({ 'X-Intent-Install-Id': install.install_id, 'X-Intent-Token': install.intent_token });
           const input = JSON.parse(gunzipSync(init!.body as Uint8Array).toString());
           const ids = [...new Set(input.ownerPrompts.map((prompt: { sessionId: string }) => prompt.sessionId))];
           return Response.json({
@@ -140,6 +146,7 @@ describe('setup extraction', () => {
       const scan = await start(fakeRefresh(), { databasePath, dir: ledgerDir }, hosted);
       await postScan();
       await scan.finished();
+      expect(requests).toEqual(['https://cloud.example/api/installer/intent', 'https://cloud.example/api/pro/intent']);
       const view = await snapshot();
       expect(view.setup.scan).toMatchObject({ phase: 'done', done: true });
       expect(view.setup.extraction.state).toBe('ok');

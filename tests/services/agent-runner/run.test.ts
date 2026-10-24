@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
+import { setFakeSpawn } from '../../helpers/fake-spawn.js';
 import { EventEmitter } from 'events';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { spawn } from 'child_process';
@@ -44,7 +45,8 @@ function task(cwd: string, inlineCalls: string[] = [], models: Record<string, un
     claudeCode: {
       plugins: [{ type: 'local', path: '/plugin' }],
       tools: ['Read'],
-      allowedTools: ['Read', 'mcp__plugin_claude-mem_mcp-search__search'],
+      allowedTools: ['mcp__plugin_claude-mem_mcp-search__search'],
+      readableFolders: [cwd],
     },
     run: async (ask, agent) => {
       const answer = await ask(`inline prompt for ${agent}`, models);
@@ -54,10 +56,49 @@ function task(cwd: string, inlineCalls: string[] = [], models: Record<string, un
   };
 }
 
+ /** runAgentTask with `spawn` installed as child_process.spawn for the run. */
+function runTask(agentTask: AgentTask, { spawn: fake, ...overrides }: { spawn: typeof spawn } & Parameters<typeof runAgentTask>[1]) {
+  setFakeSpawn(fake);
+  return runAgentTask(agentTask, overrides);
+}
+afterEach(() => setFakeSpawn(null));
+
 const neverQuery = (() => { throw new Error('query must not run'); }) as never;
 const env = async () => ({ PATH: '/bin', CLAUDE_MEM_INTERNAL: '1' });
 
 describe('agent runner', () => {
+  it('Claude Code reads only inside the task\'s readable folders: never the data dir\'s .env, even through a link', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'agent-runner-read-'));
+    try {
+      const ledger = join(dataDir, 'work-view');
+      mkdirSync(ledger);
+      writeFileSync(join(dataDir, '.env'), 'ANTHROPIC_API_KEY=secret');
+      writeFileSync(join(ledger, 'show.json'), '{}');
+      symlinkSync(join(dataDir, '.env'), join(ledger, 'env-link'));
+      const seen: any[] = [];
+      const query = ((input: any) => { seen.push(input); return (async function* () { yield { type: 'result', subtype: 'success', is_error: false, result: 'ok' }; })(); }) as never;
+      const readTask: AgentTask = { ...task(ledger), claudeCode: { plugins: [], tools: ['Read', 'Grep', 'Glob'], allowedTools: [], readableFolders: [ledger] } };
+      await runTask(readTask, { detect: async () => agents('claude-code'), query, spawn: fakeSpawn([], () => {}), buildEnv: env });
+      const { canUseTool } = seen[0].options;
+      const decide = async (tool: string, input: Record<string, unknown>) => (await canUseTool(tool, input, { signal: new AbortController().signal })).behavior;
+      expect(await decide('Read', { file_path: join(ledger, 'show.json') })).toBe('allow');
+      expect(await decide('Read', { file_path: 'show.json' })).toBe('allow');
+      expect(await decide('Read', { file_path: join(dataDir, '.env') })).toBe('deny');
+      expect(await decide('Read', { file_path: join(ledger, '..', '.env') })).toBe('deny');
+      expect(await decide('Read', { file_path: join(ledger, 'env-link') })).toBe('deny');
+      expect(await decide('Grep', { pattern: 'KEY' })).toBe('allow');
+      expect(await decide('Grep', { pattern: 'KEY', path: dataDir })).toBe('deny');
+      expect(await decide('Glob', { pattern: '*.json' })).toBe('allow');
+      expect(await decide('Glob', { pattern: join(dataDir, '*') })).toBe('deny');
+      expect(await decide('Glob', { pattern: '../*' })).toBe('deny');
+    } finally { rmSync(dataDir, { recursive: true, force: true }); }
+  });
+
+  it('a task that auto-approves Read, Grep or Glob is refused before any agent runs', async () => {
+    const autoRead: AgentTask = { ...task('/data'), claudeCode: { plugins: [], tools: ['Read'], allowedTools: ['Read'], readableFolders: ['/data'] } };
+    await expect(runTask(autoRead, { detect: async () => agents('claude-code'), query: neverQuery, spawn: fakeSpawn([], () => {}), buildEnv: env })).rejects.toThrow(/Read/);
+  });
+
   it('Claude Code: one SDK query per step, read-only tools only, no bypass and no session persistence', async () => {
     const seen: any[] = [];
     const query = ((input: any) => {
@@ -67,7 +108,7 @@ describe('agent runner', () => {
         yield { type: 'result', subtype: 'success', is_error: false, result: '{"reviews": []}' };
       })();
     }) as never;
-    const result = await runAgentTask(task('/data'), { detect: async () => agents('claude-code', 'codex'), query, spawn: fakeSpawn([], () => {}), buildEnv: env });
+    const result = await runTask(task('/data'), { detect: async () => agents('claude-code', 'codex'), query, spawn: fakeSpawn([], () => {}), buildEnv: env });
     expect(result).toEqual({ state: 'ok', agent: 'claude-code', result: 'inline done: {"reviews": []}', error: null, attempts: [] });
     const { prompt, options } = seen[0];
     expect(prompt).toBe('inline prompt for claude-code');
@@ -77,7 +118,7 @@ describe('agent runner', () => {
     expect(options.settingSources).toEqual([]);
     expect(options.permissionMode).toBe('default');
     expect(JSON.stringify(options)).not.toMatch(/bypass|dangerous|skip/i);
-    expect(options.allowedTools).toEqual(['Read', 'mcp__plugin_claude-mem_mcp-search__search']);
+    expect(options.allowedTools).toEqual(['mcp__plugin_claude-mem_mcp-search__search']);
     expect(options.tools).toEqual(['Read']);
     expect(options.plugins).toEqual([{ type: 'local', path: '/plugin' }]);
     expect(options.env.CLAUDE_MEM_INTERNAL).toBe('1');
@@ -95,17 +136,27 @@ describe('agent runner', () => {
         call.child.emit('close', 0);
       });
       const inlineCalls: string[] = [];
-      const result = await runAgentTask(task(cwd, inlineCalls), { detect: async () => agents('codex', 'gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
+      const result = await runTask(task(cwd, inlineCalls), { detect: async () => agents('codex', 'gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
       expect(result.state).toBe('ok');
       expect(result.agent).toBe('codex');
       expect(result.result).toBe('inline done: {"ok":true}');
       expect(calls).toHaveLength(1);
       const { command, args, options, child } = calls[0];
       expect(command).toBe('/bin/codex');
-      expect(args.slice(0, 8)).toEqual(['exec', '-s', 'read-only', '--ephemeral', '--ignore-user-config', '--skip-git-repo-check', '-C', cwd]);
-      expect(args[8]).toBe('-o');
-      expect(args[9].startsWith(join(cwd, 'agent-runs'))).toBe(true);
-      expect(args[10]).toBe('-');
+      expect(args[0]).toBe('exec');
+      expect(args).toContain('--strict-config');
+      expect(args).not.toContain('-s'); // legacy sandbox flags would override the scoped profile
+      expect(args).toContain('default_permissions="claude-mem-refresh"');
+      const policy = args.find(arg => arg.startsWith('permissions.claude-mem-refresh.filesystem='))!;
+      expect(policy).toContain('":root"="deny"');
+      expect(policy).toContain('":workspace_roots"={"."="read"}');
+      expect(policy).toContain('"/bin"="read"');
+      expect(args).toContain('permissions.claude-mem-refresh.network.enabled=false');
+      expect(args).toContain('--ephemeral');
+      expect(args).toContain('--ignore-user-config');
+      expect(args[args.indexOf('-C') + 1]).toBe(cwd);
+      expect(args[args.indexOf('-o') + 1].startsWith(join(cwd, 'agent-runs'))).toBe(true);
+      expect(args.at(-1)).toBe('-');
       expect(args.join(' ')).not.toMatch(/bypass|dangerous|full-auto|yolo/i);
       expect(child.stdinText).toBe('inline prompt for codex');
       expect(options.cwd).toBe(cwd);
@@ -113,14 +164,43 @@ describe('agent runner', () => {
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 
+  it('Codex: a step with an answer schema passes it as --output-schema, and the schema file is removed after', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-codex-schema-'));
+    try {
+      const schema = { type: 'object', additionalProperties: false, required: ['ok'], properties: { ok: { type: 'boolean' } } };
+      const calls: SpawnCall[] = [];
+      let schemaSeen: unknown = null;
+      const spawnImpl = fakeSpawn(calls, call => {
+        schemaSeen = JSON.parse(readFileSync(call.args[call.args.indexOf('--output-schema') + 1], 'utf8'));
+        writeFileSync(call.args[call.args.indexOf('-o') + 1], '{"ok":true}');
+        call.child.emit('close', 0);
+      });
+      const schemaTask: AgentTask = { ...task(cwd), run: async ask => ask('prompt', LIGHT_MODELS, schema) };
+      const result = await runTask(schemaTask, { detect: async () => agents('codex'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
+      expect(result).toMatchObject({ state: 'ok', agent: 'codex', result: '{"ok":true}' });
+      const { args } = calls[0];
+      const schemaIndex = args.indexOf('--output-schema');
+      expect(args[schemaIndex + 1].startsWith(join(cwd, 'agent-runs'))).toBe(true);
+      expect(args.slice(schemaIndex + 2)).toEqual(['-m', 'gpt-6-luna', '-c', 'model_reasoning_effort="low"', '-']);
+      expect(schemaSeen).toEqual(schema);
+      expect(existsSync(args[schemaIndex + 1])).toBe(false);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
   it('Gemini: gemini -p in plan (read-only) mode, no extensions or MCP servers, JSON output, prompt on stdin', async () => {
     const calls: SpawnCall[] = [];
     const spawnImpl = fakeSpawn(calls, call => {
+      const policyPath = (call.options.env as Record<string, string>).GEMINI_CLI_SYSTEM_SETTINGS_PATH;
+      expect(JSON.parse(readFileSync(policyPath, 'utf8'))).toEqual({
+        tools: { core: [] },
+        security: { disableYoloMode: true }, hooksConfig: { enabled: false },
+      });
       call.child.stdout.emit('data', JSON.stringify({ response: '{"ok":"gemini"}', stats: {} }));
       call.child.emit('close', 0);
     });
-    const result = await runAgentTask(task('/data'), { detect: async () => agents('gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
+    const result = await runTask(task('/data'), { detect: async () => agents('gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
     expect(result).toEqual({ state: 'ok', agent: 'gemini', result: 'inline done: {"ok":"gemini"}', error: null, attempts: [] });
+    expect(existsSync((calls[0].options.env as Record<string, string>).GEMINI_CLI_SYSTEM_SETTINGS_PATH)).toBe(false);
     expect(calls[0].command).toBe('/bin/gemini');
     expect(calls[0].args).toEqual(['-p', 'Follow the instructions above.', '--approval-mode', 'plan', '--skip-trust', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json']);
     expect(calls[0].child.stdinText).toBe('inline prompt for gemini');
@@ -136,7 +216,7 @@ describe('agent runner', () => {
     });
     const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-fallthrough-'));
     try {
-      const result = await runAgentTask(task(cwd), { detect: async () => agents('claude-code', 'codex', 'gemini'), query, spawn: spawnImpl, buildEnv: env });
+      const result = await runTask(task(cwd), { detect: async () => agents('claude-code', 'codex', 'gemini'), query, spawn: spawnImpl, buildEnv: env });
       expect(result.state).toBe('ok');
       expect(result.agent).toBe('gemini');
       expect(result.attempts.map(attempt => attempt.agent)).toEqual(['claude-code', 'codex']);
@@ -148,7 +228,7 @@ describe('agent runner', () => {
   it('each step runs on the model its table names, per backend; no entry keeps the CLI default', async () => {
     const seen: any[] = [];
     const query = ((input: any) => { seen.push(input); return (async function* () { yield { type: 'result', subtype: 'success', is_error: false, result: 'ok' }; })(); }) as never;
-    await runAgentTask(task('/data', [], LIGHT_MODELS), { detect: async () => agents('claude-code'), query, spawn: fakeSpawn([], () => {}), buildEnv: env });
+    await runTask(task('/data', [], LIGHT_MODELS), { detect: async () => agents('claude-code'), query, spawn: fakeSpawn([], () => {}), buildEnv: env });
     expect(seen[0].options.model).toBe('haiku');
     const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-models-'));
     try {
@@ -158,18 +238,35 @@ describe('agent runner', () => {
         call.child.stdout.emit('data', JSON.stringify({ response: 'ok' }));
         call.child.emit('close', 0);
       });
-      await runAgentTask(task(cwd, [], LIGHT_MODELS), { detect: async () => agents('codex'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
-      await runAgentTask(task(cwd, [], LIGHT_MODELS), { detect: async () => agents('gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
-      await runAgentTask(task(cwd, [], {}), { detect: async () => agents('codex'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
+      await runTask(task(cwd, [], LIGHT_MODELS), { detect: async () => agents('codex'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
+      await runTask(task(cwd, [], LIGHT_MODELS), { detect: async () => agents('gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
+      await runTask(task(cwd, [], {}), { detect: async () => agents('codex'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
       expect(calls[0].args.slice(-5)).toEqual(['-m', 'gpt-6-luna', '-c', 'model_reasoning_effort="low"', '-']);
       expect(calls[1].args.slice(-2)).toEqual(['-m', 'flash-lite']);
       expect(calls[2].args).not.toContain('-m');
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 
+  it('each step gets a freshly built environment, so a long run never reuses an old OAuth token', async () => {
+    let built = 0;
+    const query = ((input: any) => (async function* () { yield { type: 'result', subtype: 'success', is_error: false, result: input.options.env.TOKEN }; })()) as never;
+    const twoSteps: AgentTask = { ...task('/data'), run: async ask => `${await ask('one', {})} ${await ask('two', {})}` };
+    const result = await runTask(twoSteps, { detect: async () => agents('claude-code'), query, spawn: fakeSpawn([], () => {}), buildEnv: async () => ({ TOKEN: `t${++built}` }) });
+    expect(result.result).toBe('t1 t2');
+  });
+
+  it('an auth failure ends the run as failed with the clear error, after one try', async () => {
+    let queries = 0;
+    const query = (() => { queries++; return (async function* () { yield { type: 'result', subtype: 'success', is_error: true, result: 'Failed to authenticate: OAuth token revoked. Please log in again.' }; })(); }) as never;
+    const result = await runTask(task('/data'), { detect: async () => agents('claude-code'), query, spawn: fakeSpawn([], () => {}), buildEnv: env });
+    expect(result.state).toBe('failed');
+    expect(result.error).toMatch(/OAuth token revoked/);
+    expect(queries).toBe(1);
+  });
+
   it('no logged-in agent: waiting-for-agent, and nothing runs', async () => {
     const calls: SpawnCall[] = [];
-    const result = await runAgentTask(task('/data'), { detect: async () => agents(), query: neverQuery, spawn: fakeSpawn(calls, () => {}), buildEnv: env });
+    const result = await runTask(task('/data'), { detect: async () => agents(), query: neverQuery, spawn: fakeSpawn(calls, () => {}), buildEnv: env });
     expect(result.state).toBe('waiting-for-agent');
     expect(calls).toHaveLength(0);
   });
@@ -180,7 +277,7 @@ describe('agent runner', () => {
       setTimeout(() => { call.child.stdout.emit('data', JSON.stringify({ response: 'slow but done' })); call.child.emit('close', 0); }, 1500);
     });
     const started = Date.now();
-    const result = await runAgentTask(task('/data'), { detect: async () => agents('gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
+    const result = await runTask(task('/data'), { detect: async () => agents('gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
     expect(Date.now() - started).toBeGreaterThanOrEqual(1400);
     expect(result.state).toBe('ok');
     expect(calls[0].child.killed).toBe(false);

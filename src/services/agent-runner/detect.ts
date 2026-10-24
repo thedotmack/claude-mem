@@ -43,6 +43,8 @@ import { findClaudeExecutable } from '../../shared/find-claude-executable.js';
 import { readClaudeOAuthToken, type OAuthTokenResult } from '../../shared/oauth-token.js';
 import { hasAnthropicApiKey, hasAnthropicAuthToken } from '../../shared/EnvManager.js';
 
+import { commandInvocation, resolveVoltaShim, selectWindowsCommandCandidate, windowsWhereExecutablePath } from '../../shared/spawn.js';
+
 export type UsableAgentId = 'claude-code' | 'codex' | 'gemini';
 
 export interface UsableAgent {
@@ -75,14 +77,17 @@ export interface CommandOptions {
  * that takes. Never rejects. The one spawn-and-collect helper for agent
  * detection, agent runs and the refresh's skill scripts.
  */
-export function runCommand(
-  spawnImplementation: typeof spawn,
-  command: string,
-  args: string[],
-  options: CommandOptions = {},
-): Promise<CommandResult> {
+export function runCommand(command: string, args: string[], options?: CommandOptions): Promise<CommandResult>;
+export function runCommand(spawnImplementation: typeof spawn, command: string, args: string[], options?: CommandOptions): Promise<CommandResult>;
+export function runCommand(first: typeof spawn | string, second: string | string[], third: string[] | CommandOptions = {}, fourth: CommandOptions = {}): Promise<CommandResult> {
+  const spawnImplementation = typeof first === 'string' ? spawn : first;
+  const command = typeof first === 'string' ? first : second as string;
+  const args = (typeof first === 'string' ? second : third) as string[];
+  const options = (typeof first === 'string' ? third : fourth) as CommandOptions;
   return new Promise<CommandResult>(resolve => {
-    const child = spawnImplementation(command, args, {
+    const invocation = commandInvocation(command, args);
+    const child = spawnImplementation(invocation.command, invocation.args, {
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       cwd: options.cwd,
       env: options.env,
       windowsHide: true,
@@ -174,9 +179,11 @@ async function resolveOnPath(
   dependencies: AgentDetectionDependencies,
   command: string,
 ): Promise<{ path: string } | { path: null; reason: string }> {
-  const lookup = dependencies.platform() === 'win32' ? 'where.exe' : 'which';
+  const windows = dependencies.platform() === 'win32';
+  const lookup = windows ? windowsWhereExecutablePath(dependencies.environment) : 'which';
   const result = await runCommand(dependencies.spawn, lookup, [command]);
-  const firstLine = result.stdout.split(/\r?\n/).map(line => line.trim()).find(Boolean);
+  const lines = result.stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  const firstLine = windows ? selectWindowsCommandCandidate(lines.filter(dependencies.fileExists), shim => resolveVoltaShim(command, shim)) : lines[0];
   if (result.exitCode !== 0 || !firstLine) {
     return { path: null, reason: `not installed: \`${command}\` is not on PATH` };
   }
@@ -294,7 +301,10 @@ async function detectGemini(dependencies: AgentDetectionDependencies): Promise<U
     check = probeGeminiAccount(dependencies, path, selectedType);
     dependencies.geminiAccountChecks.set(loginKey, check);
   }
-  return check;
+  const result = await check;
+  // Share in-flight checks, but retry failed probes on the next detection pass.
+  if (!result.authenticated && dependencies.geminiAccountChecks.get(loginKey) === check) dependencies.geminiAccountChecks.delete(loginKey);
+  return result;
 }
 
 /** A hash of the stored refresh token (it changes only on a new login), never the token itself. */

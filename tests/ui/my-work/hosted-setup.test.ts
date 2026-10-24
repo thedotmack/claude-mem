@@ -81,6 +81,20 @@ describe('hosted setup scan control', () => {
     expect(html).toContain('class="scan-error" role="alert">Could not save this choice: Network unavailable.');
   });
 
+  it('shows the server message from a failed anonymous upload on the scan screen', async () => {
+    const app = fixture();
+    useNetwork(url => url === '/api/setup/state'
+      ? Response.json({ status: 'pending', alreadyPro: false })
+      : Response.json(scan({ phase: 'uploading', percent: 99 })));
+    let latest: any;
+    const stop = app.localSetupSource.subscribe((data: any) => { latest = data; });
+    await until(() => latest.scan.phase === 'uploading');
+    const message = 'Hosted setup failed (HTTP 503): The anonymous daily budget has been reached.';
+    Stream.latest.send('setup-scan', scan({ phase: 'failed', error: message }));
+    expect(app.renderScan(latest.scan)).toContain(`class="scan-error" role="alert">${message}`);
+    stop();
+  });
+
   it('buffers early unchecking without delaying the scan, sends false, and still receives upload/results', async () => {
     const app = fixture();
     const initial = deferred<Response>();

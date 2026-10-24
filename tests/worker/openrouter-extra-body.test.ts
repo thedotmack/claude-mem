@@ -332,16 +332,18 @@ describe('server runtime OpenRouter provider', () => {
     expect(bodies[0]?.reasoning).toEqual({ enabled: false });
   });
 
-  it('never sends it to the cmem gateway', async () => {
+  it('never sends the extra body to the cmem gateway', async () => {
     const { bodies, fetchImpl } = capture();
     const provider = new OpenRouterObservationProvider({
       apiKey: 'cm_pro_0123456789abcdef01234567',
       baseUrl: 'https://cmem.ai/api/inference/v1',
       fetchImpl,
-      extraBody: { reasoning: { enabled: false } },
+      extraBody: { reasoning: { effort: 'high' }, provider: { order: ['x'] } },
     });
     await provider.generate(context as never).catch(() => {});
-    expect(bodies[0]?.reasoning).toBeUndefined();
+    expect(bodies[0]?.reasoning).toEqual({ enabled: false });
+    expect(bodies[0]?.provider).toBeUndefined();
+    expect(bodies[0]?.temperature).toBe(0.3);
   });
 });
 

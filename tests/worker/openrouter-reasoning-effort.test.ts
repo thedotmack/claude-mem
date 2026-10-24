@@ -14,8 +14,9 @@ import { SettingsRoutes } from '../../src/services/worker/http/routes/SettingsRo
 import { logger } from '../../src/utils/logger.js';
 
 // CLAUDE_MEM_OPENROUTER_REASONING_EFFORT (#3001, #2995): a typed reasoning
-// control for openrouter.ai. Unset sends nothing; it never reaches a custom
-// gateway or the cmem gateway, and never overrides a wrap-up's own control.
+// control for openrouter.ai. Unset disables reasoning on openrouter.ai and the
+// cmem gateway. A typed effort never reaches a custom gateway or the cmem
+// gateway, and never overrides a wrap-up's own control.
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const base = {
@@ -26,8 +27,12 @@ const base = {
 };
 
 describe('buildOpenRouterRequestBody reasoning effort', () => {
-  it('sends no reasoning field when unset', () => {
-    expect(buildOpenRouterRequestBody({ ...base, apiUrl: OPENROUTER_URL }).reasoning).toBeUndefined();
+  it('disables reasoning on openrouter.ai and the cmem gateway when unset, and leaves a custom gateway alone', () => {
+    expect(buildOpenRouterRequestBody({ ...base, apiUrl: OPENROUTER_URL }).reasoning).toEqual({ enabled: false });
+    expect(buildOpenRouterRequestBody({ ...base, apiUrl: 'https://cmem.ai/api/inference/v1/chat/completions' }).reasoning)
+      .toEqual({ enabled: false });
+    expect(buildOpenRouterRequestBody({ ...base, apiUrl: 'https://api.deepseek.com/chat/completions' }).reasoning)
+      .toBeUndefined();
   });
 
   it('maps none to enabled:false and every other value to effort', () => {
@@ -39,10 +44,11 @@ describe('buildOpenRouterRequestBody reasoning effort', () => {
     }
   });
 
-  it('sends it to openrouter.ai only: never to a custom gateway or the cmem gateway', () => {
-    for (const apiUrl of ['https://api.deepseek.com/chat/completions', 'https://cmem.ai/api/inference/v1/chat/completions']) {
-      expect(buildOpenRouterRequestBody({ ...base, apiUrl, reasoningEffort: 'low' }).reasoning).toBeUndefined();
-    }
+  it('sends a typed effort to openrouter.ai only; cmem stays reasoning-off and a custom gateway stays unset', () => {
+    expect(buildOpenRouterRequestBody({ ...base, apiUrl: 'https://api.deepseek.com/chat/completions', reasoningEffort: 'low' }).reasoning)
+      .toBeUndefined();
+    expect(buildOpenRouterRequestBody({ ...base, apiUrl: 'https://cmem.ai/api/inference/v1/chat/completions', reasoningEffort: 'low' }).reasoning)
+      .toEqual({ enabled: false });
   });
 
   it('wins over a reasoning field in CLAUDE_MEM_OPENROUTER_EXTRA_BODY, keeping the rest of it', () => {
@@ -179,7 +185,7 @@ describe('the viewer reasoning-effort select', () => {
   const modal = readFileSync('src/ui/viewer/components/ContextSettingsModal.tsx', 'utf-8');
   const select = modal.slice(modal.indexOf('label="Reasoning effort"'), modal.indexOf('</select>', modal.indexOf('label="Reasoning effort"')));
 
-  it('offers exactly the accepted values, defaulting to sending nothing', () => {
+  it('offers exactly the accepted values, defaulting to reasoning off', () => {
     const values = [...select.matchAll(/<option value="([^"]*)"/g)].map(match => match[1]);
     expect(values).toEqual(['', ...OPENROUTER_REASONING_EFFORTS]);
   });

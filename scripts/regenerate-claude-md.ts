@@ -30,6 +30,7 @@ interface ObservationRow {
 import { formatTime, groupByDate } from '../src/shared/timeline-formatting.js';
 import { isDirectChild } from '../src/shared/path-utils.js';
 import { replaceTaggedContent } from '../src/utils/claude-md-utils.js';
+import { toBmpSafe } from '../src/utils/bmp-safe.js';
 
 const TYPE_ICONS: Record<string, string> = {
   'bugfix': '🔴',
@@ -252,7 +253,9 @@ function writeClaudeMdToFolderForRegenerate(folderPath: string, newContent: stri
     existingContent = readFileSync(claudeMdPath, 'utf-8');
   }
 
-  const finalContent = replaceTaggedContent(existingContent, newContent);
+  // #2787: the type markers and titles above can be astral emoji, and the
+  // block must stay BMP-only, as the worker's folder writer keeps it.
+  const finalContent = replaceTaggedContent(existingContent, toBmpSafe(newContent));
 
   writeFileSync(tempFile, finalContent);
   renameSync(tempFile, claudeMdPath);

@@ -12,6 +12,10 @@
  */
 
 import { homedir } from 'os';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { isProjectExcluded } from '../../utils/project-filter.js';
+import { stripMemoryTags } from '../../utils/tag-stripping.js';
 import { getProjectName } from '../../utils/project-name.js';
 import { logger } from '../../utils/logger.js';
 import { AgentTextIndex, isAgentWritten, provenanceFingerprint } from './owner-prompt-filter.js';
@@ -36,6 +40,8 @@ export interface MemoryPrompt {
   platformSource: string;
   contentSessionId: string;
   promptText: string;
+  project?: string;
+  cwd?: string | null;
   createdAtEpoch: number;
 }
 
@@ -61,6 +67,8 @@ export interface PromptScanProgress {
 export interface PromptScanOptions {
   sinceEpochMs: number;
   homeDirectory?: string;
+  /** Override the configured exclusion list (primarily for isolated scans/tests). */
+  excludedProjects?: string;
   agents?: PromptAgentId[];
   resolveProject?: (cwd: string | null) => string;
   memoryPrompts?: MemoryPrompt[];
@@ -92,6 +100,8 @@ function cachedProjectResolver(): (cwd: string | null) => string {
 export async function scanOwnerPrompts(options: PromptScanOptions): Promise<PromptScanResult> {
   const homeDirectory = options.homeDirectory ?? homedir();
   const resolveProject = options.resolveProject ?? cachedProjectResolver();
+  const excluded = options.excludedProjects ?? process.env.CLAUDE_MEM_EXCLUDED_PROJECTS
+    ?? SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_EXCLUDED_PROJECTS;
   const readers = createPromptReaders().filter(reader => !options.agents || options.agents.includes(reader.id));
   const agentTextSince = options.sinceEpochMs - AGENT_TEXT_LOOKBACK_MS;
   const located = readers.map(reader => ({ reader, ...reader.locate(homeDirectory) }));
@@ -128,11 +138,14 @@ export async function scanOwnerPrompts(options: PromptScanOptions): Promise<Prom
 
   const typedPrompts: TypedPrompt[] = [];
   await eachSource('reading', promptSources, (reader, summary, source) => reader.readPrompts(source, {
-    prompt(prompt) { typedPrompts.push(prompt); summary.typed++; },
+    prompt(prompt) {
+      if (isProjectExcluded(prompt.cwd ?? resolveProject(null), excluded)) return;
+      typedPrompts.push(prompt); summary.typed++;
+    },
     session(sessionId) { summary.sessions.add(sessionId); },
   }, options.sinceEpochMs));
 
-  const memoryPrompts = options.memoryPrompts ?? [];
+  const memoryPrompts = (options.memoryPrompts ?? []).filter(prompt => !isProjectExcluded(prompt.cwd ?? prompt.project ?? '', excluded));
   const fingerprints = [...typedPrompts.map(prompt => prompt.text), ...memoryPrompts.map(prompt => prompt.promptText)]
     .map(provenanceFingerprint)
     .filter((fingerprint): fingerprint is string => fingerprint !== null);
@@ -144,7 +157,12 @@ export async function scanOwnerPrompts(options: PromptScanOptions): Promise<Prom
   const agentWritten: OwnerPrompt[] = [];
   const platformOf = new Map(readers.map(reader => [reader.id, reader.platformSource]));
   for (const prompt of typedPrompts.sort((left, right) => left.at - right.at)) {
-    const owned: OwnerPrompt = { ...prompt, project: resolveProject(prompt.cwd), platformSource: platformOf.get(prompt.agent)! };
+    // Classify the original text, then apply the shared privacy gate before any consumer sees it.
+    const text = stripMemoryTags(prompt.text).trim();
+    if (!text) continue;
+    const owned: OwnerPrompt = { ...prompt, text,
+      ...(prompt.hookTextVariants ? { hookTextVariants: prompt.hookTextVariants.map(value => stripMemoryTags(value).trim()).filter(Boolean) } : {}),
+      project: resolveProject(prompt.cwd), platformSource: platformOf.get(prompt.agent)! };
     (isAgentWritten(Math.floor(prompt.at / 1000), prompt.text, agentText) ? agentWritten : ownerPrompts).push(owned);
   }
   const ownerMemoryPromptIds = new Set(memoryPrompts

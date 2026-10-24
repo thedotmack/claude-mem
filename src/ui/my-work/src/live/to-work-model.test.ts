@@ -172,15 +172,49 @@ test('an explicit status recorded after a review wins over it: a reopened reques
   assert.equal(model.requests[2].progress.percent, 60, 'an older partial review still shows')
 })
 
+test('a request shipped after a partial review is a shipped card at 100%, not a read-error card', () => {
+  const now = Date.parse('2026-10-22T12:00:00Z')
+  const partial = { summary: 'Under way.', narrative: '', milestones: [], checkedAt: '2026-10-22T09:00:00Z', state: 'in-progress' as const, percent: 60, readings: [{ at: '2026-10-22T08:00:00Z', percent: 30 }, { at: '2026-10-22T09:00:00Z', percent: 60 }] }
+  const shippedLater = { status: 'shipped', explicit: true, complete: true, atEpoch: Date.parse('2026-10-22T11:00:00Z') }
+  // Shipped after the review, and shipped before a newer partial review.
+  const after = { ...syntheticRequest(), id: 'shipped-after', lifecycle: shippedLater, completedAtEpoch: shippedLater.atEpoch, progress: partial }
+  const before = { ...syntheticRequest(), id: 'shipped-before', lifecycle: { ...shippedLater, atEpoch: Date.parse('2026-10-22T08:30:00Z') }, completedAtEpoch: Date.parse('2026-10-22T08:30:00Z'), progress: partial }
+  const model = toWorkModel(snapshotWith([after, before]), now)
+  assert.deepEqual(model.requestReadErrors, [])
+  for (const card of model.requests) {
+    assert.equal(card.state, 'shipped')
+    assert.equal(card.progress.percent, 100, 'the recorded ship completes it')
+    assert.ok(card.progress.completedAt)
+    assert.equal(card.progress.readings, 2, 'the reviews still count')
+  }
+})
+
+test('a request with only asks maps cleanly: its asks show, no activity, and a fresh ask reads as working', () => {
+  const now = Date.parse('2026-10-22T12:00:00Z')
+  const asked = { ...syntheticRequest(), updatedAtEpoch: now - 60000, scopeUpdates: [{ text: 'Keep the existing design.', atEpoch: now - 60000 }] }
+  const model = toWorkModel(snapshotWith([asked, { ...asked, id: 'old-ask', updatedAtEpoch: now - 3 * 86400000 }]), now)
+  assert.deepEqual(model.requestReadErrors, [])
+  const [fresh, old] = model.requests
+  assert.deepEqual(fresh.terminal, ['ask Build the release cards', 'ask Keep the existing design.'])
+  assert.deepEqual(fresh.granular, [])
+  assert.deepEqual(fresh.workstreams, [])
+  assert.equal(fresh.next.text, 'No agent work recorded yet')
+  assert.equal(fresh.state, 'working')
+  assert.deepEqual(fresh.prompts.map((prompt) => prompt.quote), ['Build the release cards', 'Keep the existing design.'])
+  assert.equal(old.state, 'idle')
+})
+
 test('goal links: absent is not linked yet, empty is no goal, and an open ask lists the requests that serve it', () => {
   const goalItem = (id: string, kind: 'priority' | 'open-ask') => ({ id, task: id, kind, rank: 1, title: id, product: null, latestAt: null, timesAsked: 1, status: 'todo', evidence: [] })
-  const goals = { listId: 'l', listName: 'owner-goals', history: false, project: 'p', updatedAt: '2026-10-22T00:00:00Z', periodStart: null, periodEnd: null, summary: null, generatedAt: '2026-10-22T00:00:00Z', windowDays: 30, sourcePromptCount: 10, mapPath: null, priorities: [goalItem('ship', 'priority')], openAsks: [goalItem('ask', 'open-ask')] }
-  const linked = { ...syntheticRequest(), id: 'r1', goals: [{ goalId: 'ask', goal: 'ask', title: 'ask', kind: 'open-ask' as const, evidence: 'x' }, { goalId: 'ship', goal: 'ship', title: 'ship', kind: 'priority' as const, evidence: 'y' }] }
+  const goals = { listId: 'l', listName: 'owner-goals', history: false, project: 'p', updatedAt: '2026-10-22T00:00:00Z', periodStart: null, periodEnd: null, summary: null, generatedAt: '2026-10-22T00:00:00Z', windowDays: 30, sourcePromptCount: 10, mapPath: null, priorities: [goalItem('ship', 'priority'), goalItem('docs', 'priority')], openAsks: [goalItem('ask', 'open-ask')] }
+  const linked = { ...syntheticRequest(), id: 'r1', goals: [{ goalId: 'ask', goal: 'ask', title: 'ask', kind: 'open-ask' as const, evidence: 'x' }, { goalId: 'ship', goal: 'ship', title: 'ship', kind: 'priority' as const, evidence: 'y' }, { goalId: 'docs', goal: 'docs', title: 'docs', kind: 'priority' as const, evidence: 'z' }] }
   const none = { ...syntheticRequest(), id: 'r2', goals: [] }
   const notYet = { ...syntheticRequest(), id: 'r3' }
   const model = toWorkModel(snapshotWith([linked, none, notYet], { goals }), Date.parse('2026-10-22T12:00:00Z'))
   assert.deepEqual(model.requests.map((request) => request.goalId), ['ship', null, undefined])
   assert.deepEqual(model.openAsks[0].servedBy, ['r1'])
+  // A request linked to two priorities counts for both, not only the one request.goalId names.
+  assert.deepEqual(model.priorities.map((goal) => goal.servedBy), [['r1'], ['r1']])
 })
 
 test('the build story recap is its first paragraph; no story hides it', () => {
@@ -222,4 +256,18 @@ test('recorded work product maps onto the drawer kinds; a missing local file is 
     { kind: 'Link', label: 'Release notes', href: 'https://example.com/notes' },
   ])
   assert.deepEqual(mapOne({ workProduct: undefined }).request.workProduct, [])
+})
+
+test('a subagent shows Finished only on a recorded stop, and quiet otherwise; main agents carry no status', async () => {
+  const { toAgent } = await import('./to-work-model.ts')
+  const base = { id: 'g', label: 'Claude Code', platformSource: 'claude', sessionTitle: null, project: 'repo', contentSessionId: 's' }
+  assert.equal(toAgent(base).status, undefined)
+  const finished = toAgent({ ...base, isSubagent: true, canMarkFinished: false, presence: { status: 'finished', finishedAt: '2026-10-23T18:12:50Z', evidence: 'subagent-stop-hook' } })
+  assert.equal(finished.status, 'finished')
+  assert.equal(finished.canMarkFinished, false)
+  assert.ok(finished.finishedAt)
+  const quiet = toAgent({ ...base, isSubagent: true, canMarkFinished: true, presence: { status: 'quiet' } })
+  assert.equal(quiet.status, 'quiet')
+  assert.equal(quiet.canMarkFinished, true)
+  assert.equal(toAgent({ ...base, isSubagent: true, canMarkFinished: true, presence: { status: 'recent' } }).status, 'working')
 })

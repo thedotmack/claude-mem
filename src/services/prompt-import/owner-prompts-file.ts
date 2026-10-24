@@ -6,6 +6,7 @@
  * Antigravity CLI, OpenCode) instead of the script's two.
  */
 
+import { stripMemoryTags } from '../../utils/tag-stripping.js';
 import { mkdirSync, writeFileSync } from 'fs';
 import { basename, join } from 'path';
 import { scanOwnerPrompts, scanWindowStart, PROMPT_SCAN_WINDOW_DAYS, type OwnerPrompt, type PromptScanOptions } from './index.js';
@@ -26,7 +27,7 @@ export function promptMinute(epochMs: number): string {
 }
 
 function section(prompt: OwnerPrompt, trim: boolean): string {
-  let text = prompt.text;
+  let text = stripMemoryTags(prompt.text).trim();
   if (trim && text.length > MAXIMUM_KEPT_PROMPT_CHARACTERS) {
     const trimmed = text.length - MAXIMUM_KEPT_PROMPT_CHARACTERS;
     text = `${text.slice(0, MAXIMUM_KEPT_PROMPT_CHARACTERS)}\n\n[... ${trimmed} more characters, mostly pasted material, trimmed]`;

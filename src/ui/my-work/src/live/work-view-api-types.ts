@@ -120,6 +120,10 @@ export interface WorkViewHumanRequest {
 export interface WorkViewAgent {
   id: string
   label: string
+  /** Older workers leave these out. `presence.status` is 'finished' only on a recorded stop. */
+  isSubagent?: boolean
+  canMarkFinished?: boolean
+  presence?: { status: string; finishedAt?: string | null; evidence?: string }
   platformSource: string | null
   sessionTitle: string | null
   project: string | null

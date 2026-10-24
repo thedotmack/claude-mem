@@ -89,6 +89,8 @@ export const sampleSource: WorkDataSource = {
   },
   // The sample file is always loaded; there is no CLAUDE.md to change.
   loadRulesInClaudeCode: loadSampleWorkModel,
+  // Sample agents are fixtures with no recorded state to change.
+  markAgentFinished: () => Promise.reject(new Error('Sample agents have no recorded state to change.')),
 
   /** Checking hands the request back to you to ship; it never marks it shipped. Fixtures have no fingerprint to guard. */
   async setRequestChecked(requestId, _expectedFingerprint, checked) {

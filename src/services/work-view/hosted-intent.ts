@@ -4,6 +4,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import type { OwnerPrompt } from '../prompt-import/index.js';
+import { getOrCreateIntentCredentials, intentCredentialHeaders, readIntentCredentials } from '../../shared/intent-credentials.js';
 import { groupIdFor, readGoals, readLedger, writeJsonAtomic, type LedgerDatabase } from './request-groups.mjs';
 
 /** Owner-approved cap: the largest measured export was 262 KB, and all exports fit one 1M-context call.
@@ -38,6 +39,8 @@ export interface HostedIntentState {
 export interface HostedIntentOptions {
   origin: () => string;
   credentials: () => { token: string; userId: string };
+  /** Defaults to the installation's private intent configuration, shared with installer sign-in. */
+  intentConfigPath?: string;
   ledgerDir: string;
   openDatabase: () => LedgerDatabase & { close(): void };
   appendWorkStateEntry: (entry: { project: string; listName: string; fields: Record<string, string | number | boolean | null> }) => void;
@@ -112,7 +115,7 @@ export class HostedIntent {
     this.current = { state: 'running', reason: 'setup-scan', step: 'goals', agent: null, startedAt: this.iso(), finishedAt: null, error: null };
     try {
       const { token, userId } = this.options.credentials();
-      if (!token || !userId) throw new Error('Hosted setup needs a CMEM account connection on this computer. Sign in to CMEM before running the setup scan.');
+      if (!!token !== !!userId) throw new Error('Hosted setup has incomplete CMEM account credentials. Repair the account connection before retrying.');
       if (!ownerPrompts.length) throw new Error('No owner-typed prompts were found for hosted setup. No prompts were uploaded.');
       const keys = conversationKeys(ownerPrompts);
       const timezoneOffsetMinutes = this.options.timezoneOffsetMinutes?.() ?? new Date().getTimezoneOffset();
@@ -120,14 +123,20 @@ export class HostedIntent {
       if (json.byteLength > INTENT_MAX_UPLOAD_BYTES) throw new Error('Hosted setup exceeds the 2 MiB upload cap. No prompts were truncated or uploaded.');
       const body = gzipSync(json);
       if (body.byteLength > INTENT_MAX_UPLOAD_BYTES) throw new Error('Hosted setup exceeds the 2 MiB compressed upload cap. No prompts were truncated or uploaded.');
-      // No client retry: a timed-out response may already have spent this account's subsidized run.
-      const response = await (this.options.fetch ?? fetch)(`${this.options.origin().replace(/\/$/, '')}/api/pro/intent`, {
+      const origin = this.options.origin().replace(/\/$/, '');
+      // Keep the proved install after sign-in so Cloud can bind its run and consent to the account.
+      // Existing signed-in installations without an install credential retain their account-only path.
+      const install = token ? readIntentCredentials(this.options.intentConfigPath)
+        : await getOrCreateIntentCredentials({ origin, fetch: this.options.fetch, configPath: this.options.intentConfigPath });
+      // No client retry: a lost response may already have spent this install/account's subsidized run.
+      const response = await (this.options.fetch ?? fetch)(`${origin}/api/pro/intent`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Encoding': 'gzip',
-          Authorization: `Bearer ${token}`, 'X-User-Id': userId }, body,
+          ...intentCredentialHeaders(install), ...(token ? { Authorization: `Bearer ${token}`, 'X-User-Id': userId } : {}) }, body,
       });
       const answer = await response.json().catch(() => null);
       if (!response.ok) {
-        const reason = typeof answer?.message === 'string' ? answer.message : typeof answer?.error === 'string' ? answer.error : response.statusText;
+        const failure = answer && typeof answer === 'object' ? answer as { message?: unknown; error?: unknown } : null;
+        const reason = typeof failure?.message === 'string' ? failure.message : typeof failure?.error === 'string' ? failure.error : response.statusText;
         throw new Error(`Hosted setup failed (HTTP ${response.status}): ${reason || 'Cloud did not return a reason.'}`);
       }
       const parsed = resultSchema.safeParse(answer);

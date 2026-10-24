@@ -77,6 +77,16 @@ text after`;
     expect(result.counts.private_key_pem).toBe(1);
   });
 
+  it('redacts a PGP private key block and an encrypted PKCS#8 key', () => {
+    const pgp = '-----BEGIN PGP PRIVATE KEY BLOCK-----\n\nlQOYBF8wP0sBCADH\n=abcd\n-----END PGP PRIVATE KEY BLOCK-----';
+    const pkcs8 = '-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIFHDBOBgkqhkiG\n-----END ENCRYPTED PRIVATE KEY-----';
+    for (const block of [pgp, pkcs8]) {
+      const result = redactSensitive(`text before\n${block}\ntext after`, cfg);
+      expect(result.redacted).toBe("text before\n<redacted type='private_key_pem'/>\ntext after");
+      expect(result.counts.private_key_pem).toBe(1);
+    }
+  });
+
   it('redacts aws_secret_key only when anchored to AWS_SECRET_ACCESS_KEY', () => {
     const anchored = 'AWS_SECRET_ACCESS_KEY=abcdefghijklmnopqrstuvwxyz0123456789ABCD';
     const r1 = redactSensitive(anchored, cfg);
@@ -85,6 +95,15 @@ text after`;
     const standalone = 'random base64 abcdefghijklmnopqrstuvwxyz0123456789ABCD here';
     const r2 = redactSensitive(standalone, cfg);
     expect(r2.counts.aws_secret_key).toBeUndefined();
+  });
+
+  it('redacts aws_secret_key under the lowercase key of the AWS credentials file', () => {
+    const credentials = '[default]\naws_access_key_id = AKIAIOSFODNN7EXAMPLE\naws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n';
+    const result = redactSensitive(credentials, cfg);
+    expect(result.redacted).toBe("[default]\naws_access_key_id = <redacted type='aws_access_key'/>\naws_secret_access_key = <redacted type='aws_secret_key'/>\n");
+
+    const sdkArgument = "boto3.client('s3', aws_secret_access_key='wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY')";
+    expect(redactSensitive(sdkArgument, cfg).counts.aws_secret_key).toBe(1);
   });
 
   it('does NOT match near-miss strings', () => {

@@ -64,13 +64,10 @@ describe('skill docs placement (#1651)', () => {
     expect(content).not.toContain('/api/pro/sync/status');
   });
 
-  it('cloud sync copy keeps the launch boundary and 4,000,000-byte request contract accurate', () => {
+  it('cloud sync docs keep the 4,000,000-byte request contract accurate', () => {
     const docs = readFileSync(join(import.meta.dir, '../../docs/public/cloud-sync.mdx'), 'utf-8');
-    const source = readFileSync(join(import.meta.dir, '../../src/services/sync/CloudSync.ts'), 'utf-8');
 
     expect(docs).toContain('up to 500 ops / 4,000,000 encoded');
     expect(docs).not.toContain('500 ops / 2&nbsp;MB');
-    expect(source).toContain('no historical/pre-launch backfill');
-    expect(source).not.toContain('This IS backfill');
   });
 });

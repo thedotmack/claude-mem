@@ -10,6 +10,7 @@ import { takeTimelinePending } from '../../shared/codex-compaction-gate.js';
 import { observationHandler } from './observation.js';
 import { summarizeHandler } from './summarize.js';
 import { sessionEndHandler } from './session-end.js';
+import { subagentStopHandler } from './subagent-stop.js';
 import { userMessageHandler } from './user-message.js';
 import { fileEditHandler } from './file-edit.js';
 import { fileContextHandler } from './file-context.js';
@@ -22,6 +23,7 @@ export type EventType =
   | 'observation'
   | 'summarize'
   | 'session-end'
+  | 'subagent-stop'
   | 'user-message'
   | 'file-edit'
   | 'file-context'
@@ -133,6 +135,7 @@ const handlers: Record<EventType, EventHandler> = {
   'observation': observationWithPendingTimelineHandler,
   'summarize': summarizeHandler,
   'session-end': sessionEndHandler,
+  'subagent-stop': subagentStopHandler,
   'user-message': userMessageHandler,
   'file-edit': fileEditHandler,
   'file-context': fileContextHandler,
@@ -157,6 +160,7 @@ export { sessionInitHandler } from './session-init.js';
 export { observationHandler } from './observation.js';
 export { summarizeHandler } from './summarize.js';
 export { sessionEndHandler } from './session-end.js';
+export { subagentStopHandler } from './subagent-stop.js';
 export { userMessageHandler } from './user-message.js';
 export { fileEditHandler } from './file-edit.js';
 export { fileContextHandler } from './file-context.js';

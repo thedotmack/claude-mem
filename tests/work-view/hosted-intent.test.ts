@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { gunzipSync } from 'node:zlib';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { HostedIntent, INTENT_MAX_UPLOAD_BYTES, type HostedIntentResult } from '../../src/services/work-view/hosted-intent.js';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
@@ -30,6 +30,7 @@ function answer(): HostedIntentResult {
   };
 }
 const cleanup: Array<() => void> = [];
+const installCredentials = { install_id: 'a'.repeat(32), intent_token: 'b'.repeat(64) };
 afterEach(() => { for (const clean of cleanup.splice(0).reverse()) clean(); });
 function fixture(response: typeof fetch = (async () => Response.json(answer())) as typeof fetch, credentials = { token: 'setup-token', userId: 'owner' }) {
   const scratch = join(import.meta.dir, '..', '..', '.scratch', 'test-runs');
@@ -39,13 +40,14 @@ function fixture(response: typeof fetch = (async () => Response.json(answer())) 
   const databasePath = join(dir, 'memory.db');
   const store = new SessionStore(databasePath);
   cleanup.push(() => store.close());
-  const run = new HostedIntent({
-    origin: () => 'https://cloud.example/', credentials: () => credentials, ledgerDir: join(dir, 'work-view'),
+  const configPath = join(dir, 'intent-install.json');
+  const createRun = () => new HostedIntent({
+    origin: () => 'https://cloud.example/', credentials: () => credentials, intentConfigPath: configPath, ledgerDir: join(dir, 'work-view'),
     openDatabase: () => new Database(databasePath, { readonly: true }),
     appendWorkStateEntry: entry => { store.appendWorkStateEntry(entry); }, homeProject: () => 'home',
     fetch: response, now: () => at, timezoneOffsetMinutes: () => 420,
   });
-  return { run, dir, store, databasePath };
+  return { run: createRun(), createRun, configPath, dir, store, databasePath };
 }
 
 describe('hosted setup extraction', () => {
@@ -136,12 +138,84 @@ describe('hosted setup extraction', () => {
     expect(calls).toBe(0);
   });
 
-  it('refuses missing credentials, no prompts and ambiguous cross-agent ids before upload', async () => {
+  it('refuses incomplete account credentials, no prompts and ambiguous cross-agent ids before upload', async () => {
     let calls = 0;
     const fetch = (async () => { calls++; return Response.json(answer()); }) as typeof globalThis.fetch;
-    await expect(fixture(fetch, { token: '', userId: '' }).run.run(prompts, true)).rejects.toThrow('CMEM account connection');
+    await expect(fixture(fetch, { token: 'explicit-token', userId: '' }).run.run(prompts, true)).rejects.toThrow('incomplete CMEM account credentials');
+    await expect(fixture(fetch, { token: '', userId: 'explicit-user' }).run.run(prompts, true)).rejects.toThrow('incomplete CMEM account credentials');
     await expect(fixture(fetch).run.run([], true)).rejects.toThrow('No owner-typed prompts');
     await expect(fixture(fetch).run.run([prompts[0], { ...prompts[0], platformSource: 'claude' }], true)).rejects.toThrow('shared by multiple agents');
+    expect(calls).toBe(0);
+  });
+
+  it('issues and persists an anonymous credential before upload, then reuses it on retry and after sign-in', async () => {
+    const requests: Array<{ url: string; init: RequestInit }> = [];
+    const account = { token: '', userId: '' };
+    const test = fixture((async (url, init) => {
+      requests.push({ url: String(url), init: init! });
+      if (String(url).endsWith('/api/installer/intent')) {
+        expect(init!.method).toBe('POST');
+        expect(init!.body).toBeUndefined();
+        expect(init!.headers).toBeUndefined();
+        return Response.json(installCredentials);
+      }
+      expect(JSON.parse(readFileSync(test.configPath, 'utf8'))).toEqual(installCredentials);
+      return requests.length === 3
+        ? Response.json({ error: 'install_run_used', message: 'This installation has already used its hosted run.' }, { status: 429 })
+        : Response.json(answer());
+    }) as typeof fetch, account);
+    await test.run.run(prompts, false);
+    expect(statSync(test.configPath).mode & 0o777).toBe(0o600);
+    const restarted = test.createRun();
+    await expect(restarted.run(prompts, true)).rejects.toThrow('This installation has already used its hosted run.');
+    expect(restarted.state().error).toContain('This installation has already used its hosted run.');
+    account.token = 'signed-in-token';
+    account.userId = 'signed-in-user';
+    await test.createRun().run(prompts, true);
+    expect(requests.map(request => request.url)).toEqual([
+      'https://cloud.example/api/installer/intent', 'https://cloud.example/api/pro/intent',
+      'https://cloud.example/api/pro/intent', 'https://cloud.example/api/pro/intent',
+    ]);
+    for (const { init } of requests.slice(1)) {
+      expect(init.headers).toMatchObject({ 'X-Intent-Install-Id': installCredentials.install_id, 'X-Intent-Token': installCredentials.intent_token });
+    }
+    expect(requests[1].init.headers).not.toHaveProperty('Authorization');
+    expect(requests[1].init.headers).not.toHaveProperty('X-User-Id');
+    expect(requests[3].init.headers).toMatchObject({ Authorization: 'Bearer signed-in-token', 'X-User-Id': 'signed-in-user' });
+    expect(JSON.parse(gunzipSync(requests[1].init.body as Uint8Array).toString())).toEqual({ ownerPrompts: prompts, improveProduct: false, timezoneOffsetMinutes: 420 });
+  });
+
+  it('keeps the anonymous credential after a lost upload response', async () => {
+    let issues = 0;
+    let uploads = 0;
+    const test = fixture((async url => {
+      if (String(url).endsWith('/api/installer/intent')) { issues++; return Response.json(installCredentials); }
+      uploads++;
+      throw new Error('Upload connection lost');
+    }) as typeof fetch, { token: '', userId: '' });
+    await expect(test.run.run(prompts, true)).rejects.toThrow('Upload connection lost');
+    await expect(test.createRun().run(prompts, true)).rejects.toThrow('Upload connection lost');
+    expect(issues).toBe(1);
+    expect(uploads).toBe(2);
+  });
+
+  it('surfaces issuance errors before any upload', async () => {
+    const requests: string[] = [];
+    const test = fixture((async url => {
+      requests.push(String(url));
+      return Response.json({ error: 'issuance_limited', message: 'Installation credentials are temporarily unavailable.' }, { status: 429 });
+    }) as typeof fetch, { token: '', userId: '' });
+    await expect(test.run.run(prompts, true)).rejects.toThrow('Installation credentials are temporarily unavailable.');
+    expect(test.run.state()).toMatchObject({ state: 'failed', error: expect.stringContaining('Installation credentials are temporarily unavailable.') });
+    expect(requests).toEqual(['https://cloud.example/api/installer/intent']);
+  });
+
+  it('rejects an invalid explicit install credential even when account credentials exist', async () => {
+    let calls = 0;
+    const test = fixture((async () => { calls++; return Response.json(answer()); }) as typeof fetch);
+    writeFileSync(test.configPath, JSON.stringify({ install_id: installCredentials.install_id }), { mode: 0o600 });
+    await expect(test.run.run(prompts, true)).rejects.toThrow();
+    expect(test.run.state().state).toBe('failed');
     expect(calls).toBe(0);
   });
 });

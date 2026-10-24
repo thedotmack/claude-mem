@@ -16,6 +16,7 @@ import { WorkStateSource, type WorkViewSnapshot } from '../../../work-view/data-
 import { FILE_CONTENT_TYPES } from '../../../work-view/work-product.mjs';
 import { contentFingerprint, LocalReviewStore } from '../../../work-view/review-store.js';
 import { MY_RULES_LIST, renderRulesFile, ruleRowFields, type SavedRule } from '../../../work-view/my-rules.mjs';
+import { AGENT_LIFECYCLE_LIST, agentStopFields } from '../../../work-view/agent-lifecycle.mjs';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { chatCompletionsHumanCopyProvider, HumanCopyWorker } from '../../../work-view/human-copy-worker.mjs';
 import { AutoRefreshWorker } from '../../../work-view/auto-refresh-worker.mjs';
@@ -99,6 +100,10 @@ const ruleBody = z.object({
     when: z.string().max(300),
     then: z.string().trim().min(1).max(600),
   }).strict().optional(),
+}).strict();
+
+const markAgentFinishedBody = z.object({
+  agentGroupId: z.string().min(1).max(2000),
 }).strict();
 
 /** A path as the owner reads it: `~/...` under the home folder, else absolute. */
@@ -197,7 +202,10 @@ export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTIN
     // Setup's only extraction is hosted. Once setup is complete, ongoing refresh keeps its existing local path.
     enabled: () => !setupActive() && (!existsSync(setupPath) || readSetupState(setupPath).status === 'complete')
       && SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true }).CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH !== 'false',
-    runJob: ({ needs, reason }) => runAgentTask(buildRefreshTask({ needs, reason, dataDir: DATA_DIR, ledgerDir, pluginRoot: getPackageRoot(), openDatabase })),
+    runJob: async ({ needs, reason }) => {
+      const task = buildRefreshTask({ needs, reason, dataDir: DATA_DIR, ledgerDir, pluginRoot: getPackageRoot(), openDatabase });
+      return { ...(await runAgentTask(task)), steps: task.steps };
+    },
     log: (level, message, data) => (level === 'info' ? logger.info : logger.warn).call(logger, 'WORKER', message, data),
   });
 }
@@ -264,6 +272,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     this.hostedIntent = options.hostedIntent === undefined
       ? (this.setupScan && ledgerDir && this.appendWorkStateEntry ? new HostedIntent({
         origin: () => cmemProOrigin(),
+        intentConfigPath: join(dirname(this.settingsPath), 'intent-install.json'),
         credentials: () => {
           const settings = SettingsDefaultsManager.loadFromFile(this.settingsPath, true, { readOnly: true });
           return { token: settings.CLAUDE_MEM_CLOUD_SYNC_TOKEN?.trim() ?? '', userId: settings.CLAUDE_MEM_CLOUD_SYNC_USER_ID?.trim() ?? '' };
@@ -336,7 +345,13 @@ export class WorkViewRoutes extends BaseRouteHandler {
     }));
     // A recorded work-product file, found through the record that names it.
     // Pages and images render sandboxed so they cannot act as the viewer.
+    // It reads real files, so another local page (which worker CORS lets read responses) is refused:
+    // a cross-origin fetch carries its Origin, while the viewer opens files from its own origin.
     app.get('/api/work-view/file/:kind/:id/:index', workViewLoopbackOnly, this.wrapHandler((req, res) => {
+      if (req.get('sec-fetch-site') === 'cross-site' || isForeignLoopbackBrowserWrite(req)) {
+        res.status(403).json({ error: 'Recorded files open only from the local work viewer.' });
+        return;
+      }
       const id = this.parseIntParam(req, res, 'id');
       if (id === null) return;
       const index = this.parseIntParam(req, res, 'index');
@@ -351,6 +366,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     }));
     app.post('/api/work-view/review', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(reviewBody), this.wrapHandler(this.review));
     app.post('/api/work-view/rules', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(ruleBody), this.wrapHandler(this.saveRule));
+    app.post('/api/work-view/agents/mark-finished', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(markAgentFinishedBody), this.wrapHandler(this.markAgentFinished));
     app.post('/api/work-view/rules/load-in-claude-code', workViewLoopbackOnly, requireWorkViewOrigin, this.wrapHandler(this.loadRulesInClaudeCode));
     app.get('/api/setup/scan', workViewLoopbackOnly, this.wrapHandler((_req, res) => {
       if (!this.setupScan) { res.status(503).json({ error: 'The prompt scan is unavailable on this worker.' }); return; }
@@ -616,6 +632,37 @@ export class WorkViewRoutes extends BaseRouteHandler {
     const updated = this.snapshot();
     this.writeRulesFile((updated.rules ?? []) as SavedRule[]);
     logger.debug('HTTP', 'My Rules updated', { action });
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(updated);
+    this.publish(updated);
+  };
+
+  /**
+   * The owner says a subagent finished when no recorded stop covers it (one that
+   * finished before the SubagentStop hook existed). Saved like a hook stop, with
+   * its own source, so a later tool call from the agent still reopens it.
+   */
+  private markAgentFinished = (req: Request, res: Response): void => {
+    const { agentGroupId } = req.body as z.infer<typeof markAgentFinishedBody>;
+    if (!this.appendWorkStateEntry) { res.status(503).json({ error: 'Saving agent state is unavailable on this worker.' }); return; }
+    const snapshot = this.snapshot();
+    if (!snapshot.source.connected) { res.status(503).json({ error: 'Local work is unavailable. Reconnect before changing an agent.' }); return; }
+    const agent = (snapshot.agents as Array<{ id: string; isSubagent?: boolean; canMarkFinished?: boolean; agentId: string | null; agentType: string | null; platformSource: string | null; contentSessionId: string | null; project: string }>)
+      .find(entry => entry.id === agentGroupId);
+    if (!agent) { this.notFound(res, 'That agent is not in the loaded work.'); return; }
+    if (!agent.isSubagent || !agent.agentId || !agent.contentSessionId) { res.status(409).json({ error: 'Only a subagent can be marked finished.', snapshot }); return; }
+    if (!agent.canMarkFinished) { res.status(409).json({ error: 'This agent is already recorded as finished.', snapshot }); return; }
+    const stoppedAtEpoch = Date.now();
+    this.appendWorkStateEntry({
+      project: agent.project,
+      listName: AGENT_LIFECYCLE_LIST,
+      fields: agentStopFields({
+        platformSource: agent.platformSource, contentSessionId: agent.contentSessionId, agentId: agent.agentId,
+        agentType: agent.agentType, stoppedAtEpoch, stopSource: 'owner-marked-finished',
+      }),
+    });
+    logger.debug('HTTP', 'Agent marked finished by the owner');
+    const updated = this.snapshot();
     res.setHeader('Cache-Control', 'no-store');
     res.json(updated);
     this.publish(updated);
