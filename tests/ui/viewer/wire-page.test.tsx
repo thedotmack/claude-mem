@@ -38,7 +38,7 @@ describe('Agents', () => {
   it('shows the state badge and the fix the gateway gave', () => {
     const html = renderToStaticMarkup(<AgentCard agent={agent({ state: 'bypassed', detail: 'used since connect, no request reached the gateway', fix: 'restart Codex' })} routes={[{
       routeId: 'codex', agentId: 'codex', captureSource: 'wire', upstream: 'https://api.openai.com/v1', createdAt: '',
-      memoryInjection: { on: true, decidedBy: 'setting' }, memorySearchTool: { on: false, decidedBy: 'setting' }, endlessMode: { on: true, decidedBy: 'route' },
+      memoryInjection: { on: true, decidedBy: 'setting' }, durableHeader: { on: true, decidedBy: 'setting' }, memorySearchTool: { on: false, decidedBy: 'setting' }, endlessMode: { on: true, decidedBy: 'route' },
     }]} />);
     expect(html).toContain('data-state="bypassed"');
     expect(html).toContain('wire-badge--warn');

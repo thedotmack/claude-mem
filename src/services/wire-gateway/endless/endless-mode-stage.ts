@@ -29,16 +29,17 @@
 import { createHash } from 'crypto';
 import { logger } from '../../../utils/logger.js';
 import { contentSessionIdOf } from '../capture/capture-assembler.js';
-import { ScannedObject } from '../ir/scanned-object.js';
+import { latestUserTurnStartIndex } from '../identity/turn-start.js';
 import type { WireRequest } from '../ir/types.js';
 import { applyByteSplices, type ByteSplice } from '../json/byte-splices.js';
-import { arrayItemRemovalSplices, encodeJsonString } from '../json/splice.js';
-import type { WireConversationLedgerView, WireLedgerEntry } from '../ledger/conversation-ledger.js';
+import { encodeJsonString } from '../json/splice.js';
+import type { WireConversationLedgerView } from '../ledger/conversation-ledger.js';
 import { estimateTextTokens } from '../metrics/context-buckets.js';
 import type { WireGatewayRoute } from '../routes.js';
 import type { WireRewriteContext, WireRewriteStage } from '../rewrite/rewrite-stage.js';
+import { recordedThinkingDrops, thinkingDropIsCovered, thinkingDropSplicesFor, type ThinkingDropEntry } from '../rewrite/thinking-drop.js';
 import type { WireObservationLookup, WireSwapObservation } from './observation-lookup.js';
-import { latestUserTurnStartIndex, toolResultSitesOf, type ToolResultSite } from './tool-result-sites.js';
+import { toolResultSitesOf, type ToolResultSite } from './tool-result-sites.js';
 
 export const ENDLESS_MODE_STAGE_NAME = 'endless-mode';
 
@@ -109,39 +110,6 @@ function bytesEqual(bytes: Uint8Array, start: number, end: number, other: Uint8A
     if (bytes[start + index] !== other[index]) return false;
   }
   return true;
-}
-
-const THINKING_BLOCK_TYPES = new Set(['thinking', 'redacted_thinking']);
-
-/** The splices that drop an assistant message's thinking blocks; null when the message would be left empty. */
-function thinkingDropSplices(request: WireRequest, messageIndex: number): ByteSplice[] | null {
-  const message = ScannedObject.of(request.body, request.messages[messageIndex].span);
-  const contentSpan = message?.spanOf('content');
-  if (contentSpan?.type !== 'array') return [];
-  let kept = 0;
-  const splices = arrayItemRemovalSplices(request.body, contentSpan, elementSpan => {
-    const isThinking = THINKING_BLOCK_TYPES.has(ScannedObject.of(request.body, elementSpan)?.string('type') ?? '');
-    if (!isThinking) kept++;
-    return isThinking;
-  });
-  return splices.length > 0 && kept === 0 ? null : splices;
-}
-
-type ThinkingDropEntry = Extract<WireLedgerEntry, { type: 'thinkingDrop' }>;
-
-/** The assistant messages whose thinking `drops` take out: after a boundary, before its end. */
-function assistantMessagesToStripOfThinking(request: WireRequest, drops: ThinkingDropEntry[]): number[] {
-  const indexes: number[] = [];
-  request.messages.forEach((message, messageIndex) => {
-    if (message.role !== 'assistant') return;
-    if (drops.some(drop => messageIndex > drop.boundaryMessageIndex && messageIndex < drop.untilMessageIndex)) indexes.push(messageIndex);
-  });
-  return indexes;
-}
-
-/** Whether `drops` already take out everything `candidate` would (one of them spans its whole range). */
-function dropIsCovered(drops: ThinkingDropEntry[], candidate: ThinkingDropEntry): boolean {
-  return drops.some(drop => drop.boundaryMessageIndex <= candidate.boundaryMessageIndex && drop.untilMessageIndex >= candidate.untilMessageIndex);
 }
 
 const SUSPENDED_ENTRY_ID = `suspended:${ENDLESS_MODE_STAGE_NAME}`;
@@ -245,19 +213,8 @@ export function createEndlessModeStage(options: EndlessModeStageOptions): WireRe
 
       // Anthropic: the thinking to drop, decided before anything is recorded, so
       // a request that goes as it came leaves nothing new in the ledger.
-      const recordedDrops = request.protocol === 'anthropic'
-        ? ledger.entries().filter((entry): entry is ThinkingDropEntry => entry.type === 'thinkingDrop')
-        : [];
-      const thinkingSplicesFor = (drops: ThinkingDropEntry[]): ByteSplice[] | null => {
-        const splices: ByteSplice[] = [];
-        for (const messageIndex of assistantMessagesToStripOfThinking(request, drops)) {
-          const dropSplices = thinkingDropSplices(request, messageIndex);
-          if (dropSplices === null) return null;
-          splices.push(...dropSplices);
-        }
-        return splices;
-      };
-      let thinkingSplices = thinkingSplicesFor(recordedDrops);
+      const recordedDrops = request.protocol === 'anthropic' ? recordedThinkingDrops(ledger) : [];
+      let thinkingSplices = thinkingDropSplicesFor(request, recordedDrops);
       if (thinkingSplices === null) {
         // Never send an empty assistant message: the request goes as it came,
         // and since the model then answers the original history, the
@@ -275,8 +232,8 @@ export function createEndlessModeStage(options: EndlessModeStageOptions): WireRe
           boundaryMessageIndex: Math.min(...newSwaps.map(swap => swap.site.messageIndex)),
           untilMessageIndex: latestUserTurnStartIndex(request),
         };
-        const alreadyCovered = dropIsCovered(recordedDrops, candidate);
-        const withCandidate = alreadyCovered ? thinkingSplices : thinkingSplicesFor([...recordedDrops, candidate]);
+        const alreadyCovered = thinkingDropIsCovered(recordedDrops, candidate);
+        const withCandidate = alreadyCovered ? thinkingSplices : thinkingDropSplicesFor(request, [...recordedDrops, candidate]);
         if (withCandidate === null) {
           logger.debug('WIRE', 'Endless Mode added no swaps this turn: dropping thinking would leave an assistant message empty', {
             agentId: context.identity.agentId, conversationKey: ledger.conversationKey,

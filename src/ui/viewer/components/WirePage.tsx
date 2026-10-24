@@ -90,6 +90,7 @@ export function AgentCard({ agent, routes }: { agent: WireAgentStatus; routes: W
           <code>/r/{route.routeId}</code> → <code>{route.upstream}</code>
           <div className="wire-chips">
             <FeatureChip name="memory" state={route.memoryInjection} />
+            <FeatureChip name="My Rules" state={route.durableHeader} />
             <FeatureChip name="memory_search" state={route.memorySearchTool} />
             <FeatureChip name="Endless Mode" state={route.endlessMode} />
           </div>

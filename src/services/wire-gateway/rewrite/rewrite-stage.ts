@@ -37,6 +37,12 @@ import type { WireGatewayRoute } from '../routes.js';
 
 /** How long onRequest and onResponse may take (magpie `requestLimit`). */
 export const REQUEST_STAGE_BUDGET_MS = 250;
+/**
+ * Leeway a stage that waits on the worker adds on top of that wait
+ * (CONTEXT_TIMEOUT_MS) for its splices and ledger writes: the budget a stage
+ * that waits on nothing gets for the same work.
+ */
+export const STAGE_BUDGET_MARGIN_MS = REQUEST_STAGE_BUDGET_MS;
 /** How long onEvent may take for one event (magpie `eventLimit`). */
 export const EVENT_STAGE_BUDGET_MS = 50;
 /** Failures logged across all stages per minute (magpie `say`). */

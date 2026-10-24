@@ -5,6 +5,7 @@ import { getRedactionConfig, redactSensitive } from './redaction.js';
 const TAG_NAMES = [
   'private',
   'claude-mem-context',
+  'claude-mem-rules',
   'system_instruction',
   'system-instruction',
   'persisted-output',

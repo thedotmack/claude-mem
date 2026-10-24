@@ -53,3 +53,11 @@ export function userTurnPositionOfRequest(request: WireRequest): UserTurnPositio
   }
   return { userTurnOrdinal, withinTurn };
 }
+
+/** The index of the latest message that begins a user turn; -1 when none does. */
+export function latestUserTurnStartIndex(request: WireRequest): number {
+  for (let messageIndex = request.messages.length - 1; messageIndex >= 0; messageIndex--) {
+    if (startsUserTurn(request.messages[messageIndex])) return messageIndex;
+  }
+  return -1;
+}

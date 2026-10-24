@@ -1057,6 +1057,7 @@ describe('SettingsDefaultsManager', () => {
       expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_AGE_TURNS).toBe('3');
       expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_RESULT_BYTES).toBe('2048');
       expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_MEMORY_INJECTION).toBe('true');
+      expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_DURABLE_HEADER).toBe('true');
       expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS).toBe('1500');
       expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_MEMORY_SEARCH_TOOL).toBe('false');
       expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_OTLP).toBe('true');

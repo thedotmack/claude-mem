@@ -19,6 +19,7 @@ export type WireGatewayCaptureSource = 'wire' | 'native';
 
 export interface WireGatewayRouteFeatures {
   memoryInjection?: boolean;
+  durableHeader?: boolean;
   endlessMode?: boolean;
   memorySearchTool?: boolean;
   outboundRedaction?: boolean;

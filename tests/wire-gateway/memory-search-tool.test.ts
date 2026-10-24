@@ -163,7 +163,8 @@ describe('memory settings and status', () => {
     const status = buildWireMemoryStatus(readWireGatewayRoutesFile(routesFilePath).routes, { CLAUDE_MEM_WIRE_GATEWAY_MEMORY_INJECTION: 'true' }, { 'memory-injection': { calls: 3, failures: 1, averageMicros: 10, lastError: 'onRequest: boom' } });
     const lines = formatWireMemoryStatus(status, 'http://127.0.0.1:37677');
     expect(lines).toContain('Memory: MCP tools at http://127.0.0.1:37677/mcp');
-    expect(lines.some(line => /^codex-main\s+on\s+on \(route\)\s+off$/.test(line))).toBe(true);
+    // INJECTION, HEADER, MEMORY_SEARCH, ENDLESS.
+    expect(lines.some(line => /^codex-main\s+on\s+on\s+on \(route\)\s+off$/.test(line))).toBe(true);
     expect(lines).toContain('  stage memory-injection: 3 calls, 1 failures (last: onRequest: boom)');
     rmSync(testRoot, { recursive: true, force: true });
   });

@@ -26,7 +26,7 @@ import { createHash } from 'crypto';
 import type { WireMessage, WirePart, WireReply, WireRequest } from '../ir/types.js';
 import type { WireIdentity } from '../identity/resolve-identity.js';
 import { userWordsInMessage } from '../identity/user-words.js';
-import { startsUserTurn } from '../identity/turn-start.js';
+import { latestUserTurnStartIndex } from '../identity/turn-start.js';
 import type { WireSessionStale, WireTurnEnd } from '../identity/turn-tracker.js';
 import { logger } from '../../../utils/logger.js';
 import { MEDIA_PROMPT_PLACEHOLDER } from '../../sqlite/prompt-storage.js';
@@ -141,22 +141,13 @@ function requestItemsOf(request: WireRequest): RequestItem[] {
   return items;
 }
 
-/** Where the latest user turn starts (the turn-start rule of identity/turn-start.ts); -1 when none does. */
-function latestUserTurnMessageIndex(request: WireRequest): number {
-  let latest = -1;
-  request.messages.forEach((message, messageIndex) => {
-    if (startsUserTurn(message)) latest = messageIndex;
-  });
-  return latest;
-}
-
 /**
  * The prompt of the latest user turn: its own words, or the worker's media
  * placeholder when it carries only images or files. Never an older turn's
  * words. Null when the request holds no user turn.
  */
 function latestUserTurnPrompt(request: WireRequest): string | null {
-  const messageIndex = latestUserTurnMessageIndex(request);
+  const messageIndex = latestUserTurnStartIndex(request);
   if (messageIndex < 0) return null;
   return userWordsInMessage(request.messages[messageIndex]) || MEDIA_PROMPT_PLACEHOLDER;
 }
@@ -222,7 +213,7 @@ export class WireCaptureAssembler {
     let historyMatched: boolean;
     if (isFirstSight || conversation.previousItemKeys === null) {
       // Not born here (or unknown): everything before the latest user turn was seen.
-      const latestTurnMessageIndex = latestUserTurnMessageIndex(exchange.request);
+      const latestTurnMessageIndex = latestUserTurnStartIndex(exchange.request);
       firstNewItemIndex = latestTurnMessageIndex < 0 ? items.length : items.findIndex(item => item.messageIndex >= latestTurnMessageIndex);
       if (firstNewItemIndex < 0) firstNewItemIndex = items.length;
       historyMatched = false;

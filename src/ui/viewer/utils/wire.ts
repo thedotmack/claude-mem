@@ -39,6 +39,7 @@ export interface WireRouteReport {
   upstream: string;
   createdAt: string;
   memoryInjection: WireFeatureState;
+  durableHeader: WireFeatureState;
   memorySearchTool: WireFeatureState;
   endlessMode: WireFeatureState;
 }

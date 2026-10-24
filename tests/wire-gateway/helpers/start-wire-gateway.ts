@@ -41,6 +41,7 @@ export async function startWireGatewayForTest(
     // must never reach whatever worker listens on this machine, so the
     // memory stages see no worker unless a test gives them one.
     memory: {
+      header: { fetchHeader: () => Promise.reject(new Error('no worker in this test')), ...options.memory?.header },
       injection: { fetchContext: () => Promise.reject(new Error('no worker in this test')), ...options.memory?.injection },
       search: { searcher: () => Promise.reject(new Error('no worker in this test')), ...options.memory?.search },
     },

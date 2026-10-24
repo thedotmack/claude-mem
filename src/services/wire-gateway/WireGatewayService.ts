@@ -91,6 +91,7 @@ import { OutboundRedactionPlaceholders } from './privacy/outbound-redaction.js';
 import { WireConversationLedger } from './ledger/conversation-ledger.js';
 import { WireRewriteSeam, type WireRewriteStage } from './rewrite/rewrite-stage.js';
 import { createEndlessModeStage } from './endless/endless-mode-stage.js';
+import { createDurableHeaderStage, type DurableHeaderStageOptions } from './header/durable-header-stage.js';
 import { WireObservationLookup } from './endless/observation-lookup.js';
 import { buildEndlessModeReport, formatEndlessModeReport } from './endless/endless-report.js';
 import { WireUsageLedger } from './metrics/usage-ledger.js';
@@ -173,8 +174,9 @@ export interface WireGatewayServiceOptions {
    * route's feature.
    */
   rewriteStages?: WireRewriteStage[];
-  /** Test seams for the memory stages (Phase 12): where context and searches come from, keepalive pace, round cap. */
+  /** Test seams for the memory stages (Phase 12) and the durable header: where context, rules and searches come from, keepalive pace, round cap. */
   memory?: {
+    header?: Pick<DurableHeaderStageOptions, 'fetchHeader'>;
     injection?: Pick<MemoryInjectionStageOptions, 'fetchContext'>;
     search?: Pick<MemorySearchStageOptions, 'searcher' | 'keepaliveIntervalMs' | 'maxSearchRounds'>;
   };
@@ -261,7 +263,9 @@ function editToolNamesOfAgent(agentId: string): readonly string[] {
 
 /**
  * The stages the gateway runs, in request order (D7, plan Phase 10 task 1):
- * memory injection → Endless Mode → the memory_search tool definition.
+ * durable header → memory injection → Endless Mode → the memory_search
+ * tool definition. The header goes before memory injection so the rules
+ * sit before the timeline in the system prompt (Endless Mode v2 Phase 3).
  */
 function defaultRewriteStages(
   observationLookup: WireObservationLookup,
@@ -270,6 +274,7 @@ function defaultRewriteStages(
 ): WireRewriteStage[] {
   const contextTimeoutMs = Number(rewriteSettings[CONTEXT_TIMEOUT_MS_SETTING]) || DEFAULT_CONTEXT_TIMEOUT_MS;
   return [
+    createDurableHeaderStage({ contextTimeoutMs, ...memory.header }),
     createMemoryInjectionStage({ contextTimeoutMs, ...memory.injection }),
     createEndlessModeStage({ observationLookup, editToolNamesOf: editToolNamesOfAgent }),
     createMemorySearchStage({ ...memory.search }),
@@ -1092,6 +1097,8 @@ function printWireGatewayUsage(): void {
   writeStderrLine('                     read at start: change it, then restart)');
   writeStderrLine('  routes memory <routeId> on|off|default');
   writeStderrLine('                     memory injection for one route, live (default: CLAUDE_MEM_WIRE_GATEWAY_MEMORY_INJECTION, capture=wire routes)');
+  writeStderrLine('  routes header <routeId> on|off|default');
+  writeStderrLine('                     the durable header (My Rules) for one route, live (default: CLAUDE_MEM_WIRE_GATEWAY_DURABLE_HEADER, capture=wire routes)');
   writeStderrLine('  routes search <routeId> on|off|default');
   writeStderrLine('                     the hidden memory_search tool for one route, live (default: CLAUDE_MEM_WIRE_GATEWAY_MEMORY_SEARCH_TOOL)');
   writeStderrLine('  consent            print whether raw recording is on');
@@ -1338,9 +1345,10 @@ function assertUpstreamIsNotThisGateway(upstreamBaseUrl: string, config: WireGat
 }
 
 /** `routes <action> <routeId> on|off|default`: each feature's per-route switch. */
-const ROUTE_FEATURE_SWITCHES: Record<string, { feature: 'endlessMode' | 'memoryInjection' | 'memorySearchTool'; setting: string; settingDefault: string; title: string; listLabel: string }> = {
+const ROUTE_FEATURE_SWITCHES: Record<string, { feature: 'endlessMode' | 'memoryInjection' | 'durableHeader' | 'memorySearchTool'; setting: string; settingDefault: string; title: string; listLabel: string }> = {
   endless: { feature: 'endlessMode', setting: 'CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE', settingDefault: 'false', title: 'Endless Mode', listLabel: 'endless' },
   memory: { feature: 'memoryInjection', setting: 'CLAUDE_MEM_WIRE_GATEWAY_MEMORY_INJECTION', settingDefault: 'true', title: 'Memory injection', listLabel: 'memory' },
+  header: { feature: 'durableHeader', setting: 'CLAUDE_MEM_WIRE_GATEWAY_DURABLE_HEADER', settingDefault: 'true', title: 'The durable header (My Rules)', listLabel: 'header' },
   search: { feature: 'memorySearchTool', setting: 'CLAUDE_MEM_WIRE_GATEWAY_MEMORY_SEARCH_TOOL', settingDefault: 'false', title: 'The hidden memory_search tool', listLabel: 'search' },
 };
 
@@ -1395,7 +1403,7 @@ function runWireGatewayRoutesCli(args: string[], config: WireGatewayConfig): voi
     if (!setWireGatewayRouteFeature(routeId, feature.feature, enabledByState[state])) {
       throw new Error(`No route ${routeId}`);
     }
-    const followsSetting = `follows ${feature.setting} (${config.rewriteSettings[feature.setting] ?? feature.settingDefault}${feature.feature === 'memoryInjection' ? ', for capture=wire routes' : ''}; `
+    const followsSetting = `follows ${feature.setting} (${config.rewriteSettings[feature.setting] ?? feature.settingDefault}${feature.feature === 'memoryInjection' || feature.feature === 'durableHeader' ? ', for capture=wire routes' : ''}; `
       + 'a running gateway reads that setting at start, so a change to it needs claude-mem wire restart)';
     writeStdoutLine(`${feature.title} for route ${routeId}: ${state === 'default' ? followsSetting : state} (a running gateway applies the route change within a second)`);
     return;

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // What the memory stages ask the worker (plan Phase 12): the context the
-// SessionStart hook injects (GET /api/context/inject, text/plain), and a
+// SessionStart hook injects (GET /api/context/inject, text/plain), the
+// owner's rules for the durable header (GET /api/wire/header, Endless Mode
+// v2 Phase 3: {text, hash}), and a
 // memory search for the hidden memory_search tool (POST /api/dumb-search,
 // the route §0.1 knew as /api/mem-search: the same progressive search,
 // answering {content:[{type:'text',text}], isError?}). Both are loopback
@@ -9,7 +11,7 @@
 // between the gateway and its worker.
 
 import { buildWorkerUrl } from '../../../shared/worker-utils.js';
-import { describeDirectHttpFailure, requestDirectly, requestDirectlyWithOutcome } from '../direct-http.js';
+import { describeDirectHttpFailure, requestDirectly, requestDirectlyWithOutcome, requestJsonDirectly } from '../direct-http.js';
 
 export interface MemoryContextQuery {
   /** The agent's folder; the worker resolves its project keys from it, as it does for hosts that send only a cwd. */
@@ -50,6 +52,38 @@ export async function fetchMemoryContextFromWorker(
   if (!answer) throw new Error('the worker did not answer /api/context/inject');
   if (answer.statusCode !== 200) throw new Error(`the worker answered /api/context/inject with ${answer.statusCode}`);
   return answer.bodyText.trim();
+}
+
+export interface DurableHeaderQuery {
+  /** The agent's folder; the worker narrows the rules to its projects. */
+  workDir: string;
+  timeoutMs: number;
+}
+
+/** The worker's answer: the rules (null when none apply) and the sha256 hex of their text. */
+export interface DurableHeaderAnswer {
+  text: string | null;
+  hash: string;
+}
+
+/** Throws when the worker cannot be asked or refuses. */
+export type DurableHeaderFetcher = (query: DurableHeaderQuery) => Promise<DurableHeaderAnswer>;
+
+/** The worker's /api/wire/header for a folder. `workerUrlOf` is a test seam. */
+export async function fetchDurableHeaderFromWorker(
+  query: DurableHeaderQuery,
+  workerUrlOf: (apiPath: string) => string = buildWorkerUrl,
+): Promise<DurableHeaderAnswer> {
+  const search = new URLSearchParams({ cwd: query.workDir });
+  const answer = await requestJsonDirectly<{ text?: unknown; hash?: unknown }>({ url: workerUrlOf(`/api/wire/header?${search}`), timeoutMs: query.timeoutMs });
+  if (!answer) throw new Error('the worker did not answer /api/wire/header');
+  if (answer.statusCode !== 200) throw new Error(`the worker answered /api/wire/header with ${answer.statusCode}`);
+  const text = answer.body?.text;
+  const hash = answer.body?.hash;
+  if ((typeof text !== 'string' && text !== null) || typeof hash !== 'string' || hash === '') {
+    throw new Error('the worker answered /api/wire/header with something that is not a header');
+  }
+  return { text: text === null || text.trim() === '' ? null : text.trim(), hash };
 }
 
 interface DumbSearchAnswer {

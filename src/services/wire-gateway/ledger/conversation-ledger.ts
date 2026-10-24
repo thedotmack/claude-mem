@@ -38,19 +38,28 @@ export type WireLedgerEntry =
   /** The hidden tool's definition as appended to `tools`, or null when it was not added. */
   | { type: 'tool'; name: string; definitionJson: string | null }
   /**
-   * The durable header (the owner's rule-scoped markdown) applied from the
-   * request at `firstTurnMessageIndex` on, or null text when none is added.
-   * One header per turn start (the first written wins); the header in force
-   * is the entry with the largest `firstTurnMessageIndex`.
+   * The durable header (the owner's rule-scoped markdown), or null text when
+   * none is added: the conversation's `sequence`-th header (0 first),
+   * recorded at the start of user turn `turnOrdinal`. The header in force is
+   * the entry with the largest `sequence`. Positions are turn ordinals, never
+   * message indexes: those shift on compaction, rewind, culls, and when a
+   * stage inserts an OpenAI Chat system message.
    */
-  | { type: 'header'; text: string | null; hash: string; firstTurnMessageIndex: number }
+  | { type: 'header'; text: string | null; hash: string; sequence: number; turnOrdinal: number }
   /**
-   * Finished tool work culled (Endless Mode): the messages after the user
-   * turn at `turnMessageIndex` through `throughMessageIndex` are replaced by
-   * the timeline `lines` of the observations they produced. For one turn,
-   * the entry with the largest `throughMessageIndex` is the one applied.
+   * Anthropic: every thinking and redacted_thinking block is removed from the
+   * assistant messages before the user message that starts turn
+   * `untilTurnOrdinal` (an assistant message left empty goes whole). The one
+   * applied has the largest `untilTurnOrdinal`.
    */
-  | { type: 'cull'; turnMessageIndex: number; throughMessageIndex: number; lines: string[]; observationIds: number[]; culledTokensEst: number }
+  | { type: 'thinkingCut'; untilTurnOrdinal: number }
+  /**
+   * Finished tool work culled (Endless Mode): in user turn `turnOrdinal`, the
+   * messages through the result of call `throughCallId` are replaced by the
+   * timeline `lines` of the observations they produced. For one turn, the
+   * entry recorded last is the one applied.
+   */
+  | { type: 'cull'; turnOrdinal: number; throughCallId: string; lines: string[]; observationIds: number[]; culledTokensEst: number }
   /**
    * A tool result replaced by an observation's text (Endless Mode v1): the
    * observation it shows, or, with `coveredByCallId`, the earlier call whose
@@ -60,10 +69,10 @@ export type WireLedgerEntry =
   | { type: 'swap'; callId: string; replacementText: string; firstRequestAt: string; observationId: number; coveredByCallId?: string }
   /**
    * Thinking blocks are dropped from the assistant messages after
-   * `boundaryMessageIndex` and before `untilMessageIndex` (Endless Mode,
+   * `boundaryMessageIndex` and before `untilMessageIndex` (Endless Mode v1,
    * Anthropic): the user turn that added the swaps, so what the model said
-   * after it, with the swaps in place, keeps its thinking. A cull always
-   * records `boundaryMessageIndex: 0` (oldest first, no gap).
+   * after it, with the swaps in place, keeps its thinking. Written by the v1
+   * swap stage only; v2 records `thinkingCut`.
    */
   | { type: 'thinkingDrop'; boundaryMessageIndex: number; untilMessageIndex: number }
   /**
@@ -78,8 +87,8 @@ export type WireLedgerEntryType = WireLedgerEntry['type'];
 
 /**
  * What an entry is first-write-wins by: one of each kind per conversation, a
- * header per turn start, a cull per turn and end, a swap per call, a thinking drop
- * per boundary.
+ * header per sequence number, a thinking cut per turn, a cull per turn and
+ * last call, a swap per call, a thinking drop per boundary.
  */
 export function ledgerEntryIdOf(entry: WireLedgerEntry): string {
   switch (entry.type) {
@@ -88,9 +97,11 @@ export function ledgerEntryIdOf(entry: WireLedgerEntry): string {
     case 'tool':
       return entry.type;
     case 'header':
-      return `header:${entry.firstTurnMessageIndex}`;
+      return `header:${entry.sequence}`;
+    case 'thinkingCut':
+      return `thinkingCut:${entry.untilTurnOrdinal}`;
     case 'cull':
-      return `cull:${entry.turnMessageIndex}:${entry.throughMessageIndex}`;
+      return `cull:${entry.turnOrdinal}:${entry.throughCallId}`;
     case 'swap':
       return `swap:${entry.callId}`;
     case 'thinkingDrop':
@@ -128,19 +139,21 @@ function ledgerEntryFromLine(line: string): WireLedgerEntry | null {
         ? { type: 'tool', name: record.name, definitionJson: record.definitionJson as string | null }
         : null;
     case 'header':
-      return (isString(record.text) || record.text === null) && isString(record.hash) && isNonNegativeInteger(record.firstTurnMessageIndex)
-        ? { type: 'header', text: record.text as string | null, hash: record.hash, firstTurnMessageIndex: record.firstTurnMessageIndex }
+      return (isString(record.text) || record.text === null) && isString(record.hash)
+        && isNonNegativeInteger(record.sequence) && isNonNegativeInteger(record.turnOrdinal)
+        ? { type: 'header', text: record.text as string | null, hash: record.hash, sequence: record.sequence, turnOrdinal: record.turnOrdinal }
         : null;
+    case 'thinkingCut':
+      return isNonNegativeInteger(record.untilTurnOrdinal) ? { type: 'thinkingCut', untilTurnOrdinal: record.untilTurnOrdinal } : null;
     case 'cull':
-      // One line per observation, and a cull never ends before the turn it belongs to.
-      return isNonNegativeInteger(record.turnMessageIndex) && isNonNegativeInteger(record.throughMessageIndex)
-        && record.throughMessageIndex >= record.turnMessageIndex
+      // One line per observation.
+      return isNonNegativeInteger(record.turnOrdinal) && isString(record.throughCallId) && record.throughCallId !== ''
         && Array.isArray(record.lines) && record.lines.every(isString)
         && Array.isArray(record.observationIds) && record.observationIds.every(isNonNegativeInteger)
         && record.lines.length === record.observationIds.length
         && isNonNegativeInteger(record.culledTokensEst)
         ? {
-          type: 'cull', turnMessageIndex: record.turnMessageIndex, throughMessageIndex: record.throughMessageIndex,
+          type: 'cull', turnOrdinal: record.turnOrdinal, throughCallId: record.throughCallId,
           lines: record.lines as string[], observationIds: record.observationIds as number[], culledTokensEst: record.culledTokensEst,
         }
         : null;

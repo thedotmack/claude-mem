@@ -38,7 +38,7 @@ import { jsonEscapeString } from '../json/string-walker.js';
 import { requestStartsConversation, type WireConversationLedgerView } from '../ledger/conversation-ledger.js';
 import { estimateTextTokens } from '../metrics/context-buckets.js';
 import type { WireGatewayRoute } from '../routes.js';
-import type { WireRewriteContext, WireRewriteStage } from '../rewrite/rewrite-stage.js';
+import { STAGE_BUDGET_MARGIN_MS, type WireRewriteContext, type WireRewriteStage } from '../rewrite/rewrite-stage.js';
 import { fetchMemoryContextFromWorker, type MemoryContextFetcher } from './memory-worker-client.js';
 
 export const MEMORY_INJECTION_STAGE_NAME = 'memory-injection';
@@ -57,19 +57,35 @@ const STRING_SEPARATOR = '\n\n';
 const SUSPENDED_ENTRY_ID = `suspended:${MEMORY_INJECTION_STAGE_NAME}`;
 
 /**
- * Whether injection is on for a route: its own `features.memoryInjection`,
- * else the setting, which covers only routes the gateway captures
- * (`captureSource: 'wire'`); a native route has its integration's own
- * context injection, so it gets this only when its route asks.
+ * Whether a system-prompt stage is on for a route: its own `features[feature]`,
+ * else `setting` (on unless 'false'), which covers only routes the gateway
+ * captures (`captureSource: 'wire'`); a native route has its integration's
+ * own context injection, so it gets this only when its route asks.
  */
+export function wireRouteFeatureEnabledFor(
+  route: WireGatewayRoute,
+  settings: Readonly<Record<string, string>>,
+  feature: 'memoryInjection' | 'durableHeader',
+  setting: string,
+): boolean {
+  const own = route.features?.[feature];
+  if (own !== undefined) return own;
+  return settings[setting] !== 'false' && route.captureSource === 'wire';
+}
+
+/** Whether injection is on for a route (wireRouteFeatureEnabledFor). */
 export function memoryInjectionEnabledFor(route: WireGatewayRoute, settings: Readonly<Record<string, string>>): boolean {
-  if (route.features?.memoryInjection !== undefined) return route.features.memoryInjection;
-  return settings[MEMORY_INJECTION_SETTING] !== 'false' && route.captureSource === 'wire';
+  return wireRouteFeatureEnabledFor(route, settings, 'memoryInjection', MEMORY_INJECTION_SETTING);
+}
+
+/** `text` between `<tagName>` and `</tagName>`, each on its own line: how a stage's system block is appended. */
+export function tagWrappedBlock(tagName: string, text: string): string {
+  return `<${tagName}>\n${text}\n</${tagName}>`;
 }
 
 /** The block as it is appended. */
 export function memoryContextBlock(contextText: string): string {
-  return `${MEMORY_CONTEXT_OPEN_TAG}\n${contextText}\n${MEMORY_CONTEXT_CLOSE_TAG}`;
+  return tagWrappedBlock('claude-mem-context', contextText);
 }
 
 const utf8Encoder = new TextEncoder();
@@ -151,9 +167,6 @@ export interface MemoryInjectionStageOptions {
   fetchContext?: MemoryContextFetcher;
   now?: () => number;
 }
-
-/** Leeway on top of the context timeout for the splice and the ledger write. */
-const STAGE_BUDGET_MARGIN_MS = 250;
 
 export function createMemoryInjectionStage(options: MemoryInjectionStageOptions = {}): WireRewriteStage {
   const contextTimeoutMs = options.contextTimeoutMs ?? DEFAULT_CONTEXT_TIMEOUT_MS;

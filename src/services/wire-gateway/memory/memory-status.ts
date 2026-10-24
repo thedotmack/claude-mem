@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // What `claude-mem wire status` says of the rewrite features per route
-// (plan Phase 12): whether memory injection, the hidden memory_search tool
-// and Endless Mode are on, and whether a route's own switch or the setting
+// (plan Phase 12): whether memory injection, the durable header, the hidden
+// memory_search tool and Endless Mode are on, and whether a route's own switch or the setting
 // decided it; with the running gateway's stage counters when it answers.
 
 import { endlessModeEnabledFor } from '../endless/endless-mode-stage.js';
+import { durableHeaderEnabledFor } from '../header/durable-header-stage.js';
 import type { WireGatewayRoute } from '../routes.js';
 import type { WireRewriteStageState } from '../rewrite/rewrite-stage.js';
 import { memoryInjectionEnabledFor } from './memory-injection-stage.js';
@@ -22,6 +23,7 @@ export interface WireRouteFeaturesStatus {
   agentId: string;
   captureSource: WireGatewayRoute['captureSource'];
   memoryInjection: WireFeatureState;
+  durableHeader: WireFeatureState;
   memorySearchTool: WireFeatureState;
   endlessMode: WireFeatureState;
 }
@@ -36,7 +38,7 @@ export interface WireMemoryStatus {
 
 function featureState(
   route: WireGatewayRoute,
-  feature: 'memoryInjection' | 'memorySearchTool' | 'endlessMode',
+  feature: 'memoryInjection' | 'durableHeader' | 'memorySearchTool' | 'endlessMode',
   enabledFor: (route: WireGatewayRoute, settings: Readonly<Record<string, string>>) => boolean,
   settings: Readonly<Record<string, string>>,
 ): WireFeatureState {
@@ -54,6 +56,7 @@ export function buildWireMemoryStatus(
       agentId: route.agentId,
       captureSource: route.captureSource,
       memoryInjection: featureState(route, 'memoryInjection', memoryInjectionEnabledFor, settings),
+      durableHeader: featureState(route, 'durableHeader', durableHeaderEnabledFor, settings),
       memorySearchTool: featureState(route, 'memorySearchTool', memorySearchToolEnabledFor, settings),
       endlessMode: featureState(route, 'endlessMode', endlessModeEnabledFor, settings),
     })),
@@ -70,9 +73,9 @@ export function formatWireMemoryStatus(status: WireMemoryStatus, gatewayOrigin: 
   const lines = ['', `Memory: MCP tools at ${gatewayOrigin}${status.mcpPath}`];
   if (status.routes.length === 0) return lines;
   const idWidth = Math.max(5, ...status.routes.map(route => route.routeId.length));
-  lines.push(`${'ROUTE'.padEnd(idWidth)}  ${'INJECTION'.padEnd(13)}  ${'MEMORY_SEARCH'.padEnd(13)}  ENDLESS`);
+  lines.push(`${'ROUTE'.padEnd(idWidth)}  ${'INJECTION'.padEnd(13)}  ${'HEADER'.padEnd(13)}  ${'MEMORY_SEARCH'.padEnd(13)}  ENDLESS`);
   for (const route of status.routes) {
-    lines.push(`${route.routeId.padEnd(idWidth)}  ${stateText(route.memoryInjection).padEnd(13)}  ${stateText(route.memorySearchTool).padEnd(13)}  ${stateText(route.endlessMode)}`);
+    lines.push(`${route.routeId.padEnd(idWidth)}  ${stateText(route.memoryInjection).padEnd(13)}  ${stateText(route.durableHeader).padEnd(13)}  ${stateText(route.memorySearchTool).padEnd(13)}  ${stateText(route.endlessMode)}`);
   }
   for (const [stageName, stage] of Object.entries(status.stages ?? {})) {
     lines.push(`  stage ${stageName}: ${stage.calls} calls, ${stage.failures} failures${stage.lastError ? ` (last: ${stage.lastError})` : ''}`);
