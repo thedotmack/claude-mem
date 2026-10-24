@@ -136,7 +136,7 @@ describe('refresh task', () => {
     expect(claudeCode.allowedTools).toContain('mcp__plugin_claude-mem_mcp-search__search');
     expect(claudeCode.allowedTools).toContain('mcp__plugin_claude-mem_mcp-search__work_state_read');
     // No raw work-state writes: they would skip the skills' validators.
-    expect(claudeCode.allowedTools.filter(tool => /Bash|Write|Edit|work_state_write|save_memory|Agent|Skill/.test(tool))).toEqual([]);
+    expect(claudeCode.allowedTools.filter(tool => /Bash|Write|Edit|work_state_write|save_memory|smart_search|smart_outline|smart_unfold|Agent|Skill/.test(tool))).toEqual([]);
     expect(JSON.stringify(task)).not.toMatch(/bypass|dangerous/i);
   });
 
