@@ -3,11 +3,21 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
-  injectContextIntoMarkdownFile,
   findContextBlockRange,
   CONTEXT_TAG_OPEN,
   CONTEXT_TAG_CLOSE,
 } from '../src/utils/context-injection';
+import { upsertTextBlock } from '../src/services/wire-gateway/library/text-block';
+import { toBmpSafe } from '../src/utils/bmp-safe';
+
+// Instruction-file context blocks are written by the Library's text blocks
+// (placement 'after-trimmed-text', contextBlockItem); this runs that same
+// function on a real file, the way the engine does.
+function writeContextBlockToFile(filePath: string, contextContent: string, headerLine?: string): void {
+  mkdirSync(join(filePath, '..'), { recursive: true });
+  const existing = existsSync(filePath) ? readFileSync(filePath, 'utf-8') : null;
+  writeFileSync(filePath, upsertTextBlock(existing, CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE, toBmpSafe(contextContent), 'after-trimmed-text', headerLine));
+}
 
 // Every writer and cleaner of the managed block pairs its tags through this one
 // helper: the inject and folder CLAUDE.md writers, `claude-mem generate`, and
@@ -65,7 +75,7 @@ describe('Context Injection', () => {
     it('creates a new file with context tags when file does not exist', () => {
       const filePath = join(tempDir, 'CLAUDE.md');
 
-      injectContextIntoMarkdownFile(filePath, 'Hello world');
+      writeContextBlockToFile(filePath, 'Hello world');
 
       expect(existsSync(filePath)).toBe(true);
       const content = readFileSync(filePath, 'utf-8');
@@ -77,7 +87,7 @@ describe('Context Injection', () => {
     it('creates parent directories if they do not exist', () => {
       const filePath = join(tempDir, 'nested', 'deep', 'CLAUDE.md');
 
-      injectContextIntoMarkdownFile(filePath, 'test content');
+      writeContextBlockToFile(filePath, 'test content');
 
       expect(existsSync(filePath)).toBe(true);
     });
@@ -86,7 +96,7 @@ describe('Context Injection', () => {
       const filePath = join(tempDir, 'CLAUDE.md');
       const contextContent = '# Recent Activity\n\nSome memory data here.';
 
-      injectContextIntoMarkdownFile(filePath, contextContent);
+      writeContextBlockToFile(filePath, contextContent);
 
       const content = readFileSync(filePath, 'utf-8');
       const expected = `${CONTEXT_TAG_OPEN}\n${contextContent}\n${CONTEXT_TAG_CLOSE}\n`;
@@ -99,7 +109,7 @@ describe('Context Injection', () => {
       const filePath = join(tempDir, 'AGENTS.md');
       const headerLine = '# Claude-Mem Memory Context';
 
-      injectContextIntoMarkdownFile(filePath, 'context data', headerLine);
+      writeContextBlockToFile(filePath, 'context data', headerLine);
 
       const content = readFileSync(filePath, 'utf-8');
       expect(content.startsWith(headerLine)).toBe(true);
@@ -111,7 +121,7 @@ describe('Context Injection', () => {
       const filePath = join(tempDir, 'AGENTS.md');
       const headerLine = '# My Header';
 
-      injectContextIntoMarkdownFile(filePath, 'data', headerLine);
+      writeContextBlockToFile(filePath, 'data', headerLine);
 
       const content = readFileSync(filePath, 'utf-8');
       expect(content).toBe(`${headerLine}\n\n${CONTEXT_TAG_OPEN}\ndata\n${CONTEXT_TAG_CLOSE}\n`);
@@ -121,7 +131,7 @@ describe('Context Injection', () => {
       const filePath = join(tempDir, 'AGENTS.md');
       writeFileSync(filePath, '# Existing Content\n\nSome stuff.\n');
 
-      injectContextIntoMarkdownFile(filePath, 'new context', '# Should Not Appear');
+      writeContextBlockToFile(filePath, 'new context', '# Should Not Appear');
 
       const content = readFileSync(filePath, 'utf-8');
       expect(content).toContain('# Existing Content');
@@ -137,7 +147,7 @@ describe('Context Injection', () => {
       const after = '\n## Other instructions\n';
       writeFileSync(filePath, `${before}${CONTEXT_TAG_OPEN}\nold\n${CONTEXT_TAG_CLOSE}${after}`);
 
-      injectContextIntoMarkdownFile(filePath, 'new');
+      writeContextBlockToFile(filePath, 'new');
 
       expect(readFileSync(filePath, 'utf-8')).toBe(
         `${before}${CONTEXT_TAG_OPEN}\nnew\n${CONTEXT_TAG_CLOSE}${after}`,
@@ -157,7 +167,7 @@ describe('Context Injection', () => {
       ].join('\n');
       writeFileSync(filePath, initialContent);
 
-      injectContextIntoMarkdownFile(filePath, 'New context data');
+      writeContextBlockToFile(filePath, 'New context data');
 
       const content = readFileSync(filePath, 'utf-8');
       expect(content).toContain('New context data');
@@ -173,7 +183,7 @@ describe('Context Injection', () => {
       const initialContent = `${before}${CONTEXT_TAG_OPEN}\nold\n${CONTEXT_TAG_CLOSE}${after}`;
       writeFileSync(filePath, initialContent);
 
-      injectContextIntoMarkdownFile(filePath, 'replaced');
+      writeContextBlockToFile(filePath, 'replaced');
 
       const content = readFileSync(filePath, 'utf-8');
       expect(content).toContain('# Header');
@@ -190,7 +200,7 @@ describe('Context Injection', () => {
       const filePath = join(tempDir, 'CLAUDE.md');
       writeFileSync(filePath, '# My Project\n\nInstructions here.\n');
 
-      injectContextIntoMarkdownFile(filePath, 'appended context');
+      writeContextBlockToFile(filePath, 'appended context');
 
       const content = readFileSync(filePath, 'utf-8');
       expect(content).toContain('# My Project');
@@ -204,7 +214,7 @@ describe('Context Injection', () => {
       const filePath = join(tempDir, 'CLAUDE.md');
       writeFileSync(filePath, '# Header');
 
-      injectContextIntoMarkdownFile(filePath, 'data');
+      writeContextBlockToFile(filePath, 'data');
 
       const content = readFileSync(filePath, 'utf-8');
       expect(content).toContain(`# Header\n\n${CONTEXT_TAG_OPEN}`);
@@ -214,7 +224,7 @@ describe('Context Injection', () => {
       const filePath = join(tempDir, 'CLAUDE.md');
       writeFileSync(filePath, '# Header\n\n\n   \n');
 
-      injectContextIntoMarkdownFile(filePath, 'data');
+      writeContextBlockToFile(filePath, 'data');
 
       const content = readFileSync(filePath, 'utf-8');
       expect(content).toContain(`# Header\n\n${CONTEXT_TAG_OPEN}`);
@@ -225,10 +235,10 @@ describe('Context Injection', () => {
     it('produces same result when called twice with same content', () => {
       const filePath = join(tempDir, 'CLAUDE.md');
 
-      injectContextIntoMarkdownFile(filePath, 'stable content');
+      writeContextBlockToFile(filePath, 'stable content');
       const firstWrite = readFileSync(filePath, 'utf-8');
 
-      injectContextIntoMarkdownFile(filePath, 'stable content');
+      writeContextBlockToFile(filePath, 'stable content');
       const secondWrite = readFileSync(filePath, 'utf-8');
 
       expect(secondWrite).toBe(firstWrite);
@@ -237,8 +247,8 @@ describe('Context Injection', () => {
     it('updates content when called with different data', () => {
       const filePath = join(tempDir, 'CLAUDE.md');
 
-      injectContextIntoMarkdownFile(filePath, 'version 1');
-      injectContextIntoMarkdownFile(filePath, 'version 2');
+      writeContextBlockToFile(filePath, 'version 1');
+      writeContextBlockToFile(filePath, 'version 2');
 
       const content = readFileSync(filePath, 'utf-8');
       expect(content).toContain('version 2');

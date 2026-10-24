@@ -24,6 +24,7 @@ import {
   type InstallRuntimeId,
 } from './server-runtime-setup.js';
 import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
+import { libraryRecoveryNotesIn } from '../../services/wire-gateway/library/types.js';
 import {
   currentLauncherHostEnvironment,
   removeInstalledLauncher,
@@ -320,8 +321,18 @@ export async function runUninstallCommand(): Promise<void> {
   // record and the marketplace directory, so a re-run can finish the removal.
   let deepSeekHarnessCleanupFailed = false;
   try {
-    const { uninstallDeepSeekHarness } = await import('../../services/integrations/DeepSeekHarnessInstaller.js');
-    deepSeekHarnessCleanupFailed = await uninstallDeepSeekHarness() !== 0;
+    const { libraryRunsInThisProcess, runLibraryInBunChild } = await import('./library.js');
+    if (libraryRunsInThisProcess()) {
+      const { uninstallDeepSeekHarness } = await import('../../services/integrations/DeepSeekHarnessInstaller.js');
+      deepSeekHarnessCleanupFailed = await uninstallDeepSeekHarness() !== 0;
+    } else {
+      // Its transcript-watch edit goes through the Library, which runs under Bun.
+      const child = runLibraryInBunChild(['uninstall', 'dsh']);
+      if (child.result !== 0 && child.output.trim()) p.log.error(child.output.trim());
+      // Shown on success too: the output above is printed only on failure.
+      if (child.result === 0) for (const note of libraryRecoveryNotesIn(child.output)) p.log.warn(`Recovered an interrupted claude-mem change: ${note}`);
+      deepSeekHarnessCleanupFailed = child.result !== 0;
+    }
   } catch (error) {
     deepSeekHarnessCleanupFailed = true;
     p.log.error('DeepSeek Harness cleanup failed: ' + String(error));
@@ -413,8 +424,10 @@ export async function runUninstallCommand(): Promise<void> {
     },
   ]);
 
-  const ideCleanups: Array<{ label: string; fn: () => Promise<number> | number }> = [
-    { label: 'T3 Code provider plugins', fn: async () => {
+  // `libraryAgent`: the cleanup edits agent configs through the Library, which
+  // runs under Bun; under Node (npx) it runs in a Bun child instead.
+  const ideCleanups: Array<{ label: string; fn: () => Promise<number> | number; libraryAgent?: string }> = [
+    { label: 'T3 Code provider plugins', libraryAgent: 't3code', fn: async () => {
       const { uninstallT3Code } = await import('../../services/integrations/T3CodeInstaller.js');
       return uninstallT3Code();
     }},
@@ -422,47 +435,56 @@ export async function runUninstallCommand(): Promise<void> {
       const { uninstallHermesIntegration } = await import('../../services/integrations/HermesInstaller.js');
       return uninstallHermesIntegration();
     }},
-    { label: 'Pi memory', fn: async () => {
+    { label: 'Pi memory', libraryAgent: 'pi', fn: async () => {
       const { uninstallPiExtension } = await import('../../services/integrations/PiInstaller.js');
       return uninstallPiExtension();
     }},
-    { label: 'Windsurf hooks', fn: async () => {
+    { label: 'Windsurf hooks', libraryAgent: 'windsurf', fn: async () => {
       const { uninstallWindsurfHooks } = await import('../../services/integrations/WindsurfHooksInstaller.js');
       return uninstallWindsurfHooks();
     }},
-    { label: 'Goose MCP extension', fn: async () => {
+    { label: 'Goose MCP extension', libraryAgent: 'goose', fn: async () => {
       const { uninstallGooseMcpIntegration } = await import('../../services/integrations/McpIntegrations.js');
       return uninstallGooseMcpIntegration();
     }},
-    { label: 'OpenCode plugin', fn: async () => {
+    { label: 'OpenCode plugin', libraryAgent: 'opencode', fn: async () => {
       const { uninstallOpenCodePlugin } = await import('../../services/integrations/OpenCodeInstaller.js');
       return uninstallOpenCodePlugin();
     }},
-    { label: 'OpenClaw plugin', fn: async () => {
+    { label: 'OpenClaw plugin', libraryAgent: 'openclaw', fn: async () => {
       const { uninstallOpenClawPlugin } = await import('../../services/integrations/OpenClawInstaller.js');
       return uninstallOpenClawPlugin();
     }},
-    { label: 'Codex CLI', fn: async () => {
+    { label: 'Codex CLI', libraryAgent: 'codex-cli', fn: async () => {
       const { uninstallCodexCli } = await import('../../services/integrations/CodexCliInstaller.js');
       return uninstallCodexCli();
     }},
-    { label: 'Antigravity CLI hooks + MCP', fn: async () => {
+    { label: 'Antigravity CLI hooks + MCP', libraryAgent: 'antigravity', fn: async () => {
       const { uninstallAntigravityCliHooks } = await import('../../services/integrations/AntigravityCliHooksInstaller.js');
       return uninstallAntigravityCliHooks();
     }},
-    { label: 'Kimi Code hooks + MCP', fn: async () => {
+    { label: 'Kimi Code hooks + MCP', libraryAgent: 'kimi', fn: async () => {
       const { uninstallKimiHooks } = await import('../../services/integrations/KimiHooksInstaller.js');
       return uninstallKimiHooks();
     }},
-    { label: 'OMP hooks', fn: async () => {
+    { label: 'OMP hooks', libraryAgent: 'omp', fn: async () => {
       const { uninstallOmpHooks } = await import('../../services/integrations/OmpHooksInstaller.js');
       return uninstallOmpHooks();
     }},
   ];
 
-  for (const { label, fn } of ideCleanups) {
+  const { libraryRunsInThisProcess, runLibraryInBunChild } = await import('./library.js');
+  for (const { label, fn, libraryAgent } of ideCleanups) {
     try {
-      const result = await fn();
+      let result: number;
+      if (libraryAgent && !libraryRunsInThisProcess()) {
+        // The uninstaller ran in a Bun child: its output is shown here, as it was when uninstallers ran in this process.
+        const child = runLibraryInBunChild(['uninstall', libraryAgent]);
+        if (child.output.trim()) console.log(child.output.trimEnd());
+        result = child.result;
+      } else {
+        result = await fn();
+      }
       if (result === 0) {
         p.log.info(`${label}: removed.`);
       }

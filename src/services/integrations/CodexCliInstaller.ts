@@ -9,14 +9,14 @@ import {
   accessSync,
   constants,
   existsSync,
-  mkdirSync,
   readFileSync,
-  writeFileSync,
 } from 'fs';
 import { fileURLToPath } from 'url';
 import { logger } from '../../utils/logger.js';
-import { findContextBlockRange } from '../../utils/context-injection.js';
-import { readJsonFileWithBom } from '../../shared/atomic-json.js';
+import { CONTEXT_BLOCK_CLOSE, CONTEXT_BLOCK_OPEN, LIBRARY_GROUPS } from '../wire-gateway/library/agent-library-targets.js';
+import { applyLibraryForInstaller, hasLibraryRecord, removeLibraryForInstaller } from '../wire-gateway/library/library-runtime.js';
+import { stripLegacyContextBlock } from '../wire-gateway/library/text-block.js';
+import type { ConfigMemberItem, LibraryMigration } from '../wire-gateway/library/types.js';
 import { paths } from '../../shared/paths.js';
 import { buildSpawnSyncInvocation, type SpawnSyncInvocation } from '../../shared/spawn.js';
 
@@ -286,46 +286,6 @@ function tomlStructuralLines(lines: string[]): string[] {
   });
 }
 
-export function setTomlBooleanInTable(content: string, header: string, key: string, enabled: boolean): string {
-  const booleanLine = `${key} = ${enabled ? 'true' : 'false'}`;
-  const lines = content.split('\n');
-  const structuralLines = tomlStructuralLines(lines);
-  const headerIndex = structuralLines.findIndex((line) => line.trim() === header);
-
-  if (headerIndex === -1) {
-    const trimmed = content.trimEnd();
-    return `${trimmed}${trimmed ? '\n\n' : ''}${header}\n${booleanLine}\n`;
-  }
-
-  let sectionEnd = headerIndex + 1;
-  while (sectionEnd < lines.length && !/^\s*\[/.test(structuralLines[sectionEnd])) {
-    sectionEnd += 1;
-  }
-
-  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const keyPattern = new RegExp(`^\\s*${escapedKey}\\s*=`);
-  const keyIndex = structuralLines.findIndex(
-    (line, index) => index > headerIndex && index < sectionEnd && keyPattern.test(line),
-  );
-
-  if (keyIndex === -1) {
-    lines.splice(headerIndex + 1, 0, booleanLine);
-  } else {
-    lines[keyIndex] = booleanLine;
-  }
-
-  return lines.join('\n');
-}
-
-export function setTomlPluginEnabled(content: string, pluginId: string, enabled: boolean): string {
-  const escapedPluginId = pluginId.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  return setTomlBooleanInTable(content, `[plugins."${escapedPluginId}"]`, 'enabled', enabled);
-}
-
-export function setTomlFeatureEnabled(content: string, featureName: string, enabled: boolean): string {
-  return setTomlBooleanInTable(content, '[features]', featureName, enabled);
-}
-
 function normalizeTomlHeader(line: string): string | null {
   const match = stripTomlComment(line).trim().match(/^\[([^\]]+)\]\s*$/);
   if (!match) return null;
@@ -408,68 +368,95 @@ function repairStaleMarketplaceRegistration(): void {
   runCodex(['plugin', 'marketplace', 'remove', MARKETPLACE_NAME]);
 }
 
-function isLegacyMcpSearchHeader(normalizedHeader: string | null): boolean {
-  return normalizedHeader === 'mcp_servers.mcp-search';
+/**
+ * The pre-plugin `[mcp_servers.mcp-search]` server a claude-mem install wrote
+ * (the block names claude-mem): removed with its tool child tables, so Codex
+ * falls back to the plugin-managed MCP declaration.
+ */
+function legacyMcpSearchRemoval(configPath: string): LibraryMigration {
+  return {
+    file: configPath,
+    format: 'toml',
+    compute: (document) => {
+      const server = (document as { mcp_servers?: Record<string, unknown> }).mcp_servers?.['mcp-search'];
+      return server !== undefined && JSON.stringify(server).includes('claude-mem') ? [{ op: 'delete', keyPath: ['mcp_servers', 'mcp-search'] }] : [];
+    },
+  };
 }
 
-function isLegacyMcpSearchChildHeader(normalizedHeader: string | null): boolean {
-  return typeof normalizedHeader === 'string' && normalizedHeader.startsWith('mcp_servers.mcp-search.');
+function codexPluginGroup(configPath: string): string {
+  return `${LIBRARY_GROUPS.settings}:${configPath}`;
 }
 
-function isClaudeMemMcpSearchBlock(block: string): boolean {
-  return /claude-mem/.test(block);
+function codexHooksFeatureGroup(configPath: string): string {
+  return `${LIBRARY_GROUPS.settings}:${configPath}:features`;
 }
 
-export function removeLegacyCodexMcpSearchConfig(content: string): string {
-  const lines = content.split('\n');
-  const structuralLines = tomlStructuralLines(lines);
-  const blocks: Array<{ header: string | null; text: string }> = [];
-  let currentHeader: string | null = null;
-  let currentLines: string[] = [];
-
-  for (const [index, line] of lines.entries()) {
-    const header = normalizeTomlHeader(structuralLines[index]);
-    if (header !== null) {
-      blocks.push({ header: currentHeader, text: currentLines.join('\n') });
-      currentHeader = header;
-      currentLines = [line];
-    } else {
-      currentLines.push(line);
-    }
-  }
-  blocks.push({ header: currentHeader, text: currentLines.join('\n') });
-
-  const removeLegacyMcpSearch = blocks.some(
-    (block) => isLegacyMcpSearchHeader(block.header) && isClaudeMemMcpSearchBlock(block.text),
-  );
-  if (!removeLegacyMcpSearch) return content;
-
-  const kept = blocks.filter((block) =>
-    !isLegacyMcpSearchHeader(block.header) && !isLegacyMcpSearchChildHeader(block.header)
-  );
-  // The stale claude-mem-owned server can have tool child tables; remove the
-  // whole subtree so Codex falls back to the plugin-managed MCP declaration.
-  return kept.map((block) => block.text).join('\n').replace(/^\n+/, '').replace(/\n{3,}/g, '\n\n');
+/** The settings that make Codex load claude-mem's plugin: hooks on, the old plugin id off, the plugin on (or off). */
+function codexPluginSettings(configPath: string, enabled: boolean): ConfigMemberItem[] {
+  const setting = (id: string, keyPath: string[], value: boolean, group = codexPluginGroup(configPath)): ConfigMemberItem => ({
+    kind: 'setting', id: `setting:${configPath}:${id}`, group,
+    place: 'member', file: configPath, format: 'toml', keyPath, value, whenUnrecorded: 'replace-and-stash',
+  });
+  // A claude-mem plugin id (current or legacy) found turned on before the
+  // first write was turned on by claude-mem (an install from before the
+  // record), so it is not stashed as the user's: a remove turns it off, as
+  // uninstall always did, instead of turning claude-mem back on.
+  const claudeMemPlugin = (pluginId: string, value: boolean): ConfigMemberItem => ({
+    ...setting(`plugins.${pluginId}`, ['plugins', pluginId, 'enabled'], value),
+    isPreLibraryValue: (current) => current === true,
+    valueAfterRemoveOfPreLibraryValue: false,
+  });
+  return [
+    // Its own group: turning the plugin off leaves Codex's hooks feature as it is.
+    ...(enabled ? [setting('features.hooks', ['features', 'hooks'], true, codexHooksFeatureGroup(configPath))] : []),
+    ...LEGACY_CODEX_PLUGIN_IDS.map((legacyPluginId) => claudeMemPlugin(legacyPluginId, false)),
+    claudeMemPlugin(CODEX_PLUGIN_ID, enabled),
+  ];
 }
 
-function writeCodexPluginConfig(enabled: boolean, configPath = CODEX_CONFIG_PATH): boolean {
+/**
+ * Turn claude-mem's Codex plugin on or off in a config.toml through the
+ * Library (the Phase 7 TOML editor: comments, order and every other key stay).
+ * Returns whether the file changed. `agentId` is whose record it is: Codex
+ * CLI's own, or T3 Code's for a provider home.
+ */
+export function writeCodexPluginConfig(enabled: boolean, configPath = CODEX_CONFIG_PATH, agentId = 'codex-cli'): boolean {
   if (!enabled && !existsSync(configPath)) return false;
-  mkdirSync(path.dirname(configPath), { recursive: true });
-  const current = existsSync(configPath) ? readFileSync(configPath, 'utf-8') : '';
-  let next = current;
+  const result = applyLibraryForInstaller({
+    agentId,
+    items: codexPluginSettings(configPath, enabled),
+    ownedGroups: enabled ? [codexPluginGroup(configPath), codexHooksFeatureGroup(configPath)] : [codexPluginGroup(configPath)],
+    migrations: enabled ? [legacyMcpSearchRemoval(configPath)] : [],
+  });
+  return result.filesWritten.length > 0;
+}
 
-  if (enabled) {
-    next = setTomlFeatureEnabled(next, 'hooks', true);
-    next = removeLegacyCodexMcpSearchConfig(next);
-  }
-  for (const legacyPluginId of LEGACY_CODEX_PLUGIN_IDS) {
-    next = setTomlPluginEnabled(next, legacyPluginId, false);
-  }
-  next = setTomlPluginEnabled(next, CODEX_PLUGIN_ID, enabled);
-
-  if (next === current) return false;
-  writeFileSync(configPath, next);
-  return true;
+/**
+ * Take claude-mem's settings out of a config.toml: values claude-mem set go,
+ * values that were there before come back. An install from before the
+ * Library left no record; for it the plugin is turned off, as uninstall
+ * always did.
+ */
+function removeCodexPluginConfig(configPath = CODEX_CONFIG_PATH): boolean {
+  if (!existsSync(configPath)) return false;
+  const hadRecord = hasLibraryRecord('codex-cli');
+  const result = removeLibraryForInstaller({
+    agentId: 'codex-cli',
+    items: [],
+    groups: [codexPluginGroup(configPath), codexHooksFeatureGroup(configPath)],
+    migrations: hadRecord ? [] : [{
+      file: configPath,
+      format: 'toml',
+      compute: (document) => {
+        const plugins = (document as { plugins?: Record<string, { enabled?: unknown }> }).plugins ?? {};
+        return [CODEX_PLUGIN_ID, ...LEGACY_CODEX_PLUGIN_IDS]
+          .filter((pluginId) => plugins[pluginId]?.enabled === true)
+          .map((pluginId) => ({ op: 'set' as const, keyPath: ['plugins', pluginId, 'enabled'], value: false }));
+      },
+    }],
+  });
+  return result.filesWritten.length > 0;
 }
 
 function enableCodexPluginConfig(): void {
@@ -478,8 +465,8 @@ function enableCodexPluginConfig(): void {
 }
 
 function disableCodexPluginConfig(): void {
-  const changed = writeCodexPluginConfig(false);
-  console.log(`  Disabled Codex plugin: ${CODEX_PLUGIN_ID}${changed ? '' : ' (already disabled)'}`);
+  const changed = removeCodexPluginConfig();
+  console.log(`  Removed claude-mem's Codex plugin settings: ${CODEX_PLUGIN_ID}${changed ? '' : ' (none left)'}`);
 }
 
 function extractSemver(value: string): string | null {
@@ -523,22 +510,20 @@ function removeCodexAgentsMdContext(): boolean {
 }
 
 export function readAndStripContextTags(agentsMdPath = CODEX_AGENTS_MD_PATH): void {
-  const content = readFileSync(agentsMdPath, 'utf-8');
-
-  const block = findContextBlockRange(content);
-  if (!block) return;
-
-  const before = content.substring(0, block.start).replace(/\n+$/, '');
-  const after = content.substring(block.end).replace(/^\n+/, '');
-  const finalContent = (before + (after ? '\n\n' + after : '')).trim();
-
-  if (finalContent) {
-    writeFileSync(agentsMdPath, finalContent + '\n');
-  } else {
-    writeFileSync(agentsMdPath, '');
-  }
-
-  console.log(`  Removed legacy global context from ${agentsMdPath}`);
+  const result = applyLibraryForInstaller({
+    agentId: 'codex-cli',
+    items: [],
+    ownedGroups: [],
+    migrations: [{
+      file: agentsMdPath,
+      format: 'text',
+      computeText: (text) => {
+        const remaining = stripLegacyContextBlock(text, CONTEXT_BLOCK_OPEN, CONTEXT_BLOCK_CLOSE, '\n\n');
+        return remaining === null ? null : { text: remaining ? `${remaining}\n` : '' };
+      },
+    }],
+  });
+  if (result.filesWritten.includes(agentsMdPath)) console.log(`  Removed legacy global context from ${agentsMdPath}`);
 }
 
 const cleanupLegacyCodexAgentsMdContext = removeCodexAgentsMdContext;
@@ -588,21 +573,25 @@ function disableCodexTranscriptAgentsContext(): boolean {
 }
 
 export function stripLegacyTranscriptWatchContexts(configPath = CODEX_TRANSCRIPT_WATCH_CONFIG_PATH): void {
-  const parsed = readJsonFileWithBom<unknown>(configPath);
-  if (!isRecord(parsed) || !Array.isArray(parsed.watches)) return;
-
-  let changed = false;
-  for (const watch of parsed.watches) {
-    if (!isRecord(watch) || !isCodexTranscriptWatch(watch)) continue;
-    if (!isRecord(watch.context) || !isLegacyCodexAgentsContext(watch.context)) continue;
-    delete watch.context;
-    changed = true;
-  }
-
-  if (changed) {
-    writeFileSync(configPath, `${JSON.stringify(parsed, null, 2)}\n`);
-    console.log(`  Disabled legacy Codex transcript AGENTS.md context in ${configPath}`);
-  }
+  const result = applyLibraryForInstaller({
+    agentId: 'codex-cli',
+    items: [],
+    ownedGroups: [],
+    migrations: [{
+      file: configPath,
+      format: 'json',
+      compute: (document) => {
+        const watches = (document as { watches?: unknown }).watches;
+        if (!Array.isArray(watches)) return [];
+        return watches.flatMap((watch, index) => (
+          isRecord(watch) && isCodexTranscriptWatch(watch) && isRecord(watch.context) && isLegacyCodexAgentsContext(watch.context)
+            ? [{ op: 'delete' as const, keyPath: ['watches', String(index), 'context'] }]
+            : []
+        ));
+      },
+    }],
+  });
+  if (result.filesWritten.includes(configPath)) console.log(`  Disabled legacy Codex transcript AGENTS.md context in ${configPath}`);
 }
 
 const cleanupLegacyCodexTranscriptAgentsContext = disableCodexTranscriptAgentsContext;
@@ -630,17 +619,19 @@ export function installCodexPluginForHome(options: {
   marketplaceRoot: string;
   homePath: string;
   spawn: CodexSpawn;
+  /** Whose Library record the settings go in (default: T3 Code, the only caller). */
+  agentId?: string;
 }): void {
   const root = assertCodexMarketplaceRoot(options.marketplaceRoot);
   assertCodexMarketplaceSupported(options.spawn);
   const run = (args: string[]) => runCodex(args, options.spawn);
   registerCodexMarketplace(root, run);
   run(['plugin', 'add', CODEX_PLUGIN_ID]);
-  writeCodexPluginConfig(true, path.join(options.homePath, 'config.toml'));
+  writeCodexPluginConfig(true, path.join(options.homePath, 'config.toml'), options.agentId ?? 't3code');
 }
 
-export function disableCodexPluginForHome(homePath: string): void {
-  writeCodexPluginConfig(false, path.join(homePath, 'config.toml'));
+export function disableCodexPluginForHome(homePath: string, agentId = 't3code'): void {
+  writeCodexPluginConfig(false, path.join(homePath, 'config.toml'), agentId);
 }
 
 function performCodexInstall(marketplaceRootOverride?: string): number {

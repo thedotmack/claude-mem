@@ -1,0 +1,4 @@
+{"model":"gpt-x","instructions":"be brief — ok \/ <tag> \u00e9","service_tier":"priority","reasoning":{"effort":"medium","summary":"auto"},
+ "input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"<cwd>/work/app</cwd> hi 1.50e2"}]}],
+ "tools":[{"type":"function","name":"Read","description":"Reads","parameters":{"type":"object","properties":{"path":{"type":"string"}}}}],
+ "store":false,"stream":true,"include":["reasoning.encrypted_content"]}

@@ -118,7 +118,7 @@ describe('My Rules routes', () => {
     const replaced = await (await saveRule({ action: 'replace', ruleId: own.ruleId, rule: { scopeTier: 'situation', scopeName: 'When I am frustrated', when: '', then: 'Stop, restate what I want, and wait.' } })).json();
     expect(ruleById(replaced, own.ruleId)).toMatchObject({ status: 'replaced' });
     expect(ruleById(replaced, ruleById(replaced, own.ruleId).replacedBy).then).toBe('Stop, restate what I want, and wait.');
-    expect(readFileSync(rulesFilePath, 'utf8')).toContain('## When I am frustrated\n\n- Stop, restate what I want, and wait.');
+    expect(readFileSync(rulesFilePath, 'utf8')).toContain('## Situation: When I am frustrated\n\n- Stop, restate what I want, and wait.');
     expect(replaced.ruleScopes.map((scope: any) => scope.id)).toEqual(['everywhere', 'project:claude-mem', 'situation:When I am frustrated']);
   });
 

@@ -6,6 +6,7 @@ import { resolveDataDir } from './paths.js';
 import { normalizePlatformSource } from './platform-source.js';
 import { logger } from '../utils/logger.js';
 import type { AgentRole, InstructionState, WorkStateOutcome } from './work-state-telemetry.js';
+import type { SessionInitPayload } from '../services/worker/http/shared.js';
 
 /**
  * Durable hand-off from short-lived write hooks to the worker.
@@ -30,8 +31,12 @@ import type { AgentRole, InstructionState, WorkStateOutcome } from './work-state
  * each file all-or-nothing.
  */
 
-export const HOOK_SPOOL_KINDS = ['observation', 'file_edit', 'summarize', 'session_end', 'subagent_stop', 'advisor_calls', 'work_state_telemetry'] as const;
+export const HOOK_SPOOL_KINDS = ['session_init', 'observation', 'file_edit', 'summarize', 'session_end', 'subagent_stop', 'advisor_calls', 'work_state_telemetry'] as const;
 export type HookSpoolKind = typeof HOOK_SPOOL_KINDS[number];
+
+/** The `POST /api/sessions/init` body (SessionRoutes sessionInitByClaudeIdSchema), for producers that never wait on the worker (the wire gateway). */
+export type SpooledSessionInitPayload = Pick<SessionInitPayload,
+  'contentSessionId' | 'platformSource' | 'prompt' | 'nativePromptId' | 'project' | 'projectKeySource' | 'customTitle' | 'cwd'>;
 
 export interface SpooledObservationPayload {
   contentSessionId: string;
@@ -45,6 +50,8 @@ export interface SpooledObservationPayload {
   agentId?: string;
   agentType?: string;
   toolUseId?: string;
+  /** The project to file the observation under when `cwd` is absent (the wire gateway's `<agentId>-unattributed`). */
+  project?: string;
 }
 
 export interface SpooledSummarizePayload {
@@ -88,6 +95,7 @@ export interface SpooledAdvisorCallsPayload {
 }
 
 export interface HookSpoolPayloadByKind {
+  session_init: SpooledSessionInitPayload;
   observation: SpooledObservationPayload;
   file_edit: SpooledObservationPayload;
   summarize: SpooledSummarizePayload;
@@ -147,7 +155,8 @@ export function remoteHookSpoolReceivedKey(receipt: string): string {
 }
 
 const ENTRY_FILENAME = /^[a-z_]+-[A-Za-z0-9_-]+\.json$/;
-const FILENAME_SAFE_TOOL_USE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+/** A tool-use or native prompt id that can go into an entry's file name as it is. */
+const FILENAME_SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const CORRUPT_DIRNAME = 'corrupt';
 const EXPIRED_DIRNAME = 'expired';
 
@@ -195,18 +204,32 @@ function isRemoteReceipt(entryKey: string): boolean {
   return /^remote_[a-z_]+-[a-f0-9]{64}$/.test(entryKey);
 }
 
+/** A session's scope for ids hosts number within a session (tool use ids, prompt ids): the shared team gateway's outbox scopes the tool_use_id it sends the server runtime the same way. */
+export function sessionScopeKey(payload: { contentSessionId: string; platformSource: string }): string {
+  return createHash('sha256')
+    .update(payload.contentSessionId)
+    .update('\0')
+    .update(normalizePlatformSource(payload.platformSource))
+    .digest('hex');
+}
+
 export function hookSpoolKeyFor<K extends HookSpoolKind>(kind: K, payload: HookSpoolPayloadByKind[K]): string {
   const toolUseId = (payload as { toolUseId?: unknown }).toolUseId;
-  if (typeof toolUseId === 'string' && FILENAME_SAFE_TOOL_USE_ID.test(toolUseId)) {
+  if (typeof toolUseId === 'string' && FILENAME_SAFE_ID.test(toolUseId)) {
     // Tool ids are opaque host values; some hosts number them within a
     // session. Scope the durable filename (and consumed marker) like the
     // worker dedup key, so a second session cannot overwrite the first.
-    const sessionKey = createHash('sha256')
-      .update(payload.contentSessionId)
-      .update('\0')
-      .update(normalizePlatformSource(payload.platformSource))
-      .digest('hex');
-    return `${sessionKey}-${toolUseId}`;
+    return `${sessionScopeKey(payload)}-${toolUseId}`;
+  }
+  const nativePromptId = kind === 'session_init' ? (payload as SpooledSessionInitPayload).nativePromptId : undefined;
+  if (typeof nativePromptId === 'string' && nativePromptId.length > 0) {
+    // One user turn, one file, like the worker's UNIQUE(session_db_id,
+    // native_prompt_id): a re-sent init overwrites its own entry. An id that
+    // cannot be a filename (`wire:<hex>`) is hashed.
+    const promptKey = FILENAME_SAFE_ID.test(nativePromptId)
+      ? nativePromptId
+      : createHash('sha256').update(nativePromptId).digest('hex');
+    return `${sessionScopeKey(payload)}-${promptKey}`;
   }
   return createHash('sha256')
     .update(kind)
@@ -308,7 +331,7 @@ export class HookSpool {
     const normalizedPayload = { ...payload, platformSource: normalizePlatformSource(payload.platformSource) };
     let entryPath = join(this.directory, `${kind}-${hookSpoolKeyFor(kind, normalizedPayload)}.json`);
     const toolUseId = (normalizedPayload as { toolUseId?: unknown }).toolUseId;
-    if (typeof toolUseId === 'string' && FILENAME_SAFE_TOOL_USE_ID.test(toolUseId)) {
+    if (typeof toolUseId === 'string' && FILENAME_SAFE_ID.test(toolUseId)) {
       const legacyPath = join(this.directory, `${kind}-${toolUseId}.json`);
       try {
         const legacy = parseHookSpoolEntry(readFileSync(legacyPath, 'utf8'));

@@ -105,7 +105,8 @@ function FormField({
   );
 }
 
-function ToggleSwitch({
+/** The settings switch row; the Wire page's consent card uses it too. */
+export function ToggleSwitch({
   id,
   label,
   description,

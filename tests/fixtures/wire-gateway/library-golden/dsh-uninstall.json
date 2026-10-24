@@ -1,0 +1,13 @@
+{
+  "exitCodes": [
+    0,
+    0
+  ],
+  "files": {
+    "home/.claude/": "<empty dir>",
+    "home/.claude-mem/transcript-watch.json": "{\n  \"version\": 1,\n  \"schemas\": {\n    \"dsh\": {\n      \"name\": \"dsh\",\n      \"version\": \"1\",\n      \"events\": []\n    }\n  },\n  \"watches\": [],\n  \"stateFile\": \"<SANDBOX>/data/transcript-watch-state.json\"\n}\n",
+    "workspace/": "<empty dir>",
+    "data/integrations/": "<empty dir>",
+    "cli-calls.log": "dsh plugin --profile web add --workspace-root <SANDBOX>/home/.claude/plugins/marketplaces/thedotmack/dsh\ndsh plugin --profile web remove --workspace-root @claude-mem/dsh\n"
+  }
+}

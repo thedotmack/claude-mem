@@ -1,0 +1,605 @@
+---
+title: "Wire Gateway"
+description: "A local relay for agent model traffic: what it sends, what it stores, and how long it keeps it."
+---
+
+The wire gateway is a separate claude-mem daemon on your computer. An agent you
+connect to it sends its model requests to `http://127.0.0.1:<port>/r/<route>`
+instead of straight to its provider; the gateway passes each request on with the
+agent's own credentials and passes the reply back unchanged. On the way it can
+turn what it sees into claude-mem memories.
+
+Nothing is rerouted on its own: a route exists only after you add one
+(`claude-mem wire connect`, or `claude-mem wire routes add` by hand). Agents
+signed in with a subscription are refused and stay on their native claude-mem
+integration (`CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS=true` lifts
+that on your computer; check your provider's terms first).
+
+## Connect an agent
+
+```bash
+claude-mem wire preview <agent>              # what connect would change; nothing is written
+claude-mem wire connect <agent>              # point the agent's base URLs at the gateway
+claude-mem wire connect <agent> --capture native   # relay only; its own claude-mem integration records it
+claude-mem wire status                       # is each connected agent really using the gateway?
+claude-mem wire preview <agent> --disconnect # what disconnect would put back
+claude-mem wire disconnect <agent>           # put back what connect changed
+```
+
+`connect` edits the agent's own config file in place, keeping its comments and
+layout, and records what it changed. It adds one route per base URL it rewires,
+relaying to the URL that was there before (or the agent's built-in endpoint),
+starts the gateway, checks the gateway answers on each new route, and installs
+the login service if it is not installed yet (`claude-mem wire service install`
+does that alone). If any step fails the config is put back and nothing stays
+connected. It refuses an agent signed in with a subscription, an agent it cannot
+find on this computer, and a base URL that already points at the gateway without
+a record of connecting it. Each route starts on the `CLAUDE_MEM_WIRE_GATEWAY_*`
+defaults; the [features](#endless-mode) below have per-route switches.
+
+`--capture` picks who records the agent. `wire` (the default when the agent has
+no claude-mem integration installed) means the gateway turns its traffic into
+memories. `native` means the agent's own claude-mem hooks or plugin keep doing
+that and the gateway only relays; an agent whose integration is installed is
+always connected this way, so nothing is recorded twice.
+
+`disconnect` restores each value `connect` changed. A value you changed by hand
+since is left as it is and reported. It removes the agent's routes; when the
+last route goes, the gateway stops.
+
+### Run an agent that is set by environment only
+
+Some agents take their endpoint from an environment variable only (Antigravity
+CLI, Cursor Private Inference), so there is no file to connect. Start them
+through the gateway instead:
+
+```bash
+claude-mem wire run <agent> -- <the agent's own arguments>
+```
+
+`run` starts the gateway if needed, opens a launcher session that knows the
+folder you started in, sets the agent's base-URL variable to that session's
+route and runs the agent in your terminal. If the agent sent no request through
+the gateway (it ignored the variable), `run` says so when it exits, because
+nothing from that run was recorded.
+
+### Status
+
+`claude-mem wire status` (`--json` for scripts) prints whether the gateway runs
+and one state per connected agent, with what to run to fix it:
+
+| State | Meaning |
+| --- | --- |
+| `ok` | The agent sends its requests through the gateway. |
+| `unwired` | A base URL in the agent's config sends it somewhere other than the gateway, or is unset so it uses its built-in endpoint. |
+| `replaced` | A value `connect` wrote was changed outside claude-mem; it was left as it is. |
+| `unreachable` | Nothing answers as the gateway where the agent sends its requests (it is not running, or the port changed). |
+| `proxied` | The agent would send its gateway requests through a proxy (an env var or the system proxy) that does not pass them on. |
+| `bypassed` | The agent was used since it was connected, but none of its requests reached the gateway (a copy started before `connect` still runs on its old config). |
+| `unknown` | Not decided yet (ask again in a moment), or a config file cannot be read. |
+
+It also shows each route's memory injection, `memory_search` and Endless Mode
+switches. `claude-mem wire start`, `stop` (it waits for open streams to finish,
+up to `CLAUDE_MEM_WIRE_GATEWAY_DRAIN_TIMEOUT_MS`) and `restart` run the daemon by
+hand. The worker also starts it at boot while any route exists
+(`CLAUDE_MEM_WIRE_GATEWAY_AUTOSTART`).
+
+## Privacy
+
+Everything below happens on this computer. The gateway has no server of its own
+and uploads nothing except the anonymous counters described under
+[Telemetry](#telemetry).
+
+### What each feature sends, stores and keeps
+
+| Feature | Default | Sends | Stores | Keeps |
+|---|---|---|---|---|
+| Relay | on for each route you add | The agent's request, unchanged, to the provider you named for the route | Nothing | Nothing |
+| Memory capture | on for routes with `captureSource: wire` | Nothing beyond the relay | Capture events (your prompt, each tool call and its result, the last reply) in the local hook spool, which the claude-mem worker turns into memories | Spool files until the worker has taken them in; memories as long as you keep them |
+| Raw recording | **off** until you consent | Nothing | Each exchange's text in `<data dir>/wire-gateway/recordings/<date>/…/turns.jsonl` | `CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS` (7 days), at most 256 MiB in all, oldest removed first |
+| Outbound redaction | **off** | The request with secrets swapped for placeholders such as `{{API_KEY_k3v9x2mq}}` | A random 32-byte key in `<data dir>/wire-gateway/redact.key` (owner-only) | The key until you delete it; the values behind placeholders in memory only, until the gateway stops |
+| Endless Mode | **off** | The request with old tool results replaced by their observations' text | Each replacement, word for word, in `<data dir>/wire-gateway/ledger/<conversation>.jsonl`; token counts per request in `usage/<date>.jsonl` | Ledgers 30 days after a conversation's last request; usage lines for `CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS` (7 days) |
+| Memory injection | on for routes with `captureSource: wire` | Your claude-mem context, once per conversation, at the end of the system prompt | The text injected, word for word, in the conversation's ledger | Ledgers 30 days after a conversation's last request |
+| Hidden `memory_search` | **off** | Extra requests to the provider (billed) carrying the model's searches and claude-mem's answers | Which tool definition was offered, in the conversation's ledger | Ledgers 30 days after a conversation's last request |
+| MCP over HTTP (`/mcp`) | on, loopback only | Nothing beyond what a tool call asks the worker | Nothing | Nothing |
+| Push endpoint (`/v1/claude-mem/events`) | on, loopback only | Nothing | The events you push, secrets scrubbed, in the local hook spool; each accepted event id in `<data dir>/wire-gateway/state/push-events.jsonl` | Spool files until the worker has taken them in; event ids for `CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS` (7 days) |
+| OTLP receiver (`/v1/traces`) | on, loopback only | Nothing | Capture events made from the spans' bodies, scrubbed, in the local hook spool | Spool files until the worker has taken them in |
+| magpie follower | **off** until `claude-mem wire magpie enable` | Nothing | Capture events made from magpie's recordings, scrubbed, in the local hook spool; how far it read in `<data dir>/wire-gateway/state/magpie-follower.json` | Spool files until the worker has taken them in |
+| Live trace (`/wire/trace`, `/wire/call`) | on, loopback only | Nothing | In memory only: the last 60 calls without their text; with recording consent, the last 40 calls' bodies (each side at most 256 KiB, secrets scrubbed) | Until the gateway stops; bodies until recording is turned off or `claude-mem wire clear` |
+| Telemetry | follows claude-mem's [telemetry](/telemetry) setting | Counters only | Nothing | Nothing |
+
+Request and response **headers are never stored**, so API keys in
+`Authorization` or `x-api-key` never reach a file.
+
+### Secrets are scrubbed before anything reaches disk
+
+What the gateway writes (recordings and spooled capture events) has its secrets
+removed first, always, whether or not `CLAUDE_MEM_REDACT_ENABLED` is on:
+
+- API keys (`sk-…`, `sk-ant-…`, GitHub, GitLab, Google, Slack, Stripe, AWS,
+  Hugging Face, Groq, xAI, npm, PyPI, DigitalOcean, SendGrid, claude-mem's own)
+  become `[REDACTED:API_KEY]`
+- JSON Web Tokens become `[REDACTED:TOKEN]`
+- PEM private keys become `[REDACTED:PRIVATE_KEY]`
+- the password in `scheme://user:password@host` becomes `[REDACTED:PASSWORD]`
+- values assigned to secret-named fields (`DB_PASSWORD=…`, `"apiKey": "…"`)
+  become `[REDACTED:SECRET]`
+- a JSON field named for a secret (`password`, `api_key`, `access_token`,
+  `client_secret`, `authorization`, `cookie`…) is replaced whole by
+  `[REDACTED]`; token *counts* such as `max_tokens` are left alone
+
+A scrubbed secret is gone for good: no placeholder is written to disk and
+nothing is kept that could put it back. Memories made by your native hooks are
+not affected by this; they follow `CLAUDE_MEM_REDACT_ENABLED` as before.
+
+### Raw recording needs your consent
+
+Raw recording is off until you turn it on, and only you can turn it on:
+
+```bash
+claude-mem wire consent --record   # needs an interactive terminal; says what is kept, where, for how long
+claude-mem wire consent            # show the current decision
+claude-mem wire consent --off      # stop recording
+claude-mem wire clear              # delete every recording
+```
+
+- The decision lives in `<data dir>/wire-gateway/consent.json`. Cloud sync never
+  reads or writes it.
+- `CLAUDE_MEM_WIRE_GATEWAY_RECORDING=false` forces recording off. No setting or
+  environment variable can turn it on; only the command above or the consent
+  card on the viewer's [Wire page](#the-wire-page-in-the-viewer) can, and the
+  worker accepts that card's change only from the viewer's own page.
+- `clear` deletes every recording and refuses saves that were already in flight,
+  so a recording that was being written when you cleared never lands. Memories
+  that capture already created stay in claude-mem.
+- Requests the gateway classifies as helper calls (titles, summaries) are never
+  recorded.
+
+Memory capture does not depend on recording: with recording off, routes with
+`captureSource: wire` still produce memories.
+
+### Outbound redaction
+
+Turn it on for every route with `CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION=true`,
+or per route with `"features": { "outboundRedaction": true }` in
+`<data dir>/wire-gateway/routes.json`.
+
+- The secrets listed above are swapped for placeholders before the provider sees
+  the request. The same value always gets the same placeholder, so a
+  conversation's history reads the same on every turn and the provider's prompt
+  cache stays valid.
+- The reply has the placeholders swapped back before your agent sees it,
+  streams included: a placeholder split across several stream events is put
+  back whole, placeholders a model rewrote (`{{ API_KEY_k3v9x2mq }}`, a dropped
+  brace, another case) are put back too, and no event is added or dropped.
+  Values put back inside tool-call arguments are JSON-escaped.
+- Only string values are edited, in place; every other byte of the request goes
+  as your agent wrote it.
+- What a provider sealed with a signature (Anthropic thinking blocks, Gemini
+  thought signatures, OpenAI encrypted reasoning) is left as the provider wrote
+  it, except that values already masked become their placeholders again.
+  Signatures themselves are never touched.
+- Tool-call arguments are always masked, whatever their keys are called. In tool
+  definitions and schemas only `description` text is masked, since the rest is
+  structure the provider checks.
+- A request the gateway cannot decode or mask is **refused** (HTTP 502 in your
+  provider's error format), never sent unmasked. Send it uncompressed or turn
+  outbound redaction off for that route.
+- A reply the provider compresses anyway, or one larger than 32 MiB, is relayed
+  with its placeholders left in, and that is logged. Your agent sees the
+  placeholder; the provider still never saw the value.
+
+### Telemetry
+
+The gateway sends one content-free event, `wire_gateway_started`, when it starts
+and once a day: the number of routes, exchanges relayed, capture events and
+rewritten requests. No body, URL, path, header, route id or agent name is ever
+sent. It follows the same opt-out as the rest of claude-mem; see
+[Telemetry](/telemetry).
+
+## Endless Mode
+
+A long session resends every tool result it ever got on every request. Endless
+Mode replaces the old, large ones with the observation claude-mem already made
+of them, so the history the provider reads gets shorter while your agent's own
+copy stays as it was.
+
+Turn it on for every route with `CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE=true` and
+`claude-mem wire restart` (the gateway reads its settings at start), or per
+route, with no restart:
+
+```bash
+claude-mem wire routes endless <route> on        # on for this route
+claude-mem wire routes endless <route> off       # off for this route, whatever the setting says
+claude-mem wire routes endless <route> default   # follow CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE again
+claude-mem wire status --endless                 # what it saved, per agent
+```
+
+A running gateway picks up a route change within a second. Turning Endless Mode
+off for a route sends its conversations' history as your agent wrote it from
+the next request on. A conversation that sent even one request that way is
+never changed again, even after you turn it back on: the model has answered the
+original history since. Turning it off and back on with no request in between
+changes nothing.
+
+What gets replaced, and when:
+
+- Only conversations that began under the gateway: the first request it saw
+  held one message of yours and no reply. A conversation it first sees part way
+  through is never changed.
+- Only tool results at least `CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_RESULT_BYTES`
+  (2048) long, older than `CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_AGE_TURNS` (3) of
+  your turns (so from the fourth turn you start after one), whose observation
+  already exists. The gateway never waits for an observation: it asks the worker
+  in the background, and a result whose observation is not there yet stays as
+  it is and is asked about again less and less often. With the worker down,
+  requests go exactly as your agent sent them.
+- Never errors, results that carry images, results with a cache breakpoint of
+  their own, or the results of tools that edit files (`Edit`, `Write`,
+  `MultiEdit`, `NotebookEdit`, `apply_patch`, `replace`, `write_file`, and any
+  tool named for edit, write or patch).
+- New replacements are made only when you start a new turn, never while the
+  agent is running tools. Each one is written to the conversation's ledger the
+  first time and sent the same, byte for byte, on every later request and after
+  a restart, so the provider's prompt cache is rebuilt once and then holds.
+- A replaced result keeps its call id and its place, and reads
+  `[claude-mem: this <tool> result (call_id=…) was replaced by observation #<id>]`
+  followed by the observation's title, narrative and facts, at most 4,000
+  characters. When several calls share one observation, the later ones point to
+  the first.
+- The system prompt and tool definitions are never changed. Signatures and
+  sealed reasoning (Gemini thought signatures, OpenAI encrypted reasoning) are
+  never touched. For Anthropic, the thinking blocks of replies that came after a
+  replaced result and before the turn that replaced it are left out, because the
+  provider no longer accepts them once the history before them changed. A later
+  replacement in the same place leaves out the thinking said since, too. If that
+  would leave a reply empty, nothing new is replaced that turn.
+- If anything goes wrong, the request goes as your agent sent it.
+
+`claude-mem wire status --endless` reads the usage ledger and shows, per agent,
+the prompt cache's read-to-write ratio before and after each conversation's
+first replacement, and the tokens the replacements took out.
+
+## Memory injection
+
+An agent wired through the gateway gets the same claude-mem context a Claude
+Code session gets at its start: the gateway asks the worker for the context of
+the folder the agent works in (`GET /api/context/inject`) and adds it, wrapped in
+`<claude-mem-context>…</claude-mem-context>`, at the end of the conversation's
+system prompt. It is on for routes with `captureSource: wire`; a route whose
+agent has its own claude-mem integration (`captureSource: native`) already gets
+context that way and is left alone unless you turn it on for that route.
+
+```bash
+claude-mem wire routes memory <route> on        # on for this route (a native route too)
+claude-mem wire routes memory <route> off       # off for this route
+claude-mem wire routes memory <route> default   # follow CLAUDE_MEM_WIRE_GATEWAY_MEMORY_INJECTION again
+```
+
+- Only conversations that began under the gateway, and only on their first
+  request. The gateway waits for the worker at most
+  `CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS` (1500 ms). If the worker is down,
+  slow, has no context for the folder, or the agent did not say its folder, the
+  request goes as the agent sent it and that conversation is never injected
+  later: adding to a system prompt part way through would throw away the
+  provider's prompt cache.
+- The text is frozen in the conversation's ledger and added the same, byte for
+  byte, on every later request and after a restart.
+- It is appended, never prepended: Claude Code's attribution block stays first
+  and unchanged, a block-form system prompt gets one more text block (with no
+  cache breakpoint of its own, so the breakpoint count does not change), and a
+  string system prompt gets the text after a blank line. Chat requests with no
+  system message get one at the top; Responses requests get it at the end of
+  `instructions`; Gemini requests at the end of `systemInstruction`.
+- A system prompt that already holds `<claude-mem-context>` is left alone.
+- Capture strips `<claude-mem-context>`, so injected memory never becomes new
+  memory.
+- Turning it off for a route after a conversation was injected sends that
+  conversation without it from then on, for good.
+
+## Hidden memory_search
+
+With `CLAUDE_MEM_WIRE_GATEWAY_MEMORY_SEARCH_TOOL=true` (and `claude-mem wire
+restart`), or per route with `claude-mem wire routes search <route> on`, the
+model of a conversation that began under the gateway is offered one more tool,
+`memory_search` (`claude_mem_memory_search` when the agent already has a tool by
+that name). Your agent never sees it: when the model calls only that tool, the
+gateway runs the search in claude-mem, asks the model again with the answer, and
+passes the rounds on to your agent as one reply. It is off by default because
+every search is another billed request to the provider.
+
+- The tool is added at the end of the tool list on the conversation's first
+  request and kept the same on every later one; a conversation that began without
+  it never gets it.
+- What your agent receives stays one coherent reply: the search calls and their
+  results are left out, block, item and sequence numbers stay continuous, text
+  after a search follows a blank line, and the usage it reports is the sum of
+  every round.
+- If the model calls your agent's own tools in the same reply, the reply goes to
+  your agent with the model's own stop reason; the search calls in it are
+  neither shown nor run.
+- A request runs at most 5 real searches. If the model asks a 6th time, it is
+  told "No more searches" instead of getting results; if it still asks on the 7th
+  round, the reply ends there with a plain stop. So one request can make up to 7
+  calls to the provider.
+- With outbound redaction on, every extra round is masked the way the first one
+  was, search results included.
+- While a search runs, your agent is kept from timing out the way its protocol
+  expects (`ping` for Anthropic, `response.in_progress` for Responses, a
+  `: keepalive` comment for Chat); Gemini clients get nothing, as they fail on
+  comments.
+- The extra rounds go straight to the provider with your agent's own headers;
+  they are never recorded as exchanges of their own, and capture sees only what
+  your agent saw.
+- If a later round fails, your agent's reply ends with the provider's error
+  and no end marker, so the agent treats it as a broken connection.
+
+## Ways in from outside
+
+Tools the gateway cannot relay can still feed claude-mem through it. All four
+endpoints answer this computer only, on the gateway's port.
+
+### Push endpoint
+
+`POST http://127.0.0.1:<port>/v1/claude-mem/events` takes one event, or an
+array of at most 5000, as `application/json` (32 MiB at most; gzip, br and
+zstd bodies are decoded). Each event is one of claude-mem's own capture events:
+
+```json
+{ "eventId": "run-42-step-3", "kind": "observation", "platformSource": "my-tool",
+  "contentSessionId": "run-42", "toolName": "Read", "toolInput": { "path": "a.ts" },
+  "toolResponse": "export const a = 1;", "cwd": "/Users/me/project" }
+```
+
+| `kind` | Fields beside `eventId` (at most 128 characters), `platformSource` and `contentSessionId` |
+|---|---|
+| `session_init` | `prompt`, `nativePromptId`, `project`, `projectKeySource`, `customTitle`, `cwd` |
+| `observation` | `toolName` (required), `toolInput`, `toolResponse`, `toolUseId`, `cwd`, `agentId`, `agentType`, `project`, `telemetryPlatformSource` |
+| `summarize` | `lastAssistantMessage` (required), `observedModel`, `observedBilling`, `cwd` |
+| `session_end` | none |
+
+A post is all or nothing: one bad event answers 400 with
+`{"error": {"message", "param", "index"}}` and nothing of the post is kept.
+Otherwise the answer is `{"accepted", "skipped", "records": [{"index",
+"eventId", "status"}]}`. An event id already accepted (in this post, earlier,
+or before a restart, for `CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS`) is
+`skipped`, so a client can safely send again. Events go into the same hook
+spool as everything else the gateway captures, secrets scrubbed, and the
+worker takes them in exactly once.
+
+### OTLP receiver
+
+`POST http://127.0.0.1:<port>/v1/traces` takes OpenTelemetry traces as
+OTLP/HTTP **JSON** (gzip accepted). Protobuf is answered 415: set
+`OTEL_EXPORTER_OTLP_PROTOCOL=http/json`. It reads:
+
+- **magpie's spans with bodies.** Run magpie with `MAGPIE_OTEL_ENABLED=true`,
+  `MAGPIE_OTEL_BODIES=true` and `MAGPIE_OTEL_ENDPOINT=http://127.0.0.1:<port>`.
+  Its gateway spans carry each request and reply; its session spans
+  (`MAGPIE_OTEL_SESSIONS=true`) carry each tool run and each interaction.
+- **GenAI semantic-convention messages**: `gen_ai.input.messages` and
+  `gen_ai.output.messages` (and the older `gen_ai.prompt` / `gen_ai.completion`).
+  The agent is the resource's `service.name`; the session is
+  `gen_ai.conversation.id`.
+
+Spans with neither are counted and ignored. A span whose bodies cannot be read
+is answered with `partialSuccess.rejectedSpans`. `CLAUDE_MEM_WIRE_GATEWAY_OTLP=false`
+turns the receiver off.
+
+### magpie recordings
+
+If you use magpie with its conversation recording on, claude-mem can follow
+those recordings:
+
+```bash
+npx claude-mem wire magpie enable            # from now on
+npx claude-mem wire magpie enable --backfill # also what magpie kept already
+npx claude-mem wire restart
+```
+
+`enable` finds `$XDG_CONFIG_HOME/magpie/gateway-conversations` or
+`~/.config/magpie/gateway-conversations` (`--dir <path>` names another) and sets
+`CLAUDE_MEM_WIRE_GATEWAY_MAGPIE_RECORDINGS_DIR`. The gateway then looks every 2
+seconds, reads whole lines only (at most 8 MiB a look), and remembers where it
+got to, so a restart never replays a line; a recording magpie replaced or cut
+short is read again from its start. Symlinks under the folder are not followed.
+Each line is decided 30 seconds after the follower first sees it (see below).
+magpie records only calls that name a session (its `X-Magpie-Session` header or
+the agent's own session header); its OTLP export also covers the others.
+
+Running `enable` again for the folder already followed (or followed before)
+goes on from where the follower got to: no line it has not read yet is skipped,
+also when the gateway was down meanwhile. `--backfill` starts every recording
+there again from its beginning. Either takes effect at the follower's next
+look; for another folder, at `claude-mem wire restart`. A failed `enable`
+changes nothing. A request file the follower cannot read is reported once in
+the log and in `wire status`, and following goes on; run `enable` again to
+replace it. `claude-mem wire magpie disable` stops the follower.
+
+**Each exchange is captured once.** Which copy is taken follows what magpie
+does and what reaches claude-mem, never a fixed list of agents:
+
+1. An agent claude-mem already captures, through a wire route or its own
+   integration (Claude Code always stays on its hooks), is skipped by the
+   OTLP receiver and the magpie follower.
+2. magpie's OTLP spans are all taken, session spans and gateway spans alike.
+   magpie sends a gateway span for every call except one its session spans
+   cover: a local, keyless call, not relayed `via` another magpie and not a
+   helper call, of a session its poller traces, which needs
+   `MAGPIE_OTEL_SESSIONS=true` (off by default). So each call reaches
+   claude-mem in exactly one of the two.
+3. A recorded line repeats a call magpie's OTLP export also sends. It is
+   skipped when magpie spans for its agent reached claude-mem within 30
+   seconds of the line (magpie delivers within 19: a 2 s transcript poll, a
+   5 s flush, three 3 s send attempts with 1 s and 2 s backoff), and taken
+   otherwise. Lines written while the gateway was not running are taken:
+   magpie's export to claude-mem failed then.
+4. An agent that sends its own GenAI spans (`service.name` = the agent) is
+   taken from them, since they hold all of its calls; magpie's copies of it
+   (spans and recorded lines) are skipped while its own spans arrive.
+
+| magpie set up with | claude-mem has | Each call is captured from |
+|---|---|---|
+| recording on | the follower | the recorded line |
+| `MAGPIE_OTEL_ENABLED`, `MAGPIE_OTEL_BODIES` | OTLP | the gateway span |
+| the above and `MAGPIE_OTEL_SESSIONS=true` | OTLP | the session span for a call it covers (2), the gateway span for every other call (remote, keyed, `via`, helper, or an agent it does not trace) |
+| recording on, OTLP with bodies (sessions on or off) | the follower and OTLP | the OTLP span, as above; the recorded line only for a call made while the gateway was down |
+| any of the above, and the agent sends its own GenAI spans | OTLP | the agent's own span |
+
+Limits of the rule, all from magpie's own behavior: magpie records nothing for
+a call that names no session, so with the follower alone those calls are not
+captured; a local call made with a gateway key gets both a gateway span and,
+when its agent's session files are traced, a session span (magpie sends both);
+when magpie drops spans (its queue holds 128) while other spans for the same
+agent arrive, the recorded line is still skipped; and `--backfill` takes every
+line magpie kept, including calls OTLP already delivered while claude-mem ran.
+
+### Live trace
+
+`GET /wire/trace?after=<seq>&feed=<feedId>&wait=1` answers `{feedId, seq, calls,
+now}`: the calls that changed after `seq`, waiting up to 25 seconds for one
+(without `wait` it answers at once). Send back the `seq` and `feedId` you got.
+`feedId` is new each time the gateway starts: a `feed` that is not the current
+one, or a `seq` ahead of the gateway's, is read as 0, so after a restart you get
+all of the new gateway's calls and should drop the ones you had. The feed keeps the last 60 calls: agent, route, model,
+status, timing and tokens, never their text.
+
+`GET /wire/call?id=<call id>` answers `{requestBody, responseBody,
+requestTruncated, responseTruncated}` for one of the last 40 calls, only while
+[raw recording](#raw-recording-needs-your-consent) is on, and only for agents
+the gateway captures. Bodies are scrubbed of secrets and cut at 256 KiB each.
+Turning recording off or `claude-mem wire clear` deletes them.
+
+## The Wire page in the viewer
+
+The viewer (`http://localhost:<worker port>`) has a **Wire** tab (`#/wire`)
+beside Timeline and Sessions. The page talks only to the worker: the worker
+forwards to the gateway over loopback, and the browser never calls the gateway's
+port. When the gateway is down, the page says so and how to start it
+(`claude-mem wire start`); consent and the usage numbers still show, because
+they are read from disk.
+
+- **Agents.** Every wired agent with the state badge `claude-mem wire status`
+  shows (`ok`, `unwired`, `replaced`, `unreachable`, `proxied`, `bypassed`,
+  `unknown`), its detail, the fix to run, and each route's upstream and
+  feature switches (memory injection, `memory_search`, Endless Mode). The
+  gateway's own counter of captured events with no known folder is shown at the
+  top. The page reads it again every 10 seconds.
+- **Raw recording.** A switch, off by default, that says what is kept (the
+  scrubbed text of model calls from agents the gateway captures), where (the
+  recordings folder on this computer, and the live feed's memory) and how long
+  (`CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS`). **Delete every recording** does what
+  `claude-mem wire clear` does. When `CLAUDE_MEM_WIRE_GATEWAY_RECORDING=false`,
+  the switch stays off. The decision lives only in `consent.json`, never in the
+  browser.
+- **Live calls.** The [live trace](#live-trace), updated as calls start and end.
+  While recording is on, a call the gateway captured can be opened to show its
+  request and reply text.
+- **Endless Mode savings.** Per agent, from the usage ledger: conversations with
+  swaps, requests with swaps, tokens saved, and the prompt cache's read:write
+  ratio before the first swap and from it on (what
+  `claude-mem wire status --endless` prints).
+- **Injected memory.** Per agent: estimated tokens per request × the requests
+  that carried injected memory.
+- **Context per agent.** What each agent's prompts are made of (system prompt,
+  tool definitions, memory and instructions, files read, other tool output,
+  conversation) as shares of their estimated tokens; an agent at 10% memory or
+  more is tagged `memory-heavy`.
+
+The worker routes behind the page:
+
+| Route | What it does |
+| --- | --- |
+| `GET /api/wire/status` | forwards `GET /wire/status` |
+| `GET /api/wire/routes` | forwards `GET /wire/routes` (each route, its upstream without credentials, and its feature switches) |
+| `GET /api/wire/trace?after=<seq>&feed=<feedId>&wait=1` | forwards the live trace long-poll |
+| `GET /api/wire/call?id=<call id>` | forwards one call's bodies |
+| `GET /api/wire/consent` | the recording decision, whether a setting forces it off, the folder and the retention |
+| `POST /api/wire/consent` `{"recording": true\|false}` | changes the decision; only from the viewer's own page (any other Origin, or none, gets 403) |
+| `POST /api/wire/consent/clear` `{}` | deletes every recording; same Origin rule |
+| `GET /api/wire/usage` | savings, injected memory and context shares from the usage ledger's last `CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS` days, and how many ledger lines are not usage records (those are not counted) |
+
+These routes are for the viewer only. A request from any other browser page
+(for example another `http://localhost:*` app, which the worker's CORS
+otherwise lets read its API) gets `403`, whatever the route. Requests that send
+no `Origin` (the CLI, `curl`) may read; consent changes still need the viewer's
+own page. The `Origin` check keeps other web pages out; it is not a password
+against programs on this computer.
+
+The page stops its live feed and its 10-second refresh while its tab is hidden,
+and picks up where it left off when you come back.
+
+The forwarded routes answer `503 {"error":"wire gateway not running"}` when
+nothing listens on the gateway's port, `502` when the gateway closes the
+connection without answering (it was stopping) or answers something that is not
+HTTP, `504` when it does not answer in time, and pass every other answer through
+unchanged.
+
+## MCP over HTTP
+
+claude-mem's MCP tools (the same ones the stdio server offers) answer at
+`http://127.0.0.1:<port>/mcp` on the gateway, over Streamable HTTP, statelessly:
+each `POST` is answered with JSON. Only this computer can reach it.
+
+The gateway is not running in any project folder, so tools here never guess one:
+`save_memory` and `team_brief` need `project`, searches cover every project
+unless you name one, and folder tools (`smart_search`, `smart_outline`,
+`work_state_*`) refuse. Use the stdio MCP server inside a workspace for those.
+
+`claude-mem wire status` shows, per route, whether memory injection, the hidden
+`memory_search` tool and Endless Mode are on, and whether the route or the
+setting decided; with the gateway running, it also shows each stage's calls and
+failures.
+
+## Team mode
+
+With `CLAUDE_MEM_WIRE_GATEWAY_SHARED=true` one gateway serves a team. It gets a
+second, **team listener** (`CLAUDE_MEM_WIRE_GATEWAY_SHARED_HOST`:`CLAUDE_MEM_WIRE_GATEWAY_SHARED_PORT`)
+where each member's agent connects with a client key in its base URL; the
+usual **loopback listener** (`CLAUDE_MEM_WIRE_GATEWAY_HOST`:`CLAUDE_MEM_WIRE_GATEWAY_PORT`,
+always loopback) stays the host's own. The agent's own provider key goes to
+the provider untouched; the gateway stores no provider credential. Setup,
+hosting, TLS proxies and key handling are in the
+[team setup guide](/wire-gateway-team).
+
+The team listener never serves a request without a key, whatever address it
+comes from: a TLS proxy on the host that adds no forwarding header (nginx's
+plain `proxy_pass`, stunnel, a TCP stream proxy, `ssh -R`, `socat`) makes every
+internet request arrive from `127.0.0.1`, so a peer address can never stand for
+"the host". Point proxies at the team listener only.
+
+What a shared gateway answers, and where:
+
+| Endpoint | Loopback listener (this computer) | Team listener (members, any proxy; loopback peers too) |
+| --- | --- | --- |
+| `/r/<route>/…`, `/r/<route>/l/<launch>/…` (relay) | yes, no key | only as `/k/<key>/r/<route>/…`; no key or a wrong key: `401`, more than 50 failures (refilling 1 per second): `429` |
+| `/`, `/wire/identity`, `GET /r/<route>/` (identity probe) | yes | only as `GET /k/<key>/` and `GET /k/<key>/r/<route>/` |
+| `/wire/status`, `/wire/routes` | yes | `403` with a key, `401` without: they show paths, routes and settings |
+| `/wire/launch`, `/wire/trace`, `/wire/call` (launcher, live trace feed) | yes | `403` with a key, `401` without: the feed shows every member's traffic |
+| `/mcp` | yes | `403` with a key, `401` without: its tools read and write this host's own memory |
+| `/v1/claude-mem/events` (push), `/v1/traces` (OTLP) | yes | `403` with a key, `401` without: they write into this host's own memory |
+| any request with a forwarding header, or from another address | `403` (as on a single-user gateway) | handled as above, by key |
+
+Before any key is looked at, `CLAUDE_MEM_WIRE_GATEWAY_ALLOW_IPS` (when set)
+refuses team-listener connections from addresses off the list with `403`,
+judged on the connection's own address only. `keys.json` that does not read:
+every keyed request gets `503` until it does.
+
+In team mode:
+
+- A member's requests never get memory injection, Endless Mode or the hidden
+  `memory_search` tool: those read this host's own memory.
+- A session is captured (and recorded, with consent) only when the agent names
+  it (a session header, an id in the body, a launch, or `x-claude-mem-session`).
+  A session the gateway would have to guess from the first words is not
+  captured at all.
+- A member's sessions are kept apart from every other member's, even when two
+  agents name the same session.
+- Their memory goes to the claude-mem server runtime their key names, through
+  a durable outbox (`<data dir>/wire-gateway/outbox/`), never to this host's
+  worker. Their traffic is still recorded (with consent), counted and shown in
+  the live feed on this host: the operator sees it.
+- A key reaches every route in `routes.json`, including routes to services on
+  this host's own network.
+- Client keys never appear in logs (`/k/[REDACTED]/`), error messages or
+  telemetry.

@@ -1,7 +1,7 @@
 // src/services/work-view/request-groups.mjs
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { mkdirSync as mkdirSync4, readFileSync as readFileSync6, readdirSync, renameSync as renameSync2, statSync as statSync5, writeFileSync as writeFileSync2 } from "node:fs";
+import { mkdirSync as mkdirSync4, readFileSync as readFileSync6, readdirSync as readdirSync2, renameSync as renameSync2, statSync as statSync5, writeFileSync as writeFileSync2 } from "node:fs";
 import { homedir as homedir6 } from "node:os";
 import { join as join7 } from "node:path";
 
@@ -53,18 +53,21 @@ function expandHome(filePath, platform = process.platform, home = homedir()) {
 // src/shared/paths.ts
 import { join as join3, dirname as dirname2, basename as basename2 } from "path";
 import { homedir as homedir2 } from "os";
-import { existsSync as existsSync2, mkdirSync as mkdirSync2 } from "fs";
+import { chmodSync, existsSync as existsSync2, mkdirSync as mkdirSync2 } from "fs";
 import { fileURLToPath } from "url";
 
 // src/shared/atomic-json.ts
 import {
   closeSync,
   existsSync,
+  fchmodSync,
   fsyncSync,
+  ftruncateSync,
   lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
+  readdirSync,
   readlinkSync,
   realpathSync,
   renameSync,
@@ -162,52 +165,74 @@ function renameWithWindowsRetry(from, to, rename = renameSync, onWindows = IS_WI
   }
 }
 function writeJsonFileAtomic(filepath, data, options = {}) {
-  const resolved = resolveSymlinkWriteTarget(filepath);
-  ensureDirectoryExists(dirname(resolved));
-  const dir = dirname(resolved);
-  const base = basename(resolved);
-  const tmpPath = join2(dir, `.${base}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`);
-  const payload = Buffer.from(JSON.stringify(data, null, 2) + "\n", "utf-8");
-  let mode = options.mode;
-  if (mode === void 0) {
+  writeFileAtomic(filepath, Buffer.from(JSON.stringify(data, null, 2) + "\n", "utf-8"), options);
+}
+var STALE_ATOMIC_TEMP_FILE_AGE_MS = 10 * 60 * 1e3;
+function atomicTempFilePath(resolvedTargetPath) {
+  return join2(dirname(resolvedTargetPath), `.${basename(resolvedTargetPath)}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`);
+}
+function isAtomicTempFileNameOf(fileName, targetBaseName) {
+  const prefix = `.${targetBaseName}.`;
+  return fileName.startsWith(prefix) && /^[0-9]+\.[0-9a-f]+\.tmp$/.test(fileName.slice(prefix.length));
+}
+function removeStaleAtomicTempFiles(resolvedTargetPath) {
+  const dir = dirname(resolvedTargetPath);
+  const base = basename(resolvedTargetPath);
+  let entries;
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return;
+  }
+  const now = Date.now();
+  for (const entry of entries) {
+    if (!isAtomicTempFileNameOf(entry, base)) continue;
     try {
-      mode = statSync(resolved).mode & 511;
+      const entryPath = join2(dir, entry);
+      if (now - statSync(entryPath).mtimeMs > STALE_ATOMIC_TEMP_FILE_AGE_MS) unlinkSync(entryPath);
     } catch {
     }
   }
+}
+function writeAllBytes(fd, payload, position) {
+  let written = 0;
+  while (written < payload.length) {
+    const n = writeSync(fd, payload, written, payload.length - written, position === null ? null : position + written);
+    if (n === 0) {
+      throw new Error(`writeSync stalled at ${written}/${payload.length} bytes`);
+    }
+    written += n;
+  }
+}
+function fsyncDirectory(dir) {
+  if (IS_WINDOWS_PLATFORM) return;
+  let dirFd;
+  try {
+    dirFd = openSync(dir, "r");
+    fsyncSync(dirFd);
+  } catch (dirSyncErr) {
+    const dirSyncError = dirSyncErr instanceof Error ? dirSyncErr : new Error(String(dirSyncErr));
+    emitDiagnostic(`claude-mem: directory fsync failed for ${dir}: ${dirSyncError.message}
+`);
+  } finally {
+    if (dirFd !== void 0) {
+      try {
+        closeSync(dirFd);
+      } catch {
+      }
+    }
+  }
+}
+function writeSyncedTempFile(resolvedTargetPath, payload, mode) {
+  const tmpPath = atomicTempFilePath(resolvedTargetPath);
   let fd;
   try {
     fd = mode !== void 0 ? openSync(tmpPath, "w", mode) : openSync(tmpPath, "w");
-    let written = 0;
-    while (written < payload.length) {
-      const n = writeSync(fd, payload, written, payload.length - written);
-      if (n === 0) {
-        throw new Error(`writeSync stalled at ${written}/${payload.length} bytes`);
-      }
-      written += n;
-    }
+    writeAllBytes(fd, payload, null);
     fsyncSync(fd);
     closeSync(fd);
     fd = void 0;
-    renameWithWindowsRetry(tmpPath, resolved);
-    if (!IS_WINDOWS_PLATFORM) {
-      let dirFd;
-      try {
-        dirFd = openSync(dir, "r");
-        fsyncSync(dirFd);
-      } catch (dirSyncErr) {
-        const dirSyncError = dirSyncErr instanceof Error ? dirSyncErr : new Error(String(dirSyncErr));
-        emitDiagnostic(`claude-mem: directory fsync failed for ${dir}: ${dirSyncError.message}
-`);
-      } finally {
-        if (dirFd !== void 0) {
-          try {
-            closeSync(dirFd);
-          } catch {
-          }
-        }
-      }
-    }
+    return tmpPath;
   } catch (err) {
     if (fd !== void 0) {
       try {
@@ -221,6 +246,72 @@ function writeJsonFileAtomic(filepath, data, options = {}) {
     }
     throw err;
   }
+}
+function writeHardLinkedFileInPlace(resolvedTargetPath, payload, mode, modeIsForced) {
+  let targetFd;
+  try {
+    targetFd = openSync(resolvedTargetPath, "r+");
+  } catch (err) {
+    const code = err.code;
+    if (code === "EACCES" || code === "EPERM") return false;
+    throw err;
+  }
+  let tmpPath;
+  try {
+    tmpPath = writeSyncedTempFile(resolvedTargetPath, payload, mode);
+  } catch (err) {
+    try {
+      closeSync(targetFd);
+    } catch {
+    }
+    throw err;
+  }
+  try {
+    writeAllBytes(targetFd, payload, 0);
+    ftruncateSync(targetFd, payload.length);
+    if (modeIsForced && mode !== void 0) fchmodSync(targetFd, mode);
+    fsyncSync(targetFd);
+  } catch (err) {
+    try {
+      closeSync(targetFd);
+    } catch {
+    }
+    const error = err instanceof Error ? err : new Error(String(err));
+    throw new Error(`${error.message}; the new text is kept in ${tmpPath}`, { cause: error });
+  }
+  closeSync(targetFd);
+  try {
+    unlinkSync(tmpPath);
+  } catch {
+  }
+  return true;
+}
+function writeFileAtomic(filepath, payload, options = {}) {
+  const resolved = resolveSymlinkWriteTarget(filepath);
+  const dir = dirname(resolved);
+  ensureDirectoryExists(dir);
+  let existing;
+  try {
+    existing = statSync(resolved);
+  } catch {
+  }
+  const mode = options.mode ?? (existing ? Number(existing.mode) & 511 : void 0);
+  if (existing && existing.isFile() && existing.nlink > 1 && writeHardLinkedFileInPlace(resolved, payload, mode, options.mode !== void 0)) {
+    removeStaleAtomicTempFiles(resolved);
+    return;
+  }
+  const tmpPath = writeSyncedTempFile(resolved, payload, mode);
+  try {
+    renameWithWindowsRetry(tmpPath, resolved);
+  } catch (err) {
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+    }
+    throw err;
+  }
+  fsyncDirectory(dir);
+  removeStaleAtomicTempFiles(resolved);
 }
 
 // src/shared/settings-document.ts
@@ -274,6 +365,7 @@ var DB_FILENAME = "claude-mem.db";
 var DB_PATH = join3(DATA_DIR, DB_FILENAME);
 var OBSERVER_SESSIONS_DIR = join3(DATA_DIR, "observer-sessions");
 var OBSERVER_SESSIONS_PROJECT = basename2(OBSERVER_SESSIONS_DIR);
+var WIRE_GATEWAY_DIR = join3(DATA_DIR, "wire-gateway");
 var paths = {
   dataDir: () => DATA_DIR,
   workerPid: () => join3(DATA_DIR, "worker.pid"),
@@ -293,7 +385,20 @@ var paths = {
   corpora: () => join3(DATA_DIR, "corpora"),
   supervisorRegistry: () => join3(DATA_DIR, "supervisor.json"),
   envFile: () => join3(DATA_DIR, ".env"),
-  logsDir: () => LOGS_DIR
+  logsDir: () => LOGS_DIR,
+  wireGatewayRoutes: () => join3(WIRE_GATEWAY_DIR, "routes.json"),
+  wireGatewayConsent: () => join3(WIRE_GATEWAY_DIR, "consent.json"),
+  wireGatewayRedactKey: () => join3(WIRE_GATEWAY_DIR, "redact.key"),
+  wireGatewayPid: () => join3(WIRE_GATEWAY_DIR, "state", "wire-gateway.pid"),
+  wireGatewayPort: () => join3(WIRE_GATEWAY_DIR, "state", "wire-gateway.port"),
+  wireGatewayRuntime: () => join3(WIRE_GATEWAY_DIR, "state", "wire-gateway.runtime.json"),
+  wireGatewayProcessRegistry: () => join3(WIRE_GATEWAY_DIR, "state", "supervisor.json"),
+  wireGatewayMagpieFollowerState: () => join3(WIRE_GATEWAY_DIR, "state", "magpie-follower.json"),
+  wireGatewayPushEventLedger: () => join3(WIRE_GATEWAY_DIR, "state", "push-events.jsonl"),
+  /** Shared team gateway client keys (plan Phase 16): scrypt hashes and each key's server destination, 0600. */
+  wireGatewayClientKeys: () => join3(WIRE_GATEWAY_DIR, "keys", "keys.json"),
+  /** Shared team gateway: events waiting for (or delivered to) the claude-mem server runtime (plan Phase 16). */
+  wireGatewayOutbox: () => join3(WIRE_GATEWAY_DIR, "outbox")
 };
 
 // src/shared/SettingsDefaultsManager.ts
@@ -602,7 +707,7 @@ ${data.stack}` : ` ${data.message}`;
         contextStr = ` {${pairs.join(", ")}}`;
       }
     }
-    const logLine = `[${timestamp}] [${levelStr}] [${componentStr}] ${correlationStr}${message}${contextStr}${dataStr}`;
+    const logLine = redactWireClientKeys(`[${timestamp}] [${levelStr}] [${componentStr}] ${correlationStr}${message}${contextStr}${dataStr}`);
     if (this.logFilePath) {
       try {
         this.appendLine(this.logFilePath, logLine + "\n");
@@ -665,6 +770,13 @@ ${err.stack ?? ""}
     this.error(component, `\u2717 ${message}`, context, data);
   }
 };
+var WIRE_CLIENT_KEY_SHAPE = "(?<![A-Za-z0-9_-])cmw_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])";
+var WIRE_CLIENT_KEY_PATH_PATTERN = new RegExp(`/k/${WIRE_CLIENT_KEY_SHAPE}`, "g");
+var WIRE_CLIENT_KEY_PATTERN = new RegExp(WIRE_CLIENT_KEY_SHAPE, "g");
+function redactWireClientKeys(line) {
+  if (!line.includes("cmw_")) return line;
+  return line.replace(WIRE_CLIENT_KEY_PATH_PATTERN, "/k/[REDACTED]").replace(WIRE_CLIENT_KEY_PATTERN, "cmw_[REDACTED]");
+}
 var logger = new Logger();
 
 // src/shared/openrouter-base-url.ts
@@ -1119,8 +1231,50 @@ var SettingsDefaultsManager = class {
     // 0 = keep forever (default); N = purge linked tool_uses older than N days at worker start
     CLAUDE_MEM_WORKER_AUTOSTART: "true",
     // 'false' = the worker is managed externally: hooks, the MCP server and `start` use a running worker but never launch, kill or recycle one.
-    CLAUDE_MEM_PROJECT_NAME_SOURCE: "path"
+    CLAUDE_MEM_PROJECT_NAME_SOURCE: "path",
     // 'path' (default) = folder/git-root basename; 'git-remote' = stable org/repo slug from the git `origin` URL (survives directory renames). Opt-in; default preserves existing behavior.
+    // Mirrors the worker formula above, 100 ports lower: 37600–37699 sits below
+    // the worker (37700–37799) and the server runtime (37877+). 37677 on Windows.
+    CLAUDE_MEM_WIRE_GATEWAY_PORT: String(37600 + (process.getuid?.() ?? 77) % 100),
+    CLAUDE_MEM_WIRE_GATEWAY_HOST: "127.0.0.1",
+    CLAUDE_MEM_WIRE_GATEWAY_AUTOSTART: "true",
+    // worker starts the wire gateway at boot while routes.json has a route
+    CLAUDE_MEM_WIRE_GATEWAY_DRAIN_TIMEOUT_MS: "600000",
+    // stop/restart waits this long for in-flight streams before force-closing
+    CLAUDE_MEM_WIRE_GATEWAY_MAX_REQUEST_BYTES: "67108864",
+    // 64 MiB: largest request body the relay reads; larger ones get a protocol-native 413
+    CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS: "7",
+    // days of raw wire recordings (turns.jsonl) kept, when recording is consented to
+    CLAUDE_MEM_WIRE_GATEWAY_RECORDING: "",
+    // 'false' forces raw recording off; nothing here turns it on (consent.json decides)
+    CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION: "false",
+    // routes without their own setting swap secrets for placeholders before the provider sees them
+    CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS: "false",
+    // 'true' lifts D4 locally: subscription sign-ins are forwarded instead of refused
+    CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE: "false",
+    // routes without their own features.endlessMode swap old bulky tool results for their observations (read at gateway start)
+    CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_AGE_TURNS: "3",
+    // Endless Mode swaps a result only once more than this many user turns have begun after it (read at gateway start)
+    CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_RESULT_BYTES: "2048",
+    // ... and only a result at least this many bytes long
+    CLAUDE_MEM_WIRE_GATEWAY_MEMORY_INJECTION: "true",
+    // captureSource:'wire' routes without their own features.memoryInjection get claude-mem context once per conversation (read at gateway start)
+    CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS: "1500",
+    // how long a conversation's first request waits for that context (read at gateway start)
+    CLAUDE_MEM_WIRE_GATEWAY_MEMORY_SEARCH_TOOL: "false",
+    // routes without their own features.memorySearchTool get the hidden memory_search tool (extra billed rounds; read at gateway start)
+    CLAUDE_MEM_WIRE_GATEWAY_OTLP: "true",
+    // POST /v1/traces takes OTLP/HTTP JSON spans (magpie, GenAI emitters) into memory capture; 'false' answers 404 (read at gateway start)
+    CLAUDE_MEM_WIRE_GATEWAY_MAGPIE_RECORDINGS_DIR: "",
+    // magpie's gateway-conversations folder to follow into memory capture; '' = off (`claude-mem wire magpie enable` sets it; read at gateway start)
+    CLAUDE_MEM_WIRE_GATEWAY_SHARED: "false",
+    // 'true' = shared team gateway: a second, team listener (SHARED_HOST:SHARED_PORT) where every request needs a client key in the base URL (/k/<key>/r/<route>); capture goes to each key's claude-mem server runtime; CLAUDE_MEM_WIRE_GATEWAY_HOST stays loopback (read at gateway start)
+    CLAUDE_MEM_WIRE_GATEWAY_SHARED_HOST: "0.0.0.0",
+    // shared mode: the team listener's address (every interface by default; a client key is always required there, loopback peers included)
+    CLAUDE_MEM_WIRE_GATEWAY_SHARED_PORT: "",
+    // shared mode: the team listener's port, required when SHARED=true (the port a TLS proxy forwards to; never the loopback listener's)
+    CLAUDE_MEM_WIRE_GATEWAY_ALLOW_IPS: ""
+    // shared mode: IPs/CIDR ranges (comma or space separated) other computers may connect from, judged on the socket address only; '' = every address; a malformed entry lets nothing in (read at gateway start)
   };
   static getAllDefaults() {
     return { ...this.DEFAULTS };
@@ -1128,20 +1282,21 @@ var SettingsDefaultsManager = class {
   static get(key) {
     const value = process.env[key] ?? this.DEFAULTS[key];
     if (key === "CLAUDE_MEM_WORKER_HOST") {
-      return this.normalizeWorkerHost(value);
+      return this.normalizeLoopbackHost(value);
     }
     return value;
   }
   // 'localhost' resolves IPv6-first on modern Windows resolvers while
   // server.listen(port, 'localhost') binds ::1 only, so the hook client and
   // the worker can land on different loopback families (#2992). Pin the
-  // documented IPv4 loopback so every consumer of the setting agrees.
-  static normalizeWorkerHost(host) {
+  // documented IPv4 loopback so every consumer of the setting agrees (the
+  // worker's host here, the wire gateway's in its config.ts).
+  static normalizeLoopbackHost(host) {
     return host === "localhost" ? "127.0.0.1" : host;
   }
   static finalizeSettings(settings, applyEnvOverrides) {
     const result = applyEnvOverrides ? this.applyEnvOverrides(settings) : settings;
-    result.CLAUDE_MEM_WORKER_HOST = this.normalizeWorkerHost(result.CLAUDE_MEM_WORKER_HOST);
+    result.CLAUDE_MEM_WORKER_HOST = this.normalizeLoopbackHost(result.CLAUDE_MEM_WORKER_HOST);
     return result;
   }
   static getInt(key) {
@@ -2275,7 +2430,7 @@ function readLedger(dir = LEDGER_DIR) {
   const progress = {};
   let names = [];
   try {
-    names = readdirSync(join7(dir, "progress")).filter((name) => /^g_[0-9a-f]{12}\.json$/.test(name));
+    names = readdirSync2(join7(dir, "progress")).filter((name) => /^g_[0-9a-f]{12}\.json$/.test(name));
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
   }

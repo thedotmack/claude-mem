@@ -86,6 +86,8 @@ const COLLECTED_FIELDS = [
   'skill_id         first-party plugin/skills name or other (never a third-party name)',
   'skill_source     first_party / third_party',
   'skill_trigger    tool (Skill tool) / prompt (typed /skill)',
+  'wire_routes_count / wire_requests_relayed_count / wire_capture_events_count / wire_rewrites_applied_count',
+  '                 wire gateway counters (never a body, URL, path or header)',
 ];
 
 const EVENT_NAMES = [
@@ -107,6 +109,7 @@ const EVENT_NAMES = [
   'skill_invoked',
   'hook_failed',
   'error_occurred',
+  'wire_gateway_started',
 ];
 
 const SOURCE_LABELS: Record<TelemetryConsentSource, string> = {

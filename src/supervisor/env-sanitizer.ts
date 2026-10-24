@@ -70,3 +70,18 @@ export function sanitizeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.Proces
 
   return sanitized;
 }
+
+/**
+ * The env for the user's own agent that `wire run` starts in the terminal: the
+ * user's settings (CLAUDE_CODE_EFFORT_LEVEL and the rest) are theirs and stay,
+ * so the agent behaves as a normal launch would. Only the markers that make a
+ * fresh agent think it is nested inside another session are dropped.
+ */
+export function sanitizeEnvForUserAgentLaunch(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const sanitized: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined || ENV_EXACT_MATCHES.has(key)) continue;
+    sanitized[key] = value;
+  }
+  return sanitized;
+}

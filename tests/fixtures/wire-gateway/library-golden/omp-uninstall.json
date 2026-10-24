@@ -1,0 +1,12 @@
+{
+  "exitCodes": [
+    0,
+    0
+  ],
+  "files": {
+    "home/.claude/": "<empty dir>",
+    "home/.omp/agent/hooks/pre/": "<empty dir>",
+    "workspace/": "<empty dir>",
+    "data/": "<empty dir>"
+  }
+}

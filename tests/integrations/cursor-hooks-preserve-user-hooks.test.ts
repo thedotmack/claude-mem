@@ -93,11 +93,13 @@ describe('Cursor hooks.json install/uninstall preserves user hooks', () => {
     expect(existsSync(hooksJsonPath)).toBe(false);
   });
 
-  it('uninstall leaves an unparseable hooks.json untouched', async () => {
+  // The Library never writes a file it cannot read, and says so (exit 1)
+  // rather than report a clean uninstall while claude-mem's hooks may remain.
+  it('uninstall leaves an unparseable hooks.json untouched and reports the failure', async () => {
     writeFileSync(hooksJsonPath, '{ not json');
     const { uninstallCursorHooks } = await installer();
 
-    expect(uninstallCursorHooks('project')).toBe(0);
+    expect(uninstallCursorHooks('project')).toBe(1);
     expect(readFileSync(hooksJsonPath, 'utf-8')).toBe('{ not json');
   });
 
@@ -139,9 +141,10 @@ describe('Cursor hooks.json install/uninstall preserves user hooks', () => {
     expect(existsSync(legacyScript)).toBe(false);
   });
 
-  for (const [label, malformed] of [
-    ['an event value that is not an array', { version: 1, hooks: { stop: { command: 'x' } } }],
-    ['a hooks value that is not an object', { version: 1, hooks: ['x'] }],
+  for (const [label, malformed, uninstallExitCode] of [
+    // Uninstall refuses (1) where a list claude-mem writes to is not a list; it has nothing to take out (0) where `hooks` holds no events at all.
+    ['an event value that is not an array', { version: 1, hooks: { stop: { command: 'x' } } }, 1],
+    ['a hooks value that is not an object', { version: 1, hooks: ['x'] }, 0],
   ] as const) {
     it(`install and uninstall leave hooks.json untouched when it has ${label}`, async () => {
       const original = JSON.stringify(malformed);
@@ -151,7 +154,7 @@ describe('Cursor hooks.json install/uninstall preserves user hooks', () => {
       expect(await installCursorHooks('project')).toBe(1);
       expect(readFileSync(hooksJsonPath, 'utf-8')).toBe(original);
 
-      expect(uninstallCursorHooks('project')).toBe(0);
+      expect(uninstallCursorHooks('project')).toBe(uninstallExitCode);
       expect(readFileSync(hooksJsonPath, 'utf-8')).toBe(original);
     });
   }
