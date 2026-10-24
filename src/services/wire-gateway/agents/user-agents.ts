@@ -12,11 +12,11 @@
 //   "id": "my-agent", "name": "My Agent", "ua": ["my-agent"],
 //   "detect": {"bin": "my-agent", "dirs": ["~/.my-agent"]},
 //   "files": [{"key": "config", "path": "$MY_AGENT_HOME/config.json", "alternates": ["~/.my-agent/config.json"], "format": "json"}],
-//   "targets": [{"file": "config", "keyPath": "providers.*.baseUrl", "kind": "baseUrl", "protocol": "openai-chat"}],
+//   "targets": [{"file": "config", "keyPath": "providers.*.baseUrl", "kind": "baseUrl"}],
 //   "identitySwitches": [{"file": "config", "keyPath": "sendSessionHeaders", "value": true}],
 //   "authProbe": {"file": "config", "keyPath": "auth.type", "subscriptionWhen": {"equals": ["oauth"]}},
 //   "launch": {"env": {"MY_AGENT_BASE_URL": "{baseUrl}"}, "baseUrlVariable": "MY_AGENT_BASE_URL",
-//              "defaultUpstream": "https://api.example.com/v1", "protocol": "openai-chat"}
+//              "defaultUpstream": "https://api.example.com/v1"}
 // }
 
 import { readdirSync, readFileSync } from 'fs';
@@ -33,7 +33,6 @@ export function defaultUserAgentsDirectory(): string {
 }
 
 const formatSchema = z.enum(['json', 'toml', 'yaml', 'env']);
-const protocolSchema = z.enum(['anthropic', 'openai-chat', 'openai-responses', 'gemini', 'per-provider']);
 const upstreamSchema = z.string().refine((value) => validateUpstreamBaseUrl(value) === null, { message: 'must be an http(s) URL with no query or fragment' });
 
 const userAgentDescriptorSchema = z.object({
@@ -51,7 +50,6 @@ const userAgentDescriptorSchema = z.object({
     file: z.string().min(1),
     keyPath: z.string().min(1),
     kind: z.literal('baseUrl'),
-    protocol: protocolSchema,
     defaultUpstream: upstreamSchema.optional(),
   }).strict()).default([]),
   identitySwitches: z.array(z.object({
@@ -73,7 +71,6 @@ const userAgentDescriptorSchema = z.object({
     env: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/), z.string()),
     baseUrlVariable: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
     defaultUpstream: upstreamSchema,
-    protocol: protocolSchema,
   }).strict().optional(),
 }).strict();
 
@@ -100,7 +97,7 @@ function checkKeyPath(keyPath: string, where: string, options: { wildcardAllowed
   if (wildcards > 1) throw new Error(`${where}: at most one "*" per key path`);
 }
 
-function toDescriptor(json: UserAgentDescriptorJson, sourcePath: string): AgentDescriptor {
+function toDescriptor(json: UserAgentDescriptorJson): AgentDescriptor {
   const fileFormats = new Map(json.files.map((file) => [file.key, file.format]));
   if (fileFormats.size !== json.files.length) throw new Error('files: two files share a key');
   const requireFile = (fileKey: string, where: string) => {
@@ -142,7 +139,7 @@ function toDescriptor(json: UserAgentDescriptorJson, sourcePath: string): AgentD
         .map((candidate) => expandUserDescriptorPath(candidate, environment))
         .filter((candidate): candidate is string => candidate !== null),
     })),
-    targets: json.targets.map(({ file, keyPath, protocol, defaultUpstream }) => ({ file, keyPath, protocol, defaultUpstream })),
+    targets: json.targets.map(({ file, keyPath, defaultUpstream }) => ({ file, keyPath, defaultUpstream })),
     identitySwitches: json.identitySwitches,
     detectSubscription: authProbe
       ? (context) => {
@@ -157,7 +154,6 @@ function toDescriptor(json: UserAgentDescriptorJson, sourcePath: string): AgentD
       }
       : undefined,
     launch: json.launch,
-    userDescriptorPath: sourcePath,
     pathVariables,
   };
 }
@@ -197,7 +193,7 @@ export function loadUserAgentDescriptors(
       if (takenNames.has(parsed.data.id)) throw new Error(`agent id "${parsed.data.id}" is a built-in agent's`);
       const earlier = usedIds.get(parsed.data.id);
       if (earlier) throw new Error(`agent id "${parsed.data.id}" is ${earlier}'s too`);
-      descriptors.push(toDescriptor(parsed.data, sourcePath));
+      descriptors.push(toDescriptor(parsed.data));
       usedIds.set(parsed.data.id, fileName);
     } catch (error) {
       refusals.push(`${sourcePath}: ${error instanceof Error ? error.message : String(error)}`);

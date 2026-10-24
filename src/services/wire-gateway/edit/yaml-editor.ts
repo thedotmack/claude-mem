@@ -14,13 +14,14 @@
 // Library, Phase 14) in place of the regex splice it had before.
 
 import {
-  assertPlainConfigValue,
+  applyVerifiedPatch,
   decodeConfigText,
   editConfigTextPreservingShape,
   isPlainObjectValue,
-  keysOverlap,
+  nestUnderKeys,
   splitLiteralConfigKeyPath,
   valueAtKeys,
+  type ConfigPatch,
 } from './text-shape.js';
 
 interface YamlLine {
@@ -332,12 +333,6 @@ function renderYamlEntryLines(key: string, value: unknown, indent: number, unit:
   return [`${prefix}${renderYamlKey(key)}: ${renderYamlInlineValue(value)}`];
 }
 
-function nestUnderKeys(keys: string[], value: unknown): unknown {
-  let nested = value;
-  for (let index = keys.length - 1; index >= 0; index--) nested = { [keys[index]]: nested };
-  return nested;
-}
-
 function spliceYamlText(text: string, start: number, end: number, replacement: string): string {
   return text.slice(0, start) + replacement + text.slice(end);
 }
@@ -474,16 +469,6 @@ function deleteYamlValue(text: string, keys: string[], keyPath: string): string 
   return text;
 }
 
-export interface YamlSetOperation {
-  keyPath: string;
-  value: unknown;
-}
-
-export interface YamlPatch {
-  set?: YamlSetOperation[];
-  delete?: string[];
-}
-
 /**
  * Apply sets, then deletes, to a YAML document whose top level is a block
  * mapping and return its new bytes. A set replaces an entry's value in place
@@ -494,36 +479,17 @@ export interface YamlPatch {
  * flow-mapping parents are refused; the exact output is parsed with
  * Bun.YAML.parse and compared at every edited path before it is returned.
  */
-export function patchYamlDocument(originalBytes: Uint8Array, patch: YamlPatch): Uint8Array {
+export function patchYamlDocument(originalBytes: Uint8Array, patch: ConfigPatch): Uint8Array {
   return editConfigTextPreservingShape(originalBytes, (text) => {
     scanYamlDocument(text); // Refuse invalid input before anything else.
-    const expectations: Array<{ keys: string[]; present: boolean; value?: unknown }> = [];
-    let edited = text;
-    for (const operation of patch.set ?? []) {
-      assertPlainConfigValue(operation.value, operation.keyPath);
-      const keys = splitLiteralConfigKeyPath(operation.keyPath);
-      edited = setYamlValue(edited, keys, operation.value, operation.keyPath);
-      expectations.push({ keys, present: true, value: operation.value });
-    }
-    for (const keyPath of patch.delete ?? []) {
-      const keys = splitLiteralConfigKeyPath(keyPath);
-      edited = deleteYamlValue(edited, keys, keyPath);
-      expectations.push({ keys, present: false });
-    }
-    let parsed: unknown;
-    try {
-      scanYamlDocument(edited);
-      parsed = Bun.YAML.parse(edited);
-    } catch (error) {
-      throw new Error(`edited YAML is invalid: ${error instanceof Error ? error.message : String(error)}`);
-    }
-    expectations.forEach((expectation, index) => {
-      if (expectations.slice(index + 1).some((later) => keysOverlap(later.keys, expectation.keys))) return;
-      const actual = valueAtKeys(parsed, expectation.keys);
-      const holds = expectation.present ? Bun.deepEquals(actual, expectation.value, true) : actual === undefined;
-      if (!holds) throw new Error(`edited YAML does not hold the edit at ${expectation.keys.join('.')}`);
+    return applyVerifiedPatch(text, patch, 'YAML', {
+      set: setYamlValue,
+      delete: deleteYamlValue,
+      parse: (edited) => {
+        scanYamlDocument(edited);
+        return Bun.YAML.parse(edited);
+      },
     });
-    return edited;
   });
 }
 

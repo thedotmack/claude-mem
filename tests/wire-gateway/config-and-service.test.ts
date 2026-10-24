@@ -13,7 +13,7 @@ import {
   buildSystemdUnit,
   serviceStopTimeoutSeconds,
 } from '../../src/services/wire-gateway/os-service.js';
-import { parseWorkerServiceCommand } from '../../src/services/worker-service.js';
+import { wireGatewayServiceArguments } from '../../src/npx-cli/commands/wire.js';
 import { DATA_DIR, ensureWireGatewayDirs, paths } from '../../src/shared/paths.js';
 
 describe('wire gateway Bun gate', () => {
@@ -241,15 +241,18 @@ function parseCmdTaskLine(taskRun: string): { dataDir: string; environment: Reco
   return { dataDir: environment.CLAUDE_MEM_DATA_DIR, environment, argv };
 }
 
-describe('worker-service `wire <sub>` dispatch', () => {
-  it('maps wire subcommands to wire-<sub> and keeps their args', () => {
-    expect(parseWorkerServiceCommand(['wire', 'start', '--foreground'])).toEqual({ command: 'wire-start', args: ['--foreground'] });
-    expect(parseWorkerServiceCommand(['wire', 'stop'])).toEqual({ command: 'wire-stop', args: [] });
-    expect(parseWorkerServiceCommand(['wire', 'restart'])).toEqual({ command: 'wire-restart', args: [] });
-    expect(parseWorkerServiceCommand(['wire', 'status'])).toEqual({ command: 'wire-status', args: [] });
-    expect(parseWorkerServiceCommand(['wire', 'service', 'install'])).toEqual({ command: 'wire-service', args: ['install'] });
-    expect(parseWorkerServiceCommand(['wire', 'bogus'])).toEqual({ command: 'wire-help', args: [] });
-    expect(parseWorkerServiceCommand(['wire'])).toEqual({ command: 'wire-help', args: [] });
+describe('npx `wire <sub>` forwarding to the gateway script', () => {
+  it('forwards every subcommand and its args untouched; the gateway script validates them', () => {
+    for (const argv of [['start', '--foreground'], ['stop'], ['restart'], ['status'], ['service', 'install'], ['keys', 'list'], ['magpie', 'disable'], ['bogus'], []]) {
+      expect(wireGatewayServiceArguments(argv, '/work')).toEqual(argv);
+    }
+  });
+
+  it('`run <agent>` takes the caller\'s folder as --cwd, before the agent arguments', () => {
+    expect(wireGatewayServiceArguments(['run', 'codex', '--capture', 'wire', '--', '-m', 'x'], '/work')).toEqual(['run', 'codex', '--capture', 'wire', '--cwd', '/work', '--', '-m', 'x']);
+    expect(wireGatewayServiceArguments(['run', 'codex', '-m', 'x'], '/work')).toEqual(['run', 'codex', '--cwd', '/work', '--', '-m', 'x']);
+    // No agent: the gateway script prints its usage.
+    expect(wireGatewayServiceArguments(['run'], '/work')).toEqual(['run']);
   });
 });
 

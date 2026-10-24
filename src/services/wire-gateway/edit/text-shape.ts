@@ -14,16 +14,10 @@ function startsWithByteOrderMark(bytes: Uint8Array): boolean {
   return bytes.length >= 3 && bytes[0] === UTF8_BYTE_ORDER_MARK[0] && bytes[1] === UTF8_BYTE_ORDER_MARK[1] && bytes[2] === UTF8_BYTE_ORDER_MARK[2];
 }
 
-function countOccurrences(text: string, needle: string): number {
-  let count = 0;
-  for (let index = text.indexOf(needle); index !== -1; index = text.indexOf(needle, index + needle.length)) count++;
-  return count;
-}
-
 /** True when the text has line breaks and every one of them is CRLF. */
-export function everyLineBreakIsCrlf(text: string): boolean {
-  const lineFeedCount = countOccurrences(text, '\n');
-  return lineFeedCount > 0 && countOccurrences(text, '\r\n') === lineFeedCount;
+function everyLineBreakIsCrlf(text: string): boolean {
+  const lineFeedCount = text.split('\n').length - 1;
+  return lineFeedCount > 0 && text.split('\r\n').length - 1 === lineFeedCount;
 }
 
 /** The text of a config's bytes, without a leading byte order mark. Invalid UTF-8 throws. */
@@ -161,4 +155,62 @@ export function trimCharacters(text: string, characters: string, sides: 'both' |
   if (sides === 'both') while (start < end && characters.includes(text[start])) start++;
   while (end > start && characters.includes(text[end - 1])) end--;
   return text.slice(start, end);
+}
+
+/** `value` nested under `keys`, outermost first: `['a', 'b'], 1` → `{ a: { b: 1 } }`. */
+export function nestUnderKeys(keys: readonly string[], value: unknown): unknown {
+  let nested = value;
+  for (let index = keys.length - 1; index >= 0; index--) nested = { [keys[index]]: nested };
+  return nested;
+}
+
+/** Sets, then deletes, at key paths: what every format editor takes. */
+export interface ConfigPatch {
+  set?: Array<{ keyPath: string; value: unknown }>;
+  delete?: string[];
+}
+
+/**
+ * The TOML and YAML editors' shared patch run: apply each literal-path set,
+ * then each delete, through the format's own step; parse the exact output
+ * and check the value at every edited path (a later edit of the same, an
+ * enclosing or an enclosed path decides instead). Throws on anything that
+ * does not hold; the caller's text is never changed in place.
+ */
+export function applyVerifiedPatch(
+  text: string,
+  patch: ConfigPatch,
+  format: 'TOML' | 'YAML',
+  steps: {
+    set: (text: string, keys: string[], value: unknown, keyPath: string) => string;
+    delete: (text: string, keys: string[], keyPath: string) => string;
+    parse: (text: string) => unknown;
+  },
+): string {
+  const expectations: Array<{ keys: string[]; present: boolean; value?: unknown }> = [];
+  let edited = text;
+  for (const operation of patch.set ?? []) {
+    assertPlainConfigValue(operation.value, operation.keyPath);
+    const keys = splitLiteralConfigKeyPath(operation.keyPath);
+    edited = steps.set(edited, keys, operation.value, operation.keyPath);
+    expectations.push({ keys, present: true, value: operation.value });
+  }
+  for (const keyPath of patch.delete ?? []) {
+    const keys = splitLiteralConfigKeyPath(keyPath);
+    edited = steps.delete(edited, keys, keyPath);
+    expectations.push({ keys, present: false });
+  }
+  let parsed: unknown;
+  try {
+    parsed = steps.parse(edited);
+  } catch (error) {
+    throw new Error(`edited ${format} is invalid: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  expectations.forEach((expectation, index) => {
+    if (expectations.slice(index + 1).some((later) => keysOverlap(later.keys, expectation.keys))) return;
+    const actual = valueAtKeys(parsed, expectation.keys);
+    const holds = expectation.present ? Bun.deepEquals(actual, expectation.value, true) : actual === undefined;
+    if (!holds) throw new Error(`edited ${format} does not hold the edit at ${expectation.keys.join('.')}`);
+  });
+  return edited;
 }

@@ -83,22 +83,22 @@ describe('user agent descriptors', () => {
     writeUserDescriptor(directory, 'good.json', {
       id: 'my-agent',
       files: [{ key: 'config', path: '~/.my-agent/config.json', format: 'json' }],
-      targets: [{ file: 'config', keyPath: 'providers.*.baseUrl', kind: 'baseUrl', protocol: 'openai-chat' }],
+      targets: [{ file: 'config', keyPath: 'providers.*.baseUrl', kind: 'baseUrl' }],
     });
     writeUserDescriptor(directory, 'codex.json', {
       id: 'codex',
       files: [{ key: 'config', path: '~/.x.json', format: 'json' }],
-      targets: [{ file: 'config', keyPath: 'a', kind: 'baseUrl', protocol: 'openai-chat' }],
+      targets: [{ file: 'config', keyPath: 'a', kind: 'baseUrl' }],
     });
     writeUserDescriptor(directory, 'alias.json', {
       id: 'cc',
       files: [{ key: 'config', path: '~/.x.json', format: 'json' }],
-      targets: [{ file: 'config', keyPath: 'a', kind: 'baseUrl', protocol: 'openai-chat' }],
+      targets: [{ file: 'config', keyPath: 'a', kind: 'baseUrl' }],
     });
     writeUserDescriptor(directory, 'toml-wildcard.json', {
       id: 'toml-agent',
       files: [{ key: 'config', path: '~/.x.toml', format: 'toml' }],
-      targets: [{ file: 'config', keyPath: 'providers.*.base_url', kind: 'baseUrl', protocol: 'openai-chat' }],
+      targets: [{ file: 'config', keyPath: 'providers.*.base_url', kind: 'baseUrl' }],
     });
     writeUserDescriptor(directory, 'unknown-key.json', { id: 'extra', files: [], targets: [], surprise: true });
     writeFileSync(join(directory, 'broken.json'), '{"id": ');
@@ -113,7 +113,7 @@ describe('user agent descriptors', () => {
     expect(refusals).toMatch(/broken\.json/);
 
     const registry = loadAgentRegistry({ userAgentsDirectory: directory });
-    expect(requireAgentDescriptor(registry, 'my-agent').userDescriptorPath).toBe(join(directory, 'good.json'));
+    expect(requireAgentDescriptor(registry, 'my-agent').targets).toEqual([{ file: 'config', keyPath: 'providers.*.baseUrl', defaultUpstream: undefined }]);
     expect(requireAgentDescriptor(registry, 'CLAUDE').id).toBe('claude-code');
     expect(() => requireAgentDescriptor(registry, 'kilo')).toThrow(/kilo has no wiring descriptor.*wire routes add/s);
     expect(() => requireAgentDescriptor(registry, 'nope')).toThrow(/Unknown agent "nope"/);
@@ -134,7 +134,7 @@ describe('user agent descriptors', () => {
       id: 'toml-agent',
       detect: { dirs: ['~/.toml-agent'] },
       files: [{ key: 'config', path: '$TOML_AGENT_HOME/config.toml', alternates: ['~/.toml-agent/config.toml'], format: 'toml' }],
-      targets: [{ file: 'config', keyPath: 'gateway.base_url', kind: 'baseUrl', protocol: 'openai-chat', defaultUpstream: 'https://api.example.com/v1' }],
+      targets: [{ file: 'config', keyPath: 'gateway.base_url', kind: 'baseUrl', defaultUpstream: 'https://api.example.com/v1' }],
       identitySwitches: [{ file: 'config', keyPath: 'gateway.session_headers', value: true }],
       authProbe: { file: 'config', keyPath: 'auth.kind', subscriptionWhen: { equals: ['oauth'] } },
     });
@@ -158,7 +158,7 @@ describe('user agent descriptors', () => {
     writeUserDescriptor(directory, 'a.json', {
       id: 'probe-agent',
       files: [{ key: 'config', path: '~/.probe/config.json', format: 'json' }],
-      targets: [{ file: 'config', keyPath: 'baseUrl', kind: 'baseUrl', protocol: 'openai-chat' }],
+      targets: [{ file: 'config', keyPath: 'baseUrl', kind: 'baseUrl' }],
       authProbe: { file: 'config', keyPath: 'auth', subscriptionWhen: { notEquals: ['api-key'] } },
     });
     box.write('.probe/config.json', '{"baseUrl":"https://x.example.com/v1","auth":"login"}');

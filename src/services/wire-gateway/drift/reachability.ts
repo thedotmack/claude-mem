@@ -11,7 +11,7 @@
 // Probes never run in a relayed request's path. The daemon's GET /wire/status
 // reads cached answers and starts stale ones in the background; the CLI waits.
 
-import { spawn } from 'child_process';
+import { execFile } from 'child_process';
 import { isIP } from 'net';
 import { sanitizeEnv } from '../../../supervisor/env-sanitizer.js';
 import { readResponseTextWithinLimit, requestDirectly } from '../direct-http.js';
@@ -281,21 +281,11 @@ const SCUTIL_TIMEOUT_MS = 2_000;
 export function readMacSystemProxySettings(platform: NodeJS.Platform = process.platform): Promise<SystemProxySettings | null> {
   if (platform !== 'darwin') return Promise.resolve(null);
   return new Promise((resolve) => {
-    let output = '';
-    let child: ReturnType<typeof spawn>;
-    try {
-      child = spawn('scutil', ['--proxy'], { stdio: ['ignore', 'pipe', 'ignore'], env: sanitizeEnv(process.env), timeout: SCUTIL_TIMEOUT_MS });
-    } catch {
-      // scutil missing: no system proxy known.
-      resolve(null);
-      return;
-    }
-    child.stdout?.setEncoding('utf-8');
-    child.stdout?.on('data', (chunk: string) => {
-      output += chunk;
+    // scutil missing, failing or past the timeout: no system proxy known.
+    // maxBuffer: Infinity keeps the no-cap read the spawn this replaced had (execFile's default is 1 MB).
+    execFile('scutil', ['--proxy'], { encoding: 'utf-8', env: sanitizeEnv(process.env), timeout: SCUTIL_TIMEOUT_MS, maxBuffer: Infinity, windowsHide: true }, (error, stdout) => {
+      resolve(error ? null : parseScutilProxyOutput(stdout));
     });
-    child.on('error', () => resolve(null));
-    child.on('close', (code) => resolve(code === 0 ? parseScutilProxyOutput(output) : null));
   });
 }
 

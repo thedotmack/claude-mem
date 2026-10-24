@@ -127,7 +127,7 @@ describe('wire preview', () => {
     writeFileSync(join(agentsDirectory, 'my-agent.json'), JSON.stringify({
       id: 'my-agent',
       files: [{ key: 'config', path: '$MY_AGENT_HOME/config.json', format: 'json' }],
-      targets: [{ file: 'config', keyPath: 'baseUrl', kind: 'baseUrl', protocol: 'openai-chat' }],
+      targets: [{ file: 'config', keyPath: 'baseUrl', kind: 'baseUrl' }],
     }));
     const original = '{"baseUrl": "https://api.example.com/v1"}\n';
     box.write('.my-agent/config.json', original);
@@ -234,7 +234,7 @@ describe('wire run', () => {
     mkdirSync(agentsDirectory, { recursive: true });
     writeFileSync(descriptorPath, JSON.stringify({
       id: 'cwd-stub-agent',
-      launch: { env: { STUB_BASE_URL: '{baseUrl}' }, baseUrlVariable: 'STUB_BASE_URL', defaultUpstream: 'https://api.example.com/v1', protocol: 'openai-chat' },
+      launch: { env: { STUB_BASE_URL: '{baseUrl}' }, baseUrlVariable: 'STUB_BASE_URL', defaultUpstream: 'https://api.example.com/v1' },
     }));
     const gateway = await startWireGatewayForTest({ routesReloadCheckIntervalMs: 0 });
     const printedPath = join(box.root, 'pwd.txt');

@@ -145,8 +145,6 @@ export function writeJsonFileAtomic(
   writeFileAtomic(filepath, Buffer.from(JSON.stringify(data, null, 2) + '\n', 'utf-8'), options);
 }
 
-export type AtomicFileWriteOptions = AtomicJsonWriteOptions;
-
 /**
  * A temp file a crashed or failed write left beside its target is removed by
  * the next successful write once it is this old. A write takes milliseconds,
@@ -163,13 +161,7 @@ function atomicTempFilePath(resolvedTargetPath: string): string {
 /** Our own temp names only: `.<base>.<pid>.<hex>.tmp`. */
 function isAtomicTempFileNameOf(fileName: string, targetBaseName: string): boolean {
   const prefix = `.${targetBaseName}.`;
-  if (!fileName.startsWith(prefix) || !fileName.endsWith('.tmp')) return false;
-  const middle = fileName.slice(prefix.length, fileName.length - '.tmp'.length);
-  const separator = middle.indexOf('.');
-  if (separator <= 0) return false;
-  const pidPart = middle.slice(0, separator);
-  const hexPart = middle.slice(separator + 1);
-  return /^[0-9]+$/.test(pidPart) && /^[0-9a-f]+$/.test(hexPart);
+  return fileName.startsWith(prefix) && /^[0-9]+\.[0-9a-f]+\.tmp$/.test(fileName.slice(prefix.length));
 }
 
 function removeStaleAtomicTempFiles(resolvedTargetPath: string): void {
@@ -296,7 +288,7 @@ function writeHardLinkedFileInPlace(resolvedTargetPath: string, payload: Uint8Ar
 export function writeFileAtomic(
   filepath: string,
   payload: Uint8Array,
-  options: AtomicFileWriteOptions = {}
+  options: AtomicJsonWriteOptions = {}
 ): void {
   const resolved = resolveSymlinkWriteTarget(filepath);
   const dir = dirname(resolved);

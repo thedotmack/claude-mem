@@ -173,13 +173,7 @@ function atomicTempFilePath(resolvedTargetPath) {
 }
 function isAtomicTempFileNameOf(fileName, targetBaseName) {
   const prefix = `.${targetBaseName}.`;
-  if (!fileName.startsWith(prefix) || !fileName.endsWith(".tmp")) return false;
-  const middle = fileName.slice(prefix.length, fileName.length - ".tmp".length);
-  const separator = middle.indexOf(".");
-  if (separator <= 0) return false;
-  const pidPart = middle.slice(0, separator);
-  const hexPart = middle.slice(separator + 1);
-  return /^[0-9]+$/.test(pidPart) && /^[0-9a-f]+$/.test(hexPart);
+  return fileName.startsWith(prefix) && /^[0-9]+\.[0-9a-f]+\.tmp$/.test(fileName.slice(prefix.length));
 }
 function removeStaleAtomicTempFiles(resolvedTargetPath) {
   const dir = dirname(resolvedTargetPath);

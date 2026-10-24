@@ -115,13 +115,12 @@ function formatValue(value: unknown): string {
   return value === undefined ? '(absent)' : JSON.stringify(value);
 }
 
-export function printConnectResult(result: ConnectResult, writeLine: (line: string) => void): void {
-  const { plan } = result;
-  const { descriptor } = plan;
+export function printConnectResult(descriptor: AgentDescriptor, result: ConnectResult, writeLine: (line: string) => void): void {
   if (result.alreadyConnected) {
-    writeLine(`${descriptor.name} is already connected (routes: ${plan.routes.map((route) => route.routeId).join(', ')})`);
+    writeLine(`${descriptor.name} is already connected (routes: ${result.routeIds.join(', ')})`);
     return;
   }
+  const { plan } = result;
   writeLine(`Connected ${descriptor.name}`);
   for (const route of plan.routes) {
     writeLine(`  ${route.filePath}: ${route.keyPath} → ${route.agentBaseUrl}`);
@@ -189,7 +188,7 @@ export async function runWireAgentCli(command: 'connect' | 'disconnect' | 'previ
   switch (command) {
     case 'connect': {
       const result = await connectAgent(descriptor, wiringOptions(runtime, inPreviewSandbox), { captureSource: parseCaptureFlag(ownArguments) });
-      printConnectResult(result, runtime.writeLine);
+      printConnectResult(descriptor, result, runtime.writeLine);
       return 0;
     }
     case 'disconnect': {
@@ -200,11 +199,10 @@ export async function runWireAgentCli(command: 'connect' | 'disconnect' | 'previ
     case 'preview': {
       const disconnect = ownArguments.includes('--disconnect');
       const environment = currentAgentEnvironment();
-      const native = descriptor.nativeIntegration;
       const result = runWirePreview({
         descriptor,
         disconnect,
-        captureSource: native && (native.alwaysNative || native.isInstalled(environment)) ? 'native' : undefined,
+        captureSource: resolveCaptureSource(descriptor, environment, undefined) === 'native' ? 'native' : undefined,
         environment,
         dataDirectory: DATA_DIR,
         wireGatewayDirectory: WIRE_GATEWAY_DIR,
@@ -238,7 +236,6 @@ export async function runWireAgentCli(command: 'connect' | 'disconnect' | 'previ
   }
 }
 
-/** `POST /wire/launch` on the running gateway, never through a proxy (direct-http.ts). */
 /** How many requests a launch relayed; null when the gateway does not answer or no longer knows the launch. */
 export async function countLaunchRequests(origin: string, launchId: string): Promise<number | null> {
   const answer = await requestJsonDirectly<{ requestCount?: unknown }>({
@@ -250,6 +247,7 @@ export async function countLaunchRequests(origin: string, launchId: string): Pro
   return typeof requestCount === 'number' ? requestCount : null;
 }
 
+/** `POST /wire/launch` on the running gateway, never through a proxy (direct-http.ts). */
 export async function createLaunch(origin: string, agentId: string, cwd: string): Promise<string> {
   const answer = await requestJsonDirectly<{ launchId?: unknown; error?: { message?: string } }>({
     url: `${origin}/wire/launch`,

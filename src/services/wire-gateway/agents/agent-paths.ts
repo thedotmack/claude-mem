@@ -4,7 +4,6 @@
 // AgentEnvironment (never os.homedir() or process.env directly), so tests and
 // `wire preview` can point every agent at a sandbox home.
 
-import { existsSync } from 'fs';
 import { isAbsolute, join } from 'path';
 import { homedir } from 'os';
 import { expandHome } from '../../../shared/expand-home.js';
@@ -37,8 +36,4 @@ export function isExecutableOnPath(environment: AgentEnvironment, executable: st
   const searchPath = environment.env.PATH ?? environment.env.Path;
   if (!searchPath) return false;
   return Bun.which(executable, { PATH: searchPath }) !== null;
-}
-
-export function pathExists(path: string): boolean {
-  return existsSync(path);
 }

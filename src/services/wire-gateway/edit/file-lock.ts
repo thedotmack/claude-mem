@@ -19,6 +19,7 @@ import { randomBytes } from 'crypto';
 import { hostname } from 'os';
 import { linkSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import { basename, dirname } from 'path';
+import { sleepSync } from '../../../shared/atomic-json.js';
 import { WIRE_GATEWAY_DIR_MODE, WIRE_GATEWAY_FILE_MODE } from '../../../shared/paths.js';
 import { captureProcessStartToken, isSameProcess } from '../../../shared/process-identity.js';
 
@@ -68,10 +69,6 @@ export interface ExclusiveFileLockHandle {
 
 function isMissingFileError(error: unknown): boolean {
   return (error as NodeJS.ErrnoException)?.code === 'ENOENT';
-}
-
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 /** This process's start token, read once: a process's own start token cannot change while it runs. */

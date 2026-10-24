@@ -615,11 +615,11 @@ describe('team listener: what a member\'s request never touches', () => {
   it('a member\'s request does not mark the host\'s agent as seen (drift status is about this host\'s own agents)', async () => {
     const gateway = await startSharedGateway();
     try {
-      const before = gateway.service.agentLastSeen.lastSeenAt('codex');
+      const before = gateway.service.agentLastSeen.snapshot().codex;
       expect((await call(gateway, `/k/${aliceKey}/r/codex/v1/responses`, { body: { ...firstCodexRequest, stream: false } })).status).toBe(200);
-      expect(gateway.service.agentLastSeen.lastSeenAt('codex')).toBe(before);
+      expect(gateway.service.agentLastSeen.snapshot().codex).toBe(before);
       expect((await callLoopback(gateway, '/r/codex/v1/responses', { body: { ...firstCodexRequest, stream: false } })).status).toBe(200);
-      expect(gateway.service.agentLastSeen.lastSeenAt('codex')).not.toBe(before);
+      expect(gateway.service.agentLastSeen.snapshot().codex).not.toBe(before);
     } finally {
       await gateway.stop();
     }

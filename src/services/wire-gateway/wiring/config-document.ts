@@ -7,7 +7,7 @@
 
 import { patchEnvDocument, readEnvValue } from '../edit/env-editor.js';
 import { patchJsoncDocument, resolveJsoncKeyPath } from '../edit/jsonc-editor.js';
-import { decodeConfigText } from '../edit/text-shape.js';
+import { decodeConfigText, type ConfigPatch } from '../edit/text-shape.js';
 import { patchTomlDocument, readTomlValueAtKeyPath } from '../edit/toml-editor.js';
 import { patchYamlDocument, readYamlValueAtKeyPath } from '../edit/yaml-editor.js';
 import type { AgentConfigFormat } from '../agents/types.js';
@@ -74,13 +74,8 @@ export function expandJsonWildcardKeyPath(bytes: Uint8Array | null, keyPath: str
   return resolveJsoncKeyPath(bytes, keyPath).map((match) => ({ keyPath: joinConfigKeyPath(match.keys), keys: match.keys }));
 }
 
-export interface ConfigDocumentPatch {
-  set: Array<{ keyPath: string; value: unknown }>;
-  delete: string[];
-}
-
 /** The file's bytes after the patch (an absent file is edited from empty). Nothing is written. */
-export function patchConfigBytes(format: AgentConfigFormat, configFilePath: string, bytes: Uint8Array | null, patch: ConfigDocumentPatch): Uint8Array {
+export function patchConfigBytes(format: AgentConfigFormat, configFilePath: string, bytes: Uint8Array | null, patch: ConfigPatch): Uint8Array {
   const originalBytes = bytes ?? new Uint8Array(0);
   switch (format) {
     case 'json':
@@ -95,7 +90,7 @@ export function patchConfigBytes(format: AgentConfigFormat, configFilePath: stri
       return patchYamlDocument(originalBytes, patch);
     case 'env':
       return patchEnvDocument(originalBytes, {
-        set: patch.set.map(({ keyPath, value }) => {
+        set: (patch.set ?? []).map(({ keyPath, value }) => {
           if (typeof value !== 'string') throw new Error(`${configFilePath}: ${keyPath} must be a string in a .env file`);
           return { key: keyPath, value };
         }),

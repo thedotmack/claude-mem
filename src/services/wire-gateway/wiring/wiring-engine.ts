@@ -22,6 +22,7 @@
 // (MIT, Copyright (c) 2026 yetone).
 
 import { createHash } from 'crypto';
+import { existsSync } from 'fs';
 import { isAbsolute, join, relative } from 'path';
 import { writeFileAtomic } from '../../../shared/atomic-json.js';
 import { WIRE_GATEWAY_FILE_MODE } from '../../../shared/paths.js';
@@ -39,7 +40,7 @@ import {
   type WireGatewayCaptureSource,
 } from '../routes.js';
 import { isLoopbackAddress } from '../network-guard.js';
-import { isExecutableOnPath, pathExists } from '../agents/agent-paths.js';
+import { isExecutableOnPath } from '../agents/agent-paths.js';
 import type {
   AgentConfigFormat,
   AgentConfigReadContext,
@@ -90,7 +91,6 @@ export interface WiringOptions {
   routesFilePath: string;
   sideEffects: WiringSideEffects;
   helpers: AgentWiringHelpers;
-  now?: () => Date;
   /** `wire preview`'s sandboxed run: every agent file written or removed must be under this folder. */
   confineAgentFileWritesTo?: string;
   /** CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS: connect a subscription sign-in (with a note) instead of refusing it (D4). */
@@ -112,7 +112,7 @@ function resolveConfigFiles(descriptor: AgentDescriptor, environment: AgentEnvir
   for (const file of descriptor.files) {
     const candidates = file.candidatePaths(environment);
     if (candidates.length === 0) continue;
-    const path = candidates.find(pathExists) ?? candidates[0];
+    const path = candidates.find(existsSync) ?? candidates[0];
     files.set(file.key, { key: file.key, path, format: file.format, bytes: readConfigFileBytes(path) });
   }
   return files;
@@ -125,7 +125,6 @@ function createReadContext(descriptor: AgentDescriptor, environment: AgentEnviro
     return file;
   };
   return {
-    agentId: descriptor.id,
     environment,
     readValue: (fileKey, keyPath) => {
       const file = requireFile(fileKey);
@@ -138,8 +137,15 @@ function createReadContext(descriptor: AgentDescriptor, environment: AgentEnviro
 
 function isAgentDetected(descriptor: AgentDescriptor, environment: AgentEnvironment, files: Map<string, ResolvedConfigFile>): boolean {
   if ([...files.values()].some((file) => file.bytes !== null)) return true;
-  if ((descriptor.detect.directories?.(environment) ?? []).some(pathExists)) return true;
+  if ((descriptor.detect.directories?.(environment) ?? []).some(existsSync)) return true;
   return (descriptor.detect.bins ?? []).some((bin) => isExecutableOnPath(environment, bin));
+}
+
+/** The file a target or identity switch names; a descriptor naming a file it does not have is a bug in it. */
+function requireTargetFile(descriptor: AgentDescriptor, files: Map<string, ResolvedConfigFile>, fileKey: string, keyPath: string): ResolvedConfigFile {
+  const file = files.get(fileKey);
+  if (!file) throw new Error(`${descriptor.name}: no "${fileKey}" file for ${keyPath}`);
+  return file;
 }
 
 function resolveTargets(descriptor: AgentDescriptor, context: AgentConfigReadContext, files: Map<string, ResolvedConfigFile>): ResolvedBaseUrlTarget[] {
@@ -148,12 +154,12 @@ function resolveTargets(descriptor: AgentDescriptor, context: AgentConfigReadCon
     const segments = splitConfigKeyPath(target.keyPath);
     const wildcardIndex = segments.findIndex((segment) => segment.matchesAnyKey);
     if (wildcardIndex === -1) {
-      targets.push({ file: target.file, keyPath: target.keyPath, protocol: target.protocol, defaultUpstream: target.defaultUpstream });
+      targets.push({ file: target.file, keyPath: target.keyPath, defaultUpstream: target.defaultUpstream });
       continue;
     }
     const file = files.get(target.file);
     for (const match of expandJsonWildcardKeyPath(file?.bytes ?? null, target.keyPath)) {
-      targets.push({ file: target.file, keyPath: match.keyPath, protocol: target.protocol, defaultUpstream: target.defaultUpstream, providerLabel: match.keys[wildcardIndex] });
+      targets.push({ file: target.file, keyPath: match.keyPath, defaultUpstream: target.defaultUpstream, providerLabel: match.keys[wildcardIndex] });
     }
   }
   return targets;
@@ -178,8 +184,7 @@ export function readCurrentBaseUrlTargets(descriptor: AgentDescriptor, environme
   const files = resolveConfigFiles(descriptor, environment);
   const context = createReadContext(descriptor, environment, files);
   return resolveTargets(descriptor, context, files).map((target) => {
-    const file = files.get(target.file);
-    if (!file) throw new Error(`${descriptor.name}: no "${target.file}" file for ${target.keyPath}`);
+    const file = requireTargetFile(descriptor, files, target.file, target.keyPath);
     return {
       fileKey: file.key,
       filePath: file.path,
@@ -291,7 +296,7 @@ function firstMissingParent(file: ResolvedConfigFile, keyPath: string): string |
 
 export function planAgentConnection(
   descriptor: AgentDescriptor,
-  options: Pick<WiringOptions, 'environment' | 'gatewayOrigin' | 'routesFilePath' | 'helpers' | 'forwardSubscriptionSignIns'>,
+  options: Pick<WiringOptions, 'environment' | 'gatewayOrigin' | 'helpers' | 'forwardSubscriptionSignIns'>,
   request: { captureSource?: WireGatewayCaptureSource } = {},
 ): ConnectionPlan {
   const { environment } = options;
@@ -316,7 +321,6 @@ export function planAgentConnection(
 
   const captureSource = resolveCaptureSource(descriptor, environment, request.captureSource);
 
-  const existingRoutes = readWireGatewayRoutesFile(options.routesFilePath).routes;
   const takenRouteIds = new Set<string>();
   const routes: PlannedRoute[] = [];
   const setsByFile = new Map<string, Array<{ keyPath: string; value: unknown }>>();
@@ -327,8 +331,7 @@ export function planAgentConnection(
   };
 
   for (const target of targets) {
-    const file = files.get(target.file);
-    if (!file) throw new Error(`${descriptor.name}: no "${target.file}" file for ${target.keyPath}`);
+    const file = requireTargetFile(descriptor, files, target.file, target.keyPath);
     const currentValue = readConfigValue(file.format, file.path, file.bytes, target.keyPath);
     const currentText = typeof currentValue === 'string' && currentValue !== '' ? currentValue : undefined;
     if (currentText !== undefined && isGatewayRouteUrl(currentText, options.gatewayOrigin)) {
@@ -339,11 +342,8 @@ export function planAgentConnection(
       notes.push(`${target.keyPath} in ${file.path} is not set and ${descriptor.name} has no known default endpoint for it; not routed`);
       continue;
     }
+    // A route id another agent holds is refused under the routes lock, in applyConnectionPlan.
     const routeId = routeIdFor(descriptor.id, target.providerLabel, takenRouteIds);
-    const existing = Object.hasOwn(existingRoutes, routeId) ? existingRoutes[routeId] : undefined;
-    if (existing && existing.agentId !== descriptor.id) {
-      throw new Error(`Route "${routeId}" already belongs to agent ${existing.agentId}; remove it (claude-mem wire routes remove ${routeId}) or rename it first`);
-    }
     const { upstreamBaseUrl, agentBaseUrl } = splitUpstreamForRoute(upstreamValue, options.gatewayOrigin, routeId);
     routes.push({ routeId, fileKey: file.key, filePath: file.path, keyPath: target.keyPath, upstreamBaseUrl, agentBaseUrl, upstreamSource: currentText ? 'config' : 'default' });
     addSet(file.key, target.keyPath, agentBaseUrl);
@@ -357,8 +357,7 @@ export function planAgentConnection(
   notes.push(...computedSwitches.notes);
   const identitySwitches: ConnectionPlan['identitySwitches'] = [];
   for (const identitySwitch of [...(descriptor.identitySwitches ?? []), ...computedSwitches.switches]) {
-    const file = files.get(identitySwitch.file);
-    if (!file) throw new Error(`${descriptor.name}: no "${identitySwitch.file}" file for ${identitySwitch.keyPath}`);
+    const file = requireTargetFile(descriptor, files, identitySwitch.file, identitySwitch.keyPath);
     if (Bun.deepEquals(readConfigValue(file.format, file.path, file.bytes, identitySwitch.keyPath), identitySwitch.value, true)) continue;
     identitySwitches.push({ ...identitySwitch, filePath: file.path });
     addSet(file.key, identitySwitch.keyPath, identitySwitch.value);
@@ -446,7 +445,7 @@ function withWiringAndRoutesLocks<T>(options: Pick<WiringOptions, 'wiringDirecto
 }
 
 /** Write a planned connect: config files, routes, stash, applied record — all or nothing. */
-export function applyConnectionPlan(plan: ConnectionPlan, options: Pick<WiringOptions, 'wiringDirectory' | 'routesFilePath' | 'now' | 'confineAgentFileWritesTo'>): void {
+export function applyConnectionPlan(plan: ConnectionPlan, options: Pick<WiringOptions, 'wiringDirectory' | 'routesFilePath' | 'confineAgentFileWritesTo'>): void {
   const agentId = plan.descriptor.id;
   for (const edit of plan.fileEdits) requireConfinedAgentFile(edit.path, options.confineAgentFileWritesTo);
   withWiringAndRoutesLocks(options, () => {
@@ -473,7 +472,7 @@ export function applyConnectionPlan(plan: ConnectionPlan, options: Pick<WiringOp
       }
       const stashEntry: StashedAgentEntry = { files: {}, fields: {} };
       const record: AppliedAgentRecord = {
-        at: (options.now?.() ?? new Date()).toISOString(),
+        at: new Date().toISOString(),
         captureSource: plan.captureSource,
         routeIds: plan.routes.map((route) => route.routeId),
         files: {},
@@ -521,12 +520,14 @@ export function resolveCaptureSource(
   return nativeInstalled || native?.alwaysNative ? 'native' : (requested ?? 'wire');
 }
 
-export interface ConnectResult {
-  plan: ConnectionPlan;
-  alreadyConnected: boolean;
-  /** Lines for the user beyond the plan (service install, warnings). */
-  messages: string[];
-}
+export type ConnectResult =
+  | { alreadyConnected: true; routeIds: string[] }
+  | {
+    alreadyConnected: false;
+    plan: ConnectionPlan;
+    /** Lines for the user beyond the plan (service install, warnings). */
+    messages: string[];
+  };
 
 export async function connectAgent(
   descriptor: AgentDescriptor,
@@ -545,7 +546,7 @@ export async function connectAgent(
       throw new Error(`${descriptor.name} points at route(s) ${missingRouteIds.join(', ')}, which were removed; run \`claude-mem wire disconnect ${descriptor.id}\`, then connect again`);
     }
     await options.sideEffects.ensureGatewayRunning();
-    return { plan: alreadyConnectedPlan(descriptor, existingRecord, options), alreadyConnected: true, messages: [] };
+    return { alreadyConnected: true, routeIds: existingRecord.routeIds };
   }
 
   const plan = planAgentConnection(descriptor, options, request);
@@ -578,26 +579,6 @@ export async function connectAgent(
     }
   }
   return { plan, alreadyConnected: false, messages };
-}
-
-function alreadyConnectedPlan(descriptor: AgentDescriptor, record: AppliedAgentRecord, options: Pick<WiringOptions, 'routesFilePath'>): ConnectionPlan {
-  const routesFile = readWireGatewayRoutesFile(options.routesFilePath);
-  return {
-    descriptor,
-    captureSource: record.captureSource,
-    routes: record.routeIds.map((routeId) => ({
-      routeId,
-      fileKey: '',
-      filePath: '',
-      keyPath: '',
-      upstreamBaseUrl: routesFile.routes[routeId].upstreamBaseUrl,
-      agentBaseUrl: '',
-      upstreamSource: 'config',
-    })),
-    identitySwitches: [],
-    fileEdits: [],
-    notes: [],
-  };
 }
 
 // ---------------------------------------------------------------------------

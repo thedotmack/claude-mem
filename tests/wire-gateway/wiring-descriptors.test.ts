@@ -476,7 +476,7 @@ describe('connect and disconnect bookkeeping', () => {
     expect(first.messages.join('\n')).toMatch(/Could not install the login service/);
     const afterFirst = box.read('.config/crush/crush.json');
     const second = await connectAgent(descriptor('crush'), box.options(sideEffects));
-    expect(second.alreadyConnected).toBe(true);
+    expect(second).toEqual({ alreadyConnected: true, routeIds: ['crush-x'] });
     expect(box.read('.config/crush/crush.json')).toBe(afterFirst);
   });
 

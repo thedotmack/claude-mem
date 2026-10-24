@@ -24,13 +24,14 @@
 // value reads back differently by Bun version (the editor never writes one).
 
 import {
-  assertPlainConfigValue,
+  applyVerifiedPatch,
   decodeConfigText,
   editConfigTextPreservingShape,
   isPlainObjectValue,
   keysOverlap,
   splitLiteralConfigKeyPath,
   valueAtKeys,
+  type ConfigPatch,
 } from './text-shape.js';
 
 interface TomlTableHeader {
@@ -393,7 +394,7 @@ function scanTomlForEdit(text: string): ScannedTomlDocument {
 }
 
 /** Most dots one dotted key may hold. Real configs use a handful. */
-export const MAX_TOML_DOTTED_KEY_DOTS = 128;
+const MAX_TOML_DOTTED_KEY_DOTS = 128;
 
 /**
  * Bun 1.3.9's TOML parser crashes the process (a segfault, not a throw) on a
@@ -468,7 +469,7 @@ function parseAndScanToml(text: string): { parsed: unknown; document: ScannedTom
  * non-ASCII included, is written as it is (magpie internal/edit/toml.go
  * `tomlString`).
  */
-export function renderTomlString(value: string): string {
+function renderTomlString(value: string): string {
   let rendered = '"';
   for (const character of value) {
     const code = character.codePointAt(0)!;
@@ -612,16 +613,6 @@ function deleteTomlValue(text: string, keys: string[]): string {
   return edited;
 }
 
-export interface TomlSetOperation {
-  keyPath: string;
-  value: unknown;
-}
-
-export interface TomlPatch {
-  set?: TomlSetOperation[];
-  delete?: string[];
-}
-
 /**
  * Apply sets, then deletes, to a TOML document and return its new bytes.
  * Only the edited statements change; comments, layout, a byte order mark and
@@ -632,35 +623,14 @@ export interface TomlPatch {
  * Invalid input is refused, and the exact output is parsed and compared at
  * every edited path before it is returned.
  */
-export function patchTomlDocument(originalBytes: Uint8Array, patch: TomlPatch): Uint8Array {
+export function patchTomlDocument(originalBytes: Uint8Array, patch: ConfigPatch): Uint8Array {
   return editConfigTextPreservingShape(originalBytes, (text) => {
     parseAndScanToml(text); // Refuse invalid input before anything else.
-    const expectations: Array<{ keys: string[]; present: boolean; value?: unknown }> = [];
-    let edited = text;
-    for (const operation of patch.set ?? []) {
-      assertPlainConfigValue(operation.value, operation.keyPath);
-      const keys = splitLiteralConfigKeyPath(operation.keyPath);
-      edited = setTomlValue(edited, keys, operation.value, operation.keyPath);
-      expectations.push({ keys, present: true, value: operation.value });
-    }
-    for (const keyPath of patch.delete ?? []) {
-      const keys = splitLiteralConfigKeyPath(keyPath);
-      edited = deleteTomlValue(edited, keys);
-      expectations.push({ keys, present: false });
-    }
-    let parsed: unknown;
-    try {
-      parsed = parseAndScanToml(edited).parsed;
-    } catch (error) {
-      throw new Error(`edited TOML is invalid: ${error instanceof Error ? error.message : String(error)}`);
-    }
-    expectations.forEach((expectation, index) => {
-      if (expectations.slice(index + 1).some((later) => keysOverlap(later.keys, expectation.keys))) return;
-      const actual = valueAtKeys(parsed, expectation.keys);
-      const holds = expectation.present ? Bun.deepEquals(actual, expectation.value, true) : actual === undefined;
-      if (!holds) throw new Error(`edited TOML does not hold the edit at ${expectation.keys.join('.')}`);
+    return applyVerifiedPatch(text, patch, 'TOML', {
+      set: setTomlValue,
+      delete: (edited, keys) => deleteTomlValue(edited, keys),
+      parse: (edited) => parseAndScanToml(edited).parsed,
     });
-    return edited;
   });
 }
 

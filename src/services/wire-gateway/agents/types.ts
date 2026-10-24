@@ -14,13 +14,6 @@
 export type AgentConfigFormat = 'json' | 'toml' | 'yaml' | 'env';
 
 /**
- * What the agent speaks to the base URL. Informational: the relay classifies
- * every request by its path (relay/protocols.ts), so a provider block whose
- * protocol depends on a field (`npm`, `api`, `type`) is `per-provider`.
- */
-export type AgentWireProtocol = 'anthropic' | 'openai-chat' | 'openai-responses' | 'gemini' | 'per-provider';
-
-/**
  * Where the agent runs. Every path a descriptor resolves comes from here, so
  * tests and `wire preview` point an agent at a sandbox home without touching
  * the real one.
@@ -44,7 +37,6 @@ export interface AgentBaseUrlTargetDescriptor {
   file: string;
   /** Dotted key path. One `*` segment (JSON only) gives a route per existing key there (per-provider blocks). */
   keyPath: string;
-  protocol: AgentWireProtocol;
   /** The agent's built-in endpoint when the key is absent. Without one, an absent key is not wired. */
   defaultUpstream?: string;
 }
@@ -54,7 +46,6 @@ export interface ResolvedBaseUrlTarget {
   file: string;
   /** Literal key path (dots inside a key are escaped). */
   keyPath: string;
-  protocol: AgentWireProtocol;
   defaultUpstream?: string;
   /** The provider the key belongs to, when there are several: the route id becomes `<agentId>-<provider>`. */
   providerLabel?: string;
@@ -69,7 +60,6 @@ export interface ResolvedIdentitySwitch {
 
 /** What a descriptor's computed parts may look at: the files, read once, and the environment. */
 export interface AgentConfigReadContext {
-  agentId: string;
   environment: AgentEnvironment;
   /** The parsed value at a key path of a file, or undefined (absent file or key). Throws on an unreadable file. */
   readValue(fileKey: string, keyPath: string): unknown;
@@ -95,13 +85,12 @@ export interface AgentLaunchDescriptor {
   /** The env var whose current value (when set and not ours) is the route's upstream. */
   baseUrlVariable: string;
   defaultUpstream: string;
-  protocol: AgentWireProtocol;
 }
 
 /** The agent's own record of use, for bypass detection (Phase 9). */
 export interface AgentLastUsedDescriptor {
   path(environment: AgentEnvironment): string;
-  kind: 'jsonl';
+  /** The JSONL field holding the time of use. */
   field: string;
   unit: 's' | 'ms';
   /**
@@ -169,8 +158,6 @@ export interface AgentDescriptor {
    */
   statusNotes?(context: AgentStatusNotesContext): string[];
   launch?: AgentLaunchDescriptor;
-  /** Set on descriptors loaded from <DATA_DIR>/wire-gateway/agents/*.json. */
-  userDescriptorPath?: string;
   /** Env vars a user descriptor's paths name (`$VAR`), which `wire preview` re-roots into its sandbox. */
   pathVariables?: string[];
 }

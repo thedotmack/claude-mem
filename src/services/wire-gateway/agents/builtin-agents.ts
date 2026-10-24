@@ -32,18 +32,21 @@
 // built-in endpoint (`defaultUpstream`): the gateway relays to the agent's own
 // upstream and never invents one.
 
+import { existsSync } from 'fs';
 import { join } from 'path';
 import { KIMI_MARKER_BEGIN } from '../library/agent-library-targets.js';
 import { readConfigFileBytes } from '../edit/config-file.js';
 import { resolveJsoncKeyPath } from '../edit/jsonc-editor.js';
 import { isPlainObjectValue } from '../edit/text-shape.js';
 import { joinConfigKeyPath, readConfigValue } from '../wiring/config-document.js';
-import { directoryFromEnv, pathExists, xdgConfigHome, xdgDataHome } from './agent-paths.js';
+import { directoryFromEnv, xdgConfigHome, xdgDataHome } from './agent-paths.js';
 import type {
   AgentConfigReadContext,
   AgentDescriptor,
   AgentEnvironment,
+  AgentLaunchDescriptor,
   ResolvedBaseUrlTarget,
+  ResolvedIdentitySwitch,
   UnroutableAgentNote,
 } from './types.js';
 
@@ -73,11 +76,15 @@ function providerBlockTargets(
     targets.push({
       file: options.file,
       keyPath: joinConfigKeyPath([...options.providersKeyPath.split('.'), providerId, ...options.baseUrlKey]),
-      protocol: 'per-provider',
       providerLabel: providerId,
     });
   }
   return targets;
+}
+
+/** One identity switch per wired provider block (Pi, omp, Hermes): `providers.<provider>.<keys…>` = `value`. */
+function perProviderSwitches(targets: ResolvedBaseUrlTarget[], keys: string[], value: unknown): ResolvedIdentitySwitch[] {
+  return targets.map((target) => ({ file: target.file, keyPath: joinConfigKeyPath(['providers', target.providerLabel!, ...keys]), value }));
 }
 
 function readJsonFileIfPresent(filePath: string): unknown {
@@ -111,7 +118,7 @@ const claudeCode: AgentDescriptor = {
   editToolNames: ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'],
   detect: { bins: ['claude'], directories: (environment) => [claudeConfigDirectory(environment)] },
   files: [{ key: 'settings', format: 'json', candidatePaths: (environment) => [join(claudeConfigDirectory(environment), 'settings.json')] }],
-  targets: [{ file: 'settings', keyPath: 'env.ANTHROPIC_BASE_URL', protocol: 'anthropic', defaultUpstream: ANTHROPIC_API_BASE_URL }],
+  targets: [{ file: 'settings', keyPath: 'env.ANTHROPIC_BASE_URL', defaultUpstream: ANTHROPIC_API_BASE_URL }],
   // Claude Code sends x-claude-code-request-class and friends only with this on (report 07 §2.3).
   // ENABLE_TOOL_SEARCH: Claude Code turns tool search off for a base URL that
   // is not Anthropic's and then sends every MCP tool schema inline; seen live
@@ -147,7 +154,6 @@ const claudeCode: AgentDescriptor = {
   nativeIntegration: { isInstalled: () => true, uninstallCommand: UNINSTALL_ALL_INTEGRATIONS, alwaysNative: true },
   lastUsed: {
     path: (environment) => join(claudeConfigDirectory(environment), 'history.jsonl'),
-    kind: 'jsonl',
     field: 'timestamp',
     unit: 'ms',
     slashCommandTextField: 'display', // magpie claude.go:1623-1626
@@ -156,7 +162,6 @@ const claudeCode: AgentDescriptor = {
     env: { ANTHROPIC_BASE_URL: '{baseUrl}', CLAUDE_CODE_GATEWAY_HINT_HEADERS: '1', ENABLE_TOOL_SEARCH: 'true' },
     baseUrlVariable: 'ANTHROPIC_BASE_URL',
     defaultUpstream: ANTHROPIC_API_BASE_URL,
-    protocol: 'anthropic',
   },
 };
 
@@ -195,14 +200,13 @@ const codex: AgentDescriptor = {
     if (activeProvider === CODEX_BUILT_IN_OPENAI_PROVIDER) {
       // A ChatGPT sign-in talks to chatgpt.com's Codex backend, not api.openai.com (seen live, codex-cli 0.162.1).
       const defaultUpstream = codexHasChatGptSignIn(context) ? CODEX_CHATGPT_BACKEND_BASE_URL : OPENAI_API_BASE_URL;
-      return [{ file: 'config', keyPath: 'openai_base_url', protocol: 'openai-responses', defaultUpstream }];
+      return [{ file: 'config', keyPath: 'openai_base_url', defaultUpstream }];
     }
     const keyPath = joinConfigKeyPath(['model_providers', activeProvider, 'base_url']);
     if (!stringValue(context.readValue('config', keyPath))) {
       throw new Error(`Codex uses model_provider "${activeProvider}", which has no [model_providers.${activeProvider}] base_url to route`);
     }
-    const wireApi = context.readValue('config', joinConfigKeyPath(['model_providers', activeProvider, 'wire_api']));
-    return [{ file: 'config', keyPath, protocol: wireApi === 'chat' ? 'openai-chat' : 'openai-responses', providerLabel: activeProvider }];
+    return [{ file: 'config', keyPath, providerLabel: activeProvider }];
   },
   detectSubscription(context, targets) {
     // A ChatGPT sign-in drives only the built-in OpenAI provider.
@@ -221,7 +225,7 @@ const codex: AgentDescriptor = {
     uninstallCommand: UNINSTALL_ALL_INTEGRATIONS,
   },
   // magpie codex.go:1231 reads ts and skips `/` commands in text.
-  lastUsed: { path: (environment) => join(codexHome(environment), 'history.jsonl'), kind: 'jsonl', field: 'ts', unit: 's', slashCommandTextField: 'text' },
+  lastUsed: { path: (environment) => join(codexHome(environment), 'history.jsonl'), field: 'ts', unit: 's', slashCommandTextField: 'text' },
 };
 
 // ---------------------------------------------------------------------------
@@ -230,6 +234,11 @@ const codex: AgentDescriptor = {
 function geminiDirectory(environment: AgentEnvironment): string {
   return join(environment.home, '.gemini');
 }
+
+const GEMINI_ENV_FILE_NOTE = 'Gemini CLI reads ~/.gemini/.env only in folders it trusts, and only when the project has no .env of its own; elsewhere it uses its built-in endpoint and bypasses the gateway.';
+
+/** Gemini CLI and Antigravity CLI (which runs on it) launch the same way. */
+const GEMINI_LAUNCH: AgentLaunchDescriptor = { env: { GOOGLE_GEMINI_BASE_URL: '{baseUrl}' }, baseUrlVariable: 'GOOGLE_GEMINI_BASE_URL', defaultUpstream: GEMINI_API_BASE_URL };
 
 const geminiCli: AgentDescriptor = {
   id: 'gemini-cli',
@@ -242,7 +251,7 @@ const geminiCli: AgentDescriptor = {
     { key: 'env', format: 'env', candidatePaths: (environment) => [join(geminiDirectory(environment), '.env')] },
     { key: 'settings', format: 'json', candidatePaths: (environment) => [join(geminiDirectory(environment), 'settings.json')] },
   ],
-  targets: [{ file: 'env', keyPath: 'GOOGLE_GEMINI_BASE_URL', protocol: 'gemini', defaultUpstream: GEMINI_API_BASE_URL }],
+  targets: [{ file: 'env', keyPath: 'GOOGLE_GEMINI_BASE_URL', defaultUpstream: GEMINI_API_BASE_URL }],
   detectSubscription(context) {
     const selectedType = context.readValue('settings', 'security.auth.selectedType');
     if (selectedType !== 'gemini-api-key') {
@@ -250,10 +259,8 @@ const geminiCli: AgentDescriptor = {
     }
     return null;
   },
-  statusNotes: () => [
-    'Gemini CLI reads ~/.gemini/.env only in folders it trusts, and only when the project has no .env of its own; elsewhere it uses its built-in endpoint and bypasses the gateway.',
-  ],
-  launch: { env: { GOOGLE_GEMINI_BASE_URL: '{baseUrl}' }, baseUrlVariable: 'GOOGLE_GEMINI_BASE_URL', defaultUpstream: GEMINI_API_BASE_URL, protocol: 'gemini' },
+  statusNotes: () => [GEMINI_ENV_FILE_NOTE],
+  launch: GEMINI_LAUNCH,
 };
 
 // ---------------------------------------------------------------------------
@@ -264,10 +271,10 @@ function openCodeConfigDirectory(environment: AgentEnvironment): string {
 }
 
 /** The AI SDK packages' own endpoints (magpie provider/plugins.go:158-167 npmBase). */
-const OPENCODE_DEFAULT_UPSTREAM_BY_PACKAGE: Record<string, { upstream: string; protocol: ResolvedBaseUrlTarget['protocol'] }> = {
-  '@ai-sdk/anthropic': { upstream: 'https://api.anthropic.com/v1', protocol: 'anthropic' },
-  '@ai-sdk/openai': { upstream: 'https://api.openai.com/v1', protocol: 'openai-responses' },
-  '@ai-sdk/google': { upstream: 'https://generativelanguage.googleapis.com/v1beta', protocol: 'gemini' },
+const OPENCODE_DEFAULT_UPSTREAM_BY_PACKAGE: Record<string, string> = {
+  '@ai-sdk/anthropic': 'https://api.anthropic.com/v1',
+  '@ai-sdk/openai': 'https://api.openai.com/v1',
+  '@ai-sdk/google': 'https://generativelanguage.googleapis.com/v1beta',
 };
 const OPENCODE_PACKAGE_BY_PROVIDER_ID: Record<string, string> = {
   anthropic: '@ai-sdk/anthropic',
@@ -304,10 +311,10 @@ const openCode: AgentDescriptor = {
       if (!isPlainObjectValue(provider)) continue;
       const keyPath = joinConfigKeyPath(['provider', providerId, 'options', 'baseURL']);
       const packageName = stringValue(provider.npm) ?? OPENCODE_PACKAGE_BY_PROVIDER_ID[providerId];
-      const known = packageName ? OPENCODE_DEFAULT_UPSTREAM_BY_PACKAGE[packageName] : undefined;
+      const defaultUpstream = packageName ? OPENCODE_DEFAULT_UPSTREAM_BY_PACKAGE[packageName] : undefined;
       const options = isPlainObjectValue(provider.options) ? provider.options : {};
-      if (!stringValue(options.baseURL) && !known) continue;
-      targets.push({ file: 'config', keyPath, protocol: known?.protocol ?? 'per-provider', defaultUpstream: known?.upstream, providerLabel: providerId });
+      if (!stringValue(options.baseURL) && !defaultUpstream) continue;
+      targets.push({ file: 'config', keyPath, defaultUpstream, providerLabel: providerId });
     }
     return targets;
   },
@@ -328,7 +335,7 @@ const openCode: AgentDescriptor = {
   },
   readOnlyInputPaths: openCodeAuthPaths,
   nativeIntegration: {
-    isInstalled: (environment) => pathExists(join(openCodeConfigDirectory(environment), 'plugins', 'claude-mem.js')),
+    isInstalled: (environment) => existsSync(join(openCodeConfigDirectory(environment), 'plugins', 'claude-mem.js')),
     uninstallCommand: UNINSTALL_ALL_INTEGRATIONS,
   },
   statusNotes({ environment, connectedFilePaths }) {
@@ -369,7 +376,7 @@ const crush: AgentDescriptor = {
   userAgentPrefixes: ['crush'],
   detect: { bins: ['crush'] },
   files: [{ key: 'config', format: 'json', candidatePaths: (environment) => [crushConfigPath(environment)] }],
-  targets: [{ file: 'config', keyPath: 'providers.*.base_url', protocol: 'per-provider' }],
+  targets: [{ file: 'config', keyPath: 'providers.*.base_url' }],
 };
 
 // ---------------------------------------------------------------------------
@@ -386,20 +393,11 @@ const pi: AgentDescriptor = {
   userAgentPrefixes: ['pi-'],
   detect: { bins: ['pi'], directories: (environment) => [piAgentDirectory(environment)] },
   files: [{ key: 'models', format: 'json', candidatePaths: (environment) => [join(piAgentDirectory(environment), 'models.json')] }],
-  targets: [{ file: 'models', keyPath: 'providers.*.baseUrl', protocol: 'per-provider' }],
+  targets: [{ file: 'models', keyPath: 'providers.*.baseUrl' }],
   // Pi then sends x-session-affinity / session_id (magpie agents.go:403-416, 422-440).
-  resolveIdentitySwitches(_context, targets) {
-    return {
-      switches: targets.map((target) => ({
-        file: target.file,
-        keyPath: joinConfigKeyPath(['providers', target.providerLabel!, 'compat', 'sendSessionAffinityHeaders']),
-        value: true,
-      })),
-      notes: [],
-    };
-  },
+  resolveIdentitySwitches: (_context, targets) => ({ switches: perProviderSwitches(targets, ['compat', 'sendSessionAffinityHeaders'], true), notes: [] }),
   nativeIntegration: {
-    isInstalled: (environment) => pathExists(join(piAgentDirectory(environment), 'extensions', 'claude-mem', 'index.js')),
+    isInstalled: (environment) => existsSync(join(piAgentDirectory(environment), 'extensions', 'claude-mem', 'index.js')),
     uninstallCommand: 'npx claude-mem pi uninstall',
   },
 };
@@ -447,17 +445,10 @@ const omp: AgentDescriptor = {
         notes: [`omp ${version ?? '(version unknown)'} is older than ${OMP_SESSION_HEADER_MINIMUM_VERSION}: compat.promptCacheSessionHeader skipped, so omp sessions are told apart by their requests only`],
       };
     }
-    return {
-      switches: targets.map((target) => ({
-        file: target.file,
-        keyPath: joinConfigKeyPath(['providers', target.providerLabel!, 'compat', 'promptCacheSessionHeader']),
-        value: 'x-session-affinity',
-      })),
-      notes: [],
-    };
+    return { switches: perProviderSwitches(targets, ['compat', 'promptCacheSessionHeader'], 'x-session-affinity'), notes: [] };
   },
   nativeIntegration: {
-    isInstalled: (environment) => pathExists(join(ompAgentDirectory(environment), 'hooks', 'pre', 'claude-mem.ts')),
+    isInstalled: (environment) => existsSync(join(ompAgentDirectory(environment), 'hooks', 'pre', 'claude-mem.ts')),
     uninstallCommand: UNINSTALL_ALL_INTEGRATIONS,
   },
 };
@@ -478,7 +469,7 @@ const cline: AgentDescriptor = {
   userAgentPrefixes: ['cline'],
   detect: { bins: ['cline'], directories: (environment) => [clineDataDirectory(environment)] },
   files: [{ key: 'providers', format: 'json', candidatePaths: (environment) => [join(clineDataDirectory(environment), 'settings', 'providers.json')] }],
-  targets: [{ file: 'providers', keyPath: joinConfigKeyPath([...CLINE_PROVIDER_SETTINGS, 'baseUrl']), protocol: 'openai-chat' }],
+  targets: [{ file: 'providers', keyPath: joinConfigKeyPath([...CLINE_PROVIDER_SETTINGS, 'baseUrl']) }],
   // magpie cline.go:295 names Cline's requests with this header.
   resolveIdentitySwitches: (_context, targets) => ({
     switches: targets.length === 0 ? [] : [{ file: 'providers', keyPath: joinConfigKeyPath([...CLINE_PROVIDER_SETTINGS, 'headers', 'User-Agent']), value: 'cline' }],
@@ -511,7 +502,7 @@ const qwen: AgentDescriptor = {
     if (entries.some((entry) => isPlainObjectValue(entry) && stringValue(entry.baseUrl))) {
       throw new Error('Qwen Code\'s modelProviders entries set their own baseUrl, which wins over security.auth.baseUrl; route those by hand with `claude-mem wire routes add`');
     }
-    return [{ file: 'settings', keyPath: 'security.auth.baseUrl', protocol: 'per-provider' }];
+    return [{ file: 'settings', keyPath: 'security.auth.baseUrl' }];
   },
   detectSubscription(context) {
     const selectedType = context.readValue('settings', 'security.auth.selectedType');
@@ -530,11 +521,11 @@ function kimiDirectory(environment: AgentEnvironment): string {
   const explicit = directoryFromEnv(environment, 'KIMI_CODE_HOME');
   if (explicit) return explicit;
   const current = join(environment.home, '.kimi-code');
-  if (pathExists(current)) return current;
+  if (existsSync(current)) return current;
   const legacyShare = directoryFromEnv(environment, 'KIMI_SHARE_DIR');
   if (legacyShare) return legacyShare;
   const legacy = join(environment.home, '.kimi');
-  return pathExists(legacy) ? legacy : current;
+  return existsSync(legacy) ? legacy : current;
 }
 
 const kimi: AgentDescriptor = {
@@ -571,7 +562,7 @@ const zed: AgentDescriptor = {
   userAgentPrefixes: ['zed'],
   detect: { bins: ['zed'], directories: (environment) => [zedConfigDirectory(environment)] },
   files: [{ key: 'settings', format: 'json', candidatePaths: (environment) => [join(zedConfigDirectory(environment), 'settings.json')] }],
-  targets: [{ file: 'settings', keyPath: 'language_models.openai_compatible.*.api_url', protocol: 'openai-chat' }],
+  targets: [{ file: 'settings', keyPath: 'language_models.openai_compatible.*.api_url' }],
 };
 
 // ---------------------------------------------------------------------------
@@ -595,14 +586,7 @@ const hermes: AgentDescriptor = {
   targets: [],
   resolveTargets: (context) => providerBlockTargets(context, { file: 'config', providersKeyPath: 'providers', baseUrlKey: ['base_url'] }),
   // magpie hermes.go:267-277 names Hermes's requests with this header.
-  resolveIdentitySwitches: (_context, targets) => ({
-    switches: targets.map((target) => ({
-      file: target.file,
-      keyPath: joinConfigKeyPath(['providers', target.providerLabel!, 'extra_headers', 'User-Agent']),
-      value: 'hermes-agent',
-    })),
-    notes: [],
-  }),
+  resolveIdentitySwitches: (_context, targets) => ({ switches: perProviderSwitches(targets, ['extra_headers', 'User-Agent'], 'hermes-agent'), notes: [] }),
 };
 
 // ---------------------------------------------------------------------------
@@ -612,13 +596,6 @@ function factoryDirectory(environment: AgentEnvironment): string {
   // FACTORY_HOME_OVERRIDE replaces the home .factory sits in (magpie droid.go:4, 135-140).
   return join(directoryFromEnv(environment, 'FACTORY_HOME_OVERRIDE') ?? environment.home, '.factory');
 }
-
-/** A custom model's `provider` → the API droid speaks to its baseUrl (magpie droid.go:5-7, 68-76). */
-const DROID_PROTOCOL_BY_PROVIDER: Record<string, ResolvedBaseUrlTarget['protocol']> = {
-  anthropic: 'anthropic',
-  openai: 'openai-responses',
-  'generic-chat-completion-api': 'openai-chat',
-};
 
 /** Credential prefixes of a subscription sign-in (plan D4): a Claude OAuth token, a ChatGPT JWT. */
 const SUBSCRIPTION_CREDENTIAL_PREFIXES = [SUBSCRIPTION_TOKEN_PREFIX, 'eyJ'];
@@ -645,11 +622,9 @@ const droid: AgentDescriptor = {
     const targets: ResolvedBaseUrlTarget[] = [];
     customModels.forEach((entry: unknown, index) => {
       if (!isPlainObjectValue(entry) || !stringValue(entry.baseUrl)) return;
-      const provider = stringValue(entry.provider);
       targets.push({
         file: 'settings',
         keyPath: joinConfigKeyPath(['customModels', String(index), 'baseUrl']),
-        protocol: (provider && DROID_PROTOCOL_BY_PROVIDER[provider]) || 'per-provider',
         providerLabel: stringValue(entry.displayName) ?? stringValue(entry.model) ?? String(index),
       });
     });
@@ -703,14 +678,11 @@ const vscodeChat: AgentDescriptor = {
     const targets: ResolvedBaseUrlTarget[] = [];
     for (const { keys, value: group } of resolveJsoncKeyPath(bytes, '*')) {
       if (!isPlainObjectValue(group) || typeof group.vendor !== 'string' || !VSCODE_URL_VENDORS.has(group.vendor) || !Array.isArray(group.models)) continue;
-      // magpie writes Custom Endpoint groups with apiType "chat-completions" (vscode.go:447).
-      const protocol: ResolvedBaseUrlTarget['protocol'] = group.apiType === undefined || group.apiType === 'chat-completions' ? 'openai-chat' : 'per-provider';
       group.models.forEach((model: unknown, modelIndex) => {
         if (!isPlainObjectValue(model) || !stringValue(model.url)) return;
         targets.push({
           file: 'models',
           keyPath: joinConfigKeyPath([...keys, 'models', String(modelIndex), 'url']),
-          protocol,
           providerLabel: `${stringValue(group.name) ?? group.vendor}-${stringValue(model.id) ?? String(modelIndex)}`,
         });
       });
@@ -728,8 +700,8 @@ const aider: AgentDescriptor = {
   userAgentPrefixes: ['aider', 'litellm'],
   detect: { bins: ['aider'] },
   files: [{ key: 'config', format: 'yaml', candidatePaths: (environment) => [join(environment.home, '.aider.conf.yml')] }],
-  targets: [{ file: 'config', keyPath: 'openai-api-base', protocol: 'openai-chat', defaultUpstream: OPENAI_API_BASE_URL }],
-  launch: { env: { OPENAI_API_BASE: '{baseUrl}' }, baseUrlVariable: 'OPENAI_API_BASE', defaultUpstream: OPENAI_API_BASE_URL, protocol: 'openai-chat' },
+  targets: [{ file: 'config', keyPath: 'openai-api-base', defaultUpstream: OPENAI_API_BASE_URL }],
+  launch: { env: { OPENAI_API_BASE: '{baseUrl}' }, baseUrlVariable: 'OPENAI_API_BASE', defaultUpstream: OPENAI_API_BASE_URL },
 };
 
 // ---------------------------------------------------------------------------
@@ -750,10 +722,8 @@ const antigravityCli: AgentDescriptor = {
   files: [],
   targets: [],
   nativeIntegration: { isInstalled: antigravityHooksInstalled, uninstallCommand: 'npx claude-mem antigravity-cli uninstall' },
-  statusNotes: () => [
-    'Gemini CLI reads ~/.gemini/.env only in folders it trusts, and only when the project has no .env of its own; elsewhere it uses its built-in endpoint and bypasses the gateway.',
-  ],
-  launch: { env: { GOOGLE_GEMINI_BASE_URL: '{baseUrl}' }, baseUrlVariable: 'GOOGLE_GEMINI_BASE_URL', defaultUpstream: GEMINI_API_BASE_URL, protocol: 'gemini' },
+  statusNotes: () => [GEMINI_ENV_FILE_NOTE],
+  launch: GEMINI_LAUNCH,
 };
 
 function cursorHooksInstalled(environment: AgentEnvironment): boolean {
@@ -774,7 +744,7 @@ const cursorPrivateInference: AgentDescriptor = {
   targets: [],
   nativeIntegration: { isInstalled: cursorHooksInstalled, uninstallCommand: UNINSTALL_ALL_INTEGRATIONS },
   // No public default endpoint: the upstream is the CURSOR_LOCAL_AGENT_BASE_URL already set.
-  launch: { env: { CURSOR_LOCAL_AGENT_BASE_URL: '{baseUrl}' }, baseUrlVariable: 'CURSOR_LOCAL_AGENT_BASE_URL', defaultUpstream: '', protocol: 'per-provider' },
+  launch: { env: { CURSOR_LOCAL_AGENT_BASE_URL: '{baseUrl}' }, baseUrlVariable: 'CURSOR_LOCAL_AGENT_BASE_URL', defaultUpstream: '' },
 };
 
 export const BUILT_IN_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = [

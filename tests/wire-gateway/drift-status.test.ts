@@ -59,8 +59,11 @@ function descriptor(id: string): AgentDescriptor {
 
 /** Connect an agent in the sandbox, stamped `connectedMinutesAgo` ago. */
 async function connectInSandbox(box: WiringSandbox, agentId: string, connectedMinutesAgo = 10): Promise<void> {
-  const options = { ...box.options(recordingSideEffects()), now: () => new Date(Date.now() - connectedMinutesAgo * MINUTE_MS) };
-  await connectAgent(descriptor(agentId), options);
+  await connectAgent(descriptor(agentId), box.options(recordingSideEffects()));
+  // As if the connect ran `connectedMinutesAgo` minutes ago: its applied record's time is what bypass detection reads.
+  updateAppliedRecords(box.wiringDirectory, (agents) => {
+    agents[agentId].at = new Date(Date.now() - connectedMinutesAgo * MINUTE_MS).toISOString();
+  });
 }
 
 function statusInputs(box: WiringSandbox, overrides: Partial<WireAgentStatusInputs> = {}): WireAgentStatusInputs {
@@ -391,7 +394,7 @@ describe('bypassed (ported applied_test.go TestDriftBypassed)', () => {
   it('skips nothing when the descriptor names no prompt text field', () => {
     const box = sandbox('plain-history');
     const logPath = box.write('log.jsonl', JSON.stringify({ at: 1_700_000_000, display: '/looks like a command' }));
-    const lastUsed = { path: () => logPath, kind: 'jsonl' as const, field: 'at', unit: 's' as const };
+    const lastUsed = { path: () => logPath, field: 'at', unit: 's' as const };
     expect(readAgentLastUsed(lastUsed, box.environment)).toEqual({ kind: 'used', at: 1_700_000_000_000 });
   });
 

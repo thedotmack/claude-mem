@@ -10,15 +10,15 @@
 
 import { spawnSync } from 'child_process';
 import { randomBytes } from 'crypto';
-import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'fs';
 import { dirname, isAbsolute, join, relative, sep } from 'path';
-import { WIRE_GATEWAY_DIR_MODE, WIRE_GATEWAY_FILE_MODE } from '../../../shared/paths.js';
+import { WIRE_GATEWAY_DIR_MODE } from '../../../shared/paths.js';
 import { sanitizeEnv } from '../../../supervisor/env-sanitizer.js';
 import { readConfigFileBytes } from '../edit/config-file.js';
 import { decodeConfigText } from '../edit/text-shape.js';
 import type { AgentDescriptor, AgentEnvironment } from '../agents/types.js';
 import { diffConfigLines, type ConfigDiffLine } from './config-diff.js';
-import { readAppliedRecords, WIRING_RECORDS_VERSION } from './wiring-records.js';
+import { readAppliedRecords, updateAppliedRecords } from './wiring-records.js';
 import type { WireGatewayCaptureSource } from '../routes.js';
 
 /** Copied per folder: regular files up to this size. */
@@ -171,9 +171,7 @@ function copyClaudeMemState(options: PreviewOptions, sandbox: PreviewSandbox): v
   for (const record of Object.values(applied)) {
     for (const file of Object.values(record.files)) file.path = sandbox.mirror(file.path);
   }
-  const sandboxWiringDirectory = join(sandboxWireGatewayDirectory, 'wiring');
-  mkdirSync(sandboxWiringDirectory, { recursive: true, mode: WIRE_GATEWAY_DIR_MODE });
-  writeFileSync(join(sandboxWiringDirectory, 'applied.json'), JSON.stringify({ version: WIRING_RECORDS_VERSION, agents: applied }, null, 2), { mode: WIRE_GATEWAY_FILE_MODE });
+  updateAppliedRecords(join(sandboxWireGatewayDirectory, 'wiring'), (agents) => Object.assign(agents, applied));
 }
 
 /**

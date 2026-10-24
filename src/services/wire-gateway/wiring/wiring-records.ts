@@ -96,15 +96,24 @@ export function readAppliedRecords(wiringDirectory: string): Record<string, Appl
   }
 }
 
-/** Read-modify-write applied.json under its lock. */
-export function updateAppliedRecords(wiringDirectory: string, mutate: (agents: Record<string, AppliedAgentRecord>) => void): void {
-  const filePath = appliedRecordsPath(wiringDirectory);
+/** Read-modify-write one records file (applied.json, stash.json) under its lock. */
+function updateRecordsFile<T>(
+  wiringDirectory: string,
+  filePath: string,
+  readAgents: () => Record<string, T>,
+  mutate: (agents: Record<string, T>) => void,
+): void {
   withExclusiveFileLock(filePath, () => {
-    const agents = readAppliedRecords(wiringDirectory);
+    const agents = readAgents();
     mutate(agents);
     ensureWiringDirectory(wiringDirectory);
     writeJsonFileAtomic(filePath, { version: WIRING_RECORDS_VERSION, agents }, { mode: WIRE_GATEWAY_FILE_MODE });
   });
+}
+
+/** Read-modify-write applied.json under its lock. */
+export function updateAppliedRecords(wiringDirectory: string, mutate: (agents: Record<string, AppliedAgentRecord>) => void): void {
+  updateRecordsFile(wiringDirectory, appliedRecordsPath(wiringDirectory), () => readAppliedRecords(wiringDirectory), mutate);
 }
 
 /** `stash.json.bad-20261015-143005.123` — magpie's name, in local time (millisecond precision here). */
@@ -145,14 +154,10 @@ export function readStash(wiringDirectory: string): StashReadResult {
  * entries that could be kept: none.
  */
 export function updateStash(wiringDirectory: string, mutate: (agents: Record<string, StashedAgentEntry>) => void): void {
-  const filePath = stashPath(wiringDirectory);
-  withExclusiveFileLock(filePath, () => {
+  updateRecordsFile(wiringDirectory, stashPath(wiringDirectory), () => {
     const current = readStash(wiringDirectory);
-    const agents = current.kind === 'read' ? current.agents : {};
-    mutate(agents);
-    ensureWiringDirectory(wiringDirectory);
-    writeJsonFileAtomic(filePath, { version: WIRING_RECORDS_VERSION, agents }, { mode: WIRE_GATEWAY_FILE_MODE });
-  });
+    return current.kind === 'read' ? current.agents : {};
+  }, mutate);
 }
 
 /** The stash entry connect left for an agent. Throws when it cannot be had: disconnect never guesses prior values. */

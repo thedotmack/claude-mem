@@ -273,19 +273,6 @@ function isGatewayOriginItself(base: string, gatewayOrigin: string): boolean {
   }
 }
 
-function withoutCredentials(proxyUrl: string): string {
-  try {
-    const url = new URL(proxyUrl);
-    if (url.username || url.password) {
-      url.username = '***';
-      url.password = '';
-    }
-    return url.href.replace(/\/$/, '');
-  } catch {
-    return '(unparseable proxy URL)';
-  }
-}
-
 const MASKED_URL_SECRET = '***';
 
 /**
@@ -324,9 +311,15 @@ function describeValue(value: unknown): string {
   return value === undefined ? '(absent)' : JSON.stringify(value);
 }
 
+/** A proxy URL for `wire status`: its credentials masked (withUrlSecretsMasked), no trailing slash. */
+function proxyUrlForDisplay(proxyUrl: string): string {
+  if (!URL.canParse(proxyUrl)) return '(unparseable proxy URL)';
+  return String(withUrlSecretsMasked(proxyUrl)).replace(/\/$/, '');
+}
+
+/** `HH:MM`, local time. */
 function clockTime(epochMs: number): string {
-  const date = new Date(epochMs);
-  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+  return new Date(epochMs).toTimeString().slice(0, 5);
 }
 
 function errorText(error: unknown): string {
@@ -375,6 +368,23 @@ function agentNotes(descriptor: AgentDescriptor | undefined, record: AppliedAgen
   return descriptor.statusNotes({ environment, connectedFilePaths });
 }
 
+/** An agent's status before it is evaluated: `ok`, nothing known yet. */
+function baseStatus(descriptor: AgentDescriptor | undefined, agentId: string, captureSource: WireGatewayCaptureSource, routeIds: string[]): WireAgentStatus {
+  return {
+    agentId,
+    name: descriptor?.name ?? agentId,
+    state: 'ok',
+    detail: '',
+    fix: null,
+    captureSource,
+    routeIds,
+    connectedAt: null,
+    lastSeenAt: null,
+    lastUsedAt: null,
+    notes: [],
+  };
+}
+
 async function evaluateConnectedAgent(
   context: EvaluationContext,
   agentId: string,
@@ -384,16 +394,9 @@ async function evaluateConnectedAgent(
   const descriptor = inputs.descriptors.find((candidate) => candidate.id === agentId);
   const lastSeenAt = inputs.lastSeen.kind === 'read' ? inputs.lastSeen.lastSeenByAgent[agentId] ?? null : null;
   const status: WireAgentStatus = {
-    agentId,
-    name: descriptor?.name ?? agentId,
-    state: 'ok',
-    detail: '',
-    fix: null,
-    captureSource: record.captureSource,
-    routeIds: record.routeIds,
+    ...baseStatus(descriptor, agentId, record.captureSource, record.routeIds),
     connectedAt: record.at,
     lastSeenAt: lastSeenAt === null ? null : new Date(lastSeenAt).toISOString(),
-    lastUsedAt: null,
     notes: agentNotes(descriptor, record, inputs.environment),
   };
   const conclude = (state: WireAgentState, detail: string, fix: string | null, extra: Partial<WireAgentStatus> = {}): WireAgentStatus =>
@@ -507,12 +510,12 @@ async function evaluateConnectedAgent(
     const route: ProxyRoute | null = proxyRouteFor(`${base}/`, inputs.environment.env, systemProxy.value);
     if (!route) continue;
     const answer = await inputs.lookupProbe(`proxy ${route.proxyUrl} ${base}`, () => context.probeThroughProxy(base, route.proxyUrl));
-    if (!answer.known) return conclude('unknown', `checking whether the proxy at ${withoutCredentials(route.proxyUrl)} passes requests on to the gateway; ask again in a moment`, null);
+    if (!answer.known) return conclude('unknown', `checking whether the proxy at ${proxyUrlForDisplay(route.proxyUrl)} passes requests on to the gateway; ask again in a moment`, null);
     if (answer.value) continue;
     return conclude('proxied',
-      `${name} would send its requests for the gateway (${base}) through the proxy at ${withoutCredentials(route.proxyUrl)}, set in ${route.source}, and that proxy does not pass them on: every request fails`,
+      `${name} would send its requests for the gateway (${base}) through the proxy at ${proxyUrlForDisplay(route.proxyUrl)}, set in ${route.source}, and that proxy does not pass them on: every request fails`,
       `add 127.0.0.1 to NO_PROXY${route.source.includes('PROXY') ? ` where ${route.source} is set (your shell profile)` : ' in your shell profile'}, or have the proxy send 127.0.0.1 direct (Clash: IP-CIDR,127.0.0.0/8,DIRECT,no-resolve); then restart ${name}`,
-      { proxy: { url: withoutCredentials(route.proxyUrl), source: route.source } });
+      { proxy: { url: proxyUrlForDisplay(route.proxyUrl), source: route.source } });
   }
 
   // Was it used without reaching us?
@@ -544,16 +547,9 @@ async function evaluateRouteOnlyAgent(context: EvaluationContext, agentId: strin
   const descriptor = inputs.descriptors.find((candidate) => candidate.id === agentId);
   const lastSeenAt = inputs.lastSeen.kind === 'read' ? inputs.lastSeen.lastSeenByAgent[agentId] ?? null : null;
   const status: WireAgentStatus = {
-    agentId,
-    name: descriptor?.name ?? agentId,
-    state: 'ok',
+    ...baseStatus(descriptor, agentId, captureSource, routeIds),
     detail: `routed by \`wire run\` or \`wire routes add\` (no config wiring to check)${lastSeenAt !== null ? `; last request ${clockTime(lastSeenAt)}` : ''}`,
-    fix: null,
-    captureSource,
-    routeIds,
-    connectedAt: null,
     lastSeenAt: lastSeenAt === null ? null : new Date(lastSeenAt).toISOString(),
-    lastUsedAt: null,
     notes: agentNotes(descriptor, undefined, inputs.environment),
   };
   const answer = await identityAnswer(context, inputs.gatewayOrigin);
@@ -605,9 +601,10 @@ export async function evaluateWireAgentStatuses(inputs: WireAgentStatusInputs): 
       // Without applied.json there is no telling whether connect wired it.
       const descriptor = inputs.descriptors.find((candidate) => candidate.id === agentId);
       agents.push({
-        agentId, name: descriptor?.name ?? agentId, state: 'unknown', detail: 'wiring/applied.json cannot be read, so its config wiring cannot be checked',
-        fix: 'fix or remove wiring/applied.json by hand', captureSource: entry.captureSource, routeIds: entry.routeIds,
-        connectedAt: null, lastSeenAt: null, lastUsedAt: null, notes: [],
+        ...baseStatus(descriptor, agentId, entry.captureSource, entry.routeIds),
+        state: 'unknown',
+        detail: 'wiring/applied.json cannot be read, so its config wiring cannot be checked',
+        fix: 'fix or remove wiring/applied.json by hand',
       });
       continue;
     }

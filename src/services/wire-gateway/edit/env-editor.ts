@@ -8,7 +8,6 @@
 // quoted value may run over several lines (dotenv reads `NOTE="a\nb"` as one
 // value); its lines are one assignment, never assignments of their own.
 
-import { applyConfigFileEdit, readConfigFileBytes, removeConfigFile } from './config-file.js';
 import { decodeConfigText, editConfigTextPreservingShape } from './text-shape.js';
 
 /**
@@ -175,17 +174,4 @@ export function patchEnvDocument(originalBytes: Uint8Array, patch: EnvPatch): Ui
     }
     return lines.join('\n');
   });
-}
-
-/**
- * Delete keys from a .env file. When that leaves only whitespace and the
- * applied record says claude-mem created the file, the file itself goes
- * (magpie `DelEnvFile`); a file the user had is never removed.
- */
-export function deleteEnvFileKeys(envFilePath: string, keys: string[], options: { fileWasCreatedByClaudeMem: boolean }): void {
-  applyConfigFileEdit(envFilePath, (bytes) => patchEnvDocument(bytes, { delete: keys }));
-  const remaining = readConfigFileBytes(envFilePath);
-  if (options.fileWasCreatedByClaudeMem && remaining !== null && decodeConfigText(remaining).trim() === '') {
-    removeConfigFile(envFilePath);
-  }
 }

@@ -17,7 +17,7 @@ import {
   readWireGatewayRoutesFile,
   removeWireGatewayRoute,
 } from '../../src/services/wire-gateway/routes.js';
-import { parseWorkerServiceCommand } from '../../src/services/worker-service.js';
+import { wireGatewayServiceArguments } from '../../src/npx-cli/commands/wire.js';
 
 const encoder = new TextEncoder();
 
@@ -250,11 +250,9 @@ describe('routes.json', () => {
   });
 });
 
-describe('worker script maps `wire routes …`', () => {
+describe('npx forwards `wire routes …`', () => {
   it('passes the action and flags through', () => {
-    expect(parseWorkerServiceCommand(['wire', 'routes', 'add', 'codex', '--agent', 'codex', '--upstream', 'https://api.openai.com/v1'])).toEqual({
-      command: 'wire-routes',
-      args: ['add', 'codex', '--agent', 'codex', '--upstream', 'https://api.openai.com/v1'],
-    });
+    const argv = ['routes', 'add', 'codex', '--agent', 'codex', '--upstream', 'https://api.openai.com/v1'];
+    expect(wireGatewayServiceArguments(argv, '/work')).toEqual(argv);
   });
 });

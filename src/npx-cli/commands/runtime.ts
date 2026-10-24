@@ -81,7 +81,7 @@ function spawnPlugin(bunPath: string, args: string[], cwd: string, startFailureL
   });
 }
 
-function spawnBunWorkerCommand(command: string, extraArgs: string[] = [], hostsInteractiveChild = false): void {
+function spawnBunWorkerCommand(command: string, extraArgs: string[] = []): void {
   const pluginRoot = pluginRootOrExit();
   const bunPath = resolveBunOrExit();
   const workerScript = workerServiceScriptPath(pluginRoot);
@@ -92,7 +92,7 @@ function spawnBunWorkerCommand(command: string, extraArgs: string[] = [], hostsI
     process.exit(1);
   }
 
-  spawnPlugin(bunPath, [workerScript, command, ...extraArgs], pluginRoot, 'Bun', hostsInteractiveChild);
+  spawnPlugin(bunPath, [workerScript, command, ...extraArgs], pluginRoot);
 }
 
 function spawnBunServerCommand(command: string, extraArgs: string[] = []): void {
@@ -166,11 +166,23 @@ export function runServerWorkerStartCommand(): void {
   void spawnBunServerWithEmbedder('worker', ['start']);
 }
 
-// The wire gateway's lifecycle runs through the worker script, which maps
-// `wire <sub>` to the gateway's own wire-gateway-service.cjs.
-/** `hostsInteractiveChild`: `wire run`, whose agent owns the terminal (see shared/interactive-child-signals.ts). */
-export function runWireGatewayCommand(extraArgs: string[] = [], hostsInteractiveChild = false): void {
-  spawnBunWorkerCommand('wire', extraArgs, hostsInteractiveChild);
+/**
+ * `wire <sub>`: the installed plugin's own wire-gateway-service.cjs under Bun
+ * (plan D2: the gateway is a separate daemon, never part of the worker), from
+ * the plugin root, so `wire service install` and the worker's autostart name
+ * the same script. `hostsInteractiveChild`: `wire run`, whose agent owns the
+ * terminal (see shared/interactive-child-signals.ts).
+ */
+export function runWireGatewayCommand(extraArgs: string[], hostsInteractiveChild: boolean): void {
+  const pluginRoot = pluginRootOrExit();
+  const bunPath = resolveBunOrExit();
+  const wireScript = join(pluginRoot, 'scripts', 'wire-gateway-service.cjs');
+  if (!existsSync(wireScript)) {
+    console.error(styleText('red', `Wire gateway script not found at: ${wireScript}`));
+    console.error('The installation may be corrupted. Try: npx claude-mem install');
+    process.exit(1);
+  }
+  spawnPlugin(bunPath, [wireScript, ...extraArgs], pluginRoot, 'Bun', hostsInteractiveChild);
 }
 
 export function runStartCommand(): void {

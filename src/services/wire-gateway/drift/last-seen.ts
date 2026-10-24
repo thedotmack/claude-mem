@@ -63,10 +63,6 @@ export class AgentLastSeenTracker {
     this.changedSinceFlush = true;
   }
 
-  lastSeenAt(agentId: string): number | null {
-    return this.lastSeenByAgent.get(agentId) ?? null;
-  }
-
   snapshot(): LastSeenByAgent {
     return Object.fromEntries(this.lastSeenByAgent);
   }

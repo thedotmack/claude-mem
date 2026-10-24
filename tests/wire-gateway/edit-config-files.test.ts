@@ -17,10 +17,10 @@ import { join } from 'path';
 import { hostname } from 'os';
 import { STALE_ATOMIC_TEMP_FILE_AGE_MS, writeFileAtomic, writeJsonFileAtomic } from '../../src/shared/atomic-json.js';
 import { WIRE_GATEWAY_DIR } from '../../src/shared/paths.js';
-import { applyConfigFileEdit, atomically, removeConfigFile } from '../../src/services/wire-gateway/edit/config-file.js';
+import { atomically, readConfigFileBytes, removeConfigFile } from '../../src/services/wire-gateway/edit/config-file.js';
 import { withExclusiveFileLock } from '../../src/services/wire-gateway/edit/file-lock.js';
 import { patchTomlDocument } from '../../src/services/wire-gateway/edit/toml-editor.js';
-import { deleteEnvFileKeys, patchEnvDocument } from '../../src/services/wire-gateway/edit/env-editor.js';
+import { patchConfigBytes } from '../../src/services/wire-gateway/wiring/config-document.js';
 
 const IS_WINDOWS = process.platform === 'win32';
 const editTestsRoot = join(WIRE_GATEWAY_DIR, 'tmp', `edit-config-files-${process.pid}-${Date.now()}`);
@@ -111,7 +111,7 @@ describe('atomically', () => {
     const stepTwoFailure = new Error('step two');
     expect(() =>
       atomically([configPath, createdPath], () => {
-        applyConfigFileEdit(configPath, (bytes) => patchTomlDocument(bytes, { set: [{ keyPath: 'model_providers.cm.base_url', value: 'http://127.0.0.1:37677/r/codex' }] }));
+        writeFileAtomic(configPath, patchTomlDocument(readFileSync(configPath), { set: [{ keyPath: 'model_providers.cm.base_url', value: 'http://127.0.0.1:37677/r/codex' }] }));
         writeFileAtomic(createdPath, new TextEncoder().encode('{}'));
         if (!IS_WINDOWS) chmodSync(configPath, 0o644);
         throw stepTwoFailure;
@@ -127,7 +127,7 @@ describe('atomically', () => {
     const configPath = join(dir, 'config.toml');
     writeFileSync(configPath, 'a = 1\n');
     const result = atomically([configPath], () => {
-      applyConfigFileEdit(configPath, (bytes) => patchTomlDocument(bytes, { set: [{ keyPath: 'b', value: 2 }] }));
+      writeFileAtomic(configPath, patchTomlDocument(readFileSync(configPath), { set: [{ keyPath: 'b', value: 2 }] }));
       return 'done';
     });
     expect(result).toBe('done');
@@ -156,31 +156,28 @@ describe('atomically', () => {
   });
 });
 
-describe('applyConfigFileEdit and removeConfigFile', () => {
-  it('does not write an unchanged file', () => {
+describe('editing a file in place and removeConfigFile', () => {
+  it('an edit that changes nothing gives back the very bytes it was given (nothing to write)', () => {
     const dir = freshTestDir();
     const configPath = join(dir, 'config.toml');
     writeFileSync(configPath, 'a = 1\n');
-    const longAgoSeconds = (Date.now() - 3_600_000) / 1000;
-    utimesSync(configPath, longAgoSeconds, longAgoSeconds);
-    const mtimeBefore = statSync(configPath).mtimeMs;
-    expect(applyConfigFileEdit(configPath, (bytes) => patchTomlDocument(bytes, { delete: ['absent'] }))).toBe(false);
-    expect(statSync(configPath).mtimeMs).toBe(mtimeBefore);
+    const bytes = readFileSync(configPath);
+    expect(patchTomlDocument(bytes, { delete: ['absent'] })).toBe(bytes);
   });
 
   it('a refused edit leaves the file untouched', () => {
     const dir = freshTestDir();
     const configPath = join(dir, 'config.toml');
     writeFileSync(configPath, '[x]\na = 1\n[x]\nb = 2\n');
-    expect(() => applyConfigFileEdit(configPath, (bytes) => patchTomlDocument(bytes, { set: [{ keyPath: 'y', value: 1 }] }))).toThrow('defined twice');
+    expect(() => patchTomlDocument(readFileSync(configPath), { set: [{ keyPath: 'y', value: 1 }] })).toThrow('defined twice');
     expect(readFileSync(configPath, 'utf-8')).toBe('[x]\na = 1\n[x]\nb = 2\n');
   });
 
-  it('does not create an absent file that an edit leaves empty', () => {
+  it('a delete from an absent file leaves nothing to create', () => {
     const dir = freshTestDir();
     const absentPath = join(dir, '.env');
-    expect(applyConfigFileEdit(absentPath, (bytes) => patchEnvDocument(bytes, { delete: ['OPENAI_BASE_URL'] }))).toBe(false);
-    deleteEnvFileKeys(absentPath, ['OPENAI_BASE_URL'], { fileWasCreatedByClaudeMem: false });
+    expect(readConfigFileBytes(absentPath)).toBeNull();
+    expect(patchConfigBytes('env', absentPath, readConfigFileBytes(absentPath), { set: [], delete: ['OPENAI_BASE_URL'] })).toHaveLength(0);
     expect(existsSync(absentPath)).toBe(false);
   });
 

@@ -45,7 +45,6 @@ export interface PreparedLaunch {
   env: Record<string, string>;
   routeId: string;
   launchId: string;
-  launchBaseUrl: string;
 }
 
 /** What `wire run` does once the agent has exited. */
@@ -183,7 +182,7 @@ export async function prepareAgentLaunch(
   for (const [name, template] of Object.entries(launch.env)) env[name] = template.replaceAll('{baseUrl}', agentBaseUrl);
   // The agent is the user's, not a claude-mem helper: its own hooks must record it.
   delete env.CLAUDE_MEM_INTERNAL;
-  return { executablePath, args, env, routeId, launchId, launchBaseUrl: agentBaseUrl };
+  return { executablePath, args, env, routeId, launchId };
 }
 
 /**

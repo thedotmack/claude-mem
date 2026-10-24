@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// `claude-mem wire run` starts an interactive agent through up to three
-// claude-mem processes (npx CLI → worker-service → wire gateway script), each
-// with inherited stdio. Every one of them must outlive the agent:
+// `claude-mem wire run` starts an interactive agent through up to two
+// claude-mem processes (npx CLI → wire gateway script), each with inherited
+// stdio. Both must outlive the agent:
 //
 // - Ctrl-C reaches the whole foreground process group, so the agent already
 //   has it (an agent uses it to cancel a turn). A parent that died of it would

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // File-level helpers for the format editors (plan Phase 7 tasks 1-2): read an
-// agent's config, write it back atomically only when an edit changed it, and
-// run a multi-file edit as one group that is put back exactly on a throw.
+// agent's config, take one away, and run a multi-file edit as one group that
+// is put back exactly on a throw.
 // Ported from magpie internal/edit/file.go:314-366 `Remove`/`Atomically`
 // (MIT, Copyright (c) 2026 yetone).
 
@@ -25,21 +25,6 @@ export function readConfigFileBytes(configFilePath: string): Uint8Array | null {
 
 function bytesAreEqual(left: Uint8Array, right: Uint8Array): boolean {
   return Buffer.compare(Buffer.from(left.buffer, left.byteOffset, left.byteLength), Buffer.from(right.buffer, right.byteOffset, right.byteLength)) === 0;
-}
-
-/**
- * Run `editBytes` over the file's bytes (empty when the file is absent) and
- * write the result atomically, only when it differs. An absent file the edit
- * leaves empty (a delete from a file that is not there) is not created.
- * Returns whether the file was written. An editor that throws leaves the file
- * untouched.
- */
-export function applyConfigFileEdit(configFilePath: string, editBytes: (originalBytes: Uint8Array) => Uint8Array): boolean {
-  const originalBytes = readConfigFileBytes(configFilePath);
-  const editedBytes = editBytes(originalBytes ?? new Uint8Array(0));
-  if (bytesAreEqual(originalBytes ?? new Uint8Array(0), editedBytes)) return false;
-  writeFileAtomic(configFilePath, editedBytes);
-  return true;
 }
 
 /**

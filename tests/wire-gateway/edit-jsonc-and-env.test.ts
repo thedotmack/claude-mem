@@ -1,18 +1,29 @@
 import { afterAll, describe, expect, it } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { WIRE_GATEWAY_DIR } from '../../src/shared/paths.js';
-import { applyConfigFileEdit } from '../../src/services/wire-gateway/edit/config-file.js';
-import { deleteEnvFileKeys, patchEnvDocument, readEnvValue } from '../../src/services/wire-gateway/edit/env-editor.js';
-import { MAX_WILDCARD_EXPANSIONS, appendJsoncArrayElement, patchJsoncDocument, removeJsoncArrayElement, resolveJsoncKeyPath, type JsoncPatch } from '../../src/services/wire-gateway/edit/jsonc-editor.js';
+import { patchEnvDocument, readEnvValue } from '../../src/services/wire-gateway/edit/env-editor.js';
+import { appendJsoncArrayElement, patchJsoncDocument, removeJsoncArrayElement, resolveJsoncKeyPath } from '../../src/services/wire-gateway/edit/jsonc-editor.js';
+import type { ConfigPatch } from '../../src/services/wire-gateway/edit/text-shape.js';
+import { expandJsonWildcardKeyPath, isEmptyConfigDocument } from '../../src/services/wire-gateway/wiring/config-document.js';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
 const ONE_MEGABYTE = 1 << 20;
 const HOSTILE_INPUT_BUDGET_MS = 2_000;
 
-function patchJsonc(text: string, patch: JsoncPatch): string {
+function patchJsonc(text: string, patch: ConfigPatch): string {
   return decoder.decode(patchJsoncDocument(encoder.encode(text), patch));
+}
+
+/**
+ * A `*` set the way the wiring engine makes one: the path is expanded to one
+ * literal key path per match (expandJsonWildcardKeyPath), then every literal
+ * path is set in one patch.
+ */
+function patchJsoncEveryMatch(text: string, wildcardKeyPath: string, tailKeys: string, value: unknown): string {
+  const matches = expandJsonWildcardKeyPath(encoder.encode(text), wildcardKeyPath);
+  return patchJsonc(text, { set: matches.map((match) => ({ keyPath: tailKeys ? `${match.keyPath}.${tailKeys}` : match.keyPath, value })) });
 }
 
 function expectSetThenDeleteGivesBackOriginal(original: string, keyPath: string, value: unknown, deleteKeyPath = keyPath): string {
@@ -76,21 +87,26 @@ describe('JSONC editor: byte-exact set → delete round trips', () => {
     expectSetThenDeleteGivesBackOriginal('{ // top\n  "a": 1\n}\n', 'k', true);
   });
 
-  it('supports \\. escapes and * wildcards; resolve returns every match', () => {
+  it('supports \\. escapes; resolve expands * to every match, and an edit takes literal key paths only', () => {
     expect(patchJsonc('{"chat.defaultModel": 1}', { set: [{ keyPath: 'chat\\.defaultModel', value: 2 }] })).toBe('{"chat.defaultModel": 2}');
     const providers = '{\n  "provider": {\n    "openai": { "options": { "baseURL": "https://api.openai.com/v1" } },\n    "local": {\n      "options": {}\n    }\n  }\n}\n';
     expect(resolveJsoncKeyPath(encoder.encode(providers), 'provider.*.options.baseURL')).toEqual([
       { keys: ['provider', 'openai', 'options', 'baseURL'], value: 'https://api.openai.com/v1' },
     ]);
-    const wired = patchJsonc(providers, { set: [{ keyPath: 'provider.*.options.baseURL', value: 'http://127.0.0.1:37677/r/x' }] });
+    const wired = patchJsoncEveryMatch(providers, 'provider.*', 'options.baseURL', 'http://127.0.0.1:37677/r/x');
     expect(resolveJsoncKeyPath(encoder.encode(wired), 'provider.*.options.baseURL').map((match) => match.value)).toEqual([
       'http://127.0.0.1:37677/r/x',
       'http://127.0.0.1:37677/r/x',
     ]);
+    for (const patch of [{ set: [{ keyPath: 'provider.*.options.baseURL', value: 1 }] }, { delete: ['provider.*'] }]) {
+      expect(() => patchJsonc(providers, patch)).toThrow('"*" is for reading');
+    }
+    // `\*` is a key named `*`, not a wildcard.
+    expect(patchJsonc('{"*": 1}', { set: [{ keyPath: '\\*', value: 2 }] })).toBe('{"*": 2}');
   });
 
   it('refuses invalid JSON, a non-object top level and duplicated keys, unchanged', () => {
-    const refusals: Array<[string, JsoncPatch]> = [];
+    const refusals: Array<[string, ConfigPatch]> = [];
     for (const input of ['{"model":"old", "keep":', '{"model":"old" "keep":true}', '{"model":"old"} {"keep":true}', '[1]', '{/* open']) {
       refusals.push([input, { set: [{ keyPath: 'model', value: 'new' }] }], [input, { delete: ['model'] }], [input, { delete: ['missing'] }]);
     }
@@ -107,7 +123,7 @@ describe('JSONC editor: byte-exact set → delete round trips', () => {
     mkdirSync(dir, { recursive: true });
     const path = join(dir, 'settings.json');
     writeFileSync(path, '{"model":"old" "keep":true}');
-    expect(() => applyConfigFileEdit(path, (bytes) => patchJsoncDocument(bytes, { set: [{ keyPath: 'model', value: 'n' }] }))).toThrow('invalid JSON');
+    expect(() => patchJsoncDocument(readFileSync(path), { set: [{ keyPath: 'model', value: 'n' }] })).toThrow('invalid JSON');
     expect(readFileSync(path, 'utf-8')).toBe('{"model":"old" "keep":true}');
     rmSync(dir, { recursive: true, force: true });
   });
@@ -121,8 +137,6 @@ describe('JSONC editor: byte-exact set → delete round trips', () => {
     expectWithinBudget('commas', () => patchJsonc(`{"a":[${','.repeat(ONE_MEGABYTE)}]}`, { set: [{ keyPath: 'a', value: 1 }] }));
     const manyMembers = `{\n${Array.from({ length: 60_000 }, (_, index) => `  "k${index}": ${index},\n`).join('')}  "z": 0\n}\n`;
     expectWithinBudget('many members', () => patchJsonc(manyMembers, { set: [{ keyPath: 'new', value: 1 }], delete: ['k5'] }));
-    const manyObjects = `{"p":{${Array.from({ length: MAX_WILDCARD_EXPANSIONS + 1 }, (_, index) => `"k${index}":{}`).join(',')}}}`;
-    expect(() => patchJsonc(manyObjects, { set: [{ keyPath: 'p.*.x', value: 1 }] })).toThrow('edit the file by hand');
   });
 });
 
@@ -153,8 +167,9 @@ describe('JSONC editor: array elements by index and `*`', () => {
     expect(patchJsonc(replaced, { set: [{ keyPath: 'customModels.0.baseUrl', value: 'https://api.groq.com/openai/v1' }] })).toBe(droidSettings);
     const added = expectSetThenDeleteGivesBackOriginal(droidSettings, 'customModels.1.baseUrl', 'https://x.example.com');
     expect(added).toContain('    {\n      "baseUrl": "https://x.example.com", "model": "claude"');
-    const everyElement = expectSetThenDeleteGivesBackOriginal(droidSettings, 'customModels.*.noImageSupport', true);
+    const everyElement = patchJsoncEveryMatch(droidSettings, 'customModels.*', 'noImageSupport', true);
     expect(resolveJsoncKeyPath(encoder.encode(everyElement), 'customModels.*.noImageSupport').map((match) => match.value)).toEqual([true, true]);
+    expect(patchJsonc(everyElement, { delete: ['customModels.0.noImageSupport', 'customModels.1.noImageSupport'] })).toBe(droidSettings);
     const crlf = droidSettings.replaceAll('\n', '\r\n');
     expect(expectSetThenDeleteGivesBackOriginal(crlf, 'customModels.0.extra', 1)).toContain('\r\n      "extra": 1,\r\n');
     expectSetThenDeleteGivesBackOriginal(`\uFEFF${droidSettings}`, 'customModels.1.baseUrl', 'http://127.0.0.1:1/r/x');
@@ -169,7 +184,7 @@ describe('JSONC editor: array elements by index and `*`', () => {
     const one = patchJsonc(groups, { set: [{ keyPath: '0.models.1.url', value: 'http://127.0.0.1:37677/r/vscode-chat-work-m2/v1/chat/completions' }] });
     expect(one).toContain('{ "id": "m2", "url": "http://127.0.0.1:37677/r/vscode-chat-work-m2/v1/chat/completions" }');
     expect(patchJsonc(one, { set: [{ keyPath: '0.models.1.url', value: 'https://llm.example.com/v1/chat/completions' }] })).toBe(groups);
-    const wired = patchJsonc(groups, { set: [{ keyPath: '*.models.*.url', value: 'http://127.0.0.1:1/r/x' }] });
+    const wired = patchJsoncEveryMatch(groups, '*.models.*.url', '', 'http://127.0.0.1:1/r/x');
     expect(wired.match(/http:\/\/127\.0\.0\.1:1\/r\/x/g)).toHaveLength(2);
     expect(wired).toContain('// mine');
     expect(() => resolveJsoncKeyPath(encoder.encode(groups), 'models')).toThrow('the top level is not a JSON object');
@@ -177,14 +192,14 @@ describe('JSONC editor: array elements by index and `*`', () => {
   });
 
   it('refuses ambiguous edits unchanged: a missing element, a non-index into an array, removing an element', () => {
-    const refusals: Array<[string, JsoncPatch, RegExp]> = [
+    const refusals: Array<[string, ConfigPatch, RegExp]> = [
       ['{"a":[{"x":1}]}', { set: [{ keyPath: 'a.1.x', value: 2 }] }, /no element 1/],
       ['{"a":[{"x":1}]}', { set: [{ keyPath: 'a.01.x', value: 2 }] }, /is an array, so "01" names nothing/],
       ['{"a":[{"x":1}]}', { set: [{ keyPath: 'a.x', value: 2 }] }, /is an array, so "x" names nothing/],
       ['{"a":[{"x":1}]}', { delete: ['a.0'] }, /would shift the elements after it/],
       ['[{"x":1}]', { delete: ['0'] }, /would shift the elements after it/],
       ['[{"x":1}]', { set: [{ keyPath: '1', value: {} }] }, /no element 1/],
-      ['{"p":{"a":{},"a":{}}}', { set: [{ keyPath: 'p.*.x', value: 1 }] }, /written twice/],
+      ['{"p":{"a":{},"a":{}}}', { set: [{ keyPath: 'p.a.x', value: 1 }] }, /written twice/],
     ];
     for (const [input, patch, message] of refusals) {
       const bytes = encoder.encode(input);
@@ -200,13 +215,8 @@ describe('JSONC editor: array elements by index and `*`', () => {
     expectWithinBudget('index near the end of a long array', () => patchJsonc(smallElements, { set: [{ keyPath: `a.${ONE_MEGABYTE / 8}.x`, value: 2 }] }));
     expectWithinBudget('index past the end of a long array', () => patchJsonc(smallElements, { set: [{ keyPath: 'a.999999999999999.x', value: 2 }] }));
     expectWithinBudget('read every element', () => resolveJsoncKeyPath(encoder.encode(smallElements), 'a.*.x'));
-    expect(() => patchJsonc(smallElements, { set: [{ keyPath: 'a.*.x', value: 2 }] })).toThrow('edit the file by hand');
-    const elementCount = MAX_WILDCARD_EXPANSIONS;
-    const bigElements = `{"a":[${Array.from({ length: elementCount }, () => `{"pad":"${'p'.repeat(Math.floor(ONE_MEGABYTE / elementCount) - 12)}"}`).join(',')}]}`;
-    expectWithinBudget('`*` set over 1000 elements of 1 KB', () => patchJsonc(bigElements, { set: [{ keyPath: 'a.*.x', value: 1 }] }));
-    const bigMembers = `{"p":{${Array.from({ length: elementCount }, (_, index) => `"k${index}":{"pad":"${'p'.repeat(Math.floor(ONE_MEGABYTE / elementCount) - 20)}"}`).join(',\n')}}}`;
-    expectWithinBudget('`*` set over 1000 object members of 1 KB', () => patchJsonc(bigMembers, { set: [{ keyPath: 'p.*.x', value: 1 }] }));
-    expectWithinBudget('top-level array `*`', () => patchJsonc(`[${'[],'.repeat(ONE_MEGABYTE / 3)}[]]`, { set: [{ keyPath: '*.x', value: 1 }] }));
+    expect(() => patchJsonc(smallElements, { set: [{ keyPath: 'a.*.x', value: 2 }] })).toThrow('"*" is for reading');
+    expectWithinBudget('read every element of a top-level array', () => resolveJsoncKeyPath(encoder.encode(`[${'[],'.repeat(ONE_MEGABYTE / 3)}[]]`), '*.x'));
   });
 });
 
@@ -259,18 +269,15 @@ describe('.env editor', () => {
     expect(patchEnv('N="open\nB=2\n', { delete: ['B'] })).toBe('N="open\n');
   });
 
-  it('removes the file only when claude-mem created it', () => {
-    const dir = join(WIRE_GATEWAY_DIR, 'tmp', `edit-env-${process.pid}`);
-    mkdirSync(dir, { recursive: true });
-    const ours = join(dir, 'ours.env');
-    const theirs = join(dir, 'theirs.env');
-    writeFileSync(ours, 'GEMINI_API_KEY=x\nGOOGLE_GEMINI_BASE_URL=http://127.0.0.1:37677/r/gemini\n');
-    writeFileSync(theirs, 'GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:37677/r/gemini\n');
-    deleteEnvFileKeys(ours, ['GEMINI_API_KEY', 'GOOGLE_GEMINI_BASE_URL'], { fileWasCreatedByClaudeMem: true });
-    deleteEnvFileKeys(theirs, ['GOOGLE_GEMINI_BASE_URL'], { fileWasCreatedByClaudeMem: false });
-    expect(existsSync(ours)).toBe(false);
-    expect(readFileSync(theirs, 'utf-8')).toBe('');
-    rmSync(dir, { recursive: true, force: true });
+  it('deleting every key leaves an empty document (disconnect removes the file only when connect created it)', () => {
+    // The removal itself is the wiring engine's (file.createdByConnect && isEmptyConfigDocument), covered by
+    // the gemini-cli "No .env yet" round trip in wiring-descriptors.test.ts.
+    const emptied = patchEnvDocument(encoder.encode('GEMINI_API_KEY=x\nGOOGLE_GEMINI_BASE_URL=http://127.0.0.1:37677/r/gemini\n'), { delete: ['GEMINI_API_KEY', 'GOOGLE_GEMINI_BASE_URL'] });
+    expect(decoder.decode(emptied)).toBe('');
+    expect(isEmptyConfigDocument(emptied)).toBe(true);
+    const kept = patchEnvDocument(encoder.encode('A=1\nGOOGLE_GEMINI_BASE_URL=http://127.0.0.1:37677/r/gemini\n'), { delete: ['GOOGLE_GEMINI_BASE_URL'] });
+    expect(decoder.decode(kept)).toBe('A=1\n');
+    expect(isEmptyConfigDocument(kept)).toBe(false);
   });
 
   it('stays linear on hostile 1 MB lines (magpie\'s `(.*?)\\s*$` tail backtracked quadratically)', () => {

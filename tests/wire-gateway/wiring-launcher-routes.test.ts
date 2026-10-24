@@ -51,7 +51,7 @@ describe('wire run: one route per distinct upstream', () => {
     // The same upstream again reuses its own route.
     const secondAgain = await launch(box, 'antigravity-cli', { GOOGLE_GEMINI_BASE_URL: 'https://two.example/v1beta' });
     expect(secondAgain.routeId).toBe(second.routeId);
-    expect(secondAgain.launchBaseUrl).toBe(`${TEST_GATEWAY_ORIGIN}/r/${second.routeId}/l/abcdefghijklmnopqrstuvwxyz/v1beta`);
+    expect(secondAgain.env.GOOGLE_GEMINI_BASE_URL).toBe(`${TEST_GATEWAY_ORIGIN}/r/${second.routeId}/l/abcdefghijklmnopqrstuvwxyz/v1beta`);
   });
 
   it('refuses a route id that already carries another upstream instead of replacing it', async () => {
@@ -90,7 +90,7 @@ describe('wire run: the upstream includes the agent\'s saved config', () => {
     box.write('.gemini/.env', 'GOOGLE_GEMINI_BASE_URL=https://saved.example/v1beta\n');
     const prepared = await launch(box, 'gemini-cli', {});
     expect(readWireGatewayRoutesFile(box.routesFilePath).routes[prepared.routeId].upstreamBaseUrl).toBe('https://saved.example');
-    expect(prepared.launchBaseUrl.endsWith('/v1beta')).toBe(true);
+    expect(prepared.env.GOOGLE_GEMINI_BASE_URL.endsWith('/v1beta')).toBe(true);
   });
 
   it('the process environment still wins over the saved config', async () => {
@@ -106,25 +106,25 @@ describe('wire run: the upstream includes the agent\'s saved config', () => {
     box.write('.gemini/.env', `GOOGLE_GEMINI_BASE_URL=${TEST_GATEWAY_ORIGIN}/r/gemini-cli/v1beta\n`);
     const prepared = await launch(box, 'gemini-cli', {});
     expect(prepared.routeId).toBe('gemini-cli');
-    expect(prepared.launchBaseUrl).toBe(`${TEST_GATEWAY_ORIGIN}/r/gemini-cli/l/abcdefghijklmnopqrstuvwxyz/v1beta`);
+    expect(prepared.env.GOOGLE_GEMINI_BASE_URL).toBe(`${TEST_GATEWAY_ORIGIN}/r/gemini-cli/l/abcdefghijklmnopqrstuvwxyz/v1beta`);
     expect(Object.keys(readWireGatewayRoutesFile(box.routesFilePath).routes)).toEqual(['gemini-cli']);
   });
 
   it('a launch from inside a launched agent (env already a launch URL) relays to the same upstream and path', async () => {
     const box = sandbox('launch-nested');
     const outer = await launch(box, 'antigravity-cli', { GOOGLE_GEMINI_BASE_URL: 'https://one.example/v1beta' });
-    const inner = await launch(box, 'antigravity-cli', { GOOGLE_GEMINI_BASE_URL: outer.launchBaseUrl });
+    const inner = await launch(box, 'antigravity-cli', { GOOGLE_GEMINI_BASE_URL: outer.env.GOOGLE_GEMINI_BASE_URL });
     expect(inner.routeId).toBe(outer.routeId);
-    expect(inner.launchBaseUrl).toBe(outer.launchBaseUrl);
+    expect(inner.env.GOOGLE_GEMINI_BASE_URL).toBe(outer.env.GOOGLE_GEMINI_BASE_URL);
   });
 
   it('a nested launch whose env is a gateway launch URL keeps that route\'s upstream, not a different saved provider', async () => {
     const box = sandbox('launch-nested-saved-differs');
     const outer = await launch(box, 'gemini-cli', { GOOGLE_GEMINI_BASE_URL: 'https://google.example/v1beta' });
     box.write('.gemini/.env', 'GOOGLE_GEMINI_BASE_URL=https://other-provider.example/v1beta\n');
-    const inner = await launch(box, 'gemini-cli', { GOOGLE_GEMINI_BASE_URL: outer.launchBaseUrl });
+    const inner = await launch(box, 'gemini-cli', { GOOGLE_GEMINI_BASE_URL: outer.env.GOOGLE_GEMINI_BASE_URL });
     expect(readWireGatewayRoutesFile(box.routesFilePath).routes[inner.routeId].upstreamBaseUrl).toBe('https://google.example');
     expect(inner.routeId).toBe(outer.routeId);
-    expect(inner.launchBaseUrl).toBe(outer.launchBaseUrl);
+    expect(inner.env.GOOGLE_GEMINI_BASE_URL).toBe(outer.env.GOOGLE_GEMINI_BASE_URL);
   });
 });
