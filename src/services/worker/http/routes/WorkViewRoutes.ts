@@ -21,6 +21,8 @@ import { getProjectContext } from '../../../../utils/project-name.js';
 import { chatCompletionsHumanCopyProvider, HumanCopyWorker } from '../../../work-view/human-copy-worker.mjs';
 import { AutoRefreshWorker } from '../../../work-view/auto-refresh-worker.mjs';
 import { buildRefreshTask } from '../../../work-view/refresh-task.js';
+import { HostedIntent } from '../../../work-view/hosted-intent.js';
+import { cmemProOrigin } from '../../../../shared/cmem-gateway.js';
 import { runAgentTask } from '../../../agent-runner/run.js';
 import { ledgerSignature, readLedger } from '../../../work-view/request-groups.mjs';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
@@ -28,7 +30,7 @@ import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { validateBody } from '../middleware/validateBody.js';
 import type { SetupScan, SetupScanState } from '../../../prompt-import/setup-scan.js';
 import { readHistoryCounts, type HistoryImport } from '../../../setup/history-import.js';
-import { hasProConfiguration, readSetupState, setupStatePath, writeSetupState, type SetupStateFile, type SetupStateView } from '../../../../shared/setup-state.js';
+import { hasActiveSetupSession, hasProConfiguration, readSetupState, setupStatePath, writeSetupState, type SetupStateFile, type SetupStateView } from '../../../../shared/setup-state.js';
 
 // A request is ready for a human check once its explicit lifecycle reports it complete, shipped, or waiting for review.
 // Statuses are compared lowercased with `_` and spaces read as `-`, matching the viewer's status normalization.
@@ -141,13 +143,16 @@ interface WorkViewOptions {
   settingsPath?: string;
   /** Finish Setup's history upload to CMEM Pro. Without it POST /api/setup/import answers 503. */
   historyImport?: HistoryImport | null;
+  /** Setup extraction only. Ongoing automatic refresh continues to use the local agent runner. */
+  hostedIntent?: Pick<HostedIntent, 'run' | 'state'> | null;
 }
 
 /** One overall request on the Reveal, read from the request-group ledger so new installs (prompts only) have work too. */
 export interface SetupWorkItem { groupId: string; title: string; platform: string | null; lastActiveAt: string | null; progressPercent: number | null }
 const SETUP_WORK_SHOWN = 5;
 
-const setupScanBody = z.object({}).strict();
+const setupScanBody = z.object({ improveProduct: z.boolean().optional() }).strict();
+const setupScanPreferencesBody = z.object({ improveProduct: z.boolean() }).strict();
 // On The Go is always CMEM Pro: standalone Cloud Sync on your own tokens has no price yet (gap G1).
 const setupChoiceBody = z.object({
   branch: z.enum(['home', 'go']),
@@ -185,7 +190,7 @@ export function configuredHumanCopyProvider(settingsPath = USER_SETTINGS_PATH): 
 
 /** My Work's automatic refresh on the user's own logged-in agent, unless
  * CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH is 'false' (checked on every tick). */
-export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTINGS_PATH): AutoRefreshWorker {
+export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTINGS_PATH, setupPath = setupStatePath(), setupActive = () => false): AutoRefreshWorker {
   const openDatabase = () => {
     const database = new Database(DB_PATH, { readonly: true, create: false });
     database.exec('PRAGMA busy_timeout = 1500');
@@ -194,7 +199,9 @@ export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTIN
   return new AutoRefreshWorker({
     dir: ledgerDir,
     openDatabase,
-    enabled: () => SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true }).CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH !== 'false',
+    // Setup's only extraction is hosted. Once setup is complete, ongoing refresh keeps its existing local path.
+    enabled: () => !setupActive() && (readSetupState(setupPath).status === 'complete' || !hasActiveSetupSession(setupPath))
+      && SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true }).CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH !== 'false',
     runJob: async ({ needs, reason }) => {
       const task = buildRefreshTask({ needs, reason, dataDir: DATA_DIR, ledgerDir, pluginRoot: getPackageRoot(), openDatabase });
       return { ...(await runAgentTask(task)), steps: task.steps };
@@ -223,13 +230,12 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private setupStatePath: string;
   private settingsPath: string;
   private unsubscribeSetupScan: (() => void) | null = null;
-  /** The scan (by start time) whose finish already started the extraction. */
-  private extractedScanStartedAt: string | null = null;
   private ledgerDir: string | null;
   private databasePath: string;
   private setupWorkCache: { signature: string; work: SetupWorkItem[] | null } | null = null;
   private historyImport: HistoryImport | null;
   private unsubscribeHistoryImport: (() => void) | null = null;
+  private hostedIntent: Pick<HostedIntent, 'run' | 'state'> | null;
 
   constructor(options: WorkViewOptions = {}) {
     super();
@@ -247,10 +253,12 @@ export class WorkViewRoutes extends BaseRouteHandler {
     this.humanCopy = options.humanCopy === undefined
       ? new HumanCopyWorker({ provider: configuredHumanCopyProvider(), cachePath: join(DATA_DIR, 'work-view', 'human-copy.json') })
       : options.humanCopy;
+    this.humanCopy?.pauseWhile(() => this.setupIsActive());
     if (this.humanCopy) void this.humanCopy.load().then(() => this.humanCopy?.start());
     // A test or demo with its own ledger never starts an agent unless it passes one in.
     this.autoRefresh = options.autoRefresh === undefined
-      ? (options.ledgerDir === undefined && ledgerDir ? defaultAutoRefresh(ledgerDir) : null)
+      ? (options.ledgerDir === undefined && ledgerDir ? defaultAutoRefresh(ledgerDir, options.settingsPath, options.setupStatePath,
+        () => this.setupIsActive()) : null)
       : options.autoRefresh;
     this.autoRefresh?.start();
     this.appendWorkStateEntry = options.appendWorkStateEntry ?? null;
@@ -261,17 +269,26 @@ export class WorkViewRoutes extends BaseRouteHandler {
     this.setupStatePath = options.setupStatePath ?? setupStatePath();
     this.settingsPath = options.settingsPath ?? USER_SETTINGS_PATH;
     this.historyImport = options.historyImport ?? null;
+    this.hostedIntent = options.hostedIntent === undefined
+      ? (this.setupScan && ledgerDir && this.appendWorkStateEntry ? new HostedIntent({
+        origin: () => cmemProOrigin(),
+        intentConfigPath: join(dirname(this.settingsPath), 'intent-install.json'),
+        credentials: () => {
+          const settings = SettingsDefaultsManager.loadFromFile(this.settingsPath, true, { readOnly: true });
+          return { token: settings.CLAUDE_MEM_CLOUD_SYNC_TOKEN?.trim() ?? '', userId: settings.CLAUDE_MEM_CLOUD_SYNC_USER_ID?.trim() ?? '' };
+        },
+        ledgerDir,
+        openDatabase: () => new Database(this.databasePath, { readonly: true, create: false }),
+        appendWorkStateEntry: entry => this.appendWorkStateEntry!(entry),
+        homeProject: () => this.homeProject ?? getProjectContext(homedir()).primary,
+      }) : null)
+      : options.hostedIntent;
+    if (this.hostedIntent) this.setupScan?.setExtractor((prompts, improveProduct) => this.hostedIntent!.run(prompts, improveProduct));
     this.unsubscribeHistoryImport = this.historyImport?.subscribe(state => this.broadcast('setup-import', state)) ?? null;
-    // Scan progress rides the work view's event stream, as `setup-scan` events. A finished scan starts the
-    // extraction right away (funnel Phase 5): goals, then work, then rules land in the snapshot as each is saved.
+    // Hosted extraction is awaited inside the scan, so failures stay in the scan screen's error slot.
     this.unsubscribeSetupScan = this.setupScan?.subscribe(state => {
+      this.publish();
       this.broadcast('setup-scan', state);
-      if (state.phase === 'done' && state.startedAt !== this.extractedScanStartedAt) {
-        this.extractedScanStartedAt = state.startedAt;
-        void this.autoRefresh?.runNow({ reason: 'setup-scan' })
-          .catch(error => logger.warn('WORKER', 'Setup extraction did not start', { error: String((error as Error)?.message ?? error) }))
-          .finally(() => this.publish());
-      }
     }) ?? null;
     // Rule rows pulled from another device change what Claude Code should load; rebuild the file then too.
     this.stopRulesSync = onContextInvalidation(({ reason }) => {
@@ -281,6 +298,13 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   private stopRulesSync: () => void;
   private rulesRebuildScheduled = false;
+
+  private setupIsActive(): boolean {
+    const statePath = this.setupStatePath ?? setupStatePath();
+    const scanPhase = this.setupScan?.state().phase ?? 'idle';
+    if (!['idle', 'done', 'failed'].includes(scanPhase)) return true;
+    return readSetupState(statePath).status !== 'complete' && hasActiveSetupSession(statePath);
+  }
 
   private scheduleRulesFileRebuild(): void {
     if (this.rulesRebuildScheduled || this.closed) return;
@@ -350,10 +374,16 @@ export class WorkViewRoutes extends BaseRouteHandler {
       res.setHeader('Cache-Control', 'no-store');
       res.json(this.setupScan.state());
     }));
-    app.post('/api/setup/scan', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupScanBody), this.wrapHandler((_req, res) => {
+    app.post('/api/setup/scan', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupScanBody), this.wrapHandler((req, res) => {
       if (!this.setupScan) { res.status(503).json({ error: 'The prompt scan is unavailable on this worker.' }); return; }
       res.setHeader('Cache-Control', 'no-store');
-      res.status(202).json(this.setupScan.start());
+      res.status(202).json(this.setupScan.start(req.body.improveProduct));
+    }));
+    app.post('/api/setup/scan/preferences', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupScanPreferencesBody), this.wrapHandler((req, res) => {
+      if (!this.setupScan) { res.status(503).json({ error: 'The prompt scan is unavailable on this worker.' }); return; }
+      if (this.setupScan.state().phase === 'uploading') { res.status(409).json({ error: 'The setup upload has already started.' }); return; }
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(this.setupScan.setImproveProduct(req.body.improveProduct));
     }));
     // The funnel hand-off. The page posts the storage choice and the finish; the installer polls the state and
     // reports what it did with the choice. Node's fetch sends no Origin, so the installer passes the same guard.
@@ -486,6 +516,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
    * being extracted now, read from what has landed: goals first, then work (request groups), then rules (the story).
    */
   private setupView(snapshot: WorkViewSnapshot) {
+    const hosted = this.hostedIntent?.state();
+    if (hosted && hosted.state !== 'idle') return { scan: this.setupScan?.state() ?? null, work: this.setupWork(), extraction: hosted };
     const refresh = this.autoRefresh?.status() ?? null;
     const view = snapshot as unknown as { goals?: unknown; story?: { groups?: number; story?: unknown } | null };
     const step = refresh?.state !== 'running' ? null : !view.goals ? 'goals' : !view.story?.groups ? 'work' : 'rules';
@@ -717,7 +749,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   private publish(snapshot = this.snapshot()): void {
     if (this.closed) return;
-    const signature = JSON.stringify([snapshot.revision, snapshot.source.connected, snapshot.source.error]);
+    const signature = JSON.stringify([snapshot.revision, snapshot.source.connected, snapshot.source.error, snapshot.setup]);
     if (signature === this.signature) return;
     this.signature = signature;
     for (const client of this.clients) this.send(client, 'work-view', snapshot);

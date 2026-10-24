@@ -161,7 +161,10 @@ export function readGoals(database) {
   const goals = [...items.values()].filter((item) => !['done', 'dropped'].includes(String(item.status).toLowerCase())).map((item) => ({
     goal: item.task, kind: item.goal_kind === 'open-ask' ? 'open-ask' : 'priority', rank: Number(item.rank) || null,
     title: item.title ?? item.task, product: item.product ?? null, latestAt: item.latest_at ?? null, timesAsked: Number(item.times_asked) || null,
-    evidence: String(item.evidence ?? '').split('\n').filter(Boolean).map((line) => { const [at, ...quote] = line.split(' | '); return { at, quote: quote.join(' | ') }; }),
+    // A later local refresh changes snapshot, so it cannot reuse an older hosted JSON evidence field.
+    evidence: item.source === 'hosted-intent' && item.hosted_snapshot === item.snapshot
+      ? JSON.parse(item.evidence_json)
+      : String(item.evidence ?? '').split('\n').filter(Boolean).map((line) => { const [at, ...quote] = line.split(' | '); return { at, quote: quote.join(' | ') }; }),
   })).sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'priority' ? -1 : 1) || (a.rank ?? Infinity) - (b.rank ?? Infinity));
   return { summary: listState.human_summary ?? null, generatedAt: listState.generated_at ?? null, mapPath: listState.map_path ?? null, goals };
 }
