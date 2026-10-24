@@ -59,7 +59,7 @@ const VERSION_MARKER_PATH = path.join(
   '.claude',
   'plugins',
   'marketplaces',
-  'thedotmack',
+  'leoli-goat',
   'plugin',
   '.install-version'
 );

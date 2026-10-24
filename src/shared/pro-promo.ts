@@ -1,3 +1,4 @@
+import { PROMOTIONS_ENABLED } from './distribution.js';
 /**
  * cmem Pro trial promo copy — the single source of truth for every place
  * claude-mem tells an existing user the trial exists.
@@ -61,5 +62,6 @@ export const PRO_TRIAL_PITCH = `${PRO_TRIAL_LABEL} — memory runs off-plan. Get
  * proTrialUrl() instead so the escape codes stay at the presentation layer.
  */
 export function proTrialLine(source: ProPromoSource): string {
+  if (!PROMOTIONS_ENABLED) return '';
   return `${String.fromCodePoint(0x2728)} ${PRO_TRIAL_PITCH} ${proTrialUrl(source)}`;
 }

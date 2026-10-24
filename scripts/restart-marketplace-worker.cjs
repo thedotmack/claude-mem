@@ -5,7 +5,7 @@ const { existsSync } = require('fs');
 const path = require('path');
 const os = require('os');
 
-const INSTALLED_PATH = path.join(os.homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
+const INSTALLED_PATH = path.join(os.homedir(), '.claude', 'plugins', 'marketplaces', 'leoli-goat');
 
 if (!existsSync(INSTALLED_PATH)) {
   console.error('\x1b[31m%s\x1b[0m', `Marketplace not found at ${INSTALLED_PATH} - run npm run sync-marketplace first`);

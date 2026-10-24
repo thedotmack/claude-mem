@@ -28,7 +28,7 @@ describe('verifyCodexPluginLoaded', () => {
   });
 
   it('reports success when Codex lists claude-mem', () => {
-    const listing = 'Marketplace `claude-mem-local`\nclaude-mem@claude-mem-local  installed, enabled  13.13.1\n';
+    const listing = 'Marketplace `claude-mem-leoli-goat`\nclaude-mem@claude-mem-leoli-goat  installed, enabled  13.13.1\n';
 
     expect(verifyCodexPluginLoaded(() => spawnResult({ stdout: listing }))).toBe(true);
   });
@@ -51,7 +51,7 @@ describe('verifyCodexPluginLoaded', () => {
     const calls: string[][] = [];
     verifyCodexPluginLoaded((args) => {
       calls.push(args);
-      return spawnResult({ stdout: 'claude-mem@claude-mem-local' });
+      return spawnResult({ stdout: 'claude-mem@claude-mem-leoli-goat' });
     });
 
     expect(calls).toEqual([['plugin', 'list']]);

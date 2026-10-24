@@ -174,11 +174,11 @@ describe('fitTeamBriefSection', () => {
 describe('TeamBrain discovery notice', () => {
   const banner = { platform: 'claude-code', sessionSource: 'startup' };
 
-  it('rides the terminal banner once per install, then stays quiet', async () => {
+  it('never adds a discovery promotion to the terminal banner', async () => {
     settings = { ...NOT_JOINED, CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: 'true' };
     const first = await sessionStart(banner);
-    expect(first.systemMessage).toContain(TEAMBRAIN_DISCOVERY_LINE);
-    expect(first.systemMessage?.split(TEAMBRAIN_DISCOVERY_LINE)).toHaveLength(2);
+    expect(first.systemMessage).not.toContain(TEAMBRAIN_DISCOVERY_LINE);
+    expect(first.systemMessage).not.toContain('cmem.ai/pro');
     // The model's context never carries the promotion.
     expect(first.hookSpecificOutput?.additionalContext).not.toContain('TeamBrain');
 

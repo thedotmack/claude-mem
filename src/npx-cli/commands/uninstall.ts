@@ -70,7 +70,7 @@ function removeMarketplaceDirectory(): boolean {
 }
 
 function removeCacheDirectory(): boolean {
-  const cacheDirectory = join(pluginsDirectory(), 'cache', 'thedotmack', 'claude-mem');
+  const cacheDirectory = join(pluginsDirectory(), 'cache', 'leoli-goat', 'claude-mem');
   if (existsSync(cacheDirectory)) {
     rmSync(cacheDirectory, { recursive: true, force: true });
     return true;
@@ -80,16 +80,16 @@ function removeCacheDirectory(): boolean {
 
 function removeFromKnownMarketplaces(): void {
   const knownMarketplaces = readJsonSafe<Record<string, any>>(knownMarketplacesPath(), {});
-  if (knownMarketplaces['thedotmack']) {
-    delete knownMarketplaces['thedotmack'];
+  if (knownMarketplaces['leoli-goat']) {
+    delete knownMarketplaces['leoli-goat'];
     writeJsonFileAtomic(knownMarketplacesPath(), knownMarketplaces);
   }
 }
 
 function removeFromInstalledPlugins(): void {
   const installedPlugins = readJsonSafe<Record<string, any>>(installedPluginsPath(), {});
-  if (installedPlugins.plugins?.['claude-mem@thedotmack']) {
-    delete installedPlugins.plugins['claude-mem@thedotmack'];
+  if (installedPlugins.plugins?.['claude-mem@leoli-goat']) {
+    delete installedPlugins.plugins['claude-mem@leoli-goat'];
     writeJsonFileAtomic(installedPluginsPath(), installedPlugins);
   }
 }
@@ -129,8 +129,8 @@ export function removeFromClaudeSettings(): void {
   const settings = readJsonSafe<Record<string, any>>(claudeSettingsPath(), {});
   let dirty = false;
 
-  if (settings.enabledPlugins?.['claude-mem@thedotmack'] !== undefined) {
-    delete settings.enabledPlugins['claude-mem@thedotmack'];
+  if (settings.enabledPlugins?.['claude-mem@leoli-goat'] !== undefined) {
+    delete settings.enabledPlugins['claude-mem@leoli-goat'];
     dirty = true;
   }
 
@@ -219,7 +219,7 @@ export function removeStrayClaudeMemPaths(home: string = homedir()): number {
     }
   }
 
-  const pluginDataDir = join(pluginsDirectory(), 'data', 'claude-mem-thedotmack');
+  const pluginDataDir = join(pluginsDirectory(), 'data', 'claude-mem-leoli-goat');
   if (existsSync(pluginDataDir)) {
     try {
       rmSync(pluginDataDir, { recursive: true, force: true });

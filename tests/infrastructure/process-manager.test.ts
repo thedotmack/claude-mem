@@ -831,7 +831,7 @@ describe('ProcessManager', () => {
     // entries and bun dies with "Module not found".
     it('embeds double quotes around a script path containing spaces', () => {
       const runtimePath = String.raw`C:\Users\Test User\.bun\bin\bun.exe`;
-      const scriptPath = String.raw`C:\Users\Test User\.claude\plugins\marketplaces\thedotmack\plugin\scripts\worker-service.cjs`;
+      const scriptPath = String.raw`C:\Users\Test User\.claude\plugins\marketplaces\leoli-goat\plugin\scripts\worker-service.cjs`;
 
       const command = buildWindowsDaemonStartCommand(runtimePath, scriptPath, String.raw`C:\daemon-home`);
 

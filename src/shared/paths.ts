@@ -50,7 +50,7 @@ export const DATA_DIR = resolveDataDir();
 export const DEFAULT_CLAUDE_CONFIG_DIR = join(homedir(), '.claude');
 export const CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || DEFAULT_CLAUDE_CONFIG_DIR;
 
-export const MARKETPLACE_ROOT = join(CLAUDE_CONFIG_DIR, 'plugins', 'marketplaces', 'thedotmack');
+export const MARKETPLACE_ROOT = join(CLAUDE_CONFIG_DIR, 'plugins', 'marketplaces', 'leoli-goat');
 
 export const LOGS_DIR = join(DATA_DIR, 'logs');
 export const USER_SETTINGS_PATH = join(DATA_DIR, 'settings.json');

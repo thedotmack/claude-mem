@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "15.0.2",
+  "version": "15.0.2-leoli.1",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",
@@ -19,11 +19,11 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/thedotmack/claude-mem.git"
+    "url": "https://github.com/LeoLi-Goat/claude-mem.git"
   },
-  "homepage": "https://github.com/thedotmack/claude-mem#readme",
+  "homepage": "https://github.com/LeoLi-Goat/claude-mem#readme",
   "bugs": {
-    "url": "https://github.com/thedotmack/claude-mem/issues"
+    "url": "https://github.com/LeoLi-Goat/claude-mem/issues"
   },
   "type": "module",
   "bin": {
@@ -129,7 +129,8 @@
     "release": "np",
     "release:patch": "np patch --no-cleanup",
     "release:minor": "np minor --no-cleanup",
-    "release:major": "np major --no-cleanup"
+    "release:major": "np major --no-cleanup",
+    "fork:install": "bun scripts/install-personal-fork.ts"
   },
   "np": {
     "yarn": false,
@@ -247,5 +248,7 @@
     "esbuild": true,
     "@biomejs/biome": true,
     "better-sqlite3": true
-  }
+  },
+  "private": true,
+  "packageManager": "bun@1.4.2"
 }

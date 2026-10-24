@@ -111,9 +111,9 @@ function resolvePluginRootForLauncher(): string | null {
     if (environmentRoot) candidateRoots.push(environmentRoot);
   }
   candidateRoots.push(
-    ...listCacheVersionRootsDescending(join(claudeConfigDirectory, 'plugins', 'cache', 'thedotmack', 'claude-mem')),
+    ...listCacheVersionRootsDescending(join(claudeConfigDirectory, 'plugins', 'cache', 'leoli-goat', 'claude-mem')),
   );
-  candidateRoots.push(join(claudeConfigDirectory, 'plugins', 'marketplaces', 'thedotmack', 'plugin'));
+  candidateRoots.push(join(claudeConfigDirectory, 'plugins', 'marketplaces', 'leoli-goat', 'plugin'));
 
   for (const candidateRoot of candidateRoots) {
     // Same normalization as the bash template's `_E` handling: trim a trailing
@@ -141,7 +141,7 @@ function isPluginDisabledInClaudeSettings(): boolean {
     return Boolean(
       settings &&
       settings.enabledPlugins &&
-      settings.enabledPlugins['claude-mem@thedotmack'] === false
+      settings.enabledPlugins['claude-mem@leoli-goat'] === false
     );
   } catch {
     return false;

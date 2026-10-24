@@ -42,7 +42,7 @@ export const SYNC_AUTH_MESSAGES: Record<SyncAuthCode, string> = {
     + 'Reconnect at https://cmem.ai (Connect), then restart claude-mem. Your local memories are safe.',
   subscription_inactive:
     'Cloud sync is paused: your CMEM Pro trial or subscription is not active. '
-    + 'Renew at https://cmem.ai/pro and sync resumes on its own within the hour. Your local memories are safe.',
+    + 'Check the configured sync service or disable cloud sync. Your local memories are safe.',
 };
 
 /**

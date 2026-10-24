@@ -70,7 +70,7 @@ for (const { name, executable: shell } of shells) {
     });
 
     test('Setup falls back to the plugin cache when no plugin root is set', () => {
-      const cacheRoot = join(fixture, 'config', 'plugins', 'cache', 'thedotmack', 'claude-mem', '99.0.0');
+      const cacheRoot = join(fixture, 'config', 'plugins', 'cache', 'leoli-goat', 'claude-mem', '99.0.0');
       mkdirSync(join(cacheRoot, 'scripts'), { recursive: true });
       writeFileSync(join(cacheRoot, 'scripts', 'version-check.js'), readFileSync(join(fixture, 'scripts', 'version-check.js')));
       const result = run(shell!, setup, { CLAUDE_PLUGIN_ROOT: undefined, PLUGIN_ROOT: undefined });

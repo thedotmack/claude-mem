@@ -54,7 +54,7 @@ if (!bunAvailable()) {
 }
 
 try {
-  execSync('bun install --ignore-scripts', {
+  execSync('bun install --frozen-lockfile --ignore-scripts', {
     cwd: pluginDir,
     stdio: 'inherit',
   });

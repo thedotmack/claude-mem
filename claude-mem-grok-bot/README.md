@@ -1,5 +1,5 @@
-# claude-mem for Grok Bot
+# claude-mem for Grok Bot — personal fork
 
-Install from the Grok Bot or Cursor plugin store as **claude-mem-grok-bot**. Does not install Cursor.
+Install from a reviewed checkout of [LeoLi-Goat/claude-mem](https://github.com/LeoLi-Goat/claude-mem), following the root README. After building, run `bun dist/npx-cli/index.js install --ide grok-bot --no-auto-start`.
 
-Grok Bot has no hooks. After install: `npx claude-mem install --ide grok-bot` for a local worker plus CMEM Pro observer. `--provider host` is an explicit local loopback-shim opt-in. Set `CLAUDE_MEM_MCP_TOKEN` for remote MCP.
+The installer preserves saved provider credentials. No CMEM account or trial is required. Configure a supported personal provider before starting the worker.

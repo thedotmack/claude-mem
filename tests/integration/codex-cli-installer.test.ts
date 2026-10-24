@@ -35,7 +35,7 @@ describe('Codex legacy AGENTS.md context cleanup', () => {
 
 describe('Codex marketplace staleness detection', () => {
   const CONFIG = [
-    '[marketplaces.claude-mem-local]',
+    '[marketplaces.claude-mem-leoli-goat]',
     'last_updated = "2026-06-24T23:24:37Z"',
     'source_type = "local"',
     'source = "/gone/worktrees/night-parsnip"',
@@ -47,7 +47,7 @@ describe('Codex marketplace staleness detection', () => {
   ].join('\n');
 
   it('reads the registered source and source_type for a marketplace', () => {
-    expect(readRegisteredMarketplace(CONFIG, 'claude-mem-local')).toEqual({
+    expect(readRegisteredMarketplace(CONFIG, 'claude-mem-leoli-goat')).toEqual({
       source: '/gone/worktrees/night-parsnip',
       sourceType: 'local',
     });
@@ -65,18 +65,18 @@ describe('Codex marketplace staleness detection', () => {
   });
 
   it('reads a quoted marketplace header', () => {
-    const quoted = '[marketplaces."claude-mem-local"]\nsource = "/somewhere"\n';
-    expect(readRegisteredMarketplace(quoted, 'claude-mem-local')?.source).toBe('/somewhere');
+    const quoted = '[marketplaces."claude-mem-leoli-goat"]\nsource = "/somewhere"\n';
+    expect(readRegisteredMarketplace(quoted, 'claude-mem-leoli-goat')?.source).toBe('/somewhere');
   });
 
   it('recognizes headers and values with trailing comments', () => {
     const commented = [
-      '[marketplaces.claude-mem-local] # added by claude-mem',
+      '[marketplaces.claude-mem-leoli-goat] # added by claude-mem',
       'source_type = "local" # local checkout',
       'source = "/repo/#hash-dir" # moved later',
       '',
     ].join('\n');
-    expect(readRegisteredMarketplace(commented, 'claude-mem-local')).toEqual({
+    expect(readRegisteredMarketplace(commented, 'claude-mem-leoli-goat')).toEqual({
       source: '/repo/#hash-dir',
       sourceType: 'local',
     });
@@ -85,21 +85,21 @@ describe('Codex marketplace staleness detection', () => {
   it('ignores a header-looking line inside a multiline string', () => {
     const multiline = [
       'notes = """',
-      '[marketplaces.claude-mem-local]',
+      '[marketplaces.claude-mem-leoli-goat]',
       'source = "/not/real"',
       '"""',
       '',
     ].join('\n');
-    expect(readRegisteredMarketplace(multiline, 'claude-mem-local')).toBeNull();
+    expect(readRegisteredMarketplace(multiline, 'claude-mem-leoli-goat')).toBeNull();
   });
 
   it('flags a local source whose directory is gone', () => {
-    const entry = readRegisteredMarketplace(CONFIG, 'claude-mem-local');
+    const entry = readRegisteredMarketplace(CONFIG, 'claude-mem-leoli-goat');
     expect(isStaleLocalMarketplace(entry, () => false)).toBe(true);
   });
 
   it('leaves a healthy local source alone', () => {
-    const entry = readRegisteredMarketplace(CONFIG, 'claude-mem-local');
+    const entry = readRegisteredMarketplace(CONFIG, 'claude-mem-leoli-goat');
     expect(isStaleLocalMarketplace(entry, () => true)).toBe(false);
   });
 
@@ -107,12 +107,12 @@ describe('Codex marketplace staleness detection', () => {
     // Git/npm sources are fetched into a cache, so their `source` is a URL that
     // will never exist on disk; removing them would break a working install.
     const gitConfig = [
-      '[marketplaces.claude-mem-local]',
+      '[marketplaces.claude-mem-leoli-goat]',
       'source_type = "git"',
-      'source = "https://github.com/thedotmack/claude-mem.git"',
+      'source = "https://github.com/leoli-goat/claude-mem.git"',
       '',
     ].join('\n');
-    const entry = readRegisteredMarketplace(gitConfig, 'claude-mem-local');
+    const entry = readRegisteredMarketplace(gitConfig, 'claude-mem-leoli-goat');
 
     expect(isStaleLocalMarketplace(entry, () => false)).toBe(false);
   });
@@ -125,39 +125,39 @@ describe('Codex marketplace staleness detection', () => {
 
 describe('Codex CLI installer config repair', () => {
   it('adds claude-mem plugin enablement when missing', () => {
-    const result = setTomlPluginEnabled('model = "gpt-5.5"\n', 'claude-mem@claude-mem-local', true);
+    const result = setTomlPluginEnabled('model = "gpt-5.5"\n', 'claude-mem@claude-mem-leoli-goat', true);
 
-    expect(result).toContain('[plugins."claude-mem@claude-mem-local"]');
+    expect(result).toContain('[plugins."claude-mem@claude-mem-leoli-goat"]');
     expect(result).toContain('enabled = true');
   });
 
   it('updates existing plugin enablement in place', () => {
     const input = [
-      '[plugins."claude-mem@thedotmack"]',
+      '[plugins."claude-mem@leoli-goat"]',
       'enabled = true',
       '',
-      '[marketplaces.claude-mem-local]',
+      '[marketplaces.claude-mem-leoli-goat]',
       'source_type = "git"',
       '',
     ].join('\n');
 
-    const result = setTomlPluginEnabled(input, 'claude-mem@thedotmack', false);
+    const result = setTomlPluginEnabled(input, 'claude-mem@leoli-goat', false);
 
-    expect(result).toContain('[plugins."claude-mem@thedotmack"]\nenabled = false');
-    expect(result).toContain('[marketplaces.claude-mem-local]');
+    expect(result).toContain('[plugins."claude-mem@leoli-goat"]\nenabled = false');
+    expect(result).toContain('[marketplaces.claude-mem-leoli-goat]');
   });
 
   it('inserts enabled into an existing plugin section without touching the next section', () => {
     const input = [
-      '[plugins."claude-mem@claude-mem-local"]',
+      '[plugins."claude-mem@claude-mem-leoli-goat"]',
       '',
       '[hooks.state]',
       '',
     ].join('\n');
 
-    const result = setTomlPluginEnabled(input, 'claude-mem@claude-mem-local', true);
+    const result = setTomlPluginEnabled(input, 'claude-mem@claude-mem-leoli-goat', true);
 
-    expect(result).toContain('[plugins."claude-mem@claude-mem-local"]\nenabled = true\n');
+    expect(result).toContain('[plugins."claude-mem@claude-mem-leoli-goat"]\nenabled = true\n');
     expect(result).toContain('[hooks.state]');
   });
 
@@ -166,7 +166,7 @@ describe('Codex CLI installer config repair', () => {
       '[features]',
       'shell_snapshot = true',
       '',
-      '[plugins."claude-mem@claude-mem-local"]',
+      '[plugins."claude-mem@claude-mem-leoli-goat"]',
       'enabled = true',
       '',
     ].join('\n');
@@ -174,7 +174,7 @@ describe('Codex CLI installer config repair', () => {
     const result = setTomlFeatureEnabled(input, 'hooks', true);
 
     expect(result).toContain('[features]\nhooks = true\nshell_snapshot = true');
-    expect(result).toContain('[plugins."claude-mem@claude-mem-local"]');
+    expect(result).toContain('[plugins."claude-mem@claude-mem-leoli-goat"]');
     expect(result).not.toContain('codex_hooks');
   });
 
@@ -187,9 +187,9 @@ describe('Codex CLI installer config repair', () => {
       '',
       '[mcp_servers.mcp-search]',
       'command = "node"',
-      'args = ["/Users/alexnewman/.codex/plugins/cache/claude-mem-local/claude-mem/12.7.5/scripts/mcp-server.cjs"]',
+      'args = ["/Users/alexnewman/.codex/plugins/cache/claude-mem-leoli-goat/claude-mem/12.7.5/scripts/mcp-server.cjs"]',
       '',
-      '[plugins."claude-mem@claude-mem-local"]',
+      '[plugins."claude-mem@claude-mem-leoli-goat"]',
       'enabled = true',
       '',
     ].join('\n');
@@ -197,7 +197,7 @@ describe('Codex CLI installer config repair', () => {
     const result = removeLegacyCodexMcpSearchConfig(input);
 
     expect(result).toContain('[mcp_servers.playwright]');
-    expect(result).toContain('[plugins."claude-mem@claude-mem-local"]');
+    expect(result).toContain('[plugins."claude-mem@claude-mem-leoli-goat"]');
     expect(result).not.toContain('[mcp_servers.mcp-search]');
     expect(result).not.toContain('12.7.5/scripts/mcp-server.cjs');
   });

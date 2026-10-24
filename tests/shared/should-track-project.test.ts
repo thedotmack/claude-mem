@@ -23,7 +23,7 @@ const { shouldTrackProject } = await import('../../src/shared/should-track-proje
 
 const PLUGINS_DIR_NAME = 'plugins';
 const PLUGIN_CACHE_DIR_NAME = 'cache';
-const CLAUDE_MEM_PLUGIN_OWNER = 'thedotmack';
+const CLAUDE_MEM_PLUGIN_OWNER = 'leoli-goat';
 const CLAUDE_MEM_PLUGIN_NAME = 'claude-mem';
 const PLUGIN_VERSION_DIR_NAME = '13.12.4';
 const PLUGIN_RUNTIME_DIR_NAME = 'plugin';

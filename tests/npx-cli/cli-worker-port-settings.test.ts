@@ -253,7 +253,7 @@ describe('OpenClaw install registers the worker port from settings.json', () => 
 
   beforeAll(() => {
     // A pre-built plugin bundle where the installer looks for one.
-    const dist = join(sandbox, '.claude', 'plugins', 'marketplaces', 'thedotmack', 'openclaw', 'dist');
+    const dist = join(sandbox, '.claude', 'plugins', 'marketplaces', 'leoli-goat', 'openclaw', 'dist');
     mkdirSync(dist, { recursive: true });
     writeFileSync(join(dist, 'index.js'), '');
 

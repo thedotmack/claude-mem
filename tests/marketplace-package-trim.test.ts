@@ -102,14 +102,14 @@ describe('writeTrimmedMarketplaceManifest', () => {
 
     expect(pluginNames()).toEqual(['claude-mem']);
     const manifest = JSON.parse(readFileSync(manifestPath(), 'utf-8'));
-    expect(manifest.name).toBe('thedotmack');
+    expect(manifest.name).toBe('leoli-goat');
     expect(manifest.plugins[0].source).toBe('./plugin');
   });
 
   it('keeps an entry once its source directory ships, and keeps non-path sources', () => {
     mkdirSync(path.join(marketplaceDir, 'cowork'), { recursive: true });
     writeFileSync(manifestPath(), JSON.stringify({
-      name: 'thedotmack',
+      name: 'leoli-goat',
       plugins: [
         { name: 'claude-mem', source: './plugin' },
         { name: 'claude-mem-cowork', source: './cowork' },

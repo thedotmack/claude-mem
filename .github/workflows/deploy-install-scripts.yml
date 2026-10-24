@@ -10,6 +10,7 @@ on:
 
 jobs:
   deploy:
+    if: github.repository == 'thedotmack/claude-mem'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -11,7 +11,7 @@ const script = path.resolve(import.meta.dir, '../../scripts/activate-progressive
 function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'cmem-activation-')); roots.push(root);
   const source = path.join(root, 'source/plugin'), claude = path.join(root, 'claude'), codex = path.join(root, 'codex'), data = path.join(root, 'memory'), workspace = path.join(root, 'workspace');
-  const targets = [path.join(claude, 'plugins/marketplaces/thedotmack/plugin'), path.join(claude, 'plugins/cache/thedotmack/claude-mem/13.34.2'), path.join(codex, 'plugins/cache/claude-mem-local/claude-mem/13.34.2')];
+  const targets = [path.join(claude, 'plugins/marketplaces/leoli-goat/plugin'), path.join(claude, 'plugins/cache/leoli-goat/claude-mem/13.34.2'), path.join(codex, 'plugins/cache/claude-mem-leoli-goat/claude-mem/13.34.2')];
   const write = (file: string, content: string) => { mkdirSync(path.dirname(file), {recursive: true}); writeFileSync(file, content); };
   for (const folder of [source, ...targets]) {
     write(path.join(folder, '.claude-plugin/plugin.json'), JSON.stringify({name: 'claude-mem', version: '13.34.2'}));

@@ -32,8 +32,8 @@ describe('uninstall: plugin data directory', () => {
   });
 
   it('removes the data dir under CLAUDE_CONFIG_DIR and leaves ~/.claude alone', () => {
-    const activeDataDir = join(configDir, 'plugins', 'data', 'claude-mem-thedotmack');
-    const otherProfileDataDir = join(home, '.claude', 'plugins', 'data', 'claude-mem-thedotmack');
+    const activeDataDir = join(configDir, 'plugins', 'data', 'claude-mem-leoli-goat');
+    const otherProfileDataDir = join(home, '.claude', 'plugins', 'data', 'claude-mem-leoli-goat');
     mkdirSync(activeDataDir, { recursive: true });
     mkdirSync(otherProfileDataDir, { recursive: true });
 

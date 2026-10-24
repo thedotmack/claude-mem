@@ -1,23 +1,17 @@
 {
-  "name": "thedotmack",
+  "name": "leoli-goat",
   "owner": {
-    "name": "Alex Newman"
+    "name": "LeoLi-Goat"
   },
   "metadata": {
-    "description": "Plugins by Alex Newman (thedotmack)"
+    "description": "Personal claude-mem fork: local gateway, no promotions, manual updates"
   },
   "plugins": [
     {
       "name": "claude-mem",
-      "version": "15.0.2",
+      "version": "15.0.2-leoli.1",
       "source": "./plugin",
       "description": "Persistent memory system for Claude Code - context compression across sessions"
-    },
-    {
-      "name": "claude-mem-cowork",
-      "version": "0.1.4",
-      "source": "./cowork",
-      "description": "Claude-Mem for Cowork (Claude app cloud sessions) - hooks stream tool use to cmem.ai and inject observations into new sessions and agents"
     }
   ]
 }

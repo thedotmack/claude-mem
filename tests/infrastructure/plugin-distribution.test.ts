@@ -285,8 +285,8 @@ describe('Plugin Distribution - Codex Marketplace', () => {
     const mcp = JSON.parse(readFileSync(mcpPath, 'utf-8'));
     const command = mcp.mcpServers['mcp-search'].args.join(' ');
 
-    expect(command).toContain('.codex/plugins/cache/claude-mem-local/claude-mem');
-    expect(command).toContain('plugins/cache/thedotmack/claude-mem');
+    expect(command).toContain('.codex/plugins/cache/claude-mem-leoli-goat/claude-mem');
+    expect(command).toContain('plugins/cache/leoli-goat/claude-mem');
     expect(command).toContain('claude-mem: mcp server not found');
   });
 });
@@ -378,12 +378,12 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
   });
 
   it('should include CLAUDE_PLUGIN_ROOT fallback in the Setup hook command (#1215)', () => {
-    expect(setupCommand()).toContain('$_C/plugins/marketplaces/thedotmack/plugin');
+    expect(setupCommand()).toContain('$_C/plugins/marketplaces/leoli-goat/plugin');
   });
 
   it('should try cache path before marketplaces fallback in the Setup hook command (#1533)', () => {
-    const cachePath = '$_C/plugins/cache/thedotmack/claude-mem';
-    const marketplacesPath = '$_C/plugins/marketplaces/thedotmack/plugin';
+    const cachePath = '$_C/plugins/cache/leoli-goat/claude-mem';
+    const marketplacesPath = '$_C/plugins/marketplaces/leoli-goat/plugin';
     const command = setupCommand();
     expect(command).toContain(cachePath);
     expect(command.indexOf(cachePath)).toBeLessThan(command.indexOf(marketplacesPath));
@@ -411,16 +411,16 @@ describe('Plugin Distribution - Startup Root Resolution', () => {
     expect(command).toContain('.claude');
     expect(command).toContain('CLAUDE_PLUGIN_ROOT');
     expect(command).toContain('PLUGIN_ROOT');
-    expect(command).toContain('plugins/marketplaces/thedotmack/plugin');
-    expect(command).toContain('plugins/cache/thedotmack/claude-mem');
+    expect(command).toContain('plugins/marketplaces/leoli-goat/plugin');
+    expect(command).toContain('plugins/cache/leoli-goat/claude-mem');
     expect(command).toContain('mcp-server.cjs');
     expect(command).toMatch(/require\(p\.resolve\(R,'scripts',["']mcp-server\.cjs["']\)\)/);
     expect(command).not.toContain('child_process');
     expect(command).not.toContain('.spawn(');
     // No bare absolute "/scripts/..." path leaks through.
     expect(command).not.toContain('"/scripts/mcp-server.cjs"');
-    expect(command.indexOf('plugins/cache/thedotmack/claude-mem')).toBeLessThan(
-      command.indexOf('plugins/marketplaces/thedotmack/plugin')
+    expect(command.indexOf('plugins/cache/leoli-goat/claude-mem')).toBeLessThan(
+      command.indexOf('plugins/marketplaces/leoli-goat/plugin')
     );
   });
 
@@ -429,12 +429,12 @@ describe('Plugin Distribution - Startup Root Resolution', () => {
       expect(command).toContain('${CLAUDE_CONFIG_DIR:-$HOME/.claude}');
       expect(command).toContain('export PATH=');
       expect(command).toContain('while IFS= read -r _R');
-      expect(command).toContain('$_C/plugins/marketplaces/thedotmack/plugin');
-      expect(command).toContain('$_C/plugins/cache/thedotmack/claude-mem');
+      expect(command).toContain('$_C/plugins/marketplaces/leoli-goat/plugin');
+      expect(command).toContain('$_C/plugins/cache/leoli-goat/claude-mem');
       expect(command).toContain('[ -f "$_Q/scripts/');
       expect(command).toContain('command -v cygpath');
-      expect(command.indexOf('$_C/plugins/cache/thedotmack/claude-mem')).toBeLessThan(
-        command.indexOf('$_C/plugins/marketplaces/thedotmack/plugin')
+      expect(command.indexOf('$_C/plugins/cache/leoli-goat/claude-mem')).toBeLessThan(
+        command.indexOf('$_C/plugins/marketplaces/leoli-goat/plugin')
       );
     }
   });
@@ -445,8 +445,8 @@ describe('Plugin Distribution - Startup Root Resolution', () => {
     for (const command of setupCommands) {
       expect(command).toContain('${CLAUDE_CONFIG_DIR:-$HOME/.claude}');
       expect(command).toContain('while IFS= read -r _R');
-      expect(command).toContain('$_C/plugins/marketplaces/thedotmack/plugin');
-      expect(command).toContain('$_C/plugins/cache/thedotmack/claude-mem');
+      expect(command).toContain('$_C/plugins/marketplaces/leoli-goat/plugin');
+      expect(command).toContain('$_C/plugins/cache/leoli-goat/claude-mem');
       expect(command).toContain('[ -f "$_Q/scripts/');
       expect(command).not.toContain('$HOME/.claude/plugins/');
     }
@@ -722,8 +722,8 @@ const MCP_EXPECTED = buildShellCommand({
   notFoundMessage: 'claude-mem: mcp server not found',
   mcpExtraCandidates: ['$PWD/plugin', '$PWD'],
   mcpExtraCacheRoots: [
-    '$HOME/.codex/plugins/cache/claude-mem-local/claude-mem',
-    '$HOME/.codex/plugins/cache/thedotmack/claude-mem',
+    '$HOME/.codex/plugins/cache/claude-mem-leoli-goat/claude-mem',
+    '$HOME/.codex/plugins/cache/leoli-goat/claude-mem',
   ],
 });
 
@@ -911,7 +911,7 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
     // behavior; running all six only multiplies shell spawns.
     const codexRoot = mkdtempSync(path.join(tmpdir(), 'cm-codex-root-'));
     const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
-    const cacheRoot = path.join(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem', '99.0.0');
+    const cacheRoot = path.join(home, '.claude', 'plugins', 'cache', 'leoli-goat', 'claude-mem', '99.0.0');
     writeProbeScripts(codexRoot);
     // The Codex copy deliberately has no node_modules — that is the bug shape.
     writeProbeScripts(cacheRoot);
@@ -956,7 +956,7 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
         const home = path.join(sandbox, 'home');
         const configDir = path.join(home, '.claude');
         const hostRoot = makeRoot(path.join(sandbox, 'codex-plugin'), hostRootHasDependencies);
-        const cacheRoot = makeRoot(path.join(configDir, 'plugins', 'cache', 'thedotmack', 'claude-mem', '99.0.0'), true);
+        const cacheRoot = makeRoot(path.join(configDir, 'plugins', 'cache', 'leoli-goat', 'claude-mem', '99.0.0'), true);
         const command = buildCodexWindowsCommand(['hook', 'codex', 'session-init'], { requireDependencies: true });
         const env: Record<string, string | undefined> = {
           ...process.env, HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: configDir, CLAUDE_PLUGIN_ROOT: hostRoot,
@@ -991,7 +991,7 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
 
   it('resolves _P from the cache directory when CLAUDE_PLUGIN_ROOT is unset', () => {
     const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
-    const cacheRoot = path.join(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem', '99.0.0');
+    const cacheRoot = path.join(home, '.claude', 'plugins', 'cache', 'leoli-goat', 'claude-mem', '99.0.0');
     writeProbeScripts(cacheRoot);
     try {
       for (const { command } of claudeCommands()) {
@@ -1008,7 +1008,7 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
 
   it('prefers the highest cache version over the newest mtime and skips .orphaned_at dirs (2026-07-22 restart storm)', () => {
     const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
-    const cacheBase = path.join(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem');
+    const cacheBase = path.join(home, '.claude', 'plugins', 'cache', 'leoli-goat', 'claude-mem');
     const makeVersion = (version: string) => {
       const root = path.join(cacheBase, version);
       writeProbeScripts(root);

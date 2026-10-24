@@ -216,7 +216,7 @@ export async function collectDiagnostics(
     ".claude",
     "plugins",
     "marketplaces",
-    "thedotmack"
+    "leoli-goat"
   );
   const cwd = process.cwd();
   const isDevMode = cwd.includes("claude-mem") && !cwd.includes(".claude");

@@ -48,7 +48,7 @@ describe('install --runtime server help text (#4131)', () => {
 
     expect(helpLine).not.toContain('generates an API key');
     expect(explanation).toContain('only when CLAUDE_MEM_SERVER_DATABASE_URL is set');
-    expect(explanation).toContain('set CLAUDE_MEM_SERVER_DATABASE_URL before running npx claude-mem server keys rotate');
+    expect(explanation).toContain('set CLAUDE_MEM_SERVER_DATABASE_URL before running bun dist/npx-cli/index.js server keys rotate');
   });
 
   it('does not claim to inject the IDE MCP config, which the installer only prints', () => {

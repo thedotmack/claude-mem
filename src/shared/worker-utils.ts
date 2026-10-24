@@ -572,7 +572,7 @@ export function compareVersionsDescending(a: string, b: string): number {
 }
 
 export function cacheWorkerScriptCandidates(
-  cacheRoot: string = path.join(path.dirname(path.dirname(MARKETPLACE_ROOT)), 'cache', 'thedotmack', 'claude-mem')
+  cacheRoot: string = path.join(path.dirname(path.dirname(MARKETPLACE_ROOT)), 'cache', 'leoli-goat', 'claude-mem')
 ): WorkerScriptCandidate[] {
   try {
     return readdirSync(cacheRoot)
@@ -622,7 +622,7 @@ export interface WorkerScriptSearchRoots {
 
 function defaultWorkerScriptSearchRoots(): WorkerScriptSearchRoots {
   return {
-    cacheRoot: path.join(path.dirname(path.dirname(MARKETPLACE_ROOT)), 'cache', 'thedotmack', 'claude-mem'),
+    cacheRoot: path.join(path.dirname(path.dirname(MARKETPLACE_ROOT)), 'cache', 'leoli-goat', 'claude-mem'),
     marketplaceRoot: MARKETPLACE_ROOT,
     cwd: process.cwd(),
   };

@@ -216,7 +216,7 @@ describe('readRegisteredCacheVersions', () => {
     const registryPath = writeRegistry(JSON.stringify({
       version: 2,
       plugins: {
-        'claude-mem@thedotmack': [{ scope: 'user', installPath: '/home/u/.claude/plugins/cache/thedotmack/claude-mem/13.20.0', version: '13.20.0' }],
+        'claude-mem@leoli-goat': [{ scope: 'user', installPath: '/home/u/.claude/plugins/cache/leoli-goat/claude-mem/13.20.0', version: '13.20.0' }],
         'other@someone': [{ installPath: '/home/u/.claude/plugins/cache/someone/other/9.9.9' }],
       },
     }));
@@ -237,7 +237,7 @@ describe('readRegisteredCacheVersions', () => {
     // Downgrade with the worker stopped: Claude Code loads 13.20.0, which is
     // outside the newest-2 budget. Deleting it would break the registered install.
     const registryPath = writeRegistry(JSON.stringify({
-      plugins: { 'claude-mem@thedotmack': [{ installPath: join(root, 'cache', '13.20.0') }] },
+      plugins: { 'claude-mem@leoli-goat': [{ installPath: join(root, 'cache', '13.20.0') }] },
     }));
     const cacheRoot = join(root, 'cache');
     for (const version of ['13.20.0', '13.24.0', '13.25.0', '13.25.1']) {

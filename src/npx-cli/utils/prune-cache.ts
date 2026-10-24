@@ -240,7 +240,7 @@ export async function probeLiveWorker(): Promise<LiveWorkerProbe> {
  */
 export function readRegisteredCacheVersions(registryPath: string = installedPluginsPath()): string[] {
   const registry = readJsonSafe<{ plugins?: Record<string, unknown> } | null>(registryPath, {});
-  const entries = registry?.plugins?.['claude-mem@thedotmack'];
+  const entries = registry?.plugins?.['claude-mem@leoli-goat'];
   if (!Array.isArray(entries)) return [];
   return entries
     .map(entry => (entry as { installPath?: unknown } | null)?.installPath)

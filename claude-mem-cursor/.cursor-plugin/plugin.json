@@ -1,12 +1,12 @@
 {
   "name": "claude-mem-cursor",
-  "version": "15.0.2",
+  "version": "15.0.2-leoli.1",
   "description": "Persistent memory for Cursor. Hooks ingest tool use; MCP searches past sessions. Works with a local worker or a remote cmem.ai worker, and a local host-login observer or remote inference.",
   "author": {
     "name": "Alex Newman"
   },
   "homepage": "https://github.com/thedotmack/claude-mem",
-  "repository": "https://github.com/thedotmack/claude-mem",
+  "repository": "https://github.com/LeoLi-Goat/claude-mem",
   "license": "Apache-2.0",
   "keywords": [
     "claude-mem",

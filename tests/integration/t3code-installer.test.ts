@@ -46,9 +46,9 @@ if (args[1] === 'marketplace' && args[2] === 'add') {
 }
 if (args[1] === 'add' || args[1] === 'install') {
   const known = JSON.parse(fs.readFileSync(path.join(home, 'plugins', 'known_marketplaces.json')));
-  const root = known.thedotmack.installLocation;
+  const root = known['leoli-goat'].installLocation;
   const version = JSON.parse(fs.readFileSync(path.join(root, 'plugin', '.claude-plugin', 'plugin.json'))).version;
-  const marketplace = args[1] === 'add' ? 'claude-mem-local' : 'thedotmack';
+  const marketplace = args[1] === 'add' ? 'claude-mem-leoli-goat' : 'leoli-goat';
   const cache = path.join(home, 'plugins', 'cache', marketplace, 'claude-mem', version);
   for (const file of ['.claude-plugin/plugin.json', '.codex-plugin/plugin.json', '.mcp.json', 'scripts/worker-service.cjs', 'scripts/mcp-server.cjs', 'hooks/hooks.json', 'hooks/codex-hooks.json']) {
     const target = path.join(cache, file);
@@ -143,7 +143,7 @@ describe('T3 Code launch compatibility', () => {
   it.each(['--setting-sources ""', '--setting-sources=project,local', '--disable-all-hooks', '--strict-mcp-config=true'])('refuses Claude overrides that block memory: %s', launchArgs => {
     expect(() => assertT3CodePluginLoading(provider('claudeAgent', launchArgs))).toThrow();
   });
-  it.each(['-c features.hooks=false', '--config=features.hooks=false', '--disable hooks', '--disable=hooks', '-c \'plugins."claude-mem@claude-mem-local".enabled=false\''])('refuses Codex overrides that block memory: %s', launchArgs => {
+  it.each(['-c features.hooks=false', '--config=features.hooks=false', '--disable hooks', '--disable=hooks', '-c \'plugins."claude-mem@claude-mem-leoli-goat".enabled=false\''])('refuses Codex overrides that block memory: %s', launchArgs => {
     expect(() => assertT3CodePluginLoading(provider('codex', launchArgs))).toThrow();
   });
 });
@@ -176,19 +176,19 @@ describe('T3 Code native plugin installation', () => {
       expect(existsSync(join(directory, 'never-write-shadow'))).toBe(false);
       const codexConfig = readFileSync(join(codexHome, 'config.toml'), 'utf-8');
       expect(codexConfig).toContain('[features]\nhooks = true');
-      expect(codexConfig).toContain('[plugins."claude-mem@claude-mem-local"]\nenabled = true');
+      expect(codexConfig).toContain('[plugins."claude-mem@claude-mem-leoli-goat"]\nenabled = true');
       expect(codexConfig).toContain('[mcp_servers.other]\ncommand = "keep-command"');
       const claudeSettings = JSON.parse(readFileSync(join(claudeHome, 'settings.json'), 'utf-8'));
-      expect(claudeSettings.enabledPlugins['claude-mem@thedotmack']).toBe(true);
+      expect(claudeSettings.enabledPlugins['claude-mem@leoli-goat']).toBe(true);
       expect(claudeSettings.enabledPlugins['other@marketplace']).toBe(true);
       const calls = readFileSync(log, 'utf-8').trim().split('\n').map(line => JSON.parse(line));
       expect(calls.filter(call => call.args[1] === 'install').every(call => call.home === claudeHome)).toBe(true);
       expect(calls.filter(call => call.args[1] === 'add').every(call => call.home === codexHome)).toBe(true);
       expect(uninstallT3Code({ settingsPath })).toBe(0);
       expect(t3CodeStatus({ settingsPath })).toBe(1);
-      expect(readFileSync(join(codexHome, 'config.toml'), 'utf-8')).toContain('[plugins."claude-mem@claude-mem-local"]\nenabled = false');
+      expect(readFileSync(join(codexHome, 'config.toml'), 'utf-8')).toContain('[plugins."claude-mem@claude-mem-leoli-goat"]\nenabled = false');
       const removed = JSON.parse(readFileSync(join(claudeHome, 'settings.json'), 'utf-8'));
-      expect(removed.enabledPlugins['claude-mem@thedotmack']).toBe(false);
+      expect(removed.enabledPlugins['claude-mem@leoli-goat']).toBe(false);
       expect(removed.enabledPlugins['other@marketplace']).toBe(true);
       expect(removed.permissions).toEqual({ allow: ['Read'] });
       expect(readFileSync(settingsPath, 'utf-8')).toBe(before);
@@ -253,15 +253,15 @@ describe('T3 Code native plugin installation', () => {
     mkdirSync(plugins, { recursive: true });
     writeFileSync(settingsPath, JSON.stringify({ providers: { claudeAgent: { binaryPath: command, homePath } } }));
     writeFileSync(join(plugins, 'known_marketplaces.json'), JSON.stringify({
-      thedotmack: { source: { source: 'github', repo: 'thedotmack/claude-mem' }, installLocation: join(directory, 'old-bundle') },
+      'leoli-goat': { source: { source: 'github', repo: 'leoli-goat/claude-mem' }, installLocation: join(directory, 'old-bundle') },
       other: { installLocation: '/keep-other-marketplace' },
     }));
     const logSpy = spyOn(console, 'log').mockImplementation(() => {});
     try {
       expect(await installT3Code(repository, { settingsPath, environment: { ...process.env, T3_TEST_DRIVER: 'claude' } })).toBe(0);
       const known = JSON.parse(readFileSync(join(plugins, 'known_marketplaces.json'), 'utf-8'));
-      expect(known.thedotmack.installLocation).toBe(repository);
-      expect(known.thedotmack.source).toEqual({ source: 'directory', path: repository });
+      expect(known['leoli-goat'].installLocation).toBe(repository);
+      expect(known['leoli-goat'].source).toEqual({ source: 'directory', path: repository });
       expect(known.other).toEqual({ installLocation: '/keep-other-marketplace' });
       const environment = { ...process.env, T3_TEST_DRIVER: 'claude' };
       expect(t3CodeStatus({ settingsPath, environment })).toBe(0);
@@ -275,9 +275,9 @@ describe('T3 Code native plugin installation', () => {
     const homePath = join(directory, 'claude');
     mkdirSync(join(homePath, 'plugins'), { recursive: true });
     writeFileSync(settingsPath, JSON.stringify({ providers: { claudeAgent: { homePath } } }));
-    writeFileSync(join(homePath, 'settings.json'), '{"enabledPlugins":{"claude-mem@thedotmack":true}}');
-    writeFileSync(join(homePath, 'plugins', 'known_marketplaces.json'), JSON.stringify({ thedotmack: { installLocation: repository } }));
-    const spawn = () => ({ status: 0, stdout: JSON.stringify([{ id: 'claude-mem@thedotmack', scope: 'user', installPath: join(directory, 'deleted-cache'), readFromFolder: join(repository, 'plugin') }]), stderr: '', pid: 0, output: [], signal: null });
+    writeFileSync(join(homePath, 'settings.json'), '{"enabledPlugins":{"claude-mem@leoli-goat":true}}');
+    writeFileSync(join(homePath, 'plugins', 'known_marketplaces.json'), JSON.stringify({ 'leoli-goat': { installLocation: repository } }));
+    const spawn = () => ({ status: 0, stdout: JSON.stringify([{ id: 'claude-mem@leoli-goat', scope: 'user', installPath: join(directory, 'deleted-cache'), readFromFolder: join(repository, 'plugin') }]), stderr: '', pid: 0, output: [], signal: null });
     const logSpy = spyOn(console, 'log').mockImplementation(() => {});
     try { expect(t3CodeStatus({ settingsPath, spawn })).toBe(0); }
     finally { logSpy.mockRestore(); }
@@ -287,7 +287,7 @@ describe('T3 Code native plugin installation', () => {
     const { directory, settingsPath } = fixture({});
     const homePath = join(directory, 'shared');
     mkdirSync(homePath);
-    writeFileSync(join(homePath, 'config.toml'), '[plugins."claude-mem@claude-mem-local"]\nenabled = true\n\n[features]\nhooks = false\n');
+    writeFileSync(join(homePath, 'config.toml'), '[plugins."claude-mem@claude-mem-leoli-goat"]\nenabled = true\n\n[features]\nhooks = false\n');
     writeFileSync(settingsPath, JSON.stringify({ providerInstances: { codex: { driver: 'codex', enabled: false, config: { homePath, setupMode: 'managed' } } } }));
     const logSpy = spyOn(console, 'log').mockImplementation(() => {});
     try {

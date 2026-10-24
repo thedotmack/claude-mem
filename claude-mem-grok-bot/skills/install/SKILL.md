@@ -1,45 +1,12 @@
 ---
-name: claude-mem-install
-description: >-
-  Use this when setting up claude-mem on Grok Bot: local worker plus CMEM Pro
-  observer (default), optional host-login observer, or remote cmem.ai. No Cursor
-  required.
+name: install
+description: Install the personal claude-mem fork for Grok Bot using existing provider credentials.
 ---
-# Install claude-mem on Grok Bot
 
-Independent of Cursor. Grok Bot has no session-start / file-read / tool-use hooks.
+Use the reviewed LeoLi-Goat/claude-mem checkout. Run `bun install --frozen-lockfile` and `bun run build`, then `bun dist/npx-cli/index.js install --ide grok-bot --no-auto-start`.
 
-## Local worker + CMEM Pro observer (default)
+Keep the saved provider, gateway, model and credentials. Do not run the upstream npm installer. No CMEM account or trial is required. If no provider is saved, ask which supported personal provider to configure.
 
-```
-npx claude-mem install --ide grok-bot
-```
+## Optional host observer
 
-Do **not** pass `--provider host` unless you want the loopback shim. With no `--provider`, this is the CMEM Pro path:
-
-- Worker on `127.0.0.1:<port>` (default `37700 + uid%100`). Do not restart if healthy.
-- Transcript watcher per Grok Bot agent (`platformSource=grok-bot`)
-- Observer via CMEM Pro: `CLAUDE_MEM_PROVIDER=openrouter`, `CLAUDE_MEM_OPENROUTER_BASE_URL=https://cmem.ai/api/inference/v1`, `CLAUDE_MEM_OPENROUTER_MODEL=cmem-observer`, API key from installer OAuth (`cm_pro` memory key)
-- Interactive installer pre-selects CMEM Pro
-- MCP `session_start_context` at the start of a real task
-- Live INDEX into `agents/<uuid>/memory/log/zz-claude-mem-inject.md` (disable with `CLAUDE_MEM_GROK_BOT_INJECT_ENABLED=false`)
-
-No xAI key. No Claude CLI.
-
-## Optional: local host-login observer
-
-Explicit opt-in only. Not the user default.
-
-```
-npx claude-mem install --ide grok-bot --provider host
-```
-
-Loopback OpenAI-compatible shim on a **free** loopback port (not the worker port). Idle replies are `<skip_summary />`; finished units are one `<observation>`. This Grok login fulfills inbox jobs (skill host-observer).
-
-## Remote worker / remote observer
-
-Set plugin variable `CLAUDE_MEM_MCP_TOKEN` and use MCP `claude-mem-remote`.
-
-```
-npx claude-mem install --ide grok-bot --runtime server --server-url https://cmem.ai
-```
+Use `--provider host` only when the user requests the host observer and the local shim is configured.

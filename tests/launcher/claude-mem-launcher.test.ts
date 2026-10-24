@@ -47,7 +47,7 @@ function makeStubPluginRoot(pluginRoot: string): string {
 }
 
 function cacheVersionRoot(temporaryHome: string, version: string): string {
-  return path.join(temporaryHome, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem', version);
+  return path.join(temporaryHome, '.claude', 'plugins', 'cache', 'leoli-goat', 'claude-mem', version);
 }
 
 function runLauncher(
@@ -258,7 +258,7 @@ describe('claude-mem launcher', () => {
     const tenMinutesAgo = new Date(Date.now() - 600_000);
     utimesSync(expectedRoot, tenMinutesAgo, tenMinutesAgo);
     // A marketplace install must lose to any valid cache version.
-    makeStubPluginRoot(path.join(temporaryHome, '.claude', 'plugins', 'marketplaces', 'thedotmack', 'plugin'));
+    makeStubPluginRoot(path.join(temporaryHome, '.claude', 'plugins', 'marketplaces', 'leoli-goat', 'plugin'));
 
     const result = runObservationHook({ temporaryHome });
 
@@ -270,7 +270,7 @@ describe('claude-mem launcher', () => {
     const temporaryHome = makeTemporaryHome();
     const customConfigDirectory = path.join(temporaryHome, 'custom-config');
     const expectedRoot = makeStubPluginRoot(
-      path.join(customConfigDirectory, 'plugins', 'cache', 'thedotmack', 'claude-mem', '13.12.0'),
+      path.join(customConfigDirectory, 'plugins', 'cache', 'leoli-goat', 'claude-mem', '13.12.0'),
     );
 
     const result = runObservationHook({ temporaryHome, extraEnvironment: { CLAUDE_CONFIG_DIR: customConfigDirectory } });
@@ -286,7 +286,7 @@ describe('claude-mem launcher', () => {
     mkdirSync(path.join(incompleteCacheRoot, 'scripts'), { recursive: true });
     writeFileSync(path.join(incompleteCacheRoot, 'scripts', 'bun-runner.js'), '');
     const marketplaceRoot = makeStubPluginRoot(
-      path.join(temporaryHome, '.claude', 'plugins', 'marketplaces', 'thedotmack', 'plugin'),
+      path.join(temporaryHome, '.claude', 'plugins', 'marketplaces', 'leoli-goat', 'plugin'),
     );
 
     const result = runObservationHook({ temporaryHome });
@@ -325,7 +325,7 @@ describe('claude-mem launcher', () => {
     makeStubPluginRoot(cacheVersionRoot(temporaryHome, '13.12.0'));
     writeFileSync(
       path.join(temporaryHome, '.claude', 'settings.json'),
-      JSON.stringify({ enabledPlugins: { 'claude-mem@thedotmack': false } }),
+      JSON.stringify({ enabledPlugins: { 'claude-mem@leoli-goat': false } }),
     );
 
     const result = runObservationHook({ temporaryHome });

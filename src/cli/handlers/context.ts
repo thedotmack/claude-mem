@@ -1,3 +1,4 @@
+import { PROMOTIONS_ENABLED } from '../../shared/distribution.js';
 // IO discipline (see src/shared/hook-io.ts):
 // - hookSpecificOutput.additionalContext → MODEL_CONTEXT (model consumes; via stdout JSON)
 // - systemMessage                        → USER_HINT (user-visible; via stdout JSON systemMessage)
@@ -387,7 +388,7 @@ export const contextHandler: EventHandler = {
     // Days-remaining nicety: while the free trial is active (plan 'trial', an
     // end date stored, no fallback), append the countdown. Computed locally —
     // no network — and display-only: nothing is enabled or disabled by it.
-    const daysLeft = !fallbackActive && settings.CLAUDE_MEM_PRO_PLAN === 'trial'
+    const daysLeft = PROMOTIONS_ENABLED && !fallbackActive && settings.CLAUDE_MEM_PRO_PLAN === 'trial'
       ? trialDaysRemaining(settings.CLAUDE_MEM_PRO_TRIAL_ENDS_AT)
       : null;
     const trialDaysLine = daysLeft !== null && daysLeft >= 0
@@ -400,7 +401,7 @@ export const contextHandler: EventHandler = {
     const showsBanner = showTerminalOutput && Boolean(displayContent);
     // TeamBrain discovery: one line on the banner the user already reads, once
     // per claude-mem version, and never once this install is in a team.
-    const teamBrainDiscoveryLine = showsBanner && !teamBrain && !hasShownTeamBrainDiscoveryNotice()
+    const teamBrainDiscoveryLine = PROMOTIONS_ENABLED && showsBanner && !teamBrain && !hasShownTeamBrainDiscoveryNotice()
       ? TEAMBRAIN_DISCOVERY_LINE
       : null;
     if (teamBrainDiscoveryLine) markTeamBrainDiscoveryNoticeShown();

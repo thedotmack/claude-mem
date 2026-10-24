@@ -32,7 +32,7 @@ export function getOpenClawConfigFilePath(): string {
 const OPENCLAW_MARKETPLACE_ROOTS = [
   path.join(
     process.env.CLAUDE_CONFIG_DIR || path.join(homedir(), '.claude'),
-    'plugins', 'marketplaces', 'thedotmack',
+    'plugins', 'marketplaces', 'leoli-goat',
   ),
   process.cwd(),
 ];

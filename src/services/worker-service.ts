@@ -1475,7 +1475,7 @@ async function main() {
     // exit(0) and no trace — indistinguishable from a crash, and only
     // discoverable by reverse-engineering the bundle. One INFO line turns
     // "memory mysteriously stopped" into an obvious cause.
-    logger.info('SYSTEM', 'Worker not starting: claude-mem is disabled in Claude settings (enabledPlugins["claude-mem@thedotmack"] === false). Re-enable the plugin to resume memory capture.', {
+    logger.info('SYSTEM', 'Worker not starting: claude-mem is disabled in Claude settings (enabledPlugins["claude-mem@leoli-goat"] === false). Re-enable the plugin to resume memory capture.', {
       command: command ?? '(none)',
       configDir: process.env.CLAUDE_CONFIG_DIR || '~/.claude',
     });
@@ -1814,7 +1814,7 @@ async function main() {
     case 'transcript': {
       // npx-cli falls back to `worker-service.cjs transcript <sub>` when the
       // standalone `transcript-watcher.cjs` is not present in the bundle
-      // (see thedotmack/claude-mem 2450). Dispatch to the shared
+      // (see leoli-goat/claude-mem 2450). Dispatch to the shared
       // implementation so `init`, `watch`, and `validate` all work
       // regardless of which entry point the user invokes.
       const { runTranscriptCommand } = await import('./transcripts/cli.js');

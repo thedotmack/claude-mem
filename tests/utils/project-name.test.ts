@@ -255,7 +255,7 @@ describe('getProjectName', () => {
       writeFileSync(join(fakeTmp, '.claude-mem-project'), '');
 
       const fakeConfig = join(tmp, 'fake-config');
-      const pluginDir = join(fakeConfig, 'plugins', 'cache', 'thedotmack', 'claude-mem', '13.0.0');
+      const pluginDir = join(fakeConfig, 'plugins', 'cache', 'leoli-goat', 'claude-mem', '13.0.0');
       mkdirSync(join(pluginDir, 'scripts'), { recursive: true });
       writeFileSync(join(pluginDir, '.claude-mem.json'), '{}\n');
 
@@ -528,23 +528,23 @@ describe('getProjectContext', () => {
 
 describe('parseOriginUrlToSlug — CLAUDE_MEM_PROJECT_NAME_SOURCE=git-remote', () => {
   it('parses scp-style ssh URLs', () => {
-    expect(parseOriginUrlToSlug('git@github.com:thedotmack/claude-mem.git')).toBe('thedotmack/claude-mem');
+    expect(parseOriginUrlToSlug('git@github.com:leoli-goat/claude-mem.git')).toBe('leoli-goat/claude-mem');
   });
 
   it('parses https URLs', () => {
-    expect(parseOriginUrlToSlug('https://github.com/thedotmack/claude-mem.git')).toBe('thedotmack/claude-mem');
+    expect(parseOriginUrlToSlug('https://github.com/leoli-goat/claude-mem.git')).toBe('leoli-goat/claude-mem');
   });
 
   it('parses ssh:// URLs', () => {
-    expect(parseOriginUrlToSlug('ssh://git@github.com/thedotmack/claude-mem.git')).toBe('thedotmack/claude-mem');
+    expect(parseOriginUrlToSlug('ssh://git@github.com/leoli-goat/claude-mem.git')).toBe('leoli-goat/claude-mem');
   });
 
   it('tolerates a missing .git suffix', () => {
-    expect(parseOriginUrlToSlug('https://github.com/thedotmack/claude-mem')).toBe('thedotmack/claude-mem');
+    expect(parseOriginUrlToSlug('https://github.com/leoli-goat/claude-mem')).toBe('leoli-goat/claude-mem');
   });
 
   it('tolerates a trailing slash', () => {
-    expect(parseOriginUrlToSlug('https://github.com/thedotmack/claude-mem/')).toBe('thedotmack/claude-mem');
+    expect(parseOriginUrlToSlug('https://github.com/leoli-goat/claude-mem/')).toBe('leoli-goat/claude-mem');
   });
 
   it('strips the trailing slash before .git, so repo.git/ loses both', () => {

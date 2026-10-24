@@ -55,14 +55,14 @@ if (!statSync(workspace).isDirectory()) fail('Workspace must be an existing dire
 if (!args.includes('--no-restart')) fail('Include --no-restart; the caller controls when the local worker may restart.');
 const source = option('--source-plugin') ? path.resolve(option('--source-plugin')) : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../plugin');
 const version = json(path.join(source, '.claude-plugin/plugin.json')).version;
-if (!/^\d+\.\d+\.\d+$/.test(version)) fail('Source plugin must have a release version');
+if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$/.test(version)) fail('Source plugin must have a release version');
 const home = homedir();
 const claudeConfig = option('--claude-config-dir') || process.env.CLAUDE_CONFIG_DIR || path.join(home, '.claude');
 const codexHome = option('--codex-dir') || process.env.CODEX_HOME || path.join(home, '.codex');
 const targets = [
-  { root: path.join(claudeConfig, 'plugins/marketplaces/thedotmack/plugin'), instructions: path.join(claudeConfig, 'CLAUDE.md') },
-  { root: path.join(claudeConfig, `plugins/cache/thedotmack/claude-mem/${version}`), instructions: path.join(claudeConfig, 'CLAUDE.md') },
-  { root: path.join(codexHome, `plugins/cache/claude-mem-local/claude-mem/${version}`), instructions: path.join(codexHome, 'AGENTS.md') },
+  { root: path.join(claudeConfig, 'plugins/marketplaces/leoli-goat/plugin'), instructions: path.join(claudeConfig, 'CLAUDE.md') },
+  { root: path.join(claudeConfig, `plugins/cache/leoli-goat/claude-mem/${version}`), instructions: path.join(claudeConfig, 'CLAUDE.md') },
+  { root: path.join(codexHome, `plugins/cache/claude-mem-leoli-goat/claude-mem/${version}`), instructions: path.join(codexHome, 'AGENTS.md') },
 ].filter(target => existsSync(target.root));
 if (targets.length === 0) fail('No supported installed claude-mem plugin found for this version');
 const artifacts = ['scripts/worker-service.cjs', 'scripts/mcp-server.cjs', 'hooks/hooks.json', 'hooks/codex-hooks.json', 'skills/mem-search/SKILL.md'];

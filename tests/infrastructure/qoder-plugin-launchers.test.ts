@@ -121,7 +121,7 @@ describe('Qoder hook launcher execution', () => {
     mkdirSync(claudeConfig);
     writeFileSync(
       path.join(claudeConfig, 'settings.json'),
-      JSON.stringify({ enabledPlugins: { 'claude-mem@thedotmack': false } }),
+      JSON.stringify({ enabledPlugins: { 'claude-mem@leoli-goat': false } }),
     );
     copyFileSync(
       path.join(projectRoot, 'plugin/scripts/bun-runner.js'),
@@ -146,7 +146,7 @@ describe('Qoder hook launcher execution', () => {
     mkdirSync(claudeConfig);
     writeFileSync(
       path.join(claudeConfig, 'settings.json'),
-      JSON.stringify({ enabledPlugins: { 'claude-mem@thedotmack': false } }),
+      JSON.stringify({ enabledPlugins: { 'claude-mem@leoli-goat': false } }),
     );
     copyFileSync(
       path.join(projectRoot, 'plugin/scripts/bun-runner.js'),
@@ -183,7 +183,7 @@ describe('worker-service disabled-plugin gate', () => {
     mkdirSync(claudeConfig);
     writeFileSync(
       path.join(claudeConfig, 'settings.json'),
-      JSON.stringify({ enabledPlugins: { 'claude-mem@thedotmack': false } }),
+      JSON.stringify({ enabledPlugins: { 'claude-mem@leoli-goat': false } }),
     );
     const env: Record<string, string | undefined> = {
       ...process.env,

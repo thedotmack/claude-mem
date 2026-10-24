@@ -20,14 +20,11 @@ jobs:
       - name: Install Bun (worker runtime + test runner)
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.4.2
 
-      # The repo intentionally gitignores package-lock.json (.gitignore), so
-      # `cache: 'npm'` and `npm ci` (both require a committed lockfile) cannot
-      # be used here — matches windows.yml / npm-publish.yml, which install the
-      # same way.
+      # Personal fork builds use the committed root dependency lock.
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        run: bun install --frozen-lockfile
 
       - name: Install Fish for hook regression tests
         run: |
@@ -105,7 +102,7 @@ jobs:
       - name: Install Bun (worker runtime + test runner)
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.4.2
 
       - name: Install uv (with cache)
         uses: astral-sh/setup-uv@v5
@@ -114,7 +111,7 @@ jobs:
           cache-python: true
 
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        run: bun install --frozen-lockfile
 
       # resolveWorkerScript() falls back to <cwd>/plugin/scripts, so the
       # recycle gate's version-mismatch probe needs a built worker present.
@@ -196,7 +193,7 @@ jobs:
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.4.2
 
       - name: Install sync-hub dependencies
         working-directory: workers/sync-hub
@@ -243,10 +240,10 @@ jobs:
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.4.2
 
       - name: Install repository dependencies
-        run: npm install --no-audit --no-fund
+        run: bun install --frozen-lockfile
 
       - name: Install sync-api dependencies
         working-directory: services/sync-api
@@ -302,10 +299,10 @@ jobs:
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.4.2
 
       - name: Install repository dependencies
-        run: npm install --no-audit --no-fund
+        run: bun install --frozen-lockfile
 
       - name: bm25 and hybrid search, vector writes and backfill
         env:
@@ -334,11 +331,11 @@ jobs:
       - name: Install Bun (worker runtime + test runner)
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.4.2
 
-      # See note in the build job: no committed root lockfile, so npm install.
+      # Use the committed root dependency lock.
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        run: bun install --frozen-lockfile
 
       # Run the frozen-lockfile drift check against the COMMITTED tree BEFORE
       # `npm run build` regenerates plugin/package.json + plugin/bun.lock (via
@@ -377,11 +374,11 @@ jobs:
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.4.2
 
-      # See note in the build job: no committed lockfile, so npm install.
+      # Use the committed root dependency lock.
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        run: bun install --frozen-lockfile
 
       - name: Verify Docker is available
         run: docker compose version

@@ -15,7 +15,7 @@ describe('Version Consistency', () => {
     
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
     expect(packageJson.version).toBeDefined();
-    expect(packageJson.version).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(packageJson.version).toMatch(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$/);
     
     rootVersion = packageJson.version;
   });
@@ -84,9 +84,9 @@ describe('Version Consistency', () => {
   }
 
   it('should validate version format is semver compliant', () => {
-    expect(rootVersion).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(rootVersion).toMatch(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$/);
     
-    const [major, minor, patch] = rootVersion.split('.').map(Number);
+    const [major, minor, patch] = rootVersion.split('-')[0].split('.').map(Number);
     expect(major).toBeGreaterThanOrEqual(0);
     expect(minor).toBeGreaterThanOrEqual(0);
     expect(patch).toBeGreaterThanOrEqual(0);

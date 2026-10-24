@@ -6,8 +6,8 @@ import { resolveInstallerProviderChoice } from '../../src/npx-cli/installer-prov
 const repoRoot = join(__dirname, '..', '..');
 
 describe('grok-bot install default provider', () => {
-  it('defaults --ide grok-bot with no --provider to CMEM Pro', () => {
-    expect(resolveInstallerProviderChoice({ ide: 'grok-bot' })).toBe('cmem');
+  it('uses saved/default credentials when grok-bot has no --provider', () => {
+    expect(resolveInstallerProviderChoice({ ide: 'grok-bot' })).toBeUndefined();
   });
 
   it('keeps --provider host as an explicit grok-bot opt-in', () => {
@@ -20,18 +20,11 @@ describe('grok-bot install default provider', () => {
     expect(resolveInstallerProviderChoice({})).toBeUndefined();
   });
 
-  it('documents CMEM Pro as the grok-bot plugin default and host as opt-in', () => {
+  it('documents installation from the fork without a cloud account', () => {
     const skill = readFileSync(join(repoRoot, 'claude-mem-grok-bot/skills/install/SKILL.md'), 'utf-8');
-    const readme = readFileSync(join(repoRoot, 'claude-mem-grok-bot/README.md'), 'utf-8');
-    const defaultSection = skill.split('## Optional')[0];
-
-    expect(defaultSection).toContain('npx claude-mem install --ide grok-bot');
-    expect(defaultSection).not.toContain('npx claude-mem install --ide grok-bot --provider host');
-    expect(defaultSection).toContain('https://cmem.ai/api/inference/v1');
-    expect(defaultSection).toContain('cmem-observer');
-    expect(defaultSection.toLowerCase()).not.toContain('host-login observer (default)');
-    expect(skill).toContain('npx claude-mem install --ide grok-bot --provider host');
-    expect(readme).toContain('npx claude-mem install --ide grok-bot');
-    expect(readme).not.toContain('npx claude-mem install --ide grok-bot --provider host');
+    expect(skill).toContain('bun dist/npx-cli/index.js install --ide grok-bot');
+    expect(skill).toContain('No CMEM account or trial is required');
+    expect(skill).toContain('--provider host');
+    expect(skill).not.toContain('cmem-observer');
   });
 });

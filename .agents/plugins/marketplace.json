@@ -1,7 +1,7 @@
 {
-  "name": "claude-mem-local",
+  "name": "claude-mem-leoli-goat",
   "interface": {
-    "displayName": "claude-mem (local)"
+    "displayName": "claude-mem (LeoLi-Goat)"
   },
   "plugins": [
     {

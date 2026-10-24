@@ -23,7 +23,7 @@ function linuxProbe(readCommandLine: (pid: number) => string): WorkerCommandLine
 
 const WORKER_COMMAND_LINE = [
   '/home/dev/.bun/bin/bun',
-  '/home/dev/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs',
+  '/home/dev/.claude/plugins/marketplaces/leoli-goat/plugin/scripts/worker-service.cjs',
   '--daemon',
   '',
 ].join('\0');

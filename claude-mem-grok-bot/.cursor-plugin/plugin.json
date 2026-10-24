@@ -1,12 +1,12 @@
 {
   "name": "claude-mem-grok-bot",
-  "version": "15.0.2",
+  "version": "15.0.2-leoli.1",
   "description": "Persistent memory for Grok Bot. No host hooks: transcript watcher plus MCP. Local worker with host-login observer, or remote cmem.ai. Install without Cursor.",
   "author": {
     "name": "Alex Newman"
   },
   "homepage": "https://github.com/thedotmack/claude-mem",
-  "repository": "https://github.com/thedotmack/claude-mem",
+  "repository": "https://github.com/LeoLi-Goat/claude-mem",
   "license": "Apache-2.0",
   "keywords": [
     "claude-mem",

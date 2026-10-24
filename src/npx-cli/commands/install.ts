@@ -1,3 +1,4 @@
+import { DISTRIBUTION, CLOUD_ONBOARDING_ENABLED } from '../../shared/distribution.js';
 import * as p from '@clack/prompts';
 import { styleText } from 'node:util';
 import { randomUUID } from 'crypto';
@@ -37,17 +38,14 @@ import {
 } from '../install/error-reporter.js';
 import { extractEresolveBlock, isEresolve, npmErrorCode, runNpmStrict } from '../install/npm-install-helper.js';
 import {
-  buildProviderLabels,
   CMEM_INSTALLER_OAUTH_POLL_URL,
   CMEM_INSTALLER_OAUTH_START_URL,
   CMEM_PRO_BASE_URL,
   CMEM_PRO_MODEL,
-  PROVIDER_PROMPT_MESSAGE,
 } from '../cmem-pro-costs.js';
 import { clearProFallback, isCmemGatewayUrl } from '../../shared/cmem-gateway.js';
-import { PRO_TRIAL_LABEL, PRO_TRIAL_PITCH, proTrialUrl } from '../../shared/pro-promo.js';
+import { PRO_TRIAL_LABEL, proTrialUrl } from '../../shared/pro-promo.js';
 import {
-  buildAnthropicMaxLocalSettings,
   buildCmemActivationSettings,
   buildHostObserverSettings,
   buildNonInteractiveOpenRouterSettings,
@@ -171,17 +169,17 @@ import { checkWindowsGitBash } from '../utils/windows-git-bash-preflight.js';
 import { claudeCodeVersionTooOldWarning, detectClaudeCodeVersion } from '../install/claude-code-version.js';
 import { ensureLauncherOnPath, ensureLocalBinOnShellPath } from '../../launcher/install-launcher.js';
 
-function registerMarketplace(): void {
+export function registerMarketplace(): void {
   const knownMarketplaces = readJsonSafe<Record<string, any>>(knownMarketplacesPath(), {});
 
-  knownMarketplaces['thedotmack'] = {
+  knownMarketplaces['leoli-goat'] = {
     source: {
       source: 'github',
-      repo: 'thedotmack/claude-mem',
+      repo: DISTRIBUTION.repository,
     },
     installLocation: marketplaceDirectory(),
     lastUpdated: new Date().toISOString(),
-    autoUpdate: true,
+    autoUpdate: DISTRIBUTION.automaticUpdates,
   };
 
   ensureDirectoryExists(pluginsDirectory());
@@ -197,7 +195,7 @@ function registerPlugin(version: string): void {
   const cachePath = pluginCacheDirectory(version);
   const now = new Date().toISOString();
 
-  installedPlugins.plugins['claude-mem@thedotmack'] = [
+  installedPlugins.plugins['claude-mem@leoli-goat'] = [
     {
       scope: 'user',
       installPath: cachePath,
@@ -210,11 +208,15 @@ function registerPlugin(version: string): void {
   writeJsonFileAtomic(installedPluginsPath(), installedPlugins);
 }
 
-function enablePluginInClaudeSettings(): void {
+export function enablePluginInClaudeSettings(): void {
   const settings = readJsonSafe<Record<string, any>>(claudeSettingsPath(), {});
 
   if (!settings.enabledPlugins) settings.enabledPlugins = {};
-  settings.enabledPlugins['claude-mem@thedotmack'] = true;
+  settings.enabledPlugins['claude-mem@leoli-goat'] = true;
+  // Avoid duplicate memory hooks; keep the old install available for rollback.
+  if ('claude-mem@thedotmack' in settings.enabledPlugins) {
+    settings.enabledPlugins['claude-mem@thedotmack'] = false;
+  }
 
   writeJsonFileAtomic(claudeSettingsPath(), settings);
 }
@@ -446,7 +448,7 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
             return 'Pi: extension installation failed';
           }
           return 'Pi: extension files installed; automatic capture is unverified. Pi 0.79.6 provides manual recall only. ' +
-            'Check your Pi version and update Pi if needed: https://github.com/thedotmack/claude-mem/blob/main/docs/pi-native-capture.md';
+            'Check your Pi version and update Pi if needed: https://github.com/leoli-goat/claude-mem/blob/main/docs/pi-native-capture.md';
         },
       };
     }
@@ -1191,28 +1193,14 @@ export async function promptProvider(
       CLAUDE_MEM_PROVIDER: 'claude',
       CLAUDE_MEM_CLAUDE_AUTH_METHOD: resolvedAuthMethod,
     });
-    if (wrote) log.info('Saved Claude Agent SDK configuration to ~/.claude-mem/settings.json');
-  };
-
-  const useSubscriptionAuth = () => {
-    const wrote = mergeSettings(buildAnthropicMaxLocalSettings(persistedSettings));
     if (!wrote) {
-      p.cancel('Could not save the local Anthropic Max configuration.');
+      p.cancel('Could not save the Claude provider configuration.');
       process.exit(1);
     }
-    saveClaudeMemEnv({
-      ANTHROPIC_API_KEY: '',
-      ANTHROPIC_BASE_URL: '',
-      ANTHROPIC_AUTH_TOKEN: '',
-    });
-    log.info('Disabled cloud sync and saved local Anthropic Max configuration.');
-    log.info('Configured claude-mem to use your logged-in Claude SDK account.');
+    log.info('Saved Claude Agent SDK configuration to ~/.claude-mem/settings.json');
   };
 
-  // A provider reused from settings on a non-interactive run is already fully
-  // configured. Re-running the claude branch would call useSubscriptionAuth(),
-  // which blanks cloud-sync and the Pro memory key — a persisted Pro config
-  // must survive a non-TTY `npx claude-mem update` untouched.
+  // Reinstall preserves an already configured provider without re-enrollment.
   if (options.providerSource === 'persisted' && options.provider) {
     return options.provider;
   }
@@ -1225,21 +1213,20 @@ export async function promptProvider(
       throw new Error('Non-interactive provider validation did not run.');
     }
     options.providerSource = 'prompt';
-    const labels = buildProviderLabels();
 
     // Multiselect gives both choices square controls. Exactly one provider is
     // still required; selecting both re-opens the prompt instead of guessing.
     while (true) {
       const providerResult = await p.multiselect<ProviderChoice>({
-        message: PROVIDER_PROMPT_MESSAGE,
+        message: 'Choose the provider that will generate memories:',
         options: [
-          { value: 'cmem', label: labels.cmem, hint: labels.cmemHint },
-          { value: 'claude', label: labels.claude, hint: labels.claudeHint },
+          { value: 'claude', label: 'Claude (existing gateway or Claude Code credentials)' },
+          { value: 'codex', label: 'Codex (existing login)' },
+          { value: 'gemini', label: 'Gemini (your API key)' },
+          { value: 'openrouter', label: 'OpenRouter (your API key)' },
         ],
-        // CMEM Pro pre-selected: it is the recommended path and the one the
-        // funnel is built around. Selecting it no longer means "pay now" —
-        // it opens the offer page to read first.
-        initialValues: ['cmem'],
+        // Reinstall keeps the current choice; no paid service is preselected.
+        initialValues: [(['claude', 'codex', 'gemini', 'openrouter'] as string[]).includes(initialProvider) ? initialProvider : 'claude'],
         required: true,
       });
       // @clack/prompts 1.8: isCancel narrows to unique CANCEL_SYMBOL, not generic symbol.
@@ -1299,7 +1286,8 @@ export async function promptProvider(
   }
 
   if (selectedProvider === 'claude') {
-    useSubscriptionAuth();
+    // Selecting Claude keeps the existing gateway/API credentials and model.
+    persistClaudeProvider();
     return 'claude';
   }
 
@@ -2101,6 +2089,7 @@ async function requireInstallerOAuthLogin(version: string): Promise<InstallerOAu
  * The server ignores `source` today and will allowlist it separately.
  */
 export async function offerDeferredLogin(options: InstallOptions, version: string): Promise<void> {
+  if (!CLOUD_ONBOARDING_ENABLED) return;
   if (isInteractive) return;
   if (providerNeedsAccount(options.provider)) return;
   if (process.env.CI) return;
@@ -2227,7 +2216,8 @@ async function promptTelemetryOptIn(): Promise<void> {
  * CMEM Pro, so login must happen first.
  */
 export function providerNeedsAccount(provider: InstallOptions['provider']): boolean {
-  return provider !== 'claude' && provider !== 'host';
+  // Local and bring-your-own providers need no separate cmem.ai account.
+  return CLOUD_ONBOARDING_ENABLED && provider !== 'claude' && provider !== 'host';
 }
 
 export interface InstallOptions {
@@ -2907,24 +2897,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     log.info('Claude Code: leaving native auto-memory enabled unless you explicitly opt in to disabling it.');
   }
 
-  // Login is account-first for every install EXCEPT one that has already named
-  // a provider needing no claude-mem account. `--provider claude` (or the
-  // non-interactive default to claude) runs memory on the user's own Anthropic
-  // plan, so gating it on browser OAuth made an unrelated cmem.ai outage fail
-  // an install that could have completed offline — and there is no account
-  // question left to ask, because the provider already answered it. Such a
-  // non-interactive install still prints an optional, non-blocking sign-in
-  // link at the very end (offerDeferredLogin).
-  //
-  // Deliberately keyed on the resolved provider, not on reachability: a silent
-  // fallback to a local install whenever cmem.ai is down would quietly change
-  // what the user gets. This only skips a step the provider choice made moot.
-  //
-  // A provider reused from settings on a non-interactive run (`persisted`) is
-  // exempt too, even when it is account-backed: the machine already holds its
-  // account and credentials, and promptProvider returns early for it without
-  // enrolling anything. Running the blocking browser login here would hang an
-  // agent shell polling for up to the pairing TTL and then exit 1.
+  // Personal providers use their own credentials. No cloud enrollment on install.
   let oauthPairing: InstallerOAuthPairing | null = null;
   if (options.providerSource === 'persisted') {
     log.info(`Skipping claude-mem login: keeping the existing account and ${options.provider} configuration.`);
@@ -2939,8 +2912,8 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     const skipReason = options.provider === 'host'
       ? 'host observer uses the logged-in host agent over a local OpenAI-compatible shim.'
       : options.providerSource === 'default'
-        ? 'no --provider was given, so memory defaults to your own Anthropic plan.'
-        : '--provider claude runs memory on your own Anthropic plan.';
+        ? 'memory uses your existing provider credentials.'
+        : 'the selected provider uses your existing credentials.';
     log.info(`Skipping claude-mem login: ${skipReason}`);
   }
   const selectedProvider = await promptProvider(options, oauthPairing, version);
@@ -3152,8 +3125,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     `Memory injection starts on your second session in a project.`,
     cloudSyncConfigured
       ? 'Memory syncs across your signed-in CMEM Pro agents and devices.'
-      : `Everything stays in ${styleText('cyan', '~/.claude-mem')} on this machine. cmem.ai is contacted once, at signup, to create the sign-in link, with a numbers-only usage summary (observation counts and token totals, no prompts, paths, or project names); nothing else is sent to cmem.ai (telemetry is separate: npx claude-mem telemetry).`,
-    ...(cloudSyncConfigured ? [] : [`${PRO_TRIAL_PITCH}: ${styleText('underline', proTrialUrl('installer'))}`]),
+      : `Memories stay in ${styleText('cyan', '~/.claude-mem')} on this machine. Your selected model provider processes observation requests.`,
     ``,
     `${styleText('dim', `Optional: ${'/learn-codebase'} ingests a whole repo up front (~5 min)   ·   How it works: /how-it-works`)}`,
   ];

@@ -22,10 +22,10 @@ describe('knownMarketplaceInstallLocation', () => {
   const writeKnownMarketplaces = (content: string): void =>
     writeFileSync(join(claudeConfigDirectory, 'plugins', 'known_marketplaces.json'), content);
 
-  it('returns the thedotmack installLocation recorded for a directory-source marketplace', () => {
+  it('returns the leoli-goat installLocation recorded for a directory-source marketplace', () => {
     const localCheckout = join(claudeConfigDirectory, 'my-claude-mem-checkout');
     writeKnownMarketplaces(JSON.stringify({
-      thedotmack: { source: { source: 'directory', path: localCheckout }, installLocation: localCheckout },
+      'leoli-goat': { source: { source: 'directory', path: localCheckout }, installLocation: localCheckout },
     }));
     expect(knownMarketplaceInstallLocation(claudeConfigDirectory)).toBe(localCheckout);
   });
@@ -39,8 +39,8 @@ describe('knownMarketplaceInstallLocation', () => {
     expect(knownMarketplaceInstallLocation(claudeConfigDirectory)).toBeNull();
   });
 
-  it('returns null when there is no thedotmack entry or it has no installLocation', () => {
-    writeKnownMarketplaces(JSON.stringify({ other: { installLocation: '/somewhere' }, thedotmack: {} }));
+  it('returns null when there is no leoli-goat entry or it has no installLocation', () => {
+    writeKnownMarketplaces(JSON.stringify({ other: { installLocation: '/somewhere' }, 'leoli-goat': {} }));
     expect(knownMarketplaceInstallLocation(claudeConfigDirectory)).toBeNull();
   });
 
@@ -50,11 +50,11 @@ describe('knownMarketplaceInstallLocation', () => {
     expect(marketplaceDirectoryCandidates(emptyHome, claudeConfigDirectory).some(existsSync)).toBe(false);
 
     mkdirSync(localCheckout);
-    writeKnownMarketplaces(JSON.stringify({ thedotmack: { installLocation: localCheckout } }));
+    writeKnownMarketplaces(JSON.stringify({ 'leoli-goat': { installLocation: localCheckout } }));
     const candidates = marketplaceDirectoryCandidates(emptyHome, claudeConfigDirectory);
     expect(candidates).toEqual([
-      join(emptyHome, '.claude', 'plugins', 'marketplaces', 'thedotmack'),
-      join(emptyHome, '.config', 'claude', 'plugins', 'marketplaces', 'thedotmack'),
+      join(emptyHome, '.claude', 'plugins', 'marketplaces', 'leoli-goat'),
+      join(emptyHome, '.config', 'claude', 'plugins', 'marketplaces', 'leoli-goat'),
       localCheckout,
     ]);
     expect(candidates.some(existsSync)).toBe(true);

@@ -10,7 +10,7 @@ const IS_WINDOWS = process.platform === 'win32';
 const VERSION_CHECK_LOG_PREFIX = '[version-check]';
 // Optional dependencies are the server's embedder, which `npx claude-mem
 // server start` installs where a server runs (scripts/build-hooks.js).
-const BUN_INSTALL_ARGS = Object.freeze(['install', '--production', '--omit=optional']);
+const BUN_INSTALL_ARGS = Object.freeze(['install', '--frozen-lockfile', '--production', '--omit=optional']);
 const BUN_INSTALL_TIMEOUT_MS = 120_000;
 const NODE_MODULES_DIRNAME = 'node_modules';
 // zod ships its public API behind subpath exports that worker-service.cjs
@@ -380,7 +380,7 @@ try {
   if (missingDependencies.length > 0) {
     // The only state worth a hint: modules are still missing after the install
     // attempt, so the worker would crash. Name them (#3092).
-    emitUpgradeHint(`claude-mem: plugin dependencies missing (${formatMissing(missingDependencies)}) - run: npx claude-mem@latest install`);
+    emitUpgradeHint(`claude-mem: plugin dependencies missing (${formatMissing(missingDependencies)}) - run: bun run fork:install (from your reviewed LeoLi-Goat/claude-mem checkout)`);
   } else if (
     typeof pkg.version === 'string'
     && (!existsSync(markerPath) || readInstallMarkerVersion(markerPath) !== pkg.version)
@@ -395,6 +395,6 @@ try {
     }
   }
 } catch {
-  emitUpgradeHint('claude-mem: install marker unreadable - run: npx claude-mem@latest install');
+  emitUpgradeHint('claude-mem: install marker unreadable - run: bun run fork:install (from your reviewed LeoLi-Goat/claude-mem checkout)');
 }
 process.exit(0);

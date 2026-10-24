@@ -21,11 +21,13 @@ function renderHeader(showTeamBrainLink?: boolean): string {
 }
 
 describe('viewer header TeamBrain link', () => {
-  it('links to the TeamBrain start page while this install is in no team', () => {
+  it('keeps both purchase and TeamBrain promotions out of the personal viewer', () => {
     const html = renderHeader(true);
-    expect(html).toContain('class="teambrain-cta"');
-    expect(html).toContain(`href="${TEAMBRAIN_START_URL}"`);
-    expect(html).toContain('>TeamBrain</a>');
+    expect(html).not.toContain('class="teambrain-cta"');
+    expect(html).not.toContain('pro-trial-cta');
+    expect(html).not.toContain('cmem.ai/pro');
+    expect(html).not.toContain(`href="${TEAMBRAIN_START_URL}"`);
+    expect(html).not.toContain('>TeamBrain</a>');
   });
 
   it('is gone once the install is in a team, and before settings have loaded', () => {

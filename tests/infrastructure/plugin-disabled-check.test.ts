@@ -40,7 +40,7 @@ describe('isPluginDisabledInClaudeSettings (#781)', () => {
   it('should return false when plugin is explicitly enabled', () => {
     const settings = {
       enabledPlugins: {
-        'claude-mem@thedotmack': true
+        'claude-mem@leoli-goat': true
       }
     };
     writeFileSync(join(tempDir, 'settings.json'), JSON.stringify(settings));
@@ -50,7 +50,7 @@ describe('isPluginDisabledInClaudeSettings (#781)', () => {
   it('should return true when plugin is explicitly disabled', () => {
     const settings = {
       enabledPlugins: {
-        'claude-mem@thedotmack': false
+        'claude-mem@leoli-goat': false
       }
     };
     writeFileSync(join(tempDir, 'settings.json'), JSON.stringify(settings));
@@ -58,7 +58,7 @@ describe('isPluginDisabledInClaudeSettings (#781)', () => {
   });
 
   it('ignores the Claude Code toggle for a Qoder hook', () => {
-    writeFileSync(join(tempDir, 'settings.json'), JSON.stringify({ enabledPlugins: { 'claude-mem@thedotmack': false } }));
+    writeFileSync(join(tempDir, 'settings.json'), JSON.stringify({ enabledPlugins: { 'claude-mem@leoli-goat': false } }));
     process.env.CLAUDE_MEM_QODER_HOOK = '1';
     expect(isPluginDisabledInClaudeSettings()).toBe(false);
   });

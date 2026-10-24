@@ -20,59 +20,59 @@ function printHelp(): void {
   console.log(`
 ${styleText('bold', 'claude-mem')} v${version} — persistent memory for AI coding assistants
 
-${styleText('bold', 'Install Commands')} (no Bun required):
-  ${styleText('cyan', 'npx claude-mem')}                     Interactive install
-  ${styleText('cyan', 'npx claude-mem install')}              Interactive install (also puts the claude-mem hook launcher on PATH)
-  ${styleText('cyan', 'npx claude-mem install --ide <id>')}   Install for specific IDE
-  ${styleText('cyan', 'npx claude-mem install --ide dsh --dsh-profile <name>')}   Install DeepSeek Harness (default profile: web)
-  ${styleText('cyan', 'npx claude-mem install --provider claude|codex|gemini|openrouter|host')}   Set LLM provider (optional non-interactively; a fresh install defaults to claude)
-  ${styleText('cyan', 'npx claude-mem install --model <id>')}   Set Claude or Codex model (when provider=claude|codex)
-  ${styleText('cyan', 'npx claude-mem install --no-auto-start')}   Skip worker auto-start at the end
-  ${styleText('cyan', 'npx claude-mem install --disable-auto-memory')}   Explicitly disable Claude Code native auto-memory
-  ${styleText('cyan', 'npx claude-mem install --runtime worker|server')}   Select runtime non-interactively (server prints the docker compose command for pg+redis without running it, and provisions a hook API key only when CLAUDE_MEM_SERVER_DATABASE_URL is set; otherwise set CLAUDE_MEM_SERVER_DATABASE_URL before running npx claude-mem server keys rotate once Postgres is up)
-  ${styleText('cyan', 'npx claude-mem install --runtime server --server-url <url>')}   Point the server runtime at a specific base URL
-  ${styleText('cyan', 'npx claude-mem repair')}                Repair runtime (re-runs Bun/uv setup and bun install in plugin cache)
-  ${styleText('cyan', 'npx claude-mem prune [--dry-run] [--keep <n>]')}   Remove superseded plugin cache versions (keeps newest 2 + live worker + registered install)
-  ${styleText('cyan', 'npx claude-mem update')}               Update to latest version (refreshes the hook launcher)
-  ${styleText('cyan', 'npx claude-mem uninstall')}            Remove plugin, configs and the hook launcher
-  ${styleText('cyan', 'npx claude-mem version')}              Print version
+${styleText('bold', 'Install Commands')} (from this reviewed fork checkout):
+  ${styleText('cyan', 'bun dist/npx-cli/index.js')}                     Interactive install
+  ${styleText('cyan', 'bun dist/npx-cli/index.js install')}              Interactive install (also puts the claude-mem hook launcher on PATH)
+  ${styleText('cyan', 'bun dist/npx-cli/index.js install --ide <id>')}   Install for specific IDE
+  ${styleText('cyan', 'bun dist/npx-cli/index.js install --ide dsh --dsh-profile <name>')}   Install DeepSeek Harness (default profile: web)
+  ${styleText('cyan', 'bun dist/npx-cli/index.js install --provider claude|codex|gemini|openrouter|host')}   Set LLM provider (optional non-interactively; a fresh install defaults to claude)
+  ${styleText('cyan', 'bun dist/npx-cli/index.js install --model <id>')}   Set Claude or Codex model (when provider=claude|codex)
+  ${styleText('cyan', 'bun dist/npx-cli/index.js install --no-auto-start')}   Skip worker auto-start at the end
+  ${styleText('cyan', 'bun dist/npx-cli/index.js install --disable-auto-memory')}   Explicitly disable Claude Code native auto-memory
+  ${styleText('cyan', 'bun dist/npx-cli/index.js install --runtime worker|server')}   Select runtime non-interactively (server prints the docker compose command for pg+redis without running it, and provisions a hook API key only when CLAUDE_MEM_SERVER_DATABASE_URL is set; otherwise set CLAUDE_MEM_SERVER_DATABASE_URL before running bun dist/npx-cli/index.js server keys rotate once Postgres is up)
+  ${styleText('cyan', 'bun dist/npx-cli/index.js install --runtime server --server-url <url>')}   Point the server runtime at a specific base URL
+  ${styleText('cyan', 'bun dist/npx-cli/index.js repair')}                Repair runtime (re-runs Bun/uv setup and bun install in plugin cache)
+  ${styleText('cyan', 'bun dist/npx-cli/index.js prune [--dry-run] [--keep <n>]')}   Remove superseded plugin cache versions (keeps newest 2 + live worker + registered install)
+  ${styleText('cyan', 'bun dist/npx-cli/index.js update')}               Reinstall this fork build (no download of newer versions)
+  ${styleText('cyan', 'bun dist/npx-cli/index.js uninstall')}            Remove plugin, configs and the hook launcher
+  ${styleText('cyan', 'bun dist/npx-cli/index.js version')}              Print version
 
 ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed plugin):
-  ${styleText('cyan', 'npx claude-mem start')}                Start worker service
-  ${styleText('cyan', 'npx claude-mem stop')}                 Stop worker service
-  ${styleText('cyan', 'npx claude-mem restart')}              Restart worker service
-  ${styleText('cyan', 'npx claude-mem status')}               Show worker status
-  ${styleText('cyan', 'npx claude-mem doctor')}               Diagnose install/runtime health (bun, uv, hook launcher, worker)
-  ${styleText('cyan', 'npx claude-mem telemetry status|enable|disable')}   Manage anonymous telemetry (on by default, opt-out)
-  ${styleText('cyan', 'npx claude-mem server start')}         Start server service
-  ${styleText('cyan', 'npx claude-mem server stop')}          Stop server service
-  ${styleText('cyan', 'npx claude-mem server restart')}       Restart server service
-  ${styleText('cyan', 'npx claude-mem server status')}        Show server status
-  ${styleText('cyan', 'npx claude-mem server api-key create|list|revoke')}   Manage API keys
-  ${styleText('cyan', 'npx claude-mem worker start|stop|restart|status')}    Worker compatibility aliases
-  ${styleText('cyan', 'npx claude-mem search <query>')}       Search observations
-  ${styleText('cyan', 'npx claude-mem mcp')}                    Start the stdio MCP server
-  ${styleText('cyan', 'npx claude-mem hook cursor <event>')}    Run Cursor hook forwarding
-  ${styleText('cyan', 'npx claude-mem adopt [--dry-run] [--branch <name>]')}    Stamp merged worktrees into parent project
-  ${styleText('cyan', 'npx claude-mem cleanup [--dry-run]')}    Run one-time v12.4.3 pollution cleanup (or preview counts)
-  ${styleText('cyan', 'npx claude-mem project merge <from> <into> [--dry-run]')}    Fold one project's memory into another (non-destructive, syncs)
-  ${styleText('cyan', 'npx claude-mem transcript watch')}     Start transcript watcher
-  ${styleText('cyan', 'npx claude-mem antigravity-cli install|status|uninstall')}   Manage Antigravity CLI hooks + MCP config
-  ${styleText('cyan', 'npx claude-mem kimi install|status|uninstall')}   Manage Kimi Code CLI hooks + MCP config
-  ${styleText('cyan', 'npx claude-mem t3code status|uninstall [--settings <path>]')}   Inspect or disable T3 Code provider plugins
-  ${styleText('cyan', 'npx claude-mem pi install|status|uninstall')}   Manage the native Pi extension
+  ${styleText('cyan', 'bun dist/npx-cli/index.js start')}                Start worker service
+  ${styleText('cyan', 'bun dist/npx-cli/index.js stop')}                 Stop worker service
+  ${styleText('cyan', 'bun dist/npx-cli/index.js restart')}              Restart worker service
+  ${styleText('cyan', 'bun dist/npx-cli/index.js status')}               Show worker status
+  ${styleText('cyan', 'bun dist/npx-cli/index.js doctor')}               Diagnose install/runtime health (bun, uv, hook launcher, worker)
+  ${styleText('cyan', 'bun dist/npx-cli/index.js telemetry status|enable|disable')}   Manage anonymous telemetry (on by default, opt-out)
+  ${styleText('cyan', 'bun dist/npx-cli/index.js server start')}         Start server service
+  ${styleText('cyan', 'bun dist/npx-cli/index.js server stop')}          Stop server service
+  ${styleText('cyan', 'bun dist/npx-cli/index.js server restart')}       Restart server service
+  ${styleText('cyan', 'bun dist/npx-cli/index.js server status')}        Show server status
+  ${styleText('cyan', 'bun dist/npx-cli/index.js server api-key create|list|revoke')}   Manage API keys
+  ${styleText('cyan', 'bun dist/npx-cli/index.js worker start|stop|restart|status')}    Worker compatibility aliases
+  ${styleText('cyan', 'bun dist/npx-cli/index.js search <query>')}       Search observations
+  ${styleText('cyan', 'bun dist/npx-cli/index.js mcp')}                    Start the stdio MCP server
+  ${styleText('cyan', 'bun dist/npx-cli/index.js hook cursor <event>')}    Run Cursor hook forwarding
+  ${styleText('cyan', 'bun dist/npx-cli/index.js adopt [--dry-run] [--branch <name>]')}    Stamp merged worktrees into parent project
+  ${styleText('cyan', 'bun dist/npx-cli/index.js cleanup [--dry-run]')}    Run one-time v12.4.3 pollution cleanup (or preview counts)
+  ${styleText('cyan', 'bun dist/npx-cli/index.js project merge <from> <into> [--dry-run]')}    Fold one project's memory into another (non-destructive, syncs)
+  ${styleText('cyan', 'bun dist/npx-cli/index.js transcript watch')}     Start transcript watcher
+  ${styleText('cyan', 'bun dist/npx-cli/index.js antigravity-cli install|status|uninstall')}   Manage Antigravity CLI hooks + MCP config
+  ${styleText('cyan', 'bun dist/npx-cli/index.js kimi install|status|uninstall')}   Manage Kimi Code CLI hooks + MCP config
+  ${styleText('cyan', 'bun dist/npx-cli/index.js t3code status|uninstall [--settings <path>]')}   Inspect or disable T3 Code provider plugins
+  ${styleText('cyan', 'bun dist/npx-cli/index.js pi install|status|uninstall')}   Manage the native Pi extension
 
 ${styleText('bold', 'TeamBrain')} (one shared brain for your team; your own memory stays private):
-  ${styleText('cyan', 'npx claude-mem teambrain start')}                Create a team on cmem.ai
-  ${styleText('cyan', 'npx claude-mem teambrain join <invite-link>')}   Join a team, then choose which projects to share
-  ${styleText('cyan', 'npx claude-mem teambrain status|share|leave')}   Check your teams, change what you share, or leave
+  ${styleText('cyan', 'bun dist/npx-cli/index.js teambrain start')}                Create a team on cmem.ai
+  ${styleText('cyan', 'bun dist/npx-cli/index.js teambrain join <invite-link>')}   Join a team, then choose which projects to share
+  ${styleText('cyan', 'bun dist/npx-cli/index.js teambrain status|share|leave')}   Check your teams, change what you share, or leave
 
 ${styleText('bold', 'Claude Code Hooks')}:
   Each hook runs ${styleText('cyan', 'claude-mem hook claude-code <event>')} directly, with no shell.
   That ${styleText('cyan', 'claude-mem')} is a small launcher the installer places on PATH:
   ~/.local/bin (macOS/Linux) or %LOCALAPPDATA%\\claude-mem\\bin (Windows).
-  Hook error 'Executable not found in $PATH: "claude-mem"'? Run ${styleText('cyan', 'npx claude-mem install')},
-  restart your terminal or IDE, then check ${styleText('cyan', 'npx claude-mem doctor')}.
+  Hook error 'Executable not found in $PATH: "claude-mem"'? Run ${styleText('cyan', 'bun dist/npx-cli/index.js install')},
+  restart your terminal or IDE, then check ${styleText('cyan', 'bun dist/npx-cli/index.js doctor')}.
 
 ${styleText('bold', 'IDE Identifiers')}:
   claude-code, cursor, grok-bot, opencode, openclaw, omp, hermes, pi, dsh,

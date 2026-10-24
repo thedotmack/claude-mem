@@ -62,7 +62,7 @@ describe('sync-health helpers', () => {
     expect(classifySyncAuthFailure(403, 'not json')?.code).toBe('invalid_token');
     expect(classifySyncAuthFailure(403, '<!DOCTYPE html>\n<!--[if lt IE 7]> <html class="no-js ie6 oldie" lang="en-US"> <![endif]--><title>Attention Required! | Cloudflare</title>')).toBeNull();
     expect(classifySyncAuthFailure(401, '<html><body>blocked</body></html>')).toBeNull();
-    expect(classifySyncAuthFailure(403, '{"code":"subscription_inactive"}')?.message).toContain('cmem.ai/pro');
+    expect(classifySyncAuthFailure(403, '{"code":"subscription_inactive"}')?.message).toContain('Check the configured sync service or disable cloud sync');
   });
 
   it('replaces HTML error pages with a short description and scrubs tokens', () => {
@@ -176,7 +176,7 @@ describe('CloudSync failure handling', () => {
     const pausedStatus = sync.status();
     expect(pausedStatus.authError?.code).toBe('subscription_inactive');
     expect(pausedStatus.health.state).toBe('auth_paused');
-    expect(pausedStatus.lastError).toContain('cmem.ai/pro');
+    expect(pausedStatus.lastError).toContain('Check the configured sync service or disable cloud sync');
     expect(readSyncHealth(healthPath)?.state).toBe('auth_paused');
     expect(readSyncHealth(healthPath)?.code).toBe('subscription_inactive');
 

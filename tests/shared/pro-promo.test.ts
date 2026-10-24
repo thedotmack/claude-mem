@@ -19,7 +19,9 @@ describe('pro trial promo copy', () => {
   it('tags links with the source only — no trial length hint', () => {
     expect(proTrialUrl('installer')).toBe('https://cmem.ai/pro?from=installer');
     expect(proTrialUrl('session-start')).not.toContain('trial=');
-    expect(proTrialLine('welcome-hint')).toContain('https://cmem.ai/pro?from=welcome-hint');
+    for (const source of ['installer', 'session-start', 'context-banner', 'welcome-hint', 'fallback'] as const) {
+      expect(proTrialLine(source)).toBe('');
+    }
   });
 
   it('keeps the viewer mirror in sync with the Node-side copy', () => {

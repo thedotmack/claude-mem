@@ -1,3 +1,4 @@
+import { PROMOTIONS_ENABLED } from './distribution.js';
 // SPDX-License-Identifier: Apache-2.0
 
 /**
@@ -169,6 +170,11 @@ const PRO_FALLBACK_KEYS = [
  * is true for every account.
  */
 export function proFallbackNotice(notice: ProFallbackNotice, role: CmemGatewayRole = 'primary'): string {
+  if (!PROMOTIONS_ENABLED) {
+    return role === 'primary'
+      ? 'The configured CMEM gateway is unavailable. Memory is using the Claude provider. Check its credentials and model settings.'
+      : 'The configured fallback gateway is unavailable. Capture waits for your selected provider.';
+  }
   const message = relayedLine(notice.message) || 'cmem.ai memory is paused for this account.';
   const action = relayedLine(notice.action);
   // As the opt-in quota fallback the gateway never had memory: nothing moved

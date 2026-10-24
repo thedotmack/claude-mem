@@ -202,7 +202,7 @@ describe('OpenCode installer leaves the global AGENTS.md to the user', () => {
 
   beforeEach(() => {
     tempDir = join(tmpdir(), `opencode-context-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    const marketplacePluginPath = join(tempDir, 'plugins', 'marketplaces', 'thedotmack', 'dist', 'opencode-plugin', 'index.js');
+    const marketplacePluginPath = join(tempDir, 'plugins', 'marketplaces', 'leoli-goat', 'dist', 'opencode-plugin', 'index.js');
     mkdirSync(join(marketplacePluginPath, '..'), { recursive: true });
     writeFileSync(marketplacePluginPath, 'export default {}\n', 'utf-8');
 
@@ -333,7 +333,7 @@ describe('OpenCode installer per OpenCode version', () => {
 
   beforeEach(() => {
     tempDir = join(tmpdir(), `opencode-version-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    const bundle = join(tempDir, 'claude', 'plugins', 'marketplaces', 'thedotmack', 'dist', 'opencode-plugin', 'index.js');
+    const bundle = join(tempDir, 'claude', 'plugins', 'marketplaces', 'leoli-goat', 'dist', 'opencode-plugin', 'index.js');
     mkdirSync(join(bundle, '..'), { recursive: true });
     writeFileSync(bundle, 'export default { id: "claude-mem" };\n', 'utf-8');
     mkdirSync(join(tempDir, 'opencode'), { recursive: true });

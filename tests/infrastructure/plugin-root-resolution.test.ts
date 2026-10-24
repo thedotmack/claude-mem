@@ -48,8 +48,8 @@ describe('resolvePluginRoot (shared worker-script oracle)', () => {
   beforeEach(() => {
     base = mkdtempSync(join(tmpdir(), 'claude-mem-plugin-root-'));
     roots = {
-      cacheRoot: join(base, 'cache', 'thedotmack', 'claude-mem'),
-      marketplaceRoot: join(base, 'marketplaces', 'thedotmack'),
+      cacheRoot: join(base, 'cache', 'leoli-goat', 'claude-mem'),
+      marketplaceRoot: join(base, 'marketplaces', 'leoli-goat'),
       cwd: join(base, 'project'),
     };
     delete process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH;

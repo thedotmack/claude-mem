@@ -76,7 +76,7 @@ describe('AntigravityCliHooksInstaller - hooks.json target (not settings.json)',
 // seconds. These tests assert the real JSON shape (not source strings).
 describe('AntigravityCliHooksInstaller - agy hooks.json schema (issue #4196)', () => {
   const BUN = '/usr/local/bin/bun';
-  const WORKER = '/home/u/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs';
+  const WORKER = '/home/u/.claude/plugins/marketplaces/leoli-goat/plugin/scripts/worker-service.cjs';
   const config = buildAntigravityHooksConfig(BUN, WORKER) as Record<string, any>;
   const claudeMem = config['claude-mem'];
 
@@ -130,7 +130,7 @@ describe('AntigravityCliHooksInstaller - agy hooks.json schema (issue #4196)', (
 
 describe('AntigravityCliHooksInstaller - merge/uninstall migrate and preserve', () => {
   const BUN = '/usr/local/bin/bun';
-  const WORKER = '/home/u/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs';
+  const WORKER = '/home/u/.claude/plugins/marketplaces/leoli-goat/plugin/scripts/worker-service.cjs';
 
   it('preserves other named hooks and replaces claude-mem idempotently', () => {
     const existing = {
@@ -191,7 +191,7 @@ describe('AntigravityCliHooksInstaller - merge/uninstall migrate and preserve', 
 
 describe('AntigravityCliHooksInstaller - status sees leftover legacy hooks (issue #4196)', () => {
   const BUN = '/usr/local/bin/bun';
-  const WORKER = '/home/u/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs';
+  const WORKER = '/home/u/.claude/plugins/marketplaces/leoli-goat/plugin/scripts/worker-service.cjs';
 
   it('counts legacy claude-mem handlers next to a current install, without touching the config', () => {
     const config = {

@@ -12,8 +12,8 @@ import { readJsonFileWithBom, writeJsonFileAtomic } from '../../shared/atomic-js
 import { buildSpawnSyncInvocation, lookupWindowsCommand } from '../../shared/spawn.js';
 import { disableCodexPluginForHome, installCodexPluginForHome } from './CodexCliInstaller.js';
 
-const CLAUDE_PLUGIN = 'claude-mem@thedotmack';
-const CODEX_PLUGIN = 'claude-mem@claude-mem-local';
+const CLAUDE_PLUGIN = 'claude-mem@leoli-goat';
+const CODEX_PLUGIN = 'claude-mem@claude-mem-leoli-goat';
 type Driver = 'codex' | 'claudeAgent';
 type Document = Record<string, unknown>;
 
@@ -151,7 +151,7 @@ export function assertT3CodePluginLoading(provider: T3CodeProvider): void {
       throw new Error(`T3 Code provider ${provider.id} disables plugin MCP or hooks in launchArgs. Remove that override in T3 Code Settings, then reinstall.`);
     }
   } else if (args.some((arg, index) => (arg === '--disable' && args[index + 1] === 'hooks') || arg === '--disable=hooks'
-    || /^(?:features\.hooks|plugins\."?claude-mem@(?:claude-mem-local|thedotmack)"?\.enabled)\s*=\s*false$/.test(arg.replace(/^(?:--config|-c)=/, '')))) {
+    || /^(?:features\.hooks|plugins\."?claude-mem@(?:claude-mem-leoli-goat|leoli-goat)"?\.enabled)\s*=\s*false$/.test(arg.replace(/^(?:--config|-c)=/, '')))) {
     throw new Error(`T3 Code provider ${provider.id} disables Claude-Mem in launchArgs. Remove that override in T3 Code Settings, then reinstall.`);
   }
 }
@@ -199,16 +199,16 @@ function pluginEnabled(provider: T3CodeProvider, requireHooks = true): boolean {
 function pluginAssetsPresent(provider: T3CodeProvider, spawn: NonNullable<T3CodeOptions['spawn']>): boolean {
   let pluginPath: string | undefined;
   if (provider.driver === 'codex') {
-    const plugins = JSON.parse(runProvider(provider, ['plugin', 'list', '--marketplace', 'claude-mem-local', '--json'], spawn));
+    const plugins = JSON.parse(runProvider(provider, ['plugin', 'list', '--marketplace', 'claude-mem-leoli-goat', '--json'], spawn));
     if (!isRecord(plugins) || !Array.isArray(plugins.installed)) return false;
     const plugin = plugins.installed.find(value => isRecord(value) && value.pluginId === CODEX_PLUGIN && value.installed === true);
     if (!isRecord(plugin) || typeof plugin.version !== 'string' || !isRecord(plugin.marketplaceSource) || typeof plugin.marketplaceSource.source !== 'string') return false;
     if (!existsSync(join(plugin.marketplaceSource.source, '.agents', 'plugins', 'marketplace.json'))) return false;
-    pluginPath = join(provider.homePath, 'plugins', 'cache', 'claude-mem-local', 'claude-mem', plugin.version);
+    pluginPath = join(provider.homePath, 'plugins', 'cache', 'claude-mem-leoli-goat', 'claude-mem', plugin.version);
   } else {
     const marketplaces = join(provider.homePath, 'plugins', 'known_marketplaces.json');
     if (!existsSync(marketplaces)) return false;
-    const known = readDocument(marketplaces).thedotmack;
+    const known = readDocument(marketplaces)['leoli-goat'];
     if (!isRecord(known) || typeof known.installLocation !== 'string' || !existsSync(join(known.installLocation, '.claude-plugin', 'marketplace.json'))) return false;
     const entries = JSON.parse(runProvider(provider, ['plugin', 'list', '--json'], spawn));
     if (!Array.isArray(entries)) return false;
@@ -249,17 +249,17 @@ export async function installT3Code(marketplaceRoot: string, options: T3CodeOpti
         } else {
           const knownPath = join(provider.homePath, 'plugins', 'known_marketplaces.json');
           const known = existsSync(knownPath) ? readDocument(knownPath) : {};
-          const marketplace = known.thedotmack;
+          const marketplace = known['leoli-goat'];
           // The main installer already registers the default Claude home.
           if (!isRecord(marketplace)) {
             runProvider(provider, ['plugin', 'marketplace', 'add', root], spawn);
           } else if (marketplace.installLocation !== root
-            && (!isRecord(marketplace.source) || (marketplace.source.repo !== 'thedotmack/claude-mem' && marketplace.source.path !== root))) {
-            throw new Error('The thedotmack marketplace points to another source. Repair its registration with the main Claude-Mem installer.');
+            && (!isRecord(marketplace.source) || ((typeof marketplace.source.repo !== 'string' || marketplace.source.repo.toLowerCase() !== 'leoli-goat/claude-mem') && marketplace.source.path !== root))) {
+            throw new Error('The leoli-goat marketplace points to another source. Repair its registration with the main Claude-Mem installer.');
           } else if (marketplace.installLocation !== root) {
             // Keep other marketplace entries and installed plugins intact while
             // redirecting this provider to the bundle validated above.
-            known.thedotmack = { ...marketplace, source: { source: 'directory', path: root }, installLocation: root, lastUpdated: new Date().toISOString() };
+            known['leoli-goat'] = { ...marketplace, source: { source: 'directory', path: root }, installLocation: root, lastUpdated: new Date().toISOString() };
             writeJsonFileAtomic(knownPath, known);
           }
           runProvider(provider, ['plugin', 'install', CLAUDE_PLUGIN, '--scope', 'user'], spawn);

@@ -247,7 +247,7 @@ function makeFreshPlugin(
     // The install marker records bun's version (#3092).
     'if [ "$1" = "--version" ]; then echo 9.9.9; exit 0; fi',
     'if [ "$1" = "install" ]; then',
-    `  : > "${join(pluginRoot, BUN_INVOKED_MARKER)}"`,
+    `  printf '%s\\n' "$@" > "${join(pluginRoot, BUN_INVOKED_MARKER)}"`,
     ...installBody,
     'fi',
     'exit 0',
@@ -283,6 +283,7 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
     expect(code).toBe(0);
     expect(stderr).toContain(INSTALL_DIAGNOSTIC);
     expect(stderr).toContain(INSTALL_SUCCESS_DIAGNOSTIC);
+    expect(readFileSync(join(pluginRoot, BUN_INVOKED_MARKER), 'utf8')).toContain('--frozen-lockfile');
     // Success is now asserted against real resolvability, not a stray file:
     // the post-install re-check in version-check.js only reports success when
     // every declared specifier — zod and its three subpaths — resolves.
@@ -478,7 +479,7 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
     // `require.resolve(dep, { paths: [nodeModules] })` reads as tree-scoped but
     // is not: `paths` only seeds Node's lookup, which then walks every ancestor
     // directory and always consults the global folders. Real plugin roots sit
-    // at ~/.claude/plugins/cache/thedotmack/claude-mem/<version>/, so a zod
+    // at ~/.claude/plugins/cache/leoli-goat/claude-mem/<version>/, so a zod
     // anywhere above them — or installed globally — answered for the plugin's
     // own. The guard reported a gutted tree as complete and skipped repair,
     // silently reinstating the gh #3755 bug it exists to catch.
@@ -563,7 +564,7 @@ describe.skipIf(SKIP_NON_UNIX)('version-check install marker self-heal (#3092)',
 
     expect(code).toBe(0);
     expect(stderr).toContain('plugin dependencies missing (zod');
-    expect(stderr).toContain('npx claude-mem@latest install');
+    expect(stderr).toContain('bun run fork:install');
     expect(existsSync(join(pluginRoot, '.install-version'))).toBe(false);
     // The partial tree is preserved (#3972): no forced delete-and-reinstall.
     expect(existsSync(join(pluginRoot, PARTIAL_FETCH_ARTIFACT_REL))).toBe(true);

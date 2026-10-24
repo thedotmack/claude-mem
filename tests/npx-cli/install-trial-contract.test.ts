@@ -223,12 +223,12 @@ describe('installer trial-ready contract', () => {
     expect(parseInstallerOAuthStartBody({ ...validStartBody, expires_in: -5 })).not.toHaveProperty('expiresAt');
   });
 
-  it('prints only the login-only link for a deferred non-interactive sign-in', () => {
+  it('does not start or advertise deferred cloud sign-in', () => {
     const { output, exitCode } = runDeferredLoginChild(200, {}, ['CI']);
     expect(exitCode, output).toBe(0);
-    expect(output).toContain('__FETCH_CALLED__');
-    expect(output).toContain('Sign-in link: https://cmem.ai/login?next=');
-    expect(output).toContain('AGENT: show this link to the user');
+    expect(output).not.toContain('__FETCH_CALLED__');
+    expect(output).not.toContain('Sign-in link:');
+    expect(output).not.toContain('AGENT:');
     expect(output).not.toContain(checkoutUrl);
     expect(output).not.toContain('trial=7');
     expect(output).not.toContain('ABCD-2345');
@@ -239,7 +239,7 @@ describe('installer trial-ready contract', () => {
   it('stays silent and exits 0 when the deferred start request fails', () => {
     const { output, exitCode } = runDeferredLoginChild(503, {}, ['CI']);
     expect(exitCode, output).toBe(0);
-    expect(output).toContain('__FETCH_CALLED__');
+    expect(output).not.toContain('__FETCH_CALLED__');
     expect(output).not.toContain('Sign-in link:');
     expect(output).not.toContain('AGENT:');
     expect(output).toContain('__DEFERRED_DONE__');
