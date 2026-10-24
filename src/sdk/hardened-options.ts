@@ -130,8 +130,13 @@ export function resolveObserverThinkingOption(raw: string | undefined): Observer
   if (value === 'enabled' || value.startsWith('enabled:')) {
     const budgetRaw = value.slice('enabled:'.length);
     const budget = parseInt(budgetRaw, 10);
-    if (budgetRaw !== '' && Number.isFinite(budget) && budget > 0) {
+    if (budgetRaw !== '' && Number.isFinite(budget) && budget >= DEFAULT_OBSERVER_THINKING_BUDGET_TOKENS) {
       return { type: 'enabled', budgetTokens: budget };
+    }
+    if (budgetRaw !== '' && Number.isFinite(budget) && budget > 0) {
+      // The API rejects a smaller budget with a 400 on every request.
+      logger.warn('SDK', `Raising the CLAUDE_MEM_OBSERVER_THINKING budget "${budgetRaw}" to the API minimum ${DEFAULT_OBSERVER_THINKING_BUDGET_TOKENS}`);
+      return { type: 'enabled', budgetTokens: DEFAULT_OBSERVER_THINKING_BUDGET_TOKENS };
     }
     if (budgetRaw !== '') {
       logger.warn('SDK', `Ignoring the non-positive CLAUDE_MEM_OBSERVER_THINKING budget "${budgetRaw}"; using ${DEFAULT_OBSERVER_THINKING_BUDGET_TOKENS}`);

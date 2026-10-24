@@ -320,6 +320,32 @@ describe('ClaudeObservationProvider', () => {
     expect('temperature' in JSON.parse(String(capturing.lastInit?.body))).toBe(false);
   });
 
+  it('sends no thinking field unless given a policy', async () => {
+    const capturing = new CapturingFetch(jsonResponse(200, { content: [{ type: 'text', text: 'ok' }] }));
+    const provider = new ClaudeObservationProvider({ apiKey: 'sk-fake', fetchImpl: capturing.fetch });
+    await provider.generate(makeContext());
+    const body = JSON.parse(String(capturing.lastInit?.body));
+    expect('thinking' in body).toBe(false);
+    expect(body.max_tokens).toBe(4096);
+  });
+
+  it('sends the thinking policy: omit drops the field, adaptive passes through, an enabled budget adds to max_tokens', async () => {
+    const cases = [
+      { thinking: { type: 'disabled' as const }, expected: { type: 'disabled' }, maxTokens: 4096 },
+      { thinking: 'omit' as const, expected: undefined, maxTokens: 4096 },
+      { thinking: { type: 'adaptive' as const }, expected: { type: 'adaptive' }, maxTokens: 4096 },
+      { thinking: { type: 'enabled' as const, budgetTokens: 2048 }, expected: { type: 'enabled', budget_tokens: 2048 }, maxTokens: 6144 },
+    ];
+    for (const { thinking, expected, maxTokens } of cases) {
+      const capturing = new CapturingFetch(jsonResponse(200, { content: [{ type: 'text', text: 'ok' }] }));
+      const provider = new ClaudeObservationProvider({ apiKey: 'sk-fake', fetchImpl: capturing.fetch, thinking });
+      await provider.generate(makeContext());
+      const body = JSON.parse(String(capturing.lastInit?.body));
+      expect(body.thinking).toEqual(expected);
+      expect(body.max_tokens).toBe(maxTokens);
+    }
+  });
+
   it('POSTs to api.anthropic.com when baseUrl is unset', async () => {
     const capturing = new CapturingFetch(jsonResponse(200, { content: [{ type: 'text', text: 'ok' }] }));
     const provider = new ClaudeObservationProvider({ apiKey: 'sk-fake', fetchImpl: capturing.fetch });

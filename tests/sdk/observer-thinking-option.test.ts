@@ -45,6 +45,12 @@ describe('resolveObserverThinkingOption (#4732)', () => {
     expect(resolveObserverThinkingOption('enabled:2048')).toEqual({ type: 'enabled', budgetTokens: 2048 });
   });
 
+  it('raises a budget below the API minimum to 1024, with a warning', () => {
+    warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
+    expect(resolveObserverThinkingOption('enabled:500')).toEqual({ type: 'enabled', budgetTokens: 1024 });
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('falls back to the default budget for a non-positive or non-numeric budget', () => {
     expect(resolveObserverThinkingOption('enabled:0')).toEqual({ type: 'enabled', budgetTokens: 1024 });
     expect(resolveObserverThinkingOption('enabled:-5')).toEqual({ type: 'enabled', budgetTokens: 1024 });

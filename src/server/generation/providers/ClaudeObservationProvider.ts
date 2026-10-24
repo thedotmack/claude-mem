@@ -12,6 +12,7 @@ import type {
   ServerGenerationResult,
 } from './shared/types.js';
 import { readCappedErrorBody } from '../../../shared/capped-error-body.js';
+import { DEFAULT_OBSERVER_THINKING_BUDGET_TOKENS, type ObserverThinkingOption } from '../../../sdk/hardened-options.js';
 
 const ANTHROPIC_DEFAULT_BASE_URL = 'https://api.anthropic.com';
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -32,6 +33,13 @@ export interface ClaudeObservationProviderOptions {
   // is appended), for deployments that don't call api.anthropic.com directly.
   // Defaults to the real Anthropic API.
   baseUrl?: string;
+  // The worker's CLAUDE_MEM_OBSERVER_THINKING policy (#4732), parsed by
+  // resolveObserverThinkingOption; instantiateServerGenerationProvider passes
+  // it, so the server defaults to `disabled` as the worker does: a model that
+  // thinks by default (Claude Haiku 5.5) bills it as output and spends
+  // max_tokens on it, up to a reply with no text. Unset here sends no field,
+  // as before, for providers built directly by a custom module.
+  thinking?: ObserverThinkingOption;
 }
 
 interface AnthropicMessagesResponse {
@@ -47,6 +55,7 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
   private readonly maxOutputTokens: number;
   private readonly fetchImpl: typeof fetch;
   private readonly messagesUrl: string;
+  private readonly thinking: ObserverThinkingOption;
 
   constructor(options: ClaudeObservationProviderOptions) {
     if (!options.apiKey) {
@@ -61,6 +70,7 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
     this.fetchImpl = options.fetchImpl ?? fetch;
     const baseUrl = (options.baseUrl?.trim() || ANTHROPIC_DEFAULT_BASE_URL).replace(/\/+$/, '');
     this.messagesUrl = `${baseUrl}/v1/messages`;
+    this.thinking = options.thinking ?? 'omit';
   }
 
   async generate(
@@ -168,11 +178,30 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
       // rejects any request that sets one.
       body: JSON.stringify({
         model: this.model,
-        max_tokens: this.maxOutputTokens,
+        max_tokens: this.requestMaxTokens(),
         messages: [{ role: 'user', content: prompt }],
+        ...this.thinkingField(),
       }),
       signal,
     });
+  }
+
+  // An enabled thinking budget gets its own tokens on top of the answer's
+  // cap, as the worker's reasoning budget does (#5033); the API also requires
+  // max_tokens above budget_tokens.
+  private requestMaxTokens(): number {
+    const thinking = this.thinking;
+    return thinking && thinking !== 'omit' && thinking.type === 'enabled'
+      ? this.maxOutputTokens + (thinking.budgetTokens ?? DEFAULT_OBSERVER_THINKING_BUDGET_TOKENS)
+      : this.maxOutputTokens;
+  }
+
+  private thinkingField(): { thinking?: Record<string, unknown> } {
+    if (this.thinking === 'omit' || !this.thinking) return {};
+    if (this.thinking.type === 'enabled') {
+      return { thinking: { type: 'enabled', budget_tokens: this.thinking.budgetTokens ?? DEFAULT_OBSERVER_THINKING_BUDGET_TOKENS } };
+    }
+    return { thinking: { type: this.thinking.type } };
   }
 }
 
