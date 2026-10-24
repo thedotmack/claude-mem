@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { fileURLToPath } from 'node:url';
 import { runBrowserSetup, settingsChangesNeedingRestart, setupPageUrl, shouldUseBrowserSetup, waitForBackgroundWorkToFinish } from '../../src/npx-cli/install/browser-setup.js';
 import type { SetupStateView } from '../../src/shared/setup-state.js';
 
@@ -43,6 +44,22 @@ function fakeWorker(script: { unreachableReads?: number }) {
 }
 
 describe('runBrowserSetup', () => {
+  it('handles a checkout watcher failure immediately, then preserves paid credentials and reports before rejecting', () => {
+    const child = Bun.spawnSync([process.execPath, fileURLToPath(new URL('../fixtures/browser-setup-watcher-failure.ts', import.meta.url))], {
+      stdout: 'pipe', stderr: 'pipe',
+    });
+    expect(child.exitCode).toBe(0);
+    const result = JSON.parse(child.stdout.toString());
+    expect(result.whileCheckoutOpen.unhandled).toEqual([]);
+    expect(result.whileCheckoutOpen.setupSettled).toBe(false);
+    expect(result.whileCheckoutOpen.credentialsPersisted).toBe(false);
+    expect(result.whileCheckoutOpen.warnings).toHaveLength(1);
+    expect(result.whileCheckoutOpen.warnings[0]).toContain('Checkout status service is unavailable.');
+    expect(result.credentialsPersisted).toBe(true);
+    expect(result.reports.at(-1)).toBe('paid');
+    expect(result.error).toContain('Checkout status service is unavailable.');
+  });
+
   for (const status of [403, 503]) {
     it(`surfaces the worker's setup-state error on HTTP ${status}`, async () => {
       await expect(runBrowserSetup({

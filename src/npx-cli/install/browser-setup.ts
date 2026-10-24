@@ -145,14 +145,23 @@ export async function runBrowserSetup(deps: BrowserSetupDeps): Promise<BrowserSe
           await report(stage, null, 'waiting');
         }
       }
-    })();
+    })().then(
+      () => ({ ok: true as const }),
+      (error: unknown) => {
+        // Observe failures immediately without interrupting checkout before it persists paid credentials.
+        const message = error instanceof Error ? error.message : String(error);
+        deps.log.warn(`${message} Waiting for the open checkout to finish before stopping setup.`);
+        return { ok: false as const, error };
+      },
+    );
     let failure: string | null = null;
     try { checkoutPaid = await deps.checkout!.run(); }
     catch (error: unknown) { failure = error instanceof Error ? error.message : String(error); }
     settled = true;
-    await watchForRepeats;
+    const watcherOutcome = await watchForRepeats;
     if (checkoutPaid) await report(stage, null, 'paid');
     else await report(stage, failure ?? 'Checkout did not finish. Continue to open it again.', 'failed');
+    if (!watcherOutcome.ok) throw watcherOutcome.error;
   }
 }
 
