@@ -13,6 +13,7 @@ const WORK_VIEW_EVENTS_URL = '/api/work-view/events'
 const WORK_VIEW_REVIEW_URL = '/api/work-view/review'
 const WORK_VIEW_RULES_URL = '/api/work-view/rules'
 const WORK_VIEW_LOAD_RULES_URL = '/api/work-view/rules/load-in-claude-code'
+const WORK_VIEW_MARK_AGENT_FINISHED_URL = '/api/work-view/agents/mark-finished'
 const CONTENT_FINGERPRINT_PATTERN = /^[a-f0-9]{64}$/
 const CONNECTION_TICK_MS = 1000
 const AGING_TICK_MS = 60_000
@@ -32,7 +33,7 @@ const connectionEvidence = {
 let latestSnapshot: WorkViewSnapshot | null = null
 /** The content of the last model handed to the screens, so an unchanged snapshot or a quiet minute is not sent again. */
 let lastDeliveredSignature: string | null = null
-const modelSignature = (model: MappedWorkModel) => JSON.stringify([model.requests, model.requestReadErrors, model.unlinkedWorkCount, model.sourceHealth, model.priorities, model.openAsks, model.currentPeriod, model.pastPeriods, model.goalsReadError, model.lastRuns, model.refresh, model.rules, model.ruleScopes, model.rulesLearning, model.rulesFile, model.rulesReadError])
+const modelSignature = (model: MappedWorkModel) => JSON.stringify([model.agents, model.requests, model.requestReadErrors, model.unlinkedWorkCount, model.sourceHealth, model.priorities, model.openAsks, model.currentPeriod, model.pastPeriods, model.goalsReadError, model.lastRuns, model.refresh, model.rules, model.ruleScopes, model.rulesLearning, model.rulesFile, model.rulesReadError])
 
 const currentConnectionStatus = (): ConnectionStatus =>
   getConnectionStatus({ ...connectionEvidence, now: performance.now(), wallNow: Date.now() })
@@ -121,6 +122,7 @@ export const localSource: WorkDataSource = {
 
   saveRuleChange: (change) => postForWorkModel(WORK_VIEW_RULES_URL, change, 'The rule change'),
   loadRulesInClaudeCode: () => postForWorkModel(WORK_VIEW_LOAD_RULES_URL, {}, 'Loading your rules into Claude Code'),
+  markAgentFinished: (agentId) => postForWorkModel(WORK_VIEW_MARK_AGENT_FINISHED_URL, { agentGroupId: agentId }, 'Marking the agent finished'),
 
   subscribeToLiveUpdates(onWorkModel, onConnectionChange) {
     const reportConnection = () => onConnectionChange(currentConnectionStatus())

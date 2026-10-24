@@ -16,7 +16,7 @@ function fixtureDatabase() {
   db.exec(`CREATE TABLE sdk_sessions (id INTEGER PRIMARY KEY, platform_source TEXT, content_session_id TEXT, memory_session_id TEXT, project TEXT, user_prompt TEXT, started_at_epoch INTEGER);
     CREATE TABLE user_prompts (id INTEGER PRIMARY KEY, session_db_id INTEGER, prompt_number INTEGER, prompt_text TEXT, created_at_epoch INTEGER);
     CREATE TABLE tool_uses (id INTEGER PRIMARY KEY, session_db_id INTEGER, tool_name TEXT, tool_input TEXT, created_at_epoch INTEGER);
-    CREATE TABLE observations (id INTEGER PRIMARY KEY, memory_session_id TEXT, created_at_epoch INTEGER);
+    CREATE TABLE observations (id INTEGER PRIMARY KEY, memory_session_id TEXT, type TEXT, title TEXT, subtitle TEXT, created_at_epoch INTEGER);
     CREATE TABLE work_state_entries (id INTEGER PRIMARY KEY, project TEXT, list_name TEXT, fields TEXT, created_at_epoch INTEGER);`);
   const session = db.prepare('INSERT INTO sdk_sessions VALUES (?, ?, ?, ?, ?, ?, ?)');
   const prompt = db.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)');
@@ -304,6 +304,53 @@ describe('overall requests and progress reviews', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+  it('a request that changed since it was aligned is aligned again; an unchanged one is not', () => {
+  const dir = ledgerDir();
+  try {
+    const database = fixtureDatabase();
+    saveGoals(database, '2026-10-01T10:00:00Z');
+    let output: any;
+    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; } }); return output; };
+    const write = (name: string, value: unknown) => { const path = join(dir, name); writeFileSync(path, JSON.stringify(value)); return path; };
+    const group = groupIdFor(key('a'));
+    run(['apply', write('d1.json', { groups: [{ title: 'Release cards', conversations: [key('a')] }, { title: 'Pricing page', conversations: [key('c')] }] })]);
+    run(['record-alignment', write('a1.json', { links: [{ groupId: group, goal: 'Priority: Ship cards', evidence: 'The cards.' }], unaligned: [groupIdFor(key('c'))] })]);
+    expect(run(['align-input']).groups).toEqual([]);
+    // A new review says what the request is now; the decision was made on the old one.
+    run(['record-progress', write('r.json', { groupId: group, state: 'in-progress', percent: 40, summary: 'Now the pricing page too.', reviewBasis: run(['show', group]).reviewBasis })]);
+    expect(run(['align-input']).groups.map((entry: { groupId: string }) => entry.groupId)).toEqual([group]);
+    expect(refreshNeeds({ dir, database, now: NOW }).unaligned).toBe(1);
+    run(['record-alignment', write('a2.json', { links: [{ groupId: group, goal: 'Priority: Ship cards', evidence: 'Still the cards.' }] })]);
+    expect(run(['align-input']).groups).toEqual([]);
+    // A merged-in conversation changes the request too.
+    run(['apply', write('d2.json', { groups: [{ title: 'Release cards', conversations: [key('a'), key('b')], links: [{ kind: 'shared-work-list', conversations: [key('a'), key('b')], evidence: 'work list "release-cards" in repo/tree' }] }] })]);
+    expect(run(['align-input']).groups.map((entry: { groupId: string }) => entry.groupId)).toEqual([group]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+  it('a re-review that adds an owner preference, a ship date fix or a regression reaches the story, at the same state and percent', () => {
+  const dir = ledgerDir();
+  try {
+    const database = fixtureDatabase();
+    let output: any;
+    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; } }); return output; };
+    const write = (name: string, value: unknown) => { const path = join(dir, name); writeFileSync(path, JSON.stringify(value)); return path; };
+    const group = groupIdFor(key('a'));
+    run(['apply', write('d.json', { groups: [{ title: 'Release cards', conversations: [key('a')] }] })]);
+    const review = (now: number, extra: object) => run(['record-progress', write('r.json', { groupId: group, state: 'in-progress', percent: 40, summary: 'Under way.', reviewBasis: run(['show', group], now).reviewBasis, ...extra })], now);
+    review(NOW, {});
+    run(['record-story', write('s.json', { narrative: 'One request under way.' })], NOW + 1000);
+    // Reworded prose alone is not new story content.
+    review(NOW + 2000, { summary: 'Still under way.' });
+    expect(run(['story-input']).reviews).toEqual([]);
+    review(NOW + 3000, { preferences: [{ kind: 'directive', preference: 'Fail loudly at limits', quote: 'fail loudly', at: null }] });
+    expect(run(['story-input']).reviews.map((entry: { groupId: string }) => entry.groupId)).toEqual([group]);
+    run(['record-story', write('s2.json', { narrative: 'One request under way.' })], NOW + 4000);
+    review(NOW + 5000, { preferences: [{ kind: 'directive', preference: 'Fail loudly at limits', quote: 'fail loudly', at: null }], outcome: { regressions: [{ text: 'Cards lost their dates', at: null }] } });
+    expect(run(['story-input']).reviews.map((entry: { groupId: string }) => entry.groupId)).toEqual([group]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
   it('show: a re-review with the same conversations amends the previous review from the new asks only', () => {
   const dir = ledgerDir();
   try {
@@ -317,6 +364,9 @@ describe('overall requests and progress reviews', () => {
     expect(first).toMatchObject({ mode: 'full', amendSince: null });
     run(['record-progress', write('r.json', { groupId: group, state: 'in-progress', percent: 40, summary: 'Under way.', reviewBasis: first.reviewBasis })]);
     database.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)').run(1, 2, 'Now add the release date to each card', NOW + DAY);
+    database.prepare('INSERT INTO observations (memory_session_id, type, title, subtitle, created_at_epoch) VALUES (?, ?, ?, ?, ?)').run('m1', 'feature', 'Release dates on cards', 'Each card shows its date', NOW + DAY);
+    database.prepare('INSERT INTO observations (memory_session_id, type, title, subtitle, created_at_epoch) VALUES (?, ?, ?, ?, ?)').run('m1', 'feature', 'Cards built', 'Before the review', NOW - DAY);
+    expect(run(['show', group], NOW + 2 * DAY).conversations[0].observations).toMatchObject([{ title: 'Release dates on cards', type: 'feature', at: new Date(NOW + DAY).toISOString() }]);
     const amend = run(['show', group], NOW + 2 * DAY);
     expect(amend).toMatchObject({ mode: 'amend', amendSince: new Date(NOW).toISOString(), previousReview: { percent: 40 } });
     expect(amend.conversations[0].asks.map((ask: { text: string }) => ask.text)).toEqual(['Now add the release date to each card']);
@@ -328,7 +378,7 @@ describe('overall requests and progress reviews', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-  it('story-input lists every review without a story, then only reviews whose state or percent changed', () => {
+  it('story-input lists every review without a story, then only reviews whose facts changed', () => {
   const dir = ledgerDir();
   try {
     const database = fixtureDatabase();

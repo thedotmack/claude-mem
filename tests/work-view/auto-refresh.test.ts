@@ -1,14 +1,16 @@
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import { setFakeSpawn } from '../helpers/fake-spawn.js';
 import { EventEmitter } from 'node:events';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AutoRefreshWorker } from '../../src/services/work-view/auto-refresh-worker.mjs';
-import { buildRefreshTask, STEP_MODELS } from '../../src/services/work-view/refresh-task.js';
+import { buildRefreshTask, GROUPING_ANSWER_SCHEMA, STEP_MODELS } from '../../src/services/work-view/refresh-task.js';
 import { readLedger, runCli } from '../../src/services/work-view/request-groups.mjs';
 
 const DAY = 86400000, NOW = 100 * DAY;
+afterEach(() => setFakeSpawn(null));
 const key = (session: string) => JSON.stringify(['conversation', 'claude', session]);
 const PLUGIN_ROOT = join(import.meta.dir, '..', '..', 'plugin');
 
@@ -17,7 +19,7 @@ function fixtureDatabase() {
   db.exec(`CREATE TABLE sdk_sessions (id INTEGER PRIMARY KEY, platform_source TEXT, content_session_id TEXT, memory_session_id TEXT, project TEXT, user_prompt TEXT, started_at_epoch INTEGER);
     CREATE TABLE user_prompts (id INTEGER PRIMARY KEY, session_db_id INTEGER, prompt_number INTEGER, prompt_text TEXT, created_at_epoch INTEGER);
     CREATE TABLE tool_uses (id INTEGER PRIMARY KEY, session_db_id INTEGER, tool_name TEXT, tool_input TEXT, created_at_epoch INTEGER);
-    CREATE TABLE observations (id INTEGER PRIMARY KEY, memory_session_id TEXT, created_at_epoch INTEGER);
+    CREATE TABLE observations (id INTEGER PRIMARY KEY, memory_session_id TEXT, type TEXT, title TEXT, subtitle TEXT, created_at_epoch INTEGER);
     CREATE TABLE work_state_entries (id INTEGER PRIMARY KEY, project TEXT, list_name TEXT, fields TEXT, created_at_epoch INTEGER);`);
   db.prepare('INSERT INTO sdk_sessions VALUES (?, ?, ?, ?, ?, ?, ?)').run(1, 'claude', 'a', 'm1', 'repo/tree', 'Build the release cards', NOW - 3 * DAY);
   db.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)').run(1, 1, 'Build the release cards', NOW - 3 * DAY);
@@ -56,9 +58,10 @@ describe('automatic refresh scheduler', () => {
       expect(await worker.runNow({ reason: 'setup-scan' })).toBe('running');
       expect(jobs).toHaveLength(1);
       expect(worker.status().state).toBe('running');
-      finish.resolve({ state: 'ok', agent: 'claude-code', result: 'Reviewed 1 request.', error: null });
+      const steps = [{ step: 'review', agent: 'claude-code', startedAt: new Date(NOW).toISOString(), finishedAt: new Date(now).toISOString(), groups: 1 }];
+      finish.resolve({ state: 'ok', agent: 'claude-code', result: 'Reviewed 1 request.', error: null, steps });
       expect(await first).toBe('ok');
-      expect(worker.status()).toMatchObject({ state: 'ok', agent: 'claude-code', result: 'Reviewed 1 request.', error: null, startedAt: new Date(NOW).toISOString(), finishedAt: new Date(now).toISOString() });
+      expect(worker.status()).toMatchObject({ state: 'ok', agent: 'claude-code', result: 'Reviewed 1 request.', error: null, startedAt: new Date(NOW).toISOString(), finishedAt: new Date(now).toISOString(), steps });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
@@ -123,9 +126,13 @@ describe('refresh task', () => {
   it('Claude Code gets only read-only tools: Read, Grep, Glob and memory search, with no Bash, Write or bypass', () => {
     const task = buildRefreshTask({ needs: { due: 2, ungrouped: 1, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: '/data', ledgerDir: '/data/work-view', pluginRoot: '/plugin', openDatabase: handle(fixtureDatabase()), now: () => NOW });
     const { claudeCode } = task;
-    expect(task.cwd).toBe('/data');
+    // The work-view folder, not the data dir that holds .env and settings.json.
+    expect(task.cwd).toBe('/data/work-view');
     expect(claudeCode.plugins).toEqual([{ type: 'local', path: '/plugin' }]);
     expect(claudeCode.tools).toEqual(['Read', 'Grep', 'Glob']);
+    // File tools are approved per call, only inside the work-view folder.
+    expect(claudeCode.readableFolders).toEqual(['/data/work-view']);
+    expect(claudeCode.allowedTools.filter(tool => ['Read', 'Grep', 'Glob'].includes(tool))).toEqual([]);
     expect(claudeCode.allowedTools).toContain('mcp__plugin_claude-mem_mcp-search__search');
     expect(claudeCode.allowedTools).toContain('mcp__plugin_claude-mem_mcp-search__work_state_read');
     // No raw work-state writes: they would skip the skills' validators.
@@ -145,6 +152,9 @@ describe('refresh task', () => {
         prompts.push(prompt);
         models.push(stepModels);
         expect(prompt).toMatch(/read-only sandbox/);
+        // Codex and Gemini run without MCP servers: no instruction to search memory, the evidence is inline.
+        expect(prompt).toMatch(/You have no memory tools/);
+        expect(prompt).not.toMatch(/with its MCP tools/);
         expect(prompt).not.toContain('${CLAUDE_SKILL_DIR}');
         const file = /is in (\S+\.json)/.exec(prompt)?.[1];
         if (prompt.includes('Do only section 1')) return '```json\n{"groups": [{"title": "Release cards", "conversations": [' + JSON.stringify(key('a')) + ']}]}\n```';
@@ -158,7 +168,7 @@ describe('refresh task', () => {
         if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'One request is under way.', preferences: [] });
         throw new Error(`Unexpected prompt: ${prompt.slice(-200)}`);
       };
-      expect(await task.run(ask, 'codex')).toBe('1 conversations in 1 groups, 1 requests reviewed, story written.');
+      expect(await task.run(ask, 'codex')).toBe('1 new conversations grouped, 1 requests reviewed, story written.');
       const ledger = readLedger(dir);
       expect(Object.values(ledger.groups.groups).map((group: any) => group.title)).toEqual(['Release cards']);
       expect(Object.values(ledger.progress).map((review: any) => review.percent)).toEqual([40]);
@@ -168,6 +178,81 @@ describe('refresh task', () => {
       expect(models).toEqual([STEP_MODELS.grouping, STEP_MODELS.review, STEP_MODELS.review, STEP_MODELS.story]);
       expect(STEP_MODELS.grouping).toEqual({ 'claude-code': { model: 'haiku' }, codex: { model: 'gpt-6-luna', reasoningEffort: 'low' }, gemini: { model: 'flash-lite' } });
       expect(STEP_MODELS.review).toEqual({ 'claude-code': { model: 'sonnet' }, codex: {}, gemini: { model: 'flash' } });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('Codex grouping answers', () => {
+  const FIXTURES = join(import.meta.dir, '..', 'fixtures', 'codex');
+  const groupingTask = (dir: string, database: Database) => buildRefreshTask({ needs: { due: 0, ungrouped: 1, goalsStale: false, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW });
+
+  it('grouping asks for the apply schema, and a schema-shaped Codex answer is saved', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-codex-schema-'));
+    try {
+      const database = fixtureDatabase();
+      const schemas: unknown[] = [];
+      const ask = async (prompt: string, _models: unknown, schema?: unknown) => {
+        schemas.push(schema);
+        if (prompt.includes('Do only section 1')) return readFileSync(join(FIXTURES, 'grouping-answer-schema.txt'), 'utf8');
+        if (prompt.includes('Do only section 2')) {
+          const [show] = JSON.parse(readFileSync(/is in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+          return JSON.stringify({ reviews: [{ groupId: show.groupId, state: 'in-progress', percent: 10, summary: 'Started.', reviewBasis: show.reviewBasis }] });
+        }
+        return JSON.stringify({ narrative: 'Started.', preferences: [] });
+      };
+      expect(await groupingTask(dir, database).run(ask, 'codex')).toBe('1 new conversations grouped, 1 requests reviewed, story written.');
+      expect(schemas[0]).toBe(GROUPING_ANSWER_SCHEMA);
+      expect(Object.values(readLedger(dir).groups.groups).map((group: any) => group.title)).toEqual(['Release cards for My Work']);
+      // Strict structured output: every object lists all its properties as required and allows no others.
+      const objects: any[] = [];
+      const walk = (node: any) => { if (node?.type === 'object') objects.push(node); for (const value of Object.values(node ?? {})) if (value && typeof value === 'object') walk(value); };
+      walk(GROUPING_ANSWER_SCHEMA);
+      expect(objects.length).toBe(4);
+      for (const object of objects) { expect(object.additionalProperties).toBe(false); expect(object.required).toEqual(Object.keys(object.properties)); }
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a malformed answer (recorded Oct 23 Codex output: arrays closed twice) fails loudly with the raw answer kept', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-codex-malformed-'));
+    try {
+      const malformed = readFileSync(join(FIXTURES, 'grouping-answer-malformed.txt'), 'utf8');
+      const prompts: string[] = [];
+      const ask = async (prompt: string) => { prompts.push(prompt); return malformed; };
+      const error = await groupingTask(dir, fixtureDatabase()).run(ask, 'codex').then(() => null, failure => failure as Error);
+      expect(error?.message).toMatch(/^grouping \(raw answer: .+failed-answers.+-grouping-codex\.txt\): JSON Parse error/);
+      expect(readFileSync(/\(raw answer: (.+?\.txt)\)/.exec(error!.message)![1], 'utf8')).toBe(malformed);
+      // Asked once more with the reason before failing; nothing was grouped.
+      expect(prompts).toHaveLength(2);
+      expect(prompts[1]).toMatch(/Your previous answer was refused: JSON Parse error/);
+      expect(Object.keys(readLedger(dir).groups.groups)).toEqual([]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('alignment prompt', () => {
+  it('carries the align-input inline and names every group to decide', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-align-'));
+    try {
+      const database = fixtureDatabase();
+      saveGoals(database, new Date(NOW).toISOString());
+      const decisions = join(dir, 'decisions.json');
+      writeFileSync(decisions, JSON.stringify({ groups: [{ title: 'Release cards', conversations: [key('a')] }] }));
+      runCli(['apply', decisions], { dir, database, now: NOW, print: () => {} });
+      const task = buildRefreshTask({ needs: { due: 1, ungrouped: 0, goalsStale: false, unaligned: 1, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW });
+      const ask = async (prompt: string) => {
+        if (prompt.includes('Do only section 2')) {
+          const [show] = JSON.parse(readFileSync(/is in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+          return JSON.stringify({ reviews: [{ groupId: show.groupId, state: 'in-progress', percent: 10, summary: 'Started.', reviewBasis: show.reviewBasis }] });
+        }
+        if (prompt.includes('Do only section 3')) {
+          const input = JSON.parse(/```json\n([\s\S]*?)\n```/.exec(prompt.slice(prompt.indexOf('Do only section 3')))![1]);
+          expect(JSON.parse(readFileSync(/also saved in (\S+\.json)/.exec(prompt)![1], 'utf8'))).toEqual(input);
+          expect(prompt).toContain(`Decide each of these 1 groups, in "links" or "unaligned": ${input.groups[0].groupId}.`);
+          return JSON.stringify({ links: [], unaligned: [input.groups[0].groupId] });
+        }
+        return JSON.stringify({ narrative: 'Started.', preferences: [] });
+      };
+      expect(await task.run(ask, 'codex')).toBe('1 requests reviewed, 0 linked to goals, story written.');
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
@@ -188,7 +273,9 @@ describe('parallel reviews', () => {
       const task = buildRefreshTask({ needs: { due: 10, ungrouped: 0, goalsStale: false, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW });
       let inFlight = 0, most = 0;
       const bothAsked = deferred<void>();
+      let lastPrompt = '';
       const ask = async (prompt: string) => {
+        lastPrompt = prompt;
         if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'Ten features under way.' });
         const shows = JSON.parse(readFileSync(/is in (\S+\.json)/.exec(prompt)![1], 'utf8'));
         most = Math.max(most, ++inFlight);
@@ -198,7 +285,11 @@ describe('parallel reviews', () => {
         return JSON.stringify({ reviews: shows.map((show: any) => ({ groupId: show.groupId, state: 'in-progress', percent: 30, summary: 'Under way.', reviewBasis: show.reviewBasis })) });
       };
       expect(await task.run(ask, 'claude-code')).toBe('10 requests reviewed, story written.');
+      expect(lastPrompt).toMatch(/Search claude-mem memory with its MCP tools/);
       expect(most).toBe(2);
+      // refresh.json's run record gets one timing per step and review batch.
+      expect(task.steps.map(timing => [timing.step, timing.agent, timing.groups])).toEqual([['review', 'claude-code', 8], ['review', 'claude-code', 2], ['story', 'claude-code', undefined]]);
+      expect(task.steps.every(timing => timing.startedAt === new Date(NOW).toISOString() && timing.finishedAt === timing.startedAt)).toBe(true);
       expect(Object.keys(readLedger(dir).progress)).toHaveLength(10);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
@@ -240,6 +331,8 @@ describe('incremental owner goals', () => {
       const prompts: string[] = [];
       const ask = async (prompt: string) => {
         prompts.push(prompt);
+        // The agent takes five minutes; a prompt typed meanwhile is not in this export.
+        clock += 5 * 60000;
         const previous = JSON.parse(readFileSync(/saved goals are in (\S+\.json)/.exec(prompt)![1], 'utf8'));
         expect(previous.priorities.map((item: any) => item.title)).toEqual(['Ship cards']);
         return JSON.stringify({ ...previous, priorities: [{ ...previous.priorities[0], rank: 2 }] });

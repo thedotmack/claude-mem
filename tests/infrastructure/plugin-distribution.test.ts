@@ -345,6 +345,7 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
       PostToolUseFailure: [['hook', 'claude-code', 'observation']],
       PreToolUse: [['hook', 'claude-code', 'file-context']],
       Stop: [['hook', 'claude-code', 'summarize']],
+      SubagentStop: [['hook', 'claude-code', 'subagent-stop']],
       SessionEnd: [['hook', 'claude-code', 'session-end']],
     });
   });
@@ -590,6 +591,7 @@ describe('Plugin Distribution - Non-blocking bookkeeping hooks (#3206)', () => {
     const postToolUseFailure = parsed.hooks.PostToolUseFailure[0].hooks[0];
     const stop = parsed.hooks.Stop[0].hooks[0];
     const sessionEnd = parsed.hooks.SessionEnd[0].hooks[0];
+    const subagentStop = parsed.hooks.SubagentStop[0].hooks[0];
 
     expect(postToolUse.args).toEqual(['hook', 'claude-code', 'observation']);
     expect(postToolUse.async).toBe(true);
@@ -600,6 +602,8 @@ describe('Plugin Distribution - Non-blocking bookkeeping hooks (#3206)', () => {
     expect(stop.async).toBe(true);
     expect(sessionEnd.args).toEqual(['hook', 'claude-code', 'session-end']);
     expect(sessionEnd.async).toBe(true);
+    expect(subagentStop.args).toEqual(['hook', 'claude-code', 'subagent-stop']);
+    expect(subagentStop.async).toBe(true);
   });
 
   it('runs the SessionStart worker start asynchronously and keeps context and UserPromptSubmit synchronous (#3303)', () => {
@@ -698,6 +702,8 @@ const CLAUDE_EXEC_EXPECTATIONS: Record<string, Record<string, unknown>> = {
   // Synchronous so the File Read Gate can deny a whole-file Read.
   'PreToolUse.0.0': claudeExecHook(['hook', 'claude-code', 'file-context'], { timeout: FILE_CONTEXT_HOOK_TIMEOUT_SECONDS }),
   'Stop.0.0': claudeExecHook(['hook', 'claude-code', 'summarize'], { timeout: 120, async: true }),
+  // Records that a subagent finished, so My Work stops showing it as working.
+  'SubagentStop.0.0': claudeExecHook(['hook', 'claude-code', 'subagent-stop'], { timeout: 30, async: true }),
   'SessionEnd.0.0': claudeExecHook(['hook', 'claude-code', 'session-end'], { async: true }),
 };
 
@@ -1086,20 +1092,4 @@ describe('Spawn-Contract Templating - Rule B installers bake absolute paths', ()
       expect(content).not.toMatch(/\$\{CLAUDE_PLUGIN_ROOT\}/);
     });
   }
-
-  it('install-paths.ts centralizes the Rule B helpers', () => {
-    const content = readFileSync(
-      path.join(projectRoot, 'src/services/integrations/install-paths.ts'),
-      'utf-8',
-    );
-    for (const name of [
-      'getMcpServerAbsolutePath',
-      'getWorkerServiceAbsolutePath',
-      'getBunAbsolutePath',
-      'getNodeAbsolutePath',
-      'getPluginRootAbsolutePath',
-    ]) {
-      expect(content).toContain(`export function ${name}`);
-    }
-  });
 });

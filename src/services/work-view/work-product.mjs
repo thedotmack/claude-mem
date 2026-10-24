@@ -3,7 +3,7 @@
 // Every entry comes from a recorded source (a captured tool call, an observer's
 // files_modified list, or a work-state field) and keeps a reference to it.
 import { statSync } from 'node:fs';
-import { basename, extname } from 'node:path';
+import { basename, extname, isAbsolute } from 'node:path';
 
 // Files a person opens, not source code. Anything else stays in the work history.
 const FILE_KINDS = {
@@ -50,8 +50,9 @@ export function safeWebUrl(value) {
   } catch { return null; }
 }
 
-function isLocalPath(value) {
-  return typeof value === 'string' && value.startsWith('/') && !value.includes('\0') && !value.split('/').includes('..');
+/** An absolute path on this platform (`/…`, or `C:\…` / `C:/…` / `\\server\…` on Windows) with no `..` part. */
+export function isLocalPath(value, isAbsolutePath = isAbsolute) {
+  return typeof value === 'string' && isAbsolutePath(value) && !value.includes('\0') && !value.split(/[\\/]/).includes('..');
 }
 
 /** The kind of a local file a person would open, or null for code and data. */
@@ -260,7 +261,9 @@ export function productsFromFields(fields, { atEpoch = null, sourceRef = null } 
   let index = 0;
   for (const [field, value] of Object.entries(fields ?? {})) {
     if (!isWorkProductField(field)) continue;
-    const values = WORK_PRODUCT_FIELDS.has(field) ? (Array.isArray(value) ? value : [value]) : typeof value === 'string' ? [value] : [];
+    // Work-state fields are plain values, so several products (with titles) arrive as one JSON string.
+    const decoded = WORK_PRODUCT_FIELDS.has(field) && typeof value === 'string' && /^\s*[[{]/.test(value) ? parse(value) ?? value : value;
+    const values = WORK_PRODUCT_FIELDS.has(field) ? (Array.isArray(decoded) ? decoded : [decoded]) : typeof value === 'string' ? [value] : [];
     for (const value of values) {
       const entry = value && typeof value === 'object' && !Array.isArray(value) ? value : { url: value };
       const url = safeWebUrl(entry.url ?? entry.link);

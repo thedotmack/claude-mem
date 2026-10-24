@@ -119,6 +119,10 @@ describe('local work view', () => {
     expect(file.headers.get('content-type')).toContain('image/png');
     expect(file.headers.get('content-security-policy')).toBe('sandbox allow-scripts');
     expect(await file.text()).toBe('png-bytes');
+    // Another local page cannot read the file through worker CORS.
+    const foreign = await fetch(`${origin}${products[0].fileUrl}`, { headers: { Origin: 'http://localhost:1' } });
+    expect(foreign.status).toBe(403);
+    expect((await fetch(`${origin}${products[0].fileUrl}`, { headers: { Origin: origin } })).status).toBe(200);
     expect((await fetch(`${origin}/api/work-view/file/work-state/2/1`)).status).toBe(404);
     expect((await fetch(`${origin}/api/work-view/file/work-state/1/0`)).status).toBe(404);
   });

@@ -9,11 +9,13 @@
  * a run actually fails.
  *
  *   - Claude Code: one Agent SDK `query` per step with the claude-mem plugin
- *     loaded for its memory-search MCP tools, only the task's allowed tools
- *     (everything else is denied), `cwd` = the data dir and no session persistence.
- *   - Codex: `codex exec -s read-only --ephemeral --ignore-user-config --skip-git-repo-check -C <cwd> -o <file> [-m <model>] [-c model_reasoning_effort="<effort>"] -`
- *     (codex-cli 0.163.0 `exec --help`), prompt on stdin, no MCP servers.
- *   - Gemini: `gemini -p <line> --approval-mode plan --skip-trust -e none --allowed-mcp-server-names <none> -o json [-m <model>]`
+ *     loaded for its memory-search MCP tools, only the task's allowed tools,
+ *     Read/Grep/Glob only inside the task's readable folders (everything else is
+ *     denied), `cwd` = the task's folder and no session persistence.
+ *   - Codex: `codex exec -s read-only --ephemeral --ignore-user-config --skip-git-repo-check -C <cwd> -o <file> [--output-schema <file>] [-m <model>] [-c model_reasoning_effort="<effort>"] -`
+ *     (codex-cli 0.163.0 `exec --help`), prompt on stdin, no MCP servers. A step that names an answer
+ *     schema gets it as `--output-schema`, so the final message is that JSON shape and nothing else.
+ *   - Gemini: `gemini -p <line> --approval-mode plan -e none --allowed-mcp-server-names <none> -o json [-m <model>]`
  *     (gemini 0.49.0 `--help`: plan = read-only mode), prompt on stdin, no extensions or MCP servers.
  *   Each step names its model per backend (the task's table); Claude Code takes it as the SDK `model` option.
  *
@@ -23,10 +25,9 @@
  * through claude-mem's own validators.
  */
 
-import { spawn } from 'child_process';
 import { randomBytes } from 'crypto';
-import { mkdirSync, readFileSync, rmSync } from 'fs';
-import { join } from 'path';
+import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { query, type CanUseTool, type Options, type SdkPluginConfig } from '@anthropic-ai/claude-agent-sdk';
 import { buildIsolatedEnvWithFreshOAuth } from '../../shared/EnvManager.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
@@ -40,22 +41,29 @@ export { GEMINI_NO_MCP_SERVERS };
 export interface StepModel { model?: string; reasoningEffort?: string }
 export type StepModels = Partial<Record<UsableAgentId, StepModel>>;
 
-/** Ask a read-only agent one prompt, on the step's model, and get its final answer text. */
-export type AskAgent = (prompt: string, models: StepModels) => Promise<string>;
+/** A JSON Schema for a step's answer, strict-mode shaped (every property required, no extra properties). */
+export type AnswerSchema = Record<string, unknown>;
+
+/** Ask a read-only agent one prompt, on the step's model, and get its final answer text.
+ * With `answerSchema`, an agent CLI that supports structured output (Codex) must answer in that shape. */
+export type AskAgent = (prompt: string, models: StepModels, answerSchema?: AnswerSchema) => Promise<string>;
 
 export interface ClaudeCodeTaskOptions {
   /** Plugins whose MCP servers the steps need. */
   plugins: SdkPluginConfig[];
   /** The built-in tools the model can see at all. */
   tools: string[];
-  /** The only tools a step may use (read-only); every other tool is denied. */
+  /** Tools approved without a check (read-only MCP tools). Never Read, Grep or Glob: the SDK's
+   * allowedTools approves a path anywhere on disk, so those go through `readableFolders`. */
   allowedTools: string[];
+  /** The only folders Read, Grep and Glob may touch, checked per call (links resolved). Every other tool is denied. */
+  readableFolders: string[];
 }
 
 export interface AgentTask {
   /** Why this run happened, for logs and the run record (e.g. 'scheduled', 'setup-scan'). */
   reason: string;
-  /** Working directory for every backend: the claude-mem data dir. */
+  /** Working directory for every backend (My Work's refresh: the work-view folder). */
   cwd: string;
   claudeCode: ClaudeCodeTaskOptions;
   /** Drives the agent step by step; returns a short result line. */
@@ -77,8 +85,9 @@ export interface AgentRunResult {
 export interface AgentRunnerDependencies {
   detect: () => Promise<UsableAgent[]>;
   query: typeof query;
-  spawn: typeof spawn;
-  /** Environment for the agent process: the worker's isolated credentials, never tracked by claude-mem's own hooks. */
+  /** Environment for the agent process: the worker's isolated credentials, never tracked by claude-mem's own hooks.
+   * Built fresh for every step: a run can outlive the OAuth access token it started with (Oct 22: the Mac slept
+   * 11 hours mid-run, and the token injected at the start was revoked by the time the next step asked). */
   buildEnv: () => Promise<NodeJS.ProcessEnv>;
 }
 
@@ -91,20 +100,48 @@ async function defaultEnv(): Promise<NodeJS.ProcessEnv> {
 const defaultDependencies: AgentRunnerDependencies = {
   detect: () => detectUsableAgents(),
   query,
-  spawn,
   buildEnv: defaultEnv,
 };
 
 const describeError = (error: unknown) => (error instanceof Error ? error.message : String(error)).trim() || 'unknown error';
 
+const FILE_TOOLS = ['Read', 'Grep', 'Glob'];
+
+/** `path` with every existing link resolved; the part that does not exist yet is kept as written. */
+function realPath(path: string): string {
+  try { return realpathSync(path); }
+  catch {
+    const parent = dirname(path);
+    return parent === path ? path : join(realPath(parent), relative(parent, path));
+  }
+}
+
+/** True when the file tool call stays inside `folders`: its path (relative to `cwd`) and, for Glob, its pattern. */
+export function fileToolStaysInside(toolName: string, input: Record<string, unknown>, cwd: string, folders: string[]): boolean {
+  const named = toolName === 'Read' ? input.file_path : input.path ?? cwd;
+  if (typeof named !== 'string' || !named) return false;
+  const inside = (path: string) => {
+    const real = realPath(resolve(cwd, path));
+    return folders.some(folder => { const from = relative(realPath(resolve(folder)), real); return from === '' || (!from.startsWith('..') && !isAbsolute(from)); });
+  };
+  if (!inside(named)) return false;
+  // A Glob pattern is matched from its path; an absolute or climbing pattern could leave it.
+  if (toolName === 'Glob' && (typeof input.pattern !== 'string' || isAbsolute(input.pattern) || input.pattern.split(/[\\/]/).includes('..'))) return false;
+  return true;
+}
+
 /** One Agent SDK query per step, with read-only tools only. */
-function claudeCodeAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies, env: NodeJS.ProcessEnv): AskAgent {
+function claudeCodeAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies): AskAgent {
   const { claudeCode } = task;
-  const canUseTool: CanUseTool = async toolName => {
+  const canUseTool: CanUseTool = async (toolName, input) => {
+    if (FILE_TOOLS.includes(toolName) && fileToolStaysInside(toolName, input, task.cwd, claudeCode.readableFolders)) {
+      return { behavior: 'allow', updatedInput: input };
+    }
     logger.warn('WORKER', `Agent run (${task.reason}) was refused ${toolName}`);
     return { behavior: 'deny', message: `${toolName} is not available to this read-only step.` };
   };
   return async (prompt, models) => {
+    const env = await dependencies.buildEnv();
     let stderr = '';
     const options: Options = {
       pathToClaudeCodeExecutable: agent.path!,
@@ -137,13 +174,12 @@ function claudeCodeAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentR
 
 /** Run an agent CLI with the prompt on stdin and wait for it, however long it takes. */
 async function runCli(
-  dependencies: AgentRunnerDependencies,
   command: string,
   args: string[],
   prompt: string,
   options: { cwd: string; env: NodeJS.ProcessEnv },
 ): Promise<CommandResult> {
-  const result = await runCommand(dependencies.spawn, command, args, { ...options, input: prompt });
+  const result = await runCommand(command, args, { ...options, input: prompt });
   if (result.spawnError) throw result.spawnError;
   return result;
 }
@@ -160,9 +196,9 @@ function failure(name: string, result: CommandResult): Error {
  * `--ignore-user-config` skips that file, so the run has no MCP tools; auth
  * still comes from CODEX_HOME. Every save goes through the worker's validators.
  */
-const CODEX_EXEC_ARGS = (cwd: string, answerPath: string, { model, reasoningEffort }: StepModel = {}) => [
+const CODEX_EXEC_ARGS = (cwd: string, answerPath: string, schemaPath: string | null, { model, reasoningEffort }: StepModel = {}) => [
   'exec', '-s', 'read-only', '--ephemeral', '--ignore-user-config', '--skip-git-repo-check', '-C', cwd, '-o', answerPath,
-  ...(model ? ['-m', model] : []), ...(reasoningEffort ? ['-c', `model_reasoning_effort="${reasoningEffort}"`] : []), '-',
+  ...(schemaPath ? ['--output-schema', schemaPath] : []), ...(model ? ['-m', model] : []), ...(reasoningEffort ? ['-c', `model_reasoning_effort="${reasoningEffort}"`] : []), '-',
 ];
 
 // --skip-trust: in a folder Gemini never trusted, headless runs exit 55 and drop plan mode. It trusts the data dir for
@@ -170,25 +206,33 @@ const CODEX_EXEC_ARGS = (cwd: string, answerPath: string, { model, reasoningEffo
 // Gemini with no extensions and no MCP server, so plan mode is the only tool surface.
 const GEMINI_ARGS = ['-p', 'Follow the instructions above.', '--approval-mode', 'plan', '--skip-trust', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json'];
 
-function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies, env: NodeJS.ProcessEnv): AskAgent {
-  return async (prompt, models) => {
+function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies): AskAgent {
+  return async (prompt, models, answerSchema) => {
+    const env = await dependencies.buildEnv();
     const directory = join(task.cwd, 'agent-runs');
     mkdirSync(directory, { recursive: true });
-    const answerPath = join(directory, `codex-${randomBytes(6).toString('hex')}.txt`);
+    const id = randomBytes(6).toString('hex');
+    const answerPath = join(directory, `codex-${id}.txt`);
+    // Free-form JSON from Codex can be malformed (Oct 23: an 82-conversation grouping answer closed
+    // its arrays twice), so a step with a schema asks Codex's structured output for it instead.
+    const schemaPath = answerSchema ? join(directory, `codex-${id}.schema.json`) : null;
+    if (schemaPath) writeFileSync(schemaPath, JSON.stringify(answerSchema), { mode: 0o600 });
     try {
-      const result = await runCli(dependencies, agent.path!, CODEX_EXEC_ARGS(task.cwd, answerPath, models.codex), prompt, { cwd: task.cwd, env });
+      const result = await runCli(agent.path!, CODEX_EXEC_ARGS(task.cwd, answerPath, schemaPath, models.codex), prompt, { cwd: task.cwd, env });
       if (result.exitCode !== 0) throw failure('codex exec', result);
       return readFileSync(answerPath, 'utf8');
     } finally {
       rmSync(answerPath, { force: true });
+      if (schemaPath) rmSync(schemaPath, { force: true });
     }
   };
 }
 
-function geminiAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies, env: NodeJS.ProcessEnv): AskAgent {
+function geminiAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies): AskAgent {
   return async (prompt, models) => {
+    const env = await dependencies.buildEnv();
     const model = models.gemini?.model;
-    const result = await runCli(dependencies, agent.path!, [...GEMINI_ARGS, ...(model ? ['-m', model] : [])], prompt, { cwd: task.cwd, env });
+    const result = await runCli(agent.path!, [...GEMINI_ARGS, ...(model ? ['-m', model] : [])], prompt, { cwd: task.cwd, env });
     if (result.exitCode !== 0) throw failure('gemini', result);
     let output: { response?: unknown; error?: { message?: string } };
     try { output = JSON.parse(result.stdout); }
@@ -205,6 +249,8 @@ function geminiAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunne
  * `waiting-for-agent` and runs nothing.
  */
 export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunnerDependencies> = {}): Promise<AgentRunResult> {
+  const autoApprovedFileTools = task.claudeCode.allowedTools.filter(tool => FILE_TOOLS.includes(tool));
+  if (autoApprovedFileTools.length) throw new Error(`Agent task ${task.reason} auto-approves ${autoApprovedFileTools.join(', ')}, which would read anywhere on disk; name readableFolders instead.`);
   const dependencies = { ...defaultDependencies, ...overrides };
   const usable = (await dependencies.detect()).filter(agent => agent.authenticated && agent.path);
   if (!usable.length) {
@@ -220,8 +266,7 @@ export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunn
   for (const agent of usable) {
     logger.info('WORKER', `Agent run (${task.reason}) starting on ${agent.id}`);
     try {
-      const env = await dependencies.buildEnv();
-      const ask = { 'claude-code': claudeCodeAsk, codex: codexAsk, gemini: geminiAsk }[agent.id](agent, task, dependencies, env);
+      const ask = { 'claude-code': claudeCodeAsk, codex: codexAsk, gemini: geminiAsk }[agent.id](agent, task, dependencies);
       const result = await task.run(ask, agent.id);
       logger.info('WORKER', `Agent run (${task.reason}) finished on ${agent.id}`);
       return { state: 'ok', agent: agent.id, result: result.slice(0, 4000), error: null, attempts };

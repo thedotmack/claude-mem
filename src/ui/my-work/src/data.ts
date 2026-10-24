@@ -11,7 +11,17 @@ export interface Device { id: string; name: string; syncedMinutesAgo: number; on
 /** 'other' is any platform without its own mark (a neutral mark is shown). */
 export type AgentTool = 'claude' | 'codex' | 'gemini' | 'other'
 /** One running agent. Several can share a tool, so each also has a role and the machine it runs on (§13.2). */
-export interface Agent { id: string; tool: AgentTool; name: string; role: string; deviceId: string }
+/**
+ * `status` is set only for a subagent, from recorded evidence: `finished` means a recorded stop (its SubagentStop,
+ * its Agent call returning, or the owner's Mark finished) came after its last recorded step. Quiet is never finished.
+ */
+export interface Agent {
+  id: string; tool: AgentTool; name: string; role: string; deviceId: string
+  status?: 'working' | 'quiet' | 'finished'
+  finishedAt?: string
+  /** A subagent with no recorded stop: the owner may record one. */
+  canMarkFinished?: boolean
+}
 
 export type Stage = 'Planning' | 'Building' | 'Reviewing' | 'Shipped'
 export type LiveState = 'working' | 'needs-check' | 'your-move' | 'idle' | 'shipped'
@@ -367,6 +377,12 @@ export async function saveRuleChange(change: RuleChange): Promise<WorkModel> {
   const model = await activeWorkDataSource.saveRuleChange(change)
   applyWorkModel(model)
   return model
+}
+
+/** Records that a subagent finished, for one no recorded stop covers. Rejects with the reason. */
+export async function markAgentFinished(agentId: string): Promise<void> {
+  if (!activeWorkDataSource) throw new Error('No data source to save the agent to')
+  applyWorkModel(await activeWorkDataSource.markAgentFinished(agentId))
 }
 
 /** Adds the MY-RULES.md import to ~/.claude/CLAUDE.md through the active source. */

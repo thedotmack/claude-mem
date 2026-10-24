@@ -1,16 +1,10 @@
 import { expect, it } from 'bun:test';
-import { build } from 'esbuild';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import {
+  FIXTURE_PAGE_HTML, UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, compileBrowserFixture, failOnCiWithoutChrome,
+  htmlResponse, launchChrome, scriptResponse, withTimeout, type OwnedChrome,
+} from '../../helpers/chrome-devtools';
 
-const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
-  ?? (existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
-    ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : null);
-
-if (process.env.CI && !chrome) {
-  throw new Error('CI requires Chrome or Chromium for the context-preview browser regressions.');
-}
+failOnCiWithoutChrome('CI requires Chrome or Chromium for the context-preview browser regressions.');
 
 // This regression needs real React effects, state updates, and HTTP ordering.
 // It runs in headless Chrome when installed; no mocked React dispatcher.
@@ -20,12 +14,8 @@ for (const { oldStatus, emptySource, startupDelayMs = 0 } of [
   { oldStatus: 200, emptySource: true },
   { oldStatus: 200, emptySource: false, startupDelayMs: 10000 },
 ]) {
-  (chrome ? it : it.skip)(`keeps the current preview after an older HTTP ${oldStatus} reply (emptySource=${emptySource})${startupDelayMs ? ` after ${startupDelayMs}ms browser startup` : ''}`, async () => {
-    const root = resolve(import.meta.dir, '../../..');
-    const bundle = await build({
-      write: false, bundle: true, platform: 'browser', format: 'iife',
-      define: { 'process.env.NODE_ENV': '"production"' },
-      stdin: { resolveDir: root, loader: 'tsx', contents: `
+  (chromeExecutablePath ? it : it.skip)(`keeps the current preview after an older HTTP ${oldStatus} reply (emptySource=${emptySource})${startupDelayMs ? ` after ${startupDelayMs}ms browser startup` : ''}`, async () => {
+    const bundle = compileBrowserFixture(`
         import React from 'react';
         import { createRoot } from 'react-dom/client';
         import { useContextPreview } from './src/ui/viewer/hooks/useContextPreview';
@@ -80,8 +70,7 @@ for (const { oldStatus, emptySource, startupDelayMs = 0 } of [
           if (!seen) fetch('/seen').then(res => res.json()).then(value => { seen = value; });
           return seen;
         }
-      ` },
-    });
+      `);
     let markReady!: () => void;
     const ready = new Promise<void>(resolve => { markReady = resolve; });
     let release!: () => void;
@@ -91,8 +80,8 @@ for (const { oldStatus, emptySource, startupDelayMs = 0 } of [
     const result = new Promise<unknown>(resolve => { report = resolve; });
     const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
       const url = new URL(request.url);
-      if (url.pathname === '/') return new Response('<div id="root"></div><script src="/fixture.js"></script>', { headers: { 'Content-Type': 'text/html' } });
-      if (url.pathname === '/fixture.js') { await Bun.sleep(startupDelayMs); return new Response(bundle.outputFiles[0].text, { headers: { 'Content-Type': 'application/javascript' } }); }
+      if (url.pathname === '/') return htmlResponse(FIXTURE_PAGE_HTML);
+      if (url.pathname === '/fixture.js') { await Bun.sleep(startupDelayMs); return scriptResponse(bundle); }
       if (url.pathname === '/api/projects') return Response.json({ projects: ['project-a', 'project-b'], sources: ['claude'], projectsBySource: { claude: ['project-a', 'project-b'] } });
       if (url.pathname === '/ready') { markReady(); return new Response('ready'); }
       if (url.pathname === '/seen') return Response.json(seen);
@@ -104,24 +93,17 @@ for (const { oldStatus, emptySource, startupDelayMs = 0 } of [
       if (url.pathname === '/result') { report(await request.json()); return new Response('received'); }
       return new Response('Not found', { status: 404 });
     } });
-    const profile = mkdtempSync(join(tmpdir(), 'claude-mem-preview-browser-'));
-    const child = Bun.spawn([chrome!, '--headless', '--no-sandbox', '--disable-gpu', '--disable-background-networking', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--no-first-run', `--user-data-dir=${profile}`, server.url.href], { stdout: 'ignore', stderr: 'ignore' });
-    let timeout: ReturnType<typeof setTimeout>;
+    let chrome: OwnedChrome | undefined;
     try {
+      chrome = launchChrome(server.url.href, { profilePrefix: 'claude-mem-preview-browser-', extraFlags: UNTHROTTLED_TIMER_FLAGS });
       // Chrome startup is independent of the rendered fixture's six-second race.
-      await Promise.race([ready, new Promise<never>((_, reject) => {
-        timeout = setTimeout(() => reject(new Error('Owned browser page did not become ready')), 30000);
-      })]);
-      clearTimeout(timeout!);
-      const reported = await Promise.race([result, new Promise(resolve => { timeout = setTimeout(() => resolve({ failure: 'Browser timed out' }), 9000); })]);
+      await withTimeout(ready, 30000, 'Owned browser page did not become ready');
+      const reported = await withTimeout(result, 9000, 'Browser timed out');
       expect(reported).toEqual({ selectedProject: emptySource ? null : 'project-b', preview: emptySource ? 'No project selected' : 'PREVIEW_B', error: null, isLoading: false });
     } finally {
-      clearTimeout(timeout!);
       release();
-      child.kill();
-      await child.exited;
+      await chrome?.close();
       server.stop(true);
-      rmSync(profile, { recursive: true, force: true });
     }
   }, 45000);
 }

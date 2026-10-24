@@ -15,6 +15,8 @@ const UNRECORDED_AGENT: Agent = { id: 'agent-not-recorded', tool: 'other', name:
 /** In solo mode every human request comes from the owner's own prompts. */
 const SOLO_REQUESTER = 'You'
 const NEXT_STEP_NOT_RECORDED = 'Next step not recorded'
+/** A request is built from its prompts; until an agent records work it has only asks. */
+const NO_WORK_YET = 'No agent work recorded yet'
 const KNOWN_TOOLS: AgentTool[] = ['claude', 'codex', 'gemini']
 const PLATFORM_LABEL: Record<string, string> = { claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini' }
 const EVIDENCE_URL = /^\/api\/work-view\/evidence\/(work-state|observation|prompt|summary|session)\/\d+$/
@@ -87,7 +89,17 @@ function parseRecordKey(key: string): string[] {
 
 export function toAgent(agent: WorkViewAgent): Agent {
   const tool = KNOWN_TOOLS.includes(agent.platformSource as AgentTool) ? agent.platformSource as AgentTool : 'other'
-  return { id: agent.id, tool, name: agent.label, role: agent.sessionTitle ?? lastPathSegment(agent.project) ?? 'Recorded session', deviceId: THIS_COMPUTER.id }
+  const mapped: Agent = { id: agent.id, tool, name: agent.label, role: agent.sessionTitle ?? lastPathSegment(agent.project) ?? 'Recorded session', deviceId: THIS_COMPUTER.id }
+  if (!agent.isSubagent) return mapped
+  const finished = agent.presence?.status === 'finished'
+  const finishedAt = finished && agent.presence?.finishedAt ? Date.parse(agent.presence.finishedAt) : NaN
+  return {
+    ...mapped,
+    role: `Subagent · ${mapped.role}`,
+    status: finished ? 'finished' : agent.presence?.status === 'recent' ? 'working' : 'quiet',
+    ...(Number.isFinite(finishedAt) ? { finishedAt: formatDateTime(finishedAt) } : {}),
+    canMarkFinished: agent.canMarkFinished === true,
+  }
 }
 
 function nextTextFor(status: NormalizedStatus, recordedNext: string) {
@@ -131,17 +143,21 @@ export function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], no
   // An explicit status recorded after the review (a reopen) wins, and the older review cannot claim it finished.
   const reviewCounts = !!recordedReview && reviewIsNewerThanLifecycle(recordedReview, raw.lifecycle)
   const review = reviewCounts || (recordedReview && recordedReview.percent < 100) ? recordedReview : null
-  const status = normalizeRequestStatus({ items: raw.items, lifecycle: raw.lifecycle, checked: raw.review?.checked === true, progressState: reviewCounts ? review?.state : null, progressPercent: reviewCounts ? review?.percent : null }, now)
+  // With only asks, the latest ask is the request's last update.
+  const statusItems = raw.items.length ? raw.items : [{ kind: 'prompt', status: '', lastUpdateEpoch: updatedAt }]
+  const status = normalizeRequestStatus({ items: statusItems, lifecycle: raw.lifecycle, checked: raw.review?.checked === true, progressState: reviewCounts ? review?.state : null, progressPercent: reviewCounts ? review?.percent : null }, now)
   const shippedAt = review?.state === 'shipped' && review.shippedAt ? Date.parse(review.shippedAt) : NaN
   const completedEpoch = raw.completedAtEpoch ?? (Number.isFinite(shippedAt) ? shippedAt : null)
   const { state, stage, who } = presentStatus(status, now - updatedAt <= STALE_AFTER_MS)
   const recordedNext = (copyReady && cleanText(copy.next, 240))
     || cleanText(raw.items.find((item) => item.nextStep?.text)?.nextStep?.text, 140)
-    || NEXT_STEP_NOT_RECORDED
+    || (raw.items.length ? NEXT_STEP_NOT_RECORDED : NO_WORK_YET)
   const agentId = agents.some((agent) => agent.id === raw.agentIds[0]) ? raw.agentIds[0] : UNRECORDED_AGENT.id
   const started = raw.startedAtEpoch
   const reviewedAt = review ? Date.parse(review.checkedAt) : NaN
   const readings = review?.readings ?? []
+  // A recorded ship completes the request at 100%; review readings that stopped short of it are not its trace.
+  const readingsStopShort = status === 'shipped' && !!review && review.percent < 100
   const evidence = [
     ...(raw.original.url ? [{ title: `${EVIDENCE_KIND_LABEL.prompt}: ${cleanText(raw.original.text, 80)}`, href: raw.original.url }] : []),
     ...raw.items.map((item) => ({ title: `${EVIDENCE_KIND_LABEL[item.url.split('/')[4]] ?? 'Record'}: ${cleanText(item.title, 80)}`, href: item.url })),
@@ -168,12 +184,15 @@ export function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], no
       percent: status === 'shipped' ? 100 : review ? review.percent : null,
       readings: review ? Math.max(1, readings.length) : 0,
       reviewedAt: Number.isFinite(reviewedAt) ? formatRecordTime(reviewedAt, now) : 'Not reviewed yet',
-      history: readings.map((reading) => reading.percent),
+      history: readingsStopShort ? undefined : readings.map((reading) => reading.percent),
       completedAt: status === 'shipped' && completedEpoch ? formatDateTime(completedEpoch) : undefined,
     },
     estimate: measuredEstimate(readings, status === 'shipped'),
     next: { who, text: nextTextFor(status, recordedNext) },
-    terminal: raw.activity.slice(0, 4).reverse().map((activity) => cleanText(`${activity.kind} ${activity.title}${activity.detail ? `: ${activity.detail}` : ''}`, 160)).filter(Boolean),
+    // No agent activity yet: the card shows the human's own asks instead.
+    terminal: raw.activity.length
+      ? raw.activity.slice(0, 4).reverse().map((activity) => cleanText(`${activity.kind} ${activity.title}${activity.detail ? `: ${activity.detail}` : ''}`, 160)).filter(Boolean)
+      : [raw.original, ...raw.scopeUpdates].slice(-4).map((prompt) => cleanText(`ask ${prompt.text}`, 160)).filter(Boolean),
     activityWord: copyReady ? 'Working' : 'Translating',
     workstreams: raw.workstreams.map((stream) => ({
       title: cleanText(copy?.workstreams?.find((entry) => entry.id === stream.id)?.title, 115) || 'Supporting work',
@@ -408,9 +427,12 @@ export function toWorkModel(snapshot: WorkViewSnapshot, now: number): MappedWork
     }
   }
   const { goalsRun, ...goalsModel } = toGoalsModel(snapshot.goals, snapshot.goalHistory)
-  // An open ask lists the requests the alignment linked to it; priorities link through request.goalId.
+  // Each goal lists every request the alignment linked to it. A request can serve up to three goals,
+  // while request.goalId names only one, so priorities need the list too.
   const aligned = snapshot.humanRequests.some((raw) => raw.goals)
-  const openAsks = aligned ? goalsModel.openAsks.map((ask) => ({ ...ask, servedBy: snapshot.humanRequests.filter((raw) => raw.goals?.some((goal) => goal.goalId === ask.id)).map((raw) => raw.id) })) : goalsModel.openAsks
+  const withServedBy = <T extends { id: string }>(goal: T) => ({ ...goal, servedBy: snapshot.humanRequests.filter((raw) => raw.goals?.some((link) => link.goalId === goal.id)).map((raw) => raw.id) })
+  const priorities = aligned ? goalsModel.priorities.map(withServedBy) : goalsModel.priorities
+  const openAsks = aligned ? goalsModel.openAsks.map(withServedBy) : goalsModel.openAsks
   const { progressRun, ...rulesModel } = toRulesModel(snapshot, now)
   const agents = snapshot.agents.map(toAgent)
   if (requests.some((request) => request.agentId === UNRECORDED_AGENT.id)) agents.push(UNRECORDED_AGENT)
@@ -424,6 +446,7 @@ export function toWorkModel(snapshot: WorkViewSnapshot, now: number): MappedWork
     unlinkedWorkCount: Array.isArray(snapshot.unlinkedWork) ? snapshot.unlinkedWork.length : 0,
     sourceHealth: { connected: snapshot.source.connected, error: snapshot.source.error },
     ...goalsModel,
+    priorities,
     openAsks,
     ...rulesModel,
     buildStory: toBuildStory(snapshot.story?.story ?? null, now),

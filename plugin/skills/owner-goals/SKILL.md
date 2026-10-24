@@ -76,7 +76,7 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/save_goals.py" --goals "<folder>/owner-goal
 
 For a date range, add the same `--start YYYY-MM-DD --end YYYY-MM-DD` used in step 1.
 
-The script checks every quote against the prompt typed at that minute. If any fail, it lists them; correct the wording or time from `owner-prompts.md` and run it again. A quote dated before the first prompt in `owner-prompts.md` has aged out of the window: it is dropped, and so is an item left with no quote. `--dry-run` shows the writes without saving.
+The script checks every quote against the prompt typed at that minute. If any fail, it lists them; correct the wording or time from `owner-prompts.md` and run it again. A quote dated before the first prompt in `owner-prompts.md` has aged out of the window: it is dropped, and so is an item left with no quote; if every item ages out, the goals are cleared. `--dry-run` shows the writes without saving.
 
 It saves through the local claude-mem worker to the `owner-goals` work-state list, one list per computer:
 

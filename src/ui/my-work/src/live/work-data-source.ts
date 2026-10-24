@@ -76,6 +76,8 @@ export interface WorkDataSource {
   setRequestChecked(requestId: string, expectedFingerprint: string, checked: boolean): Promise<ReviewResult>
   /** Saves one change to My Rules and answers with the model after it. Rejects with the reason it was not saved. */
   saveRuleChange(change: RuleChange): Promise<WorkModel>
+  /** Records the owner's stop for a subagent no recorded stop covers, and answers with the model after it. */
+  markAgentFinished(agentId: string): Promise<WorkModel>
   /** Adds the MY-RULES.md import to ~/.claude/CLAUDE.md (once). Rejects with the reason when it can't. */
   loadRulesInClaudeCode(): Promise<WorkModel>
 }
