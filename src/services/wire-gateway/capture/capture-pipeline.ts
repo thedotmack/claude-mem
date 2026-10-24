@@ -31,6 +31,9 @@ export interface WireCaptureObserverOptions {
   isSessionCapturable?: (identity: WireIdentity) => boolean;
 }
 
+/** 401 and 403 from the vendor: the agent's credential was refused. */
+const UPSTREAM_REFUSED_CREDENTIAL_STATUSES: ReadonlySet<number> = new Set([401, 403]);
+
 function replyWithNothing(): WireReply {
   return { text: '', toolCalls: [], thinking: '', sealed: [], usage: emptyWireUsage(), stop: null, endedCleanly: false };
 }
@@ -83,6 +86,15 @@ export function createWireCaptureConsumer(options: WireCaptureObserverOptions): 
         options.recorder.save(turn, generationAtStart);
       }
 
+      // The vendor refused the agent's credential: no model work happened, so
+      // nothing of this exchange becomes memory (the agent re-sends the request
+      // once its credential works, and that exchange is captured). On a shared
+      // gateway this also keeps a member with a bogus credential from filling
+      // the outbox with events built from request bodies the vendor never took.
+      if (UPSTREAM_REFUSED_CREDENTIAL_STATUSES.has(result.recordedStatus)) {
+        logger.debug('WIRE', 'Not captured: the vendor refused the agent\'s credential', { agentId: identity.agentId, routeId: exchange.routeId, status: result.recordedStatus });
+        return;
+      }
       try {
         options.assembler.observeExchange({ identity, request, reply, replyIsWhole });
       } catch (error) {

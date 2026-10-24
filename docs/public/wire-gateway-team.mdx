@@ -1,0 +1,333 @@
+---
+title: "Wire Gateway for Teams"
+description: "Run one shared wire gateway for a team: client keys, the allow list, where memory goes, and hosting on Fly."
+---
+
+A shared wire gateway is the [wire gateway](/wire-gateway) on a team host. Each
+member's agent sends its model requests through it with its own provider key,
+and the gateway turns what it sees into memories in the team's
+[claude-mem server runtime](/hosted-server), one project per client key.
+
+```text
+member's agent ──https──▶ https://gateway.example.com/k/<client key>/r/<route>/v1/messages
+                              │  (the provider key in the agent's own header goes on untouched)
+                              ├──▶ provider (Anthropic, OpenAI, Gemini, …)
+                              └──▶ outbox ──▶ claude-mem server runtime (project of that key)
+```
+
+## What the gateway keeps, and what it never does
+
+- **Client keys** are `cmw_` plus 32 random bytes. The gateway keeps only the
+  SHA-256 digest of each, in `<data dir>/wire-gateway/keys/keys.json`
+  (mode `0600`). A key is shown once, when you make it. A digest rather than a
+  slow password hash such as scrypt: a slow hash protects a guessable secret,
+  and 256 random bits cannot be guessed whatever the hash costs, while a slow
+  hash on every request let a flood of wrong keys burn the host's CPU.
+  A `keys.json` from an earlier build of this feature (version 1, scrypt) is
+  refused with a message saying so: delete it and add your keys again.
+- **Server API keys** (one per client key, for the server runtime) are kept in
+  the same `0600` file, because the gateway must send them.
+- **Provider keys** are never stored: they travel in the agent's own headers,
+  straight to the provider.
+- A client key never appears in a log (paths are logged as `/k/[REDACTED]/…`),
+  in an error message, or in telemetry.
+- A member's requests get no memory injection, Endless Mode or hidden
+  `memory_search` tool, which read the gateway host's own memory.
+- Only sessions the agent names are captured: by a session header
+  (`x-claude-code-session-id`, `session_id`, `x-session-id`, …), an id in the
+  request body, or `x-claude-mem-session`. A session the gateway would have to
+  guess from a conversation's first words is relayed but never captured.
+- Every endpoint except the relay and its identity probe answers the gateway
+  host only, on its loopback listener; the full table is in
+  [Team mode](/wire-gateway#team-mode).
+
+## What members can reach, and what the host can see
+
+Read this before you hand out a key.
+
+- **A member can use every route the host set up.** A client key is not tied
+  to a route: `/k/<key>/r/<any route>/…` works for every route in
+  `routes.json`. That includes a route whose upstream is a service on the
+  gateway host's own loopback or private network (a local model server, an
+  internal proxy): a member reaches it through the gateway with the gateway
+  host's network position. Add only routes you mean every member to use.
+- **A member's traffic is stored on the gateway host and visible to its
+  operator.** With recording consent on, the raw turns are kept in
+  `<data dir>/wire-gateway/recordings/` (for `CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS`);
+  every exchange's token counts go to the usage ledger (`wire-gateway/usage/`);
+  the live call feed (`/wire/trace`, the viewer's Wire page) shows every
+  member's requests as they happen; and captured events wait in the outbox
+  (`wire-gateway/outbox/`) until their server runtime takes them, then stay as
+  `rejected/` or `expired/` copies when it never does. Anyone who can read the
+  gateway host's data directory or reach its loopback listener sees all of it.
+  Tell members.
+
+## 1. The server runtime and a project per member (or per team)
+
+Memory goes to a claude-mem [server runtime](/hosted-server) (Postgres). For
+each client key, make a **project-scoped** API key with write access on the
+server:
+
+```bash
+npx claude-mem server api-key create --team <team id> --project <project id> --scope memories:read,memories:write
+```
+
+It prints `key` (`cmem_…`) and the `projectId`. Several client keys may share
+one project; give each member their own client key so you can remove one
+without the others.
+
+## 2. Run the gateway
+
+A shared gateway has two listeners:
+
+- the **team listener** (`CLAUDE_MEM_WIRE_GATEWAY_SHARED_HOST`:`CLAUDE_MEM_WIRE_GATEWAY_SHARED_PORT`),
+  where members connect. Every request there needs a client key, whatever
+  address it comes from, loopback included. It serves only the relay and the
+  identity probe.
+- the **loopback listener** (`CLAUDE_MEM_WIRE_GATEWAY_HOST`:`CLAUDE_MEM_WIRE_GATEWAY_PORT`,
+  always `127.0.0.1`), the same one a single-user gateway has: the host's own
+  agents use it without a key, and `/wire/*`, `/mcp`, the push and OTLP
+  endpoints answer only there. `claude-mem wire connect` and `wire status` use
+  it.
+
+Settings (environment or `<data dir>/settings.json`):
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| `CLAUDE_MEM_WIRE_GATEWAY_SHARED` | `true` | Team mode: the team listener, client keys, capture to the server runtime |
+| `CLAUDE_MEM_WIRE_GATEWAY_SHARED_PORT` | e.g. `8080` (required) | The team listener's port: the one your TLS proxy forwards to |
+| `CLAUDE_MEM_WIRE_GATEWAY_SHARED_HOST` | `0.0.0.0` (default), `127.0.0.1` when the TLS proxy runs on this host, or one interface's IP | The team listener's address |
+| `CLAUDE_MEM_WIRE_GATEWAY_HOST` | `127.0.0.1` (default; always loopback) | The loopback listener |
+| `CLAUDE_MEM_WIRE_GATEWAY_ALLOW_IPS` | optional, e.g. `10.0.0.0/8` | Addresses that may connect to the team listener (see below) |
+| `CLAUDE_MEM_WIRE_GATEWAY_AUTOSTART` | `false` | No worker runs on a team host |
+| `CLAUDE_MEM_DATA_DIR` | a persistent volume | Keys, routes and the outbox must survive restarts |
+
+Add a route per provider the team uses, on the gateway host:
+
+```bash
+claude-mem wire routes add anthropic --agent claude-code --upstream https://api.anthropic.com
+claude-mem wire routes add openai --agent codex --upstream https://api.openai.com/v1
+```
+
+Then start it in the foreground (what a container runs):
+
+```bash
+claude-mem wire start --foreground
+```
+
+Put TLS in front of the team listener: the client key travels in the URL path,
+so a member must only ever reach the gateway over `https://`.
+
+### TLS proxies, and why the team listener never trusts loopback
+
+Point your TLS proxy at the **team listener's** port, never at the loopback
+listener's. Many TLS terminators on the same host pass a request on without
+adding any forwarding header: nginx's plain `proxy_pass` (unless you add
+`proxy_set_header X-Forwarded-For …`), stunnel, an HAProxy or nginx `stream`
+(TCP) proxy, `ssh -R`, `socat`. To the gateway, every internet request they
+pass on arrives from `127.0.0.1` and looks exactly like the host's own agent.
+That is why the team listener asks for a key on every request, loopback
+included, and why nothing keyless is served there: no proxy setup can turn an
+internet request into keyless host access. A proxy pointed at the loopback
+listener instead would hand the internet the host's own memory, `/mcp` and
+`/wire/*`, with no key; the loopback listener refuses requests that carry a
+forwarding header, but a proxy that adds none gets through. Bind the loopback
+listener to loopback (it always is) and never forward to it.
+
+## 3. Make a client key per member
+
+```bash
+CLAUDE_MEM_WIRE_SERVER_API_KEY=cmem_… \
+  claude-mem wire keys add alice --server-url https://memory.example.com --server-project <project id>
+```
+
+The server API key can also be passed as `--server-api-key`, but an argument
+shows in the process list; the environment variable does not.
+
+Before it saves anything, `keys add` asks the server runtime whether it takes
+the server API key and whether the key is **project-scoped** (an unscoped key
+makes the server refuse every observation and session end). It sends one
+`POST /api/sessions/summarize` for a subagent context, which the server answers
+without writing anything. A server that is down, a wrong or revoked key, or an
+unscoped key stops `keys add` with the reason. (The server cannot tell it
+whether `--server-project` is the key's own project; a wrong one shows up as
+`403` retries in the gateway's log.)
+
+A plain `http://` server URL is accepted only when its host is on this
+computer or a private network (loopback, `10/8`, `172.16/12`, `192.168/16`,
+`fc00::/7`, link-local): a name is resolved, and every address must be
+private. The outbox checks it again before each delivery pass and connects to
+the very address it checked, so a name that later resolves elsewhere is never
+sent the key. `100.64/10` is not accepted: carrier-grade NAT uses it on the
+provider's network, so it does not mean private. A Tailscale server takes
+`https://` (`tailscale serve` or `tailscale cert`) or its `fd7a:115c:a1e0::`
+address. Use `https://` for anything else; the server API key would otherwise
+cross the internet in clear text.
+
+The command prints the client key once, and the base URL to give the member:
+
+```text
+https://gateway.example.com/k/cmw_…/r/anthropic
+```
+
+`claude-mem wire keys list` shows each key's name and server, never a key.
+`claude-mem wire keys remove alice` refuses that key within a second. Events
+still waiting for alice's server are **never sent**: her server API key went
+with the key. They move to `outbox/alice/<key id>/rejected/` and are deleted
+after the retention period. A key added later under the same name is a new key
+with its own id; it never receives the first one's events.
+
+If `keys.json` stops reading (a botched hand edit), the gateway refuses every
+keyed request with `503` until it reads again, rather than keep the last good
+keys: a removal you meant to make never leaves the key working.
+
+## 4. Point a member's agent at it
+
+The member sets their agent's base URL to the one they were given, and keeps
+their own provider key, for example:
+
+```bash
+export ANTHROPIC_BASE_URL=https://gateway.example.com/k/cmw_…/r/anthropic
+export ANTHROPIC_API_KEY=sk-ant-api03-…   # their own, unchanged
+```
+
+Subscription sign-ins (a Claude.ai or ChatGPT sign-in instead of an API key)
+are refused on the team listener, always: `CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS`
+lifts that for the gateway host's own agents only.
+
+When outbound redaction is on, each client key has its own placeholders: a
+secret masked in one member's request can only be put back into that member's
+replies, never another member's or the host's.
+
+## Who can reach it
+
+In order, for every request:
+
+On the team listener, in order, for every request:
+
+1. **Allow list.** With `CLAUDE_MEM_WIRE_GATEWAY_ALLOW_IPS` set, a connection
+   from any other address is refused `403` before its key is looked at, so a
+   leaked key is of no use from elsewhere. The address judged is the
+   connection's own; `X-Forwarded-For`, `Forwarded`, `X-Real-IP`,
+   `CF-Connecting-IP` and `True-Client-IP` are never believed. The gateway host
+   itself (loopback and its own addresses) is always let past the list (it
+   still needs a key). An entry that is not an IP or CIDR range lets no address
+   in.
+2. **Client key.** Every request needs a valid key in the path, loopback
+   included: none or a wrong one gets `401`. Every key is checked the same
+   way, a SHA-256 digest and one lookup (microseconds), so a valid key always
+   gets through, even during a flood of wrong ones, and how long an answer
+   takes says nothing about any stored key. Only failures are counted: after
+   50 (refilling one per second) further failures get `429` with `Retry-After`.
+   `keys.json` unreadable: `503` (it is read again a second later, changed or
+   not).
+3. **Endpoint.** With a valid key, the team listener serves only the relay
+   (`/k/<key>/r/<route>/…`) and the identity probe (`/k/<key>/`).
+
+Refusals are logged once per reason per minute, with a count of the rest, so a
+flood cannot fill the host's disk; `claude-mem wire status` shows the counts.
+
+Behind a TLS proxy that runs elsewhere (a load balancer, Fly's edge), every
+connection comes from the proxy's address, so the allow list can only allow or
+refuse the proxy; the client keys are what tells members apart.
+
+## Where memory goes: the outbox
+
+Captured events (each user prompt, tool result and turn summary) are written to
+`<data dir>/wire-gateway/outbox/<key name>/<key id>/pending/` before anything is
+sent, and delivered in order with that key's server API key. Each key is
+delivered on its own, so one member's slow or hung server never delays
+another's:
+
+| Event | Server runtime route |
+| --- | --- |
+| tool result (observation) | `POST /api/sessions/observations` |
+| session went quiet (end) | `POST /api/sessions/summarize` (ends the session and queues its one summary) |
+| user prompt, turn summary | `POST /v1/events` with the key's project |
+
+- A delivery that fails (server down, `5xx`, `429`, `401`/`403` from a wrong or
+  revoked server key, a timeout of 10 seconds) is retried after 1 s, doubling
+  to at most once a minute, with the same request body, so the server's own
+  idempotency keeps one copy even when an answer was lost.
+- An event the server refuses for good (another `4xx`) moves to `rejected/`;
+  one not accepted within seven days moves to `expired/`. Both are logged as
+  errors; nothing is deleted silently.
+- `rejected/` and `expired/` keep the event's full content (prompts, tool
+  output), so they are deleted after the recordings' retention
+  (`CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS`).
+- Everything a key leaves on disk (`pending/`, `rejected/`, `expired/` and its
+  delivered markers) counts toward 256 MiB per key (the bound the gateway's own
+  raw recordings get), and every key together toward 1 GiB. Past either, new
+  events are refused, logged as lost and counted in `wire status`; a server
+  that stays down or refuses everything shows up there long before.
+- An event larger than the server runtime's request limit (5 MiB) is not sent
+  whole and refused: its longest strings, usually a tool's output, are cut to
+  fit and marked `…[truncated: N bytes]`, the way the worker cuts stored tool
+  output.
+- An exchange the provider answered `401` or `403` (the member's provider key
+  was refused) is not captured: no work happened. The same holds for the
+  gateway host's own agents.
+- A delivered event leaves a content-free line in its key's
+  `delivered.log`, so the same event captured again is not sent twice. The rule
+  for how long: as long as losing it could make the server store the event
+  twice. The server keys a user prompt or turn summary (`/v1/events`) on the
+  time the gateway first queued it, and the gateway can capture one again
+  whenever it first sees a request of that turn again (after a restart), so
+  those lines are not dropped by age. The file is capped at 16 MiB per key
+  (about 55,000 turns); past it the oldest half is let go, with a warning in
+  the log. A tool result is keyed by its session-scoped tool id and a session
+  end by its session, neither with a time, so their lines go with the
+  retention.
+- A tool result's id is sent scoped by its session (`<session hash>-<tool id>`):
+  the server deduplicates tool results by id across a whole project, and some
+  agents number tool ids per session.
+- A session that ends, resumes and ends again is ended on the server once: the
+  server keeps one end time and one summary per session, so the gateway sends
+  one session end per session.
+
+## Hosting on Fly
+
+claude-mem's own server-side work runs on Fly or Vercel, never on metered
+Cloudflare compute. The gateway is a long-lived process that streams replies,
+so it fits a Fly Machine with a volume:
+
+```dockerfile
+FROM oven/bun:1.3.9
+WORKDIR /app
+RUN bun add claude-mem@<version>
+ENV CLAUDE_MEM_DATA_DIR=/data \
+    CLAUDE_MEM_WIRE_GATEWAY_SHARED=true \
+    CLAUDE_MEM_WIRE_GATEWAY_SHARED_HOST=0.0.0.0 \
+    CLAUDE_MEM_WIRE_GATEWAY_SHARED_PORT=8080 \
+    CLAUDE_MEM_WIRE_GATEWAY_AUTOSTART=false
+CMD ["bun", "node_modules/claude-mem/plugin/scripts/wire-gateway-service.cjs", "start", "--foreground"]
+```
+
+Fly's edge connects to the team listener (`internal_port = 8080`); the loopback
+listener stays on the machine's own `127.0.0.1` at the default port.
+
+```toml
+# fly.toml (excerpt)
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"   # an idle stop would cut members' streams
+  min_machines_running = 1
+
+[[mounts]]
+  source = "wire_gateway_data"
+  destination = "/data"
+```
+
+Run the gateway's own commands on the machine, for example
+`fly ssh console -C "bun node_modules/claude-mem/plugin/scripts/wire-gateway-service.cjs keys list"`
+(and `routes add`, `keys add` the same way, with the server API key in
+`CLAUDE_MEM_WIRE_SERVER_API_KEY`).
+
+When the server runtime runs on Fly too, the gateway can reach it on the
+private network (`--server-url http://<server app>.internal:<port>`; it
+resolves to Fly's private `fdaa::` addresses): plain `http://` server URLs are
+called directly, never through a proxy, and `https://` ones go through `fetch`
+(and any proxy the environment names). A gateway on
+Vercel is not a fit: its functions are not long-lived processes that can hold
+an outbox or a model stream open for minutes.

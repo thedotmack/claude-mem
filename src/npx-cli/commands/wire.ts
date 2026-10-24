@@ -8,7 +8,7 @@ const WIRE_AGENT_COMMANDS = new Set(['connect', 'disconnect', 'preview', 'run'])
 
 function printWireUsage(): void {
   console.error(`Usage: ${styleText('bold', 'npx claude-mem wire <command>')}`);
-  console.error('Commands: start [--foreground], stop, restart, status [--endless], service install|uninstall, routes add|list|remove|endless|memory|search, consent [--record|--off], clear, magpie enable|disable,');
+  console.error('Commands: start [--foreground], stop, restart, status [--endless], service install|uninstall, routes add|list|remove|endless|memory|search, consent [--record|--off], clear, magpie enable|disable, keys add|list|remove,');
   console.error('          connect <agent> [--capture wire|native], disconnect <agent>, preview <agent> [--disconnect], run <agent> -- <args>');
 }
 
@@ -80,6 +80,19 @@ export function runWireCommand(argv: string[] = []): void {
   if (subCommand === 'clear') {
     runWireGatewayCommand(['clear']);
     return;
+  }
+
+  if (subCommand === 'keys') {
+    const action = argv[1]?.toLowerCase();
+    if (action === 'add' || action === 'list' || action === 'remove') {
+      // The key name and flags pass through; the gateway script validates them.
+      // The server API key may come from CLAUDE_MEM_WIRE_SERVER_API_KEY (the env is passed down).
+      runWireGatewayCommand(['keys', action, ...argv.slice(2)]);
+      return;
+    }
+    console.error(styleText('red', `Unknown wire keys action: ${action ?? '(none)'}`));
+    console.error('Usage: npx claude-mem wire keys add <name> --server-url <url> --server-project <id> [--server-api-key <key>] | list | remove <name>');
+    process.exit(1);
   }
 
   if (subCommand === 'magpie') {

@@ -59,6 +59,7 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem wire consent [--record|--off]')}        Show or change consent to raw wire recording (off until you turn it on)
   ${styleText('cyan', 'npx claude-mem wire clear')}                          Delete every raw wire recording
   ${styleText('cyan', 'npx claude-mem wire magpie enable [--backfill]')}      Follow magpie's recordings into memory capture (also: wire magpie disable)
+  ${styleText('cyan', 'npx claude-mem wire keys add <name> --server-url <url> --server-project <id>')}  Shared team gateway: make a client key for /k/<key>/r/<route> (also: keys list, keys remove <name>)
   ${styleText('cyan', 'npx claude-mem wire connect <agent>')}                 Point an agent's base URLs at the wire gateway (API-key sign-ins only)
   ${styleText('cyan', 'npx claude-mem wire disconnect <agent>')}              Put back what connect changed
   ${styleText('cyan', 'npx claude-mem wire preview <agent> [--disconnect]')}  Show what connect (or disconnect) would change, changing nothing

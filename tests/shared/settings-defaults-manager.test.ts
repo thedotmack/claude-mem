@@ -1061,6 +1061,10 @@ describe('SettingsDefaultsManager', () => {
       expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_MEMORY_SEARCH_TOOL).toBe('false');
       expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_OTLP).toBe('true');
       expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_MAGPIE_RECORDINGS_DIR).toBe('');
+      expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_SHARED).toBe('false');
+      expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_SHARED_HOST).toBe('0.0.0.0');
+      expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_SHARED_PORT).toBe('');
+      expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_ALLOW_IPS).toBe('');
     });
 
     it('cloud sync content flush knobs default to 40 ops / 90s', () => {

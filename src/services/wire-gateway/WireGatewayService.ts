@@ -37,6 +37,7 @@ import {
   WIRE_GATEWAY_IDENTITY_NAME,
   WIRE_GATEWAY_VERSION,
   createWireGatewayFetchHandler,
+  createWireTeamListenerFetchHandler,
   jsonErrorResponse,
   wireGatewayIdentity,
 } from './router.js';
@@ -58,7 +59,14 @@ import { composeRelayObservers, createWireGatewayRelay, relayActivityCounts, typ
 import { WireLaunchRegistry } from './identity/launch-registry.js';
 import { DEFAULT_REQUEST_BODY_IDLE_TIMEOUT_MS } from './relay/request-body.js';
 import { createWireCapturePipeline, type WireCapturePipeline, type WireCapturePipelineOptions } from './capture/capture-pipeline.js';
-import { createWorkerNudger, wireCaptureEventActivity } from './capture/capture-event-sink.js';
+import { createHookSpoolCaptureEventSink, createWorkerNudger, wireCaptureEventActivity } from './capture/capture-event-sink.js';
+import { parseAllowList } from './shared/allow-list.js';
+import { FailedKeyThrottle } from './shared/auth-throttle.js';
+import { WireClientKeyStore, type WireClientKeyIdentity } from './shared/client-keys.js';
+import { WireServerOutbox, serverOutboxActivity, type WireServerOutboxOptions } from './shared/server-outbox.js';
+import { RefusalLogLimiter, sharedAdmissionActivity, type WireSharedMode } from './shared/shared-admission.js';
+import { createSharedModeCaptureEventSink, isSessionCapturableInSharedMode } from './shared/shared-capture.js';
+import { runWireKeysCli } from './shared/keys-cli.js';
 import type { WireRecordingConsent } from './capture/turn-recorder.js';
 import { PushEventLedger, createHookSpoolPushEventSpool, createPushEventsHandler, pushEventActivity, type PushEventSpool } from './ingest/push-events.js';
 import { OtlpTraceReceiver, createOtlpTracesHandler, otlpActivity } from './ingest/otlp-receiver.js';
@@ -111,8 +119,10 @@ import {
   evaluateWireAgentStatuses,
   formatWireIngestStatus,
   formatWireStatusReport,
+  formatWireTeamStatus,
   withUrlSecretsMasked,
   type WireIngestStatus,
+  type WireTeamStatus,
   type WireAgentStatusInputs,
   type WireStatusReport,
 } from './drift/agent-status.js';
@@ -205,6 +215,29 @@ export interface WireGatewayServiceOptions {
     /** Where the one-source-per-agent rule looks (routes.json, agent descriptors, home). */
     captureSourceRule?: CaptureSourceRuleOptions;
   };
+  /**
+   * CLAUDE_MEM_WIRE_GATEWAY_SHARED (plan Phase 16): a second, team listener
+   * (sharedHost:sharedPort) where other computers reach the relay with a
+   * client key in the base URL, and their sessions' capture goes to each
+   * key's claude-mem server runtime through the outbox. host:port stays the
+   * loopback listener (this computer, no key).
+   */
+  shared?: boolean;
+  /** CLAUDE_MEM_WIRE_GATEWAY_SHARED_HOST: the team listener's address. */
+  sharedHost?: string;
+  /** CLAUDE_MEM_WIRE_GATEWAY_SHARED_PORT: the team listener's port (0 picks one, for tests). */
+  sharedPort?: number;
+  /** CLAUDE_MEM_WIRE_GATEWAY_ALLOW_IPS (shared mode only). */
+  allowIps?: string;
+  /** Test seams for shared mode. */
+  sharedMode?: {
+    clientKeysFilePath?: string;
+    outboxDirectory?: string;
+    outbox?: Pick<WireServerOutboxOptions, 'send' | 'resolveHost' | 'retryBaseDelayMs' | 'retryMaxDelayMs' | 'tickIntervalMs' | 'retryWindowMs' | 'maxBytesPerKey' | 'maxBytesTotal'>;
+    /** The team listener's socket peer address; defaults to server.requestIP. */
+    peerAddressOf?: (request: Request, server: Server<undefined>) => string | null;
+    throttle?: FailedKeyThrottle;
+  };
   /** Write PID/port/state files and the process-registry entry. Off for in-process tests. */
   persistRuntimeState?: boolean;
   /** Test seam for the Bun gate; defaults to Bun.version. */
@@ -253,12 +286,18 @@ export interface WireGatewayRuntimeState {
   port: number;
   host: string;
   startedAt: string;
+  /** A shared gateway's team listener; absent on a single-user gateway. */
+  sharedHost?: string;
+  sharedPort?: number;
 }
 
 export class WireGatewayService {
   private readonly options: WireGatewayServiceOptions;
   private readonly persistRuntimeState: boolean;
   private server: Server<undefined> | null = null;
+  /** A shared gateway's team listener (plan Phase 16); null otherwise. */
+  private teamServer: Server<undefined> | null = null;
+  private sharedMode: WireSharedMode | null = null;
   private processRegistry: ProcessRegistry | null = null;
   /** What this instance wrote to the PID file; stop removes the state files only while they still say this. */
   private writtenPidInfo: PidInfo | null = null;
@@ -271,6 +310,12 @@ export class WireGatewayService {
   private readonly launchRegistry = new WireLaunchRegistry();
   /** Placeholders live as long as the process; requests bring their values back after a restart. */
   private readonly outboundRedactionPlaceholders: OutboundRedactionPlaceholders;
+  /**
+   * Each client key's own placeholders (shared mode), by record id. Bounded
+   * by keys.json: a namespace whose record is gone is let go when another is
+   * made, and each holds at most OUTBOUND_REDACTION_MAX_HELD_VALUES values.
+   */
+  private readonly memberRedactionPlaceholders = new Map<string, { name: string; placeholders: OutboundRedactionPlaceholders }>();
   private telemetryHeartbeat: ReturnType<typeof setInterval> | null = null;
   /** When each agent's last request arrived (Phase 9 task 1); persisted while runtime state is. */
   readonly agentLastSeen: AgentLastSeenTracker;
@@ -287,6 +332,8 @@ export class WireGatewayService {
   liveTraceFeed: WireLiveTraceFeed | null = null;
   /** magpie's recordings, followed into capture (plan Phase 13 task 3); null when off or stopped. */
   magpieFollower: MagpieRecordingsFollower | null = null;
+  /** Shared mode's outbox to the claude-mem server runtime (plan Phase 16); null when not shared or stopped. */
+  serverOutbox: WireServerOutbox | null = null;
 
   constructor(options: WireGatewayServiceOptions) {
     this.options = options;
@@ -299,6 +346,21 @@ export class WireGatewayService {
     this.rewriteSeam = new WireRewriteSeam({
       stages: options.rewriteStages ?? defaultRewriteStages(this.observationLookup, options.rewriteSettings ?? {}, options.memory),
     });
+  }
+
+  /** The host's placeholders for its own agents; a client key's own namespace for a member's request. */
+  private outboundRedactionPlaceholdersFor(clientKey: WireClientKeyIdentity | null): OutboundRedactionPlaceholders {
+    if (!clientKey) return this.outboundRedactionPlaceholders;
+    const held = this.memberRedactionPlaceholders.get(clientKey.keyId);
+    if (held) return held.placeholders;
+    const clientKeys = this.sharedMode?.clientKeys;
+    for (const [keyId, entry] of this.memberRedactionPlaceholders) {
+      const lookup = clientKeys?.lookupByName(entry.name);
+      if (lookup && (lookup.kind === 'absent' || (lookup.kind === 'found' && lookup.identity.keyId !== keyId))) this.memberRedactionPlaceholders.delete(keyId);
+    }
+    const placeholders = this.outboundRedactionPlaceholders.forNamespace(`client-key:${clientKey.keyId}`);
+    this.memberRedactionPlaceholders.set(clientKey.keyId, { name: clientKey.name, placeholders });
+    return placeholders;
   }
 
   async start(): Promise<void> {
@@ -316,12 +378,40 @@ export class WireGatewayService {
       ?? new FileWireRecordingConsent({ recordingForcedOff: this.options.recordingForcedOff ?? false });
     const liveTraceFeed = new WireLiveTraceFeed({ consent });
     this.liveTraceFeed = liveTraceFeed;
+    // Shared mode (plan Phase 16): client keys, the outbox, and capture only of sessions the client named.
+    const sharedSeams = this.options.sharedMode ?? {};
+    const clientKeys = this.options.shared ? new WireClientKeyStore({ filePath: sharedSeams.clientKeysFilePath }) : null;
+    if (clientKeys && !this.options.sharedPort && this.options.sharedPort !== 0) {
+      throw new Error('a shared wire gateway needs CLAUDE_MEM_WIRE_GATEWAY_SHARED_PORT: the team listener');
+    }
+    this.serverOutbox = clientKeys
+      ? new WireServerOutbox({
+        directory: sharedSeams.outboxDirectory,
+        lookupKey: name => clientKeys.lookupByName(name),
+        retentionMs: retentionDays * DAY_MS,
+        ...sharedSeams.outbox,
+      })
+      : null;
+    this.sharedMode = clientKeys
+      ? { allowList: parseAllowList(this.options.allowIps ?? ''), clientKeys, throttle: sharedSeams.throttle ?? new FailedKeyThrottle(), refusalLog: new RefusalLogLimiter() }
+      : null;
+    const sharedCapture: Partial<WireCapturePipelineOptions> = clientKeys && this.serverOutbox
+      ? {
+        isSessionCapturable: isSessionCapturableInSharedMode,
+        eventSink: createSharedModeCaptureEventSink({
+          localSink: this.options.capture?.eventSink ?? createHookSpoolCaptureEventSink(),
+          outbox: this.serverOutbox,
+          lookupKey: name => clientKeys.lookupByName(name),
+        }),
+      }
+      : {};
     this.capturePipeline = this.options.relayObserver
       ? null
       : createWireCapturePipeline({
         retentionDays,
         consent,
         ...this.options.capture,
+        ...sharedCapture,
         extraReplyConsumers: [liveTraceFeed.replyConsumer],
       });
     const relayObserver = this.options.relayObserver ?? this.capturePipeline?.relayObserver;
@@ -361,7 +451,7 @@ export class WireGatewayService {
       observer: relayObserver ? composeRelayObservers(relayObserver, liveTraceFeed.relayObserver) : liveTraceFeed.relayObserver,
       launchRegistry: this.launchRegistry,
       outboundRedaction: {
-        placeholders: this.outboundRedactionPlaceholders,
+        placeholdersFor: clientKey => this.outboundRedactionPlaceholdersFor(clientKey),
         enabledByDefault: this.options.outboundRedaction ?? false,
       },
       noteRequestFromAgent: agentId => this.agentLastSeen.noteRequestFromAgent(agentId),
@@ -409,8 +499,35 @@ export class WireGatewayService {
         return jsonErrorResponse(500, 'api_error', 'the claude-mem wire gateway failed to handle this request');
       },
     });
+    if (this.sharedMode) {
+      const handleTeamRequest = createWireTeamListenerFetchHandler({ shared: this.sharedMode, relay, peerAddressOf: sharedSeams.peerAddressOf });
+      try {
+        this.teamServer = Bun.serve({
+          hostname: this.options.sharedHost ?? '0.0.0.0',
+          port: this.options.sharedPort ?? 0,
+          idleTimeout: this.options.idleTimeoutSeconds ?? WIRE_GATEWAY_IDLE_TIMEOUT_SECONDS,
+          maxRequestBodySize: this.options.maxRequestBytes * 2,
+          fetch: (request, server) => {
+            if (this.draining) {
+              return jsonErrorResponse(503, 'api_error', 'the claude-mem wire gateway is shutting down; retry in a moment');
+            }
+            return handleTeamRequest(request, server);
+          },
+          error(error) {
+            logger.error('WIRE', 'Unhandled error in wire gateway team listener handler', {}, error);
+            return jsonErrorResponse(500, 'api_error', 'the claude-mem wire gateway failed to handle this request');
+          },
+        });
+      } catch (error) {
+        // Fail fast: a shared gateway without its team listener would serve nobody it was set up for.
+        await this.server.stop(true);
+        this.server = null;
+        throw error;
+      }
+    }
     this.startedAt = new Date().toISOString();
     this.magpieFollower?.start();
+    this.serverOutbox?.start();
     if (this.persistRuntimeState || this.options.status?.lastSeenFilePath) this.agentLastSeen.startPersisting();
 
     if (this.persistRuntimeState) {
@@ -425,7 +542,10 @@ export class WireGatewayService {
       restrictToOwner(paths.wireGatewayProcessRegistry());
       this.startTelemetry();
     }
-    logger.info('WIRE', 'Wire gateway started', { host: this.options.host, port: this.port, pid: process.pid, version: WIRE_GATEWAY_VERSION });
+    logger.info('WIRE', 'Wire gateway started', {
+      host: this.options.host, port: this.port, pid: process.pid, version: WIRE_GATEWAY_VERSION, shared: this.options.shared === true,
+      ...(this.teamServer ? { teamListener: `${formatHostForUrl(this.options.sharedHost ?? '0.0.0.0')}:${this.teamServer.port}` } : {}),
+    });
   }
 
   /**
@@ -472,8 +592,16 @@ export class WireGatewayService {
     return this.server.port;
   }
 
+  /** The team listener's port (shared mode). */
+  get sharedPort(): number {
+    if (!this.teamServer?.port) {
+      throw new Error('Wire gateway has no team listener');
+    }
+    return this.teamServer.port;
+  }
+
   get pendingRequests(): number {
-    return this.server?.pendingRequests ?? 0;
+    return (this.server?.pendingRequests ?? 0) + (this.teamServer?.pendingRequests ?? 0);
   }
 
   getRuntimeState(): WireGatewayRuntimeState {
@@ -513,7 +641,19 @@ export class WireGatewayService {
         skippedOtherSource: foreignCaptureActivity.magpie.skippedOtherSource,
       },
     };
-    return { ...report, ...(memory ? { memory } : {}), ingest };
+    const team = this.teamStatus();
+    return { ...report, ...(memory ? { memory } : {}), ingest, ...(team ? { team } : {}) };
+  }
+
+  /** `wire status`'s team section (shared mode): where members connect, and counts only. */
+  private teamStatus(): WireTeamStatus | null {
+    if (!this.teamServer || !this.sharedMode) return null;
+    return {
+      listener: `http://${formatHostForUrl(this.options.sharedHost ?? '0.0.0.0')}:${this.teamServer.port}`,
+      clientKeys: this.sharedMode.clientKeys.keyCount(),
+      admission: { ...sharedAdmissionActivity },
+      outbox: { ...serverOutboxActivity, pending: this.serverOutbox?.pendingCount() ?? 0 },
+    };
   }
 
   private async drainAndClose(): Promise<void> {
@@ -530,22 +670,29 @@ export class WireGatewayService {
       this.draining = true;
       this.liveTraceFeed?.releaseWaiters();
       const deadline = Date.now() + this.options.drainTimeoutMs;
-      while (server.pendingRequests > 0 && Date.now() < deadline) {
+      while (this.pendingRequests > 0 && Date.now() < deadline) {
         await new Promise(resolve => setTimeout(resolve, DRAIN_POLL_INTERVAL_MS));
       }
-      if (server.pendingRequests > 0) {
+      if (this.pendingRequests > 0) {
         logger.warn('WIRE', 'Drain timeout reached; force-closing in-flight requests', {
-          pendingRequests: server.pendingRequests,
+          pendingRequests: this.pendingRequests,
           drainTimeoutMs: this.options.drainTimeoutMs,
         });
       }
+      await this.teamServer?.stop(true);
       await server.stop(true);
     } finally {
       this.server = null;
+      this.teamServer = null;
+      this.sharedMode?.refusalLog.flush();
+      this.sharedMode = null;
       this.startedAt = null;
       this.draining = false;
       this.magpieFollower?.stop();
       this.magpieFollower = null;
+      // Pending events stay on disk for the next start.
+      await this.serverOutbox?.stop();
+      this.serverOutbox = null;
       this.liveTraceFeed = null;
       // After the drain, so in-flight exchanges were assembled; turn ends still in their quiet are dropped.
       this.capturePipeline?.dispose();
@@ -584,6 +731,7 @@ export class WireGatewayService {
       port: this.port,
       host: this.options.host,
       startedAt: this.startedAt ?? new Date().toISOString(),
+      ...(this.teamServer ? { sharedHost: this.options.sharedHost ?? '0.0.0.0', sharedPort: this.teamServer.port } : {}),
     };
   }
 }
@@ -702,7 +850,7 @@ async function wireStatusReportForCli(config: WireGatewayConfig): Promise<WireSt
   });
   // The settings as this CLI reads them are what a gateway started now would use.
   const memory = memoryStatusOf(paths.wireGatewayRoutes(), config.rewriteSettings, daemonReport?.memory?.stages ?? null);
-  return { ...report, ...(memory ? { memory } : {}), ...(daemonReport?.ingest ? { ingest: daemonReport.ingest } : {}) };
+  return { ...report, ...(memory ? { memory } : {}), ...(daemonReport?.ingest ? { ingest: daemonReport.ingest } : {}), ...(daemonReport?.team ? { team: daemonReport.team } : {}) };
 }
 
 // ---------------------------------------------------------------------------
@@ -1016,6 +1164,11 @@ function printWireGatewayUsage(): void {
   writeStderrLine('  magpie enable [--backfill] [--dir <path>]');
   writeStderrLine('                     follow magpie\'s recordings (~/.config/magpie/gateway-conversations) into memory capture');
   writeStderrLine('  magpie disable     stop following them');
+  writeStderrLine('  keys add <name> --server-url <url> --server-project <id> [--server-api-key <key>]');
+  writeStderrLine('                     shared team gateway: make a client key (shown once) whose members\' memory goes to that');
+  writeStderrLine('                     claude-mem server runtime (the API key may come from CLAUDE_MEM_WIRE_SERVER_API_KEY instead)');
+  writeStderrLine('  keys list          print every client key\'s name and server (never a key)');
+  writeStderrLine('  keys remove <name> refuse that key from now on');
   writeStderrLine('  connect <agent> [--capture wire|native]');
   writeStderrLine('                     point the agent\'s base URLs at the gateway (and start it at login)');
   writeStderrLine('  disconnect <agent> put back what connect changed');
@@ -1385,6 +1538,12 @@ export async function runWireGatewayServiceCli(argv: string[] = process.argv.sli
       for (const line of rest) writeStdoutLine(line);
       if (report.memory) for (const line of formatWireMemoryStatus(report.memory, report.gateway.origin)) writeStdoutLine(line);
       if (report.ingest) for (const line of formatWireIngestStatus(report.ingest)) writeStdoutLine(line);
+      if (report.team) {
+        for (const line of formatWireTeamStatus(report.team, report.gateway.origin)) writeStdoutLine(line);
+      } else if (config.shared) {
+        writeStdoutLine('');
+        writeStdoutLine(`Shared team gateway (not running): its team listener would be http://${formatHostForUrl(config.sharedHost)}:${config.sharedPort} (client key required); ${report.gateway.origin} stays this computer's`);
+      }
       return;
     }
 
@@ -1426,6 +1585,11 @@ export async function runWireGatewayServiceCli(argv: string[] = process.argv.sli
 
     case 'magpie': {
       process.exitCode = runWireMagpieCli(argv.slice(1));
+      return;
+    }
+
+    case 'keys': {
+      process.exitCode = await runWireKeysCli(argv.slice(1), { config });
       return;
     }
 

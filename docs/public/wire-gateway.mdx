@@ -479,3 +479,56 @@ unless you name one, and folder tools (`smart_search`, `smart_outline`,
 `memory_search` tool and Endless Mode are on, and whether the route or the
 setting decided; with the gateway running, it also shows each stage's calls and
 failures.
+
+## Team mode
+
+With `CLAUDE_MEM_WIRE_GATEWAY_SHARED=true` one gateway serves a team. It gets a
+second, **team listener** (`CLAUDE_MEM_WIRE_GATEWAY_SHARED_HOST`:`CLAUDE_MEM_WIRE_GATEWAY_SHARED_PORT`)
+where each member's agent connects with a client key in its base URL; the
+usual **loopback listener** (`CLAUDE_MEM_WIRE_GATEWAY_HOST`:`CLAUDE_MEM_WIRE_GATEWAY_PORT`,
+always loopback) stays the host's own. The agent's own provider key goes to
+the provider untouched; the gateway stores no provider credential. Setup,
+hosting, TLS proxies and key handling are in the
+[team setup guide](/wire-gateway-team).
+
+The team listener never serves a request without a key, whatever address it
+comes from: a TLS proxy on the host that adds no forwarding header (nginx's
+plain `proxy_pass`, stunnel, a TCP stream proxy, `ssh -R`, `socat`) makes every
+internet request arrive from `127.0.0.1`, so a peer address can never stand for
+"the host". Point proxies at the team listener only.
+
+What a shared gateway answers, and where:
+
+| Endpoint | Loopback listener (this computer) | Team listener (members, any proxy; loopback peers too) |
+| --- | --- | --- |
+| `/r/<route>/…`, `/r/<route>/l/<launch>/…` (relay) | yes, no key | only as `/k/<key>/r/<route>/…`; no key or a wrong key: `401`, more than 50 failures (refilling 1 per second): `429` |
+| `/`, `/wire/identity`, `GET /r/<route>/` (identity probe) | yes | only as `GET /k/<key>/` and `GET /k/<key>/r/<route>/` |
+| `/wire/status`, `/wire/routes` | yes | `403` with a key, `401` without: they show paths, routes and settings |
+| `/wire/launch`, `/wire/trace`, `/wire/call` (launcher, live trace feed) | yes | `403` with a key, `401` without: the feed shows every member's traffic |
+| `/mcp` | yes | `403` with a key, `401` without: its tools read and write this host's own memory |
+| `/v1/claude-mem/events` (push), `/v1/traces` (OTLP) | yes | `403` with a key, `401` without: they write into this host's own memory |
+| any request with a forwarding header, or from another address | `403` (as on a single-user gateway) | handled as above, by key |
+
+Before any key is looked at, `CLAUDE_MEM_WIRE_GATEWAY_ALLOW_IPS` (when set)
+refuses team-listener connections from addresses off the list with `403`,
+judged on the connection's own address only. `keys.json` that does not read:
+every keyed request gets `503` until it does.
+
+In team mode:
+
+- A member's requests never get memory injection, Endless Mode or the hidden
+  `memory_search` tool: those read this host's own memory.
+- A session is captured (and recorded, with consent) only when the agent names
+  it (a session header, an id in the body, a launch, or `x-claude-mem-session`).
+  A session the gateway would have to guess from the first words is not
+  captured at all.
+- A member's sessions are kept apart from every other member's, even when two
+  agents name the same session.
+- Their memory goes to the claude-mem server runtime their key names, through
+  a durable outbox (`<data dir>/wire-gateway/outbox/`), never to this host's
+  worker. Their traffic is still recorded (with consent), counted and shown in
+  the live feed on this host: the operator sees it.
+- A key reaches every route in `routes.json`, including routes to services on
+  this host's own network.
+- Client keys never appear in logs (`/k/[REDACTED]/`), error messages or
+  telemetry.

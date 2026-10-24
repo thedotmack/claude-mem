@@ -212,7 +212,8 @@ function isRemoteReceipt(entryKey: string): boolean {
   return /^remote_[a-z_]+-[a-f0-9]{64}$/.test(entryKey);
 }
 
-function sessionScopeKey(payload: { contentSessionId: string; platformSource: string }): string {
+/** A session's scope for ids hosts number within a session (tool use ids, prompt ids): the shared team gateway's outbox scopes the tool_use_id it sends the server runtime the same way. */
+export function sessionScopeKey(payload: { contentSessionId: string; platformSource: string }): string {
   return createHash('sha256')
     .update(payload.contentSessionId)
     .update('\0')

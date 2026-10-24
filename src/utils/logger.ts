@@ -402,7 +402,7 @@ class Logger {
       }
     }
 
-    const logLine = `[${timestamp}] [${levelStr}] [${componentStr}] ${correlationStr}${message}${contextStr}${dataStr}`;
+    const logLine = redactWireClientKeys(`[${timestamp}] [${levelStr}] [${componentStr}] ${correlationStr}${message}${contextStr}${dataStr}`);
 
     if (this.logFilePath) {
       try {
@@ -484,6 +484,24 @@ class Logger {
   failure(component: Component, message: string, context?: LogContext, data?: any): void {
     this.error(component, `✗ ${message}`, context, data);
   }
+}
+
+/**
+ * The wire gateway's client keys never reach a log (plan Phase 16): a
+ * shared gateway's base URL carries one as `/k/<key>/`, and the key itself is
+ * `cmw_` + 43 base64url characters. Only that exact shape is matched (with no
+ * key character on either side), so an ordinary path such as
+ * `/Users/k/project/a.ts` or a name such as `cmw_helper_function` is left
+ * alone. Applied to every line, whatever logged it, as the last step before it
+ * is written. (The gateway's own refusal logs redact any `/k/<segment>`,
+ * mistyped keys included: shared-admission.ts redactClientKeyPaths.)
+ */
+const WIRE_CLIENT_KEY_SHAPE = '(?<![A-Za-z0-9_-])cmw_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])';
+const WIRE_CLIENT_KEY_PATH_PATTERN = new RegExp(`/k/${WIRE_CLIENT_KEY_SHAPE}`, 'g');
+const WIRE_CLIENT_KEY_PATTERN = new RegExp(WIRE_CLIENT_KEY_SHAPE, 'g');
+export function redactWireClientKeys(line: string): string {
+  if (!line.includes('cmw_')) return line;
+  return line.replace(WIRE_CLIENT_KEY_PATH_PATTERN, '/k/[REDACTED]').replace(WIRE_CLIENT_KEY_PATTERN, 'cmw_[REDACTED]');
 }
 
 export const logger = new Logger();

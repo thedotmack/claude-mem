@@ -7,6 +7,8 @@ export interface StartedWireGateway {
   service: WireGatewayService;
   port: number;
   baseUrl: string;
+  /** A shared gateway's team listener (`shared: true`); null otherwise. */
+  teamUrl: string | null;
   stop(): Promise<void>;
 }
 
@@ -25,6 +27,8 @@ export async function startWireGatewayForTest(
     drainTimeoutMs: 5_000,
     maxRequestBytes: 64 * 1024 * 1024,
     persistRuntimeState: false,
+    // A shared gateway's team listener: loopback and an OS-picked port in tests.
+    ...(options.shared ? { sharedHost: '127.0.0.1', sharedPort: 0 } : {}),
     ...options,
     // Captured events go nowhere unless a test asks for them: a default sink
     // would nudge whatever worker listens on this machine's worker port.
@@ -43,6 +47,7 @@ export async function startWireGatewayForTest(
     service,
     port,
     baseUrl: `http://127.0.0.1:${port}`,
+    teamUrl: options.shared ? `http://127.0.0.1:${service.sharedPort}` : null,
     stop: () => service.stop(),
   };
 }

@@ -5,6 +5,8 @@ import type { Server } from 'bun';
 import { logger } from '../../utils/logger.js';
 import { checkLoopbackRequest } from './network-guard.js';
 import { handleWireLaunchRequest, type WireLaunchRegistry } from './identity/launch-registry.js';
+import type { WireRelayRouting } from './relay/relay.js';
+import { admitTeamListenerRequest, redactClientKeyPaths, type WireSharedMode } from './shared/shared-admission.js';
 
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 export const WIRE_GATEWAY_VERSION = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined'
@@ -39,8 +41,8 @@ const RESERVED_PATH_FAMILIES: Array<{ matches: (pathname: string) => boolean; la
 
 const ROUTE_ROOT_PATTERN = /^\/r\/[^/]+\/?$/;
 
-export function jsonErrorResponse(status: number, type: string, message: string): Response {
-  return Response.json({ error: { type, message } }, { status });
+export function jsonErrorResponse(status: number, type: string, message: string, headers?: Record<string, string>): Response {
+  return Response.json({ error: { type, message } }, { status, headers });
 }
 
 /**
@@ -50,7 +52,9 @@ export function jsonErrorResponse(status: number, type: string, message: string)
 export function createWireGatewayFetchHandler(options: {
   listenHost: string;
   /** The relay for /r/<routeId>/… (Phase 2); without one, /r/ answers 404. */
-  relay?: (request: Request, server: Server<undefined>) => Promise<Response>;
+  relay?: (request: Request, server: Server<undefined>, routing: WireRelayRouting) => Promise<Response>;
+  /** Test seam: the socket's peer address; defaults to server.requestIP. Never a header. */
+  peerAddressOf?: (request: Request, server: Server<undefined>) => string | null;
   /** Launcher sessions for POST /wire/launch (Phase 4); without one, it answers 404. */
   launchRegistry?: WireLaunchRegistry;
   /**
@@ -73,17 +77,20 @@ export function createWireGatewayFetchHandler(options: {
   /** The live call feed GET /wire/trace and GET /wire/call (Phase 13); without one, they answer 404. */
   liveTrace?: { trace: (request: Request) => Promise<Response>; call: (request: Request) => Response };
 }) {
+  const peerAddressOf = options.peerAddressOf ?? ((request: Request, server: Server<undefined>) => server.requestIP(request)?.address ?? null);
   return function handleWireGatewayRequest(request: Request, server: Server<undefined>): Response | Promise<Response> {
-    const refusal = checkLoopbackRequest(request, {
-      peerAddress: server.requestIP(request)?.address ?? null,
-      listenHost: options.listenHost,
-    });
+    const peerAddress = peerAddressOf(request, server);
+    const { pathname } = new URL(request.url);
+    const routing: WireRelayRouting = { pathname, clientKey: null };
+    // The loopback listener (and a single-user gateway's only one): this
+    // computer only, whatever CLAUDE_MEM_WIRE_GATEWAY_SHARED says. A shared
+    // gateway's other computers use its team listener (createWireTeamListenerFetchHandler).
+    const refusal = checkLoopbackRequest(request, { peerAddress, listenHost: options.listenHost });
     if (refusal) {
-      logger.warn('WIRE', 'Refused request', { method: request.method, path: new URL(request.url).pathname, reason: refusal.message });
+      // A path key never reaches a log (plan Phase 16 task 2), even here.
+      logger.warn('WIRE', 'Refused request', { method: request.method, path: redactClientKeyPaths(pathname), reason: refusal.message });
       return jsonErrorResponse(refusal.status, 'permission_error', refusal.message);
     }
-
-    const { pathname } = new URL(request.url);
 
     if (request.method === 'GET' && (pathname === '/' || pathname === '/wire/identity')) {
       return Response.json(wireGatewayIdentity());
@@ -115,8 +122,8 @@ export function createWireGatewayFetchHandler(options: {
       return handleWireLaunchRequest(request, server, options.launchRegistry);
     }
 
-    // Every path below is loopback-only: the guard above refused anything else
-    // (the shared team gateway's per-client keys are Phase 16).
+    // Every path below is this computer's only: the loopback guard refused
+    // anything else (a shared gateway's members reach only the team listener).
     if (pathname === '/v1/claude-mem/events' && options.pushEvents) {
       return options.pushEvents(request);
     }
@@ -143,7 +150,7 @@ export function createWireGatewayFetchHandler(options: {
 
     if (pathname === '/r' || pathname.startsWith('/r/')) {
       return options.relay
-        ? options.relay(request, server)
+        ? options.relay(request, server, routing)
         : jsonErrorResponse(404, 'not_found_error', 'the relay (/r/<route>/…) is not available in this claude-mem wire gateway');
     }
 
@@ -151,6 +158,40 @@ export function createWireGatewayFetchHandler(options: {
     if (family) {
       return jsonErrorResponse(404, 'not_found_error', `${family.label} is not available in this claude-mem wire gateway yet`);
     }
-    return jsonErrorResponse(404, 'not_found_error', `the claude-mem wire gateway has no endpoint at ${pathname}`);
+    return jsonErrorResponse(404, 'not_found_error', `the claude-mem wire gateway has no endpoint at ${redactClientKeyPaths(pathname)}`);
+  };
+}
+
+/**
+ * A shared team gateway's team listener (plan Phase 16,
+ * CLAUDE_MEM_WIRE_GATEWAY_SHARED_HOST/_PORT): every request needs a client
+ * key, loopback peers included, and reaches only the relay and the identity
+ * probe (shared-admission.ts). Nothing here serves a keyless request, so a
+ * proxy on the host that adds no forwarding header cannot make one "local".
+ */
+export function createWireTeamListenerFetchHandler(options: {
+  shared: WireSharedMode;
+  relay?: (request: Request, server: Server<undefined>, routing: WireRelayRouting) => Promise<Response>;
+  /** Test seam: the socket's peer address; defaults to server.requestIP. Never a header. */
+  peerAddressOf?: (request: Request, server: Server<undefined>) => string | null;
+}) {
+  const peerAddressOf = options.peerAddressOf ?? ((request: Request, server: Server<undefined>) => server.requestIP(request)?.address ?? null);
+  return async function handleWireTeamListenerRequest(request: Request, server: Server<undefined>): Promise<Response> {
+    const admission = await admitTeamListenerRequest(request, {
+      peerAddress: peerAddressOf(request, server),
+      pathname: new URL(request.url).pathname,
+      shared: options.shared,
+    });
+    if (admission.kind === 'refused') return jsonErrorResponse(admission.status, admission.type, admission.message, admission.headers);
+    const { pathname } = admission;
+    if (request.method === 'GET' && (pathname === '/' || ROUTE_ROOT_PATTERN.test(pathname))) {
+      return Response.json(wireGatewayIdentity());
+    }
+    if (pathname === '/r' || pathname.startsWith('/r/')) {
+      return options.relay
+        ? options.relay(request, server, { pathname, clientKey: admission.clientKey })
+        : jsonErrorResponse(404, 'not_found_error', 'the relay (/r/<route>/…) is not available in this claude-mem wire gateway');
+    }
+    return jsonErrorResponse(404, 'not_found_error', 'the team listener answers /k/<key>/r/<route>/… and the identity probe /k/<key>/ only');
   };
 }

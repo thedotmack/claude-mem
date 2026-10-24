@@ -36,6 +36,8 @@ import type { WireConversationLedger, WireConversationLedgerView } from '../ledg
 import type { WireRewriteRun, WireRewriteSeam } from '../rewrite/rewrite-stage.js';
 import { ResponseStageTransform } from '../rewrite/response-stage-transform.js';
 import { toolPairingProblem } from '../rewrite/tool-pairing.js';
+import type { WireClientKeyIdentity } from '../shared/client-keys.js';
+import { identityForClientKey } from '../shared/shared-capture.js';
 
 // ---------------------------------------------------------------------------
 // Header policy (magpie `hopHeader` + `copyHeaders`)
@@ -86,8 +88,18 @@ export function clientResponseHeaders(upstream: Headers): Headers {
 // ---------------------------------------------------------------------------
 // Observers (the seam later phases record through)
 
+/** What the router decided before the relay runs (plan Phase 16). */
+export interface WireRelayRouting {
+  /** The path to relay: the request's own, or, on a shared gateway, what follows `/k/<key>`. */
+  pathname: string;
+  /** The client key a shared gateway's request came with; null for none. */
+  clientKey: WireClientKeyIdentity | null;
+}
+
 export interface RelayExchange {
   exchangeId: string;
+  /** The shared gateway's client key name (never the key); undefined for a request with none. */
+  clientKeyName?: string;
   routeId: string;
   agentId: string;
   protocol: WireProtocol | null;
@@ -217,7 +229,11 @@ export interface WireGatewayRelayOptions {
    * whether a route without its own `features.outboundRedaction` gets it
    * (CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION). Absent: never.
    */
-  outboundRedaction?: { placeholders: OutboundRedactionPlaceholders; enabledByDefault: boolean };
+  outboundRedaction?: {
+    /** The placeholders of whoever sent the request: the host's (null) or one client key's own namespace. */
+    placeholdersFor: (clientKey: WireClientKeyIdentity | null) => OutboundRedactionPlaceholders;
+    enabledByDefault: boolean;
+  };
   /**
    * Told the agent of every request that names a known route, before
    * anything else is checked (plan Phase 9 task 1, lastSeen). Must not block.
@@ -273,9 +289,11 @@ const UNREAD_BODY_CLOSE_IDLE_TIMEOUT_SECONDS = 1;
 export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
   const captureSpoolCapBytes = options.captureSpoolCapBytes ?? CAPTURE_SPOOL_CAP_BYTES;
 
-  return async function relayWireGatewayRequest(request: Request, server: Server<undefined>): Promise<Response> {
+  return async function relayWireGatewayRequest(request: Request, server: Server<undefined>, routing?: WireRelayRouting): Promise<Response> {
     const requestUrl = new URL(request.url);
-    const routeMatch = ROUTE_PATH_PATTERN.exec(requestUrl.pathname);
+    // On a shared gateway the router strips /k/<key> first; the key itself never reaches the relay.
+    const routeMatch = ROUTE_PATH_PATTERN.exec(routing?.pathname ?? requestUrl.pathname);
+    const clientKey = routing?.clientKey ?? null;
     // A launched agent's base URL is /r/<routeId>/l/<launchId>; the launch
     // segment names its session and never goes upstream.
     const { launchId, upstreamSuffixPath: suffixPath } = splitLaunchSegment(routeMatch?.[2] ?? '');
@@ -303,7 +321,8 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
       });
     }
     const route: WireGatewayRoute = lookup.route;
-    if (options.noteRequestFromAgent) notifyObserver(() => options.noteRequestFromAgent!(route.agentId));
+    // Drift status is about this host's own agents and their configs: a member's request says nothing of them.
+    if (options.noteRequestFromAgent && !clientKey) notifyObserver(() => options.noteRequestFromAgent!(route.agentId));
     let launch: WireLaunch | undefined;
     if (launchId) {
       launch = options.launchRegistry?.use(launchId);
@@ -318,8 +337,10 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
 
     // Refuse subscription sign-ins before anything is read or forwarded (plan D4),
     // unless the operator lifted D4 on this machine.
+    // On the team listener a member's sign-in is refused whatever that setting says: it lifts D4
+    // for this host's own agents only (docs/public/wire-gateway-team.mdx).
     const subscription = detectSubscriptionSignIn(request.headers, upstreamUrl);
-    if (subscription && options.forwardSubscriptionSignIns) {
+    if (subscription && options.forwardSubscriptionSignIns && !clientKey) {
       logger.info('WIRE', 'Forwarding a subscription sign-in (CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS=true)', { routeId, agentId: route.agentId, marker: subscription.marker });
     } else if (subscription) {
       logger.warn('WIRE', 'Refused a subscription sign-in', { routeId, agentId: route.agentId, marker: subscription.marker });
@@ -406,7 +427,13 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
         }
       }
     }
-    const identity = resolveIdentity(route, request.headers, parsedRequest, { suffixPath, launch });
+    const resolvedIdentity = resolveIdentity(route, request.headers, parsedRequest, { suffixPath, launch });
+    // A member's sessions are namespaced by their key (shared-capture.ts); the echo below stays their own id.
+    const identity = clientKey ? identityForClientKey(resolvedIdentity, clientKey) : resolvedIdentity;
+    // The rewrite stages read and write this host's own memory (injection,
+    // Endless Mode, memory_search): a member's request never runs them, so no
+    // member sees the host's memory or another member's.
+    const rewriteSeam = clientKey ? undefined : options.rewriteSeam;
     const methodHasBody = request.method !== 'GET' && request.method !== 'HEAD';
     const forwardedHeaders = upstreamRequestHeaders(request.headers);
     let forwardedBody = originalBody;
@@ -421,14 +448,14 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
     const rewriteSettings = options.rewriteSettings ?? {};
     // A stage that is off for this route still hears of the request when its
     // conversation already has a ledger (no ledger is created for it).
-    if (options.rewriteSeam && options.conversationLedger && classification.protocol && parsedRequest && methodHasBody) {
+    if (rewriteSeam && options.conversationLedger && classification.protocol && parsedRequest && methodHasBody) {
       const conversationLedger = options.conversationLedger;
-      options.rewriteSeam.noteStagesOff(route, rewriteSettings, () => conversationLedger.openExisting(identity));
+      rewriteSeam.noteStagesOff(route, rewriteSettings, () => conversationLedger.openExisting(identity));
     }
     // With no stage registered, or none turned on for this route, nothing is
     // opened or written: a conversation first seen after a stage is on is
     // judged by that request (unknown ≠ empty).
-    if (options.rewriteSeam && options.rewriteSeam.hasStageEnabledFor(route, rewriteSettings) && classification.protocol && parsedRequest && methodHasBody && decodedCopy?.kind === 'decoded') {
+    if (rewriteSeam && rewriteSeam.hasStageEnabledFor(route, rewriteSettings) && classification.protocol && parsedRequest && methodHasBody && decodedCopy?.kind === 'decoded') {
       const protocol = classification.protocol;
       const decodedBody = decodedCopy.bytes;
       const parsedByBody = new Map<Uint8Array, WireRequest>([[decodedBody, parsedRequest]]);
@@ -442,7 +469,7 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
       };
       try {
         const ledger = openConversationLedger(options.conversationLedger, identity, parsedRequest, routeId);
-        rewriteRun = options.rewriteSeam.begin({
+        rewriteRun = rewriteSeam.begin({
           routeId, route, identity, ledger, protocol, settings: rewriteSettings, requestOf,
         });
         if (rewriteRun) {
@@ -462,7 +489,7 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
               pairingProblem = `the rewritten body does not parse: ${error instanceof Error ? error.message : String(error)}`;
             }
             if (pairingProblem) {
-              options.rewriteSeam.health.noteFailure('pairing-check', 'afterRequestStages', new Error(`${pairingProblem}; the original body was sent`));
+              rewriteSeam.health.noteFailure('pairing-check', 'afterRequestStages', new Error(`${pairingProblem}; the original body was sent`));
               rewriteRun.discardEstimates();
             } else {
               stagedBody = staged.body;
@@ -495,7 +522,10 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
         requestRewritten = true;
       }
     }
-    const outboundRedaction = options.outboundRedaction;
+    const outboundRedactionOptions = options.outboundRedaction;
+    const outboundRedaction = outboundRedactionOptions
+      ? { placeholders: outboundRedactionOptions.placeholdersFor(clientKey), enabledByDefault: outboundRedactionOptions.enabledByDefault }
+      : undefined;
     const outboundRedactionOn = outboundRedaction !== undefined
       && (route.features?.outboundRedaction ?? outboundRedaction.enabledByDefault);
     if (outboundRedaction && outboundRedactionOn && methodHasBody && originalBody.length > 0) {
@@ -544,6 +574,7 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
 
     const exchange: RelayExchange = {
       exchangeId: randomUUID(),
+      ...(clientKey ? { clientKeyName: clientKey.name } : {}),
       routeId,
       agentId: route.agentId,
       protocol: classification.protocol,
@@ -640,7 +671,7 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
     const responseHeaders = clientResponseHeaders(upstreamResponse.headers);
     // Echo the session only when the client named it (sources 1–4); a
     // fingerprint is the gateway's guess and is never handed out as a name.
-    const echoedSessionId = sessionIdToEcho(identity);
+    const echoedSessionId = sessionIdToEcho(resolvedIdentity);
     if (echoedSessionId) responseHeaders.set(CLAUDE_MEM_SESSION_HEADER, echoedSessionId);
     const responseInit: ResponseInit = {
       status: upstreamResponse.status,

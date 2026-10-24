@@ -213,11 +213,17 @@ export function redactSecrets(text: string): string {
   // backtrack quadratically chasing the required dots. Real JWT segments are
   // far under 512 chars.
   out = out.replace(/\b[A-Za-z0-9_-]{10,512}\.[A-Za-z0-9_-]{10,512}\.[A-Za-z0-9_-]{10,512}\b/g, REDACTED);
-  // Provider keys with known prefixes (sk-, phc_, pk-, rk_, ghp_, xoxb-, ...)
+  // Provider keys with known prefixes (sk-, phc_, pk-, rk_, ghp_, xoxb-, ...),
+  // and claude-mem's own: wire gateway client keys (cmw_) and server API keys (cmem_).
   // followed by a run of token chars. Prefix list kept broad but anchored.
-  // Upper-bounded ({8,512}) to stay linear on adversarial runs.
+  // The match takes the whole run of token characters, not up to a \b: a key
+  // that ends in `-` or `_` (base64url allows both) has no word boundary
+  // there, and \b would back the match off to the last letter or digit,
+  // leaving the tail unmasked. It stays linear: once 8 token characters follow
+  // the prefix the greedy run always succeeds (nothing after it can fail), and
+  // the global replace resumes past it.
   out = out.replace(
-    /\b(?:sk|pk|rk|ak|phc|phx|ph|ghp|gho|ghs|xox[bpasr])[-_][A-Za-z0-9_-]{8,512}\b/gi,
+    /\b(?:sk|pk|rk|ak|phc|phx|ph|ghp|gho|ghs|xox[bpasr]|cmw|cmem)[-_][A-Za-z0-9_-]{8,}/gi,
     REDACTED
   );
   // Bearer tokens: "Bearer <token>".

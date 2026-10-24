@@ -98,6 +98,7 @@
           "modes",
           "telemetry",
           "wire-gateway",
+          "wire-gateway-team",
           "library",
           "development",
           "troubleshooting",

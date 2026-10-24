@@ -24,6 +24,15 @@ export interface DirectHttpRequest {
   maximumResponseBytes?: number;
   /** Gives up when it aborts (null; requestDirectlyWithOutcome says `aborted`). */
   signal?: AbortSignal;
+  /**
+   * http:// only: the IP address to connect to instead of resolving the URL's
+   * host again (the Host header still names the URL's host). The outbox
+   * passes the address its private-network check resolved, so the connection
+   * goes where the check looked (client-keys.ts resolvePlainHttpServer).
+   */
+  connectAddress?: string;
+  /** More request headers (an Authorization bearer for the server runtime). A value holding CR or LF is refused (`bad_header`). */
+  headers?: Readonly<Record<string, string>>;
 }
 
 export interface DirectHttpResponse {
@@ -140,7 +149,9 @@ export type DirectHttpFailure =
   | { reason: 'not_http' }
   /** The server closed the connection without sending a byte (a gateway shutting down, or one that cut a silent connection). */
   | { reason: 'closed' }
-  | { reason: 'bad_url'; detail: string };
+  | { reason: 'bad_url'; detail: string }
+  /** A header name or value that would break the request head (CR, LF, or a name that is not a token). */
+  | { reason: 'bad_header'; name: string };
 
 export type DirectHttpOutcome = { response: DirectHttpResponse } | { failure: DirectHttpFailure };
 
@@ -154,6 +165,7 @@ export function describeDirectHttpFailure(failure: DirectHttpFailure, what: stri
     case 'not_http': return `${what} answered something that is not HTTP`;
     case 'closed': return `${what} closed the connection without answering`;
     case 'bad_url': return `${what} has no usable address (${failure.detail})`;
+    case 'bad_header': return `the request to ${what} has an unusable header (${failure.name})`;
   }
 }
 
@@ -162,7 +174,10 @@ async function requestOverFetch(url: URL, request: DirectHttpRequest): Promise<D
   try {
     const response = await fetch(url, {
       method: request.method ?? 'GET',
-      headers: request.jsonBody === undefined ? { accept: 'application/json' } : { accept: 'application/json', 'content-type': 'application/json' },
+      headers: {
+        ...request.headers,
+        ...(request.jsonBody === undefined ? { accept: 'application/json' } : { accept: 'application/json', 'content-type': 'application/json' }),
+      },
       body: request.jsonBody === undefined ? undefined : JSON.stringify(request.jsonBody),
       redirect: 'manual',
       signal: request.signal ? AbortSignal.any([request.signal, AbortSignal.timeout(request.timeoutMs)]) : AbortSignal.timeout(request.timeoutMs),
@@ -233,7 +248,12 @@ export class RawHttpResponseReader {
  * no answer when there is none: aborted, timed out, unreachable, larger than
  * the cap (https:// too), not HTTP. Never throws.
  */
+const HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+
 export function requestDirectlyWithOutcome(request: DirectHttpRequest): Promise<DirectHttpOutcome> {
+  for (const [name, value] of Object.entries(request.headers ?? {})) {
+    if (!HEADER_NAME_PATTERN.test(name) || /[\r\n]/.test(value)) return Promise.resolve({ failure: { reason: 'bad_header', name } });
+  }
   let url: URL;
   try {
     url = new URL(request.url);
@@ -249,10 +269,11 @@ export function requestDirectlyWithOutcome(request: DirectHttpRequest): Promise<
     `Host: ${url.host}`,
     'Accept: application/json',
     'Connection: close',
+    ...Object.entries(request.headers ?? {}).map(([name, value]) => `${name}: ${value}`),
     ...(bodyBytes ? ['Content-Type: application/json', `Content-Length: ${bodyBytes.length}`] : []),
   ];
   if (request.signal?.aborted) return Promise.resolve({ failure: { reason: 'aborted' } });
-  const host = url.hostname.replace(/^\[|\]$/g, '');
+  const host = request.connectAddress ?? url.hostname.replace(/^\[|\]$/g, '');
   const port = Number(url.port || 80);
   return new Promise<DirectHttpOutcome>((resolve) => {
     const reader = new RawHttpResponseReader();

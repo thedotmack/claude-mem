@@ -74,6 +74,32 @@ export interface WireStatusReport {
   memory?: WireMemoryStatus;
   /** The ways in from outside (plan Phase 13), from the running gateway only. */
   ingest?: WireIngestStatus;
+  /** A shared gateway's team listener and outbox (plan Phase 16), from the running gateway only. */
+  team?: WireTeamStatus;
+}
+
+/** Content-free: where members connect, and counts. */
+export interface WireTeamStatus {
+  /** The team listener (every request there needs a client key). */
+  listener: string;
+  /** Keys in keys.json; null when it does not read (every keyed request is then answered 503). */
+  clientKeys: number | null;
+  admission: { admitted: number; refusedNotAllowed: number; refusedNoKey: number; refusedWrongKey: number; refusedThrottled: number; refusedHostOnly: number; refusedKeysUnreadable: number };
+  outbox: { pending: number; queued: number; duplicates: number; delivered: number; retried: number; rejected: number; expired: number; refusedFull: number; orphaned: number };
+}
+
+/** The `wire status` lines for a shared gateway. */
+export function formatWireTeamStatus(team: WireTeamStatus, loopbackOrigin: string): string[] {
+  const { admission, outbox } = team;
+  return [
+    '',
+    'Shared team gateway:',
+    `  team listener ${team.listener}: a client key is required for every request (/k/<key>/r/<route>/…), loopback included; point your TLS proxy here`,
+    `  loopback listener ${loopbackOrigin}: this computer's own agents (no key), /wire/*, /mcp; never point a proxy here`,
+    `  client keys: ${team.clientKeys === null ? 'keys.json does not read: every keyed request is refused (503) until it is repaired' : team.clientKeys}`,
+    `  since start: ${admission.admitted} admitted; refused ${admission.refusedNoKey} without a key, ${admission.refusedWrongKey} wrong key, ${admission.refusedThrottled} throttled (429), ${admission.refusedNotAllowed} off the allow list, ${admission.refusedHostOnly} host-only endpoint, ${admission.refusedKeysUnreadable} keys.json unreadable`,
+    `  outbox: ${outbox.pending} pending; since start ${outbox.queued} queued, ${outbox.delivered} delivered, ${outbox.duplicates} duplicate(s), ${outbox.retried} retried, ${outbox.rejected} rejected (${outbox.orphaned} of a removed key), ${outbox.expired} expired, ${outbox.refusedFull} lost (pending full)`,
+  ];
 }
 
 /** Content-free counters of the push endpoint, the OTLP receiver and the magpie follower since the gateway started. */

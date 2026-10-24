@@ -401,7 +401,11 @@ var paths = {
   wireGatewayRuntime: () => join3(WIRE_GATEWAY_DIR, "state", "wire-gateway.runtime.json"),
   wireGatewayProcessRegistry: () => join3(WIRE_GATEWAY_DIR, "state", "supervisor.json"),
   wireGatewayMagpieFollowerState: () => join3(WIRE_GATEWAY_DIR, "state", "magpie-follower.json"),
-  wireGatewayPushEventLedger: () => join3(WIRE_GATEWAY_DIR, "state", "push-events.jsonl")
+  wireGatewayPushEventLedger: () => join3(WIRE_GATEWAY_DIR, "state", "push-events.jsonl"),
+  /** Shared team gateway client keys (plan Phase 16): scrypt hashes and each key's server destination, 0600. */
+  wireGatewayClientKeys: () => join3(WIRE_GATEWAY_DIR, "keys", "keys.json"),
+  /** Shared team gateway: events waiting for (or delivered to) the claude-mem server runtime (plan Phase 16). */
+  wireGatewayOutbox: () => join3(WIRE_GATEWAY_DIR, "outbox")
 };
 
 // src/shared/SettingsDefaultsManager.ts
@@ -710,7 +714,7 @@ ${data.stack}` : ` ${data.message}`;
         contextStr = ` {${pairs.join(", ")}}`;
       }
     }
-    const logLine = `[${timestamp}] [${levelStr}] [${componentStr}] ${correlationStr}${message}${contextStr}${dataStr}`;
+    const logLine = redactWireClientKeys(`[${timestamp}] [${levelStr}] [${componentStr}] ${correlationStr}${message}${contextStr}${dataStr}`);
     if (this.logFilePath) {
       try {
         this.appendLine(this.logFilePath, logLine + "\n");
@@ -773,6 +777,13 @@ ${err.stack ?? ""}
     this.error(component, `\u2717 ${message}`, context, data);
   }
 };
+var WIRE_CLIENT_KEY_SHAPE = "(?<![A-Za-z0-9_-])cmw_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])";
+var WIRE_CLIENT_KEY_PATH_PATTERN = new RegExp(`/k/${WIRE_CLIENT_KEY_SHAPE}`, "g");
+var WIRE_CLIENT_KEY_PATTERN = new RegExp(WIRE_CLIENT_KEY_SHAPE, "g");
+function redactWireClientKeys(line) {
+  if (!line.includes("cmw_")) return line;
+  return line.replace(WIRE_CLIENT_KEY_PATH_PATTERN, "/k/[REDACTED]").replace(WIRE_CLIENT_KEY_PATTERN, "cmw_[REDACTED]");
+}
 var logger = new Logger();
 
 // src/shared/openrouter-base-url.ts
@@ -1261,8 +1272,16 @@ var SettingsDefaultsManager = class {
     // routes without their own features.memorySearchTool get the hidden memory_search tool (extra billed rounds; read at gateway start)
     CLAUDE_MEM_WIRE_GATEWAY_OTLP: "true",
     // POST /v1/traces takes OTLP/HTTP JSON spans (magpie, GenAI emitters) into memory capture; 'false' answers 404 (read at gateway start)
-    CLAUDE_MEM_WIRE_GATEWAY_MAGPIE_RECORDINGS_DIR: ""
+    CLAUDE_MEM_WIRE_GATEWAY_MAGPIE_RECORDINGS_DIR: "",
     // magpie's gateway-conversations folder to follow into memory capture; '' = off (`claude-mem wire magpie enable` sets it; read at gateway start)
+    CLAUDE_MEM_WIRE_GATEWAY_SHARED: "false",
+    // 'true' = shared team gateway: a second, team listener (SHARED_HOST:SHARED_PORT) where every request needs a client key in the base URL (/k/<key>/r/<route>); capture goes to each key's claude-mem server runtime; CLAUDE_MEM_WIRE_GATEWAY_HOST stays loopback (read at gateway start)
+    CLAUDE_MEM_WIRE_GATEWAY_SHARED_HOST: "0.0.0.0",
+    // shared mode: the team listener's address (every interface by default; a client key is always required there, loopback peers included)
+    CLAUDE_MEM_WIRE_GATEWAY_SHARED_PORT: "",
+    // shared mode: the team listener's port, required when SHARED=true (the port a TLS proxy forwards to; never the loopback listener's)
+    CLAUDE_MEM_WIRE_GATEWAY_ALLOW_IPS: ""
+    // shared mode: IPs/CIDR ranges (comma or space separated) other computers may connect from, judged on the socket address only; '' = every address; a malformed entry lets nothing in (read at gateway start)
   };
   static getAllDefaults() {
     return { ...this.DEFAULTS };

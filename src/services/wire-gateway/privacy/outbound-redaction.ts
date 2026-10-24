@@ -257,6 +257,14 @@ export interface OutboundRedactionPlaceholdersOptions {
   keyFilePath?: string;
   /** Test seam: how many values are held before the oldest half is let go. */
   maxHeldValues?: number;
+  /**
+   * Whose values these are. On a shared team gateway each client key gets
+   * its own namespace (and the host's agents the unnamed one): its own
+   * placeholder key (HMAC of redact.key and the namespace) and its own held
+   * values, so a reply to one member can only ever put back that member's
+   * values, never another's, whatever placeholder text the reply carries.
+   */
+  namespace?: string;
 }
 
 interface KnownValue {
@@ -279,9 +287,17 @@ export class OutboundRedactionPlaceholders {
   /** The first two characters of every known value, so most places in a text are passed over at once. */
   private knownValueFirstPairs = new Set<number>();
 
+  private readonly namespace: string | undefined;
+
   constructor(options: OutboundRedactionPlaceholdersOptions = {}) {
     this.keyFilePath = options.keyFilePath ?? paths.wireGatewayRedactKey();
     this.maxHeldValues = options.maxHeldValues ?? OUTBOUND_REDACTION_MAX_HELD_VALUES;
+    this.namespace = options.namespace;
+  }
+
+  /** Placeholders of another namespace over the same redact.key (a client key's on a shared gateway). */
+  forNamespace(namespace: string): OutboundRedactionPlaceholders {
+    return new OutboundRedactionPlaceholders({ keyFilePath: this.keyFilePath, maxHeldValues: this.maxHeldValues, namespace });
   }
 
   /** How many values are held now. */
@@ -295,21 +311,25 @@ export class OutboundRedactionPlaceholders {
    */
   private key(): Buffer {
     if (this.placeholderKey) return this.placeholderKey;
+    const fileKey = this.fileKey();
+    this.placeholderKey = this.namespace === undefined
+      ? fileKey
+      : createHmac('sha256', fileKey).update(`claude-mem placeholder namespace\u0000${this.namespace}`, 'utf8').digest();
+    return this.placeholderKey;
+  }
+
+  private fileKey(): Buffer {
     if (existsSync(this.keyFilePath)) {
       // Owner-only, whoever made the file (a copy, a restore from backup).
       if (process.platform !== 'win32') chmodSync(this.keyFilePath, WIRE_GATEWAY_FILE_MODE);
       const stored = readFileSync(this.keyFilePath);
-      if (stored.length >= PLACEHOLDER_KEY_BYTES) {
-        this.placeholderKey = stored.subarray(0, PLACEHOLDER_KEY_BYTES);
-        return this.placeholderKey;
-      }
+      if (stored.length >= PLACEHOLDER_KEY_BYTES) return stored.subarray(0, PLACEHOLDER_KEY_BYTES);
       logger.warn('WIRE', 'Outbound redaction key file is too short; writing a new key', { keyFilePath: this.keyFilePath });
     }
     const generated = randomBytes(PLACEHOLDER_KEY_BYTES);
     mkdirSync(dirname(this.keyFilePath), { recursive: true, mode: WIRE_GATEWAY_DIR_MODE });
     writeFileSync(this.keyFilePath, generated, { mode: WIRE_GATEWAY_FILE_MODE });
     if (process.platform !== 'win32') chmodSync(this.keyFilePath, WIRE_GATEWAY_FILE_MODE);
-    this.placeholderKey = generated;
     return generated;
   }
 
@@ -522,7 +542,10 @@ export class OutboundRedactionPlaceholders {
    * that is itself JSON (a tool call's arguments), where a value goes in
    * JSON-escaped. A placeholder the model rewrote (spaces inside the braces,
    * a brace or both dropped, another case) is put back too when what is left
-   * names a placeholder made here.
+   * names a placeholder made here. That brace-less form is kept (magpie
+   * restores it too, and models do drop or space the braces); only this
+   * namespace's own values can come back, so on a shared gateway a member's
+   * reply never carries another member's or the host's values.
    */
   restore(text: string, escaped: boolean): string {
     if (!text.includes('_') || this.valuesByPlaceholder.size === 0) return text;

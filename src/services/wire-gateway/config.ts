@@ -25,9 +25,18 @@ export function assertWireGatewayBun(
   }
 }
 
-// Loopback mode only. The shared team gateway (plan D15, Phase 16) is the one
-// way the gateway ever listens off loopback.
+// CLAUDE_MEM_WIRE_GATEWAY_HOST is always loopback: it is the listener that
+// serves this computer without a key. The shared team gateway (plan D15,
+// Phase 16) adds a second, team listener (CLAUDE_MEM_WIRE_GATEWAY_SHARED_HOST
+// and _PORT), the one way the gateway ever listens off loopback, and that one
+// never serves a request without a client key.
 const LOOPBACK_HOST_PATTERN = /^(127\.0\.0\.1|::1|localhost)$/;
+/**
+ * The team listener's address: a host name (at most 253 characters, the DNS
+ * limit of RFC 1035) or an IP literal (at most 45, the longest IPv6 text form,
+ * IPv4-mapped included).
+ */
+const SHARED_HOST_PATTERN = /^(?:[A-Za-z0-9.-]{1,253}|[0-9A-Fa-f:.]{2,45})$/;
 
 /**
  * Same rules as the worker's port/host checks (SettingsRoutes validateSettings),
@@ -51,7 +60,15 @@ export function validateWireGatewayListenSettings(settings: {
   CLAUDE_MEM_WIRE_GATEWAY_MEMORY_SEARCH_TOOL?: string;
   CLAUDE_MEM_WIRE_GATEWAY_OTLP?: string;
   CLAUDE_MEM_WIRE_GATEWAY_MAGPIE_RECORDINGS_DIR?: string;
+  CLAUDE_MEM_WIRE_GATEWAY_SHARED?: string;
+  CLAUDE_MEM_WIRE_GATEWAY_SHARED_HOST?: string;
+  CLAUDE_MEM_WIRE_GATEWAY_SHARED_PORT?: string;
 }): string | null {
+  if (settings.CLAUDE_MEM_WIRE_GATEWAY_SHARED !== undefined
+    && settings.CLAUDE_MEM_WIRE_GATEWAY_SHARED !== 'true' && settings.CLAUDE_MEM_WIRE_GATEWAY_SHARED !== 'false') {
+    return 'CLAUDE_MEM_WIRE_GATEWAY_SHARED must be "true" or "false"';
+  }
+  const shared = settings.CLAUDE_MEM_WIRE_GATEWAY_SHARED === 'true';
   if (settings.CLAUDE_MEM_WIRE_GATEWAY_PORT) {
     const port = parseInt(settings.CLAUDE_MEM_WIRE_GATEWAY_PORT, 10);
     if (isNaN(port) || port < 1024 || port > 65535) {
@@ -59,7 +76,23 @@ export function validateWireGatewayListenSettings(settings: {
     }
   }
   if (settings.CLAUDE_MEM_WIRE_GATEWAY_HOST && !LOOPBACK_HOST_PATTERN.test(settings.CLAUDE_MEM_WIRE_GATEWAY_HOST)) {
-    return 'CLAUDE_MEM_WIRE_GATEWAY_HOST must be a loopback address (127.0.0.1, ::1, localhost)';
+    return shared
+      ? 'CLAUDE_MEM_WIRE_GATEWAY_HOST must be a loopback address (127.0.0.1, ::1, localhost) even when shared: other computers reach the team listener (CLAUDE_MEM_WIRE_GATEWAY_SHARED_HOST and CLAUDE_MEM_WIRE_GATEWAY_SHARED_PORT)'
+      : 'CLAUDE_MEM_WIRE_GATEWAY_HOST must be a loopback address (127.0.0.1, ::1, localhost)';
+  }
+  if (shared) {
+    const sharedPortText = settings.CLAUDE_MEM_WIRE_GATEWAY_SHARED_PORT ?? '';
+    const sharedPort = /^\d+$/.test(sharedPortText) ? parseInt(sharedPortText, 10) : NaN;
+    if (isNaN(sharedPort) || sharedPort < 1024 || sharedPort > 65535) {
+      return 'CLAUDE_MEM_WIRE_GATEWAY_SHARED_PORT must be set (1024–65535) when CLAUDE_MEM_WIRE_GATEWAY_SHARED=true: it is the team listener, the port your TLS proxy forwards to';
+    }
+    if (settings.CLAUDE_MEM_WIRE_GATEWAY_PORT && sharedPort === parseInt(settings.CLAUDE_MEM_WIRE_GATEWAY_PORT, 10)) {
+      return 'CLAUDE_MEM_WIRE_GATEWAY_SHARED_PORT must differ from CLAUDE_MEM_WIRE_GATEWAY_PORT (the loopback listener)';
+    }
+    const sharedHost = settings.CLAUDE_MEM_WIRE_GATEWAY_SHARED_HOST ?? '';
+    if (!SHARED_HOST_PATTERN.test(sharedHost)) {
+      return 'CLAUDE_MEM_WIRE_GATEWAY_SHARED_HOST must be an IP address or a host name';
+    }
   }
   if (settings.CLAUDE_MEM_WIRE_GATEWAY_DRAIN_TIMEOUT_MS !== undefined
     && !/^\d+$/.test(settings.CLAUDE_MEM_WIRE_GATEWAY_DRAIN_TIMEOUT_MS)) {
@@ -128,6 +161,14 @@ export interface WireGatewayConfig {
   otlp: boolean;
   /** CLAUDE_MEM_WIRE_GATEWAY_MAGPIE_RECORDINGS_DIR: magpie's gateway-conversations folder to follow; null when off (plan Phase 13 task 3). */
   magpieRecordingsDirectory: string | null;
+  /** CLAUDE_MEM_WIRE_GATEWAY_SHARED: the shared team gateway (plan Phase 16). */
+  shared: boolean;
+  /** The team listener (shared mode only): where other computers (and any proxy) connect, a client key always required. */
+  sharedHost: string;
+  /** 0 when not shared. */
+  sharedPort: number;
+  /** CLAUDE_MEM_WIRE_GATEWAY_ALLOW_IPS as written (read by shared/allow-list.ts; a malformed entry lets nothing in). */
+  allowIps: string;
   /** Every setting (settings.json with env overrides), handed to the rewrite stages as `context.settings`. */
   rewriteSettings: Readonly<Record<string, string>>;
 }
@@ -157,6 +198,10 @@ export function loadWireGatewayConfig(settingsPath: string = USER_SETTINGS_PATH)
     forwardSubscriptionSignIns: settings.CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS === 'true',
     otlp: settings.CLAUDE_MEM_WIRE_GATEWAY_OTLP !== 'false',
     magpieRecordingsDirectory: settings.CLAUDE_MEM_WIRE_GATEWAY_MAGPIE_RECORDINGS_DIR.trim() || null,
+    shared: settings.CLAUDE_MEM_WIRE_GATEWAY_SHARED === 'true',
+    sharedHost: settings.CLAUDE_MEM_WIRE_GATEWAY_SHARED_HOST,
+    sharedPort: settings.CLAUDE_MEM_WIRE_GATEWAY_SHARED === 'true' ? parseInt(settings.CLAUDE_MEM_WIRE_GATEWAY_SHARED_PORT, 10) : 0,
+    allowIps: settings.CLAUDE_MEM_WIRE_GATEWAY_ALLOW_IPS,
     rewriteSettings: { ...settings },
   };
 }

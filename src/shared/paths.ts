@@ -80,7 +80,7 @@ export function ensureDir(dirPath: string): void {
  * here, temp files included (`tmp/`): never the OS temp dir.
  */
 export const WIRE_GATEWAY_DIR = join(DATA_DIR, 'wire-gateway');
-export const WIRE_GATEWAY_SUBDIRS = ['state', 'recordings', 'ledger', 'usage', 'wiring', 'agents', 'tmp', 'keys'] as const;
+export const WIRE_GATEWAY_SUBDIRS = ['state', 'recordings', 'ledger', 'usage', 'wiring', 'agents', 'tmp', 'keys', 'outbox'] as const;
 export type WireGatewaySubdir = typeof WIRE_GATEWAY_SUBDIRS[number];
 
 /** Folders the gateway creates are owner-only; files are written 0600 by their writers. */
@@ -186,4 +186,8 @@ export const paths = {
   wireGatewayProcessRegistry: () => join(WIRE_GATEWAY_DIR, 'state', 'supervisor.json'),
   wireGatewayMagpieFollowerState: () => join(WIRE_GATEWAY_DIR, 'state', 'magpie-follower.json'),
   wireGatewayPushEventLedger: () => join(WIRE_GATEWAY_DIR, 'state', 'push-events.jsonl'),
+  /** Shared team gateway client keys (plan Phase 16): scrypt hashes and each key's server destination, 0600. */
+  wireGatewayClientKeys: () => join(WIRE_GATEWAY_DIR, 'keys', 'keys.json'),
+  /** Shared team gateway: events waiting for (or delivered to) the claude-mem server runtime (plan Phase 16). */
+  wireGatewayOutbox: () => join(WIRE_GATEWAY_DIR, 'outbox'),
 } as const;

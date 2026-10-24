@@ -427,6 +427,10 @@ export interface SettingsDefaults {
   CLAUDE_MEM_WIRE_GATEWAY_MEMORY_SEARCH_TOOL: string;
   CLAUDE_MEM_WIRE_GATEWAY_OTLP: string;
   CLAUDE_MEM_WIRE_GATEWAY_MAGPIE_RECORDINGS_DIR: string;
+  CLAUDE_MEM_WIRE_GATEWAY_SHARED: string;
+  CLAUDE_MEM_WIRE_GATEWAY_SHARED_HOST: string;
+  CLAUDE_MEM_WIRE_GATEWAY_SHARED_PORT: string;
+  CLAUDE_MEM_WIRE_GATEWAY_ALLOW_IPS: string;
 }
 
 export class SettingsDefaultsManager {
@@ -725,6 +729,10 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_WIRE_GATEWAY_MEMORY_SEARCH_TOOL: 'false',   // routes without their own features.memorySearchTool get the hidden memory_search tool (extra billed rounds; read at gateway start)
     CLAUDE_MEM_WIRE_GATEWAY_OTLP: 'true',                  // POST /v1/traces takes OTLP/HTTP JSON spans (magpie, GenAI emitters) into memory capture; 'false' answers 404 (read at gateway start)
     CLAUDE_MEM_WIRE_GATEWAY_MAGPIE_RECORDINGS_DIR: '',     // magpie's gateway-conversations folder to follow into memory capture; '' = off (`claude-mem wire magpie enable` sets it; read at gateway start)
+    CLAUDE_MEM_WIRE_GATEWAY_SHARED: 'false',               // 'true' = shared team gateway: a second, team listener (SHARED_HOST:SHARED_PORT) where every request needs a client key in the base URL (/k/<key>/r/<route>); capture goes to each key's claude-mem server runtime; CLAUDE_MEM_WIRE_GATEWAY_HOST stays loopback (read at gateway start)
+    CLAUDE_MEM_WIRE_GATEWAY_SHARED_HOST: '0.0.0.0',        // shared mode: the team listener's address (every interface by default; a client key is always required there, loopback peers included)
+    CLAUDE_MEM_WIRE_GATEWAY_SHARED_PORT: '',               // shared mode: the team listener's port, required when SHARED=true (the port a TLS proxy forwards to; never the loopback listener's)
+    CLAUDE_MEM_WIRE_GATEWAY_ALLOW_IPS: '',                 // shared mode: IPs/CIDR ranges (comma or space separated) other computers may connect from, judged on the socket address only; '' = every address; a malformed entry lets nothing in (read at gateway start)
   };
 
   static getAllDefaults(): SettingsDefaults {
