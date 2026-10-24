@@ -29,7 +29,7 @@ const BUN_TEST_FILE_EXTENSION = /\.(c|m)?[jt]sx?$/;
 
 function listAllTestFiles(): string[] {
   const files: string[] = [];
-  for (const path of new Glob('tests/**/*').scanSync({ onlyFiles: true })) {
+  for (const path of new Glob('{tests,src/ui/my-work/src/live,src/ui/my-work/src/setup}/**/*').scanSync({ onlyFiles: true })) {
     if (path.includes('/node_modules/')) continue;
     const name = path.slice(path.lastIndexOf('/') + 1);
     if (BUN_TEST_FILE_NAME.test(name) && BUN_TEST_FILE_EXTENSION.test(name)) files.push(path);

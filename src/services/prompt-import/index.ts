@@ -12,6 +12,7 @@
  */
 
 import { homedir } from 'os';
+import { stripMemoryTags } from '../../utils/tag-stripping.js';
 import { getProjectName } from '../../utils/project-name.js';
 import { logger } from '../../utils/logger.js';
 import { AgentTextIndex, isAgentWritten, provenanceFingerprint } from './owner-prompt-filter.js';
@@ -144,7 +145,12 @@ export async function scanOwnerPrompts(options: PromptScanOptions): Promise<Prom
   const agentWritten: OwnerPrompt[] = [];
   const platformOf = new Map(readers.map(reader => [reader.id, reader.platformSource]));
   for (const prompt of typedPrompts.sort((left, right) => left.at - right.at)) {
-    const owned: OwnerPrompt = { ...prompt, project: resolveProject(prompt.cwd), platformSource: platformOf.get(prompt.agent)! };
+    // Classify the original text, then apply the shared privacy gate before any consumer sees it.
+    const text = stripMemoryTags(prompt.text).trim();
+    if (!text) continue;
+    const owned: OwnerPrompt = { ...prompt, text,
+      ...(prompt.hookTextVariants ? { hookTextVariants: prompt.hookTextVariants.map(value => stripMemoryTags(value).trim()).filter(Boolean) } : {}),
+      project: resolveProject(prompt.cwd), platformSource: platformOf.get(prompt.agent)! };
     (isAgentWritten(Math.floor(prompt.at / 1000), prompt.text, agentText) ? agentWritten : ownerPrompts).push(owned);
   }
   const ownerMemoryPromptIds = new Set(memoryPrompts
