@@ -351,8 +351,10 @@ describe('incremental owner goals', () => {
       const calls: Array<{ args: string[]; goals?: any }> = [];
       const python = fakePython(0, calls);
       const scripts: string[] = [];
+      let probes = 0;
       setFakeSpawn(((command: string, args: string[], options: any) => {
         if (command !== 'python') throw Object.assign(new Error(`Executable not found: ${command}`), { code: 'ENOENT' });
+        if (args[0] === '-c') probes++;
         if (args[0] !== '-c') {
           scripts.push(command);
           expect(options.env.PYTHONUTF8).toBe('1');
@@ -363,7 +365,29 @@ describe('incremental owner goals', () => {
       const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW });
       expect(await task.run(async () => { throw new Error('no agent needed'); }, 'codex')).toBe('goals unchanged.');
       expect(scripts).toEqual(['python', 'python']);
+      expect(probes).toBe(1);
       expect(calls[1].goals).toMatchObject({ priorities: [{ title: 'Ship cards' }] });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('does not retry a failing skill script with another interpreter', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-python-'));
+    try {
+      const database = fixtureDatabase();
+      const scripts: string[] = [];
+      setFakeSpawn(((command: string, args: string[]) => {
+        const child: any = new EventEmitter();
+        child.stdout = Object.assign(new EventEmitter(), { setEncoding() {} });
+        child.stderr = Object.assign(new EventEmitter(), { setEncoding() {} });
+        queueMicrotask(() => {
+          if (args[0] !== '-c') { scripts.push(command); child.stderr.emit('data', 'export failed'); }
+          child.emit('close', args[0] === '-c' ? 0 : 7);
+        });
+        return child;
+      }) as any);
+      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW });
+      await expect(task.run(async () => { throw new Error('no agent needed'); }, 'codex')).rejects.toThrow('exited 7: export failed');
+      expect(scripts).toEqual(['python3']);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
