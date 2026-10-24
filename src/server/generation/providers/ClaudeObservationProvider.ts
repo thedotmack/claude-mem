@@ -40,6 +40,10 @@ export interface ClaudeObservationProviderOptions {
   // max_tokens on it, up to a reply with no text. Unset here sends no field,
   // as before, for providers built directly by a custom module.
   thinking?: ObserverThinkingOption;
+  // Extra request headers, such as a gateway's own auth header
+  // (`cf-aig-authorization` on Cloudflare AI Gateway). They can't replace the
+  // API key, version or content type.
+  extraHeaders?: Record<string, string>;
 }
 
 interface AnthropicMessagesResponse {
@@ -57,6 +61,7 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
   private readonly fetchImpl: typeof fetch;
   private readonly messagesUrl: string;
   private readonly thinking: ObserverThinkingOption;
+  private readonly extraHeaders: Record<string, string>;
 
   constructor(options: ClaudeObservationProviderOptions) {
     if (!options.apiKey) {
@@ -72,6 +77,7 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
     const baseUrl = (options.baseUrl?.trim() || ANTHROPIC_DEFAULT_BASE_URL).replace(/\/+$/, '');
     this.messagesUrl = `${baseUrl}/v1/messages`;
     this.thinking = options.thinking ?? 'omit';
+    this.extraHeaders = options.extraHeaders ?? {};
   }
 
   async generate(
@@ -179,11 +185,7 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
   private postMessages(prompt: string, signal?: AbortSignal): Promise<Response> {
     return this.fetchImpl(this.messagesUrl, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': this.apiKey,
-        'anthropic-version': ANTHROPIC_VERSION,
-      },
+      headers: this.requestHeaders(),
       // No temperature, as on the worker's Agent SDK path: Claude Haiku 5.5
       // rejects any request that sets one.
       body: JSON.stringify({
@@ -194,6 +196,16 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
       }),
       signal,
     });
+  }
+
+  // Header names are case-insensitive, so the fixed headers are set last on a
+  // Headers object: an extra `X-Api-Key` is replaced, not sent beside the key.
+  private requestHeaders(): Headers {
+    const headers = new Headers(this.extraHeaders);
+    headers.set('Content-Type', 'application/json');
+    headers.set('x-api-key', this.apiKey);
+    headers.set('anthropic-version', ANTHROPIC_VERSION);
+    return headers;
   }
 
   // An enabled thinking budget gets its own tokens on top of the answer's

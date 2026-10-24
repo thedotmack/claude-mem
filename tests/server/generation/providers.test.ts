@@ -347,6 +347,20 @@ describe('ClaudeObservationProvider', () => {
     }
   });
 
+  it('sends extra headers without letting them replace the api key, in any case', async () => {
+    const capturing = new CapturingFetch(jsonResponse(200, { content: [{ type: 'text', text: 'ok' }] }));
+    const provider = new ClaudeObservationProvider({
+      apiKey: 'sk-fake',
+      fetchImpl: capturing.fetch,
+      extraHeaders: { 'cf-aig-authorization': 'Bearer gw', 'X-Api-Key': 'other', 'content-type': 'text/plain' },
+    });
+    await provider.generate(makeContext());
+    const headers = new Headers(capturing.lastInit?.headers);
+    expect(headers.get('cf-aig-authorization')).toBe('Bearer gw');
+    expect(headers.get('x-api-key')).toBe('sk-fake');
+    expect(headers.get('content-type')).toBe('application/json');
+  });
+
   it('logs an error when the reply is cut off at max_tokens', async () => {
     const errorSpy = spyOn(logger, 'error').mockImplementation(() => {});
     try {
