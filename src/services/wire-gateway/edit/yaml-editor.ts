@@ -10,8 +10,8 @@
 //
 // Anchors, aliases, multiple documents, directives and flow-mapping parents
 // are refused with an explicit "edit by hand" error: a line splice cannot
-// keep their meaning. This replaces the regex YAML edit for Goose
-// (McpIntegrations.ts:140-233) in Phase 14.
+// keep their meaning. Goose's config.yaml is edited with it (through the
+// Library, Phase 14) in place of the regex splice it had before.
 
 import {
   assertPlainConfigValue,

@@ -118,6 +118,9 @@ function restoreConfigFile(snapshot: ConfigFileSnapshot): void {
   }
 }
 
+/** `atomically`'s edit group failed and putting some files back failed too: those files still hold the group's writes. */
+export class ConfigFilesNotPutBackError extends AggregateError {}
+
 /**
  * Run `editGroup`, which may write the files at `configFilePaths` in several
  * steps, and when it throws put each back as it was — its bytes and mode, or
@@ -144,6 +147,6 @@ export function atomically<T>(configFilePaths: readonly string[], editGroup: () 
     }
     if (restoreErrors.length === 0) throw groupError;
     const groupMessage = groupError instanceof Error ? groupError.message : String(groupError);
-    throw new AggregateError([groupError, ...restoreErrors], `${groupMessage} (and ${restoreErrors.length} file(s) could not be put back)`);
+    throw new ConfigFilesNotPutBackError([groupError, ...restoreErrors], `${groupMessage} (and ${restoreErrors.length} file(s) could not be put back)`);
   }
 }

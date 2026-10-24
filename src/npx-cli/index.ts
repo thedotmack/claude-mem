@@ -74,6 +74,9 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem kimi install|status|uninstall')}   Manage Kimi Code CLI hooks + MCP config
   ${styleText('cyan', 'npx claude-mem t3code status|uninstall [--settings <path>]')}   Inspect or disable T3 Code provider plugins
   ${styleText('cyan', 'npx claude-mem pi install|status|uninstall')}   Manage the native Pi extension
+  ${styleText('cyan', 'npx claude-mem library status [<agent>] [--json]')}   Show what claude-mem wrote into each agent (hooks, MCP, instructions, bundles), checked against the files
+  ${styleText('cyan', 'npx claude-mem library sync <agent>')}   Write claude-mem's integration into an agent (what install --ide does), recording what it wrote
+  ${styleText('cyan', 'npx claude-mem library remove <agent>')}   Take out only what claude-mem wrote into an agent; every other entry stays
 
 ${styleText('bold', 'TeamBrain')} (one shared brain for your team; your own memory stays private):
   ${styleText('cyan', 'npx claude-mem teambrain start')}                Create a team on cmem.ai
@@ -260,7 +263,19 @@ async function main(): Promise<void> {
       break;
     }
 
+    case 'library': {
+      const { runLibraryCommand } = await import('./commands/library.js');
+      process.exitCode = await runLibraryCommand(args.slice(1));
+      break;
+    }
+
     case 'antigravity-cli': {
+      const agentAction = args[1]?.toLowerCase();
+      const { libraryRunsInThisProcess, runLibraryCommand } = await import('./commands/library.js');
+      if (!libraryRunsInThisProcess() && (agentAction === 'install' || agentAction === 'uninstall')) {
+        // Config edits run in the Library under Bun.
+        process.exit(await runLibraryCommand([agentAction === 'install' ? 'sync' : 'remove', 'antigravity']));
+      }
       const { handleAntigravityCliCommand } = await import('../services/integrations/AntigravityCliHooksInstaller.js');
       const exitCode = await handleAntigravityCliCommand(args[1]?.toLowerCase(), args.slice(2));
       if (typeof exitCode === 'number') {
@@ -284,8 +299,14 @@ async function main(): Promise<void> {
     }
 
     case 'pi': {
-      const { installPiExtension, uninstallPiExtension, piExtensionStatus } = await import('../services/integrations/PiInstaller.js');
       const action = args[1]?.toLowerCase();
+      const { libraryRunsInThisProcess, runLibraryCommand } = await import('./commands/library.js');
+      if (!libraryRunsInThisProcess() && (action === 'install' || action === 'uninstall')) {
+        // Config edits run in the Library under Bun.
+        process.exitCode = await runLibraryCommand([action === 'install' ? 'sync' : 'remove', 'pi']);
+        break;
+      }
+      const { installPiExtension, uninstallPiExtension, piExtensionStatus } = await import('../services/integrations/PiInstaller.js');
       const code = action === 'install' ? installPiExtension()
         : action === 'uninstall' ? uninstallPiExtension()
         : action === 'status' ? piExtensionStatus() : 1;
@@ -294,6 +315,12 @@ async function main(): Promise<void> {
       break;
     }
     case 'kimi': {
+      const kimiAction = args[1]?.toLowerCase();
+      const { libraryRunsInThisProcess, runLibraryCommand } = await import('./commands/library.js');
+      if (!libraryRunsInThisProcess() && (kimiAction === 'install' || kimiAction === 'uninstall')) {
+        // Config edits run in the Library under Bun.
+        process.exit(await runLibraryCommand([kimiAction === 'install' ? 'sync' : 'remove', 'kimi']));
+      }
       const { handleKimiCommand } = await import('../services/integrations/KimiHooksInstaller.js');
       const exitCode = await handleKimiCommand(args[1]?.toLowerCase(), args.slice(2));
       if (typeof exitCode === 'number') {

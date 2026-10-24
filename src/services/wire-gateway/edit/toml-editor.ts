@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // A comment-preserving TOML editor (plan Phase 7 task 4). It generalizes the
-// line-based helpers in CodexCliInstaller.ts (`stripTomlComment`,
-// `tomlStructuralLines`, `setTomlBooleanInTable`) into one linear statement
+// line-based helpers CodexCliInstaller.ts had (`stripTomlComment`,
+// `tomlStructuralLines`, `setTomlBooleanInTable`; the last now replaced by
+// this editor through the Library, Phase 14) into one linear statement
 // scanner over the whole text, so strings, numbers, arrays, inline tables,
 // tables and array tables are located by offset and edited by splicing text.
 // The exact output is validated with Bun.TOML.parse and the value at the

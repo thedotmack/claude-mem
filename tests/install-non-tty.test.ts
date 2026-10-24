@@ -274,7 +274,10 @@ describe('Install Non-TTY Support', () => {
         codexInstallerSource.indexOf('export async function installCodexCli'),
         codexInstallerSource.indexOf('export function uninstallCodexCli'),
       );
-      expect(codexInstallerSource).toContain("setTomlFeatureEnabled(next, 'hooks', true)");
+      // The TOML edits go through the Library: features.hooks and the plugin's `enabled`.
+      expect(codexInstallerSource).toContain("setting('features.hooks', ['features', 'hooks'], true");
+      expect(codexInstallerSource).toContain("setting(`plugins.${pluginId}`, ['plugins', pluginId, 'enabled'], value)");
+      expect(codexInstallerSource).toContain('claudeMemPlugin(CODEX_PLUGIN_ID, enabled)');
       expect(codexInstallerSource).toContain("const CODEX_PLUGIN_ID = `claude-mem@${MARKETPLACE_NAME}`");
       expect(installRegion).toContain('enableCodexPluginConfig()');
       expect(installRegion).not.toContain('plugin_hooks');

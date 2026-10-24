@@ -1,9 +1,12 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
 import { readJsonFileWithBom } from '../../shared/atomic-json.js';
 import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, SAMPLE_CONFIG } from '../transcripts/config.js';
 import type { TranscriptSchema, TranscriptWatchConfig, WatchTarget } from '../transcripts/types.js';
+import { LIBRARY_GROUPS } from '../wire-gateway/library/agent-library-targets.js';
+import { applyLibraryForInstaller } from '../wire-gateway/library/library-runtime.js';
+import type { LibraryItem, LibraryValue } from '../wire-gateway/library/types.js';
 
 export const GROK_BOT_SCHEMA: TranscriptSchema = {
   name: 'grok-bot',
@@ -231,49 +234,41 @@ function buildGrokBotWatches(workspaceRoot: string): WatchTarget[] {
   return [...perAgent, buildGrokBotCatchAllWatch(agentDataRoot, true)];
 }
 
-function loadOrCreateConfig(configPath: string): TranscriptWatchConfig {
-  const resolvedPath = expandHomePath(configPath);
-  if (!existsSync(resolvedPath)) {
-    return {
-      ...SAMPLE_CONFIG,
-      schemas: { ...(SAMPLE_CONFIG.schemas ?? {}) },
-      watches: [...SAMPLE_CONFIG.watches],
-      stateFile: DEFAULT_STATE_PATH,
-    };
-  }
-
-  const parsed = readJsonFileWithBom<TranscriptWatchConfig>(resolvedPath);
-  return {
-    version: 1,
-    schemas: { ...(parsed.schemas ?? {}) },
-    watches: Array.isArray(parsed.watches) ? parsed.watches : [],
-    stateFile: parsed.stateFile ?? DEFAULT_STATE_PATH,
-  };
-}
-
+/**
+ * Merge the grok-bot schema and watches into the transcript-watch config
+ * through the Library: earlier grok-bot watches are replaced, every other
+ * schema and watch is kept where it is.
+ */
 export function installGrokBotIntegration(configPath = DEFAULT_CONFIG_PATH, workspaceRoot?: string): number {
   const resolvedWorkspaceRoot = workspaceRoot?.trim()
     ? workspaceRoot.trim()
     : discoverGrokBotAgentDataRoot();
   const resolvedConfigPath = expandHomePath(configPath);
-  const configDir = path.dirname(resolvedConfigPath);
-  if (!existsSync(configDir)) {
-    mkdirSync(configDir, { recursive: true });
-  }
-
-  const config = loadOrCreateConfig(resolvedConfigPath);
-  config.schemas = {
-    ...(config.schemas ?? {}),
-    'grok-bot': GROK_BOT_SCHEMA,
-  };
+  if (existsSync(resolvedConfigPath)) readJsonFileWithBom<TranscriptWatchConfig>(resolvedConfigPath); // a corrupt config stops here, unwritten
 
   const grokWatches = buildGrokBotWatches(resolvedWorkspaceRoot);
-  config.watches = [
-    ...config.watches.filter((watch) => watch.name !== 'grok-bot'),
-    ...grokWatches,
+  const items: LibraryItem[] = [
+    {
+      kind: 'setting', id: 'setting:schema', group: LIBRARY_GROUPS.settings, place: 'member', file: resolvedConfigPath, format: 'json',
+      keyPath: ['schemas', 'grok-bot'], value: GROK_BOT_SCHEMA as unknown as LibraryValue, whenUnrecorded: 'adopt',
+    },
+    ...grokWatches.map((watch): LibraryItem => ({
+      kind: 'setting', id: `setting:watch:${watch.path}`, group: `${LIBRARY_GROUPS.settings}:watches`, place: 'json-array-entry',
+      file: resolvedConfigPath, arrayKeyPath: ['watches'], entry: watch as unknown as LibraryValue,
+      isPreLibraryEntry: (entry) => (entry as { name?: unknown } | null)?.name === 'grok-bot',
+    })),
   ];
-
-  writeFileSync(resolvedConfigPath, JSON.stringify(config, null, 2) + '\n');
+  applyLibraryForInstaller({
+    agentId: 'grok-bot',
+    items,
+    ownedGroups: [LIBRARY_GROUPS.settings, `${LIBRARY_GROUPS.settings}:watches`],
+    jsonStyles: {
+      [resolvedConfigPath]: {
+        finalNewline: true,
+        initialDocument: { ...SAMPLE_CONFIG, schemas: { ...(SAMPLE_CONFIG.schemas ?? {}) }, watches: [...SAMPLE_CONFIG.watches], stateFile: DEFAULT_STATE_PATH } as unknown as Record<string, LibraryValue>,
+      },
+    },
+  });
   console.log(`  Configured Grok Bot transcript watcher: ${resolvedConfigPath}`);
   for (const watch of grokWatches) {
     console.log(`  Watching: ${watch.path}`);

@@ -37,6 +37,7 @@ export type Component =
   | 'HTTP'
   | 'IMPORT'
   | 'INGEST'
+  | 'LIBRARY'
   | 'OAUTH'
   | 'OMP'
   | 'OPENCLAW'

@@ -1,91 +1,79 @@
-import { describe, it, expect } from 'bun:test';
-import { mkdtempSync, writeFileSync } from 'fs';
+import { describe, it, expect, afterAll } from 'bun:test';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { readFileSync } from 'fs';
 import { antigravityCliAdapter } from '../src/cli/adapters/antigravity-cli.js';
 import { extractLastMessage } from '../src/shared/transcript-parser.js';
+import { describeAntigravityHooks } from '../src/services/integrations/AntigravityCliHooksInstaller.js';
+import { WIRE_GATEWAY_DIR } from '../src/shared/paths.js';
 import {
-  buildAntigravityHooksConfig,
-  describeAntigravityHooks,
-  mergeHooksIntoConfig,
-  removeClaudeMemHooks,
-} from '../src/services/integrations/AntigravityCliHooksInstaller.js';
-
-const INSTALLER_PATH = 'src/services/integrations/AntigravityCliHooksInstaller.ts';
+  ANTIGRAVITY_HOOK_TABLE,
+  antigravityHookItems,
+  antigravityHooksMigration,
+  type LibraryInstallEnvironment,
+} from '../src/services/wire-gateway/library/agent-library-targets.js';
+import { applyLibrary, removeLibrary } from '../src/services/wire-gateway/library/library-engine.js';
 
 // These assertions lock in the REAL agy 1.2.1 hook contract (issue #4057).
 // The prior version of this file asserted the legacy Gemini-CLI event map
 // (BeforeTool/AfterTool/BeforeAgent/SessionStart) written into settings.json —
 // none of which agy actually fires — so it "passed" while recording zero
-// observations. Do not reintroduce those names.
-describe('AntigravityCliHooksInstaller - agy event map', () => {
-  const src = readFileSync(INSTALLER_PATH, 'utf-8');
+// observations. Do not reintroduce those names. The table and the writes
+// live in the Library (wire-gateway/library/agent-library-targets.ts).
+
+const SANDBOX = join(WIRE_GATEWAY_DIR, 'tmp', `antigravity-compat-${process.pid}`);
+mkdirSync(SANDBOX, { recursive: true });
+afterAll(() => rmSync(SANDBOX, { recursive: true, force: true }));
+let sandboxCounter = 0;
+
+const BUN = '/usr/local/bin/bun';
+const WORKER = '/home/u/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs';
+const environment: LibraryInstallEnvironment = {
+  home: SANDBOX, env: {}, platform: 'linux', cwd: SANDBOX, bunPath: BUN, workerServicePath: WORKER, mcpServerPath: null, nodePath: '/usr/bin/node',
+};
+
+/** A fresh hooks.json path and Library record directory. */
+function sandbox(initial?: unknown): { hooksPath: string; context: { libraryDirectory: string } } {
+  const root = join(SANDBOX, String(sandboxCounter++));
+  mkdirSync(root, { recursive: true });
+  const hooksPath = join(root, 'hooks.json');
+  if (initial !== undefined) writeFileSync(hooksPath, JSON.stringify(initial, null, 2) + '\n');
+  return { hooksPath, context: { libraryDirectory: join(root, 'library') } };
+}
+
+function freshInstall(): Record<string, any> {
+  const { hooksPath, context } = sandbox();
+  return install(hooksPath, context);
+}
+
+function install(hooksPath: string, context: { libraryDirectory: string }): Record<string, any> {
+  applyLibrary({ agentId: 'antigravity', items: antigravityHookItems(environment, hooksPath, 30), ownedGroups: ['hooks'], migrations: [antigravityHooksMigration(hooksPath)] }, context);
+  return JSON.parse(readFileSync(hooksPath, 'utf-8'));
+}
+
+describe('Antigravity CLI hook table (agy event map)', () => {
+  const internalEventOf = Object.fromEntries(ANTIGRAVITY_HOOK_TABLE.map((row) => [row.event, row.args]));
 
   it('maps SessionStart to context (the injectSteps startup context-injection point, issue #4911)', () => {
-    expect(src).toContain("'SessionStart': 'context'");
-    expect(src).not.toContain("'PreInvocation': 'context'");
+    expect(internalEventOf.SessionStart).toBe('hook antigravity-cli context');
+    expect(internalEventOf.PreInvocation).toBeUndefined();
   });
 
-  it('maps PreToolUse and PostToolUse to observation', () => {
-    expect(src).toContain("'PreToolUse': 'observation'");
-    expect(src).toContain("'PostToolUse': 'observation'");
-  });
-
-  it('maps PostInvocation to observation', () => {
-    expect(src).toContain("'PostInvocation': 'observation'");
-  });
-
-  it('maps Stop to summarize', () => {
-    expect(src).toContain("'Stop': 'summarize'");
+  it('maps PreToolUse, PostToolUse and PostInvocation to observation, Stop to summarize', () => {
+    expect(internalEventOf.PreToolUse).toBe('hook antigravity-cli observation');
+    expect(internalEventOf.PostToolUse).toBe('hook antigravity-cli observation');
+    expect(internalEventOf.PostInvocation).toBe('hook antigravity-cli observation');
+    expect(internalEventOf.Stop).toBe('hook antigravity-cli summarize');
   });
 
   it('does NOT register the legacy Gemini-CLI event names (0 occurrences in agy)', () => {
-    expect(src).not.toContain("'BeforeTool'");
-    expect(src).not.toContain("'AfterTool'");
-    expect(src).not.toContain("'BeforeAgent'");
-    expect(src).not.toContain("'AfterAgent'");
-    expect(src).not.toContain("'PreCompress'");
-    expect(src).not.toContain("'Notification':");
-  });
-
-  it('uses the antigravity-cli hook command string, not gemini-cli', () => {
-    expect(src).toContain('hook antigravity-cli');
-    expect(src).not.toContain('hook gemini-cli');
-  });
-});
-
-describe('AntigravityCliHooksInstaller - hooks.json target (not settings.json)', () => {
-  const src = readFileSync(INSTALLER_PATH, 'utf-8');
-
-  it('writes hooks to ~/.gemini/config/hooks.json (the file agy loads)', () => {
-    expect(src).toContain("path.join(GEMINI_CONFIG_DIR, 'config', 'hooks.json')");
-    expect(src).toContain('writeAntigravityHooksConfig');
-  });
-
-  it('does not write hooks into settings.json on install', () => {
-    // settings.json is only referenced for LEGACY uninstall cleanup, never for
-    // writing hooks. Install must go through the hooks.json writer.
-    expect(src).toContain('writeAntigravityHooksAndSetupContext(mergedHooks)');
-    expect(src).toContain('writeAntigravityHooksConfig(mergedHooks)');
+    expect(Object.keys(internalEventOf).sort()).toEqual(['PostInvocation', 'PostToolUse', 'PreToolUse', 'SessionStart', 'Stop']);
   });
 
   it('emits bare (unquoted) forward-slashed hook command paths (agy splits on spaces, keeps quotes)', () => {
-    expect(src).toContain('hook antigravity-cli ${internalEvent}');
-    expect(src).not.toContain('"${escapedBunPath}" "${escapedWorkerPath}"');
-  });
-
-  it('still targets the shared ~/.gemini GEMINI.md context file', () => {
-    expect(src).toContain("path.join(GEMINI_CONFIG_DIR, 'GEMINI.md')");
-  });
-
-  it('dual-writes MCP config to both B0-confirmed candidate paths', () => {
-    expect(src).toContain("path.join(GEMINI_CONFIG_DIR, 'antigravity', 'mcp_config.json')");
-    expect(src).toContain("path.join(GEMINI_CONFIG_DIR, 'config', 'mcp_config.json')");
-  });
-
-  it('writes the rules/context placeholder to the plural, home-relative .agents/rules path', () => {
-    expect(src).toContain("path.join(homedir(), '.agents', 'rules', 'claude-mem-context.md')");
+    const { hooksPath, context } = sandbox();
+    const handler = install(hooksPath, context)['claude-mem'].SessionStart[0];
+    expect(handler.command).toBe(`${BUN} ${WORKER} hook antigravity-cli context`);
   });
 });
 
@@ -95,10 +83,9 @@ describe('AntigravityCliHooksInstaller - hooks.json target (not settings.json)',
 // (verified against 1.2.13) requires top-level HOOK names, grouped shape only
 // for PreToolUse/PostToolUse, flat handler arrays for the rest, and timeout in
 // seconds. These tests assert the real JSON shape (not source strings).
-describe('AntigravityCliHooksInstaller - agy hooks.json schema (issue #4196)', () => {
-  const BUN = '/usr/local/bin/bun';
-  const WORKER = '/home/u/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs';
-  const config = buildAntigravityHooksConfig(BUN, WORKER) as Record<string, any>;
+describe('Antigravity CLI hooks.json schema (issue #4196)', () => {
+  const { hooksPath, context } = sandbox();
+  const config = install(hooksPath, context);
   const claudeMem = config['claude-mem'];
 
   it('nests every event under the "claude-mem" hook name (not event names)', () => {
@@ -113,7 +100,6 @@ describe('AntigravityCliHooksInstaller - agy hooks.json schema (issue #4196)', (
       const groups = claudeMem[event];
       expect(groups).toHaveLength(1);
       expect(groups[0].matcher).toBe('*');
-      expect(Array.isArray(groups[0].hooks)).toBe(true);
       expect(groups[0].hooks[0].command).toContain('hook antigravity-cli');
     }
   });
@@ -129,94 +115,64 @@ describe('AntigravityCliHooksInstaller - agy hooks.json schema (issue #4196)', (
   });
 
   it('writes timeout in seconds (agy default 30), never the old 10000', () => {
-    const handlers = [
-      claudeMem.SessionStart[0],
-      claudeMem.PreToolUse[0].hooks[0],
-      claudeMem.PostToolUse[0].hooks[0],
-      claudeMem.PostInvocation[0],
-      claudeMem.Stop[0],
-    ];
-    for (const handler of handlers) {
+    for (const handler of [claudeMem.SessionStart[0], claudeMem.PreToolUse[0].hooks[0], claudeMem.PostToolUse[0].hooks[0], claudeMem.PostInvocation[0], claudeMem.Stop[0]]) {
       expect(handler.timeout).toBe(30);
-      expect(handler.timeout).not.toBe(10000);
       expect(handler.type).toBe('command');
+      expect(handler.name).toBeUndefined();
     }
-  });
-
-  it('keeps the hook name on the top-level key, not on individual handlers', () => {
-    expect(claudeMem.SessionStart[0].name).toBeUndefined();
-    expect(claudeMem.PreToolUse[0].hooks[0].name).toBeUndefined();
   });
 });
 
-describe('AntigravityCliHooksInstaller - merge/uninstall migrate and preserve', () => {
-  const BUN = '/usr/local/bin/bun';
-  const WORKER = '/home/u/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs';
-
+describe('Antigravity CLI install/uninstall migrate and preserve', () => {
   it('preserves other named hooks and replaces claude-mem idempotently', () => {
-    const existing = {
-      'lint-checker': { PostToolUse: [{ matcher: 'run_command', hooks: [{ command: './lint.sh' }] }] },
+    const lintChecker = { PostToolUse: [{ matcher: 'run_command', hooks: [{ command: './lint.sh' }] }] };
+    const { hooksPath, context } = sandbox({
+      'lint-checker': lintChecker,
       'claude-mem': { SessionStart: [{ command: 'stale-command' }], PreInvocation: [{ command: 'legacy-pre-inv' }] },
-    } as unknown as Parameters<typeof mergeHooksIntoConfig>[0];
-
-    const merged = mergeHooksIntoConfig(existing, buildAntigravityHooksConfig(BUN, WORKER)) as Record<string, any>;
-
-    expect(merged['lint-checker']).toEqual(existing['lint-checker']);
+    });
+    const merged = install(hooksPath, context);
+    expect(merged['lint-checker']).toEqual(lintChecker);
     expect(merged['claude-mem'].SessionStart).toHaveLength(1);
     expect(merged['claude-mem'].SessionStart[0].command).not.toBe('stale-command');
     expect(merged['claude-mem'].PreInvocation).toBeUndefined();
-
-    const twice = mergeHooksIntoConfig(
-      merged as unknown as Parameters<typeof mergeHooksIntoConfig>[0],
-      buildAntigravityHooksConfig(BUN, WORKER),
-    ) as Record<string, any>;
-    expect(twice['claude-mem'].SessionStart).toHaveLength(1);
-    expect(twice['claude-mem'].PreToolUse).toHaveLength(1);
+    const twice = install(hooksPath, context);
+    expect(twice).toEqual(merged);
   });
 
   it('migrates legacy event-keyed claude-mem entries and keeps others', () => {
-    const existing = {
+    const otherTool = { Stop: [{ command: './other.sh' }] };
+    const { hooksPath, context } = sandbox({
       PreInvocation: [{ matcher: '*', hooks: [{ name: 'claude-mem', type: 'command', command: 'old', timeout: 10000 }] }],
       PreToolUse: [{ matcher: '*', hooks: [{ name: 'claude-mem', type: 'command', command: 'old' }] }],
-      'other-tool': { Stop: [{ command: './other.sh' }] },
-    } as unknown as Parameters<typeof mergeHooksIntoConfig>[0];
-
-    const merged = mergeHooksIntoConfig(existing, buildAntigravityHooksConfig(BUN, WORKER)) as Record<string, any>;
-
+      'other-tool': otherTool,
+    });
+    const merged = install(hooksPath, context);
     expect(merged.PreInvocation).toBeUndefined();
     expect(merged.PreToolUse).toBeUndefined();
-    expect(merged['other-tool']).toEqual(existing['other-tool']);
+    expect(merged['other-tool']).toEqual(otherTool);
     expect(merged['claude-mem'].SessionStart).toHaveLength(1);
   });
 
-  it('uninstall removes only claude-mem (named + legacy) and keeps other hooks', () => {
-    const config = {
-      'lint-checker': { PostToolUse: [{ matcher: 'run_command', hooks: [{ command: './lint.sh' }] }] },
-      'claude-mem': {
-        SessionStart: [{ command: 'a' }],
-        PreToolUse: [{ matcher: '*', hooks: [{ command: 'b' }] }],
-      },
+  it('uninstall removes only what claude-mem wrote (named + legacy) and keeps other hooks', () => {
+    const lintChecker = { PostToolUse: [{ matcher: 'run_command', hooks: [{ command: './lint.sh' }] }] };
+    const { hooksPath, context } = sandbox({
+      'lint-checker': lintChecker,
       PreToolUse: [{ matcher: '*', hooks: [{ name: 'claude-mem', command: 'c' }, { name: 'other', command: 'd' }] }],
-    } as unknown as Parameters<typeof removeClaudeMemHooks>[0];
-
-    const { config: cleaned, removed } = removeClaudeMemHooks(config) as { config: Record<string, any>; removed: number };
-
+    });
+    install(hooksPath, context);
+    removeLibrary({ agentId: 'antigravity', items: antigravityHookItems(environment, hooksPath, 30), migrations: [antigravityHooksMigration(hooksPath)] }, context);
+    const cleaned = JSON.parse(readFileSync(hooksPath, 'utf-8'));
     expect(cleaned['claude-mem']).toBeUndefined();
-    expect(cleaned['lint-checker']).toEqual((config as Record<string, any>)['lint-checker']);
-    expect(cleaned.PreToolUse).toHaveLength(1);
-    expect(cleaned.PreToolUse[0].hooks).toHaveLength(1);
-    expect(cleaned.PreToolUse[0].hooks[0].name).toBe('other');
-    expect(removed).toBe(3);
+    expect(cleaned['lint-checker']).toEqual(lintChecker);
+    expect(cleaned.PreToolUse).toEqual([{ matcher: '*', hooks: [{ name: 'other', command: 'd' }] }]);
   });
 });
 
 describe('AntigravityCliHooksInstaller - status sees leftover legacy hooks (issue #4196)', () => {
-  const BUN = '/usr/local/bin/bun';
-  const WORKER = '/home/u/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs';
 
   it('counts legacy claude-mem handlers next to a current install, without touching the config', () => {
     const config = {
-      ...buildAntigravityHooksConfig(BUN, WORKER),
+      'claude-mem': freshInstall()['claude-mem'],
       PreToolUse: [{ matcher: '*', hooks: [{ name: 'claude-mem', command: 'old' }, { name: 'other', command: 'keep' }] }],
       Stop: [{ matcher: '*', hooks: [{ name: 'claude-mem', command: 'old', timeout: 10000 }] }],
     } as unknown as Parameters<typeof describeAntigravityHooks>[0];

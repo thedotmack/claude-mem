@@ -33,7 +33,7 @@
 // upstream and never invents one.
 
 import { join } from 'path';
-import { KIMI_MARKER_BEGIN } from '../../integrations/KimiHooksInstaller.js';
+import { KIMI_MARKER_BEGIN } from '../library/agent-library-targets.js';
 import { readConfigFileBytes } from '../edit/config-file.js';
 import { resolveJsoncKeyPath } from '../edit/jsonc-editor.js';
 import { isPlainObjectValue } from '../edit/text-shape.js';

@@ -1,0 +1,16 @@
+{
+  "exitCodes": [
+    0,
+    0
+  ],
+  "files": {
+    "home/.agents/rules/claude-mem-context.md": "# Notes\n",
+    "home/.claude/": "<empty dir>",
+    "home/.gemini/GEMINI.md": "# My rules\n\nBe terse.\n",
+    "home/.gemini/antigravity/mcp_config.json": "{\n  \"mcpServers\": {\n    \"github\": {\n      \"command\": \"gh-mcp\"\n    }\n  }\n}\n",
+    "home/.gemini/config/hooks.json": "{\n  \"my-guard\": {\n    \"PreToolUse\": [\n      {\n        \"matcher\": \"*\",\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"./guard.sh\"\n          }\n        ]\n      }\n    ]\n  },\n  \"SessionStart\": [\n    {\n      \"matcher\": \"*\",\n      \"hooks\": [\n        {\n          \"name\": \"other\",\n          \"type\": \"command\",\n          \"command\": \"./other.sh\"\n        }\n      ]\n    }\n  ]\n}\n",
+    "home/.gemini/config/mcp_config.json": "{\n  \"mcpServers\": {}\n}\n",
+    "workspace/": "<empty dir>",
+    "data/": "<empty dir>"
+  }
+}

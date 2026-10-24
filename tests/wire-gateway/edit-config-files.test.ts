@@ -14,6 +14,7 @@ import {
   writeFileSync,
 } from 'fs';
 import { join } from 'path';
+import { hostname } from 'os';
 import { STALE_ATOMIC_TEMP_FILE_AGE_MS, writeFileAtomic, writeJsonFileAtomic } from '../../src/shared/atomic-json.js';
 import { WIRE_GATEWAY_DIR } from '../../src/shared/paths.js';
 import { applyConfigFileEdit, atomically, removeConfigFile } from '../../src/services/wire-gateway/edit/config-file.js';
@@ -226,14 +227,110 @@ describe('withExclusiveFileLock', () => {
     expect(existsSync(`${counterPath}.lock`)).toBe(false);
   });
 
-  it('a holder whose lock was broken as stale leaves the next holder\'s lock alone', () => {
+  it('a holder whose lock was taken away leaves the new holder\'s lock alone and fails loudly', () => {
     const dir = freshTestDir();
     const lockedPath = join(dir, 'routes.json');
-    withExclusiveFileLock(lockedPath, () => {
-      // A waiter broke this lock as stale and took its own.
+    expect(() => withExclusiveFileLock(lockedPath, () => {
+      // Another process took the lock (deleted by hand, then taken).
       writeFileSync(`${lockedPath}.lock`, 'another-holder');
-    });
+    })).toThrow('lost the lock on routes.json');
     expect(readFileSync(`${lockedPath}.lock`, 'utf-8')).toBe('another-holder');
+  });
+
+  it('assertStillHeld throws once the lock is no longer this holder\'s', () => {
+    const dir = freshTestDir();
+    const lockedPath = join(dir, 'applied.json');
+    let assertion = '';
+    withExclusiveFileLock(lockedPath, (lock) => {
+      lock.assertStillHeld();
+      const mine = readFileSync(lock.lockPath, 'utf-8');
+      writeFileSync(lock.lockPath, 'another-holder');
+      try {
+        lock.assertStillHeld();
+      } catch (error) {
+        assertion = (error as Error).message;
+      }
+      writeFileSync(lock.lockPath, mine);
+    });
+    expect(assertion).toContain('lost the lock on applied.json');
+  });
+
+  /** A child process that stays alive until killed, to own a lock file. */
+  function liveProcess(): ReturnType<typeof Bun.spawn> {
+    return Bun.spawn([process.execPath, '-e', 'setInterval(() => {}, 1000)'], { stdout: 'ignore', stderr: 'ignore' });
+  }
+
+  it('never breaks a live holder\'s lock, however old: a waiter runs only after the holder finished', async () => {
+    const dir = freshTestDir();
+    const lockedPath = join(dir, 'library.json');
+    writeFileSync(lockedPath, 'before');
+    const marker = join(dir, 'holding');
+    // The holder makes its own lock look a minute old (as a long stall would), then holds it a while.
+    const holder = Bun.spawn([process.execPath, '-e', `
+      const { utimesSync, writeFileSync } = await import('fs');
+      const { withExclusiveFileLock } = await import(${JSON.stringify(editConfigModulePath)});
+      withExclusiveFileLock(${JSON.stringify(lockedPath)}, (lock) => {
+        const longAgo = new Date(Date.now() - 60_000);
+        utimesSync(lock.lockPath, longAgo, longAgo);
+        writeFileSync(${JSON.stringify(marker)}, '1');
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1_000);
+        writeFileSync(${JSON.stringify(lockedPath)}, 'holder done');
+      });
+    `], { stdout: 'ignore', stderr: 'pipe' });
+    const waitUntil = Date.now() + 30_000;
+    while (!existsSync(marker)) {
+      if (Date.now() > waitUntil) throw new Error('the holder never took the lock');
+      await Bun.sleep(10);
+    }
+    const seen = withExclusiveFileLock(lockedPath, () => readFileSync(lockedPath, 'utf-8'));
+    expect(await holder.exited).toBe(0);
+    expect(await new Response(holder.stderr).text()).toBe('');
+    expect(seen).toBe('holder done');
+  });
+
+  it('breaks the lock of a holder that no longer exists at once, without waiting out a stale window', async () => {
+    const dir = freshTestDir();
+    const lockedPath = join(dir, 'consent.json');
+    const dead = Bun.spawn([process.execPath, '-e', '0'], { stdout: 'ignore', stderr: 'ignore' });
+    await dead.exited;
+    writeFileSync(`${lockedPath}.lock`, JSON.stringify({ token: 'dead', pid: dead.pid, host: hostname(), startToken: null }));
+    const started = Date.now();
+    expect(withExclusiveFileLock(lockedPath, () => 'taken')).toBe('taken');
+    // The old rule waited 10 s for the lock to age; a proven-dead holder needs no wait.
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(existsSync(`${lockedPath}.lock`)).toBe(false);
+  });
+
+  it('breaks a lock whose pid now names another process (pid reuse)', () => {
+    const dir = freshTestDir();
+    const lockedPath = join(dir, 'stash.json');
+    const unrelated = liveProcess();
+    try {
+      writeFileSync(`${lockedPath}.lock`, JSON.stringify({ token: 'old', pid: unrelated.pid, host: hostname(), startToken: 'Thu Jan  1 00:00:00 1970' }));
+      expect(withExclusiveFileLock(lockedPath, () => 'taken')).toBe('taken');
+    } finally {
+      unrelated.kill();
+    }
+  });
+
+  it('a live holder\'s lock written by an older claude-mem (`<pid>.<hex>`) is honoured too', async () => {
+    const dir = freshTestDir();
+    const lockedPath = join(dir, 'routes.json');
+    const holder = liveProcess();
+    try {
+      writeFileSync(`${lockedPath}.lock`, `${holder.pid}.abcdef0123456789`);
+      const longAgo = new Date(Date.now() - 60_000);
+      utimesSync(`${lockedPath}.lock`, longAgo, longAgo);
+      // The holder releases it in 300 ms (another process: this one blocks while waiting).
+      const releaser = Bun.spawn([process.execPath, '-e', `setTimeout(() => require('fs').rmSync(${JSON.stringify(`${lockedPath}.lock`)}), 300)`], { stdout: 'ignore', stderr: 'ignore' });
+      const started = Date.now();
+      // Taken only after the holder released it, not broken as stale.
+      expect(withExclusiveFileLock(lockedPath, () => 'taken')).toBe('taken');
+      expect(Date.now() - started).toBeGreaterThanOrEqual(250);
+      expect(await releaser.exited).toBe(0);
+    } finally {
+      holder.kill();
+    }
   });
 
   it('releases the lock when the mutation throws', () => {

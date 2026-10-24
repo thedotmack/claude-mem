@@ -1,0 +1,105 @@
+---
+title: "Library"
+description: "How claude-mem writes its hooks, MCP server and context into each agent, records what it wrote, and takes out only that."
+---
+
+Every agent claude-mem supports by file edits (Cursor, Windsurf, Codex CLI,
+Kimi Code, Antigravity CLI, OpenCode, OpenClaw, Pi, OMP, T3 Code, Grok Bot,
+DeepSeek Harness, Copilot CLI, Roo Code, Warp and Goose) is installed by one
+engine, the Library. `npx claude-mem install --ide <agent>` works as before;
+underneath, the Library does the writing.
+
+## What it writes
+
+| Kind | Example |
+| --- | --- |
+| Hooks | `hooks.stop` entries in `~/.cursor/hooks.json`, Kimi's `[[hooks]]` block in `config.toml`, the `claude-mem` hook in agy's `hooks.json` |
+| MCP server | `mcpServers.claude-mem` in `mcp.json`, `extensions.claude-mem` in Goose's `config.yaml`, `mcp.claude-mem` in `opencode.json` |
+| Settings | Codex's `[features] hooks` and plugin `enabled` flags, OpenClaw's memory slot |
+| Instructions | the `<claude-mem-context>` block in `GEMINI.md`, `WARP.md` or `.github/copilot-instructions.md`, and Cursor/Windsurf rules files |
+| Bundles | plugin and extension files (OpenCode, OpenClaw, Pi, OMP) |
+
+## The rules it keeps
+
+- **Only what it wrote is ever removed.** Each item is recorded in
+  `~/.claude-mem/wire-gateway/library/library.json`. Entries claude-mem wrote
+  before this record existed are recognized by claude-mem's own command or
+  name and are taken over; nothing else is touched.
+- **An entry you edit becomes yours.** If you change a hook or an MCP entry
+  claude-mem wrote, claude-mem leaves your version alone from then on: it is
+  neither rewritten nor removed. An instruction block you edit stays yours until
+  claude-mem's own text for it changes. An entry you delete is written again on
+  the next sync.
+- **Your formatting stays.** A JSON file in the plain two-space shape claude-mem
+  has always written is updated the same way. Any other JSON file (comments,
+  trailing commas, another indent, a byte order mark) is edited in place, so
+  only claude-mem's entry changes; a hook added to or taken out of a list is
+  that one element, and your comments inside the list stay. TOML and YAML
+  files are always edited in place.
+- **A file it cannot read is never written.** The change stops, every file it
+  touched is put back, and the error names the file.
+- **Nothing is left half recorded.** `library.json` notes a change before its
+  files are written and records it once they all are. If the process dies in
+  between, the next Library command puts those files back as they were and
+  says so.
+- **Every write is backed up first**, under
+  `~/.claude-mem/wire-gateway/library/backups/<when>/<agent>/<file's path>`.
+  One command (`install`, `uninstall`, `library sync|remove`) is one backup;
+  the newest 30 are kept.
+- **Removing gives back the exact bytes.** When a file is still exactly as
+  claude-mem left it, `remove` restores the bytes it had before claude-mem
+  first wrote to it, or deletes it when claude-mem created it. When those
+  earlier bytes already held claude-mem's entries from an older install,
+  `remove` takes out only claude-mem's entries instead, so an uninstall after
+  an upgrade never brings the old ones back. A plugin claude-mem had turned on
+  (Codex) is left turned off.
+- **No Codex trust records.** claude-mem never writes `[hooks.state…]` into
+  Codex's `config.toml`; Codex asks you to trust the hooks.
+- **No double context.** An agent whose [wire gateway](/wire-gateway) route
+  injects memory gets no `<claude-mem-context>` block in its instruction files,
+  and a block written earlier is removed on the next sync. If `routes.json`
+  cannot be read, the block is written as before and the command says why.
+
+## Commands
+
+```bash
+npx claude-mem library status                 # every agent with something recorded
+npx claude-mem library status cursor --json   # one agent, as JSON
+npx claude-mem library sync cursor            # write claude-mem's integration (same as install --ide cursor)
+npx claude-mem library remove cursor          # take out only what claude-mem wrote
+```
+
+`status` checks each recorded item against its file and never writes. Each
+item shows one state:
+
+| State | Meaning |
+| --- | --- |
+| `present` | The file holds what claude-mem wrote |
+| `missing` | The file or the entry is gone |
+| `edited-by-user` | The entry is there but differs from what claude-mem wrote |
+| `released-to-user` | claude-mem saw your edit on a sync and will leave the entry alone |
+
+Agent ids: `windsurf`, `kimi`, `antigravity`, `cursor`, `opencode`, `openclaw`,
+`pi`, `omp`, `t3code`, `grok-bot`, `dsh`, `codex-cli`, `copilot-cli`,
+`roo-code`, `warp`, `goose`. `sync dsh` takes `--dsh-profile <name>`.
+
+The Library runs under Bun, because its TOML and YAML checks use Bun's parsers.
+`npx claude-mem` runs it in a Bun child when it is itself running under Node.
+
+## Changes from earlier installers
+
+- Kimi Code no longer gets a `config.toml.bak-YYYYMMDD` file next to its config;
+  the backup is in the Library's backups folder.
+- Codex's `uninstall` takes claude-mem's settings out of `config.toml` (and puts
+  back any value of yours that was there before) instead of leaving `enabled =
+  false` and `hooks = true`; a claude-mem plugin an older install had turned on
+  is left `enabled = false`, as before.
+- Goose's `args` is written as `["…"]`, and claude-mem's extension is added after
+  the ones already there.
+- `uninstall` for Antigravity and OpenClaw restores the files' exact bytes,
+  instead of leaving `{"mcpServers": {}}` or `"slots": {}` behind, and keeps
+  hooks under the `claude-mem` name that claude-mem never wrote. DeepSeek
+  Harness's uninstall keeps the `dsh` transcript schema, as before: a watch of
+  yours may use it.
+- Cursor's uninstall exits 1 when its `hooks.json` cannot be read, instead of
+  reporting success while claude-mem's hooks may still be there.

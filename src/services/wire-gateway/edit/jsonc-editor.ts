@@ -597,3 +597,144 @@ export function patchJsoncDocument(originalBytes: Uint8Array, patch: JsoncPatch)
     return utf8Decoder.decode(bytes);
   });
 }
+
+// --- array elements (the Library's hook lists, watches and plugin lists) ----------------------
+
+/** The array a literal key path names (no `*`), refusing anything else: a missing key or a non-array is the caller's to handle. */
+function arraySpanAt(document: ScannedJsoncDocument, keyPath: string): JsonSpan {
+  const segments = splitConfigKeyPath(keyPath);
+  if (segments.some((segment) => segment.matchesAnyKey)) throw new Error(`${keyPath}: an array element is added or removed at one literal key path, not a "*" path`);
+  requireAddressableRoot(document, segments);
+  const [match] = resolveSpans(document, segments, { refuseDuplicateKeys: true });
+  if (!match) throw new Error(`${keyPath} is not in the file`);
+  if (match.span.type !== 'array') throw new Error(`${keyPath} is not an array; edit the file by hand`);
+  return match.span;
+}
+
+function arrayValueAt(bytes: Uint8Array, keyPath: string): unknown[] {
+  const document = scanJsoncDocument(bytes);
+  return decodeValue(document.blanked, arraySpanAt(document, keyPath)) as unknown[];
+}
+
+/** The first byte after `position` (spaces and tabs skipped) in the original: a trailing comma the blanked copy hides shows here. */
+function nextNonBlankOnLine(bytes: Uint8Array, position: number): number {
+  let index = position;
+  while (index < bytes.length && (bytes[index] === SPACE || bytes[index] === TAB)) index++;
+  return index;
+}
+
+/**
+ * Append `value` as the last element of the array at `keyPath`, as a byte
+ * splice: every other byte of the file stays (comments, the other elements'
+ * formatting, a trailing-comma style). On a multi-line array the element gets
+ * its own line at the last element's indent, after any comment that ends the
+ * last element's line; on a one-line array it is added inline.
+ */
+export function appendJsoncArrayElement(originalBytes: Uint8Array, keyPath: string, value: unknown): Uint8Array {
+  assertPlainConfigValue(value, keyPath);
+  return editConfigTextPreservingShape(originalBytes, (text) => {
+    const bytes = utf8Encoder.encode(text);
+    const document = scanJsoncDocument(bytes);
+    const arraySpan = arraySpanAt(document, keyPath);
+    const before = decodeValue(document.blanked, arraySpan) as unknown[];
+    const elements = [...arrayElements(document.blanked, arraySpan)];
+    const openBracket = arraySpan.start;
+    const closeBracket = arraySpan.end - 1;
+    const multiLine = isMultiLine(document);
+    let splices: ByteSplice[];
+    if (elements.length === 0) {
+      const baseIndent = indentOfLineAt(document, openBracket);
+      const unit = indentUnitAt(document, openBracket, baseIndent);
+      const innerIsWhitespaceOnly = bytes.subarray(openBracket + 1, closeBracket).every(isJsonWhitespace);
+      if (!multiLine) splices = [textSplice(openBracket + 1, innerIsWhitespaceOnly ? closeBracket : openBracket + 1, JSON.stringify(value))];
+      else if (innerIsWhitespaceOnly) splices = [textSplice(openBracket, closeBracket + 1, `[\n${baseIndent + unit}${renderJsonValue(value, true, baseIndent + unit, unit)}\n${baseIndent}]`)];
+      // Only comments inside: the element goes first, the comments stay after it.
+      else splices = [textSplice(openBracket + 1, openBracket + 1, `\n${baseIndent + unit}${renderJsonValue(value, true, baseIndent + unit, unit)}`)];
+    } else {
+      const last = elements[elements.length - 1];
+      const afterLast = nextNonBlankOnLine(bytes, last.end);
+      const trailingComma = bytes[afterLast] === COMMA;
+      const lastStartsItsLine = onlyWhitespaceBetween(bytes, lineStartBefore(document, last.start), last.start);
+      const restOfLineEnd = lineFeedAtOrAfter(document, last.end);
+      // Only whitespace or comments after the last element on its line (the blanked copy shows comments as spaces).
+      const lastEndsItsLine = document.blanked.subarray(trailingComma ? afterLast + 1 : last.end, restOfLineEnd).every(isJsonWhitespace);
+      if (multiLine && lastStartsItsLine && lastEndsItsLine) {
+        const indent = indentOfLineAt(document, last.start);
+        const lineEnd = restOfLineEnd > 0 && bytes[restOfLineEnd - 1] === CARRIAGE_RETURN ? restOfLineEnd - 1 : restOfLineEnd;
+        const element = `\n${indent}${renderJsonValue(value, true, indent, indentUnitAt(document, openBracket, indentOfLineAt(document, openBracket)))}${trailingComma ? ',' : ''}`;
+        splices = trailingComma ? [textSplice(lineEnd, lineEnd, element)] : [textSplice(last.end, last.end, ','), textSplice(lineEnd, lineEnd, element)];
+      } else {
+        splices = [textSplice(trailingComma ? afterLast + 1 : last.end, trailingComma ? afterLast + 1 : last.end, `${trailingComma ? ' ' : ', '}${JSON.stringify(value)}${trailingComma ? ',' : ''}`)];
+      }
+    }
+    const edited = applyByteSplices(bytes, splices);
+    const after = arrayValueAt(edited, keyPath);
+    if (!sameJsonValue(after, [...before, value])) throw new Error(`edited JSON does not hold the new element at the end of ${keyPath}`);
+    return utf8Decoder.decode(edited);
+  });
+}
+
+/**
+ * Remove element `index` of the array at `keyPath`, as a byte splice: the
+ * element's line goes when nothing else is on it (a comment after it on the
+ * line stays), with the comma joining it to its neighbors; an array left with
+ * only whitespace inside collapses to `[]`. Every other byte stays.
+ */
+export function removeJsoncArrayElement(originalBytes: Uint8Array, keyPath: string, index: number): Uint8Array {
+  return editConfigTextPreservingShape(originalBytes, (text) => {
+    const bytes = utf8Encoder.encode(text);
+    const document = scanJsoncDocument(bytes);
+    const arraySpan = arraySpanAt(document, keyPath);
+    const before = decodeValue(document.blanked, arraySpan) as unknown[];
+    const element = elementAt(document, arraySpan, index);
+    if (!element) throw new Error(`${keyPath} has no element ${index}`);
+    const { blanked } = document;
+    let start = element.start;
+    let end = element.end;
+    let next = end;
+    while (next < blanked.length && isJsonWhitespace(blanked[next])) next++;
+    // A comma after the element (a separator, or a trailing comma the blanked copy hides) goes with it.
+    const afterOnLine = nextNonBlankOnLine(bytes, end);
+    const followedByComma = blanked[next] === COMMA || bytes[afterOnLine] === COMMA;
+    if (blanked[next] === COMMA) end = next + 1;
+    else if (bytes[afterOnLine] === COMMA) end = afterOnLine + 1;
+    let precedingCommaPosition = -1;
+    if (!followedByComma) {
+      let previous = start;
+      while (previous > 0 && isJsonWhitespace(blanked[previous - 1])) previous--;
+      if (blanked[previous - 1] === COMMA) precedingCommaPosition = previous - 1;
+    }
+    const lineStart = lineStartBefore(document, start);
+    const aloneOnLine = onlyWhitespaceBetween(bytes, lineStart, start);
+    if (!aloneOnLine) {
+      // Inline (`[a, b]`): the spaces that set the element off go with it and its comma.
+      if (precedingCommaPosition !== -1 && onlyWhitespaceBetween(bytes, precedingCommaPosition + 1, start)) {
+        start = precedingCommaPosition;
+        precedingCommaPosition = -1;
+      } else if (followedByComma) {
+        end = nextNonBlankOnLine(bytes, end);
+      }
+    }
+    if (aloneOnLine) {
+      const afterElement = nextNonBlankOnLine(bytes, end);
+      const lineEnd = pastLineEnd(bytes, afterElement);
+      if (lineEnd !== afterElement || afterElement === bytes.length) {
+        start = lineStart;
+        end = lineEnd;
+      } else if (lineStart > 0 && blanked.subarray(afterElement, lineFeedAtOrAfter(document, afterElement)).every(isJsonWhitespace)) {
+        // A comment follows on the line: it stays, joined to the line before.
+        start = lineStart - 1;
+        if (start > 0 && bytes[start - 1] === CARRIAGE_RETURN) start--;
+      }
+    }
+    const splices: ByteSplice[] = [{ start, end, replacement: new Uint8Array(0) }];
+    if (precedingCommaPosition !== -1 && precedingCommaPosition < start) splices.push({ start: precedingCommaPosition, end: precedingCommaPosition + 1, replacement: new Uint8Array(0) });
+    let edited = applyByteSplices(bytes, splices);
+    const editedDocument = scanJsoncDocument(edited);
+    const emptied = arraySpanAt(editedDocument, keyPath);
+    if (edited.subarray(emptied.start + 1, emptied.end - 1).every(isJsonWhitespace)) edited = spliceText(edited, emptied.start, emptied.end, '[]');
+    const after = arrayValueAt(edited, keyPath);
+    if (!sameJsonValue(after, before.filter((_entry, position) => position !== index))) throw new Error(`edited JSON does not hold ${keyPath} without element ${index}`);
+    return utf8Decoder.decode(edited);
+  });
+}

@@ -1,0 +1,11 @@
+{
+  "exitCodes": [
+    0
+  ],
+  "files": {
+    "home/.claude/": "<empty dir>",
+    "home/.codeium/windsurf/hooks.json": "{\n  \"hooks\": {\n    \"pre_user_prompt\": [\n      {\n        \"command\": \"./audit.sh\",\n        \"show_output\": true\n      },\n      {\n        \"command\": \"\\\"<SANDBOX>/home/.bun/bin/bun\\\" \\\"<SANDBOX>/home/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\\\" hook windsurf session-init\",\n        \"show_output\": false\n      }\n    ],\n    \"post_setup_worktree\": [\n      {\n        \"command\": \"./setup.sh\",\n        \"show_output\": true\n      }\n    ],\n    \"post_write_code\": [\n      {\n        \"command\": \"\\\"<SANDBOX>/home/.bun/bin/bun\\\" \\\"<SANDBOX>/home/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\\\" hook windsurf file-edit\",\n        \"show_output\": false\n      }\n    ],\n    \"post_run_command\": [\n      {\n        \"command\": \"\\\"<SANDBOX>/home/.bun/bin/bun\\\" \\\"<SANDBOX>/home/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\\\" hook windsurf observation\",\n        \"show_output\": false\n      }\n    ],\n    \"post_mcp_tool_use\": [\n      {\n        \"command\": \"\\\"<SANDBOX>/home/.bun/bin/bun\\\" \\\"<SANDBOX>/home/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\\\" hook windsurf observation\",\n        \"show_output\": false\n      }\n    ],\n    \"post_cascade_response\": [\n      {\n        \"command\": \"\\\"<SANDBOX>/home/.bun/bin/bun\\\" \\\"<SANDBOX>/home/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs\\\" hook windsurf observation\",\n        \"show_output\": false\n      }\n    ]\n  }\n}",
+    "workspace/.windsurf/rules/claude-mem-context.md": "# Memory Context from Past Sessions\n\n*No context yet. Complete your first session and context will appear here.*\n\nUse claude-mem's MCP search tools for manual memory queries.\n",
+    "data/windsurf-projects.json": "{\n  \"<SANDBOX>/workspace\": {\n    \"installedAt\": \"<ISO_TIMESTAMP>\"\n  }\n}"
+  }
+}

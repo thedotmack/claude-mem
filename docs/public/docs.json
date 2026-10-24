@@ -98,6 +98,7 @@
           "modes",
           "telemetry",
           "wire-gateway",
+          "library",
           "development",
           "troubleshooting",
           "platform-integration",

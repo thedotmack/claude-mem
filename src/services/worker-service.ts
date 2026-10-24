@@ -11,6 +11,7 @@ import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js'
 import { runShutdownSequence, type WorkerShutdownReason } from './worker-shutdown.js';
 import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensureDir } from '../shared/paths.js';
 import { HookSpool, migrateLegacySessionEndReplay } from '../shared/hook-spool.js';
+import { writeAllSync } from '../shared/write-all-sync.js';
 import { HookSpoolDrainer, hookSpoolConsumedMarkers } from './worker/hook-spool-drain.js';
 import { HookSpoolRoutes } from './worker/http/routes/HookSpoolRoutes.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
@@ -52,7 +53,7 @@ const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DE
 export const WORKER_BOOT_FAILED_EXIT_CODE = 78;
 
 /** Subcommands that read or write the caller's project, so they run in its directory (#4628). */
-export const COMMANDS_THAT_ACT_ON_CALLER_PROJECT: ReadonlySet<string> = new Set(['generate', 'clean', 'adopt', 'memory', 'cursor']);
+export const COMMANDS_THAT_ACT_ON_CALLER_PROJECT: ReadonlySet<string> = new Set(['generate', 'clean', 'adopt', 'memory', 'cursor', 'library']);
 
 // The bind must happen within this window. server.listen() is the first ref'd
 // handle in the boot path, so a stall before it lets the event loop empty and
@@ -1836,6 +1837,19 @@ async function main() {
       const kimiSubcommand = process.argv[3];
       const kimiResult = await handleKimiCommand(kimiSubcommand, process.argv.slice(4));
       process.exit(kimiResult);
+      break;
+    }
+
+    case 'library': {
+      // claude-mem's integrations in each agent (plan Phase 14): status | sync | remove <agent>.
+      const { runLibraryCli } = await import('./wire-gateway/library/library-cli.js');
+      // Written whole before exiting (shared/write-all-sync.ts): under Bun
+      // 1.3.9 console.log to a pipe kept only 64 KB of `library status --json`.
+      const libraryResult = await runLibraryCli(process.argv.slice(3), {
+        writeLine: (line) => writeAllSync(1, `${line}\n`),
+        writeError: (line) => writeAllSync(2, `${line}\n`),
+      });
+      process.exit(libraryResult);
       break;
     }
 

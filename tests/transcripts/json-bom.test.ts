@@ -7,6 +7,7 @@ import { loadWatchState } from '../../src/services/transcripts/state.js';
 import { installGrokBotIntegration } from '../../src/services/integrations/GrokBotInstaller.js';
 import { loadGrokBotIndexConfig, projectsForAgent } from '../../src/services/integrations/GrokBotIndexWriter.js';
 import { stripLegacyTranscriptWatchContexts } from '../../src/services/integrations/CodexCliInstaller.js';
+import { parseJsonWithBom } from '../../src/shared/atomic-json.js';
 
 describe('BOM-prefixed transcript JSON documents', () => {
   const dirs: string[] = [];
@@ -34,7 +35,9 @@ describe('BOM-prefixed transcript JSON documents', () => {
     const configPath = file({ version: 1, schemas: {}, watches: [{ name: 'cursor', path: '/tmp/cursor.jsonl', schema: 'cursor' }] }, true);
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'transcript-bom-grok-')); dirs.push(workspaceRoot);
     expect(installGrokBotIntegration(configPath, workspaceRoot)).toBe(0);
-    const written = JSON.parse(readFileSync(configPath, 'utf-8')) as { watches: Array<{ name: string }> };
+    // The Library edits a BOM file in place and keeps its BOM.
+    expect(readFileSync(configPath, 'utf-8').startsWith('\uFEFF')).toBe(true);
+    const written = parseJsonWithBom<{ watches: Array<{ name: string }> }>(readFileSync(configPath, 'utf-8'));
     expect(written.watches.map(watch => watch.name)).toEqual(['cursor', 'grok-bot']);
   });
   it('maps a Grok Bot seat to the project its BOM config names', () => {
@@ -47,7 +50,8 @@ describe('BOM-prefixed transcript JSON documents', () => {
     const legacyContext = { mode: 'agents', updateOn: ['session_start', 'session_end'] };
     const configPath = file({ version: 1, watches: [{ name: 'codex', path: '/tmp/sessions/*.jsonl', schema: 'codex', context: legacyContext }] }, true);
     stripLegacyTranscriptWatchContexts(configPath);
-    const written = JSON.parse(readFileSync(configPath, 'utf-8')) as { watches: Array<{ context?: unknown }> };
+    expect(readFileSync(configPath, 'utf-8').startsWith('\uFEFF')).toBe(true);
+    const written = parseJsonWithBom<{ watches: Array<{ context?: unknown }> }>(readFileSync(configPath, 'utf-8'));
     expect(written.watches[0].context).toBeUndefined();
   });
 });

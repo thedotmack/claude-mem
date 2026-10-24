@@ -4,7 +4,7 @@ import { join } from 'path';
 import { WIRE_GATEWAY_DIR } from '../../src/shared/paths.js';
 import { applyConfigFileEdit } from '../../src/services/wire-gateway/edit/config-file.js';
 import { deleteEnvFileKeys, patchEnvDocument, readEnvValue } from '../../src/services/wire-gateway/edit/env-editor.js';
-import { MAX_WILDCARD_EXPANSIONS, patchJsoncDocument, resolveJsoncKeyPath, type JsoncPatch } from '../../src/services/wire-gateway/edit/jsonc-editor.js';
+import { MAX_WILDCARD_EXPANSIONS, appendJsoncArrayElement, patchJsoncDocument, removeJsoncArrayElement, resolveJsoncKeyPath, type JsoncPatch } from '../../src/services/wire-gateway/edit/jsonc-editor.js';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
@@ -281,5 +281,47 @@ describe('.env editor', () => {
     expectWithinBudget('many unclosed quotes', () => patchEnv('A="x\n'.repeat(ONE_MEGABYTE / 5), { set: [{ key: 'B', value: '1' }] }));
     expectWithinBudget('one long multi-line value', () => patchEnv(`A="${'x\n'.repeat(ONE_MEGABYTE / 2)}"\n`, { set: [{ key: 'B', value: '1' }] }));
     expectWithinBudget('many lines', () => patchEnv(Array.from({ length: 100_000 }, (_, index) => `K${index}=v\n`).join(''), { set: [{ key: 'B', value: '1' }], delete: ['K5'] }));
+  });
+});
+
+describe('JSONC array elements: one element added or removed as a byte splice (Library hook lists)', () => {
+  const append = (text: string, keyPath: string, value: unknown) => decoder.decode(appendJsoncArrayElement(encoder.encode(text), keyPath, value));
+  const remove = (text: string, keyPath: string, index: number) => decoder.decode(removeJsoncArrayElement(encoder.encode(text), keyPath, index));
+
+  it('appends on its own line after a trailing comment, keeping the trailing-comma style, and removes back to the same bytes', () => {
+    const original = '{\n  "a": [\n    1, // one\n    2, // two\n  ],\n}\n';
+    const appended = append(original, 'a', { b: 3 });
+    expect(appended).toBe('{\n  "a": [\n    1, // one\n    2, // two\n    {\n      "b": 3\n    },\n  ],\n}\n');
+    expect(remove(appended, 'a', 2)).toBe(original);
+  });
+
+  it('adds the separating comma before a comment when the last element has none', () => {
+    const original = '{\n  "a": [\n    1 // one\n  ]\n}\n';
+    const appended = append(original, 'a', 2);
+    expect(appended).toBe('{\n  "a": [\n    1, // one\n    2\n  ]\n}\n');
+    expect(remove(appended, 'a', 1)).toBe('{\n  "a": [\n    1 // one\n  ]\n}\n');
+  });
+
+  it('fills an empty array on its own lines and collapses it again', () => {
+    const original = '{\n  "a": []\n}\n';
+    const appended = append(original, 'a', 'x');
+    expect(appended).toBe('{\n  "a": [\n    "x"\n  ]\n}\n');
+    expect(remove(appended, 'a', 0)).toBe(original);
+  });
+
+  it('edits a one-line array inline, and keeps a BOM and CRLF line ends', () => {
+    expect(append('{"a": [1, 2]}', 'a', 3)).toBe('{"a": [1, 2, 3]}');
+    expect(remove('{"a": [1, 2, 3]}', 'a', 1)).toBe('{"a": [1, 3]}');
+    expect(remove('{"a": [1, 2, 3]}', 'a', 0)).toBe('{"a": [2, 3]}');
+    const crlf = '\uFEFF{\r\n  // c\r\n  "a": [\r\n    1\r\n  ]\r\n}\r\n';
+    const appended = append(crlf, 'a', 2);
+    expect(appended).toBe('\uFEFF{\r\n  // c\r\n  "a": [\r\n    1,\r\n    2\r\n  ]\r\n}\r\n');
+    expect(remove(appended, 'a', 1)).toBe(crlf);
+  });
+
+  it('refuses a key path that is not an array, or an element that is not there', () => {
+    expect(() => append('{"a": {}}', 'a', 1)).toThrow('is not an array');
+    expect(() => remove('{"a": [1]}', 'a', 1)).toThrow('has no element 1');
+    expect(() => append('{"a": [1]}', '*', 1)).toThrow('literal key path');
   });
 });

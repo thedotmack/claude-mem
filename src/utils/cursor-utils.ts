@@ -87,28 +87,3 @@ ${toBmpSafe(context)}
   writeFileSync(tempFile, content);
   renameSync(tempFile, rulesFile);
 }
-
-export function configureCursorMcp(mcpJsonPath: string, mcpServerScriptPath: string): void {
-  const dir = join(mcpJsonPath, '..');
-  mkdirSync(dir, { recursive: true });
-
-  let config: CursorMcpConfig = { mcpServers: {} };
-  if (existsSync(mcpJsonPath)) {
-    try {
-      config = parseJsonWithBom<CursorMcpConfig>(readFileSync(mcpJsonPath, 'utf-8'));
-      if (!config.mcpServers) {
-        config.mcpServers = {};
-      }
-    } catch (error) {
-      // Rewriting it would drop every other MCP server the user configured.
-      throw new Error(`Corrupt JSON in ${mcpJsonPath}, refusing to overwrite (${error instanceof Error ? error.message : String(error)})`);
-    }
-  }
-
-  config.mcpServers['claude-mem'] = {
-    command: 'node',
-    args: [mcpServerScriptPath]
-  };
-
-  writeFileSync(mcpJsonPath, JSON.stringify(config, null, 2));
-}
