@@ -1,0 +1,14 @@
+{
+  "exitCodes": [
+    0,
+    0
+  ],
+  "files": {
+    "home/.claude/": "<empty dir>",
+    "home/.codex/AGENTS.md": "# Codex rules\n\nKeep going.\n",
+    "home/.codex/config.toml": "model = \"o3\"\n\n[features]\nhooks = true\nweb_search = true\n\n[mcp_servers.github]\ncommand = \"gh-mcp\"\n\n[plugins.\"claude-mem@thedotmack\"]\nenabled = false\n\n[plugins.\"claude-mem@claude-mem-local\"]\nenabled = false\n",
+    "workspace/": "<empty dir>",
+    "data/": "<empty dir>",
+    "cli-calls.log": "codex --version\ncodex plugin marketplace add <SANDBOX>/home/.claude/plugins/marketplaces/thedotmack\ncodex plugin add claude-mem@claude-mem-local\ncodex plugin list\ncodex plugin marketplace remove claude-mem-local\n"
+  }
+}

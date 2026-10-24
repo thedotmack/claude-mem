@@ -4,6 +4,9 @@ import { join } from 'node:path';
 import { MARKETPLACE_ROOT, DATA_DIR, USER_SETTINGS_PATH, expandHome } from '../../shared/paths.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { writeJsonFileAtomic, readJsonFileWithBom } from '../../shared/atomic-json.js';
+import { LIBRARY_GROUPS } from '../wire-gateway/library/agent-library-targets.js';
+import { applyLibraryForInstaller, removeLibraryForInstaller } from '../wire-gateway/library/library-runtime.js';
+import type { JsonFileStyle, LibraryItem, LibraryValue } from '../wire-gateway/library/types.js';
 import { buildSpawnSyncInvocation, lookupWindowsCommand, spawnHidden } from '../../shared/spawn.js';
 import type { TranscriptSchema, TranscriptWatchConfig } from '../transcripts/types.js';
 
@@ -42,26 +45,47 @@ function readWatchConfig(): TranscriptWatchConfig {
   }
   return config;
 }
+function dshWatchItems(schema: TranscriptSchema | null): LibraryItem[] {
+  const file = dshWatchConfigPath();
+  const sessions = join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'sessions');
+  const items: LibraryItem[] = [];
+  if (schema) {
+    items.push({
+      kind: 'setting', id: 'setting:schema', group: LIBRARY_GROUPS.settings, place: 'member', file, format: 'json',
+      // Kept on uninstall, as the pre-Library uninstall kept it: a user-managed watch may name the dsh schema.
+      keyPath: ['schemas', 'dsh'], value: schema as unknown as LibraryValue, whenUnrecorded: 'leave', onlyWhenAbsent: true, keepOnRemove: true,
+    });
+  }
+  items.push({
+    kind: 'setting', id: 'setting:watch', group: LIBRARY_GROUPS.settings, place: 'json-array-entry', file, arrayKeyPath: ['watches'],
+    entry: { name: WATCH_NAME, path: sessions, schema: 'dsh', startAtEnd: true, managedBy: 'claude-mem' },
+    isPreLibraryEntry: (watch) => (watch as { name?: unknown; managedBy?: unknown } | null)?.name === WATCH_NAME && (watch as { managedBy?: unknown }).managedBy === 'claude-mem',
+  });
+  return items;
+}
+
+function dshJsonStyles(): Record<string, JsonFileStyle> {
+  return {
+    [dshWatchConfigPath()]: {
+      finalNewline: true,
+      initialDocument: { version: 1, schemas: {}, watches: [], stateFile: join(DATA_DIR, 'transcript-watch-state.json') },
+    },
+  };
+}
+
 export function installDshTranscriptWatch(packageDir: string): void {
   const config = readWatchConfig();
   const schema = readJsonFileWithBom<TranscriptSchema>(join(packageDir, 'transcript-schema.json'));
-  const sessions = join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'sessions');
   // An existing DSH watch is already authoritative; do not add a second writer.
-  if (!config.watches.some(watch => watch.schema === 'dsh')) {
-    if (config.watches.some(watch => watch.name === WATCH_NAME)) throw new Error('A different watch already uses the name dsh.');
-    config.schemas ??= {};
-    config.schemas.dsh ??= schema;
-    const watch = { name: WATCH_NAME, path: sessions, schema: 'dsh', startAtEnd: true, managedBy: 'claude-mem' };
-    config.watches.push(watch);
-  }
-  writeJsonFileAtomic(dshWatchConfigPath(), config);
+  if (config.watches.some(watch => watch.schema === 'dsh')) return;
+  if (config.watches.some(watch => watch.name === WATCH_NAME)) throw new Error('A different watch already uses the name dsh.');
+  applyLibraryForInstaller({ agentId: 'dsh', items: dshWatchItems(schema), ownedGroups: [LIBRARY_GROUPS.settings], jsonStyles: dshJsonStyles() });
 }
 export function uninstallDshTranscriptWatch(): void {
   if (!existsSync(dshWatchConfigPath())) return;
-  const config = readWatchConfig();
-  config.watches = config.watches.filter(watch => !(watch.name === WATCH_NAME && (watch as typeof watch & { managedBy?: string }).managedBy === 'claude-mem'));
+  readWatchConfig();
   // A schema may be used by a user-managed watch; it is harmless to keep it.
-  writeJsonFileAtomic(dshWatchConfigPath(), config);
+  removeLibraryForInstaller({ agentId: 'dsh', items: dshWatchItems(null), jsonStyles: dshJsonStyles() });
 }
 
 async function runDsh(profile: string, operation: 'add' | 'remove', target: string): Promise<number> {

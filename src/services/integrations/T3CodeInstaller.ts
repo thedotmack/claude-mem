@@ -8,7 +8,10 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { parse as parseShell } from 'shell-quote';
-import { readJsonFileWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.js';
+import { readJsonFileWithBom } from '../../shared/atomic-json.js';
+import { LIBRARY_GROUPS } from '../wire-gateway/library/agent-library-targets.js';
+import { applyLibraryForInstaller } from '../wire-gateway/library/library-runtime.js';
+import type { ConfigMemberItem, LibraryValue } from '../wire-gateway/library/types.js';
 import { buildSpawnSyncInvocation, lookupWindowsCommand } from '../../shared/spawn.js';
 import { disableCodexPluginForHome, installCodexPluginForHome } from './CodexCliInstaller.js';
 
@@ -226,6 +229,15 @@ function pluginAssetsPresent(provider: T3CodeProvider, spawn: NonNullable<T3Code
   return files.every(file => existsSync(join(pluginPath, file)));
 }
 
+/** One value in a provider home's JSON file, written through the Library under T3 Code's record. */
+function applyT3Setting(file: string, keyPath: string[], value: LibraryValue): void {
+  const item: ConfigMemberItem = {
+    kind: 'setting', id: `setting:${file}:${keyPath.join('.')}`, group: `${LIBRARY_GROUPS.settings}:${file}:${keyPath.join('.')}`,
+    place: 'member', file, format: 'json', keyPath, value, whenUnrecorded: 'replace-and-stash',
+  };
+  applyLibraryForInstaller({ agentId: 't3code', items: [item], ownedGroups: [item.group] });
+}
+
 export async function installT3Code(marketplaceRoot: string, options: T3CodeOptions = {}): Promise<number> {
   try {
     const root = resolve(marketplaceRoot);
@@ -258,9 +270,9 @@ export async function installT3Code(marketplaceRoot: string, options: T3CodeOpti
             throw new Error('The thedotmack marketplace points to another source. Repair its registration with the main Claude-Mem installer.');
           } else if (marketplace.installLocation !== root) {
             // Keep other marketplace entries and installed plugins intact while
-            // redirecting this provider to the bundle validated above.
-            known.thedotmack = { ...marketplace, source: { source: 'directory', path: root }, installLocation: root, lastUpdated: new Date().toISOString() };
-            writeJsonFileAtomic(knownPath, known);
+            // redirecting this provider to the bundle validated above; the
+            // Library stashes the registration it replaces.
+            applyT3Setting(knownPath, ['thedotmack'], { ...marketplace, source: { source: 'directory', path: root }, installLocation: root, lastUpdated: new Date().toISOString() } as LibraryValue);
           }
           runProvider(provider, ['plugin', 'install', CLAUDE_PLUGIN, '--scope', 'user'], spawn);
           // Claude returns a failure for `plugin enable` when already enabled.
@@ -291,10 +303,7 @@ export function uninstallT3Code(options: T3CodeOptions = {}): number {
       if (!pluginEnabled(provider, false)) continue;
       if (provider.driver === 'codex') disableCodexPluginForHome(provider.homePath);
       else {
-        const settingsPath = join(provider.homePath, 'settings.json');
-        const settings = readDocument(settingsPath);
-        (settings.enabledPlugins as Document)[CLAUDE_PLUGIN] = false;
-        writeJsonFileAtomic(settingsPath, settings);
+        applyT3Setting(join(provider.homePath, 'settings.json'), ['enabledPlugins', CLAUDE_PLUGIN], false);
       }
     }
     console.log('Claude-Mem disabled in T3 Code provider homes. Restart T3 Code.');

@@ -220,6 +220,14 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'observations_created',
   'total_observations_injected',
   'total_tokens_saved_vs_naive',
+  // wire_gateway_started — the wire gateway's counters, integers only: routes
+  // in routes.json, exchanges relayed, capture events spooled, and requests
+  // rewritten (outbound redaction) since the gateway started. Never a body,
+  // URL, path, header, route id or agent name.
+  'wire_routes_count',
+  'wire_requests_relayed_count',
+  'wire_capture_events_count',
+  'wire_rewrites_applied_count',
   // Work-state usage: closed dimensions and counts; no task/session/agent IDs.
   'platform', 'agent_role', 'instruction_state',
   'instruction_returned_count', 'instruction_disabled_count',

@@ -1,17 +1,12 @@
 
 import path from 'path';
 import { homedir } from 'os';
-import {
-  existsSync,
-  readFileSync,
-  writeFileSync,
-  mkdirSync,
-  cpSync,
-  rmSync,
-  unlinkSync,
-} from 'fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { getWorkerPort } from '../../shared/worker-utils.js';
+import { LIBRARY_GROUPS } from '../wire-gateway/library/agent-library-targets.js';
+import { applyLibraryForInstaller, removeLibraryForInstaller } from '../wire-gateway/library/library-runtime.js';
+import type { ConfigMemberItem, LibraryConfigEdit, LibraryItem, LibraryMigration, LibraryValue, OwnedFileItem } from '../wire-gateway/library/types.js';
 
 export function getOpenClawConfigDirectory(): string {
   return path.join(homedir(), '.openclaw');
@@ -83,63 +78,63 @@ function readOpenClawConfig(): Record<string, any> {
   }
 }
 
-function writeOpenClawConfig(config: Record<string, any>): void {
-  const configDirectory = getOpenClawConfigDirectory();
-  mkdirSync(configDirectory, { recursive: true });
-  writeFileSync(getOpenClawConfigFilePath(), JSON.stringify(config, null, 2) + '\n', 'utf-8');
+const ENTRY_PATH = ['plugins', 'entries', 'claude-mem'];
+
+/**
+ * claude-mem in openclaw.json: the memory slot, and the plugin entry enabled
+ * with its config defaults. A value the user already set in the plugin's
+ * config is kept (each default is written only where absent).
+ */
+function openclawConfigItems(workerPort: number, project: string = 'openclaw', syncMemoryFile: boolean = true): LibraryItem[] {
+  const file = getOpenClawConfigFilePath();
+  // Everything under claude-mem's own plugin entry is claude-mem's, and so is a
+  // memory slot naming claude-mem: found before the first write, it came from
+  // an install before the record, so a remove takes it out (with the
+  // pre-Library cleanup below) instead of putting it back.
+  const setting = (id: string, keyPath: string[], value: LibraryValue, onlyWhenAbsent = false): ConfigMemberItem => ({
+    kind: 'setting', id: `setting:${id}`, group: LIBRARY_GROUPS.settings, place: 'member', file, format: 'json',
+    keyPath, value, whenUnrecorded: 'replace-and-stash', ...(onlyWhenAbsent ? { onlyWhenAbsent: true } : {}),
+    isPreLibraryValue: () => true,
+  });
+  return [
+    { ...setting('memory-slot', ['plugins', 'slots', 'memory'], 'claude-mem'), isPreLibraryValue: (current) => current === 'claude-mem' },
+    setting('enabled', [...ENTRY_PATH, 'enabled'], true),
+    setting('worker-port', [...ENTRY_PATH, 'config', 'workerPort'], workerPort, true),
+    setting('project', [...ENTRY_PATH, 'config', 'project'], project, true),
+    setting('sync-memory-file', [...ENTRY_PATH, 'config', 'syncMemoryFile'], syncMemoryFile, true),
+  ];
 }
 
-function registerPluginInOpenClawConfig(
-  workerPort: number,
-  project: string = 'openclaw',
-  syncMemoryFile: boolean = true,
-): void {
-  const config = readOpenClawConfig();
-
-  if (!config.plugins) config.plugins = {};
-  if (!config.plugins.slots) config.plugins.slots = {};
-  if (!config.plugins.entries) config.plugins.entries = {};
-
-  config.plugins.slots.memory = 'claude-mem';
-
-  if (!config.plugins.entries['claude-mem']) {
-    config.plugins.entries['claude-mem'] = {
-      enabled: true,
-      config: {
-        workerPort,
-        project,
-        syncMemoryFile,
-      },
-    };
-  } else {
-    config.plugins.entries['claude-mem'].enabled = true;
-    if (!config.plugins.entries['claude-mem'].config) {
-      config.plugins.entries['claude-mem'].config = {};
-    }
-    const existingPluginConfig = config.plugins.entries['claude-mem'].config;
-    if (existingPluginConfig.workerPort === undefined) existingPluginConfig.workerPort = workerPort;
-    if (existingPluginConfig.project === undefined) existingPluginConfig.project = project;
-    if (existingPluginConfig.syncMemoryFile === undefined) existingPluginConfig.syncMemoryFile = syncMemoryFile;
+/** Every file of a folder, relative path → bytes, in a stable order. */
+function filesUnder(directory: string, prefix = ''): Array<[string, Uint8Array]> {
+  const found: Array<[string, Uint8Array]> = [];
+  for (const name of readdirSync(directory).sort()) {
+    const source = path.join(directory, name);
+    const relativePath = prefix ? path.join(prefix, name) : name;
+    if (statSync(source).isDirectory()) found.push(...filesUnder(source, relativePath));
+    else found.push([relativePath, readFileSync(source)]);
   }
-
-  writeOpenClawConfig(config);
+  return found;
 }
 
-function unregisterPluginFromOpenClawConfig(): void {
-  const configFilePath = getOpenClawConfigFilePath();
-  if (!existsSync(configFilePath)) return;
-
-  const config = readOpenClawConfig();
-
-  if (config.plugins?.entries?.['claude-mem']) {
-    delete config.plugins.entries['claude-mem'];
-  }
-
-  if (config.plugins?.slots?.memory === 'claude-mem') {
-    delete config.plugins.slots.memory;
-  }
-
-  writeOpenClawConfig(config);
+/** The extension folder's files: the built dist, the manifest, the skills and a package.json, all claude-mem's. */
+function openclawBundleItems(preBuiltDistDirectory: string, manifestPath: string | null, skillsDirectory: string | null): OwnedFileItem[] {
+  const extensionDirectory = getOpenClawClaudeMemExtensionDirectory();
+  const extensionPackageJson = {
+    name: 'claude-mem',
+    version: '1.0.0',
+    type: 'module',
+    main: 'dist/index.js',
+    openclaw: { extensions: ['./dist/index.js'] },
+  };
+  const files: Array<[string, Uint8Array]> = filesUnder(preBuiltDistDirectory).map(([relativePath, bytes]) => [path.join('dist', relativePath), bytes]);
+  if (manifestPath) files.push(['openclaw.plugin.json', readFileSync(manifestPath)]);
+  if (skillsDirectory) files.push(...filesUnder(skillsDirectory).map(([relativePath, bytes]): [string, Uint8Array] => [path.join('skills', relativePath), bytes]));
+  files.push(['package.json', new TextEncoder().encode(JSON.stringify(extensionPackageJson, null, 2) + '\n')]);
+  return files.map(([relativePath, contents]) => ({
+    kind: 'bundle', id: `bundle:${relativePath}`, group: LIBRARY_GROUPS.bundle, place: 'file',
+    path: path.join(extensionDirectory, relativePath), contents, bundleRoot: extensionDirectory,
+  }));
 }
 
 export function installOpenClawPlugin(): number {
@@ -152,22 +147,21 @@ export function installOpenClawPlugin(): number {
   }
 
   const extensionDirectory = getOpenClawClaudeMemExtensionDirectory();
-  const destinationDistDirectory = path.join(extensionDirectory, 'dist');
-
   const manifestPath = findPluginManifestPath();
   const skillsDirectory = findPluginSkillsDirectory();
 
-  const extensionPackageJson = {
-    name: 'claude-mem',
-    version: '1.0.0',
-    type: 'module',
-    main: 'dist/index.js',
-    openclaw: { extensions: ['./dist/index.js'] },
-  };
-
   try {
-    mkdirSync(destinationDistDirectory, { recursive: true });
-    copyPluginFilesAndRegister(preBuiltDistDirectory, destinationDistDirectory, extensionDirectory, manifestPath, skillsDirectory, extensionPackageJson);
+    readOpenClawConfig(); // an openclaw.json that does not parse stops the install before anything is copied
+    applyLibraryForInstaller({
+      agentId: 'openclaw',
+      items: [...openclawBundleItems(preBuiltDistDirectory, manifestPath, skillsDirectory), ...openclawConfigItems(getWorkerPort())],
+      ownedGroups: [LIBRARY_GROUPS.bundle, LIBRARY_GROUPS.settings],
+    });
+    console.log(`  Plugin dist copied to: ${path.join(extensionDirectory, 'dist')}`);
+    if (manifestPath) console.log(`  Plugin manifest copied to: ${path.join(extensionDirectory, 'openclaw.plugin.json')}`);
+    if (skillsDirectory) console.log(`  Skills copied to: ${path.join(extensionDirectory, 'skills')}`);
+    console.log(`  Registered in openclaw.json`);
+    logger.info('OPENCLAW', 'Plugin installed', { destination: extensionDirectory });
     return 0;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -176,67 +170,47 @@ export function installOpenClawPlugin(): number {
   }
 }
 
-function copyPluginFilesAndRegister(
-  preBuiltDistDirectory: string,
-  destinationDistDirectory: string,
-  extensionDirectory: string,
-  manifestPath: string | null,
-  skillsDirectory: string | null,
-  extensionPackageJson: Record<string, unknown>,
-): void {
-  cpSync(preBuiltDistDirectory, destinationDistDirectory, { recursive: true, force: true });
-  console.log(`  Plugin dist copied to: ${destinationDistDirectory}`);
-
-  if (manifestPath) {
-    const destinationManifest = path.join(extensionDirectory, 'openclaw.plugin.json');
-    cpSync(manifestPath, destinationManifest, { force: true });
-    console.log(`  Plugin manifest copied to: ${destinationManifest}`);
-  }
-
-  if (skillsDirectory) {
-    const destinationSkills = path.join(extensionDirectory, 'skills');
-    cpSync(skillsDirectory, destinationSkills, { recursive: true, force: true });
-    console.log(`  Skills copied to: ${destinationSkills}`);
-  }
-
-  writeFileSync(
-    path.join(extensionDirectory, 'package.json'),
-    JSON.stringify(extensionPackageJson, null, 2) + '\n',
-    'utf-8',
-  );
-
-  const workerPort = getWorkerPort();
-  registerPluginInOpenClawConfig(workerPort);
-  console.log(`  Registered in openclaw.json`);
-
-  logger.info('OPENCLAW', 'Plugin installed', { destination: extensionDirectory });
+/**
+ * openclaw.json as an install from before the Library left it: the memory
+ * slot when it names claude-mem, and claude-mem's plugin entry.
+ */
+function openclawPreLibraryRemoval(): LibraryMigration {
+  return {
+    file: getOpenClawConfigFilePath(),
+    format: 'json',
+    compute: (document) => {
+      const plugins = (document as { plugins?: { slots?: Record<string, unknown>; entries?: Record<string, unknown> } }).plugins;
+      const edits: LibraryConfigEdit[] = [];
+      if (plugins?.entries && Object.hasOwn(plugins.entries, 'claude-mem')) edits.push({ op: 'delete', keyPath: ENTRY_PATH });
+      if (plugins?.slots?.memory === 'claude-mem') edits.push({ op: 'delete', keyPath: ['plugins', 'slots', 'memory'] });
+      return edits;
+    },
+  };
 }
 
 export function uninstallOpenClawPlugin(): number {
-  let hasErrors = false;
-
   const extensionDirectory = getOpenClawClaudeMemExtensionDirectory();
-  if (existsSync(extensionDirectory)) {
-    try {
-      rmSync(extensionDirectory, { recursive: true, force: true });
-      console.log(`  Removed extension: ${extensionDirectory}`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`  Failed to remove extension directory: ${message}`);
-      hasErrors = true;
-    }
-  }
-
   try {
-    unregisterPluginFromOpenClawConfig();
-    console.log(`  Unregistered from openclaw.json`);
+    const result = removeLibraryForInstaller({
+      agentId: 'openclaw',
+      // Files in claude-mem's own extension folder that an install before the Library record copied.
+      items: existsSync(extensionDirectory)
+        ? filesUnder(extensionDirectory).map(([relativePath]): OwnedFileItem => ({
+          kind: 'bundle', id: `bundle:${relativePath}`, group: LIBRARY_GROUPS.bundle, place: 'file',
+          path: path.join(extensionDirectory, relativePath), contents: new Uint8Array(0), bundleRoot: extensionDirectory,
+        }))
+        : [],
+      migrations: [openclawPreLibraryRemoval()],
+    });
+    const bundleFilesRemoved = result.items.some((item) => item.kind === 'bundle' && (item.outcome === 'removed' || item.outcome === 'restored'));
+    console.log(bundleFilesRemoved ? `  Removed extension: ${extensionDirectory}` : `  No claude-mem extension files to remove in ${extensionDirectory}`);
+    console.log(result.filesWritten.includes(getOpenClawConfigFilePath()) ? `  Unregistered from openclaw.json` : `  openclaw.json held no claude-mem entries`);
+    return 0;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error(`  Failed to update openclaw.json: ${message}`);
-    hasErrors = true;
+    console.error(`  Failed to uninstall OpenClaw plugin: ${message}`);
+    return 1;
   }
-
-  return hasErrors ? 1 : 0;
 }
 
 export function checkOpenClawStatus(): number {

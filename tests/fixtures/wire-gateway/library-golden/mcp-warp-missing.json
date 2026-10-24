@@ -1,0 +1,10 @@
+{
+  "exitCodes": [
+    0
+  ],
+  "files": {
+    "home/.claude/": "<empty dir>",
+    "workspace/WARP.md": "<claude-mem-context>\n# claude-mem: Cross-Session Memory\n\n*No context yet. Complete your first session and context will appear here.*\n\nUse claude-mem's MCP search tools for manual memory queries.\n</claude-mem-context>\n",
+    "data/": "<empty dir>"
+  }
+}

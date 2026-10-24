@@ -7,7 +7,8 @@ import {
   SESSION_START_HOOK_LIMIT_MS,
   serverSessionStartBudgetMs,
 } from '../../src/shared/host-hook-limits.js';
-import { buildAntigravityHooksConfig } from '../../src/services/integrations/AntigravityCliHooksInstaller.js';
+import { ANTIGRAVITY_HOOK_TIMEOUT_SECONDS } from '../../src/services/integrations/AntigravityCliHooksInstaller.js';
+import { antigravityHookItems } from '../../src/services/wire-gateway/library/agent-library-targets.js';
 
 const REPO_ROOT = join(import.meta.dir, '..', '..');
 const originalPlatform = process.platform;
@@ -49,8 +50,9 @@ describe('SESSION_START_HOOK_LIMIT_MS', () => {
     expect(SESSION_START_HOOK_LIMIT_MS.antigravity).toBe(ANTIGRAVITY_HOOK_TIMEOUT_MS);
 
     // agy reads `timeout` in seconds (#4196); the SessionStart hook runs `context` (#4911).
-    const agyHooks = buildAntigravityHooksConfig('/usr/local/bin/bun', '/opt/plugin/scripts/worker-service.cjs') as Record<string, any>;
-    const contextHook = agyHooks['claude-mem'].SessionStart[0];
+    const environment = { home: '/h', env: {}, platform: 'linux' as const, cwd: '/h', bunPath: '/usr/local/bin/bun', workerServicePath: '/opt/plugin/scripts/worker-service.cjs', mcpServerPath: null, nodePath: '/n' };
+    const sessionStart = antigravityHookItems(environment, '/h/.gemini/config/hooks.json', ANTIGRAVITY_HOOK_TIMEOUT_SECONDS).find((item) => item.id === 'hook:SessionStart')!;
+    const contextHook = ((sessionStart as { value: unknown }).value as Array<{ command: string; timeout: number }>)[0];
     expect(contextHook.command).toEndWith('hook antigravity-cli context');
     expect(contextHook.timeout).toBe(ANTIGRAVITY_HOOK_TIMEOUT_MS / 1000);
   });

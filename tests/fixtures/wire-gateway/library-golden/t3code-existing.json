@@ -1,0 +1,14 @@
+{
+  "exitCodes": [
+    0
+  ],
+  "files": {
+    "home/.claude/": "<empty dir>",
+    "home/.t3/userdata/settings.json": "{\n  \"providerInstances\": {\n    \"codex\": {\n      \"driver\": \"codex\",\n      \"config\": {\n        \"homePath\": \"<SANDBOX>/home/t3-codex-home\"\n      }\n    },\n    \"claude\": {\n      \"driver\": \"claudeAgent\",\n      \"config\": {\n        \"homePath\": \"<SANDBOX>/home/t3-claude-home\"\n      }\n    }\n  }\n}\n",
+    "home/t3-claude-home/plugins/known_marketplaces.json": "{\n  \"other\": {\n    \"installLocation\": \"/somewhere\"\n  },\n  \"thedotmack\": {\n    \"source\": {\n      \"source\": \"directory\",\n      \"path\": \"<SANDBOX>/home/.claude/plugins/marketplaces/thedotmack\"\n    },\n    \"installLocation\": \"<SANDBOX>/home/.claude/plugins/marketplaces/thedotmack\",\n    \"lastUpdated\": \"<ISO_TIMESTAMP>\"\n  }\n}\n",
+    "home/t3-claude-home/settings.json": "{\n  \"enabledPlugins\": {\n    \"claude-mem@thedotmack\": true\n  }\n}\n",
+    "home/t3-codex-home/config.toml": "model = \"o3\"\n\n[features]\nhooks = true\n\n[plugins.\"claude-mem@thedotmack\"]\nenabled = false\n\n[plugins.\"claude-mem@claude-mem-local\"]\nenabled = true\n",
+    "workspace/": "<empty dir>",
+    "data/": "<empty dir>"
+  }
+}

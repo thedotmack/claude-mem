@@ -17,6 +17,7 @@ import { createHash } from 'crypto';
 import { logger } from '../../utils/logger.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
 import { isRecursiveMemoryTool } from '../../shared/memory-retrieval-tools.js';
+import { utf8CutIndex } from '../../shared/utf8-cut.js';
 export { isRecursiveMemoryTool } from '../../shared/memory-retrieval-tools.js';
 
 /**
@@ -114,8 +115,7 @@ export function truncatePayload(value: string, maxBytes: number = MAX_TOOL_PAYLO
   if (byteLength <= maxBytes) return value;
 
   const buf = Buffer.from(value, 'utf8');
-  let end = maxBytes;
-  while (end > 0 && (buf[end] & 0xc0) === 0x80) end--;
+  const end = utf8CutIndex(buf, maxBytes);
   return `${buf.subarray(0, end).toString('utf8')}…[truncated: ${byteLength} bytes]`;
 }
 
@@ -296,6 +296,20 @@ export function linkToolUsesToObservation(
   return Number(result.changes ?? 0);
 }
 
+/**
+ * Whether the tool use `(contentSessionId, toolUseId)` already produced an
+ * observation (its `observation_id` is linked). A replay of such a tool use
+ * after a worker restart must not be queued again: the in-memory dedupe in
+ * SessionMessageBuffer lasts one worker lifetime only. A row with no linked
+ * observation yet is not "done": its generation may have been lost.
+ */
+export function isToolUseLinkedToObservation(db: Database, contentSessionId: string, toolUseId: string): boolean {
+  const row = db.prepare(
+    'SELECT 1 AS linked FROM tool_uses WHERE content_session_id = ? AND tool_use_id = ? AND observation_id IS NOT NULL'
+  ).get(contentSessionId, toolUseId) as { linked: number } | null;
+  return row !== null && row !== undefined;
+}
+
 function mapPlatformFilter(platformSource: string | undefined): { clause: string; param: string } | null {
   if (!platformSource) return null;
   return {
@@ -369,6 +383,41 @@ export function getToolUsesByIds(
     ORDER BY created_at_epoch DESC
     ${limitClause}
   `).all(...params) as ToolUseRow[];
+}
+
+/** A tool use's observation as the wire gateway's Endless Mode needs it: no tool bodies. */
+export interface ToolUseObservationRow {
+  tool_use_id: string;
+  observation_id: number;
+  title: string | null;
+  narrative: string | null;
+  facts: string | null;
+}
+
+/**
+ * For each of `toolUseIds` of one session that is linked to an observation,
+ * that observation's title, narrative and facts (POST
+ * /api/wire/tool-observations). Ids with no observation yet are left out.
+ */
+export function getToolUseObservations(
+  db: Database,
+  query: { contentSessionId: string; platformSource?: string; toolUseIds: string[] },
+): ToolUseObservationRow[] {
+  const toolUseIds = [...new Set(query.toolUseIds.filter(id => typeof id === 'string' && id.length > 0))];
+  if (toolUseIds.length === 0) return [];
+  const params: Array<string | number> = [query.contentSessionId, ...toolUseIds];
+  const conditions = ['t.content_session_id = ?', `t.tool_use_id IN (${toolUseIds.map(() => '?').join(',')})`];
+  const platform = mapPlatformFilter(query.platformSource);
+  if (platform) {
+    conditions.push(platform.clause.replace('platform_source', 't.platform_source'));
+    params.push(platform.param);
+  }
+  return db.prepare(`
+    SELECT t.tool_use_id AS tool_use_id, o.id AS observation_id, o.title AS title, o.narrative AS narrative, o.facts AS facts
+    FROM tool_uses t
+    JOIN observations o ON o.id = t.observation_id
+    WHERE ${conditions.join(' AND ')}
+  `).all(...params) as ToolUseObservationRow[];
 }
 
 /**

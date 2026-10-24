@@ -1,9 +1,12 @@
-import { existsSync, readFileSync, rmSync, readdirSync, rmdirSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { MARKETPLACE_ROOT } from '../../shared/paths.js';
-import { replaceOwnedFiles, type OwnedFile } from '../../shared/owned-file-install.js';
+import type { OwnedFile } from '../../shared/owned-file-install.js';
+import { LIBRARY_GROUPS } from '../wire-gateway/library/agent-library-targets.js';
+import { applyLibraryForInstaller, removeLibraryForInstaller } from '../wire-gateway/library/library-runtime.js';
+import type { OwnedFileItem } from '../wire-gateway/library/types.js';
 
 const PI_CAPTURE_GUIDANCE =
   'Automatic memory capture is not verified by installation or status. Pi 0.79.6 provides manual recall only. ' +
@@ -54,6 +57,14 @@ function piOwnedInputs(source: string): OwnedFile[] {
   ];
 }
 
+/** The extension's files as Library bundle items; the extension folder is claude-mem's own. */
+function piBundleItems(files: OwnedFile[]): OwnedFileItem[] {
+  return files.map((file) => ({
+    kind: 'bundle', id: `bundle:${file.name}`, group: LIBRARY_GROUPS.bundle, place: 'file',
+    path: join(piExtensionDirectory(), file.name), contents: file.contents, bundleRoot: piExtensionDirectory(),
+  }));
+}
+
 export function installPiExtension(): number {
   const source = findPiExtensionSource();
   if (!source) {
@@ -61,8 +72,9 @@ export function installPiExtension(): number {
     return 1;
   }
   try {
-    // Finish every source read and provenance check before destination mutation.
-    replaceOwnedFiles(piExtensionDirectory(), piOwnedInputs(source));
+    // Finish every source read and provenance check before destination mutation;
+    // the Library then writes the set as one group (all or none).
+    applyLibraryForInstaller({ agentId: 'pi', items: piBundleItems(piOwnedInputs(source)), ownedGroups: [LIBRARY_GROUPS.bundle] });
     console.log('Pi extension files installed: ' + piExtensionPath() + '. Restart Pi to load the memory tools.');
     console.log(PI_CAPTURE_GUIDANCE);
     return 0;
@@ -73,8 +85,8 @@ export function installPiExtension(): number {
 }
 export function uninstallPiExtension(): number {
   try {
-    for (const name of PI_OWNED_FILES) rmSync(join(piExtensionDirectory(), name), { force: true });
-    if (existsSync(piExtensionDirectory()) && readdirSync(piExtensionDirectory()).length === 0) rmdirSync(piExtensionDirectory());
+    // The owned names also cover an install from before the Library record.
+    removeLibraryForInstaller({ agentId: 'pi', items: piBundleItems(PI_OWNED_FILES.map((name) => ({ name, contents: Buffer.alloc(0) }))) });
     return 0;
   }
   catch (error) { console.error('Could not uninstall Pi memory: ' + String(error)); return 1; }

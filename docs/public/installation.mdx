@@ -88,6 +88,17 @@ This exec form (`"command": "claude-mem", "args": [...]`) needs **Claude Code 2.
 - `npx claude-mem doctor` shows a **Hook launcher** row with where `claude-mem` resolves on PATH and whether it is the launcher. See [claude-mem: command not found in hooks](/troubleshooting#claude-mem-command-not-found-in-hooks).
 - `npx claude-mem uninstall` removes the launcher binary. It leaves your shell rc file and user Path alone and prints the line to remove.
 
+## What an install writes into an agent
+
+`npx claude-mem install --ide <agent>` writes claude-mem's hooks, MCP server
+and context into the agent's own config files through the [Library](/library),
+which records each entry. To see what it wrote, or take out only that:
+
+```bash
+npx claude-mem library status <agent>
+npx claude-mem library remove <agent>
+```
+
 ## System Requirements
 
 - **Node.js**: 20.0.0 or higher

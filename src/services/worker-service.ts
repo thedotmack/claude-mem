@@ -11,6 +11,7 @@ import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js'
 import { runShutdownSequence, type WorkerShutdownReason } from './worker-shutdown.js';
 import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensureDir } from '../shared/paths.js';
 import { HookSpool, migrateLegacySessionEndReplay } from '../shared/hook-spool.js';
+import { writeAllSync } from '../shared/write-all-sync.js';
 import { HookSpoolDrainer, hookSpoolConsumedMarkers } from './worker/hook-spool-drain.js';
 import { HookSpoolRoutes } from './worker/http/routes/HookSpoolRoutes.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
@@ -51,7 +52,7 @@ const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DE
 export const WORKER_BOOT_FAILED_EXIT_CODE = 78;
 
 /** Subcommands that read or write the caller's project, so they run in its directory (#4628). */
-export const COMMANDS_THAT_ACT_ON_CALLER_PROJECT: ReadonlySet<string> = new Set(['generate', 'clean', 'adopt', 'memory', 'cursor']);
+export const COMMANDS_THAT_ACT_ON_CALLER_PROJECT: ReadonlySet<string> = new Set(['generate', 'clean', 'adopt', 'memory', 'cursor', 'library']);
 
 // The bind must happen within this window. server.listen() is the first ref'd
 // handle in the boot path, so a stall before it lets the event loop empty and
@@ -90,7 +91,7 @@ import { runProjectMergeCommand } from './infrastructure/ProjectMerge.js';
 
 import { Server } from './server/Server.js';
 import { InitPhaseTracker } from './server/init-phase.js';
-import { buildWorkerOriginPolicy } from './worker/http/middleware.js';
+import { buildWorkerOriginPolicy, type WorkerOriginPolicy } from './worker/http/middleware.js';
 import { BetterAuthRoutes } from '../server/auth/BetterAuthRoutes.js';
 import {
   createServerApiKey,
@@ -134,6 +135,7 @@ import { SessionCompletionHandler } from './worker/session/SessionCompletionHand
 import { setIngestContext, attachIngestGeneratorStarter } from './worker/http/shared.js';
 import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, scopeNativeHookBackedCodexWatches, loadTranscriptWatchConfig } from './transcripts/config.js';
 import { TranscriptWatcher } from './transcripts/watcher.js';
+import { ensureWireGatewayRunning } from './wire-gateway/WireGatewayService.js';
 import { runMemoryCommand } from './memory/cli.js';
 import { SyncApply } from './sync/SyncApply.js';
 import { ContextCacheService } from './worker/ContextCacheService.js';
@@ -151,6 +153,8 @@ import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
 import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
+import { WireRoutes } from './worker/http/routes/WireRoutes.js';
+import { WireViewerRoutes } from './worker/http/routes/WireViewerRoutes.js';
 import { MemoryFileWatcher } from './memory/file-watcher.js';
 import { parseMemoryWatchRoots } from './memory/config.js';
 import { saveMemory } from './memory/save-memory.js';
@@ -256,6 +260,8 @@ export class WorkerService implements WorkerRef {
   private previousUptimeSeconds: number | null = null;
   // Observation TV shared secret, resolved once in the constructor. Empty = off.
   private tvToken: string = '';
+  /** Which browser pages are the viewer's own (CLAUDE_MEM_ALLOWED_ORIGINS, CLAUDE_MEM_PUBLIC_URL); read once at boot. */
+  private readonly originPolicy: WorkerOriginPolicy;
   private mcpClient: Client;
 
   private mcpReady: boolean = false;
@@ -352,6 +358,7 @@ export class WorkerService implements WorkerRef {
     const workerSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const tvToken = (workerSettings.CLAUDE_MEM_TV_TOKEN ?? '').trim();
     this.tvToken = tvToken;
+    this.originPolicy = buildWorkerOriginPolicy(workerSettings);
 
     this.server = new Server({
       getInitializationComplete: () => this.initializationCompleteFlag,
@@ -384,7 +391,7 @@ export class WorkerService implements WorkerRef {
       ...(tvToken ? { remoteReadOnly: { getToken: () => tvToken } } : {}),
       // Browser access: same-host and CLAUDE_MEM_ALLOWED_ORIGINS for CORS, plus
       // the DNS-rebinding Host check. Read once at boot; restart to change it.
-      originPolicy: buildWorkerOriginPolicy(workerSettings),
+      originPolicy: this.originPolicy,
     });
 
     this.registerRoutes();
@@ -583,6 +590,8 @@ export class WorkerService implements WorkerRef {
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
     this.server.registerRoutes(new LogsRoutes());
     this.server.registerRoutes(new MemoryRoutes(this.dbManager, 'claude-mem'));
+    this.server.registerRoutes(new WireRoutes(this.dbManager));
+    this.server.registerRoutes(new WireViewerRoutes({ originPolicy: this.originPolicy }));
     this.server.registerRoutes(new MemoryIngestRoutes(this.dbManager));
     this.server.registerRoutes(new DedupRoutes(this.dbManager));
     this.server.registerRoutes(new ServerV1Routes({
@@ -962,6 +971,12 @@ export class WorkerService implements WorkerRef {
       });
 
       await this.startTranscriptWatcher(settings);
+      // Wired agents' model traffic needs the wire gateway, which runs as its
+      // own daemon (plan D2/D14). Fire-and-forget like ensureWorkerStarted's
+      // spawn: a slow or failed gateway start never holds up the worker.
+      ensureWireGatewayRunning(path.join(__dirname, 'wire-gateway-service.cjs')).catch(error => {
+        logger.error('WIRE', 'Wire gateway autostart failed (non-blocking)', {}, error instanceof Error ? error : new Error(String(error)));
+      });
       try {
         const roots = parseMemoryWatchRoots(settings.CLAUDE_MEM_MEMORY_WATCH_ROOTS);
         if (roots.length) {
@@ -1770,6 +1785,19 @@ async function main() {
       const kimiSubcommand = process.argv[3];
       const kimiResult = await handleKimiCommand(kimiSubcommand, process.argv.slice(4));
       process.exit(kimiResult);
+      break;
+    }
+
+    case 'library': {
+      // claude-mem's integrations in each agent (plan Phase 14): status | sync | remove <agent>.
+      const { runLibraryCli } = await import('./wire-gateway/library/library-cli.js');
+      // Written whole before exiting (shared/write-all-sync.ts): under Bun
+      // 1.3.9 console.log to a pipe kept only 64 KB of `library status --json`.
+      const libraryResult = await runLibraryCli(process.argv.slice(3), {
+        writeLine: (line) => writeAllSync(1, `${line}\n`),
+        writeError: (line) => writeAllSync(2, `${line}\n`),
+      });
+      process.exit(libraryResult);
       break;
     }
 

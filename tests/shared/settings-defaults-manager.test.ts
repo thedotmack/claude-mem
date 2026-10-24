@@ -1043,6 +1043,30 @@ describe('SettingsDefaultsManager', () => {
       expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_CLAUDE_CONFIG_DIR).toBe('');
     });
 
+    it('wire gateway defaults: uid-derived port below the worker range, loopback, autostart, 10 min drain, 64 MiB body limit', () => {
+      const defaults = SettingsDefaultsManager.getAllDefaults();
+      expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_PORT).toBe(String(37600 + ((process.getuid?.() ?? 77) % 100)));
+      expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_HOST).toBe('127.0.0.1');
+      expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_AUTOSTART).toBe('true');
+      expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_DRAIN_TIMEOUT_MS).toBe('600000');
+      expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_MAX_REQUEST_BYTES).toBe('67108864');
+      expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS).toBe('7');
+      expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_RECORDING).toBe('');
+      expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION).toBe('false');
+      expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE).toBe('false');
+      expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_AGE_TURNS).toBe('3');
+      expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_RESULT_BYTES).toBe('2048');
+      expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_MEMORY_INJECTION).toBe('true');
+      expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS).toBe('1500');
+      expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_MEMORY_SEARCH_TOOL).toBe('false');
+      expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_OTLP).toBe('true');
+      expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_MAGPIE_RECORDINGS_DIR).toBe('');
+      expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_SHARED).toBe('false');
+      expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_SHARED_HOST).toBe('0.0.0.0');
+      expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_SHARED_PORT).toBe('');
+      expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_ALLOW_IPS).toBe('');
+    });
+
     it('cloud sync content flush knobs default to 40 ops / 90s', () => {
       const defaults = SettingsDefaultsManager.getAllDefaults();
       expect(defaults.CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE).toBe('40');

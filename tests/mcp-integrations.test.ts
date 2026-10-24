@@ -2,34 +2,21 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { mcpMemberItem, nodeMcpServerEntry } from '../src/services/wire-gateway/library/agent-library-targets';
+import { applyLibrary } from '../src/services/wire-gateway/library/library-engine';
+import { currentLibraryInstallEnvironment } from '../src/services/wire-gateway/library/library-runtime';
 
-import { readJsonSafe } from '../src/utils/json-utils';
-import { injectContextIntoMarkdownFile, CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE } from '../src/utils/context-injection';
-
-function buildMcpServerEntry(mcpServerPath: string): { command: string; args: string[] } {
-  return {
-    command: process.execPath,
-    args: [mcpServerPath],
-  };
+// The MCP-only installers (Copilot CLI, Roo Code, Warp) and Antigravity write
+// claude-mem's server through the Library; these run that same path.
+function nodeMcpEntryFor(mcpServerPath: string) {
+  return nodeMcpServerEntry({ ...currentLibraryInstallEnvironment(), mcpServerPath });
 }
 
-function writeMcpJsonConfig(
-  configFilePath: string,
-  mcpServerPath: string,
-  serversKeyName: string = 'mcpServers',
-): void {
-  const parentDirectory = join(configFilePath, '..');
-  mkdirSync(parentDirectory, { recursive: true });
-
-  const existingConfig = readJsonSafe<Record<string, any>>(configFilePath, {});
-
-  if (!existingConfig[serversKeyName]) {
-    existingConfig[serversKeyName] = {};
-  }
-
-  existingConfig[serversKeyName]['claude-mem'] = buildMcpServerEntry(mcpServerPath);
-
-  writeFileSync(configFilePath, JSON.stringify(existingConfig, null, 2) + '\n');
+function writeMcpEntryThroughLibrary(configFilePath: string, mcpServerPath: string, serversKeyName: string = 'mcpServers'): void {
+  applyLibrary(
+    { agentId: 'mcp-test', items: [mcpMemberItem(configFilePath, [serversKeyName, 'claude-mem'], nodeMcpEntryFor(mcpServerPath))], ownedGroups: ['mcp'] },
+    { libraryDirectory: join(configFilePath, '..', '.library-record') },
+  );
 }
 
 describe('MCP Integrations', () => {
@@ -48,9 +35,9 @@ describe('MCP Integrations', () => {
     }
   });
 
-  describe('buildMcpServerEntry', () => {
+  describe('nodeMcpEntryFor', () => {
     it('uses process.execPath as the command, not "node"', () => {
-      const entry = buildMcpServerEntry('/path/to/mcp-server.cjs');
+      const entry = nodeMcpEntryFor('/path/to/mcp-server.cjs');
 
       expect(entry.command).toBe(process.execPath);
       expect(entry.command).not.toBe('node');
@@ -58,24 +45,24 @@ describe('MCP Integrations', () => {
 
     it('passes the mcp server path as the sole argument', () => {
       const serverPath = '/usr/local/lib/mcp-server.cjs';
-      const entry = buildMcpServerEntry(serverPath);
+      const entry = nodeMcpEntryFor(serverPath);
 
       expect(entry.args).toEqual([serverPath]);
     });
 
     it('handles paths with spaces', () => {
       const serverPath = '/path/to/my project/mcp-server.cjs';
-      const entry = buildMcpServerEntry(serverPath);
+      const entry = nodeMcpEntryFor(serverPath);
 
       expect(entry.args).toEqual([serverPath]);
     });
   });
 
-  describe('writeMcpJsonConfig', () => {
+  describe('writeMcpEntryThroughLibrary', () => {
     it('creates config file if it does not exist', () => {
       const configPath = join(tempDir, '.config', 'ide', 'mcp.json');
 
-      writeMcpJsonConfig(configPath, '/path/to/mcp.cjs');
+      writeMcpEntryThroughLibrary(configPath, '/path/to/mcp.cjs');
 
       expect(existsSync(configPath)).toBe(true);
     });
@@ -83,7 +70,7 @@ describe('MCP Integrations', () => {
     it('creates parent directories if they do not exist', () => {
       const configPath = join(tempDir, 'deep', 'nested', 'mcp.json');
 
-      writeMcpJsonConfig(configPath, '/path/to/mcp.cjs');
+      writeMcpEntryThroughLibrary(configPath, '/path/to/mcp.cjs');
 
       expect(existsSync(join(tempDir, 'deep', 'nested'))).toBe(true);
     });
@@ -91,7 +78,7 @@ describe('MCP Integrations', () => {
     it('writes valid JSON with claude-mem entry', () => {
       const configPath = join(tempDir, 'mcp.json');
 
-      writeMcpJsonConfig(configPath, '/path/to/mcp.cjs');
+      writeMcpEntryThroughLibrary(configPath, '/path/to/mcp.cjs');
 
       const content = readFileSync(configPath, 'utf-8');
       const config = JSON.parse(content);
@@ -104,7 +91,7 @@ describe('MCP Integrations', () => {
     it('uses custom serversKeyName when provided', () => {
       const configPath = join(tempDir, 'mcp.json');
 
-      writeMcpJsonConfig(configPath, '/path/to/mcp.cjs', 'servers');
+      writeMcpEntryThroughLibrary(configPath, '/path/to/mcp.cjs', 'servers');
 
       const config = JSON.parse(readFileSync(configPath, 'utf-8'));
       expect(config.servers).toBeDefined();
@@ -124,7 +111,7 @@ describe('MCP Integrations', () => {
       };
       writeFileSync(configPath, JSON.stringify(existingConfig));
 
-      writeMcpJsonConfig(configPath, '/path/to/mcp.cjs');
+      writeMcpEntryThroughLibrary(configPath, '/path/to/mcp.cjs');
 
       const config = JSON.parse(readFileSync(configPath, 'utf-8'));
       expect(config.mcpServers['other-tool']).toBeDefined();
@@ -141,7 +128,7 @@ describe('MCP Integrations', () => {
       };
       writeFileSync(configPath, JSON.stringify(existingConfig));
 
-      writeMcpJsonConfig(configPath, '/path/to/mcp.cjs');
+      writeMcpEntryThroughLibrary(configPath, '/path/to/mcp.cjs');
 
       const config = JSON.parse(readFileSync(configPath, 'utf-8'));
       expect(config.version).toBe(2);
@@ -154,8 +141,8 @@ describe('MCP Integrations', () => {
     it('running install twice does not create duplicate entries', () => {
       const configPath = join(tempDir, 'mcp.json');
 
-      writeMcpJsonConfig(configPath, '/path/to/mcp.cjs');
-      writeMcpJsonConfig(configPath, '/path/to/mcp.cjs');
+      writeMcpEntryThroughLibrary(configPath, '/path/to/mcp.cjs');
+      writeMcpEntryThroughLibrary(configPath, '/path/to/mcp.cjs');
 
       const config = JSON.parse(readFileSync(configPath, 'utf-8'));
       const serverKeys = Object.keys(config.mcpServers);
@@ -166,8 +153,8 @@ describe('MCP Integrations', () => {
     it('updates the server path on re-install', () => {
       const configPath = join(tempDir, 'mcp.json');
 
-      writeMcpJsonConfig(configPath, '/old/path/mcp.cjs');
-      writeMcpJsonConfig(configPath, '/new/path/mcp.cjs');
+      writeMcpEntryThroughLibrary(configPath, '/old/path/mcp.cjs');
+      writeMcpEntryThroughLibrary(configPath, '/new/path/mcp.cjs');
 
       const config = JSON.parse(readFileSync(configPath, 'utf-8'));
       expect(config.mcpServers['claude-mem'].args).toEqual(['/new/path/mcp.cjs']);
@@ -179,29 +166,30 @@ describe('MCP Integrations', () => {
       const configPath = join(tempDir, 'mcp.json');
       writeFileSync(configPath, 'not valid json {{{{');
 
-      expect(() => writeMcpJsonConfig(configPath, '/path/to/mcp.cjs')).toThrow(
-        /Corrupt JSON file, refusing to overwrite/
+      expect(() => writeMcpEntryThroughLibrary(configPath, '/path/to/mcp.cjs')).toThrow(
+        /is not JSON claude-mem can read.*left as it is/
       );
 
       expect(readFileSync(configPath, 'utf-8')).toBe('not valid json {{{{');
     });
 
-    it('throws on empty file to prevent data loss', () => {
+    // An empty file holds nothing that could be lost (agy creates its MCP config at 0 bytes).
+    it('writes into an empty file', () => {
       const configPath = join(tempDir, 'mcp.json');
       writeFileSync(configPath, '');
 
-      expect(() => writeMcpJsonConfig(configPath, '/path/to/mcp.cjs')).toThrow(
-        /Corrupt JSON file, refusing to overwrite/
-      );
+      writeMcpEntryThroughLibrary(configPath, '/path/to/mcp.cjs');
+
+      expect(JSON.parse(readFileSync(configPath, 'utf-8')).mcpServers['claude-mem'].args).toEqual(['/path/to/mcp.cjs']);
     });
 
-    it('throws on file with only whitespace', () => {
+    it('writes into a file with only whitespace', () => {
       const configPath = join(tempDir, 'mcp.json');
       writeFileSync(configPath, '   \n\n   ');
 
-      expect(() => writeMcpJsonConfig(configPath, '/path/to/mcp.cjs')).toThrow(
-        /Corrupt JSON file, refusing to overwrite/
-      );
+      writeMcpEntryThroughLibrary(configPath, '/path/to/mcp.cjs');
+
+      expect(JSON.parse(readFileSync(configPath, 'utf-8')).mcpServers['claude-mem']).toBeDefined();
     });
   });
 
@@ -216,7 +204,7 @@ describe('MCP Integrations', () => {
       };
       writeFileSync(configPath, JSON.stringify(existingConfig));
 
-      writeMcpJsonConfig(configPath, '/path/to/mcp.cjs');
+      writeMcpEntryThroughLibrary(configPath, '/path/to/mcp.cjs');
 
       const config = JSON.parse(readFileSync(configPath, 'utf-8'));
       expect(Object.keys(config.mcpServers)).toHaveLength(3);
@@ -234,7 +222,7 @@ describe('MCP Integrations', () => {
       };
       writeFileSync(configPath, JSON.stringify(existingConfig));
 
-      writeMcpJsonConfig(configPath, '/path/to/mcp.cjs', 'servers');
+      writeMcpEntryThroughLibrary(configPath, '/path/to/mcp.cjs', 'servers');
 
       const config = JSON.parse(readFileSync(configPath, 'utf-8'));
       expect(config.servers['copilot-tool']).toBeDefined();
@@ -245,7 +233,7 @@ describe('MCP Integrations', () => {
       const configPath = join(tempDir, 'mcp.json');
       writeFileSync(configPath, JSON.stringify({ mcpServers: {} }));
 
-      writeMcpJsonConfig(configPath, '/path/to/mcp.cjs');
+      writeMcpEntryThroughLibrary(configPath, '/path/to/mcp.cjs');
 
       const config = JSON.parse(readFileSync(configPath, 'utf-8'));
       expect(config.mcpServers['claude-mem']).toBeDefined();
@@ -255,7 +243,7 @@ describe('MCP Integrations', () => {
       const configPath = join(tempDir, 'mcp.json');
       writeFileSync(configPath, JSON.stringify({ version: 1 }));
 
-      writeMcpJsonConfig(configPath, '/path/to/mcp.cjs');
+      writeMcpEntryThroughLibrary(configPath, '/path/to/mcp.cjs');
 
       const config = JSON.parse(readFileSync(configPath, 'utf-8'));
       expect(config.version).toBe(1);
@@ -267,7 +255,7 @@ describe('MCP Integrations', () => {
     it('writes pretty-printed JSON with 2-space indent', () => {
       const configPath = join(tempDir, 'mcp.json');
 
-      writeMcpJsonConfig(configPath, '/path/to/mcp.cjs');
+      writeMcpEntryThroughLibrary(configPath, '/path/to/mcp.cjs');
 
       const content = readFileSync(configPath, 'utf-8');
       expect(content).toContain('\n');
@@ -277,7 +265,7 @@ describe('MCP Integrations', () => {
     it('ends file with trailing newline', () => {
       const configPath = join(tempDir, 'mcp.json');
 
-      writeMcpJsonConfig(configPath, '/path/to/mcp.cjs');
+      writeMcpEntryThroughLibrary(configPath, '/path/to/mcp.cjs');
 
       const content = readFileSync(configPath, 'utf-8');
       expect(content.endsWith('\n')).toBe(true);

@@ -3,8 +3,6 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync }
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
-  addOpenCodeMcpReference,
-  addOpenCodePluginReference,
   deregisterOpenCodePluginFromConfig,
   detectOpenCodeVersion,
   getInstalledPluginPath,
@@ -15,9 +13,20 @@ import {
   OPENCODE_OLD_CONTEXT_BLOCK_LEFT,
   parseOpenCodeVersion,
   registerOpenCodePluginInConfig,
-  removeOpenCodeMcpReference,
-  removeOpenCodePluginReference,
 } from '../../src/services/integrations/OpenCodeInstaller.js';
+
+// opencode.json is edited through the Library: each case writes the config,
+// runs the real register/deregister, and reads the file back.
+type OpenCodeTestConfig = Record<string, any>;
+function throughConfigFile(config: OpenCodeTestConfig, run: () => number): OpenCodeTestConfig {
+  writeFileSync(getOpenCodeConfigPath(), JSON.stringify(config, null, 2) + '\n', 'utf-8');
+  expect(run()).toBe(0);
+  return JSON.parse(readFileSync(getOpenCodeConfigPath(), 'utf-8'));
+}
+const registerThroughConfigFile = (config: OpenCodeTestConfig) => throughConfigFile(config, () => registerOpenCodePluginInConfig());
+const registerMcpThroughConfigFile = registerThroughConfigFile;
+const deregisterThroughConfigFile = (config: OpenCodeTestConfig) => throughConfigFile(config, () => deregisterOpenCodePluginFromConfig());
+const deregisterMcpThroughConfigFile = deregisterThroughConfigFile;
 import { getMcpServerAbsolutePath } from '../../src/services/integrations/install-paths.js';
 import { logger } from '../../src/utils/logger.js';
 
@@ -58,17 +67,17 @@ describe('OpenCode installer config registration', () => {
   });
 
   it('adds claude-mem to an existing plugin array', () => {
-    const config = addOpenCodePluginReference({
+    const config = registerThroughConfigFile({
       plugin: ['context-mode'],
       mcp: { context7: { enabled: true } },
     });
 
     expect(config.plugin).toEqual(['context-mode', './plugins/claude-mem.js']);
-    expect(config.mcp).toEqual({ context7: { enabled: true } });
+    expect(config.mcp.context7).toEqual({ enabled: true });
   });
 
   it('does not duplicate an existing claude-mem plugin reference', () => {
-    const config = addOpenCodePluginReference({
+    const config = registerThroughConfigFile({
       plugin: ['context-mode', './plugins/claude-mem.js'],
     });
 
@@ -76,7 +85,7 @@ describe('OpenCode installer config registration', () => {
   });
 
   it('preserves an existing single-string plugin entry', () => {
-    const config = addOpenCodePluginReference({
+    const config = registerThroughConfigFile({
       plugin: 'context-mode',
     });
 
@@ -84,7 +93,7 @@ describe('OpenCode installer config registration', () => {
   });
 
   it('removes only claude-mem from plugin entries', () => {
-    const config = removeOpenCodePluginReference({
+    const config = deregisterThroughConfigFile({
       plugin: ['context-mode', './plugins/claude-mem.js'],
       provider: { openai: { models: {} } },
     });
@@ -140,7 +149,7 @@ describe('OpenCode installer config registration', () => {
   });
 
   it('adds the claude-mem MCP entry while preserving other MCP servers', () => {
-    const config = addOpenCodeMcpReference({
+    const config = registerMcpThroughConfigFile({
       $schema: 'https://opencode.ai/config.json',
       plugin: ['./plugins/claude-mem.js'],
       mcp: { context7: { enabled: true } },
@@ -163,11 +172,14 @@ describe('OpenCode installer config registration', () => {
       },
     };
 
-    expect(addOpenCodeMcpReference(config)).toBe(config);
+    writeFileSync(getOpenCodeConfigPath(), JSON.stringify(config, null, 2) + '\n', 'utf-8');
+    const before = readFileSync(getOpenCodeConfigPath(), 'utf-8');
+    expect(registerOpenCodePluginInConfig()).toBe(0);
+    expect(readFileSync(getOpenCodeConfigPath(), 'utf-8')).toBe(before);
   });
 
   it('removes only the claude-mem MCP entry, preserving other servers', () => {
-    const config = removeOpenCodeMcpReference({
+    const config = deregisterMcpThroughConfigFile({
       plugin: ['./plugins/claude-mem.js'],
       mcp: {
         'claude-mem': { type: 'local', command: ['node', '/x/mcp-server.cjs'] },
@@ -179,7 +191,7 @@ describe('OpenCode installer config registration', () => {
   });
 
   it('drops the mcp block when it becomes empty', () => {
-    const config = removeOpenCodeMcpReference({
+    const config = deregisterMcpThroughConfigFile({
       plugin: ['./plugins/claude-mem.js'],
       mcp: { 'claude-mem': { type: 'local', command: ['node', '/x/mcp-server.cjs'] } },
     });
@@ -288,7 +300,7 @@ describe('OpenCode installer leaves the global AGENTS.md to the user', () => {
 
 describe('OpenCode MCP entry host contract (plan-23 step 1)', () => {
   it('emits an entry that satisfies the checked-in OpenCode schema fixture', () => {
-    const output = addOpenCodeMcpReference({
+    const output = registerMcpThroughConfigFile({
       $schema: 'https://opencode.ai/config.json',
       plugin: ['./plugins/claude-mem.js'],
     });

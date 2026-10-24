@@ -259,9 +259,16 @@ export class SearchRoutes extends BaseRouteHandler {
 
   private handleDumbSearch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     this.progressiveSearch ??= new ProgressiveMemorySearch(this.searchManager, this.searchManager.getSessionStore());
-    const { projects, ...input } = req.body ?? {};
+    const { projects, cwd, ...input } = req.body ?? {};
+    // A host that cannot run the project resolver itself (the wire gateway's
+    // hidden memory_search) sends its agent's folder instead: search the keys
+    // that checkout reads, as /api/context/inject does for a cwd.
+    let scope = projects;
+    if (scope === undefined && input.project === undefined && typeof cwd === 'string' && cwd.trim()) {
+      scope = this.contextReader ? await this.contextReader.projectsForCwd(cwd) : getProjectContext(cwd).allProjects;
+    }
     try {
-      res.json(progressiveSearchToolResult(await this.progressiveSearch.run(input as ProgressiveSearchInput, projects)));
+      res.json(progressiveSearchToolResult(await this.progressiveSearch.run(input as ProgressiveSearchInput, scope)));
     } catch (error) {
       logger.warn('HTTP', 'Progressive memory search failed', { projectCount: Array.isArray(projects) ? projects.length : projects ? 1 : 0 }, error instanceof Error ? error : new Error(String(error)));
       res.json(progressiveSearchToolError(error));

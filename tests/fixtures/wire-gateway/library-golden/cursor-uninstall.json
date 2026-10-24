@@ -1,0 +1,13 @@
+{
+  "exitCodes": [
+    0,
+    0
+  ],
+  "files": {
+    "home/.claude/": "<empty dir>",
+    "home/.cursor/hooks.json": "{\n  \"version\": 1,\n  \"hooks\": {\n    \"stop\": [\n      {\n        \"command\": \"./my-audit.sh\"\n      }\n    ],\n    \"beforeShellExecution\": [\n      {\n        \"command\": \"./guard.sh\"\n      }\n    ]\n  }\n}",
+    "home/.cursor/mcp.json": "{\n  \"mcpServers\": {\n    \"github\": {\n      \"command\": \"gh-mcp\"\n    }\n  }\n}",
+    "workspace/": "<empty dir>",
+    "data/": "<empty dir>"
+  }
+}

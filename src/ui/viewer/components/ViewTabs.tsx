@@ -1,13 +1,13 @@
 import React from 'react';
 
-export type ViewTab = 'timeline' | 'sessions';
+export type ViewTab = 'timeline' | 'sessions' | 'wire';
 
 interface ViewTabsProps {
   active: ViewTab;
   onSelect: (tab: ViewTab) => void;
 }
 
-/** Switch between the chronological timeline and the per-session view. */
+/** Switch between the chronological timeline, the per-session view and the Wire page. */
 export function ViewTabs({ active, onSelect }: ViewTabsProps) {
   return (
     <nav className="view-tabs" aria-label="View">
@@ -24,6 +24,13 @@ export function ViewTabs({ active, onSelect }: ViewTabsProps) {
         onClick={() => onSelect('sessions')}
       >
         Sessions
+      </button>
+      <button
+        className={`view-tab${active === 'wire' ? ' active' : ''}`}
+        aria-pressed={active === 'wire'}
+        onClick={() => onSelect('wire')}
+      >
+        Wire
       </button>
     </nav>
   );

@@ -6,10 +6,8 @@ import {
   isStaleLocalMarketplace,
   readAndStripContextTags,
   readRegisteredMarketplace,
-  removeLegacyCodexMcpSearchConfig,
-  setTomlFeatureEnabled,
-  setTomlPluginEnabled,
 } from '../../src/services/integrations/CodexCliInstaller.js';
+import { codexConfigAfterLibraryWrite } from '../helpers/codex-config-through-library.js';
 
 describe('Codex legacy AGENTS.md context cleanup', () => {
   it('strips only the old block when the user text mentions a closing tag before it', () => {
@@ -123,12 +121,13 @@ describe('Codex marketplace staleness detection', () => {
   });
 });
 
-describe('Codex CLI installer config repair', () => {
+describe('Codex CLI installer config repair (through the Library)', () => {
   it('adds claude-mem plugin enablement when missing', () => {
-    const result = setTomlPluginEnabled('model = "gpt-5.5"\n', 'claude-mem@claude-mem-local', true);
+    const result = codexConfigAfterLibraryWrite('model = "gpt-5.5"\n');
 
-    expect(result).toContain('[plugins."claude-mem@claude-mem-local"]');
-    expect(result).toContain('enabled = true');
+    expect(result).toContain('[plugins."claude-mem@claude-mem-local"]\nenabled = true');
+    expect(result).toContain('[plugins."claude-mem@thedotmack"]\nenabled = false');
+    expect(result.startsWith('model = "gpt-5.5"\n')).toBe(true);
   });
 
   it('updates existing plugin enablement in place', () => {
@@ -141,10 +140,9 @@ describe('Codex CLI installer config repair', () => {
       '',
     ].join('\n');
 
-    const result = setTomlPluginEnabled(input, 'claude-mem@thedotmack', false);
+    const result = codexConfigAfterLibraryWrite(input);
 
-    expect(result).toContain('[plugins."claude-mem@thedotmack"]\nenabled = false');
-    expect(result).toContain('[marketplaces.claude-mem-local]');
+    expect(result).toContain('[plugins."claude-mem@thedotmack"]\nenabled = false\n\n[marketplaces.claude-mem-local]');
   });
 
   it('inserts enabled into an existing plugin section without touching the next section', () => {
@@ -155,9 +153,9 @@ describe('Codex CLI installer config repair', () => {
       '',
     ].join('\n');
 
-    const result = setTomlPluginEnabled(input, 'claude-mem@claude-mem-local', true);
+    const result = codexConfigAfterLibraryWrite(input);
 
-    expect(result).toContain('[plugins."claude-mem@claude-mem-local"]\nenabled = true\n');
+    expect((Bun.TOML.parse(result) as any).plugins['claude-mem@claude-mem-local']).toEqual({ enabled: true });
     expect(result).toContain('[hooks.state]');
   });
 
@@ -171,10 +169,9 @@ describe('Codex CLI installer config repair', () => {
       '',
     ].join('\n');
 
-    const result = setTomlFeatureEnabled(input, 'hooks', true);
+    const result = codexConfigAfterLibraryWrite(input);
 
-    expect(result).toContain('[features]\nhooks = true\nshell_snapshot = true');
-    expect(result).toContain('[plugins."claude-mem@claude-mem-local"]');
+    expect((Bun.TOML.parse(result) as any).features).toEqual({ shell_snapshot: true, hooks: true });
     expect(result).not.toContain('codex_hooks');
   });
 
@@ -194,7 +191,7 @@ describe('Codex CLI installer config repair', () => {
       '',
     ].join('\n');
 
-    const result = removeLegacyCodexMcpSearchConfig(input);
+    const result = codexConfigAfterLibraryWrite(input);
 
     expect(result).toContain('[mcp_servers.playwright]');
     expect(result).toContain('[plugins."claude-mem@claude-mem-local"]');
@@ -216,27 +213,11 @@ describe('Codex CLI installer config repair', () => {
       '',
     ].join('\n');
 
-    const result = removeLegacyCodexMcpSearchConfig(input);
+    const result = codexConfigAfterLibraryWrite(input);
 
     expect(result).not.toContain('mcp-search');
     expect(result).toContain('[features]\nhooks = true');
-  });
-
-  it('does not add a leading newline when the stale config starts the file', () => {
-    const input = [
-      '[mcp_servers.mcp-search]',
-      'command = "node"',
-      'args = ["/tmp/claude-mem/scripts/mcp-server.cjs"]',
-      '',
-      '[features]',
-      'hooks = true',
-      '',
-    ].join('\n');
-
-    const result = removeLegacyCodexMcpSearchConfig(input);
-
     expect(result.startsWith('\n')).toBe(false);
-    expect(result).toStartWith('[features]');
   });
 
   it('preserves non-claude-mem mcp-search config', () => {
@@ -247,6 +228,6 @@ describe('Codex CLI installer config repair', () => {
       '',
     ].join('\n');
 
-    expect(removeLegacyCodexMcpSearchConfig(input)).toBe(input);
+    expect(codexConfigAfterLibraryWrite(input).startsWith(input)).toBe(true);
   });
 });

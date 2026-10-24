@@ -61,6 +61,9 @@ const EXCLUDED_PATTERNS = [
   /servers\/worker-restart\.ts$/,  // MCP refused-connection retry; the restart is logged by ensureWorkerConnection and failures by callWorker in mcp-server.ts
   /servers\/request-context\.ts$/,  // AsyncLocalStorage holder for the per-call project directory: no I/O and no failure path to log; mcp-http.ts logs the sessions
   /worker\/http\/origin-policy\.ts$/,  // Pure Origin predicates moved out of middleware.ts; the guards that refuse a request (middleware.ts, mcp-http.ts) log it
+  /wire-gateway\/library\/library-cli\.ts$/,  // `claude-mem library status|sync|remove` terminal output, like npx-cli/commands
+  /wire-gateway\/library\/library-runtime\.ts$/,  // prints rollback notes on stderr, the installers' user-visible channel; the record itself logs them
+  /shared\/write-all-sync\.ts$/,  // mentions console.log only in its comment; it is the CLI's blocking stdout writer
 ];
 
 const HIGH_PRIORITY_PATTERNS = [

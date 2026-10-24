@@ -3,14 +3,31 @@ import path from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, unlinkSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { buildSpawnSyncInvocation, lookupWindowsCommand } from '../../shared/spawn.js';
 import { logger } from '../../utils/logger.js';
-import { CONTEXT_TAG_OPEN, findContextBlockRange } from '../../utils/context-injection.js';
 import { getMcpServerAbsolutePath, getNodeAbsolutePath } from './install-paths.js';
-
-const OPENCODE_PLUGIN_CONFIG_PATH = './plugins/claude-mem.js';
-const OPENCODE_MCP_SERVER_KEY = 'claude-mem';
+import {
+  CONTEXT_BLOCK_CLOSE as CONTEXT_TAG_CLOSE,
+  CONTEXT_BLOCK_OPEN as CONTEXT_TAG_OPEN,
+  LIBRARY_GROUPS,
+  OPENCODE_MCP_SERVER_KEY,
+  OPENCODE_PLUGIN_CONFIG_PATH,
+  mcpMemberItem,
+} from '../wire-gateway/library/agent-library-targets.js';
+import { encodeMcpServerEntry } from '../wire-gateway/library/mcp-servers.js';
+import { applyLibraryForInstaller, removeLibraryForInstaller } from '../wire-gateway/library/library-runtime.js';
+import { stripLegacyContextBlock } from '../wire-gateway/library/text-block.js';
+import type {
+  ConfigMemberItem,
+  JsonArrayEntryItem,
+  JsonFileStyle,
+  LibraryConfigEdit,
+  LibraryItem,
+  LibraryMigration,
+  LibraryValue,
+  OwnedFileItem,
+} from '../wire-gateway/library/types.js';
 
 /**
  * Partial-install exit code: the plugin was registered but its MCP entry could
@@ -116,146 +133,91 @@ export function getInstalledPluginPath(): string {
   return path.join(getOpenCodePluginsDirectory(), 'claude-mem.js');
 }
 
-function getOpenCodePluginEntries(config: OpenCodeConfig, key: 'plugin' | 'plugins' = 'plugin'): unknown[] {
-  if (Array.isArray(config[key])) {
-    return config[key] as unknown[];
-  }
-  return config[key] === undefined ? [] : [config[key]];
-}
-
-export function addOpenCodePluginReference(config: OpenCodeConfig): OpenCodeConfig {
-  const existingPlugins = getOpenCodePluginEntries(config);
-  if (existingPlugins.includes(OPENCODE_PLUGIN_CONFIG_PATH)) {
-    return config;
-  }
-
-  return {
-    ...config,
-    plugin: [...existingPlugins, OPENCODE_PLUGIN_CONFIG_PATH],
-  };
-}
-
-/**
- * Remove claude-mem's entry from `plugin` (OpenCode 1) and `plugins`
- * (OpenCode 2), keeping every other entry. A key the config lacks stays absent.
- */
-export function removeOpenCodePluginReference(config: OpenCodeConfig): OpenCodeConfig {
-  const next: OpenCodeConfig = { ...config };
-  for (const key of ['plugin', 'plugins'] as const) {
-    if (config[key] === undefined) continue;
-    next[key] = getOpenCodePluginEntries(config, key).filter(
-      (plugin) => plugin !== OPENCODE_PLUGIN_CONFIG_PATH,
-    );
-  }
-  return next;
-}
-
 function getOpenCodeMcpEntry(config: OpenCodeConfig): Record<string, unknown> {
   return (config.mcp && typeof config.mcp === 'object')
     ? config.mcp as Record<string, unknown>
     : {};
 }
 
-/**
- * Register claude-mem's MCP server in opencode.json as a local MCP server that
- * launches `node <absolute-path-to-mcp-server.cjs>` — OpenCode does NOT do
- * `${CLAUDE_PLUGIN_ROOT}` substitution, so the path must be baked absolute
- * (Rule B in install-paths.ts). Other MCP servers are preserved untouched.
- * Returns the config unchanged (no mcp entry) when the server script cannot be
- * resolved, so a broken build never corrupts the user's opencode.json.
- */
-export function addOpenCodeMcpReference(config: OpenCodeConfig): OpenCodeConfig {
-  return addOpenCodeMcpReferenceWithStatus(config).config;
+const OPENCODE_DEFAULT_CONFIG: Record<string, LibraryValue> = { $schema: 'https://opencode.ai/config.json' };
+
+function opencodeJsonStyles(): Record<string, JsonFileStyle> {
+  return { [getOpenCodeConfigPath()]: { finalNewline: true, initialDocument: OPENCODE_DEFAULT_CONFIG } };
 }
 
-/**
- * `addOpenCodeMcpReference` plus whether this run actually resolved its own
- * `mcp-server.cjs`. The caller must not infer that from the resulting config:
- * a pre-existing `mcp["claude-mem"]` entry — stale, or pointing at an unrelated
- * existing file — would masquerade as a successful registration. Surfacing the
- * resolution outcome is what lets the install report partial failure honestly.
- */
-function addOpenCodeMcpReferenceWithStatus(
-  config: OpenCodeConfig,
-): { config: OpenCodeConfig; mcpServerResolved: boolean } {
-  const mcpServerPath = getMcpServerAbsolutePath();
-  if (!mcpServerPath) return { config, mcpServerResolved: false };
-
-  const command = [getNodeAbsolutePath(), mcpServerPath];
-  const existingMcp = getOpenCodeMcpEntry(config);
-  const current = existingMcp[OPENCODE_MCP_SERVER_KEY];
-  if (
-    current
-    && typeof current === 'object'
-    && (current as { type?: unknown }).type === 'local'
-    && Array.isArray((current as { command?: unknown }).command)
-    && JSON.stringify((current as { command: unknown[] }).command) === JSON.stringify(command)
-  ) {
-    return { config, mcpServerResolved: true };
-  }
-
+/** OpenCode 1's `plugin` entry for claude-mem's plugin file. */
+function opencodePluginReferenceItem(): JsonArrayEntryItem {
   return {
-    config: {
-      ...config,
-      mcp: {
-        ...existingMcp,
-        [OPENCODE_MCP_SERVER_KEY]: { type: 'local', command },
-      },
-    },
-    mcpServerResolved: true,
+    kind: 'setting', id: 'setting:plugin-reference', group: LIBRARY_GROUPS.settings, place: 'json-array-entry',
+    file: getOpenCodeConfigPath(), arrayKeyPath: ['plugin'], entry: OPENCODE_PLUGIN_CONFIG_PATH,
+    scalarIsOneEntryArray: true,
+    isPreLibraryEntry: (entry) => entry === OPENCODE_PLUGIN_CONFIG_PATH,
   };
 }
 
 /**
- * Remove only claude-mem's MCP entry from opencode.json, preserving every other
- * MCP server. The `mcp` block itself is dropped when it becomes empty.
+ * claude-mem's MCP server in opencode.json: a local server that launches
+ * `node <absolute mcp-server.cjs>` (OpenCode does no `${CLAUDE_PLUGIN_ROOT}`
+ * substitution, Rule B in install-paths.ts). null when the server script
+ * cannot be resolved, so a broken build never registers a dead server.
  */
-export function removeOpenCodeMcpReference(config: OpenCodeConfig): OpenCodeConfig {
-  const existingMcp = getOpenCodeMcpEntry(config);
-  if (!(OPENCODE_MCP_SERVER_KEY in existingMcp)) {
-    return config;
-  }
-
-  const { [OPENCODE_MCP_SERVER_KEY]: _removed, ...remainingMcp } = existingMcp;
-  const next: OpenCodeConfig = { ...config, mcp: remainingMcp };
-  if (Object.keys(remainingMcp).length === 0) {
-    delete next.mcp;
-  }
-  return next;
+function opencodeMcpItem(): ConfigMemberItem | null {
+  const mcpServerPath = getMcpServerAbsolutePath();
+  if (!mcpServerPath) return null;
+  return {
+    ...mcpMemberItem(getOpenCodeConfigPath(), ['mcp', OPENCODE_MCP_SERVER_KEY], encodeMcpServerEntry({ transport: 'stdio', command: getNodeAbsolutePath(), args: [mcpServerPath] }, 'opencode')),
+    dropEmptiedParentOnRemove: true,
+  };
 }
 
 /**
- * OpenCode 1 gets the `plugin` entry every install has written. OpenCode 2
- * loads `plugins/claude-mem.js` from its plugin directory by itself and drops
- * a configured plugin path that is a file, warning "configured plugin path
- * must be a directory" on every start, so for 2 the entry is removed instead.
+ * OpenCode 2 loads `plugins/claude-mem.js` from its plugin directory by
+ * itself and drops a configured plugin path that is a file ("configured
+ * plugin path must be a directory" on every start): claude-mem's entry is
+ * taken out of `plugin` and `plugins` instead.
+ */
+function opencodePluginReferenceRemoval(): LibraryMigration {
+  return {
+    file: getOpenCodeConfigPath(),
+    format: 'json',
+    compute: (document) => {
+      const edits: LibraryConfigEdit[] = [];
+      for (const key of ['plugin', 'plugins']) {
+        const value = (document as Record<string, unknown>)[key];
+        if (value === undefined) continue;
+        const entries = Array.isArray(value) ? value : [value];
+        const kept = entries.filter((entry) => entry !== OPENCODE_PLUGIN_CONFIG_PATH);
+        if (kept.length !== entries.length) edits.push({ op: 'set', keyPath: [key], value: kept as LibraryValue });
+      }
+      return edits;
+    },
+  };
+}
+
+/**
+ * Register the plugin and claude-mem's MCP server in opencode.json through
+ * the Library. OpenCode 1 gets the `plugin` entry every install has written;
+ * for OpenCode 2 it is removed (see opencodePluginReferenceRemoval).
  */
 export function registerOpenCodePluginInConfig(api: OpenCodePluginApi = 1): number {
   const configPath = getOpenCodeConfigPath();
-  const defaultConfig: OpenCodeConfig = {
-    $schema: 'https://opencode.ai/config.json',
-  };
-
   try {
-    const config = existsSync(configPath)
-      ? JSON.parse(readFileSync(configPath, 'utf-8')) as OpenCodeConfig
-      : defaultConfig;
-    const withPlugin = api === 2
-      ? removeOpenCodePluginReference(config)
-      : addOpenCodePluginReference(config);
-    const { config: updatedConfig, mcpServerResolved } = addOpenCodeMcpReferenceWithStatus(withPlugin);
-
-    writeFileSync(configPath, `${JSON.stringify(updatedConfig, null, 2)}\n`, 'utf-8');
+    const mcpItem = opencodeMcpItem();
+    const items: LibraryItem[] = api === 2 ? [] : [opencodePluginReferenceItem()];
+    if (mcpItem) items.push(mcpItem);
+    applyLibraryForInstaller({
+      agentId: 'opencode',
+      items,
+      ownedGroups: [LIBRARY_GROUPS.settings, LIBRARY_GROUPS.mcp],
+      jsonStyles: opencodeJsonStyles(),
+      migrations: api === 2 ? [opencodePluginReferenceRemoval()] : [],
+    });
 
     // Warn conservatively whenever this run could not resolve its own MCP
-    // server script. The final config is deliberately NOT consulted: a retained
-    // entry cannot be trusted as claude-mem's server just because its command
-    // names an existing file, and a stale entry must not be silently reported
-    // as a successful registration. The warning goes to stderr (captured by the
-    // installer's console buffer) as well as the log file, and the partial
-    // result is returned to the caller — a log-file-only warning plus a success
-    // exit would let the user believe the integration is complete.
-    if (!mcpServerResolved) {
+    // server script: a retained entry cannot be trusted as claude-mem's
+    // server, and a stale one must not be reported as a successful
+    // registration. The partial result goes back to the caller.
+    if (!mcpItem) {
       const message = 'MCP server script not found — claude-mem MCP server could not be registered';
       logger.warn('OPENCODE', message, { path: configPath });
       console.warn(`  ${message}: ${configPath}`);
@@ -264,7 +226,6 @@ export function registerOpenCodePluginInConfig(api: OpenCodePluginApi = 1): numb
 
     console.log(`  Plugin registered in: ${configPath}`);
     logger.info('OPENCODE', 'Plugin registered in config', { path: configPath });
-
     return 0;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -273,20 +234,23 @@ export function registerOpenCodePluginInConfig(api: OpenCodePluginApi = 1): numb
   }
 }
 
+/** Take claude-mem's plugin entries and MCP server out of opencode.json; everything else stays. */
 export function deregisterOpenCodePluginFromConfig(): number {
   const configPath = getOpenCodeConfigPath();
   if (!existsSync(configPath)) {
     return 0;
   }
-
   try {
-    const config = JSON.parse(readFileSync(configPath, 'utf-8')) as OpenCodeConfig;
-    const updatedConfig = removeOpenCodeMcpReference(removeOpenCodePluginReference(config));
-
-    writeFileSync(configPath, `${JSON.stringify(updatedConfig, null, 2)}\n`, 'utf-8');
+    const mcpItem = opencodeMcpItem();
+    removeLibraryForInstaller({
+      agentId: 'opencode',
+      items: [opencodePluginReferenceItem(), ...(mcpItem ? [mcpItem] : [{ ...mcpMemberItem(configPath, ['mcp', OPENCODE_MCP_SERVER_KEY], {}), dropEmptiedParentOnRemove: true }])],
+      groups: [LIBRARY_GROUPS.settings, LIBRARY_GROUPS.mcp],
+      jsonStyles: opencodeJsonStyles(),
+      migrations: [opencodePluginReferenceRemoval()],
+    });
     console.log(`  Plugin deregistered from: ${configPath}`);
     logger.info('OPENCODE', 'Plugin deregistered from config', { path: configPath });
-
     return 0;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -329,13 +293,14 @@ export function installOpenCodePlugin(version: OpenCodeVersion | null = detectOp
     return 1;
   }
 
-  const pluginsDirectory = getOpenCodePluginsDirectory();
   const destinationPath = getInstalledPluginPath();
 
   try {
-    mkdirSync(pluginsDirectory, { recursive: true });
-
-    copyFileSync(builtPluginPath, destinationPath);
+    applyLibraryForInstaller({
+      agentId: 'opencode',
+      items: [opencodePluginFileItem(readFileSync(builtPluginPath))],
+      ownedGroups: [LIBRARY_GROUPS.bundle],
+    });
 
     console.log(`  Plugin installed to: ${destinationPath}`);
     logger.info('OPENCODE', 'Plugin installed', { destination: destinationPath });
@@ -353,32 +318,22 @@ export function installOpenCodePlugin(version: OpenCodeVersion | null = detectOp
   }
 }
 
-function writeOrRemoveCleanedAgentsMd(agentsMdPath: string, trimmedContent: string): void {
-  if (
-    trimmedContent.length === 0 ||
-    trimmedContent === '# Claude-Mem Memory Context'
-  ) {
-    unlinkSync(agentsMdPath);
-    console.log(`  Removed empty AGENTS.md`);
-  } else {
-    writeFileSync(agentsMdPath, trimmedContent + '\n', 'utf-8');
-    console.log(`  Cleaned context from AGENTS.md`);
-  }
+/** The plugin bundle in OpenCode's plugin directory: claude-mem's own file (it may also be there from an install before the Library). */
+function opencodePluginFileItem(contents: Uint8Array): OwnedFileItem {
+  return { kind: 'bundle', id: 'bundle:plugin', group: LIBRARY_GROUPS.bundle, place: 'file', path: getInstalledPluginPath(), contents };
 }
 
 export function uninstallOpenCodePlugin(): number {
   let hasErrors = false;
 
   const pluginPath = getInstalledPluginPath();
-  if (existsSync(pluginPath)) {
-    try {
-      unlinkSync(pluginPath);
-      console.log(`  Removed plugin: ${pluginPath}`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`  Failed to remove plugin: ${message}`);
-      hasErrors = true;
-    }
+  try {
+    removeLibraryForInstaller({ agentId: 'opencode', items: [opencodePluginFileItem(new Uint8Array(0))], groups: [LIBRARY_GROUPS.bundle] });
+    console.log(`  Removed plugin: ${pluginPath}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`  Failed to remove plugin: ${message}`);
+    hasErrors = true;
   }
 
   if (deregisterOpenCodePluginFromConfig() !== 0) {
@@ -405,26 +360,22 @@ export function uninstallOpenCodePlugin(): number {
 export function removeContextBlockFromAgentsMd(): boolean {
   const agentsMdPath = getOpenCodeAgentsMdPath();
   if (!existsSync(agentsMdPath)) return true;
-
-  let content: string;
   try {
-    content = readFileSync(agentsMdPath, 'utf-8');
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`  Failed to read AGENTS.md: ${message}`);
-    return false;
-  }
-
-  const block = findContextBlockRange(content);
-  if (!block) return true;
-
-  const trimmedContent = (
-    content.slice(0, block.start).trimEnd() +
-    '\n' +
-    content.slice(block.end).trimStart()
-  ).trim();
-  try {
-    writeOrRemoveCleanedAgentsMd(agentsMdPath, trimmedContent);
+    const result = applyLibraryForInstaller({
+      agentId: 'opencode',
+      items: [],
+      ownedGroups: [],
+      migrations: [{
+        file: agentsMdPath,
+        format: 'text',
+        computeText: (text) => {
+          const remaining = stripLegacyContextBlock(text, CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE, '\n');
+          if (remaining === null) return null;
+          return remaining.length === 0 || remaining === '# Claude-Mem Memory Context' ? { deleteFile: true } : { text: `${remaining}\n` };
+        },
+      }],
+    });
+    if (result.filesWritten.includes(agentsMdPath)) console.log(existsSync(agentsMdPath) ? `  Cleaned context from AGENTS.md` : `  Removed empty AGENTS.md`);
     return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

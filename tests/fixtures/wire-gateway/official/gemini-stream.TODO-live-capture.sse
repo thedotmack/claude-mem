@@ -1,0 +1,6 @@
+data: {"candidates": [{"content": {"parts": [{"text": "Thinking about the files.","thought": true}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 120,"totalTokenCount": 120},"modelVersion": "gemini-2.5-pro","responseId": "hand-built-1"}
+
+data: {"candidates": [{"content": {"parts": [{"text": "I'll list the directory."}],"role": "model"},"index": 0}],"modelVersion": "gemini-2.5-pro","responseId": "hand-built-1"}
+
+data: {"candidates": [{"content": {"parts": [{"functionCall": {"name": "list_directory","args": {"path": "."}},"thoughtSignature": "c2lnbmF0dXJl"}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 120,"candidatesTokenCount": 18,"totalTokenCount": 170,"cachedContentTokenCount": 40,"thoughtsTokenCount": 32},"modelVersion": "gemini-2.5-pro","responseId": "hand-built-1"}
+

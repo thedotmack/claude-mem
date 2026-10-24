@@ -2992,6 +2992,55 @@
       .console-filters { flex-direction: column; flex-wrap: nowrap; align-items: stretch; }
       .console-filter-section { flex-shrink: 0; }
     }
+    /* Wire page (plan Phase 15): cards, state badges, consent, live calls, context bars. */
+    .wire-section { margin-bottom: 32px; }
+    .wire-section-title { font-size: 16px; font-weight: 650; margin-bottom: 6px; }
+    .wire-section-hint { color: var(--color-text-secondary); font-size: 13px; line-height: 1.55; margin-bottom: 14px; }
+    .wire-card { background: var(--color-bg-card); border: 1px solid var(--color-border-primary); border-radius: 8px; padding: 16px 20px; margin-bottom: 12px; overflow-wrap: anywhere; }
+    .wire-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+    .wire-banner { font-size: 13px; line-height: 1.6; margin-bottom: 28px; }
+    .wire-banner--down { border-color: var(--color-accent-summary); }
+    .wire-muted { color: var(--color-text-secondary); font-size: 12px; line-height: 1.55; }
+    .wire-detail { font-size: 14px; line-height: 1.6; margin-bottom: 6px; }
+    .wire-fix { font-size: 13px; margin-bottom: 6px; }
+    .wire-card code, .wire-section-hint code, .session-list-empty code { font-family: var(--font-terminal); font-size: 12px; background: var(--color-bg-tertiary); border-radius: 4px; padding: 1px 5px; }
+    .wire-problem { display: block; max-width: none; margin-top: 6px; font-size: 12px; }
+    .wire-badge { display: inline-block; flex-shrink: 0; font-size: 11px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; border-radius: 999px; padding: 2px 9px; border: 1px solid transparent; }
+    .wire-badge--ok { color: var(--color-accent-success); background: color-mix(in srgb, var(--color-accent-success) 12%, transparent); border-color: color-mix(in srgb, var(--color-accent-success) 30%, transparent); }
+    .wire-badge--warn { color: var(--color-accent-summary); background: color-mix(in srgb, var(--color-accent-summary) 12%, transparent); border-color: color-mix(in srgb, var(--color-accent-summary) 30%, transparent); }
+    .wire-badge--error { color: var(--color-accent-error); background: color-mix(in srgb, var(--color-accent-error) 12%, transparent); border-color: color-mix(in srgb, var(--color-accent-error) 30%, transparent); }
+    .wire-badge--muted { color: var(--color-text-secondary); background: var(--color-bg-tertiary); border-color: var(--color-border-primary); }
+    .wire-route { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--color-border-secondary); font-size: 12px; }
+    .wire-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    .wire-chip { font-size: 11px; border: 1px solid var(--color-border-primary); border-radius: 999px; padding: 1px 8px; color: var(--color-text-secondary); }
+    .wire-chip--on { color: var(--color-text-primary); border-color: color-mix(in srgb, var(--color-accent-primary) 45%, var(--color-border-primary)); background: color-mix(in srgb, var(--color-accent-primary) 10%, var(--color-bg-card)); }
+    .wire-consent .toggle-row { padding: 0 0 12px; }
+    .wire-consent .toggle-switch { margin-left: 0; }
+    .wire-consent-facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; font-size: 13px; line-height: 1.55; margin: 4px 0 14px; }
+    .wire-consent-facts dt { font-weight: 650; color: var(--color-text-secondary); }
+    .wire-consent-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+    .wire-button { background: var(--color-bg-card); border: 1px solid var(--color-border-primary); border-radius: 6px; padding: 6px 12px; font-size: 13px; color: var(--color-text-primary); cursor: pointer; }
+    .wire-button:hover:not(:disabled) { border-color: var(--color-border-hover); }
+    .wire-button:disabled { opacity: .5; cursor: not-allowed; }
+    .wire-button--small { margin-top: 8px; padding: 3px 10px; font-size: 12px; }
+    .wire-calls { list-style: none; padding: 0; margin: 10px 0 0; }
+    .wire-call { padding: 12px 16px; margin-bottom: 8px; }
+    .wire-bodies { margin-top: 10px; }
+    .wire-body { font-family: var(--font-terminal); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; background: var(--color-bg-tertiary); border-radius: 6px; padding: 10px; margin: 4px 0 10px; }
+    .wire-table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; background: var(--color-bg-card); border: 1px solid var(--color-border-primary); border-radius: 8px; overflow: hidden; }
+    .wire-table th, .wire-table td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--color-border-secondary); }
+    .wire-table th { font-size: 11px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; color: var(--color-text-secondary); }
+    .wire-bar { display: flex; height: 12px; border-radius: 6px; overflow: hidden; background: var(--color-bg-tertiary); margin: 6px 0 10px; }
+    .wire-bar-part { display: block; height: 100%; }
+    .wire-bar-part--system { background: var(--color-accent-prompt); }
+    .wire-bar-part--tools { background: var(--color-accent-observation); }
+    .wire-bar-part--memory { background: var(--color-accent-summary); }
+    .wire-bar-part--files { background: var(--color-accent-success); }
+    .wire-bar-part--results { background: var(--color-text-muted); }
+    .wire-bar-part--chat { background: var(--color-source-claude-text); }
+    .wire-legend { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--color-text-secondary); }
+    .wire-swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: baseline; }
+    @media (max-width: 640px) { .wire-table { display: block; overflow-x: auto; } .wire-consent-facts { grid-template-columns: 1fr; } }
   </style>
 </head>
 

@@ -1,7 +1,7 @@
 
 import path from 'path';
 import { homedir } from 'os';
-import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, unlinkSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { parseJsonWithBom } from '../../shared/atomic-json.js';
 import { getProjectContext } from '../../utils/project-name.js';
@@ -11,16 +11,32 @@ import {
   readCursorRegistry as readCursorRegistryFromFile,
   registerCursorProject as registerCursorProjectInFile,
   unregisterCursorProject as unregisterCursorProjectInFile,
-  configureCursorMcp as configureCursorMcpFile,
   writeContextFile,
   type CursorProjectRegistry
 } from '../../utils/cursor-utils.js';
-import type { CursorInstallTarget, CursorHooksJson } from './types.js';
+import type { CursorInstallTarget } from './types.js';
 import {
   getMcpServerAbsolutePath,
   getWorkerServiceAbsolutePath,
   getBunAbsolutePath,
 } from './install-paths.js';
+import {
+  CURSOR_LEGACY_HOOK_SCRIPT_BASENAMES,
+  CURSOR_PLACEHOLDER_RULES,
+  cursorHookItems,
+  cursorMcpItem,
+  isLegacyClaudeMemCursorHook,
+  isUnifiedClaudeMemCursorHook,
+  libraryRemovalEnvironment,
+  rulesFileItem,
+  type LibraryInstallEnvironment,
+} from '../wire-gateway/library/agent-library-targets.js';
+import {
+  applyLibraryForInstaller,
+  currentLibraryInstallEnvironment,
+  removeLibraryForInstaller,
+  withoutInstructionsWhenWireInjects,
+} from '../wire-gateway/library/library-runtime.js';
 
 const CURSOR_REGISTRY_FILE = path.join(DATA_DIR, 'cursor-projects.json');
 
@@ -131,46 +147,11 @@ export async function installCursorHooks(target: CursorInstallTarget): Promise<n
   }
 
   const workspaceRoot = process.cwd();
-
-  const hooksJsonPath = path.join(targetDir, 'hooks.json');
-
   const bunPath = getBunAbsolutePath();
-  const escapedBunPath = bunPath.replace(/\\/g, '\\\\');
-
-  const escapedWorkerPath = workerServicePath.replace(/\\/g, '\\\\');
-
-  const callOperator = process.platform === 'win32' ? '& ' : '';
-  const makeHookCommand = (command: string) => {
-    return `${callOperator}"${escapedBunPath}" "${escapedWorkerPath}" hook cursor ${command}`;
-  };
-
   console.log(`  Using Bun runtime: ${bunPath}`);
 
-  const hooksJson: CursorHooksJson = {
-    version: 1,
-    hooks: {
-      beforeSubmitPrompt: [
-        { command: makeHookCommand('session-init') },
-        { command: makeHookCommand('context') }
-      ],
-      afterMCPExecution: [
-        { command: makeHookCommand('observation') }
-      ],
-      afterShellExecution: [
-        { command: makeHookCommand('observation') }
-      ],
-      afterFileEdit: [
-        { command: makeHookCommand('file-edit') }
-      ],
-      stop: [
-        { command: makeHookCommand('summarize') }
-      ]
-    }
-  };
-
   try {
-    mkdirSync(targetDir, { recursive: true });
-    await writeHooksJsonAndSetupProject(hooksJsonPath, hooksJson, workerServicePath, target, targetDir, workspaceRoot);
+    await writeHooksJsonAndSetupProject(workerServicePath, target, targetDir, workspaceRoot);
     return 0;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -182,137 +163,44 @@ export async function installCursorHooks(target: CursorInstallTarget): Promise<n
   }
 }
 
-type CursorHookEntry = { command?: unknown };
-
-// Older installers copied these scripts into <target>/hooks/ and pointed
-// hooks.json at them (`./.cursor/hooks/session-init.sh`, an absolute
-// `<dir>/hooks/session-init.sh`, or `powershell.exe ... -File "<dir>/hooks/session-init.ps1"`).
-const LEGACY_HOOK_SCRIPT_BASENAMES = [
-  'common', 'session-init', 'context-inject', 'save-observation', 'save-file-edit', 'session-summary',
-];
-const LEGACY_BASH_SCRIPTS = LEGACY_HOOK_SCRIPT_BASENAMES.map((name) => `${name}.sh`);
-const LEGACY_POWERSHELL_SCRIPTS = LEGACY_HOOK_SCRIPT_BASENAMES.map((name) => `${name}.ps1`);
-
-// Narrow on purpose: the script must sit directly in a `hooks` directory and
-// have one of our exact basenames, so a user's `./my-session-init.sh` stays theirs.
-const LEGACY_HOOK_COMMAND_PATTERN = new RegExp(
-  `(?:^|[\\s"'\\\\/])hooks[\\\\/](?:${LEGACY_HOOK_SCRIPT_BASENAMES.join('|')})\\.(?:sh|ps1)["']?$`,
-);
-
-function cursorHookCommand(hook: unknown): string | null {
-  const command = (hook as CursorHookEntry | null)?.command;
-  return typeof command === 'string' ? command.trim() : null;
-}
-
-function isUnifiedClaudeMemCursorHook(hook: unknown): boolean {
-  const command = cursorHookCommand(hook);
-  return command !== null && command.includes('worker-service') && command.includes('hook cursor');
-}
-
-function isLegacyClaudeMemCursorHook(hook: unknown): boolean {
-  const command = cursorHookCommand(hook);
-  return command !== null && LEGACY_HOOK_COMMAND_PATTERN.test(command);
+/** Register claude-mem's MCP server in a Cursor mcp.json through the Library; every other server stays. */
+export function configureCursorMcpFile(mcpJsonPath: string, mcpServerScriptPath: string): void {
+  const { item, jsonStyles } = cursorMcpItem(mcpServerScriptPath, mcpJsonPath);
+  applyLibraryForInstaller({ agentId: 'cursor', items: [item], ownedGroups: [item.group], jsonStyles });
 }
 
 /**
- * A hook entry is ours when it runs `worker-service ... hook cursor <command>`
- * or one of the legacy hook scripts older installers wrote. Anything else in
- * hooks.json belongs to the user (or another tool).
+ * The hooks (and, for a project, its rules file) through the Library: only
+ * entries claude-mem wrote — recorded, or from an earlier install by their
+ * command — are replaced; every other hook in hooks.json stays where it is.
  */
-function isClaudeMemCursorHook(hook: unknown): boolean {
-  return isUnifiedClaudeMemCursorHook(hook) || isLegacyClaudeMemCursorHook(hook);
-}
-
-function isPlainObject(value: unknown): value is Record<string, any> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-/** Every hook entry in a parsed hooks.json, across all events. */
-function allCursorHookEntries(config: Record<string, any>): unknown[] {
-  if (!isPlainObject(config.hooks)) return [];
-  return Object.values(config.hooks).flatMap((entries) => (Array.isArray(entries) ? entries : []));
-}
-
-function readExistingCursorHooksJson(hooksJsonPath: string): Record<string, any> | null {
-  if (!existsSync(hooksJsonPath)) return null;
-  try {
-    const parsed = parseJsonWithBom<unknown>(readFileSync(hooksJsonPath, 'utf-8'));
-    if (!isPlainObject(parsed)) {
-      throw new Error('top-level value is not an object');
-    }
-    // A shape we don't understand is the user's to fix: rewriting it would
-    // silently drop whatever they meant to put there.
-    if (parsed.hooks !== undefined) {
-      if (!isPlainObject(parsed.hooks)) {
-        throw new Error('"hooks" is not an object');
-      }
-      for (const [eventName, entries] of Object.entries(parsed.hooks)) {
-        if (!Array.isArray(entries)) {
-          throw new Error(`"hooks.${eventName}" is not an array`);
-        }
-      }
-    }
-    return parsed;
-  } catch (error) {
-    const cause = error instanceof Error ? error : new Error(String(error));
-    logger.error('WORKER', 'Corrupt hooks.json, refusing to overwrite', { path: hooksJsonPath }, cause);
-    throw new Error(`Corrupt hooks.json at ${hooksJsonPath}, refusing to overwrite (${cause.message})`);
+function cursorLibraryRequest(targetDir: string, workspaceRoot: string, rulesContents: string | null | undefined, environment: LibraryInstallEnvironment = currentLibraryInstallEnvironment()) {
+  const { items, jsonStyles } = cursorHookItems(environment, targetDir);
+  const ownedGroups = [items[0].group];
+  if (rulesContents !== undefined) {
+    const rulesItem = rulesFileItem(path.join(targetDir, 'rules', 'claude-mem-context.mdc'), rulesContents, workspaceRoot);
+    items.push(...withoutInstructionsWhenWireInjects('cursor', [rulesItem]));
+    ownedGroups.push(rulesItem.group);
   }
-}
-
-/** Merge our hooks into whatever the user already has, replacing only our own earlier entries. */
-function mergeCursorHooksJson(existing: Record<string, any> | null, ours: CursorHooksJson): Record<string, any> {
-  const merged: Record<string, any> = { ...(existing ?? {}) };
-  if (typeof merged.version !== 'number') merged.version = ours.version;
-  const existingHooks: Record<string, any> =
-    merged.hooks && typeof merged.hooks === 'object' && !Array.isArray(merged.hooks) ? merged.hooks : {};
-  const mergedHooks: Record<string, any> = { ...existingHooks };
-
-  for (const [eventName, entries] of Object.entries(ours.hooks)) {
-    const kept = Array.isArray(existingHooks[eventName])
-      ? existingHooks[eventName].filter((hook: unknown) => !isClaudeMemCursorHook(hook))
-      : [];
-    mergedHooks[eventName] = [...kept, ...(entries ?? [])];
-  }
-
-  merged.hooks = mergedHooks;
-  return merged;
-}
-
-/** Drop only our entries. Returns the file's remaining content, or null when no hooks remain. */
-function removeClaudeMemCursorHooks(existing: Record<string, any>): Record<string, any> | null {
-  const hooks: Record<string, any> =
-    existing.hooks && typeof existing.hooks === 'object' && !Array.isArray(existing.hooks) ? { ...existing.hooks } : {};
-
-  for (const [eventName, entries] of Object.entries(hooks)) {
-    if (!Array.isArray(entries)) continue;
-    const kept = entries.filter((hook) => !isClaudeMemCursorHook(hook));
-    if (kept.length === 0) {
-      delete hooks[eventName];
-    } else {
-      hooks[eventName] = kept;
-    }
-  }
-
-  if (Object.keys(hooks).length === 0) return null;
-  return { ...existing, hooks };
+  return { agentId: 'cursor', items, ownedGroups, jsonStyles };
 }
 
 async function writeHooksJsonAndSetupProject(
-  hooksJsonPath: string,
-  hooksJson: CursorHooksJson,
   workerServicePath: string,
   target: CursorInstallTarget,
   targetDir: string,
   workspaceRoot: string,
 ): Promise<void> {
-  const merged = mergeCursorHooksJson(readExistingCursorHooksJson(hooksJsonPath), hooksJson);
-  writeFileSync(hooksJsonPath, JSON.stringify(merged, null, 2));
+  const generatedContext = target === 'project' ? await generateProjectContext(workspaceRoot) : false;
+  const rulesContents = target !== 'project' ? undefined : generatedContext ? null : CURSOR_PLACEHOLDER_RULES;
+  applyLibraryForInstaller(cursorLibraryRequest(targetDir, workspaceRoot, rulesContents));
   console.log(`  Wrote hooks.json (unified CLI mode, existing hooks preserved)`);
   console.log(`  Worker service: ${workerServicePath}`);
 
   if (target === 'project') {
-    await setupProjectContext(targetDir, workspaceRoot);
+    if (!generatedContext) console.log(`  Created placeholder context file (will populate after first session)`);
+    registerCursorProject(getProjectContext(workspaceRoot).primary, workspaceRoot);
+    console.log(`  Registered for auto-context updates`);
   }
 
   console.log(`
@@ -332,44 +220,16 @@ Context Injection:
 `);
 }
 
-async function setupProjectContext(targetDir: string, workspaceRoot: string): Promise<void> {
-  const rulesDir = path.join(targetDir, 'rules');
-  mkdirSync(rulesDir, { recursive: true });
-
+/** Ask a running worker for the project's context; true when it was written to the rules file. */
+async function generateProjectContext(workspaceRoot: string): Promise<boolean> {
   const projectName = getProjectContext(workspaceRoot).primary;
-  let contextGenerated = false;
-
   console.log(`  Generating initial context...`);
-
   try {
-    contextGenerated = await fetchInitialContextFromWorker(projectName, workspaceRoot);
+    return await fetchInitialContextFromWorker(projectName, workspaceRoot);
   } catch (error) {
-    if (error instanceof Error) {
-      logger.debug('WORKER', 'Worker not running during install', {}, error);
-    } else {
-      logger.debug('WORKER', 'Worker not running during install', {}, new Error(String(error)));
-    }
+    logger.debug('WORKER', 'Worker not running during install', {}, error instanceof Error ? error : new Error(String(error)));
+    return false;
   }
-
-  if (!contextGenerated) {
-    const rulesFile = path.join(rulesDir, 'claude-mem-context.mdc');
-    const placeholderContent = `---
-alwaysApply: true
-description: "Claude-mem context from past sessions (auto-updated)"
----
-
-# Memory Context from Past Sessions
-
-*No context yet. Complete your first session and context will appear here.*
-
-Use claude-mem's MCP search tools for manual memory queries.
-`;
-    writeFileSync(rulesFile, placeholderContent);
-    console.log(`  Created placeholder context file (will populate after first session)`);
-  }
-
-  registerCursorProject(projectName, workspaceRoot);
-  console.log(`  Registered for auto-context updates`);
 }
 
 async function fetchInitialContextFromWorker(
@@ -402,13 +262,33 @@ export function uninstallCursorHooks(target: CursorInstallTarget): number {
     return 1;
   }
 
-  const hooksDir = path.join(targetDir, 'hooks');
-  const hooksJsonPath = path.join(targetDir, 'hooks.json');
-
-  const allScripts = [...LEGACY_BASH_SCRIPTS, ...LEGACY_POWERSHELL_SCRIPTS];
-
   try {
-    removeCursorHooksFiles(hooksDir, allScripts, hooksJsonPath, target, targetDir);
+    const workspaceRoot = process.cwd();
+    // Built for removal: a plugin folder that is gone must not stop the uninstall (libraryRemovalEnvironment).
+    const environment = libraryRemovalEnvironment(currentLibraryInstallEnvironment());
+    const request = cursorLibraryRequest(targetDir, workspaceRoot, target === 'project' ? null : undefined, environment);
+    const items = [...request.items, cursorMcpItem(environment.mcpServerPath!, path.join(targetDir, 'mcp.json')).item];
+    removeLibraryForInstaller({ agentId: 'cursor', items, jsonStyles: request.jsonStyles, groups: [...request.ownedGroups, `mcp:${targetDir}`] });
+    console.log(`  Removed claude-mem entries from hooks.json (other hooks preserved)`);
+
+    // Scripts older installers copied next to hooks.json; hooks.json no longer runs them.
+    for (const name of CURSOR_LEGACY_HOOK_SCRIPT_BASENAMES) {
+      for (const script of [`${name}.sh`, `${name}.ps1`]) {
+        const scriptPath = path.join(targetDir, 'hooks', script);
+        if (existsSync(scriptPath)) {
+          unlinkSync(scriptPath);
+          console.log(`  Removed legacy script: ${script}`);
+        }
+      }
+    }
+
+    if (target === 'project') {
+      unregisterCursorProject(getProjectContext(workspaceRoot).primary);
+      console.log(`  Unregistered from auto-context updates`);
+    }
+
+    console.log(`\nUninstallation complete!\n`);
+    console.log('Restart Cursor to apply changes.');
     return 0;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -417,59 +297,19 @@ export function uninstallCursorHooks(target: CursorInstallTarget): number {
   }
 }
 
-function removeCursorHooksFiles(
-  hooksDir: string,
-  allScripts: string[],
-  hooksJsonPath: string,
-  target: CursorInstallTarget,
-  targetDir: string,
-): void {
-  // hooks.json first: a file we can't parse may still point at the legacy
-  // scripts, so those stay too rather than leaving Cursor running missing files.
-  let hooksJsonUnderstood = true;
-  if (existsSync(hooksJsonPath)) {
-    let remaining: Record<string, any> | null = null;
-    try {
-      remaining = removeClaudeMemCursorHooks(readExistingCursorHooksJson(hooksJsonPath)!);
-    } catch {
-      hooksJsonUnderstood = false;
-      console.log(`  Warning: could not parse hooks.json — leaving it and any legacy hook scripts intact to preserve other hooks`);
-    }
-    if (hooksJsonUnderstood) {
-      if (remaining === null) {
-        unlinkSync(hooksJsonPath);
-        console.log(`  Removed hooks.json (no hooks remaining)`);
-      } else {
-        writeFileSync(hooksJsonPath, JSON.stringify(remaining, null, 2));
-        console.log(`  Removed claude-mem entries from hooks.json (other hooks preserved)`);
-      }
-    }
-  }
+function isPlainObject(value: unknown): value is Record<string, any> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
 
-  if (hooksJsonUnderstood) {
-    for (const script of allScripts) {
-      const scriptPath = path.join(hooksDir, script);
-      if (existsSync(scriptPath)) {
-        unlinkSync(scriptPath);
-        console.log(`  Removed legacy script: ${script}`);
-      }
-    }
-  }
+function cursorHookCommand(hook: unknown): string | null {
+  const command = (hook as { command?: unknown } | null)?.command;
+  return typeof command === 'string' ? command.trim() : null;
+}
 
-  if (target === 'project') {
-    const contextFile = path.join(targetDir, 'rules', 'claude-mem-context.mdc');
-    if (existsSync(contextFile)) {
-      unlinkSync(contextFile);
-      console.log(`  Removed context file`);
-    }
-
-    const projectName = getProjectContext(process.cwd()).primary;
-    unregisterCursorProject(projectName);
-    console.log(`  Unregistered from auto-context updates`);
-  }
-
-  console.log(`\nUninstallation complete!\n`);
-  console.log('Restart Cursor to apply changes.');
+/** Every hook entry in a parsed hooks.json, across all events. */
+function allCursorHookEntries(config: Record<string, any>): unknown[] {
+  if (!isPlainObject(config.hooks)) return [];
+  return Object.values(config.hooks).flatMap((entries) => (Array.isArray(entries) ? entries : []));
 }
 
 export function checkCursorHooksStatus(): number {

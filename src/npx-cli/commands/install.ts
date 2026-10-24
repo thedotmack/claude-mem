@@ -5,6 +5,7 @@ import { spawnSync } from 'child_process';
 import { loadTelemetryConfig, saveTelemetryConfig } from '../../services/telemetry/consent.js';
 import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
 import { spawnHidden } from '../../shared/spawn.js';
+import { LIBRARY_INSTALL_MCP_STEP_FAILED_EXIT_CODE, libraryRecoveryNotesIn } from '../../services/wire-gateway/library/types.js';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { readProjectAttribution, replaceOwnedFiles } from '../../shared/owned-file-install.js';
 import { homedir, hostname } from 'os';
@@ -136,6 +137,51 @@ async function bufferConsole<T>(fn: () => Promise<T>): Promise<{ result: T; outp
     console.warn = orig.warn;
   }
 }
+
+/**
+ * Run one IDE's installer. Its config edits go through the Library engine,
+ * which needs Bun (Bun.TOML/Bun.YAML checks). Under Bun the installer runs
+ * here with its console output buffered; under Node (the npx CLI) the whole
+ * install for that IDE runs once in a Bun child (`library install <ide>`),
+ * and a follow-up step of the same IDE (Cursor's or Kimi's MCP half) is
+ * already done by then.
+ */
+async function runIdeInstallStep(
+  ideId: string,
+  run: () => Promise<number> | number,
+  options: { followUp?: boolean; extraArgs?: string[] } = {},
+): Promise<{ result: number; output: string }> {
+  const { libraryRunsInThisProcess, runLibraryInBunChild } = await import('./library.js');
+  if (libraryRunsInThisProcess()) return collectLibraryRecoveryNotes(await bufferConsole(async () => run()));
+  if (options.followUp) {
+    // The child ran this step too; its exit code said whether the MCP half failed.
+    const mcpStepFailed = idesWhoseMcpStepFailedInChild.has(ideId);
+    return { result: mcpStepFailed ? 1 : 0, output: '' };
+  }
+  const child = collectLibraryRecoveryNotes(runLibraryInBunChild(['install', ideId, ...(options.extraArgs ?? [])]));
+  if (child.result === LIBRARY_INSTALL_MCP_STEP_FAILED_EXIT_CODE) {
+    // The hooks went in; only the MCP server did not (reported by the follow-up step).
+    idesWhoseMcpStepFailedInChild.add(ideId);
+    return { result: 0, output: child.output };
+  }
+  return child;
+}
+
+/**
+ * Recovery notes (an earlier interrupted Library change rolled back) found in
+ * a step's captured output. The spinner shows a step's output only when it
+ * fails, so these are kept and printed after the tasks (setupIDEs) even when
+ * the step succeeded.
+ */
+const libraryRecoveryNotesFromIdeSteps: string[] = [];
+
+function collectLibraryRecoveryNotes<T extends { output: string }>(step: T): T {
+  libraryRecoveryNotesFromIdeSteps.push(...libraryRecoveryNotesIn(step.output));
+  return step;
+}
+
+/** IDEs whose Bun child installed the hooks but not the MCP server (Cursor, Kimi). */
+const idesWhoseMcpStepFailedInChild = new Set<string>();
 
 export const log = {
   info: (msg: string) => isInteractive ? p.log.info(msg) : console.log(`  ${msg}`),
@@ -317,13 +363,13 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
           message('Loading Cursor installer…');
           const { installCursorHooks, configureCursorMcp } = await import('../../services/integrations/CursorHooksInstaller.js');
           message('Installing Cursor hooks…');
-          const { result: cursorResult, output: hooksOutput } = await bufferConsole(() => installCursorHooks('user'));
+          const { result: cursorResult, output: hooksOutput } = await runIdeInstallStep('cursor', () => installCursorHooks('user'));
           if (cursorResult !== 0) {
             recordFailure('Cursor: hook installation failed', hooksOutput);
             return `Cursor: hook installation failed ${styleText('red', 'FAIL')}`;
           }
           message('Configuring Cursor MCP…');
-          const { result: mcpResult } = await bufferConsole(async () => configureCursorMcp('user'));
+          const { result: mcpResult } = await runIdeInstallStep('cursor', () => configureCursorMcp('user'), { followUp: true });
           if (mcpResult === 0) {
             return `Cursor: hooks + MCP installed ${styleText('green', 'OK')}`;
           }
@@ -338,7 +384,7 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
         task: async (message) => {
           message('Configuring Grok Bot transcript watch…');
           const { installGrokBotIntegration } = await import('../../services/integrations/GrokBotInstaller.js');
-          const { result, output } = await bufferConsole(async () => installGrokBotIntegration());
+          const { result, output } = await runIdeInstallStep('grok-bot', () => installGrokBotIntegration());
           if (result !== 0) {
             recordFailure('Grok Bot: transcript watch installation failed', output);
             return `Grok Bot: transcript watch installation failed ${styleText('red', 'FAIL')}`;
@@ -355,13 +401,13 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
           message('Loading Kimi installer…');
           const { installKimiHooks, configureKimiMcp } = await import('../../services/integrations/KimiHooksInstaller.js');
           message('Installing Kimi hooks…');
-          const { result: hooksResult, output: hooksOutput } = await bufferConsole(async () => installKimiHooks());
+          const { result: hooksResult, output: hooksOutput } = await runIdeInstallStep('kimi', () => installKimiHooks());
           if (hooksResult !== 0) {
             recordFailure('Kimi Code: hook installation failed', hooksOutput);
             return `Kimi Code: hook installation failed ${styleText('red', 'FAIL')}`;
           }
           message('Configuring Kimi MCP…');
-          const { result: mcpResult } = await bufferConsole(async () => configureKimiMcp());
+          const { result: mcpResult } = await runIdeInstallStep('kimi', () => configureKimiMcp(), { followUp: true });
           if (mcpResult === 0) {
             return `Kimi Code: hooks + MCP installed ${styleText('green', 'OK')}`;
           }
@@ -382,7 +428,7 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
             OPENCODE_OLD_CONTEXT_BLOCK_LEFT,
           } = await import('../../services/integrations/OpenCodeInstaller.js');
           message('Installing OpenCode plugin…');
-          const { result, output } = await bufferConsole(() => installOpenCodeIntegration());
+          const { result, output } = await runIdeInstallStep('opencode', () => installOpenCodeIntegration());
           if (result === OPENCODE_MCP_REGISTRATION_INCOMPLETE) {
             // The plugin is installed; only the MCP entry is missing. That is a
             // partial install, not a failed IDE: record a WARN_CONTINUE warning
@@ -440,7 +486,7 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
         title: 'Pi: installing memory extension',
         task: async () => {
           const { installPiExtension } = await import('../../services/integrations/PiInstaller.js');
-          const { result, output } = await bufferConsole(async () => installPiExtension());
+          const { result, output } = await runIdeInstallStep('pi', () => installPiExtension());
           if (result !== 0) {
             recordFailure('Pi: memory extension installation failed', output);
             return 'Pi: extension installation failed';
@@ -455,7 +501,7 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
         title: 'DeepSeek Harness: installing native memory',
         task: async () => {
           const { installDeepSeekHarness } = await import('../../services/integrations/DeepSeekHarnessInstaller.js');
-          const { result, output } = await bufferConsole(() => installDeepSeekHarness(dshProfile));
+          const { result, output } = await runIdeInstallStep('dsh', () => installDeepSeekHarness(dshProfile), { extraArgs: dshProfile ? ['--dsh-profile', dshProfile] : [] });
           if (result === 2) {
             installerError(ErrorSeverity.WARN_CONTINUE, {
               component: 'dsh', phase: 'ide-install',
@@ -480,7 +526,7 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
           message('Loading OMP installer…');
           const { installOmpHooks } = await import('../../services/integrations/OmpHooksInstaller.js');
           message('Installing OMP hooks…');
-          const { result, output } = await bufferConsole(() => installOmpHooks());
+          const { result, output } = await runIdeInstallStep('omp', () => installOmpHooks());
           if (result !== 0) {
             recordFailure('OMP: hook installation failed', output);
             return `OMP: hook installation failed ${styleText('red', 'FAIL')}`;
@@ -497,7 +543,7 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
           message('Loading Windsurf installer…');
           const { installWindsurfHooks } = await import('../../services/integrations/WindsurfHooksInstaller.js');
           message('Installing Windsurf hooks…');
-          const { result, output } = await bufferConsole(() => installWindsurfHooks());
+          const { result, output } = await runIdeInstallStep('windsurf', () => installWindsurfHooks());
           if (result !== 0) {
             recordFailure('Windsurf: hook installation failed', output);
             return `Windsurf: hook installation failed ${styleText('red', 'FAIL')}`;
@@ -514,7 +560,7 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
           message('Loading OpenClaw installer…');
           const { installOpenClawIntegration } = await import('../../services/integrations/OpenClawInstaller.js');
           message('Copying plugin files…');
-          const { result, output } = await bufferConsole(() => installOpenClawIntegration());
+          const { result, output } = await runIdeInstallStep('openclaw', () => installOpenClawIntegration());
           if (result !== 0) {
             recordFailure('OpenClaw: plugin installation failed', output);
             return `OpenClaw: plugin installation failed ${styleText('red', 'FAIL')}`;
@@ -530,7 +576,7 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
         task: async (message) => {
           message('Installing hooks and MCP for T3 Code providers…');
           const { installT3Code } = await import('../../services/integrations/T3CodeInstaller.js');
-          const { result, output } = await bufferConsole(() => installT3Code(marketplaceDirectory()));
+          const { result, output } = await runIdeInstallStep('t3code', () => installT3Code(marketplaceDirectory()));
           if (result !== 0) {
             recordFailure('T3 Code: integration setup failed', output);
             return `T3 Code: integration setup failed ${styleText('red', 'FAIL')}`;
@@ -547,7 +593,7 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
           message('Loading Codex CLI installer…');
           const { installCodexCli } = await import('../../services/integrations/CodexCliInstaller.js');
           message('Registering native Codex hooks…');
-          const { result, output } = await bufferConsole(() => installCodexCli(marketplaceDirectory()));
+          const { result, output } = await runIdeInstallStep('codex-cli', () => installCodexCli(marketplaceDirectory()));
           if (result !== 0) {
             recordFailure('Codex CLI: integration setup failed', output);
             return `Codex CLI: integration setup failed ${styleText('red', 'FAIL')}`;
@@ -564,7 +610,7 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
           message('Loading Antigravity CLI installer…');
           const { installAntigravityCliHooks } = await import('../../services/integrations/AntigravityCliHooksInstaller.js');
           message('Installing Antigravity hooks + MCP…');
-          const { result, output } = await bufferConsole(() => installAntigravityCliHooks());
+          const { result, output } = await runIdeInstallStep('antigravity', () => installAntigravityCliHooks());
           if (result !== 0) {
             recordFailure('Antigravity: hooks + MCP installation failed', output);
             return `Antigravity: hooks + MCP installation failed ${styleText('red', 'FAIL')}`;
@@ -591,7 +637,7 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
             return `${ideLabel}: MCP installer not found ${styleText('yellow', '!')}`;
           }
           message(`Configuring ${ideLabel} MCP…`);
-          const { result, output } = await bufferConsole(() => mcpInstaller());
+          const { result, output } = await runIdeInstallStep(ideId, () => mcpInstaller());
           if (result !== 0) {
             recordFailure(`${ideLabel}: MCP integration failed`, output);
             return `${ideLabel}: MCP integration failed ${styleText('red', 'FAIL')}`;
@@ -617,6 +663,7 @@ async function setupIDEs(selectedIDEs: string[], summary: InstallSummary, dshPro
   if (tasks.length > 0) {
     await runTasks(tasks);
   }
+  for (const note of libraryRecoveryNotesFromIdeSteps.splice(0)) log.warn(`Recovered an interrupted claude-mem change: ${note}`);
 
   // FAIL_LOUD_PER_IDE failures were recorded on the summary; if EVERY selected
   // IDE failed, escalate to an ABORT (all-ides-failed) — a fully failed install
