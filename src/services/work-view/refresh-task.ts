@@ -292,6 +292,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
 
   return {
     reason,
+    steps,
     // The work-view folder holds every input file; the data dir above it holds .env and settings.json.
     cwd: ledgerDir,
     claudeCode: {

@@ -325,8 +325,9 @@ describe('incremental owner goals', () => {
       const database = fixtureDatabase();
       saveGoals(database, new Date(NOW - 2 * DAY).toISOString());
       writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
+      let clock = NOW;
       const calls: Array<{ args: string[]; goals?: any }> = [], sinceMinutes: Array<string | null> = [];
-      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl: fakePython(calls), writeOwnerPrompts: fakeOwnerPrompts(3, sinceMinutes) });
+      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => clock, spawnImpl: fakePython(calls), writeOwnerPrompts: fakeOwnerPrompts(3, sinceMinutes) });
       await task.prepare!();
       const prompts: string[] = [];
       const ask = async (prompt: string) => {

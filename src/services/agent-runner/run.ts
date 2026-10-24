@@ -26,7 +26,8 @@
  */
 
 import { randomBytes } from 'crypto';
-import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { query, type CanUseTool, type Options, type SdkPluginConfig } from '@anthropic-ai/claude-agent-sdk';
 import { buildIsolatedEnvWithFreshOAuth } from '../../shared/EnvManager.js';
@@ -232,7 +233,20 @@ function geminiAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunne
   return async (prompt, models) => {
     const env = await dependencies.buildEnv();
     const model = models.gemini?.model;
-    const result = await runCli(agent.path!, [...GEMINI_ARGS, ...(model ? ['-m', model] : [])], prompt, { cwd: task.cwd, env });
+    const policyDir = mkdtempSync(join(tmpdir(), 'claude-mem-gemini-policy-'));
+    const policyPath = join(policyDir, 'settings.json');
+    // System settings override project/user config. The allowlist excludes shell,
+    // writes and exit_plan_mode, so changing approval mode cannot enable them.
+    writeFileSync(policyPath, JSON.stringify({
+      tools: { core: ['read_file', 'list_directory', 'glob', 'grep_search'] },
+      security: { disableYoloMode: true }, hooksConfig: { enabled: false },
+    }), { mode: 0o600 });
+    let result: CommandResult;
+    try {
+      result = await runCli(agent.path!, [...GEMINI_ARGS, ...(model ? ['-m', model] : [])], prompt, {
+        cwd: task.cwd, env: { ...env, GEMINI_CLI_SYSTEM_SETTINGS_PATH: policyPath },
+      });
+    } finally { rmSync(policyDir, { recursive: true, force: true }); }
     if (result.exitCode !== 0) throw failure('gemini', result);
     let output: { response?: unknown; error?: { message?: string } };
     try { output = JSON.parse(result.stdout); }

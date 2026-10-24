@@ -192,7 +192,7 @@ describe('detectUsableAgents', () => {
     it('uses where.exe on Windows', async () => {
       const calls: string[] = [];
       await detectOne('codex', { platform: () => 'win32', spawn: fakeSpawn({}, calls) });
-      expect(calls).toContain('where.exe codex');
+      expect(calls).toContain('C:\\Windows/System32/where.exe codex');
     });
   });
 
@@ -256,7 +256,7 @@ describe('detectUsableAgents', () => {
       const calls: string[] = [];
       let refreshToken = 'refresh-1';
       const geminiAccountChecks = new Map();
-      const overrides = { ...signedIn({ exitCode: 42, stderr: INELIGIBLE }, () => JSON.stringify({ refresh_token: refreshToken }), calls), geminiAccountChecks };
+      const overrides = { ...signedIn({ exitCode: 42, stderr: NO_INPUT }, () => JSON.stringify({ refresh_token: refreshToken }), calls), geminiAccountChecks };
       const [first, second] = await Promise.all([detectOne('gemini', overrides), detectOne('gemini', overrides)]);
       expect(await detectOne('gemini', overrides)).toEqual(first);
       expect(second).toEqual(first);
@@ -266,6 +266,14 @@ describe('detectUsableAgents', () => {
       expect(relogged.authenticated).toBe(true);
       expect(calls.filter(call => call === PROBE)).toHaveLength(2);
       expect([...geminiAccountChecks.keys()].join(' ')).not.toContain('refresh-');
+    });
+
+    it('retries a transient failed account probe without requiring a new login', async () => {
+      const geminiAccountChecks = new Map();
+      const failed = await detectOne('gemini', { ...signedIn({ exitCode: 1, stderr: 'network unavailable' }), geminiAccountChecks });
+      expect(failed.authenticated).toBe(false);
+      const retry = await detectOne('gemini', { ...signedIn({ exitCode: 42, stderr: NO_INPUT }), geminiAccountChecks });
+      expect(retry.authenticated).toBe(true);
     });
 
     it('logged in through GEMINI_API_KEY', async () => {

@@ -180,11 +180,17 @@ describe('agent runner', () => {
   it('Gemini: gemini -p in plan (read-only) mode, no extensions or MCP servers, JSON output, prompt on stdin', async () => {
     const calls: SpawnCall[] = [];
     const spawnImpl = fakeSpawn(calls, call => {
+      const policyPath = (call.options.env as Record<string, string>).GEMINI_CLI_SYSTEM_SETTINGS_PATH;
+      expect(JSON.parse(readFileSync(policyPath, 'utf8'))).toEqual({
+        tools: { core: ['read_file', 'list_directory', 'glob', 'grep_search'] },
+        security: { disableYoloMode: true }, hooksConfig: { enabled: false },
+      });
       call.child.stdout.emit('data', JSON.stringify({ response: '{"ok":"gemini"}', stats: {} }));
       call.child.emit('close', 0);
     });
     const result = await runTask(task('/data'), { detect: async () => agents('gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
     expect(result).toEqual({ state: 'ok', agent: 'gemini', result: 'inline done: {"ok":"gemini"}', error: null, attempts: [] });
+    expect(existsSync((calls[0].options.env as Record<string, string>).GEMINI_CLI_SYSTEM_SETTINGS_PATH)).toBe(false);
     expect(calls[0].command).toBe('/bin/gemini');
     expect(calls[0].args).toEqual(['-p', 'Follow the instructions above.', '--approval-mode', 'plan', '--skip-trust', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json']);
     expect(calls[0].child.stdinText).toBe('inline prompt for gemini');
