@@ -80,7 +80,7 @@ function compactTime(time: string): string {
 }
 
 export function renderAgentTableRow(
-  obs: Observation,
+  obs: Pick<Observation, 'id' | 'type' | 'title'>,
   timeDisplay: string,
   config: ContextConfig
 ): string {

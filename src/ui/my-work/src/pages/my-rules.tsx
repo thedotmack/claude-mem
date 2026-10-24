@@ -27,6 +27,8 @@ function useRuleScope(scopeId: string): RuleScope {
   return scope
 }
 const scopeHeading = (scope: RuleScope) => scope.tier === 'project' ? `In ${scope.name}` : scope.name
+/** A scope's heading in MY-RULES.md, as renderRulesFile (work-view/my-rules.mjs) writes it. */
+const rulesFileHeading = (scope: RuleScope) => scope.tier === 'situation' ? `Situation: ${scope.name}` : scopeHeading(scope)
 
 /** Strength (§14): times seen × how recent. Shown in words, never as a raw score. */
 const strengthScore = (rule: OwnerRule) => rule.timesSeen / (1 + rule.latestDaysAgo / 7)
@@ -449,7 +451,7 @@ function rulesFileLines(rules: OwnerRule[], scopes: RuleScope[]) {
   const loaded = rules.filter((rule) => rule.status === 'on' && rule.setBy !== 'learned')
   return [{ text: '# My Rules', ruleId: null as string | null }, ...scopes.flatMap((scope) => {
     const inScope = loaded.filter((rule) => rule.scopeId === scope.id).sort((a, b) => SET_BY_ORDER[a.setBy] - SET_BY_ORDER[b.setBy] || byStrength(a, b))
-    return inScope.length ? [{ text: '', ruleId: null }, { text: `## ${scopeHeading(scope)}`, ruleId: null }, ...inScope.map((rule) => ({ text: rule.when ? `- When ${rule.when}: ${lowerFirst(rule.then)}` : `- ${rule.then}`, ruleId: rule.id }))] : []
+    return inScope.length ? [{ text: '', ruleId: null }, { text: `## ${rulesFileHeading(scope)}`, ruleId: null }, ...inScope.map((rule) => ({ text: rule.when ? `- When ${rule.when}: ${lowerFirst(rule.then)}` : `- ${rule.then}`, ruleId: rule.id }))] : []
   })]
 }
 

@@ -38,16 +38,32 @@ export type WireLedgerEntry =
   /** The hidden tool's definition as appended to `tools`, or null when it was not added. */
   | { type: 'tool'; name: string; definitionJson: string | null }
   /**
-   * A tool result replaced by an observation's text (Endless Mode): the
+   * The durable header (the owner's rule-scoped markdown) applied from the
+   * request at `firstTurnMessageIndex` on, or null text when none is added.
+   * One header per turn start (the first written wins); the header in force
+   * is the entry with the largest `firstTurnMessageIndex`.
+   */
+  | { type: 'header'; text: string | null; hash: string; firstTurnMessageIndex: number }
+  /**
+   * Finished tool work culled (Endless Mode): the messages after the user
+   * turn at `turnMessageIndex` through `throughMessageIndex` are replaced by
+   * the timeline `lines` of the observations they produced. For one turn,
+   * the entry with the largest `throughMessageIndex` is the one applied.
+   */
+  | { type: 'cull'; turnMessageIndex: number; throughMessageIndex: number; lines: string[]; observationIds: number[]; culledTokensEst: number }
+  /**
+   * A tool result replaced by an observation's text (Endless Mode v1): the
    * observation it shows, or, with `coveredByCallId`, the earlier call whose
-   * replacement already shows it.
+   * replacement already shows it. Still parsed so old ledgers stay readable;
+   * a conversation holding one is suspended for the cull stage.
    */
   | { type: 'swap'; callId: string; replacementText: string; firstRequestAt: string; observationId: number; coveredByCallId?: string }
   /**
    * Thinking blocks are dropped from the assistant messages after
    * `boundaryMessageIndex` and before `untilMessageIndex` (Endless Mode,
    * Anthropic): the user turn that added the swaps, so what the model said
-   * after it, with the swaps in place, keeps its thinking.
+   * after it, with the swaps in place, keeps its thinking. A cull always
+   * records `boundaryMessageIndex: 0` (oldest first, no gap).
    */
   | { type: 'thinkingDrop'; boundaryMessageIndex: number; untilMessageIndex: number }
   /**
@@ -60,13 +76,21 @@ export type WireLedgerEntry =
 
 export type WireLedgerEntryType = WireLedgerEntry['type'];
 
-/** What an entry is first-write-wins by: one of each kind per conversation, a swap per call, a thinking drop per boundary. */
+/**
+ * What an entry is first-write-wins by: one of each kind per conversation, a
+ * header per turn start, a cull per turn and end, a swap per call, a thinking drop
+ * per boundary.
+ */
 export function ledgerEntryIdOf(entry: WireLedgerEntry): string {
   switch (entry.type) {
     case 'born':
     case 'injection':
     case 'tool':
       return entry.type;
+    case 'header':
+      return `header:${entry.firstTurnMessageIndex}`;
+    case 'cull':
+      return `cull:${entry.turnMessageIndex}:${entry.throughMessageIndex}`;
     case 'swap':
       return `swap:${entry.callId}`;
     case 'thinkingDrop':
@@ -78,6 +102,10 @@ export function ledgerEntryIdOf(entry: WireLedgerEntry): string {
 
 function isString(value: unknown): value is string {
   return typeof value === 'string';
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return Number.isInteger(value) && (value as number) >= 0;
 }
 
 /** The entry a ledger line holds, or null when the line is not one (a corrupt ledger). */
@@ -99,6 +127,23 @@ function ledgerEntryFromLine(line: string): WireLedgerEntry | null {
       return isString(record.name) && (isString(record.definitionJson) || record.definitionJson === null)
         ? { type: 'tool', name: record.name, definitionJson: record.definitionJson as string | null }
         : null;
+    case 'header':
+      return (isString(record.text) || record.text === null) && isString(record.hash) && isNonNegativeInteger(record.firstTurnMessageIndex)
+        ? { type: 'header', text: record.text as string | null, hash: record.hash, firstTurnMessageIndex: record.firstTurnMessageIndex }
+        : null;
+    case 'cull':
+      // One line per observation, and a cull never ends before the turn it belongs to.
+      return isNonNegativeInteger(record.turnMessageIndex) && isNonNegativeInteger(record.throughMessageIndex)
+        && record.throughMessageIndex >= record.turnMessageIndex
+        && Array.isArray(record.lines) && record.lines.every(isString)
+        && Array.isArray(record.observationIds) && record.observationIds.every(isNonNegativeInteger)
+        && record.lines.length === record.observationIds.length
+        && isNonNegativeInteger(record.culledTokensEst)
+        ? {
+          type: 'cull', turnMessageIndex: record.turnMessageIndex, throughMessageIndex: record.throughMessageIndex,
+          lines: record.lines as string[], observationIds: record.observationIds as number[], culledTokensEst: record.culledTokensEst,
+        }
+        : null;
     case 'swap': {
       if (!isString(record.callId) || !isString(record.replacementText) || !isString(record.firstRequestAt)
         || !Number.isInteger(record.observationId)) return null;
@@ -108,12 +153,10 @@ function ledgerEntryFromLine(line: string): WireLedgerEntry | null {
       if (record.coveredByCallId === undefined) return swap;
       return isString(record.coveredByCallId) ? { ...swap, coveredByCallId: record.coveredByCallId } : null;
     }
-    case 'thinkingDrop': {
-      const isMessageIndex = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 0;
-      return isMessageIndex(record.boundaryMessageIndex) && isMessageIndex(record.untilMessageIndex)
+    case 'thinkingDrop':
+      return isNonNegativeInteger(record.boundaryMessageIndex) && isNonNegativeInteger(record.untilMessageIndex)
         ? { type: 'thinkingDrop', boundaryMessageIndex: record.boundaryMessageIndex, untilMessageIndex: record.untilMessageIndex }
         : null;
-    }
     case 'suspended':
       return isString(record.stage) && isString(record.at) ? { type: 'suspended', stage: record.stage, at: record.at } : null;
     default:

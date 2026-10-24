@@ -54,6 +54,8 @@ export const MARKETPLACE_ROOT = join(CLAUDE_CONFIG_DIR, 'plugins', 'marketplaces
 
 export const LOGS_DIR = join(DATA_DIR, 'logs');
 export const USER_SETTINGS_PATH = join(DATA_DIR, 'settings.json');
+/** The approved rules as Markdown (My Rules): written by WorkViewRoutes, read by the wire header route. */
+export const MY_RULES_FILE_PATH = join(DATA_DIR, 'MY-RULES.md');
 export const DB_FILENAME = 'claude-mem.db';
 
 /**

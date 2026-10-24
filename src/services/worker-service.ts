@@ -590,7 +590,7 @@ export class WorkerService implements WorkerRef {
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
     this.server.registerRoutes(new LogsRoutes());
     this.server.registerRoutes(new MemoryRoutes(this.dbManager, 'claude-mem'));
-    this.server.registerRoutes(new WireRoutes(this.dbManager));
+    this.server.registerRoutes(new WireRoutes(this.dbManager, { contextReader: getContextReadWorker() }));
     this.server.registerRoutes(new WireViewerRoutes({ originPolicy: this.originPolicy }));
     this.server.registerRoutes(new MemoryIngestRoutes(this.dbManager));
     this.server.registerRoutes(new DedupRoutes(this.dbManager));

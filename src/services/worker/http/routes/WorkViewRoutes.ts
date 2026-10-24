@@ -6,7 +6,7 @@ import { homedir } from 'node:os';
 import { dirname, extname, join } from 'node:path';
 import { z } from 'zod';
 import { Database } from 'bun:sqlite';
-import { CLAUDE_CONFIG_DIR, DATA_DIR, DB_PATH, getPackageRoot, USER_SETTINGS_PATH } from '../../../../shared/paths.js';
+import { CLAUDE_CONFIG_DIR, DATA_DIR, DB_PATH, getPackageRoot, MY_RULES_FILE_PATH, USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { onContextInvalidation } from '../../../../shared/context-invalidation.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { resolveOpenRouterChatCompletionsUrl } from '../../../../shared/openrouter-base-url.js';
@@ -199,7 +199,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     this.autoRefresh?.start();
     this.appendWorkStateEntry = options.appendWorkStateEntry ?? null;
     this.homeProject = options.homeProject;
-    this.rulesFilePath = options.rulesFilePath ?? join(DATA_DIR, 'MY-RULES.md');
+    this.rulesFilePath = options.rulesFilePath ?? MY_RULES_FILE_PATH;
     this.claudeInstructionsPath = options.claudeInstructionsPath ?? join(CLAUDE_CONFIG_DIR, 'CLAUDE.md');
     // Rule rows pulled from another device change what Claude Code should load; rebuild the file then too.
     this.stopRulesSync = onContextInvalidation(({ reason }) => {

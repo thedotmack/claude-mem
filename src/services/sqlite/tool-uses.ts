@@ -389,14 +389,16 @@ export function getToolUsesByIds(
 export interface ToolUseObservationRow {
   tool_use_id: string;
   observation_id: number;
+  type: string;
   title: string | null;
   narrative: string | null;
   facts: string | null;
+  created_at_epoch: number;
 }
 
 /**
  * For each of `toolUseIds` of one session that is linked to an observation,
- * that observation's title, narrative and facts (POST
+ * that observation's type, title, narrative, facts and creation time (POST
  * /api/wire/tool-observations). Ids with no observation yet are left out.
  */
 export function getToolUseObservations(
@@ -413,7 +415,8 @@ export function getToolUseObservations(
     params.push(platform.param);
   }
   return db.prepare(`
-    SELECT t.tool_use_id AS tool_use_id, o.id AS observation_id, o.title AS title, o.narrative AS narrative, o.facts AS facts
+    SELECT t.tool_use_id AS tool_use_id, o.id AS observation_id, o.type AS type, o.title AS title, o.narrative AS narrative, o.facts AS facts,
+      o.created_at_epoch AS created_at_epoch
     FROM tool_uses t
     JOIN observations o ON o.id = t.observation_id
     WHERE ${conditions.join(' AND ')}

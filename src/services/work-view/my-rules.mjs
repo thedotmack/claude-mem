@@ -158,7 +158,8 @@ export function renderRulesFile(rules, now = Date.now()) {
   const ordered = [...scopes.values()].sort((a, b) => RULE_SCOPE_TIERS.indexOf(a.tier) - RULE_SCOPE_TIERS.indexOf(b.tier) || a.name.localeCompare(b.name));
   const lines = ['# My Rules', '', 'How I want agents to work. Written by claude-mem from the rules I set or approved in My Rules (localhost:37777).'];
   for (const scope of ordered) {
-    lines.push('', `## ${scope.tier === 'project' ? `In ${scope.name}` : scope.tier === 'situation' ? scope.name : 'Everywhere'}`, '');
+    // "Situation: " keeps a situation named "In ..." from reading as a project section (the wire header filters on "## In ").
+    lines.push('', `## ${scope.tier === 'project' ? `In ${scope.name}` : scope.tier === 'situation' ? `Situation: ${scope.name}` : 'Everywhere'}`, '');
     scope.rules.sort((a, b) => SET_BY_ORDER[a.setBy] - SET_BY_ORDER[b.setBy] || strength(b, now) - strength(a, now));
     for (const rule of scope.rules) lines.push(rule.when ? `- When ${rule.when}: ${lowerFirst(rule.then)}` : `- ${rule.then}`);
   }
