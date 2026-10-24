@@ -15,7 +15,7 @@
  *   - Codex: `codex exec -s read-only --ephemeral --ignore-user-config --skip-git-repo-check -C <cwd> -o <file> [--output-schema <file>] [-m <model>] [-c model_reasoning_effort="<effort>"] -`
  *     (codex-cli 0.163.0 `exec --help`), prompt on stdin, no MCP servers. A step that names an answer
  *     schema gets it as `--output-schema`, so the final message is that JSON shape and nothing else.
- *   - Gemini: `gemini -p <line> --approval-mode plan -e none --allowed-mcp-server-names <none> -o json [-m <model>]`
+ *   - Gemini: `gemini -p <line> --skip-trust --approval-mode plan -e none --allowed-mcp-server-names <none> -o json [-m <model>]`
  *     (gemini 0.49.0 `--help`: plan = read-only mode), prompt on stdin, no extensions or MCP servers.
  *   Each step names its model per backend (the task's table); Claude Code takes it as the SDK `model` option.
  *
@@ -197,9 +197,11 @@ const CODEX_EXEC_ARGS = (cwd: string, answerPath: string, schemaPath: string | n
   ...(schemaPath ? ['--output-schema', schemaPath] : []), ...(model ? ['-m', model] : []), ...(reasoningEffort ? ['-c', `model_reasoning_effort="${reasoningEffort}"`] : []), '-',
 ];
 
-/** Gemini with no extensions and no MCP server (none is named this), so plan mode is the only tool surface. */
+/** Gemini with no extensions and no MCP server (none is named this), so plan mode is the only tool surface.
+ * `--skip-trust` trusts only the task's own folder for this run: in an untrusted folder Gemini drops plan mode
+ * to "default" and a headless run exits 55 (Oct 24, "Gemini CLI is not running in a trusted directory"). */
 export const GEMINI_NO_MCP_SERVERS = 'claude-mem-refresh-uses-no-mcp-servers';
-const GEMINI_ARGS = ['-p', 'Follow the instructions above.', '--approval-mode', 'plan', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json'];
+const GEMINI_ARGS = ['-p', 'Follow the instructions above.', '--skip-trust', '--approval-mode', 'plan', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json'];
 
 function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies): AskAgent {
   return async (prompt, models, answerSchema) => {
@@ -243,6 +245,8 @@ function geminiAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunne
  * when a run fails. Never throws. With no logged-in agent it returns
  * `waiting-for-agent` and runs nothing.
  */
+const agentNames: Record<UsableAgentId, string> = { 'claude-code': 'Claude Code', codex: 'Codex', gemini: 'Gemini' };
+
 export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunnerDependencies> = {}): Promise<AgentRunResult> {
   const autoApprovedFileTools = task.claudeCode.allowedTools.filter(tool => FILE_TOOLS.includes(tool));
   if (autoApprovedFileTools.length) throw new Error(`Agent task ${task.reason} auto-approves ${autoApprovedFileTools.join(', ')}, which would read anywhere on disk; name readableFolders instead.`);
@@ -266,5 +270,7 @@ export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunn
     }
   }
   const last = attempts[attempts.length - 1];
-  return { state: 'failed', agent: last.agent, result: null, error: last.error, attempts };
+  // Every agent's failure, in the order tried: the last fallback's error alone hides why the first ones failed.
+  const error = attempts.map(attempt => `${agentNames[attempt.agent]}: ${attempt.error}`).join(' · ');
+  return { state: 'failed', agent: last.agent, result: null, error, attempts };
 }
