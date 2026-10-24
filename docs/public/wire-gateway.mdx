@@ -10,8 +10,79 @@ agent's own credentials and passes the reply back unchanged. On the way it can
 turn what it sees into claude-mem memories.
 
 Nothing is rerouted on its own: a route exists only after you add one
-(`claude-mem wire routes add`). Agents signed in with a subscription are refused
-and stay on their native claude-mem integration.
+(`claude-mem wire connect`, or `claude-mem wire routes add` by hand). Agents
+signed in with a subscription are refused and stay on their native claude-mem
+integration (`CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS=true` lifts
+that on your computer; check your provider's terms first).
+
+## Connect an agent
+
+```bash
+claude-mem wire preview <agent>              # what connect would change; nothing is written
+claude-mem wire connect <agent>              # point the agent's base URLs at the gateway
+claude-mem wire connect <agent> --capture native   # relay only; its own claude-mem integration records it
+claude-mem wire status                       # is each connected agent really using the gateway?
+claude-mem wire preview <agent> --disconnect # what disconnect would put back
+claude-mem wire disconnect <agent>           # put back what connect changed
+```
+
+`connect` edits the agent's own config file in place, keeping its comments and
+layout, and records what it changed. It adds one route per base URL it rewires,
+relaying to the URL that was there before (or the agent's built-in endpoint),
+starts the gateway, checks the gateway answers on each new route, and installs
+the login service if it is not installed yet (`claude-mem wire service install`
+does that alone). If any step fails the config is put back and nothing stays
+connected. It refuses an agent signed in with a subscription, an agent it cannot
+find on this computer, and a base URL that already points at the gateway without
+a record of connecting it. Each route starts on the `CLAUDE_MEM_WIRE_GATEWAY_*`
+defaults; the [features](#endless-mode) below have per-route switches.
+
+`--capture` picks who records the agent. `wire` (the default when the agent has
+no claude-mem integration installed) means the gateway turns its traffic into
+memories. `native` means the agent's own claude-mem hooks or plugin keep doing
+that and the gateway only relays; an agent whose integration is installed is
+always connected this way, so nothing is recorded twice.
+
+`disconnect` restores each value `connect` changed. A value you changed by hand
+since is left as it is and reported. It removes the agent's routes; when the
+last route goes, the gateway stops.
+
+### Run an agent that is set by environment only
+
+Some agents take their endpoint from an environment variable only (Antigravity
+CLI, Cursor Private Inference), so there is no file to connect. Start them
+through the gateway instead:
+
+```bash
+claude-mem wire run <agent> -- <the agent's own arguments>
+```
+
+`run` starts the gateway if needed, opens a launcher session that knows the
+folder you started in, sets the agent's base-URL variable to that session's
+route and runs the agent in your terminal. If the agent sent no request through
+the gateway (it ignored the variable), `run` says so when it exits, because
+nothing from that run was recorded.
+
+### Status
+
+`claude-mem wire status` (`--json` for scripts) prints whether the gateway runs
+and one state per connected agent, with what to run to fix it:
+
+| State | Meaning |
+| --- | --- |
+| `ok` | The agent sends its requests through the gateway. |
+| `unwired` | A base URL in the agent's config sends it somewhere other than the gateway, or is unset so it uses its built-in endpoint. |
+| `replaced` | A value `connect` wrote was changed outside claude-mem; it was left as it is. |
+| `unreachable` | Nothing answers as the gateway where the agent sends its requests (it is not running, or the port changed). |
+| `proxied` | The agent would send its gateway requests through a proxy (an env var or the system proxy) that does not pass them on. |
+| `bypassed` | The agent was used since it was connected, but none of its requests reached the gateway (a copy started before `connect` still runs on its old config). |
+| `unknown` | Not decided yet (ask again in a moment), or a config file cannot be read. |
+
+It also shows each route's memory injection, `memory_search` and Endless Mode
+switches. `claude-mem wire start`, `stop` (it waits for open streams to finish,
+up to `CLAUDE_MEM_WIRE_GATEWAY_DRAIN_TIMEOUT_MS`) and `restart` run the daemon by
+hand. The worker also starts it at boot while any route exists
+(`CLAUDE_MEM_WIRE_GATEWAY_AUTOSTART`).
 
 ## Privacy
 
