@@ -44,6 +44,7 @@ export interface ClaudeObservationProviderOptions {
 
 interface AnthropicMessagesResponse {
   content?: Array<{ type?: string; text?: string }>;
+  stop_reason?: string;
   usage?: { input_tokens?: number; output_tokens?: number };
   error?: { type?: string; message?: string };
 }
@@ -145,7 +146,16 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
       .join('\n')
       .trim();
 
-    if (!rawText) {
+    // A reply cut off at the output-token cap loses its tail, or all of it when
+    // thinking spent the cap first; say so rather than store it silently.
+    if (data.stop_reason === 'max_tokens') {
+      logger.error('SDK', 'Anthropic reply was cut off at max_tokens; the unfinished tail is lost. Raise CLAUDE_MEM_SERVER_MAX_OUTPUT_TOKENS if this repeats', {
+        provider: 'claude',
+        model: this.model,
+        maxTokens: this.requestMaxTokens(),
+        hasText: rawText !== '',
+      });
+    } else if (!rawText) {
       logger.warn('SDK', 'Anthropic returned empty content array', {
         provider: 'claude',
         model: this.model,

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 import { readFileSync } from 'fs';
 import {
   ServerClassifiedProviderError,
@@ -24,6 +24,7 @@ import { OpenRouterObservationProvider } from '../../../src/server/generation/pr
 import { buildServerGenerationPrompt } from '../../../src/server/generation/providers/shared/prompt-builder.js';
 import type { ServerGenerationContext } from '../../../src/server/generation/providers/shared/types.js';
 import { SettingsDefaultsManager } from '../../../src/shared/SettingsDefaultsManager.js';
+import { logger } from '../../../src/utils/logger.js';
 
 function makeContext(overrides: Partial<{ payload: unknown; serverSessionId: string | null; sourceType: 'agent_event' | 'session_summary' }> = {}): ServerGenerationContext {
   return {
@@ -343,6 +344,22 @@ describe('ClaudeObservationProvider', () => {
       const body = JSON.parse(String(capturing.lastInit?.body));
       expect(body.thinking).toEqual(expected);
       expect(body.max_tokens).toBe(maxTokens);
+    }
+  });
+
+  it('logs an error when the reply is cut off at max_tokens', async () => {
+    const errorSpy = spyOn(logger, 'error').mockImplementation(() => {});
+    try {
+      const provider = new ClaudeObservationProvider({
+        apiKey: 'sk-fake',
+        fetchImpl: new CapturingFetch(jsonResponse(200, { content: [], stop_reason: 'max_tokens' })).fetch,
+      });
+      const result = await provider.generate(makeContext());
+      expect(result.rawText).toBe('');
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      expect(String(errorSpy.mock.calls[0]?.[1])).toContain('CLAUDE_MEM_SERVER_MAX_OUTPUT_TOKENS');
+    } finally {
+      errorSpy.mockRestore();
     }
   });
 
