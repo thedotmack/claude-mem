@@ -197,7 +197,10 @@ const CODEX_EXEC_ARGS = (cwd: string, answerPath: string, schemaPath: string | n
   ...(schemaPath ? ['--output-schema', schemaPath] : []), ...(model ? ['-m', model] : []), ...(reasoningEffort ? ['-c', `model_reasoning_effort="${reasoningEffort}"`] : []), '-',
 ];
 
-/** Gemini with no extensions and no MCP server (none is named this), so plan mode is the only tool surface. */
+/** Gemini with no extensions and no MCP server (none is named this), so plan mode is the only tool surface.
+ * Never `--skip-trust`: a non-interactive run that exits plan mode switches to YOLO (gemini 0.49.0
+ * ExitPlanModeTool.getAllowApprovalMode), so the folder-trust check is what keeps an unattended run read-only.
+ * In an untrusted folder Gemini refuses with exit 55, and that refusal is reported like any other failure. */
 export const GEMINI_NO_MCP_SERVERS = 'claude-mem-refresh-uses-no-mcp-servers';
 const GEMINI_ARGS = ['-p', 'Follow the instructions above.', '--approval-mode', 'plan', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json'];
 
@@ -243,6 +246,8 @@ function geminiAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunne
  * when a run fails. Never throws. With no logged-in agent it returns
  * `waiting-for-agent` and runs nothing.
  */
+const agentNames: Record<UsableAgentId, string> = { 'claude-code': 'Claude Code', codex: 'Codex', gemini: 'Gemini' };
+
 export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunnerDependencies> = {}): Promise<AgentRunResult> {
   const autoApprovedFileTools = task.claudeCode.allowedTools.filter(tool => FILE_TOOLS.includes(tool));
   if (autoApprovedFileTools.length) throw new Error(`Agent task ${task.reason} auto-approves ${autoApprovedFileTools.join(', ')}, which would read anywhere on disk; name readableFolders instead.`);
@@ -266,5 +271,7 @@ export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunn
     }
   }
   const last = attempts[attempts.length - 1];
-  return { state: 'failed', agent: last.agent, result: null, error: last.error, attempts };
+  // Every agent's failure, in the order tried: the last fallback's error alone hides why the first ones failed.
+  const error = attempts.map(attempt => `${agentNames[attempt.agent]}: ${attempt.error}`).join(' · ');
+  return { state: 'failed', agent: last.agent, result: null, error, attempts };
 }
