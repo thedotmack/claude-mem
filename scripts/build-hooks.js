@@ -180,9 +180,10 @@ export function shellTemplateManifest(buildShellCommand, buildCodexWindowsComman
     // the installer-prepared copies (#4763).
     requireDependencies: true,
   });
-  const codexHookPair = (tail) => ({
+  const codexHookPair = (tail, entryOptions = {}) => ({
     command: codexHook(tail),
     commandWindows: buildCodexWindowsCommand(tail, { requireDependencies: true }),
+    ...entryOptions,
   });
 
   return {
@@ -231,7 +232,12 @@ export function shellTemplateManifest(buildShellCommand, buildCodexWindowsComman
         'SessionStart.0.0': codexHookPair(['hook', 'codex', 'context']),
         'UserPromptSubmit.0.0': codexHookPair(['hook', 'codex', 'session-init']),
         'PreToolUse.0.0': codexHookPair(['hook', 'codex', 'file-context']),
-        'PostToolUse.0.0': codexHookPair(['hook', 'codex', 'observation']),
+        // Observation capture is fail-open bookkeeping; never block tool
+        // completion on worker startup or storage I/O.
+        'PostToolUse.0.0': codexHookPair(
+          ['hook', 'codex', 'observation'],
+          { timeout: 120, async: true },
+        ),
         'Stop.0.0': codexHookPair(['hook', 'codex', 'summarize']),
         'PostCompact.0.0': codexHookPair(['hook', 'codex', 'post-compact']),
       },
@@ -399,6 +405,17 @@ async function verifyShellTemplateCanonical() {
             );
           }
           entry.timeout = expected.timeout;
+          dirty = true;
+        }
+        if (typeof expected !== 'string' && Object.prototype.hasOwnProperty.call(expected, 'async')
+          && entry?.async !== expected.async) {
+          if (!writeMode || !entry) {
+            throw new Error(
+              `Hand-edited async setting detected in ${filePath} (${dottedPath}). It no longer matches scripts/build-hooks.js. ` +
+              `Regenerate via \`node scripts/build-hooks.js --write-shell-templates\` after an intentional generator change.`
+            );
+          }
+          entry.async = expected.async;
           dirty = true;
         }
       }

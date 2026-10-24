@@ -247,6 +247,19 @@ describe('Plugin Distribution - Codex Marketplace', () => {
     expect(codexHooks.hooks.PostToolUse[0].matcher).toBe('.*');
   });
 
+  it('runs Codex observation asynchronously while immediate-output hooks stay synchronous', () => {
+    const codexHooks = readJson('plugin/hooks/codex-hooks.json');
+    const observation = codexHooks.hooks.PostToolUse[0].hooks[0];
+
+    expect(observation.command).toContain('hook codex observation');
+    expect(observation.timeout).toBe(120);
+    expect(observation.async).toBe(true);
+
+    for (const event of ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'Stop', 'PostCompact']) {
+      expect(codexHooks.hooks[event][0].hooks[0]).not.toHaveProperty('async');
+    }
+  });
+
   it('sets the Codex hook marker on every Codex command', () => {
     for (const command of commandHooksFrom('plugin/hooks/codex-hooks.json')) {
       expect(command).toContain('CLAUDE_MEM_CODEX_HOOK=1');
@@ -667,9 +680,10 @@ const codexHook = (tail: string[]) => buildShellCommand({
   extraEnv: { CLAUDE_MEM_CODEX_HOOK: '1' },
   requireDependencies: true,
 });
-const codexHookPair = (tail: string[]) => ({
+const codexHookPair = (tail: string[], entryOptions: Record<string, unknown> = {}) => ({
   command: codexHook(tail),
   commandWindows: buildCodexWindowsCommand(tail, { requireDependencies: true }),
+  ...entryOptions,
 });
 
 const SESSION_INIT_HOOK_TIMEOUT_SECONDS = 15;
@@ -677,7 +691,12 @@ const SESSION_INIT_HOOK_PATH = 'UserPromptSubmit.0.0';
 const FILE_CONTEXT_HOOK_TIMEOUT_SECONDS = 15;
 const FILE_CONTEXT_HOOK_PATH = 'PreToolUse.0.0';
 
-type RuleAExpectation = string | { command: string; commandWindows?: string; timeout?: number };
+type RuleAExpectation = string | {
+  command: string;
+  commandWindows?: string;
+  timeout?: number;
+  async?: boolean;
+};
 
 const SETUP_SHELL_COMMAND = buildShellCommand({
   host: 'claude-code-setup', requireFile: 'version-check.js',
@@ -715,7 +734,10 @@ const RULE_A_EXPECTATIONS: Record<string, Record<string, RuleAExpectation>> = {
     'SessionStart.0.0': codexHookPair(['hook', 'codex', 'context']),
     'UserPromptSubmit.0.0': codexHookPair(['hook', 'codex', 'session-init']),
     'PreToolUse.0.0': codexHookPair(['hook', 'codex', 'file-context']),
-    'PostToolUse.0.0': codexHookPair(['hook', 'codex', 'observation']),
+    'PostToolUse.0.0': codexHookPair(
+      ['hook', 'codex', 'observation'],
+      { timeout: 120, async: true },
+    ),
     'Stop.0.0': codexHookPair(['hook', 'codex', 'summarize']),
     'PostCompact.0.0': codexHookPair(['hook', 'codex', 'post-compact']),
   },
@@ -752,6 +774,12 @@ describe('Spawn-Contract Templating - Rule A generator parity', () => {
         expect(entry?.command ?? null).toBe(expectedCommand);
         if (typeof expected !== 'string' && expected.commandWindows !== undefined) {
           expect(entry?.commandWindows ?? null).toBe(expected.commandWindows);
+        }
+        if (typeof expected !== 'string' && expected.timeout !== undefined) {
+          expect(entry?.timeout ?? null).toBe(expected.timeout);
+        }
+        if (typeof expected !== 'string' && expected.async !== undefined) {
+          expect(entry?.async ?? null).toBe(expected.async);
         }
       });
     }
