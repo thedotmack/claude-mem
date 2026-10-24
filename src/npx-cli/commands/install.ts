@@ -2147,6 +2147,15 @@ export function noteDeviceCode(
  * Continues the already-authenticated pairing only after the CMEM Pro choice
  * and required trial acknowledgement.
  */
+/** Activate a fresh enrollment before the browser reports checkout paid. Sync-only seats keep their provider. */
+export function activateBrowserEnrollment(result: TrialReadyResult): ProviderId | null {
+  if (!result.memory) return null;
+  const credentials = resolveCmemMemoryCredentials(result.memory, SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH));
+  if (!credentials || !mergeSettings(buildCmemActivationSettings(credentials))) throw new Error('Could not save the CMEM Pro memory configuration.');
+  if (credentials.clearFallback) clearProFallback();
+  return 'openrouter';
+}
+
 export async function completeCmemTrialPairing(
   pairing: InstallerOAuthPairing,
   version: string,
@@ -3026,8 +3035,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
               if (!onTheGoPairing) onTheGoPairing = await startOnTheGoPairing(version);
               const pairing: InstallerOAuthPairing = onTheGoPairing;
               const delivered = await completeCmemTrialPairing(pairing, version);
-              if (!delivered) onTheGoPairing = null;
-              return Boolean(delivered);
+              if (!delivered) { onTheGoPairing = null; return false; }
+              browserProvider = activateBrowserEnrollment(delivered) ?? browserProvider;
+              return true;
             },
             reopen: () => {
               const pairing = onTheGoPairing as InstallerOAuthPairing | null;

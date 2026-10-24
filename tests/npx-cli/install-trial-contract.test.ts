@@ -658,3 +658,26 @@ describe('installer trial-ready contract', () => {
     expect(output).not.toContain('PAIRING_SECRET_MUST_NOT_LEAK');
   });
 });
+
+
+describe('browser checkout memory activation', () => {
+  it('activates delivered memory credentials and keeps sync-only accounts on their existing provider', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-browser-activation-'));
+    try {
+      const script = `
+        const { activateBrowserEnrollment } = await import('./src/npx-cli/commands/install.ts');
+        const memory = { memoryKey: 'test-memory-key', memoryBaseUrl: 'https://cmem.ai/api/observer/v1', memoryModel: 'cmem-test' };
+        const first = activateBrowserEnrollment({ memory });
+        const second = activateBrowserEnrollment({ memory: null });
+        console.log(JSON.stringify({ first, second }));
+      `;
+      const result = Bun.spawnSync([process.execPath, '--eval', script], { cwd: repoRoot, env: { ...process.env, CLAUDE_MEM_DATA_DIR: dataDir, CLAUDE_MEM_TELEMETRY: '0' }, stdout: 'pipe', stderr: 'pipe' });
+      expect(result.exitCode, decoder.decode(result.stderr)).toBe(0);
+      expect(JSON.parse(decoder.decode(result.stdout).trim())).toEqual({ first: 'openrouter', second: null });
+      const settings = JSON.parse(readFileSync(join(dataDir, 'settings.json'), 'utf8'));
+      expect(settings.CLAUDE_MEM_PROVIDER).toBe('openrouter');
+      expect(settings.CLAUDE_MEM_OPENROUTER_API_KEY).toBe('test-memory-key');
+      expect(settings.CLAUDE_MEM_OPENROUTER_MODEL).toBe('cmem-test');
+    } finally { rmSync(dataDir, { recursive: true, force: true }); }
+  });
+});
