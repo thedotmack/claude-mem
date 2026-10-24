@@ -33,6 +33,7 @@ import { query, type CanUseTool, type Options, type SdkPluginConfig } from '@ant
 import { buildIsolatedEnvWithFreshOAuth } from '../../shared/EnvManager.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { logger } from '../../utils/logger.js';
+import { runtimeReadRoots } from './runtime-read-roots.js';
 import { detectUsableAgents, GEMINI_NO_MCP_SERVERS, runCommand, type CommandResult, type UsableAgent, type UsableAgentId } from './detect.js';
 
 /** The model one step runs on: a Claude Code alias, a Codex model id (with reasoning effort) or a Gemini alias.
@@ -202,7 +203,7 @@ function failure(name: string, result: CommandResult): Error {
  */
 const CODEX_EXEC_ARGS = (executable: string, cwd: string, answerPath: string, schemaPath: string | null, { model, reasoningEffort }: StepModel = {}) => [
   'exec', '--strict-config', '-c', 'default_permissions="claude-mem-refresh"',
-  '-c', `permissions.claude-mem-refresh.filesystem={":root"="deny",":minimal"="read",":workspace_roots"={"."="read"},${[...new Set([dirname(executable), dirname(realPath(executable))])].map(path => `${JSON.stringify(path)}="read"`).join(',')}}`,
+  '-c', `permissions.claude-mem-refresh.filesystem={":root"="deny",":minimal"="read",":workspace_roots"={"."="read"},${runtimeReadRoots(executable).map(path => `${JSON.stringify(path)}="read"`).join(',')}}`,
   '-c', 'permissions.claude-mem-refresh.network.enabled=false', '--ephemeral', '--ignore-user-config', '--skip-git-repo-check', '-C', cwd, '-o', answerPath,
   ...(schemaPath ? ['--output-schema', schemaPath] : []), ...(model ? ['-m', model] : []), ...(reasoningEffort ? ['-c', `model_reasoning_effort="${reasoningEffort}"`] : []), '-',
 ];
