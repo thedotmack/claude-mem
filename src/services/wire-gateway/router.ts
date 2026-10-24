@@ -58,6 +58,12 @@ export function createWireGatewayFetchHandler(options: {
    * probe answers only, so it never waits on a probe.
    */
   statusReport?: () => Promise<unknown>;
+  /**
+   * GET /wire/routes (Phase 15): each route with its agent, upstream and
+   * feature switches, for the viewer's Wire page. Throws when routes.json
+   * cannot be read (unknown is not empty): answered 500 with why.
+   */
+  routesReport?: () => unknown;
   /** MCP over Streamable HTTP at /mcp (Phase 12); without one, /mcp answers 404. */
   mcp?: (request: Request) => Promise<Response>;
   /** The push endpoint POST /v1/claude-mem/events (Phase 13); without one, it answers 404. */
@@ -93,6 +99,16 @@ export function createWireGatewayFetchHandler(options: {
     if (pathname === '/wire/status' && options.statusReport) {
       if (request.method !== 'GET') return jsonErrorResponse(405, 'invalid_request_error', 'GET /wire/status only');
       return options.statusReport().then(report => Response.json(report));
+    }
+
+    if (pathname === '/wire/routes' && options.routesReport) {
+      if (request.method !== 'GET') return jsonErrorResponse(405, 'invalid_request_error', 'GET /wire/routes only');
+      try {
+        return Response.json(options.routesReport());
+      } catch (error) {
+        logger.warn('WIRE', 'GET /wire/routes could not read routes.json', { error: error instanceof Error ? error.message : String(error) });
+        return jsonErrorResponse(500, 'api_error', `routes.json cannot be read: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
 
     if (pathname === '/wire/launch' && options.launchRegistry) {

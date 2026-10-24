@@ -92,7 +92,7 @@ import { runProjectMergeCommand } from './infrastructure/ProjectMerge.js';
 
 import { Server } from './server/Server.js';
 import { InitPhaseTracker } from './server/init-phase.js';
-import { buildWorkerOriginPolicy } from './worker/http/middleware.js';
+import { buildWorkerOriginPolicy, type WorkerOriginPolicy } from './worker/http/middleware.js';
 import { BetterAuthRoutes } from '../server/auth/BetterAuthRoutes.js';
 import {
   createServerApiKey,
@@ -155,6 +155,7 @@ import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
 import { WireRoutes } from './worker/http/routes/WireRoutes.js';
+import { WireViewerRoutes } from './worker/http/routes/WireViewerRoutes.js';
 import { MemoryFileWatcher } from './memory/file-watcher.js';
 import { parseMemoryWatchRoots } from './memory/config.js';
 import { saveMemory } from './memory/save-memory.js';
@@ -260,6 +261,8 @@ export class WorkerService implements WorkerRef {
   private previousUptimeSeconds: number | null = null;
   // Observation TV shared secret, resolved once in the constructor. Empty = off.
   private tvToken: string = '';
+  /** Which browser pages are the viewer's own (CLAUDE_MEM_ALLOWED_ORIGINS, CLAUDE_MEM_PUBLIC_URL); read once at boot. */
+  private readonly originPolicy: WorkerOriginPolicy;
   private mcpClient: Client;
 
   private mcpReady: boolean = false;
@@ -356,6 +359,7 @@ export class WorkerService implements WorkerRef {
     const workerSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const tvToken = (workerSettings.CLAUDE_MEM_TV_TOKEN ?? '').trim();
     this.tvToken = tvToken;
+    this.originPolicy = buildWorkerOriginPolicy(workerSettings);
 
     this.server = new Server({
       getInitializationComplete: () => this.initializationCompleteFlag,
@@ -388,7 +392,7 @@ export class WorkerService implements WorkerRef {
       ...(tvToken ? { remoteReadOnly: { getToken: () => tvToken } } : {}),
       // Browser access: same-host and CLAUDE_MEM_ALLOWED_ORIGINS for CORS, plus
       // the DNS-rebinding Host check. Read once at boot; restart to change it.
-      originPolicy: buildWorkerOriginPolicy(workerSettings),
+      originPolicy: this.originPolicy,
     });
 
     this.registerRoutes();
@@ -588,6 +592,7 @@ export class WorkerService implements WorkerRef {
     this.server.registerRoutes(new LogsRoutes());
     this.server.registerRoutes(new MemoryRoutes(this.dbManager, 'claude-mem'));
     this.server.registerRoutes(new WireRoutes(this.dbManager));
+    this.server.registerRoutes(new WireViewerRoutes({ originPolicy: this.originPolicy }));
     this.server.registerRoutes(new MemoryIngestRoutes(this.dbManager));
     this.server.registerRoutes(new DedupRoutes(this.dbManager));
     this.server.registerRoutes(new ServerV1Routes({

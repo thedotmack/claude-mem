@@ -95,7 +95,7 @@ import {
   type MemoryInjectionStageOptions,
 } from './memory/memory-injection-stage.js';
 import { createMemorySearchStage, type MemorySearchStageOptions } from './memory/memory-search-stage.js';
-import { buildWireMemoryStatus, formatWireMemoryStatus, type WireMemoryStatus } from './memory/memory-status.js';
+import { buildWireMemoryStatus, formatWireMemoryStatus, type WireMemoryStatus, type WireRouteFeaturesStatus } from './memory/memory-status.js';
 import { createWireMcpHandler } from './mcp/mcp-http.js';
 import { directHttpToolEnvironment } from './mcp/mcp-worker-environment.js';
 import { captureEvent, shutdownTelemetry } from '../telemetry/telemetry.js';
@@ -111,6 +111,7 @@ import {
   evaluateWireAgentStatuses,
   formatWireIngestStatus,
   formatWireStatusReport,
+  withUrlSecretsMasked,
   type WireIngestStatus,
   type WireAgentStatusInputs,
   type WireStatusReport,
@@ -378,6 +379,7 @@ export class WireGatewayService {
         relay,
         launchRegistry: this.launchRegistry,
         statusReport: () => this.statusReport(),
+        routesReport: () => buildWireRoutesReport(this.options.routesFilePath ?? paths.wireGatewayRoutes(), this.options.rewriteSettings ?? {}),
         pushEvents,
         otlpTraces,
         liveTrace: createLiveTraceHandlers(liveTraceFeed),
@@ -603,6 +605,28 @@ function memoryStatusOf(
   }
 }
 
+/** One route as GET /wire/routes shows it: memory-status's feature switches plus where it goes. */
+export interface WireRouteReport extends WireRouteFeaturesStatus {
+  /** The upstream base URL as written, its user:password and secret-named query values masked (withUrlSecretsMasked; it is shown in the viewer). */
+  upstream: string;
+  createdAt: string;
+}
+
+/**
+ * GET /wire/routes (plan Phase 15): every route, its upstream and its
+ * feature switches as the gateway's settings decide them. Throws when
+ * routes.json cannot be read: an unreadable file is never "no routes".
+ */
+export function buildWireRoutesReport(routesFilePath: string, rewriteSettings: Readonly<Record<string, string>>): { routes: WireRouteReport[] } {
+  const routes = readWireGatewayRoutesFile(routesFilePath).routes;
+  return {
+    routes: buildWireMemoryStatus(routes, rewriteSettings, null).routes.map(features => {
+      const route = routes[features.routeId];
+      return { ...features, upstream: String(withUrlSecretsMasked(route.upstreamBaseUrl)), createdAt: route.createdAt };
+    }),
+  };
+}
+
 interface WireStatusReportInputs extends Omit<WireAgentStatusInputs, 'descriptors' | 'gatewayOrigin' | 'lookupProbe'> {
   gateway: WireStatusReport['gateway'];
   capture: WireStatusReport['capture'];
@@ -626,9 +650,17 @@ export async function buildWireStatusReport(inputs: WireStatusReportInputs): Pro
   };
 }
 
+/**
+ * How long a GET /wire/status to the running gateway may take: it answers from
+ * cached probe answers and a few small files and never waits on a probe, so
+ * anything slower means the gateway is stuck. Shared by `wire status` and the
+ * viewer's proxy route.
+ */
+export const WIRE_STATUS_REQUEST_TIMEOUT_MS = 2_000;
+
 /** The running gateway's own report, for what only it knows (in-memory lastSeen, capture counters); null when it does not answer. */
 export async function fetchRunningWireGatewayStatus(origin: string): Promise<WireStatusReport | null> {
-  const answer = await requestJsonDirectly<WireStatusReport>({ url: `${origin}/wire/status`, timeoutMs: 2_000 });
+  const answer = await requestJsonDirectly<WireStatusReport>({ url: `${origin}/wire/status`, timeoutMs: WIRE_STATUS_REQUEST_TIMEOUT_MS });
   return answer?.statusCode === 200 ? answer.body : null;
 }
 

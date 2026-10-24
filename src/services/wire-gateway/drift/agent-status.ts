@@ -288,7 +288,10 @@ export function withUrlSecretsMasked<T>(value: T): T | string {
     masked = true;
   }
   // Re-serialize only when something was masked, so a clean value reads exactly as written.
-  return masked ? url.href : value;
+  if (!masked) return value;
+  // URL adds a "/" path to a bare origin; a value written without one is shown without one.
+  const writtenWithoutPath = url.pathname === '/' && !/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*\//i.test(value);
+  return writtenWithoutPath ? url.href.replace(/^([a-z][a-z0-9+.-]*:\/\/[^/?#]*)\//i, '$1') : url.href;
 }
 
 function describeValue(value: unknown): string {

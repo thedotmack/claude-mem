@@ -20,7 +20,12 @@
 // - `trace(after, wait)` answers the calls changed after `after`, waiting
 //   up to 25 s for one (magpie gui/trace.go:276-277); a cursor ahead of the
 //   feed (the gateway restarted) is read as 0 (magpie trace.go:521-523).
+// - Every answer names its feed (`feedId`, new each time the gateway
+//   starts). A cursor sent with another feed's id is read as 0 too: a
+//   restarted gateway can be past the old cursor already, and its first
+//   calls would otherwise never be sent.
 
+import { randomUUID } from 'crypto';
 import { logger } from '../../../utils/logger.js';
 import type { RelayExchange, RelayExchangeResult, RelayObserver, RelayResponseStart } from '../relay/relay.js';
 import type { CompletedRelayExchange, RelayReplyConsumer } from '../ir/relay-reply-collection.js';
@@ -70,6 +75,8 @@ export interface LiveTraceCall {
 }
 
 export interface LiveTraceSnapshot {
+  /** This feed, new each time the gateway starts: a client that sees it change starts its list over. */
+  feedId: string;
   seq: number;
   calls: LiveTraceCall[];
   now: string;
@@ -122,6 +129,7 @@ export interface WireLiveTraceFeedOptions {
 }
 
 export class WireLiveTraceFeed {
+  readonly feedId = randomUUID();
   private seq = 0;
   private readonly calls: LiveTraceCall[] = [];
   private readonly bodiesById = new Map<string, BodyCapture>();
@@ -299,9 +307,10 @@ export class WireLiveTraceFeed {
     call.cacheWriteTokens = reply.usage.cacheWriteTokens;
   }
 
-  private snapshotAfter(after: number): LiveTraceSnapshot {
-    const cursor = after > this.seq ? 0 : after;
+  private snapshotAfter(after: number, cursorFeedId?: string): LiveTraceSnapshot {
+    const cursor = after > this.seq || (cursorFeedId !== undefined && cursorFeedId !== this.feedId) ? 0 : after;
     return {
+      feedId: this.feedId,
       seq: this.seq,
       calls: this.calls.filter(call => call.seq > cursor).map(call => ({ ...call })),
       now: new Date(this.now()).toISOString(),
@@ -315,11 +324,12 @@ export class WireLiveTraceFeed {
 
   /**
    * The calls changed after `after`, oldest first. With none, waits up to
-   * `waitMs` for one, or until `signal` aborts (the client left).
+   * `waitMs` for one, or until `signal` aborts (the client left). A
+   * `cursorFeedId` that is not this feed's reads `after` as 0.
    */
-  async trace(after: number, waitMs: number, signal?: AbortSignal): Promise<LiveTraceSnapshot> {
+  async trace(after: number, waitMs: number, signal?: AbortSignal, cursorFeedId?: string): Promise<LiveTraceSnapshot> {
     this.dropStaleBodies();
-    const immediate = this.snapshotAfter(after);
+    const immediate = this.snapshotAfter(after, cursorFeedId);
     if (immediate.calls.length > 0 || waitMs <= 0 || signal?.aborted) return immediate;
     await new Promise<void>(resolve => {
       const done = () => {
@@ -332,7 +342,7 @@ export class WireLiveTraceFeed {
       this.waiters.add(done);
       signal?.addEventListener('abort', done);
     });
-    return this.snapshotAfter(after);
+    return this.snapshotAfter(after, cursorFeedId);
   }
 
   /**
@@ -369,7 +379,7 @@ export function createLiveTraceHandlers(feed: WireLiveTraceFeed) {
       if (!Number.isSafeInteger(after) || after < 0) {
         return Response.json({ error: { type: 'invalid_request_error', message: 'after must be a whole number (the seq of the last answer)' } }, { status: 400 });
       }
-      const snapshot = await feed.trace(after, liveTraceWaitMs(url.searchParams.get('wait')), request.signal);
+      const snapshot = await feed.trace(after, liveTraceWaitMs(url.searchParams.get('wait')), request.signal, url.searchParams.get('feed') || undefined);
       return Response.json(snapshot, { headers: { 'cache-control': 'no-store' } });
     },
     call(request: Request): Response {

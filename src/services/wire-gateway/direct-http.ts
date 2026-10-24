@@ -49,23 +49,58 @@ function decodeChunkedBody(raw: Buffer): Buffer | null {
   return null;
 }
 
-/** Status and body of a raw HTTP/1.1 response read until the server closed. */
-export function parseRawHttpResponse(raw: Buffer): DirectHttpResponse | null {
+interface RawHttpHead {
+  statusCode: number;
+  chunked: boolean;
+  /** The Content-Length header's value; null when there is none (or it is not a number). */
+  contentLength: number | null;
+  body: Buffer;
+}
+
+function readRawHttpHead(raw: Buffer): RawHttpHead | null {
   const headerEnd = raw.indexOf('\r\n\r\n');
   if (headerEnd === -1) return null;
   const headerLines = raw.subarray(0, headerEnd).toString('latin1').split('\r\n');
   const statusMatch = /^HTTP\/1\.[01] (\d{3})/.exec(headerLines[0] ?? '');
   if (!statusMatch) return null;
-  const chunked = headerLines.some((line) => {
+  let chunked = false;
+  let contentLength: number | null = null;
+  for (const line of headerLines.slice(1)) {
     const separator = line.indexOf(':');
-    return separator !== -1
-      && line.slice(0, separator).trim().toLowerCase() === 'transfer-encoding'
-      && line.slice(separator + 1).toLowerCase().includes('chunked');
-  });
-  const body = raw.subarray(headerEnd + 4);
-  const decoded = chunked ? decodeChunkedBody(body) : body;
+    if (separator === -1) continue;
+    const name = line.slice(0, separator).trim().toLowerCase();
+    const value = line.slice(separator + 1).trim();
+    if (name === 'transfer-encoding' && value.toLowerCase().includes('chunked')) chunked = true;
+    if (name === 'content-length' && /^\d+$/.test(value)) contentLength = Number(value);
+  }
+  return { statusCode: Number(statusMatch[1]), chunked, contentLength, body: raw.subarray(headerEnd + 4) };
+}
+
+/** Status and body of a raw HTTP/1.1 response read until the server closed. */
+export function parseRawHttpResponse(raw: Buffer): DirectHttpResponse | null {
+  const head = readRawHttpHead(raw);
+  if (!head) return null;
+  const decoded = head.chunked ? decodeChunkedBody(head.body) : head.body;
   if (decoded === null) return null;
-  return { statusCode: Number(statusMatch[1]), bodyText: decoded.toString('utf-8') };
+  return { statusCode: head.statusCode, bodyText: decoded.toString('utf-8') };
+}
+
+/**
+ * The response as soon as its own framing says it is whole: Content-Length
+ * bytes of body, or a chunked body's last chunk. null while more is due, and
+ * for a response only the server's close can end. Needed because Bun 1.3.9's
+ * Bun.serve keeps the connection open after a response it sent late (a
+ * long-poll), whatever `Connection: close` asked; probed on 1.3.9 and 1.4.3.
+ */
+export function parseCompleteRawHttpResponse(raw: Buffer): DirectHttpResponse | null {
+  const head = readRawHttpHead(raw);
+  if (!head) return null;
+  if (head.chunked) {
+    const decoded = decodeChunkedBody(head.body);
+    return decoded === null ? null : { statusCode: head.statusCode, bodyText: decoded.toString('utf-8') };
+  }
+  if (head.contentLength === null || head.body.length < head.contentLength) return null;
+  return { statusCode: head.statusCode, bodyText: head.body.subarray(0, head.contentLength).toString('utf-8') };
 }
 
 /**
@@ -103,6 +138,8 @@ export type DirectHttpFailure =
   | { reason: 'unreachable'; detail: string }
   | { reason: 'too_large'; maximumResponseBytes: number }
   | { reason: 'not_http' }
+  /** The server closed the connection without sending a byte (a gateway shutting down, or one that cut a silent connection). */
+  | { reason: 'closed' }
   | { reason: 'bad_url'; detail: string };
 
 export type DirectHttpOutcome = { response: DirectHttpResponse } | { failure: DirectHttpFailure };
@@ -115,6 +152,7 @@ export function describeDirectHttpFailure(failure: DirectHttpFailure, what: stri
     case 'unreachable': return `${what} could not be reached (${failure.detail})`;
     case 'too_large': return `${what} answered more than ${failure.maximumResponseBytes} bytes`;
     case 'not_http': return `${what} answered something that is not HTTP`;
+    case 'closed': return `${what} closed the connection without answering`;
     case 'bad_url': return `${what} has no usable address (${failure.detail})`;
   }
 }
@@ -136,6 +174,57 @@ async function requestOverFetch(url: URL, request: DirectHttpRequest): Promise<D
     if (request.signal?.aborted) return { failure: { reason: 'aborted' } };
     if (error instanceof Error && error.name === 'TimeoutError') return { failure: { reason: 'timeout', timeoutMs: request.timeoutMs } };
     return { failure: { reason: 'unreachable', detail: error instanceof Error ? error.message : String(error) } };
+  }
+}
+
+const HEAD_END = Buffer.from('\r\n\r\n');
+const LAST_CHUNK = Buffer.from('0\r\n\r\n');
+
+/**
+ * The bytes of one raw HTTP/1.1 response as they arrive, and the response as
+ * soon as its own framing says it is whole (parseCompleteRawHttpResponse).
+ * The head is looked for only in each new chunk plus the few bytes before it,
+ * and the received bytes are joined only once they can hold the whole
+ * response: a body that arrives in many chunks is not copied once per chunk.
+ */
+export class RawHttpResponseReader {
+  private readonly received: Buffer[] = [];
+  private receivedBytes = 0;
+  /** Where the head's blank line starts; -1 until it has arrived. */
+  private headEnd = -1;
+  private contentLength: number | null = null;
+  /** The last bytes received, as long as HEAD_END / LAST_CHUNK: matches across a chunk boundary. */
+  private tail = Buffer.alloc(0);
+
+  get byteLength(): number {
+    return this.receivedBytes;
+  }
+
+  /** Every byte received so far, joined. */
+  all(): Buffer {
+    return Buffer.concat(this.received, this.receivedBytes);
+  }
+
+  /** Adds a chunk; the response when it is now whole, else null. */
+  push(chunk: Buffer): DirectHttpResponse | null {
+    const before = this.receivedBytes;
+    this.received.push(chunk);
+    this.receivedBytes += chunk.length;
+    const previousTail = this.tail;
+    const joinedTail = Buffer.concat([previousTail, chunk.subarray(Math.max(0, chunk.length - LAST_CHUNK.length))]);
+    this.tail = joinedTail.subarray(Math.max(0, joinedTail.length - LAST_CHUNK.length));
+    if (this.headEnd === -1) {
+      const window = Buffer.concat([previousTail, chunk]);
+      const found = window.indexOf(HEAD_END);
+      if (found === -1) return null;
+      this.headEnd = before - previousTail.length + found;
+      const head = readRawHttpHead(this.all());
+      this.contentLength = head?.chunked ? null : head?.contentLength ?? null;
+    }
+    const mayBeWhole = this.contentLength !== null
+      ? this.receivedBytes >= this.headEnd + HEAD_END.length + this.contentLength
+      : this.tail.equals(LAST_CHUNK);
+    return mayBeWhole ? parseCompleteRawHttpResponse(this.all()) : null;
   }
 }
 
@@ -166,8 +255,7 @@ export function requestDirectlyWithOutcome(request: DirectHttpRequest): Promise<
   const host = url.hostname.replace(/^\[|\]$/g, '');
   const port = Number(url.port || 80);
   return new Promise<DirectHttpOutcome>((resolve) => {
-    const received: Buffer[] = [];
-    let receivedBytes = 0;
+    const reader = new RawHttpResponseReader();
     let settled = false;
     const onAbort = () => finish({ failure: { reason: 'aborted' } });
     const finish = (outcome: DirectHttpOutcome) => {
@@ -186,15 +274,19 @@ export function requestDirectlyWithOutcome(request: DirectHttpRequest): Promise<
       if (bodyBytes) socket.write(bodyBytes);
     });
     socket.on('data', (chunk: Buffer) => {
-      receivedBytes += chunk.length;
-      if (receivedBytes > maximumResponseBytes) {
+      if (reader.byteLength + chunk.length > maximumResponseBytes) {
         finish({ failure: { reason: 'too_large', maximumResponseBytes } });
         return;
       }
-      received.push(chunk);
+      const complete = reader.push(chunk);
+      if (complete) finish({ response: complete });
     });
     socket.on('end', () => {
-      const response = parseRawHttpResponse(Buffer.concat(received));
+      if (reader.byteLength === 0) {
+        finish({ failure: { reason: 'closed' } });
+        return;
+      }
+      const response = parseRawHttpResponse(reader.all());
       finish(response ? { response } : { failure: { reason: 'not_http' } });
     });
     socket.on('error', (error: Error) => finish({ failure: { reason: 'unreachable', detail: error.message } }));

@@ -14,6 +14,7 @@ import {
   LIVE_TRACE_KEPT_CALLS,
   LIVE_TRACE_LONG_POLL_MS,
   WireLiveTraceFeed,
+  createLiveTraceHandlers,
   liveTraceWaitMs,
 } from '../../src/services/wire-gateway/trace/live-trace-feed.js';
 import type { RelayExchange, RelayExchangeResult } from '../../src/services/wire-gateway/relay/relay.js';
@@ -207,6 +208,30 @@ describe('live trace feed rings', () => {
     };
   }
   const finished: RelayExchangeResult = { outcome: 'complete', recordedStatus: 200, endMarkerSeen: true, captureOverflowed: false, responseBytes: 2, durationMs: 1, firstResponseChunkAt: null };
+
+  it('names its feed, and reads a cursor from another feed (a restarted gateway) as 0', async () => {
+    const feed = new WireLiveTraceFeed({ consent: recordingOn });
+    for (let index = 0; index < 5; index++) {
+      const exchange = fakeExchange(index);
+      feed.relayObserver.onExchangeStarted!(exchange);
+      feed.relayObserver.onExchangeFinished!(exchange, finished);
+    }
+    const everything = await feed.trace(0, 0);
+    expect(everything.feedId).toBe(feed.feedId);
+    expect(everything.calls).toHaveLength(5);
+    expect(new WireLiveTraceFeed({ consent: recordingOn }).feedId).not.toBe(feed.feedId);
+    // A cursor of this feed, below its seq: only the calls changed after it.
+    const cursor = everything.calls[1].seq;
+    expect((await feed.trace(cursor, 0, undefined, feed.feedId)).calls.map(call => call.id)).toEqual(['exchange-2', 'exchange-3', 'exchange-4']);
+    // The same cursor from the feed before a restart: every call (the new feed may already be past the old cursor).
+    expect((await feed.trace(cursor, 0, undefined, 'feed-before-restart')).calls).toHaveLength(5);
+    const handlers = createLiveTraceHandlers(feed);
+    const ownFeed = await (await handlers.trace(new Request(`http://gateway/wire/trace?after=${cursor}&feed=${feed.feedId}`))).json() as { feedId: string; calls: unknown[] };
+    expect(ownFeed).toMatchObject({ feedId: feed.feedId });
+    expect(ownFeed.calls).toHaveLength(3);
+    const otherFeed = await (await handlers.trace(new Request(`http://gateway/wire/trace?after=${cursor}&feed=feed-before-restart`))).json() as { calls: unknown[] };
+    expect(otherFeed.calls).toHaveLength(5);
+  });
 
   it(`keeps the last ${LIVE_TRACE_KEPT_CALLS} calls and ${LIVE_TRACE_KEPT_BODIES} bodies`, async () => {
     const feed = new WireLiveTraceFeed({ consent: recordingOn });

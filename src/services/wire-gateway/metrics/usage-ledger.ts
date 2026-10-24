@@ -13,7 +13,9 @@
 // pruned when the gateway starts and when a new UTC day's file is begun.
 
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, unlinkSync } from 'fs';
+import { open, readdir, stat } from 'fs/promises';
 import { join } from 'path';
+import { z } from 'zod';
 import { WIRE_GATEWAY_DIR_MODE, WIRE_GATEWAY_FILE_MODE, wireGatewaySubdirPath } from '../../../shared/paths.js';
 import { logger } from '../../../utils/logger.js';
 import type { CompletedRelayExchange, RelayReplyConsumer } from '../ir/relay-reply-collection.js';
@@ -44,6 +46,69 @@ export interface WireUsageLedgerRecord {
   swappedTokensEst: number;
   /** The prompt as forwarded, part by part (estimated tokens); absent when the body could not be read. */
   buckets?: WireContextBuckets;
+}
+
+const finiteNumber = z.number().finite();
+
+/**
+ * One ledger line as this file writes it. A line is JSON another writer (or a
+ * crash mid-line, or a hand edit) can still have made wrong: `null`, a number,
+ * a record missing a count. Such a line is not a record and is never counted.
+ */
+const usageLedgerRecordSchema = z.object({
+  t: z.string(),
+  agent: z.string(),
+  session: z.string(),
+  routeId: z.string(),
+  model: z.string(),
+  status: finiteNumber,
+  in: finiteNumber,
+  out: finiteNumber,
+  cacheRead: finiteNumber,
+  cacheWrite: finiteNumber,
+  cacheWrite1h: finiteNumber,
+  reasoning: finiteNumber,
+  ms: finiteNumber,
+  ttftMs: finiteNumber.nullable(),
+  kind: z.string(),
+  stages: z.array(z.string()),
+  injectedTokensEst: finiteNumber,
+  swappedTokensEst: finiteNumber,
+  buckets: z.object({
+    system: finiteNumber, tools: finiteNumber, memory: finiteNumber, files: finiteNumber, results: finiteNumber, chat: finiteNumber,
+  }).optional(),
+});
+
+/** A ledger line as a record; null for a line that is not JSON or not a record's shape. */
+export function parseUsageLedgerLine(line: string): WireUsageLedgerRecord | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(line);
+  } catch {
+    // Not JSON (a line cut by a crash): the caller counts it as unreadable.
+    return null;
+  }
+  const parsed = usageLedgerRecordSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+/** Records read, and the lines that were not records (counted, never dropped silently). */
+export interface WireUsageLedgerReadResult {
+  records: WireUsageLedgerRecord[];
+  unreadableLines: number;
+}
+
+/** Records and unreadable lines of the complete lines (each ending in \n) in `text`. */
+function parseUsageLedgerLines(text: string): WireUsageLedgerReadResult {
+  const records: WireUsageLedgerRecord[] = [];
+  let unreadableLines = 0;
+  for (const line of text.split('\n')) {
+    if (line === '') continue;
+    const record = parseUsageLedgerLine(line);
+    if (record) records.push(record);
+    else unreadableLines++;
+  }
+  return { records, unreadableLines };
 }
 
 const USAGE_FILE_SUFFIX = '.jsonl';
@@ -147,7 +212,11 @@ export class WireUsageLedger {
     appendFileSync(filePath, `${JSON.stringify(record)}\n`, { mode: WIRE_GATEWAY_FILE_MODE });
   }
 
-  /** Every record of the given UTC dates (YYYY-MM-DD), or of every day when none are given. A line that does not parse is skipped. */
+  /**
+   * Every record of the given UTC dates (YYYY-MM-DD), or of every day when
+   * none are given. A line that is not a record is skipped and logged with
+   * its file's count.
+   */
   read(utcDates?: string[]): WireUsageLedgerRecord[] {
     let names: string[];
     try {
@@ -159,16 +228,135 @@ export class WireUsageLedger {
     if (utcDates) names = names.filter(name => utcDates.includes(name.slice(0, -USAGE_FILE_SUFFIX.length)));
     const records: WireUsageLedgerRecord[] = [];
     for (const name of names) {
-      for (const line of readFileSync(join(this.directory, name), 'utf8').split('\n')) {
-        if (line === '') continue;
-        try {
-          records.push(JSON.parse(line) as WireUsageLedgerRecord);
-        } catch {
-          logger.debug('WIRE', 'Skipped a usage ledger line that does not parse', { file: name });
-        }
+      const parsed = parseUsageLedgerLines(readFileSync(join(this.directory, name), 'utf8'));
+      records.push(...parsed.records);
+      if (parsed.unreadableLines > 0) {
+        logger.warn('WIRE', 'Skipped usage ledger lines that are not records', { file: name, unreadableLines: parsed.unreadableLines });
       }
     }
     return records;
+  }
+}
+
+/** The UTC days (YYYY-MM-DD) a retention of `retentionDays` keeps at `nowMs`: the days pruneExpired would not delete. */
+export function retainedUsageLedgerDays(retentionDays: number, nowMs: number): Set<string> {
+  const cutoffMs = nowMs - retentionDays * DAY_MS;
+  const days = new Set<string>();
+  // A day is kept while any of it is newer than the cutoff (pruneExpired's rule).
+  for (let dayStartMs = Date.parse(`${utcDateOf(cutoffMs)}T00:00:00Z`); dayStartMs <= nowMs; dayStartMs += DAY_MS) {
+    if (dayStartMs + DAY_MS > cutoffMs) days.add(utcDateOf(dayStartMs));
+  }
+  return days;
+}
+
+interface CachedUsageDay {
+  /** The file's inode: a day file deleted and written again is another file, read whole. */
+  ino: number;
+  size: number;
+  mtimeMs: number;
+  /** Bytes up to the end of the last complete line read; a line still being appended waits for the next read. */
+  consumedBytes: number;
+  records: WireUsageLedgerRecord[];
+  unreadableLines: number;
+}
+
+/**
+ * The ledger as the viewer's Wire page reads it (plan Phase 15), every
+ * refresh of every open tab. How much it reads is bounded by the retention
+ * (CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS, the user's setting): only those
+ * days count, even while the gateway (which prunes) is down. A day file is
+ * read once; after that only the bytes appended since (the ledger only
+ * appends), and an unchanged file (same size and mtime) not at all. Reads go
+ * through fs/promises, off the event loop. Concurrent callers share one read.
+ */
+export class WireUsageLedgerReader {
+  private readonly directory: string;
+  private readonly now: () => number;
+  private readonly cachedDays = new Map<string, CachedUsageDay>();
+  private readInFlight: Promise<WireUsageLedgerReadResult> | null = null;
+
+  constructor(options: { directory?: string; now?: () => number } = {}) {
+    this.directory = options.directory ?? wireGatewaySubdirPath('usage');
+    this.now = options.now ?? Date.now;
+  }
+
+  /** Every record of the days the retention keeps, and how many lines were not records. */
+  readRetained(retentionDays: number): Promise<WireUsageLedgerReadResult> {
+    if (!this.readInFlight) {
+      this.readInFlight = this.readRetainedNow(retentionDays).finally(() => {
+        this.readInFlight = null;
+      });
+    }
+    return this.readInFlight;
+  }
+
+  private async readRetainedNow(retentionDays: number): Promise<WireUsageLedgerReadResult> {
+    const retainedDays = retainedUsageLedgerDays(retentionDays, this.now());
+    let names: string[];
+    try {
+      names = await readdir(this.directory);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      names = [];
+    }
+    const retainedNames = names
+      .filter(name => name.endsWith(USAGE_FILE_SUFFIX) && retainedDays.has(name.slice(0, -USAGE_FILE_SUFFIX.length)))
+      .sort();
+    for (const name of [...this.cachedDays.keys()]) {
+      if (!retainedNames.includes(name)) this.cachedDays.delete(name);
+    }
+    const records: WireUsageLedgerRecord[] = [];
+    let unreadableLines = 0;
+    for (const name of retainedNames) {
+      const day = await this.readDay(name);
+      records.push(...day.records);
+      unreadableLines += day.unreadableLines;
+    }
+    return { records, unreadableLines };
+  }
+
+  private async readDay(name: string): Promise<CachedUsageDay> {
+    const filePath = join(this.directory, name);
+    const { ino, size, mtimeMs } = await stat(filePath);
+    const cached = this.cachedDays.get(name);
+    if (cached && cached.ino === ino && cached.size === size && cached.mtimeMs === mtimeMs) return cached;
+    // The same file, grown since the last read: only the appended bytes. Anything else (another file, shorter): all of it.
+    const appended = cached !== undefined && cached.ino === ino && size > cached.size;
+    const startByte = appended ? cached.consumedBytes : 0;
+    const bytes = await readFileRange(filePath, startByte, size);
+    // Counted in bytes, not characters: a line with bytes that are not UTF-8 still ends where its \n is.
+    const completeLength = bytes.lastIndexOf(0x0a) + 1;
+    const parsed = parseUsageLedgerLines(bytes.subarray(0, completeLength).toString('utf8'));
+    const day: CachedUsageDay = {
+      ino,
+      size,
+      mtimeMs,
+      consumedBytes: startByte + completeLength,
+      records: appended ? [...cached.records, ...parsed.records] : parsed.records,
+      unreadableLines: (appended ? cached.unreadableLines : 0) + parsed.unreadableLines,
+    };
+    if (parsed.unreadableLines > 0) {
+      logger.warn('WIRE', 'Skipped usage ledger lines that are not records', { file: name, unreadableLines: parsed.unreadableLines });
+    }
+    this.cachedDays.set(name, day);
+    return day;
+  }
+}
+
+/** Bytes [start, end) of a file (fewer when it is shorter now). */
+async function readFileRange(filePath: string, start: number, end: number): Promise<Buffer> {
+  const handle = await open(filePath, 'r');
+  try {
+    const buffer = Buffer.alloc(end - start);
+    let filled = 0;
+    while (filled < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, filled, buffer.length - filled, start + filled);
+      if (bytesRead === 0) break;
+      filled += bytesRead;
+    }
+    return buffer.subarray(0, filled);
+  } finally {
+    await handle.close();
   }
 }
 

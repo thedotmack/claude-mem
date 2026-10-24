@@ -75,8 +75,9 @@ claude-mem wire clear              # delete every recording
 - The decision lives in `<data dir>/wire-gateway/consent.json`. Cloud sync never
   reads or writes it.
 - `CLAUDE_MEM_WIRE_GATEWAY_RECORDING=false` forces recording off. No setting or
-  environment variable can turn it on; only the command above (or, later, the
-  viewer's consent card on the viewer's own page) can.
+  environment variable can turn it on; only the command above or the consent
+  card on the viewer's [Wire page](#the-wire-page-in-the-viewer) can, and the
+  worker accepts that card's change only from the viewer's own page.
 - `clear` deletes every recording and refuses saves that were already in flight,
   so a recording that was being written when you cleared never lands. Memories
   that capture already created stay in claude-mem.
@@ -384,10 +385,12 @@ line magpie kept, including calls OTLP already delivered while claude-mem ran.
 
 ### Live trace
 
-`GET /wire/trace?after=<seq>&wait=1` answers `{seq, calls, now}`: the calls that
-changed after `seq`, waiting up to 25 seconds for one (without `wait` it answers
-at once). Send back the `seq` you got; a `seq` ahead of the gateway's (it
-restarted) is read as 0. The feed keeps the last 60 calls: agent, route, model,
+`GET /wire/trace?after=<seq>&feed=<feedId>&wait=1` answers `{feedId, seq, calls,
+now}`: the calls that changed after `seq`, waiting up to 25 seconds for one
+(without `wait` it answers at once). Send back the `seq` and `feedId` you got.
+`feedId` is new each time the gateway starts: a `feed` that is not the current
+one, or a `seq` ahead of the gateway's, is read as 0, so after a restart you get
+all of the new gateway's calls and should drop the ones you had. The feed keeps the last 60 calls: agent, route, model,
 status, timing and tokens, never their text.
 
 `GET /wire/call?id=<call id>` answers `{requestBody, responseBody,
@@ -395,6 +398,71 @@ requestTruncated, responseTruncated}` for one of the last 40 calls, only while
 [raw recording](#raw-recording-needs-your-consent) is on, and only for agents
 the gateway captures. Bodies are scrubbed of secrets and cut at 256 KiB each.
 Turning recording off or `claude-mem wire clear` deletes them.
+
+## The Wire page in the viewer
+
+The viewer (`http://localhost:<worker port>`) has a **Wire** tab (`#/wire`)
+beside Timeline and Sessions. The page talks only to the worker: the worker
+forwards to the gateway over loopback, and the browser never calls the gateway's
+port. When the gateway is down, the page says so and how to start it
+(`claude-mem wire start`); consent and the usage numbers still show, because
+they are read from disk.
+
+- **Agents.** Every wired agent with the state badge `claude-mem wire status`
+  shows (`ok`, `unwired`, `replaced`, `unreachable`, `proxied`, `bypassed`,
+  `unknown`), its detail, the fix to run, and each route's upstream and
+  feature switches (memory injection, `memory_search`, Endless Mode). The
+  gateway's own counter of captured events with no known folder is shown at the
+  top. The page reads it again every 10 seconds.
+- **Raw recording.** A switch, off by default, that says what is kept (the
+  scrubbed text of model calls from agents the gateway captures), where (the
+  recordings folder on this computer, and the live feed's memory) and how long
+  (`CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS`). **Delete every recording** does what
+  `claude-mem wire clear` does. When `CLAUDE_MEM_WIRE_GATEWAY_RECORDING=false`,
+  the switch stays off. The decision lives only in `consent.json`, never in the
+  browser.
+- **Live calls.** The [live trace](#live-trace), updated as calls start and end.
+  While recording is on, a call the gateway captured can be opened to show its
+  request and reply text.
+- **Endless Mode savings.** Per agent, from the usage ledger: conversations with
+  swaps, requests with swaps, tokens saved, and the prompt cache's read:write
+  ratio before the first swap and from it on (what
+  `claude-mem wire status --endless` prints).
+- **Injected memory.** Per agent: estimated tokens per request × the requests
+  that carried injected memory.
+- **Context per agent.** What each agent's prompts are made of (system prompt,
+  tool definitions, memory and instructions, files read, other tool output,
+  conversation) as shares of their estimated tokens; an agent at 10% memory or
+  more is tagged `memory-heavy`.
+
+The worker routes behind the page:
+
+| Route | What it does |
+| --- | --- |
+| `GET /api/wire/status` | forwards `GET /wire/status` |
+| `GET /api/wire/routes` | forwards `GET /wire/routes` (each route, its upstream without credentials, and its feature switches) |
+| `GET /api/wire/trace?after=<seq>&feed=<feedId>&wait=1` | forwards the live trace long-poll |
+| `GET /api/wire/call?id=<call id>` | forwards one call's bodies |
+| `GET /api/wire/consent` | the recording decision, whether a setting forces it off, the folder and the retention |
+| `POST /api/wire/consent` `{"recording": true\|false}` | changes the decision; only from the viewer's own page (any other Origin, or none, gets 403) |
+| `POST /api/wire/consent/clear` `{}` | deletes every recording; same Origin rule |
+| `GET /api/wire/usage` | savings, injected memory and context shares from the usage ledger's last `CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS` days, and how many ledger lines are not usage records (those are not counted) |
+
+These routes are for the viewer only. A request from any other browser page
+(for example another `http://localhost:*` app, which the worker's CORS
+otherwise lets read its API) gets `403`, whatever the route. Requests that send
+no `Origin` (the CLI, `curl`) may read; consent changes still need the viewer's
+own page. The `Origin` check keeps other web pages out; it is not a password
+against programs on this computer.
+
+The page stops its live feed and its 10-second refresh while its tab is hidden,
+and picks up where it left off when you come back.
+
+The forwarded routes answer `503 {"error":"wire gateway not running"}` when
+nothing listens on the gateway's port, `502` when the gateway closes the
+connection without answering (it was stopping) or answers something that is not
+HTTP, `504` when it does not answer in time, and pass every other answer through
+unchanged.
 
 ## MCP over HTTP
 
