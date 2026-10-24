@@ -19,7 +19,8 @@ import {
   vectorSearchMode,
   warmSharedEmbedder,
 } from '../services/ObservationEmbeddingService.js';
-import { ClaudeObservationProvider } from '../generation/providers/ClaudeObservationProvider.js';
+import { ClaudeObservationProvider, type ClaudeObservationProviderOptions } from '../generation/providers/ClaudeObservationProvider.js';
+import { resolveObserverThinkingOption } from '../../sdk/hardened-options.js';
 import { ServerClassifiedProviderError } from '../generation/providers/shared/error-classification.js';
 import { GEMINI_API_URL, GeminiObservationProvider } from '../generation/providers/GeminiObservationProvider.js';
 import { OpenRouterObservationProvider } from '../generation/providers/OpenRouterObservationProvider.js';
@@ -413,7 +414,10 @@ export async function instantiateServerGenerationProvider(provider: string): Pro
   if (provider === 'claude' || provider === 'anthropic') {
     const apiKey = process.env.ANTHROPIC_API_KEY ?? process.env.CLAUDE_MEM_ANTHROPIC_API_KEY ?? '';
     if (!apiKey) return null;
-    const opts: { apiKey: string; model?: string; maxOutputTokens?: number } = { apiKey };
+    const opts: ClaudeObservationProviderOptions = {
+      apiKey,
+      thinking: resolveObserverThinkingOption(process.env.CLAUDE_MEM_OBSERVER_THINKING),
+    };
     if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
     const maxOutputTokens = resolveServerMaxOutputTokens();
     if (maxOutputTokens !== undefined) opts.maxOutputTokens = maxOutputTokens;
