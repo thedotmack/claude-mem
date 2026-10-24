@@ -159,7 +159,9 @@ describe('refresh task', () => {
         const file = /is in (\S+\.json)/.exec(prompt)?.[1];
         if (prompt.includes('Do only section 1')) return '```json\n{"groups": [{"title": "Release cards", "conversations": [' + JSON.stringify(key('a')) + ']}]}\n```';
         if (prompt.includes("Do only section 2")) {
-          const [show] = JSON.parse(readFileSync(file!, 'utf8'));
+          const supplied = prompt.split(`--- ${file} ---\n`)[1];
+          expect(supplied).toBeDefined();
+          const [show] = JSON.parse(supplied);
           // The first answer forgets reviewBasis; the refusal is sent back and fixed.
           if (reviewAnswers++ === 0) return JSON.stringify({ reviews: [{ groupId: show.groupId, state: 'in-progress', percent: 40, summary: 'Cards are being built.' }] });
           expect(prompt).toMatch(/refused for these groups/);
@@ -168,7 +170,7 @@ describe('refresh task', () => {
         if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'One request is under way.', preferences: [] });
         throw new Error(`Unexpected prompt: ${prompt.slice(-200)}`);
       };
-      expect(await task.run(ask, 'codex')).toBe('1 new conversations grouped, 1 requests reviewed, story written.');
+      expect(await task.run(ask, 'gemini')).toBe('1 new conversations grouped, 1 requests reviewed, story written.');
       const ledger = readLedger(dir);
       expect(Object.values(ledger.groups.groups).map((group: any) => group.title)).toEqual(['Release cards']);
       expect(Object.values(ledger.progress).map((review: any) => review.percent)).toEqual([40]);

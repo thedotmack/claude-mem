@@ -12,7 +12,7 @@
  *     loaded for its memory-search MCP tools, only the task's allowed tools,
  *     Read/Grep/Glob only inside the task's readable folders (everything else is
  *     denied), `cwd` = the task's folder and no session persistence.
- *   - Codex: `codex exec -s read-only --ephemeral --ignore-user-config --skip-git-repo-check -C <cwd> -o <file> [--output-schema <file>] [-m <model>] [-c model_reasoning_effort="<effort>"] -`
+ *   - Codex: `codex exec --strict-config -c default_permissions=claude-mem-refresh --ephemeral --ignore-user-config --skip-git-repo-check -C <cwd> -o <file> [--output-schema <file>] [-m <model>] [-c model_reasoning_effort="<effort>"] -`
  *     (codex-cli 0.163.0 `exec --help`), prompt on stdin, no MCP servers. A step that names an answer
  *     schema gets it as `--output-schema`, so the final message is that JSON shape and nothing else.
  *   - Gemini: `gemini -p <line> --approval-mode plan -e none --allowed-mcp-server-names <none> -o json [-m <model>]`
@@ -191,20 +191,25 @@ function failure(name: string, result: CommandResult): Error {
 }
 
 /**
- * `-s read-only` sandboxes only shell and files, not MCP tools, and `--ephemeral`
+ * A named permissions profile confines reads to the task workspace and minimal runtime,
+ * with the installed Codex executable reopened so its sandbox helper can start.
+ * Network and writes are denied. Strict config makes unsupported versions fail closed.
+ * `--ephemeral`
  * still loads $CODEX_HOME/config.toml, where the user's write-capable MCP
  * servers (claude-mem's save_memory and work_state_write among them) live.
  * `--ignore-user-config` skips that file, so the run has no MCP tools; auth
  * still comes from CODEX_HOME. Every save goes through the worker's validators.
  */
-const CODEX_EXEC_ARGS = (cwd: string, answerPath: string, schemaPath: string | null, { model, reasoningEffort }: StepModel = {}) => [
-  'exec', '-s', 'read-only', '--ephemeral', '--ignore-user-config', '--skip-git-repo-check', '-C', cwd, '-o', answerPath,
+const CODEX_EXEC_ARGS = (executable: string, cwd: string, answerPath: string, schemaPath: string | null, { model, reasoningEffort }: StepModel = {}) => [
+  'exec', '--strict-config', '-c', 'default_permissions="claude-mem-refresh"',
+  '-c', `permissions.claude-mem-refresh.filesystem={":root"="deny",":minimal"="read",":workspace_roots"={"."="read"},${[...new Set([dirname(executable), dirname(realPath(executable))])].map(path => `${JSON.stringify(path)}="read"`).join(',')}}`,
+  '-c', 'permissions.claude-mem-refresh.network.enabled=false', '--ephemeral', '--ignore-user-config', '--skip-git-repo-check', '-C', cwd, '-o', answerPath,
   ...(schemaPath ? ['--output-schema', schemaPath] : []), ...(model ? ['-m', model] : []), ...(reasoningEffort ? ['-c', `model_reasoning_effort="${reasoningEffort}"`] : []), '-',
 ];
 
 // --skip-trust: in a folder Gemini never trusted, headless runs exit 55 and drop plan mode. It trusts the data dir for
-// this one session only, so plan (read-only) mode holds; it approves no tools.
-// Gemini with no extensions and no MCP server, so plan mode is the only tool surface.
+// this one session only. System settings below remove all builtins as well as
+// disabling hooks and YOLO; Gemini receives its input evidence inline.
 const GEMINI_ARGS = ['-p', 'Follow the instructions above.', '--approval-mode', 'plan', '--skip-trust', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json'];
 
 function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies): AskAgent {
@@ -219,7 +224,7 @@ function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunner
     const schemaPath = answerSchema ? join(directory, `codex-${id}.schema.json`) : null;
     if (schemaPath) writeFileSync(schemaPath, JSON.stringify(answerSchema), { mode: 0o600 });
     try {
-      const result = await runCli(agent.path!, CODEX_EXEC_ARGS(task.cwd, answerPath, schemaPath, models.codex), prompt, { cwd: task.cwd, env });
+      const result = await runCli(agent.path!, CODEX_EXEC_ARGS(agent.path!, task.cwd, answerPath, schemaPath, models.codex), prompt, { cwd: task.cwd, env });
       if (result.exitCode !== 0) throw failure('codex exec', result);
       return readFileSync(answerPath, 'utf8');
     } finally {
@@ -235,10 +240,10 @@ function geminiAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunne
     const model = models.gemini?.model;
     const policyDir = mkdtempSync(join(tmpdir(), 'claude-mem-gemini-policy-'));
     const policyPath = join(policyDir, 'settings.json');
-    // System settings override project/user config. The allowlist excludes shell,
-    // writes and exit_plan_mode, so changing approval mode cannot enable them.
+    // System settings override project/user config. An empty core list registers
+    // no builtin tools: all evidence is inline, so no disk reads or plan exit are needed.
     writeFileSync(policyPath, JSON.stringify({
-      tools: { core: ['read_file', 'list_directory', 'glob', 'grep_search'] },
+      tools: { core: [] },
       security: { disableYoloMode: true }, hooksConfig: { enabled: false },
     }), { mode: 0o600 });
     let result: CommandResult;

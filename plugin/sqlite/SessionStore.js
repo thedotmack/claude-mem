@@ -1163,7 +1163,7 @@ ${A.stack??""}
         ORDER BY ABS(created_at_epoch - ?), id`).all(i,...a,e.createdAtEpoch,e.hookMatchWindowMs,e.createdAtEpoch).find(d=>!e.claimedHookRowIds.has(d.id));if(E)return e.claimedHookRowIds.add(E.id),{reason:"recorded-by-hook",hookRowId:E.id}}else{let a=new Date(e.createdAtEpoch).toISOString(),_=this.db.prepare(`INSERT INTO sdk_sessions
         (content_session_id, memory_session_id, project, platform_source, user_prompt, started_at, started_at_epoch, completed_at, completed_at_epoch, status)
         VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, 'completed')`).run(e.contentSessionId,e.project,s,t,a,e.createdAtEpoch,a,e.createdAtEpoch);i=Number(_.lastInsertRowid)}return{reason:this.saveNativeUserPrompt(e.contentSessionId,i,`transcript:${e.nativePromptId}`,e.promptText,e.promptText,{createdAtEpoch:e.createdAtEpoch,reopenSession:!1}).duplicate?"already-imported":"new"}}listHookRecordedPrompts(e){return this.db.prepare(`SELECT up.id, COALESCE(NULLIF(s.platform_source, ''), ?) AS platformSource,
-        s.content_session_id AS contentSessionId, s.project, up.prompt_text AS promptText, up.created_at_epoch AS createdAtEpoch
+        s.content_session_id AS contentSessionId, s.project, s.cwd, up.prompt_text AS promptText, up.created_at_epoch AS createdAtEpoch
       FROM user_prompts up JOIN sdk_sessions s ON s.id = up.session_db_id
       WHERE up.created_at_epoch >= ? AND s.project != ?
         AND (up.native_prompt_id IS NULL OR up.native_prompt_id NOT LIKE 'transcript:%')

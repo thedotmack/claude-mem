@@ -125,13 +125,26 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
   };
 
   const steps: StepTiming[] = [];
-  const run = async (ask: AskAgent, agent: UsableAgentId): Promise<string> => {
+  const run = async (askBackend: AskAgent, agent: UsableAgentId): Promise<string> => {
     const runDir = join(ledgerDir, 'agent-runs', randomBytes(6).toString('hex'));
     mkdirSync(runDir, { recursive: true });
     let fileNumber = 0;
+    const inlineEvidence = new Map<string, string>();
+    if (agent === 'gemini' && needs.goalsStale) {
+      for (const name of ['owner-prompts.md', 'new-owner-prompts.md']) {
+        const path = join(goalsFolder, name);
+        if (existsSync(path)) inlineEvidence.set(path, readFileSync(path, 'utf8'));
+      }
+    }
+    const ask: AskAgent = (prompt, models, schema) => {
+      const supplied = agent === 'gemini' ? [...inlineEvidence].filter(([path]) => prompt.includes(path)) : [];
+      return askBackend(supplied.length ? `${prompt}\n\nThe following input files are supplied inline; no file tools are available:\n${supplied.map(([path, contents]) => `--- ${path} ---\n${contents}`).join('\n\n')}` : prompt, models, schema);
+    };
     const writeInput = (name: string, value: unknown) => {
       const path = join(runDir, `${++fileNumber}-${name}.json`);
-      writeFileSync(path, typeof value === 'string' ? value : JSON.stringify(value, null, 2), { mode: 0o600 });
+      const contents = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+      writeFileSync(path, contents, { mode: 0o600 });
+      inlineEvidence.set(path, contents);
       return path;
     };
     const cli = (argv: string[], input?: unknown) => {
