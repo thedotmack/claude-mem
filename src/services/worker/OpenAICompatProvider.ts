@@ -11,14 +11,16 @@
  * carries the cmem.ai gateway's credential-pinning rules, and neither should
  * follow a user to NVIDIA.
  *
- * What this sends is deliberately plain — model, messages, temperature, the
- * output-token cap, and the standard OpenAI streaming fields (`stream`,
- * `stream_options.include_usage`), nothing else. Strict endpoints (vLLM in
- * particular) reject unknown body fields, so there is no vendor-specific
- * extra; one that refuses the streaming fields is sent the plain body instead
- * (streamed-chat-completion.ts). Token counts are used when the endpoint
- * reports them and are never estimated into the usage event, matching the rule OpenRouter's
- * `buildLastUsage` already enforces: real numbers on both sides or none.
+ * The body is model, messages, temperature, the output-token cap, the standard
+ * OpenAI streaming fields, and `reasoning: { enabled: false }` by default
+ * (CLAUDE_MEM_OPENAI_COMPAT_REASONING). A reasoning-by-default model otherwise
+ * spends max_tokens thinking and returns empty content (#2995). A strict
+ * endpoint that rejects the field (vLLM in particular) is sent the request
+ * once more without it. One that refuses the streaming fields is sent the
+ * plain body instead (streamed-chat-completion.ts). Token counts are used when
+ * the endpoint reports them and are never estimated into the usage event,
+ * matching the rule OpenRouter's `buildLastUsage` already enforces: real
+ * numbers on both sides or none.
  */
 
 import { getCredential } from '../../shared/EnvManager.js';
@@ -34,7 +36,21 @@ import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { randomUUID } from 'crypto';
-import { ClassifiedProviderError, rateLimitUntilNextKey } from './provider-errors.js';
+import { ClassifiedProviderError, isClassified, rateLimitUntilNextKey } from './provider-errors.js';
+import {
+  claimReasoningBudgetRetry,
+  combineBilledChatUsage,
+  endpointRejectsReasoningField,
+  isLengthTruncatedEmptyReply,
+  isUnknownReasoningParameter,
+  REASONING_DISABLED,
+  reasoningBudgetGiveUpMessage,
+  reasoningBudgetRetryMessage,
+  reasoningBudgetSkippedMessage,
+  rememberEndpointRejectsReasoningField,
+  resolveOpenAICompatReasoning,
+  startReasoningRetryDeadline,
+} from './reasoning-budget.js';
 import type { PaidSendBudget } from './paid-send-budget.js';
 import { isContextOverflowBody } from './OpenRouterProvider.js';
 import { namesPeriodRateLimit } from '../../shared/period-rate-limit.js';
@@ -71,6 +87,30 @@ interface ChatCompletionResponse {
     total_tokens?: number;
   };
   error?: { message?: string; code?: string | number; type?: string };
+}
+
+/** Last prompt for context size; both requests' completion tokens were billed. */
+function withCombinedCompatUsage(
+  first: ChatCompletionResponse['usage'],
+  retry: ChatCompletionResponse,
+): ChatCompletionResponse {
+  const combined = combineBilledChatUsage(
+    {
+      promptTokens: first?.prompt_tokens,
+      completionTokens: first?.completion_tokens,
+      totalTokens: first?.total_tokens,
+    },
+    {
+      promptTokens: retry.usage?.prompt_tokens,
+      completionTokens: retry.usage?.completion_tokens,
+      totalTokens: retry.usage?.total_tokens,
+    },
+  );
+  const usage: NonNullable<ChatCompletionResponse['usage']> = { ...retry.usage };
+  if (combined.promptTokens !== undefined) usage.prompt_tokens = combined.promptTokens;
+  if (combined.completionTokens !== undefined) usage.completion_tokens = combined.completionTokens;
+  if (combined.totalTokens !== undefined) usage.total_tokens = combined.totalTokens;
+  return { ...retry, usage };
 }
 
 export interface OpenAICompatConfig {
@@ -422,6 +462,12 @@ export function resolveOpenAICompatConfig(
   };
 }
 
+function errorText(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const cause = error.cause instanceof Error ? error.cause.message : '';
+  return `${error.message}\n${cause}`;
+}
+
 export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatConfig> {
   protected readonly providerName = 'OpenAI-compatible';
   protected readonly syntheticIdPrefix = 'openai-compat';
@@ -509,7 +555,7 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
    * POST the request and read its (streamed) reply. A model that only takes
    * max_completion_tokens gets the #4003 resend inside sendChatCompletion.
    */
-  private requestChatCompletion(
+  private async requestChatCompletion(
     config: OpenAICompatConfig,
     apiKey: string,
     messages: OpenAIChatMessage[],
@@ -518,10 +564,19 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     attemptSignal: AbortSignal,
     liveness: StreamLiveness | null,
     sessionId: string | undefined,
+    forceReasoningOff: boolean = false,
   ): Promise<ChatCompletionExchange> {
     const label = config.preset.label;
     const sessionHeader = config.preset.sessionHeader;
-    return sendChatCompletion({
+    const reasoningMode = resolveOpenAICompatReasoning(
+      SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_OPENAI_COMPAT_REASONING,
+    );
+    // Default off. A URL that already 400'd on the field never sees it again.
+    // The forced retry (after an empty length reply) sends it even when the
+    // setting is "on", unless that URL has rejected the field.
+    const includeReasoning = !endpointRejectsReasoningField(config.apiUrl)
+      && (forceReasoningOff || reasoningMode !== 'on');
+    const send = (withReasoning: boolean) => sendChatCompletion({
       url: config.apiUrl,
       headers: {
         'Content-Type': 'application/json',
@@ -539,6 +594,7 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
         messages,
         temperature: 0.3,
         ...(liveness ? STREAMED_REQUEST_FIELDS : {}),
+        ...(withReasoning ? { reasoning: REASONING_DISABLED } : {}),
       },
       maxOutputTokens,
       signal: attemptSignal,
@@ -546,6 +602,21 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
       label,
       classify: (input) => classifyOpenAICompatError({ ...input, endpointLabel: label, requestUrl: config.apiUrl }),
     });
+    try {
+      return await send(includeReasoning);
+    } catch (error) {
+      // Strict schemas (vLLM) 400 on the unknown field. Remember the URL and
+      // resend once without it. A model that says reasoning is mandatory is
+      // not this: stripping the field would hide that refusal.
+      const text = errorText(error);
+      if (!includeReasoning || !isClassified(error) || error.kind !== 'unrecoverable' || !isUnknownReasoningParameter(text)) {
+        throw error;
+      }
+      if (rememberEndpointRejectsReasoningField(config.apiUrl)) {
+        logger.warn('SDK', `${label} rejected the reasoning field; resending without it`, { url: config.apiUrl });
+      }
+      return send(false);
+    }
   }
 
   private async queryChatCompletions(
@@ -564,6 +635,12 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     const label = config.preset.label;
     const clientAttemptId = paidSendBudget?.clientAttemptId ?? randomUUID();
     const maxOutputTokens = resolveObserverMaxOutputTokens();
+    // Before the send. A 400 that strips the field must not look like "we
+    // never asked", and an already-disabled request must not be sent twice.
+    const disabledOnSend = !endpointRejectsReasoningField(config.apiUrl)
+      && resolveOpenAICompatReasoning(
+        SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_OPENAI_COMPAT_REASONING,
+      ) !== 'on';
 
     logger.debug('SDK', `Querying ${label} multi-turn (${config.model})`, {
       turns: history.length,
@@ -576,7 +653,7 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     const liveness = streamed
       ? resolveStreamLiveness(perAttemptTimeoutMs, this.streamIdleTimeoutMs ?? resolveStreamIdleTimeoutMs())
       : null;
-    const data = await withRetry<ChatCompletionResponse>(async (attemptSignal) => {
+    let data = await withRetry<ChatCompletionResponse>(async (attemptSignal) => {
       const exchange = await this.requestChatCompletion(config, apiKey, messages, maxOutputTokens, clientAttemptId, attemptSignal, liveness, sessionId);
       const responseData = exchange.body as ChatCompletionResponse;
 
@@ -606,12 +683,13 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
       ...retryPolicyForPool(poolSize),
     });
 
-    const choice = data.choices?.[0];
+    let choice = data.choices?.[0];
     // Text blocks only: reasoning and tool-call arguments are never the answer,
     // and neither is a leading <think> block in the text itself.
-    const content = stripLeadingThinkBlock(assistantText(choice?.message?.content));
-    const finishReason = typeof choice?.finish_reason === 'string' ? choice.finish_reason : undefined;
-    if (finishReason === 'length') {
+    let content = stripLeadingThinkBlock(assistantText(choice?.message?.content));
+    let finishReason = typeof choice?.finish_reason === 'string' ? choice.finish_reason : undefined;
+    const warnIfCutOff = () => {
+      if (finishReason !== 'length') return;
       logger.warn('SDK', `${label} reply was cut off at the output-token limit`, {
         model: config.model,
         maxTokens: maxOutputTokens,
@@ -619,8 +697,57 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
         contentChars: content.length,
         clientAttemptId,
       });
-    }
-    if (!content) {
+    };
+    warnIfCutOff();
+
+    if (isLengthTruncatedEmptyReply(content, finishReason) && !disabledOnSend && !endpointRejectsReasoningField(config.apiUrl)) {
+      if (!claimReasoningBudgetRetry(paidSendBudget)) {
+        logger.error('SDK', reasoningBudgetSkippedMessage(label, paidSendBudget?.spentPaidSends ?? 0), {
+          model: config.model,
+          finishReason,
+          maxTokens: maxOutputTokens,
+        });
+      } else {
+        const firstUsage = data.usage;
+        logger.error('SDK', reasoningBudgetRetryMessage(label), { model: config.model, finishReason, maxTokens: maxOutputTokens });
+        const deadline = liveness ? undefined : startReasoningRetryDeadline(signal, perAttemptTimeoutMs);
+        try {
+          const retrySignal = deadline?.signal ?? signal ?? new AbortController().signal;
+          const exchange = await this.requestChatCompletion(
+            config, apiKey, messages, maxOutputTokens, clientAttemptId, retrySignal, liveness, sessionId, true,
+          );
+          const retryData = exchange.body as ChatCompletionResponse;
+          if (retryData.error) {
+            throw classifyOpenAICompatError({
+              status: exchange.status,
+              bodyText: JSON.stringify(retryData),
+              headers: exchange.headers,
+              cause: new Error(`${label} API error: ${retryData.error.code} - ${retryData.error.message}`),
+              endpointLabel: label,
+            });
+          }
+          data = withCombinedCompatUsage(firstUsage, retryData);
+          choice = data.choices?.[0];
+          content = stripLeadingThinkBlock(assistantText(choice?.message?.content));
+          finishReason = typeof choice?.finish_reason === 'string' ? choice.finish_reason : undefined;
+          warnIfCutOff();
+          if (isLengthTruncatedEmptyReply(content, finishReason)) {
+            logger.error('SDK', reasoningBudgetGiveUpMessage(label, finishReason), { model: config.model });
+          }
+        } catch (error) {
+          logger.error('SDK', reasoningBudgetGiveUpMessage(label, finishReason), {
+            model: config.model,
+          }, error instanceof Error ? error : new Error(String(error)));
+        } finally {
+          deadline?.finish();
+        }
+      }
+    } else if (isLengthTruncatedEmptyReply(content, finishReason)) {
+      logger.error('SDK', reasoningBudgetGiveUpMessage(label, finishReason), {
+        model: config.model,
+        maxTokens: maxOutputTokens,
+      });
+    } else if (!content) {
       logger.error('SDK', `Empty response from ${label}`, { model: config.model, finishReason });
     }
 

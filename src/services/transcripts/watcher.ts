@@ -862,7 +862,9 @@ export class TranscriptWatcher {
 
   private resolveWatchFiles(inputPath: string): string[] {
     if (this.hasGlob(inputPath)) {
-      return this.scanGlob(this.normalizeGlobPattern(inputPath));
+      // Bun.Glob matches nothing for a pattern that climbs with '..', so a
+      // relative watch path is resolved against the cwd before scanning.
+      return this.scanGlob(this.normalizeGlobPattern(resolvePath(inputPath)));
     }
 
     if (existsSync(inputPath)) {

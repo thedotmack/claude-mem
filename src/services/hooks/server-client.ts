@@ -14,7 +14,7 @@
 import { fetchWithTimeout } from '../../shared/worker-utils.js';
 import { HOOK_TIMEOUTS, getTimeout } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
-import { stripMemoryTagsFromJsonStrings } from '../../utils/tag-stripping.js';
+import { stripMemoryTags, stripMemoryTagsFromJsonStrings } from '../../utils/tag-stripping.js';
 
 const DEFAULT_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.API_REQUEST);
 
@@ -218,6 +218,21 @@ export interface ServerSelectedObservationsRequest {
   ids: string[];
 }
 
+// Per-prompt injection (CLAUDE_MEM_SEMANTIC_INJECT): observations near the
+// prompt in meaning, rendered like the worker's /api/context/semantic.
+export interface ServerSemanticContextRequest {
+  projectId: string;
+  query: string;
+  limit?: number;
+  platformSource?: string | null;
+  folderProjects?: string[];
+}
+
+export interface ServerSemanticContextResponse {
+  context: string;
+  count: number;
+}
+
 // Phase 8 — generation job status, scoped by api-key team/project.
 export interface ServerJobStatusResponse {
   generationJob: {
@@ -320,6 +335,22 @@ export class ServerClient {
     }
     if (input.excludeSubagents !== undefined) payload.excludeSubagents = input.excludeSubagents;
     return this.request<ServerContextObservationsResponse>('POST', '/v1/context', payload, options);
+  }
+
+  async semanticContext(
+    input: ServerSemanticContextRequest,
+    options: ServerRequestOptions = {},
+  ): Promise<ServerSemanticContextResponse> {
+    // The query is the user's prompt; <private> sections never leave the hook.
+    const payload: Record<string, unknown> = { projectId: input.projectId, query: stripMemoryTags(input.query) };
+    if (input.limit !== undefined) payload.limit = input.limit;
+    if (input.platformSource !== undefined) {
+      payload.platformSource = normalizePlatformSourceField(input.platformSource);
+    }
+    if (input.folderProjects && input.folderProjects.length > 0) {
+      payload.folderProjects = input.folderProjects;
+    }
+    return this.request<ServerSemanticContextResponse>('POST', '/v1/context/semantic', payload, options);
   }
 
   // Phase 8 — MCP `observation_generation_status`. Server returns the same

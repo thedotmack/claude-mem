@@ -33,6 +33,7 @@ describe('streaming fields in the OpenRouter request body', () => {
   it('leaves cmem gateway requests unchanged', () => {
     const body = buildOpenRouterRequestBody({ ...base, apiUrl: 'https://cmem.ai/api/inference/v1/chat/completions' });
     expect('stream' in body).toBe(false);
-    expect(Object.keys(body)).toEqual(['model', 'messages', 'temperature', 'max_tokens']);
+    expect(Object.keys(body)).toEqual(['model', 'messages', 'temperature', 'max_tokens', 'reasoning']);
+    expect(body.reasoning).toEqual({ enabled: false });
   });
 });

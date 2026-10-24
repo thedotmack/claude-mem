@@ -40,10 +40,14 @@ try {
   const {GeminiProvider: Provider} = process.env.CLAUDE_MEM_GEMINI_MODULE ? await import(process.env.CLAUDE_MEM_GEMINI_MODULE) : {GeminiProvider};
   await new Provider(db,manager).startSession(session);
   console.log(JSON.stringify({scenario,requests,input:session.cumulativeInputTokens,output:session.cumulativeOutputTokens,lastUsage:session.lastUsage,lastContextTokens:session.lastContextTokens,pending:manager.getTotalQueueDepth()}));
-  assert.equal(requests,1);
+  // An empty MAX_TOKENS reply is retried once with thinking disabled. This
+  // fixture's server ignores that flag and returns the same usage twice.
+  // Context size stays the last request's prompt; billed output adds both.
+  assert.equal(requests, scenario.startsWith('limit') ? 2 : 1);
   assert.equal(session.cumulativeInputTokens,120);
-  assert.equal(session.cumulativeOutputTokens,15);
-  if (!barePrompt) { assert.deepEqual(session.lastUsage,{input:120,output:15}); assert.equal(session.lastContextTokens,120); assert.equal(manager.getTotalQueueDepth(),1); }
+  const output = scenario.startsWith('limit') ? 30 : 15;
+  assert.equal(session.cumulativeOutputTokens, output);
+  if (!barePrompt) { assert.deepEqual(session.lastUsage,{input:120,output}); assert.equal(session.lastContextTokens,120); assert.equal(manager.getTotalQueueDepth(),1); }
   assert.equal((store.db.query('SELECT COUNT(*) AS count FROM observations').get() as any).count,0);
 } finally {
   if(abortTimer) clearTimeout(abortTimer);
