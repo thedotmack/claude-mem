@@ -232,11 +232,11 @@ export function shellTemplateManifest(buildShellCommand, buildCodexWindowsComman
         'SessionStart.0.0': codexHookPair(['hook', 'codex', 'context']),
         'UserPromptSubmit.0.0': codexHookPair(['hook', 'codex', 'session-init']),
         'PreToolUse.0.0': codexHookPair(['hook', 'codex', 'file-context']),
-        // Observation capture is fail-open bookkeeping; never block tool
-        // completion on worker startup or storage I/O.
+        // Observation capture stays synchronous so a delayed event cannot cross
+        // turn boundaries. Bound worker/storage stalls to a short fail-open wait.
         'PostToolUse.0.0': codexHookPair(
           ['hook', 'codex', 'observation'],
-          { timeout: 120, async: true },
+          { timeout: 5 },
         ),
         'Stop.0.0': codexHookPair(['hook', 'codex', 'summarize']),
         'PostCompact.0.0': codexHookPair(['hook', 'codex', 'post-compact']),
@@ -405,17 +405,6 @@ async function verifyShellTemplateCanonical() {
             );
           }
           entry.timeout = expected.timeout;
-          dirty = true;
-        }
-        if (typeof expected !== 'string' && Object.prototype.hasOwnProperty.call(expected, 'async')
-          && entry?.async !== expected.async) {
-          if (!writeMode || !entry) {
-            throw new Error(
-              `Hand-edited async setting detected in ${filePath} (${dottedPath}). It no longer matches scripts/build-hooks.js. ` +
-              `Regenerate via \`node scripts/build-hooks.js --write-shell-templates\` after an intentional generator change.`
-            );
-          }
-          entry.async = expected.async;
           dirty = true;
         }
       }
