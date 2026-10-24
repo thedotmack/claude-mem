@@ -1,0 +1,134 @@
+import { describe, expect, it } from 'bun:test';
+import { runBrowserSetup, settingsChangesNeedingRestart, setupPageUrl, shouldUseBrowserSetup, waitForBackgroundWorkToFinish } from '../../src/npx-cli/install/browser-setup.js';
+import type { SetupStateView } from '../../src/shared/setup-state.js';
+
+const GUI = { interactive: true, runtime: 'worker' as const, setupComplete: false };
+
+describe('shouldUseBrowserSetup', () => {
+  it('hands an interactive install with no provider to the browser', () => {
+    expect(shouldUseBrowserSetup(GUI)).toBe(true);
+  });
+  it('keeps the terminal flow for non-TTY (agent-run) installs', () => {
+    expect(shouldUseBrowserSetup({ ...GUI, interactive: false })).toBe(false);
+  });
+  it('keeps the terminal flow for --provider claude and every other --provider', () => {
+    expect(shouldUseBrowserSetup({ ...GUI, provider: 'claude' })).toBe(false);
+    expect(shouldUseBrowserSetup({ ...GUI, provider: 'openrouter' })).toBe(false);
+  });
+  it('keeps the terminal flow for --no-auto-start and the server runtime', () => {
+    expect(shouldUseBrowserSetup({ ...GUI, noAutoStart: true })).toBe(false);
+    expect(shouldUseBrowserSetup({ ...GUI, runtime: 'server' })).toBe(false);
+  });
+  it('shows the funnel once per machine', () => {
+    expect(shouldUseBrowserSetup({ ...GUI, setupComplete: true })).toBe(false);
+  });
+});
+
+/** A worker that answers from a scripted state, the way the page and installer would move it. */
+function fakeWorker(script: { unreachableReads?: number }) {
+  let state: SetupStateView = { status: 'pending', choice: null, installer: null, completedAt: null, alreadyPro: false };
+  let unreachable = script.unreachableReads ?? 0;
+  const stages: string[] = [];
+  const fetch = (async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/api/setup/installer')) {
+      const body = JSON.parse(String(init?.body));
+      stages.push(body.stage);
+      state = { ...state, ...(body.stage === 'waiting-for-choice' ? { choice: null } : {}), installer: { stage: body.stage, error: body.error, updatedAt: 'now' } };
+      return Response.json(state);
+    }
+    if (unreachable > 0) { unreachable--; throw new TypeError('fetch failed'); }
+    return Response.json(state);
+  }) as typeof globalThis.fetch;
+  return { fetch, stages, set: (changes: Partial<SetupStateView>) => { state = { ...state, ...changes }; }, get: () => state };
+}
+
+describe('runBrowserSetup', () => {
+  it('opens the page, waits without a time limit for the worker and the choice, then for the finish', async () => {
+    const worker = fakeWorker({ unreachableReads: 3 });
+    const opened: string[] = [];
+    const warnings: string[] = [];
+    let sleeps = 0;
+    const applied: string[] = [];
+    const outcome = await runBrowserSetup({
+      workerBaseUrl: 'http://127.0.0.1:1234',
+      openBrowser: (url) => opened.push(url),
+      log: { info: () => {}, warn: (message) => warnings.push(message) },
+      fetch: worker.fetch,
+      sleep: async () => {
+        sleeps++;
+        // The browser connects late, then chooses, then finishes.
+        if (sleeps === 10) worker.set({ choice: { branch: 'home', memoryBilling: 'existing', chosenAt: 'now' } });
+        if (sleeps === 20) worker.set({ status: 'complete', completedAt: 'now' });
+      },
+      applyChoice: async (choice) => { applied.push(choice.branch); return 'home-ready'; },
+    });
+    expect(opened).toEqual([setupPageUrl('http://127.0.0.1:1234')]);
+    expect(opened[0]).toBe('http://127.0.0.1:1234/?setup=1');
+    expect(warnings).toEqual(['Waiting for the worker at http://127.0.0.1:1234…']);
+    expect(applied).toEqual(['home']);
+    expect(worker.stages).toEqual(['waiting-for-choice', 'home-ready']);
+    expect(outcome).toMatchObject({ choice: { branch: 'home' }, stage: 'home-ready', state: { status: 'complete' } });
+  });
+
+  it('reports a failed choice to the page and stops', async () => {
+    const worker = fakeWorker({});
+    let sleeps = 0;
+    await expect(runBrowserSetup({
+      workerBaseUrl: 'http://127.0.0.1:1234',
+      openBrowser: () => {},
+      log: { info: () => {}, warn: () => {} },
+      fetch: worker.fetch,
+      sleep: async () => { if (++sleeps === 2) worker.set({ choice: { branch: 'go', memoryBilling: 'hosted', chosenAt: 'now' } }); },
+      applyChoice: async () => { throw new Error('Could not start the CMEM Pro sign-in.'); },
+    })).rejects.toThrow('Could not start the CMEM Pro sign-in.');
+    expect(worker.stages).toEqual(['waiting-for-choice', 'failed']);
+    expect(worker.get().installer?.error).toBe('Could not start the CMEM Pro sign-in.');
+  });
+});
+
+describe('settingsChangesNeedingRestart', () => {
+  const before = JSON.stringify({ CLAUDE_MEM_WORKER_PORT: '37896', CLAUDE_MEM_RUNTIME: 'worker' });
+  it('At Home needs no restart: the worker reads the provider, auth method and model live, and sync stays off', () => {
+    // What useSubscriptionAuth() writes (buildAnthropicMaxLocalSettings): the scenario (b) settings file.
+    const atHome = JSON.stringify({
+      CLAUDE_MEM_WORKER_PORT: '37896', CLAUDE_MEM_RUNTIME: 'worker', CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription',
+      CLAUDE_MEM_MODEL: 'claude-sonnet-5', CLAUDE_MEM_CLOUD_SYNC_TOKEN: '', CLAUDE_MEM_CLOUD_SYNC_USER_ID: '', CLAUDE_MEM_CLOUD_SYNC_HUB_URL: '',
+      CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '', CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: '', CLAUDE_MEM_PRO_MEMORY_KEY: '', CLAUDE_MEM_PRO_MEMORY_BASE_URL: '', CLAUDE_MEM_PRO_MEMORY_MODEL: '',
+    });
+    expect(settingsChangesNeedingRestart(before, atHome)).toEqual([]);
+    expect(settingsChangesNeedingRestart('', JSON.stringify({ CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: '' }))).toEqual([]);
+    expect(settingsChangesNeedingRestart(before, before)).toEqual([]);
+  });
+  it('turning cloud sync on (On The Go paid) needs a restart: the worker sets up sync only at boot', () => {
+    const paid = JSON.stringify({ CLAUDE_MEM_WORKER_PORT: '37896', CLAUDE_MEM_CLOUD_SYNC_TOKEN: 't', CLAUDE_MEM_CLOUD_SYNC_USER_ID: 'u', CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'https://cmem.ai/api/sync' });
+    expect(settingsChangesNeedingRestart(before, paid)).toEqual(['CLAUDE_MEM_CLOUD_SYNC_HUB_URL', 'CLAUDE_MEM_CLOUD_SYNC_TOKEN', 'CLAUDE_MEM_CLOUD_SYNC_USER_ID']);
+  });
+  it('any other setting the worker reads at boot needs a restart', () => {
+    expect(settingsChangesNeedingRestart(before, JSON.stringify({ CLAUDE_MEM_WORKER_PORT: '37896', CLAUDE_MEM_RUNTIME: 'worker', CLAUDE_MEM_CHROMA_ENABLED: 'false' }))).toEqual(['CLAUDE_MEM_CHROMA_ENABLED']);
+  });
+});
+
+describe('waitForBackgroundWorkToFinish', () => {
+  it('waits, with no time limit, until no extraction or history import runs, and says why once per change', async () => {
+    const answers = [['extraction'], ['extraction'], ['extraction', 'history-import'], []];
+    let reads = 0, sleeps = 0;
+    const said: string[] = [];
+    await waitForBackgroundWorkToFinish({
+      workerBaseUrl: 'http://w',
+      fetch: (async () => Response.json({ backgroundWorkRunning: answers[reads++] })) as unknown as typeof fetch,
+      sleep: async () => { sleeps++; },
+      log: { info: line => said.push(line), warn: line => said.push(line) },
+    });
+    expect(reads).toBe(4);
+    expect(sleeps).toBe(3);
+    expect(said).toEqual([
+      'Setup is complete. The worker restarts to apply your settings once it finishes reading your goals, work and rules; that work keeps going until then.',
+      'Setup is complete. The worker restarts to apply your settings once it finishes reading your goals, work and rules and bringing your memory to CMEM; that work keeps going until then.',
+    ]);
+  });
+  it('ends at once when nothing runs or the worker is gone (nothing left to protect)', async () => {
+    const log = { info: () => {}, warn: () => {} };
+    await waitForBackgroundWorkToFinish({ workerBaseUrl: 'http://w', log, fetch: (async () => Response.json({})) as unknown as typeof fetch, sleep: async () => { throw new Error('no wait'); } });
+    await waitForBackgroundWorkToFinish({ workerBaseUrl: 'http://w', log, fetch: (async () => { throw new TypeError('fetch failed'); }) as unknown as typeof fetch, sleep: async () => { throw new Error('no wait'); } });
+  });
+});

@@ -1,7 +1,7 @@
 import type express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import { createHash, randomBytes } from 'node:crypto';
-import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, extname, join } from 'node:path';
 import { z } from 'zod';
@@ -22,9 +22,13 @@ import { chatCompletionsHumanCopyProvider, HumanCopyWorker } from '../../../work
 import { AutoRefreshWorker } from '../../../work-view/auto-refresh-worker.mjs';
 import { buildRefreshTask } from '../../../work-view/refresh-task.js';
 import { runAgentTask } from '../../../agent-runner/run.js';
+import { ledgerSignature, readLedger } from '../../../work-view/request-groups.mjs';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { validateBody } from '../middleware/validateBody.js';
+import type { SetupScan, SetupScanState } from '../../../prompt-import/setup-scan.js';
+import { readHistoryCounts, type HistoryImport } from '../../../setup/history-import.js';
+import { hasProConfiguration, readSetupState, setupStatePath, writeSetupState, type SetupStateFile, type SetupStateView } from '../../../../shared/setup-state.js';
 
 // A request is ready for a human check once its explicit lifecycle reports it complete, shipped, or waiting for review.
 // Statuses are compared lowercased with `_` and spaces read as `-`, matching the viewer's status normalization.
@@ -39,6 +43,12 @@ function reviewIsNewerThanLifecycle(review: { checkedAt?: string | null }, lifec
   if (!lifecycle?.explicit || !lifecycle.atEpoch) return true;
   const reviewedAt = Date.parse(review.checkedAt ?? '');
   return Number.isFinite(reviewedAt) && reviewedAt >= lifecycle.atEpoch;
+}
+
+/** True while a process with this pid exists (signal 0 checks without signalling). */
+function processIsAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
 /** Ready for a person's check: the explicit lifecycle says so, or a memory review newer than it reached 100%.
@@ -123,7 +133,40 @@ interface WorkViewOptions {
   rulesFilePath?: string;
   /** <Claude config dir>/CLAUDE.md: the user-level file that imports MY-RULES.md. Never a project's file. */
   claudeInstructionsPath?: string;
+  /** The install funnel's prompt scan. Without it the setup scan endpoints answer 503. */
+  setupScan?: SetupScan | null;
+  /** The install funnel's per-machine state file (choice, installer stage, completion). */
+  setupStatePath?: string;
+  /** Read for `alreadyPro`; defaults to ~/.claude-mem/settings.json. */
+  settingsPath?: string;
+  /** Finish Setup's history upload to CMEM Pro. Without it POST /api/setup/import answers 503. */
+  historyImport?: HistoryImport | null;
 }
+
+/** One overall request on the Reveal, read from the request-group ledger so new installs (prompts only) have work too. */
+export interface SetupWorkItem { groupId: string; title: string; platform: string | null; lastActiveAt: string | null; progressPercent: number | null }
+const SETUP_WORK_SHOWN = 5;
+
+const setupScanBody = z.object({}).strict();
+// On The Go is always CMEM Pro: standalone Cloud Sync on your own tokens has no price yet (gap G1).
+const setupChoiceBody = z.object({
+  branch: z.enum(['home', 'go']),
+  memoryBilling: z.enum(['hosted', 'existing']),
+}).strict().refine(choice => choice.branch === 'home' || choice.memoryBilling === 'hosted', {
+  message: 'On The Go uses CMEM Pro (memoryBilling "hosted").',
+});
+const setupInstallerBody = z.object({
+  stage: z.enum(['waiting-for-choice', 'home-ready', 'go-kept-existing-pro', 'go-awaiting-checkout', 'failed']),
+  error: z.string().max(2000).nullable().optional(),
+  /** The installer mirrors the pairing checkout it is running (funnel Phase 8). */
+  checkout: z.enum(['waiting', 'paid', 'failed']).optional(),
+}).strict();
+const setupCheckoutBody = z.object({}).strict();
+const setupCompleteBody = z.object({
+  /** Finish Setup's picked tools; the installer sets up the local ones it has not installed. */
+  tools: z.array(z.string().min(1).max(40)).max(20).optional(),
+}).strict();
+const setupImportBody = z.object({}).strict();
 
 type HumanCopyProvider = ReturnType<typeof chatCompletionsHumanCopyProvider>;
 
@@ -176,12 +219,25 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private homeProject: string | undefined;
   private rulesFilePath: string;
   private claudeInstructionsPath: string;
+  private setupScan: SetupScan | null;
+  private setupStatePath: string;
+  private settingsPath: string;
+  private unsubscribeSetupScan: (() => void) | null = null;
+  /** The scan (by start time) whose finish already started the extraction. */
+  private extractedScanStartedAt: string | null = null;
+  private ledgerDir: string | null;
+  private databasePath: string;
+  private setupWorkCache: { signature: string; work: SetupWorkItem[] | null } | null = null;
+  private historyImport: HistoryImport | null;
+  private unsubscribeHistoryImport: (() => void) | null = null;
 
   constructor(options: WorkViewOptions = {}) {
     super();
     this.pollIntervalMs = options.pollIntervalMs ?? 1000;
     this.getLocalDeviceId = options.getLocalDeviceId ?? (() => '');
     const ledgerDir = options.ledgerDir === undefined ? join(DATA_DIR, 'work-view') : options.ledgerDir;
+    this.ledgerDir = ledgerDir;
+    this.databasePath = options.databasePath ?? DB_PATH;
     this.source = new WorkStateSource({
       databasePath: options.databasePath ?? DB_PATH,
       pollIntervalMs: this.pollIntervalMs,
@@ -201,6 +257,22 @@ export class WorkViewRoutes extends BaseRouteHandler {
     this.homeProject = options.homeProject;
     this.rulesFilePath = options.rulesFilePath ?? join(DATA_DIR, 'MY-RULES.md');
     this.claudeInstructionsPath = options.claudeInstructionsPath ?? join(CLAUDE_CONFIG_DIR, 'CLAUDE.md');
+    this.setupScan = options.setupScan ?? null;
+    this.setupStatePath = options.setupStatePath ?? setupStatePath();
+    this.settingsPath = options.settingsPath ?? USER_SETTINGS_PATH;
+    this.historyImport = options.historyImport ?? null;
+    this.unsubscribeHistoryImport = this.historyImport?.subscribe(state => this.broadcast('setup-import', state)) ?? null;
+    // Scan progress rides the work view's event stream, as `setup-scan` events. A finished scan starts the
+    // extraction right away (funnel Phase 5): goals, then work, then rules land in the snapshot as each is saved.
+    this.unsubscribeSetupScan = this.setupScan?.subscribe(state => {
+      this.broadcast('setup-scan', state);
+      if (state.phase === 'done' && state.startedAt !== this.extractedScanStartedAt) {
+        this.extractedScanStartedAt = state.startedAt;
+        void this.autoRefresh?.runNow({ reason: 'setup-scan' })
+          .catch(error => logger.warn('WORKER', 'Setup extraction did not start', { error: String((error as Error)?.message ?? error) }))
+          .finally(() => this.publish());
+      }
+    }) ?? null;
     // Rule rows pulled from another device change what Claude Code should load; rebuild the file then too.
     this.stopRulesSync = onContextInvalidation(({ reason }) => {
       if (reason.startsWith('SyncApply.')) this.scheduleRulesFileRebuild();
@@ -273,6 +345,127 @@ export class WorkViewRoutes extends BaseRouteHandler {
     app.post('/api/work-view/rules', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(ruleBody), this.wrapHandler(this.saveRule));
     app.post('/api/work-view/agents/mark-finished', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(markAgentFinishedBody), this.wrapHandler(this.markAgentFinished));
     app.post('/api/work-view/rules/load-in-claude-code', workViewLoopbackOnly, requireWorkViewOrigin, this.wrapHandler(this.loadRulesInClaudeCode));
+    app.get('/api/setup/scan', workViewLoopbackOnly, this.wrapHandler((_req, res) => {
+      if (!this.setupScan) { res.status(503).json({ error: 'The prompt scan is unavailable on this worker.' }); return; }
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(this.setupScan.state());
+    }));
+    app.post('/api/setup/scan', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupScanBody), this.wrapHandler((_req, res) => {
+      if (!this.setupScan) { res.status(503).json({ error: 'The prompt scan is unavailable on this worker.' }); return; }
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(202).json(this.setupScan.start());
+    }));
+    // The funnel hand-off. The page posts the storage choice and the finish; the installer polls the state and
+    // reports what it did with the choice. Node's fetch sends no Origin, so the installer passes the same guard.
+    app.get('/api/setup/state', workViewLoopbackOnly, this.wrapHandler((_req, res) => {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(this.setupStateView());
+    }));
+    app.post('/api/setup/choice', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupChoiceBody), this.wrapHandler(this.saveSetupChoice));
+    app.post('/api/setup/installer', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupInstallerBody), this.wrapHandler(this.saveInstallerStage));
+    app.post('/api/setup/checkout', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupCheckoutBody), this.wrapHandler(this.requestCheckout));
+    app.post('/api/setup/import', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupImportBody), this.wrapHandler(this.startHistoryImport));
+    app.post('/api/setup/complete', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupCompleteBody), this.wrapHandler(this.completeSetup));
+  }
+
+  private setupStateView(state: SetupStateFile = readSetupState(this.setupStatePath)): SetupStateView {
+    const settings = SettingsDefaultsManager.loadFromFile(this.settingsPath, true, { readOnly: true }) as unknown as Record<string, unknown>;
+    const historyImport = this.historyImport?.state() ?? null;
+    const backgroundWorkRunning: NonNullable<SetupStateView['backgroundWorkRunning']> = [];
+    const refresh = this.autoRefresh?.status() ?? null;
+    // A 'running' record whose process is gone was cut off; only a live run counts.
+    // The setup scan counts too: when it finishes it starts the extraction run.
+    const scanPhase = this.setupScan?.state().phase ?? 'idle';
+    const scanning = !['idle', 'done', 'failed'].includes(scanPhase);
+    if (scanning || (refresh?.state === 'running' && processIsAlive(Number((refresh as { pid?: number }).pid)))) backgroundWorkRunning.push('extraction');
+    if (historyImport?.state === 'running') backgroundWorkRunning.push('history-import');
+    return { ...state, alreadyPro: hasProConfiguration(settings), history: this.historyCounts(), historyImport, backgroundWorkRunning };
+  }
+
+  /** This machine's own observations, for the import offer. A missing database is a new install: nothing to import. */
+  private historyCounts(): { projects: number; sessions: number; observations: number } | null {
+    if (!existsSync(this.databasePath)) return { projects: 0, sessions: 0, observations: 0 };
+    const database = new Database(this.databasePath, { readonly: true, create: false });
+    try { return readHistoryCounts(database); }
+    finally { database.close(); }
+  }
+
+  /** Finish Setup's "Import full history" (On The Go only, after checkout). */
+  private startHistoryImport = (_req: Request, res: Response): void => {
+    if (!this.historyImport) { res.status(503).json({ error: 'Bringing your memory is unavailable on this worker.' }); return; }
+    const state = readSetupState(this.setupStatePath);
+    if (state.choice?.branch !== 'go') { res.status(409).json({ error: 'Bringing your memory to CMEM is part of On The Go.' }); return; }
+    try {
+      const started = this.historyImport.start();
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(202).json(started);
+    } catch (error) {
+      res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
+  private saveSetupState(state: SetupStateFile, res: Response): void {
+    writeSetupState(state, this.setupStatePath);
+    const view = this.setupStateView(state);
+    this.broadcast('setup-state', view);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(view);
+  }
+
+  /** The choice can change until the installer acts on it; after that the installer holds the result. */
+  private saveSetupChoice = (req: Request, res: Response): void => {
+    const { branch, memoryBilling } = req.body as z.infer<typeof setupChoiceBody>;
+    const state = readSetupState(this.setupStatePath);
+    if (state.status === 'complete') { res.status(409).json({ error: 'Setup is already complete.', state: this.setupStateView(state) }); return; }
+    const applied = state.installer && state.installer.stage !== 'waiting-for-choice' && state.installer.stage !== 'failed';
+    if (applied && (state.choice?.branch !== branch || state.choice?.memoryBilling !== memoryBilling)) {
+      res.status(409).json({ error: 'The installer already applied the earlier choice.', state: this.setupStateView(state) });
+      return;
+    }
+    if (applied) { res.setHeader('Cache-Control', 'no-store'); res.json(this.setupStateView(state)); return; }
+    this.saveSetupState({ ...state, choice: { branch, memoryBilling, chosenAt: new Date().toISOString() } }, res);
+  };
+
+  private saveInstallerStage = (req: Request, res: Response): void => {
+    const { stage, error, checkout } = req.body as z.infer<typeof setupInstallerBody>;
+    const state = readSetupState(this.setupStatePath);
+    const now = new Date().toISOString();
+    // A new installer run starts a fresh hand-off: a choice or checkout left by an earlier, interrupted run is not applied.
+    const fresh = stage === 'waiting-for-choice';
+    const choice = fresh ? null : state.choice;
+    const checkoutState = fresh ? null : checkout
+      ? { state: checkout, requests: state.checkout?.requests ?? 0, error: checkout === 'failed' ? error ?? null : null, updatedAt: now }
+      : state.checkout;
+    this.saveSetupState({ ...state, choice, checkout: checkoutState, installer: { stage, error: checkout ? state.installer?.error ?? null : error ?? null, updatedAt: now } }, res);
+  };
+
+  /** The page's Continue on Checkout: the installer holding the On The Go pairing opens the checkout (again, on a repeat). */
+  private requestCheckout = (_req: Request, res: Response): void => {
+    const state = readSetupState(this.setupStatePath);
+    if (state.checkout?.state === 'paid') { res.setHeader('Cache-Control', 'no-store'); res.json(this.setupStateView(state)); return; }
+    if (state.choice?.branch !== 'go' || state.installer?.stage !== 'go-awaiting-checkout') {
+      res.status(409).json({ error: 'Checkout opens once the terminal has started your CMEM Pro sign-in.', state: this.setupStateView(state) });
+      return;
+    }
+    const requests = (state.checkout?.requests ?? 0) + 1;
+    this.saveSetupState({ ...state, checkout: { state: 'requested', requests, error: null, updatedAt: new Date().toISOString() } }, res);
+  };
+
+  private completeSetup = (req: Request, res: Response): void => {
+    const { tools } = req.body as z.infer<typeof setupCompleteBody>;
+    const state = readSetupState(this.setupStatePath);
+    if (state.status === 'complete') { res.setHeader('Cache-Control', 'no-store'); res.json(this.setupStateView(state)); return; }
+    if (!state.choice) { res.status(409).json({ error: 'Choose where to keep your memory before finishing setup.', state: this.setupStateView(state) }); return; }
+    if (state.installer?.stage === 'go-awaiting-checkout' && state.checkout?.state !== 'paid') {
+      res.status(409).json({ error: 'Finish checkout before finishing setup.', state: this.setupStateView(state) });
+      return;
+    }
+    this.saveSetupState({ ...state, status: 'complete', tools: tools ?? state.tools, completedAt: new Date().toISOString() }, res);
+  };
+
+  private broadcast(event: string, value: unknown): void {
+    if (this.closed) return;
+    for (const client of this.clients) this.send(client, event, value);
   }
 
   private snapshot(): WorkViewSnapshot {
@@ -285,7 +478,65 @@ export class WorkViewRoutes extends BaseRouteHandler {
     const reviewRevision = createHash('sha256').update(JSON.stringify(snapshot.humanRequests.map(request => [request.id, request.contentFingerprint, request.review]))).digest('hex').slice(0, 16);
     // Generated wording is display only: it never changes what was reviewed.
     const view = this.humanCopy ? this.humanCopy.observe(snapshot) as WorkViewSnapshot : snapshot;
-    return { ...view, rulesFile: this.rulesFileStatus(snapshot), revision: `${snapshot.revision}:${reviewRevision}:${this.humanCopy?.revision ?? 0}` };
+    return { ...view, rulesFile: this.rulesFileStatus(snapshot), setup: this.setupView(view), revision: `${snapshot.revision}:${reviewRevision}:${this.humanCopy?.revision ?? 0}` };
+  }
+
+  /**
+   * The funnel's view of setup: the scan and the extraction run (the automatic refresh's status). `step` is what is
+   * being extracted now, read from what has landed: goals first, then work (request groups), then rules (the story).
+   */
+  private setupView(snapshot: WorkViewSnapshot) {
+    const refresh = this.autoRefresh?.status() ?? null;
+    const view = snapshot as unknown as { goals?: unknown; story?: { groups?: number; story?: unknown } | null };
+    const step = refresh?.state !== 'running' ? null : !view.goals ? 'goals' : !view.story?.groups ? 'work' : 'rules';
+    return {
+      scan: this.setupScan?.state() ?? null,
+      work: this.setupWork(),
+      extraction: refresh ? {
+        state: refresh.state, reason: refresh.reason ?? null, step, agent: refresh.agent ?? null,
+        startedAt: refresh.startedAt ?? null, finishedAt: refresh.finishedAt ?? null, error: refresh.error ?? null,
+      } : null,
+    };
+  }
+
+  /**
+   * The newest overall requests in the ledger, with the latest prompt time of their conversations. `null` until the
+   * grouping has run. A review without evidence (state `unknown`, every new install) gives no percent, so no bar.
+   * Re-read only when the ledger changes.
+   */
+  private setupWork(): SetupWorkItem[] | null {
+    if (!this.ledgerDir) return null;
+    const signature = ledgerSignature(this.ledgerDir);
+    if (this.setupWorkCache?.signature === signature) return this.setupWorkCache.work;
+    const ledger = readLedger(this.ledgerDir);
+    const groupIds = Object.keys(ledger.groups.groups);
+    let work: SetupWorkItem[] | null = null;
+    if (groupIds.length) {
+      const conversationsOf = new Map<string, Array<[string, string]>>();
+      for (const [key, groupId] of Object.entries(ledger.groups.conversations as Record<string, string>)) {
+        const [, platform, contentSessionId] = JSON.parse(key) as [string, string, string];
+        if (!conversationsOf.has(groupId)) conversationsOf.set(groupId, []);
+        conversationsOf.get(groupId)!.push([platform, contentSessionId]);
+      }
+      const database = existsSync(this.databasePath) ? new Database(this.databasePath, { readonly: true, create: false }) : null;
+      try {
+        const lastPrompt = database?.prepare(`SELECT MAX(up.created_at_epoch) AS at FROM user_prompts up JOIN sdk_sessions s ON s.id = up.session_db_id
+          WHERE s.platform_source = ? AND s.content_session_id = ?`);
+        work = groupIds.map((groupId) => {
+          const group = ledger.groups.groups[groupId];
+          const lastEpoch = Math.max(0, ...(conversationsOf.get(groupId) ?? []).map(([platform, id]) => Number((lastPrompt?.get(platform, id) as { at: number | null } | null)?.at ?? 0)), group.anchorAsk?.atEpoch ?? 0);
+          const review = ledger.progress[groupId];
+          let platform: string | null = null;
+          try { platform = (JSON.parse(group.anchor) as string[])[1] ?? null; } catch { /* An anchor that is not a conversation key names no agent. */ }
+          return {
+            groupId, title: String(group.title), platform, lastActiveAt: lastEpoch ? new Date(lastEpoch).toISOString() : null,
+            progressPercent: review && review.state !== 'unknown' && Number.isFinite(review.percent) ? review.percent : null,
+          };
+        }).sort((left, right) => String(right.lastActiveAt ?? '').localeCompare(String(left.lastActiveAt ?? ''))).slice(0, SETUP_WORK_SHOWN);
+      } finally { database?.close(); }
+    }
+    this.setupWorkCache = { signature, work };
+    return work;
   }
 
   private rulesFileStatus(snapshot: WorkViewSnapshot) {
@@ -446,6 +697,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
     socket?.on('close', cleanup);
     res.on('error', () => { cleanup(); res.destroy(); });
     this.send(res, 'work-view', this.snapshot());
+    const scan: SetupScanState | undefined = this.setupScan?.state();
+    if (scan && scan.phase !== 'idle') this.send(res, 'setup-scan', scan);
     if (!this.poll) this.poll = setInterval(() => this.publish(), this.pollIntervalMs);
     if (!this.heartbeat) this.heartbeat = setInterval(() => {
       const snapshot = this.snapshot();
@@ -480,6 +733,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   close(): void {
     this.closed = true;
+    this.unsubscribeSetupScan?.();
+    this.unsubscribeHistoryImport?.();
     this.stopRulesSync();
     this.stopTimers();
     for (const client of this.clients) client.end();

@@ -1918,6 +1918,7 @@ var OWNER_GOALS_LIST = "owner-goals";
 // src/services/work-view/request-groups.mjs
 var DATA_DIR2 = process.env.CLAUDE_MEM_DATA_DIR || join7(homedir6(), ".claude-mem");
 var LEDGER_DIR = join7(DATA_DIR2, "work-view");
+var AGENT_WRITTEN_PROMPTS_FILE = "agent-written-prompts.json";
 var DAY_MS = 864e5;
 var GOALS_STALE_MS = DAY_MS;
 var MAX_CONVERSATIONS_PER_LINKING_LIST = 8;
@@ -1932,7 +1933,7 @@ var groupIdFor = (anchorConversationKey) => `g_${createHash("sha256").update(anc
 function placeholders(values) {
   return values.map(() => "?").join(",");
 }
-function readCandidates(database, { sinceEpoch = 0, conversationKeys = null, fullAsks = false }) {
+function readCandidates(database, { sinceEpoch = 0, conversationKeys = null, fullAsks = false, excludedPromptIds = null }) {
   const columns = "SELECT id, platform_source, content_session_id, project, user_prompt, started_at_epoch FROM sdk_sessions";
   const pairs = conversationKeys?.map((key) => JSON.parse(key).slice(1));
   const stored = pairs ? pairs.length ? database.prepare(`${columns} WHERE (platform_source, content_session_id) IN (VALUES ${pairs.map(() => "(?, ?)").join(",")})`).all(...pairs.flat()) : [] : database.prepare(`${columns} WHERE started_at_epoch >= ?
@@ -1961,7 +1962,7 @@ function readCandidates(database, { sinceEpoch = 0, conversationKeys = null, ful
   const candidates = /* @__PURE__ */ new Map();
   for (const session of sessions) {
     const key = conversationKey(session);
-    const own = promptsBySession.get(session.id) ?? [];
+    const own = (promptsBySession.get(session.id) ?? []).filter((prompt) => !excludedPromptIds?.has(prompt.id));
     const original = key ? originalFor(session, own) : null;
     if (!original) continue;
     own.sort((a, b) => a.created_at_epoch - b.created_at_epoch || a.id - b.id);
@@ -2283,7 +2284,14 @@ function readLedger(dir = LEDGER_DIR) {
     const entry = readJson(join7(dir, "progress", name), null);
     if (entry?.groupId && groups.groups[entry.groupId]) progress[entry.groupId] = { ...entry, title: groups.groups[entry.groupId].title };
   }
-  return { groups, progress, story: readJson(join7(dir, "story.json"), null), alignment: readJson(join7(dir, "alignment.json"), null), refresh: readJson(join7(dir, "refresh.json"), null) };
+  return {
+    groups,
+    progress,
+    story: readJson(join7(dir, "story.json"), null),
+    alignment: readJson(join7(dir, "alignment.json"), null),
+    refresh: readJson(join7(dir, "refresh.json"), null),
+    agentWrittenPromptIds: new Set(readJson(join7(dir, AGENT_WRITTEN_PROMPTS_FILE), { promptIds: [] }).promptIds ?? [])
+  };
 }
 function groupDetails(groupId, ledger, candidatesByKey) {
   const group = ledger.groups.groups[groupId];
@@ -2303,7 +2311,7 @@ function groupDetails(groupId, ledger, candidatesByKey) {
   };
 }
 function pendingReviews(ledger, database, sinceEpoch) {
-  const candidates = new Map(readCandidates(database, { sinceEpoch }).map((candidate) => [candidate.conversationKey, candidate]));
+  const candidates = new Map(readCandidates(database, { sinceEpoch, excludedPromptIds: ledger.agentWrittenPromptIds }).map((candidate) => [candidate.conversationKey, candidate]));
   const ungrouped = [...candidates.keys()].filter((key) => !ledger.groups.conversations[key] && !ledger.groups.ignored?.[key]).length;
   const ids = [...new Set([...candidates.keys()].map((key) => ledger.groups.conversations[key]).filter(Boolean))];
   const due = ids.map((id) => groupDetails(id, ledger, candidates)).filter((group) => !reviewIsCurrent(group.previousReview, group.conversations.map((conversation) => conversation.conversationKey), group.lastActivityEpoch)).sort((a, b) => b.lastActivityEpoch - a.lastActivityEpoch);
@@ -2411,8 +2419,9 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
   const since = () => now - option(args, "days", 14) * DAY_MS;
   if (command === "candidates") {
     const wantedRoot = textOption(args, "project");
-    const stored = readLedger(dir).groups;
-    const candidates = readCandidates(db(), { sinceEpoch: since() }).filter((candidate) => !stored.ignored?.[candidate.conversationKey] && (wantedRoot == null || projectRoot(candidate.project) === wantedRoot));
+    const ledger = readLedger(dir);
+    const stored = ledger.groups;
+    const candidates = readCandidates(db(), { sinceEpoch: since(), excludedPromptIds: ledger.agentWrittenPromptIds }).filter((candidate) => !stored.ignored?.[candidate.conversationKey] && (wantedRoot == null || projectRoot(candidate.project) === wantedRoot));
     const { proposedGroups, skippedLists } = linkBackwards(candidates);
     const brief = args.includes("--brief");
     const shown = candidates.map(({ lastActivityEpoch, startedAtEpoch, original, ...candidate }) => {
@@ -2431,7 +2440,7 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
     const existing = Object.entries(stored.conversations).filter(([, id]) => touchedGroups.has(id)).map(([key]) => key);
     const next = applyGroupDecisions(stored, decisions, now, { projectOf: readConversationProjects(database2, [...touched, ...existing]) });
     const missing = Object.values(next.groups).filter((group) => !group.anchorAsk).map((group) => group.anchor);
-    const anchors = new Map(readCandidates(database2, { conversationKeys: missing }).map((candidate) => [candidate.conversationKey, candidate.original]));
+    const anchors = new Map(readCandidates(database2, { conversationKeys: missing, excludedPromptIds: readLedger(dir).agentWrittenPromptIds }).map((candidate) => [candidate.conversationKey, candidate.original]));
     for (const group of Object.values(next.groups)) if (!group.anchorAsk && anchors.has(group.anchor)) group.anchorAsk = anchors.get(group.anchor);
     writeJsonAtomic(join7(dir, "request-groups.json"), next);
     return print({ groups: Object.keys(next.groups).length, conversations: Object.keys(next.conversations).length });
@@ -2441,7 +2450,7 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
     if (command === "show") {
       if (!ledger.groups.groups[args[0]]) throw new TypeError(`Unknown group ${args[0]}.`);
       const keys = Object.entries(ledger.groups.conversations).filter(([, id]) => id === args[0]).map(([key]) => key);
-      const candidates = new Map(readCandidates(db(), { conversationKeys: keys, fullAsks: true }).map((candidate) => [candidate.conversationKey, candidate]));
+      const candidates = new Map(readCandidates(db(), { conversationKeys: keys, fullAsks: true, excludedPromptIds: ledger.agentWrittenPromptIds }).map((candidate) => [candidate.conversationKey, candidate]));
       const details = groupDetails(args[0], ledger, candidates);
       const previous = details.previousReview;
       const amendSince = previous && reviewIsCurrent(previous, keys, 0) ? previous.reviewedThrough : null;
