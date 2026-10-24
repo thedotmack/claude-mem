@@ -29,6 +29,11 @@ it('removes a commented legacy claude-mem server table', () => {
 // after an opening delimiter, which TOML trims); the edit must leave it unchanged.
 const instructionsAsParsed = (input: string) => (Bun.TOML.parse(input) as { developer_instructions?: string; features?: { developer_instructions?: string } });
 
+// TOML trims a newline that immediately follows an opening multi-line delimiter.
+// Bun.TOML.parse up to at least 1.3.9 keeps it, so normalize that one character
+// to keep these assertions about the installer, not the local Bun parser version.
+const multilineStringValue = (parsedValue: string) => parsedValue.replace(/^\n/, '');
+
 for (const delimiter of ['"""', "'''"]) {
   it(`preserves feature and legacy-server examples inside ${delimiter} instructions`, () => {
     const instructions = '[features] # example\nhooks = false\n[mcp_servers."mcp-search"] # example\nargs = ["claude-mem/example"]';

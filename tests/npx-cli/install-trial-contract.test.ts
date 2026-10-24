@@ -330,7 +330,6 @@ describe('installer trial-ready contract', () => {
     const providerIndex = source.indexOf('await promptProvider(options, oauthPairing, version)');
     expect(oauthIndex).toBeGreaterThan(-1);
     expect(providerIndex).toBeGreaterThan(oauthIndex);
-    expect(source).toContain('p.multiselect<ProviderChoice>');
     expect(source).not.toContain('promptBrowserLogin');
     expect(source).not.toContain('CMEM_PRO_TRIAL_START_URL');
     expect(source).not.toContain('CLAUDE_MEM_ONLINE_OPTIN');

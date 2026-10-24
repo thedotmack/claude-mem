@@ -51,6 +51,8 @@ import { postCorpusRequestOverSse } from './corpus-worker-stream.js';
 import { withWorkerRestartOnRefusedConnection } from './worker-restart.js';
 import { ProgressiveSearchError, progressiveSearchToolError } from '../shared/progressive-search.js';
 import { formatMcpPayload, formatWorkerMcpResponse, mcpTextResult, workerFailureText, serverFailureText, type McpTextPurpose } from './mcp-text-format.js';
+import { getRequestCwd, runWithCwd } from './request-context.js';
+import type { CwdResolver } from './mcp-http.js';
 
 /**
  * Where the table's tools reach the worker and which folder they work for.
@@ -79,7 +81,9 @@ export const stdioToolEnvironment: ClaudeMemToolEnvironment = {
     ? { method: init.method ?? 'GET' }
     : { method: init.method ?? 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(init.jsonBody) }),
   postCorpus: postCorpusRequestOverSse,
-  workspaceFolder: () => process.cwd(),
+  // Over stdio the process cwd (the workspace the agent started it in); in the
+  // stdio server's HTTP mode (`--http`) the cwd of the session making the call.
+  workspaceFolder: () => getRequestCwd(),
   startsWorker: true,
 };
 
@@ -407,14 +411,20 @@ async function startWorkerProcess(): Promise<boolean> {
  * and its way to the worker.
  */
 function toolScopeFor(environment: ClaudeMemToolEnvironment) {
-  /** This table's checkout, resolved once; null when it has no workspace folder. */
-  let workspaceCheckout: ProjectContext | null | undefined;
+  /**
+   * The checkout of the running tool call, resolved once per folder (the folder
+   * can differ per call in HTTP mode); null when this table has no workspace folder.
+   */
+  const checkoutByFolder = new Map<string, ProjectContext>();
   function currentCheckout(): ProjectContext | null {
-    if (workspaceCheckout === undefined) {
-      const folder = environment.workspaceFolder();
-      workspaceCheckout = folder === null ? null : getProjectContext(folder);
+    const folder = environment.workspaceFolder();
+    if (folder === null) return null;
+    let checkout = checkoutByFolder.get(folder);
+    if (!checkout) {
+      checkout = getProjectContext(folder);
+      checkoutByFolder.set(folder, checkout);
     }
-    return workspaceCheckout;
+    return checkout;
   }
 
   /** `args` widened to the checkout's project keys; as they are when there is no checkout. */
@@ -1283,8 +1293,12 @@ export interface ClaudeMemToolTable {
   tools: ClaudeMemTools;
   listTools(): ReturnType<typeof advertisedClaudeMemTools>;
   callTool(name: string, args: Record<string, unknown> | undefined): ReturnType<typeof callClaudeMemTool>;
-  /** Answer tools/list and tools/call on `server` from this table. */
-  registerOn(server: Server): void;
+  /**
+   * Answer tools/list and tools/call on `server` from this table. `getCwd`, when
+   * given, resolves the project directory of the request carrying each tool call
+   * (the stdio server's HTTP mode); the handlers then read it via getRequestCwd().
+   */
+  registerOn(server: Server, getCwd?: CwdResolver): void;
   /** Whether this table's worker answers, starting it when this table may. */
   ensureWorkerConnection(): Promise<boolean>;
 }
@@ -1303,9 +1317,11 @@ export function buildClaudeMemToolTable(serverEnvironment: ClaudeMemToolEnvironm
     tools,
     listTools,
     callTool,
-    registerOn(server) {
+    registerOn(server, getCwd) {
       server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: listTools() }));
-      server.setRequestHandler(CallToolRequestSchema, async (request) => callTool(request.params.name, request.params.arguments));
+      server.setRequestHandler(CallToolRequestSchema, async (request, extra) => getCwd
+        ? runWithCwd(getCwd(extra), () => callTool(request.params.name, request.params.arguments))
+        : callTool(request.params.name, request.params.arguments));
     },
     ensureWorkerConnection: scope.ensureWorkerConnection,
   };
@@ -1318,9 +1334,9 @@ function stdioToolTable(): ClaudeMemToolTable {
   return stdioTable;
 }
 
-/** Answer tools/list and tools/call on the stdio `server`. */
-export function registerClaudeMemTools(server: Server): void {
-  stdioToolTable().registerOn(server);
+/** Answer tools/list and tools/call on a stdio-server `server` (one per HTTP session in `--http` mode). */
+export function registerClaudeMemTools(server: Server, getCwd?: CwdResolver): void {
+  stdioToolTable().registerOn(server, getCwd);
 }
 
 /** Whether the stdio server's worker answers, starting it when it does not. */

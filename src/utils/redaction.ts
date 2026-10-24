@@ -61,8 +61,10 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   // Known limitation: only matches shell-style (`KEY=val`, `KEY='val'`) and
   // yaml-style (`KEY: val`); JSON-style `"KEY": "val"` is not anchored
   // because the lookbehind expects `=`/`:` directly after the key name.
-  // Whitespace is bounded for the same reason as BOUNDED_SPACE.
-  { name: 'aws_secret_key',  regex: /(?<=AWS_SECRET_ACCESS_KEY\s{0,8}[=:]\s{0,8}['"]?)[A-Za-z0-9/+=]{40}/g },
+  // Whitespace is bounded for the same reason as BOUNDED_SPACE. The key name
+  // matches in any letter case: the AWS CLI writes `aws_secret_access_key = …`
+  // to ~/.aws/credentials, and the SDKs take it as a lowercase argument.
+  { name: 'aws_secret_key',  regex: /(?<=AWS_SECRET_ACCESS_KEY\s{0,8}[=:]\s{0,8}['"]?)[A-Za-z0-9/+=]{40}/gi },
   { name: 'github_pat',      regex: /\bgh[oprsu]_[A-Za-z0-9]{36}\b|\bgithub_pat_[A-Za-z0-9_]{82}\b/g },
   // openai_key, anthropic_key, slack_token, jwt and google_api_key end in a
   // class that includes `-`. A closing `\b` after a `-` needs a word character
@@ -73,7 +75,9 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   { name: 'anthropic_key',   regex: /\bsk-ant-[A-Za-z0-9_-]{20,}(?!\w)/g },
   { name: 'slack_token',     regex: /\bxox[baprs]-[A-Za-z0-9-]{10,}(?!\w)/g },
   { name: 'jwt',             regex: /\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?!\w)/g },
-  { name: 'private_key_pem', regex: /-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----/g },
+  // A PGP secret key is armored as `PRIVATE KEY BLOCK`, and an encrypted
+  // PKCS#8 key as `ENCRYPTED PRIVATE KEY`.
+  { name: 'private_key_pem', regex: /-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END (?:RSA |DSA |EC |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----/g },
   { name: 'stripe_key',      regex: /\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{24,}\b/g },
   { name: 'google_api_key',  regex: /\bAIza[0-9A-Za-z_-]{35}(?!\w)/g },
   // claude-mem's own credentials: server API keys (`cmem_` + 43 base64url

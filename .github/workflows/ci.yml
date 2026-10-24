@@ -58,13 +58,28 @@ jobs:
       # Scoped to tests/ because workers/sync-hub/test is a vitest-pool-workers
       # suite (imports cloudflare:test — unresolvable under bun test); it runs
       # in the dedicated sync-hub job below.
-      - name: Test
-        run: bun test tests
+      # The root suite runs as two lanes (scripts/test-lanes.ts): the fast unit
+      # lane is `npm test`; the integration lane holds real Chrome, tree-sitter
+      # grammar builds and end-to-end installs. Together they cover every file
+      # `bun test tests` finds, which the lane check proves on every PR.
+      - name: Test lanes cover every test file
+        run: bun scripts/test-lanes.ts check
+
+      - name: Test (fast lane)
+        run: bun scripts/test-lanes.ts fast
+
+      - name: Test (integration lane)
+        if: ${{ !cancelled() }}
+        run: bun scripts/test-lanes.ts integration
 
       # openclaw's suite lives outside tests/ (openclaw/src/index.test.ts), so
       # the scoped step above no longer reaches it — run it explicitly.
       - name: Test (openclaw)
         run: bun test openclaw
+
+      # The My Work app's pure-logic tests live with the app (src/ui/my-work), outside tests/.
+      - name: Test (My Work viewer)
+        run: bun test src/ui/my-work/src/live
 
       - name: Test (Hermes provider, Python)
         run: python3 -B -m unittest discover -s tests/hermes -v
@@ -307,6 +322,7 @@ jobs:
           tests/server/runtime/memories-vector-write.test.ts
           tests/server/generation/process-generated-response-vectors.test.ts
           tests/services/vector/local-embedder-encode.test.ts
+          tests/server/semantic-context-route.test.ts
 
   clean-room-deps:
     name: clean-room dependency closure smoke

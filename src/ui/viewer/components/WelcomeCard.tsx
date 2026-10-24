@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react';
+import { useDialogFocus } from '../hooks/useDialogFocus';
 
 interface WelcomeCardProps {
   onDismiss: () => void;
@@ -149,17 +150,18 @@ const FEATURES: Feature[] = [
     kind: 'tune',
     illustration: <TuneIllustration />,
     title: 'Tune it',
-    description: 'The gear in the top-right tunes memory injection.',
+    description: 'Open Settings to choose the context your next session receives.',
   },
   {
     kind: 'recall',
     illustration: <RecallIllustration />,
     title: 'Recall it',
-    description: 'Ask Claude or run /mem-search to find past work.',
+    description: 'Ask your assistant or run /mem-search to find past work.',
   },
 ];
 
 export function WelcomeCard({ onDismiss }: WelcomeCardProps) {
+  const dialogRef = useDialogFocus(true);
   const handleDismiss = () => {
     setStoredWelcomeDismissed(true);
     onDismiss();
@@ -176,7 +178,9 @@ export function WelcomeCard({ onDismiss }: WelcomeCardProps) {
 
   return (
     <div className="welcome-modal-backdrop" onClick={handleDismiss}>
-      <article
+      <div
+        ref={dialogRef}
+        tabIndex={-1}
         className="welcome-modal"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
@@ -188,7 +192,7 @@ export function WelcomeCard({ onDismiss }: WelcomeCardProps) {
         <header className="welcome-modal-header">
           <img className="welcome-modal-logo" src="claude-mem-logo-stylized.png" alt="" width="96" height="96" />
           <h2 id="welcome-modal-title">Welcome to claude-mem</h2>
-          <p>Persistent memory for Claude Code.</p>
+          <p>Keep useful context across your coding sessions.</p>
         </header>
 
         <div className="welcome-modal-grid">
@@ -212,7 +216,7 @@ export function WelcomeCard({ onDismiss }: WelcomeCardProps) {
             Read the docs
           </a>
         </footer>
-      </article>
+      </div>
     </div>
   );
 }

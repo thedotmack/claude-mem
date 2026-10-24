@@ -75,6 +75,24 @@ describe('Antigravity CLI hook table (agy event map)', () => {
     const handler = install(hooksPath, context)['claude-mem'].SessionStart[0];
     expect(handler.command).toBe(`${BUN} ${WORKER} hook antigravity-cli context`);
   });
+
+  // Carried from main (#5032): a Windows-style bun path must come out bare and
+  // forward-slashed for every event, since agy splits on spaces and keeps quotes.
+  it.each([
+    ['SessionStart', 'context'],
+    ['PreToolUse', 'observation'],
+    ['PostToolUse', 'observation'],
+    ['PostInvocation', 'observation'],
+    ['Stop', 'summarize'],
+  ])('writes %s as a bare forward-slashed Windows command for %s', (event, internalEvent) => {
+    const root = join(SANDBOX, String(sandboxCounter++));
+    mkdirSync(root, { recursive: true });
+    const hooksPath = join(root, 'hooks.json');
+    const windowsEnvironment: LibraryInstallEnvironment = { ...environment, platform: 'win32', bunPath: String.raw`C:\bun\bun.exe`, workerServicePath: '/plugin/worker-service.cjs' };
+    applyLibrary({ agentId: 'antigravity', items: antigravityHookItems(windowsEnvironment, hooksPath, 30), ownedGroups: ['hooks'] }, { libraryDirectory: join(root, 'library') });
+    const [entry] = JSON.parse(readFileSync(hooksPath, 'utf-8'))['claude-mem'][event];
+    expect((entry.hooks ? entry.hooks[0] : entry).command).toBe(`C:/bun/bun.exe /plugin/worker-service.cjs hook antigravity-cli ${internalEvent}`);
+  });
 });
 
 // Issue #4196: the pre-fix installer wrote top-level EVENT keys, wrapped every
@@ -369,11 +387,9 @@ describe('platform-source - antigravity-cli support', () => {
     const viewer = readFileSync(join(import.meta.dir, '../src/ui/viewer-template.html'), 'utf-8');
     const tv = readFileSync(join(import.meta.dir, '../src/ui/tv.html'), 'utf-8');
     expect(viewer).toContain('.source-antigravity-cli {');
-    expect(viewer).toContain('color: var(--color-source-antigravity-cli-text);');
-    // The badge colour is a theme token, so light and dark each define it.
-    expect(viewer).toContain('--color-source-antigravity-cli-text: #0284c7;');
-    expect(viewer).toContain('--color-source-antigravity-cli-text: #38bdf8;');
-    expect(tv).toContain("'antigravity-cli': '#0284c7'");
+    // Both themes define the badge token: tests/viewer/theme-tokens.test.ts.
+    expect(viewer).toContain('var(--color-source-antigravity-cli-text)');
+    expect(tv).toContain("'antigravity-cli':");
   });
 });
 

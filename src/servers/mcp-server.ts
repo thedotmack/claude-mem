@@ -16,22 +16,34 @@ import { resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { selectRuntime } from '../services/hooks/runtime-selector.js';
 import { ensureWorkerConnection, registerClaudeMemTools } from './mcp-tool-table.js';
+import { loadFromFileOnce } from '../shared/hook-settings.js';
+import { parseHttpArgs, startMcpHttpServer, type CwdResolver, type McpHttpOptions } from './mcp-http.js';
+import { buildWorkerOriginPolicy } from '../services/worker/http/origin-policy.js';
 
-const server = new Server(
-  {
-    name: 'claude-mem',
-    version: packageVersion,
-  },
-  {
-    capabilities: {
-      tools: {},  // Exposes tools capability (handled by ListToolsRequestSchema and CallToolRequestSchema)
+/**
+ * One MCP Server. Over stdio there is exactly one; over HTTP every session gets its own.
+ * `getCwd` returns the project directory of the request carrying a tool call, resolved
+ * for every call, so the project-scoped tools see the caller's project. Without it they
+ * use process.cwd().
+ */
+function createMcpServer(getCwd?: CwdResolver): Server {
+  const server = new Server(
+    {
+      name: 'claude-mem',
+      version: packageVersion,
     },
-  }
-);
+    {
+      capabilities: {
+        tools: {},  // Exposes tools capability (handled by ListToolsRequestSchema and CallToolRequestSchema)
+      },
+    }
+  );
 
-// The tools, their handlers and their visibility rules live in mcp-tool-table.ts,
-// shared with the wire gateway's MCP over HTTP.
-registerClaudeMemTools(server);
+  // The tools, their handlers and their visibility rules live in mcp-tool-table.ts,
+  // shared with the wire gateway's MCP over HTTP.
+  registerClaudeMemTools(server, getCwd);
+  return server;
+}
 
 const HEARTBEAT_INTERVAL_MS = 30_000;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -120,16 +132,7 @@ function checkMarketplaceMarker(): void {
   }
 }
 
-async function main() {
-  const transport = new StdioServerTransport();
-  attachStdioLifecycle();
-  await server.connect(transport);
-  logger.info('SYSTEM', 'Claude-mem search server started');
-
-  checkMarketplaceMarker();
-
-  startParentHeartbeat();
-
+function scheduleWorkerAutostart(): void {
   setTimeout(async () => {
     // Phase 8 — when CLAUDE_MEM_RUNTIME=server (or legacy `server-beta`,
     // normalized to `'server'` by selectRuntime), MCP must NOT auto-start
@@ -152,7 +155,55 @@ async function main() {
   }, 0);
 }
 
-main().catch((error) => {
+async function main() {
+  // Built here, not at module load, so HTTP mode never creates this unused stdio server.
+  const server = createMcpServer();
+  const transport = new StdioServerTransport();
+  attachStdioLifecycle();
+  await server.connect(transport);
+  logger.info('SYSTEM', 'Claude-mem search server started');
+
+  checkMarketplaceMarker();
+
+  startParentHeartbeat();
+
+  scheduleWorkerAutostart();
+}
+
+/**
+ * HTTP mode (`--http`): one long-lived process serves many MCP clients. No stdin lifecycle
+ * and no parent heartbeat, since no single client owns this process.
+ */
+async function mainHttp(options: McpHttpOptions) {
+  const handle = await startMcpHttpServer({
+    ...options,
+    originPolicy: buildWorkerOriginPolicy(loadFromFileOnce()),
+    createServer: createMcpServer,
+  });
+  logger.info('SYSTEM', 'Claude-mem MCP HTTP server started', { host: options.host, port: handle.port });
+
+  checkMarketplaceMarker();
+
+  scheduleWorkerAutostart();
+}
+
+// stdio keeps its historical exit code 0 on a fatal error. HTTP mode, including a
+// refused --host or --port, exits 1 so a process manager reports the failure.
+let fatalExitCode = 0;
+async function start(): Promise<void> {
+  let httpOptions: McpHttpOptions | null;
+  try {
+    httpOptions = parseHttpArgs(process.argv.slice(2), process.env);
+  } catch (error) {
+    fatalExitCode = 1; // parseHttpArgs only throws when HTTP mode was requested.
+    throw error;
+  }
+  if (!httpOptions) return main();
+  fatalExitCode = 1;
+  return mainHttp(httpOptions);
+}
+
+start().catch((error) => {
   logger.error('SYSTEM', 'Fatal error', undefined, error);
-  process.exit(0);
+  process.exit(fatalExitCode);
 });

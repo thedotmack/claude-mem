@@ -1,22 +1,29 @@
 import { test, expect } from 'bun:test';
 import { createServer } from 'node:http';
+import { createServer as createNetServer } from 'node:net';
 import { FIELD_OPTIMIZE_TIMEOUT_MS, optimizeField } from '../../src/services/worker/field-optimizer.js';
 import { OpenRouterProvider } from '../../src/services/worker/OpenRouterProvider.js';
 
 test('field deadline cancels real OpenRouter fetch and prevents retries', async () => {
   let requests = 0;
   let disconnected = false;
-  const server = createServer((req, res) => {
-    requests++;
-    // Do not resume() the body: on older Bun versions that keeps the keep-alive
-    // socket open and `res.on('close')` does not fire within the observation
-    // window. The request's own abort/error and socket-close events are the
-    // event-driven, runtime-agnostic signal that the client disconnected.
-    req.on('error', () => { disconnected = true; });
-    req.on('close', () => { if ((req as any).aborted || (req as any).destroyed) disconnected = true; });
-    req.socket.on('close', () => { disconnected = true; });
-    // Deliberately never send headers: cancellation must reach the socket.
+  // A raw TCP server, not node:http: Bun's node:http server emits no request or
+  // socket 'close' when a client aborts before response headers (Bun 1.3.9), so
+  // it cannot observe the disconnect this test is about. The TCP socket closing
+  // is the runtime-agnostic signal that the client cancelled.
+  const server = createNetServer(socket => {
+    let received = '';
+    socket.on('data', chunk => {
+      received += chunk.toString('latin1');
+      const requestLines = received.match(/^POST [^\r\n]* HTTP\/1\.1\r$/gm)?.length ?? 0;
+      if (requestLines > 0) { requests += requestLines; received = received.replace(/^POST [^\r\n]* HTTP\/1\.1\r$/gm, ''); }
+    });
+    socket.on('error', () => {});
+    socket.on('close', () => { disconnected = true; });
+    // Deliberately never send a response: cancellation must reach the socket.
   });
+  const openSockets = new Set<import('node:net').Socket>();
+  server.on('connection', socket => { openSockets.add(socket); socket.on('close', () => openSockets.delete(socket)); });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address() as { port: number };
   const nativeTimeout = globalThis.setTimeout;
@@ -48,7 +55,7 @@ test('field deadline cancels real OpenRouter fetch and prevents retries', async 
     globalThis.setTimeout = nativeTimeout;
     if (priorLlmTimeout === undefined) delete process.env.CLAUDE_MEM_LLM_TIMEOUT_MS;
     else process.env.CLAUDE_MEM_LLM_TIMEOUT_MS = priorLlmTimeout;
-    server.closeAllConnections();
+    for (const socket of openSockets) socket.destroy();
     await new Promise<void>(resolve => server.close(() => resolve()));
   }
 }, 5000);

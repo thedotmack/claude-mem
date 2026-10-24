@@ -30,7 +30,7 @@ import type { AgentRole, InstructionState, WorkStateOutcome } from './work-state
  * each file all-or-nothing.
  */
 
-export const HOOK_SPOOL_KINDS = ['session_init', 'observation', 'file_edit', 'summarize', 'session_end', 'advisor_calls', 'work_state_telemetry'] as const;
+export const HOOK_SPOOL_KINDS = ['session_init', 'observation', 'file_edit', 'summarize', 'session_end', 'subagent_stop', 'advisor_calls', 'work_state_telemetry'] as const;
 export type HookSpoolKind = typeof HOOK_SPOOL_KINDS[number];
 
 /** The `POST /api/sessions/init` body (SessionRoutes sessionInitByClaudeIdSchema), for producers that never wait on the worker (the wire gateway). */
@@ -76,6 +76,15 @@ export interface SpooledSessionEndPayload {
   platformSource: string;
 }
 
+/** Claude Code's SubagentStop: one subagent of the session finished. */
+export interface SpooledSubagentStopPayload {
+  contentSessionId: string;
+  platformSource: string;
+  agentId: string;
+  agentType?: string;
+  cwd?: string;
+}
+
 export interface SpooledAdvisorCall {
   toolUseId: string;
   advice: string;
@@ -99,6 +108,7 @@ export interface HookSpoolPayloadByKind {
   file_edit: SpooledObservationPayload;
   summarize: SpooledSummarizePayload;
   session_end: SpooledSessionEndPayload;
+  subagent_stop: SpooledSubagentStopPayload;
   advisor_calls: SpooledAdvisorCallsPayload;
   work_state_telemetry: {
     contentSessionId: string;
@@ -267,6 +277,9 @@ function parseHookSpoolEntry(raw: string): HookSpoolEntry | { corruptReason: str
   }
   if (kind === 'summarize' && typeof payload.lastAssistantMessage !== 'string') {
     return { corruptReason: 'summarize payload missing lastAssistantMessage' };
+  }
+  if (kind === 'subagent_stop' && !isNonEmptyString(payload.agentId)) {
+    return { corruptReason: 'subagent_stop payload missing agentId' };
   }
   if (kind === 'advisor_calls' && (!Array.isArray(payload.calls) || payload.calls.length === 0)) {
     return { corruptReason: 'advisor_calls payload has no calls' };

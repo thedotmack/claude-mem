@@ -17,7 +17,7 @@ import { HookSpoolRoutes } from './worker/http/routes/HookSpoolRoutes.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { getUptimeSeconds } from '../shared/uptime.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
-import { getAuthMethodDescription } from '../shared/EnvManager.js';
+import { describeObserverAuthMethod } from './worker/observer-auth-method.js';
 import { logger } from '../utils/logger.js';
 import { ChromaMcpManager } from './sync/ChromaMcpManager.js';
 import { ChromaSync } from './sync/ChromaSync.js';
@@ -372,7 +372,7 @@ export class WorkerService implements WorkerRef {
         const provider = getSelectedProvider();
         return {
           provider,
-          authMethod: provider === 'codex' ? 'Codex CLI subscription' : getAuthMethodDescription(),
+          authMethod: describeObserverAuthMethod(provider),
           lastInteraction: this.lastAiInteraction
             ? {
                 timestamp: this.lastAiInteraction.timestamp,
@@ -565,7 +565,14 @@ export class WorkerService implements WorkerRef {
       SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_INGEST_MAX_BYTES,
     ));
 
-    this.workViewRoutes = new WorkViewRoutes({ getLocalDeviceId: () => this.dbManager.getCloudSync()?.status().deviceId ?? '' });
+    this.workViewRoutes = new WorkViewRoutes({
+      getLocalDeviceId: () => this.dbManager.getCloudSync()?.status().deviceId ?? '',
+      // My Rules saves as work-state rows, so a rule change syncs like any other write.
+      appendWorkStateEntry: (entry) => {
+        this.dbManager.getSessionStore().appendWorkStateEntry(entry);
+        this.dbManager.getCloudSync()?.notify();
+      },
+    });
     this.server.registerRoutes(this.workViewRoutes);
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
     const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this, this.completionHandler, this.codexAgent, this.openAICompatAgent);

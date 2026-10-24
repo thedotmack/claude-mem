@@ -275,8 +275,12 @@ mock.module('../../../src/shared/kill-process-tree.js', () => ({
   killProcessTree: (pid: number, options?: { expectedStartToken?: string | null }) =>
     ((): Promise<void> => {
       killProcessTreeCalls.push({ pid, options });
-      return (killProcessTreeOverride ?? realKillProcessTreeSnapshot.killProcessTree)(pid, options);
+      return (killProcessTreeOverride ?? killProcessTreeUnderChildProcessMock.killProcessTree)(pid, options);
     })(),
+  collectDescendantIdentities: (rootPid: number) =>
+    killProcessTreeUnderChildProcessMock.collectDescendantIdentities(rootPid),
+  collectDescendantPids: (rootPid: number) =>
+    killProcessTreeUnderChildProcessMock.collectDescendantPids(rootPid),
 }));
 
 // Replace child_process.execFile so the static killProcessTree implementation
@@ -322,6 +326,16 @@ mock.module('child_process', () => {
   };
 });
 
+// realKillProcessTreeSnapshot was imported before the child_process mock
+// existed, and kill-process-tree promisifies execFile at module load, so that
+// copy still shells out to the real ps for every descendant walk. Load a second
+// instance now, bound to the mocked execFile above, as the real implementation
+// the kill-process-tree mock delegates to.
+const killProcessTreeUnderChildProcessMock: typeof realKillProcessTree = await import(
+  // @ts-ignore -- the query string only forces a fresh module instance
+  '../../../src/shared/kill-process-tree.ts?bound-to-child-process-mock'
+);
+
 // Stub process.kill so the tree-kill path can record targets without crashing
 // the test runner if the synthetic PID happens to collide with a real one.
 const realProcessKill = process.kill.bind(process);
@@ -335,6 +349,10 @@ const stubbedProcessKill = ((pid: number, signal?: string | number) => {
     return true;
   }
   killTreeCalls.push(pid);
+  // A delivered SIGTERM/SIGKILL takes the fake out of the process table, so a
+  // later liveness probe (signal 0) reports ESRCH like a real reaped child —
+  // which lets killProcessTree's graceful settle end as soon as the tree is gone.
+  deadPids.add(pid);
   if (transportKillEmitsOnclose) {
     const transport = transportInstances.find(instance => instance._process.pid === pid);
     if (transport && transport._process.exitCode === null && transport._process.signalCode === null) {
@@ -356,6 +374,7 @@ import {
 
 afterAll(() => {
   ChromaMcpManager.setUvxAvailabilityProbeForTesting(null);
+  ChromaMcpManager.setChildExitWaitTimeoutsForTesting(null);
   process.kill = realProcessKill;
   if (originalPrewarmTimeout === undefined) {
     delete process.env.CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS;
@@ -417,6 +436,10 @@ function resetState(): void {
   // prewarm never sweeps the real machine's ~/.cache/uv during tests (#4108).
   process.env.UV_CACHE_DIR = path.join(path.dirname(mockedChromaDir), 'uv-cache');
   ChromaMcpManager.setUvxAvailabilityProbeForTesting(() => true);
+  // The fake chroma-mcp children never exit on close() (nor a prewarm killed
+  // with prewarmKillEmitsClose=false), so teardown always runs out the wait
+  // and takes the escalation path; a short bound keeps that path without the 1s.
+  ChromaMcpManager.setChildExitWaitTimeoutsForTesting(10);
   resetDependencyStatusesForTesting();
   if (originalPrewarmTimeout === undefined) {
     delete process.env.CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS;

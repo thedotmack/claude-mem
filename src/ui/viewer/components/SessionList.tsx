@@ -41,7 +41,7 @@ export function SessionList({ header, sessions, isLoading, hasMore, loadError, o
   }, [hasMore, isLoading, loadError]);
 
   return (
-    <div className="session-list">
+    <main className="session-list" aria-label="Saved sessions">
       <div className="session-list-content">
         {header}
         {loadError && <div className="card-delete-error" role="alert">
@@ -61,7 +61,7 @@ export function SessionList({ header, sessions, isLoading, hasMore, loadError, o
         })}
         {sessions.length === 0 && !loadError && (
           <div className="session-list-empty">
-            {isLoading ? 'Loading sessions…' : 'No sessions to display'}
+            {isLoading ? 'Loading sessions…' : <><h3>No sessions to show</h3><p>Sessions appear as work is captured. Try another project if a filter is selected.</p></>}
           </div>
         )}
         {isLoading && sessions.length > 0 && (
@@ -71,6 +71,6 @@ export function SessionList({ header, sessions, isLoading, hasMore, loadError, o
           <div ref={loadMoreRef} style={{ height: '20px', margin: '10px 0' }} />
         )}
       </div>
-    </div>
+    </main>
   );
 }

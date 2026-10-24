@@ -113,12 +113,12 @@ afterAll(() => {
 });
 
 describe('sessionInitHandler server semantic injection', () => {
-  it('starts the server session and skips worker semantic injection in server mode', async () => {
+  it('starts the server session and injects the server\'s semantic context, never the worker\'s', async () => {
     const env = { ...process.env };
     delete env.CLAUDE_MEM_INTERNAL;
     const prompt = 'Please restore platform-aware context for this Cursor session.';
     const script = `
-      const serverCalls = { startSession: [], contextObservations: [] };
+      const serverCalls = { startSession: [], contextObservations: [], semanticContext: [] };
       let workerFallbackCalled = false;
       const { sessionInitHandler, setSessionInitDependenciesForTesting } = await import('./src/cli/handlers/session-init.ts');
       setSessionInitDependenciesForTesting({
@@ -140,6 +140,10 @@ describe('sessionInitHandler server semantic injection', () => {
             contextObservations: async (input) => {
               serverCalls.contextObservations.push(input);
               return { observations: [], context: 'server semantic context' };
+            },
+            semanticContext: async (input, options) => {
+              serverCalls.semanticContext.push({ input, options });
+              return { context: 'server semantic context', count: 1 };
             },
           },
         }),
@@ -167,7 +171,15 @@ describe('sessionInitHandler server semantic injection', () => {
         throw new Error('startSession body mismatch: ' + JSON.stringify(start));
       }
       if (serverCalls.contextObservations.length !== 0) throw new Error('contextObservations should not be called');
+      if (serverCalls.semanticContext.length !== 1) throw new Error('semanticContext count mismatch: ' + serverCalls.semanticContext.length);
+      const semantic = serverCalls.semanticContext[0];
+      if (semantic.input.projectId !== 'server-project-1' || semantic.input.query !== ${JSON.stringify(prompt)} || semantic.input.limit !== 7 || semantic.input.platformSource !== 'cursor' || !(semantic.options.timeoutMs > 0)) {
+        throw new Error('semanticContext body mismatch: ' + JSON.stringify(semantic));
+      }
       if (!result.continue || !result.suppressOutput) throw new Error('unexpected result ' + JSON.stringify(result));
+      if (result.hookSpecificOutput?.hookEventName !== 'UserPromptSubmit' || result.hookSpecificOutput?.additionalContext !== 'server semantic context') {
+        throw new Error('semantic context not injected: ' + JSON.stringify(result));
+      }
     `;
 
     const result = Bun.spawnSync({
@@ -181,5 +193,73 @@ describe('sessionInitHandler server semantic injection', () => {
     expect(new TextDecoder().decode(result.stderr)).toBe('');
     expect(new TextDecoder().decode(result.stdout)).toBe('');
     expect(result.exitCode).toBe(0);
+  });
+  // The script above as a template: the semantic stub, the budget and the
+  // checks change; the prompt must still continue without the worker.
+  function runScenario(semanticContext: string, timeoutMs: number, checks: string): void {
+    const env = { ...process.env };
+    delete env.CLAUDE_MEM_INTERNAL;
+    const script = `
+      const calls = { semanticContext: 0 };
+      let workerFallbackCalled = false;
+      const { sessionInitHandler, setSessionInitDependenciesForTesting } = await import('./src/cli/handlers/session-init.ts');
+      setSessionInitDependenciesForTesting({
+        loadFromFileOnce: () => ({
+          CLAUDE_MEM_EXCLUDED_PROJECTS: '',
+          CLAUDE_MEM_RUNTIME: 'server',
+          CLAUDE_MEM_SEMANTIC_INJECT: 'true',
+          CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: '7',
+        }),
+        resolveRuntimeContext: () => ({
+          runtime: 'server',
+          projectId: 'server-project-1',
+          serverBaseUrl: 'http://server.test',
+          client: {
+            startSession: async () => ({ session: { id: 'server-session-1' } }),
+            contextObservations: async () => ({ observations: [], context: '' }),
+            semanticContext: async () => { calls.semanticContext++; ${semanticContext} },
+          },
+        }),
+        getSessionInitRequestTimeoutMs: () => ${timeoutMs},
+        shouldTrackProject: () => true,
+        executeWithWorkerFallback: async () => {
+          workerFallbackCalled = true;
+          throw new Error('worker fallback should not be called');
+        },
+        isWorkerFallback: () => false,
+        logServerFallback: () => {},
+      });
+      const result = await sessionInitHandler.execute({
+        sessionId: 'session-server-context',
+        cwd: '/tmp/session-init-server-context-test',
+        platform: 'Cursor CLI',
+        prompt: 'Please restore platform-aware context for this Cursor session.',
+      });
+      if (workerFallbackCalled) throw new Error('worker fallback was called');
+      if (!result.continue) throw new Error('prompt did not continue: ' + JSON.stringify(result));
+      if (result.hookSpecificOutput?.additionalContext) throw new Error('unexpected injection: ' + JSON.stringify(result));
+      ${checks}
+    `;
+    const result = Bun.spawnSync({ cmd: [process.execPath, '--eval', script], cwd: process.cwd(), env, stdout: 'pipe', stderr: 'pipe' });
+    expect(new TextDecoder().decode(result.stderr)).toBe('');
+    expect(result.exitCode).toBe(0);
+  }
+
+  it('lets the prompt continue, injecting nothing, when the server\'s semantic call fails', () => {
+    runScenario(`throw new Error('server unavailable');`, SESSION_INIT_TIMEOUT_MS, `
+      if (calls.semanticContext !== 1) throw new Error('semanticContext count ' + calls.semanticContext);
+    `);
+  });
+
+  it('injects nothing when the server finds no context', () => {
+    runScenario(`return { context: '', count: 0 };`, SESSION_INIT_TIMEOUT_MS, `
+      if (calls.semanticContext !== 1) throw new Error('semanticContext count ' + calls.semanticContext);
+    `);
+  });
+
+  it('skips the semantic call when the prompt\'s time budget is spent', () => {
+    runScenario(`return { context: 'late context', count: 1 };`, 1, `
+      if (calls.semanticContext !== 0) throw new Error('semanticContext was called with no budget left');
+    `);
   });
 });

@@ -107,7 +107,11 @@ export const OBSERVER_DISALLOWED_TOOLS = [
  */
 export type ObserverThinkingOption = Options['thinking'] | 'omit';
 
-/** Budget assumed by `CLAUDE_MEM_OBSERVER_THINKING=enabled` with no `:budget`. */
+/**
+ * Budget assumed by `CLAUDE_MEM_OBSERVER_THINKING=enabled` with no `:budget`.
+ * Reason: provider minimum. Anthropic's extended thinking requires
+ * budget_tokens >= 1024, so this is the smallest budget the API accepts.
+ */
 export const DEFAULT_OBSERVER_THINKING_BUDGET_TOKENS = 1024;
 
 /**

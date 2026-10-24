@@ -48,6 +48,7 @@ const EXCLUDED_PATTERNS = [
   /build\/hook-shell-template\.ts$/,  // Pure build-time shell-string generator (no runtime/observability surface); drift is enforced by build-hooks.js + plugin-distribution.test.ts
   /worker\/model-aliases\.ts$/,  // Pure $TIER alias resolver (#2289); side-effect-free passthrough, logging happens at the request-time call site
   /worker\/observer-usage\.ts$/,  // Pure observer token accumulation helpers; logging happens at provider/session completion call sites (#3508)
+  /worker\/observer-auth-method\.ts$/,  // Pure health-endpoint auth label; no I/O of its own
   /worker\/session\/OutputRecovery\.ts$/,  // Pure per-batch rejection counter; the retry and drop are logged at the ResponseProcessor call site (#3624)
   /worker\/session\/abort-reason\.ts$/,  // Pure abort-category authority (enum + preserve set); exits are logged by the handler and runner (#3475)
   /worker\/session\/tier-routing\.ts$/,  // Pure simple-tier tool predicate; the tier choice and the boundary switch are logged by SessionRoutes and SessionManager (#4963)
@@ -58,6 +59,11 @@ const EXCLUDED_PATTERNS = [
   /worker\/paid-send-budget\.ts$/,  // Pure per-batch paid-send counter; spends and exhaustion are logged at the provider call sites
   /servers\/corpus-worker-stream\.ts$/,  // MCP SSE transport; every failure throws to callWorker in mcp-server.ts, which logs it
   /servers\/worker-restart\.ts$/,  // MCP refused-connection retry; the restart is logged by ensureWorkerConnection and failures by callWorker in mcp-server.ts
+  /servers\/request-context\.ts$/,  // AsyncLocalStorage holder for the per-call project directory: no I/O and no failure path to log; mcp-http.ts logs the sessions
+  /worker\/http\/origin-policy\.ts$/,  // Pure Origin predicates moved out of middleware.ts; the guards that refuse a request (middleware.ts, mcp-http.ts) log it
+  /wire-gateway\/library\/library-cli\.ts$/,  // `claude-mem library status|sync|remove` terminal output, like npx-cli/commands
+  /wire-gateway\/library\/library-runtime\.ts$/,  // prints rollback notes on stderr, the installers' user-visible channel; the record itself logs them
+  /shared\/write-all-sync\.ts$/,  // mentions console.log only in its comment; it is the CLI's blocking stdout writer
 ];
 
 const HIGH_PRIORITY_PATTERNS = [

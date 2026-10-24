@@ -794,6 +794,11 @@ export class SearchManager {
     const { anchor, query, depth_before, depth_after, project, projects, platformSource } = normalized;
     const readKeys = projectReadKeysFor(this.sessionStore, project, projects);
     const scope = { project, projects: readKeys, platformSource };
+    // A record anchor supplies the default project for its surrounding context.
+    // Explicit scopes win; timestamp-only anchors have no project to infer.
+    const readKeysForAnchor = (anchorProject: string): string[] => readKeys.length > 0
+      ? readKeys
+      : projectReadKeysFor(this.sessionStore, anchorProject, undefined);
     // HTTP query strings and MCP numbers must describe whole, bounded SQL LIMITs.
     const parseDepth = (value: unknown): number => value == null ? 10
       : typeof value === 'number' || (typeof value === 'string' && value.trim() !== '')
@@ -871,7 +876,7 @@ export class SearchManager {
       anchorId = topResult.id;
       anchorEpoch = topResult.created_at_epoch;
       logger.debug('SEARCH', 'Query mode: Using observation as timeline anchor', { observationId: topResult.id });
-      timelineData = this.sessionStore.getTimelineAroundObservation(topResult.id, topResult.created_at_epoch, depthBefore, depthAfter, project, platformSource, readKeys);
+      timelineData = this.sessionStore.getTimelineAroundObservation(topResult.id, topResult.created_at_epoch, depthBefore, depthAfter, project, platformSource, readKeysForAnchor(topResult.project));
     }
     // MODE 2: Anchor-based timeline
     else if (anchorAsNumber !== null) {
@@ -887,7 +892,7 @@ export class SearchManager {
       }
       anchorId = anchorAsNumber;
       anchorEpoch = obs.created_at_epoch;
-      timelineData = this.sessionStore.getTimelineAroundObservation(anchorAsNumber, anchorEpoch, depthBefore, depthAfter, project, platformSource, readKeys);
+      timelineData = this.sessionStore.getTimelineAroundObservation(anchorAsNumber, anchorEpoch, depthBefore, depthAfter, project, platformSource, readKeysForAnchor(obs.project));
     } else if (typeof anchor === 'string') {
       if (anchor.startsWith('S') || anchor.startsWith('#S')) {
         const sessionMatch = /^#?S(\d+)$/.exec(anchor);
@@ -907,7 +912,7 @@ export class SearchManager {
         }
         anchorEpoch = sessions[0].created_at_epoch;
         anchorId = `S${sessionNum}`;
-        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project, platformSource, readKeys);
+        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project, platformSource, readKeysForAnchor(sessions[0].project));
       } else {
         const date = new Date(anchor);
         if (isNaN(date.getTime())) {
