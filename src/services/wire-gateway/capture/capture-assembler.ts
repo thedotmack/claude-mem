@@ -203,10 +203,6 @@ export class WireCaptureAssembler {
     return this.unattributedEvents;
   }
 
-  get trackedConversationCount(): number {
-    return this.conversations.size;
-  }
-
   observeExchange(exchange: WireAssemblerExchange): void {
     const { identity } = exchange;
     if (identity.kind === 'compaction') {

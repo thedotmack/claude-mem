@@ -93,12 +93,7 @@ export class IncrementalSseReader {
   }
 
   private takePendingLine(): string {
-    const line = new Uint8Array(this.pendingLineBytes);
-    let offset = 0;
-    for (const part of this.pendingLineParts) {
-      line.set(part, offset);
-      offset += part.length;
-    }
+    const line = Buffer.concat(this.pendingLineParts, this.pendingLineBytes);
     this.pendingLineParts = [];
     this.pendingLineBytes = 0;
     this.pendingLineHadBytes = false;

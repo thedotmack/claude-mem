@@ -34,7 +34,7 @@ import { createHmac, randomBytes } from 'crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname } from 'path';
 import { WIRE_GATEWAY_DIR_MODE, WIRE_GATEWAY_FILE_MODE, paths } from '../../../shared/paths.js';
-import { findSecretSpans, isSecretFieldName, replaceSecretSpans, type SecretSpan } from '../../../utils/redaction.js';
+import { WHOLE_OUTBOUND_PLACEHOLDER_PATTERN, findSecretSpans, isSecretFieldName, replaceSecretSpans, type SecretSpan } from '../../../utils/redaction.js';
 import { logger } from '../../../utils/logger.js';
 import { applyByteSplices, type ByteSplice } from '../json/byte-splices.js';
 import {
@@ -300,11 +300,6 @@ export class OutboundRedactionPlaceholders {
     return new OutboundRedactionPlaceholders({ keyFilePath: this.keyFilePath, maxHeldValues: this.maxHeldValues, namespace });
   }
 
-  /** How many values are held now. */
-  get heldValueCount(): number {
-    return this.valuesByPlaceholder.size;
-  }
-
   /**
    * 32 random bytes kept at redact.key (0600) across restarts, so a placeholder
    * stays the same and what a vendor cached stays good (magpie `loadKey`).
@@ -474,7 +469,7 @@ export class OutboundRedactionPlaceholders {
     const maskSecretFieldsInJsonText = (key: string, text: string): string => {
       if (key !== 'arguments' || !/^\s*[[{]/.test(text)) return text;
       const rewritten = rewriteJsonStringsInText(text, (_path, key, value) => {
-        if (value === '' || value.startsWith('data:') || !isSecretFieldName(key) || isWholePlaceholder(value)) return value;
+        if (value === '' || value.startsWith('data:') || !isSecretFieldName(key) || WHOLE_OUTBOUND_PLACEHOLDER_PATTERN.test(value)) return value;
         maskedCount++;
         return remember('SECRET', value);
       });
@@ -487,7 +482,7 @@ export class OutboundRedactionPlaceholders {
         sealedSites.push(site);
         continue;
       }
-      if (site.value !== '' && isSecretFieldName(site.key) && !isWholePlaceholder(site.value)) {
+      if (site.value !== '' && isSecretFieldName(site.key) && !WHOLE_OUTBOUND_PLACEHOLDER_PATTERN.test(site.value)) {
         maskedCount++;
         splices.push(stringValueSplice(site.span, remember('SECRET', site.value)));
         continue;
@@ -629,11 +624,6 @@ export class OutboundRedactionPlaceholders {
     }
     return 0;
   }
-}
-
-/** `value` is one placeholder and nothing else, so it is not masked again. */
-function isWholePlaceholder(value: string): boolean {
-  return /^\{\{[A-Z][A-Z0-9_]*_[a-z2-7]{8}\}\}$/.test(value);
 }
 
 /** A function that swaps each value for its placeholder, the longest value first where two start at the same place (magpie `replacerOf`). */

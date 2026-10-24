@@ -38,13 +38,7 @@ const LOOPBACK_HOST_PATTERN = /^(127\.0\.0\.1|::1|localhost)$/;
  */
 const SHARED_HOST_PATTERN = /^(?:[A-Za-z0-9.-]{1,253}|[0-9A-Fa-f:.]{2,45})$/;
 
-/**
- * Same rules as the worker's port/host checks (SettingsRoutes validateSettings),
- * except the host must be loopback: the gateway never binds all interfaces.
- * Returns an error message, or null when valid. Used by the settings route and
- * by the daemon at start.
- */
-export function validateWireGatewayListenSettings(settings: {
+export interface WireGatewayListenSettings {
   CLAUDE_MEM_WIRE_GATEWAY_PORT?: string;
   CLAUDE_MEM_WIRE_GATEWAY_HOST?: string;
   CLAUDE_MEM_WIRE_GATEWAY_DRAIN_TIMEOUT_MS?: string;
@@ -63,11 +57,44 @@ export function validateWireGatewayListenSettings(settings: {
   CLAUDE_MEM_WIRE_GATEWAY_SHARED?: string;
   CLAUDE_MEM_WIRE_GATEWAY_SHARED_HOST?: string;
   CLAUDE_MEM_WIRE_GATEWAY_SHARED_PORT?: string;
-}): string | null {
-  if (settings.CLAUDE_MEM_WIRE_GATEWAY_SHARED !== undefined
-    && settings.CLAUDE_MEM_WIRE_GATEWAY_SHARED !== 'true' && settings.CLAUDE_MEM_WIRE_GATEWAY_SHARED !== 'false') {
-    return 'CLAUDE_MEM_WIRE_GATEWAY_SHARED must be "true" or "false"';
-  }
+}
+
+/** A plain setting's rule: "true"/"false", or a whole number of `unit` (above 0 when `minimum` is 1). */
+type PlainSettingRule = 'boolean' | { unit: string; minimum: 0 | 1 };
+
+/** The plain settings, checked in this order (the first bad one is the error). */
+const PLAIN_SETTING_RULES: Array<[keyof WireGatewayListenSettings, PlainSettingRule]> = [
+  ['CLAUDE_MEM_WIRE_GATEWAY_DRAIN_TIMEOUT_MS', { unit: 'milliseconds', minimum: 0 }],
+  ['CLAUDE_MEM_WIRE_GATEWAY_MAX_REQUEST_BYTES', { unit: 'bytes', minimum: 1 }],
+  ['CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS', { unit: 'days', minimum: 1 }],
+  ['CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION', 'boolean'],
+  ['CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS', 'boolean'],
+  ['CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE', 'boolean'],
+  ['CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_AGE_TURNS', { unit: 'user turns', minimum: 0 }],
+  ['CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_RESULT_BYTES', { unit: 'bytes', minimum: 0 }],
+  ['CLAUDE_MEM_WIRE_GATEWAY_MEMORY_INJECTION', 'boolean'],
+  ['CLAUDE_MEM_WIRE_GATEWAY_MEMORY_SEARCH_TOOL', 'boolean'],
+  ['CLAUDE_MEM_WIRE_GATEWAY_OTLP', 'boolean'],
+  ['CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS', { unit: 'milliseconds', minimum: 1 }],
+];
+
+/** The error for `value` of `key` under `rule`, or null when it is unset or valid. */
+function plainSettingError(key: string, value: string | undefined, rule: PlainSettingRule): string | null {
+  if (value === undefined) return null;
+  if (rule === 'boolean') return value === 'true' || value === 'false' ? null : `${key} must be "true" or "false"`;
+  if (/^\d+$/.test(value) && Number(value) >= rule.minimum) return null;
+  return `${key} must be a whole number of ${rule.unit}${rule.minimum === 1 ? ' above 0' : ''}`;
+}
+
+/**
+ * Same rules as the worker's port/host checks (SettingsRoutes validateSettings),
+ * except the host must be loopback: the gateway never binds all interfaces.
+ * Returns an error message, or null when valid. Used by the settings route and
+ * by the daemon at start.
+ */
+export function validateWireGatewayListenSettings(settings: WireGatewayListenSettings): string | null {
+  const sharedError = plainSettingError('CLAUDE_MEM_WIRE_GATEWAY_SHARED', settings.CLAUDE_MEM_WIRE_GATEWAY_SHARED, 'boolean');
+  if (sharedError) return sharedError;
   const shared = settings.CLAUDE_MEM_WIRE_GATEWAY_SHARED === 'true';
   if (settings.CLAUDE_MEM_WIRE_GATEWAY_PORT) {
     const port = parseInt(settings.CLAUDE_MEM_WIRE_GATEWAY_PORT, 10);
@@ -94,46 +121,9 @@ export function validateWireGatewayListenSettings(settings: {
       return 'CLAUDE_MEM_WIRE_GATEWAY_SHARED_HOST must be an IP address or a host name';
     }
   }
-  if (settings.CLAUDE_MEM_WIRE_GATEWAY_DRAIN_TIMEOUT_MS !== undefined
-    && !/^\d+$/.test(settings.CLAUDE_MEM_WIRE_GATEWAY_DRAIN_TIMEOUT_MS)) {
-    return 'CLAUDE_MEM_WIRE_GATEWAY_DRAIN_TIMEOUT_MS must be a whole number of milliseconds';
-  }
-  if (settings.CLAUDE_MEM_WIRE_GATEWAY_MAX_REQUEST_BYTES !== undefined
-    && (!/^\d+$/.test(settings.CLAUDE_MEM_WIRE_GATEWAY_MAX_REQUEST_BYTES) || Number(settings.CLAUDE_MEM_WIRE_GATEWAY_MAX_REQUEST_BYTES) < 1)) {
-    return 'CLAUDE_MEM_WIRE_GATEWAY_MAX_REQUEST_BYTES must be a whole number of bytes above 0';
-  }
-  if (settings.CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS !== undefined
-    && (!/^\d+$/.test(settings.CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS) || Number(settings.CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS) < 1)) {
-    return 'CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS must be a whole number of days above 0';
-  }
-  if (settings.CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION !== undefined
-    && settings.CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION !== 'true' && settings.CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION !== 'false') {
-    return 'CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION must be "true" or "false"';
-  }
-  if (settings.CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS !== undefined
-    && settings.CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS !== 'true' && settings.CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS !== 'false') {
-    return 'CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS must be "true" or "false"';
-  }
-  if (settings.CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE !== undefined
-    && settings.CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE !== 'true' && settings.CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE !== 'false') {
-    return 'CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE must be "true" or "false"';
-  }
-  if (settings.CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_AGE_TURNS !== undefined
-    && !/^\d+$/.test(settings.CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_AGE_TURNS)) {
-    return 'CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_AGE_TURNS must be a whole number of user turns';
-  }
-  if (settings.CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_RESULT_BYTES !== undefined
-    && !/^\d+$/.test(settings.CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_RESULT_BYTES)) {
-    return 'CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_RESULT_BYTES must be a whole number of bytes';
-  }
-  for (const key of ['CLAUDE_MEM_WIRE_GATEWAY_MEMORY_INJECTION', 'CLAUDE_MEM_WIRE_GATEWAY_MEMORY_SEARCH_TOOL', 'CLAUDE_MEM_WIRE_GATEWAY_OTLP'] as const) {
-    if (settings[key] !== undefined && settings[key] !== 'true' && settings[key] !== 'false') {
-      return `${key} must be "true" or "false"`;
-    }
-  }
-  if (settings.CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS !== undefined
-    && (!/^\d+$/.test(settings.CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS) || Number(settings.CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS) < 1)) {
-    return 'CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS must be a whole number of milliseconds above 0';
+  for (const [key, rule] of PLAIN_SETTING_RULES) {
+    const error = plainSettingError(key, settings[key], rule);
+    if (error) return error;
   }
   const magpieRecordingsDirectory = settings.CLAUDE_MEM_WIRE_GATEWAY_MAGPIE_RECORDINGS_DIR?.trim();
   if (magpieRecordingsDirectory && !isAbsolute(magpieRecordingsDirectory)) {
@@ -183,11 +173,9 @@ export function loadWireGatewayConfig(settingsPath: string = USER_SETTINGS_PATH)
   if (error) {
     throw new Error(`Invalid wire gateway setting: ${error}`);
   }
-  // 'localhost' can resolve IPv6-first while the client dials IPv4 (#2992,
-  // SettingsDefaultsManager.normalizeWorkerHost): pin the IPv4 loopback.
-  const host = settings.CLAUDE_MEM_WIRE_GATEWAY_HOST === 'localhost' ? '127.0.0.1' : settings.CLAUDE_MEM_WIRE_GATEWAY_HOST;
   return {
-    host,
+    // 'localhost' can resolve IPv6-first while the client dials IPv4 (#2992): the IPv4 loopback.
+    host: SettingsDefaultsManager.normalizeLoopbackHost(settings.CLAUDE_MEM_WIRE_GATEWAY_HOST),
     port: parseInt(settings.CLAUDE_MEM_WIRE_GATEWAY_PORT, 10),
     autostart: settings.CLAUDE_MEM_WIRE_GATEWAY_AUTOSTART !== 'false',
     drainTimeoutMs: parseInt(settings.CLAUDE_MEM_WIRE_GATEWAY_DRAIN_TIMEOUT_MS, 10),

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { collectWireReply, createWireReplyCollector } from '../../src/services/wire-gateway/ir/reply-collectors.js';
-import { RelayReplyCollection } from '../../src/services/wire-gateway/ir/relay-reply-collection.js';
+import { WIRE_REPLY_MAX_BYTES, collectWireReply, createWireReplyCollector } from '../../src/services/wire-gateway/ir/reply-collectors.js';
+import { createReplyCollectingRelayObserver, type CompletedRelayExchange } from '../../src/services/wire-gateway/ir/relay-reply-collection.js';
 import type { RelayExchange } from '../../src/services/wire-gateway/relay/relay.js';
 import { IncrementalSseReader, WIRE_SSE_MAX_EVENT_BYTES, type WireSseEvent } from '../../src/services/wire-gateway/ir/sse-event-reader.js';
 import { ToolCallScanner } from '../../src/services/wire-gateway/ir/tool-scan.js';
@@ -76,11 +76,10 @@ describe('wire IR reply collectors: the docs\' examples', () => {
     expect(reply.usage).toMatchObject({ inputTokens: 472, outputTokens: 89 });
   });
 
-  it('Anthropic thinking: thinking text and its signature, sealed', () => {
+  it('Anthropic thinking: thinking text', () => {
     const reply = collectWhole('anthropic', SSE, fixtureBytes('official/anthropic-thinking.sse'));
     expect(reply.thinking).toStartWith('I need to find the GCD of 1071 and 462');
     expect(reply.thinking).toEndWith('GCD(1071, 462) = 21.');
-    expect(reply.sealed).toEqual([{ sealedBy: 'anthropic', form: 'signature', value: 'EqQBCgIYAhIM1gbcDa9GJwZA2b3hGgxBdjrkzLoky3dl1pkiMOYds...' }]);
     expect(reply.text).toBe('The greatest common divisor of 1071 and 462 is **21**.');
   });
 
@@ -113,14 +112,12 @@ describe('wire IR reply collectors: the docs\' examples', () => {
     expect(reply).toMatchObject({ thinking: 'Thinking about the files.', text: 'I\'ll list the directory.', stop: 'tool', endedCleanly: true });
     expect(reply.toolCalls).toEqual([{ id: 'gemini:reply:0', name: 'list_directory', argsJson: '{"path":"."}' }]);
     expect(reply.usage).toMatchObject({ inputTokens: 80, cacheReadTokens: 40, outputTokens: 50, reasoningTokens: 32 });
-    expect(reply.sealed).toEqual([{ sealedBy: 'gemini', form: 'signature', value: 'c2lnbmF0dXJl' }]);
   });
 
   it('Gemini thoughts through Vertex\'s OpenAI-compatible Chat (magpie fixture)', () => {
     const reply = collectWhole('openai-chat', SSE, fixtureBytes('magpie/vertex_openai_thoughts.sse'));
     expect(reply.thinking).toStartWith('**Acknowledging Greeting**');
     expect(reply.text).toBe('你好！很高兴与你交流。请问有什么我可以帮你的吗？');
-    expect(reply.sealed[0]).toMatchObject({ sealedBy: 'gemini', form: 'signature' });
   });
 });
 
@@ -166,7 +163,6 @@ describe('wire IR reply collectors: edge cases', () => {
     ]));
     const reply = expectSameAtEverySplit('anthropic', SSE, encoder.encode(stream));
     expect(reply.toolCalls).toEqual([{ id: 't1', name: 'Bash', argsJson: '{"command":"ls"}' }]);
-    expect(reply.sealed).toEqual([{ sealedBy: 'anthropic', form: 'block', value: redacted }]);
     expect(reply.usage).toEqual({ inputTokens: 10, outputTokens: 55, cacheReadTokens: 500, cacheWriteTokens: 50, cacheWrite1hTokens: 30, reasoningTokens: 12 });
     expect(reply).toMatchObject({ stop: 'tool', endedCleanly: true });
   });
@@ -210,7 +206,6 @@ describe('wire IR reply collectors: edge cases', () => {
       ].map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join('');
     const reply = expectSameAtEverySplit('openai-responses', SSE, encoder.encode(stream));
     expect(reply.thinking).toBe('plan');
-    expect(reply.sealed).toEqual([{ sealedBy: 'openai-responses', form: 'block', value: reasoningItem }]);
     expect(reply.toolCalls).toEqual([
       { id: 'call_1', name: 'shell', argsJson: '{"cmd":"ls"}' },
       { id: 'call_2', name: 'apply_patch', argsJson: '{"input":"*** Begin Patch"}' },
@@ -292,12 +287,11 @@ describe('wire IR toolScan', () => {
 });
 
 describe('wire IR reply edge cases found in review', () => {
-  it('a whole JSON reply with a UTF-8 byte order mark is read, raw blocks included', () => {
+  it('a whole JSON reply with a UTF-8 byte order mark is read', () => {
     const body = '{"type":"message","model":"m","content":[{"type":"redacted_thinking","data":"x"},{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":2}}';
     const withMark = new Uint8Array([0xef, 0xbb, 0xbf, ...encoder.encode(body)]);
     const reply = collectWhole('anthropic', JSON_TYPE, withMark);
     expect(reply).toMatchObject({ text: 'hi', endedCleanly: true, stop: 'stop' });
-    expect(reply.sealed).toEqual([{ sealedBy: 'anthropic', form: 'block', value: '{"type":"redacted_thinking","data":"x"}' }]);
   });
 
   it('an oversized SSE event is dropped whole, even when the chunk that passes the limit ends its line, and the next event is still read', () => {
@@ -338,14 +332,17 @@ describe('wire IR reply collectors: total byte cap', () => {
   });
 
   it('the relay reply collection reports a reply past the cap, and its tool scan still sees the whole reply', () => {
-    const collection = new RelayReplyCollection({ maxReplyBytes: 200 });
+    let collected: CompletedRelayExchange['collected'] | undefined;
+    const observer = createReplyCollectingRelayObserver([{ onExchangeCompleted: completed => { collected = completed.collected; } }]);
     const exchange = { exchangeId: 'x1', captured: true, metered: true, protocol: 'anthropic' } as unknown as RelayExchange;
-    expect(collection.begin(exchange)).toBe(true);
-    collection.responseStarted(exchange, { contentType: SSE } as never);
-    collection.chunk(exchange, encoder.encode(start));
-    collection.chunk(exchange, encoder.encode('event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t1","name":"Bash","input":{}}}\n\n'));
-    collection.chunk(exchange, encoder.encode(end));
-    const collected = collection.finish(exchange);
+    observer.onExchangeStarted!(exchange);
+    observer.onResponseStarted!(exchange, { status: 200, contentType: SSE });
+    observer.onResponseChunk!(exchange, encoder.encode(start));
+    // One chunk past WIRE_REPLY_MAX_BYTES: collecting stops, the scan goes on.
+    observer.onResponseChunk!(exchange, new Uint8Array(WIRE_REPLY_MAX_BYTES));
+    observer.onResponseChunk!(exchange, encoder.encode('event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t1","name":"Bash","input":{}}}\n\n'));
+    observer.onResponseChunk!(exchange, encoder.encode(end));
+    observer.onExchangeFinished!(exchange, {} as never);
     expect(collected?.passedByteCap).toBe(true);
     expect(collected?.reply?.endedCleanly).toBe(false);
     expect(collected?.calledTool).toBe(true);

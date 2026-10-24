@@ -63,13 +63,8 @@ export async function readBoundedRequestBody(
     chunks.push(next.value);
   }
 
-  const body = new Uint8Array(totalBytes);
-  let offset = 0;
-  for (const chunk of chunks) {
-    body.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return { kind: 'read', body };
+  // A plain Uint8Array, not a Buffer: callers rely on slice() copying (decodeRequestBodyCopy, the live trace).
+  return { kind: 'read', body: new Uint8Array(Bun.concatArrayBuffers(chunks)) };
 }
 
 export type DecodedBodyCopy =

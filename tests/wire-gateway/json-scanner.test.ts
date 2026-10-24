@@ -7,7 +7,6 @@ import {
   decodeString,
   decodeValue,
   getSpan,
-  objectMemberMap,
   objectMembers,
   rawText,
   scanDocument,
@@ -85,7 +84,6 @@ describe('wire gateway JSON scanner', () => {
   it('reads the last duplicate key, as JSON.parse does, while listing every member', () => {
     const bytes = bytesOf('{"k":1,"other":true,"k":2}');
     expect(rawText(bytes, getSpan(bytes, ['k'])!)).toBe('2');
-    expect(rawText(bytes, objectMemberMap(bytes, scanDocument(bytes)).get('k')!)).toBe('2');
     expect([...objectMembers(bytes, scanDocument(bytes))].map(member => member.key)).toEqual(['k', 'other', 'k']);
     expect(valueFromSpans(bytes, scanDocument(bytes))).toEqual(JSON.parse('{"k":1,"other":true,"k":2}'));
     expect(decodeValue(bytes, getSpan(bytes, ['other'])!)).toBe(true);

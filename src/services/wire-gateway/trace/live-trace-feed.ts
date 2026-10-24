@@ -31,6 +31,7 @@ import type { RelayExchange, RelayExchangeResult, RelayObserver, RelayResponseSt
 import type { CompletedRelayExchange, RelayReplyConsumer } from '../ir/relay-reply-collection.js';
 import type { WireRecordingConsent } from '../capture/turn-recorder.js';
 import { scrubWireText } from '../privacy/secret-scrub.js';
+import { utf8CutIndex } from '../../../shared/utf8-cut.js';
 
 /** Calls kept without bodies (plan Phase 13 task 4; magpie trace.go:25 `traceKeep`). */
 export const LIVE_TRACE_KEPT_CALLS = 60;
@@ -107,8 +108,7 @@ function scrubbedAndCut(bytes: Uint8Array, totalBytes: number): { text: string; 
   const scrubbed = scrubWireText(utf8Decoder.decode(bytes));
   const encoded = Buffer.from(scrubbed, 'utf8');
   if (encoded.length <= LIVE_TRACE_BODY_MAX_BYTES && totalBytes <= bytes.length) return { text: scrubbed, truncated: false };
-  let end = Math.min(encoded.length, LIVE_TRACE_BODY_MAX_BYTES);
-  while (end > 0 && end < encoded.length && (encoded[end] & 0xc0) === 0x80) end--;
+  const end = utf8CutIndex(encoded, Math.min(encoded.length, LIVE_TRACE_BODY_MAX_BYTES));
   return { text: encoded.subarray(0, end).toString('utf8'), truncated: true };
 }
 

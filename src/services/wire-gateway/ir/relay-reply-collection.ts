@@ -9,9 +9,8 @@
 // reply past WIRE_REPLY_MAX_BYTES stops being collected (`passedByteCap`);
 // the scan, which holds only a few bytes, still sees the whole reply.
 
-import { logger } from '../../../utils/logger.js';
-import type { RelayExchange, RelayExchangeResult, RelayObserver, RelayResponseStart } from '../relay/relay.js';
-import { createWireReplyCollector, type WireReplyCollector, type WireReplyCollectorOptions } from './reply-collectors.js';
+import { notifyObserver, type RelayExchange, type RelayExchangeResult, type RelayObserver, type RelayResponseStart } from '../relay/relay.js';
+import { createWireReplyCollector, type WireReplyCollector } from './reply-collectors.js';
 import { ToolCallScanner } from './tool-scan.js';
 import type { WireReply } from './types.js';
 
@@ -22,50 +21,6 @@ export interface CollectedRelayReply {
   calledTool: boolean;
   /** The reply passed the collector's byte cap: what was collected is cut short and never ended cleanly. */
   passedByteCap: boolean;
-}
-
-interface ReplyInProgress {
-  collector: WireReplyCollector | null;
-  toolCallScanner: ToolCallScanner;
-}
-
-export class RelayReplyCollection {
-  private readonly repliesInProgress = new Map<string, ReplyInProgress>();
-
-  constructor(private readonly collectorOptions: WireReplyCollectorOptions = {}) {}
-
-  /** Start collecting `exchange`'s reply. Only a metered exchange (a model call of a known protocol) gets chunks. */
-  begin(exchange: RelayExchange): boolean {
-    if (!exchange.metered || !exchange.protocol) return false;
-    this.repliesInProgress.set(exchange.exchangeId, { collector: null, toolCallScanner: new ToolCallScanner() });
-    return true;
-  }
-
-  responseStarted(exchange: RelayExchange, response: RelayResponseStart): void {
-    const inProgress = this.repliesInProgress.get(exchange.exchangeId);
-    if (!inProgress || !exchange.protocol) return;
-    inProgress.collector = createWireReplyCollector(exchange.protocol, response.contentType, this.collectorOptions);
-  }
-
-  chunk(exchange: RelayExchange, chunk: Uint8Array): void {
-    const inProgress = this.repliesInProgress.get(exchange.exchangeId);
-    if (!inProgress) return;
-    inProgress.toolCallScanner.observe(chunk);
-    inProgress.collector?.push(chunk);
-  }
-
-  /** The reply as far as it went, or null when `exchange` was never collected. Forgets the exchange. */
-  finish(exchange: RelayExchange): CollectedRelayReply | null {
-    const inProgress = this.repliesInProgress.get(exchange.exchangeId);
-    if (!inProgress) return null;
-    this.repliesInProgress.delete(exchange.exchangeId);
-    const reply = inProgress.collector ? inProgress.collector.finish() : null;
-    return {
-      reply,
-      calledTool: inProgress.toolCallScanner.calledTool || (reply?.toolCalls.length ?? 0) > 0,
-      passedByteCap: inProgress.collector?.passedByteCap ?? false,
-    };
-  }
 }
 
 /** One exchange once it is over, with its reply collected once for every consumer. */
@@ -82,38 +37,47 @@ export interface RelayReplyConsumer {
   onExchangeCompleted(completed: CompletedRelayExchange): void;
 }
 
-function notifyConsumer(callback: () => void): void {
-  try {
-    callback();
-  } catch (error) {
-    logger.error('WIRE', 'A relay reply consumer failed', {}, error instanceof Error ? error : new Error(String(error)));
-  }
-}
-
 /**
  * The relay observer that collects each metered reply once and hands every
  * consumer the result, in order. A consumer that throws does not stop the
- * others.
+ * others. Only a metered exchange (a model call of a known protocol) is
+ * collected: its tool-call scan beside its reply collector, made when
+ * upstream answers.
  */
-export function createReplyCollectingRelayObserver(consumers: RelayReplyConsumer[], collectorOptions: WireReplyCollectorOptions = {}): RelayObserver {
-  const replyCollection = new RelayReplyCollection(collectorOptions);
+export function createReplyCollectingRelayObserver(consumers: RelayReplyConsumer[]): RelayObserver {
+  const repliesInProgress = new Map<string, { collector: WireReplyCollector | null; toolCallScanner: ToolCallScanner }>();
   return {
     onExchangeStarted(exchange: RelayExchange) {
-      replyCollection.begin(exchange);
+      if (exchange.metered && exchange.protocol) repliesInProgress.set(exchange.exchangeId, { collector: null, toolCallScanner: new ToolCallScanner() });
       for (const consumer of consumers) {
-        if (consumer.onExchangeStarted) notifyConsumer(() => consumer.onExchangeStarted!(exchange));
+        if (consumer.onExchangeStarted) notifyObserver(() => consumer.onExchangeStarted!(exchange));
       }
     },
     onResponseStarted(exchange: RelayExchange, response: RelayResponseStart) {
-      replyCollection.responseStarted(exchange, response);
+      const inProgress = repliesInProgress.get(exchange.exchangeId);
+      if (inProgress && exchange.protocol) inProgress.collector = createWireReplyCollector(exchange.protocol, response.contentType);
     },
     onResponseChunk(exchange: RelayExchange, chunk: Uint8Array) {
-      replyCollection.chunk(exchange, chunk);
+      const inProgress = repliesInProgress.get(exchange.exchangeId);
+      if (!inProgress) return;
+      inProgress.toolCallScanner.observe(chunk);
+      inProgress.collector?.push(chunk);
     },
     onExchangeFinished(exchange: RelayExchange, result: RelayExchangeResult) {
-      const collected = replyCollection.finish(exchange);
+      // The reply as far as it went, or null when the exchange was never collected.
+      const inProgress = repliesInProgress.get(exchange.exchangeId);
+      repliesInProgress.delete(exchange.exchangeId);
+      let collected: CollectedRelayReply | null = null;
+      if (inProgress) {
+        const reply = inProgress.collector ? inProgress.collector.finish() : null;
+        collected = {
+          reply,
+          calledTool: inProgress.toolCallScanner.calledTool || (reply?.toolCalls.length ?? 0) > 0,
+          passedByteCap: inProgress.collector?.passedByteCap ?? false,
+        };
+      }
       const completed: CompletedRelayExchange = { exchange, result, collected };
-      for (const consumer of consumers) notifyConsumer(() => consumer.onExchangeCompleted(completed));
+      for (const consumer of consumers) notifyObserver(() => consumer.onExchangeCompleted(completed));
     },
   };
 }

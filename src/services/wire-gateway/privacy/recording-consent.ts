@@ -45,10 +45,6 @@ export function readWireRecordingConsentFile(consentFilePath: string = paths.wir
   return { recording: parsed.recording, generation: parsed.generation as number, decidedAt: typeof parsed.decidedAt === 'string' ? parsed.decidedAt : '' };
 }
 
-function writeWireRecordingConsentFile(consent: WireRecordingConsentFile, consentFilePath: string): void {
-  writeJsonFileAtomic(consentFilePath, consent, { mode: WIRE_GATEWAY_FILE_MODE });
-}
-
 /** The generation after the one on disk; an unreadable file is replaced, starting past any generation it could have held. */
 function nextGeneration(consentFilePath: string): { previous: WireRecordingConsentFile | null; generation: number } {
   try {
@@ -69,7 +65,7 @@ export function setWireRecordingConsent(recording: boolean, consentFilePath: str
       generation: nextGeneration(consentFilePath).generation,
       decidedAt: new Date().toISOString(),
     };
-    writeWireRecordingConsentFile(consent, consentFilePath);
+    writeJsonFileAtomic(consentFilePath, consent, { mode: WIRE_GATEWAY_FILE_MODE });
     return consent;
   });
 }
@@ -93,7 +89,7 @@ export function clearWireRecordings(options: { consentFilePath?: string; recordi
       generation,
       decidedAt: previous?.decidedAt ?? new Date().toISOString(),
     };
-    writeWireRecordingConsentFile(bumped, consentFilePath);
+    writeJsonFileAtomic(consentFilePath, bumped, { mode: WIRE_GATEWAY_FILE_MODE });
     return bumped;
   });
   rmSync(options.recordingsDirectory ?? wireGatewaySubdirPath('recordings'), { recursive: true, force: true });

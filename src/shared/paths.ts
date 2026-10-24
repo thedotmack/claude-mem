@@ -176,7 +176,6 @@ export const paths = {
   supervisorRegistry: () => join(DATA_DIR, 'supervisor.json'),
   envFile: () => join(DATA_DIR, '.env'),
   logsDir: () => LOGS_DIR,
-  wireGateway: () => WIRE_GATEWAY_DIR,
   wireGatewayRoutes: () => join(WIRE_GATEWAY_DIR, 'routes.json'),
   wireGatewayConsent: () => join(WIRE_GATEWAY_DIR, 'consent.json'),
   wireGatewayRedactKey: () => join(WIRE_GATEWAY_DIR, 'redact.key'),

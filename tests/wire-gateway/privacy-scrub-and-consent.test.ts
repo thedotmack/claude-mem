@@ -137,7 +137,7 @@ describe('secret detectors and the on-disk scrub (magpie TestScrub)', () => {
     });
     try {
       const turn = turnWith(`here is ${anthropicKey} and {{API_KEY_abcdefgh}}`, `stored ${jwt}`);
-      expect(recorder.save(turn, recorder.currentGeneration())).toBe('saved');
+      expect(recorder.save(turn, recorder.consent.recordingGeneration())).toBe('saved');
       const [turnsFile] = filesUnder(recordingsDirectory);
       const written = readFileSync(turnsFile, 'utf8');
       for (const secret of [anthropicKey, jwt, 'plainvalue']) expect(written).not.toContain(secret);
@@ -230,9 +230,9 @@ describe('recording consent', () => {
     const consent = new FileWireRecordingConsent({ recordingForcedOff: false, consentFilePath });
     const recorder = new WireTurnRecorder({ consent, retentionDays: 7, recordingsDirectory, cleanupIntervalMs: 0 });
     try {
-      expect(recorder.save(turnWith('first', 'one'), recorder.currentGeneration())).toBe('saved');
+      expect(recorder.save(turnWith('first', 'one'), recorder.consent.recordingGeneration())).toBe('saved');
       expect(filesUnder(recordingsDirectory)).toHaveLength(1);
-      const inFlightGeneration = recorder.currentGeneration();
+      const inFlightGeneration = recorder.consent.recordingGeneration();
       const lines: string[] = [];
       expect(runWireClearCli({ consentFilePath, recordingsDirectory, writeLine: line => lines.push(line) })).toBe(0);
       expect(lines.join('\n')).toContain('Memories that capture already created stay');
@@ -240,7 +240,7 @@ describe('recording consent', () => {
       expect(recorder.save(turnWith('in flight', 'two'), inFlightGeneration)).toBe('generation_changed');
       expect(filesUnder(recordingsDirectory)).toHaveLength(0);
       // Recording itself stays on: a request that starts after the clear is kept.
-      expect(recorder.save(turnWith('after', 'three'), recorder.currentGeneration())).toBe('saved');
+      expect(recorder.save(turnWith('after', 'three'), recorder.consent.recordingGeneration())).toBe('saved');
     } finally {
       recorder.dispose();
     }

@@ -91,12 +91,11 @@ describe('wire gateway network guard (unit)', () => {
 
   it('refuses a peer that is not loopback', () => {
     const refusal = checkLoopbackRequest(request(), { peerAddress: '192.168.1.20', listenHost: '127.0.0.1' });
-    expect(refusal?.status).toBe(403);
-    expect(refusal?.message).toContain('192.168.1.20');
+    expect(refusal).toContain('192.168.1.20');
   });
 
   it('refuses an unknown peer (socket already gone)', () => {
-    expect(checkLoopbackRequest(request(), { peerAddress: null, listenHost: '127.0.0.1' })?.status).toBe(403);
+    expect(checkLoopbackRequest(request(), { peerAddress: null, listenHost: '127.0.0.1' })).toContain('an unknown address');
   });
 
   it('accepts IPv4, IPv6 and IPv4-mapped loopback peers', () => {

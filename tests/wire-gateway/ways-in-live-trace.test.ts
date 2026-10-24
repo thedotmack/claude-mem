@@ -202,12 +202,12 @@ describe('live trace feed rings', () => {
   function fakeExchange(index: number): RelayExchange {
     return {
       exchangeId: `exchange-${index}`, routeId: 'r', agentId: 'a', protocol: 'anthropic', captured: true, metered: true, method: 'POST',
-      suffixPath: '/v1/messages', startedAt: Date.now(), decodedRequestBody: new TextEncoder().encode(`{"n":${index}}`), captureSkippedReason: null,
+      suffixPath: '/v1/messages', startedAt: Date.now(), decodedRequestBody: new TextEncoder().encode(`{"n":${index}}`),
       request: null, identity: { agentId: 'a', sessionId: 's', sessionSource: 'named', kind: 'turn', userWords: '', userTurnOrdinal: 1, turnStart: true },
       rewrite: { appliedStageNames: [], injectedTokensEst: 0, swappedTokensEst: 0, forwardedRequest: null },
     };
   }
-  const finished: RelayExchangeResult = { outcome: 'complete', recordedStatus: 200, endMarkerSeen: true, captureOverflowed: false, responseBytes: 2, durationMs: 1, firstResponseChunkAt: null };
+  const finished: RelayExchangeResult = { outcome: 'complete', recordedStatus: 200, captureOverflowed: false, responseBytes: 2, durationMs: 1, firstResponseChunkAt: null };
 
   it('names its feed, and reads a cursor from another feed (a restarted gateway) as 0', async () => {
     const feed = new WireLiveTraceFeed({ consent: recordingOn });

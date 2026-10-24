@@ -23,7 +23,7 @@ function recordingSink(): WireCaptureEventSink & { events: EmittedEvent[] } {
 }
 
 function reply(fields: Partial<WireReply> = {}): WireReply {
-  return { text: '', toolCalls: [], thinking: '', sealed: [], usage: emptyWireUsage(), stop: 'stop', endedCleanly: true, ...fields };
+  return { text: '', toolCalls: [], thinking: '', usage: emptyWireUsage(), stop: 'stop', endedCleanly: true, ...fields };
 }
 
 /** Feed one request (and its reply) the way the capture observer does, with the identity Phase 4 would resolve. */
@@ -35,7 +35,7 @@ function feed(
   replyFields: Partial<WireReply> | null = {},
   suffixPath = '',
 ): void {
-  const request = parseWireRequest(protocol, new TextEncoder().encode(JSON.stringify(body)), { suffixPath });
+  const request = parseWireRequest(protocol, new TextEncoder().encode(JSON.stringify(body)), suffixPath);
   const position = userTurnPositionOfRequest(request);
   const identity: WireIdentity = {
     agentId: 'claude-code',
@@ -285,6 +285,9 @@ describe('WireCaptureAssembler', () => {
       { kind: 'summarize', payload: { contentSessionId: 'session-1', platformSource: 'claude-code', lastAssistantMessage: 'Hi there.', cwd: '/Users/me/proj' } },
       { kind: 'session_end', payload: { contentSessionId: 'session-1', platformSource: 'claude-code' } },
     ]);
-    expect(assembler.trackedConversationCount).toBe(0);
+    // Forgotten: the same request again is a first sight, so its prompt is sent again.
+    const eventsBefore = sink.events.length;
+    feed(assembler, 'anthropic', { model: 'm', messages: [{ role: 'user', content: 'hello' }] }, {}, { text: 'Hi there.' });
+    expect(sink.events[eventsBefore]).toEqual(sink.events[0]);
   });
 });

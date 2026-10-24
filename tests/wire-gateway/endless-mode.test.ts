@@ -279,8 +279,8 @@ describe('Endless Mode per protocol', () => {
       expect(sent[7]).toContain(`contents of file 2 <${tag}>`);
 
       // Pairs stay whole; ids and order stay.
-      const original = parseWireRequest(protocolCase.protocol, new TextEncoder().encode(requests[7]), { suffixPath: protocolCase.path });
-      const rewritten = parseWireRequest(protocolCase.protocol, new TextEncoder().encode(sent[7]), { suffixPath: protocolCase.path });
+      const original = parseWireRequest(protocolCase.protocol, new TextEncoder().encode(requests[7]), protocolCase.path);
+      const rewritten = parseWireRequest(protocolCase.protocol, new TextEncoder().encode(sent[7]), protocolCase.path);
       expect(toolPairingProblem(original, rewritten)).toBeNull();
       const callIdsOf = (request: typeof original) => request.messages.flatMap(message => message.parts.filter(part => part.callId).map(part => `${part.kind}:${part.callId}`));
       expect(callIdsOf(rewritten)).toEqual(callIdsOf(original));

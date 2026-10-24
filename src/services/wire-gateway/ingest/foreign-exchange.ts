@@ -200,7 +200,6 @@ export function foreignExchangeOf(input: ForeignExchangeInput): ForeignExchange 
     text: texts.join(''),
     toolCalls,
     thinking: thinking.join(''),
-    sealed: [],
     usage: input.usage ?? emptyWireUsage(),
     stop: toolCalls.length > 0 ? 'tool' : (failed || input.cut ? null : 'stop'),
     endedCleanly: !input.cut && !failed,

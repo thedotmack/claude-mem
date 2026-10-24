@@ -16,7 +16,7 @@ type QueuedCaptureItem = { kind: 'chunk'; chunk: Uint8Array } | { kind: 'callbac
 export class BoundedCaptureQueue {
   private readonly items: QueuedCaptureItem[] = [];
   private queuedChunkBytes = 0;
-  private overflowed = false;
+  hasOverflowed = false;
   private drainScheduled = false;
 
   constructor(
@@ -24,14 +24,10 @@ export class BoundedCaptureQueue {
     private readonly deliverChunk: (chunk: Uint8Array) => void,
   ) {}
 
-  get hasOverflowed(): boolean {
-    return this.overflowed;
-  }
-
   offer(chunk: Uint8Array): void {
-    if (this.overflowed) return;
+    if (this.hasOverflowed) return;
     if (this.queuedChunkBytes + chunk.byteLength > this.capBytes) {
-      this.overflowed = true;
+      this.hasOverflowed = true;
       return;
     }
     // A copy: the original chunk belongs to the client's stream.

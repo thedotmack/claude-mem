@@ -21,6 +21,7 @@ import { isRecursiveMemoryTool, isExplicitMemoryWrite } from '../../../shared/me
 import { workStateTool } from '../../../shared/work-state-telemetry.js';
 import { recordWorkStatePrivacy, recordWorkStatePrompt, recordWorkStateTool, isPublicWorkStateTurn } from '../../telemetry/work-state.js';
 import { AGENT_LIFECYCLE_LIST, agentStopFields } from '../../work-view/agent-lifecycle.mjs';
+import { utf8CutIndex } from '../../../shared/utf8-cut.js';
 
 export interface IngestContext {
   sessionManager: SessionManager;
@@ -247,9 +248,7 @@ export async function ingestSessionInit(
       preview: prompt.slice(0, 200)
     });
     const buf = Buffer.from(prompt, 'utf8');
-    let end = MAX_USER_PROMPT_BYTES;
-    while (end > 0 && (buf[end] & 0xc0) === 0x80) end--;
-    prompt = buf.subarray(0, end).toString('utf8');
+    prompt = buf.subarray(0, utf8CutIndex(buf, MAX_USER_PROMPT_BYTES)).toString('utf8');
   }
 
   logger.info('HTTP', 'SessionRoutes: handleSessionInitByClaudeId called', {

@@ -15,7 +15,7 @@ function parseFixture(relativePath: string, protocol: WireProtocol): WireRequest
 }
 
 function parseText(protocol: WireProtocol, body: string, suffixPath?: string): WireRequest {
-  return parseWireRequest(protocol, encoder.encode(body), { suffixPath });
+  return parseWireRequest(protocol, encoder.encode(body), suffixPath);
 }
 
 function allParts(request: WireRequest): WirePart[] {
@@ -31,7 +31,7 @@ function expectPartSpansAreValues(request: WireRequest): void {
   }
 }
 
-const emptyReply = { text: '', toolCalls: [], thinking: '', sealed: [], usage: emptyWireUsage(), stop: null, endedCleanly: true };
+const emptyReply = { text: '', toolCalls: [], thinking: '', usage: emptyWireUsage(), stop: null, endedCleanly: true };
 
 describe('wire IR request parsers: magpie fixtures', () => {
   const cases: Array<[string, WireProtocol]> = [
@@ -135,7 +135,7 @@ describe('wire IR request parsers: protocol rules', () => {
     expect(contextParts.find(part => part.name === 'developer')!.text).toBe('late dev');
     expect(contextParts.find(part => part.name === 'local_shell_call')!.text).toBe('ls -la');
     expect(contextParts.find(part => part.name === 'web_search_call')!.text).toBe('bun zlib');
-    expect(parts.find(part => part.author)).toMatchObject({ kind: 'text', text: 'task', author: 'parent', recipient: 'worker-1' });
+    expect(request.messages.find(message => message.parts.some(part => part.text === 'task'))).toMatchObject({ role: 'user', parts: [{ kind: 'text', text: 'task' }] });
     expectPartSpansAreValues(request);
   });
 

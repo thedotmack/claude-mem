@@ -32,11 +32,6 @@ const CONTAINER_HOST_NAMES = new Set([
   'docker.for.mac.localhost',
 ]);
 
-export interface NetworkGuardRefusal {
-  status: 403;
-  message: string;
-}
-
 export interface NetworkGuardContext {
   /** Peer address from server.requestIP(req); null when the socket is gone. */
   peerAddress: string | null;
@@ -118,41 +113,30 @@ export function isForeignOrigin(origin: string | null, hostHeader: string): bool
 }
 
 /**
- * Loopback-mode admission. Returns why a request is refused, or null to let it
- * through. Order: peer, forwarding headers, DNS rebinding, foreign page.
+ * Loopback-mode admission. Returns why a request is refused (answered 403),
+ * or null to let it through. Order: peer, forwarding headers, DNS rebinding,
+ * foreign page.
  */
-export function checkLoopbackRequest(request: Request, context: NetworkGuardContext): NetworkGuardRefusal | null {
+export function checkLoopbackRequest(request: Request, context: NetworkGuardContext): string | null {
   const { headers } = request;
 
   if (!context.peerAddress || !isLoopbackAddress(context.peerAddress)) {
-    return {
-      status: 403,
-      message: `the claude-mem wire gateway answers this computer only; refused a request from ${context.peerAddress ?? 'an unknown address'}`,
-    };
+    return `the claude-mem wire gateway answers this computer only; refused a request from ${context.peerAddress ?? 'an unknown address'}`;
   }
 
   const forwardingHeader = FORWARDING_HEADERS.find(name => headers.get(name));
   if (forwardingHeader) {
-    return {
-      status: 403,
-      message: `this request came through a proxy or tunnel (it carries ${forwardingHeader}), so the claude-mem wire gateway treats it as from another machine and refuses it`,
-    };
+    return `this request came through a proxy or tunnel (it carries ${forwardingHeader}), so the claude-mem wire gateway treats it as from another machine and refuses it`;
   }
 
   const hostHeader = headers.get('host') ?? '';
   if (isFromBrowser(headers) && !isOwnHost(hostHeader, context.listenHost)) {
-    return {
-      status: 403,
-      message: `the claude-mem wire gateway doesn't answer a browser that reached it as ${hostHeader} (a web site's name pointed at this computer): call it as localhost or 127.0.0.1`,
-    };
+    return `the claude-mem wire gateway doesn't answer a browser that reached it as ${hostHeader} (a web site's name pointed at this computer): call it as localhost or 127.0.0.1`;
   }
 
   const origin = headers.get('origin');
   if (isForeignOrigin(origin, hostHeader)) {
-    return {
-      status: 403,
-      message: `the claude-mem wire gateway doesn't answer the web page ${origin}`,
-    };
+    return `the claude-mem wire gateway doesn't answer the web page ${origin}`;
   }
 
   return null;

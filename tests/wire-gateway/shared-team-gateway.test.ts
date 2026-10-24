@@ -582,7 +582,7 @@ describe('shared team gateway: capture', () => {
       expect(report.team?.clientKeys).toBeGreaterThanOrEqual(2);
       expect(report.team?.admission.refusedNoKey).toBeGreaterThan(0);
       expect(JSON.stringify(report.team)).not.toContain('cmw_');
-      expect(gateway.service.getRuntimeState().sharedPort).toBe(gateway.service.sharedPort);
+      expect(gateway.service.runtimeState().sharedPort).toBe(gateway.service.sharedPort);
     } finally {
       await gateway.stop();
     }

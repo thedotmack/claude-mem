@@ -161,6 +161,5 @@ export function workPlaceOfRequest(request: WireRequest): WorkPlace {
     for (const part of message.parts) look(agentAuthoredText(part));
   }
   if (workPlace.gitRepositorySaid === undefined) delete workPlace.gitRepositorySaid;
-  if (workPlace.workDir === undefined) delete workPlace.workDir;
   return workPlace;
 }

@@ -39,9 +39,6 @@ export interface WirePart {
   hasImages?: boolean;
   /** The part carries a signature, encrypted content or a redacted block. */
   sealedBy?: WireSealOwner;
-  /** Codex `agent_message`: who sent it and to whom. */
-  author?: string;
-  recipient?: string;
   /** Where the part sits in the decoded request body. */
   span: JsonSpan;
 }
@@ -107,20 +104,12 @@ export interface WireUsage {
 /** Why the model stopped, normalized as magpie does: stop | length | tool | filter. */
 export type WireStopReason = 'stop' | 'length' | 'tool' | 'filter';
 
-export interface WireSealedReplyItem {
-  sealedBy: WireSealOwner;
-  /** signature: a thinking block's or thoughtSignature; block: a whole redacted_thinking block or reasoning item, as raw JSON. */
-  form: 'signature' | 'block';
-  value: string;
-}
-
 export interface WireReply {
   /** Every text part, joined in order. */
   text: string;
   toolCalls: WireToolCall[];
   /** Readable reasoning, joined in order. */
   thinking: string;
-  sealed: WireSealedReplyItem[];
   usage: WireUsage;
   /** Null when the reply never said why it ended. */
   stop: WireStopReason | null;

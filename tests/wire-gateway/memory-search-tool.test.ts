@@ -52,16 +52,16 @@ describe('the hidden tool definition', () => {
   it('goes at the end of tools, twice is once; Gemini into the last functionDeclarations', () => {
     for (const testCase of STITCH_PROTOCOL_CASES) {
       const body = encoder.encode(testCase.requestBody(true));
-      const request = parseWireRequest(testCase.protocol, body, { suffixPath: testCase.streamPath.split('?')[0] });
+      const request = parseWireRequest(testCase.protocol, body, testCase.streamPath.split('?')[0]);
       const definition = memorySearchToolDefinition(testCase.protocol, 'memory_search');
       const once = appendToolDefinition(request, definition);
       expect(textOf(once)).toContain(`${definition}]`);
-      const twice = appendToolDefinition(parseWireRequest(testCase.protocol, once, { suffixPath: testCase.streamPath.split('?')[0] }), definition);
+      const twice = appendToolDefinition(parseWireRequest(testCase.protocol, once, testCase.streamPath.split('?')[0]), definition);
       expect(twice).toBe(once);
       expect(textOf(twice)).toBe(textOf(once));
     }
     const gemini = encoder.encode('{"contents":[],"tools":[{"googleSearch":{}},{"functionDeclarations":[{"name":"a"}]}]}');
-    const appended = appendToolDefinition(parseWireRequest('gemini', gemini, { suffixPath: '/v1beta/models/g:generateContent' }), '{"name":"memory_search"}');
+    const appended = appendToolDefinition(parseWireRequest('gemini', gemini, '/v1beta/models/g:generateContent'), '{"name":"memory_search"}');
     expect(textOf(appended)).toBe('{"contents":[],"tools":[{"googleSearch":{}},{"functionDeclarations":[{"name":"a"},{"name":"memory_search"}]}]}');
     const noTools = encoder.encode('{"model":"m","messages":[]}');
     expect(textOf(appendToolDefinition(parseWireRequest('openai-chat', noTools), '{"type":"function"}'))).toBe('{"model":"m","messages":[],"tools":[{"type":"function"}]}');

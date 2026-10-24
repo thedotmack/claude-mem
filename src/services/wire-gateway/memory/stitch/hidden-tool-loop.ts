@@ -65,16 +65,6 @@ export interface HiddenToolLoopOptions {
 
 class LaterRoundFailed extends Error {}
 
-function concatChunks(chunks: Uint8Array[], length: number): Uint8Array {
-  const joined = new Uint8Array(length);
-  let offset = 0;
-  for (const chunk of chunks) {
-    joined.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return joined;
-}
-
 async function boundedText(body: ReadableStream<Uint8Array>, maximumBytes: number): Promise<string> {
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
@@ -89,7 +79,7 @@ async function boundedText(body: ReadableStream<Uint8Array>, maximumBytes: numbe
   } finally {
     reader.cancel().catch(() => undefined);
   }
-  return new TextDecoder().decode(concatChunks(chunks, length)).slice(0, maximumBytes);
+  return new TextDecoder().decode(Buffer.concat(chunks, length)).slice(0, maximumBytes);
 }
 
 const sleep = (ms: number) => new Promise<'tick'>(resolve => setTimeout(() => resolve('tick'), ms));
@@ -148,7 +138,8 @@ export function hiddenToolLoopStream(options: HiddenToolLoopOptions): ReadableSt
           if (length > WHOLE_ROUND_MAX_BYTES) throw new Error(`a round's reply is over ${WHOLE_ROUND_MAX_BYTES} bytes`);
           chunks.push(value);
         }
-        outcome = stitcher.wholeRound(concatChunks(chunks, length));
+        // A plain Uint8Array (not a Buffer, whose slice() is a view): the stitcher keeps what it is given.
+        outcome = stitcher.wholeRound(new Uint8Array(Bun.concatArrayBuffers(chunks)));
       }
       if (!outcome.continues) {
         if (mode === 'whole') yield [stitcher.mergedWholeReply()];

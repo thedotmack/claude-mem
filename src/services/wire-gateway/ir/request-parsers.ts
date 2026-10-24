@@ -13,7 +13,6 @@
 //   named by their type (magpie drops them; compaction detection needs them).
 // - A developer/system item after a reply is a `context` part, not text
 //   wrapped in <system-reminder>.
-// - `agent_message` keeps its author and recipient.
 // - A Gemini call without an id gets a position id (`gemini:<content>:<part>`),
 //   not a random one, so the same history always yields the same ids.
 
@@ -29,17 +28,13 @@ export class WireRequestParseError extends Error {
   }
 }
 
-export interface ParseWireRequestOptions {
-  /** The route suffix (Gemini names its model and streaming in the path). */
-  suffixPath?: string;
-}
-
 /**
  * Parse a decoded request body. Throws JsonScanError on bytes that are not
  * JSON and WireRequestParseError on a root that is not an object; unknown
- * fields and item types are ignored.
+ * fields and item types are ignored. `suffixPath` is the route suffix
+ * (Gemini names its model and streaming in the path).
  */
-export function parseWireRequest(protocol: WireProtocol, body: Uint8Array, options: ParseWireRequestOptions = {}): WireRequest {
+export function parseWireRequest(protocol: WireProtocol, body: Uint8Array, suffixPath = ''): WireRequest {
   const rootSpan = scanDocument(body);
   const root = ScannedObject.of(body, rootSpan);
   if (!root) throw new WireRequestParseError(`a ${protocol} request body must be a JSON object`);
@@ -51,7 +46,7 @@ export function parseWireRequest(protocol: WireProtocol, body: Uint8Array, optio
     case 'openai-responses':
       return parseOpenAiResponsesRequest(root);
     case 'gemini':
-      return parseGeminiRequest(root, options.suffixPath ?? '');
+      return parseGeminiRequest(root, suffixPath);
   }
 }
 
@@ -367,11 +362,7 @@ function responsesItemMessage(item: ScannedObject, replied: boolean): { role: Wi
   }
   switch (itemType) {
     case 'agent_message': {
-      const parts = responsesContentParts(bytes, item.spanOf('content')).map(part => ({
-        ...part,
-        author: item.string('author'),
-        recipient: item.string('recipient'),
-      }));
+      const parts = responsesContentParts(bytes, item.spanOf('content'));
       return parts.length > 0 ? { role: 'user', part: parts } : null;
     }
     case 'function_call':

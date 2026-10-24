@@ -10,6 +10,7 @@
 import { createHash } from 'crypto';
 import type { WireRequest } from '../ir/types.js';
 import type { CodexTurnMetadata } from './codex-turn-metadata.js';
+import { utf8CutIndex } from '../../../shared/utf8-cut.js';
 
 /** A session the client names to claude-mem itself; also echoed back on the response. */
 export const CLAUDE_MEM_SESSION_HEADER = 'x-claude-mem-session';
@@ -37,10 +38,7 @@ const utf8Decoder = new TextDecoder();
 function truncateUtf8(text: string, maxBytes: number): string {
   const bytes = utf8Encoder.encode(text);
   if (bytes.length <= maxBytes) return text;
-  let end = maxBytes;
-  // Step back over continuation bytes (10xxxxxx) to a character boundary.
-  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
-  return utf8Decoder.decode(bytes.subarray(0, end));
+  return utf8Decoder.decode(bytes.subarray(0, utf8CutIndex(bytes, maxBytes)));
 }
 
 /**

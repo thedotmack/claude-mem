@@ -7,16 +7,17 @@
 import {
   arrayElements,
   decodeString,
-  objectMemberMap,
+  objectMembers,
   rawText,
   type JsonSpan,
 } from '../json/scanner.js';
 
 export class ScannedObject {
-  private readonly members: Map<string, JsonSpan>;
+  /** By key; a duplicated key keeps its last value, as JSON.parse does. */
+  private readonly members = new Map<string, JsonSpan>();
 
   constructor(readonly bytes: Uint8Array, readonly span: JsonSpan) {
-    this.members = objectMemberMap(bytes, span);
+    for (const member of objectMembers(bytes, span)) this.members.set(member.key, member.value);
   }
 
   /** A ScannedObject for `span` when it is an object, else undefined. */

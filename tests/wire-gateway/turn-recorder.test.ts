@@ -56,7 +56,7 @@ describe('WireTurnRecorder', () => {
   it('writes nothing while recording is off (no consent yet)', () => {
     recorder = new WireTurnRecorder({ retentionDays: 7, recordingsDirectory, cleanupIntervalMs: 0 });
     const now = new Date().toISOString();
-    expect(recorder.save(turnAt(now), recorder.currentGeneration())).toBe('recording_off');
+    expect(recorder.save(turnAt(now), recorder.consent.recordingGeneration())).toBe('recording_off');
     expect(existsSync(recordingsDirectory)).toBe(false);
   });
 
@@ -81,7 +81,7 @@ describe('WireTurnRecorder', () => {
   it('a consent generation bump during an in-flight request means it is not saved', () => {
     const consent = switchableConsent();
     recorder = new WireTurnRecorder({ consent, retentionDays: 7, recordingsDirectory, cleanupIntervalMs: 0 });
-    const generationAtStart = recorder.currentGeneration();
+    const generationAtStart = recorder.consent.recordingGeneration();
     consent.generation++; // recording was cleared and turned back on while the request was in flight
     expect(recorder.save(turnAt(new Date().toISOString()), generationAtStart)).toBe('generation_changed');
     expect(existsSync(recordingsDirectory)).toBe(false);

@@ -46,6 +46,7 @@ import type { WireRecorderPart } from '../ir/recorder-parts.js';
 import type { WireUsage } from '../ir/types.js';
 import type { WireRequestKind } from '../identity/request-kind.js';
 import { scrubWireRecorderPart } from '../privacy/secret-scrub.js';
+import { utf8CutIndex } from '../../../shared/utf8-cut.js';
 
 /** Each direction (input, output) of a line keeps at most this many bytes of part text (magpie `bound`). */
 export const RECORDED_DIRECTION_BUDGET_BYTES = 64 * 1024;
@@ -109,9 +110,7 @@ function utf8ByteLength(text: string): number {
 /** `text` cut to at most `maxBytes` of UTF-8 on a character boundary, and how many characters were left off. */
 function cutUtf8(text: string, maxBytes: number): { kept: string; charactersLeftOff: number } {
   const bytes = utf8Encoder.encode(text);
-  let end = Math.max(0, maxBytes);
-  // Step back over continuation bytes (10xxxxxx) to a character boundary.
-  while (end > 0 && end < bytes.length && (bytes[end] & 0xc0) === 0x80) end--;
+  const end = utf8CutIndex(bytes, Math.max(0, maxBytes));
   const kept = utf8Decoder.decode(bytes.subarray(0, end));
   return { kept, charactersLeftOff: [...text].length - [...kept].length };
 }
@@ -202,7 +201,8 @@ export type WireTurnSaveOutcome =
 
 export class WireTurnRecorder {
   readonly recordingsDirectory: string;
-  private readonly consent: WireRecordingConsent;
+  /** Read when a request starts (its generation) and again before its turn is saved. */
+  readonly consent: WireRecordingConsent;
   private readonly retentionDays: number;
   private readonly now: () => number;
   private readonly cleanupTimer: ReturnType<typeof setInterval> | null;
@@ -215,15 +215,6 @@ export class WireTurnRecorder {
     const cleanupIntervalMs = options.cleanupIntervalMs ?? RECORDING_CLEANUP_INTERVAL_MS;
     this.cleanupTimer = cleanupIntervalMs > 0 ? setInterval(() => this.pruneRecordings(), cleanupIntervalMs) : null;
     this.cleanupTimer?.unref?.();
-  }
-
-  /** The consent generation, taken when a request starts. */
-  currentGeneration(): number {
-    return this.consent.recordingGeneration();
-  }
-
-  isRecordingOn(): boolean {
-    return this.consent.isRecordingOn();
   }
 
   /**

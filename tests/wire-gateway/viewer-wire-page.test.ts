@@ -4,6 +4,7 @@ import { createServer, type Socket } from 'node:net';
 import { join } from 'node:path';
 import type { Server } from 'bun';
 import { createWireGatewayFetchHandler } from '../../src/services/wire-gateway/router.js';
+import { WireLaunchRegistry } from '../../src/services/wire-gateway/identity/launch-registry.js';
 import { buildWireRoutesReport } from '../../src/services/wire-gateway/WireGatewayService.js';
 import {
   RawHttpResponseReader,
@@ -13,6 +14,13 @@ import {
 } from '../../src/services/wire-gateway/direct-http.js';
 import { buildWireUsageSummary, summarizeInjectedMemory } from '../../src/services/wire-gateway/metrics/usage-summary.js';
 import type { WireUsageLedgerRecord } from '../../src/services/wire-gateway/metrics/usage-ledger.js';
+
+/** The router parts these tests never reach. */
+const UNUSED_ROUTER_PARTS = {
+  relay: () => Promise.reject(new Error('no relay in this test')),
+  launchRegistry: new WireLaunchRegistry(),
+  statusReport: () => Promise.reject(new Error('no status in this test')),
+};
 
 // What the viewer's Wire page (plan Phase 15) needs from the gateway side:
 // GET /wire/routes, direct HTTP that ends on a late long-poll answer, and the
@@ -59,7 +67,7 @@ describe('GET /wire/routes', () => {
 
   it('is served by the router, GET only, and answers 500 with why for an unreadable routes.json', async () => {
     let routesReport: () => unknown = () => buildWireRoutesReport(routesFilePath, {});
-    const handle = createWireGatewayFetchHandler({ listenHost: '127.0.0.1', routesReport: () => routesReport() });
+    const handle = createWireGatewayFetchHandler({ ...UNUSED_ROUTER_PARTS, listenHost: '127.0.0.1', routesReport: () => routesReport() });
     const ok = await handle(new Request('http://127.0.0.1/wire/routes'), loopbackServer);
     expect(ok.status).toBe(200);
     expect(((await ok.json()) as { routes: unknown[] }).routes).toHaveLength(3);
@@ -75,7 +83,7 @@ describe('GET /wire/routes', () => {
   });
 
   it('refuses a foreign web page like every other gateway path', async () => {
-    const handle = createWireGatewayFetchHandler({ listenHost: '127.0.0.1', routesReport: () => ({ routes: [] }) });
+    const handle = createWireGatewayFetchHandler({ ...UNUSED_ROUTER_PARTS, listenHost: '127.0.0.1', routesReport: () => ({ routes: [] }) });
     const response = await handle(new Request('http://127.0.0.1/wire/routes', { headers: { origin: 'https://evil.example' } }), loopbackServer);
     expect(response.status).toBe(403);
   });

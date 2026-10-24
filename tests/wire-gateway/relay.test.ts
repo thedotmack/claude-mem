@@ -5,7 +5,6 @@ import { gunzipSync } from 'node:zlib';
 import { WIRE_GATEWAY_DIR } from '../../src/shared/paths.js';
 import { addWireGatewayRoute } from '../../src/services/wire-gateway/routes.js';
 import {
-  relayCaptureSkipCounts,
   type RelayExchange,
   type RelayExchangeResult,
 } from '../../src/services/wire-gateway/relay/relay.js';
@@ -203,7 +202,7 @@ describe('classification by suffix', () => {
 
   it('a native-capture route relays but never captures', async () => {
     await (await fetch(`${gateway.baseUrl}/r/native/v1/messages`, { method: 'POST', body: '{}' })).text();
-    expect(lastExchange()).toMatchObject({ protocol: 'anthropic', captured: false, captureSkippedReason: 'native_capture_source' });
+    expect(lastExchange()).toMatchObject({ protocol: 'anthropic', captured: false, decodedRequestBody: null });
   });
 
   it('an unknown route is a protocol-native 404 that names `wire routes list`', async () => {
@@ -235,7 +234,7 @@ describe('streaming responses', () => {
 
     const exchange = lastExchange();
     const result = await resultOf(exchange);
-    expect(result).toMatchObject({ outcome: 'complete', endMarkerSeen: true, recordedStatus: 200 });
+    expect(result).toMatchObject({ outcome: 'complete', recordedStatus: 200 });
     // Observers got a copy of every chunk before the finish.
     expect(capturedChunks.get(exchange.exchangeId)).toBe(chunks.join(''));
   });
@@ -266,7 +265,8 @@ describe('streaming responses', () => {
     const { text, outcome } = await readStream(response);
     expect(outcome).toBe('ended');
     expect(text).toBe(start + errorEvent);
-    expect((await resultOf(lastExchange())).endMarkerSeen).toBe(true);
+    // An error event is the stream's end marker: the reply ended whole.
+    expect((await resultOf(lastExchange())).outcome).toBe('complete');
   });
 });
 
@@ -289,7 +289,7 @@ describe('cut streams are never "fixed"', () => {
     expect(outcome).toBe('errored');
 
     const result = await resultOf(lastExchange());
-    expect(result).toMatchObject({ outcome: 'cut', endMarkerSeen: false });
+    expect(result).toMatchObject({ outcome: 'cut' });
     expect(await waitFor(() => (gateway.service.pendingRequests === 0 ? true : undefined))).toBe(true);
   }, 15_000);
 
@@ -494,14 +494,12 @@ describe('compressed request bodies', () => {
     expect(JSON.parse(new TextDecoder().decode(exchange.decodedRequestBody!)).model).toBe('gpt-x');
   });
 
-  it('an unknown content-encoding is relayed untouched, capture skipped and counted', async () => {
-    const before = relayCaptureSkipCounts.unknown_content_encoding ?? 0;
+  it('an unknown content-encoding is relayed untouched, capture skipped', async () => {
     const opaque = new Uint8Array([1, 2, 3, 250, 251]);
     await (await fetch(`${gateway.baseUrl}/r/codex/responses`, { method: 'POST', headers: { 'content-encoding': 'compress' }, body: opaque })).text();
     expect(Buffer.from(upstream.requests.at(-1)!.body).equals(Buffer.from(opaque))).toBe(true);
     expect(upstream.requests.at(-1)!.headers['content-encoding']).toBe('compress');
-    expect(lastExchange()).toMatchObject({ captured: false, captureSkippedReason: 'unknown_content_encoding' });
-    expect(relayCaptureSkipCounts.unknown_content_encoding).toBe(before + 1);
+    expect(lastExchange()).toMatchObject({ protocol: 'openai-responses', captured: false, decodedRequestBody: null, request: null });
   });
 });
 

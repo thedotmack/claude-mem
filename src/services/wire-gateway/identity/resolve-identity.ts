@@ -68,21 +68,17 @@ export interface WireIdentity {
   nativePromptId?: string;
 }
 
-/** Sessions the client named (sources 1–4). Only these are echoed back in `x-claude-mem-session`. */
-export function sessionWasNamedByClient(sessionSource: WireSessionSource): boolean {
-  return sessionSource !== 'fingerprint';
-}
-
 // A header value is a ByteString: Headers.set throws on a character past U+00FF.
 const NOT_A_HEADER_VALUE_PATTERN = /[^\u0020-\u007e\u00a0-\u00ff]/;
 
 /**
  * The session to echo in `x-claude-mem-session`, or undefined: only a session
- * the client named, and only when it fits in a header (a body id is any JSON
- * string, and an unencodable echo must never fail the relay).
+ * the client named (sources 1–4, not a fingerprint), and only when it fits in
+ * a header (a body id is any JSON string, and an unencodable echo must never
+ * fail the relay).
  */
 export function sessionIdToEcho(identity: Pick<WireIdentity, 'sessionId' | 'sessionSource'>): string | undefined {
-  if (!sessionWasNamedByClient(identity.sessionSource)) return undefined;
+  if (identity.sessionSource === 'fingerprint') return undefined;
   return NOT_A_HEADER_VALUE_PATTERN.test(identity.sessionId) ? undefined : identity.sessionId;
 }
 

@@ -20,8 +20,8 @@ import { logger } from '../../../utils/logger.js';
 import { getSpan, rawText, scanDocument, type JsonSpan } from '../json/scanner.js';
 import { EventStreamSniffer, StreamEndMarkerDetector, isEventStreamContentType, type WireProtocol } from '../relay/protocols.js';
 import { IncrementalSseReader } from './sse-event-reader.js';
-import { emptyWireUsage, type WireReply, type WireSealedReplyItem, type WireSealOwner, type WireStopReason, type WireUsage } from './types.js';
-import { anthropicUsage, geminiUsage, mergeWireUsage, openAiChatUsage, openAiResponsesUsage } from './usage.js';
+import { emptyWireUsage, type WireReply, type WireStopReason, type WireUsage } from './types.js';
+import { anthropicUsage, asRecord, geminiUsage, mergeWireUsage, openAiChatUsage, openAiResponsesUsage } from './usage.js';
 
 /**
  * The most bytes of one reply a collector takes in, streamed or whole. Past
@@ -32,10 +32,6 @@ import { anthropicUsage, geminiUsage, mergeWireUsage, openAiChatUsage, openAiRes
 export const WIRE_REPLY_MAX_BYTES = 64 * 1024 * 1024;
 
 type JsonRecord = Record<string, unknown>;
-
-function asRecord(value: unknown): JsonRecord {
-  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as JsonRecord : {};
-}
 
 function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
@@ -98,8 +94,6 @@ class WireReplyAccumulator {
   private text = '';
   private thinking = '';
   private readonly toolCalls = new Map<string, ToolCallInProgress>();
-  private readonly sealedByKey = new Map<string, WireSealedReplyItem>();
-  private sealedCounter = 0;
   readonly usage: WireUsage = emptyWireUsage();
   stop: WireStopReason | null = null;
   model?: string;
@@ -130,18 +124,6 @@ class WireReplyAccumulator {
     return this.toolCalls.get(key);
   }
 
-  /** A sealed item; a keyed signature grows by its deltas. */
-  addSealed(sealedBy: WireSealOwner, form: WireSealedReplyItem['form'], value: string, key?: string): void {
-    if (!value) return;
-    const itemKey = key ?? `unkeyed:${this.sealedCounter++}`;
-    const existing = this.sealedByKey.get(itemKey);
-    if (existing && existing.form === form) {
-      existing.value += value;
-      return;
-    }
-    this.sealedByKey.set(itemKey, { sealedBy, form, value });
-  }
-
   mergeUsage(update: Partial<WireUsage>): void {
     mergeWireUsage(this.usage, update);
   }
@@ -162,7 +144,6 @@ class WireReplyAccumulator {
       text: this.text,
       toolCalls,
       thinking: this.thinking,
-      sealed: [...this.sealedByKey.values()],
       usage: { ...this.usage },
       stop,
       model: this.model,
@@ -251,10 +232,6 @@ function anthropicDecoder(): WireReplyDecoder {
         break;
       case 'thinking':
         accumulator.appendThinking(asString(block.thinking));
-        accumulator.addSealed('anthropic', 'signature', asString(block.signature), blockKey);
-        break;
-      case 'redacted_thinking':
-        accumulator.addSealed('anthropic', 'block', rawBlock() ?? '', blockKey);
         break;
       case 'tool_use': {
         const call = accumulator.startToolCall(blockKey, asString(block.id), asString(block.name));
@@ -297,9 +274,6 @@ function anthropicDecoder(): WireReplyDecoder {
               break;
             case 'thinking_delta':
               accumulator.appendThinking(asString(delta.thinking));
-              break;
-            case 'signature_delta':
-              accumulator.addSealed('anthropic', 'signature', asString(delta.signature), String(blockIndex));
               break;
             case 'input_json_delta': {
               if (wholeInputBlockIndexes.has(blockIndex)) break;
@@ -349,11 +323,6 @@ function chatContentText(content: unknown): string {
     .join('');
 }
 
-function googleThoughtSignature(holder: JsonRecord): string {
-  const google = asRecord(asRecord(holder.extra_content).google);
-  return asString(google.thought_signature) || asString(google.thoughtSignature);
-}
-
 function openAiChatDecoder(): WireReplyDecoder {
   // Translation-free, but one reply: lock onto the first choice index seen (magpie chatChoiceIndex).
   let lockedChoiceIndex: number | null = null;
@@ -387,7 +356,6 @@ function openAiChatDecoder(): WireReplyDecoder {
         }
         accumulator.appendThinking(thinking);
         accumulator.appendText(content);
-        accumulator.addSealed('gemini', 'signature', googleThoughtSignature(delta));
         asArray(delta.tool_calls).forEach((rawCall, position) => {
           const call = asRecord(rawCall);
           const callIndex = typeof call.index === 'number' ? call.index : position;
@@ -400,7 +368,6 @@ function openAiChatDecoder(): WireReplyDecoder {
           }
           const inProgress = accumulator.startToolCall(open.key, callId, asString(fn.name));
           inProgress.streamedArgs += asString(fn.arguments);
-          accumulator.addSealed('gemini', 'signature', googleThoughtSignature(call), `chat-signature:${open.key}`);
         });
         if (typeof choice.finish_reason === 'string' && choice.finish_reason) accumulator.stop = chatStop(choice.finish_reason);
       }
@@ -422,7 +389,6 @@ function openAiChatDecoder(): WireReplyDecoder {
         const fn = asRecord(call.function);
         const inProgress = accumulator.startToolCall(`chat:${position}`, asString(call.id), asString(fn.name));
         inProgress.streamedArgs = asString(fn.arguments);
-        accumulator.addSealed('gemini', 'signature', googleThoughtSignature(call), `chat-signature:${position}`);
       });
       if (typeof choice.finish_reason === 'string' && choice.finish_reason) accumulator.stop = chatStop(choice.finish_reason);
       accumulator.mergeUsage(openAiChatUsage(completion.usage));
@@ -447,7 +413,7 @@ function openAiResponsesDecoder(): WireReplyDecoder {
   let sawToolCall = false;
 
   /** A whole output item (output_item.done, or a whole reply's output[]). */
-  const outputItemDone = (item: JsonRecord, itemKey: string, accumulator: WireReplyAccumulator, rawItem: () => string | undefined, fromStream: boolean) => {
+  const outputItemDone = (item: JsonRecord, itemKey: string, accumulator: WireReplyAccumulator, fromStream: boolean) => {
     switch (item.type) {
       case 'function_call': {
         sawToolCall = true;
@@ -464,7 +430,6 @@ function openAiResponsesDecoder(): WireReplyDecoder {
       }
       case 'reasoning':
         if (!fromStream) accumulator.appendThinking(responsesReasoningText(item));
-        if (asString(item.encrypted_content)) accumulator.addSealed('openai-responses', 'block', rawItem() ?? '', `responses-item:${itemKey}`);
         break;
       case 'message':
         if (!fromStream) {
@@ -535,7 +500,7 @@ function openAiResponsesDecoder(): WireReplyDecoder {
           break;
         }
         case 'response.output_item.done':
-          outputItemDone(asRecord(event.item), itemKeyOf(event), accumulator, () => rawJsonAt(data, ['item']), true);
+          outputItemDone(asRecord(event.item), itemKeyOf(event), accumulator, true);
           break;
         case 'response.completed':
         case 'response.incomplete':
@@ -547,14 +512,14 @@ function openAiResponsesDecoder(): WireReplyDecoder {
           break;
       }
     },
-    decodeWhole(body, accumulator, rawAt) {
+    decodeWhole(body, accumulator) {
       const response = asRecord(body);
       if (response.error !== undefined && response.error !== null && response.output === undefined) {
         accumulator.setError(errorText(response.error, 'upstream error'));
         return;
       }
       asArray(response.output).forEach((item, outputIndex) => {
-        outputItemDone(asRecord(item), String(outputIndex), accumulator, () => rawAt(['output', outputIndex]), false);
+        outputItemDone(asRecord(item), String(outputIndex), accumulator, false);
       });
       finishedResponse('', response, accumulator);
     },
@@ -589,20 +554,16 @@ function geminiDecoder(): WireReplyDecoder {
       const candidate = asRecord(rawCandidate);
       for (const rawPart of asArray(asRecord(candidate.content).parts)) {
         const part = asRecord(rawPart);
-        const signature = asString(part.thoughtSignature);
         const functionCall = asRecord(part.functionCall);
         if (part.functionCall !== undefined) {
           sawToolCall = true;
           const callId = asString(functionCall.id) || `gemini:reply:${replyCallCounter}`;
           const call = accumulator.startToolCall(`gemini:${replyCallCounter++}`, callId, geminiToolName(asString(functionCall.name)));
           call.streamedArgs = functionCall.args === undefined || functionCall.args === null ? '{}' : JSON.stringify(functionCall.args);
-          accumulator.addSealed('gemini', 'signature', signature);
         } else if (part.thought === true) {
           accumulator.appendThinking(asString(part.text));
-          accumulator.addSealed('gemini', 'signature', signature);
-        } else if (typeof part.text === 'string' || signature) {
-          accumulator.appendText(asString(part.text));
-          accumulator.addSealed('gemini', 'signature', signature);
+        } else if (typeof part.text === 'string') {
+          accumulator.appendText(part.text);
         }
       }
       if (typeof candidate.finishReason === 'string' && candidate.finishReason && !sawStop) {
@@ -712,12 +673,7 @@ class WholeJsonReplyCollector implements WireReplyCollector {
   finish(): WireReply {
     const accumulator = new WireReplyAccumulator();
     if (this.passedByteCap) return accumulator.finish(false);
-    const joined = new Uint8Array(this.totalBytes);
-    let offset = 0;
-    for (const chunk of this.chunks) {
-      joined.set(chunk, offset);
-      offset += chunk.length;
-    }
+    const joined = Buffer.concat(this.chunks, this.totalBytes);
     // A leading UTF-8 BOM is not JSON: TextDecoder drops it, so the scanner must too.
     const hasByteOrderMark = joined[0] === 0xef && joined[1] === 0xbb && joined[2] === 0xbf;
     const bytes = hasByteOrderMark ? joined.subarray(3) : joined;

@@ -26,6 +26,10 @@ export async function startWireGatewayForTest(
     port: 0,
     drainTimeoutMs: 5_000,
     maxRequestBytes: 64 * 1024 * 1024,
+    // The settings' own defaults (SettingsDefaultsManager).
+    retentionDays: 7,
+    outboundRedaction: false,
+    forwardSubscriptionSignIns: false,
     persistRuntimeState: false,
     // A shared gateway's team listener: loopback and an OS-picked port in tests.
     ...(options.shared ? { sharedHost: '127.0.0.1', sharedPort: 0 } : {}),

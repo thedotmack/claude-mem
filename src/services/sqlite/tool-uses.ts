@@ -17,6 +17,7 @@ import { createHash } from 'crypto';
 import { logger } from '../../utils/logger.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
 import { isRecursiveMemoryTool } from '../../shared/memory-retrieval-tools.js';
+import { utf8CutIndex } from '../../shared/utf8-cut.js';
 export { isRecursiveMemoryTool } from '../../shared/memory-retrieval-tools.js';
 
 /**
@@ -114,8 +115,7 @@ export function truncatePayload(value: string, maxBytes: number = MAX_TOOL_PAYLO
   if (byteLength <= maxBytes) return value;
 
   const buf = Buffer.from(value, 'utf8');
-  let end = maxBytes;
-  while (end > 0 && (buf[end] & 0xc0) === 0x80) end--;
+  const end = utf8CutIndex(buf, maxBytes);
   return `${buf.subarray(0, end).toString('utf8')}…[truncated: ${byteLength} bytes]`;
 }
 

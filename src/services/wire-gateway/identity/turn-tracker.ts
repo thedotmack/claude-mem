@@ -18,8 +18,8 @@
 // sessions are also swept on a timer, not only when a request comes.
 
 import { logger } from '../../../utils/logger.js';
-import { createReplyCollectingRelayObserver, type CompletedRelayExchange, type RelayReplyConsumer } from '../ir/relay-reply-collection.js';
-import type { RelayExchange, RelayObserver } from '../relay/relay.js';
+import type { CompletedRelayExchange, RelayReplyConsumer } from '../ir/relay-reply-collection.js';
+import type { RelayExchange } from '../relay/relay.js';
 import type { WireIdentity } from './resolve-identity.js';
 
 /** After a final reply, how long nothing more of the session may come before its turn is done. */
@@ -154,10 +154,6 @@ export class TurnTracker {
     }
   }
 
-  get trackedSessionCount(): number {
-    return this.sessions.size;
-  }
-
   /** Stop every timer. Pending turn ends are dropped. */
   dispose(): void {
     if (this.sweepInterval) clearInterval(this.sweepInterval);
@@ -202,9 +198,4 @@ export function createTurnTrackingConsumer(turnTracker: TurnTracker): RelayReply
       turnTracker.end(exchange.identity, finalReply);
     },
   };
-}
-
-/** A relay observer that feeds `turnTracker` alone (collecting replies for it). */
-export function createTurnTrackingRelayObserver(turnTracker: TurnTracker): RelayObserver {
-  return createReplyCollectingRelayObserver([createTurnTrackingConsumer(turnTracker)]);
 }

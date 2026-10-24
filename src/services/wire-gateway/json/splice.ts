@@ -55,23 +55,11 @@ function bytesEqual(bytes: Uint8Array, start: number, end: number, other: Uint8A
   return true;
 }
 
-function concatBytes(...pieces: Uint8Array[]): Uint8Array {
-  let length = 0;
-  for (const piece of pieces) length += piece.length;
-  const joined = new Uint8Array(length);
-  let writeAt = 0;
-  for (const piece of pieces) {
-    joined.set(piece, writeAt);
-    writeAt += piece.length;
-  }
-  return joined;
-}
-
 const COMMA_BYTES = utf8Encoder.encode(',');
 const COLON_BYTES = utf8Encoder.encode(':');
 
 function insertionSplice(at: number, ...pieces: Uint8Array[]): ByteSplice {
-  return { start: at, end: at, replacement: concatBytes(...pieces) };
+  return { start: at, end: at, replacement: Buffer.concat(pieces) };
 }
 
 /**

@@ -562,7 +562,10 @@ export function findSecretSpans(text: string): SecretSpan[] {
 }
 
 /** A placeholder as the wire gateway's outbound redaction writes it: {{KIND_<8 of base32>}} (magpie `placeholderRe`). */
-const OUTBOUND_PLACEHOLDER_PATTERN = /\{\{[A-Z][A-Z0-9_]*_[a-z2-7]{8}\}\}/g;
+const OUTBOUND_PLACEHOLDER = String.raw`\{\{[A-Z][A-Z0-9_]*_[a-z2-7]{8}\}\}`;
+const OUTBOUND_PLACEHOLDER_PATTERN = new RegExp(OUTBOUND_PLACEHOLDER, 'g');
+/** One placeholder and nothing else (a value that is one is not masked again). */
+export const WHOLE_OUTBOUND_PLACEHOLDER_PATTERN = new RegExp(`^${OUTBOUND_PLACEHOLDER}$`);
 
 /**
  * Swap each of `spans` in `text` for what `replacementFor` makes of its
@@ -600,17 +603,12 @@ export function replaceSecretSpans(
   return { text: replaced + text.slice(last), replacedCount };
 }
 
-/** A recognised secret's marker in a scrubbed copy: `[REDACTED:API_KEY]` (magpie `scrubbed`). */
-export function secretKindMarker(kind: string): string {
-  return `[REDACTED:${kind}]`;
-}
-
 /** What a field or header named for a secret holds once scrubbed (magpie `Scrubbed`). */
 export const SECRET_NAMED_FIELD_MARKER = '[REDACTED]';
 
 /** Every secret the detectors find, replaced by `[REDACTED:KIND]` for good: nothing is held to put it back (magpie `Scrub`). */
 export function scrubSecretsToKindMarkers(text: string): string {
-  return replaceSecretSpans(text, findSecretSpans(text), secretKindMarker).text;
+  return replaceSecretSpans(text, findSecretSpans(text), kind => `[REDACTED:${kind}]`).text;
 }
 
 const SECRET_FIELD_NAME_PATTERN = new RegExp(`${SECRET_NAME_WORDS}|authori[sz]ation|cookie|^key$`);

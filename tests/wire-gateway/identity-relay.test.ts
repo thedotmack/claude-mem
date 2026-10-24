@@ -4,7 +4,8 @@ import { join } from 'path';
 import { WIRE_GATEWAY_DIR } from '../../src/shared/paths.js';
 import { addWireGatewayRoute } from '../../src/services/wire-gateway/routes.js';
 import { composeRelayObservers, type RelayExchange } from '../../src/services/wire-gateway/relay/relay.js';
-import { TurnTracker, createTurnTrackingRelayObserver, type WireTurnEnd } from '../../src/services/wire-gateway/identity/turn-tracker.js';
+import { TurnTracker, createTurnTrackingConsumer, type WireTurnEnd } from '../../src/services/wire-gateway/identity/turn-tracker.js';
+import { createReplyCollectingRelayObserver } from '../../src/services/wire-gateway/ir/relay-reply-collection.js';
 import { sse, startFakeUpstream, type FakeUpstream } from './helpers/fake-upstream.js';
 import { startWireGatewayForTest, type StartedWireGateway } from './helpers/start-wire-gateway.js';
 
@@ -38,7 +39,7 @@ beforeAll(async () => {
     routesReloadCheckIntervalMs: 0,
     relayObserver: composeRelayObservers(
       { onExchangeStarted: exchange => exchanges.push(exchange) },
-      createTurnTrackingRelayObserver(turnTracker),
+      createReplyCollectingRelayObserver([createTurnTrackingConsumer(turnTracker)]),
     ),
   });
 });

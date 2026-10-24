@@ -49,17 +49,13 @@ function containsToolCall(text: string): boolean {
  */
 export class ToolCallScanner {
   private carry = '';
-  private sawToolCall = false;
+  calledTool = false;
   private readonly decoder = new TextDecoder('latin1');
 
-  get calledTool(): boolean {
-    return this.sawToolCall;
-  }
-
   observe(chunk: Uint8Array): void {
-    if (this.sawToolCall || chunk.length === 0) return;
+    if (this.calledTool || chunk.length === 0) return;
     const text = this.carry + this.decoder.decode(chunk);
-    this.sawToolCall = containsToolCall(text);
+    this.calledTool = containsToolCall(text);
     this.carry = text.slice(-TOOL_SCAN_CARRY_BYTES);
   }
 }

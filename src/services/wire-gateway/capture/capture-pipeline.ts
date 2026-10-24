@@ -35,7 +35,7 @@ export interface WireCaptureObserverOptions {
 const UPSTREAM_REFUSED_CREDENTIAL_STATUSES: ReadonlySet<number> = new Set([401, 403]);
 
 function replyWithNothing(): WireReply {
-  return { text: '', toolCalls: [], thinking: '', sealed: [], usage: emptyWireUsage(), stop: null, endedCleanly: false };
+  return { text: '', toolCalls: [], thinking: '', usage: emptyWireUsage(), stop: null, endedCleanly: false };
 }
 
 /** The reply consumer that records each captured exchange and hands it to the assembler. */
@@ -47,7 +47,7 @@ export function createWireCaptureConsumer(options: WireCaptureObserverOptions): 
     onExchangeStarted(exchange: RelayExchange) {
       // Native-first (D6): only a captured exchange is recorded or assembled.
       if (!exchange.captured || !exchange.protocol || !exchange.request || !isSessionCapturable(exchange.identity)) return;
-      generationAtStartByExchange.set(exchange.exchangeId, options.recorder.currentGeneration());
+      generationAtStartByExchange.set(exchange.exchangeId, options.recorder.consent.recordingGeneration());
     },
     onExchangeCompleted({ exchange, result, collected }: CompletedRelayExchange) {
       const generationAtStart = generationAtStartByExchange.get(exchange.exchangeId);
@@ -63,7 +63,7 @@ export function createWireCaptureConsumer(options: WireCaptureObserverOptions): 
         && reply.error === undefined;
 
       // Helper requests are never recorded (plan Phase 5 task 3).
-      if (!identity.kind.startsWith('helper:') && options.recorder.isRecordingOn()) {
+      if (!identity.kind.startsWith('helper:') && options.recorder.consent.isRecordingOn()) {
         // No reply (upstream unreachable, the client left first): the request alone.
         const parts = toRecorderParts(request, reply ?? replyWithNothing());
         const turn: WireGatewayTurn = {

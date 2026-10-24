@@ -7,7 +7,7 @@
 // CLI output goes through process.stdout/stderr.write: the console API is banned in
 // src/ (tests/logger-usage-standards.test.ts) and in this folder (plan Phase 1).
 
-import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, rmSync } from 'fs';
 import { homedir } from 'os';
 import { resolve as resolvePath } from 'path';
 import { fileURLToPath } from 'url';
@@ -22,8 +22,8 @@ import {
   wireGatewaySubdirPath,
 } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
+import { pollUntil, readServiceStateFile, removeServiceState, restrictFileMode, waitForPidExit, writeServiceState, type ServiceStateFiles } from '../../shared/pid-state.js';
 import {
-  captureProcessStartToken,
   createProcessRegistry,
   verifyPidFileOwnership,
   type PidInfo,
@@ -54,7 +54,6 @@ import {
   setWireGatewayRouteFeature,
   type WireGatewayCaptureSource,
 } from './routes.js';
-import { isLoopbackAddress } from './network-guard.js';
 import { composeRelayObservers, createWireGatewayRelay, relayActivityCounts, type RelayObserver } from './relay/relay.js';
 import { WireLaunchRegistry } from './identity/launch-registry.js';
 import { DEFAULT_REQUEST_BODY_IDLE_TIMEOUT_MS } from './relay/request-body.js';
@@ -114,7 +113,7 @@ import { currentAgentEnvironment } from './agents/agent-paths.js';
 import { loadAgentRegistry } from './agents/agent-registry.js';
 import type { AgentEnvironment } from './agents/types.js';
 import { AgentLastSeenTracker, readLastSeenFile, type LastSeenFileReadResult } from './drift/last-seen.js';
-import { ProbeAnswerCache, probeLookupFor, type ProbeLookup } from './drift/reachability.js';
+import { ProbeAnswerCache, isLoopbackUrl, probeLookupFor, type ProbeLookup } from './drift/reachability.js';
 import {
   evaluateWireAgentStatuses,
   formatWireIngestStatus,
@@ -127,7 +126,6 @@ import {
   type WireStatusReport,
 } from './drift/agent-status.js';
 
-const DEFAULT_RETENTION_DAYS = 7;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 // Bun.serve's idle timer, in seconds (max 255). It also bounds the wait before
@@ -158,14 +156,14 @@ export interface WireGatewayServiceOptions {
   routesFilePath?: string;
   /** Test seam: how often routes.json's stamp is looked at; defaults to once a second. */
   routesReloadCheckIntervalMs?: number;
-  /** Days of raw recordings kept (CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS); defaults to 7. */
-  retentionDays?: number;
+  /** Days of raw recordings kept (CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS). */
+  retentionDays: number;
   /** CLAUDE_MEM_WIRE_GATEWAY_RECORDING=false: raw recording stays off whatever consent.json says. */
   recordingForcedOff?: boolean;
   /** CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION: routes without their own setting mask secrets outbound. */
-  outboundRedaction?: boolean;
+  outboundRedaction: boolean;
   /** CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS: forward subscription sign-ins instead of refusing them (D4). */
-  forwardSubscriptionSignIns?: boolean;
+  forwardSubscriptionSignIns: boolean;
   /** Test seam: the placeholder table; defaults to one keyed by <DATA_DIR>/wire-gateway/redact.key. */
   outboundRedactionPlaceholders?: OutboundRedactionPlaceholders;
   /**
@@ -373,7 +371,7 @@ export class WireGatewayService {
     // Fail fast, before any timer starts: following claude-mem's own recordings would capture them twice.
     if (this.options.magpieRecordingsDirectory) assertNotClaudeMemRecordings(this.options.magpieRecordingsDirectory);
 
-    const retentionDays = this.options.retentionDays ?? DEFAULT_RETENTION_DAYS;
+    const retentionDays = this.options.retentionDays;
     const consent: WireRecordingConsent = this.options.capture?.consent
       ?? new FileWireRecordingConsent({ recordingForcedOff: this.options.recordingForcedOff ?? false });
     const liveTraceFeed = new WireLiveTraceFeed({ consent });
@@ -452,10 +450,10 @@ export class WireGatewayService {
       launchRegistry: this.launchRegistry,
       outboundRedaction: {
         placeholdersFor: clientKey => this.outboundRedactionPlaceholdersFor(clientKey),
-        enabledByDefault: this.options.outboundRedaction ?? false,
+        enabledByDefault: this.options.outboundRedaction,
       },
       noteRequestFromAgent: agentId => this.agentLastSeen.noteRequestFromAgent(agentId),
-      forwardSubscriptionSignIns: this.options.forwardSubscriptionSignIns ?? false,
+      forwardSubscriptionSignIns: this.options.forwardSubscriptionSignIns,
       rewriteSeam: this.rewriteSeam,
       conversationLedger: this.conversationLedger,
       rewriteSettings: this.options.rewriteSettings,
@@ -532,14 +530,15 @@ export class WireGatewayService {
 
     if (this.persistRuntimeState) {
       const state = this.runtimeState();
-      this.writtenPidInfo = writeWireGatewayState(state);
+      ensureWireGatewayDirs();
+      this.writtenPidInfo = writeServiceState(wireGatewayStateFiles(), state);
       this.processRegistry = createProcessRegistry(paths.wireGatewayProcessRegistry());
       this.processRegistry.register(PROCESS_REGISTRY_ID, {
         pid: process.pid,
         type: 'wire-gateway',
         startedAt: state.startedAt,
       });
-      restrictToOwner(paths.wireGatewayProcessRegistry());
+      restrictFileMode(paths.wireGatewayProcessRegistry(), WIRE_GATEWAY_FILE_MODE);
       this.startTelemetry();
     }
     logger.info('WIRE', 'Wire gateway started', {
@@ -567,21 +566,16 @@ export class WireGatewayService {
    * chain and the property whitelist (telemetry/scrub.ts).
    */
   private startTelemetry(): void {
-    const routeCount = countWireGatewayRoutes();
-    captureEvent('wire_gateway_started', {
-      trigger: 'start',
-      ...(routeCount !== null ? { wire_routes_count: routeCount } : {}),
-    });
-    this.telemetryHeartbeat = setInterval(() => {
-      const heartbeatRouteCount = countWireGatewayRoutes();
-      captureEvent('wire_gateway_started', {
-        trigger: 'heartbeat',
-        ...(heartbeatRouteCount !== null ? { wire_routes_count: heartbeatRouteCount } : {}),
-        wire_requests_relayed_count: relayActivityCounts.exchangesRelayed,
-        wire_capture_events_count: wireCaptureEventActivity.eventsSpooled,
-        wire_rewrites_applied_count: relayActivityCounts.requestsRewritten,
-      });
-    }, TELEMETRY_HEARTBEAT_INTERVAL_MS);
+    const emitStarted = (trigger: 'start' | 'heartbeat', counts: Record<string, number> = {}) => {
+      const routeCount = countWireGatewayRoutes();
+      captureEvent('wire_gateway_started', { trigger, ...(routeCount !== null ? { wire_routes_count: routeCount } : {}), ...counts });
+    };
+    emitStarted('start');
+    this.telemetryHeartbeat = setInterval(() => emitStarted('heartbeat', {
+      wire_requests_relayed_count: relayActivityCounts.exchangesRelayed,
+      wire_capture_events_count: wireCaptureEventActivity.eventsSpooled,
+      wire_rewrites_applied_count: relayActivityCounts.requestsRewritten,
+    }), TELEMETRY_HEARTBEAT_INTERVAL_MS);
     this.telemetryHeartbeat.unref?.();
   }
 
@@ -602,10 +596,6 @@ export class WireGatewayService {
 
   get pendingRequests(): number {
     return (this.server?.pendingRequests ?? 0) + (this.teamServer?.pendingRequests ?? 0);
-  }
-
-  getRuntimeState(): WireGatewayRuntimeState {
-    return this.runtimeState();
   }
 
   /**
@@ -706,7 +696,7 @@ export class WireGatewayService {
         this.writtenPidInfo = null;
         this.processRegistry?.unregister(PROCESS_REGISTRY_ID, process.pid);
         this.processRegistry = null;
-        restrictToOwner(paths.wireGatewayProcessRegistry());
+        restrictFileMode(paths.wireGatewayProcessRegistry(), WIRE_GATEWAY_FILE_MODE);
         if (this.telemetryHeartbeat) clearInterval(this.telemetryHeartbeat);
         this.telemetryHeartbeat = null;
         await shutdownTelemetry();
@@ -724,7 +714,8 @@ export class WireGatewayService {
     }
   }
 
-  private runtimeState(): WireGatewayRuntimeState {
+  /** What runtime.json says while this gateway runs. */
+  runtimeState(): WireGatewayRuntimeState {
     return {
       ...wireGatewayIdentity(),
       pid: process.pid,
@@ -856,49 +847,17 @@ async function wireStatusReportForCli(config: WireGatewayConfig): Promise<WireSt
 // ---------------------------------------------------------------------------
 // State files (ServerService writeServerState/readServerPidFile pattern)
 
-function restrictToOwner(filePath: string): void {
-  if (process.platform !== 'win32' && existsSync(filePath)) chmodSync(filePath, WIRE_GATEWAY_FILE_MODE);
-}
-
-function writePrivateFile(filePath: string, content: string): void {
-  writeFileSync(filePath, content, { mode: WIRE_GATEWAY_FILE_MODE });
-  // writeFileSync's mode applies only when it creates the file.
-  restrictToOwner(filePath);
-}
-
-function writeWireGatewayState(state: WireGatewayRuntimeState): PidInfo {
-  ensureWireGatewayDirs();
-  const pidInfo: PidInfo = {
-    pid: state.pid,
-    port: state.port,
-    startedAt: state.startedAt,
-    startToken: captureProcessStartToken(state.pid) ?? undefined,
-  };
-  writePrivateFile(paths.wireGatewayPid(), JSON.stringify(pidInfo, null, 2));
-  writePrivateFile(paths.wireGatewayPort(), `${state.port}\n`);
-  writePrivateFile(paths.wireGatewayRuntime(), JSON.stringify(state, null, 2));
-  return pidInfo;
-}
-
-function readJsonStateFile<T>(filePath: string, label: string): T | null {
-  if (!existsSync(filePath)) {
-    return null;
-  }
-  try {
-    return JSON.parse(readFileSync(filePath, 'utf-8')) as T;
-  } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    logger.warn('WIRE', `Failed to read wire gateway ${label}`, { path: filePath }, err);
-    return null;
-  }
+/** Paths read on each use: tests and the CLI point CLAUDE_MEM_DATA_DIR elsewhere. */
+function wireGatewayStateFiles(): ServiceStateFiles {
+  return { pidFile: paths.wireGatewayPid(), portFile: paths.wireGatewayPort(), runtimeFile: paths.wireGatewayRuntime(), fileMode: WIRE_GATEWAY_FILE_MODE };
 }
 
 export function readWireGatewayPidFile(): PidInfo | null {
-  return readJsonStateFile<PidInfo>(paths.wireGatewayPid(), 'PID file');
+  return readServiceStateFile<PidInfo>(paths.wireGatewayPid(), 'WIRE', 'wire gateway PID file');
 }
 
 export function readWireGatewayRuntimeState(): WireGatewayRuntimeState | null {
-  return readJsonStateFile<WireGatewayRuntimeState>(paths.wireGatewayRuntime(), 'runtime state file');
+  return readServiceStateFile<WireGatewayRuntimeState>(paths.wireGatewayRuntime(), 'WIRE', 'wire gateway runtime state file');
 }
 
 function sameWireGatewayInstance(a: PidInfo, b: PidInfo): boolean {
@@ -917,9 +876,7 @@ export function removeWireGatewayStateIfOwnedBy(owner: PidInfo | null): boolean 
     logger.debug('WIRE', 'Wire gateway state files belong to another instance; leaving them', { ownerPid: owner?.pid, currentPid: current.pid });
     return false;
   }
-  rmSync(paths.wireGatewayPid(), { force: true });
-  rmSync(paths.wireGatewayPort(), { force: true });
-  rmSync(paths.wireGatewayRuntime(), { force: true });
+  removeServiceState(wireGatewayStateFiles());
   return true;
 }
 
@@ -953,26 +910,6 @@ export async function probeWireGatewayIdentity(host: string, port: number): Prom
   });
   const body = answer?.statusCode === 200 ? answer.body : null;
   return body?.name === WIRE_GATEWAY_IDENTITY_NAME && typeof body.version === 'string' ? { version: body.version } : null;
-}
-
-async function waitForWireGatewayIdentity(host: string, port: number, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await probeWireGatewayIdentity(host, port)) return true;
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-  return false;
-}
-
-/** Waits until the process the PID file names is gone; its start token guards against PID reuse. */
-async function waitForPidExit(pidInfo: PidInfo, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (!verifyPidFileOwnership(pidInfo)) {
-      return;
-    }
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
 }
 
 /**
@@ -1036,7 +973,7 @@ export async function startWireGatewayDaemon(
   if (pid === undefined) {
     throw new Error('Failed to spawn the wire gateway daemon.');
   }
-  const ready = await waitForWireGatewayIdentity(config.host, config.port, START_READY_TIMEOUT_MS);
+  const ready = await pollUntil(async () => (await probeWireGatewayIdentity(config.host, config.port)) !== null, START_READY_TIMEOUT_MS);
   // spawnDaemon returns 0 on Windows (Start-Process yields no pid).
   return { status: ready ? 'ready' : 'starting', pid: pid > 0 ? pid : undefined, port: config.port, version: WIRE_GATEWAY_VERSION };
 }
@@ -1391,16 +1328,11 @@ function parseFlagValues(args: string[]): { positional: string[]; flags: Record<
 
 /** A route whose upstream is this gateway would relay to itself forever. */
 function assertUpstreamIsNotThisGateway(upstreamBaseUrl: string, config: WireGatewayConfig): void {
-  let upstream: URL;
-  try {
-    upstream = new URL(upstreamBaseUrl);
-  } catch {
-    return; // addWireGatewayRoute reports the bad URL
-  }
-  const upstreamHost = upstream.hostname.replace(/^\[|\]$/g, '');
+  // A URL that does not parse is not loopback: addWireGatewayRoute reports it.
+  if (!isLoopbackUrl(upstreamBaseUrl)) return;
+  const upstream = new URL(upstreamBaseUrl);
   const upstreamPort = upstream.port || (upstream.protocol === 'https:' ? '443' : '80');
-  const pointsAtLoopback = upstreamHost === 'localhost' || isLoopbackAddress(upstreamHost);
-  if (pointsAtLoopback && upstreamPort === String(config.port)) {
+  if (upstreamPort === String(config.port)) {
     throw new Error(`Upstream ${upstreamBaseUrl} is this wire gateway (port ${config.port}); a route must point at the provider.`);
   }
 }

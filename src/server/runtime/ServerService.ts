@@ -2,7 +2,7 @@
 
 import type { Application } from 'express';
 import { spawn } from 'child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync } from 'fs';
 import net from 'net';
 import { dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -11,11 +11,11 @@ import { Server, type RouteHandler } from '../../services/server/Server.js';
 import { paths } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import {
-  captureProcessStartToken,
   isPidAlive,
   verifyPidFileOwnership,
   type PidInfo,
 } from '../../supervisor/process-registry.js';
+import { readServiceStateFile, removeServiceState, waitForPidExit, writeServiceState, type ServiceStateFiles } from '../../shared/pid-state.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { killProcessTree } from '../../shared/kill-process-tree.js';
 import { ServerV1PostgresRoutes } from '../routes/v1/ServerV1PostgresRoutes.js';
@@ -403,7 +403,8 @@ export async function runServerServiceCli(argv: string[] = process.argv.slice(2)
       // entirely successful shutdown reports failure. runShutdownCascade gives
       // children 5s after SIGTERM plus 1s after SIGKILL, so a legitimate stop
       // can take just over 6s — a 5s deadline here failed those every time.
-      await waitForPidExit(existing.pid, SERVER_STOP_EXIT_TIMEOUT_MS);
+      // Only the PID is waited on (not its start token), as isPidAlive checks below.
+      await waitForPidExit({ pid: existing.pid, port: 0, startedAt: '' }, SERVER_STOP_EXIT_TIMEOUT_MS);
       if (isPidAlive(existing.pid)) {
         console.error(`Server PID ${existing.pid} did not exit; leaving its PID file in place.`);
         process.exit(1);
@@ -889,49 +890,26 @@ function spawnServerDaemon(port: number): number | undefined {
   return child.pid;
 }
 
+/** Paths read on each use: tests and the CLI point CLAUDE_MEM_DATA_DIR elsewhere. */
+function serverStateFiles(): ServiceStateFiles {
+  return { pidFile: paths.serverPid(), portFile: paths.serverPort(), runtimeFile: paths.serverRuntime() };
+}
+
 function writeServerState(state: ServerRuntimeState): void {
   mkdirSync(dirname(paths.serverRuntime()), { recursive: true });
-  const pidInfo: PidInfo = {
-    pid: state.pid,
-    port: state.port,
-    startedAt: state.startedAt,
-    startToken: captureProcessStartToken(state.pid) ?? undefined,
-  };
-  writeFileSync(paths.serverPid(), JSON.stringify(pidInfo, null, 2));
-  writeFileSync(paths.serverPort(), `${state.port}\n`);
-  writeFileSync(paths.serverRuntime(), JSON.stringify(state, null, 2));
+  writeServiceState(serverStateFiles(), state);
 }
 
 function readServerPidFile(): PidInfo | null {
-  if (!existsSync(paths.serverPid())) {
-    return null;
-  }
-  try {
-    return JSON.parse(readFileSync(paths.serverPid(), 'utf-8')) as PidInfo;
-  } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    logger.warn('SYSTEM', 'Failed to read server PID file', { path: paths.serverPid() }, err);
-    return null;
-  }
+  return readServiceStateFile<PidInfo>(paths.serverPid(), 'SYSTEM', 'server PID file');
 }
 
 function readServerRuntimeState(): ServerRuntimeState | null {
-  if (!existsSync(paths.serverRuntime())) {
-    return null;
-  }
-  try {
-    return JSON.parse(readFileSync(paths.serverRuntime(), 'utf-8')) as ServerRuntimeState;
-  } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    logger.warn('SYSTEM', 'Failed to read server runtime state file', { path: paths.serverRuntime() }, err);
-    return null;
-  }
+  return readServiceStateFile<ServerRuntimeState>(paths.serverRuntime(), 'SYSTEM', 'server runtime state file');
 }
 
 function removeServerState(): void {
-  rmSync(paths.serverPid(), { force: true });
-  rmSync(paths.serverPort(), { force: true });
-  rmSync(paths.serverRuntime(), { force: true });
+  removeServiceState(serverStateFiles());
 }
 
 async function isPortInUse(port: number, host: string): Promise<boolean> {
@@ -943,16 +921,6 @@ async function isPortInUse(port: number, host: string): Promise<boolean> {
     });
     socket.once('error', () => resolve(false));
   });
-}
-
-async function waitForPidExit(pid: number, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (!verifyPidFileOwnership({ pid, port: 0, startedAt: '' })) {
-      return;
-    }
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
 }
 
 if (

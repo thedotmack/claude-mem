@@ -208,8 +208,46 @@ export function scanDocument(bytes: Uint8Array): JsonSpan {
   return span;
 }
 
-/** Every member of an object, in order, duplicates included. */
-export function* objectMembers(bytes: Uint8Array, objectSpan: JsonSpan): Generator<JsonObjectMember> {
+/**
+ * Where each object and array of a document (already checked by
+ * scanDocument) ends, by where it starts: one pass. Handed to
+ * objectMembers/arrayElements, a child container's end is looked up rather
+ * than scanned, so walking every level of a deeply nested document costs its
+ * size once, not depth × size (a tool's output of nested brackets would
+ * otherwise stall the gateway).
+ */
+export function containerEndsByStart(bytes: Uint8Array): Map<number, number> {
+  const ends = new Map<number, number>();
+  const openStarts: number[] = [];
+  let position = 0;
+  while (position < bytes.length) {
+    const byte = bytes[position];
+    if (byte === QUOTE) {
+      position++;
+      while (position < bytes.length && bytes[position] !== QUOTE) position += bytes[position] === BACKSLASH ? 2 : 1;
+    } else if (byte === OPEN_BRACE || byte === OPEN_BRACKET) {
+      openStarts.push(position);
+    } else if (byte === CLOSE_BRACE || byte === CLOSE_BRACKET) {
+      ends.set(openStarts.pop()!, position + 1);
+    }
+    position++;
+  }
+  return ends;
+}
+
+/** scanValue, with a container's end looked up in `containerEnds` when given. */
+function childValueSpan(bytes: Uint8Array, position: number, containerEnds?: Map<number, number>): JsonSpan {
+  if (!containerEnds) return scanValue(bytes, position);
+  const start = skipWhitespace(bytes, position);
+  const byte = bytes[start];
+  if (byte !== OPEN_BRACE && byte !== OPEN_BRACKET) return scanValue(bytes, start);
+  const end = containerEnds.get(start);
+  if (end === undefined) throw new JsonScanError('container without an end', start);
+  return { start, end, type: byte === OPEN_BRACE ? 'object' : 'array' };
+}
+
+/** Every member of an object, in order, duplicates included. `containerEnds`: see containerEndsByStart. */
+export function* objectMembers(bytes: Uint8Array, objectSpan: JsonSpan, containerEnds?: Map<number, number>): Generator<JsonObjectMember> {
   if (objectSpan.type !== 'object') throw new JsonScanError('not an object', objectSpan.start);
   let position = skipWhitespace(bytes, objectSpan.start + 1);
   if (bytes[position] === CLOSE_BRACE) return;
@@ -217,7 +255,7 @@ export function* objectMembers(bytes: Uint8Array, objectSpan: JsonSpan): Generat
     const keySpan: JsonSpan = { start: position, end: endOfString(bytes, position), type: 'string' };
     position = skipWhitespace(bytes, keySpan.end);
     if (bytes[position] !== COLON) throw new JsonScanError('expected :', position);
-    const value = scanValue(bytes, position + 1);
+    const value = childValueSpan(bytes, position + 1, containerEnds);
     yield { key: decodeString(bytes, keySpan), keySpan, value };
     position = skipWhitespace(bytes, value.end);
     if (bytes[position] === CLOSE_BRACE) return;
@@ -226,26 +264,19 @@ export function* objectMembers(bytes: Uint8Array, objectSpan: JsonSpan): Generat
   }
 }
 
-/** Every element of an array, in order. */
-export function* arrayElements(bytes: Uint8Array, arraySpan: JsonSpan): Generator<JsonSpan> {
+/** Every element of an array, in order. `containerEnds`: see containerEndsByStart. */
+export function* arrayElements(bytes: Uint8Array, arraySpan: JsonSpan, containerEnds?: Map<number, number>): Generator<JsonSpan> {
   if (arraySpan.type !== 'array') throw new JsonScanError('not an array', arraySpan.start);
   let position = skipWhitespace(bytes, arraySpan.start + 1);
   if (bytes[position] === CLOSE_BRACKET) return;
   for (;;) {
-    const element = scanValue(bytes, position);
+    const element = childValueSpan(bytes, position, containerEnds);
     yield element;
     position = skipWhitespace(bytes, element.end);
     if (bytes[position] === CLOSE_BRACKET) return;
     if (bytes[position] !== COMMA) throw new JsonScanError('expected , or ]', position);
     position++;
   }
-}
-
-/** An object's members by key; a duplicated key keeps its last value, as JSON.parse does. */
-export function objectMemberMap(bytes: Uint8Array, objectSpan: JsonSpan): Map<string, JsonSpan> {
-  const members = new Map<string, JsonSpan>();
-  for (const member of objectMembers(bytes, objectSpan)) members.set(member.key, member.value);
-  return members;
 }
 
 /**

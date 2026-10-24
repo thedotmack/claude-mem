@@ -117,8 +117,6 @@ export interface RelayExchange {
   startedAt: number;
   /** The decoded request body for parsing; null when not captured. Never the forwarded bytes. */
   decodedRequestBody: Uint8Array | null;
-  /** Why capture was skipped for a captured protocol, when it was. */
-  captureSkippedReason: Extract<DecodedBodyCopy, { kind: 'skipped' }>['reason'] | 'native_capture_source' | null;
   /**
    * The decoded request body, parsed, for a captured protocol on any route
    * (a native route's body is parsed for identity and later rewrites, never
@@ -155,7 +153,6 @@ export interface RelayExchangeResult {
   outcome: RelayOutcome;
   /** The upstream status; 499 for a client abort before the end; 502 when unreachable. */
   recordedStatus: number;
-  endMarkerSeen: boolean;
   /** The capture copy outgrew the 8 MiB queue, so the capture is cut (the client was not). */
   captureOverflowed: boolean;
   responseBytes: number;
@@ -180,9 +177,6 @@ export interface RelayObserver {
   onExchangeFinished?(exchange: RelayExchange, result: RelayExchangeResult): void;
 }
 
-/** Bodies relayed untouched whose capture was skipped, by reason (plan Phase 2 task 3, "counted"). */
-export const relayCaptureSkipCounts: Record<string, number> = {};
-
 /**
  * Process-lifetime counters for the gateway's content-free telemetry
  * (plan Phase 6 task 4): how many exchanges were relayed, and how many had
@@ -190,10 +184,6 @@ export const relayCaptureSkipCounts: Record<string, number> = {};
  * outbound redaction masked something; a request counts once).
  */
 export const relayActivityCounts = { exchangesRelayed: 0, requestsRewritten: 0 };
-
-function countCaptureSkip(reason: string): void {
-  relayCaptureSkipCounts[reason] = (relayCaptureSkipCounts[reason] ?? 0) + 1;
-}
 
 /** One observer that hands every event to each of `observers` in order. */
 export function composeRelayObservers(...observers: RelayObserver[]): RelayObserver {
@@ -205,7 +195,7 @@ export function composeRelayObservers(...observers: RelayObserver[]): RelayObser
   };
 }
 
-function notifyObserver(callback: () => void): void {
+export function notifyObserver(callback: () => void): void {
   try {
     callback();
   } catch (error) {
@@ -221,7 +211,6 @@ export interface WireGatewayRelayOptions {
   maxRequestBytes: number;
   requestBodyIdleTimeoutMs: number;
   observer?: RelayObserver;
-  captureSpoolCapBytes?: number;
   /** Launches made through POST /wire/launch; without one, /l/<launchId> segments are still stripped. */
   launchRegistry?: WireLaunchRegistry;
   /**
@@ -287,8 +276,6 @@ const CUT_SIGNAL_IDLE_TIMEOUT_SECONDS = 1;
 const UNREAD_BODY_CLOSE_IDLE_TIMEOUT_SECONDS = 1;
 
 export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
-  const captureSpoolCapBytes = options.captureSpoolCapBytes ?? CAPTURE_SPOOL_CAP_BYTES;
-
   return async function relayWireGatewayRequest(request: Request, server: Server<undefined>, routing?: WireRelayRouting): Promise<Response> {
     const requestUrl = new URL(request.url);
     // On a shared gateway the router strips /k/<key> first; the key itself never reaches the relay.
@@ -401,25 +388,20 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
 
     let decodedRequestBody: Uint8Array | null = null;
     let parsedRequest: WireRequest | null = null;
-    let captureSkippedReason: RelayExchange['captureSkippedReason'] = null;
     let decodedCopy: DecodedBodyCopy | null = null;
     if (classification.captured && classification.protocol) {
       // Decoded on every route: a native route is never recorded, but its
       // identity (and Phase 10's rewrites) still read the body.
       const decoded = decodeRequestBodyCopy(originalBody, request.headers.get('content-encoding'), options.maxRequestBytes);
       decodedCopy = decoded;
-      if (route.captureSource !== 'wire') {
-        captureSkippedReason = 'native_capture_source';
-      } else if (decoded.kind === 'decoded') {
-        decodedRequestBody = decoded.bytes;
-      } else {
-        captureSkippedReason = decoded.reason;
-        countCaptureSkip(decoded.reason);
-        logger.debug('WIRE', 'Relaying a body untouched without capture', { routeId, reason: decoded.reason, contentEncoding: decoded.contentEncoding });
+      // Native-first (D6): a native route's capture comes from the agent's own hooks.
+      if (route.captureSource === 'wire') {
+        if (decoded.kind === 'decoded') decodedRequestBody = decoded.bytes;
+        else logger.debug('WIRE', 'Relaying a body untouched without capture', { routeId, reason: decoded.reason, contentEncoding: decoded.contentEncoding });
       }
       if (decoded.kind === 'decoded') {
         try {
-          parsedRequest = parseWireRequest(classification.protocol, decoded.bytes, { suffixPath });
+          parsedRequest = parseWireRequest(classification.protocol, decoded.bytes, suffixPath);
         } catch (error) {
           logger.debug('WIRE', 'Request body did not parse; identity comes from headers', {
             routeId, protocol: classification.protocol, error: error instanceof Error ? error.message : String(error),
@@ -462,7 +444,7 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
       const requestOf = (body: Uint8Array): WireRequest => {
         let parsed = parsedByBody.get(body);
         if (!parsed) {
-          parsed = parseWireRequest(protocol, body, { suffixPath });
+          parsed = parseWireRequest(protocol, body, suffixPath);
           parsedByBody.set(body, parsed);
         }
         return parsed;
@@ -584,7 +566,6 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
       suffixPath,
       startedAt: Date.now(),
       decodedRequestBody,
-      captureSkippedReason,
       request: parsedRequest,
       identity,
       rewrite: rewriteOutcome,
@@ -593,7 +574,7 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
     if (observer?.onExchangeStarted) notifyObserver(() => observer.onExchangeStarted!(exchange));
 
     const captureQueue = new BoundedCaptureQueue(
-      captureSpoolCapBytes,
+      CAPTURE_SPOOL_CAP_BYTES,
       exchange.metered && observer?.onResponseChunk ? chunk => observer.onResponseChunk!(exchange, chunk) : () => undefined,
     );
     let responseBytes = 0;
@@ -606,7 +587,6 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
       const result: RelayExchangeResult = {
         outcome,
         recordedStatus,
-        endMarkerSeen: endDetector?.hasSeenEnd ?? false,
         captureOverflowed: captureQueue.hasOverflowed,
         responseBytes,
         durationMs: Date.now() - exchange.startedAt,

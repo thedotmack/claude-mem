@@ -8,7 +8,7 @@ import { emptyWireUsage, type WireRequest } from '../../src/services/wire-gatewa
 import type { WireProtocol } from '../../src/services/wire-gateway/relay/protocols.js';
 import { agentIdFromUserAgent, resolveAgentId } from '../../src/services/wire-gateway/identity/agent-of.js';
 import { WireLaunchRegistry, LAUNCH_ID_PATTERN, splitLaunchSegment } from '../../src/services/wire-gateway/identity/launch-registry.js';
-import { resolveIdentity, sessionIdToEcho, sessionWasNamedByClient, type WireIdentity } from '../../src/services/wire-gateway/identity/resolve-identity.js';
+import { resolveIdentity, sessionIdToEcho, type WireIdentity } from '../../src/services/wire-gateway/identity/resolve-identity.js';
 import { cleanSessionId, fingerprintSessionId, MAX_SESSION_ID_BYTES } from '../../src/services/wire-gateway/identity/session-id.js';
 import { SESSION_STALE_MS, TURN_QUIET_MS, TurnTracker, type WireSessionStale, type WireTurnEnd } from '../../src/services/wire-gateway/identity/turn-tracker.js';
 import { userTurnPositionOfRequest } from '../../src/services/wire-gateway/identity/turn-start.js';
@@ -26,7 +26,7 @@ function parseFixture(relativePath: string, protocol: WireProtocol): WireRequest
 }
 
 function parseBody(protocol: WireProtocol, body: string, suffixPath?: string): WireRequest {
-  return parseWireRequest(protocol, encoder.encode(body), { suffixPath });
+  return parseWireRequest(protocol, encoder.encode(body), suffixPath);
 }
 
 function identityOf(
@@ -125,8 +125,7 @@ describe('wire identity: session precedence and caps', () => {
   });
 
   it('echoes only sessions the client named (sources 1-4)', () => {
-    expect(['named', 'launch', 'header', 'body'].every(source => sessionWasNamedByClient(source as WireIdentity['sessionSource']))).toBe(true);
-    expect(sessionWasNamedByClient('fingerprint')).toBe(false);
+    for (const source of ['named', 'launch', 'header', 'body'] as const) expect(sessionIdToEcho({ sessionId: 's-1', sessionSource: source })).toBe('s-1');
     expect(sessionIdToEcho({ sessionId: 'café-1', sessionSource: 'header' })).toBe('café-1');
     expect(sessionIdToEcho({ sessionId: '会话-1', sessionSource: 'body' })).toBeUndefined();
     expect(sessionIdToEcho({ sessionId: 'wire-abc', sessionSource: 'fingerprint' })).toBeUndefined();
@@ -228,9 +227,9 @@ describe('wire identity: subagents and lineage', () => {
     expect(bySource).toMatchObject({ kind: 'subagent', subagent: '/root/worker', parentSessionId: 'root-thread' });
   });
 
-  it('Codex agent_message keeps its author and recipient in the IR', () => {
+  it('Codex agent_message is read as a user message in the IR', () => {
     const request = parseBody('openai-responses', '{"model":"m","input":[{"type":"agent_message","author":"/root/research","recipient":"/root","content":[{"type":"input_text","text":"found it"}]}]}');
-    expect(request.messages[0].parts[0]).toMatchObject({ author: '/root/research', recipient: '/root', text: 'found it' });
+    expect(request.messages[0]).toMatchObject({ role: 'user', parts: [{ kind: 'text', text: 'found it' }] });
   });
 });
 
@@ -550,7 +549,7 @@ describe('wire identity: user words and turn start', () => {
 
   it('the recorder keeps what the agent put in as context, not as words said', () => {
     const request = parseBody('anthropic', anthropicBody([['user', JSON.stringify([{ type: 'text', text: envContext }, { type: 'text', text: codexAgents }, { type: 'text', text: 'fix it' }])], ['assistant', '<b>bold</b> answer']]));
-    const reply = { text: '', toolCalls: [], thinking: '', sealed: [], usage: emptyWireUsage(), stop: null, endedCleanly: true };
+    const reply = { text: '', toolCalls: [], thinking: '', usage: emptyWireUsage(), stop: null, endedCleanly: true };
     expect(toRecorderParts(request, reply).input).toEqual([
       { role: 'user', kind: 'context', text: envContext },
       { role: 'user', kind: 'context', text: codexAgents },
@@ -581,7 +580,6 @@ describe('wire identity: launch registry', () => {
     const second = registry.create({ agentId: 'aider', cwd: '/2' });
     expect(registry.use(first.launchId)).toBeDefined();
     const third = registry.create({ agentId: 'aider', cwd: '/3' });
-    expect(registry.size).toBe(2);
     expect(registry.use(second.launchId)).toBeUndefined();
     expect(registry.use(first.launchId)?.cwd).toBe('/1');
     expect(registry.use(third.launchId)?.cwd).toBe('/3');
@@ -680,9 +678,18 @@ describe('wire identity: turn tracker', () => {
     now += SESSION_STALE_MS + 1;
     tracker.sweepStaleSessions();
     expect(staleSessions).toEqual([{ agentId: 'claude-code', sessionId: 's1', lastActivityAt: 0 }]);
-    expect(tracker.trackedSessionCount).toBe(1);
+    // Forgotten: another sweep does not report it again (and the one in flight is still not stale).
+    tracker.sweepStaleSessions();
+    expect(staleSessions).toHaveLength(1);
     // A stale session's next request starts it over.
+    const restartedAt = now;
     tracker.begin(turn);
-    expect(tracker.trackedSessionCount).toBe(2);
+    tracker.end(turn, false);
+    now += SESSION_STALE_MS + 1;
+    tracker.sweepStaleSessions();
+    expect(staleSessions).toEqual([
+      { agentId: 'claude-code', sessionId: 's1', lastActivityAt: 0 },
+      { agentId: 'claude-code', sessionId: 's1', lastActivityAt: restartedAt },
+    ]);
   });
 });

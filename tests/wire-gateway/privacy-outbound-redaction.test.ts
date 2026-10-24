@@ -100,10 +100,10 @@ describe('masking (magpie TestMask, secrets only)', () => {
   it('lets the oldest half go when full, and a request that still has a value brings it back', () => {
     const small = new OutboundRedactionPlaceholders({ keyFilePath, maxHeldValues: 4 });
     const values = ['sk-aaaaaaaaaaaaaaaaaaaaaaa1', 'sk-bbbbbbbbbbbbbbbbbbbbbbb2', 'sk-ccccccccccccccccccccccc3', 'sk-ddddddddddddddddddddddd4', 'sk-eeeeeeeeeeeeeeeeeeeeeee5'];
-    const firstPlaceholder = small.placeholderFor('API_KEY', values[0]);
-    for (const value of values.slice(1)) small.placeholderFor('API_KEY', value);
-    expect(small.heldValueCount).toBe(3);
-    expect(small.restore(firstPlaceholder, false)).toBe(firstPlaceholder);
+    const placeholdersMade = values.map(value => small.placeholderFor('API_KEY', value));
+    const firstPlaceholder = placeholdersMade[0];
+    // The fifth found it full: the oldest two went, the last three are held.
+    expect(placeholdersMade.map(placeholder => small.restore(placeholder, false))).toEqual([placeholdersMade[0], placeholdersMade[1], values[2], values[3], values[4]]);
     small.maskText(`again ${values[0]}`);
     expect(small.restore(firstPlaceholder, false)).toBe(values[0]);
   });

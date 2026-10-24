@@ -51,17 +51,17 @@ export function jsonErrorResponse(status: number, type: string, message: string,
  */
 export function createWireGatewayFetchHandler(options: {
   listenHost: string;
-  /** The relay for /r/<routeId>/… (Phase 2); without one, /r/ answers 404. */
-  relay?: (request: Request, server: Server<undefined>, routing: WireRelayRouting) => Promise<Response>;
+  /** The relay for /r/<routeId>/… (Phase 2). */
+  relay: (request: Request, server: Server<undefined>, routing: WireRelayRouting) => Promise<Response>;
   /** Test seam: the socket's peer address; defaults to server.requestIP. Never a header. */
   peerAddressOf?: (request: Request, server: Server<undefined>) => string | null;
-  /** Launcher sessions for POST /wire/launch (Phase 4); without one, it answers 404. */
-  launchRegistry?: WireLaunchRegistry;
+  /** Launcher sessions for POST /wire/launch (Phase 4). */
+  launchRegistry: WireLaunchRegistry;
   /**
    * GET /wire/status (Phase 9): each agent's drift state. It reads cached
    * probe answers only, so it never waits on a probe.
    */
-  statusReport?: () => Promise<unknown>;
+  statusReport: () => Promise<unknown>;
   /**
    * GET /wire/routes (Phase 15): each route with its agent, upstream and
    * feature switches, for the viewer's Wire page. Throws when routes.json
@@ -88,8 +88,8 @@ export function createWireGatewayFetchHandler(options: {
     const refusal = checkLoopbackRequest(request, { peerAddress, listenHost: options.listenHost });
     if (refusal) {
       // A path key never reaches a log (plan Phase 16 task 2), even here.
-      logger.warn('WIRE', 'Refused request', { method: request.method, path: redactClientKeyPaths(pathname), reason: refusal.message });
-      return jsonErrorResponse(refusal.status, 'permission_error', refusal.message);
+      logger.warn('WIRE', 'Refused request', { method: request.method, path: redactClientKeyPaths(pathname), reason: refusal });
+      return jsonErrorResponse(403, 'permission_error', refusal);
     }
 
     if (request.method === 'GET' && (pathname === '/' || pathname === '/wire/identity')) {
@@ -103,7 +103,7 @@ export function createWireGatewayFetchHandler(options: {
       return Response.json(wireGatewayIdentity());
     }
 
-    if (pathname === '/wire/status' && options.statusReport) {
+    if (pathname === '/wire/status') {
       if (request.method !== 'GET') return jsonErrorResponse(405, 'invalid_request_error', 'GET /wire/status only');
       return options.statusReport().then(report => Response.json(report));
     }
@@ -118,7 +118,7 @@ export function createWireGatewayFetchHandler(options: {
       }
     }
 
-    if (pathname === '/wire/launch' && options.launchRegistry) {
+    if (pathname === '/wire/launch') {
       return handleWireLaunchRequest(request, server, options.launchRegistry);
     }
 
@@ -149,9 +149,7 @@ export function createWireGatewayFetchHandler(options: {
     }
 
     if (pathname === '/r' || pathname.startsWith('/r/')) {
-      return options.relay
-        ? options.relay(request, server, routing)
-        : jsonErrorResponse(404, 'not_found_error', 'the relay (/r/<route>/…) is not available in this claude-mem wire gateway');
+      return options.relay(request, server, routing);
     }
 
     const family = RESERVED_PATH_FAMILIES.find(candidate => candidate.matches(pathname));
@@ -171,7 +169,7 @@ export function createWireGatewayFetchHandler(options: {
  */
 export function createWireTeamListenerFetchHandler(options: {
   shared: WireSharedMode;
-  relay?: (request: Request, server: Server<undefined>, routing: WireRelayRouting) => Promise<Response>;
+  relay: (request: Request, server: Server<undefined>, routing: WireRelayRouting) => Promise<Response>;
   /** Test seam: the socket's peer address; defaults to server.requestIP. Never a header. */
   peerAddressOf?: (request: Request, server: Server<undefined>) => string | null;
 }) {
@@ -188,9 +186,7 @@ export function createWireTeamListenerFetchHandler(options: {
       return Response.json(wireGatewayIdentity());
     }
     if (pathname === '/r' || pathname.startsWith('/r/')) {
-      return options.relay
-        ? options.relay(request, server, { pathname, clientKey: admission.clientKey })
-        : jsonErrorResponse(404, 'not_found_error', 'the relay (/r/<route>/…) is not available in this claude-mem wire gateway');
+      return options.relay(request, server, { pathname, clientKey: admission.clientKey });
     }
     return jsonErrorResponse(404, 'not_found_error', 'the team listener answers /k/<key>/r/<route>/… and the identity probe /k/<key>/ only');
   };

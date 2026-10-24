@@ -386,7 +386,6 @@ var paths = {
   supervisorRegistry: () => join3(DATA_DIR, "supervisor.json"),
   envFile: () => join3(DATA_DIR, ".env"),
   logsDir: () => LOGS_DIR,
-  wireGateway: () => WIRE_GATEWAY_DIR,
   wireGatewayRoutes: () => join3(WIRE_GATEWAY_DIR, "routes.json"),
   wireGatewayConsent: () => join3(WIRE_GATEWAY_DIR, "consent.json"),
   wireGatewayRedactKey: () => join3(WIRE_GATEWAY_DIR, "redact.key"),
@@ -1283,20 +1282,21 @@ var SettingsDefaultsManager = class {
   static get(key) {
     const value = process.env[key] ?? this.DEFAULTS[key];
     if (key === "CLAUDE_MEM_WORKER_HOST") {
-      return this.normalizeWorkerHost(value);
+      return this.normalizeLoopbackHost(value);
     }
     return value;
   }
   // 'localhost' resolves IPv6-first on modern Windows resolvers while
   // server.listen(port, 'localhost') binds ::1 only, so the hook client and
   // the worker can land on different loopback families (#2992). Pin the
-  // documented IPv4 loopback so every consumer of the setting agrees.
-  static normalizeWorkerHost(host) {
+  // documented IPv4 loopback so every consumer of the setting agrees (the
+  // worker's host here, the wire gateway's in its config.ts).
+  static normalizeLoopbackHost(host) {
     return host === "localhost" ? "127.0.0.1" : host;
   }
   static finalizeSettings(settings, applyEnvOverrides) {
     const result = applyEnvOverrides ? this.applyEnvOverrides(settings) : settings;
-    result.CLAUDE_MEM_WORKER_HOST = this.normalizeWorkerHost(result.CLAUDE_MEM_WORKER_HOST);
+    result.CLAUDE_MEM_WORKER_HOST = this.normalizeLoopbackHost(result.CLAUDE_MEM_WORKER_HOST);
     return result;
   }
   static getInt(key) {

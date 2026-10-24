@@ -178,7 +178,7 @@ function replyOfMagpieOutput(protocol: WireProtocol, output: string, status: num
   const failed = status >= 400;
   return {
     reply: {
-      text, toolCalls: [], thinking: '', sealed: [],
+      text, toolCalls: [], thinking: '',
       usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cacheWrite1hTokens: 0, reasoningTokens: 0 },
       stop: failed || cut ? null : 'stop',
       endedCleanly: !failed && !cut,

@@ -16,14 +16,15 @@ function count(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
 }
 
-function record(value: unknown): Record<string, unknown> {
+/** `value` when it is a JSON object, else an empty one. */
+export function asRecord(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 /** Anthropic `usage` (message_start, message_delta, or a whole message). */
 export function anthropicUsage(rawUsage: unknown): Partial<WireUsage> {
-  const usage = record(rawUsage);
-  const cacheCreation = record(usage.cache_creation);
+  const usage = asRecord(rawUsage);
+  const cacheCreation = asRecord(usage.cache_creation);
   const cacheWrite1hTokens = count(cacheCreation.ephemeral_1h_input_tokens);
   const cacheWriteSplitTotal = count(cacheCreation.ephemeral_5m_input_tokens) + cacheWrite1hTokens;
   return {
@@ -33,7 +34,7 @@ export function anthropicUsage(rawUsage: unknown): Partial<WireUsage> {
     cacheWriteTokens: Math.max(count(usage.cache_creation_input_tokens), cacheWriteSplitTotal),
     cacheWrite1hTokens,
     // output_tokens_details.thinking_tokens (report 07 §2.1); magpie does not read it.
-    reasoningTokens: count(record(usage.output_tokens_details).thinking_tokens),
+    reasoningTokens: count(asRecord(usage.output_tokens_details).thinking_tokens),
   };
 }
 
@@ -43,8 +44,8 @@ export function anthropicUsage(rawUsage: unknown): Partial<WireUsage> {
  * which are counted as Anthropic counts (magpie cUsage.usage).
  */
 export function openAiChatUsage(rawUsage: unknown): Partial<WireUsage> {
-  const usage = record(rawUsage);
-  const promptDetails = record(usage.prompt_tokens_details);
+  const usage = asRecord(rawUsage);
+  const promptDetails = asRecord(usage.prompt_tokens_details);
   let cacheReadTokens = count(promptDetails.cached_tokens);
   let cacheWriteTokens = count(promptDetails.cache_write_tokens);
   for (const alternative of [usage.prompt_cache_hit_tokens, usage.cached_tokens]) {
@@ -62,9 +63,9 @@ export function openAiChatUsage(rawUsage: unknown): Partial<WireUsage> {
     outputTokens: count(usage.completion_tokens),
     cacheReadTokens,
     cacheWriteTokens,
-    reasoningTokens: count(record(usage.completion_tokens_details).reasoning_tokens),
+    reasoningTokens: count(asRecord(usage.completion_tokens_details).reasoning_tokens),
   };
-  const deferred = record(usage.magpie_deferred);
+  const deferred = asRecord(usage.magpie_deferred);
   const deferredPrompt = count(deferred.prompt_tokens);
   const deferredCompletion = count(deferred.completion_tokens);
   if (deferredPrompt + deferredCompletion > 0) {
@@ -84,8 +85,8 @@ export function openAiChatUsage(rawUsage: unknown): Partial<WireUsage> {
 
 /** OpenAI Responses `usage`: input_tokens is the whole prompt, cached reads and writes among it. */
 export function openAiResponsesUsage(rawUsage: unknown): Partial<WireUsage> {
-  const usage = record(rawUsage);
-  const inputDetails = record(usage.input_tokens_details);
+  const usage = asRecord(rawUsage);
+  const inputDetails = asRecord(usage.input_tokens_details);
   const cacheReadTokens = count(inputDetails.cached_tokens);
   const cacheWriteTokens = count(inputDetails.cache_write_tokens);
   return {
@@ -93,13 +94,13 @@ export function openAiResponsesUsage(rawUsage: unknown): Partial<WireUsage> {
     outputTokens: count(usage.output_tokens),
     cacheReadTokens,
     cacheWriteTokens,
-    reasoningTokens: count(record(usage.output_tokens_details).reasoning_tokens),
+    reasoningTokens: count(asRecord(usage.output_tokens_details).reasoning_tokens),
   };
 }
 
 /** Gemini `usageMetadata`: thoughts are counted as output and as reasoning. */
 export function geminiUsage(rawUsageMetadata: unknown): Partial<WireUsage> {
-  const usage = record(rawUsageMetadata);
+  const usage = asRecord(rawUsageMetadata);
   const cachedTokens = count(usage.cachedContentTokenCount);
   const thoughtsTokens = count(usage.thoughtsTokenCount);
   return {

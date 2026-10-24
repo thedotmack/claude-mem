@@ -67,13 +67,11 @@ export interface WireLaunch {
 
 export class WireLaunchRegistry {
   private readonly launches = new Map<string, WireLaunch>();
-  private readonly idleExpiryMs: number;
   private readonly now: () => number;
 
   private readonly maxLiveLaunches: number;
 
-  constructor(options: { idleExpiryMs?: number; maxLiveLaunches?: number; now?: () => number } = {}) {
-    this.idleExpiryMs = options.idleExpiryMs ?? LAUNCH_IDLE_EXPIRY_MS;
+  constructor(options: { maxLiveLaunches?: number; now?: () => number } = {}) {
     this.maxLiveLaunches = options.maxLiveLaunches ?? MAX_LIVE_LAUNCHES;
     this.now = options.now ?? Date.now;
   }
@@ -108,15 +106,11 @@ export class WireLaunchRegistry {
     return launch;
   }
 
-  get size(): number {
-    return this.launches.size;
-  }
-
   /** Oldest use first, so the sweep stops at the first launch still alive. */
   private forgetExpired(): void {
     const now = this.now();
     for (const [launchId, launch] of this.launches) {
-      if (now - launch.lastUsedAt <= this.idleExpiryMs) break;
+      if (now - launch.lastUsedAt <= LAUNCH_IDLE_EXPIRY_MS) break;
       this.launches.delete(launchId);
     }
   }

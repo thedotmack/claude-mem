@@ -190,13 +190,7 @@ export class EventStreamSniffer {
       this.held.push(chunk);
       this.heldBytes += chunk.byteLength;
     }
-    const head = new Uint8Array(this.heldBytes);
-    let offset = 0;
-    for (const heldChunk of this.held) {
-      head.set(heldChunk, offset);
-      offset += heldChunk.byteLength;
-    }
-    const decision = sniffEventStream(head, ended || this.heldBytes >= 64);
+    const decision = sniffEventStream(Buffer.concat(this.held, this.heldBytes), ended || this.heldBytes >= 64);
     if (decision === null) return null;
     const heldChunks = this.held;
     this.held = [];
@@ -217,24 +211,20 @@ export class StreamEndMarkerDetector {
   private readonly markers: string[];
   private carry = '';
   private started = false;
-  private endSeen = false;
+  hasSeenEnd = false;
   private readonly decoder = new TextDecoder('latin1');
 
   constructor(protocol: WireProtocol) {
     this.markers = STREAM_END_MARKERS[protocol];
   }
 
-  get hasSeenEnd(): boolean {
-    return this.endSeen;
-  }
-
   observe(chunk: Uint8Array): void {
-    if (this.endSeen) return;
+    if (this.hasSeenEnd) return;
     // The stream starts a line, so a first-line marker is seen too.
     const text = (this.started ? this.carry : '\n') + this.decoder.decode(chunk);
     this.started = true;
     if (this.markers.some(marker => text.includes(marker))) {
-      this.endSeen = true;
+      this.hasSeenEnd = true;
       return;
     }
     this.carry = text.slice(-END_MARKER_CARRY_BYTES);
