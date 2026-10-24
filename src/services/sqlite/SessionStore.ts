@@ -3795,16 +3795,16 @@ export class SessionStore {
 
   /** Prompts claude-mem's hooks recorded since `sinceEpochMs` (everything the transcript import did not write). */
   listHookRecordedPrompts(sinceEpochMs: number): Array<{
-    id: number; platformSource: string; contentSessionId: string; project: string; promptText: string; createdAtEpoch: number;
+    id: number; platformSource: string; contentSessionId: string; project: string; cwd: string | null; promptText: string; createdAtEpoch: number;
   }> {
     return this.db.prepare(`SELECT up.id, COALESCE(NULLIF(s.platform_source, ''), ?) AS platformSource,
-        s.content_session_id AS contentSessionId, s.project, up.prompt_text AS promptText, up.created_at_epoch AS createdAtEpoch
+        s.content_session_id AS contentSessionId, s.project, s.cwd, up.prompt_text AS promptText, up.created_at_epoch AS createdAtEpoch
       FROM user_prompts up JOIN sdk_sessions s ON s.id = up.session_db_id
       WHERE up.created_at_epoch >= ? AND s.project != ?
         AND (up.native_prompt_id IS NULL OR up.native_prompt_id NOT LIKE 'transcript:%')
       ORDER BY up.created_at_epoch, up.id`)
       .all(DEFAULT_PLATFORM_SOURCE, sinceEpochMs, OBSERVER_SESSIONS_PROJECT) as Array<{
-        id: number; platformSource: string; contentSessionId: string; project: string; promptText: string; createdAtEpoch: number;
+        id: number; platformSource: string; contentSessionId: string; project: string; cwd: string | null; promptText: string; createdAtEpoch: number;
       }>;
   }
 
