@@ -17,6 +17,11 @@ import { isServerClientError, type ServerRecordEventRequest } from '../../servic
 import { isRecursiveMemoryTool, isExplicitMemoryWrite } from '../../shared/memory-retrieval-tools.js';
 import { workStatePlatform } from '../../shared/work-state-telemetry.js';
 
+// The Codex PostToolUse wire timeout is 5s. Keep the server attempt well
+// inside that budget so a transient server failure still reaches the local
+// fail-open spool before the host terminates the hook process.
+const SERVER_OBSERVATION_TIMEOUT_MS = 2_000;
+
 function spoolObservation(input: NormalizedHookInput, platformSource: string): HookResult {
   spoolHookEvent('observation', {
     contentSessionId: input.sessionId,
@@ -110,7 +115,10 @@ export const observationHandler: EventHandler = {
         },
       };
       try {
-        await runtime.client.recordEvent(event);
+        await runtime.client.recordEvent(
+          event,
+          input.platform === 'codex' ? { timeoutMs: SERVER_OBSERVATION_TIMEOUT_MS } : undefined,
+        );
         logger.debug('HOOK', 'Observation sent successfully via server', { toolName });
         return { continue: true, suppressOutput: true };
       } catch (error: unknown) {

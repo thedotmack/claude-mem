@@ -261,10 +261,13 @@ export class ServerClient {
     return this.request<ServerStartSessionResponse>('POST', '/v1/sessions/start', body, options);
   }
 
-  async recordEvent(input: ServerRecordEventRequest): Promise<ServerRecordEventResponse> {
+  async recordEvent(
+    input: ServerRecordEventRequest,
+    options: ServerRequestOptions = {},
+  ): Promise<ServerRecordEventResponse> {
     const body = this.buildEventPayload(input);
     const path = input.generate === false ? '/v1/events?generate=false' : '/v1/events';
-    return this.request<ServerRecordEventResponse>('POST', path, body);
+    return this.request<ServerRecordEventResponse>('POST', path, body, options);
   }
 
   async endSession(input: ServerEndSessionRequest): Promise<ServerEndSessionResponse> {
