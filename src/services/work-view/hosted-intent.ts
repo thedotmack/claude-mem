@@ -1,11 +1,12 @@
 /** Setup's subsidized extraction. The wire contract is claude-mem-pro's /api/pro/intent. */
 import { gzipSync } from 'node:zlib';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import type { OwnerPrompt } from '../prompt-import/index.js';
 import { getOrCreateIntentCredentials, intentCredentialHeaders, readIntentCredentials } from '../../shared/intent-credentials.js';
-import { groupIdFor, readGoals, readLedger, writeJsonAtomic, type LedgerDatabase } from './request-groups.mjs';
+import { groupIdFor, readConversationProjects, readGoals, readLedger, writeJsonAtomic, type LedgerDatabase } from './request-groups.mjs';
+import { projectRoot } from './session-project.mjs';
 
 /** Owner-approved cap: the largest measured export was 262 KB, and all exports fit one 1M-context call.
  * Cloud enforces this against both compressed and uncompressed bytes, plus its offline 400k-token budget. */
@@ -64,8 +65,11 @@ function conversationKeys(prompts: OwnerPrompt[]): Map<string, string> {
 }
 
 /** Preserve Cloud's complete grouping in the existing ledger, without imposing the local agent CLI's
- * stricter connected-link graph or 200-character ignore reason restrictions on the Cloud contract. */
-function mergeGroups(stored: Record<string, any>, result: HostedIntentResult, keys: Map<string, string>, writtenAt: string) {
+ * stricter connected-link graph or 200-character ignore reason restrictions on the Cloud contract.
+ * A request stays inside one project root (as My Work reads it), so a Cloud group spanning several
+ * roots is saved as one group per root, each keeping the links between its own conversations. */
+function mergeGroups(stored: Record<string, any>, result: HostedIntentResult, keys: Map<string, string>, writtenAt: string,
+  projectOf: Map<string, string | undefined>) {
   const next = structuredClone(stored);
   const keyFor = (id: string) => {
     const key = keys.get(id);
@@ -80,14 +84,22 @@ function mergeGroups(stored: Record<string, any>, result: HostedIntentResult, ke
   };
   for (const item of result.groups.groups) {
     const members = item.conversations.map(claim);
-    const id = groupIdFor(members[0]);
     const links = item.links.map(link => {
       if (link.conversations.some(member => !item.conversations.includes(member))) throw new Error('Hosted extraction returned a link outside its group.');
       return { ...link, conversations: link.conversations.map(keyFor) };
     });
-    for (const key of members) { next.conversations[key] = id; delete next.ignored[key]; }
-    next.groups[id] = { title: item.title, product: item.product, anchor: members[0], links, decidedAt: writtenAt,
-      anchorAsk: next.groups[id]?.anchorAsk ?? null };
+    const byRoot = new Map<string | null, string[]>();
+    for (const key of members) {
+      const root = projectRoot(projectOf.get(key));
+      byRoot.set(root, [...(byRoot.get(root) ?? []), key]);
+    }
+    for (const [root, rootMembers] of byRoot) {
+      const id = groupIdFor(rootMembers[0]);
+      for (const key of rootMembers) { next.conversations[key] = id; delete next.ignored[key]; }
+      next.groups[id] = { title: item.title, product: item.product, anchor: rootMembers[0], projectRoot: root,
+        links: links.filter(link => link.conversations.every(key => rootMembers.includes(key))), decidedAt: writtenAt,
+        anchorAsk: next.groups[id]?.anchorAsk ?? null };
+    }
   }
   for (const item of result.groups.ignored) {
     const key = claim(item.conversation);
@@ -119,6 +131,12 @@ export class HostedIntent {
         this.current = { ...this.current, state: 'ok', step: null, finishedAt: this.iso() };
         return;
       }
+      // A setup resumed after a successful run (installer restarted before Finish) keeps that result:
+      // it is already saved to goals, groups and rules, and the subsidized run may not be repeatable.
+      if (this.savedResult()) {
+        this.current = { ...this.current, state: 'ok', step: null, finishedAt: this.iso() };
+        return;
+      }
       const { token, userId } = this.options.credentials();
       if (!!token !== !!userId) throw new Error('Hosted setup has incomplete CMEM account credentials. Repair the account connection before retrying.');
       const keys = conversationKeys(ownerPrompts);
@@ -145,7 +163,7 @@ export class HostedIntent {
       }
       const parsed = resultSchema.safeParse(answer);
       if (!parsed.success) throw new Error(`Hosted setup returned an invalid response: ${parsed.error.message}`);
-      this.save(parsed.data, keys, timezoneOffsetMinutes);
+      this.save(parsed.data, keys, timezoneOffsetMinutes, ownerPrompts);
       this.current = { ...this.current, state: 'ok', step: null, finishedAt: this.iso() };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
@@ -154,11 +172,26 @@ export class HostedIntent {
     }
   }
 
-  private save(result: HostedIntentResult, keys: Map<string, string>, offset: number): void {
+  /** The earlier successful run's result, if one was saved. A saved file that no longer parses fails loudly. */
+  private savedResult(): HostedIntentResult | null {
+    const path = join(this.options.ledgerDir, 'hosted-intent.json');
+    if (!existsSync(path)) return null;
+    const parsed = resultSchema.safeParse(JSON.parse(readFileSync(path, 'utf8')));
+    if (!parsed.success) throw new Error(`The saved hosted setup result at ${path} is invalid: ${parsed.error.message}`);
+    return parsed.data;
+  }
+
+  private save(result: HostedIntentResult, keys: Map<string, string>, offset: number, ownerPrompts: OwnerPrompt[]): void {
     const { ledgerDir } = this.options;
     const writtenAt = this.iso();
     const ledger = readLedger(ledgerDir);
-    const groups = mergeGroups(ledger.groups, result, keys, writtenAt);
+    // The stored session's project (derived for scratch folders) is what My Work reads; the scan's own project covers the rest.
+    const projectOf = new Map<string, string | undefined>(ownerPrompts.map(prompt => [keys.get(prompt.sessionId)!, prompt.project]));
+    const projectsDatabase = this.options.openDatabase();
+    try {
+      for (const [key, project] of readConversationProjects(projectsDatabase, [...keys.values()])) projectOf.set(key, project);
+    } finally { projectsDatabase.close(); }
+    const groups = mergeGroups(ledger.groups, result, keys, writtenAt, projectOf);
     const goals = result.goals.goals;
     const mapPath = join(ledgerDir, 'owner-goals', 'hosted-owner-map.md');
     const rows: Array<Record<string, string | number | boolean | null>> = [{

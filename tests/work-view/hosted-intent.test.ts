@@ -183,11 +183,12 @@ describe('hosted setup extraction', () => {
         return Response.json(installCredentials);
       }
       expect(JSON.parse(readFileSync(test.configPath, 'utf8'))).toEqual(installCredentials);
+      if (requests.length === 2) return Response.json({ error: 'intent_failed', message: 'Hosted extraction could not complete.' }, { status: 502 });
       return requests.length === 3
         ? Response.json({ error: 'install_run_used', message: 'This installation has already used its hosted run.' }, { status: 429 })
         : Response.json(answer());
     }) as typeof fetch, account);
-    await test.run.run(prompts, false);
+    await expect(test.run.run(prompts, false)).rejects.toThrow('Hosted extraction could not complete.');
     expect(statSync(test.configPath).mode & 0o777).toBe(0o600);
     const restarted = test.createRun();
     await expect(restarted.run(prompts, true)).rejects.toThrow('This installation has already used its hosted run.');
@@ -206,6 +207,39 @@ describe('hosted setup extraction', () => {
     expect(requests[1].init.headers).not.toHaveProperty('X-User-Id');
     expect(requests[3].init.headers).toMatchObject({ Authorization: 'Bearer signed-in-token', 'X-User-Id': 'signed-in-user' });
     expect(JSON.parse(gunzipSync(requests[1].init.body as Uint8Array).toString())).toEqual({ ownerPrompts: prompts, improveProduct: false, timezoneOffsetMinutes: 420 });
+  });
+
+  it('saves a Cloud group spanning two project roots as one group per root, each with its own links', async () => {
+    const split = prompts.map((prompt, index) => ({ ...prompt, project: index === 2 ? 'beta' : 'alpha/worktree' }));
+    const { run, dir } = fixture();
+    await run.run(split, true);
+    const { groups } = readLedger(join(dir, 'work-view')).groups;
+    const saved = Object.values(groups) as Array<{ anchor: string; projectRoot: string | null; links: unknown[]; title: string }>;
+    expect(saved.map(group => [group.anchor, group.projectRoot, group.links.length, group.title])).toEqual([
+      ['["conversation","codex","one"]', 'alpha', 1, 'Build all three'],
+      ['["conversation","codex","three"]', 'beta', 0, 'Build all three'],
+    ]);
+  });
+
+  it('reuses the saved result when setup resumes after a successful run, with no second upload', async () => {
+    let uploads = 0;
+    const test = fixture((async () => { uploads++; return Response.json(answer()); }) as typeof fetch);
+    await test.run.run(prompts, true);
+    const before = readLedger(join(test.dir, 'work-view'));
+    const resumed = test.createRun();
+    await resumed.run(prompts, true);
+    expect(uploads).toBe(1);
+    expect(resumed.state()).toMatchObject({ state: 'ok', error: null });
+    expect(readLedger(join(test.dir, 'work-view'))).toEqual(before);
+  });
+
+  it('fails loudly when the saved result is unreadable instead of uploading again', async () => {
+    let uploads = 0;
+    const test = fixture((async () => { uploads++; return Response.json(answer()); }) as typeof fetch);
+    mkdirSync(join(test.dir, 'work-view'), { recursive: true });
+    writeFileSync(join(test.dir, 'work-view', 'hosted-intent.json'), JSON.stringify({ goals: null }));
+    await expect(test.run.run(prompts, true)).rejects.toThrow('saved hosted setup result');
+    expect(uploads).toBe(0);
   });
 
   it('keeps the anonymous credential after a lost upload response', async () => {
