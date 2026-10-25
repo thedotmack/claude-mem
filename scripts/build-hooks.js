@@ -233,7 +233,13 @@ export function shellTemplateManifest(buildShellCommand, buildCodexWindowsComman
         'UserPromptSubmit.0.0': codexHookPair(['hook', 'codex', 'session-init']),
         'PreToolUse.0.0': codexHookPair(['hook', 'codex', 'file-context']),
         // Observation capture stays synchronous so a delayed event cannot cross
-        // turn boundaries. Bound worker/storage stalls to a short fail-open wait.
+        // turn boundaries. Why 5 s: the hook must fit wrapper startup, bundle
+        // load, the 2 s server attempt (SERVER_OBSERVATION_TIMEOUT_MS in
+        // src/cli/handlers/observation.ts) and the local spool write. Measured
+        // on an Apple Silicon Mac (2026-10-25, worker runtime, spool path):
+        // ~0.25-0.29 s warm, ~0.46 s on the first run. So 5 s leaves ~2.5 s of
+        // headroom after the server attempt. Windows (commandWindows) cold
+        // start was not measured. Change both values together.
         'PostToolUse.0.0': codexHookPair(
           ['hook', 'codex', 'observation'],
           { timeout: 5 },
