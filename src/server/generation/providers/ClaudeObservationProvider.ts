@@ -40,6 +40,10 @@ export interface ClaudeObservationProviderOptions {
   // max_tokens on it, up to a reply with no text. Unset here sends no field,
   // as before, for providers built directly by a custom module.
   thinking?: ObserverThinkingOption;
+  // Extra request headers, such as a gateway's own auth header
+  // (`cf-aig-authorization` on Cloudflare AI Gateway). They can't replace the
+  // API key, version or content type.
+  extraHeaders?: Record<string, string>;
 }
 
 interface AnthropicMessagesResponse {
@@ -47,6 +51,16 @@ interface AnthropicMessagesResponse {
   stop_reason?: string;
   usage?: { input_tokens?: number; output_tokens?: number };
   error?: { type?: string; message?: string };
+}
+
+/**
+ * The Messages endpoint a provider built with this base URL posts to: the
+ * custom base (trimmed, trailing slashes dropped) or api.anthropic.com, plus
+ * /v1/messages. Exported so the runtime checks the cmem key lock against the
+ * exact URL the key would be sent to.
+ */
+export function resolveAnthropicMessagesUrl(baseUrl?: string): string {
+  return `${(baseUrl?.trim() || ANTHROPIC_DEFAULT_BASE_URL).replace(/\/+$/, '')}/v1/messages`;
 }
 
 export class ClaudeObservationProvider implements ServerGenerationProvider {
@@ -57,6 +71,7 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
   private readonly fetchImpl: typeof fetch;
   private readonly messagesUrl: string;
   private readonly thinking: ObserverThinkingOption;
+  private readonly extraHeaders: Record<string, string>;
 
   constructor(options: ClaudeObservationProviderOptions) {
     if (!options.apiKey) {
@@ -69,9 +84,9 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
     this.model = options.model ?? DEFAULT_MODEL;
     this.maxOutputTokens = options.maxOutputTokens ?? 4096;
     this.fetchImpl = options.fetchImpl ?? fetch;
-    const baseUrl = (options.baseUrl?.trim() || ANTHROPIC_DEFAULT_BASE_URL).replace(/\/+$/, '');
-    this.messagesUrl = `${baseUrl}/v1/messages`;
+    this.messagesUrl = resolveAnthropicMessagesUrl(options.baseUrl);
     this.thinking = options.thinking ?? 'omit';
+    this.extraHeaders = options.extraHeaders ?? {};
   }
 
   async generate(
@@ -179,11 +194,7 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
   private postMessages(prompt: string, signal?: AbortSignal): Promise<Response> {
     return this.fetchImpl(this.messagesUrl, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': this.apiKey,
-        'anthropic-version': ANTHROPIC_VERSION,
-      },
+      headers: this.requestHeaders(),
       // No temperature, as on the worker's Agent SDK path: Claude Haiku 5.5
       // rejects any request that sets one.
       body: JSON.stringify({
@@ -194,6 +205,16 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
       }),
       signal,
     });
+  }
+
+  // Header names are case-insensitive, so the fixed headers are set last on a
+  // Headers object: an extra `X-Api-Key` is replaced, not sent beside the key.
+  private requestHeaders(): Headers {
+    const headers = new Headers(this.extraHeaders);
+    headers.set('Content-Type', 'application/json');
+    headers.set('x-api-key', this.apiKey);
+    headers.set('anthropic-version', ANTHROPIC_VERSION);
+    return headers;
   }
 
   // An enabled thinking budget gets its own tokens on top of the answer's
