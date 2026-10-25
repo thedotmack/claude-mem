@@ -269,7 +269,7 @@ function defaultRewriteStages(
   return [
     createDurableHeaderStage({ contextTimeoutMs, ...memory.header }),
     createMemoryInjectionStage({ contextTimeoutMs, ...memory.injection }),
-    createEndlessModeStage({ observationLookup }),
+    createEndlessModeStage({ observationLookup, contextTimeoutMs }),
     createMemorySearchStage({ ...memory.search }),
   ];
 }

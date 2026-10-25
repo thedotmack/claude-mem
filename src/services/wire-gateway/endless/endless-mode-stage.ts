@@ -66,7 +66,8 @@ import type { WireConversationLedgerView, WireLedgerEntry } from '../ledger/conv
 import { appendToStringSplice, tagWrappedBlock, textBlockJson } from '../memory/memory-injection-stage.js';
 import { estimateTextTokens } from '../metrics/context-buckets.js';
 import type { WireGatewayRoute } from '../routes.js';
-import type { WireRewriteContext, WireRewriteStage } from '../rewrite/rewrite-stage.js';
+import { DEFAULT_CONTEXT_TIMEOUT_MS } from '../memory/memory-injection-stage.js';
+import { STAGE_BUDGET_MARGIN_MS, type WireRewriteContext, type WireRewriteStage } from '../rewrite/rewrite-stage.js';
 import { thinkingCutInForce, thinkingCutSplices } from '../rewrite/thinking-drop.js';
 import type { WireObservationLookup } from './observation-lookup.js';
 import { toolUseIdsByCallIdOf } from './tool-use-ids.js';
@@ -183,7 +184,29 @@ function holdsCacheControl(bytes: Uint8Array, span: JsonSpan): boolean {
   return false;
 }
 
-/** Why an array element of a run may not be removed; null when it may (only tool calls and results, reasoning, the model's text). */
+/**
+ * Whether message `messageIndex` is the harness's note about the run's own
+ * work: a system-role message (Claude Code 2.1.310 sends
+ * `{"role":"system","content":"<total_tokens>… tokens left</total_tokens>"}`
+ * after every tool result; the Anthropic parser keeps it as a system message
+ * with one text part) that sits strictly inside the run, after a tool result
+ * and before the next assistant message that calls a tool, with only other
+ * such notes between. Culling the work culls its chatter; a system message
+ * anywhere else stops the run.
+ */
+function isHarnessNoteInsideRun(request: WireRequest, messageIndex: number, firstIndex: number, lastIndex: number): boolean {
+  if (request.messages[messageIndex].role !== 'system' || messageIndex <= firstIndex || messageIndex >= lastIndex) return false;
+  let previousIndex = messageIndex - 1;
+  while (previousIndex > firstIndex && request.messages[previousIndex].role === 'system') previousIndex--;
+  let nextIndex = messageIndex + 1;
+  while (nextIndex < lastIndex && request.messages[nextIndex].role === 'system') nextIndex++;
+  const previous = request.messages[previousIndex];
+  const next = request.messages[nextIndex];
+  return previous.role === 'user' && previous.parts.some(part => part.kind === 'tool_result')
+    && next.role === 'assistant' && next.parts.some(part => part.kind === 'tool_call');
+}
+
+/** Why an array element of a run may not be removed; null when it may (only tool calls and results, reasoning, the model's text, the harness's notes about the work). */
 function unremovableElementReason(request: WireRequest, element: JsonSpan, firstIndex: number, lastIndex: number): string | null {
   let partCount = 0;
   for (let messageIndex = firstIndex; messageIndex <= lastIndex; messageIndex++) {
@@ -193,7 +216,8 @@ function unremovableElementReason(request: WireRequest, element: JsonSpan, first
       if (!spansOverlap(part.span, element)) continue;
       partCount++;
       const removable = part.kind === 'tool_call' || part.kind === 'tool_result' || part.kind === 'thinking' || part.kind === 'sealed'
-        || (part.kind === 'text' && message.role === 'assistant');
+        || (part.kind === 'text' && message.role === 'assistant')
+        || (part.kind === 'text' && isHarnessNoteInsideRun(request, messageIndex, firstIndex, lastIndex));
       if (!removable) return `it holds a ${part.kind === 'context' ? `${part.name ?? 'context'} item` : `${message.role} ${part.kind} part`}`;
     }
   }
@@ -312,15 +336,31 @@ function culledTokensOf(request: WireRequest, run: CullRun, block: string): numb
 
 export interface EndlessModeStageOptions {
   observationLookup: WireObservationLookup;
+  /** CONTEXT_TIMEOUT_MS: how long a turn-start request waits for the observations of earlier turns' work. */
+  contextTimeoutMs?: number;
   now?: () => number;
+}
+
+/** `promise` settled, or `timeoutMs` passed, whichever comes first; never throws (the lookup never does). */
+async function settledWithin(promise: Promise<void>, timeoutMs: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([promise, new Promise<void>(resolve => { timer = setTimeout(resolve, timeoutMs); })]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export function createEndlessModeStage(options: EndlessModeStageOptions): WireRewriteStage {
   const now = options.now ?? Date.now;
+  const contextTimeoutMs = options.contextTimeoutMs ?? DEFAULT_CONTEXT_TIMEOUT_MS;
   const suspend = (ledger: WireConversationLedgerView) => ledger.record({ type: 'suspended', stage: ENDLESS_MODE_STAGE_NAME, at: new Date(now()).toISOString() });
 
   return {
     name: ENDLESS_MODE_STAGE_NAME,
+    // A turn-start request waits for the worker's observations up to CONTEXT_TIMEOUT_MS, as the
+    // durable header's turn-start fetch does, plus the shared margin for the splices and ledger writes.
+    budgetMs: contextTimeoutMs + STAGE_BUDGET_MARGIN_MS,
     enabledFor: endlessModeEnabledFor,
     // A conversation whose culls once went missing (the stage was off for one
     // of its requests) is never culled again: the model has answered the
@@ -336,7 +376,7 @@ export function createEndlessModeStage(options: EndlessModeStageOptions): WireRe
       });
     },
 
-    onRequest(context: WireRewriteContext, body: Uint8Array) {
+    async onRequest(context: WireRewriteContext, body: Uint8Array) {
       const ledger = context.ledger as WireConversationLedgerView;
       if (ledger.entries().some(entry => entry.type === 'swap' || entry.type === 'thinkingDrop')) {
         // Endless Mode v1 swapped this conversation; v2 does not put swaps back, so it leaves it alone for good.
@@ -372,6 +412,31 @@ export function createEndlessModeStage(options: EndlessModeStageOptions): WireRe
       const recordedByTurn = new Map<number, CullEntry>();
       for (const entry of ledger.entries()) {
         if (entry.type === 'cull') recordedByTurn.set(entry.turnOrdinal, entry);
+      }
+
+      if (context.identity.turnStart) {
+        // A turn start is the one moment a cull of earlier turns costs the cache nothing extra, so this request
+        // waits (within CONTEXT_TIMEOUT_MS) for the observations of their work not culled yet, rather than
+        // culling on the next request, mid-loop, and rewriting the cache twice. Mid-loop requests never wait.
+        const toolUseIdsToAwait: string[] = [];
+        for (const turn of turns) {
+          if (turn === latestTurn) continue;
+          const calls = callsOf(request, turn);
+          const recorded = recordedByTurn.get(turn.ordinal);
+          const recordedThroughOrder = recorded ? calls.findIndex(call => call.callId === recorded.throughCallId) : -1;
+          for (const call of calls.slice(recordedThroughOrder + 1)) {
+            const toolUseId = toolUseIdByCallId.get(call.callId);
+            if (toolUseId !== undefined) toolUseIdsToAwait.push(toolUseId);
+          }
+        }
+        if (toolUseIdsToAwait.length > 0) {
+          const deadline = now() + contextTimeoutMs;
+          const query = { contentSessionId: contentSessionIdOf(context.identity), platformSource: context.identity.agentId, toolUseIds: toolUseIdsToAwait };
+          await settledWithin(options.observationLookup.requestRefresh(ledger.conversationKey, query), contextTimeoutMs);
+          // A lookup already in flight (another request's) was joined above; ask again for what it did not cover.
+          const remainingMs = deadline - now();
+          if (remainingMs > 0) await settledWithin(options.observationLookup.requestRefresh(ledger.conversationKey, query), remainingMs);
+        }
       }
 
       const runs: Array<{ run: CullRun; entry: CullEntry; appendSplice: ByteSplice }> = [];

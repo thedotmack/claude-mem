@@ -40,7 +40,9 @@ const decoder = new TextDecoder();
 const encoder = new TextEncoder();
 const textOf = (bytes: Uint8Array) => decoder.decode(bytes);
 
-const ENDLESS_SETTINGS = { CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE: 'true' };
+/** How long a turn-start request waits for observations here: short, so the hanging-worker test stays quick. */
+const CONTEXT_TIMEOUT_MS = 200;
+const ENDLESS_SETTINGS = { CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE: 'true', CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS: String(CONTEXT_TIMEOUT_MS) };
 
 // ---------------------------------------------------------------------------
 // The fake worker behind the observation lookup
@@ -659,33 +661,98 @@ describe('Endless Mode v2 per protocol', () => {
     expect(await sendAndSettle(anthropicCase, conversation.body(), session)).toBe(conversation.body());
   });
 
-  it('with the worker down or hanging, sends every request byte-identical and never waits for it', async () => {
+  it('with the worker down or hanging, sends every request byte-identical; mid-loop requests never wait, turn starts at most CONTEXT_TIMEOUT_MS', async () => {
     const timeConversation = async (routeId: string, tag: string) => {
       const session = nextSession(tag);
       const conversation = new Conversation(anthropicCase);
-      const started = performance.now();
+      let loopMs = 0;
+      let slowestTurnStartMs = 0;
       for (let n = 1; n <= 4; n++) {
         const call = { id: `call_${tag}_${n}` };
         conversation.add(`u${n}`, anthropicCase.user(`${tag}: task ${n}`));
+        let started = performance.now();
         expect(await send(anthropicCase, conversation.body(), session, routeId)).toBe(conversation.body());
+        slowestTurnStartMs = Math.max(slowestTurnStartMs, performance.now() - started);
         conversation.add(`c${n}`, anthropicCase.calls([call], true)).add(`r${n}`, anthropicCase.results([call]));
+        started = performance.now();
         expect(await send(anthropicCase, conversation.body(), session, routeId)).toBe(conversation.body());
+        loopMs += performance.now() - started;
         conversation.add(`f${n}`, anthropicCase.final(`done ${n}`, true));
       }
-      return performance.now() - started;
+      return { loopMs, slowestTurnStartMs };
     };
     fetcherMode = 'hang';
     await timeConversation('endless-off', 'warm-off');
     await timeConversation(anthropicCase.routeId, 'warm-on');
-    const baselineMs = await timeConversation('endless-off', 'baseline');
-    const hangingMs = await timeConversation(anthropicCase.routeId, 'worker-hangs');
+    const baseline = await timeConversation('endless-off', 'baseline');
+    const hanging = await timeConversation(anthropicCase.routeId, 'worker-hangs');
     fetcherMode = 'down';
-    const downMs = await timeConversation(anthropicCase.routeId, 'worker-down');
+    const down = await timeConversation(anthropicCase.routeId, 'worker-down');
     fetcherMode = 'table';
-    // Eight requests each; a lookup that hangs forever must cost none of them anything noticeable
+    // Four mid-loop requests each: a lookup that hangs forever costs them nothing noticeable
     // (250 ms: one request stage budget, REQUEST_STAGE_BUDGET_MS).
-    expect(hangingMs).toBeLessThan(baselineMs + 250);
-    expect(downMs).toBeLessThan(baselineMs + 250);
+    expect(hanging.loopMs).toBeLessThan(baseline.loopMs + 250);
+    expect(down.loopMs).toBeLessThan(baseline.loopMs + 250);
+    // A turn start waits for a hanging worker no longer than CONTEXT_TIMEOUT_MS (plus that same 250 ms of leeway);
+    // a worker that is down answers at once.
+    expect(hanging.slowestTurnStartMs).toBeGreaterThanOrEqual(CONTEXT_TIMEOUT_MS - 5);
+    expect(hanging.slowestTurnStartMs).toBeLessThan(baseline.slowestTurnStartMs + CONTEXT_TIMEOUT_MS + 250);
+    expect(down.slowestTurnStartMs).toBeLessThan(baseline.slowestTurnStartMs + 250);
+  });
+
+  it('a turn start waits for the observations of earlier turns, so the cull lands on that request', async () => {
+    fetcherMode = 'table';
+    const tag = 'lands-on-turn-start';
+    const session = nextSession(tag);
+    const call = { id: `call_${tag}` };
+    const conversation = new Conversation(anthropicCase).add('u1', anthropicCase.user(`${tag}: one`));
+    await sendAndSettle(anthropicCase, conversation.body(), session);
+    conversation.add('c', anthropicCase.calls([call], true)).add('r', anthropicCase.results([call]));
+    // Asked during the loop: no observation yet.
+    await sendAndSettle(anthropicCase, conversation.body(), session);
+    // The observer finishes after the loop request; the turn start asks again and waits for the answer.
+    observationsByToolUseId.set(call.id, observationFor(298));
+    conversation.add('f1', anthropicCase.final('done', true)).add('u2', anthropicCase.user(`${tag}: two`));
+    const turn2 = await send(anthropicCase, conversation.body(), session);
+    expect(turn2).toContain(escapedInJson(workBlockOf(298)));
+    expect(turn2).not.toContain(call.id);
+  });
+
+  it('anthropic: Claude Code\'s system notes between a tool result and the next call go with the culled work', async () => {
+    fetcherMode = 'table';
+    const tag = 'system-notes';
+    const session = nextSession(tag);
+    // The shapes Claude Code 2.1.310 sends (Phase 6 tee'd bodies, path sanitized).
+    const tokensLeft = (left: number) => ({ role: 'system', content: `<total_tokens>${left} tokens left</total_tokens>` });
+    const fileNote = { role: 'system', content: 'Note: /repo/main.py changed on disk since you last read it. That\'s usually deliberate, so take it as the current state rather than reverting it.' };
+    const calls = ['a', 'b', 'c'].map(name => ({ id: `call_${tag}_${name}` }));
+    for (const [index, call] of calls.entries()) observationsByToolUseId.set(call.id, observationFor(310 + index));
+    const conversation = new Conversation(anthropicCase).add('u1', anthropicCase.user(`${tag}: make main.py`)).add('n0', [tokensLeft(15000000)]);
+    await sendAndSettle(anthropicCase, conversation.body(), session);
+    conversation
+      .add('ca', anthropicCase.calls([calls[0]], true)).add('ra', anthropicCase.results([calls[0]])).add('na', [tokensLeft(14999832)])
+      .add('cb', anthropicCase.calls([calls[1]], true)).add('rb', anthropicCase.results([calls[1]])).add('nb', [fileNote, tokensLeft(14999800)])
+      .add('cc', anthropicCase.calls([calls[2]], true)).add('rc', anthropicCase.results([calls[2]])).add('nc', [tokensLeft(14999217)]);
+    await sendAndSettle(anthropicCase, conversation.body(), session);
+    conversation.add('f1', anthropicCase.final('made it', true)).add('u2', anthropicCase.user(`${tag}: next`)).add('n2', [tokensLeft(15000000)]);
+    const input = conversation.body();
+    const turn2 = await send(anthropicCase, input, session);
+    expect(turn2).toContain(escapedInJson(workBlockOf(310, 311, 312)));
+    for (const call of calls) expect(turn2).not.toContain(call.id);
+    // The notes inside the run went with it; the one before the first call and the one after the last result stay.
+    expect(turn2).not.toContain('14999832');
+    expect(turn2).not.toContain('14999800');
+    expect(turn2).not.toContain('changed on disk');
+    expect(turn2).toContain('<total_tokens>15000000 tokens left</total_tokens>');
+    expect(turn2).toContain('14999217');
+    const inputBytes = encoder.encode(input);
+    expectDiffersOnlyInsideDeclaredSpans(inputBytes, encoder.encode(turn2), [
+      appendPointOf(inputBytes, anthropicCase.userContentPath(0)),
+      removedRangeOf(inputBytes, anthropicCase, { first: conversation.range('ca').first, last: conversation.range('rc').last }),
+      ...anthropicThinkingSpans(inputBytes, conversation.range('f1').first, conversation.range('f1').last + 1),
+    ]);
+    expectPairsWhole(anthropicCase, input, turn2);
+    expect(await send(anthropicCase, input, session)).toBe(turn2);
   });
 
   /** A finished turn 1 with one covered call, and the bodies of the next turn. */
