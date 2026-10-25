@@ -31,5 +31,5 @@ export class AutoRefreshWorker {
   start(): void;
   close(): void;
   check(): Promise<'closed' | 'disabled' | 'running' | 'idle' | RefreshJobOutcome['state']>;
-  runNow(options: { reason: string }): Promise<'closed' | 'running' | RefreshJobOutcome['state']>;
+  runNow(options: { reason: string }): Promise<'closed' | 'running' | 'idle' | RefreshJobOutcome['state']>;
 }

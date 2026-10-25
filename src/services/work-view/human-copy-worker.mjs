@@ -56,6 +56,7 @@ export class HumanCopyWorker {
     Object.assign(this, { provider, cachePath, concurrency, quietMs, maxWaitMs, minIntervalMs, retryMs, now });
     this.cache = new Map(); this.pending = new Map(); this.running = new Set(); this.failures = new Map(); this.lastAttempt = new Map();
     this.revision = 0; this.closed = false; this.saveChain = Promise.resolve(); this.timer = null;
+    this.shouldPause = () => false;
   }
 
   async load() {
@@ -70,9 +71,11 @@ export class HumanCopyWorker {
 
   start() { this.timer = setInterval(() => this.pump(), 1000); this.timer.unref(); }
   close() { this.closed = true; clearInterval(this.timer); this.pending.clear(); }
+  /** The GUI's subsidized setup must not start display-copy calls on the owner's token plan. */
+  pauseWhile(shouldPause) { this.shouldPause = shouldPause; }
 
   observe(view) {
-    if (this.closed) return view;
+    if (this.closed || this.shouldPause()) return view;
     const now = this.now();
     const requests = (view.humanRequests || []).map(request => {
       let input, fingerprint;
@@ -108,7 +111,7 @@ export class HumanCopyWorker {
   }
 
   pump() {
-    if (this.closed) return;
+    if (this.closed || this.shouldPause()) return;
     const now = this.now();
     const ready = [...this.pending.values()].filter(job => {
       const entry = this.cache.get(job.id), failure = this.failures.get(job.id);
@@ -124,6 +127,7 @@ export class HumanCopyWorker {
   }
 
   async run(job) {
+    if (this.closed || this.shouldPause()) return;
     this.lastAttempt.set(job.id, this.now());
     try {
       if (typeof this.provider !== 'function') throw new Error('No summary provider is configured.');

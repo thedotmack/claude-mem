@@ -12,7 +12,7 @@
  *     loaded for its memory-search MCP tools, only the task's allowed tools,
  *     Read/Grep/Glob only inside the task's readable folders (everything else is
  *     denied), `cwd` = the task's folder and no session persistence.
- *   - Codex: `codex exec -s read-only --ephemeral --ignore-user-config --skip-git-repo-check -C <cwd> -o <file> [--output-schema <file>] [-m <model>] [-c model_reasoning_effort="<effort>"] -`
+ *   - Codex: `codex exec --strict-config -c default_permissions=claude-mem-refresh --ephemeral --ignore-user-config --skip-git-repo-check -C <cwd> -o <file> [--output-schema <file>] [-m <model>] [-c model_reasoning_effort="<effort>"] -`
  *     (codex-cli 0.163.0 `exec --help`), prompt on stdin, no MCP servers. A step that names an answer
  *     schema gets it as `--output-schema`, so the final message is that JSON shape and nothing else.
  *   - Gemini: `gemini -p <line> --approval-mode plan -e none --allowed-mcp-server-names <none> -o json [-m <model>]`
@@ -26,16 +26,20 @@
  */
 
 import { randomBytes } from 'crypto';
-import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { query, type CanUseTool, type Options, type SdkPluginConfig } from '@anthropic-ai/claude-agent-sdk';
 import { buildIsolatedEnvWithFreshOAuth } from '../../shared/EnvManager.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { logger } from '../../utils/logger.js';
-import { detectUsableAgents, runCommand, type CommandResult, type UsableAgent, type UsableAgentId } from './detect.js';
+import { runtimeReadRoots } from './runtime-read-roots.js';
+import { detectUsableAgents, GEMINI_NO_MCP_SERVERS, runCommand, type CommandResult, type UsableAgent, type UsableAgentId } from './detect.js';
 
 /** The model one step runs on: a Claude Code alias, a Codex model id (with reasoning effort) or a Gemini alias.
  * A missing entry or field leaves that CLI's own default. */
+export { GEMINI_NO_MCP_SERVERS };
+
 export interface StepModel { model?: string; reasoningEffort?: string }
 export type StepModels = Partial<Record<UsableAgentId, StepModel>>;
 
@@ -66,6 +70,8 @@ export interface AgentTask {
   claudeCode: ClaudeCodeTaskOptions;
   /** Drives the agent step by step; returns a short result line. */
   run: (ask: AskAgent, agent: UsableAgentId) => Promise<string>;
+  /** Input every backend reads, prepared once a logged-in agent is found (e.g. the owner's prompts file). */
+  prepare?: () => Promise<void>;
 }
 
 export interface AgentAttempt { agent: UsableAgentId; error: string }
@@ -186,22 +192,24 @@ function failure(name: string, result: CommandResult): Error {
 }
 
 /**
- * `-s read-only` sandboxes only shell and files, not MCP tools, and `--ephemeral`
+ * A named permissions profile confines reads to the task workspace and minimal runtime,
+ * with the installed Codex executable reopened so its sandbox helper can start.
+ * Network and writes are denied. Strict config makes unsupported versions fail closed.
+ * `--ephemeral`
  * still loads $CODEX_HOME/config.toml, where the user's write-capable MCP
  * servers (claude-mem's save_memory and work_state_write among them) live.
  * `--ignore-user-config` skips that file, so the run has no MCP tools; auth
  * still comes from CODEX_HOME. Every save goes through the worker's validators.
  */
-const CODEX_EXEC_ARGS = (cwd: string, answerPath: string, schemaPath: string | null, { model, reasoningEffort }: StepModel = {}) => [
-  'exec', '-s', 'read-only', '--ephemeral', '--ignore-user-config', '--skip-git-repo-check', '-C', cwd, '-o', answerPath,
+const CODEX_EXEC_ARGS = (executable: string, cwd: string, answerPath: string, schemaPath: string | null, { model, reasoningEffort }: StepModel = {}) => [
+  'exec', '--strict-config', '-c', 'default_permissions="claude-mem-refresh"',
+  '-c', `permissions.claude-mem-refresh.filesystem={":root"="deny",":minimal"="read",":workspace_roots"={"."="read"},${runtimeReadRoots(executable).map(path => `${JSON.stringify(path)}="read"`).join(',')}}`,
+  '-c', 'permissions.claude-mem-refresh.network.enabled=false', '--ephemeral', '--ignore-user-config', '--skip-git-repo-check', '-C', cwd, '-o', answerPath,
   ...(schemaPath ? ['--output-schema', schemaPath] : []), ...(model ? ['-m', model] : []), ...(reasoningEffort ? ['-c', `model_reasoning_effort="${reasoningEffort}"`] : []), '-',
 ];
 
-/** Gemini with no extensions and no MCP server (none is named this), so plan mode is the only tool surface.
- * Never `--skip-trust`: a non-interactive run that exits plan mode switches to YOLO (gemini 0.49.0
- * ExitPlanModeTool.getAllowApprovalMode), so the folder-trust check is what keeps an unattended run read-only.
- * In an untrusted folder Gemini refuses with exit 55, and that refusal is reported like any other failure. */
-export const GEMINI_NO_MCP_SERVERS = 'claude-mem-refresh-uses-no-mcp-servers';
+// The folder trust gate remains intact. System settings below also register
+// no builtin tools, disable hooks/YOLO, and supply Gemini's evidence inline.
 const GEMINI_ARGS = ['-p', 'Follow the instructions above.', '--approval-mode', 'plan', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json'];
 
 function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies): AskAgent {
@@ -216,7 +224,7 @@ function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunner
     const schemaPath = answerSchema ? join(directory, `codex-${id}.schema.json`) : null;
     if (schemaPath) writeFileSync(schemaPath, JSON.stringify(answerSchema), { mode: 0o600 });
     try {
-      const result = await runCli(agent.path!, CODEX_EXEC_ARGS(task.cwd, answerPath, schemaPath, models.codex), prompt, { cwd: task.cwd, env });
+      const result = await runCli(agent.path!, CODEX_EXEC_ARGS(agent.path!, task.cwd, answerPath, schemaPath, models.codex), prompt, { cwd: task.cwd, env });
       if (result.exitCode !== 0) throw failure('codex exec', result);
       return readFileSync(answerPath, 'utf8');
     } finally {
@@ -230,7 +238,20 @@ function geminiAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunne
   return async (prompt, models) => {
     const env = await dependencies.buildEnv();
     const model = models.gemini?.model;
-    const result = await runCli(agent.path!, [...GEMINI_ARGS, ...(model ? ['-m', model] : [])], prompt, { cwd: task.cwd, env });
+    const policyDir = mkdtempSync(join(tmpdir(), 'claude-mem-gemini-policy-'));
+    const policyPath = join(policyDir, 'settings.json');
+    // System settings override project/user config. An empty core list registers
+    // no builtin tools: all evidence is inline, so no disk reads or plan exit are needed.
+    writeFileSync(policyPath, JSON.stringify({
+      tools: { core: [] },
+      security: { disableYoloMode: true }, hooksConfig: { enabled: false },
+    }), { mode: 0o600 });
+    let result: CommandResult;
+    try {
+      result = await runCli(agent.path!, [...GEMINI_ARGS, ...(model ? ['-m', model] : [])], prompt, {
+        cwd: task.cwd, env: { ...env, GEMINI_CLI_SYSTEM_SETTINGS_PATH: policyPath },
+      });
+    } finally { rmSync(policyDir, { recursive: true, force: true }); }
     if (result.exitCode !== 0) throw failure('gemini', result);
     let output: { response?: unknown; error?: { message?: string } };
     try { output = JSON.parse(result.stdout); }
@@ -257,6 +278,12 @@ export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunn
     return { state: 'waiting-for-agent', agent: null, result: null, error: 'No logged-in Claude Code, Codex or Gemini on this computer yet.', attempts: [] };
   }
   const attempts: AgentAttempt[] = [];
+  try { await task.prepare?.(); }
+  catch (error) {
+    const message = describeError(error).slice(0, 500);
+    logger.warn('WORKER', `Agent run (${task.reason}) could not prepare its input`, { error: message });
+    return { state: 'failed', agent: null, result: null, error: `Preparing the run failed: ${message}`, attempts };
+  }
   for (const agent of usable) {
     logger.info('WORKER', `Agent run (${task.reason}) starting on ${agent.id}`);
     try {
