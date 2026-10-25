@@ -55,7 +55,9 @@ describe('Bash memory lookup uses the native search pattern', () => {
     for (const depth of ['-d 1', '-d1']) {
       expect(memorySearchLookup({ sessionId: 'pattern-fixture', cwd: '/project', toolName: 'Bash',
         toolInput: { command: `rg ${depth} timeout /notes/feedback.md` } }, ['/notes']))
-        .toEqual({ query: 'timeout', memoryPath: '/notes/feedback.md' });
+        // memoryPath is resolved against the session cwd, so it is host-shaped
+        // (D:\notes\... on Windows); a POSIX literal cannot match there.
+        .toEqual({ query: 'timeout', memoryPath: path.resolve('/project', '/notes/feedback.md') });
     }
   });
 
