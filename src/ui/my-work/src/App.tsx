@@ -8,7 +8,7 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { TooltipProvider } from '@/components/ui/tooltip'
-import { DeviceFreshness, LiveIndicator, WorkspaceContext, type Workspace } from '@/components/bits'
+import { ClassicViewerLink, DeviceFreshness, GitHubStars, LiveIndicator, WorkspaceContext, type Workspace } from '@/components/bits'
 import { CmemMark } from '@/components/brand'
 import { RequestDetail } from '@/components/request-detail'
 import { cn } from '@/lib/utils'
@@ -165,6 +165,8 @@ function LoadedApp() {
                     <TeamSwitch team={workspace.team} onChange={(team) => setWorkspace({ ...workspace, team })} />
                     <DeviceFreshness />
                     <LiveIndicator />
+                    <ClassicViewerLink />
+                    <GitHubStars />
                   </div>
                 </div>
               </header>

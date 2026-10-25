@@ -1,5 +1,5 @@
-import { createContext, useContext, useState, type ReactNode } from 'react'
-import { BotIcon, CornerLeftUpIcon, RefreshCwIcon, UserIcon } from 'lucide-react'
+import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
+import { BotIcon, CornerLeftUpIcon, RefreshCwIcon, StarIcon, UserIcon } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card'
@@ -212,6 +212,43 @@ export function DeviceFreshness() {
         </HoverCardContent>
       </HoverCard>
     </Req>
+  )
+}
+
+const CLAUDE_MEM_REPO_URL = 'https://github.com/thedotmack/claude-mem'
+const CLAUDE_MEM_REPO_API_URL = 'https://api.github.com/repos/thedotmack/claude-mem'
+
+/** The repo's GitHub star count, read once from the public API. Shows no number until a real one arrives. */
+export function GitHubStars() {
+  const [stargazerCount, setStargazerCount] = useState<number | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    fetch(CLAUDE_MEM_REPO_API_URL)
+      .then((response) => {
+        if (!response.ok) throw new Error(`GitHub repo read failed: HTTP ${response.status}`)
+        return response.json() as Promise<{ stargazers_count: number }>
+      })
+      .then((repo) => { if (!cancelled) setStargazerCount(repo.stargazers_count) })
+      .catch((error: unknown) => console.warn('[my-work] GitHub star count unavailable:', error))
+    return () => { cancelled = true }
+  }, [])
+  return (
+    <Button asChild variant="outline" size="sm" className="h-7 gap-1.5 px-2 text-xs">
+      <a href={CLAUDE_MEM_REPO_URL} target="_blank" rel="noreferrer" aria-label="Star claude-mem on GitHub">
+        <StarIcon className="size-3.5" />
+        <span className="hidden sm:inline">Star</span>
+        {stargazerCount !== null && <span className="tabular-nums">{new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(stargazerCount)}</span>}
+      </a>
+    </Button>
+  )
+}
+
+/** The previous memory viewer, still served by the worker at /viewer. */
+export function ClassicViewerLink() {
+  return (
+    <a href="/viewer" className="hidden text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline md:inline" title="Open the previous memory viewer">
+      Classic viewer
+    </a>
   )
 }
 
