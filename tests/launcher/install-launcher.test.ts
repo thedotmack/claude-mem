@@ -811,10 +811,31 @@ describe('WINDOWS_USER_PATH_APPEND_SCRIPT #5044 guards', () => {
   });
 
   it('backs the existing value up to %LOCALAPPDATA%\\claude-mem\\user-path.bak before writing (#5044)', () => {
-    const backupIndex = indexOfLine('user-path.bak');
-    expect(backupIndex).toBeGreaterThan(-1);
-    expect(backupIndex).toBeGreaterThan(indexOfLine('$existingUserPath ='));
-    expect(backupIndex).toBeLessThan(setValuePathIndex);
+    const backupFileIndex = indexOfLine('user-path.bak');
+    const writeBackupIndex = indexOfLine('[System.IO.File]::WriteAllText($backupFile, $existingUserPath)');
+    expect(backupFileIndex).toBeGreaterThan(-1);
+    expect(writeBackupIndex).toBeGreaterThan(backupFileIndex);
+    expect(writeBackupIndex).toBeGreaterThan(indexOfLine('$existingUserPath ='));
+    expect(writeBackupIndex).toBeLessThan(setValuePathIndex);
+  });
+
+  it('writes the backup only when the existing value is non-empty, so a later run never overwrites the last good copy (#5044)', () => {
+    const nonEmptyGuardIndex = lines.findIndex((line) => line.trim() === 'if ($existingUserPath) {');
+    const writeBackupIndex = indexOfLine('[System.IO.File]::WriteAllText($backupFile, $existingUserPath)');
+    const closingBraceIndex = lines.findIndex((line, index) => index > writeBackupIndex && line.trim() === '}');
+    expect(nonEmptyGuardIndex).toBeGreaterThan(-1);
+    expect(nonEmptyGuardIndex).toBeLessThan(writeBackupIndex);
+    expect(closingBraceIndex).toBeGreaterThan(writeBackupIndex);
+    expect(closingBraceIndex).toBeLessThan(setValuePathIndex);
+  });
+
+  it('reports a failed backup on stderr without terminating the append (#5044)', () => {
+    const catchLine = lines.find((line) => line.includes('catch {')) ?? '';
+    expect(catchLine).toContain('[Console]::Error.WriteLine(');
+    expect(catchLine).toContain('user-path-backup-failed');
+    // Write-Error is terminating under $ErrorActionPreference = 'Stop'.
+    expect(WINDOWS_USER_PATH_APPEND_SCRIPT).not.toContain('Write-Error');
+    expect(WINDOWS_USER_PATH_APPEND_SCRIPT).not.toMatch(/catch \{\s*\}/);
   });
 
   it('deletes the broadcast variable through the registry API, leaving no empty value behind (#5044)', () => {

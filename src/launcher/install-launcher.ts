@@ -378,7 +378,11 @@ const runPowerShellHidden: PowerShellRunner = (script, extraEnvironment) => {
  *   directory env var is missing or empty, or when the new value would be
  *   shorter than the existing one (an append can only grow the value), and it
  *   backs the old value up to `%LOCALAPPDATA%\claude-mem\user-path.bak` first
- *   — one bad run must never be able to blank the user Path.
+ *   — one bad run must never be able to blank the user Path. The backup is
+ *   written only when the existing value is non-empty, so a run after a
+ *   blanking never overwrites the last good copy; a failed backup is reported
+ *   on stderr (not `Write-Error`, which `Stop` would make terminating) and the
+ *   append continues.
  * - The broadcast variable is removed with `DeleteValue`, not
  *   `SetEnvironmentVariable(..., $null)`: PowerShell 5.1 passes `$null` to
  *   .NET string parameters as `""`, which leaves the value behind as an empty
@@ -397,7 +401,10 @@ export const WINDOWS_USER_PATH_APPEND_SCRIPT = [
   "$updatedUserPath = if ($existingUserPath -eq '') { $launcherDirectory } elseif ($existingUserPath.EndsWith(';')) { $existingUserPath + $launcherDirectory } else { \"$existingUserPath;$launcherDirectory\" }",
   "if ($updatedUserPath.Length -lt $existingUserPath.Length) { 'shortened-user-path'; exit 1 }",
   "$backupFile = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'claude-mem\\user-path.bak'",
-  "try { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $backupFile) | Out-Null; [System.IO.File]::WriteAllText($backupFile, $existingUserPath) } catch { }",
+  "if ($existingUserPath) {",
+  "  try { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $backupFile) | Out-Null; [System.IO.File]::WriteAllText($backupFile, $existingUserPath) }",
+  "  catch { [Console]::Error.WriteLine(\"user-path-backup-failed: $($_.Exception.Message)\") }",
+  "}",
   "$environmentKey.SetValue('Path', $updatedUserPath, $pathValueKind)",
   "[Environment]::SetEnvironmentVariable('CLAUDE_MEM_PATH_BROADCAST', '1', 'User')",
   "$environmentKey.DeleteValue('CLAUDE_MEM_PATH_BROADCAST', $false)",
