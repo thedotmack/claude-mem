@@ -147,6 +147,9 @@ const QUERIES: Record<string, string> = {
 (method_declaration receiver: (parameter_list (parameter_declaration type: (_) @receiver)) name: (field_identifier) @name) @method
 (type_declaration (type_spec name: (type_identifier) @name)) @tdef
 (type_declaration (type_alias name: (type_identifier) @name)) @tdef
+(type_declaration "(" (type_spec name: (type_identifier) @name) @tdef)
+(type_declaration "(" (type_alias name: (type_identifier) @name) @tdef)
+(type_declaration "(") @go_type_group
 (import_declaration) @imp
 `,
 
@@ -705,6 +708,9 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   const imports: string[] = [];
   const exportRanges: RawCapture[] = [];
   const singletonScopes: RawCapture[] = [];
+  // A grouped Go `type ( … )` lists each member through its own capture, so
+  // the whole-group match a member also produces is dropped.
+  const goTypeGroups = new Set<string>();
   const decoratedRanges = new Map<string, RawCapture>();
   const swiftParameters = new Map<string, string[]>();
   const swiftHeaders = new Map<string, { generics?: string; constraints?: string }>();
@@ -745,6 +751,9 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       if (cap.tag === "singleton_scope") {
         singletonScopes.push(cap);
       }
+      if (cap.tag === "go_type_group") {
+        goTypeGroups.add(`${cap.startRow}:${cap.startCol}:${cap.endRow}:${cap.endCol}`);
+      }
       if (cap.tag === "imp") {
         // Outlines go straight into an agent's context, so each entry is one
         // line capped at the 200-char signature budget: a Go `import ( … )`
@@ -784,6 +793,8 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
         ? findFunctionName(kindCapture)
         : undefined);
     if (!kindCapture) continue;
+    if (kindCapture.tag === "tdef" && goTypeGroups.has(
+      `${kindCapture.startRow}:${kindCapture.startCol}:${kindCapture.endRow}:${kindCapture.endCol}`)) continue;
 
     const startRow = kindCapture.startRow;
     // An end at column 0 is just past a newline: the node's last line is the one
