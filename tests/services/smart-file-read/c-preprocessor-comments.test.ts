@@ -27,6 +27,12 @@ describe('C and C++ doc comments above preprocessor lines', () => {
     expect(add?.jsdoc).toBe('// Adds two numbers.');
   }, 120000);
 
+  nativeTest('a # line inside a block comment stays part of the comment', () => {
+    const source = '/**\n# Adds two numbers.\n*/\nint add(int a, int b) { return a + b; }\n';
+    const [add] = parseFile(source, 'add.c').symbols;
+    expect(add?.jsdoc).toBe('/**\n# Adds two numbers.\n*/');
+  }, 120000);
+
   nativeTest('a # comment above a Python function is still found', () => {
     const source = '# Adds two numbers.\ndef add(a, b):\n    return a + b\n';
     const [add] = parseFile(source, 'add.py').symbols;

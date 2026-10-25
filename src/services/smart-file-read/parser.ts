@@ -614,7 +614,11 @@ function findCommentAbove(lines: string[], startRow: number, language: string): 
   let foundComment = false;
   // In C and C++ a `#` line is a preprocessor directive (`#include`, `#ifdef`),
   // not a comment, so it ends the comment block like any other code line.
+  // Inside a /* ... */ block a `#` line is comment text, so only a `#` line
+  // outside a block is a directive. Scanning upward, a block is entered at
+  // its closing `*/` and left at its opening `/*`.
   const hashStartsComment = language !== "c" && language !== "cpp";
+  let inBlockComment = false;
 
   for (let i = startRow - 1; i >= 0; i--) {
     const trimmed = lines[i].trim();
@@ -622,12 +626,14 @@ function findCommentAbove(lines: string[], startRow: number, language: string): 
       if (foundComment) break;
       continue;
     }
-    if (trimmed.startsWith("#") && !hashStartsComment) break;
+    if (trimmed.startsWith("#") && !hashStartsComment && !inBlockComment) break;
     if (trimmed.startsWith("/**") || trimmed.startsWith("*") || trimmed.startsWith("*/") ||
         trimmed.startsWith("//") || trimmed.startsWith("///") || trimmed.startsWith("//!") ||
         trimmed.startsWith("#") || trimmed.startsWith("@")) {
       commentLines.unshift(lines[i]);
       foundComment = true;
+      if (trimmed.startsWith("/*")) inBlockComment = false;
+      else if (trimmed.endsWith("*/")) inBlockComment = true;
     } else {
       break;
     }
