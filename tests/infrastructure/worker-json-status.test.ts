@@ -89,14 +89,6 @@ describe('worker-json-status', () => {
         expect(buildStatusOutput('ready', 'msg').suppressOutput).toBe(true);
         expect(buildStatusOutput('error', 'msg').suppressOutput).toBe(true);
       });
-
-      it('can omit suppressOutput when requested', () => {
-        const result = buildStatusOutput('ready', undefined, { includeSuppressOutput: false });
-
-        expect(result.continue).toBe(true);
-        expect(result.status).toBe('ready');
-        expect(result).not.toHaveProperty('suppressOutput');
-      });
     });
 
     describe('Codex SessionStart compatibility', () => {

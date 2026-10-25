@@ -177,10 +177,6 @@ export interface StatusOutput {
   message?: string;
 }
 
-export interface StatusOutputOptions {
-  includeSuppressOutput?: boolean;
-}
-
 export interface CodexSessionStartOutput {
   continue: true;
   systemMessage?: string;
@@ -188,18 +184,14 @@ export interface CodexSessionStartOutput {
 
 export function buildStatusOutput(
   status: 'ready' | 'error',
-  message?: string,
-  options: StatusOutputOptions = {}
+  message?: string
 ): StatusOutput {
-  const output: StatusOutput = {
+  return {
     continue: true,
     status,
-    ...(message && { message })
+    ...(message && { message }),
+    suppressOutput: true
   };
-  if (options.includeSuppressOutput !== false) {
-    output.suppressOutput = true;
-  }
-  return output;
 }
 
 export function buildCodexSessionStartOutput(
