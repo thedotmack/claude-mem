@@ -260,16 +260,24 @@ export class SetupScan {
         return { ...agent, detected: summary.detected, fromMemory, fromTranscripts: transcriptOnly, prompts: fromMemory + transcriptOnly };
       });
       const sessionsByPlatform = new Map(result.agents.map(summary => [summary.platformSource, summary.sessions]));
+      // Prompts the owner typed whose transcripts are gone exist only in memory; extraction reads them too.
+      const memoryOnly: OwnerPrompt[] = memoryPrompts.flatMap(prompt => {
+        const summary = result.agents.find(entry => entry.platformSource === prompt.platformSource);
+        if (!summary || !result.ownerMemoryPromptIds.has(prompt.id) || claimedHookRowIds.has(prompt.id) || summary.sessions.has(prompt.contentSessionId)) return [];
+        return [{ agent: summary.id, platformSource: prompt.platformSource, sessionId: prompt.contentSessionId, nativePromptId: `memory-${prompt.id}`,
+          at: prompt.createdAtEpoch, cwd: prompt.cwd ?? null, text: prompt.promptText, project: prompt.project ?? '' }];
+      });
+      const ownerPrompts = [...result.ownerPrompts, ...memoryOnly];
       const notTyped = memoryPrompts.filter(prompt => !result.ownerMemoryPromptIds.has(prompt.id)
         || (!claimedHookRowIds.has(prompt.id) && Boolean(sessionsByPlatform.get(prompt.platformSource)?.has(prompt.contentSessionId))));
       this.options.saveAgentWrittenPromptIds?.(notTyped.map(prompt => prompt.id));
       const { usage, usageError } = await this.tokenSavings(store, tokenUsage);
-      const recentPrompts = [...result.ownerPrompts].sort((left, right) => right.at - left.at).slice(0, RECENT_PROMPTS)
+      const recentPrompts = [...ownerPrompts].sort((left, right) => right.at - left.at).slice(0, RECENT_PROMPTS)
         .map(prompt => ({ agent: prompt.agent, at: new Date(prompt.at).toISOString(), text: prompt.text.trim().slice(0, RECENT_PROMPT_CHARACTERS) }));
       if (this.extract) {
         // Keep the scan screen open until results are saved; its existing error slot shows Cloud failures.
         this.update({ phase: 'uploading', percent: 99, agents, added, skippedSources: result.skippedSources.length, usage, usageError, recentPrompts }, true);
-        await this.extract(result.ownerPrompts, this.current.improveProduct);
+        await this.extract(ownerPrompts, this.current.improveProduct);
       }
       const finishedAt = this.now();
       this.update({

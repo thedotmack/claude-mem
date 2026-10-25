@@ -179,10 +179,24 @@ describe('setup state endpoints', () => {
     await post('/api/setup/installer', { stage: 'waiting-for-choice' });
     const decoder = new TextDecoder();
     let buffer = '';
-    while (!buffer.includes('event: setup-state\n')) buffer += decoder.decode((await reader.read()).value, { stream: true });
+    const setupStates = () => buffer.split('\n\n').filter(block => block.startsWith('event: setup-state\n')).map(block => JSON.parse(block.split('\ndata: ')[1]));
+    while (!setupStates().some(view => view.installer?.stage === 'waiting-for-choice')) buffer += decoder.decode((await reader.read()).value, { stream: true });
+    controller.abort();
+    expect(setupStates()[0].installer).toBeNull();
+    expect(setupStates().at(-1).installer.stage).toBe('waiting-for-choice');
+  });
+
+  it('send the current setup state on every new event stream, so a reconnect sees a checkout paid while it was away', async () => {
+    await start();
+    await post('/api/setup/installer', { stage: 'go-awaiting-checkout', checkout: 'paid' });
+    const controller = new AbortController();
+    const reader = (await fetch(`${origin}/api/work-view/events`, { signal: controller.signal })).body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (!buffer.includes('event: setup-state\n') || !buffer.slice(buffer.indexOf('event: setup-state\n')).includes('\n\n')) buffer += decoder.decode((await reader.read()).value, { stream: true });
     controller.abort();
     const block = buffer.slice(buffer.indexOf('event: setup-state\n')).split('\n\n')[0];
-    expect(JSON.parse(block.split('\ndata: ')[1]).installer.stage).toBe('waiting-for-choice');
+    expect(JSON.parse(block.split('\ndata: ')[1]).checkout.state).toBe('paid');
   });
 
   it('import history only on On The Go, and only with a history import on the worker', async () => {

@@ -233,6 +233,28 @@ describe('hosted setup extraction', () => {
     expect(readLedger(join(test.dir, 'work-view'))).toEqual(before);
   });
 
+  it('replays a save that was cut off on the next attempt, with no second upload', async () => {
+    let uploads = 0;
+    const test = fixture((async () => { uploads++; return Response.json(answer()); }) as typeof fetch);
+    const append = test.store.appendWorkStateEntry.bind(test.store);
+    test.store.appendWorkStateEntry = () => { throw new Error('Worker stopped mid-save'); };
+    await expect(test.run.run(prompts, true)).rejects.toThrow('Worker stopped mid-save');
+    const ledgerDir = join(test.dir, 'work-view');
+    expect(existsSync(join(ledgerDir, 'hosted-intent.json'))).toBe(false);
+    expect(existsSync(join(ledgerDir, 'hosted-intent-pending.json'))).toBe(true);
+    test.store.appendWorkStateEntry = append;
+    const resumed = test.createRun();
+    await resumed.run(prompts, true);
+    expect(uploads).toBe(1);
+    expect(resumed.state()).toMatchObject({ state: 'ok', error: null });
+    expect(existsSync(join(ledgerDir, 'hosted-intent.json'))).toBe(true);
+    expect(existsSync(join(ledgerDir, 'hosted-intent-pending.json'))).toBe(false);
+    const database = new Database(test.databasePath, { readonly: true });
+    expect(readGoals(database).goals[0].title).toBe('Build everything');
+    database.close();
+    expect(Object.keys(readLedger(ledgerDir).groups.conversations)).toHaveLength(3);
+  });
+
   it('fails loudly when the saved result is unreadable instead of uploading again', async () => {
     let uploads = 0;
     const test = fixture((async () => { uploads++; return Response.json(answer()); }) as typeof fetch);

@@ -1,6 +1,6 @@
 /** Setup's subsidized extraction. The wire contract is claude-mem-pro's /api/pro/intent. */
 import { gzipSync } from 'node:zlib';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import type { OwnerPrompt } from '../prompt-import/index.js';
@@ -32,6 +32,10 @@ const resultSchema = z.object({
   cost_usd: z.number().finite().nonnegative(), model: text, dropped_quotes: z.number().int().nonnegative(),
 });
 export type HostedIntentResult = z.infer<typeof resultSchema>;
+/** Cloud's answer plus what saving it needs, kept until the save finishes. */
+interface PendingSave { result: HostedIntentResult; keys: Array<[string, string]>; offset: number; projects: Array<[string, string | undefined]> }
+const COMPLETE_FILE = 'hosted-intent.json';
+const PENDING_FILE = 'hosted-intent-pending.json';
 export interface HostedIntentState {
   state: 'idle' | 'running' | 'ok' | 'failed';
   reason: 'setup-scan'; step: 'goals' | null; agent: null;
@@ -131,9 +135,15 @@ export class HostedIntent {
         this.current = { ...this.current, state: 'ok', step: null, finishedAt: this.iso() };
         return;
       }
-      // A setup resumed after a successful run (installer restarted before Finish) keeps that result:
-      // it is already saved to goals, groups and rules, and the subsidized run may not be repeatable.
-      if (this.savedResult()) {
+      // A setup resumed after a successful run (installer restarted before Finish) keeps that result, since the
+      // subsidized run may not be repeatable: a complete save is done, and a save that was cut off is replayed.
+      if (this.completedResult()) {
+        this.current = { ...this.current, state: 'ok', step: null, finishedAt: this.iso() };
+        return;
+      }
+      const interrupted = this.pendingSave();
+      if (interrupted) {
+        this.save(interrupted);
         this.current = { ...this.current, state: 'ok', step: null, finishedAt: this.iso() };
         return;
       }
@@ -163,7 +173,12 @@ export class HostedIntent {
       }
       const parsed = resultSchema.safeParse(answer);
       if (!parsed.success) throw new Error(`Hosted setup returned an invalid response: ${parsed.error.message}`);
-      this.save(parsed.data, keys, timezoneOffsetMinutes, ownerPrompts);
+      // Keep Cloud's answer before writing anything from it, so a save that is cut off can be replayed.
+      const pending: PendingSave = { result: parsed.data, keys: [...keys], offset: timezoneOffsetMinutes,
+        projects: ownerPrompts.map(prompt => [keys.get(prompt.sessionId)!, prompt.project]) };
+      mkdirSync(this.options.ledgerDir, { recursive: true });
+      writeJsonAtomic(join(this.options.ledgerDir, PENDING_FILE), pending);
+      this.save(pending);
       this.current = { ...this.current, state: 'ok', step: null, finishedAt: this.iso() };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
@@ -172,21 +187,35 @@ export class HostedIntent {
     }
   }
 
-  /** The earlier successful run's result, if one was saved. A saved file that no longer parses fails loudly. */
-  private savedResult(): HostedIntentResult | null {
-    const path = join(this.options.ledgerDir, 'hosted-intent.json');
+  /** The earlier run's result once every write finished (hosted-intent.json is written last). Invalid files fail loudly. */
+  private completedResult(): HostedIntentResult | null {
+    const path = join(this.options.ledgerDir, COMPLETE_FILE);
     if (!existsSync(path)) return null;
     const parsed = resultSchema.safeParse(JSON.parse(readFileSync(path, 'utf8')));
     if (!parsed.success) throw new Error(`The saved hosted setup result at ${path} is invalid: ${parsed.error.message}`);
     return parsed.data;
   }
 
-  private save(result: HostedIntentResult, keys: Map<string, string>, offset: number, ownerPrompts: OwnerPrompt[]): void {
+  /** Cloud's answer from a run whose save was cut off before it finished. */
+  private pendingSave(): PendingSave | null {
+    const path = join(this.options.ledgerDir, PENDING_FILE);
+    if (!existsSync(path)) return null;
+    const saved = JSON.parse(readFileSync(path, 'utf8')) as Partial<PendingSave>;
+    const parsed = resultSchema.safeParse(saved.result);
+    if (!parsed.success || !Array.isArray(saved.keys) || !Array.isArray(saved.projects) || typeof saved.offset !== 'number') {
+      throw new Error(`The interrupted hosted setup save at ${path} is invalid${parsed.success ? '.' : `: ${parsed.error.message}`}`);
+    }
+    return { result: parsed.data, keys: saved.keys, offset: saved.offset, projects: saved.projects };
+  }
+
+  /** Writes goals, groups and rules. Safe to repeat: every write replaces what an earlier, cut-off attempt left. */
+  private save({ result, keys: keyEntries, offset, projects }: PendingSave): void {
     const { ledgerDir } = this.options;
+    const keys = new Map(keyEntries);
     const writtenAt = this.iso();
     const ledger = readLedger(ledgerDir);
     // The stored session's project (derived for scratch folders) is what My Work reads; the scan's own project covers the rest.
-    const projectOf = new Map<string, string | undefined>(ownerPrompts.map(prompt => [keys.get(prompt.sessionId)!, prompt.project]));
+    const projectOf = new Map<string, string | undefined>(projects);
     const projectsDatabase = this.options.openDatabase();
     try {
       for (const [key, project] of readConversationProjects(projectsDatabase, [...keys.values()])) projectOf.set(key, project);
@@ -218,12 +247,14 @@ export class HostedIntent {
     // request bound is not applied here: trimming summaries or evidence would silently change the result.
     mkdirSync(join(ledgerDir, 'owner-goals'), { recursive: true });
     writeFileSync(mapPath, result.goals.map, { mode: 0o600 });
-    writeJsonAtomic(join(ledgerDir, 'hosted-intent.json'), result);
     for (const fields of rows) this.options.appendWorkStateEntry({ project: this.options.homeProject(), listName: 'owner-goals', fields });
     writeJsonAtomic(join(ledgerDir, 'request-groups.json'), groups);
     writeJsonAtomic(join(ledgerDir, 'story.json'), {
       narrative: goals.human_summary, preferences: result.rules.map(rule => ({ ...rule, quotes: rule.quotes.map(quote => ({ ...quote, at: quoteIso(quote.at, offset) })) })),
       writtenAt, source: 'hosted-intent',
     });
+    // Last: its presence means every write above finished.
+    writeJsonAtomic(join(ledgerDir, COMPLETE_FILE), result);
+    rmSync(join(ledgerDir, PENDING_FILE), { force: true });
   }
 }

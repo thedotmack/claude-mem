@@ -731,6 +731,14 @@ export class WorkViewRoutes extends BaseRouteHandler {
     this.send(res, 'work-view', this.snapshot());
     const scan: SetupScanState | undefined = this.setupScan?.state();
     if (scan && scan.phase !== 'idle') this.send(res, 'setup-scan', scan);
+    // A reconnecting setup page may have missed checkout being paid or an import finishing: send where setup stands.
+    // A setup state that cannot be read is logged and leaves the work feed running.
+    try {
+      const setupState = readSetupState(this.setupStatePath);
+      if (setupState.status === 'pending') this.send(res, 'setup-state', this.setupStateView(setupState));
+    } catch (error) {
+      logger.error('HTTP', 'Setup state could not be read for a new event stream', {}, error as Error);
+    }
     if (!this.poll) this.poll = setInterval(() => this.publish(), this.pollIntervalMs);
     if (!this.heartbeat) this.heartbeat = setInterval(() => {
       const snapshot = this.snapshot();

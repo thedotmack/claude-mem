@@ -128,6 +128,20 @@ describe('setup prompt scan', () => {
     expect(promptRows(CLAUDE_SESSION)).toHaveLength(6);
   });
 
+  it('extraction also reads typed prompts whose transcripts are gone, without repeating matched ones', async () => {
+    hookRecorded('claude', CLAUDE_SESSION, 'alpha', 'make the scan screen show each agent', '2026-10-01T10:01:02.000Z');
+    hookRecorded('claude', 'session-older-than-its-transcript', 'alpha', 'plan the funnel', '2026-10-05T09:00:00.000Z');
+    let extracted: Array<{ text: string; sessionId: string; project: string; agent: string }> = [];
+    const scan = setupScan();
+    scan.setExtractor(async prompts => { extracted = prompts; });
+    scan.start();
+    await scan.finished();
+    expect(extracted.filter(prompt => prompt.text === 'make the scan screen show each agent')).toHaveLength(1);
+    expect(extracted.filter(prompt => prompt.text === 'plan the funnel')).toEqual([
+      expect.objectContaining({ sessionId: 'session-older-than-its-transcript', project: 'alpha', agent: 'claude-code' }),
+    ]);
+  });
+
   it('a failing store ends the scan as failed, never as a finished result', async () => {
     const scan = new SetupScan({
       getStore: () => { throw new Error('database is locked'); },
