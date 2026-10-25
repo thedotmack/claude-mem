@@ -375,7 +375,18 @@ async function assembleStream(opened: OpenedExchange, request: ChatCompletionReq
       try {
         chunk = JSON.parse(event.data) as StreamChunk;
       } catch (parseError: unknown) {
-        throw outputFailure(`${request.label} stream chunk could not be read: ${asError(parseError).message}`, parseError, STREAM_INTERRUPTED_CODE);
+        // Same rule as a stream that broke off: before any output the send is
+        // ambiguous and may be resent once; after output started it was billed.
+        const error = asError(parseError);
+        if (outputStarted) {
+          throw outputFailure(`${request.label} stream chunk could not be read: ${error.message}`, error, STREAM_INTERRUPTED_CODE);
+        }
+        throw new ClassifiedProviderError(`${request.label} stream chunk could not be read: ${error.message}`, {
+          kind: 'transient',
+          failedBeforeOutput: true,
+          code: STREAM_INTERRUPTED_CODE,
+          cause: error,
+        });
       }
       if (chunk === null || typeof chunk !== 'object') continue;
 
