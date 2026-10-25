@@ -25,7 +25,9 @@ describe('native memory lookup recognition', () => {
   });
   it('scopes custom roots exactly, rejects sibling-prefix paths and traversal', () => {
     expect(memorySearchQuery(hook('Read', { file_path: '/notes/own/lesson.md' }), ['/notes/own'])).toBe('lesson');
-    expect(memorySearchLookup(hook('Read', { file_path: '/notes/own/lesson.md' }), ['/notes/own'])).toEqual({query:'lesson',memoryPath:'/notes/own/lesson.md'});
+    // memoryPath comes back resolved against the session cwd, so its absolute
+    // form is host-shaped (D:\notes\... on Windows); a POSIX literal cannot match there.
+    expect(memorySearchLookup(hook('Read', { file_path: '/notes/own/lesson.md' }), ['/notes/own'])).toEqual({query:'lesson',memoryPath:path.resolve('/project', '/notes/own/lesson.md')});
     expect(memorySearchQuery(hook('Read', { file_path: '/notes/own-other/lesson.md' }), ['/notes/own'])).toBeNull();
     expect(memorySearchQuery(hook('Read', { file_path: '/notes/own/../private/lesson.md' }), ['/notes/own'])).toBeNull();
   });
@@ -109,12 +111,36 @@ describe('memory folder watcher', () => {
     expect(saved).toHaveLength(3);
   });
 
-  it('refuses symlinks, oversize and non-Markdown files; retries failed saves', () => {
+  // Creating a symlink needs a privilege Windows does not grant by default
+  // (EPERM without Developer Mode or admin). Probe once instead of assuming
+  // the platform, so the refusal test below runs wherever symlinks can exist.
+  const canCreateSymlinks = (() => {
+    const probeDir = mkdtempSync(path.join(tmpdir(), 'cmem-symlink-probe-'));
+    try {
+      symlinkSync(path.join(probeDir, 'missing.md'), path.join(probeDir, 'link.md'));
+      return true;
+    } catch {
+      return false;
+    } finally {
+      rmSync(probeDir, { recursive: true, force: true });
+    }
+  })();
+
+  it.skipIf(!canCreateSymlinks)('refuses symlinked note files and directories', () => {
     const root = temp();
     const outside = temp();
     writeFileSync(path.join(outside, 'secret.md'), 'outside note');
     symlinkSync(path.join(outside, 'secret.md'), path.join(root, 'link.md'));
     symlinkSync(outside, path.join(root, 'linked-dir'));
+    const saved: SaveMemoryInput[] = [];
+    const watcher = new MemoryFileWatcher([{ path: root, project: 'p' }], note => saved.push(note), 10);
+    watcher.scan(0);
+    watcher.scan(11);
+    expect(saved).toEqual([]);
+  });
+
+  it('refuses oversize and non-Markdown files; retries failed saves', () => {
+    const root = temp();
     writeFileSync(path.join(root, 'big.md'), 'x'.repeat(65_537));
     writeFileSync(path.join(root, 'skip.txt'), 'not Markdown');
     writeFileSync(path.join(root, 'allowed.md'), 'allowed');
