@@ -220,6 +220,8 @@ export function shellTemplateManifest(buildShellCommand, buildCodexWindowsComman
         // Synchronous so the File Read Gate can deny a whole-file Read.
         'PreToolUse.0.0': claudeExecHook(['hook', 'claude-code', 'file-context'], { timeout: FILE_CONTEXT_HOOK_TIMEOUT_SECONDS }, PRE_TOOL_USE_MATCHER),
         'Stop.0.0': claudeExecHook(['hook', 'claude-code', 'summarize'], { timeout: 120, async: true }),
+        // Records that a subagent finished, so My Work stops showing it as working.
+        'SubagentStop.0.0': claudeExecHook(['hook', 'claude-code', 'subagent-stop'], { timeout: 30, async: true }),
         'SessionEnd.0.0': claudeExecHook(['hook', 'claude-code', 'session-end'], { async: true }),
       },
     },
@@ -731,6 +733,21 @@ async function buildHooks() {
       assertBundleIntegrity(mod.out);
       console.log(`✓ ${mod.out} built (${(fs.statSync(mod.out).size / 1024).toFixed(2)} KB)`);
     }
+
+    // The request-progress skill runs this with bun to group conversations
+    // into overall requests and record progress reviews for My Work.
+    const REQUEST_GROUPS_CLI = 'plugin/skills/request-progress/scripts/request-groups.mjs';
+    await build({
+      entryPoints: ['src/services/work-view/request-groups-cli.mjs'],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      format: 'esm',
+      outfile: REQUEST_GROUPS_CLI,
+      logLevel: 'error',
+      external: ['bun:sqlite'],
+    });
+    console.log(`✓ ${REQUEST_GROUPS_CLI} built (${(fs.statSync(REQUEST_GROUPS_CLI).size / 1024).toFixed(2)} KB)`);
 
     console.log(`\n🔧 Building server beta service...`);
     await build({

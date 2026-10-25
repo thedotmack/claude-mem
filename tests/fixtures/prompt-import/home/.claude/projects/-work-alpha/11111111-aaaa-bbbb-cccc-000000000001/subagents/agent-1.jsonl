@@ -1,0 +1,1 @@
+{"type":"assistant","timestamp":"2026-10-01T09:00:00.000Z","isSidechain":true,"message":{"role":"assistant","content":[{"type":"text","text":"Write the release notes for the funnel phase that imports prompts, covering the five agents, the thirty day window, the dedupe rule and the live progress events on the stream."}]}}

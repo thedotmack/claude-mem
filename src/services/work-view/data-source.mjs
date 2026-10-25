@@ -5,6 +5,8 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { activitySignature, buildAgentView, readAgentRecords, readEvidence } from './agent-view.mjs';
+import { goalsAddedSince, ledgerSignature, readLedger } from './request-groups.mjs';
+import { recordedFile } from './work-product.mjs';
 
 const CLOSED = new Set(['done', 'dropped']);
 const normalizedKey = (value) => String(value).replace(/[A-Z]/g, (letter) => letter.toLowerCase());
@@ -149,6 +151,7 @@ export class WorkStateSource {
     currentProject = '',
     parentProject = currentProject,
     titleCachePath = null,
+    ledgerDir = null,
     pollIntervalMs = 1000,
     localDeviceId = '',
   } = {}) {
@@ -160,6 +163,9 @@ export class WorkStateSource {
     this.titleCachePath = titleCachePath;
     this.titleCache = {};
     this.titleCacheSignature = null;
+    this.ledgerDir = ledgerDir;
+    this.ledger = null;
+    this.ledgerSignature = null;
     this.database = null;
     this.databaseIdentity = null;
     this.cachedState = reduceWorkState([], { currentProject, currentProjectScope: [parentProject, currentProject] });
@@ -197,7 +203,8 @@ export class WorkStateSource {
       const revision = database.prepare(`SELECT COUNT(*) AS count, MAX(id) AS id${this.columns.has('sync_rev') ? ', SUM(CAST(sync_rev AS INTEGER)) AS synced_revision' : ''} FROM work_state_entries`).get();
       const signature = `${revision.count}:${revision.id ?? 0}:${revision.synced_revision ?? 0}:${this.localDeviceId}`;
       this.readTitleCache();
-      const activity = `${activitySignature(database)}|titles:${this.titleCacheSignature}`;
+      this.readLedger();
+      const activity = `${activitySignature(database)}|titles:${this.titleCacheSignature}|ledger:${this.ledgerSignature}`;
       if (signature !== this.signature || activity !== this.activitySignature || !this.source.connected) {
         database.exec('BEGIN');
         try {
@@ -211,7 +218,7 @@ export class WorkStateSource {
             this.cachedState = reduceWorkState(scopedEntries, { currentProject: this.currentProject, currentProjectScope, localDeviceId: this.localDeviceId });
           }
           this.agentRevision++;
-          this.agentView = { ...buildAgentView(this.cachedState, readAgentRecords(database, { workState: this.cachedState }), { titleCache: this.titleCache }), revision: this.agentRevision };
+          this.agentView = { ...buildAgentView(this.cachedState, readAgentRecords(database, { workState: this.cachedState, ledger: this.ledger }), { titleCache: this.titleCache, ledger: this.ledger }), revision: this.agentRevision };
           // Hash full linked evidence without sending its potentially large raw
           // text in every snapshot. A review covers the source disclosure too.
           const evidenceHashes = new Map();
@@ -288,23 +295,66 @@ export class WorkStateSource {
     this.titleCacheSignature = signature;
   }
 
+  readLedger() {
+    const signature = this.ledgerDir ? ledgerSignature(this.ledgerDir) : 'disabled';
+    if (signature === this.ledgerSignature) return;
+    try { this.ledger = this.ledgerDir ? readLedger(this.ledgerDir) : null; }
+    catch { this.ledger = null; }
+    this.ledgerSignature = signature;
+  }
+
   agentsSnapshot() {
     const now = Date.now();
     return {
       ...this.agentView,
+      ...this.goalLinks(),
       teamMode: process.env.WORK_STATE_TEAM_MODE === '1',
+      // Progress reviews and the build story come from the request-progress
+      // skill; they are assessments, separate from recorded lifecycle.
+      story: this.ledger ? { reviews: Object.values(this.ledger.progress), story: this.ledger.story, groups: Object.keys(this.ledger.groups.groups).length } : null,
+      // The automatic refresh's last run (refresh.json): running, ok, failed or waiting-for-agent.
+      refresh: this.ledger?.refresh ?? null,
       // Age labels change with the clock without declaring a task or session
       // live. Stored session status remains separate from recent activity.
       agents: this.agentView.agents.map((agent) => ({ ...agent, presence: {
         ...agent.presence,
-        status: !agent.presence.lastActivityAt ? 'unknown' : now - Date.parse(agent.presence.lastActivityAt) <= 15 * 60 * 1000 ? 'recent' : 'quiet',
+        // A recorded finish is evidence, not an age label: the clock never changes it.
+        status: agent.presence.status === 'finished' ? 'finished' : !agent.presence.lastActivityAt ? 'unknown' : now - Date.parse(agent.presence.lastActivityAt) <= 15 * 60 * 1000 ? 'recent' : 'quiet',
       } })),
       source: { ...this.source, kind: 'claude-mem-recorded-agent-activity', lastUpdatedAt: this.agentView.agents[0]?.presence.lastActivityAt ?? null, stale: !this.source.connected && this.agentView.agents.length > 0 },
     };
   }
 
+  /** Join the request-progress alignment onto requests and goals, the way the
+   * prototype's goalsSnapshot() does. A request's `goals` is absent until it is
+   * aligned (Goal not linked yet), [] when it serves none, else its goals. */
+  goalLinks() {
+    const alignment = this.ledger?.alignment;
+    const goals = this.agentView.goals;
+    if (!alignment || !goals) return {};
+    const byGoal = new Map([...goals.priorities, ...goals.openAsks].map((goal) => [goal.task, goal]));
+    // "Serves none" holds until a goal is added; then the group is asked again.
+    const unaligned = new Set(goalsAddedSince(alignment, [...byGoal.keys()]).length ? [] : alignment.unaligned ?? []);
+    const humanRequests = (this.agentView.humanRequests ?? []).map((request) => {
+      if (!request.groupId) return request;
+      const links = (alignment.links?.[request.groupId] ?? []).filter((link) => byGoal.has(link.goal)).map((link) => {
+        const goal = byGoal.get(link.goal);
+        return { goalId: goal.id, goal: link.goal, title: goal.title, kind: goal.kind, evidence: link.evidence };
+      });
+      if (links.length) return { ...request, goals: links };
+      return unaligned.has(request.groupId) ? { ...request, goals: [] } : request;
+    });
+    return { humanRequests, goals: { ...goals, alignedAt: alignment.alignedAt ?? null } };
+  }
+
   evidence(kind, id) {
     try { return readEvidence(this.openDatabase(), kind, id); }
+    catch { return null; }
+  }
+
+  /** The local file a recorded work product names, or null. */
+  file(kind, id, index) {
+    try { return recordedFile((sql, params) => this.openDatabase().prepare(sql).all(...params), kind, id, index); }
     catch { return null; }
   }
 
