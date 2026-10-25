@@ -19,7 +19,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
+          # No registry-url: setup-node would write an _authToken line to .npmrc,
+          # and npm would use that token auth instead of trusted publishing.
       - name: Install Bun (required by smoke:clean-room)
         uses: oven-sh/setup-bun@v2
         with:
