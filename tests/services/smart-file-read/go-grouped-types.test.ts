@@ -43,6 +43,15 @@ describe('go-grouped-types', () => {
     expect(unfoldSymbol(bare, filename, 'C')).not.toContain('D string');
   }, 120000);
 
+  test('a comment between `type` and `(` still lists each member once, as itself', () => {
+    const commented = ['package geo', '', 'type /* g */ (', '\tA int', '\tB string', ')'].join('\n');
+    const file = parseFile(commented, filename);
+    expect(file.symbols.map(s => [s.name, s.lineStart, s.lineEnd])).toEqual([
+      ['A', 3, 3], ['B', 4, 4],
+    ]);
+    expect(unfoldSymbol(commented, filename, 'A')).not.toContain('B string');
+  }, 120000);
+
   test('unfolding a grouped type returns that type, not the whole group', () => {
     const unfolded = unfoldSymbol(source, filename, 'Coord');
     expect(unfolded).toContain('Coord = Point');
