@@ -59,6 +59,8 @@ const EXCLUDED_PATTERNS = [
   /worker\/paid-send-budget\.ts$/,  // Pure per-batch paid-send counter; spends and exhaustion are logged at the provider call sites
   /servers\/corpus-worker-stream\.ts$/,  // MCP SSE transport; every failure throws to callWorker in mcp-server.ts, which logs it
   /servers\/worker-restart\.ts$/,  // MCP refused-connection retry; the restart is logged by ensureWorkerConnection and failures by callWorker in mcp-server.ts
+  /servers\/request-context\.ts$/,  // AsyncLocalStorage holder for the per-call project directory: no I/O and no failure path to log; mcp-http.ts logs the sessions
+  /worker\/http\/origin-policy\.ts$/,  // Pure Origin predicates moved out of middleware.ts; the guards that refuse a request (middleware.ts, mcp-http.ts) log it
 ];
 
 const HIGH_PRIORITY_PATTERNS = [

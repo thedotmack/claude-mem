@@ -263,7 +263,9 @@ export function applyGroupDecisions(stored, decisions, now = Date.now(), { proje
 const isIsoOrNull = (value) => value === null || (typeof value === 'string' && Number.isFinite(Date.parse(value)));
 function boundedText(value, max, label, optional = false) {
   if (optional && (value == null || value === '')) return '';
-  if (typeof value !== 'string' || !value.trim() || value.length > max) throw new TypeError(`${label} must be 1–${max} characters.`);
+  if (typeof value !== 'string' || !value.trim()) throw new TypeError(`${label} must be 1–${max} characters.`);
+  // The length goes in the refusal: an agent asked to fix "must be 1–12000" without it rewrote a 22K story at 22K (Oct 24).
+  if (value.length > max) throw new TypeError(`${label} is ${value.length} characters; it must be 1–${max}.`);
   return value.trim();
 }
 
@@ -360,11 +362,13 @@ export function reviewIsCurrent(review, conversationKeys, lastActivityEpoch) {
   return Date.parse(review.reviewedThrough) >= lastActivityEpoch;
 }
 
+export const STORY_NARRATIVE_MAX = 12000;
+
 export function validateStory(story) {
   const preferences = story?.preferences ?? [];
   if (!Array.isArray(preferences) || preferences.length > 30) throw new TypeError('preferences must be an array of at most 30.');
   return {
-    narrative: boundedText(story?.narrative, 12000, 'narrative'),
+    narrative: boundedText(story?.narrative, STORY_NARRATIVE_MAX, 'narrative'),
     preferences: preferences.map((preference, index) => ({
       preference: boundedText(preference.preference, 200, `preferences[${index}].preference`),
       kind: PREFERENCE_KINDS.includes(preference.kind) ? preference.kind : 'directive',
@@ -667,7 +671,10 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
     // With a previous story, only reviews whose facts changed after it was written.
     const writtenAt = Date.parse(story?.writtenAt ?? '');
     const update = Number.isFinite(writtenAt);
-    return print({ groups: Object.keys(groups.groups).length, update, reviews: update ? reviews.filter((review) => Date.parse(review.changedAt ?? review.checkedAt) > writtenAt) : reviews, previousStory: story });
+    // An update only ever added to the story until it reached the cap and every update was refused (Oct 24: 11,958 of 12,000),
+    // so the agent is told the budget and the previous story's length up front.
+    return print({ groups: Object.keys(groups.groups).length, update, narrativeLimit: STORY_NARRATIVE_MAX, previousNarrativeChars: story?.narrative?.length ?? 0,
+      reviews: update ? reviews.filter((review) => Date.parse(review.changedAt ?? review.checkedAt) > writtenAt) : reviews, previousStory: story });
   }
   if (command === 'record-story') {
     const story = { ...validateStory(readInput(args[0] ?? '-')), writtenAt: iso(now) };

@@ -187,7 +187,7 @@ describe('agent runner', () => {
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 
-  it('Gemini: gemini -p in plan (read-only) mode, no extensions or MCP servers, JSON output, prompt on stdin', async () => {
+  it('Gemini: gemini -p in plan (read-only) mode, never --skip-trust, no extensions or MCP servers, JSON output, prompt on stdin', async () => {
     const calls: SpawnCall[] = [];
     const spawnImpl = fakeSpawn(calls, call => {
       const policyPath = (call.options.env as Record<string, string>).GEMINI_CLI_SYSTEM_SETTINGS_PATH;
@@ -202,7 +202,8 @@ describe('agent runner', () => {
     expect(result).toEqual({ state: 'ok', agent: 'gemini', result: 'inline done: {"ok":"gemini"}', error: null, attempts: [] });
     expect(existsSync((calls[0].options.env as Record<string, string>).GEMINI_CLI_SYSTEM_SETTINGS_PATH)).toBe(false);
     expect(calls[0].command).toBe('/bin/gemini');
-    expect(calls[0].args).toEqual(['-p', 'Follow the instructions above.', '--approval-mode', 'plan', '--skip-trust', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json']);
+    expect(calls[0].args).toEqual(['-p', 'Follow the instructions above.', '--approval-mode', 'plan', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json']);
+    expect(calls[0].args).not.toContain('--skip-trust');
     expect(calls[0].child.stdinText).toBe('inline prompt for gemini');
   });
 
@@ -222,6 +223,20 @@ describe('agent runner', () => {
       expect(result.attempts.map(attempt => attempt.agent)).toEqual(['claude-code', 'codex']);
       expect(result.attempts[0].error).toMatch(/quota/);
       expect(result.attempts[1].error).toMatch(/codex exec exited 1: not signed in/);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  it('when every agent fails, the error names each one\'s failure in the order tried', async () => {
+    const query = (() => (async function* () { yield { type: 'result', subtype: 'error_during_execution', is_error: true, result: 'narrative is 22000 characters' }; })()) as never;
+    const spawnImpl = fakeSpawn([], call => {
+      if (call.command === '/bin/codex') { call.child.stderr.emit('data', 'story refused'); call.child.emit('close', 1); return; }
+      call.child.stderr.emit('data', 'not running in a trusted directory'); call.child.emit('close', 55);
+    });
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-all-fail-'));
+    try {
+      const result = await runTask(task(cwd), { detect: async () => agents('claude-code', 'codex', 'gemini'), query, spawn: spawnImpl, buildEnv: env });
+      expect(result).toMatchObject({ state: 'failed', agent: 'gemini' });
+      expect(result.error).toMatch(/^Claude Code: .*narrative is 22000 characters.* · Codex: codex exec exited 1: story refused · Gemini: gemini exited 55: not running in a trusted directory$/);
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 

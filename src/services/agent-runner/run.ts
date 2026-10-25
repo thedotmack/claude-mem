@@ -208,10 +208,9 @@ const CODEX_EXEC_ARGS = (executable: string, cwd: string, answerPath: string, sc
   ...(schemaPath ? ['--output-schema', schemaPath] : []), ...(model ? ['-m', model] : []), ...(reasoningEffort ? ['-c', `model_reasoning_effort="${reasoningEffort}"`] : []), '-',
 ];
 
-// --skip-trust: in a folder Gemini never trusted, headless runs exit 55 and drop plan mode. It trusts the data dir for
-// this one session only. System settings below remove all builtins as well as
-// disabling hooks and YOLO; Gemini receives its input evidence inline.
-const GEMINI_ARGS = ['-p', 'Follow the instructions above.', '--approval-mode', 'plan', '--skip-trust', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json'];
+// The folder trust gate remains intact. System settings below also register
+// no builtin tools, disable hooks/YOLO, and supply Gemini's evidence inline.
+const GEMINI_ARGS = ['-p', 'Follow the instructions above.', '--approval-mode', 'plan', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json'];
 
 function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies): AskAgent {
   return async (prompt, models, answerSchema) => {
@@ -268,6 +267,8 @@ function geminiAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunne
  * when a run fails. Never throws. With no logged-in agent it returns
  * `waiting-for-agent` and runs nothing.
  */
+const agentNames: Record<UsableAgentId, string> = { 'claude-code': 'Claude Code', codex: 'Codex', gemini: 'Gemini' };
+
 export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunnerDependencies> = {}): Promise<AgentRunResult> {
   const autoApprovedFileTools = task.claudeCode.allowedTools.filter(tool => FILE_TOOLS.includes(tool));
   if (autoApprovedFileTools.length) throw new Error(`Agent task ${task.reason} auto-approves ${autoApprovedFileTools.join(', ')}, which would read anywhere on disk; name readableFolders instead.`);
@@ -297,5 +298,7 @@ export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunn
     }
   }
   const last = attempts[attempts.length - 1];
-  return { state: 'failed', agent: last.agent, result: null, error: last.error, attempts };
+  // Every agent's failure, in the order tried: the last fallback's error alone hides why the first ones failed.
+  const error = attempts.map(attempt => `${agentNames[attempt.agent]}: ${attempt.error}`).join(' · ');
+  return { state: 'failed', agent: last.agent, result: null, error, attempts };
 }
