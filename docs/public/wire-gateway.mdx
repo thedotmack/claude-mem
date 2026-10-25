@@ -200,9 +200,10 @@ sent. It follows the same opt-out as the rest of claude-mem; see
 ## Endless Mode
 
 A long session resends every tool result it ever got on every request. Endless
-Mode replaces the old, large ones with the observation claude-mem already made
-of them, so the history the provider reads gets shorter while your agent's own
-copy stays as it was.
+Mode takes each finished stretch of tool work out of the request once
+claude-mem has made an observation of it, and puts the observation's one-line
+timeline entry in its place, so the history the provider reads grows only by
+those lines while your agent's own copy stays as it was.
 
 Turn it on for every route with `CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE=true` and
 `claude-mem wire restart` (the gateway reads its settings at start), or per
@@ -222,38 +223,35 @@ never changed again, even after you turn it back on: the model has answered the
 original history since. Turning it off and back on with no request in between
 changes nothing.
 
-What gets replaced, and when:
+What gets culled, and when:
 
 - Only conversations that began under the gateway: the first request it saw
   held one message of yours and no reply. A conversation it first sees part way
   through is never changed.
-- Only tool results at least `CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_RESULT_BYTES`
-  (2048) long, older than `CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_AGE_TURNS` (3) of
-  your turns (so from the fourth turn you start after one), whose observation
-  already exists. The gateway never waits for an observation: it asks the worker
-  in the background, and a result whose observation is not there yet stays as
-  it is and is asked about again less and less often. With the worker down,
-  requests go exactly as your agent sent them.
-- Never errors, results that carry images, results with a cache breakpoint of
-  their own, or the results of tools that edit files (`Edit`, `Write`,
-  `MultiEdit`, `NotebookEdit`, `apply_patch`, `replace`, `write_file`, and any
-  tool named for edit, write or patch).
-- New replacements are made only when you start a new turn, never while the
-  agent is running tools. Each one is written to the conversation's ledger the
-  first time and sent the same, byte for byte, on every later request and after
-  a restart, so the provider's prompt cache is rebuilt once and then holds.
-- A replaced result keeps its call id and its place, and reads
-  `[claude-mem: this <tool> result (call_id=…) was replaced by observation #<id>]`
-  followed by the observation's title, narrative and facts, at most 4,000
-  characters. When several calls share one observation, the later ones point to
-  the first.
-- The system prompt and tool definitions are never changed. Signatures and
-  sealed reasoning (Gemini thought signatures, OpenAI encrypted reasoning) are
-  never touched. For Anthropic, the thinking blocks of replies that came after a
-  replaced result and before the turn that replaced it are left out, because the
-  provider no longer accepts them once the history before them changed. A later
-  replacement in the same place leaves out the thinking said since, too. If that
-  would leave a reply empty, nothing new is replaced that turn.
+- Within one of your turns, the tool calls up to the latest one that has an
+  observation, with their results, as whole messages: from the first reply
+  that calls a tool through the message that carries the last of those results.
+  Calls the observer skipped go with them. A reply whose calls are not all
+  covered yet stays, and so does everything after it. Your message and the
+  turn's final reply are never culled. There is no age or size rule: the only
+  trigger is that the observation exists. The gateway never waits for one: it
+  asks the worker in the background, and work whose observation is not there
+  yet stays as it is. With the worker down, requests go exactly as your agent
+  sent them.
+- The timeline lines go at the end of the message of yours that started the
+  turn, as one `<claude-mem-work>` block, one `#<id> <time> <icon> <title>`
+  line per observation, never in a reply.
+- New culls are made when you start a new turn. While the agent is running
+  tools they are made only when that turn holds no thinking, sealed reasoning
+  or thought signatures, and never of the reply the agent is answering. Each
+  cull is written to the conversation's ledger the first time and sent the
+  same, byte for byte, on every later request and after a restart, so the
+  provider's prompt cache is rebuilt once and then holds.
+- The system prompt and tool definitions are never changed. For Anthropic, a
+  request that culls also leaves out every thinking block before your latest
+  turn, oldest first with no gap, because the provider no longer accepts them
+  once the history before them changed; they stay out from then on.
+- A conversation an earlier version of Endless Mode changed is left alone.
 - If anything goes wrong, the request goes as your agent sent it.
 
 `claude-mem wire status --endless` reads the usage ledger and shows, per agent,
@@ -496,8 +494,8 @@ they are read from disk.
   While recording is on, a call the gateway captured can be opened to show its
   request and reply text.
 - **Endless Mode savings.** Per agent, from the usage ledger: conversations with
-  swaps, requests with swaps, tokens saved, and the prompt cache's read:write
-  ratio before the first swap and from it on (what
+  culls, requests with culls, tokens saved, and the prompt cache's read:write
+  ratio before the first cull and from it on (what
   `claude-mem wire status --endless` prints).
 - **Injected memory.** Per agent: estimated tokens per request × the requests
   that carried injected memory.

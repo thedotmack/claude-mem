@@ -76,19 +76,9 @@ const goldenCases: GoldenCase[] = [
     edit: body => appendTo(body, spanAt(body, 'system'), `{"type":"text","text":${encodeJsonString(INJECTED_CONTEXT)}}`),
   },
   {
-    name: 'anthropic-swap-tool-result',
-    protocol: 'anthropic',
-    edit: body => replaceAt(body, spanAt(body, 'messages', 2, 'content', 0, 'content'), encodeJsonString('[claude-mem: this Read result (call_id=toolu_1) was replaced by observation #7]\nRead c.go <b>')),
-  },
-  {
     name: 'openai-chat-append-system',
     protocol: 'openai-chat',
     edit: body => appendToString(body, spanAt(body, 'messages', 0, 'content'), `\n\n${INJECTED_CONTEXT}`),
-  },
-  {
-    name: 'openai-chat-swap-tool-message',
-    protocol: 'openai-chat',
-    edit: body => replaceAt(body, spanAt(body, 'messages', 3, 'content'), encodeJsonString('[claude-mem: replaced]')),
   },
   {
     name: 'openai-responses-append-instructions',
@@ -96,19 +86,9 @@ const goldenCases: GoldenCase[] = [
     edit: body => appendToString(body, spanAt(body, 'instructions'), `\n\n${INJECTED_CONTEXT}`),
   },
   {
-    name: 'openai-responses-swap-output',
-    protocol: 'openai-responses',
-    edit: body => replaceAt(body, spanAt(body, 'input', 3, 'output'), encodeJsonString('[claude-mem: replaced]')),
-  },
-  {
     name: 'gemini-append-system-part',
     protocol: 'gemini',
     edit: body => appendTo(body, spanAt(body, 'systemInstruction', 'parts'), `{"text":${encodeJsonString(INJECTED_CONTEXT)}}`),
-  },
-  {
-    name: 'gemini-swap-function-response',
-    protocol: 'gemini',
-    edit: body => replaceAt(body, spanAt(body, 'contents', 2, 'parts', 0, 'functionResponse', 'response'), '{"output":"[claude-mem: replaced]"}'),
   },
 ];
 

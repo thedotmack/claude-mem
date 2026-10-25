@@ -44,7 +44,7 @@ export const CONTEXT_COMPACTION_TOOL_NAME = 'context_compaction';
 
 /** How the session_init native prompt id is checked (SessionRoutes sessionInitByClaudeIdSchema). */
 const NATIVE_PROMPT_ID_PATTERN = /^[^\s\x00-\x1f\x7f]{1,256}$/;
-const GEMINI_REQUEST_POSITIONAL_CALL_ID_PATTERN = /^gemini:\d+:\d+$/;
+export const GEMINI_REQUEST_POSITIONAL_CALL_ID_PATTERN = /^gemini:\d+:\d+$/;
 const GEMINI_REPLY_POSITIONAL_CALL_ID_PREFIX = 'gemini:reply:';
 
 /** One exchange as the assembler needs it, from any source. */

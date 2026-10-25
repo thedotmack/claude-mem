@@ -115,12 +115,6 @@ export interface AgentDescriptor {
   aliases?: string[];
   /** Lower-cased user-agent prefixes (identity, Phase 4). */
   userAgentPrefixes: string[];
-  /**
-   * The agent's tools that edit files. Endless Mode never swaps their
-   * results: an edit's input and result are the record of what changed
-   * (plan Phase 11 task 2). Names matching edit|write|patch are kept too.
-   */
-  editToolNames?: readonly string[];
   detect: {
     /** Executables looked up on PATH. */
     bins?: string[];

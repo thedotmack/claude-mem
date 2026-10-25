@@ -1,174 +1,479 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// Endless Mode at the wire (plan Phase 11, D7): in a conversation born under
-// the gateway, an old, bulky tool result whose observation already exists is
-// replaced by that observation's text. The replacement is frozen in the
-// conversation ledger the first time it is made and put back byte for byte
-// on every later request (and after a restart), so the vendor's cache prefix
-// changes once, at a turn boundary, and then holds.
+// Endless Mode at the wire (Endless Mode v2, plan Phase 4): the "work/tools
+// → observations" loop. In a conversation born under the gateway, a
+// finished stretch of tool work whose observation exists leaves the request
+// whole, and the one-line timeline entry of each observation it produced is
+// appended to the user message that started its turn:
+//
+//   <claude-mem-work>
+//   #<id> <time> <icon> <title>
+//   </claude-mem-work>
+//
+// Each cull is frozen in the conversation ledger the first time it is made
+// and put back byte for byte on every later request (and after a restart),
+// so the middle of the request only grows by those lines.
 //
 // The rules, each from the plan:
-// - New swaps are added only on a request that starts a user turn, never
-//   mid tool-loop (D7.5). Swaps already in the ledger are put back on every
-//   request, mid-loop ones included: they are the history the model has
-//   seen since (D7.2).
-// - Only a result's content value is replaced; ids, order and pairing stay
-//   (tool-result-sites.ts). A result is swapped only when its call is in the
-//   request too.
+// - Covered calls: in a turn, the latest tool call with an observation is
+//   the boundary; every call at or before it is covered, the ones the
+//   observer skipped included. The only trigger is "an observation exists",
+//   never age or size.
+// - Whole messages: the run from the turn's first assistant message that
+//   carries a tool call through the message that carries the result of the
+//   run's last call, exactly, so a recorded `throughCallId` alone fixes the
+//   run on every later request. An assistant message is culled only if every
+//   call in it is covered, so the run stops before one that is not. The
+//   turn's user message and its final reply are never culled. A run must
+//   hold every call's result and every result's call, and must remove whole
+//   array elements (Responses input items, Gemini `contents[i]`) made only
+//   of tool calls, tool results, thinking or sealed reasoning, and the
+//   model's text: it stops before a context item (a Codex compaction, a web
+//   search), an item the parser skipped, and anything carrying cache_control.
+// - Gemini positional call ids (`gemini:<content>:<part>`) are message
+//   indexes, so none is ever recorded: a turn whose calls have only those is
+//   not culled.
+// - When: new culls at a user-turn start (any earlier turn), or mid-turn
+//   when the current turn holds no thinking, sealed reasoning or signature
+//   (then nothing in it is bound to the prefix). The latest assistant
+//   message of the in-flight loop, and what follows it, is never culled.
+// - Lines go in the turn's user message, never an assistant message (the
+//   model would read them as its own words). A later cull of the same turn
+//   records a new entry with the later call and the full line list, the
+//   lines already frozen kept as they were.
+// - Anthropic: culling changes the messages earlier thinking was signed
+//   against, so a request that records a cull first records a
+//   `thinkingCut` up to the latest turn (held writes commit in order), and
+//   every request applies the cut in force.
+// - Positions are turn ordinals and call ids, never message indexes.
 // - The agent never waits: observations come from a cache a background
-//   lookup fills (observation-lookup.ts); no observation, no swap (§0.5).
-// - Anthropic: shortening an earlier tool_result invalidates thinking blocks
-//   replayed after it (report 07 §2.2), so the thinking and
-//   redacted_thinking blocks of the assistant messages after the earliest
-//   new swap are dropped, as Claude Code's own retry drops them (§2.3). An
-//   assistant message that would be left empty means no new swaps this turn.
-// - Responses `reasoning` items and Gemini `thoughtSignature` parts are
-//   never touched; neither are `system` and `tools`.
-// - Any failure leaves the bytes as they came (the seam fails open, D7.7).
+//   lookup fills (observation-lookup.ts); no observation, no cull.
+// - A conversation the v1 swap stage changed is suspended: its swaps are
+//   not put back, and it is never culled.
+// - Any failure leaves the bytes as they came (the seam fails open, D7.7);
+//   the relay's pairing check is the last guard.
 
-import { createHash } from 'crypto';
 import { logger } from '../../../utils/logger.js';
-import { contentSessionIdOf } from '../capture/capture-assembler.js';
-import { latestUserTurnStartIndex } from '../identity/turn-start.js';
+import { GEMINI_REQUEST_POSITIONAL_CALL_ID_PATTERN, contentSessionIdOf } from '../capture/capture-assembler.js';
+import { startsUserTurn } from '../identity/turn-start.js';
+import { userWordsInText } from '../identity/user-words.js';
+import { ScannedObject } from '../ir/scanned-object.js';
 import type { WireRequest } from '../ir/types.js';
 import { applyByteSplices, type ByteSplice } from '../json/byte-splices.js';
-import { encodeJsonString } from '../json/splice.js';
-import type { WireConversationLedgerView } from '../ledger/conversation-ledger.js';
+import { arrayElements, objectMembers, rawText, scanDocument, type JsonSpan } from '../json/scanner.js';
+import { appendArrayItemSplice, arrayItemRemovalSplices } from '../json/splice.js';
+import type { WireConversationLedgerView, WireLedgerEntry } from '../ledger/conversation-ledger.js';
+import { appendToStringSplice, tagWrappedBlock, textBlockJson } from '../memory/memory-injection-stage.js';
 import { estimateTextTokens } from '../metrics/context-buckets.js';
 import type { WireGatewayRoute } from '../routes.js';
 import type { WireRewriteContext, WireRewriteStage } from '../rewrite/rewrite-stage.js';
-import { recordedThinkingDrops, thinkingDropIsCovered, thinkingDropSplicesFor, type ThinkingDropEntry } from '../rewrite/thinking-drop.js';
-import type { WireObservationLookup, WireSwapObservation } from './observation-lookup.js';
-import { toolResultSitesOf, type ToolResultSite } from './tool-result-sites.js';
+import { thinkingCutInForce, thinkingCutSplices } from '../rewrite/thinking-drop.js';
+import type { WireObservationLookup } from './observation-lookup.js';
+import { toolUseIdsByCallIdOf } from './tool-use-ids.js';
 
 export const ENDLESS_MODE_STAGE_NAME = 'endless-mode';
 
 /**
- * Endless Mode's settings. All three are read by the gateway at start
- * (config.ts validates them; changing one needs `claude-mem wire restart`).
- * A route's `features.endlessMode` is read live.
+ * Endless Mode's setting, read by the gateway at start (config.ts validates
+ * it; changing it needs `claude-mem wire restart`). A route's
+ * `features.endlessMode` is read live.
  */
 export const ENDLESS_MODE_SETTING = 'CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE';
-/** A result is swapped once MORE than this many user turns have begun after it (0: any earlier turn). */
-export const ENDLESS_MIN_AGE_TURNS_SETTING = 'CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_AGE_TURNS';
-export const ENDLESS_MIN_RESULT_BYTES_SETTING = 'CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_RESULT_BYTES';
 
-/** A replacement is at most this many characters (plan Phase 11 task 3). */
-export const ENDLESS_REPLACEMENT_MAX_CHARS = 4_000;
+const WORK_TAG_NAME = 'claude-mem-work';
 
-/** A call id longer than this is shown as its sha256 (magpie provider/codex_request.go:362-374 `BoundCallID`). */
-const BOUND_CALL_ID_MAX_CHARS = 64;
+const SUSPENDED_ENTRY_ID = `suspended:${ENDLESS_MODE_STAGE_NAME}`;
 
-/** Tool names that edit files whatever the agent: their results are the record of a change and are kept. */
-const EDIT_TOOL_NAME_PATTERN = /edit|write|patch/i;
+type CullEntry = Extract<WireLedgerEntry, { type: 'cull' }>;
 
 /** Whether Endless Mode is on for a route: its own `features.endlessMode`, else the setting (off by default, D9). */
 export function endlessModeEnabledFor(route: WireGatewayRoute, settings: Readonly<Record<string, string>>): boolean {
   return route.features?.endlessMode ?? settings[ENDLESS_MODE_SETTING] === 'true';
 }
 
-/**
- * A call's id as it is shown: as it is when it fits 64 characters, else the
- * sha256 hex of it trimmed (magpie `BoundCallID`), so the same id always
- * reads the same.
- */
-export function boundCallId(callId: string): string {
-  if (callId.length <= BOUND_CALL_ID_MAX_CHARS) return callId;
-  return createHash('sha256').update(callId.trim()).digest('hex');
+/** The block a cull appends to its turn's user message: one timeline line per observation. */
+export function culledWorkBlock(lines: readonly string[]): string {
+  return tagWrappedBlock(WORK_TAG_NAME, lines.join('\n'));
 }
 
-function cutToMaxChars(text: string): string {
-  const codePoints = [...text];
-  return codePoints.length <= ENDLESS_REPLACEMENT_MAX_CHARS ? text : codePoints.slice(0, ENDLESS_REPLACEMENT_MAX_CHARS).join('');
+interface UserTurn {
+  ordinal: number;
+  /** The index of the user message that starts it. */
+  startIndex: number;
+  /** The index after its last message. */
+  endIndex: number;
 }
 
-/** The text a result is replaced by when its observation is shown here. */
-export function observationReplacementText(toolName: string, callId: string, observation: WireSwapObservation): string {
-  const lines = [`[claude-mem: this ${toolName} result (call_id=${boundCallId(callId)}) was replaced by observation #${observation.observationId}]`];
-  if (observation.title !== '') lines.push(observation.title);
-  if (observation.narrative !== '') lines.push(observation.narrative);
-  for (const fact of observation.facts) lines.push(`- ${fact}`);
-  return cutToMaxChars(lines.join('\n'));
+interface TurnCall {
+  callId: string;
+  messageIndex: number;
 }
 
-/** The text a result is replaced by when an earlier result of its batch already shows its observation. */
-export function coveredReplacementText(toolName: string, callId: string, observationId: number, firstCallId: string): string {
-  return cutToMaxChars(`[claude-mem: this ${toolName} result (call_id=${boundCallId(callId)}) is covered by observation #${observationId} above (call_id=${boundCallId(firstCallId)})]`);
+/** A run of whole messages to cull, and the array elements that hold them. */
+interface CullRun {
+  turn: UserTurn;
+  firstIndex: number;
+  lastIndex: number;
+  elements: JsonSpan[];
 }
 
-/** The content value a replacement is spliced in as: Gemini's `response` must be an object. */
-function replacementValueJson(protocol: WireRequest['protocol'], replacementText: string): string {
-  const text = encodeJsonString(replacementText);
-  return protocol === 'gemini' ? `{"output":${text}}` : text;
+/** The request's user turns, numbered as userTurnPositionOfRequest numbers them. */
+function userTurnsOf(request: WireRequest): UserTurn[] {
+  const turns: UserTurn[] = [];
+  request.messages.forEach((message, messageIndex) => {
+    if (!startsUserTurn(message)) return;
+    const previous = turns[turns.length - 1];
+    if (previous) previous.endIndex = messageIndex;
+    turns.push({ ordinal: turns.length + 1, startIndex: messageIndex, endIndex: request.messages.length });
+  });
+  return turns;
 }
 
-const utf8Encoder = new TextEncoder();
-
-function bytesEqual(bytes: Uint8Array, start: number, end: number, other: Uint8Array): boolean {
-  if (end - start !== other.length) return false;
-  for (let index = 0; index < other.length; index++) {
-    if (bytes[start + index] !== other[index]) return false;
+/** The turn's tool calls, in order. */
+function callsOf(request: WireRequest, turn: UserTurn): TurnCall[] {
+  const calls: TurnCall[] = [];
+  for (let messageIndex = turn.startIndex + 1; messageIndex < turn.endIndex; messageIndex++) {
+    for (const part of request.messages[messageIndex].parts) {
+      if (part.kind === 'tool_call' && part.callId) calls.push({ callId: part.callId, messageIndex });
+    }
   }
-  return true;
+  return calls;
 }
 
-const SUSPENDED_ENTRY_ID = `suspended:${ENDLESS_MODE_STAGE_NAME}`;
+/** The index of the message after `callIndex` (within the turn) that carries `callId`'s result; -1 when none does. */
+function resultIndexOf(request: WireRequest, turn: UserTurn, callId: string, callIndex: number): number {
+  for (let messageIndex = callIndex + 1; messageIndex < turn.endIndex; messageIndex++) {
+    if (request.messages[messageIndex].parts.some(part => part.kind === 'tool_result' && part.callId === callId)) return messageIndex;
+  }
+  return -1;
+}
+
+/** Whether the turn holds reasoning bound to the prefix: thinking, sealed reasoning, or a signed part. */
+function turnHoldsReasoning(request: WireRequest, turn: UserTurn): boolean {
+  for (let messageIndex = turn.startIndex; messageIndex < turn.endIndex; messageIndex++) {
+    if (request.messages[messageIndex].parts.some(part => part.kind === 'thinking' || part.kind === 'sealed' || part.sealedBy !== undefined)) return true;
+  }
+  return false;
+}
+
+function spansOverlap(first: JsonSpan, second: JsonSpan): boolean {
+  return first.start < second.end && second.start < first.end;
+}
+
+/**
+ * The array a conversation's messages are elements of: Anthropic and Chat
+ * `messages`, Responses `input`, Gemini `contents`. Null when there is none.
+ */
+function conversationArraySpanOf(request: WireRequest): JsonSpan | null {
+  const root = new ScannedObject(request.body, scanDocument(request.body));
+  const key = request.protocol === 'openai-responses' ? 'input' : request.protocol === 'gemini' ? 'contents' : 'messages';
+  const span = root.spanOf(key);
+  return span?.type === 'array' ? span : null;
+}
+
+/** Whether the JSON value at `span` holds a `cache_control` member anywhere in it. */
+function holdsCacheControl(bytes: Uint8Array, span: JsonSpan): boolean {
+  if (span.type === 'object') {
+    for (const member of objectMembers(bytes, span)) {
+      if (member.key === 'cache_control' || holdsCacheControl(bytes, member.value)) return true;
+    }
+  } else if (span.type === 'array') {
+    for (const element of arrayElements(bytes, span)) if (holdsCacheControl(bytes, element)) return true;
+  }
+  return false;
+}
+
+/** Why an array element of a run may not be removed; null when it may (only tool calls and results, reasoning, the model's text). */
+function unremovableElementReason(request: WireRequest, element: JsonSpan, firstIndex: number, lastIndex: number): string | null {
+  let partCount = 0;
+  for (let messageIndex = firstIndex; messageIndex <= lastIndex; messageIndex++) {
+    const message = request.messages[messageIndex];
+    if (!spansOverlap(message.span, element)) continue;
+    for (const part of message.parts) {
+      if (!spansOverlap(part.span, element)) continue;
+      partCount++;
+      const removable = part.kind === 'tool_call' || part.kind === 'tool_result' || part.kind === 'thinking' || part.kind === 'sealed'
+        || (part.kind === 'text' && message.role === 'assistant');
+      if (!removable) return `it holds a ${part.kind === 'context' ? `${part.name ?? 'context'} item` : `${message.role} ${part.kind} part`}`;
+    }
+  }
+  if (partCount === 0) return 'it is an element the parser skipped';
+  if (holdsCacheControl(request.body, element)) return 'it carries cache_control';
+  return null;
+}
+
+/**
+ * The run of messages firstIndex..lastIndex, when it may be culled whole:
+ * it ends on a message that is not the model's, holds every result of its
+ * calls and the call of every result, and its array elements hold nothing
+ * else (no message outside it, nothing but tool work, reasoning and the
+ * model's text). Null otherwise.
+ */
+function cullRunOf(request: WireRequest, conversationElements: JsonSpan[], turn: UserTurn, firstIndex: number, lastIndex: number): CullRun | null {
+  if (firstIndex <= turn.startIndex || lastIndex < firstIndex || lastIndex >= turn.endIndex) return null;
+  if (request.messages[lastIndex].role === 'assistant') return null;
+  const unpaired = new Map<string, number>();
+  for (let messageIndex = firstIndex; messageIndex <= lastIndex; messageIndex++) {
+    for (const part of request.messages[messageIndex].parts) {
+      if (part.kind !== 'tool_call' && part.kind !== 'tool_result') continue;
+      if (!part.callId) return null;
+      unpaired.set(part.callId, (unpaired.get(part.callId) ?? 0) + (part.kind === 'tool_call' ? 1 : -1));
+    }
+  }
+  if ([...unpaired.values()].some(count => count !== 0)) return null;
+
+  const runSpan: JsonSpan = { start: request.messages[firstIndex].span.start, end: request.messages[lastIndex].span.end, type: 'object' };
+  const elements = conversationElements.filter(element => spansOverlap(element, runSpan));
+  if (elements.length === 0) return null;
+  const removedSpan: JsonSpan = { start: elements[0].start, end: elements[elements.length - 1].end, type: 'array' };
+  const before = request.messages[firstIndex - 1];
+  const after = request.messages[lastIndex + 1];
+  if (spansOverlap(before.span, removedSpan) || (after && spansOverlap(after.span, removedSpan))) return null;
+  for (const element of elements) {
+    const reason = unremovableElementReason(request, element, firstIndex, lastIndex);
+    if (reason === null) continue;
+    logger.debug('WIRE', `Endless Mode stopped a cull before an element: ${reason}`, { protocol: request.protocol, turnOrdinal: turn.ordinal });
+    return null;
+  }
+  return { turn, firstIndex, lastIndex, elements };
+}
+
+/** The run a recorded cull removes: from the turn's first call through the message with the result of `throughCallId`; null when the history no longer has it whole. */
+function recordedCullRunOf(request: WireRequest, conversationElements: JsonSpan[], turn: UserTurn, calls: TurnCall[], throughCallId: string, endLimit: number): CullRun | null {
+  const through = calls.find(call => call.callId === throughCallId);
+  if (!through) return null;
+  const resultIndex = resultIndexOf(request, turn, throughCallId, through.messageIndex);
+  if (resultIndex < 0 || resultIndex >= endLimit) return null;
+  return cullRunOf(request, conversationElements, turn, calls[0].messageIndex, resultIndex);
+}
+
+/**
+ * The longest run that may be culled now, with the call it runs through: it
+ * ends exactly on the message with the result of its last call (so that
+ * call alone fixes it on replay), holds no call after the boundary (the
+ * latest call with an observation), and ends before `endLimit`. A Gemini
+ * positional id is never the call it runs through. Null when there is none.
+ */
+function newCullRunOf(
+  request: WireRequest,
+  conversationElements: JsonSpan[],
+  turn: UserTurn,
+  calls: TurnCall[],
+  boundaryCallOrder: number,
+  endLimit: number,
+): { run: CullRun; throughCallId: string } | null {
+  const firstIndex = calls[0].messageIndex;
+  // An assistant message with a call after the boundary is only partly covered: the run stops before it.
+  const firstPartlyCoveredIndex = calls[boundaryCallOrder + 1]?.messageIndex ?? Number.POSITIVE_INFINITY;
+  for (let throughOrder = boundaryCallOrder; throughOrder >= 0; throughOrder--) {
+    const through = calls[throughOrder];
+    if (GEMINI_REQUEST_POSITIONAL_CALL_ID_PATTERN.test(through.callId)) continue;
+    const lastIndex = resultIndexOf(request, turn, through.callId, through.messageIndex);
+    if (lastIndex < 0 || lastIndex >= endLimit || lastIndex >= firstPartlyCoveredIndex) continue;
+    // The run's last call: a later call before this result (a parallel sibling) would be the one it runs through.
+    if ((calls[throughOrder + 1]?.messageIndex ?? Number.POSITIVE_INFINITY) <= lastIndex) continue;
+    const run = cullRunOf(request, conversationElements, turn, firstIndex, lastIndex);
+    if (run) return { run, throughCallId: through.callId };
+  }
+  return null;
+}
+
+/**
+ * The splice that appends `block` to the user message that starts a turn
+ * (null when there is no content to append to, or it already ends with it):
+ * to its content string after a blank line, or as a text block after its
+ * last one (memory injection's append rules). On Responses and Gemini the
+ * message may span several elements; the block goes into the last one that
+ * holds the user's words (or, with none, the last that holds content).
+ */
+function appendToTurnStartSplice(request: WireRequest, conversationElements: JsonSpan[], turn: UserTurn, block: string): ByteSplice | null {
+  const message = request.messages[turn.startIndex];
+  const body = request.body;
+  const contentKey = request.protocol === 'gemini' ? 'parts' : 'content';
+  const holders = conversationElements
+    .filter(element => spansOverlap(element, message.span))
+    .map(element => ScannedObject.of(body, element))
+    .filter((holder): holder is ScannedObject => holder !== undefined && holder.spanOf(contentKey) !== undefined
+      && (request.protocol !== 'openai-responses' || holder.string('role') === 'user'));
+  const wordsPart = [...message.parts].reverse().find(part => part.kind === 'text' && userWordsInText(part.text ?? '') !== '');
+  const holder = (wordsPart && holders.find(candidate => spansOverlap(candidate.span, wordsPart.span))) ?? holders[holders.length - 1];
+  if (!holder) return null;
+  const contentSpan = holder.spanOf(contentKey)!;
+  if (contentSpan.type === 'string') return appendToStringSplice(body, contentSpan, block);
+  if (contentSpan.type === 'array') return appendArrayItemSplice(body, contentSpan, textBlockJson(request.protocol, block));
+  return null;
+}
+
+/** What a run takes out, less what its lines put back, in estimated tokens. */
+function culledTokensOf(request: WireRequest, run: CullRun, block: string): number {
+  const removedTokens = run.elements.reduce((sum, element) => sum + estimateTextTokens(rawText(request.body, element)), 0);
+  return Math.max(0, removedTokens - estimateTextTokens(block));
+}
 
 export interface EndlessModeStageOptions {
   observationLookup: WireObservationLookup;
-  /** The agent's edit tools (its descriptor's `editToolNames`). */
-  editToolNamesOf?: (agentId: string) => readonly string[];
   now?: () => number;
-}
-
-interface NewSwap {
-  site: ToolResultSite;
-  replacementText: string;
-  observationId: number;
-  coveredByCallId?: string;
 }
 
 export function createEndlessModeStage(options: EndlessModeStageOptions): WireRewriteStage {
   const now = options.now ?? Date.now;
-  const editToolNamesOf = options.editToolNamesOf ?? (() => []);
+  const suspend = (ledger: WireConversationLedgerView) => ledger.record({ type: 'suspended', stage: ENDLESS_MODE_STAGE_NAME, at: new Date(now()).toISOString() });
 
   return {
     name: ENDLESS_MODE_STAGE_NAME,
     enabledFor: endlessModeEnabledFor,
-    // A conversation whose swaps once went missing (the stage was off for one
-    // of its requests) is never swapped again: the model has answered the
-    // original history since, so putting the swaps back would rewrite it.
+    // A conversation whose culls once went missing (the stage was off for one
+    // of its requests) is never culled again: the model has answered the
+    // original history since, so putting the culls back would rewrite it.
     appliesTo: context => context.ledger?.status === 'born' && context.ledger.get(SUSPENDED_ENTRY_ID) === undefined,
 
     whileOff(ledger) {
       if (ledger.status !== 'born' || ledger.get(SUSPENDED_ENTRY_ID)) return;
-      if (!ledger.entries().some(entry => entry.type === 'swap')) return;
-      ledger.record({ type: 'suspended', stage: ENDLESS_MODE_STAGE_NAME, at: new Date(now()).toISOString() });
-      logger.debug('WIRE', 'Endless Mode was off for a conversation it had swapped; it never swaps that conversation again', {
+      if (!ledger.entries().some(entry => entry.type === 'cull')) return;
+      suspend(ledger);
+      logger.debug('WIRE', 'Endless Mode was off for a conversation it had culled; it never culls that conversation again', {
         conversationKey: ledger.conversationKey,
       });
     },
 
     onRequest(context: WireRewriteContext, body: Uint8Array) {
       const ledger = context.ledger as WireConversationLedgerView;
+      if (ledger.entries().some(entry => entry.type === 'swap' || entry.type === 'thinkingDrop')) {
+        // Endless Mode v1 swapped this conversation; v2 does not put swaps back, so it leaves it alone for good.
+        suspend(ledger);
+        logger.debug('WIRE', 'Endless Mode suspended a conversation the v1 swap stage had changed', { conversationKey: ledger.conversationKey });
+        return undefined;
+      }
       const request = context.requestOf(body);
-      const minAgeTurns = Number(context.settings[ENDLESS_MIN_AGE_TURNS_SETTING]);
-      const minResultBytes = Number(context.settings[ENDLESS_MIN_RESULT_BYTES_SETTING]);
-      const editToolNames = new Set(editToolNamesOf(context.identity.agentId));
-      const sites = toolResultSitesOf(request);
-      const swapOf = (site: ToolResultSite) => {
-        const entry = ledger.get(`swap:${site.callId}`);
-        return entry?.type === 'swap' ? entry : undefined;
+      const conversationArraySpan = conversationArraySpanOf(request);
+      const turns = userTurnsOf(request);
+      const latestTurn = turns[turns.length - 1];
+      if (!conversationArraySpan || !latestTurn) return undefined;
+      const conversationElements = [...arrayElements(body, conversationArraySpan)];
+      const toolUseIdByCallId = toolUseIdsByCallIdOf(request);
+      const observationOf = (callId: string) => {
+        const toolUseId = toolUseIdByCallId.get(callId);
+        return toolUseId === undefined ? undefined : options.observationLookup.cached(ledger.conversationKey, toolUseId);
       };
-      const mayBeSwapped = (site: ToolResultSite) => !site.isError
-        && !site.hasImages
-        && !site.hasCacheControl
-        && !editToolNames.has(site.toolName)
-        && !EDIT_TOOL_NAME_PATTERN.test(site.toolName)
-        && site.contentSpan.end - site.contentSpan.start >= minResultBytes;
 
-      // Ask in the background about results that may be swapped later; never waited for.
-      const toolUseIdsToLookUp = sites.filter(site => mayBeSwapped(site) && !swapOf(site)).map(site => site.toolUseId);
+      // New culls: at a turn start, or mid-turn when nothing in the current turn is bound to the prefix.
+      const currentTurnHoldsReasoning = turnHoldsReasoning(request, latestTurn);
+      // (At a turn start the latest turn holds no tool work, so only earlier turns can be culled.)
+      const mayCullNow = !currentTurnHoldsReasoning || context.identity.turnStart;
+      // The in-flight loop's latest assistant message, and what follows it, is never culled.
+      let latestAssistantIndex = request.messages.length;
+      for (let messageIndex = request.messages.length - 1; messageIndex > latestTurn.startIndex; messageIndex--) {
+        if (request.messages[messageIndex].role === 'assistant') {
+          latestAssistantIndex = messageIndex;
+          break;
+        }
+      }
+
+      const recordedByTurn = new Map<number, CullEntry>();
+      for (const entry of ledger.entries()) {
+        if (entry.type === 'cull') recordedByTurn.set(entry.turnOrdinal, entry);
+      }
+
+      const runs: Array<{ run: CullRun; entry: CullEntry; appendSplice: ByteSplice }> = [];
+      const newCulls: Array<{ run: CullRun; entry: CullEntry; appendSplice: ByteSplice }> = [];
+      for (const turn of turns) {
+        const calls = callsOf(request, turn);
+        if (calls.length === 0) continue;
+        const endLimit = turn === latestTurn ? latestAssistantIndex : turn.endIndex;
+        const recorded = recordedByTurn.get(turn.ordinal);
+        const recordedRun = recorded ? recordedCullRunOf(request, conversationElements, turn, calls, recorded.throughCallId, endLimit) : null;
+        if (recorded && !recordedRun) {
+          // The agent changed this turn's history (compaction, rewind): nothing of it is culled now, or built on.
+          logger.debug('WIRE', 'Endless Mode left a turn as it came: its recorded cull no longer matches the history', {
+            conversationKey: ledger.conversationKey, turnOrdinal: turn.ordinal,
+          });
+          continue;
+        }
+        if (recorded && recordedRun) {
+          const appendSplice = appendToTurnStartSplice(request, conversationElements, turn, culledWorkBlock(recorded.lines));
+          if (!appendSplice) {
+            // Without its lines the cull cannot be put back as it was frozen; failing open on every request would
+            // send the original history, so the conversation goes as it comes from now on.
+            suspend(ledger);
+            logger.warn('WIRE', 'Endless Mode suspended a conversation: a recorded cull\'s lines have no place in its turn\'s user message', {
+              conversationKey: ledger.conversationKey, turnOrdinal: turn.ordinal,
+            });
+            return undefined;
+          }
+          runs.push({ run: recordedRun, entry: recorded, appendSplice });
+        }
+        if (!mayCullNow) continue;
+
+        let boundaryCallOrder = -1;
+        calls.forEach((call, order) => {
+          if (observationOf(call.callId)) boundaryCallOrder = order;
+        });
+        const recordedThroughOrder = recorded ? calls.findIndex(call => call.callId === recorded.throughCallId) : -1;
+        if (boundaryCallOrder <= recordedThroughOrder) continue;
+        if (GEMINI_REQUEST_POSITIONAL_CALL_ID_PATTERN.test(calls[boundaryCallOrder].callId)) {
+          // A position id is a message index: it would name another call once the history shifts.
+          logger.debug('WIRE', 'Endless Mode left a turn as it came: its boundary call has only a position id', {
+            conversationKey: ledger.conversationKey, turnOrdinal: turn.ordinal,
+          });
+          continue;
+        }
+        const found = newCullRunOf(request, conversationElements, turn, calls, boundaryCallOrder, endLimit);
+        if (!found) continue;
+        const { run, throughCallId } = found;
+        if (calls.findIndex(call => call.callId === throughCallId) <= recordedThroughOrder) continue;
+        const callsInRun = calls.filter(call => call.messageIndex <= run.lastIndex);
+
+        // The lines already frozen stay as they were; observations new to this turn follow, in message order.
+        const lines = [...(recorded?.lines ?? [])];
+        const observationIds = [...(recorded?.observationIds ?? [])];
+        for (const call of callsInRun) {
+          const observation = observationOf(call.callId);
+          if (!observation || observationIds.includes(observation.observationId)) continue;
+          observationIds.push(observation.observationId);
+          lines.push(observation.timelineLine);
+        }
+        // A cull needs a line; one that grows needs none of its own (the worker links a whole batch to its first observation).
+        if (observationIds.length === 0) continue;
+        const appendSplice = appendToTurnStartSplice(request, conversationElements, turn, culledWorkBlock(lines));
+        if (!appendSplice) {
+          logger.debug('WIRE', 'Endless Mode left a turn as it came: its user message has no content to append lines to', {
+            conversationKey: ledger.conversationKey, turnOrdinal: turn.ordinal,
+          });
+          continue;
+        }
+        newCulls.push({
+          run,
+          appendSplice,
+          entry: { type: 'cull', turnOrdinal: turn.ordinal, throughCallId, lines, observationIds, culledTokensEst: culledTokensOf(request, run, culledWorkBlock(lines)) },
+        });
+      }
+
+      // Recorded before the culls that need it: held writes commit in order, with no rollback.
+      let cutUntilTurnOrdinal = request.protocol === 'anthropic' ? thinkingCutInForce(ledger) : null;
+      if (newCulls.length > 0 && request.protocol === 'anthropic' && (cutUntilTurnOrdinal === null || cutUntilTurnOrdinal < latestTurn.ordinal)) {
+        ledger.record({ type: 'thinkingCut', untilTurnOrdinal: latestTurn.ordinal });
+        cutUntilTurnOrdinal = latestTurn.ordinal;
+      }
+      for (const newCull of newCulls) {
+        const recorded = ledger.record(newCull.entry);
+        if (recorded.type !== 'cull') continue;
+        const index = runs.findIndex(applied => applied.run.turn === newCull.run.turn);
+        // First write wins: an entry already there under this id keeps its own lines.
+        const appendSplice = recorded === newCull.entry ? newCull.appendSplice : appendToTurnStartSplice(request, conversationElements, newCull.run.turn, culledWorkBlock(recorded.lines));
+        if (!appendSplice) continue;
+        const applied = { run: newCull.run, entry: recorded, appendSplice };
+        if (index >= 0) runs[index] = applied;
+        else runs.push(applied);
+      }
+
+      // Background lookups for the calls not culled yet; never waited for.
+      const culledCallIds = new Set<string>();
+      for (const { run } of runs) {
+        for (let messageIndex = run.firstIndex; messageIndex <= run.lastIndex; messageIndex++) {
+          for (const part of request.messages[messageIndex].parts) if (part.kind === 'tool_call' && part.callId) culledCallIds.add(part.callId);
+        }
+      }
+      const toolUseIdsToLookUp = [...toolUseIdByCallId].filter(([callId]) => !culledCallIds.has(callId)).map(([, toolUseId]) => toolUseId);
       if (toolUseIdsToLookUp.length > 0) {
         void options.observationLookup.requestRefresh(ledger.conversationKey, {
           contentSessionId: contentSessionIdOf(context.identity),
@@ -177,100 +482,22 @@ export function createEndlessModeStage(options: EndlessModeStageOptions): WireRe
         });
       }
 
-      // The swaps already made: put back as they were frozen.
-      const replacementBySite = new Map<ToolResultSite, string>();
-      const firstSiteShowingObservation = new Map<number, ToolResultSite>();
-      for (const site of sites) {
-        const swap = swapOf(site);
-        if (!swap) continue;
-        replacementBySite.set(site, swap.replacementText);
-        if (swap.coveredByCallId === undefined && !firstSiteShowingObservation.has(swap.observationId)) firstSiteShowingObservation.set(swap.observationId, site);
+      let rewritten = request.body;
+      if (runs.length > 0) {
+        const removedElementStarts = new Set(runs.flatMap(({ run }) => run.elements.map(element => element.start)));
+        const splices = [
+          ...arrayItemRemovalSplices(body, conversationArraySpan, element => removedElementStarts.has(element.start)),
+          ...runs.map(({ appendSplice }) => appendSplice),
+        ];
+        rewritten = applyByteSplices(body, splices);
+        // Kept as the relay's swapped-token estimate until the report counts each new cull once (plan Phase 5).
+        context.estimates.swappedTokens += runs.reduce((sum, { entry }) => sum + entry.culledTokensEst, 0);
       }
-
-      // New swaps: only where the user's new turn begins (D7.5), of results
-      // older than the minimum age (Gemini: earlier turns only, as every age
-      // counted here is at least one turn).
-      let newSwaps: NewSwap[] = [];
-      if (context.identity.turnStart) {
-        const callIdCounts = new Map<string, number>();
-        for (const site of sites) callIdCounts.set(site.callId, (callIdCounts.get(site.callId) ?? 0) + 1);
-        sites.forEach((site, siteIndex) => {
-          if (replacementBySite.has(site) || callIdCounts.get(site.callId) !== 1) return;
-          if (!(site.userTurnsAfter > minAgeTurns) || !mayBeSwapped(site)) return;
-          const observation = options.observationLookup.cached(ledger.conversationKey, site.toolUseId);
-          if (!observation) return;
-          const firstSite = firstSiteShowingObservation.get(observation.observationId);
-          const coveredAbove = firstSite !== undefined && sites.indexOf(firstSite) < siteIndex;
-          const replacementText = coveredAbove
-            ? coveredReplacementText(site.toolName, site.callId, observation.observationId, firstSite.callId)
-            : observationReplacementText(site.toolName, site.callId, observation);
-          // A swap must make the history smaller.
-          if (utf8Encoder.encode(replacementValueJson(request.protocol, replacementText)).length >= site.contentSpan.end - site.contentSpan.start) return;
-          if (!coveredAbove) firstSiteShowingObservation.set(observation.observationId, site);
-          newSwaps.push({ site, replacementText, observationId: observation.observationId, ...(coveredAbove ? { coveredByCallId: firstSite.callId } : {}) });
-        });
+      if (cutUntilTurnOrdinal !== null) {
+        const cutSplices = thinkingCutSplices(rewritten === request.body ? request : context.requestOf(rewritten), cutUntilTurnOrdinal);
+        if (cutSplices.length > 0) rewritten = applyByteSplices(rewritten, cutSplices);
       }
-
-      // Anthropic: the thinking to drop, decided before anything is recorded, so
-      // a request that goes as it came leaves nothing new in the ledger.
-      const recordedDrops = request.protocol === 'anthropic' ? recordedThinkingDrops(ledger) : [];
-      let thinkingSplices = thinkingDropSplicesFor(request, recordedDrops);
-      if (thinkingSplices === null) {
-        // Never send an empty assistant message: the request goes as it came,
-        // and since the model then answers the original history, the
-        // conversation is never swapped again (as when the stage is off).
-        ledger.record({ type: 'suspended', stage: ENDLESS_MODE_STAGE_NAME, at: new Date(now()).toISOString() });
-        logger.debug('WIRE', 'Endless Mode sent a request unswapped and suspended the conversation: a recorded thinking drop would leave an assistant message empty', {
-          agentId: context.identity.agentId, conversationKey: ledger.conversationKey,
-        });
-        return undefined;
-      }
-      let newThinkingDrop: ThinkingDropEntry | null = null;
-      if (newSwaps.length > 0 && request.protocol === 'anthropic') {
-        const candidate: ThinkingDropEntry = {
-          type: 'thinkingDrop',
-          boundaryMessageIndex: Math.min(...newSwaps.map(swap => swap.site.messageIndex)),
-          untilMessageIndex: latestUserTurnStartIndex(request),
-        };
-        const alreadyCovered = thinkingDropIsCovered(recordedDrops, candidate);
-        const withCandidate = alreadyCovered ? thinkingSplices : thinkingDropSplicesFor(request, [...recordedDrops, candidate]);
-        if (withCandidate === null) {
-          logger.debug('WIRE', 'Endless Mode added no swaps this turn: dropping thinking would leave an assistant message empty', {
-            agentId: context.identity.agentId, conversationKey: ledger.conversationKey,
-          });
-          newSwaps = [];
-        } else {
-          thinkingSplices = withCandidate;
-          if (!alreadyCovered) newThinkingDrop = candidate;
-        }
-      }
-
-      // Frozen first (first write wins), then applied as the ledger has them.
-      const firstRequestAt = new Date(now()).toISOString();
-      for (const swap of newSwaps) {
-        const recorded = ledger.record({
-          type: 'swap',
-          callId: swap.site.callId,
-          replacementText: swap.replacementText,
-          firstRequestAt,
-          observationId: swap.observationId,
-          ...(swap.coveredByCallId !== undefined ? { coveredByCallId: swap.coveredByCallId } : {}),
-        });
-        if (recorded.type === 'swap') replacementBySite.set(swap.site, recorded.replacementText);
-      }
-      if (newThinkingDrop) ledger.record(newThinkingDrop);
-
-      const splices: ByteSplice[] = [...thinkingSplices];
-      let swappedTokens = 0;
-      for (const [site, replacementText] of replacementBySite) {
-        const replacement = utf8Encoder.encode(replacementValueJson(request.protocol, replacementText));
-        if (bytesEqual(request.body, site.contentSpan.start, site.contentSpan.end, replacement)) continue;
-        splices.push({ start: site.contentSpan.start, end: site.contentSpan.end, replacement });
-        swappedTokens += Math.max(0, estimateTextTokens(site.text) - estimateTextTokens(replacementText));
-      }
-      if (splices.length === 0) return undefined;
-      context.estimates.swappedTokens += swappedTokens;
-      return applyByteSplices(request.body, splices);
+      return rewritten === request.body ? undefined : rewritten;
     },
   };
 }

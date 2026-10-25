@@ -107,13 +107,22 @@ export function insertArrayItem(bytes: Uint8Array, arraySpan: JsonSpan, index: n
  * zcodeStartBody test asks of a start body).
  */
 export function appendArrayItem(bytes: Uint8Array, arraySpan: JsonSpan, itemJson: string | Uint8Array): Uint8Array {
+  const splice = appendArrayItemSplice(bytes, arraySpan, itemJson);
+  return splice ? applyByteSplices(bytes, [splice]) : bytes;
+}
+
+/**
+ * The splice that appends `itemJson` as the array's last element; null when
+ * the last element already is byte-identical to it. For a caller that
+ * applies it together with other splices of the same bytes.
+ */
+export function appendArrayItemSplice(bytes: Uint8Array, arraySpan: JsonSpan, itemJson: string | Uint8Array): ByteSplice | null {
   requireContainer(arraySpan, 'array');
   const item = jsonValueBytes(itemJson);
   const elements = [...arrayElements(bytes, arraySpan)];
   const last = elements[elements.length - 1];
-  if (last && bytesEqual(bytes, last.start, last.end, item)) return bytes;
-  const splice = last ? insertionSplice(last.end, COMMA_BYTES, item) : insertionSplice(arraySpan.start + 1, item);
-  return applyByteSplices(bytes, [splice]);
+  if (last && bytesEqual(bytes, last.start, last.end, item)) return null;
+  return last ? insertionSplice(last.end, COMMA_BYTES, item) : insertionSplice(arraySpan.start + 1, item);
 }
 
 /**

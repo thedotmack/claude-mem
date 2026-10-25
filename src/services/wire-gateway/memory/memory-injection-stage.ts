@@ -31,7 +31,7 @@
 import { logger } from '../../../utils/logger.js';
 import { ScannedObject, objectElements } from '../ir/scanned-object.js';
 import type { WireRequest } from '../ir/types.js';
-import { applyByteSplices } from '../json/byte-splices.js';
+import { applyByteSplices, type ByteSplice } from '../json/byte-splices.js';
 import { decodeString, scanDocument, type JsonSpan } from '../json/scanner.js';
 import { appendArrayItem, encodeJsonString, insertArrayItem, insertObjectMember, replaceSpan } from '../json/splice.js';
 import { jsonEscapeString } from '../json/string-walker.js';
@@ -92,16 +92,34 @@ const utf8Encoder = new TextEncoder();
 
 /** `text` inserted at the end of the string at `span` (before its closing quote); every other byte kept. */
 function appendToStringSpan(body: Uint8Array, span: JsonSpan, text: string): Uint8Array {
-  const existing = decodeString(body, span);
-  const appended = existing === '' ? text : `${STRING_SEPARATOR}${text}`;
-  if (existing.endsWith(appended) || existing === text) return body;
-  const at = span.end - 1;
-  return applyByteSplices(body, [{ start: at, end: at, replacement: utf8Encoder.encode(jsonEscapeString(appended)) }]);
+  const splice = appendToStringSplice(body, span, text);
+  return splice ? applyByteSplices(body, [splice]) : body;
 }
 
-function textBlockJson(protocol: WireRequest['protocol'], text: string): string {
+/**
+ * The splice appendToStringSpan makes (after a blank line when the string
+ * is not empty); null when the string already ends with it. For a caller
+ * that applies it together with other splices of the same bytes.
+ */
+export function appendToStringSplice(body: Uint8Array, span: JsonSpan, text: string): ByteSplice | null {
+  const existing = decodeString(body, span);
+  const appended = existing === '' ? text : `${STRING_SEPARATOR}${text}`;
+  if (existing.endsWith(appended) || existing === text) return null;
+  const at = span.end - 1;
+  return { start: at, end: at, replacement: utf8Encoder.encode(jsonEscapeString(appended)) };
+}
+
+/** `text` as a text block of the protocol: a Gemini part, a Responses input_text, else a text block. */
+export function textBlockJson(protocol: WireRequest['protocol'], text: string): string {
   const encoded = encodeJsonString(text);
-  return protocol === 'gemini' ? `{"text":${encoded}}` : `{"type":"text","text":${encoded}}`;
+  switch (protocol) {
+    case 'gemini':
+      return `{"text":${encoded}}`;
+    case 'openai-responses':
+      return `{"type":"input_text","text":${encoded}}`;
+    default:
+      return `{"type":"text","text":${encoded}}`;
+  }
 }
 
 /** The body with `block` appended at the end of its system prompt (see the table in plan Phase 12 task 1). */

@@ -8,13 +8,12 @@
 // every later request takes those blocks out again, byte for byte, as
 // Claude Code's own retry drops them (report 07 §2.2–2.3).
 //
-// - `thinkingCut {untilTurnOrdinal}` (Endless Mode v2): every thinking block
-//   before the user message that starts that turn, oldest first with no gap,
-//   never in the in-flight loop. An assistant message left with nothing goes
-//   whole; Anthropic merges the user messages on either side of it.
-// - `thinkingDrop {boundaryMessageIndex, untilMessageIndex}` (Endless Mode
-//   v1's swaps, until Phase 4 replaces them): message indexes, and an
-//   assistant message that would be left empty means no change at all.
+// `thinkingCut {untilTurnOrdinal}`: every thinking block before the user
+// message that starts that turn, oldest first with no gap, never in the
+// in-flight loop. An assistant message left with nothing goes whole;
+// Anthropic merges the user messages on either side of it. (Endless Mode
+// v1's `thinkingDrop` entries are only parsed, never applied: a conversation
+// that holds one is suspended for the cull stage.)
 
 import { latestUserTurnStartIndex, startsUserTurn } from '../identity/turn-start.js';
 import { ScannedObject } from '../ir/scanned-object.js';
@@ -22,16 +21,9 @@ import type { WireRequest } from '../ir/types.js';
 import type { ByteSplice } from '../json/byte-splices.js';
 import { scanDocument } from '../json/scanner.js';
 import { arrayItemRemovalSplices } from '../json/splice.js';
-import type { WireConversationLedgerView, WireLedgerEntry } from '../ledger/conversation-ledger.js';
-
-export type ThinkingDropEntry = Extract<WireLedgerEntry, { type: 'thinkingDrop' }>;
+import type { WireConversationLedgerView } from '../ledger/conversation-ledger.js';
 
 const THINKING_BLOCK_TYPES = new Set(['thinking', 'redacted_thinking']);
-
-/** Every thinking drop the ledger holds, in the order written. */
-export function recordedThinkingDrops(ledger: WireConversationLedgerView): ThinkingDropEntry[] {
-  return ledger.entries().filter((entry): entry is ThinkingDropEntry => entry.type === 'thinkingDrop');
-}
 
 /** The splices that drop an assistant message's thinking blocks; null when the message would be left empty. */
 function thinkingDropSplicesOfMessage(request: WireRequest, messageIndex: number): ByteSplice[] | null {
@@ -45,32 +37,6 @@ function thinkingDropSplicesOfMessage(request: WireRequest, messageIndex: number
     return isThinking;
   });
   return splices.length > 0 && kept === 0 ? null : splices;
-}
-
-/** The assistant messages whose thinking `drops` take out: after a boundary, before its end. */
-function assistantMessagesToStripOfThinking(request: WireRequest, drops: ThinkingDropEntry[]): number[] {
-  const indexes: number[] = [];
-  request.messages.forEach((message, messageIndex) => {
-    if (message.role !== 'assistant') return;
-    if (drops.some(drop => messageIndex > drop.boundaryMessageIndex && messageIndex < drop.untilMessageIndex)) indexes.push(messageIndex);
-  });
-  return indexes;
-}
-
-/** The splices that take out every thinking block `drops` cover; null when an assistant message would be left empty. */
-export function thinkingDropSplicesFor(request: WireRequest, drops: ThinkingDropEntry[]): ByteSplice[] | null {
-  const splices: ByteSplice[] = [];
-  for (const messageIndex of assistantMessagesToStripOfThinking(request, drops)) {
-    const dropSplices = thinkingDropSplicesOfMessage(request, messageIndex);
-    if (dropSplices === null) return null;
-    splices.push(...dropSplices);
-  }
-  return splices;
-}
-
-/** Whether `drops` already take out everything `candidate` would (one of them spans its whole range). */
-export function thinkingDropIsCovered(drops: ThinkingDropEntry[], candidate: ThinkingDropEntry): boolean {
-  return drops.some(drop => drop.boundaryMessageIndex <= candidate.boundaryMessageIndex && drop.untilMessageIndex >= candidate.untilMessageIndex);
 }
 
 /** The turn the ledger's thinking cut reaches (the largest `untilTurnOrdinal`); null when there is none. */

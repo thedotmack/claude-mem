@@ -1,67 +1,70 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
-import { rmSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { WIRE_GATEWAY_DIR } from '../../src/shared/paths.js';
 import { addWireGatewayRoute, readWireGatewayRoutesFile, setWireGatewayRouteFeature } from '../../src/services/wire-gateway/routes.js';
-import { WireConversationLedger } from '../../src/services/wire-gateway/ledger/conversation-ledger.js';
+import { WireConversationLedger, conversationKeyOf } from '../../src/services/wire-gateway/ledger/conversation-ledger.js';
 import { WireUsageLedger } from '../../src/services/wire-gateway/metrics/usage-ledger.js';
 import { parseWireRequest } from '../../src/services/wire-gateway/ir/request-parsers.js';
+import { startsUserTurn } from '../../src/services/wire-gateway/identity/turn-start.js';
+import { userWordsInText } from '../../src/services/wire-gateway/identity/user-words.js';
+import { arrayElements, getSpan, rawText, type JsonSpan } from '../../src/services/wire-gateway/json/scanner.js';
 import { toolPairingProblem } from '../../src/services/wire-gateway/rewrite/tool-pairing.js';
 import type { WireProtocol } from '../../src/services/wire-gateway/relay/protocols.js';
 import {
   WireObservationLookup,
   fetchToolObservationsFromWorker,
-  type WireSwapObservation,
+  type WireToolObservation,
   type WireToolObservationQuery,
 } from '../../src/services/wire-gateway/endless/observation-lookup.js';
-import { boundCallId, coveredReplacementText, observationReplacementText } from '../../src/services/wire-gateway/endless/endless-mode-stage.js';
+import { culledWorkBlock } from '../../src/services/wire-gateway/endless/endless-mode-stage.js';
 import { buildEndlessModeReport, formatEndlessModeReport } from '../../src/services/wire-gateway/endless/endless-report.js';
 import { validateWireGatewayListenSettings } from '../../src/services/wire-gateway/config.js';
+import { stripMemoryTags } from '../../src/utils/tag-stripping.js';
 import { startFakeUpstream, type FakeUpstream } from './helpers/fake-upstream.js';
 import { startWireGatewayForTest, type StartedWireGateway } from './helpers/start-wire-gateway.js';
+import { expectDiffersOnlyInsideDeclaredSpans, expectMatchesGoldenFile, type DeclaredSpan } from './golden/golden-harness.js';
 
-// Endless Mode at the wire (plan Phase 11), through the real relay: per
-// protocol, a conversation born under the gateway whose first tool result
-// gets an observation is swapped once, at a turn start, and stays the same
-// byte for byte on every later request and across a restart.
+// Endless Mode v2 (plan Phase 4), through the real relay: per protocol, a
+// conversation born under the gateway has each finished stretch of tool
+// work whose observation exists culled (whole messages out, the
+// observations' timeline lines appended to the turn's user message), at a
+// turn start, or mid-turn when the turn holds no reasoning; the result is
+// the same bytes on every later request and after a restart.
 
 const testRoot = join(WIRE_GATEWAY_DIR, 'endless-mode-test');
 const routesFilePath = join(testRoot, 'routes.json');
 const ledgerDirectory = join(testRoot, 'ledger');
 const usageDirectory = join(testRoot, 'usage');
 const decoder = new TextDecoder();
+const encoder = new TextEncoder();
 const textOf = (bytes: Uint8Array) => decoder.decode(bytes);
 
-const ENDLESS_SETTINGS = {
-  CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE: 'true',
-  // Older than 0 turns: any result of an earlier turn.
-  CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_AGE_TURNS: '0',
-  CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_RESULT_BYTES: '1000',
-};
+const ENDLESS_SETTINGS = { CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE: 'true' };
 
 // ---------------------------------------------------------------------------
 // The fake worker behind the observation lookup
 
 type FetcherMode = 'table' | 'hang' | 'down';
 let fetcherMode: FetcherMode = 'table';
-/** tool_use_id → observation, per test conversation. */
-const observationsByToolUseId = new Map<string, WireSwapObservation>();
+/** tool_use_id → observation. */
+const observationsByToolUseId = new Map<string, WireToolObservation>();
 const pendingLookups = new Set<Promise<unknown>>();
-const lookupQueries: WireToolObservationQuery[] = [];
+/** When set, every tool use asked about has this observation (for ids the test cannot know, such as Gemini's derived ones). */
+let observationForEveryToolUse: WireToolObservation | null = null;
 
-async function fakeFetchToolObservations(query: WireToolObservationQuery): Promise<Map<string, WireSwapObservation>> {
-  lookupQueries.push(query);
+async function fakeFetchToolObservations(query: WireToolObservationQuery): Promise<Map<string, WireToolObservation>> {
   if (fetcherMode === 'hang') return new Promise(() => undefined);
   if (fetcherMode === 'down') throw new Error('connect ECONNREFUSED');
-  const found = new Map<string, WireSwapObservation>();
+  const found = new Map<string, WireToolObservation>();
   for (const toolUseId of query.toolUseIds) {
-    const observation = observationsByToolUseId.get(toolUseId);
+    const observation = observationForEveryToolUse ?? observationsByToolUseId.get(toolUseId);
     if (observation) found.set(toolUseId, observation);
   }
   return found;
 }
 
-function trackedFetcher(query: WireToolObservationQuery): Promise<Map<string, WireSwapObservation>> {
+function trackedFetcher(query: WireToolObservationQuery): Promise<Map<string, WireToolObservation>> {
   const pending = fakeFetchToolObservations(query);
   if (fetcherMode !== 'hang') {
     pendingLookups.add(pending);
@@ -76,27 +79,19 @@ async function settleLookups(): Promise<void> {
   await new Promise(resolve => setTimeout(resolve, 5));
 }
 
+/** An observation as the worker answers it; the title has markup, quotes and non-ASCII, kept as they are. */
+function observationFor(observationId: number): WireToolObservation {
+  const title = `File ${observationId} read <b> & "q" é`;
+  return { observationId, timelineLine: `#${observationId} 3:04p 🔵 ${title}` };
+}
+const lineOf = (observationId: number) => observationFor(observationId).timelineLine;
+
 // ---------------------------------------------------------------------------
 // Conversations in each protocol
 
-interface Turn {
-  n: number;
-  userText: string;
-  callId: string;
-  args: Record<string, unknown>;
-  resultText: string;
-  finalText: string;
-}
-
-function turnOf(tag: string, n: number): Turn {
-  return {
-    n,
-    userText: `${tag}: task number ${n}, look at file ${n}`,
-    callId: `call_${tag}_${n}`,
-    args: { path: `/repo/${tag}/file${n}.ts` },
-    resultText: `contents of file ${n} <${tag}>\n${'lorem ipsum dolor '.repeat(150)}`,
-    finalText: `file ${n} is fine`,
-  };
+interface Call {
+  id: string;
+  resultText?: string;
 }
 
 interface ProtocolCase {
@@ -104,89 +99,100 @@ interface ProtocolCase {
   routeId: string;
   agentId: string;
   path: string;
-  user(turn: Turn): unknown[];
-  call(turn: Turn): unknown[];
-  result(turn: Turn): unknown[];
-  final(turn: Turn): unknown[];
+  /** The array each item below is an element of. */
+  turnsKey: string;
+  user(text: string): unknown[];
+  /** One model message making these calls at once; with `reasoning`, it carries thinking / sealed reasoning / a signature. */
+  calls(calls: Call[], reasoning: boolean): unknown[];
+  results(calls: Call[]): unknown[];
+  final(text: string, reasoning: boolean): unknown[];
   body(items: unknown[]): string;
+  /** Where the turn's user message at element `index` takes appended text (its content string or block array). */
+  userContentPath(index: number): Array<string | number>;
 }
+
+const resultTextOf = (call: Call) => call.resultText ?? `contents of ${call.id} <x>\n${'lorem ipsum '.repeat(20)}`;
 
 const protocolCases: ProtocolCase[] = [
   {
-    protocol: 'anthropic',
-    routeId: 'endless-anthropic',
-    agentId: 'claude-code',
-    path: '/v1/messages',
-    user: turn => [{ role: 'user', content: turn.userText }],
-    call: turn => [{ role: 'assistant', content: [
-      { type: 'thinking', thinking: `thinking about file ${turn.n}`, signature: `sig-call-${turn.n}` },
-      { type: 'tool_use', id: turn.callId, name: 'read_file', input: turn.args },
+    protocol: 'anthropic', routeId: 'endless-anthropic', agentId: 'claude-code', path: '/v1/messages', turnsKey: 'messages',
+    user: text => [{ role: 'user', content: text }],
+    calls: (calls, reasoning) => [{ role: 'assistant', content: [
+      ...(reasoning ? [{ type: 'thinking', thinking: `thinking before ${calls[0].id}`, signature: `sig-${calls[0].id}` }] : []),
+      ...calls.map(call => ({ type: 'tool_use', id: call.id, name: 'read_file', input: { path: `/repo/${call.id}` } })),
     ] }],
-    result: turn => [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: turn.callId, content: turn.resultText }] }],
-    final: turn => [{ role: 'assistant', content: [
-      { type: 'thinking', thinking: `wrapping up file ${turn.n}`, signature: `sig-final-${turn.n}` },
-      { type: 'text', text: turn.finalText },
+    results: calls => [{ role: 'user', content: calls.map(call => ({ type: 'tool_result', tool_use_id: call.id, content: resultTextOf(call) })) }],
+    final: (text, reasoning) => [{ role: 'assistant', content: [
+      ...(reasoning ? [{ type: 'thinking', thinking: `wrapping up: ${text}`, signature: `sig-final-${text}` }] : []),
+      { type: 'text', text },
     ] }],
     body: items => JSON.stringify({ model: 'claude-x', max_tokens: 8192, system: [{ type: 'text', text: 'You are careful.' }], messages: items }),
+    userContentPath: index => ['messages', index, 'content'],
   },
   {
-    protocol: 'openai-chat',
-    routeId: 'endless-chat',
-    agentId: 'opencode',
-    path: '/v1/chat/completions',
-    user: turn => [{ role: 'user', content: turn.userText }],
-    call: turn => [{ role: 'assistant', content: null, tool_calls: [{ id: turn.callId, type: 'function', function: { name: 'read_file', arguments: JSON.stringify(turn.args) } }] }],
-    result: turn => [{ role: 'tool', tool_call_id: turn.callId, content: turn.resultText }],
-    final: turn => [{ role: 'assistant', content: turn.finalText }],
+    protocol: 'openai-chat', routeId: 'endless-chat', agentId: 'opencode', path: '/v1/chat/completions', turnsKey: 'messages',
+    user: text => [{ role: 'user', content: text }],
+    calls: (calls, reasoning) => [{
+      role: 'assistant', content: null,
+      ...(reasoning ? { reasoning_content: `thinking before ${calls[0].id}` } : {}),
+      tool_calls: calls.map(call => ({ id: call.id, type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: `/repo/${call.id}` }) } })),
+    }],
+    results: calls => calls.map(call => ({ role: 'tool', tool_call_id: call.id, content: resultTextOf(call) })),
+    final: (text, reasoning) => [{ role: 'assistant', content: text, ...(reasoning ? { reasoning_content: `wrapping up: ${text}` } : {}) }],
     body: items => JSON.stringify({ model: 'gpt-x', messages: items }),
+    userContentPath: index => ['messages', index, 'content'],
   },
   {
-    protocol: 'openai-responses',
-    routeId: 'endless-responses',
-    agentId: 'codex',
-    path: '/v1/responses',
-    user: turn => [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: turn.userText }] }],
-    call: turn => [
-      { type: 'reasoning', id: `rs_${turn.n}`, summary: [], encrypted_content: `enc-${turn.n}` },
-      { type: 'function_call', call_id: turn.callId, name: 'read_file', arguments: JSON.stringify(turn.args) },
+    protocol: 'openai-responses', routeId: 'endless-responses', agentId: 'codex', path: '/v1/responses', turnsKey: 'input',
+    user: text => [{ type: 'message', role: 'user', content: [{ type: 'input_text', text }] }],
+    calls: (calls, reasoning) => [
+      ...(reasoning ? [{ type: 'reasoning', id: `rs_${calls[0].id}`, summary: [], encrypted_content: `enc-${calls[0].id}` }] : []),
+      ...calls.map(call => ({ type: 'function_call', call_id: call.id, name: 'read_file', arguments: JSON.stringify({ path: `/repo/${call.id}` }) })),
     ],
-    result: turn => [{ type: 'function_call_output', call_id: turn.callId, output: turn.resultText }],
-    final: turn => [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: turn.finalText }] }],
+    results: calls => calls.map(call => ({ type: 'function_call_output', call_id: call.id, output: resultTextOf(call) })),
+    final: (text, reasoning) => [
+      ...(reasoning ? [{ type: 'reasoning', id: `rs_final_${text.length}`, summary: [], encrypted_content: `enc-final-${text}` }] : []),
+      { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] },
+    ],
     body: items => JSON.stringify({ model: 'gpt-x', input: items }),
+    userContentPath: index => ['input', index, 'content'],
   },
   {
-    protocol: 'gemini',
-    routeId: 'endless-gemini',
-    agentId: 'gemini-cli',
-    path: '/v1beta/models/gemini-x:generateContent',
-    user: turn => [{ role: 'user', parts: [{ text: turn.userText }] }],
-    call: turn => [{ role: 'model', parts: [{ functionCall: { id: turn.callId, name: 'read_file', args: turn.args }, thoughtSignature: `ts-${turn.n}` }] }],
-    result: turn => [{ role: 'user', parts: [{ functionResponse: { id: turn.callId, name: 'read_file', response: { output: turn.resultText } } }] }],
-    final: turn => [{ role: 'model', parts: [{ text: turn.finalText }] }],
+    protocol: 'gemini', routeId: 'endless-gemini', agentId: 'gemini-cli', path: '/v1beta/models/gemini-x:generateContent', turnsKey: 'contents',
+    user: text => [{ role: 'user', parts: [{ text }] }],
+    calls: (calls, reasoning) => [{ role: 'model', parts: calls.map((call, index) => ({
+      functionCall: { id: call.id, name: 'read_file', args: { path: `/repo/${call.id}` } },
+      ...(reasoning && index === 0 ? { thoughtSignature: `ts-${call.id}` } : {}),
+    })) }],
+    results: calls => [{ role: 'user', parts: calls.map(call => ({ functionResponse: { id: call.id, name: 'read_file', response: { output: resultTextOf(call) } } })) }],
+    final: (text, reasoning) => [{ role: 'model', parts: [{ text, ...(reasoning ? { thoughtSignature: `ts-final-${text}` } : {}) }] }],
     body: items => JSON.stringify({ contents: items }),
+    userContentPath: index => ['contents', index, 'parts'],
   },
 ];
+const anthropicCase = protocolCases[0];
 
-/**
- * The requests of a conversation of `turnCount` turns, in order: each turn's
- * start (its user words) and its tool loop (the call and its result).
- */
-function conversationRequests(protocolCase: ProtocolCase, tag: string, turnCount: number): string[] {
-  const requests: string[] = [];
-  const items: unknown[] = [];
-  for (let n = 1; n <= turnCount; n++) {
-    const turn = turnOf(tag, n);
-    if (n > 1) items.push(...protocolCase.final(turnOf(tag, n - 1)));
-    items.push(...protocolCase.user(turn));
-    requests.push(protocolCase.body(items));
-    items.push(...protocolCase.call(turn), ...protocolCase.result(turn));
-    requests.push(protocolCase.body(items));
+/** A conversation built item by item, with the element range each step added, and each request's body. */
+class Conversation {
+  readonly items: unknown[] = [];
+  private readonly rangeByLabel = new Map<string, { first: number; last: number }>();
+  constructor(readonly protocolCase: ProtocolCase) {}
+
+  add(label: string, items: unknown[]): this {
+    this.rangeByLabel.set(label, { first: this.items.length, last: this.items.length + items.length - 1 });
+    this.items.push(...items);
+    return this;
   }
-  return requests;
-}
 
-function observationFor(observationId: number): WireSwapObservation {
-  return { observationId, title: `File ${observationId} read`, narrative: 'The file defines the parser <and> its tests.', facts: ['parser lives in src/', 'tests pass'] };
+  range(label: string): { first: number; last: number } {
+    const range = this.rangeByLabel.get(label);
+    if (!range) throw new Error(`no step ${label}`);
+    return range;
+  }
+
+  body(): string {
+    return this.protocolCase.body(this.items);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -197,17 +203,13 @@ let gateway: StartedWireGateway;
 let observationLookup: WireObservationLookup;
 
 async function startGateway(): Promise<void> {
-  gateway = await startEndlessGateway(ENDLESS_SETTINGS, ledgerDirectory);
-}
-
-async function startEndlessGateway(rewriteSettings: Record<string, string>, conversationLedgerDirectory: string): Promise<StartedWireGateway> {
   observationLookup = new WireObservationLookup({ fetchToolObservations: trackedFetcher, missBackoffBaseMs: 0 });
-  return startWireGatewayForTest({
+  gateway = await startWireGatewayForTest({
     routesFilePath,
     routesReloadCheckIntervalMs: 0,
-    rewriteSettings,
+    rewriteSettings: ENDLESS_SETTINGS,
     observationLookup,
-    conversationLedger: new WireConversationLedger({ directory: conversationLedgerDirectory }),
+    conversationLedger: new WireConversationLedger({ directory: ledgerDirectory }),
     capture: { usageLedger: new WireUsageLedger({ directory: usageDirectory }) },
   });
 }
@@ -229,197 +231,449 @@ afterAll(async () => {
   rmSync(testRoot, { recursive: true, force: true });
 });
 
-async function send(protocolCase: ProtocolCase, body: string, routeId = protocolCase.routeId, through: StartedWireGateway = gateway): Promise<string> {
-  const response = await fetch(`${through.baseUrl}/r/${routeId}${protocolCase.path}`, {
+let sessionCounter = 0;
+const nextSession = (tag: string) => `endless-${tag}-${++sessionCounter}`;
+
+/** Sends `body` and returns what the vendor got. */
+async function send(protocolCase: ProtocolCase, body: string, session: string, routeId = protocolCase.routeId): Promise<string> {
+  const before = upstream.requests.length;
+  const response = await fetch(`${gateway.baseUrl}/r/${routeId}${protocolCase.path}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-api-key': 'test-key' },
+    headers: { 'content-type': 'application/json', 'x-api-key': 'test-key', 'x-claude-mem-session': session },
     body,
   });
   await response.arrayBuffer();
   expect(response.status).toBe(200);
+  expect(upstream.requests.length).toBe(before + 1);
   return textOf(upstream.requests.at(-1)!.body);
 }
 
-/** A body's messages array (it is the body's last member), open at its end. */
+/** Sends `body`, then lets the lookups it asked for finish. */
+async function sendAndSettle(protocolCase: ProtocolCase, body: string, session: string, routeId?: string): Promise<string> {
+  const sent = await send(protocolCase, body, session, routeId);
+  await settleLookups();
+  return sent;
+}
+
+/** A body's conversation array (it is the body's last member), open at its end. */
 function prefixOf(body: string): string {
   expect(body.endsWith(']}')).toBe(true);
   return body.slice(0, -2);
 }
 
-const anthropicCase = protocolCases[0];
+function ledgerEntriesOf(agentId: string, session: string): Array<Record<string, unknown>> {
+  const filePath = join(ledgerDirectory, `${conversationKeyOf({ agentId, sessionId: session })}.jsonl`);
+  if (!existsSync(filePath)) return [];
+  return readFileSync(filePath, 'utf8').split('\n').filter(line => line !== '').map(line => JSON.parse(line) as Record<string, unknown>);
+}
 
-describe('Endless Mode per protocol', () => {
+const escapedInJson = (text: string) => JSON.stringify(text).slice(1, -1);
+const workBlockOf = (...observationIds: number[]) => culledWorkBlock(observationIds.map(lineOf));
+
+const spanAt = (body: Uint8Array, path: Array<string | number>): JsonSpan => {
+  const span = getSpan(body, path);
+  if (!span) throw new Error(`no ${path.join('.')}`);
+  return span;
+};
+const elementsOf = (body: Uint8Array, path: Array<string | number>) => [...arrayElements(body, spanAt(body, path))];
+
+/** Where a user message's content takes appended text: before a string's closing quote, after an array's last element. */
+function appendPointOf(body: Uint8Array, contentPath: Array<string | number>): DeclaredSpan {
+  const span = spanAt(body, contentPath);
+  const at = span.type === 'string' ? span.end - 1 : elementsOf(body, contentPath).at(-1)!.end;
+  return { start: at, end: at };
+}
+
+/** The bytes a cull of elements first..last removes: from the end of the element before them to the end of the last. */
+function removedRangeOf(body: Uint8Array, protocolCase: ProtocolCase, range: { first: number; last: number }): DeclaredSpan {
+  const elements = elementsOf(body, [protocolCase.turnsKey]);
+  return { start: elements[range.first - 1].end, end: elements[range.last].end };
+}
+
+/** Each Anthropic thinking block in messages[from..until), as a span that takes its trailing comma too (what a cut removes). */
+function anthropicThinkingSpans(body: Uint8Array, from: number, until: number): DeclaredSpan[] {
+  const spans: DeclaredSpan[] = [];
+  for (let messageIndex = from; messageIndex < until; messageIndex++) {
+    const contentSpan = getSpan(body, ['messages', messageIndex, 'content']);
+    if (contentSpan?.type !== 'array') continue;
+    const blocks = [...arrayElements(body, contentSpan)];
+    blocks.forEach((block, blockIndex) => {
+      if (!rawText(body, block).startsWith('{"type":"thinking"')) return;
+      spans.push({ start: block.start, end: blockIndex + 1 < blocks.length ? blocks[blockIndex + 1].start : block.end });
+    });
+  }
+  return spans;
+}
+
+function expectPairsWhole(protocolCase: ProtocolCase, original: string, rewritten: string): void {
+  const parse = (body: string) => parseWireRequest(protocolCase.protocol, encoder.encode(body), protocolCase.path);
+  const originalRequest = parse(original);
+  const rewrittenRequest = parse(rewritten);
+  expect(toolPairingProblem(originalRequest, rewrittenRequest)).toBeNull();
+  expect(rewrittenRequest.system).toEqual(originalRequest.system);
+  expect(rewrittenRequest.tools).toEqual(originalRequest.tools);
+}
+
+// ---------------------------------------------------------------------------
+
+describe('Endless Mode v2 per protocol', () => {
   for (const protocolCase of protocolCases) {
-    it(`${protocolCase.protocol}: swaps the first result at a turn start, then keeps a byte-identical prefix for five requests and a restart`, async () => {
+    it(`${protocolCase.protocol}: a finished turn is culled at the next turn start (none mid-turn with reasoning on), frozen across requests and a restart`, async () => {
       fetcherMode = 'table';
-      const tag = `prefix-${protocolCase.protocol}`;
-      const first = turnOf(tag, 1);
-      observationsByToolUseId.set(first.callId, observationFor(101));
-      const requests = conversationRequests(protocolCase, tag, 4);
-      // [u1] [u1 c1 r1] [.. f1 u2] [.. c2 r2] [.. f2 u3] [.. c3 r3] [.. f3 u4] [.. c4 r4]
+      const tag = `finished-${protocolCase.protocol}`;
+      const session = nextSession(tag);
+      const callA = { id: `call_${tag}_a` };
+      const callB = { id: `call_${tag}_b` };
+      const callC = { id: `call_${tag}_c` };
+      observationsByToolUseId.set(callA.id, observationFor(101));
+      observationsByToolUseId.set(callB.id, observationFor(102));
+      const conversation = new Conversation(protocolCase).add('u1', protocolCase.user(`${tag}: read two files`));
+      const requests: string[] = [conversation.body()];
+      conversation.add('ca', protocolCase.calls([callA], true)).add('ra', protocolCase.results([callA]));
+      requests.push(conversation.body());
+      conversation.add('cb', protocolCase.calls([callB], true)).add('rb', protocolCase.results([callB]));
+      requests.push(conversation.body());
+      conversation.add('f1', protocolCase.final('read both', true)).add('u2', protocolCase.user(`${tag}: now another`));
+      requests.push(conversation.body());
+      conversation.add('cc', protocolCase.calls([callC], true)).add('rc', protocolCase.results([callC]));
+      requests.push(conversation.body());
+      conversation.add('f2', protocolCase.final('read it', true)).add('u3', protocolCase.user(`${tag}: and finally`));
+      requests.push(conversation.body());
+
       const sent: string[] = [];
-      for (const [index, body] of requests.entries()) {
-        sent.push(await send(protocolCase, body));
-        await settleLookups();
-        if (index < 2) expect(sent[index]).toBe(body);
+      for (const body of requests) sent.push(await sendAndSettle(protocolCase, body, session));
+
+      // Nothing before the turn start, mid-turn included: the turn holds reasoning bound to the prefix.
+      for (const index of [0, 1, 2]) expect(sent[index]).toBe(requests[index]);
+
+      // The turn start culls turn 1's work whole and appends its lines to turn 1's user message.
+      const culled = sent[3];
+      expect(culled).toContain(escapedInJson(workBlockOf(101, 102)));
+      for (const call of [callA, callB]) expect(culled).not.toContain(call.id);
+      expect(culled).toContain('read both');
+      expect(culled.indexOf('<claude-mem-work>')).toBeGreaterThan(culled.indexOf(`${tag}: read two files`));
+      expect(culled.indexOf('<claude-mem-work>')).toBeLessThan(culled.indexOf('read both'));
+      const input3 = encoder.encode(requests[3]);
+      const declared: DeclaredSpan[] = [
+        appendPointOf(input3, protocolCase.userContentPath(conversation.range('u1').first)),
+        removedRangeOf(input3, protocolCase, { first: conversation.range('ca').first, last: conversation.range('rb').last }),
+        // Anthropic: the thinking of turn 1's final reply is cut too (the rest went with the culled messages).
+        ...(protocolCase.protocol === 'anthropic' ? anthropicThinkingSpans(input3, conversation.range('f1').first, conversation.range('f1').last + 1) : []),
+      ];
+      expectMatchesGoldenFile(`endless-cull-${protocolCase.protocol}`, encoder.encode(culled));
+      expectDiffersOnlyInsideDeclaredSpans(input3, encoder.encode(culled), declared);
+
+      // Every later request starts with the one before; call c has no observation, so nothing more is culled.
+      expect(sent[4].startsWith(prefixOf(sent[3]))).toBe(true);
+      expect(sent[5].startsWith(prefixOf(sent[4]))).toBe(true);
+      expect(sent[5]).toContain(callC.id);
+      expectPairsWhole(protocolCase, requests[5], sent[5]);
+
+      // Sealed reasoning outside the culled work is kept.
+      if (protocolCase.protocol === 'openai-responses') expect(sent[5]).toContain(`"encrypted_content":"enc-${callC.id}"`);
+      if (protocolCase.protocol === 'gemini') expect(sent[5]).toContain(`"thoughtSignature":"ts-${callC.id}"`);
+
+      const entries = ledgerEntriesOf(protocolCase.agentId, session);
+      const culls = entries.filter(entry => entry.type === 'cull');
+      expect(culls).toHaveLength(1);
+      expect(culls[0]).toMatchObject({ turnOrdinal: 1, throughCallId: callB.id, lines: [lineOf(101), lineOf(102)], observationIds: [101, 102] });
+      expect(culls[0].culledTokensEst as number).toBeGreaterThan(0);
+      if (protocolCase.protocol === 'anthropic') {
+        // Recorded before the cull that needs it.
+        const cutAt = entries.findIndex(entry => entry.type === 'thinkingCut');
+        expect(entries[cutAt]).toEqual({ type: 'thinkingCut', untilTurnOrdinal: 2 });
+        expect(cutAt).toBeLessThan(entries.findIndex(entry => entry.type === 'cull'));
       }
-
-      // The first swap: at the start of turn 2, never earlier.
-      const swapped = sent[2];
-      expect(swapped).toContain(`[claude-mem: this read_file result (call_id=${first.callId}) was replaced by observation #101]`);
-      expect(swapped).toContain('File 101 read');
-      expect(swapped).toContain('- parser lives in src/');
-      expect(swapped).not.toContain(`contents of file 1 <${tag}>`);
-
-      // Five consecutive requests after it: each starts with the one before.
-      for (let index = 3; index < sent.length; index++) {
-        expect(sent[index].startsWith(prefixOf(sent[index - 1]))).toBe(true);
-      }
-      // Nothing else was swapped (only call 1 had an observation), and later results went as they came.
-      expect(sent[7]).toContain(`contents of file 2 <${tag}>`);
-
-      // Pairs stay whole; ids and order stay.
-      const original = parseWireRequest(protocolCase.protocol, new TextEncoder().encode(requests[7]), protocolCase.path);
-      const rewritten = parseWireRequest(protocolCase.protocol, new TextEncoder().encode(sent[7]), protocolCase.path);
-      expect(toolPairingProblem(original, rewritten)).toBeNull();
-      const callIdsOf = (request: typeof original) => request.messages.flatMap(message => message.parts.filter(part => part.callId).map(part => `${part.kind}:${part.callId}`));
-      expect(callIdsOf(rewritten)).toEqual(callIdsOf(original));
-      expect(rewritten.system).toEqual(original.system);
-      expect(rewritten.tools).toEqual(original.tools);
-
-      // Sealed reasoning is never touched (Anthropic's is dropped after the boundary only; see below).
-      if (protocolCase.protocol === 'openai-responses') for (let n = 1; n <= 4; n++) expect(sent[7]).toContain(`"encrypted_content":"enc-${n}"`);
-      if (protocolCase.protocol === 'gemini') for (let n = 1; n <= 4; n++) expect(sent[7]).toContain(`"thoughtSignature":"ts-${n}"`);
 
       // A restart with an empty observation cache puts back the same bytes from the ledger.
       await gateway.stop();
       fetcherMode = 'down';
       await startGateway();
-      expect(await send(protocolCase, requests[7])).toBe(sent[7]);
-      expect(await send(protocolCase, requests[6])).toBe(sent[6]);
+      expect(await send(protocolCase, requests[5], session)).toBe(sent[5]);
+      expect(await send(protocolCase, requests[4], session)).toBe(sent[4]);
       fetcherMode = 'table';
+    });
+
+    it(`${protocolCase.protocol}: with reasoning off, culls the current turn mid-loop, never its latest call`, async () => {
+      fetcherMode = 'table';
+      const tag = `mid-turn-${protocolCase.protocol}`;
+      const session = nextSession(tag);
+      const callA = { id: `call_${tag}_a` };
+      const callB = { id: `call_${tag}_b` };
+      const callC = { id: `call_${tag}_c` };
+      observationsByToolUseId.set(callA.id, observationFor(201));
+      observationsByToolUseId.set(callB.id, observationFor(202));
+      const conversation = new Conversation(protocolCase).add('u1', protocolCase.user(`${tag}: keep going`));
+      await sendAndSettle(protocolCase, conversation.body(), session);
+      conversation.add('ca', protocolCase.calls([callA], false)).add('ra', protocolCase.results([callA]));
+      // a's observation is asked for only now, so this request goes as it came.
+      expect(await sendAndSettle(protocolCase, conversation.body(), session)).toBe(conversation.body());
+      conversation.add('cb', protocolCase.calls([callB], false)).add('rb', protocolCase.results([callB]));
+      // b is the in-flight loop's latest call: a is culled, b stays even with its observation cached next time.
+      const midTurn = await sendAndSettle(protocolCase, conversation.body(), session);
+      expect(midTurn).toContain(escapedInJson(workBlockOf(201)));
+      expect(midTurn).not.toContain(callA.id);
+      expect(midTurn).toContain(callB.id);
+      const input = encoder.encode(conversation.body());
+      expectDiffersOnlyInsideDeclaredSpans(input, encoder.encode(midTurn), [
+        appendPointOf(input, protocolCase.userContentPath(0)),
+        removedRangeOf(input, protocolCase, { first: conversation.range('ca').first, last: conversation.range('ra').last }),
+      ]);
+      expectPairsWhole(protocolCase, conversation.body(), midTurn);
+
+      // The next step of the loop: b is no longer the latest, so the cull grows through b, its lines kept and added to.
+      conversation.add('cc', protocolCase.calls([callC], false)).add('rc', protocolCase.results([callC]));
+      const grown = await sendAndSettle(protocolCase, conversation.body(), session);
+      expect(grown).toContain(escapedInJson(workBlockOf(201, 202)));
+      expect(grown).not.toContain(callB.id);
+      expect(grown).toContain(callC.id);
+      expectPairsWhole(protocolCase, conversation.body(), grown);
+      const culls = ledgerEntriesOf(protocolCase.agentId, session).filter(entry => entry.type === 'cull');
+      expect(culls.map(entry => [entry.throughCallId, entry.observationIds])).toEqual([[callA.id, [201]], [callB.id, [201, 202]]]);
+
+      // The same request again gives the same bytes.
+      expect(await send(protocolCase, conversation.body(), session)).toBe(grown);
+    });
+
+    it(`${protocolCase.protocol}: the in-flight loop is never culled, even sent twice with its latest call's observation cached`, async () => {
+      fetcherMode = 'table';
+      const tag = `in-flight-${protocolCase.protocol}`;
+      const session = nextSession(tag);
+      const call = { id: `call_${tag}` };
+      observationsByToolUseId.set(call.id, observationFor(251));
+      const conversation = new Conversation(protocolCase).add('u1', protocolCase.user(`${tag}: go`));
+      await sendAndSettle(protocolCase, conversation.body(), session);
+      conversation.add('c', protocolCase.calls([call], false)).add('r', protocolCase.results([call]));
+      expect(await sendAndSettle(protocolCase, conversation.body(), session)).toBe(conversation.body());
+      // The observation is cached now; the same request (a retry) is still the loop the model is in.
+      expect(await send(protocolCase, conversation.body(), session)).toBe(conversation.body());
+      expect(ledgerEntriesOf(protocolCase.agentId, session).filter(entry => entry.type === 'cull')).toEqual([]);
+    });
+
+    it(`${protocolCase.protocol}: calls the observer skipped go with the next covered call; a partly covered parallel-call message is kept`, async () => {
+      fetcherMode = 'table';
+      const tag = `coverage-${protocolCase.protocol}`;
+      const session = nextSession(tag);
+      const skipped = { id: `call_${tag}_skipped` };
+      const covered = { id: `call_${tag}_covered` };
+      const parallelA = { id: `call_${tag}_pa` };
+      const parallelB = { id: `call_${tag}_pb` };
+      observationsByToolUseId.set(covered.id, observationFor(301));
+      observationsByToolUseId.set(parallelA.id, observationFor(302));
+      const conversation = new Conversation(protocolCase).add('u1', protocolCase.user(`${tag}: do it all`));
+      await sendAndSettle(protocolCase, conversation.body(), session);
+      conversation
+        .add('cs', protocolCase.calls([skipped], true)).add('rs', protocolCase.results([skipped]))
+        .add('cv', protocolCase.calls([covered], true)).add('rv', protocolCase.results([covered]))
+        .add('cp', protocolCase.calls([parallelA, parallelB], true)).add('rp', protocolCase.results([parallelA, parallelB]));
+      await sendAndSettle(protocolCase, conversation.body(), session);
+      conversation.add('f1', protocolCase.final('all done', true)).add('u2', protocolCase.user(`${tag}: next`));
+      const turn2 = await sendAndSettle(protocolCase, conversation.body(), session);
+      // The skipped call goes with the covered one, with no line of its own; the parallel message's b has no observation, so a stays too.
+      expect(turn2).toContain(escapedInJson(workBlockOf(301)));
+      expect(turn2).not.toContain(skipped.id);
+      expect(turn2).not.toContain(covered.id);
+      expect(turn2).toContain(parallelA.id);
+      expect(turn2).toContain(parallelB.id);
+      expect(turn2).not.toContain('#302');
+      expectPairsWhole(protocolCase, conversation.body(), turn2);
+
+      // b's observation arrives; the next turn start culls the parallel message too, the frozen line first.
+      observationsByToolUseId.set(parallelB.id, observationFor(303));
+      conversation.add('f2', protocolCase.final('ok', true)).add('u3', protocolCase.user(`${tag}: and more`));
+      await sendAndSettle(protocolCase, conversation.body(), session);
+      const turn3 = await send(protocolCase, conversation.body(), session);
+      expect(turn3).toContain(escapedInJson(workBlockOf(301, 302, 303)));
+      expect(turn3).not.toContain(parallelA.id);
+      expect(turn3).not.toContain(parallelB.id);
+      expect(turn3).toContain('all done');
+      expectPairsWhole(protocolCase, conversation.body(), turn3);
     });
   }
 
-  it('anthropic: drops thinking exactly after the boundary, up to the turn that swapped, and nowhere else', async () => {
+  it('anthropic: the thinking cut is contiguous from message 0 and never reaches the in-flight turn', async () => {
     fetcherMode = 'table';
-    const tag = 'thinking-boundary';
-    observationsByToolUseId.set(turnOf(tag, 1).callId, observationFor(201));
-    const requests = conversationRequests(anthropicCase, tag, 3);
-    const sent: string[] = [];
-    for (const body of requests) {
-      sent.push(await send(anthropicCase, body));
-      await settleLookups();
-    }
-    // [u1 c1 r1 f1 u2 ...]: swap in r1 (index 2); f1 (index 3) loses its thinking; c1 (index 1) keeps it.
-    expect(sent[2]).toContain('"signature":"sig-call-1"');
-    expect(sent[2]).not.toContain('sig-final-1');
-    expect(sent[2]).not.toContain('wrapping up file 1');
-    expect(sent[2]).toContain('"text":"file 1 is fine"');
-    // What the model said after the swap was in place keeps its thinking on every later request.
-    for (const later of sent.slice(3)) {
-      expect(later).not.toContain('sig-final-1');
-      expect(later).toContain('"signature":"sig-call-2"');
-    }
-    expect(sent[5]).toContain('"signature":"sig-final-2"');
-    expect(sent[5]).toContain('"signature":"sig-call-3"');
+    const tag = 'thinking-cut';
+    const session = nextSession(tag);
+    const callA = { id: `call_${tag}_a` };
+    const callB = { id: `call_${tag}_b` };
+    observationsByToolUseId.set(callB.id, observationFor(401));
+    const conversation = new Conversation(anthropicCase).add('u1', anthropicCase.user(`${tag}: one`));
+    await sendAndSettle(anthropicCase, conversation.body(), session);
+    conversation.add('ca', anthropicCase.calls([callA], true)).add('ra', anthropicCase.results([callA]))
+      .add('f1', anthropicCase.final('first', true)).add('u2', anthropicCase.user(`${tag}: two`));
+    await sendAndSettle(anthropicCase, conversation.body(), session);
+    conversation.add('cb', anthropicCase.calls([callB], true)).add('rb', anthropicCase.results([callB]));
+    await sendAndSettle(anthropicCase, conversation.body(), session);
+    conversation.add('f2', anthropicCase.final('second', true)).add('u3', anthropicCase.user(`${tag}: three`));
+    const turn3 = await sendAndSettle(anthropicCase, conversation.body(), session);
+    // Turn 2's work is culled; every thinking block before turn 3 is gone, turn 1's too (no gap).
+    expect(turn3).toContain(escapedInJson(workBlockOf(401)));
+    expect(turn3).not.toContain('"type":"thinking"');
+    expect(turn3).toContain(callA.id);
+    // The in-flight turn keeps its own thinking on every later request.
+    conversation.add('cc', anthropicCase.calls([{ id: `call_${tag}_c` }], true));
+    conversation.add('rc', anthropicCase.results([{ id: `call_${tag}_c` }]));
+    const loop = await send(anthropicCase, conversation.body(), session);
+    expect(loop.startsWith(prefixOf(turn3))).toBe(true);
+    expect(loop).toContain(`"signature":"sig-call_${tag}_c"`);
+    expect((loop.match(/"type":"thinking"/g) ?? []).length).toBe(1);
   });
 
-  it('never swaps mid tool-loop, even with the observation cached; swaps at the next turn start', async () => {
+  it('openai-chat: a run ends exactly on its last call\'s result, so every replay culls the same messages', async () => {
     fetcherMode = 'table';
-    const tag = 'mid-loop';
-    const requests = conversationRequests(anthropicCase, tag, 3);
-    for (const body of requests.slice(0, 3)) {
-      expect(await send(anthropicCase, body)).toBe(body);
-      await settleLookups();
-    }
-    // The observation exists only now; the next request is mid tool-loop.
-    observationsByToolUseId.set(turnOf(tag, 1).callId, observationFor(301));
-    expect(await send(anthropicCase, requests[3])).toBe(requests[3]);
-    await settleLookups();
-    // Sent again (a retry) with the observation now cached: still mid-loop, still untouched.
-    expect(await send(anthropicCase, requests[3])).toBe(requests[3]);
-    // The next turn start swaps it.
-    expect(await send(anthropicCase, requests[4])).toContain('was replaced by observation #301]');
+    const chatCase = protocolCases[1];
+    const tag = 'exact-end';
+    const session = nextSession(tag);
+    const c1 = { id: `call_${tag}_1` };
+    const c2 = { id: `call_${tag}_2` };
+    observationsByToolUseId.set(c1.id, observationFor(261));
+    observationsByToolUseId.set(c2.id, observationFor(262));
+    const conversation = new Conversation(chatCase).add('u1', chatCase.user(`${tag}: start`));
+    await sendAndSettle(chatCase, conversation.body(), session);
+    conversation.add('c1', chatCase.calls([c1], false)).add('r1', chatCase.results([c1]));
+    await sendAndSettle(chatCase, conversation.body(), session);
+    // A reminder the agent put in as the user, and a system message, between the two calls: neither may be culled.
+    conversation.add('reminder', [{ role: 'user', content: '<system-reminder>files changed</system-reminder>' }])
+      .add('system', [{ role: 'system', content: 'mid-run note' }])
+      .add('c2', chatCase.calls([c2], false)).add('r2', chatCase.results([c2]));
+    await sendAndSettle(chatCase, conversation.body(), session);
+    conversation.add('f1', chatCase.final('done', false)).add('u2', chatCase.user(`${tag}: next`));
+    const turn2 = await sendAndSettle(chatCase, conversation.body(), session);
+    expect(turn2).not.toContain(c1.id);
+    expect(turn2).toContain(c2.id);
+    expect(turn2).toContain('files changed');
+    expect(turn2).toContain('mid-run note');
+    expect(ledgerEntriesOf(chatCase.agentId, session).filter(entry => entry.type === 'cull').map(entry => entry.throughCallId)).toEqual([c1.id]);
+    // Replays rebuild the run from c1's result alone: the same bytes, then the same prefix.
+    expect(await send(chatCase, conversation.body(), session)).toBe(turn2);
+    conversation.add('c3', chatCase.calls([{ id: `call_${tag}_3` }], false)).add('r3', chatCase.results([{ id: `call_${tag}_3` }]));
+    expect((await send(chatCase, conversation.body(), session)).startsWith(prefixOf(turn2))).toBe(true);
   });
 
-  it('never swaps in a conversation it first saw mid-way', async () => {
+  it('a cull grows past calls whose observation is already in its lines (one observation for a whole batch)', async () => {
+    fetcherMode = 'table';
+    const tag = 'batch';
+    const session = nextSession(tag);
+    const calls = [1, 2, 3].map(n => ({ id: `call_${tag}_${n}` }));
+    for (const call of calls.slice(0, 2)) observationsByToolUseId.set(call.id, observationFor(271));
+    const conversation = new Conversation(anthropicCase).add('u1', anthropicCase.user(`${tag}: go`));
+    await sendAndSettle(anthropicCase, conversation.body(), session);
+    for (const [index, call] of calls.entries()) {
+      conversation.add(`c${index}`, anthropicCase.calls([call], false)).add(`r${index}`, anthropicCase.results([call]));
+      await sendAndSettle(anthropicCase, conversation.body(), session);
+    }
+    const sent = await send(anthropicCase, conversation.body(), session);
+    expect(sent).not.toContain(calls[0].id);
+    expect(sent).not.toContain(calls[1].id);
+    expect(sent).toContain(calls[2].id);
+    expect(sent).toContain(escapedInJson(workBlockOf(271)));
+    expect(ledgerEntriesOf(anthropicCase.agentId, session).filter(entry => entry.type === 'cull').map(entry => [entry.throughCallId, entry.observationIds]))
+      .toEqual([[calls[0].id, [271]], [calls[1].id, [271]]]);
+  });
+
+  it('openai-responses: a run stops before a context item (a web search, a compaction)', async () => {
+    fetcherMode = 'table';
+    const responsesCase = protocolCases[2];
+    const tag = 'context-item';
+    const session = nextSession(tag);
+    const a = { id: `call_${tag}_a` };
+    const b = { id: `call_${tag}_b` };
+    observationsByToolUseId.set(a.id, observationFor(281));
+    observationsByToolUseId.set(b.id, observationFor(282));
+    const conversation = new Conversation(responsesCase).add('u1', responsesCase.user(`${tag}: look it up`));
+    await sendAndSettle(responsesCase, conversation.body(), session);
+    conversation.add('ca', responsesCase.calls([a], true)).add('ra', responsesCase.results([a]))
+      .add('search', [{ type: 'web_search_call', id: 'ws_1', status: 'completed', action: { type: 'search', query: 'kept query' } }])
+      .add('cb', responsesCase.calls([b], true)).add('rb', responsesCase.results([b]));
+    await sendAndSettle(responsesCase, conversation.body(), session);
+    conversation.add('f1', responsesCase.final('found', true)).add('u2', responsesCase.user(`${tag}: thanks`));
+    const turn2 = await send(responsesCase, conversation.body(), session);
+    expect(turn2).not.toContain(a.id);
+    expect(turn2).toContain('kept query');
+    expect(turn2).toContain(b.id);
+    expect(turn2).toContain(escapedInJson(workBlockOf(281)));
+  });
+
+  it('anthropic: a run never removes anything that carries cache_control', async () => {
+    fetcherMode = 'table';
+    const tag = 'cache-control';
+    const session = nextSession(tag);
+    const call = { id: `call_${tag}` };
+    observationsByToolUseId.set(call.id, observationFor(291));
+    const conversation = new Conversation(anthropicCase).add('u1', anthropicCase.user(`${tag}: go`));
+    await sendAndSettle(anthropicCase, conversation.body(), session);
+    conversation.add('c', anthropicCase.calls([call], true))
+      .add('r', [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: call.id, content: 'cached', cache_control: { type: 'ephemeral' } }] }]);
+    await sendAndSettle(anthropicCase, conversation.body(), session);
+    conversation.add('f1', anthropicCase.final('done', true)).add('u2', anthropicCase.user(`${tag}: next`));
+    expect(await send(anthropicCase, conversation.body(), session)).toBe(conversation.body());
+  });
+
+  it('gemini: a turn whose calls have only position ids is never culled', async () => {
+    fetcherMode = 'table';
+    const geminiCase = protocolCases[3];
+    const tag = 'positional';
+    const session = nextSession(tag);
+    observationForEveryToolUse = observationFor(295);
+    try {
+      const conversation = new Conversation(geminiCase).add('u1', geminiCase.user(`${tag}: read`))
+        .add('c', [{ role: 'model', parts: [{ functionCall: { name: 'read_file', args: { path: 'go.mod' } } }] }])
+        .add('r', [{ role: 'user', parts: [{ functionResponse: { name: 'read_file', response: { output: 'module x' } } }] }]);
+      await sendAndSettle(geminiCase, geminiCase.body(conversation.items.slice(0, 1)), session);
+      await sendAndSettle(geminiCase, conversation.body(), session);
+      conversation.add('f1', geminiCase.final('read', false)).add('u2', geminiCase.user(`${tag}: next`));
+      expect(await send(geminiCase, conversation.body(), session)).toBe(conversation.body());
+      expect(ledgerEntriesOf(geminiCase.agentId, session).filter(entry => entry.type === 'cull')).toEqual([]);
+    } finally {
+      observationForEveryToolUse = null;
+    }
+  });
+
+  it('a recorded cull whose lines no longer have a place suspends the conversation instead of failing on every request', async () => {
+    fetcherMode = 'table';
+    const tag = 'no-place';
+    const session = nextSession(tag);
+    const bodies = killSwitchConversation(tag, 296);
+    for (const body of bodies.slice(0, 2)) await sendAndSettle(anthropicCase, body, session);
+    expect(await send(anthropicCase, bodies[2], session)).toContain('#296');
+    // The agent now sends turn 1's message already ending with the block: the frozen lines cannot be appended again.
+    const block = workBlockOf(296);
+    const altered = bodies[3].replace(`"${tag}: one"`, JSON.stringify(`${tag}: one\n\n${block}`));
+    expect(altered).not.toBe(bodies[3]);
+    expect(await send(anthropicCase, altered, session)).toBe(altered);
+    expect(ledgerEntriesOf(anthropicCase.agentId, session).filter(entry => entry.type === 'suspended').map(entry => entry.stage)).toEqual(['endless-mode']);
+    expect(await send(anthropicCase, bodies[4], session)).toBe(bodies[4]);
+  });
+
+  it('never culls in a conversation it first saw mid-way', async () => {
     fetcherMode = 'table';
     const tag = 'not-born';
-    observationsByToolUseId.set(turnOf(tag, 1).callId, observationFor(401));
-    const requests = conversationRequests(anthropicCase, tag, 3);
-    for (const body of requests.slice(2)) {
-      expect(await send(anthropicCase, body)).toBe(body);
-      await settleLookups();
-    }
-  });
-
-  it('keeps errors, images, edit tools, small results and cache breakpoints; a shared batch observation is shown once', async () => {
-    fetcherMode = 'table';
-    const tag = 'eligibility';
-    const big = (label: string) => `${label}\n${'some output line '.repeat(120)}`;
-    const calls = [
-      { id: `${tag}_plain_a`, name: 'read_file' },
-      { id: `${tag}_plain_b`, name: 'read_file' },
-      { id: `${tag}_error`, name: 'read_file' },
-      { id: `${tag}_edit`, name: 'Edit' },
-      { id: `${tag}_small`, name: 'read_file' },
-      { id: `${tag}_image`, name: 'read_file' },
-      { id: `${tag}_cached`, name: 'read_file' },
-    ];
-    // One batch: every call's observation is #501.
-    for (const call of calls) observationsByToolUseId.set(call.id, observationFor(501));
-    const results = [
-      { type: 'tool_result', tool_use_id: `${tag}_plain_a`, content: big('plain a') },
-      { type: 'tool_result', tool_use_id: `${tag}_plain_b`, content: big('plain b') },
-      { type: 'tool_result', tool_use_id: `${tag}_error`, content: big('error'), is_error: true },
-      { type: 'tool_result', tool_use_id: `${tag}_edit`, content: big('edit') },
-      { type: 'tool_result', tool_use_id: `${tag}_small`, content: 'small' },
-      { type: 'tool_result', tool_use_id: `${tag}_image`, content: [{ type: 'text', text: big('image') }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } }] },
-      { type: 'tool_result', tool_use_id: `${tag}_cached`, content: [{ type: 'text', text: big('cached'), cache_control: { type: 'ephemeral' } }] },
-    ];
-    const u1 = { role: 'user', content: `${tag}: do many things` };
-    const c1 = { role: 'assistant', content: calls.map(call => ({ type: 'tool_use', id: call.id, name: call.name, input: {} })) };
-    const r1 = { role: 'user', content: results };
-    const f1 = { role: 'assistant', content: [{ type: 'text', text: 'done' }] };
-    const u2 = { role: 'user', content: `${tag}: next` };
-    await send(anthropicCase, anthropicCase.body([u1]));
-    await send(anthropicCase, anthropicCase.body([u1, c1, r1]));
-    await settleLookups();
-    const sent = await send(anthropicCase, anthropicCase.body([u1, c1, r1, f1, u2]));
-    expect(sent).toContain(`[claude-mem: this read_file result (call_id=${tag}_plain_a) was replaced by observation #501]`);
-    expect(sent).toContain(`[claude-mem: this read_file result (call_id=${tag}_plain_b) is covered by observation #501 above (call_id=${tag}_plain_a)]`);
-    for (const kept of ['error', 'edit', 'image', 'cached']) expect(sent).toContain(`${kept}\\nsome output line`);
-    expect(sent).toContain('"content":"small"');
-    expect(sent).toContain('"cache_control":{"type":"ephemeral"}');
-  });
-
-  it('adds no swap when dropping thinking would leave an assistant message empty', async () => {
-    fetcherMode = 'table';
-    const tag = 'empty-assistant';
-    const turn = turnOf(tag, 1);
-    observationsByToolUseId.set(turn.callId, observationFor(601));
-    const u1 = anthropicCase.user(turn);
-    const loop = [...anthropicCase.call(turn), ...anthropicCase.result(turn)];
-    const thinkingOnly = { role: 'assistant', content: [{ type: 'thinking', thinking: 'nothing to say', signature: 'sig-only' }] };
-    await send(anthropicCase, anthropicCase.body(u1));
-    await send(anthropicCase, anthropicCase.body([...u1, ...loop]));
-    await settleLookups();
-    const body = anthropicCase.body([...u1, ...loop, thinkingOnly, ...anthropicCase.user(turnOf(tag, 2))]);
-    expect(await send(anthropicCase, body)).toBe(body);
-    // Nothing was frozen either: the next request of the loop goes as it came too.
-    const next = anthropicCase.body([...u1, ...loop, thinkingOnly, ...anthropicCase.user(turnOf(tag, 2)), ...anthropicCase.call(turnOf(tag, 2))]);
-    expect(await send(anthropicCase, next)).toBe(next);
+    const session = nextSession(tag);
+    const call = { id: `call_${tag}` };
+    observationsByToolUseId.set(call.id, observationFor(501));
+    const conversation = new Conversation(anthropicCase).add('u1', anthropicCase.user(`${tag}: hi`))
+      .add('c', anthropicCase.calls([call], true)).add('r', anthropicCase.results([call]));
+    expect(await sendAndSettle(anthropicCase, conversation.body(), session)).toBe(conversation.body());
+    conversation.add('f1', anthropicCase.final('done', true)).add('u2', anthropicCase.user(`${tag}: next`));
+    expect(await sendAndSettle(anthropicCase, conversation.body(), session)).toBe(conversation.body());
   });
 
   it('with the worker down or hanging, sends every request byte-identical and never waits for it', async () => {
     const timeConversation = async (routeId: string, tag: string) => {
-      const requests = conversationRequests(anthropicCase, tag, 4);
+      const session = nextSession(tag);
+      const conversation = new Conversation(anthropicCase);
       const started = performance.now();
-      for (const body of requests) expect(await send(anthropicCase, body, routeId)).toBe(body);
+      for (let n = 1; n <= 4; n++) {
+        const call = { id: `call_${tag}_${n}` };
+        conversation.add(`u${n}`, anthropicCase.user(`${tag}: task ${n}`));
+        expect(await send(anthropicCase, conversation.body(), session, routeId)).toBe(conversation.body());
+        conversation.add(`c${n}`, anthropicCase.calls([call], true)).add(`r${n}`, anthropicCase.results([call]));
+        expect(await send(anthropicCase, conversation.body(), session, routeId)).toBe(conversation.body());
+        conversation.add(`f${n}`, anthropicCase.final(`done ${n}`, true));
+      }
       return performance.now() - started;
     };
-    // Warm up both paths, then compare against a route with Endless Mode off.
     fetcherMode = 'hang';
     await timeConversation('endless-off', 'warm-off');
     await timeConversation(anthropicCase.routeId, 'warm-on');
@@ -428,146 +682,104 @@ describe('Endless Mode per protocol', () => {
     fetcherMode = 'down';
     const downMs = await timeConversation(anthropicCase.routeId, 'worker-down');
     fetcherMode = 'table';
-    // Eight requests each; a lookup that hangs forever must cost none of them anything noticeable.
+    // Eight requests each; a lookup that hangs forever must cost none of them anything noticeable
+    // (250 ms: one request stage budget, REQUEST_STAGE_BUDGET_MS).
     expect(hangingMs).toBeLessThan(baselineMs + 250);
     expect(downMs).toBeLessThan(baselineMs + 250);
   });
 
-  it('a route switched off stops swapping at once, and never resumes a conversation it went unswapped in', async () => {
+  /** A finished turn 1 with one covered call, and the bodies of the next turn. */
+  function killSwitchConversation(tag: string, observationId: number) {
+    const call = { id: `call_${tag}` };
+    observationsByToolUseId.set(call.id, observationFor(observationId));
+    const conversation = new Conversation(anthropicCase).add('u1', anthropicCase.user(`${tag}: one`));
+    const bodies = [conversation.body()];
+    conversation.add('c', anthropicCase.calls([call], true)).add('r', anthropicCase.results([call]));
+    bodies.push(conversation.body());
+    conversation.add('f1', anthropicCase.final('done', true)).add('u2', anthropicCase.user(`${tag}: two`));
+    bodies.push(conversation.body());
+    const nextCall = { id: `call_${tag}_next` };
+    conversation.add('c2', anthropicCase.calls([nextCall], true)).add('r2', anthropicCase.results([nextCall]));
+    bodies.push(conversation.body());
+    conversation.add('f2', anthropicCase.final('done again', true)).add('u3', anthropicCase.user(`${tag}: three`));
+    bodies.push(conversation.body());
+    return bodies;
+  }
+
+  it('a route switched off stops culling at once, and never resumes a conversation it went unculled in', async () => {
     fetcherMode = 'table';
     const tag = 'kill-switch';
-    observationsByToolUseId.set(turnOf(tag, 1).callId, observationFor(701));
-    const requests = conversationRequests(anthropicCase, tag, 3);
-    for (const body of requests.slice(0, 2)) {
-      await send(anthropicCase, body, 'endless-kill');
-      await settleLookups();
-    }
-    expect(await send(anthropicCase, requests[2], 'endless-kill')).toContain('#701');
+    const session = nextSession(tag);
+    const bodies = killSwitchConversation(tag, 601);
+    for (const body of bodies.slice(0, 2)) await sendAndSettle(anthropicCase, body, session, 'endless-kill');
+    expect(await send(anthropicCase, bodies[2], session, 'endless-kill')).toContain('#601');
     expect(setWireGatewayRouteFeature('endless-kill', 'endlessMode', false, routesFilePath)).toBe(true);
     expect(readWireGatewayRoutesFile(routesFilePath).routes['endless-kill'].features.endlessMode).toBe(false);
     // Off: the history goes as the agent wrote it, mid tool-loop included.
-    expect(await send(anthropicCase, requests[3], 'endless-kill')).toBe(requests[3]);
-    // On again: the model has answered the original history since, so this conversation stays unswapped.
+    expect(await send(anthropicCase, bodies[3], session, 'endless-kill')).toBe(bodies[3]);
+    // On again: the model has answered the original history since, so this conversation stays unculled.
     expect(setWireGatewayRouteFeature('endless-kill', 'endlessMode', true, routesFilePath)).toBe(true);
-    for (const body of requests.slice(4)) expect(await send(anthropicCase, body, 'endless-kill')).toBe(body);
+    expect(await send(anthropicCase, bodies[4], session, 'endless-kill')).toBe(bodies[4]);
     expect(setWireGatewayRouteFeature('endless-kill', 'endlessMode', undefined, routesFilePath)).toBe(true);
     expect(readWireGatewayRoutesFile(routesFilePath).routes['endless-kill'].features).toEqual({});
     expect(setWireGatewayRouteFeature('no-such-route', 'endlessMode', false, routesFilePath)).toBe(false);
   });
 
-  it('switched off and on with no request between, keeps putting the same swaps back', async () => {
+  it('switched off and on with no request between, keeps putting the same culls back', async () => {
     fetcherMode = 'table';
     const tag = 'kill-switch-idle';
-    observationsByToolUseId.set(turnOf(tag, 1).callId, observationFor(702));
-    const requests = conversationRequests(anthropicCase, tag, 2);
-    const sent: string[] = [];
-    for (const body of requests.slice(0, 3)) {
-      sent.push(await send(anthropicCase, body, 'endless-kill'));
-      await settleLookups();
-    }
-    expect(sent[2]).toContain('#702');
+    const session = nextSession(tag);
+    const bodies = killSwitchConversation(tag, 602);
+    for (const body of bodies.slice(0, 2)) await sendAndSettle(anthropicCase, body, session, 'endless-kill');
+    const culled = await send(anthropicCase, bodies[2], session, 'endless-kill');
+    expect(culled).toContain('#602');
     setWireGatewayRouteFeature('endless-kill', 'endlessMode', false, routesFilePath);
     setWireGatewayRouteFeature('endless-kill', 'endlessMode', undefined, routesFilePath);
-    expect((await send(anthropicCase, requests[3], 'endless-kill')).startsWith(prefixOf(sent[2]))).toBe(true);
+    expect((await send(anthropicCase, bodies[3], session, 'endless-kill')).startsWith(prefixOf(culled))).toBe(true);
   });
 
-  it('anthropic: a second swap in an already-swapped message drops the thinking said since the first', async () => {
+  it('a conversation Endless Mode v1 swapped is suspended: sent as it came, never culled', async () => {
     fetcherMode = 'table';
-    const tag = 'second-batch';
-    const big = (label: string) => `${label}\n${'more output '.repeat(200)}`;
-    const thinking = (signature: string) => ({ type: 'thinking', thinking: `about ${signature}`, signature });
-    const u1 = { role: 'user', content: `${tag}: read two files` };
-    const c1 = { role: 'assistant', content: [thinking('sig-c1'), { type: 'tool_use', id: `${tag}_a`, name: 'read_file', input: {} }, { type: 'tool_use', id: `${tag}_b`, name: 'read_file', input: {} }] };
-    const r1 = { role: 'user', content: [{ type: 'tool_result', tool_use_id: `${tag}_a`, content: big('file a') }, { type: 'tool_result', tool_use_id: `${tag}_b`, content: big('file b') }] };
-    const f1 = { role: 'assistant', content: [thinking('sig-f1'), { type: 'text', text: 'read both' }] };
-    const u2 = { role: 'user', content: `${tag}: now check something` };
-    const c2 = { role: 'assistant', content: [thinking('sig-c2'), { type: 'tool_use', id: `${tag}_c`, name: 'read_file', input: {} }] };
-    const r2 = { role: 'user', content: [{ type: 'tool_result', tool_use_id: `${tag}_c`, content: 'short' }] };
-    const f2 = { role: 'assistant', content: [thinking('sig-f2'), { type: 'text', text: 'checked' }] };
-    const u3 = { role: 'user', content: `${tag}: and finally` };
-    observationsByToolUseId.set(`${tag}_a`, observationFor(801));
-    await send(anthropicCase, anthropicCase.body([u1]));
-    await send(anthropicCase, anthropicCase.body([u1, c1, r1]));
-    await settleLookups();
-    // Turn 2: a is swapped in message 2; f1 (message 3) loses its thinking.
-    const turn2 = await send(anthropicCase, anthropicCase.body([u1, c1, r1, f1, u2]));
-    expect(turn2).toContain('#801');
-    expect(turn2).not.toContain('sig-f1');
-    // b's observation arrives; the loop request asks for it but swaps nothing.
-    observationsByToolUseId.set(`${tag}_b`, observationFor(802));
-    const loop2 = anthropicCase.body([u1, c1, r1, f1, u2, c2, r2]);
-    expect((await send(anthropicCase, loop2)).includes('sig-c2')).toBe(true);
-    await settleLookups();
-    // Turn 3: b is swapped in the same message 2, so what was said since turn 2 (c2, f2) was said over
-    // the original b and loses its thinking too; c1, before both swaps, keeps its own.
-    const turn3 = await send(anthropicCase, anthropicCase.body([u1, c1, r1, f1, u2, c2, r2, f2, u3]));
-    expect(turn3).toContain('#802');
-    expect(turn3).not.toContain('sig-c2');
-    expect(turn3).not.toContain('sig-f2');
-    expect(turn3).toContain('sig-c1');
-    // The next request of the loop puts both drops back byte for byte.
-    const c3 = { role: 'assistant', content: [thinking('sig-c3'), { type: 'tool_use', id: `${tag}_d`, name: 'read_file', input: {} }] };
-    const r3 = { role: 'user', content: [{ type: 'tool_result', tool_use_id: `${tag}_d`, content: 'short' }] };
-    const loop3 = await send(anthropicCase, anthropicCase.body([u1, c1, r1, f1, u2, c2, r2, f2, u3, c3, r3]));
-    expect(loop3.startsWith(prefixOf(turn3))).toBe(true);
-    expect(loop3).toContain('sig-c3');
+    const tag = 'v1-swapped';
+    const session = nextSession(tag);
+    const bodies = killSwitchConversation(tag, 603);
+    mkdirSync(ledgerDirectory, { recursive: true });
+    const ledgerFile = join(ledgerDirectory, `${conversationKeyOf({ agentId: anthropicCase.agentId, sessionId: session })}.jsonl`);
+    writeFileSync(ledgerFile, [
+      { type: 'born', at: '2026-10-01T00:00:00.000Z' },
+      { type: 'swap', callId: 'old_call', replacementText: '[claude-mem: replaced]', firstRequestAt: '2026-10-01T00:00:01.000Z', observationId: 9 },
+      { type: 'thinkingDrop', boundaryMessageIndex: 1, untilMessageIndex: 4 },
+    ].map(entry => JSON.stringify(entry)).join('\n') + '\n');
+    for (const body of bodies) expect(await sendAndSettle(anthropicCase, body, session)).toBe(body);
+    expect(ledgerEntriesOf(anthropicCase.agentId, session).filter(entry => entry.type === 'suspended').map(entry => entry.stage)).toEqual(['endless-mode']);
   });
 
-  it('anthropic: a recorded drop that would empty a reply sends the request as it came and suspends the conversation', async () => {
-    fetcherMode = 'table';
-    const tag = 'recorded-drop-empties';
-    observationsByToolUseId.set(turnOf(tag, 1).callId, observationFor(1001));
-    const requests = conversationRequests(anthropicCase, tag, 3);
-    for (const body of requests.slice(0, 2)) {
-      await send(anthropicCase, body);
-      await settleLookups();
-    }
-    expect(await send(anthropicCase, requests[2])).toContain('#1001');
-    // The agent now sends f1 (inside the recorded drop) as thinking alone.
-    const turn = turnOf(tag, 1);
-    const altered = anthropicCase.body([
-      ...anthropicCase.user(turn), ...anthropicCase.call(turn), ...anthropicCase.result(turn),
-      { role: 'assistant', content: [{ type: 'thinking', thinking: 'only thinking', signature: 'sig-only' }] },
-      ...anthropicCase.user(turnOf(tag, 2)),
-    ]);
-    expect(await send(anthropicCase, altered)).toBe(altered);
-    // Suspended: even the ordinary history is never swapped again.
-    for (const body of requests.slice(3)) expect(await send(anthropicCase, body)).toBe(body);
-  });
-
-  it('with the default minimum age of 3, swaps a result only once more than 3 turns have begun after it', async () => {
-    fetcherMode = 'table';
-    const tag = 'default-age';
-    observationsByToolUseId.set(turnOf(tag, 1).callId, observationFor(901));
-    const agedGateway = await startEndlessGateway({ ...ENDLESS_SETTINGS, CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_AGE_TURNS: '3' }, join(testRoot, 'ledger-default-age'));
-    try {
-      const requests = conversationRequests(anthropicCase, tag, 5);
-      const sent: string[] = [];
-      for (const body of requests) {
-        sent.push(await send(anthropicCase, body, anthropicCase.routeId, agedGateway));
-        await settleLookups();
-      }
-      // Turn starts 2, 3 and 4 (1, 2 and 3 turns after the result): untouched.
-      for (const index of [2, 4, 6]) expect(sent[index]).toBe(requests[index]);
-      // Turn 5 starts the fourth turn after it: swapped.
-      expect(sent[8]).toContain('was replaced by observation #901]');
-    } finally {
-      await agedGateway.stop();
-    }
-  });
-
-  it('records swapped tokens in the usage ledger, which status --endless reads', async () => {
+  it('records culled tokens as the relay\'s swapped-token estimate, which status --endless reads', async () => {
     let records: ReturnType<WireUsageLedger['read']> = [];
     for (let attempt = 0; attempt < 50; attempt++) {
       records = new WireUsageLedger({ directory: usageDirectory }).read();
       if (records.some(record => record.swappedTokensEst > 0)) break;
       await new Promise(resolve => setTimeout(resolve, 20));
     }
-    const swappedRecord = records.find(record => record.swappedTokensEst > 0);
-    expect(swappedRecord?.stages).toEqual(['endless-mode']);
+    const culledRecord = records.find(record => record.swappedTokensEst > 0);
+    expect(culledRecord?.stages).toEqual(['endless-mode']);
     const report = buildEndlessModeReport(records);
     expect(report.map(agent => agent.agentId)).toEqual(expect.arrayContaining(['claude-code', 'codex', 'gemini-cli', 'opencode']));
     expect(report.every(agent => agent.tokensSaved > 0)).toBe(true);
+  });
+});
+
+describe('the culled-work block', () => {
+  it('is never the user\'s words: it neither starts nor hides a turn, and capture strips it', () => {
+    const block = workBlockOf(1, 2);
+    expect(userWordsInText(block)).toBe('');
+    expect(userWordsInText(`fix the bug\n\n${block}`)).toBe('fix the bug');
+    expect(userWordsInText(`<claude-mem-rules>\nrules\n</claude-mem-rules>`)).toBe('');
+    const span = { start: 0, end: 0, type: 'string' as const };
+    const message = (text: string) => ({ role: 'user' as const, parts: [{ kind: 'text' as const, text, span }], span });
+    expect(startsUserTurn(message(block))).toBe(false);
+    expect(startsUserTurn(message(`go on\n\n${block}`))).toBe(true);
+    expect(stripMemoryTags(`before ${block} after`)).toBe('before  after');
   });
 });
 
@@ -575,7 +787,7 @@ describe('the observation lookup', () => {
   it('never waits, dedupes a lookup in flight, and caches no failure', async () => {
     let now = 0;
     let calls = 0;
-    let answer: 'fail' | Map<string, WireSwapObservation> = 'fail';
+    let answer: 'fail' | Map<string, WireToolObservation> = 'fail';
     let release!: () => void;
     const lookup = new WireObservationLookup({
       missBackoffBaseMs: 1_000,
@@ -610,7 +822,7 @@ describe('the observation lookup', () => {
   it('asks again about a missing observation less and less often, and never about a found one', async () => {
     let now = 0;
     const asked: Array<{ at: number; ids: string[] }> = [];
-    let found = new Map<string, WireSwapObservation>([['a', observationFor(9)]]);
+    let found = new Map<string, WireToolObservation>([['a', observationFor(9)]]);
     const lookup = new WireObservationLookup({
       missBackoffBaseMs: 5_000,
       now: () => now,
@@ -634,16 +846,20 @@ describe('the observation lookup', () => {
     expect(lookup.cached('c', 'b')?.observationId).toBe(10);
   });
 
-  it('reads tool uses\' observations from the worker\'s /api/wire/tool-observations', async () => {
+  it('reads tool uses\' observations and timeline lines from the worker\'s /api/wire/tool-observations', async () => {
     const worker = await startFakeUpstream(request => request.path === '/api/wire/tool-observations'
-      ? { kind: 'json', body: { observations: [{ toolUseId: 'toolu_1', observationId: 42, title: 'Parser read', narrative: 'It parses.', facts: ['one', 'two'] }] } }
+      ? { kind: 'json', body: { observations: [
+        { toolUseId: 'toolu_1', observationId: 42, title: 'Parser read', narrative: 'It parses.', facts: ['one', 'two'], timelineLine: '#42 3:04p 🔵 Parser read' },
+        // A worker older than Endless Mode v2 sends no line: taken as no observation.
+        { toolUseId: 'toolu_2', observationId: 43, title: 'Old worker', narrative: '', facts: [] },
+      ] } }
       : { kind: 'json', status: 404, body: { error: 'not found' } });
     try {
       const found = await fetchToolObservationsFromWorker(
         { contentSessionId: 'session-1', platformSource: 'claude-code', toolUseIds: ['toolu_1', 'toolu_2'] },
         apiPath => `${worker.url}${apiPath}`,
       );
-      expect([...found.entries()]).toEqual([['toolu_1', { observationId: 42, title: 'Parser read', narrative: 'It parses.', facts: ['one', 'two'] }]]);
+      expect([...found.entries()]).toEqual([['toolu_1', { observationId: 42, timelineLine: '#42 3:04p 🔵 Parser read' }]]);
       expect(worker.requests.map(request => [request.path, JSON.parse(textOf(request.body))])).toEqual([
         ['/api/wire/tool-observations', { platformSource: 'claude-code', contentSessionId: 'session-1', toolUseIds: ['toolu_1', 'toolu_2'] }],
       ]);
@@ -656,19 +872,6 @@ describe('the observation lookup', () => {
     } finally {
       await worker.stop();
     }
-  });
-});
-
-describe('replacement text', () => {
-  it('is deterministic, bounded to 4,000 characters, and names a long call id by its hash', () => {
-    const longId = `call_${'z'.repeat(80)}`;
-    const text = observationReplacementText('read_file', longId, { observationId: 7, title: 'T', narrative: 'n'.repeat(5_000), facts: ['f'] });
-    expect(text.length).toBe(4_000);
-    expect(text.startsWith(`[claude-mem: this read_file result (call_id=${boundCallId(longId)}) was replaced by observation #7]\nT\nnnn`)).toBe(true);
-    expect(boundCallId(longId)).toMatch(/^[0-9a-f]{64}$/);
-    expect(boundCallId('call_short')).toBe('call_short');
-    expect(observationReplacementText('read_file', 'c', observationFor(3))).toBe(observationReplacementText('read_file', 'c', observationFor(3)));
-    expect(coveredReplacementText('grep', 'c2', 3, 'c1')).toBe('[claude-mem: this grep result (call_id=c2) is covered by observation #3 above (call_id=c1)]');
   });
 });
 
@@ -701,9 +904,6 @@ describe('status --endless', () => {
 describe('Endless Mode settings', () => {
   it('are validated at start', () => {
     expect(validateWireGatewayListenSettings({ CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE: 'yes' })).toContain('ENDLESS_MODE');
-    expect(validateWireGatewayListenSettings({ CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_AGE_TURNS: '-1' })).toContain('MIN_AGE_TURNS');
-    expect(validateWireGatewayListenSettings({ CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_AGE_TURNS: '0' })).toBeNull();
-    expect(validateWireGatewayListenSettings({ CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_RESULT_BYTES: '-1' })).toContain('MIN_RESULT_BYTES');
-    expect(validateWireGatewayListenSettings({ CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE: 'true', CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_AGE_TURNS: '3', CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_RESULT_BYTES: '2048' })).toBeNull();
+    expect(validateWireGatewayListenSettings({ CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE: 'true' })).toBeNull();
   });
 });

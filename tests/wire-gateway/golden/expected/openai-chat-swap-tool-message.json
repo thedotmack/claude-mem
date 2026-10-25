@@ -1,5 +1,0 @@
-{"model":"gpt-x","messages":[{"role":"system","content":"be brief é <b>"},{"role":"user","content":[{"type":"text","text":"look"},{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}]},
- {"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"Read","arguments":"{\"path\":\"/x\"}"}}]},
- {"role":"tool","tool_call_id":"call_1","content":"[claude-mem: replaced]"},{"role":"user","content":"go on é"}],
- "tools":[{"type":"function","function":{"name":"Read","description":"Reads","parameters":{"type":"object","properties":{"path":{"type":"string"}}}}}],
- "tool_choice":"auto","temperature":1,"stop":["\n\n"],"stream":true,"stream_options":{"include_usage":true},"user":"u"}

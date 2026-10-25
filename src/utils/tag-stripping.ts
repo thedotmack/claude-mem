@@ -6,12 +6,13 @@ const TAG_NAMES = [
   'private',
   'claude-mem-context',
   'claude-mem-rules',
+  'claude-mem-work',
   'system_instruction',
   'system-instruction',
   'persisted-output',
   'system-reminder',
 ] as const;
-type TagName = (typeof TAG_NAMES)[number];
+export type TagName = (typeof TAG_NAMES)[number];
 
 const MEMORY_TAG_NAMES = new Set<string>(TAG_NAMES);
 
@@ -40,7 +41,7 @@ const CLOSE_TAG_RE = /<\/([A-Za-z_][A-Za-z0-9_-]*)\s*>/y;
  * untouched. Mis-nested close tags close the earliest matching open and drop
  * what was opened inside, so tag ordering cannot preserve private content.
  */
-function stripBalancedMemoryTags(input: string): {
+function stripBalancedMemoryTags(input: string, tagNames: ReadonlySet<string> = MEMORY_TAG_NAMES): {
   text: string;
   counts: Record<TagName, number>;
   total: number;
@@ -100,7 +101,7 @@ function stripBalancedMemoryTags(input: string): {
 
     OPEN_TAG_NAME_RE.lastIndex = i;
     const open = OPEN_TAG_NAME_RE.exec(input);
-    if (open && MEMORY_TAG_NAMES.has(open[1])) {
+    if (open && tagNames.has(open[1])) {
       const name = open[1] as TagName;
       const nameEnd = i + open[0].length;
       const item = { start: i, attrEnd: nextGt[nameEnd] };
@@ -185,6 +186,17 @@ function finishStrippedTags(
 
 export function stripMemoryTags(content: string): string {
   return stripTags(content).stripped;
+}
+
+/**
+ * `text` with the balanced blocks of `tagNames` alone removed, by the same
+ * scanner as stripTags, and nothing else changed: no trimming, no redaction.
+ * For readers that must look past claude-mem's own blocks without the
+ * capture-side stripping of every memory tag (the wire gateway's turn
+ * detection ignores <claude-mem-work> and <claude-mem-rules>).
+ */
+export function removeTagBlocks(text: string, tagNames: readonly TagName[]): string {
+  return stripBalancedMemoryTags(text, new Set(tagNames)).text;
 }
 
 /**

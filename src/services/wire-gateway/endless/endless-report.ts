@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // `claude-mem wire status --endless` (plan Phase 11 task 6): what Endless
-// Mode costs and saves, per agent, from the usage ledger. A swap changes the
+// Mode costs and saves, per agent, from the usage ledger. A cull changes the
 // prompt once, so the cache is written again once; after that it should be
 // read as before, from a smaller prompt. The report puts each conversation's
-// requests before its first swap beside those from it on, and adds up the
-// tokens the swaps took out.
+// requests before its first cull beside those from it on, and adds up the
+// tokens the culls took out. (Field names still say "swap" until plan
+// Phase 5 reworks the report.)
 
 import type { WireUsageLedgerRecord } from '../metrics/usage-ledger.js';
 import { ENDLESS_MODE_STAGE_NAME } from './endless-mode-stage.js';
@@ -20,14 +21,14 @@ export interface EndlessCacheTotals {
 
 export interface EndlessAgentReport {
   agentId: string;
-  /** Conversations with at least one swap. */
+  /** Conversations with at least one cull. */
   conversationsSwapped: number;
-  /** Requests that went with swaps in them. */
+  /** Requests that went with culls in them. */
   requestsSwapped: number;
-  /** Requests of those conversations before their first swap, and from it on. */
+  /** Requests of those conversations before their first cull, and from it on. */
   beforeFirstSwap: EndlessCacheTotals;
   afterFirstSwap: EndlessCacheTotals;
-  /** What the swaps took out of every request they were in (estimated tokens). */
+  /** What the culls took out of every request they were in (estimated tokens). */
   tokensSaved: number;
 }
 
@@ -45,7 +46,7 @@ function recordHasSwaps(record: WireUsageLedgerRecord): boolean {
   return record.stages.includes(ENDLESS_MODE_STAGE_NAME) && record.swappedTokensEst > 0;
 }
 
-/** One line per agent that has a conversation with a swap; in agent order. */
+/** One line per agent that has a conversation with a cull; in agent order. */
 export function buildEndlessModeReport(records: WireUsageLedgerRecord[]): EndlessAgentReport[] {
   const recordsByConversation = new Map<string, WireUsageLedgerRecord[]>();
   for (const record of records) {

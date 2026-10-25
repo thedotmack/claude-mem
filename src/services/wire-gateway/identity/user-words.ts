@@ -7,6 +7,7 @@
 // `firstWords` (internal/gateway/rules.go:122-153) and the session readers'
 // context rule `textPart` (internal/sessions/content.go:204-210).
 
+import { removeTagBlocks } from '../../../utils/tag-stripping.js';
 import type { WireMessage, WireRequest } from '../ir/types.js';
 
 const SYSTEM_REMINDER_OPEN = '<system-reminder';
@@ -47,6 +48,14 @@ function withoutSystemReminders(text: string): string {
   }
   return keptUpTo === 0 ? text : kept + text.slice(keptUpTo);
 }
+
+/**
+ * The blocks the gateway itself adds (Endless Mode v2): the durable header's
+ * <claude-mem-rules> and the cull stage's <claude-mem-work> lines appended
+ * to a turn's user message. They are never the user's words, so a cull
+ * neither starts nor hides a turn.
+ */
+const GATEWAY_BLOCK_TAG_NAMES = ['claude-mem-work', 'claude-mem-rules'] as const;
 
 /** Heads what the user typed in the Codex app, after the context it puts first. */
 const CODEX_APP_MY_REQUEST_PATTERN = /^## My request(?: for Codex)?:[ \t]*\n?/gm;
@@ -90,7 +99,7 @@ export const AGENT_INJECTED_TEXT_PREFIXES: readonly string[] = [
  * reminders, and after the Codex app's context (magpie `userWords`).
  */
 export function userWordsInText(text: string): string {
-  let words = withoutSystemReminders(text).trim();
+  let words = withoutSystemReminders(removeTagBlocks(text, GATEWAY_BLOCK_TAG_NAMES)).trim();
   const myRequestHeadings = [...words.matchAll(CODEX_APP_MY_REQUEST_PATTERN)];
   const lastMyRequestHeading = myRequestHeadings.at(-1);
   if (lastMyRequestHeading) {

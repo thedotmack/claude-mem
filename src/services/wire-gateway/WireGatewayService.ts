@@ -95,7 +95,6 @@ import { createDurableHeaderStage, type DurableHeaderStageOptions } from './head
 import { WireObservationLookup } from './endless/observation-lookup.js';
 import { buildEndlessModeReport, formatEndlessModeReport } from './endless/endless-report.js';
 import { WireUsageLedger } from './metrics/usage-ledger.js';
-import { BUILT_IN_AGENT_DESCRIPTORS } from './agents/builtin-agents.js';
 import {
   CONTEXT_TIMEOUT_MS_SETTING,
   DEFAULT_CONTEXT_TIMEOUT_MS,
@@ -256,11 +255,6 @@ export interface WireGatewayServiceOptions {
   } & Pick<WireAgentStatusInputs, 'probeIdentity' | 'probeThroughProxy' | 'readSystemProxy'>;
 }
 
-/** The agent's edit tools, from its built-in descriptor. */
-function editToolNamesOfAgent(agentId: string): readonly string[] {
-  return BUILT_IN_AGENT_DESCRIPTORS.find(descriptor => descriptor.id === agentId)?.editToolNames ?? [];
-}
-
 /**
  * The stages the gateway runs, in request order (D7, plan Phase 10 task 1):
  * durable header → memory injection → Endless Mode → the memory_search
@@ -276,7 +270,7 @@ function defaultRewriteStages(
   return [
     createDurableHeaderStage({ contextTimeoutMs, ...memory.header }),
     createMemoryInjectionStage({ contextTimeoutMs, ...memory.injection }),
-    createEndlessModeStage({ observationLookup, editToolNamesOf: editToolNamesOfAgent }),
+    createEndlessModeStage({ observationLookup }),
     createMemorySearchStage({ ...memory.search }),
   ];
 }
