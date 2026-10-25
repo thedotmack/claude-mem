@@ -615,9 +615,19 @@ function extractSignatureFromLines(lines: string[], startRow: number, endRow: nu
 function findCommentAbove(lines: string[], startRow: number): string | undefined {
   const commentLines: string[] = [];
   let foundComment = false;
+  // Every line inside a /* ... */ block is comment text, whatever it starts
+  // with. Scanning upward, a block is entered at its closing `*/` and left at
+  // its opening `/*`. A `//` or `#` line that happens to end in `*/`
+  // (`// Matches /a*/`) closes nothing.
+  let inBlockComment = false;
 
   for (let i = startRow - 1; i >= 0; i--) {
     const trimmed = lines[i].trim();
+    if (inBlockComment) {
+      commentLines.unshift(lines[i]);
+      if (trimmed.startsWith("/*")) inBlockComment = false;
+      continue;
+    }
     if (trimmed === "") {
       if (foundComment) break;
       continue;
@@ -627,6 +637,8 @@ function findCommentAbove(lines: string[], startRow: number): string | undefined
         trimmed.startsWith("#") || trimmed.startsWith("@")) {
       commentLines.unshift(lines[i]);
       foundComment = true;
+      if (trimmed.endsWith("*/") && !trimmed.startsWith("/*") &&
+          !trimmed.startsWith("//") && !trimmed.startsWith("#")) inBlockComment = true;
     } else {
       break;
     }
