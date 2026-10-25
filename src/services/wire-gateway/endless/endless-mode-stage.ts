@@ -56,6 +56,9 @@
 //   cache a background lookup fills (observation-lookup.ts). A turn-start
 //   request waits up to CONTEXT_TIMEOUT_MS for the observations of earlier
 //   turns' work, so the fold lands on it.
+// - A context item (Codex's developer note sent again before a prompt, a
+//   web search, a compaction) never folds: it stays, in order, in the tail
+//   after the timeline, and the fold goes on around it.
 // - A conversation the v1 swap stage changed, or one the earlier per-turn
 //   cull layout changed, is suspended: never folded, sent as it comes.
 // - A recorded fold the history no longer matches (a compaction, a rewind)
@@ -215,8 +218,9 @@ interface FoldRegion {
  * the current turn keeps its prompt and folds only the run from its first
  * call through `throughCallId`'s result, which may hold only tool work,
  * reasoning, the model's text and the harness's notes inside the run. A run
- * keeps every call with its result. Nothing the parser skipped, and no
- * context item (a Codex compaction, a web search), is ever folded.
+ * keeps every call with its result. Nothing the parser skipped is ever
+ * folded; a context item (a Codex developer note, compaction or web search)
+ * stays, in order, in the tail.
  */
 function foldRegionOf(
   request: WireRequest,
@@ -283,13 +287,18 @@ function foldRegionOf(
       continue;
     }
     if (removedOverlaps.length !== overlapping.length) return 'an element holds both folded and kept messages';
-    for (const { message, messageIndex } of removedOverlaps) {
+    const parts = removedOverlaps.flatMap(({ message, messageIndex }) => message.parts
+      .filter(part => spansOverlap(part.span, element)).map(part => ({ part, message, messageIndex })));
+    // A context item (a developer note Codex sends again before a prompt, a web search, a compaction) is the
+    // agent's, not tool work: it stays, in order, after the timeline, and the fold goes on around it.
+    if (parts.length > 0 && parts.every(({ part }) => part.kind === 'context')) {
+      tailElements.push(element);
+      continue;
+    }
+    for (const { part, message, messageIndex } of parts) {
       const inRun = run !== null && messageIndex >= run.firstIndex && messageIndex <= run.lastIndex;
-      for (const part of message.parts) {
-        if (!spansOverlap(part.span, element)) continue;
-        if (part.kind === 'context') return `it holds a ${part.name ?? 'context'} item`;
-        if (inRun && part.kind === 'text' && message.role === 'user') return 'the current turn\'s run holds a user text part';
-      }
+      if (part.kind === 'context') return `an element holds a ${part.name ?? 'context'} item beside other parts`;
+      if (inRun && part.kind === 'text' && message.role === 'user') return 'the current turn\'s run holds a user text part';
     }
     removedElements.push(element);
   }

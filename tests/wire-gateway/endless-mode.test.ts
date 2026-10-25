@@ -535,7 +535,7 @@ describe('Endless Mode: one growing timeline, per protocol', () => {
     expect(timelineBlocksOf(anthropicCase, turn3).at(-2)).toBe(blockOfRows(`U: ${tag}: one`, 'A: first', `U: ${tag}: two`, rowOf(401), 'A: second'));
   });
 
-  it('openai-responses: the timeline never folds past a context item (a web search, a compaction)', async () => {
+  it('openai-responses: a context item (a developer note sent again before a prompt, a web search) stays in the tail; the fold goes on around it', async () => {
     fetcherMode = 'table';
     const responsesCase = protocolCases[2];
     const tag = 'context-item';
@@ -544,18 +544,28 @@ describe('Endless Mode: one growing timeline, per protocol', () => {
     const b = { id: `call_${tag}_b` };
     observe(a.id, 281);
     observe(b.id, 282);
+    const webSearch = { type: 'web_search_call', id: 'ws_1', status: 'completed', action: { type: 'search', query: 'kept query' } };
+    // Codex sends its developer instructions again before some prompts (seen live, codex-cli 0.163.0).
+    const developerNote = { type: 'message', role: 'developer', content: [{ type: 'input_text', text: '<skills_instructions>kept note</skills_instructions>' }] };
     const conversation = new Conversation(responsesCase).add(responsesCase.user(`${tag}: look it up`));
     await sendAndSettle(responsesCase, conversation.body(), session);
-    conversation.add(responsesCase.calls([a], true)).add(responsesCase.results([a]))
-      .add([{ type: 'web_search_call', id: 'ws_1', status: 'completed', action: { type: 'search', query: 'kept query' } }])
+    conversation.add(responsesCase.calls([a], true)).add(responsesCase.results([a])).add([webSearch])
       .add(responsesCase.calls([b], true)).add(responsesCase.results([b]));
     await sendAndSettle(responsesCase, conversation.body(), session);
-    conversation.add(responsesCase.final('found', true)).add(responsesCase.user(`${tag}: thanks`));
+    const prompt2 = responsesCase.user(`${tag}: thanks`);
+    conversation.add(responsesCase.final('found', true)).add([developerNote]).add(prompt2);
     const turn2 = await send(responsesCase, conversation.body(), session);
-    expect(turn2).not.toContain(a.id);
-    expect(turn2).toContain('kept query');
-    expect(turn2).toContain(b.id);
-    expect(timelineBlocksOf(responsesCase, turn2).slice(1, -1)).toEqual([blockOfRows(`U: ${tag}: look it up`, rowOf(281))]);
+    expect(timelineBlocksOf(responsesCase, turn2).slice(1, -1)).toEqual([blockOfRows(`U: ${tag}: look it up`, rowOf(281), rowOf(282), 'A: found')]);
+    expectTailIs(responsesCase, turn2, [webSearch, developerNote, ...prompt2]);
+    for (const call of [a, b]) expect(turn2).not.toContain(call.id);
+    // (The developer note now comes before any reply in the request, so the IR reads it as instructions; the vendor gets the item as the agent wrote it.)
+    const parse = (body: string) => parseWireRequest('openai-responses', encoder.encode(body), responsesCase.path);
+    expect(toolPairingProblem(parse(conversation.body()), parse(turn2))).toBeNull();
+    // The next turn folds turn 2 too; the kept items stay, in order, after the timeline.
+    conversation.add(responsesCase.final('welcome', true)).add(responsesCase.user(`${tag}: bye`));
+    const turn3 = await send(responsesCase, conversation.body(), session);
+    expectGrowsOnlyAfterTimelineEnd('openai-responses', turn2, turn3);
+    expectTailIs(responsesCase, turn3, [webSearch, developerNote, ...responsesCase.user(`${tag}: bye`)]);
   });
 
   it('anthropic: every turn start cuts the thinking before it, fold or not', async () => {

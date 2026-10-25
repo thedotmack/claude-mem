@@ -317,8 +317,9 @@ changes nothing.
   and never counts as words of yours, so it never starts or hides a turn.
   Capture strips `<claude-mem-timeline>` and `<claude-mem-rules>`, so neither
   becomes new memory.
-- A context item (a Codex compaction, a web search) never folds: the timeline
-  stops before it.
+- A context item (a developer note Codex sends again before a prompt, a
+  compaction, a web search) never folds: it stays, in order, after the
+  timeline, and the fold goes on around it.
 - A conversation an earlier version of Endless Mode changed is left alone. If
   the agent changes the history a fold went through (a compaction, a rewind),
   the conversation is sent as the agent writes it from then on.
