@@ -157,7 +157,7 @@ function LoadedApp() {
                   <Req ids={['R10.4']}>
                     <span className="flex items-center gap-2">
                       <CmemMark className="size-8 text-[#D86441]" />
-                      <span className="sr-only md:not-sr-only md:text-[0.95rem] md:font-semibold md:tracking-tight">cmem</span>
+                      <span className="sr-only md:not-sr-only md:text-[0.95rem] md:font-semibold md:tracking-tight">claude-mem</span>
                     </span>
                   </Req>
                   <h1 className="text-lg font-semibold tracking-tight md:hidden">{PAGES.find((entry) => entry.id === page)!.label}</h1>
