@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [15.2.1] - 2026-10-25
+
+## What changed
+
+- **npm publishing now uses trusted publishing (OIDC).** The "Publish to npm" GitHub Actions workflow authenticates to npm with a short-lived OIDC token issued for this repository's workflow instead of the long-lived `NPM_TOKEN` secret, which had been failing on every tag since v13.26.1. Trusted publishes also carry an npm provenance attestation linking the package to the commit and workflow that built it. (#5063)
+
+No runtime behavior changes in the plugin or worker; this release exists to ship through the new publishing path.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v15.2.0...v15.2.1
+
 ## [15.2.0] - 2026-10-25
 
 ## Highlights
