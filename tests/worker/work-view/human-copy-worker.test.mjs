@@ -28,6 +28,25 @@ const worker = (provider, options = {}) => new HumanCopyWorker({
   now: () => 1000, ...options,
 });
 
+test('setup pause suppresses already queued and newly observed user-token calls until setup completes', async t => {
+  let paused = false, now = 0, calls = 0;
+  const instance = worker(async input => { calls++; return { output: copy(input) }; }, { now: () => now, quietMs: 100 });
+  t.after(() => instance.close());
+  instance.pauseWhile(() => paused);
+  instance.observe(view(request()));
+  assert.equal(instance.status().queued, 1);
+  paused = true;
+  now = 1000;
+  instance.pump();
+  instance.observe(view(request('request-two')));
+  assert.equal(calls, 0);
+  assert.equal(instance.status().queued, 1);
+  paused = false;
+  instance.pump();
+  await settle();
+  assert.equal(calls, 1);
+});
+
 test('one request stays single-flight and reuses its copy across polling, source ages and display-label changes', async t => {
   let calls = 0;
   const pending = deferred();

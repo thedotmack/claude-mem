@@ -1,0 +1,20 @@
+{
+  "sessionId": "gem-2",
+  "projectHash": "abc",
+  "startTime": "2026-10-04T10:00:00.000Z",
+  "lastUpdated": "2026-10-04T10:00:00.000Z",
+  "messages": [
+    {
+      "id": "g2-u1",
+      "timestamp": "2026-10-04T10:00:05.000Z",
+      "type": "user",
+      "content": "what changed in gamma"
+    },
+    {
+      "id": "g2-a1",
+      "timestamp": "2026-10-04T10:00:09.000Z",
+      "type": "gemini",
+      "content": "Two files."
+    }
+  ]
+}

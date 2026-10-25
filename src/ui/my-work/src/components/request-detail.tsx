@@ -12,7 +12,7 @@ import { setRequestChecked, useWorkModel, type Request } from '@/data'
 import { CHANGED_WHILE_READING_MESSAGE, CHECK_UNDONE_MESSAGE, CHECKED_LOCALLY_MESSAGE, type ReviewResult } from '@/live/review-response'
 import { PRODUCT_ICON } from '@/lib/product-icons'
 import { cn } from '@/lib/utils'
-import { AgentIcon, GoalChip, NextMove, ProductLink, ProgressMeter, ShowUpdatesButton, StateBadge, useWorkspace } from './bits'
+import { AgentIcon, GoalChip, NextMove, ProductLink, ProgressMeter, StateBadge, useWorkspace } from './bits'
 import { OpenFollowUps } from './request-card'
 
 const RECENT_RECORDS = 5
@@ -124,7 +124,7 @@ export function RequestDetail({ request, onClose, onOpenGoal }: { request: Reque
       <SheetContent className="w-full gap-0 overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-xl">
         <Req ids={['R3.6', 'R3.2']}>
           <SheetHeader className="gap-3 border-b p-5 md:p-6">
-            <div className="flex min-w-0 flex-wrap items-center gap-2 pr-10"><StateBadge state={request.state} /><AgentIcon agentId={request.agentId} withDevice /><ShowUpdatesButton className="ml-auto" /></div>
+            <div className="flex min-w-0 flex-wrap items-center gap-2 pr-10"><StateBadge state={request.state} /><AgentIcon agentId={request.agentId} withDevice /></div>
             <SheetTitle className="text-xl leading-snug">{title}</SheetTitle>
             <SheetDescription className="line-clamp-2">{request.summary ?? request.resolvesTo?.summary}</SheetDescription>
             <NextMove next={request.next} className="text-[0.95rem]" />

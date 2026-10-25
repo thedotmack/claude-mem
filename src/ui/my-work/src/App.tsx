@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { MotionConfig } from 'motion/react'
 import { GoalIcon, InboxIcon, ListChecksIcon, UsersIcon } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
@@ -8,7 +8,7 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { TooltipProvider } from '@/components/ui/tooltip'
-import { DeviceFreshness, LiveIndicator, ShowUpdatesButton, WorkspaceContext, type Workspace } from '@/components/bits'
+import { ClassicViewerLink, DeviceFreshness, GitHubStars, LiveIndicator, WorkspaceContext, type Workspace } from '@/components/bits'
 import { CmemMark } from '@/components/brand'
 import { RequestDetail } from '@/components/request-detail'
 import { cn } from '@/lib/utils'
@@ -19,13 +19,14 @@ import { Req, SpecOverlayContext } from '@/spec/req'
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { Spinner } from '@/components/ui/spinner'
 import { playDemoUpdates, receiveConnectionStatus, receiveLiveWorkModel, requestById, setActiveWorkDataSource, settleInitialWorkModelLoad, useWorkModel, useWorkModelLoad, type Request } from '@/data'
-import type { ReadingSignals } from '@/live/update-queue'
 import { localSource } from '@/live/local-source'
 import { sampleSource } from '@/live/sample-source'
 import type { WorkDataSource } from '@/live/work-data-source'
 
-type Page = 'work' | 'goals' | 'rules'
-const PAGES: { id: Page; label: string; icon: typeof InboxIcon; section: string }[] = [
+/** `setup` is the install funnel (`?setup=1`): a full page outside the nav that becomes My Work when it completes. */
+type Page = 'setup' | 'work' | 'goals' | 'rules'
+type NavPage = Exclude<Page, 'setup'>
+const PAGES: { id: NavPage; label: string; icon: typeof InboxIcon; section: string }[] = [
   { id: 'work', label: 'My Work', icon: InboxIcon, section: 'Monitor' },
   { id: 'goals', label: 'My Goals', icon: GoalIcon, section: 'Steer' },
   { id: 'rules', label: 'My Rules', icon: ListChecksIcon, section: 'Steer' },
@@ -74,21 +75,27 @@ function TeamSwitch({ team, onChange }: { team: boolean; onChange: (team: boolea
 const ACTIVE_SOURCE: WorkDataSource = new URLSearchParams(window.location.search).get('source') === 'sample' ? sampleSource : localSource
 setActiveWorkDataSource(ACTIVE_SOURCE)
 
-/** What the person is doing right now, read from the page (app.js `isReading`): an open drawer or dialog, focus in a control on the page, or scrolled down. */
-function readReadingSignals(): ReadingSignals {
-  const focused = document.activeElement
-  return {
-    dialogOpen: !!document.querySelector('[role="dialog"], [role="listbox"], [role="menu"]'),
-    focusInControl: !!focused && focused !== document.body && !!focused.closest('main, header'),
-    scrollY: window.scrollY,
+const SetupPage = lazy(() => import('@/setup/setup-page'))
+export default function App() {
+  // Only the explicit installer handoff opens setup. Missing state on an
+  // existing installation must never lock My Work behind checkout.
+  const [page, setPage] = useState<Page>(() => new URLSearchParams(window.location.search).get('setup') === '1' ? 'setup' : 'work')
+  if (page !== 'setup') return <WorkApp />
+  const finishSetup = () => {
+    const url = new URL(window.location.href)
+    url.searchParams.delete('setup')
+    window.history.replaceState(null, '', url)
+    window.scrollTo(0, 0)
+    setPage('work')
   }
+  return <Suspense fallback={null}><SetupPage onComplete={finishSetup} /></Suspense>
 }
 
 /** Reads the active source once and subscribes to its live feed, then renders the app. A failed load says so plainly instead of showing anything made up. */
-export default function App() {
+function WorkApp() {
   const load = useWorkModelLoad()
   useEffect(() => {
-    const unsubscribe = ACTIVE_SOURCE.subscribeToLiveUpdates((model) => receiveLiveWorkModel(model, readReadingSignals()), receiveConnectionStatus)
+    const unsubscribe = ACTIVE_SOURCE.subscribeToLiveUpdates(receiveLiveWorkModel, receiveConnectionStatus)
     ACTIVE_SOURCE.loadWorkModel().then(
       (model) => settleInitialWorkModelLoad({ model }),
       (error: unknown) => settleInitialWorkModelLoad({ error: error instanceof Error ? error.message : String(error) }),
@@ -115,21 +122,26 @@ export default function App() {
 function LoadedApp() {
   const { sourceKind } = useWorkModel()
   const sample = sourceKind === 'sample'
-  const [page, setPage] = useState<Page>('work')
+  const [page, setPage] = useState<NavPage>('work')
   const [workspaceChoice, setWorkspace] = useState<Workspace>({ mode: 'home', team: false, connected: false })
   // Outside sample mode the place comes from the source: the local worker is at home, cmem.ai is on the go.
   const workspace: Workspace = sample ? workspaceChoice : { ...workspaceChoice, mode: sourceKind === 'cloud' ? 'web' : 'home' }
   const [showSpec, setShowSpec] = useState(false)
   const [dark, setDark] = useDarkMode()
-  const [openRequest, setOpenRequest] = useState<Request | null>(null)
+  // Whether the opened request was in today's live feed, so the drawer can tell "left the feed" from "never in it".
+  const [openRequest, setOpenRequestState] = useState<{ request: Request; fromLiveFeed: boolean } | null>(null)
+  const setOpenRequest = (request: Request | null) => setOpenRequestState(request ? { request, fromLiveFeed: requestById(request.id) !== null } : null)
   const [focusGoalId, setFocusGoalId] = useState<string | undefined>()
   const { requests } = useWorkModel()
   const yourMoveCount = requests.filter((request) => request.state === 'your-move' || request.state === 'needs-check').length
   // The drawer always shows the current state of today's requests; older goal-only requests come as passed.
-  const liveOpenRequest = openRequest ? requestById(openRequest.id) ?? openRequest : null
+  // A request that leaves the live feed closes the drawer: its agent and device may have left the model with it.
+  const liveOpenRequest = openRequest ? requestById(openRequest.request.id) ?? (openRequest.fromLiveFeed ? null : openRequest.request) : null
+  // Forget the closed selection, so the drawer never reopens by itself if that request later returns to the feed.
+  useEffect(() => { if (openRequest && liveOpenRequest === null) setOpenRequestState(null) }, [openRequest, liveOpenRequest])
   // The demo flip is sample data; it never runs against real requests.
   useEffect(() => (sample ? playDemoUpdates() : undefined), [sample])
-  const goToPage = (next: Page) => { setFocusGoalId(undefined); setPage(next) }
+  const goToPage = (next: NavPage) => { setFocusGoalId(undefined); setPage(next) }
   const goToGoal = (goalId: string) => { setOpenRequest(null); setFocusGoalId(goalId); setPage('goals') }
 
   return (
@@ -165,15 +177,16 @@ function LoadedApp() {
                   <Req ids={['R10.4']}>
                     <span className="flex items-center gap-2">
                       <CmemMark className="size-8 text-[#D86441]" />
-                      <span className="sr-only md:not-sr-only md:text-[0.95rem] md:font-semibold md:tracking-tight">cmem</span>
+                      <span className="sr-only md:not-sr-only md:text-[0.95rem] md:font-semibold md:tracking-tight">claude-mem</span>
                     </span>
                   </Req>
                   <h1 className="text-lg font-semibold tracking-tight md:hidden">{PAGES.find((entry) => entry.id === page)!.label}</h1>
                   <div className="ml-auto flex items-center gap-0.5 md:gap-2">
                     <TeamSwitch team={workspace.team} onChange={(team) => setWorkspace({ ...workspace, team })} />
-                    <ShowUpdatesButton />
                     <DeviceFreshness />
                     <LiveIndicator />
+                    <ClassicViewerLink />
+                    <GitHubStars />
                   </div>
                 </div>
               </header>
