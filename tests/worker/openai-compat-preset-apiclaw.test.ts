@@ -31,15 +31,15 @@ describe('APIClaw preset', () => {
     }
   });
 
-  it('requires an explicit model before becoming available', () => {
+  it('uses the preset default model and requires a key', () => {
     const config = resolveOpenAICompatConfig();
     expect(config.apiUrl).toBe('https://apiclaw.biz/v1/chat/completions');
     expect(config.requiresApiKey).toBe(true);
-    expect(config.model).toBe('');
-    expect(isOpenAICompatAvailable()).toBe(false);
-
-    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL = 'fixture-model-id';
+    expect(config.model).toBe('apiclaw/claude-sonnet-5.5');
     expect(isOpenAICompatAvailable()).toBe(true);
+
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_API_KEY = '';
+    expect(isOpenAICompatAvailable()).toBe(false);
   });
 
   it('sends the selected model and dedicated bearer key through the shared client', async () => {

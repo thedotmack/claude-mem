@@ -107,9 +107,9 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     id: 'apiclaw',
     label: 'APIClaw (apiclaw.biz)',
     baseUrl: 'https://apiclaw.biz/v1',
-    defaultModel: '',
+    defaultModel: 'apiclaw/claude-sonnet-5.5',
     requiresApiKey: true,
-    hint: 'APIClaw key on a flat monthly plan; pick a chat-completions model id your key lists at /v1/models. Model ids are passed verbatim.',
+    hint: 'APIClaw key on a flat monthly plan; defaults to apiclaw/claude-sonnet-5.5. Other ids your key lists at /v1/models are passed verbatim.',
   },
   {
     id: 'deepseek',
