@@ -8,7 +8,7 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { TooltipProvider } from '@/components/ui/tooltip'
-import { DeviceFreshness, LiveIndicator, ShowUpdatesButton, WorkspaceContext, type Workspace } from '@/components/bits'
+import { DeviceFreshness, LiveIndicator, WorkspaceContext, type Workspace } from '@/components/bits'
 import { CmemMark } from '@/components/brand'
 import { RequestDetail } from '@/components/request-detail'
 import { cn } from '@/lib/utils'
@@ -19,7 +19,6 @@ import { Req, SpecOverlayContext } from '@/spec/req'
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { Spinner } from '@/components/ui/spinner'
 import { playDemoUpdates, receiveConnectionStatus, receiveLiveWorkModel, requestById, setActiveWorkDataSource, settleInitialWorkModelLoad, useWorkModel, useWorkModelLoad, type Request } from '@/data'
-import type { ReadingSignals } from '@/live/update-queue'
 import { localSource } from '@/live/local-source'
 import { sampleSource } from '@/live/sample-source'
 import type { WorkDataSource } from '@/live/work-data-source'
@@ -74,21 +73,11 @@ function TeamSwitch({ team, onChange }: { team: boolean; onChange: (team: boolea
 const ACTIVE_SOURCE: WorkDataSource = new URLSearchParams(window.location.search).get('source') === 'sample' ? sampleSource : localSource
 setActiveWorkDataSource(ACTIVE_SOURCE)
 
-/** What the person is doing right now, read from the page (app.js `isReading`): an open drawer or dialog, focus in a control on the page, or scrolled down. */
-function readReadingSignals(): ReadingSignals {
-  const focused = document.activeElement
-  return {
-    dialogOpen: !!document.querySelector('[role="dialog"], [role="listbox"], [role="menu"]'),
-    focusInControl: !!focused && focused !== document.body && !!focused.closest('main, header'),
-    scrollY: window.scrollY,
-  }
-}
-
 /** Reads the active source once and subscribes to its live feed, then renders the app. A failed load says so plainly instead of showing anything made up. */
 export default function App() {
   const load = useWorkModelLoad()
   useEffect(() => {
-    const unsubscribe = ACTIVE_SOURCE.subscribeToLiveUpdates((model) => receiveLiveWorkModel(model, readReadingSignals()), receiveConnectionStatus)
+    const unsubscribe = ACTIVE_SOURCE.subscribeToLiveUpdates(receiveLiveWorkModel, receiveConnectionStatus)
     ACTIVE_SOURCE.loadWorkModel().then(
       (model) => settleInitialWorkModelLoad({ model }),
       (error: unknown) => settleInitialWorkModelLoad({ error: error instanceof Error ? error.message : String(error) }),
@@ -171,7 +160,6 @@ function LoadedApp() {
                   <h1 className="text-lg font-semibold tracking-tight md:hidden">{PAGES.find((entry) => entry.id === page)!.label}</h1>
                   <div className="ml-auto flex items-center gap-0.5 md:gap-2">
                     <TeamSwitch team={workspace.team} onChange={(team) => setWorkspace({ ...workspace, team })} />
-                    <ShowUpdatesButton />
                     <DeviceFreshness />
                     <LiveIndicator />
                   </div>

@@ -8,7 +8,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
-import { agentById, applyPendingWorkModel, deviceById, isSampleHref, measuredEstimate, SAMPLE_DEVICES, useHasPendingWorkModel, useWorkModel, type Device, type LiveState, type Request, type Run, type SkillRun } from '@/data'
+import { agentById, deviceById, isSampleHref, measuredEstimate, SAMPLE_DEVICES, useWorkModel, type Device, type LiveState, type Request, type Run, type SkillRun } from '@/data'
 import type { AutoRefresh } from '@/live/work-data-source'
 import { AgentMark } from './brand'
 
@@ -213,13 +213,6 @@ export function DeviceFreshness() {
       </HoverCard>
     </Req>
   )
-}
-
-/** Newer work is held while you read; this applies it when you choose to (app.js "Show updates" banner). */
-export function ShowUpdatesButton({ className }: { className?: string }) {
-  const hasPendingWorkModel = useHasPendingWorkModel()
-  if (!hasPendingWorkModel) return null
-  return <Button size="sm" className={cn('text-xs', className)} onClick={applyPendingWorkModel}>Show updates</Button>
 }
 
 /** Sample runs only (their machines are fixtures). Runs a skill from the GUI (§14): last run time, machine and progress (cost display dropped by the owner, Oct 20, 2026). On the web it queues for an online machine. */
