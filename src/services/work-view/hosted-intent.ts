@@ -110,7 +110,8 @@ function mergeGroups(stored: Record<string, any>, result: HostedIntentResult, ke
     next.ignored[key] = item.reason;
     delete next.conversations[key];
   }
-  for (const id of keys.keys()) if (!seen.has(id)) throw new Error(`Hosted extraction omitted conversation ${id}.`);
+  // A conversation Cloud left out of every group (or placed twice, which Cloud removes and counts) stays as it was:
+  // undecided conversations show as their own request, and the local refresh may group them later.
   const used = new Set(Object.values(next.conversations));
   for (const id of Object.keys(next.groups)) if (!used.has(id)) delete next.groups[id];
   return { ...next, updatedAt: writtenAt };
