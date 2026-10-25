@@ -17,10 +17,9 @@ local-view, review, handoff, or narrow-layout behavior.
   the request card. The source lifecycle remains separate.
 - The saved check survives a page reload. The card's Undo restores Ready to
   check. Neither operation creates an unread-work dot on its own.
-- New recorded work waits behind **Show updates** while a request/source dialog
-  is open. The existing original request and source text stay in place. Escape
-  returns to the trigger; applying the update changes the displayed snapshot,
-  preserves request order, and supplies the separate unread indicator.
+- New recorded work is shown as soon as it arrives, even while a request/source
+  dialog is open. The existing original request and source text stay in place,
+  request order is preserved, and changed cards get the separate unread indicator.
 - The original human request and source-record disclosure remain accessible.
   Reading a synthetic prompt source displays the original text. Hostile fixture
   contributor text renders as text rather than executable markup.

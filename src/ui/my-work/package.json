@@ -9,7 +9,7 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "coverage": "node scripts/coverage.mjs",
-    "test": "node --test src/live/*.test.ts"
+    "test": "node --test src/live/*.test.ts src/setup/*.test.ts"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",
