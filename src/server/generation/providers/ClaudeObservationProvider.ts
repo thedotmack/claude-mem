@@ -53,6 +53,16 @@ interface AnthropicMessagesResponse {
   error?: { type?: string; message?: string };
 }
 
+/**
+ * The Messages endpoint a provider built with this base URL posts to: the
+ * custom base (trimmed, trailing slashes dropped) or api.anthropic.com, plus
+ * /v1/messages. Exported so the runtime checks the cmem key lock against the
+ * exact URL the key would be sent to.
+ */
+export function resolveAnthropicMessagesUrl(baseUrl?: string): string {
+  return `${(baseUrl?.trim() || ANTHROPIC_DEFAULT_BASE_URL).replace(/\/+$/, '')}/v1/messages`;
+}
+
 export class ClaudeObservationProvider implements ServerGenerationProvider {
   readonly providerLabel = 'claude' as const;
   private readonly apiKey: string;
@@ -74,8 +84,7 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
     this.model = options.model ?? DEFAULT_MODEL;
     this.maxOutputTokens = options.maxOutputTokens ?? 4096;
     this.fetchImpl = options.fetchImpl ?? fetch;
-    const baseUrl = (options.baseUrl?.trim() || ANTHROPIC_DEFAULT_BASE_URL).replace(/\/+$/, '');
-    this.messagesUrl = `${baseUrl}/v1/messages`;
+    this.messagesUrl = resolveAnthropicMessagesUrl(options.baseUrl);
     this.thinking = options.thinking ?? 'omit';
     this.extraHeaders = options.extraHeaders ?? {};
   }

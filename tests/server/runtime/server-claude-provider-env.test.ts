@@ -8,7 +8,10 @@ const ENV_KEYS = [
   'ANTHROPIC_API_KEY', 'CLAUDE_MEM_ANTHROPIC_API_KEY', 'CLAUDE_MEM_OBSERVER_THINKING',
   'ANTHROPIC_BASE_URL', 'CLAUDE_MEM_ANTHROPIC_BASE_URL',
   'ANTHROPIC_CUSTOM_HEADERS', 'CLAUDE_MEM_ANTHROPIC_CUSTOM_HEADERS',
+  'CMEM_PRO_ORIGIN',
 ];
+
+const CM_KEY = 'cm_pro_0123456789abcdef01234567';
 
 function thinkingOf(provider: unknown): unknown {
   return (provider as { thinking: unknown }).thinking;
@@ -60,6 +63,55 @@ describe('server Claude provider reads the worker observer settings', () => {
     expect(headersOf(await instantiateServerGenerationProvider('claude')))
       .toEqual({ 'cf-aig-authorization': 'Bearer gw', 'cf-aig-collect-log-payload': 'false' });
   });
+
+  // The shared cmem key lock (src/shared/cmem-gateway.ts): a cm_pro_ memory
+  // key authenticates only against the cmem gateway and must never be sent to
+  // api.anthropic.com or to a third-party gateway.
+  it('never builds a Claude provider around a cm_pro_ key on api.anthropic.com', async () => {
+    process.env.ANTHROPIC_API_KEY = CM_KEY;
+    const warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      expect(await instantiateServerGenerationProvider('claude')).toBeNull();
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(CM_KEY);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('never sends a cm_pro_ key to a custom Anthropic gateway', async () => {
+    process.env.ANTHROPIC_API_KEY = CM_KEY;
+    process.env.CLAUDE_MEM_ANTHROPIC_BASE_URL = 'https://gateway.example.com/anthropic';
+    const warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      expect(await instantiateServerGenerationProvider('claude')).toBeNull();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('POSTs a normal key to <base>/v1/messages on a custom gateway', async () => {
+    process.env.CLAUDE_MEM_ANTHROPIC_BASE_URL = 'https://gateway.example.com/anthropic/';
+    const calls: Array<{ url: string; headers: Headers }> = [];
+    const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), headers: new Headers(init?.headers) });
+      return new Response(JSON.stringify({ content: [{ type: 'text', text: 'ok' }] }), { status: 200 });
+    }) as typeof fetch);
+    try {
+      const provider = await instantiateServerGenerationProvider('claude');
+      expect(provider).not.toBeNull();
+      await provider!.generate({
+        job: { id: 'job-1', projectId: 'p', teamId: 't', sourceType: 'observation', sourceId: 's' },
+        events: [{ id: 'e', eventType: 'tool_use', payload: { tool: 'bash', input: 'ls' }, metadata: {}, occurredAtEpoch: 0 }],
+        project: { projectId: 'p', teamId: 't', name: 'p' },
+      } as never);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.url).toBe('https://gateway.example.com/anthropic/v1/messages');
+      expect(calls[0]!.headers.get('x-api-key')).toBe('sk-fake');
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
 });
 
 describe('parseAnthropicCustomHeaders', () => {
@@ -82,6 +134,20 @@ describe('parseAnthropicCustomHeaders', () => {
       const logged = JSON.stringify(warnSpy.mock.calls);
       expect(logged).not.toContain('ecret');
       expect(logged).not.toContain('Bad Name');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('drops a header carrying a cmem.ai memory key, warning with its line number only', () => {
+    const warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      expect(parseAnthropicCustomHeaders(`Good: ok\nX-Gateway-Auth: Bearer ${CM_KEY}`)).toEqual({ Good: 'ok' });
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const logged = JSON.stringify(warnSpy.mock.calls);
+      expect(logged).toContain('line 2');
+      expect(logged).not.toContain('cm_pro_0123');
+      expect(logged).not.toContain('X-Gateway-Auth');
     } finally {
       warnSpy.mockRestore();
     }

@@ -244,6 +244,9 @@ Claude Code's own `ANTHROPIC_BASE_URL` and `ANTHROPIC_CUSTOM_HEADERS` are not
 read, so a server started from a shell that sets them for Claude Code doesn't
 send its key to that gateway.
 
+A cmem.ai memory key (`cm_pro_…`) is refused on this provider, as the API key
+or inside a custom header; it only works on the cmem.ai gateway.
+
 ### Custom generation provider (advanced)
 
 The generation worker ships with `claude`, `gemini` and `openrouter` providers, and
