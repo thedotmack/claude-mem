@@ -891,7 +891,7 @@ var SettingsDefaultsManager = class {
     CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS: "400000",
     // Retire an observer conversation past this size and start a fresh generation (#3800)
     CLAUDE_MEM_OBSERVER_THINKING: "disabled",
-    // Observer thinking param: 'disabled' (shipped) | 'enabled[:budget]' | 'omit' — an always-thinking gateway upstream rejects 'disabled' with 400/1210 (#4732)
+    // Observer thinking param: 'disabled' (shipped) | 'adaptive' | 'enabled[:budget]' | 'omit' — an always-thinking gateway upstream rejects 'disabled' with 400/1210 (#4732)
     CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW: "",
     // Observer model context window in tokens; '' = resolve it (OpenRouter catalogue, Gemini/Claude maps). Lowers the budget above to half the window (#3625)
     CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS: "4096",
