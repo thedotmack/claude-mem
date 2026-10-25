@@ -9,6 +9,8 @@ Builds a map of what the owner wants and cares about from the prompts they typed
 
 `${CLAUDE_SKILL_DIR}` is the folder holding this file. The scripts use the Python 3 standard library.
 
+Use Python 3.9 or newer. On Windows, replace `python3` below with `python -X utf8` (or `py -3 -X utf8` when using the Python launcher); the Microsoft Store `python3` alias is not an installed interpreter.
+
 ## 1. Export the owner's prompts
 
 Pick an output folder inside the current project, such as `.scratch/owner-goals/<YYYY-MM-DD>/`, and run:

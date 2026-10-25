@@ -311,6 +311,11 @@ describe('incremental owner goals', () => {
     return ((_command: string, args: string[]) => {
       const child: any = new EventEmitter();
       child.stdout = Object.assign(new EventEmitter(), { setEncoding() {} }); child.stderr = Object.assign(new EventEmitter(), { setEncoding() {} });
+      // The interpreter probe (`python3 -c ...`): answer "Python 3.9+" without recording a script call.
+      if (args.includes('-c')) {
+        queueMicrotask(() => child.emit('close', 0));
+        return child;
+      }
       const call: { args: string[]; goals?: any } = { args };
       calls.push(call);
       queueMicrotask(() => {
@@ -359,6 +364,64 @@ describe('incremental owner goals', () => {
       await task.prepare!();
       expect(await task.run(async () => { throw new Error('empty input must not call a model'); }, 'codex')).toBe('goals empty.');
       expect(calls[0].goals).toMatchObject({ generated_at: new Date(NOW).toISOString(), source_prompt_count: 0, priorities: [], open_asks: [] });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('refreshes goals with python when python3 is not installed', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-python-'));
+    try {
+      const database = fixtureDatabase();
+      saveGoals(database, new Date(NOW - 2 * DAY).toISOString());
+      writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
+      const calls: Array<{ args: string[]; goals?: any }> = [], sinceMinutes: Array<string | null> = [];
+      const python = fakePython(calls);
+      const scripts: string[] = [];
+      let probes = 0;
+      const spawnImpl = ((command: string, args: string[], spawnOptions: any) => {
+        if (command !== 'python') throw Object.assign(new Error(`Executable not found: ${command}`), { code: 'ENOENT' });
+        if (args.includes('-c')) probes++;
+        else {
+          scripts.push(command);
+          expect(spawnOptions.env.PYTHONUTF8).toBe('1');
+          expect(spawnOptions.env.CLAUDE_MEM_INTERNAL).toBe('1');
+        }
+        return python(command, args, spawnOptions);
+      }) as any;
+      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl, writeOwnerPrompts: fakeOwnerPrompts(0, sinceMinutes) });
+      await task.prepare!();
+      expect(await task.run(async () => { throw new Error('no agent needed'); }, 'codex')).toBe('goals unchanged.');
+      // The export runs in TypeScript; only save_goals.py goes through Python.
+      expect(scripts).toEqual(['python']);
+      expect(probes).toBe(1);
+      expect(calls[0].args[0]).toEndWith('save_goals.py');
+      expect(calls[0].goals).toMatchObject({ priorities: [{ title: 'Ship cards' }] });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('does not retry a failing save script with another interpreter', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-python-'));
+    try {
+      const database = fixtureDatabase();
+      saveGoals(database, new Date(NOW - 2 * DAY).toISOString());
+      writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
+      const scripts: Array<{ command: string; script: string }> = [];
+      const spawnImpl = ((command: string, args: string[]) => {
+        const child: any = new EventEmitter();
+        child.stdout = Object.assign(new EventEmitter(), { setEncoding() {} });
+        child.stderr = Object.assign(new EventEmitter(), { setEncoding() {} });
+        const probe = args.includes('-c');
+        queueMicrotask(() => {
+          if (!probe) { scripts.push({ command, script: args[0] }); child.stderr.emit('data', 'save failed'); }
+          child.emit('close', probe ? 0 : 7);
+        });
+        return child;
+      }) as any;
+      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl, writeOwnerPrompts: fakeOwnerPrompts(0, []) });
+      await task.prepare!();
+      await expect(task.run(async () => { throw new Error('no agent needed'); }, 'codex')).rejects.toThrow('save_goals.py exited 7: save failed');
+      expect(scripts).toHaveLength(1);
+      expect(scripts[0].command).toBe('python3');
+      expect(scripts[0].script).toEndWith('save_goals.py');
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
