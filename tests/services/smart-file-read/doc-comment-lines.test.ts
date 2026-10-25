@@ -32,6 +32,10 @@ describe('smart outline doc comments take only comment lines', () => {
     expect(symbol('# Loads a user.\ndef load\n  1\nend', 'user.rb', ['load']).jsdoc).toBe('# Loads a user.');
   }, 120000);
 
+  test('a preprocessor line above a comment ending in `*/` stays out of it', () => {
+    expect(symbol('#ifdef FAST\n// Matches /a*/\nint f(void) { return 0; }\n#endif', 'f.c', ['f']).jsdoc).toBe('// Matches /a*/');
+  }, 120000);
+
   test('a Rust outer attribute is passed over, not taken as the comment', () => {
     expect(symbol('/// A documented struct.\n#[derive(Debug)]\npub struct Doc {}', 'lib.rs', ['Doc']).jsdoc).toBe('/// A documented struct.');
   }, 120000);
