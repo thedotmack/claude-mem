@@ -119,6 +119,8 @@ function LoadedApp() {
   // The drawer always shows the current state of today's requests; older goal-only requests come as passed.
   // A request that leaves the live feed closes the drawer: its agent and device may have left the model with it.
   const liveOpenRequest = openRequest ? requestById(openRequest.request.id) ?? (openRequest.fromLiveFeed ? null : openRequest.request) : null
+  // Forget the closed selection, so the drawer never reopens by itself if that request later returns to the feed.
+  useEffect(() => { if (openRequest && liveOpenRequest === null) setOpenRequestState(null) }, [openRequest, liveOpenRequest])
   // The demo flip is sample data; it never runs against real requests.
   useEffect(() => (sample ? playDemoUpdates() : undefined), [sample])
   const goToPage = (next: Page) => { setFocusGoalId(undefined); setPage(next) }
