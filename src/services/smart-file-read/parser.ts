@@ -609,31 +609,33 @@ function extractSignatureFromLines(lines: string[], startRow: number, endRow: nu
   return sig;
 }
 
-function findCommentAbove(lines: string[], startRow: number, language: string): string | undefined {
+function findCommentAbove(lines: string[], startRow: number): string | undefined {
   const commentLines: string[] = [];
   let foundComment = false;
-  // In C and C++ a `#` line is a preprocessor directive (`#include`, `#ifdef`),
-  // not a comment, so it ends the comment block like any other code line.
-  // Inside a /* ... */ block a `#` line is comment text, so only a `#` line
-  // outside a block is a directive. Scanning upward, a block is entered at
-  // its closing `*/` and left at its opening `/*`.
-  const hashStartsComment = language !== "c" && language !== "cpp";
+  // Every line inside a /* ... */ block is comment text, whatever it starts
+  // with. Scanning upward, a block is entered at its closing `*/` and left at
+  // its opening `/*`. A `//` or `#` line that happens to end in `*/`
+  // (`// Matches /a*/`) closes nothing.
   let inBlockComment = false;
 
   for (let i = startRow - 1; i >= 0; i--) {
     const trimmed = lines[i].trim();
+    if (inBlockComment) {
+      commentLines.unshift(lines[i]);
+      if (trimmed.startsWith("/*")) inBlockComment = false;
+      continue;
+    }
     if (trimmed === "") {
       if (foundComment) break;
       continue;
     }
-    if (trimmed.startsWith("#") && !hashStartsComment && !inBlockComment) break;
     if (trimmed.startsWith("/**") || trimmed.startsWith("*") || trimmed.startsWith("*/") ||
         trimmed.startsWith("//") || trimmed.startsWith("///") || trimmed.startsWith("//!") ||
         trimmed.startsWith("#") || trimmed.startsWith("@")) {
       commentLines.unshift(lines[i]);
       foundComment = true;
-      if (trimmed.startsWith("/*")) inBlockComment = false;
-      else if (trimmed.endsWith("*/")) inBlockComment = true;
+      if (trimmed.endsWith("*/") && !trimmed.startsWith("/*") &&
+          !trimmed.startsWith("//") && !trimmed.startsWith("#")) inBlockComment = true;
     } else {
       break;
     }
@@ -881,7 +883,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
         200 - exportPrefix.length, kindCapture.startCol);
     }
 
-    const comment = language === "markdown" ? undefined : findCommentAbove(lines, startRow, language);
+    const comment = language === "markdown" ? undefined : findCommentAbove(lines, startRow);
     const body = match.captures.find(c => c.tag === "body");
     const docstring = language === "python" && body
       ? findPythonDocstringFromLines(lines, body.startRow, endRow)
