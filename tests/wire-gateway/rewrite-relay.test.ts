@@ -221,7 +221,7 @@ describe('the rewrite seam in the relay', () => {
       kind: 'turn',
       stages: ['frozen-note'],
       injectedTokensEst: 3,
-      swappedTokensEst: 0,
+      culledTokensEst: 0,
     });
     expect(record!.ttftMs).not.toBeNull();
     expect(record!.ms).toBeGreaterThanOrEqual(record!.ttftMs!);

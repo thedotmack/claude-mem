@@ -251,7 +251,7 @@ export function SavingsSection({ usage }: { usage: WireLoad<WireUsageSummary> })
     <Section
       title="Endless Mode savings"
       label="Endless Mode savings"
-      hint={<>Each conversation's prompt cache before its first swap and from it on, and the tokens the swaps took out{summary ? `, over the usage ledger's last ${summary.usageDays} days` : ''}. A swap writes the cache once more; after that it should be read as before, from a smaller prompt.</>}
+      hint={<>Each conversation's prompt cache before its first cull and from it on, and the tokens the culls took out, each cull counted once{summary ? `, over the usage ledger's last ${summary.usageDays} days` : ''}. A cull writes the cache once more; after that it should be read as before, from a smaller prompt.</>}
     >
       <LoadProblem load={usage} what="the usage ledger" />
       {summary && summary.unreadableLines > 0 && (
@@ -260,20 +260,20 @@ export function SavingsSection({ usage }: { usage: WireLoad<WireUsageSummary> })
         </div>
       )}
       {summary && summary.endless.length === 0 && (
-        <div className="wire-muted">No swaps yet. Endless Mode is off by default: <code>claude-mem wire routes endless &lt;routeId&gt; on</code>.</div>
+        <div className="wire-muted">No culls yet. Endless Mode is off by default: <code>claude-mem wire routes endless &lt;routeId&gt; on</code>.</div>
       )}
       {summary && summary.endless.length > 0 && (
         <table className="wire-table">
-          <thead><tr><th>Agent</th><th>Conversations</th><th>Requests with swaps</th><th>Tokens saved</th><th>Cache read:write before</th><th>From the first swap</th></tr></thead>
+          <thead><tr><th>Agent</th><th>Conversations</th><th>Requests with new culls</th><th>Tokens saved</th><th>Cache read:write before</th><th>From the first cull</th></tr></thead>
           <tbody>
             {summary.endless.map(agent => (
               <tr key={agent.agentId}>
                 <td>{agent.agentId}</td>
-                <td>{agent.conversationsSwapped}</td>
-                <td>{agent.requestsSwapped}</td>
+                <td>{agent.conversationsCulled}</td>
+                <td>{agent.requestsWithNewCulls}</td>
                 <td>~{formatTokenCount(agent.tokensSaved)}</td>
-                <td title={`${agent.beforeFirstSwap.cacheRead} read, ${agent.beforeFirstSwap.cacheWrite} written, ${agent.beforeFirstSwap.requests} requests`}>{formatCacheRatio(agent.beforeFirstSwap)}</td>
-                <td title={`${agent.afterFirstSwap.cacheRead} read, ${agent.afterFirstSwap.cacheWrite} written, ${agent.afterFirstSwap.requests} requests`}>{formatCacheRatio(agent.afterFirstSwap)}</td>
+                <td title={`${agent.beforeFirstCull.cacheRead} read, ${agent.beforeFirstCull.cacheWrite} written, ${agent.beforeFirstCull.requests} requests`}>{formatCacheRatio(agent.beforeFirstCull)}</td>
+                <td title={`${agent.afterFirstCull.cacheRead} read, ${agent.afterFirstCull.cacheWrite} written, ${agent.afterFirstCull.requests} requests`}>{formatCacheRatio(agent.afterFirstCull)}</td>
               </tr>
             ))}
           </tbody>

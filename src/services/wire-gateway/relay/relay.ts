@@ -134,7 +134,7 @@ export interface RelayExchangeRewrite {
   /** The stages whose bytes went upstream, in order; empty when none did. */
   appliedStageNames: string[];
   injectedTokensEst: number;
-  swappedTokensEst: number;
+  culledTokensEst: number;
   /** The forwarded body parsed, when the stages changed it; null when what went is `request`'s body. */
   forwardedRequest: WireRequest | null;
 }
@@ -424,7 +424,7 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
     // The rewrite stages (plan Phase 10, D7): they edit the decoded body by
     // byte splices and FAIL OPEN: on any error, overrun or broken tool pair
     // the original bytes go upstream.
-    const rewriteOutcome: RelayExchangeRewrite = { appliedStageNames: [], injectedTokensEst: 0, swappedTokensEst: 0, forwardedRequest: null };
+    const rewriteOutcome: RelayExchangeRewrite = { appliedStageNames: [], injectedTokensEst: 0, culledTokensEst: 0, forwardedRequest: null };
     let rewriteRun: WireRewriteRun | null = null;
     let stagedBody: Uint8Array | null = null;
     const rewriteSettings = options.rewriteSettings ?? {};
@@ -484,7 +484,7 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
           if (stagedBody || staged.body === decodedBody) rewriteRun.commitLedgerEntries();
           else rewriteRun.discardLedgerEntries();
           rewriteOutcome.injectedTokensEst = rewriteRun.estimates.injectedTokens;
-          rewriteOutcome.swappedTokensEst = rewriteRun.estimates.swappedTokens;
+          rewriteOutcome.culledTokensEst = rewriteRun.estimates.culledTokens;
         }
       } catch (error) {
         // A bug in the seam itself: the original bytes go (D7.7).
@@ -495,7 +495,7 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
         rewriteOutcome.appliedStageNames = [];
         rewriteOutcome.forwardedRequest = null;
         rewriteOutcome.injectedTokensEst = 0;
-        rewriteOutcome.swappedTokensEst = 0;
+        rewriteOutcome.culledTokensEst = 0;
       }
       if (stagedBody) {
         // Forwarded decoded once rewritten (content-encoding dropped; fetch sets the length).

@@ -68,7 +68,7 @@ export interface WireRewriteStreamEvent {
 /** What stages estimate they added or took out, for the usage ledger. */
 export interface WireRewriteEstimates {
   injectedTokens: number;
-  swappedTokens: number;
+  culledTokens: number;
 }
 
 /** What every hook of a stage is told of the exchange. */
@@ -351,7 +351,7 @@ export interface WireRequestStagesOutcome {
 
 /** One exchange's run through the stages that apply to it. */
 export class WireRewriteRun {
-  readonly estimates: WireRewriteEstimates = { injectedTokens: 0, swappedTokens: 0 };
+  readonly estimates: WireRewriteEstimates = { injectedTokens: 0, culledTokens: 0 };
   private readonly contextsByStage: Map<WireRewriteStage, WireRewriteContext>;
 
   constructor(
@@ -520,7 +520,7 @@ export class WireRewriteRun {
   /** The rewrite went back to the original bytes (a failed pairing check): nothing was added or taken out. */
   discardEstimates(): void {
     this.estimates.injectedTokens = 0;
-    this.estimates.swappedTokens = 0;
+    this.estimates.culledTokens = 0;
   }
 }
 

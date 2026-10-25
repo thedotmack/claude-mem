@@ -204,7 +204,7 @@ describe('live trace feed rings', () => {
       exchangeId: `exchange-${index}`, routeId: 'r', agentId: 'a', protocol: 'anthropic', captured: true, metered: true, method: 'POST',
       suffixPath: '/v1/messages', startedAt: Date.now(), decodedRequestBody: new TextEncoder().encode(`{"n":${index}}`),
       request: null, identity: { agentId: 'a', sessionId: 's', sessionSource: 'named', kind: 'turn', userWords: '', userTurnOrdinal: 1, turnStart: true },
-      rewrite: { appliedStageNames: [], injectedTokensEst: 0, swappedTokensEst: 0, forwardedRequest: null },
+      rewrite: { appliedStageNames: [], injectedTokensEst: 0, culledTokensEst: 0, forwardedRequest: null },
     };
   }
   const finished: RelayExchangeResult = { outcome: 'complete', recordedStatus: 200, captureOverflowed: false, responseBytes: 2, durationMs: 1, firstResponseChunkAt: null };

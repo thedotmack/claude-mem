@@ -3,7 +3,7 @@
 // The usage ledger (plan Phase 10 task 6): one line per relayed model call
 // in `usage/<UTC date>.jsonl`, with the vendor's token counts (cache reads
 // and writes included), timings, the rewrite stages applied, what they
-// estimate they added or swapped, and the prompt's context buckets. It is a
+// estimate they added or culled, and the prompt's context buckets. It is a
 // consumer of the shared reply collection, so it sees the client-facing
 // reply after it went out and costs the client nothing. The record follows
 // magpie's usage record (internal/usage/usage.go:23-206, MIT, Copyright (c)
@@ -43,7 +43,12 @@ export interface WireUsageLedgerRecord {
   /** The rewrite stages whose bytes went upstream, in order. */
   stages: string[];
   injectedTokensEst: number;
-  swappedTokensEst: number;
+  /**
+   * What the Endless Mode culls this request recorded took out (estimated
+   * tokens): each cull counted once, on the request that recorded or extended
+   * it, never on the requests that replay it.
+   */
+  culledTokensEst: number;
   /** The prompt as forwarded, part by part (estimated tokens); absent when the body could not be read. */
   buckets?: WireContextBuckets;
 }
@@ -55,7 +60,7 @@ const finiteNumber = z.number().finite();
  * crash mid-line, or a hand edit) can still have made wrong: `null`, a number,
  * a record missing a count. Such a line is not a record and is never counted.
  */
-const usageLedgerRecordSchema = z.object({
+const usageLedgerRecordFields = {
   t: z.string(),
   agent: z.string(),
   session: z.string(),
@@ -73,11 +78,22 @@ const usageLedgerRecordSchema = z.object({
   kind: z.string(),
   stages: z.array(z.string()),
   injectedTokensEst: finiteNumber,
-  swappedTokensEst: finiteNumber,
   buckets: z.object({
     system: finiteNumber, tools: finiteNumber, memory: finiteNumber, files: finiteNumber, results: finiteNumber, chat: finiteNumber,
   }).optional(),
-});
+};
+
+/**
+ * A line written before Endless Mode v2 carries `swappedTokensEst`: the v1
+ * swaps' tokens counted again on every request that replayed them. It stays a
+ * record (its tokens, timings and buckets count), but that number is not
+ * tokens newly taken out, so it reads as 0 culled tokens.
+ */
+const usageLedgerRecordSchema = z.union([
+  z.object({ ...usageLedgerRecordFields, culledTokensEst: finiteNumber }),
+  z.object({ ...usageLedgerRecordFields, swappedTokensEst: finiteNumber })
+    .transform(({ swappedTokensEst: _legacySwappedTokensEst, ...record }) => ({ ...record, culledTokensEst: 0 })),
+]);
 
 /** A ledger line as a record; null for a line that is not JSON or not a record's shape. */
 export function parseUsageLedgerLine(line: string): WireUsageLedgerRecord | null {
@@ -186,7 +202,7 @@ export class WireUsageLedger {
       kind: exchange.identity.kind,
       stages: [...exchange.rewrite.appliedStageNames],
       injectedTokensEst: exchange.rewrite.injectedTokensEst,
-      swappedTokensEst: exchange.rewrite.swappedTokensEst,
+      culledTokensEst: exchange.rewrite.culledTokensEst,
     };
     const forwardedRequest = exchange.rewrite.forwardedRequest ?? exchange.request;
     if (forwardedRequest) {

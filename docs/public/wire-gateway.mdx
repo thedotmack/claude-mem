@@ -78,7 +78,7 @@ and one state per connected agent, with what to run to fix it:
 | `bypassed` | The agent was used since it was connected, but none of its requests reached the gateway (a copy started before `connect` still runs on its old config). |
 | `unknown` | Not decided yet (ask again in a moment), or a config file cannot be read. |
 
-It also shows each route's memory injection, `memory_search` and Endless Mode
+It also shows each route's memory injection, durable header, `memory_search` and Endless Mode
 switches. `claude-mem wire start`, `stop` (it waits for open streams to finish,
 up to `CLAUDE_MEM_WIRE_GATEWAY_DRAIN_TIMEOUT_MS`) and `restart` run the daemon by
 hand. The worker also starts it at boot while any route exists
@@ -98,7 +98,8 @@ and uploads nothing except the anonymous counters described under
 | Memory capture | on for routes with `captureSource: wire` | Nothing beyond the relay | Capture events (your prompt, each tool call and its result, the last reply) in the local hook spool, which the claude-mem worker turns into memories | Spool files until the worker has taken them in; memories as long as you keep them |
 | Raw recording | **off** until you consent | Nothing | Each exchange's text in `<data dir>/wire-gateway/recordings/<date>/…/turns.jsonl` | `CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS` (7 days), at most 256 MiB in all, oldest removed first |
 | Outbound redaction | **off** | The request with secrets swapped for placeholders such as `{{API_KEY_k3v9x2mq}}` | A random 32-byte key in `<data dir>/wire-gateway/redact.key` (owner-only) | The key until you delete it; the values behind placeholders in memory only, until the gateway stops |
-| Endless Mode | **off** | The request with old tool results replaced by their observations' text | Each replacement, word for word, in `<data dir>/wire-gateway/ledger/<conversation>.jsonl`; token counts per request in `usage/<date>.jsonl` | Ledgers 30 days after a conversation's last request; usage lines for `CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS` (7 days) |
+| Endless Mode | **off** | The request with finished tool work replaced by its observations' one-line timeline entries | Each cull (the calls it covers and its lines, word for word) in `<data dir>/wire-gateway/ledger/<conversation>.jsonl`; token counts per request in `usage/<date>.jsonl` | Ledgers 30 days after a conversation's last request; usage lines for `CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS` (7 days) |
+| Durable header | on for routes with `captureSource: wire` | Your My Rules for the agent's folder, in the system prompt before the memory context | Each header sent, word for word, in the conversation's ledger | Ledgers 30 days after a conversation's last request |
 | Memory injection | on for routes with `captureSource: wire` | Your claude-mem context, once per conversation, at the end of the system prompt | The text injected, word for word, in the conversation's ledger | Ledgers 30 days after a conversation's last request |
 | Hidden `memory_search` | **off** | Extra requests to the provider (billed) carrying the model's searches and claude-mem's answers | Which tool definition was offered, in the conversation's ledger | Ledgers 30 days after a conversation's last request |
 | MCP over HTTP (`/mcp`) | on, loopback only | Nothing beyond what a tool call asks the worker | Nothing | Nothing |
@@ -199,15 +200,40 @@ sent. It follows the same opt-out as the rest of claude-mem; see
 
 ## Endless Mode
 
-A long session resends every tool result it ever got on every request. Endless
-Mode takes each finished stretch of tool work out of the request once
-claude-mem has made an observation of it, and puts the observation's one-line
-timeline entry in its place, so the history the provider reads grows only by
-those lines while your agent's own copy stays as it was.
+A long session resends every tool call and result it ever made on every
+request. Endless Mode takes each finished stretch of tool work out of the
+request once claude-mem has written an observation of it, and puts the
+observation's one-line timeline entry in its place. The history the provider
+reads grows only by those lines, while your agent's own copy stays as it was.
 
-Turn it on for every route with `CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE=true` and
-`claude-mem wire restart` (the gateway reads its settings at start), or per
-route, with no restart:
+### What the provider sees
+
+With Endless Mode, the durable header and memory injection on, every request
+of a conversation that began under the gateway has five parts, in this order:
+
+| # | Part | Changes when | Comes from |
+|---|---|---|---|
+| 1 | Your agent's system prompt and tool definitions | never: the gateway does not touch them | your agent |
+| 2 | Durable header: your My Rules for the agent's folder, as `<claude-mem-rules>` | a rule's text changes, at the start of your next turn | the durable header (`durableHeader`) |
+| 3 | Timeline: the last observations (`CLAUDE_MEM_CONTEXT_OBSERVATIONS`, 50 by default), as `<claude-mem-context>` | never: frozen on the conversation's first request | [memory injection](#memory-injection) (`memoryInjection`) |
+| 4 | Middle: your messages and the agent's replies, with finished tool work replaced by `<claude-mem-work>` timeline lines | only grows | Endless Mode (`endlessMode`) |
+| 5 | Tail: tool work no observation covers yet | not touched | your agent |
+
+Parts 2 and 3 go at the end of the system prompt, after your agent's own
+text, so part 1 stays first and byte for byte the same.
+
+Providers cache a prompt by its exact prefix: a change at one point throws
+away the cache from that point on. Everything above the newest change keeps
+hitting the cache, and each change is made once and then sent the same, byte
+for byte, on every later request and after a restart (each conversation's
+ledger freezes it). So a cull or a header change writes the cache once more,
+and after that the cache is read again, from a smaller prompt.
+
+### Turning it on
+
+Endless Mode is off by default. Turn it on for every route with
+`CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE=true` and `claude-mem wire restart` (the
+gateway reads its settings at start), or per route, with no restart:
 
 ```bash
 claude-mem wire routes endless <route> on        # on for this route
@@ -216,14 +242,22 @@ claude-mem wire routes endless <route> default   # follow CLAUDE_MEM_WIRE_GATEWA
 claude-mem wire status --endless                 # what it saved, per agent
 ```
 
+The per-route switches are the route's `features` in `routes.json`:
+`endlessMode`, `durableHeader` and `memoryInjection` (`true`, `false`, or left
+out to follow the setting). The durable header and memory injection are on by
+default for routes with `captureSource: wire`
+(`CLAUDE_MEM_WIRE_GATEWAY_DURABLE_HEADER`,
+`CLAUDE_MEM_WIRE_GATEWAY_MEMORY_INJECTION`); `claude-mem wire routes header`
+and `claude-mem wire routes memory` switch them per route the same way.
+
 A running gateway picks up a route change within a second. Turning Endless Mode
 off for a route sends its conversations' history as your agent wrote it from
-the next request on. A conversation that sent even one request that way is
-never changed again, even after you turn it back on: the model has answered the
-original history since. Turning it off and back on with no request in between
+the next request on. A conversation that had culls and sent even one request
+that way is never culled again, even after you turn it back on: the model has
+answered the original history since. Turning it off and back on with no request in between
 changes nothing.
 
-What gets culled, and when:
+### What gets culled
 
 - Only conversations that began under the gateway: the first request it saw
   held one message of yours and no reply. A conversation it first sees part way
@@ -240,23 +274,57 @@ What gets culled, and when:
   sent them.
 - The timeline lines go at the end of the message of yours that started the
   turn, as one `<claude-mem-work>` block, one `#<id> <time> <icon> <title>`
-  line per observation, never in a reply.
-- New culls are made when you start a new turn. While the agent is running
-  tools they are made only when that turn holds no thinking, sealed reasoning
-  or thought signatures, and never of the reply the agent is answering. Each
-  cull is written to the conversation's ledger the first time and sent the
-  same, byte for byte, on every later request and after a restart, so the
-  provider's prompt cache is rebuilt once and then holds.
-- The system prompt and tool definitions are never changed. For Anthropic, a
-  request that culls also leaves out every thinking block before your latest
-  turn, oldest first with no gap, because the provider no longer accepts them
-  once the history before them changed; they stay out from then on.
+  line per observation (the same line the session-start timeline shows),
+  never in a reply: the model would read them as its own words. A later cull
+  in the same turn adds its lines to the same block.
+- Capture strips `<claude-mem-work>` and `<claude-mem-rules>`, and neither
+  counts as words of yours, so they never start or hide a turn and never
+  become new memory.
 - A conversation an earlier version of Endless Mode changed is left alone.
-- If anything goes wrong, the request goes as your agent sent it.
+- If anything goes wrong, the request goes as your agent sent it. The relay
+  checks every tool call still has its result before anything goes.
 
-`claude-mem wire status --endless` reads the usage ledger and shows, per agent,
-the prompt cache's read-to-write ratio before and after each conversation's
-first replacement, and the tokens the replacements took out.
+### When culls and header changes happen, and why
+
+- **Culls are made when you start a new turn.** That is the one moment no
+  reasoning of the agent's running tool loop is at stake.
+- **Mid-turn, only without reasoning.** While the agent is running tools, a cull
+  is made only when the current turn holds no thinking, sealed reasoning
+  (`encrypted_content`) or thought signatures, and never of the reply the agent
+  is answering or anything after it. Providers bind that reasoning to the
+  history before it, and OpenAI Responses and Gemini require the current turn
+  to come back untouched.
+- **The header changes only at a turn start.** The first request of each of
+  your turns asks the worker for your rules again (waiting up to
+  `CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS`). If they changed, the new
+  header goes from that request on, so a rule you edit reaches the
+  conversation at its next turn, never in the middle of a tool loop. Without
+  an answer in time, the header in force stays. A request that already holds
+  your My Rules file (the agent loads `MY-RULES.md` itself) gets no header, so
+  the rules are never there twice.
+- **Anthropic thinking.** Anthropic accepts a thinking block only while the
+  system prompt, the tools and every message before it are unchanged. So a
+  request that makes a new cull or header change also leaves out every
+  thinking block before your latest turn, oldest first with no gap (an
+  assistant message left empty goes too). They stay out from then on: putting
+  them back would be a change of its own. The thinking of the turn in flight
+  is never touched.
+
+### What it saved
+
+`claude-mem wire status --endless` (add `--json` for the numbers) and the
+viewer's [Wire page](#the-wire-page-in-the-viewer) read the usage ledger's
+last `CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS` days and show, per agent:
+
+- the conversations with at least one cull, and the requests that made a new
+  cull or extended one;
+- the tokens saved: what each cull took out, counted once, on the request that
+  made it (the requests that send it again add nothing);
+- the prompt cache's read-to-write ratio before each conversation's first cull
+  and from it on.
+
+Usage lines written before this version of Endless Mode still count as
+requests but add no culls or tokens saved.
 
 ## Memory injection
 
@@ -480,7 +548,7 @@ they are read from disk.
 - **Agents.** Every wired agent with the state badge `claude-mem wire status`
   shows (`ok`, `unwired`, `replaced`, `unreachable`, `proxied`, `bypassed`,
   `unknown`), its detail, the fix to run, and each route's upstream and
-  feature switches (memory injection, `memory_search`, Endless Mode). The
+  feature switches (memory injection, My Rules, `memory_search`, Endless Mode). The
   gateway's own counter of captured events with no known folder is shown at the
   top. The page reads it again every 10 seconds.
 - **Raw recording.** A switch, off by default, that says what is kept (the
@@ -494,7 +562,8 @@ they are read from disk.
   While recording is on, a call the gateway captured can be opened to show its
   request and reply text.
 - **Endless Mode savings.** Per agent, from the usage ledger: conversations with
-  culls, requests with culls, tokens saved, and the prompt cache's read:write
+  culls, requests that made a new cull, tokens saved (each cull counted once),
+  and the prompt cache's read:write
   ratio before the first cull and from it on (what
   `claude-mem wire status --endless` prints).
 - **Injected memory.** Per agent: estimated tokens per request × the requests

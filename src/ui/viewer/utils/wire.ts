@@ -108,10 +108,11 @@ export interface WireUsageSummary {
   unreadableLines: number;
   endless: Array<{
     agentId: string;
-    conversationsSwapped: number;
-    requestsSwapped: number;
-    beforeFirstSwap: WireCacheTotals;
-    afterFirstSwap: WireCacheTotals;
+    conversationsCulled: number;
+    requestsWithNewCulls: number;
+    beforeFirstCull: WireCacheTotals;
+    afterFirstCull: WireCacheTotals;
+    /** Each cull counted once, on the request that recorded it. */
     tokensSaved: number;
   }>;
   injectedMemory: Array<{ agentId: string; requestsInjected: number; injectedTokensEst: number; averageTokensPerRequest: number }>;

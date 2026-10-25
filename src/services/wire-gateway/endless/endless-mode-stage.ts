@@ -457,6 +457,11 @@ export function createEndlessModeStage(options: EndlessModeStageOptions): WireRe
       for (const newCull of newCulls) {
         const recorded = ledger.record(newCull.entry);
         if (recorded.type !== 'cull') continue;
+        if (recorded === newCull.entry) {
+          // Tokens saved count each cull once: only what this entry takes out beyond the turn's earlier cull, never the replays.
+          const earlierCulledTokensEst = recordedByTurn.get(newCull.run.turn.ordinal)?.culledTokensEst ?? 0;
+          context.estimates.culledTokens += Math.max(0, recorded.culledTokensEst - earlierCulledTokensEst);
+        }
         const index = runs.findIndex(applied => applied.run.turn === newCull.run.turn);
         // First write wins: an entry already there under this id keeps its own lines.
         const appendSplice = recorded === newCull.entry ? newCull.appendSplice : appendToTurnStartSplice(request, conversationElements, newCull.run.turn, culledWorkBlock(recorded.lines));
@@ -490,8 +495,6 @@ export function createEndlessModeStage(options: EndlessModeStageOptions): WireRe
           ...runs.map(({ appendSplice }) => appendSplice),
         ];
         rewritten = applyByteSplices(body, splices);
-        // Kept as the relay's swapped-token estimate until the report counts each new cull once (plan Phase 5).
-        context.estimates.swappedTokens += runs.reduce((sum, { entry }) => sum + entry.culledTokensEst, 0);
       }
       if (cutUntilTurnOrdinal !== null) {
         const cutSplices = thinkingCutSplices(rewritten === request.body ? request : context.requestOf(rewritten), cutUntilTurnOrdinal);

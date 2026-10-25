@@ -18,7 +18,7 @@ import {
   type WireToolObservationQuery,
 } from '../../src/services/wire-gateway/endless/observation-lookup.js';
 import { culledWorkBlock } from '../../src/services/wire-gateway/endless/endless-mode-stage.js';
-import { buildEndlessModeReport, formatEndlessModeReport } from '../../src/services/wire-gateway/endless/endless-report.js';
+import { buildEndlessModeReport, formatEndlessModeReport, readEndlessModeReport } from '../../src/services/wire-gateway/endless/endless-report.js';
 import { validateWireGatewayListenSettings } from '../../src/services/wire-gateway/config.js';
 import { stripMemoryTags } from '../../src/utils/tag-stripping.js';
 import { startFakeUpstream, type FakeUpstream } from './helpers/fake-upstream.js';
@@ -754,18 +754,51 @@ describe('Endless Mode v2 per protocol', () => {
     expect(ledgerEntriesOf(anthropicCase.agentId, session).filter(entry => entry.type === 'suspended').map(entry => entry.stage)).toEqual(['endless-mode']);
   });
 
-  it('records culled tokens as the relay\'s swapped-token estimate, which status --endless reads', async () => {
+  it('records each cull\'s tokens once, on the request that recorded or extended it, which status --endless adds up', async () => {
+    // Per conversation, what the ledger's culls newly took out: an entry that extends a turn's cull adds only what it took out beyond the one before.
+    const newlyCulledTokensOf = (agentId: string, session: string) => {
+      const latestByTurn = new Map<number, number>();
+      let total = 0;
+      for (const entry of ledgerEntriesOf(agentId, session)) {
+        if (entry.type !== 'cull') continue;
+        const turnOrdinal = entry.turnOrdinal as number;
+        total += Math.max(0, (entry.culledTokensEst as number) - (latestByTurn.get(turnOrdinal) ?? 0));
+        latestByTurn.set(turnOrdinal, entry.culledTokensEst as number);
+      }
+      return total;
+    };
+    const conversationsOf = (records: ReturnType<WireUsageLedger['read']>) => {
+      const recordedByConversation = new Map<string, { agent: string; session: string; recorded: number; requests: number }>();
+      for (const record of records) {
+        if (record.culledTokensEst <= 0) continue;
+        const key = `${record.agent}\u0000${record.session}`;
+        const conversation = recordedByConversation.get(key) ?? { agent: record.agent, session: record.session, recorded: 0, requests: 0 };
+        conversation.recorded += record.culledTokensEst;
+        conversation.requests++;
+        recordedByConversation.set(key, conversation);
+      }
+      return [...recordedByConversation.values()];
+    };
     let records: ReturnType<WireUsageLedger['read']> = [];
     for (let attempt = 0; attempt < 50; attempt++) {
       records = new WireUsageLedger({ directory: usageDirectory }).read();
-      if (records.some(record => record.swappedTokensEst > 0)) break;
+      const conversations = conversationsOf(records);
+      if (conversations.length > 0 && conversations.every(({ agent, session, recorded }) => recorded === newlyCulledTokensOf(agent, session))) break;
       await new Promise(resolve => setTimeout(resolve, 20));
     }
-    const culledRecord = records.find(record => record.swappedTokensEst > 0);
-    expect(culledRecord?.stages).toEqual(['endless-mode']);
+    const conversations = conversationsOf(records);
+    expect(conversations.length).toBeGreaterThan(0);
+    for (const { agent, session, recorded, requests } of conversations) {
+      // Replayed culls (every later request, and the requests sent again after a restart) add nothing.
+      expect(recorded).toBe(newlyCulledTokensOf(agent, session));
+      expect(requests).toBeLessThanOrEqual(ledgerEntriesOf(agent, session).filter(entry => entry.type === 'cull').length);
+    }
+    expect(records.find(record => record.culledTokensEst > 0)?.stages).toEqual(['endless-mode']);
     const report = buildEndlessModeReport(records);
     expect(report.map(agent => agent.agentId)).toEqual(expect.arrayContaining(['claude-code', 'codex', 'gemini-cli', 'opencode']));
-    expect(report.every(agent => agent.tokensSaved > 0)).toBe(true);
+    for (const agent of report) {
+      expect(agent.tokensSaved).toBe(conversations.filter(conversation => conversation.agent === agent.agentId).reduce((sum, { recorded }) => sum + recorded, 0));
+    }
   });
 });
 
@@ -876,28 +909,58 @@ describe('the observation lookup', () => {
 });
 
 describe('status --endless', () => {
-  it('splits each conversation at its first swap and adds up the tokens saved, per agent', () => {
-    const record = (session: string, t: string, cacheRead: number, cacheWrite: number, swappedTokensEst = 0) => ({
-      t, agent: 'codex', session, routeId: 'r', model: 'm', status: 200, in: 1, out: 1, cacheRead, cacheWrite, cacheWrite1h: 0,
-      reasoning: 0, ms: 1, ttftMs: 1, kind: 'turn', stages: swappedTokensEst > 0 ? ['endless-mode'] : [], injectedTokensEst: 0, swappedTokensEst,
-    });
+  const record = (session: string, t: string, cacheRead: number, cacheWrite: number, culledTokensEst = 0, stages: string[] = []) => ({
+    t, agent: 'codex', session, routeId: 'r', model: 'm', status: 200, in: 1, out: 1, cacheRead, cacheWrite, cacheWrite1h: 0,
+    reasoning: 0, ms: 1, ttftMs: 1, kind: 'turn', stages, injectedTokensEst: 0, culledTokensEst,
+  });
+  // The cull stage applies on every request from the first cull on, but only a request that recorded a cull carries its tokens.
+  const replayed = ['endless-mode'];
+
+  it('splits each conversation at its first cull and counts each cull\'s tokens once, per agent', () => {
     const report = buildEndlessModeReport([
       record('s1', '2026-10-01T00:00:01Z', 100, 100),
       record('s1', '2026-10-01T00:00:02Z', 900, 100),
-      record('s1', '2026-10-01T00:00:03Z', 0, 800, 500),
-      record('s1', '2026-10-01T00:00:04Z', 800, 0, 500),
-      record('s2', '2026-10-01T00:00:05Z', 50, 50),
+      record('s1', '2026-10-01T00:00:03Z', 0, 800, 500, replayed),
+      record('s1', '2026-10-01T00:00:04Z', 800, 0, 0, replayed),
+      record('s1', '2026-10-01T00:00:05Z', 700, 100, 300, replayed),
+      record('s1', '2026-10-01T00:00:06Z', 800, 0, 0, replayed),
+      record('s2', '2026-10-01T00:00:07Z', 50, 50),
     ]);
     expect(report).toEqual([{
       agentId: 'codex',
-      conversationsSwapped: 1,
-      requestsSwapped: 2,
-      beforeFirstSwap: { requests: 2, cacheRead: 1000, cacheWrite: 200, readWriteRatio: 5 },
-      afterFirstSwap: { requests: 2, cacheRead: 800, cacheWrite: 800, readWriteRatio: 1 },
-      tokensSaved: 1000,
+      conversationsCulled: 1,
+      requestsWithNewCulls: 2,
+      beforeFirstCull: { requests: 2, cacheRead: 1000, cacheWrite: 200, readWriteRatio: 5 },
+      afterFirstCull: { requests: 4, cacheRead: 2300, cacheWrite: 900, readWriteRatio: 2300 / 900 },
+      tokensSaved: 800,
     }]);
-    expect(formatEndlessModeReport(report, 7).join('\n')).toContain('codex: 1 conversations, 2 requests with swaps, ~1000 tokens saved');
-    expect(formatEndlessModeReport([], 7)[0]).toContain('no swaps');
+    const text = formatEndlessModeReport(report, 7).join('\n');
+    expect(text).toContain('codex: 1 conversations, 2 requests with new culls, ~800 tokens saved');
+    expect(text).toContain('cache before the first cull: 5.0:1');
+    expect(text).not.toMatch(/swap/i);
+    expect(formatEndlessModeReport([], 7)[0]).toBe('Endless Mode: no culls in the usage ledger\'s last 7 days.');
+  });
+
+  it('reads only the usage day files the retention keeps, and old lines as no culls', () => {
+    const directory = join(testRoot, 'status-endless-usage');
+    rmSync(directory, { recursive: true, force: true });
+    mkdirSync(directory, { recursive: true });
+    const nowMs = Date.parse('2026-10-24T12:00:00.000Z');
+    const linesOf = (...records: object[]) => records.map(line => JSON.stringify(line)).join('\n') + '\n';
+    // Past a 7-day retention, not pruned yet (the gateway prunes at start and on a new UTC day).
+    writeFileSync(join(directory, '2026-10-10.jsonl'), linesOf(record('old', '2026-10-10T00:00:01Z', 0, 0, 9_000, replayed)));
+    // Written before v2: swappedTokensEst counted the swaps on every request that replayed them.
+    const { culledTokensEst: _culledTokensEst, ...legacyRecord } = record('legacy', '2026-10-23T00:00:01Z', 0, 0);
+    writeFileSync(join(directory, '2026-10-23.jsonl'), linesOf({ ...legacyRecord, stages: replayed, swappedTokensEst: 7_000 }));
+    writeFileSync(join(directory, '2026-10-24.jsonl'), linesOf(
+      record('s1', '2026-10-24T00:00:01Z', 0, 1000),
+      record('s1', '2026-10-24T00:00:02Z', 0, 900, 400, replayed),
+      record('s1', '2026-10-24T00:00:03Z', 900, 0, 0, replayed),
+    ));
+    const report = readEndlessModeReport(7, { directory, nowMs });
+    expect(report).toHaveLength(1);
+    expect(report[0]).toMatchObject({ agentId: 'codex', conversationsCulled: 1, requestsWithNewCulls: 1, tokensSaved: 400 });
+    rmSync(directory, { recursive: true, force: true });
   });
 });
 

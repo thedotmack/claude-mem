@@ -180,7 +180,7 @@ describe('usage summary', () => {
     return {
       t: '2026-10-24T10:00:00.000Z', agent: 'codex', session: 's1', routeId: 'codex', model: 'm', status: 200,
       in: 0, out: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, reasoning: 0, ms: 1, ttftMs: null, kind: 'turn',
-      stages: [], injectedTokensEst: 0, swappedTokensEst: 0, ...overrides,
+      stages: [], injectedTokensEst: 0, culledTokensEst: 0, ...overrides,
     };
   }
 

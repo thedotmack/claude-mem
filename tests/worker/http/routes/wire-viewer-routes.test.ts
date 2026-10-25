@@ -305,7 +305,7 @@ describe('usage, read from the ledger on disk', () => {
     return {
       t: '2026-10-24T10:00:00.000Z', agent: 'codex', session: 's1', routeId: 'codex', model: 'm', status: 200,
       in: 100, out: 10, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, reasoning: 0, ms: 5, ttftMs: 1, kind: 'turn',
-      stages: [], injectedTokensEst: 0, swappedTokensEst: 0, ...overrides,
+      stages: [], injectedTokensEst: 0, culledTokensEst: 0, ...overrides,
     };
   }
 
@@ -334,7 +334,7 @@ describe('usage, read from the ledger on disk', () => {
     const lines = [
       record({ t: '2026-10-24T10:00:00.000Z', cacheWrite: 1000, injectedTokensEst: 300, stages: ['memory-injection'],
         buckets: { system: 100, tools: 100, memory: 300, files: 0, results: 0, chat: 500 } }),
-      record({ t: '2026-10-24T10:01:00.000Z', cacheRead: 900, cacheWrite: 200, swappedTokensEst: 4000, injectedTokensEst: 100, stages: ['memory-injection', 'endless-mode'] }),
+      record({ t: '2026-10-24T10:01:00.000Z', cacheRead: 900, cacheWrite: 200, culledTokensEst: 4000, injectedTokensEst: 100, stages: ['memory-injection', 'endless-mode'] }),
     ];
     writeFileSync(join(usageDirectory, `${new Date().toISOString().slice(0, 10)}.jsonl`), lines.map(line => JSON.stringify(line)).join('\n') + '\n');
     const saved = gatewayOrigin;
@@ -346,8 +346,8 @@ describe('usage, read from the ledger on disk', () => {
       expect(summary.usageDays).toBe(7);
       expect(summary.requests).toBe(2);
       expect(summary.injectedMemory).toEqual([{ agentId: 'codex', requestsInjected: 2, injectedTokensEst: 400, averageTokensPerRequest: 200 }]);
-      expect(summary.endless[0]).toMatchObject({ agentId: 'codex', conversationsSwapped: 1, requestsSwapped: 1, tokensSaved: 4000 });
-      expect(summary.endless[0].beforeFirstSwap).toMatchObject({ requests: 1, cacheWrite: 1000 });
+      expect(summary.endless[0]).toMatchObject({ agentId: 'codex', conversationsCulled: 1, requestsWithNewCulls: 1, tokensSaved: 4000 });
+      expect(summary.endless[0].beforeFirstCull).toMatchObject({ requests: 1, cacheWrite: 1000 });
       expect(summary.context[0]).toMatchObject({ agent: 'codex', requests: 1, tags: ['memory-heavy'] });
       expect(summary.context[0].shares.memory).toBeCloseTo(0.3);
     } finally {

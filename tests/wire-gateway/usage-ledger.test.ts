@@ -21,7 +21,7 @@ function recordAt(t: string): WireUsageLedgerRecord {
   return {
     t, agent: 'claude-code', session: 's', routeId: 'r', model: 'm', status: 200,
     in: 1, out: 1, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, reasoning: 0,
-    ms: 5, ttftMs: 1, kind: 'turn', stages: [], injectedTokensEst: 0, swappedTokensEst: 0,
+    ms: 5, ttftMs: 1, kind: 'turn', stages: [], injectedTokensEst: 0, culledTokensEst: 0,
   };
 }
 
@@ -55,6 +55,11 @@ describe('usage ledger lines', () => {
     for (const wrong of ['null', '7', '"text"', '[]', '{}', JSON.stringify({ ...recordAt('2026-10-15T10:00:00.000Z'), in: 'many' }), '{"t":', 'not json']) {
       expect(parseUsageLedgerLine(wrong)).toBeNull();
     }
+  });
+
+  it('still reads a line written before Endless Mode v2, with its replayed swappedTokensEst read as 0 culled tokens', () => {
+    const { culledTokensEst: _culledTokensEst, ...withoutCulled } = recordAt('2026-10-15T10:00:00.000Z');
+    expect(parseUsageLedgerLine(JSON.stringify({ ...withoutCulled, swappedTokensEst: 5000 }))).toEqual(recordAt('2026-10-15T10:00:00.000Z'));
   });
 
   it('read() skips lines that are not records instead of returning them', () => {

@@ -122,15 +122,15 @@ describe('Savings, injected memory and context buckets', () => {
     requests: 3,
     unreadableLines: 0,
     endless: [{
-      agentId: 'codex', conversationsSwapped: 1, requestsSwapped: 2, tokensSaved: 12_000,
-      beforeFirstSwap: { requests: 1, cacheRead: 0, cacheWrite: 1000, readWriteRatio: 0 },
-      afterFirstSwap: { requests: 2, cacheRead: 1800, cacheWrite: 200, readWriteRatio: 9 },
+      agentId: 'codex', conversationsCulled: 1, requestsWithNewCulls: 2, tokensSaved: 12_000,
+      beforeFirstCull: { requests: 1, cacheRead: 0, cacheWrite: 1000, readWriteRatio: 0 },
+      afterFirstCull: { requests: 2, cacheRead: 1800, cacheWrite: 200, readWriteRatio: 9 },
     }],
     injectedMemory: [{ agentId: 'codex', requestsInjected: 3, injectedTokensEst: 900, averageTokensPerRequest: 300 }],
     context: [{ agent: 'codex', requests: 3, shares: { system: 0.1, tools: 0.1, memory: 0.3, files: 0, results: 0, chat: 0.5 }, tags: ['memory-heavy'] }],
   };
 
-  it('shows cache read:write before and after the first swap, and the tokens saved', () => {
+  it('shows cache read:write before and after the first cull, and the tokens saved', () => {
     const html = renderToStaticMarkup(<SavingsSection usage={loaded(usage)} />);
     expect(html).toContain('0.0:1');
     expect(html).toContain('9.0:1');

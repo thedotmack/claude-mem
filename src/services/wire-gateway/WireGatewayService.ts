@@ -93,8 +93,7 @@ import { WireRewriteSeam, type WireRewriteStage } from './rewrite/rewrite-stage.
 import { createEndlessModeStage } from './endless/endless-mode-stage.js';
 import { createDurableHeaderStage, type DurableHeaderStageOptions } from './header/durable-header-stage.js';
 import { WireObservationLookup } from './endless/observation-lookup.js';
-import { buildEndlessModeReport, formatEndlessModeReport } from './endless/endless-report.js';
-import { WireUsageLedger } from './metrics/usage-ledger.js';
+import { formatEndlessModeReport, readEndlessModeReport } from './endless/endless-report.js';
 import {
   CONTEXT_TIMEOUT_MS_SETTING,
   DEFAULT_CONTEXT_TIMEOUT_MS,
@@ -1079,7 +1078,7 @@ function printWireGatewayUsage(): void {
   writeStderrLine('                     unreachable, proxied, bypassed, unknown) with a fix, and each route\'s memory injection,');
   writeStderrLine('                     memory_search and Endless Mode');
   writeStderrLine('  status --endless [--json]');
-  writeStderrLine('                     Endless Mode per agent: cache read:write before and after the first swap, tokens saved');
+  writeStderrLine('                     Endless Mode per agent: cache read:write before and after the first cull, tokens saved (each cull once)');
   writeStderrLine('  service install    start it at login (launchd, systemd --user, or a logon task)');
   writeStderrLine('  service uninstall  remove that login item');
   writeStderrLine('  routes add <routeId> --agent <id> --upstream <url> [--capture wire|native]');
@@ -1452,7 +1451,7 @@ export async function runWireGatewayServiceCli(argv: string[] = process.argv.sli
 
     case 'status': {
       if (argv.slice(1).includes('--endless')) {
-        const endlessReport = buildEndlessModeReport(new WireUsageLedger({ retentionDays: config.retentionDays }).read());
+        const endlessReport = readEndlessModeReport(config.retentionDays);
         if (argv.slice(1).includes('--json')) {
           writeStdoutLine(JSON.stringify({ agents: endlessReport }, null, 2));
           return;
