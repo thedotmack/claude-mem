@@ -110,12 +110,15 @@ function LoadedApp() {
   const workspace: Workspace = sample ? workspaceChoice : { ...workspaceChoice, mode: sourceKind === 'cloud' ? 'web' : 'home' }
   const [showSpec, setShowSpec] = useState(false)
   const [dark, setDark] = useDarkMode()
-  const [openRequest, setOpenRequest] = useState<Request | null>(null)
+  // Whether the opened request was in today's live feed, so the drawer can tell "left the feed" from "never in it".
+  const [openRequest, setOpenRequestState] = useState<{ request: Request; fromLiveFeed: boolean } | null>(null)
+  const setOpenRequest = (request: Request | null) => setOpenRequestState(request ? { request, fromLiveFeed: requestById(request.id) !== null } : null)
   const [focusGoalId, setFocusGoalId] = useState<string | undefined>()
   const { requests } = useWorkModel()
   const yourMoveCount = requests.filter((request) => request.state === 'your-move' || request.state === 'needs-check').length
   // The drawer always shows the current state of today's requests; older goal-only requests come as passed.
-  const liveOpenRequest = openRequest ? requestById(openRequest.id) ?? openRequest : null
+  // A request that leaves the live feed closes the drawer: its agent and device may have left the model with it.
+  const liveOpenRequest = openRequest ? requestById(openRequest.request.id) ?? (openRequest.fromLiveFeed ? null : openRequest.request) : null
   // The demo flip is sample data; it never runs against real requests.
   useEffect(() => (sample ? playDemoUpdates() : undefined), [sample])
   const goToPage = (next: Page) => { setFocusGoalId(undefined); setPage(next) }
