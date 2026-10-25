@@ -2159,7 +2159,7 @@ var isIsoOrNull = (value) => value === null || typeof value === "string" && Numb
 function boundedText(value, max, label, optional = false) {
   if (optional && (value == null || value === "")) return "";
   if (typeof value !== "string" || !value.trim()) throw new TypeError(`${label} must be 1\u2013${max} characters.`);
-  if (value.length > max) throw new TypeError(`${label} is ${value.length} characters; it must be 1\u2013${max}.`);
+  if (value.length > max) throw new TypeError(`${label} is ${value.length} characters; it must be 1\u2013${max}. Cut at least ${value.length - max} characters.`);
   return value.trim();
 }
 var evidenceList = (value) => (Array.isArray(value) ? value : []).map(String).slice(0, 8);
@@ -2480,11 +2480,13 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
     const reviews = Object.values(progress).sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
     const writtenAt = Date.parse(story?.writtenAt ?? "");
     const update = Number.isFinite(writtenAt);
+    const previousNarrativeChars = story?.narrative?.length ?? 0;
     return print({
       groups: Object.keys(groups.groups).length,
       update,
       narrativeLimit: STORY_NARRATIVE_MAX,
-      previousNarrativeChars: story?.narrative?.length ?? 0,
+      previousNarrativeChars,
+      roomChars: STORY_NARRATIVE_MAX - previousNarrativeChars,
       reviews: update ? reviews.filter((review) => Date.parse(review.changedAt ?? review.checkedAt) > writtenAt) : reviews,
       previousStory: story
     });

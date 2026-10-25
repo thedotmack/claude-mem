@@ -398,8 +398,8 @@ describe('overall requests and progress reviews', () => {
     expect(input.reviews.map((entry: { groupId: string }) => entry.groupId)).toEqual([groupIdFor(key('c'))]);
     expect(input.previousStory.narrative).toBe('Two requests under way.');
     // The agent gets its budget up front, and an over-long story is refused with its length.
-    expect(input).toMatchObject({ narrativeLimit: 12000, previousNarrativeChars: 'Two requests under way.'.length });
-    expect(() => run(['record-story', write('s.json', { narrative: 'x'.repeat(12001) })])).toThrow('narrative is 12001 characters; it must be 1–12000.');
+    expect(input).toMatchObject({ narrativeLimit: 12000, previousNarrativeChars: 'Two requests under way.'.length, roomChars: 12000 - 'Two requests under way.'.length });
+    expect(() => run(['record-story', write('s.json', { narrative: 'x'.repeat(12001) })])).toThrow('narrative is 12001 characters; it must be 1–12000. Cut at least 1 characters.');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
