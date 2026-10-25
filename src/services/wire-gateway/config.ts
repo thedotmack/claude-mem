@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+import { ENDLESS_TIMELINE_ROW_FORMATS } from '../../shared/endless-timeline-row-format.js';
 import { isAbsolute } from 'path';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
@@ -47,6 +48,7 @@ export interface WireGatewayListenSettings {
   CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION?: string;
   CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS?: string;
   CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE?: string;
+  CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_ROW_FORMAT?: string;
   CLAUDE_MEM_WIRE_GATEWAY_MEMORY_INJECTION?: string;
   CLAUDE_MEM_WIRE_GATEWAY_DURABLE_HEADER?: string;
   CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS?: string;
@@ -58,8 +60,8 @@ export interface WireGatewayListenSettings {
   CLAUDE_MEM_WIRE_GATEWAY_SHARED_PORT?: string;
 }
 
-/** A plain setting's rule: "true"/"false", or a whole number of `unit` (above 0 when `minimum` is 1). */
-type PlainSettingRule = 'boolean' | { unit: string; minimum: 0 | 1 };
+/** A plain setting's rule: "true"/"false", a whole number of `unit` (above 0 when `minimum` is 1), or one of `oneOf`. */
+type PlainSettingRule = 'boolean' | { unit: string; minimum: 0 | 1 } | { oneOf: readonly string[] };
 
 /** The plain settings, checked in this order (the first bad one is the error). */
 const PLAIN_SETTING_RULES: Array<[keyof WireGatewayListenSettings, PlainSettingRule]> = [
@@ -69,6 +71,7 @@ const PLAIN_SETTING_RULES: Array<[keyof WireGatewayListenSettings, PlainSettingR
   ['CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION', 'boolean'],
   ['CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS', 'boolean'],
   ['CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE', 'boolean'],
+  ['CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_ROW_FORMAT', { oneOf: ENDLESS_TIMELINE_ROW_FORMATS }],
   ['CLAUDE_MEM_WIRE_GATEWAY_MEMORY_INJECTION', 'boolean'],
   ['CLAUDE_MEM_WIRE_GATEWAY_DURABLE_HEADER', 'boolean'],
   ['CLAUDE_MEM_WIRE_GATEWAY_MEMORY_SEARCH_TOOL', 'boolean'],
@@ -80,6 +83,7 @@ const PLAIN_SETTING_RULES: Array<[keyof WireGatewayListenSettings, PlainSettingR
 function plainSettingError(key: string, value: string | undefined, rule: PlainSettingRule): string | null {
   if (value === undefined) return null;
   if (rule === 'boolean') return value === 'true' || value === 'false' ? null : `${key} must be "true" or "false"`;
+  if ('oneOf' in rule) return rule.oneOf.includes(value) ? null : `${key} must be one of ${rule.oneOf.map(option => `"${option}"`).join(', ')}`;
   if (/^\d+$/.test(value) && Number(value) >= rule.minimum) return null;
   return `${key} must be a whole number of ${rule.unit}${rule.minimum === 1 ? ' above 0' : ''}`;
 }

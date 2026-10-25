@@ -6,7 +6,7 @@ const TAG_NAMES = [
   'private',
   'claude-mem-context',
   'claude-mem-rules',
-  'claude-mem-work',
+  'claude-mem-timeline',
   'system_instruction',
   'system-instruction',
   'persisted-output',
@@ -193,7 +193,7 @@ export function stripMemoryTags(content: string): string {
  * scanner as stripTags, and nothing else changed: no trimming, no redaction.
  * For readers that must look past claude-mem's own blocks without the
  * capture-side stripping of every memory tag (the wire gateway's turn
- * detection ignores <claude-mem-work> and <claude-mem-rules>).
+ * detection ignores <claude-mem-timeline> and <claude-mem-rules>).
  */
 export function removeTagBlocks(text: string, tagNames: readonly TagName[]): string {
   return stripBalancedMemoryTags(text, new Set(tagNames)).text;

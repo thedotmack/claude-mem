@@ -51,11 +51,19 @@ function withoutSystemReminders(text: string): string {
 
 /**
  * The blocks the gateway itself adds (Endless Mode v2): the durable header's
- * <claude-mem-rules> and the cull stage's <claude-mem-work> lines appended
- * to a turn's user message. They are never the user's words, so a cull
- * neither starts nor hides a turn.
+ * <claude-mem-rules> and Endless Mode's <claude-mem-timeline>. They are never
+ * the user's words, so the timeline neither starts nor hides a turn.
  */
-const GATEWAY_BLOCK_TAG_NAMES = ['claude-mem-work', 'claude-mem-rules'] as const;
+const GATEWAY_BLOCK_TAG_NAMES = ['claude-mem-timeline', 'claude-mem-rules'] as const;
+
+/**
+ * Endless Mode's timeline is one block over several text parts (it grows by
+ * a part at its end): the first part opens with this tag, the last part is
+ * the closing tag alone, and none of the parts from one to the other are the
+ * user's words.
+ */
+export const TIMELINE_OPEN_TAG = '<claude-mem-timeline>';
+export const TIMELINE_CLOSE_TAG = '</claude-mem-timeline>';
 
 /** Heads what the user typed in the Codex app, after the context it puts first. */
 const CODEX_APP_MY_REQUEST_PATTERN = /^## My request(?: for Codex)?:[ \t]*\n?/gm;
@@ -113,9 +121,16 @@ export function userWordsInText(text: string): string {
 /** What the user said in a message: the words of its text parts, one per line (magpie `userSaid`). */
 export function userWordsInMessage(message: WireMessage): string {
   const said: string[] = [];
+  let insideTimeline = false;
   for (const part of message.parts) {
     if (part.kind !== 'text') continue;
-    const words = userWordsInText(part.text ?? '');
+    const text = part.text ?? '';
+    if (!insideTimeline && text.startsWith(TIMELINE_OPEN_TAG) && !text.trimEnd().endsWith(TIMELINE_CLOSE_TAG)) insideTimeline = true;
+    if (insideTimeline) {
+      if (text.trim() === TIMELINE_CLOSE_TAG) insideTimeline = false;
+      continue;
+    }
+    const words = userWordsInText(text);
     if (words !== '') said.push(words);
   }
   return said.join('\n');

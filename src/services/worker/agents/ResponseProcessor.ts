@@ -795,7 +795,9 @@ export async function processAgentResponse(
   // memorySessionId. The batch's FIRST observation id owns the link (see
   // linkToolUsesToObservation), and RECEIPT-JOIN.md documents that
   // observation_id is a pointer into the batch, not a 1:1 mapping; the reliable
-  // per-call join stays (content_session_id, tool_use_id).
+  // per-call join stays (content_session_id, tool_use_id). Every observation
+  // the batch stored is recorded beside it (tool_use_batch_observations), so
+  // Endless Mode's timeline gets a row for each, not only the first.
   //
   // Never fatal: a failed link costs a back-reference, not an observation.
   const claimedToolUseIds = Array.from(new Set(
@@ -811,6 +813,7 @@ export async function processAgentResponse(
         toolUseIds: claimedToolUseIds,
         observationId: linkObservationId,
         memorySessionId: registeredMemorySessionId,
+        batchObservationIds: freshlyStoredObservations(result.observationIds, result).observationIds,
       });
       logger.debug('DB', `TOOL_USES_LINKED | sessionDbId=${session.sessionDbId} | rows=${linked} | observationId=${linkObservationId}`, {
         sessionId: session.sessionDbId

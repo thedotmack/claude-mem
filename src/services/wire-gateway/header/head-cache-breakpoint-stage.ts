@@ -43,7 +43,7 @@ export const HEAD_CACHE_BREAKPOINT_STAGE_NAME = 'head-cache-breakpoint';
 export const ANTHROPIC_MAX_CACHE_BREAKPOINTS = 4;
 
 /** The TTLs Anthropic's cache_control takes; no `ttl` is the 5-minute default. */
-type CacheTtl = '5m' | '1h';
+export type CacheTtl = '5m' | '1h';
 
 /** The TTL of a `cache_control` value; null when it names one this stage does not know (then it adds nothing). */
 function ttlOf(bytes: Uint8Array, cacheControlSpan: JsonSpan): CacheTtl | null {
@@ -52,7 +52,7 @@ function ttlOf(bytes: Uint8Array, cacheControlSpan: JsonSpan): CacheTtl | null {
 }
 
 /** Every `cache_control` TTL inside the value at `span`, in byte order. */
-function cacheControlTtlsIn(bytes: Uint8Array, span: JsonSpan, found: Array<CacheTtl | null> = []): Array<CacheTtl | null> {
+export function cacheControlTtlsIn(bytes: Uint8Array, span: JsonSpan, found: Array<CacheTtl | null> = []): Array<CacheTtl | null> {
   if (span.type === 'object') {
     for (const member of objectMembers(bytes, span)) {
       if (member.key === 'cache_control') found.push(ttlOf(bytes, member.value));
@@ -108,21 +108,31 @@ export function withHeadCacheBreakpoint(body: Uint8Array, gatewayHeadTexts: Read
     ...(messages ? cacheControlTtlsIn(body, messages) : []),
     ...(topLevel ? [ttlOf(body, topLevel)] : []),
   ];
+  const ttl = gatewayBreakpointTtl(before, after, 'the head\'s cache breakpoint');
+  return ttl === null ? body : insertObjectMember(body, headBlock, 'cache_control', cacheControlJsonOf(ttl));
+}
+
+/**
+ * The TTL a breakpoint the gateway adds between the request's breakpoints
+ * `before` and `after` it takes, under the rules above; null (logged) when
+ * it may not be added.
+ */
+export function gatewayBreakpointTtl(before: Array<CacheTtl | null>, after: Array<CacheTtl | null>, what: string): CacheTtl | null {
   const reason = (() => {
     if (before.length + after.length >= ANTHROPIC_MAX_CACHE_BREAKPOINTS) return `the request already uses ${ANTHROPIC_MAX_CACHE_BREAKPOINTS} breakpoints`;
     if ([...before, ...after].includes(null)) return 'a breakpoint names a TTL other than 5m or 1h';
+    if (after.includes('1h') && before.includes('5m')) return 'a 5-minute breakpoint comes before a 1-hour one';
     return null;
   })();
   if (reason !== null) {
-    logger.debug('WIRE', `The head's cache breakpoint was not added: ${reason}`);
-    return body;
+    logger.debug('WIRE', `${what} was not added: ${reason}`);
+    return null;
   }
-  const ttl: CacheTtl = after.includes('1h') ? '1h' : '5m';
-  if (ttl === '1h' && before.includes('5m')) {
-    logger.debug('WIRE', 'The head\'s cache breakpoint was not added: a 5-minute breakpoint comes before a 1-hour one');
-    return body;
-  }
-  return insertObjectMember(body, headBlock, 'cache_control', ttl === '1h' ? '{"type":"ephemeral","ttl":"1h"}' : '{"type":"ephemeral"}');
+  return after.includes('1h') ? '1h' : '5m';
+}
+
+export function cacheControlJsonOf(ttl: CacheTtl): string {
+  return ttl === '1h' ? '{"type":"ephemeral","ttl":"1h"}' : '{"type":"ephemeral"}';
 }
 
 export function createHeadCacheBreakpointStage(): WireRewriteStage {

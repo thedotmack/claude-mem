@@ -3166,6 +3166,7 @@ export class SessionStore {
     toolUseIds: string[];
     observationId: number;
     memorySessionId?: string | null;
+    batchObservationIds?: number[];
   }): number {
     return linkToolUsesToObservationRows(this.db, params);
   }

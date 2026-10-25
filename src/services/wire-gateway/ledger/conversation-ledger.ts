@@ -33,8 +33,14 @@ const LEDGER_TOUCH_INTERVAL_MS = DAY_MS;
 export type WireLedgerEntry =
   /** The conversation was born under the gateway. Always the first line. */
   | { type: 'born'; at: string }
-  /** The memory injected on the first request, or null when the fetch failed (never injected later). */
-  | { type: 'injection'; text: string | null }
+  /**
+   * The memory injected on the first request, or null when the fetch failed
+   * (never injected later). `placement` says where it goes: the end of the
+   * system prompt (none recorded: how every injection went before Endless
+   * Mode's timeline), or the head of Endless Mode's timeline, the first
+   * message, when Endless Mode applied to the conversation's first request.
+   */
+  | { type: 'injection'; text: string | null; placement?: MemoryInjectionPlacement }
   /** The hidden tool's definition as appended to `tools`, or null when it was not added. */
   | { type: 'tool'; name: string; definitionJson: string | null }
   /**
@@ -54,12 +60,22 @@ export type WireLedgerEntry =
    */
   | { type: 'thinkingCut'; untilTurnOrdinal: number }
   /**
-   * Finished tool work culled (Endless Mode): in user turn `turnOrdinal`, the
-   * messages through the result of call `throughCallId` are replaced by the
-   * timeline `lines` of the observations they produced. For one turn, the
-   * entry recorded last is the one applied. `linesPlacement` says where the
-   * lines go (CULL_LINES_PLACEMENTS); a line written before it existed has
-   * none and is put back as it was sent, appended to the turn's user message.
+   * Endless Mode's timeline grew (the `sequence`-th time, 0 first, recorded
+   * when the timeline was opened, with no rows): the conversation is folded
+   * into the timeline through user turn `throughTurnOrdinal`, the whole turn
+   * with its final reply when `throughCallId` is null, else through the
+   * result of call `throughCallId`. `rows` are appended to the timeline's
+   * end, one text block per entry. The frontier in force is the entry with
+   * the largest `sequence`.
+   */
+  | {
+    type: 'timelineFold'; sequence: number; throughTurnOrdinal: number; throughCallId: string | null;
+    rows: string[]; observationIds: number[]; culledTokensEst: number;
+  }
+  /**
+   * Endless Mode's earlier layout (a block of lines per culled turn, where
+   * its work was). Still parsed so old ledgers stay readable; a conversation
+   * holding one is suspended for Endless Mode.
    */
   | {
     type: 'cull'; turnOrdinal: number; throughCallId: string; lines: string[]; observationIds: number[]; culledTokensEst: number;
@@ -102,10 +118,14 @@ export type WireLedgerEntryType = WireLedgerEntry['type'];
 export const CULL_LINES_PLACEMENTS = ['appended-to-turn-start-message', 'own-message-at-cull-point'] as const;
 export type CullLinesPlacement = typeof CULL_LINES_PLACEMENTS[number];
 
+export const MEMORY_INJECTION_PLACEMENTS = ['system-prompt', 'timeline'] as const;
+export type MemoryInjectionPlacement = typeof MEMORY_INJECTION_PLACEMENTS[number];
+
 /**
  * What an entry is first-write-wins by: one of each kind per conversation, a
  * header per sequence number, a thinking cut per turn, a cull per turn and
- * last call, a swap per call, a thinking drop per boundary.
+ * last call, a timeline fold per sequence number, a swap per call, a thinking
+ * drop per boundary.
  */
 export function ledgerEntryIdOf(entry: WireLedgerEntry): string {
   switch (entry.type) {
@@ -119,6 +139,8 @@ export function ledgerEntryIdOf(entry: WireLedgerEntry): string {
       return `thinkingCut:${entry.untilTurnOrdinal}`;
     case 'cull':
       return `cull:${entry.turnOrdinal}:${entry.throughCallId}`;
+    case 'timelineFold':
+      return `timelineFold:${entry.sequence}`;
     case 'swap':
       return `swap:${entry.callId}`;
     case 'thinkingDrop':
@@ -150,7 +172,24 @@ function ledgerEntryFromLine(line: string): WireLedgerEntry | null {
     case 'born':
       return isString(record.at) ? { type: 'born', at: record.at } : null;
     case 'injection':
-      return isString(record.text) || record.text === null ? { type: 'injection', text: record.text as string | null } : null;
+      if (!(isString(record.text) || record.text === null)) return null;
+      if (record.placement === undefined) return { type: 'injection', text: record.text as string | null };
+      return MEMORY_INJECTION_PLACEMENTS.includes(record.placement as MemoryInjectionPlacement)
+        ? { type: 'injection', text: record.text as string | null, placement: record.placement as MemoryInjectionPlacement }
+        : null;
+    case 'timelineFold':
+      // One observation id per observation row; the prompt and reply rows have none.
+      return isNonNegativeInteger(record.sequence) && isNonNegativeInteger(record.throughTurnOrdinal)
+        && (record.throughCallId === null || (isString(record.throughCallId) && record.throughCallId !== ''))
+        && Array.isArray(record.rows) && record.rows.every(isString)
+        && Array.isArray(record.observationIds) && record.observationIds.every(isNonNegativeInteger)
+        && isNonNegativeInteger(record.culledTokensEst)
+        ? {
+          type: 'timelineFold', sequence: record.sequence, throughTurnOrdinal: record.throughTurnOrdinal,
+          throughCallId: record.throughCallId as string | null, rows: record.rows as string[],
+          observationIds: record.observationIds as number[], culledTokensEst: record.culledTokensEst,
+        }
+        : null;
     case 'tool':
       return isString(record.name) && (isString(record.definitionJson) || record.definitionJson === null)
         ? { type: 'tool', name: record.name, definitionJson: record.definitionJson as string | null }

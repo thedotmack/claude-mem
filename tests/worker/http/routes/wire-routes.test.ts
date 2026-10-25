@@ -99,8 +99,8 @@ describe('POST /api/wire/tool-observations', () => {
     const observations = [...answer.body.observations].sort((a: any, b: any) => a.toolUseId.localeCompare(b.toolUseId));
     const timelineLine = expect.stringMatching(new RegExp(`^${observation.id} \\S+ \\S+ Parser read$`));
     expect(observations).toEqual([
-      { toolUseId: 'call_1', observationId: observation.id, title: 'Parser read', narrative: 'The parser was read.', facts: ['parser in src/', 'tests pass'], timelineLine },
-      { toolUseId: 'call_2', observationId: observation.id, title: 'Parser read', narrative: 'The parser was read.', facts: ['parser in src/', 'tests pass'], timelineLine },
+      { toolUseId: 'call_1', observationId: observation.id, title: 'Parser read', narrative: 'The parser was read.', facts: ['parser in src/', 'tests pass'], timelineLine, row: timelineLine },
+      { toolUseId: 'call_2', observationId: observation.id, title: 'Parser read', narrative: 'The parser was read.', facts: ['parser in src/', 'tests pass'], timelineLine, row: timelineLine },
     ]);
     expect(JSON.stringify(answer.body)).not.toContain('xxxxxxxxxx');
   });
@@ -117,6 +117,47 @@ describe('POST /api/wire/tool-observations', () => {
     const compactTime = formatTime(observation.createdAtEpoch).toLowerCase().replace(' am', 'a').replace(' pm', 'p');
     const icon = ModeManager.getInstance().getTypeIcon('bugfix');
     expect(answered.timelineLine).toBe(`${observation.id} ${compactTime} ${icon} Parser fixed`);
+  });
+
+  it('answers every observation of a tool use\'s batch, not only the first the link names', () => {
+    toolUse('call_1');
+    toolUse('call_2');
+    const fields = { subtitle: null, facts: [], narrative: null, concepts: [], files_read: [], files_modified: [] };
+    const first = store.storeObservation('wire-memory', 'wire-project', { type: 'discovery', title: 'Parser read', ...fields });
+    const second = store.storeObservation('wire-memory', 'wire-project', { type: 'change', title: 'Parser fixed', ...fields });
+    store.linkToolUsesToObservation({ contentSessionId: 'wire-session', toolUseIds: ['call_1', 'call_2'], observationId: first.id, batchObservationIds: [first.id, second.id] });
+    // A later batch that re-claims call_1 adds nothing to it: the first batch owns it.
+    const later = store.storeObservation('wire-memory', 'wire-project', { type: 'discovery', title: 'Later', ...fields });
+    store.linkToolUsesToObservation({ contentSessionId: 'wire-session', toolUseIds: ['call_1'], observationId: later.id, batchObservationIds: [later.id] });
+
+    const answered = lookup({ platformSource: 'codex', contentSessionId: 'wire-session', toolUseIds: ['call_1', 'call_2'] }).body.observations;
+    expect(answered.map((row: any) => [row.toolUseId, row.observationId, row.title])).toEqual([
+      ['call_1', first.id, 'Parser read'], ['call_1', second.id, 'Parser fixed'],
+      ['call_2', first.id, 'Parser read'], ['call_2', second.id, 'Parser fixed'],
+    ]);
+  });
+
+  it('renders each row in the asked format: the timeline line, the observation, the observation with its narrative', () => {
+    toolUse('call_1');
+    const observation = store.storeObservation('wire-memory', 'wire-project', {
+      type: 'discovery', title: 'Parser read', subtitle: 'How input is parsed', facts: ['parser in src/', 'tests pass'],
+      narrative: 'The parser was read end to end.', concepts: ['parsing'], files_read: ['src/parser.ts'], files_modified: ['src/lexer.ts'],
+    });
+    store.linkToolUsesToObservation({ contentSessionId: 'wire-session', toolUseIds: ['call_1'], observationId: observation.id });
+    const rowIn = (rowFormat?: string) => {
+      const answer = lookup({ platformSource: 'codex', contentSessionId: 'wire-session', toolUseIds: ['call_1'], ...(rowFormat ? { rowFormat } : {}) });
+      expect(answer.status).toBe(200);
+      return answer.body.observations[0] as { row: string; timelineLine: string };
+    };
+    const { row: timelineRow, timelineLine } = rowIn('timeline');
+    expect(timelineRow).toBe(timelineLine);
+    expect(rowIn().row).toBe(timelineLine);
+    // get_observations' content renderer (projectMemoryContent): subtitle, facts, files; concepts are left out.
+    const details = 'How input is parsed\n\n- parser in src/\n- tests pass\n\nFiles changed: src/lexer.ts\n\nFiles read: src/parser.ts';
+    expect(rowIn('observation').row).toBe(`${timelineLine}\n${details}`);
+    expect(rowIn('observation-with-narrative').row).toBe(`${timelineLine}\nHow input is parsed\n\nThe parser was read end to end.\n\n- parser in src/\n- tests pass\n\nFiles changed: src/lexer.ts\n\nFiles read: src/parser.ts`);
+    // An unknown format is refused, never rendered some other way.
+    expect(lookup({ platformSource: 'codex', contentSessionId: 'wire-session', toolUseIds: ['call_1'], rowFormat: 'full' }).status).toBe(400);
   });
 
   it('keeps to the session and the agent asked about', () => {

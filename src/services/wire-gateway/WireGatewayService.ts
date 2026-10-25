@@ -259,9 +259,11 @@ export interface WireGatewayServiceOptions {
  * The stages the gateway runs, in request order (D7, plan Phase 10 task 1):
  * durable header → memory injection → Endless Mode → the memory_search
  * tool definition → the head's cache breakpoint. The header goes before
- * memory injection so the rules sit before the timeline in the system
- * prompt (Endless Mode v2 Phase 3); the breakpoint goes last, so it counts
- * every breakpoint the request ends up with.
+ * memory injection so the rules sit before the session-start rows in the
+ * system prompt (Endless Mode v2 Phase 3), or before Endless Mode's
+ * timeline, which then carries those rows as its first message; the head's
+ * breakpoint goes last, so it counts every breakpoint the request ends up
+ * with (the timeline's own included).
  */
 function defaultRewriteStages(
   observationLookup: WireObservationLookup,

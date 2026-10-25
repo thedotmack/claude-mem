@@ -16,22 +16,24 @@
 // each time, up to ten minutes.
 //
 // The worker is asked through POST /api/wire/tool-observations, which
-// answers with each linked tool use's observation, of which the gateway
-// reads its id and one-line timeline entry, and never the tools' bodies. The link is tool_uses.observation_id: the
-// FIRST observation of the batch the call was summarized in
-// (ResponseProcessor.ts:754-786). It is a loopback call, made over
+// answers with every observation of the batch each linked tool use was
+// summarized in (tool_use_batch_observations; tool_uses.observation_id
+// alone names only the batch's first), of which the gateway reads the id and
+// the timeline row the worker rendered in the asked format, and never the
+// tools' bodies. It is a loopback call, made over
 // direct-http.ts so a proxy in the environment never stands between the
 // gateway and its worker.
 
 import { buildWorkerUrl } from '../../../shared/worker-utils.js';
 import { logger } from '../../../utils/logger.js';
 import { requestJsonDirectly } from '../direct-http.js';
+import type { EndlessTimelineRowFormat } from '../../../shared/endless-timeline-row-format.js';
 
-/** The observation a tool call produced, as the worker answers it (the worker sends title, narrative and facts too; nothing here reads them). */
+/** An observation a tool call produced, as the worker answers it (the worker sends title, narrative and facts too; nothing here reads them). */
 export interface WireToolObservation {
   observationId: number;
-  /** Its row in the session-start timeline (`#<id> <time> <icon> <title>`), rendered by the worker: what a cull puts in place of the work. */
-  timelineLine: string;
+  /** Its timeline row in the asked format, rendered by the worker: what the timeline shows in place of the work. */
+  row: string;
 }
 
 export interface WireToolObservationQuery {
@@ -40,17 +42,18 @@ export interface WireToolObservationQuery {
   /** The agent id; the worker normalizes it as it did when capturing. */
   platformSource: string;
   toolUseIds: string[];
+  rowFormat: EndlessTimelineRowFormat;
 }
 
-/** tool_use_id → its observation, for the ids that have one. Throws when the worker cannot be asked. */
-export type WireToolObservationFetcher = (query: WireToolObservationQuery) => Promise<Map<string, WireToolObservation>>;
+/** tool_use_id → its batch's observations in id order, for the ids that have any. Throws when the worker cannot be asked. */
+export type WireToolObservationFetcher = (query: WireToolObservationQuery) => Promise<Map<string, WireToolObservation[]>>;
 
 /** The worker route takes at most this many ids at once. */
 const TOOL_USE_IDS_PER_WORKER_REQUEST = 500;
 const WORKER_LOOKUP_TIMEOUT_MS = 5_000;
 
 interface ToolObservationsAnswer {
-  observations?: Array<{ toolUseId?: unknown; observationId?: unknown; timelineLine?: unknown }>;
+  observations?: Array<{ toolUseId?: unknown; observationId?: unknown; row?: unknown }>;
 }
 
 /**
@@ -61,8 +64,8 @@ interface ToolObservationsAnswer {
 export async function fetchToolObservationsFromWorker(
   query: WireToolObservationQuery,
   workerUrlOf: (apiPath: string) => string = buildWorkerUrl,
-): Promise<Map<string, WireToolObservation>> {
-  const found = new Map<string, WireToolObservation>();
+): Promise<Map<string, WireToolObservation[]>> {
+  const found = new Map<string, WireToolObservation[]>();
   for (let start = 0; start < query.toolUseIds.length; start += TOOL_USE_IDS_PER_WORKER_REQUEST) {
     const apiPath = '/api/wire/tool-observations';
     const answer = await requestJsonDirectly<ToolObservationsAnswer>({
@@ -72,6 +75,7 @@ export async function fetchToolObservationsFromWorker(
         platformSource: query.platformSource,
         contentSessionId: query.contentSessionId,
         toolUseIds: query.toolUseIds.slice(start, start + TOOL_USE_IDS_PER_WORKER_REQUEST),
+        rowFormat: query.rowFormat,
       },
       timeoutMs: WORKER_LOOKUP_TIMEOUT_MS,
     });
@@ -80,12 +84,15 @@ export async function fetchToolObservationsFromWorker(
       throw new Error(`the worker answered ${apiPath} with HTTP ${answer.statusCode}`);
     }
     for (const row of answer.body.observations) {
-      // A row with no timeline line (a worker older than Endless Mode v2) is taken as no observation: the gateway never renders the line itself.
+      // A row with no rendered row (a worker older than the row formats) is taken as no observation: the gateway never renders rows itself.
       if (typeof row.toolUseId !== 'string' || typeof row.observationId !== 'number' || !Number.isInteger(row.observationId)) continue;
-      if (typeof row.timelineLine !== 'string' || row.timelineLine === '') continue;
-      found.set(row.toolUseId, { observationId: row.observationId, timelineLine: row.timelineLine });
+      if (typeof row.row !== 'string' || row.row === '') continue;
+      const observations = found.get(row.toolUseId) ?? [];
+      if (!observations.some(observation => observation.observationId === row.observationId)) observations.push({ observationId: row.observationId, row: row.row });
+      found.set(row.toolUseId, observations);
     }
   }
+  for (const observations of found.values()) observations.sort((first, second) => first.observationId - second.observationId);
   return found;
 }
 
@@ -109,7 +116,7 @@ interface MissedToolUse {
 }
 
 interface ConversationObservations {
-  byToolUseId: Map<string, WireToolObservation>;
+  byToolUseId: Map<string, WireToolObservation[]>;
   missedByToolUseId: Map<string, MissedToolUse>;
   refreshInFlight: Promise<void> | null;
   /** After a failed lookup (the worker down), nothing is asked before this. */
@@ -143,8 +150,8 @@ export class WireObservationLookup {
     return conversation;
   }
 
-  /** The observation already known for a tool use; never asks anyone. */
-  cached(conversationKey: string, toolUseId: string): WireToolObservation | undefined {
+  /** The observations already known for a tool use, in id order; never asks anyone. */
+  cached(conversationKey: string, toolUseId: string): WireToolObservation[] | undefined {
     return this.conversations.get(conversationKey)?.byToolUseId.get(toolUseId);
   }
 

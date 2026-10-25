@@ -201,38 +201,69 @@ sent. It follows the same opt-out as the rest of claude-mem; see
 ## Endless Mode
 
 A long session resends every tool call and result it ever made on every
-request. Endless Mode takes each finished stretch of tool work out of the
-request once claude-mem has written an observation of it, and puts the
-observation's one-line timeline entry in its place. The history the provider
-reads grows only by those lines, while your agent's own copy stays as it was.
+request. Endless Mode keeps one timeline at the top of the conversation and
+folds the conversation into it as claude-mem writes observations: each finished
+turn becomes rows (your prompt, one row per observation of its tool work, the
+final reply), and inside the current turn, tool calls leave as their
+observations land. The history the provider reads grows only by those rows,
+while your agent's own copy stays as it was.
 
 ### What the provider sees
 
-With Endless Mode, the durable header and memory injection on, every request
-of a conversation that began under the gateway has five parts, in this order:
+With Endless Mode on, every request of a conversation that began under the
+gateway is, top to bottom:
 
 | # | Part | Changes when | Comes from |
 |---|---|---|---|
 | 1 | Your agent's system prompt and tool definitions | never: the gateway does not touch them | your agent |
-| 2 | Durable header: your My Rules for the agent's folder, as `<claude-mem-rules>` | a rule's text changes, at the start of your next turn | the durable header (`durableHeader`) |
-| 3 | Timeline: the last observations (`CLAUDE_MEM_CONTEXT_OBSERVATIONS`, 50 by default), as `<claude-mem-context>` | never: frozen on the conversation's first request | [memory injection](#memory-injection) (`memoryInjection`) |
-| 4 | Middle: your messages and the agent's replies, with finished tool work replaced by `<claude-mem-work>` timeline lines | only grows | Endless Mode (`endlessMode`) |
-| 5 | Tail: tool work no observation covers yet | not touched | your agent |
+| 2 | Durable header: your My Rules for the agent's folder, as `<claude-mem-rules>`, at the end of the system prompt | a rule's text changes, at the start of your next turn | the durable header (`durableHeader`) |
+| 3 | The timeline: one block, the first message, as `<claude-mem-timeline>`. It opens with the session-start rows ([memory injection](#memory-injection)), then each finished turn as rows | only grows, at its end | Endless Mode (`endlessMode`) |
+| 4 | The live tail: your current prompt as you wrote it, and the tool calls no observation covers yet | not touched | your agent |
 
-Parts 2 and 3 go at the end of the system prompt, after your agent's own
-text, so part 1 stays first and byte for byte the same. On Anthropic, when the
-request uses fewer than the 4 cache breakpoints Anthropic allows, the last of
-them (the timeline, or the header when there is no timeline) gets a
-`cache_control` breakpoint of its own, so parts 1 to 3 are cached as one entry.
-It is 1-hour when a breakpoint after it is (Claude Code's are), else the
-5-minute default, since Anthropic needs longer-lived breakpoints first.
+```
+<claude-mem-timeline>
+claude-mem timeline: what happened before the current turn, oldest first. …
+<claude-mem-context> the session-start rows </claude-mem-context>
+U: add a power function and a test
+#4512 3:04p 🔵 calc.py gained power(a, b)
+#4513 3:04p 🟢 test_power added; 5 tests pass
+A: Added power(a, b) and a test; all 5 tests pass.
+U: make divide raise ValueError on zero
+…
+</claude-mem-timeline>
+make main.py an argparse CLI        ← your current prompt, raw
+[tool calls not observed yet]
+```
 
-Providers cache a prompt by its exact prefix: a change at one point throws
-away the cache from that point on. Everything above the newest change keeps
-hitting the cache, and each change is made once and then sent the same, byte
-for byte, on every later request and after a restart (each conversation's
-ledger freezes it). So a cull or a header change writes the cache once more,
-and after that the cache is read again, from a smaller prompt.
+The timeline is a user message on Anthropic and OpenAI (Anthropic merges it
+with your prompt after it; the API combines consecutive user turns), and on
+Gemini its parts come first in your prompt's content (Gemini wants your turns
+and the model's to alternate). Each time it grows, the new rows go in one more
+text block just before its closing tag: every byte before that stays as it
+was, so the provider's prompt cache reads the whole conversation up to the
+timeline's previous end, and only the new rows and the short tail after them
+are new. On Anthropic the timeline's last rows block gets the gateway's
+`cache_control` breakpoint when the request uses fewer than the 4 Anthropic
+allows (1-hour when a breakpoint after it is, as Claude Code's are), so each
+growth reads the entry the request before it wrote there. With no timeline
+(Endless Mode off), the header, or else the memory injection, gets that
+breakpoint instead.
+
+Each change is made once and then sent the same, byte for byte, on every later
+request and after a restart (each conversation's ledger freezes it).
+
+How each observation shows is set by `CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_ROW_FORMAT`
+(read at gateway start):
+
+| Value | A row is |
+|---|---|
+| `timeline` (default) | the session-start timeline's one line: `#<id> <time> <icon> <title>` |
+| `observation` | that line, then the observation the way `get_observations` shows it: subtitle, facts, files |
+| `observation-with-narrative` | the same, with the narrative |
+
+The worker renders the rows; any other value stops the gateway from starting.
+When the observer turns one batch of tool calls into several observations,
+each of them is a row.
 
 ### Turning it on
 
@@ -257,61 +288,58 @@ and `claude-mem wire routes memory` switch them per route the same way.
 
 A running gateway picks up a route change within a second. Turning Endless Mode
 off for a route sends its conversations' history as your agent wrote it from
-the next request on. A conversation that had culls and sent even one request
-that way is never culled again, even after you turn it back on: the model has
-answered the original history since. Turning it off and back on with no request in between
+the next request on. A conversation that had a timeline and sent even one
+request that way never gets one again, even after you turn it back on: the
+model has answered the original history since. (Its session-start rows were in
+the timeline, so it goes without them from then on too.) Turning it off and back on with no request in between
 changes nothing.
 
-### What gets culled
+### What gets folded
 
 - Only conversations that began under the gateway: the first request it saw
   held one message of yours and no reply. A conversation it first sees part way
   through is never changed.
-- Within one of your turns, the tool calls up to the latest one that has an
-  observation, with their results, as whole messages: from the first reply
-  that calls a tool through the message that carries the last of those results.
-  Calls the observer skipped go with them. A reply whose calls are not all
-  covered yet stays, and so does everything after it. Your message and the
-  turn's final reply are never culled. There is no age or size rule: the only
-  trigger is that the observation exists. The gateway never waits for one: it
-  asks the worker in the background, and work whose observation is not there
-  yet stays as it is. With the worker down, nothing is culled (on Anthropic,
-  each turn start still leaves out the thinking before it; see below).
-- The timeline lines go in one `<claude-mem-work>` block, one
-  `#<id> <time> <icon> <title>` line per observation (the same line the
-  session-start timeline shows), never in a reply: the model would read them
-  as its own words, and never as a turn of yours. Where the block goes:
-
-  | Provider | Where | Why |
-  |---|---|---|
-  | Anthropic, after a system message (Claude Code's notes) | a system message of its own, where the culled work began | a system message must come last or before the model's reply, so a user message there would break that rule for the note before it |
-  | Anthropic, otherwise | a user message of its own, where the culled work began | Anthropic merges it with your message after its last block |
-  | OpenAI Chat Completions | a user message of its own, where the culled work began | OpenAI caches at the end of each user message; yours stays as it was |
-  | OpenAI Responses | a user message item of its own, where the culled work began | the same |
-  | Gemini | a new last part of your message that started the turn | turns keep alternating between you and the model, and nothing before the new part changes |
-
-  Everything the turn's first request sent stays byte for byte, so the cache
-  that request wrote is still read when the cull is made. A later cull in the
-  same turn adds its lines to the same block, in the same place. A
-  conversation culled by a gateway from before these placements keeps its
-  lines where that gateway put them (at the end of your message).
-- Capture strips `<claude-mem-work>` and `<claude-mem-rules>`, and neither
-  counts as words of yours, so they never start or hide a turn and never
-  become new memory.
-- A conversation an earlier version of Endless Mode changed is left alone.
+- The tool calls up to the latest one that has an observation are covered,
+  with their results; calls the observer skipped go with them, with no row.
+  A turn folds whole once all its tool calls are covered: your prompt as a
+  `U:` row, its observations, its final reply as an `A:` row (the way the
+  session-start context shows a previous reply). A turn that is only partly
+  covered folds through its last covered call, and the timeline goes no
+  further until the rest is covered. There is no age or size rule: the only
+  trigger is that the observation exists. The gateway never waits for one
+  mid-turn: it asks the worker in the background, and work whose observation
+  is not there yet stays as it is. With the worker down, nothing new folds.
+- Your current prompt always stays as you wrote it, after the timeline.
+  Inside the current turn, covered calls leave the tail and their rows (your
+  prompt's first) go to the timeline's end; the reply the agent is answering,
+  and anything after it, never folds.
+- The timeline is never in a reply (the model would read it as its own words)
+  and never counts as words of yours, so it never starts or hides a turn.
+  Capture strips `<claude-mem-timeline>` and `<claude-mem-rules>`, so neither
+  becomes new memory.
+- A context item (a Codex compaction, a web search) never folds: the timeline
+  stops before it.
+- A conversation an earlier version of Endless Mode changed is left alone. If
+  the agent changes the history a fold went through (a compaction, a rewind),
+  the conversation is sent as the agent writes it from then on.
 - If anything goes wrong, the request goes as your agent sent it. The relay
   checks every tool call still has its result before anything goes.
 
-### When culls and header changes happen, and why
+### When folds and header changes happen, and why
 
-- **Culls are made when you start a new turn.** That is the one moment no
-  reasoning of the agent's running tool loop is at stake.
-- **Mid-turn, only without reasoning.** While the agent is running tools, a cull
-  is made only when the current turn holds no thinking, sealed reasoning
-  (`encrypted_content`) or thought signatures, and never of the reply the agent
-  is answering or anything after it. Providers bind that reasoning to the
-  history before it, and OpenAI Responses and Gemini require the current turn
-  to come back untouched.
+- **A finished turn folds when you start a new one.** That is the one moment no
+  reasoning of the agent's running tool loop is at stake. The first request of
+  your turn waits up to `CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS` for the
+  observations of the turns before it, so the fold lands on that request.
+- **Mid-turn, only without reasoning.** A fold changes the bytes in front of
+  the current turn. So while the agent is running tools, the timeline grows
+  only when the current turn holds no thinking, sealed reasoning
+  (`encrypted_content`) or thought signatures: Anthropic accepts a thinking
+  block only while every message before it is unchanged and needs the turn's
+  thinking passed back within a tool loop, OpenAI Responses needs every item
+  after your last message passed back untouched, and Gemini checks the current
+  turn's thought signatures. With any of those, the fold waits for your next
+  turn.
 - **The header changes only at a turn start.** The first request of each of
   your turns asks the worker for your rules again (waiting up to
   `CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS`). If they changed, the new
@@ -320,17 +348,11 @@ changes nothing.
   an answer in time, the header in force stays. A request that already holds
   your My Rules file (the agent loads `MY-RULES.md` itself) gets no header, so
   the rules are never there twice.
-- **Anthropic thinking.** Anthropic accepts a thinking block only while the
-  system prompt, the tools and every message before it are unchanged. So every
-  request that starts one of your turns, with Endless Mode on, and every
-  request that makes a new cull or header change, leaves out every thinking
-  block before your latest turn, oldest first with no gap (an assistant
-  message left empty goes too). They stay out from then on: putting them back
-  would be a change of its own. Because each turn start does this, cull or
-  not, it only ever takes out the thinking of the turn just finished, which
-  comes after everything the previous turn start sent: a later cull never
-  reaches back into what that request cached. The thinking of the turn in
-  flight is never touched.
+- **Anthropic thinking.** Every request that starts one of your turns, and
+  every request that folds or changes the header, leaves out every thinking
+  block before your latest turn that is still in the tail, oldest first with no
+  gap (an assistant message left empty goes too). They stay out from then on.
+  The thinking of the turn in flight is never touched.
 
 ### What it saved
 
@@ -338,15 +360,15 @@ changes nothing.
 viewer's [Wire page](#the-wire-page-in-the-viewer) read the usage ledger's
 last `CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS` days and show, per agent:
 
-- the conversations with at least one cull, and the requests that made a new
-  cull or extended one;
-- the tokens saved: what each cull took out, counted once, on the request that
-  made it (the requests that send it again add nothing);
-- the prompt cache's read-to-write ratio before each conversation's first cull
+- the conversations with at least one fold, and the requests that made one;
+- the tokens saved: what each fold took out less the rows it added, counted
+  once, on the request that made it (the requests that send it again add
+  nothing);
+- the prompt cache's read-to-write ratio before each conversation's first fold
   and from it on.
 
 Usage lines written before this version of Endless Mode still count as
-requests but add no culls or tokens saved.
+requests but add no folds or tokens saved.
 
 ## Memory injection
 
@@ -364,6 +386,10 @@ claude-mem wire routes memory <route> off       # off for this route
 claude-mem wire routes memory <route> default   # follow CLAUDE_MEM_WIRE_GATEWAY_MEMORY_INJECTION again
 ```
 
+- With Endless Mode on for the conversation's first request, the context
+  opens [the timeline](#what-the-provider-sees), the first message, instead of
+  going at the end of the system prompt: the timeline grows at its end, and
+  the system prompt never changes.
 - Only conversations that began under the gateway, and only on their first
   request. The gateway waits for the worker at most
   `CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS` (1500 ms). If the worker is down,

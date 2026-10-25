@@ -178,6 +178,17 @@ export function createToolUsesSchema(db: Database): void {
   db.run('CREATE INDEX IF NOT EXISTS idx_tool_uses_created_at_epoch ON tool_uses(created_at_epoch)');
   db.run('CREATE INDEX IF NOT EXISTS idx_tool_uses_observation_id ON tool_uses(observation_id)');
   db.run('CREATE INDEX IF NOT EXISTS idx_tool_uses_or_generation_id ON tool_uses(or_generation_id)');
+
+  // Every observation of the batch a tool use was summarized in. tool_uses.observation_id
+  // keeps only the batch's first one; Endless Mode shows each of them as a timeline row.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS tool_use_batch_observations (
+      content_session_id TEXT NOT NULL,
+      tool_use_id TEXT NOT NULL,
+      observation_id INTEGER NOT NULL,
+      PRIMARY KEY (content_session_id, tool_use_id, observation_id)
+    )
+  `);
 }
 
 /**
@@ -268,10 +279,17 @@ export function linkToolUsesToObservation(
     toolUseIds: string[];
     observationId: number;
     memorySessionId?: string | null;
+    /**
+     * Every observation the batch stored, `observationId` (its first) among them. Recorded for
+     * the tool uses this batch owns (their observation_id is `observationId`), so a batch that
+     * re-claims a tool use another batch owns adds nothing to it.
+     */
+    batchObservationIds?: number[];
   }
 ): number {
   const ids = params.toolUseIds.filter(id => typeof id === 'string' && id.length > 0);
   if (ids.length === 0) return 0;
+  const batchObservationIds = [...new Set([params.observationId, ...(params.batchObservationIds ?? [])])];
 
   const placeholders = ids.map(() => '?').join(',');
   const result = db.prepare(`
@@ -292,6 +310,15 @@ export function linkToolUsesToObservation(
     ...ids,
     params.observationId
   );
+
+  const recordBatchObservation = db.prepare(`
+    INSERT OR IGNORE INTO tool_use_batch_observations (content_session_id, tool_use_id, observation_id)
+    SELECT content_session_id, tool_use_id, ? FROM tool_uses
+    WHERE content_session_id = ? AND tool_use_id IN (${placeholders}) AND observation_id = ?
+  `);
+  for (const batchObservationId of batchObservationIds) {
+    recordBatchObservation.run(batchObservationId, params.contentSessionId, ...ids, params.observationId);
+  }
 
   return Number(result.changes ?? 0);
 }
@@ -391,14 +418,19 @@ export interface ToolUseObservationRow {
   observation_id: number;
   type: string;
   title: string | null;
+  subtitle: string | null;
   narrative: string | null;
   facts: string | null;
+  files_read: string | null;
+  files_modified: string | null;
   created_at_epoch: number;
 }
 
 /**
  * For each of `toolUseIds` of one session that is linked to an observation,
- * that observation's type, title, narrative, facts and creation time (POST
+ * one row per observation of its batch (tool_use_batch_observations; a link
+ * made before that table existed has only the batch's first), with each
+ * observation's type, title, subtitle, narrative, facts, files and creation time (POST
  * /api/wire/tool-observations). Ids with no observation yet are left out.
  */
 export function getToolUseObservations(
@@ -415,11 +447,17 @@ export function getToolUseObservations(
     params.push(platform.param);
   }
   return db.prepare(`
-    SELECT t.tool_use_id AS tool_use_id, o.id AS observation_id, o.type AS type, o.title AS title, o.narrative AS narrative, o.facts AS facts,
-      o.created_at_epoch AS created_at_epoch
+    SELECT t.tool_use_id AS tool_use_id, o.id AS observation_id, o.type AS type, o.title AS title, o.subtitle AS subtitle, o.narrative AS narrative, o.facts AS facts,
+      o.files_read AS files_read, o.files_modified AS files_modified, o.created_at_epoch AS created_at_epoch
     FROM tool_uses t
-    JOIN observations o ON o.id = t.observation_id
+    JOIN (
+      SELECT content_session_id, tool_use_id, observation_id FROM tool_use_batch_observations
+      UNION
+      SELECT content_session_id, tool_use_id, observation_id FROM tool_uses WHERE observation_id IS NOT NULL
+    ) b ON b.content_session_id = t.content_session_id AND b.tool_use_id = t.tool_use_id
+    JOIN observations o ON o.id = b.observation_id
     WHERE ${conditions.join(' AND ')}
+    ORDER BY t.tool_use_id, o.id
   `).all(...params) as ToolUseObservationRow[];
 }
 

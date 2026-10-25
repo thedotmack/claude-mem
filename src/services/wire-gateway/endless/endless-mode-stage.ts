@@ -1,137 +1,117 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// Endless Mode at the wire (Endless Mode v2, plan Phase 4): the "work/tools
-// → observations" loop. In a conversation born under the gateway, a
-// finished stretch of tool work whose observation exists leaves the request
-// whole, and the one-line timeline entry of each observation it produced
-// takes its place, as a message of its own where the run began (Gemini: at
-// the end of the user message that started the turn):
+// Endless Mode at the wire (Endless Mode v2): one growing timeline. In a
+// conversation born under the gateway the request's conversation is always
 //
-//   <claude-mem-work>
-//   #<id> <time> <icon> <title>
-//   </claude-mem-work>
+//   [the agent's leading context, if any]
+//   [the timeline: one user message, append-only]
+//   [the live tail: what is not folded yet, the current turn's prompt raw]
 //
-// Each cull is frozen in the conversation ledger the first time it is made
-// and put back byte for byte on every later request (and after a restart),
-// so the middle of the request only grows by those lines.
+// The timeline opens with claude-mem's session-start rows (the memory
+// injection, which then goes here instead of the system prompt) and grows
+// only at its end. A finished turn folds into it as rows, in order: its
+// prompt (`U: …`), a row per observation of its tool work, its final reply
+// (`A: …`). Inside the current turn, when an observation lands, its rows are
+// appended and the tool calls it covers leave the tail. Each growth is one
+// more text block before the timeline's closing tag, so every byte before
+// it stays and the provider's cache reads the whole conversation up to it
+// (Anthropic: the gateway's breakpoint sits on the timeline's last rows
+// block, so a growth reads the entry the request before it wrote).
 //
-// The rules, each from the plan:
-// - Covered calls: in a turn, the latest tool call with an observation is
-//   the boundary; every call at or before it is covered, the ones the
-//   observer skipped included. The only trigger is "an observation exists",
-//   never age or size.
-// - Whole messages: the run from the turn's first assistant message that
-//   carries a tool call through the message that carries the result of the
-//   run's last call, exactly, so a recorded `throughCallId` alone fixes the
-//   run on every later request. An assistant message is culled only if every
-//   call in it is covered, so the run stops before one that is not. The
-//   turn's user message and its final reply are never culled. A run must
-//   hold every call's result and every result's call, and must remove whole
-//   array elements (Responses input items, Gemini `contents[i]`) made only
-//   of tool calls, tool results, thinking or sealed reasoning, and the
-//   model's text: it stops before a context item (a Codex compaction, a web
-//   search), an item the parser skipped, and anything carrying cache_control.
+//   <claude-mem-timeline>            (first block: intro + session-start rows)
+//   U: … / #<id> … / A: …            (one block per growth)
+//   </claude-mem-timeline>           (last block, alone)
+//
+// The rules:
+// - Covered calls: the latest tool call with an observation (conversation
+//   wide) is the boundary; every call at or before it is covered, the ones
+//   the observer skipped included (they fold with no row). The only trigger
+//   is "an observation exists", never age or size.
+// - Folds are a prefix: a turn folds whole when every call in it is covered,
+//   else through its latest covered call whose run may be removed (and the
+//   fold stops there). The current turn never folds whole: its prompt stays
+//   raw, and only its covered calls leave, through the result of the run's
+//   last call, never its latest assistant message or what follows it.
+// - When: a fold changes the bytes in front of the current turn's messages,
+//   which any thinking, sealed reasoning or signature in that turn is bound
+//   to (Anthropic: "within a tool-use turn, pass thinking blocks back", and
+//   a block stays valid only while the messages before it are unchanged;
+//   Responses: "ensure all items between the last user message and your
+//   function call output are passed into the next response untouched";
+//   Gemini validates the current turn's thought signatures). So with any of
+//   those in the current turn, folds wait for the next turn start; without,
+//   they happen on any request.
+// - Every fold is frozen in the ledger (`timelineFold`, by sequence) the
+//   first time it is made and put back byte for byte on every later request
+//   and after a restart. Positions are turn ordinals and call ids, never
+//   message indexes.
+// - Anthropic: a request that folds, and every turn-start request from turn
+//   2 on, records a `thinkingCut` up to the latest turn first (held writes
+//   commit in order), and every request applies the cut in force, so the
+//   thinking of unfolded earlier messages goes oldest first with no gap.
 // - Gemini positional call ids (`gemini:<content>:<part>`) are message
-//   indexes, so none is ever recorded: a turn whose calls have only those is
-//   not culled.
-// - When: new culls at a user-turn start (any earlier turn), or mid-turn
-//   when the current turn holds no thinking, sealed reasoning or signature
-//   (then nothing in it is bound to the prefix). The latest assistant
-//   message of the in-flight loop, and what follows it, is never culled.
-// - Lines go where the run began, in a message of their own (a user
-//   message; on Anthropic a system message after a system one), never in
-//   an assistant message (the model would read them as its own words). Every
-//   byte before the cull point stays, so the cache entry the turn-start
-//   request's breakpoint wrote (Anthropic) or its user message's ending
-//   (OpenAI) is still read. Appending them to the turn's user message
-//   instead changed that message, which every later request's prefix went
-//   through: each cull rewrote the conversation at the cache-write price.
-//   Gemini's go there still, as a new last part (see
-//   linesPlacementOfNewTurn), and so do those of a cull recorded before
-//   placements were, as they were sent. A later cull of the same turn
-//   records a new entry with the later call and the full line list, the
-//   lines already frozen kept as they were, in the place they went first.
-// - Anthropic: culling changes the messages earlier thinking was signed
-//   against, so a request that records a cull first records a
-//   `thinkingCut` up to the latest turn (held writes commit in order), and
-//   every request applies the cut in force. Every turn-start request
-//   records that cut too, cull or not: then a cut only ever takes out the
-//   thinking of the turn just finished, after the previous turn-start
-//   request's last message, and stays contiguous from message 0. Cut only
-//   with a cull, a turn that went unculled (a no-tool answer, a lookup that
-//   timed out) kept its reply's thinking until a later cull cut it, from
-//   inside a prefix an earlier turn-start request had cached.
-// - Positions are turn ordinals and call ids, never message indexes.
-// - The agent never waits: observations come from a cache a background
-//   lookup fills (observation-lookup.ts); no observation, no cull.
-// - A conversation the v1 swap stage changed is suspended: its swaps are
-//   not put back, and it is never culled.
+//   indexes, so none is ever recorded as a fold's last call; a turn that has
+//   only those folds only whole.
+// - The agent never waits on a mid-turn request: observations come from a
+//   cache a background lookup fills (observation-lookup.ts). A turn-start
+//   request waits up to CONTEXT_TIMEOUT_MS for the observations of earlier
+//   turns' work, so the fold lands on it.
+// - A conversation the v1 swap stage changed, or one the earlier per-turn
+//   cull layout changed, is suspended: never folded, sent as it comes.
+// - A recorded fold the history no longer matches (a compaction, a rewind)
+//   suspends the conversation: it goes as the agent sends it from then on.
 // - Any failure leaves the bytes as they came (the seam fails open, D7.7);
 //   the relay's pairing check is the last guard.
 
 import { logger } from '../../../utils/logger.js';
+import { renderAgentAssistantMessageRow, renderAgentUserPromptRow } from '../../context/formatters/exchange-rows.js';
+import { endlessTimelineRowFormatOf } from '../../../shared/endless-timeline-row-format.js';
 import { GEMINI_REQUEST_POSITIONAL_CALL_ID_PATTERN, contentSessionIdOf } from '../capture/capture-assembler.js';
 import { startsUserTurn } from '../identity/turn-start.js';
-import { userWordsInText } from '../identity/user-words.js';
+import { TIMELINE_CLOSE_TAG, TIMELINE_OPEN_TAG, userWordsInMessage } from '../identity/user-words.js';
 import { ScannedObject } from '../ir/scanned-object.js';
 import type { WireRequest } from '../ir/types.js';
-import { applyByteSplices, type ByteSplice } from '../json/byte-splices.js';
+import { applyByteSplices } from '../json/byte-splices.js';
 import { arrayElements, objectMembers, rawText, scanDocument, type JsonSpan } from '../json/scanner.js';
-import { appendArrayItemSplice, arrayItemRemovalSplices, encodeJsonString } from '../json/splice.js';
-import type { CullLinesPlacement, WireConversationLedgerView, WireLedgerEntry } from '../ledger/conversation-ledger.js';
-import { appendToStringSplice, tagWrappedBlock, textBlockJson } from '../memory/memory-injection-stage.js';
-import { estimateTextTokens } from '../metrics/context-buckets.js';
-import type { WireGatewayRoute } from '../routes.js';
+import { encodeJsonString, replaceSpan } from '../json/splice.js';
+import type { WireConversationLedgerView, WireLedgerEntry } from '../ledger/conversation-ledger.js';
 import { DEFAULT_CONTEXT_TIMEOUT_MS } from '../memory/memory-injection-stage.js';
+import { estimateTextTokens } from '../metrics/context-buckets.js';
+import { cacheControlJsonOf, cacheControlTtlsIn, gatewayBreakpointTtl, type CacheTtl } from '../header/head-cache-breakpoint-stage.js';
 import { STAGE_BUDGET_MARGIN_MS, type WireRewriteContext, type WireRewriteStage } from '../rewrite/rewrite-stage.js';
 import { thinkingCutInForce, thinkingCutSplices } from '../rewrite/thinking-drop.js';
-import type { WireObservationLookup } from './observation-lookup.js';
+import { ENDLESS_ROW_FORMAT_SETTING, endlessModeEnabledFor } from './endless-mode-setting.js';
+import type { WireObservationLookup, WireToolObservation } from './observation-lookup.js';
 import { toolUseIdsByCallIdOf } from './tool-use-ids.js';
+
+export { ENDLESS_MODE_SETTING, ENDLESS_ROW_FORMAT_SETTING, endlessModeEnabledFor } from './endless-mode-setting.js';
 
 export const ENDLESS_MODE_STAGE_NAME = 'endless-mode';
 
-/**
- * Endless Mode's setting, read by the gateway at start (config.ts validates
- * it; changing it needs `claude-mem wire restart`). A route's
- * `features.endlessMode` is read live.
- */
-export const ENDLESS_MODE_SETTING = 'CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE';
-
-const WORK_TAG_NAME = 'claude-mem-work';
-
-const utf8Encoder = new TextEncoder();
-
 const SUSPENDED_ENTRY_ID = `suspended:${ENDLESS_MODE_STAGE_NAME}`;
 
-type CullEntry = Extract<WireLedgerEntry, { type: 'cull' }>;
+/** What the timeline's first block says it is, before the session-start rows. */
+export const TIMELINE_INTRO = 'claude-mem timeline: what happened before the current turn, oldest first. '
+  + 'Each finished turn is its prompt (U:), a row per observation of its tool work, and its final reply (A:); '
+  + 'the current turn follows the timeline as it happened, its finished tool work folded into rows here as observations land.';
 
-/** Whether Endless Mode is on for a route: its own `features.endlessMode`, else the setting (off by default, D9). */
-export function endlessModeEnabledFor(route: WireGatewayRoute, settings: Readonly<Record<string, string>>): boolean {
-  return route.features?.endlessMode ?? settings[ENDLESS_MODE_SETTING] === 'true';
+type FoldEntry = Extract<WireLedgerEntry, { type: 'timelineFold' }>;
+
+/** How far the conversation is folded: through turn `turnOrdinal`, whole when `throughCallId` is null, else through that call's result. Turn 0: nothing. */
+interface Frontier {
+  turnOrdinal: number;
+  throughCallId: string | null;
 }
 
-/** The block that carries a cull's lines: one timeline line per observation. */
-export function culledWorkBlock(lines: readonly string[]): string {
-  return tagWrappedBlock(WORK_TAG_NAME, lines.join('\n'));
+/** The timeline's text blocks before its closing one: the first (intro and session-start rows), then one per fold that added rows. */
+export function timelineBlockTextsOf(sessionStartText: string | null, foldRows: ReadonlyArray<readonly string[]>): string[] {
+  const head = `${TIMELINE_OPEN_TAG}\n${TIMELINE_INTRO}${sessionStartText ? `\n\n${sessionStartText}` : ''}`;
+  return [head, ...foldRows.filter(rows => rows.length > 0).map(timelineRowsBlockText)];
 }
 
-/**
- * Where a turn culled for the first time puts its lines: a message of their
- * own at the cull point, so every byte the turn-start request sent stays
- * as it was and the cache entry its breakpoint wrote is still read
- * (Anthropic writes entries only at breakpoints; OpenAI at message
- * endings, the turn-start message's among them). Gemini's go at the end of
- * the turn's user message as a new last part: a content of their own would
- * put two user contents in a row, which the Gemini docs this follows do not
- * allow for, and a new last part changes nothing before it.
- */
-function linesPlacementOfNewTurn(protocol: WireRequest['protocol']): CullLinesPlacement {
-  return protocol === 'gemini' ? 'appended-to-turn-start-message' : 'own-message-at-cull-point';
-}
-
-/** Where a recorded cull's lines go: as recorded, or, for a line written before placements were, appended to the turn's user message as they were sent. */
-function linesPlacementOf(entry: CullEntry): CullLinesPlacement {
-  return entry.linesPlacement ?? 'appended-to-turn-start-message';
+/** One fold's rows as a block: one per line, or a blank line apart when a row runs over several lines. */
+export function timelineRowsBlockText(rows: readonly string[]): string {
+  return rows.join(rows.some(row => row.includes('\n')) ? '\n\n' : '\n');
 }
 
 interface UserTurn {
@@ -145,14 +125,6 @@ interface UserTurn {
 interface TurnCall {
   callId: string;
   messageIndex: number;
-}
-
-/** A run of whole messages to cull, and the array elements that hold them. */
-interface CullRun {
-  turn: UserTurn;
-  firstIndex: number;
-  lastIndex: number;
-  elements: JsonSpan[];
 }
 
 /** The request's user turns, numbered as userTurnPositionOfRequest numbers them. */
@@ -198,10 +170,7 @@ function spansOverlap(first: JsonSpan, second: JsonSpan): boolean {
   return first.start < second.end && second.start < first.end;
 }
 
-/**
- * The array a conversation's messages are elements of: Anthropic and Chat
- * `messages`, Responses `input`, Gemini `contents`. Null when there is none.
- */
+/** The array a conversation's messages are elements of: Anthropic and Chat `messages`, Responses `input`, Gemini `contents`. */
 function conversationArraySpanOf(request: WireRequest): JsonSpan | null {
   const root = new ScannedObject(request.body, scanDocument(request.body));
   const key = request.protocol === 'openai-responses' ? 'input' : request.protocol === 'gemini' ? 'contents' : 'messages';
@@ -209,27 +178,13 @@ function conversationArraySpanOf(request: WireRequest): JsonSpan | null {
   return span?.type === 'array' ? span : null;
 }
 
-/** Whether the JSON value at `span` holds a `cache_control` member anywhere in it. */
-function holdsCacheControl(bytes: Uint8Array, span: JsonSpan): boolean {
-  if (span.type === 'object') {
-    for (const member of objectMembers(bytes, span)) {
-      if (member.key === 'cache_control' || holdsCacheControl(bytes, member.value)) return true;
-    }
-  } else if (span.type === 'array') {
-    for (const element of arrayElements(bytes, span)) if (holdsCacheControl(bytes, element)) return true;
-  }
-  return false;
-}
-
 /**
  * Whether message `messageIndex` is the harness's note about the run's own
  * work: a system-role message (Claude Code 2.1.310 sends
  * `{"role":"system","content":"<total_tokens>… tokens left</total_tokens>"}`
- * after every tool result; the Anthropic parser keeps it as a system message
- * with one text part) that sits strictly inside the run, after a tool result
- * and before the next assistant message that calls a tool, with only other
- * such notes between. Culling the work culls its chatter; a system message
- * anywhere else stops the run.
+ * after every tool result) strictly inside the run, after a tool result and
+ * before the next assistant message that calls a tool, with only other such
+ * notes between.
  */
 function isHarnessNoteInsideRun(request: WireRequest, messageIndex: number, firstIndex: number, lastIndex: number): boolean {
   if (request.messages[messageIndex].role !== 'system' || messageIndex <= firstIndex || messageIndex >= lastIndex) return false;
@@ -243,186 +198,206 @@ function isHarnessNoteInsideRun(request: WireRequest, messageIndex: number, firs
     && next.role === 'assistant' && next.parts.some(part => part.kind === 'tool_call');
 }
 
-/** Why an array element of a run may not be removed; null when it may (only tool calls and results, reasoning, the model's text, the harness's notes about the work). */
-function unremovableElementReason(request: WireRequest, element: JsonSpan, firstIndex: number, lastIndex: number): string | null {
-  let partCount = 0;
-  for (let messageIndex = firstIndex; messageIndex <= lastIndex; messageIndex++) {
-    const message = request.messages[messageIndex];
-    if (!spansOverlap(message.span, element)) continue;
-    for (const part of message.parts) {
-      if (!spansOverlap(part.span, element)) continue;
-      partCount++;
-      const removable = part.kind === 'tool_call' || part.kind === 'tool_result' || part.kind === 'thinking' || part.kind === 'sealed'
-        || (part.kind === 'text' && message.role === 'assistant')
-        || (part.kind === 'text' && isHarnessNoteInsideRun(request, messageIndex, firstIndex, lastIndex));
-      if (!removable) return `it holds a ${part.kind === 'context' ? `${part.name ?? 'context'} item` : `${message.role} ${part.kind} part`}`;
-    }
-  }
-  if (partCount === 0) return 'it is an element the parser skipped';
-  if (holdsCacheControl(request.body, element)) return 'it carries cache_control';
-  return null;
+/** What a request folds away at a frontier: the removed messages and elements, and the elements left, in order. */
+interface FoldRegion {
+  removedMessageIndexes: Set<number>;
+  removedElements: JsonSpan[];
+  /** The agent's context before the first turn: it stays in front of the timeline. */
+  leadingElements: JsonSpan[];
+  /** What follows the timeline. */
+  tailElements: JsonSpan[];
 }
 
 /**
- * The run of messages firstIndex..lastIndex, when it may be culled whole:
- * it ends on a message that is not the model's, holds every result of its
- * calls and the call of every result, and its array elements hold nothing
- * else (no message outside it, nothing but tool work, reasoning and the
- * model's text). Null otherwise.
+ * What folding the request at `frontier` removes; a reason string when the
+ * history does not allow it. Finished turns fold whole (their prompt and
+ * reply become rows; any tool work, reasoning, text, harness note goes);
+ * the current turn keeps its prompt and folds only the run from its first
+ * call through `throughCallId`'s result, which may hold only tool work,
+ * reasoning, the model's text and the harness's notes inside the run. A run
+ * keeps every call with its result. Nothing the parser skipped, and no
+ * context item (a Codex compaction, a web search), is ever folded.
  */
-function cullRunOf(request: WireRequest, conversationElements: JsonSpan[], turn: UserTurn, firstIndex: number, lastIndex: number): CullRun | null {
-  if (firstIndex <= turn.startIndex || lastIndex < firstIndex || lastIndex >= turn.endIndex) return null;
-  if (request.messages[lastIndex].role === 'assistant') return null;
+function foldRegionOf(
+  request: WireRequest,
+  conversationElements: JsonSpan[],
+  turns: UserTurn[],
+  frontier: Frontier,
+  latestAssistantIndex: number,
+): FoldRegion | string {
+  const latestTurn = turns[turns.length - 1];
+  const removed = new Set<number>();
+  // Messages of the current turn's run: removed only under the strict rules.
+  let strictRun: { firstIndex: number; lastIndex: number } | null = null;
+  if (frontier.turnOrdinal > latestTurn.ordinal) return `turn ${frontier.turnOrdinal} is not in the history`;
+  for (const turn of turns) {
+    if (turn.ordinal > frontier.turnOrdinal) break;
+    const whole = turn.ordinal < frontier.turnOrdinal || frontier.throughCallId === null;
+    if (whole) {
+      if (turn === latestTurn) return 'the current turn never folds whole';
+      for (let messageIndex = turn.startIndex; messageIndex < turn.endIndex; messageIndex++) removed.add(messageIndex);
+      continue;
+    }
+    const calls = callsOf(request, turn);
+    const through = calls.find(call => call.callId === frontier.throughCallId);
+    if (!through) return `call ${frontier.throughCallId} is not in turn ${turn.ordinal}`;
+    const resultIndex = resultIndexOf(request, turn, through.callId, through.messageIndex);
+    const endLimit = turn === latestTurn ? latestAssistantIndex : turn.endIndex;
+    if (resultIndex < 0 || resultIndex >= endLimit) return `call ${through.callId} has no result before the in-flight loop`;
+    if (request.messages[resultIndex].role === 'assistant') return 'a run ends on a message that is not the model\'s';
+    const firstIndex = turn === latestTurn ? calls[0].messageIndex : turn.startIndex;
+    if (turn === latestTurn) strictRun = { firstIndex, lastIndex: resultIndex };
+    for (let messageIndex = firstIndex; messageIndex <= resultIndex; messageIndex++) {
+      if (strictRun && request.messages[messageIndex].role === 'system' && !isHarnessNoteInsideRun(request, messageIndex, firstIndex, resultIndex)) {
+        return 'a system message inside the current turn\'s run is not a note about the run';
+      }
+      removed.add(messageIndex);
+    }
+  }
+
+  // Every call goes with its result, and every result with its call.
   const unpaired = new Map<string, number>();
-  for (let messageIndex = firstIndex; messageIndex <= lastIndex; messageIndex++) {
+  for (const messageIndex of removed) {
     for (const part of request.messages[messageIndex].parts) {
       if (part.kind !== 'tool_call' && part.kind !== 'tool_result') continue;
-      if (!part.callId) return null;
+      if (!part.callId) return 'a tool part has no call id';
       unpaired.set(part.callId, (unpaired.get(part.callId) ?? 0) + (part.kind === 'tool_call' ? 1 : -1));
     }
   }
-  if ([...unpaired.values()].some(count => count !== 0)) return null;
+  if ([...unpaired.values()].some(count => count !== 0)) return 'a call would be folded without its result, or a result without its call';
 
-  const runSpan: JsonSpan = { start: request.messages[firstIndex].span.start, end: request.messages[lastIndex].span.end, type: 'object' };
-  const elements = conversationElements.filter(element => spansOverlap(element, runSpan));
-  if (elements.length === 0) return null;
-  const removedSpan: JsonSpan = { start: elements[0].start, end: elements[elements.length - 1].end, type: 'array' };
-  const before = request.messages[firstIndex - 1];
-  const after = request.messages[lastIndex + 1];
-  if (spansOverlap(before.span, removedSpan) || (after && spansOverlap(after.span, removedSpan))) return null;
-  for (const element of elements) {
-    const reason = unremovableElementReason(request, element, firstIndex, lastIndex);
-    if (reason === null) continue;
-    logger.debug('WIRE', `Endless Mode stopped a cull before an element: ${reason}`, { protocol: request.protocol, turnOrdinal: turn.ordinal });
-    return null;
-  }
-  return { turn, firstIndex, lastIndex, elements };
-}
-
-/** The run a recorded cull removes: from the turn's first call through the message with the result of `throughCallId`; null when the history no longer has it whole. */
-function recordedCullRunOf(request: WireRequest, conversationElements: JsonSpan[], turn: UserTurn, calls: TurnCall[], throughCallId: string, endLimit: number): CullRun | null {
-  const through = calls.find(call => call.callId === throughCallId);
-  if (!through) return null;
-  const resultIndex = resultIndexOf(request, turn, throughCallId, through.messageIndex);
-  if (resultIndex < 0 || resultIndex >= endLimit) return null;
-  return cullRunOf(request, conversationElements, turn, calls[0].messageIndex, resultIndex);
-}
-
-/**
- * The longest run that may be culled now, with the call it runs through: it
- * ends exactly on the message with the result of its last call (so that
- * call alone fixes it on replay), holds no call after the boundary (the
- * latest call with an observation), and ends before `endLimit`. A Gemini
- * positional id is never the call it runs through. Null when there is none.
- */
-function newCullRunOf(
-  request: WireRequest,
-  conversationElements: JsonSpan[],
-  turn: UserTurn,
-  calls: TurnCall[],
-  boundaryCallOrder: number,
-  endLimit: number,
-): { run: CullRun; throughCallId: string } | null {
-  const firstIndex = calls[0].messageIndex;
-  // An assistant message with a call after the boundary is only partly covered: the run stops before it.
-  const firstPartlyCoveredIndex = calls[boundaryCallOrder + 1]?.messageIndex ?? Number.POSITIVE_INFINITY;
-  for (let throughOrder = boundaryCallOrder; throughOrder >= 0; throughOrder--) {
-    const through = calls[throughOrder];
-    if (GEMINI_REQUEST_POSITIONAL_CALL_ID_PATTERN.test(through.callId)) continue;
-    const lastIndex = resultIndexOf(request, turn, through.callId, through.messageIndex);
-    if (lastIndex < 0 || lastIndex >= endLimit || lastIndex >= firstPartlyCoveredIndex) continue;
-    // The run's last call: a later call before this result (a parallel sibling) would be the one it runs through.
-    if ((calls[throughOrder + 1]?.messageIndex ?? Number.POSITIVE_INFINITY) <= lastIndex) continue;
-    const run = cullRunOf(request, conversationElements, turn, firstIndex, lastIndex);
-    if (run) return { run, throughCallId: through.callId };
-  }
-  return null;
-}
-
-/**
- * The splice that appends `block` to the user message that starts a turn
- * (null when there is no content to append to, or it already ends with it):
- * to its content string after a blank line, or as a text block after its
- * last one (memory injection's append rules). On Responses and Gemini the
- * message may span several elements; the block goes into the last one that
- * holds the user's words (or, with none, the last that holds content).
- */
-function appendToTurnStartSplice(request: WireRequest, conversationElements: JsonSpan[], turn: UserTurn, block: string): ByteSplice | null {
-  const message = request.messages[turn.startIndex];
-  const body = request.body;
-  const contentKey = request.protocol === 'gemini' ? 'parts' : 'content';
-  const holders = conversationElements
-    .filter(element => spansOverlap(element, message.span))
-    .map(element => ScannedObject.of(body, element))
-    .filter((holder): holder is ScannedObject => holder !== undefined && holder.spanOf(contentKey) !== undefined
-      && (request.protocol !== 'openai-responses' || holder.string('role') === 'user'));
-  const wordsPart = [...message.parts].reverse().find(part => part.kind === 'text' && userWordsInText(part.text ?? '') !== '');
-  const holder = (wordsPart && holders.find(candidate => spansOverlap(candidate.span, wordsPart.span))) ?? holders[holders.length - 1];
-  if (!holder) return null;
-  const contentSpan = holder.spanOf(contentKey)!;
-  if (contentSpan.type === 'string') return appendToStringSplice(body, contentSpan, block);
-  if (contentSpan.type === 'array') return appendArrayItemSplice(body, contentSpan, textBlockJson(request.protocol, block));
-  return null;
-}
-
-/**
- * The message that carries a cull's lines at the cull point, as JSON; null
- * when the protocol's rules leave it no place there.
- * - Anthropic: after a system message (Claude Code's turn-start request ends
- *   on one), a system message, and only when the next message that is not a
- *   system one is the model's: a mid-conversation system message must be
- *   last or be followed by an assistant turn, so a user message there would
- *   break that rule for the system message before it. Anywhere else, a user
- *   message: Anthropic merges it with a user message before it, after its
- *   last block, so the bytes and blocks before it stay as they were.
- * - OpenAI Chat: a user message; Responses: a user message item. Neither
- *   starts a turn (the block is never the user's words).
- */
-function linesMessageJson(request: WireRequest, run: CullRun, block: string): string | null {
-  const encoded = encodeJsonString(block);
-  switch (request.protocol) {
-    case 'anthropic': {
-      if (request.messages[run.firstIndex - 1].role !== 'system') return `{"role":"user","content":${encoded}}`;
-      const next = request.messages.slice(run.lastIndex + 1).find(message => message.role !== 'system');
-      return next?.role === 'assistant' ? `{"role":"system","content":${encoded}}` : null;
+  const firstTurnStart = request.messages[turns[0].startIndex].span.start;
+  const removedElements: JsonSpan[] = [];
+  const leadingElements: JsonSpan[] = [];
+  const tailElements: JsonSpan[] = [];
+  const run = strictRun as { firstIndex: number; lastIndex: number } | null;
+  for (const element of conversationElements) {
+    const overlapping = request.messages.map((message, messageIndex) => ({ message, messageIndex }))
+      .filter(({ message }) => spansOverlap(message.span, element));
+    const removedOverlaps = overlapping.filter(({ messageIndex }) => removed.has(messageIndex));
+    if (removedOverlaps.length === 0) {
+      if (overlapping.length === 0 && removed.size > 0 && element.start > firstTurnStart && element.start < Math.max(...[...removed].map(index => request.messages[index].span.end))) {
+        return 'an element the parser skipped sits inside the folded history';
+      }
+      (element.end <= firstTurnStart ? leadingElements : tailElements).push(element);
+      continue;
     }
-    case 'openai-chat':
-      return `{"role":"user","content":${encoded}}`;
-    case 'openai-responses':
-      return `{"type":"message","role":"user","content":[{"type":"input_text","text":${encoded}}]}`;
-    case 'gemini':
-      return null;
+    if (removedOverlaps.length !== overlapping.length) return 'an element holds both folded and kept messages';
+    for (const { message, messageIndex } of removedOverlaps) {
+      const inRun = run !== null && messageIndex >= run.firstIndex && messageIndex <= run.lastIndex;
+      for (const part of message.parts) {
+        if (!spansOverlap(part.span, element)) continue;
+        if (part.kind === 'context') return `it holds a ${part.name ?? 'context'} item`;
+        if (inRun && part.kind === 'text' && message.role === 'user') return 'the current turn\'s run holds a user text part';
+      }
+    }
+    removedElements.push(element);
   }
+  return { removedMessageIndexes: removed, removedElements, leadingElements, tailElements };
 }
 
-/** A cull as splices: the one that puts its lines in, and the run's elements left for the removal. */
-interface PlacedCull {
-  linesSplice: ByteSplice;
-  removedElements: JsonSpan[];
+/** The text of the turn's final reply: its last message when that is the model's words with no tool call; null when the turn has none. */
+function finalReplyTextOf(request: WireRequest, turn: UserTurn): string | null {
+  const last = request.messages[turn.endIndex - 1];
+  if (turn.endIndex - 1 <= turn.startIndex || last.role !== 'assistant' || last.parts.some(part => part.kind === 'tool_call')) return null;
+  const text = last.parts.filter(part => part.kind === 'text').map(part => part.text ?? '').join('\n').trim();
+  return text === '' ? null : text;
+}
+
+/** Whether call (turnOrdinal, order) comes at or before `boundary` (null: nothing is covered). */
+function isCovered(boundary: { turnOrdinal: number; order: number } | null, turnOrdinal: number, order: number): boolean {
+  return boundary !== null && (turnOrdinal < boundary.turnOrdinal || (turnOrdinal === boundary.turnOrdinal && order <= boundary.order));
+}
+
+/** Whether frontier `later` folds more than `earlier`. */
+function foldsFurther(request: WireRequest, turns: UserTurn[], earlier: Frontier, later: Frontier): boolean {
+  if (later.turnOrdinal !== earlier.turnOrdinal) return later.turnOrdinal > earlier.turnOrdinal;
+  if (earlier.throughCallId === null) return false;
+  if (later.throughCallId === null) return true;
+  const calls = callsOf(request, turns[later.turnOrdinal - 1]);
+  return calls.findIndex(call => call.callId === later.throughCallId) > calls.findIndex(call => call.callId === earlier.throughCallId);
+}
+
+/** The JSON of the timeline's parts (text blocks) for the protocol, the breakpoint on the last rows block when `ttl` is set. */
+function timelinePartsJson(protocol: WireRequest['protocol'], blockTexts: string[], ttl: CacheTtl | null): string[] {
+  const partOf = (text: string, marked: boolean) => {
+    const encoded = encodeJsonString(text);
+    switch (protocol) {
+      case 'gemini':
+        return `{"text":${encoded}}`;
+      case 'openai-responses':
+        return `{"type":"input_text","text":${encoded}}`;
+      default:
+        return `{"type":"text","text":${encoded}${marked ? `,"cache_control":${cacheControlJsonOf(ttl as CacheTtl)}` : ''}}`;
+    }
+  };
+  return [...blockTexts.map((text, index) => partOf(text, ttl !== null && index === blockTexts.length - 1)), partOf(TIMELINE_CLOSE_TAG, false)];
+}
+
+/** Every cache_control TTL in the values at `spans`. */
+function ttlsIn(bytes: Uint8Array, spans: Array<JsonSpan | undefined>): Array<CacheTtl | null> {
+  return spans.flatMap(span => (span ? cacheControlTtlsIn(bytes, span) : []));
 }
 
 /**
- * How a run and its lines go into the request at `placement`; null when the
- * lines have no place. At the cull point the run's first element is
- * replaced by the lines' message and the rest removed; appended to the
- * turn's user message, the whole run is removed.
+ * The request with its conversation laid out as leading context, the
+ * timeline, then the tail; null (with the reason logged) when the protocol
+ * leaves the timeline no place. Gemini: the timeline's parts go first in the
+ * user content that starts the tail (two user contents in a row are not
+ * allowed), or are a user content of their own when the tail starts with
+ * the model's; written as `{"role":"user","parts":[` either way, so the
+ * bytes through the timeline are the same in both.
  */
-function placedCullOf(request: WireRequest, conversationElements: JsonSpan[], run: CullRun, lines: readonly string[], placement: CullLinesPlacement): PlacedCull | null {
-  const block = culledWorkBlock(lines);
-  if (placement === 'appended-to-turn-start-message') {
-    const linesSplice = appendToTurnStartSplice(request, conversationElements, run.turn, block);
-    return linesSplice ? { linesSplice, removedElements: run.elements } : null;
+function withTimeline(request: WireRequest, conversationArraySpan: JsonSpan, region: FoldRegion, blockTexts: string[]): Uint8Array | null {
+  const body = request.body;
+  const raw = (span: JsonSpan) => rawText(body, span);
+  let ttl: CacheTtl | null = null;
+  if (request.protocol === 'anthropic') {
+    const root = new ScannedObject(body, scanDocument(body));
+    const topLevel = root.spanOf('cache_control');
+    const topLevelTtl = topLevel ? ScannedObject.of(body, topLevel)?.string('ttl') ?? '5m' : undefined;
+    // Render order is tools → system → messages; automatic caching (top-level cache_control) marks the last block.
+    ttl = gatewayBreakpointTtl(
+      ttlsIn(body, [root.spanOf('tools'), root.spanOf('system'), ...region.leadingElements]),
+      [...ttlsIn(body, region.tailElements), ...(topLevelTtl === undefined ? [] : [topLevelTtl === '5m' || topLevelTtl === '1h' ? topLevelTtl as CacheTtl : null])],
+      'Endless Mode\'s timeline breakpoint',
+    );
   }
-  const messageJson = linesMessageJson(request, run, block);
-  if (messageJson === null) return null;
-  const [first, ...rest] = run.elements;
-  return { linesSplice: { start: first.start, end: first.end, replacement: utf8Encoder.encode(messageJson) }, removedElements: rest };
-}
-
-/** What a run takes out, less what its lines put back, in estimated tokens. */
-function culledTokensOf(request: WireRequest, run: CullRun, block: string): number {
-  const removedTokens = run.elements.reduce((sum, element) => sum + estimateTextTokens(rawText(request.body, element)), 0);
-  return Math.max(0, removedTokens - estimateTextTokens(block));
+  const parts = timelinePartsJson(request.protocol, blockTexts, ttl).join(',');
+  const items: string[] = region.leadingElements.map(raw);
+  let tail = region.tailElements.map(raw);
+  switch (request.protocol) {
+    case 'anthropic':
+    case 'openai-chat':
+      items.push(`{"role":"user","content":[${parts}]}`);
+      break;
+    case 'openai-responses':
+      items.push(`{"type":"message","role":"user","content":[${parts}]}`);
+      break;
+    case 'gemini': {
+      const lastLeading = region.leadingElements.at(-1);
+      if (lastLeading && ScannedObject.of(body, lastLeading)?.string('role') !== 'model') {
+        logger.debug('WIRE', 'Endless Mode has no place for the timeline: the agent\'s leading context ends on a user content');
+        return null;
+      }
+      const first = region.tailElements[0] ? ScannedObject.of(body, region.tailElements[0]) : undefined;
+      if (first && first.string('role') === 'user') {
+        const members = [...objectMembers(body, first.span)];
+        const partsSpan = first.spanOf('parts');
+        if (partsSpan?.type !== 'array' || members.some(member => member.key !== 'role' && member.key !== 'parts')) {
+          logger.debug('WIRE', 'Endless Mode has no place for the timeline: the tail\'s first user content is not only role and parts');
+          return null;
+        }
+        const userParts = [...arrayElements(body, partsSpan)].map(raw);
+        items.push(`{"role":"user","parts":[${[parts, ...userParts].join(',')}]}`);
+        tail = tail.slice(1);
+      } else {
+        items.push(`{"role":"user","parts":[${parts}]}`);
+      }
+      break;
+    }
+  }
+  return replaceSpan(body, conversationArraySpan, `[${[...items, ...tail].join(',')}]`);
 }
 
 export interface EndlessModeStageOptions {
@@ -453,28 +428,31 @@ export function createEndlessModeStage(options: EndlessModeStageOptions): WireRe
     // durable header's turn-start fetch does, plus the shared margin for the splices and ledger writes.
     budgetMs: contextTimeoutMs + STAGE_BUDGET_MARGIN_MS,
     enabledFor: endlessModeEnabledFor,
-    // A conversation whose culls once went missing (the stage was off for one
-    // of its requests) is never culled again: the model has answered the
-    // original history since, so putting the culls back would rewrite it.
+    // A conversation whose timeline once went missing (the stage was off for one of its requests) is never
+    // given one again: the model has answered the original history since, so putting it back would rewrite it.
     appliesTo: context => context.ledger?.status === 'born' && context.ledger.get(SUSPENDED_ENTRY_ID) === undefined,
 
     whileOff(ledger) {
       if (ledger.status !== 'born' || ledger.get(SUSPENDED_ENTRY_ID)) return;
-      if (!ledger.entries().some(entry => entry.type === 'cull')) return;
+      const injection = ledger.get('injection');
+      const hadTimeline = ledger.entries().some(entry => entry.type === 'timelineFold' || entry.type === 'cull')
+        || (injection?.type === 'injection' && injection.placement === 'timeline');
+      if (!hadTimeline) return;
       suspend(ledger);
-      logger.debug('WIRE', 'Endless Mode was off for a conversation it had culled; it never culls that conversation again', {
+      logger.debug('WIRE', 'Endless Mode was off for a conversation it had given a timeline; it never folds that conversation again', {
         conversationKey: ledger.conversationKey,
       });
     },
 
     async onRequest(context: WireRewriteContext, body: Uint8Array) {
       const ledger = context.ledger as WireConversationLedgerView;
-      if (ledger.entries().some(entry => entry.type === 'swap' || entry.type === 'thinkingDrop')) {
-        // Endless Mode v1 swapped this conversation; v2 does not put swaps back, so it leaves it alone for good.
+      if (ledger.entries().some(entry => entry.type === 'swap' || entry.type === 'thinkingDrop' || entry.type === 'cull')) {
+        // Endless Mode v1's swaps, or the earlier per-turn cull layout: neither is put back, so the conversation is left alone for good.
         suspend(ledger);
-        logger.debug('WIRE', 'Endless Mode suspended a conversation the v1 swap stage had changed', { conversationKey: ledger.conversationKey });
+        logger.debug('WIRE', 'Endless Mode suspended a conversation an earlier layout had changed', { conversationKey: ledger.conversationKey });
         return undefined;
       }
+      const rowFormat = endlessTimelineRowFormatOf(context.settings[ENDLESS_ROW_FORMAT_SETTING]);
       const request = context.requestOf(body);
       const conversationArraySpan = conversationArraySpanOf(request);
       const turns = userTurnsOf(request);
@@ -482,16 +460,15 @@ export function createEndlessModeStage(options: EndlessModeStageOptions): WireRe
       if (!conversationArraySpan || !latestTurn) return undefined;
       const conversationElements = [...arrayElements(body, conversationArraySpan)];
       const toolUseIdByCallId = toolUseIdsByCallIdOf(request);
-      const observationOf = (callId: string) => {
+      const observationsOf = (callId: string): WireToolObservation[] => {
         const toolUseId = toolUseIdByCallId.get(callId);
-        return toolUseId === undefined ? undefined : options.observationLookup.cached(ledger.conversationKey, toolUseId);
+        return (toolUseId === undefined ? undefined : options.observationLookup.cached(ledger.conversationKey, toolUseId)) ?? [];
       };
+      const lookupQuery = (toolUseIds: string[]) => ({
+        contentSessionId: contentSessionIdOf(context.identity), platformSource: context.identity.agentId, toolUseIds, rowFormat,
+      });
 
-      // New culls: at a turn start, or mid-turn when nothing in the current turn is bound to the prefix.
-      const currentTurnHoldsReasoning = turnHoldsReasoning(request, latestTurn);
-      // (At a turn start the latest turn holds no tool work, so only earlier turns can be culled.)
-      const mayCullNow = !currentTurnHoldsReasoning || context.identity.turnStart;
-      // The in-flight loop's latest assistant message, and what follows it, is never culled.
+      // The in-flight loop's latest assistant message, and what follows it, is never folded.
       let latestAssistantIndex = request.messages.length;
       for (let messageIndex = request.messages.length - 1; messageIndex > latestTurn.startIndex; messageIndex--) {
         if (request.messages[messageIndex].role === 'assistant') {
@@ -500,173 +477,201 @@ export function createEndlessModeStage(options: EndlessModeStageOptions): WireRe
         }
       }
 
-      const recordedByTurn = new Map<number, CullEntry>();
-      for (const entry of ledger.entries()) {
-        if (entry.type === 'cull') recordedByTurn.set(entry.turnOrdinal, entry);
+      const recordedFolds = ledger.entries().filter((entry): entry is FoldEntry => entry.type === 'timelineFold').sort((first, second) => first.sequence - second.sequence);
+      const frontierOf = (fold: FoldEntry | undefined): Frontier => fold
+        ? { turnOrdinal: fold.throughTurnOrdinal, throughCallId: fold.throughCallId }
+        : { turnOrdinal: 0, throughCallId: null };
+      // The newest fold this request's history holds. An older one when the agent sent an earlier request again
+      // (a retry): it gets the timeline it had then, and nothing new is folded on it.
+      let foldsInForceCount = recordedFolds.length;
+      while (foldsInForceCount > 1 && typeof foldRegionOf(request, conversationElements, turns, frontierOf(recordedFolds[foldsInForceCount - 1]), latestAssistantIndex) === 'string') {
+        foldsInForceCount--;
+      }
+      const isRetry = foldsInForceCount < recordedFolds.length;
+      if (isRetry && foldsInForceCount <= 1) {
+        // Not even the first fold matches: the agent changed the folded history (compaction, rewind), and the
+        // frozen timeline no longer describes it.
+        suspend(ledger);
+        logger.warn('WIRE', 'Endless Mode suspended a conversation: its folded history no longer matches the request', {
+          conversationKey: ledger.conversationKey,
+          reason: foldRegionOf(request, conversationElements, turns, frontierOf(recordedFolds.at(-1)), latestAssistantIndex),
+        });
+        return undefined;
+      }
+      const folds = recordedFolds.slice(0, foldsInForceCount);
+      const recordedFrontier = frontierOf(folds.at(-1));
+      // The calls not folded yet, in conversation order, with their turn and order in it.
+      const unfoldedCalls: Array<{ turn: UserTurn; order: number; call: TurnCall }> = [];
+      for (const turn of turns) {
+        if (turn.ordinal < recordedFrontier.turnOrdinal || (turn.ordinal === recordedFrontier.turnOrdinal && recordedFrontier.throughCallId === null)) continue;
+        const calls = callsOf(request, turn);
+        const throughOrder = turn.ordinal === recordedFrontier.turnOrdinal ? calls.findIndex(call => call.callId === recordedFrontier.throughCallId) : -1;
+        calls.forEach((call, order) => { if (order > throughOrder) unfoldedCalls.push({ turn, order, call }); });
       }
 
+      // A fold changes the bytes in front of the current turn: with reasoning bound to them, only at a turn start.
+      const mayFoldNow = !isRetry && (!turnHoldsReasoning(request, latestTurn) || context.identity.turnStart);
       if (context.identity.turnStart) {
-        // A turn start is the one moment a cull of earlier turns costs the cache nothing extra, so this request
-        // waits (within CONTEXT_TIMEOUT_MS) for the observations of their work not culled yet, rather than
-        // culling on the next request, mid-loop, and rewriting the cache twice. Mid-loop requests never wait.
-        const toolUseIdsToAwait: string[] = [];
-        for (const turn of turns) {
-          if (turn === latestTurn) continue;
-          const calls = callsOf(request, turn);
-          const recorded = recordedByTurn.get(turn.ordinal);
-          const recordedThroughOrder = recorded ? calls.findIndex(call => call.callId === recorded.throughCallId) : -1;
-          for (const call of calls.slice(recordedThroughOrder + 1)) {
-            const toolUseId = toolUseIdByCallId.get(call.callId);
-            if (toolUseId !== undefined) toolUseIdsToAwait.push(toolUseId);
-          }
-        }
+        // A turn start is when a fold of earlier turns costs nothing extra, so it waits (within
+        // CONTEXT_TIMEOUT_MS) for their observations, rather than folding mid-loop a request later.
+        const toolUseIdsToAwait = unfoldedCalls.filter(({ turn }) => turn !== latestTurn)
+          .map(({ call }) => toolUseIdByCallId.get(call.callId)).filter((id): id is string => id !== undefined);
         if (toolUseIdsToAwait.length > 0) {
           const deadline = now() + contextTimeoutMs;
-          const query = { contentSessionId: contentSessionIdOf(context.identity), platformSource: context.identity.agentId, toolUseIds: toolUseIdsToAwait };
-          await settledWithin(options.observationLookup.requestRefresh(ledger.conversationKey, query), contextTimeoutMs);
+          await settledWithin(options.observationLookup.requestRefresh(ledger.conversationKey, lookupQuery(toolUseIdsToAwait)), contextTimeoutMs);
           // A lookup already in flight (another request's) was joined above; ask again for what it did not cover.
           const remainingMs = deadline - now();
-          if (remainingMs > 0) await settledWithin(options.observationLookup.requestRefresh(ledger.conversationKey, query), remainingMs);
+          if (remainingMs > 0) await settledWithin(options.observationLookup.requestRefresh(ledger.conversationKey, lookupQuery(toolUseIdsToAwait)), remainingMs);
         }
       }
 
-      const runs: Array<{ run: CullRun; entry: CullEntry; placed: PlacedCull }> = [];
-      const newCulls: Array<{ run: CullRun; entry: CullEntry; placed: PlacedCull }> = [];
-      for (const turn of turns) {
-        const calls = callsOf(request, turn);
-        if (calls.length === 0) continue;
-        const endLimit = turn === latestTurn ? latestAssistantIndex : turn.endIndex;
-        const recorded = recordedByTurn.get(turn.ordinal);
-        const recordedRun = recorded ? recordedCullRunOf(request, conversationElements, turn, calls, recorded.throughCallId, endLimit) : null;
-        if (recorded && !recordedRun) {
-          // The agent changed this turn's history (compaction, rewind): nothing of it is culled now, or built on.
-          logger.debug('WIRE', 'Endless Mode left a turn as it came: its recorded cull no longer matches the history', {
-            conversationKey: ledger.conversationKey, turnOrdinal: turn.ordinal,
-          });
-          continue;
+      // The new frontier: as far as covered work goes, finished turns whole, then one partial turn.
+      let newFrontier: Frontier = recordedFrontier;
+      if (mayFoldNow) {
+        let boundary: { turnOrdinal: number; order: number } | null = null;
+        for (const { turn, order, call } of unfoldedCalls) {
+          if (turn === latestTurn && call.messageIndex >= latestAssistantIndex) break;
+          if (observationsOf(call.callId).length > 0) boundary = { turnOrdinal: turn.ordinal, order };
         }
-        if (recorded && recordedRun) {
-          const placed = placedCullOf(request, conversationElements, recordedRun, recorded.lines, linesPlacementOf(recorded));
-          if (!placed) {
-            // Without its lines the cull cannot be put back as it was frozen; failing open on every request would
-            // send the original history, so the conversation goes as it comes from now on.
-            suspend(ledger);
-            logger.warn('WIRE', 'Endless Mode suspended a conversation: a recorded cull\'s lines have no place in its turn', {
-              conversationKey: ledger.conversationKey, turnOrdinal: turn.ordinal, linesPlacement: linesPlacementOf(recorded),
-            });
-            return undefined;
+        const startOrdinal = recordedFrontier.throughCallId === null ? recordedFrontier.turnOrdinal + 1 : recordedFrontier.turnOrdinal;
+        for (const turn of turns.slice(startOrdinal - 1)) {
+          const calls = callsOf(request, turn);
+          const fullyCovered = calls.every((_, order) => isCovered(boundary, turn.ordinal, order));
+          if (turn !== latestTurn && fullyCovered) {
+            const candidate: Frontier = { turnOrdinal: turn.ordinal, throughCallId: null };
+            if (typeof foldRegionOf(request, conversationElements, turns, candidate, latestAssistantIndex) !== 'string') {
+              newFrontier = candidate;
+              continue;
+            }
+            // The whole turn may not go (a context item in it): as far into it as may.
           }
-          runs.push({ run: recordedRun, entry: recorded, placed });
+          // Partly covered: through the latest covered call whose run may go, never a position id.
+          for (let order = calls.length - 1; order >= 0; order--) {
+            if (!isCovered(boundary, turn.ordinal, order)) continue;
+            const call = calls[order];
+            if (GEMINI_REQUEST_POSITIONAL_CALL_ID_PATTERN.test(call.callId)) continue;
+            // The run's last call: a later call before its result (a parallel sibling) would be the one it runs through.
+            const resultIndex = resultIndexOf(request, turn, call.callId, call.messageIndex);
+            if ((calls[order + 1]?.messageIndex ?? Number.POSITIVE_INFINITY) <= resultIndex) continue;
+            // An assistant message with a call that is not covered is not folded: the run stops before it.
+            if (calls.some((other, otherOrder) => otherOrder > order && other.messageIndex === call.messageIndex)) continue;
+            const candidate: Frontier = { turnOrdinal: turn.ordinal, throughCallId: call.callId };
+            if (!foldsFurther(request, turns, newFrontier, candidate)) break;
+            if (typeof foldRegionOf(request, conversationElements, turns, candidate, latestAssistantIndex) !== 'string') {
+              newFrontier = candidate;
+              break;
+            }
+          }
+          break;
         }
-        if (!mayCullNow) continue;
-
-        let boundaryCallOrder = -1;
-        calls.forEach((call, order) => {
-          if (observationOf(call.callId)) boundaryCallOrder = order;
-        });
-        const recordedThroughOrder = recorded ? calls.findIndex(call => call.callId === recorded.throughCallId) : -1;
-        if (boundaryCallOrder <= recordedThroughOrder) continue;
-        if (GEMINI_REQUEST_POSITIONAL_CALL_ID_PATTERN.test(calls[boundaryCallOrder].callId)) {
-          // A position id is a message index: it would name another call once the history shifts.
-          logger.debug('WIRE', 'Endless Mode left a turn as it came: its boundary call has only a position id', {
-            conversationKey: ledger.conversationKey, turnOrdinal: turn.ordinal,
-          });
-          continue;
-        }
-        const found = newCullRunOf(request, conversationElements, turn, calls, boundaryCallOrder, endLimit);
-        if (!found) continue;
-        const { run, throughCallId } = found;
-        if (calls.findIndex(call => call.callId === throughCallId) <= recordedThroughOrder) continue;
-        const callsInRun = calls.filter(call => call.messageIndex <= run.lastIndex);
-
-        // The lines already frozen stay as they were; observations new to this turn follow, in message order.
-        const lines = [...(recorded?.lines ?? [])];
-        const observationIds = [...(recorded?.observationIds ?? [])];
-        for (const call of callsInRun) {
-          const observation = observationOf(call.callId);
-          if (!observation || observationIds.includes(observation.observationId)) continue;
-          observationIds.push(observation.observationId);
-          lines.push(observation.timelineLine);
-        }
-        // A cull needs a line; one that grows needs none of its own (the worker links a whole batch to its first observation).
-        if (observationIds.length === 0) continue;
-        // A turn culled before keeps its lines where they went then: moving them would change bytes already sent.
-        const linesPlacement = recorded ? linesPlacementOf(recorded) : linesPlacementOfNewTurn(request.protocol);
-        const placed = placedCullOf(request, conversationElements, run, lines, linesPlacement);
-        if (!placed) {
-          logger.debug('WIRE', 'Endless Mode left a turn as it came: its lines have no place in it', {
-            conversationKey: ledger.conversationKey, turnOrdinal: turn.ordinal, linesPlacement,
-          });
-          continue;
-        }
-        newCulls.push({
-          run,
-          placed,
-          entry: {
-            type: 'cull', turnOrdinal: turn.ordinal, throughCallId, lines, observationIds,
-            culledTokensEst: culledTokensOf(request, run, culledWorkBlock(lines)), linesPlacement,
-          },
-        });
       }
 
-      // Recorded before the culls that need it: held writes commit in order, with no rollback. Every turn start
-      // cuts up to itself, cull or not, so each cut only takes out thinking after the previous turn-start
-      // request's last message: a later cull never reaches back into a prefix that request cached.
+      let newFold: FoldEntry | null = null;
+      if (foldsFurther(request, turns, recordedFrontier, newFrontier)) {
+        const seenObservationIds = new Set(folds.flatMap(fold => fold.observationIds));
+        const rows: string[] = [];
+        const observationIds: number[] = [];
+        const startOrdinal = recordedFrontier.throughCallId === null ? recordedFrontier.turnOrdinal + 1 : recordedFrontier.turnOrdinal;
+        for (const turn of turns.slice(startOrdinal - 1, newFrontier.turnOrdinal)) {
+          if (turn.ordinal > recordedFrontier.turnOrdinal) {
+            const words = userWordsInMessage(request.messages[turn.startIndex]);
+            if (words !== '') rows.push(renderAgentUserPromptRow(words));
+          }
+          const calls = callsOf(request, turn);
+          const fromOrder = turn.ordinal === recordedFrontier.turnOrdinal ? calls.findIndex(call => call.callId === recordedFrontier.throughCallId) + 1 : 0;
+          const throughOrder = turn.ordinal === newFrontier.turnOrdinal && newFrontier.throughCallId !== null
+            ? calls.findIndex(call => call.callId === newFrontier.throughCallId) : calls.length - 1;
+          for (const call of calls.slice(fromOrder, throughOrder + 1)) {
+            for (const observation of observationsOf(call.callId)) {
+              if (seenObservationIds.has(observation.observationId)) continue;
+              seenObservationIds.add(observation.observationId);
+              observationIds.push(observation.observationId);
+              rows.push(observation.row);
+            }
+          }
+          const whole = turn.ordinal < newFrontier.turnOrdinal || newFrontier.throughCallId === null;
+          const reply = whole ? finalReplyTextOf(request, turn) : null;
+          if (reply !== null) rows.push(renderAgentAssistantMessageRow(reply));
+        }
+        const before = foldRegionOf(request, conversationElements, turns, recordedFrontier, latestAssistantIndex) as FoldRegion;
+        const after = foldRegionOf(request, conversationElements, turns, newFrontier, latestAssistantIndex) as FoldRegion;
+        const wasRemoved = new Set(before.removedElements.map(element => element.start));
+        const removedTokens = after.removedElements.filter(element => !wasRemoved.has(element.start))
+          .reduce((sum, element) => sum + estimateTextTokens(rawText(body, element)), 0);
+        newFold = {
+          type: 'timelineFold', sequence: (recordedFolds.at(-1)?.sequence ?? 0) + 1,
+          throughTurnOrdinal: newFrontier.turnOrdinal, throughCallId: newFrontier.throughCallId,
+          rows, observationIds, culledTokensEst: Math.max(0, removedTokens - estimateTextTokens(timelineRowsBlockText(rows))),
+        };
+      }
+
+      // Opened on the first request the stage applies to; recorded before the cut and the fold that build on it.
+      if (folds.length === 0) {
+        const opener: FoldEntry = { type: 'timelineFold', sequence: 0, throughTurnOrdinal: 0, throughCallId: null, rows: [], observationIds: [], culledTokensEst: 0 };
+        folds.push(ledger.record(opener) as FoldEntry);
+      }
+      // Recorded before the fold that needs it: held writes commit in order, with no rollback. Every turn start
+      // cuts up to itself, fold or not, so each cut only takes out thinking after the previous turn-start request's last message.
       let cutUntilTurnOrdinal = request.protocol === 'anthropic' ? thinkingCutInForce(ledger) : null;
-      // (Turn 1's start has nothing before it to cut.)
-      if ((newCulls.length > 0 || (context.identity.turnStart && latestTurn.ordinal > 1)) && request.protocol === 'anthropic'
+      if ((newFold !== null || (context.identity.turnStart && latestTurn.ordinal > 1)) && request.protocol === 'anthropic'
         && (cutUntilTurnOrdinal === null || cutUntilTurnOrdinal < latestTurn.ordinal)) {
         ledger.record({ type: 'thinkingCut', untilTurnOrdinal: latestTurn.ordinal });
         cutUntilTurnOrdinal = latestTurn.ordinal;
       }
-      for (const newCull of newCulls) {
-        const recorded = ledger.record(newCull.entry);
-        if (recorded.type !== 'cull') continue;
-        if (recorded === newCull.entry) {
-          // Tokens saved count each cull once: only what this entry takes out beyond the turn's earlier cull, never the replays.
-          const earlierCulledTokensEst = recordedByTurn.get(newCull.run.turn.ordinal)?.culledTokensEst ?? 0;
-          context.estimates.culledTokens += Math.max(0, recorded.culledTokensEst - earlierCulledTokensEst);
-        }
-        const index = runs.findIndex(applied => applied.run.turn === newCull.run.turn);
-        // First write wins: an entry already there under this id keeps its own lines, where it put them.
-        const placed = recorded === newCull.entry ? newCull.placed : placedCullOf(request, conversationElements, newCull.run, recorded.lines, linesPlacementOf(recorded));
-        if (!placed) continue;
-        const applied = { run: newCull.run, entry: recorded, placed };
-        if (index >= 0) runs[index] = applied;
-        else runs.push(applied);
-      }
-
-      // Background lookups for the calls not culled yet; never waited for.
-      const culledCallIds = new Set<string>();
-      for (const { run } of runs) {
-        for (let messageIndex = run.firstIndex; messageIndex <= run.lastIndex; messageIndex++) {
-          for (const part of request.messages[messageIndex].parts) if (part.kind === 'tool_call' && part.callId) culledCallIds.add(part.callId);
+      let frontierInForce = recordedFrontier;
+      if (newFold !== null) {
+        const recorded = ledger.record(newFold);
+        if (recorded === newFold) {
+          folds.push(newFold);
+          frontierInForce = newFrontier;
+          context.estimates.culledTokens += newFold.culledTokensEst;
+        } else if (recorded.type === 'timelineFold') {
+          // First write wins: another request recorded this sequence; it goes as recorded, on the next request.
+          logger.debug('WIRE', 'Endless Mode found its fold already recorded by another request; this request keeps the timeline it had', {
+            conversationKey: ledger.conversationKey, sequence: newFold.sequence,
+          });
         }
       }
-      const toolUseIdsToLookUp = [...toolUseIdByCallId].filter(([callId]) => !culledCallIds.has(callId)).map(([, toolUseId]) => toolUseId);
-      if (toolUseIdsToLookUp.length > 0) {
-        void options.observationLookup.requestRefresh(ledger.conversationKey, {
-          contentSessionId: contentSessionIdOf(context.identity),
-          platformSource: context.identity.agentId,
-          toolUseIds: toolUseIdsToLookUp,
-        });
-      }
 
-      let rewritten = request.body;
-      if (runs.length > 0) {
-        // A run's first element replaced by its lines' message ends where the removal of the next begins: no overlap.
-        const removedElementStarts = new Set(runs.flatMap(({ placed }) => placed.removedElements.map(element => element.start)));
-        const splices = [
-          ...arrayItemRemovalSplices(body, conversationArraySpan, element => removedElementStarts.has(element.start)),
-          ...runs.map(({ placed }) => placed.linesSplice),
-        ];
-        rewritten = applyByteSplices(body, splices);
+      // Background lookups for the calls not folded yet; never waited for.
+      const foldedCallIds = new Set<string>();
+      const inForceRegion = foldRegionOf(request, conversationElements, turns, frontierInForce, latestAssistantIndex) as FoldRegion;
+      for (const messageIndex of inForceRegion.removedMessageIndexes) {
+        for (const part of request.messages[messageIndex].parts) if (part.kind === 'tool_call' && part.callId) foldedCallIds.add(part.callId);
       }
+      const toolUseIdsToLookUp = [...toolUseIdByCallId].filter(([callId]) => !foldedCallIds.has(callId)).map(([, toolUseId]) => toolUseId);
+      if (toolUseIdsToLookUp.length > 0) void options.observationLookup.requestRefresh(ledger.conversationKey, lookupQuery(toolUseIdsToLookUp));
+
+      // The thinking cut first, on the agent's bytes; then the layout, on the cut request (positions are ordinals and call ids).
+      let cutRequest = request;
       if (cutUntilTurnOrdinal !== null) {
-        const cutSplices = thinkingCutSplices(rewritten === request.body ? request : context.requestOf(rewritten), cutUntilTurnOrdinal);
-        if (cutSplices.length > 0) rewritten = applyByteSplices(rewritten, cutSplices);
+        const cutSplices = thinkingCutSplices(request, cutUntilTurnOrdinal);
+        if (cutSplices.length > 0) cutRequest = context.requestOf(applyByteSplices(body, cutSplices));
       }
-      return rewritten === request.body ? undefined : rewritten;
+      const cutArraySpan = conversationArraySpanOf(cutRequest) as JsonSpan;
+      const cutTurns = userTurnsOf(cutRequest);
+      let cutLatestAssistantIndex = cutRequest.messages.length;
+      for (let messageIndex = cutRequest.messages.length - 1; messageIndex > cutTurns[cutTurns.length - 1].startIndex; messageIndex--) {
+        if (cutRequest.messages[messageIndex].role === 'assistant') {
+          cutLatestAssistantIndex = messageIndex;
+          break;
+        }
+      }
+      const region = foldRegionOf(cutRequest, [...arrayElements(cutRequest.body, cutArraySpan)], cutTurns, frontierInForce, cutLatestAssistantIndex);
+      if (typeof region === 'string') throw new Error(`the fold in force does not apply to the cut request: ${region}`);
+      const injection = ledger.get('injection');
+      const sessionStartText = injection?.type === 'injection' && injection.placement === 'timeline' ? injection.text : null;
+      const blockTexts = timelineBlockTextsOf(sessionStartText, folds.map(fold => fold.rows));
+      const rewritten = withTimeline(cutRequest, cutArraySpan, region, blockTexts);
+      if (rewritten === null) {
+        // Without a place for the timeline the frozen layout cannot be put back; failing open on every request
+        // would send the original history, so the conversation goes as it comes from now on.
+        suspend(ledger);
+        logger.warn('WIRE', 'Endless Mode suspended a conversation: its timeline has no place in the request', { conversationKey: ledger.conversationKey });
+        return undefined;
+      }
+      if (sessionStartText) context.estimates.injectedTokens += estimateTextTokens(sessionStartText);
+      return rewritten;
     },
   };
 }

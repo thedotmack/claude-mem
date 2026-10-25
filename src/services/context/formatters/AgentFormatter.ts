@@ -10,6 +10,7 @@ import { ModeManager } from '../../domain/ModeManager.js';
 import { formatObservationTokenDisplay } from '../TokenCalculator.js';
 import { formatHeaderDateTime } from '../../../shared/timeline-formatting.js';
 import { formatContextReferenceId } from './id-display.js';
+import { renderAgentAssistantMessageRow } from './exchange-rows.js';
 
 function formatActiveMode(): string {
   const manager = ModeManager.getInstance();
@@ -149,7 +150,7 @@ export function renderAgentPreviouslySection(priorMessages: PriorMessages): stri
     '',
     `**Previously**`,
     '',
-    `A: ${priorMessages.assistantMessage}`,
+    renderAgentAssistantMessageRow(priorMessages.assistantMessage),
     ''
   ];
 }

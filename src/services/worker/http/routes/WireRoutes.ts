@@ -14,6 +14,9 @@ import { MY_RULES_FILE_PATH } from '../../../../shared/paths.js';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import type { ContextReadWorkerClient } from '../../../context/ContextReadWorkerClient.js';
 import { workViewLoopbackOnly } from './WorkViewRoutes.js';
+import { projectMemoryContent } from '../../../../shared/progressive-search.js';
+import { ENDLESS_TIMELINE_ROW_FORMATS, type EndlessTimelineRowFormat } from '../../../../shared/endless-timeline-row-format.js';
+import type { ToolUseObservationRow } from '../../../sqlite/tool-uses.js';
 
 /** At most this many ids per lookup: the gateway asks about one conversation's results at a time. */
 const MAX_TOOL_USE_IDS_PER_LOOKUP = 500;
@@ -22,15 +25,18 @@ const toolObservationsSchema = z.object({
   platformSource: z.string().trim().min(1),
   contentSessionId: z.string().trim().min(1),
   toolUseIds: z.array(z.string().min(1)).max(MAX_TOOL_USE_IDS_PER_LOOKUP),
+  /** How `row` is rendered (CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_ROW_FORMAT); an unknown format is a 400. */
+  rowFormat: z.enum(ENDLESS_TIMELINE_ROW_FORMATS).default('timeline'),
 }).strict();
 
 /**
  * Routes the wire gateway (src/services/wire-gateway/) calls on the worker.
  * POST /api/wire/tool-observations: which of a session's tool uses already
- * have an observation, and that observation's title, narrative and facts,
- * for Endless Mode (plan Phase 11 task 1), with the observation's one-line
- * timeline entry. Unlike POST /api/tool-uses/batch it never sends the tools'
- * bodies back.
+ * have an observation (one row per observation of the batch it was
+ * summarized in), and that observation's title, narrative and facts, for
+ * Endless Mode (plan Phase 11 task 1), with the observation's one-line
+ * timeline entry and its timeline row in the asked `rowFormat`. Unlike POST
+ * /api/tool-uses/batch it never sends the tools' bodies back.
  * GET /api/wire/header?cwd=<abs>: MY-RULES.md as written on disk, narrowed to
  * that checkout's projects, and its sha256, for the gateway's durable header.
  * Read from the file rather than re-rendered from the rule rows, so the hash
@@ -61,7 +67,7 @@ export class WireRoutes extends BaseRouteHandler {
   }
 
   private handleToolObservations = this.wrapHandler((req: Request, res: Response): void => {
-    const { platformSource, contentSessionId, toolUseIds } = req.body as z.infer<typeof toolObservationsSchema>;
+    const { platformSource, contentSessionId, toolUseIds, rowFormat } = req.body as z.infer<typeof toolObservationsSchema>;
     const rows = this.dbManager.getSessionStore().getToolUseObservations({ contentSessionId, platformSource, toolUseIds });
     logger.debug('HTTP', 'Wire gateway tool observation lookup', { asked: toolUseIds.length, found: rows.length });
     // The session-start timeline's row renderer and config, always with the time
@@ -70,18 +76,22 @@ export class WireRoutes extends BaseRouteHandler {
     // its time filled in.
     const contextConfig = loadContextConfig();
     res.json({
-      observations: rows.map(row => ({
-        toolUseId: row.tool_use_id,
-        observationId: row.observation_id,
-        title: row.title ?? '',
-        narrative: row.narrative ?? '',
-        facts: factsOf(row.facts),
-        timelineLine: renderAgentTableRow(
+      observations: rows.map(row => {
+        const timelineLine = renderAgentTableRow(
           { id: row.observation_id, type: row.type, title: row.title },
           formatTime(row.created_at_epoch),
           contextConfig,
-        ),
-      })),
+        );
+        return {
+          toolUseId: row.tool_use_id,
+          observationId: row.observation_id,
+          title: row.title ?? '',
+          narrative: row.narrative ?? '',
+          facts: factsOf(row.facts),
+          timelineLine,
+          row: timelineRowOf(row, timelineLine, rowFormat),
+        };
+      }),
     });
   });
 
@@ -139,6 +149,26 @@ function rulesForProjects(rulesFile: string, projects: Set<string>): string | nu
     return project === undefined || projects.has(project);
   });
   return kept.some(chunk => chunk.startsWith('## ')) ? kept.join('\n') : null;
+}
+
+/**
+ * An observation as an Endless Mode timeline row: its one-line timeline
+ * entry, then for the fuller formats the observation as get_observations
+ * shows its content (projectMemoryContent: subtitle, narrative, facts,
+ * files), the narrative only for `observation-with-narrative`. A detail that
+ * renderer shortened says so, as get_observations does.
+ */
+function timelineRowOf(row: ToolUseObservationRow, timelineLine: string, rowFormat: EndlessTimelineRowFormat): string {
+  if (rowFormat === 'timeline') return timelineLine;
+  const projected = projectMemoryContent({
+    subtitle: row.subtitle,
+    ...(rowFormat === 'observation-with-narrative' ? { narrative: row.narrative } : {}),
+    facts: row.facts,
+    files_modified: row.files_modified,
+    files_read: row.files_read,
+  });
+  return [timelineLine, projected.text, projected.truncated ? '[Detail shortened to fit the memory budget.]' : '']
+    .filter(text => text !== '').join('\n');
 }
 
 function factsOf(facts: string | null): string[] {

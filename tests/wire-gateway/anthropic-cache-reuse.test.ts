@@ -5,7 +5,8 @@ import { WIRE_GATEWAY_DIR } from '../../src/shared/paths.js';
 import { addWireGatewayRoute } from '../../src/services/wire-gateway/routes.js';
 import { WireConversationLedger } from '../../src/services/wire-gateway/ledger/conversation-ledger.js';
 import { WireObservationLookup, type WireToolObservation, type WireToolObservationQuery } from '../../src/services/wire-gateway/endless/observation-lookup.js';
-import { culledWorkBlock } from '../../src/services/wire-gateway/endless/endless-mode-stage.js';
+import { timelineBlockTextsOf, timelineRowsBlockText } from '../../src/services/wire-gateway/endless/endless-mode-stage.js';
+import { TIMELINE_CLOSE_TAG } from '../../src/services/wire-gateway/identity/user-words.js';
 import { ANTHROPIC_MAX_CACHE_BREAKPOINTS, withHeadCacheBreakpoint } from '../../src/services/wire-gateway/header/head-cache-breakpoint-stage.js';
 import { AnthropicPromptCacheModel, type CacheRead } from './helpers/anthropic-cache-model.js';
 import { startFakeUpstream, type FakeUpstream } from './helpers/fake-upstream.js';
@@ -14,10 +15,8 @@ import { startWireGatewayForTest, type StartedWireGateway } from './helpers/star
 // Which cache entries each request can reuse (Anthropic's rules, modelled in
 // helpers/anthropic-cache-model.ts), for a Claude Code shaped conversation
 // sent through the gateway with Endless Mode and memory injection on. The
-// measured problem (Phase 6, fixb30): each cull changed the turn's user
-// message, which the previous turn-start request's breakpoint covered, so
-// the read fell back to the system prompt's breakpoint and the whole
-// conversation was written again at the cache-write price.
+// timeline is the first message and grows only at its end, so each fold must
+// read everything through the timeline's previous end from the cache.
 
 const testRoot = join(WIRE_GATEWAY_DIR, 'anthropic-cache-reuse-test');
 const routesFilePath = join(testRoot, 'routes.json');
@@ -26,9 +25,9 @@ const decoder = new TextDecoder();
 const ROUTE_ID = 'cache-reuse-anthropic';
 const TIMELINE_TEXT = '# claude-mem\n- #12 an earlier observation';
 
-const observationsByToolUseId = new Map<string, WireToolObservation>();
-async function fakeFetchToolObservations(query: WireToolObservationQuery): Promise<Map<string, WireToolObservation>> {
-  const found = new Map<string, WireToolObservation>();
+const observationsByToolUseId = new Map<string, WireToolObservation[]>();
+async function fakeFetchToolObservations(query: WireToolObservationQuery): Promise<Map<string, WireToolObservation[]>> {
+  const found = new Map<string, WireToolObservation[]>();
   for (const toolUseId of query.toolUseIds) {
     const observation = observationsByToolUseId.get(toolUseId);
     if (observation) found.set(toolUseId, observation);
@@ -136,52 +135,61 @@ async function runConversation(session: string, turnsUseTools: boolean[]) {
         note(14_999_000),
       );
       await sendAndModel();
-      observationsByToolUseId.set(callId, { observationId: 700 + turn, timelineLine: `#${700 + turn} 3:04p 🔵 Read f${turn}` });
+      observationsByToolUseId.set(callId, [{ observationId: 700 + turn, row: `#${700 + turn} 3:04p 🔵 Read f${turn}` }]);
     }
     history.push({ role: 'assistant', content: [{ type: 'thinking', thinking: `wrap ${turn}`, signature: `sig-wrap-${turn}` }, { type: 'text', text: `done ${turn}` }] });
   }
   return { forwarded, reads, turnStartRequestIndexes };
 }
 
+/** The label of the timeline's last rows block in a sent body (messages[0], the block before its closing one). */
+function timelineEndLabelOf(sent: string): string {
+  const first = (JSON.parse(sent) as { messages: Array<{ content: Array<{ text: string }> }> }).messages[0];
+  return `messages[0][${first.content.findIndex(block => block.text === TIMELINE_CLOSE_TAG) - 1}]`;
+}
+
 describe('Anthropic cache reuse through the gateway', () => {
-  it('a cull keeps the entry the previous turn-start request wrote, and the head is cached on its own', async () => {
+  it('each growth of the timeline reads everything through its previous end from the cache, and writes only what follows', async () => {
     const session = 'cache-reuse-claude-code';
-    const TURNS = 4;
+    const TURNS = 5;
     const { forwarded, reads, turnStartRequestIndexes } = await runConversation(session, Array.from({ length: TURNS }, () => true));
 
     for (let turn = 2; turn <= TURNS; turn++) {
-      const cullRequest = turnStartRequestIndexes[turn - 1];
-      const previousTurnStart = turnStartRequestIndexes[turn - 2];
-      // The turn start culled the previous turn's work: its line is in, its tool call is out.
-      expect(forwarded[cullRequest]).toContain(JSON.stringify(culledWorkBlock([`#${700 + turn - 1} 3:04p 🔵 Read f${turn - 1}`])).slice(1, -1));
-      expect(forwarded[cullRequest]).not.toContain(`toolu_${session}_${turn - 1}`);
-      // And still reads the entry the previous turn's turn-start request wrote at its last block.
-      expect(reads[cullRequest].entryWrittenByRequest).toBe(previousTurnStart);
-      expect(reads[cullRequest].readThrough).toBe(reads[previousTurnStart].writes.at(-1)!);
+      const foldRequest = turnStartRequestIndexes[turn - 1];
+      // The turn start folded the previous turn: its rows are the timeline's newest block, its tool call is gone.
+      const blocks = (JSON.parse(forwarded[foldRequest]) as { messages: Array<{ content: Array<{ text: string }> }> }).messages[0].content;
+      expect(blocks.at(-2)!.text).toBe(timelineRowsBlockText([`U: ${turn === 2 ? "<cwd>/work/app</cwd> " : ""}task ${turn - 1}`, `#${700 + turn - 1} 3:04p 🔵 Read f${turn - 1}`, `A: done ${turn - 1}`]));
+      expect(forwarded[foldRequest]).not.toContain(`toolu_${session}_${turn - 1}`);
+      // It reads through the timeline's previous end: the entry the request before it wrote there.
+      expect(reads[foldRequest].readThrough).toBe(timelineEndLabelOf(forwarded[foldRequest - 1]));
+      expect(reads[foldRequest].entryWrittenByRequest).not.toBeNull();
+      // The bytes through that end are the same (markers aside, which the cache does not count).
+      const unmarked = (body: string) => body.replace(/,"cache_control":\{[^}]*\}/g, '');
+      const closing = `,{"type":"text","text":${JSON.stringify(TIMELINE_CLOSE_TAG)}}`;
+      const previous = unmarked(forwarded[foldRequest - 1]);
+      expect(unmarked(forwarded[foldRequest]).startsWith(previous.slice(0, previous.indexOf(closing)))).toBe(true);
     }
 
     for (const [index, sent] of forwarded.entries()) {
-      // The head's own breakpoint: on the timeline block, 1-hour like Claude Code's breakpoints after it; four in all.
-      const system = (JSON.parse(sent) as { system: Array<Record<string, unknown>> }).system;
-      expect(system.at(-1)).toEqual({ type: 'text', text: `<claude-mem-context>\n${TIMELINE_TEXT}\n</claude-mem-context>`, cache_control: ONE_HOUR });
+      const body = JSON.parse(sent) as { system: Array<Record<string, unknown>>; messages: Array<{ role: string; content: Array<Record<string, unknown>> }> };
+      // The session-start rows open the timeline, the first message; the system prompt is the agent's alone.
+      expect(body.system).toHaveLength(3);
+      expect(body.messages[0].role).toBe('user');
+      expect(body.messages[0].content[0].text).toBe(timelineBlockTextsOf(`<claude-mem-context>\n${TIMELINE_TEXT}\n</claude-mem-context>`, [])[0]);
+      // The gateway's breakpoint is on the timeline's last rows block, 1-hour like Claude Code's after it; four in all.
+      expect(body.messages[0].content.at(-2)!.cache_control).toEqual(ONE_HOUR);
       expect(sent.split('"cache_control"').length - 1).toBe(ANTHROPIC_MAX_CACHE_BREAKPOINTS);
-      expect(reads[index].writes).toContain('system[3]');
-      // Every request after the first reads at least through the head.
+      expect(reads[index].writes).toContain(timelineEndLabelOf(sent));
       if (index > 0) expect(reads[index].readThrough).not.toBeNull();
     }
   });
 
-  it('after a turn with no tool, each turn start still reads the entry the turn start before it wrote', async () => {
-    // Turn 1 answers with no tool (nothing to cull, but thinking in its reply); turn 2 uses a tool; turn 3's start culls it.
-    // Cut only with a cull, turn 3's cut would also take turn 1's reply thinking, inside turn 2's cached prefix.
+  it('after a turn with no tool, each turn start still reads through the timeline\'s previous end', async () => {
     const session = 'cache-reuse-no-tool-turn';
     const { forwarded, reads, turnStartRequestIndexes } = await runConversation(session, [false, true, true]);
-    expect(forwarded[turnStartRequestIndexes[2]]).toContain('<claude-mem-work>');
     for (const turn of [2, 3]) {
       const turnStart = turnStartRequestIndexes[turn - 1];
-      const previousTurnStart = turnStartRequestIndexes[turn - 2];
-      expect(reads[turnStart].entryWrittenByRequest).toBe(previousTurnStart);
-      expect(reads[turnStart].readThrough).toBe(reads[previousTurnStart].writes.at(-1)!);
+      expect(reads[turnStart].readThrough).toBe(timelineEndLabelOf(forwarded[turnStart - 1]));
     }
   });
 });
@@ -193,7 +201,7 @@ describe('the Anthropic cache model', () => {
   const turnStart = [{ role: 'user', content: 'task 1' }, marked('note')];
   /** The turn-start request's last message as later requests send it: the same block, its marker moved on. */
   const unmarkedNote: Message = { role: 'system', content: 'note' };
-  const lines = culledWorkBlock(['#1 3:04p 🔵 Read f1']);
+  const lines = '<claude-mem-timeline>\n#1 3:04p 🔵 Read f1\n</claude-mem-timeline>';
 
   it('lines appended to the turn\'s user message lose the turn-start entry; lines at the cull point keep it', () => {
     const appended = new AnthropicPromptCacheModel();

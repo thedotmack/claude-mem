@@ -5,7 +5,7 @@
 // memory_search tool and Endless Mode are on, and whether a route's own switch or the setting
 // decided it; with the running gateway's stage counters when it answers.
 
-import { endlessModeEnabledFor } from '../endless/endless-mode-stage.js';
+import { endlessModeEnabledFor } from '../endless/endless-mode-setting.js';
 import { durableHeaderEnabledFor } from '../header/durable-header-stage.js';
 import type { WireGatewayRoute } from '../routes.js';
 import type { WireRewriteStageState } from '../rewrite/rewrite-stage.js';

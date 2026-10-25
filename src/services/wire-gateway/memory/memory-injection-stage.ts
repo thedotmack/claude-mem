@@ -26,6 +26,10 @@
 // - Once injected, a request that goes without it (the stage turned off)
 //   suspends injection for the conversation: putting it back later would
 //   change the system prompt mid-conversation (D7.4).
+// - When Endless Mode applies to the conversation's first request, the block
+//   is not put in the system prompt: it is recorded with placement
+//   `timeline` and Endless Mode puts it at the head of its timeline, the
+//   first message, which only ever grows at its end (endless-mode-stage.ts).
 // - Any failure leaves the bytes as they came (the seam fails open, D7.7).
 
 import { logger } from '../../../utils/logger.js';
@@ -37,6 +41,7 @@ import { appendArrayItem, encodeJsonString, insertArrayItem, insertObjectMember,
 import { jsonEscapeString } from '../json/string-walker.js';
 import { requestStartsConversation, type WireConversationLedgerView } from '../ledger/conversation-ledger.js';
 import { estimateTextTokens } from '../metrics/context-buckets.js';
+import { endlessModeEnabledFor } from '../endless/endless-mode-setting.js';
 import type { WireGatewayRoute } from '../routes.js';
 import { STAGE_BUDGET_MARGIN_MS, type WireRewriteContext, type WireRewriteStage } from '../rewrite/rewrite-stage.js';
 import { fetchMemoryContextFromWorker, type MemoryContextFetcher } from './memory-worker-client.js';
@@ -219,9 +224,12 @@ export function createMemoryInjectionStage(options: MemoryInjectionStageOptions 
           return undefined;
         }
         const contextText = await fetchedContextOrNull(fetchContext, context, contextTimeoutMs);
-        injection = ledger.record({ type: 'injection', text: contextText ? memoryContextBlock(contextText) : null });
+        const placement = endlessModeEnabledFor(context.route, context.settings) ? 'timeline' : 'system-prompt';
+        injection = ledger.record({ type: 'injection', text: contextText ? memoryContextBlock(contextText) : null, placement });
       }
       if (injection.type !== 'injection' || injection.text === null) return undefined;
+      // Endless Mode's timeline carries it (and counts its tokens).
+      if (injection.placement === 'timeline') return undefined;
       const injected = appendToSystemPrompt(request, injection.text);
       if (injected === request.body) return undefined;
       context.estimates.injectedTokens += estimateTextTokens(injection.text);

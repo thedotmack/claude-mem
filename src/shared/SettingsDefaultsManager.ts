@@ -420,6 +420,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION: string;
   CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS: string;
   CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE: string;
+  CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_ROW_FORMAT: string;
   CLAUDE_MEM_WIRE_GATEWAY_MEMORY_INJECTION: string;
   CLAUDE_MEM_WIRE_GATEWAY_DURABLE_HEADER: string;
   CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS: string;
@@ -720,7 +721,8 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_WIRE_GATEWAY_RECORDING: '',                 // 'false' forces raw recording off; nothing here turns it on (consent.json decides)
     CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION: 'false',   // routes without their own setting swap secrets for placeholders before the provider sees them
     CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS: 'false', // 'true' lifts D4 locally: subscription sign-ins are forwarded instead of refused
-    CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE: 'false',         // routes without their own features.endlessMode cull finished tool work to its observations' timeline lines (read at gateway start)
+    CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE: 'false',         // routes without their own features.endlessMode fold finished work into one growing timeline (read at gateway start)
+    CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_ROW_FORMAT: 'timeline', // how the timeline shows each observation: timeline | observation | observation-with-narrative (read at gateway start)
     CLAUDE_MEM_WIRE_GATEWAY_MEMORY_INJECTION: 'true',      // captureSource:'wire' routes without their own features.memoryInjection get claude-mem context once per conversation (read at gateway start)
     CLAUDE_MEM_WIRE_GATEWAY_DURABLE_HEADER: 'true',        // captureSource:'wire' routes without their own features.durableHeader get the owner's rules as a cached system block, changed only at a turn start (read at gateway start)
     CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS: '1500',    // how long a conversation's first request waits for that context (read at gateway start)
