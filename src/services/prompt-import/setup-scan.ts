@@ -10,6 +10,7 @@
  */
 
 import { logger } from '../../utils/logger.js';
+import { stripMemoryTags } from '../../utils/tag-stripping.js';
 import type { UsableAgent, UsableAgentId } from '../agent-runner/detect.js';
 import { observationTokenEconomics, scanTokenUsage, summarizeTokenUsage, type SetupTokenUsage } from './token-usage.js';
 import { scanOwnerPrompts, scanWindowStart, type MemoryPrompt, type OwnerPrompt, type PromptAgentId, type PromptScanOptions, type PromptScanProgress } from './index.js';
@@ -261,11 +262,14 @@ export class SetupScan {
       });
       const sessionsByPlatform = new Map(result.agents.map(summary => [summary.platformSource, summary.sessions]));
       // Prompts the owner typed whose transcripts are gone exist only in memory; extraction reads them too.
+      // They get the same tag stripping and current redaction as transcript prompts: they may predate both.
       const memoryOnly: OwnerPrompt[] = memoryPrompts.flatMap(prompt => {
         const summary = result.agents.find(entry => entry.platformSource === prompt.platformSource);
         if (!summary || !result.ownerMemoryPromptIds.has(prompt.id) || claimedHookRowIds.has(prompt.id) || summary.sessions.has(prompt.contentSessionId)) return [];
+        const text = stripMemoryTags(prompt.promptText).trim();
+        if (!text) return [];
         return [{ agent: summary.id, platformSource: prompt.platformSource, sessionId: prompt.contentSessionId, nativePromptId: `memory-${prompt.id}`,
-          at: prompt.createdAtEpoch, cwd: prompt.cwd ?? null, text: prompt.promptText, project: prompt.project ?? '' }];
+          at: prompt.createdAtEpoch, cwd: prompt.cwd ?? null, text, project: prompt.project ?? '' }];
       });
       const ownerPrompts = [...result.ownerPrompts, ...memoryOnly];
       const notTyped = memoryPrompts.filter(prompt => !result.ownerMemoryPromptIds.has(prompt.id)

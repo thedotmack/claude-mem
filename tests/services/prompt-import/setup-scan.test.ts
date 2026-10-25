@@ -1,7 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { join } from 'path';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { SetupScan, type SetupScanState } from '../../../src/services/prompt-import/setup-scan.js';
+import { SettingsDefaultsManager } from '../../../src/shared/SettingsDefaultsManager.js';
+import { _resetRedactionConfigCache } from '../../../src/utils/redaction.js';
 
 const FIXTURE_HOME = join(import.meta.dir, '..', '..', 'fixtures', 'prompt-import', 'home');
 const NOW = Date.parse('2026-10-10T00:00:00.000Z');
@@ -140,6 +142,26 @@ describe('setup prompt scan', () => {
     expect(extracted.filter(prompt => prompt.text === 'plan the funnel')).toEqual([
       expect.objectContaining({ sessionId: 'session-older-than-its-transcript', project: 'alpha', agent: 'claude-code' }),
     ]);
+  });
+
+  it('memory-only prompts get the current tag stripping and redaction before extraction', async () => {
+    // Stored while redaction was off; redaction is turned on before setup reads it.
+    hookRecorded('claude', 'session-older-than-its-transcript', 'alpha', 'plan the funnel with sk-ABCDEFGHIJ1234567890abcdef <private>my secret</private>', '2026-10-05T09:00:00.000Z');
+    const loadSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({ ...SettingsDefaultsManager.getAllDefaults(), CLAUDE_MEM_REDACT_ENABLED: 'true' }));
+    _resetRedactionConfigCache();
+    try {
+      let extracted: Array<{ text: string; sessionId: string }> = [];
+      const scan = setupScan();
+      scan.setExtractor(async prompts => { extracted = prompts; });
+      scan.start();
+      const state = await scan.finished();
+      const stored = extracted.find(prompt => prompt.sessionId === 'session-older-than-its-transcript')!;
+      expect(stored.text).toStartWith('plan the funnel with');
+      for (const text of [stored.text, ...state.recentPrompts.map(prompt => prompt.text)]) {
+        expect(text).not.toContain('sk-ABCDEFGHIJ1234567890abcdef');
+        expect(text).not.toContain('my secret');
+      }
+    } finally { loadSpy.mockRestore(); _resetRedactionConfigCache(); }
   });
 
   it('a failing store ends the scan as failed, never as a finished result', async () => {
