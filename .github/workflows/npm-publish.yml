@@ -5,6 +5,12 @@ on:
     tags:
       - 'v*'
 
+# npm trusted publishing (OIDC): no NPM_TOKEN secret. The package's trusted
+# publisher on npmjs.com names this repo and this workflow file.
+permissions:
+  contents: read
+  id-token: write
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -12,7 +18,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
       - name: Install Bun (required by smoke:clean-room)
         uses: oven-sh/setup-bun@v2
@@ -21,6 +27,6 @@ jobs:
       - run: npm install --ignore-scripts
       - run: npm run build
       - run: npm run smoke:clean-room
+      # Trusted publishing requires npm CLI 11.5.1 or later.
+      - run: npm install -g npm@^11.5.1
       - run: npm publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
