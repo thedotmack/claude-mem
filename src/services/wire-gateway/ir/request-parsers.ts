@@ -433,10 +433,13 @@ function parseOpenAiResponsesRequest(root: ScannedObject): WireRequest {
   if (instructionsSpan?.type === 'string') system.push(textPart(decodeString(bytes, instructionsSpan), instructionsSpan));
 
   const messages: WireMessage[] = [];
-  const appendMessage = (role: WireMessageRole, parts: WirePart[], span: JsonSpan) => {
-    // A Responses turn is one item per part: consecutive items of one role are one message (magpie mergeTurns).
+  const appendMessage = (role: WireMessageRole, parts: WirePart[], span: JsonSpan, isMessageItem = false) => {
+    // A Responses turn is one item per part: consecutive items of one role are one message (magpie mergeTurns),
+    // except a user `message` item after function_call_output items: that is a message the agent sent of its own
+    // (Codex's next prompt after an interrupt), never text beside a tool result.
     const previous = messages[messages.length - 1];
-    if (previous && previous.role === role) {
+    const startsOwnMessage = isMessageItem && role === 'user' && previous?.parts.some(part => part.kind === 'tool_result');
+    if (previous && previous.role === role && !startsOwnMessage) {
       previous.parts.push(...parts);
       previous.span = joinSpans(previous.span, span);
       return;
@@ -469,7 +472,10 @@ function parseOpenAiResponsesRequest(root: ScannedObject): WireRequest {
         system.push(...message.part);
         continue;
       }
-      appendMessage(message.role, message.part, item.span);
+      const itemType = item.string('type');
+      const isUserMessageItem = (itemType === 'message' || (itemType === undefined && item.string('role') !== undefined))
+        && message.part.every(part => part.kind !== 'context');
+      appendMessage(message.role, message.part, item.span, isUserMessageItem);
     }
   }
 

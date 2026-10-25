@@ -11,7 +11,7 @@ import { WireLaunchRegistry, LAUNCH_ID_PATTERN, splitLaunchSegment } from '../..
 import { resolveIdentity, sessionIdToEcho, type WireIdentity } from '../../src/services/wire-gateway/identity/resolve-identity.js';
 import { cleanSessionId, fingerprintSessionId, MAX_SESSION_ID_BYTES } from '../../src/services/wire-gateway/identity/session-id.js';
 import { SESSION_STALE_MS, TURN_QUIET_MS, TurnTracker, type WireSessionStale, type WireTurnEnd } from '../../src/services/wire-gateway/identity/turn-tracker.js';
-import { userTurnPositionOfRequest } from '../../src/services/wire-gateway/identity/turn-start.js';
+import { startsUserTurn, userTurnPositionOfRequest } from '../../src/services/wire-gateway/identity/turn-start.js';
 import { firstUserWordsOfConversation, latestUserWordsOfConversation, userWordsInText } from '../../src/services/wire-gateway/identity/user-words.js';
 import { gitRepositoryOnDisk, gitRepositorySaidInText, workDirSaidInText, workPlaceOfRequest } from '../../src/services/wire-gateway/identity/work-dir.js';
 
@@ -521,7 +521,9 @@ describe('wire identity: user words and turn start', () => {
       { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Forget the essay. Write a glossary.' }] },
     ] });
     const codexRequest = parseBody('openai-responses', body);
-    expect(codexRequest.messages.at(-1)!.parts.some(part => part.kind === 'tool_result')).toBe(true);
+    // The outputs (with the note) stay a message of their own in the cut turn; the prompt item is the next message.
+    expect(codexRequest.messages.at(-2)!.parts.some(part => part.kind === 'tool_result')).toBe(true);
+    expect(codexRequest.messages.at(-1)!.parts.map(part => part.kind)).toEqual(['text']);
     expect(userTurnPositionOfRequest(codexRequest)).toEqual({ userTurnOrdinal: 2, withinTurn: false });
     expect(latestUserWordsOfConversation(codexRequest)).toBe('Forget the essay. Write a glossary.');
 
@@ -532,6 +534,36 @@ describe('wire identity: user words and turn start', () => {
       ['user', '[{"type":"tool_result","tool_use_id":"t1","content":"partial"},{"type":"text","text":"[Request interrupted by user for tool use]"}]'],
     ]));
     expect(userTurnPositionOfRequest(interrupted)).toEqual({ userTurnOrdinal: 1, withinTurn: true });
+  });
+
+  it('Claude Code\'s own text beside a tool result never begins a turn (backtest shapes, trimmed)', () => {
+    // From real sessions (.scratch/backtest): ToolSearch, Skill and an image read, each answered in one user message
+    // whose text block is Claude Code's, not the user's.
+    const resultWith = (callId: string, result: unknown, text: string) => JSON.stringify([
+      { type: 'tool_result', tool_use_id: callId, content: result }, { type: 'text', text },
+    ]);
+    for (const [name, message] of [
+      ['ToolSearch', resultWith('toolu_ts', [{ type: 'text', text: 'Found 1 tool' }], 'Tool loaded.')],
+      ['Skill', resultWith('toolu_sk', 'Launching skill: community-sweep', 'Base directory for this skill: /Users/someone/.claude/skills/community-sweep\n\n# Community sweep\nSteps...')],
+      ['image read', resultWith('toolu_img', [{ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: '/9j/' } }], '[Image: original 2560x1440, displayed at 2000x1125. Multiply coordinates by 1.28 to map to original image.]')],
+      // A message the user typed while a tool ran: Claude Code puts it beside the result too; it stays in the turn.
+      ['words typed mid-run', resultWith('toolu_mid', 'ok', 'also check the README')],
+    ] as const) {
+      const request = parseBody('anthropic', anthropicBody([
+        ['user', 'Sweep the community issues'],
+        ['assistant', `[{"type":"tool_use","id":"${JSON.parse(message)[0].tool_use_id}","name":"Tool","input":{}}]`],
+        ['user', message],
+      ]));
+      expect(startsUserTurn(request.messages.at(-1)!), name).toBe(false);
+      expect(userTurnPositionOfRequest(request), name).toEqual({ userTurnOrdinal: 1, withinTurn: true });
+    }
+    // Gemini: a functionResponse content with text beside it; Chat: a role:tool message.
+    const gemini = parseBody('gemini', JSON.stringify({ contents: [
+      { role: 'user', parts: [{ text: 'read it' }] },
+      { role: 'model', parts: [{ functionCall: { id: 'g1', name: 'read', args: {} } }] },
+      { role: 'user', parts: [{ functionResponse: { id: 'g1', name: 'read', response: { output: 'x' } } }, { text: 'Tool loaded.' }] },
+    ] }));
+    expect(userTurnPositionOfRequest(gemini)).toEqual({ userTurnOrdinal: 1, withinTurn: true });
   });
 
   it('Codex sending its context again after the cwd changed is within the turn (magpie user_said_test.go:84-93)', () => {

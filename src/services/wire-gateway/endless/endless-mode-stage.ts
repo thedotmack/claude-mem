@@ -45,10 +45,19 @@
 //   first time it is made and put back byte for byte on every later request
 //   and after a restart. Positions are turn ordinals and call ids, never
 //   message indexes.
-// - Anthropic: a request that folds, and every turn-start request from turn
-//   2 on, records a `thinkingCut` up to the latest turn first (held writes
-//   commit in order), and every request applies the cut in force, so the
-//   thinking of unfolded earlier messages goes oldest first with no gap.
+// - Anthropic thinking (preserved thinking, Claude Opus 5.5 / Fable 5.1 docs:
+//   a block stays valid while `system`, `tools` and every message before it
+//   are unchanged; "removing a leading run of thinking blocks, oldest first"
+//   keeps later blocks valid; otherwise pass blocks back unchanged). So the
+//   stage cuts no thinking while the history above the tail is unchanged:
+//   earlier turns' blocks that are still raw (a fold refused or late) go as
+//   the agent sent them, and the cache keeps reading them. Only a request
+//   that folds changes that history, which invalidates every raw thinking
+//   block after the timeline; it records a `thinkingCut` up to the latest
+//   turn first (held writes commit in order), and every request applies the
+//   cut in force. That is a leading run (every block before the latest turn
+//   start, none of the turn in flight), and it changes only bytes after the
+//   timeline's end, which the fold rewrites anyway.
 // - Gemini positional call ids (`gemini:<content>:<part>`) are message
 //   indexes, so none is ever recorded as a fold's last call; a turn that has
 //   only those folds only whole.
@@ -619,10 +628,10 @@ export function createEndlessModeStage(options: EndlessModeStageOptions): WireRe
         const opener: FoldEntry = { type: 'timelineFold', sequence: 0, throughTurnOrdinal: 0, throughCallId: null, rows: [], observationIds: [], culledTokensEst: 0 };
         folds.push(ledger.record(opener) as FoldEntry);
       }
-      // Recorded before the fold that needs it: held writes commit in order, with no rollback. Every turn start
-      // cuts up to itself, fold or not, so each cut only takes out thinking after the previous turn-start request's last message.
+      // Only a fold changes the history above the tail, so only a fold cuts: recorded before it (held writes commit
+      // in order, with no rollback), up to the latest turn start.
       let cutUntilTurnOrdinal = request.protocol === 'anthropic' ? thinkingCutInForce(ledger) : null;
-      if ((newFold !== null || (context.identity.turnStart && latestTurn.ordinal > 1)) && request.protocol === 'anthropic'
+      if (newFold !== null && request.protocol === 'anthropic'
         && (cutUntilTurnOrdinal === null || cutUntilTurnOrdinal < latestTurn.ordinal)) {
         ledger.record({ type: 'thinkingCut', untilTurnOrdinal: latestTurn.ordinal });
         cutUntilTurnOrdinal = latestTurn.ordinal;

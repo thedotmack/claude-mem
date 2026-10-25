@@ -108,7 +108,7 @@ const note = (left: number): Message => ({ role: 'system', content: `<total_toke
  * the next turn start; false: an answer with no tool), and models what each
  * forwarded request reads from the cache.
  */
-async function runConversation(session: string, turnsUseTools: boolean[]) {
+async function runConversation(session: string, turnsUseTools: boolean[], lateObservationByTurn: Map<number, number> = new Map()) {
   const cache = new AnthropicPromptCacheModel();
   const history: Message[] = [];
   const turnStartRequestIndexes: number[] = [];
@@ -121,8 +121,11 @@ async function runConversation(session: string, turnsUseTools: boolean[]) {
     // Let the background observation lookups this request asked for finish.
     await new Promise(resolve => setTimeout(resolve, 20));
   };
+  // turn → the turn before whose start its observation lands (a late observer), instead of the next one.
+  const lateObservations: Array<{ releaseBeforeTurn: number; callId: string; observation: WireToolObservation }> = [];
   for (const [index, usesTool] of turnsUseTools.entries()) {
     const turn = index + 1;
+    for (const late of lateObservations.filter(late => late.releaseBeforeTurn === turn)) observationsByToolUseId.set(late.callId, [late.observation]);
     history.push({ role: 'user', content: turn === 1 ? `<cwd>/work/app</cwd> task ${turn}` : `task ${turn}` }, note(15_000_000));
     turnStartRequestIndexes.push(forwarded.length);
     await sendAndModel();
@@ -135,7 +138,10 @@ async function runConversation(session: string, turnsUseTools: boolean[]) {
         note(14_999_000),
       );
       await sendAndModel();
-      observationsByToolUseId.set(callId, [{ observationId: 700 + turn, row: `#${700 + turn} 3:04p 🔵 Read f${turn}` }]);
+      const observation = { observationId: 700 + turn, row: `#${700 + turn} 3:04p 🔵 Read f${turn}` };
+      const releaseBeforeTurn = lateObservationByTurn.get(turn);
+      if (releaseBeforeTurn === undefined) observationsByToolUseId.set(callId, [observation]);
+      else lateObservations.push({ releaseBeforeTurn, callId, observation });
     }
     history.push({ role: 'assistant', content: [{ type: 'thinking', thinking: `wrap ${turn}`, signature: `sig-wrap-${turn}` }, { type: 'text', text: `done ${turn}` }] });
   }
@@ -190,6 +196,42 @@ describe('Anthropic cache reuse through the gateway', () => {
     for (const turn of [2, 3]) {
       const turnStart = turnStartRequestIndexes[turn - 1];
       expect(reads[turnStart].readThrough).toBe(timelineEndLabelOf(forwarded[turnStart - 1]));
+    }
+  });
+});
+
+describe('Anthropic cache reuse when a fold is refused or late', () => {
+  it('with thinking on, a turn start that cannot fold reads everything the request before it wrote, and cuts nothing', async () => {
+    // Turn 2's observation lands only before turn 4's start: turn 3's start cannot fold turn 2 (and so nothing after it).
+    const session = 'cache-reuse-late-fold';
+    const TURNS = 5;
+    const { forwarded, reads, turnStartRequestIndexes } = await runConversation(session, Array.from({ length: TURNS }, () => true), new Map([[2, 4]]));
+    const blocksOf = (sent: string) => (JSON.parse(sent) as { messages: Array<{ content: Array<{ text: string }> }> }).messages[0].content.length;
+    const turn3Start = turnStartRequestIndexes[2];
+    const turn4Start = turnStartRequestIndexes[3];
+    // Turn 3's start: no fold, so the timeline is as before, and every byte the request before it sent is a prefix of it
+    // (markers aside): turn 2's tool work and its thinking go as Claude Code sent them.
+    expect(blocksOf(forwarded[turn3Start])).toBe(blocksOf(forwarded[turn3Start - 1]));
+    expect(forwarded[turn3Start]).toContain(`toolu_${session}_2`);
+    expect(forwarded[turn3Start]).toContain('"signature":"sig-2"');
+    expect(forwarded[turn3Start]).toContain('"signature":"sig-wrap-2"');
+    const messagesUnmarked = (sent: string) => (JSON.parse(sent.replace(/,"cache_control":\{[^}]*\}/g, '')) as { messages: unknown[] }).messages;
+    const previousMessages = messagesUnmarked(forwarded[turn3Start - 1]);
+    // (Its last message is compared by the cache model below: Claude Code sends the marked last message in block form.)
+    expect(messagesUnmarked(forwarded[turn3Start]).slice(0, previousMessages.length - 1)).toEqual(previousMessages.slice(0, -1));
+    // So it reads the entry the request before it wrote at its last block: nothing before the new turn is written again.
+    expect(reads[turn3Start].entryWrittenByRequest).toBe(turn3Start - 1);
+    expect(reads[turn3Start].readThrough).toBe(reads[turn3Start - 1].writes.at(-1)!);
+    // Turn 4's start: the late observation lands, turns 2 and 3 fold in one growth, read through the timeline's previous end.
+    expect(blocksOf(forwarded[turn4Start])).toBe(blocksOf(forwarded[turn4Start - 1]) + 1);
+    expect(forwarded[turn4Start]).not.toContain(`toolu_${session}_2`);
+    expect(forwarded[turn4Start]).not.toContain('"type":"thinking"');
+    expect(reads[turn4Start].readThrough).toBe(timelineEndLabelOf(forwarded[turn4Start - 1]));
+    // Every other request reads at least through the timeline's end, and a request that does not fold reads all the request before it wrote.
+    for (let index = 1; index < forwarded.length; index++) {
+      if (blocksOf(forwarded[index]) === blocksOf(forwarded[index - 1])) {
+        expect(reads[index].entryWrittenByRequest, `request ${index}`).toBe(index - 1);
+      }
     }
   });
 });

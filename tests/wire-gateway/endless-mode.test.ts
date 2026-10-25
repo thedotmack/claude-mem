@@ -506,26 +506,29 @@ describe('Endless Mode: one growing timeline, per protocol', () => {
     });
   }
 
-  it('anthropic: the thinking cut is contiguous from message 0 and never reaches the in-flight turn', async () => {
+  it('anthropic: thinking is cut only on a request that folds; a refused fold leaves earlier turns as the agent sent them', async () => {
     fetcherMode = 'table';
     const tag = 'thinking-cut';
     const session = nextSession(tag);
     const callA = { id: `call_${tag}_a` };
     const callB = { id: `call_${tag}_b` };
-    // a never gets an observation and nothing after it is covered until b: turn 1 waits, raw, with its thinking cut.
+    const callC = { id: `call_${tag}_c` };
+    // a never gets an observation, and nothing after it is covered until b: turn 1 cannot fold.
     const conversation = new Conversation(anthropicCase).add(anthropicCase.user(`${tag}: one`));
     await sendAndSettle(anthropicCase, conversation.body(), session);
     conversation.add(anthropicCase.calls([callA], true)).add(anthropicCase.results([callA]))
       .add(anthropicCase.final('first', true)).add(anthropicCase.user(`${tag}: two`));
     const turn2 = await sendAndSettle(anthropicCase, conversation.body(), session);
+    // No fold, so no cut: turn 1 goes byte for byte as the agent sent it, thinking included, after the timeline.
     expect(turn2).toContain(callA.id);
-    expect(turn2).not.toContain('"type":"thinking"');
-    conversation.add(anthropicCase.calls([{ id: `call_${tag}_c` }], true)).add(anthropicCase.results([{ id: `call_${tag}_c` }]));
+    expect((turn2.match(/"type":"thinking"/g) ?? []).length).toBe(2);
+    expectTailIs(anthropicCase, turn2, conversation.items);
+    expect(ledgerEntriesOf(anthropicCase.agentId, session).filter(entry => entry.type === 'thinkingCut')).toEqual([]);
+    conversation.add(anthropicCase.calls([callC], true)).add(anthropicCase.results([callC]));
     const loop = await send(anthropicCase, conversation.body(), session);
     expect(loop).toContain(`"signature":"sig-call_${tag}_c"`);
-    expect((loop.match(/"type":"thinking"/g) ?? []).length).toBe(1);
     expectGrowsOnlyAfterTimelineEnd('anthropic', turn2, loop);
-    // b's observation covers a too: turn 3's start folds turns 1 and 2.
+    // b's observation covers a too: turn 3's start folds turns 1 and 2, and only then is the leading thinking cut.
     observe(callB.id, 401);
     conversation.add(anthropicCase.calls([callB], true)).add(anthropicCase.results([callB])).add(anthropicCase.final('second', true)).add(anthropicCase.user(`${tag}: three`));
     await sendAndSettle(anthropicCase, conversation.body(), session);
@@ -533,6 +536,33 @@ describe('Endless Mode: one growing timeline, per protocol', () => {
     expect(turn3).not.toContain(callA.id);
     expect(turn3).not.toContain('"type":"thinking"');
     expect(timelineBlocksOf(anthropicCase, turn3).at(-2)).toBe(blockOfRows(`U: ${tag}: one`, 'A: first', `U: ${tag}: two`, rowOf(401), 'A: second'));
+    const entries = ledgerEntriesOf(anthropicCase.agentId, session);
+    expect(entries.filter(entry => entry.type === 'thinkingCut')).toEqual([{ type: 'thinkingCut', untilTurnOrdinal: 3 }]);
+    expect(entries.findIndex(entry => entry.type === 'thinkingCut')).toBeLessThan(entries.findIndex(entry => entry.type === 'timelineFold' && entry.sequence === 1));
+  });
+
+  it('anthropic: Claude Code\'s text beside a tool result starts no turn, so the call and its result fold together and the in-flight thinking stays', async () => {
+    fetcherMode = 'table';
+    const tag = 'tool-loaded';
+    const session = nextSession(tag);
+    const search = { id: `call_${tag}_search` };
+    const read = { id: `call_${tag}_read` };
+    observe(search.id, 451);
+    observe(read.id, 452);
+    // ToolSearch's result comes back with Claude Code's "Tool loaded." beside it (backtest shape).
+    const searchResult = [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: search.id, content: [{ type: 'text', text: 'Found 1 tool' }] }, { type: 'text', text: 'Tool loaded.' }] }];
+    const conversation = new Conversation(anthropicCase).add(anthropicCase.user(`${tag}: find the tool, then read`));
+    await sendAndSettle(anthropicCase, conversation.body(), session);
+    conversation.add(anthropicCase.calls([search], true)).add(searchResult);
+    // The in-flight loop: its thinking is never touched (a false turn start used to cut it here).
+    const inFlight = await sendAndSettle(anthropicCase, conversation.body(), session);
+    expect(inFlight).toContain(`"signature":"sig-${search.id}"`);
+    expect(ledgerEntriesOf(anthropicCase.agentId, session).filter(entry => entry.type === 'thinkingCut')).toEqual([]);
+    conversation.add(anthropicCase.calls([read], true)).add(anthropicCase.results([read])).add(anthropicCase.final('read it', true)).add(anthropicCase.user(`${tag}: next`));
+    const turn2 = await send(anthropicCase, conversation.body(), session);
+    expect(timelineBlocksOf(anthropicCase, turn2).at(-2)).toBe(blockOfRows(`U: ${tag}: find the tool, then read`, rowOf(451), rowOf(452), 'A: read it'));
+    expectTailIs(anthropicCase, turn2, anthropicCase.user(`${tag}: next`));
+    expectPairsWhole(anthropicCase, conversation.body(), turn2);
   });
 
   it('openai-responses: a context item (a developer note sent again before a prompt, a web search) stays in the tail; the fold goes on around it', async () => {
@@ -568,7 +598,7 @@ describe('Endless Mode: one growing timeline, per protocol', () => {
     expectTailIs(responsesCase, turn3, [webSearch, developerNote, ...responsesCase.user(`${tag}: bye`)]);
   });
 
-  it('anthropic: every turn start cuts the thinking before it, fold or not', async () => {
+  it('anthropic: a turn with no tool folds whole at the next turn start, its thinking with it', async () => {
     fetcherMode = 'table';
     const tag = 'every-turn-cut';
     const session = nextSession(tag);
@@ -577,11 +607,9 @@ describe('Endless Mode: one growing timeline, per protocol', () => {
     const conversation = new Conversation(anthropicCase).add(anthropicCase.user(`${tag}: explain`));
     await sendAndSettle(anthropicCase, conversation.body(), session);
     conversation.add(anthropicCase.final('explained', true)).add(anthropicCase.user(`${tag}: now read`));
-    // Turn 1 had no tool: it folds whole at once (its prompt and reply), and turn 2's start records the cut.
     const turn2 = await sendAndSettle(anthropicCase, conversation.body(), session);
     expect(turn2).not.toContain('"type":"thinking"');
     expect(timelineBlocksOf(anthropicCase, turn2).at(-2)).toBe(blockOfRows(`U: ${tag}: explain`, 'A: explained'));
-    expect(ledgerEntriesOf(anthropicCase.agentId, session).filter(entry => entry.type === 'thinkingCut')).toEqual([{ type: 'thinkingCut', untilTurnOrdinal: 2 }]);
     conversation.add(anthropicCase.calls([call], true)).add(anthropicCase.results([call]));
     await sendAndSettle(anthropicCase, conversation.body(), session);
     conversation.add(anthropicCase.final('read', true)).add(anthropicCase.user(`${tag}: next`));

@@ -4,8 +4,12 @@
 // `turnIn` (internal/gateway/affinity.go:199-246, MIT, Copyright (c) 2026
 // yetone).
 //
-// A turn begins with what the user said (even beside tool results), or an
-// image or file of theirs. A tool result is within the current turn. A user
+// A turn begins with what the user said, or an image or file of theirs. A
+// message that carries a tool result (Anthropic tool_result, Chat role:tool,
+// Responses function_call_output, Gemini functionResponse) never begins one,
+// whatever text sits beside the result: Claude Code puts its own text there
+// ("Tool loaded." after ToolSearch, a skill's base directory, an image note),
+// and a turn starting at a result would split the call from it. A user
 // message the agent wrote alone (a task notification, a todo nudge, an agent
 // list, Codex's context) begins none: after an answer it carries the turn
 // on, and right after the user's own message it leaves that as it was.
@@ -21,17 +25,19 @@ export interface UserTurnPosition {
 }
 
 /**
- * A user message that begins a turn: the user's own words, or (with no tool
- * result) an image or file of theirs. Words begin a turn even beside tool
- * results: after an interrupt, Codex sends the cut turn's tool outputs, its
- * <turn_aborted> note and the next prompt as one user message (seen live,
- * codex 0.163). Media beside a tool result is the tool's, not the user's.
+ * A user message that begins a turn: the user's own words, or an image or
+ * file of theirs, in a message that carries no tool result. Text or media
+ * beside a tool result is the harness's or the tool's (Claude Code's
+ * "Tool loaded.", a skill's base directory, an image note), never a new turn.
+ * (After an interrupt, Codex sends the cut turn's outputs and then the next
+ * prompt as its own message item; the Responses parser keeps that item a
+ * message of its own, so the prompt still begins a turn.)
  */
 export function startsUserTurn(message: WireMessage): boolean {
   if (message.role !== 'user') return false;
+  if (message.parts.some(part => part.kind === 'tool_result')) return false;
   if (userWordsInMessage(message) !== '') return true;
-  return !message.parts.some(part => part.kind === 'tool_result')
-    && message.parts.some(part => part.kind === 'image' || part.kind === 'file');
+  return message.parts.some(part => part.kind === 'image' || part.kind === 'file');
 }
 
 export function userTurnPositionOfRequest(request: WireRequest): UserTurnPosition {

@@ -349,11 +349,22 @@ changes nothing.
   an answer in time, the header in force stays. A request that already holds
   your My Rules file (the agent loads `MY-RULES.md` itself) gets no header, so
   the rules are never there twice.
-- **Anthropic thinking.** Every request that starts one of your turns, and
-  every request that folds or changes the header, leaves out every thinking
-  block before your latest turn that is still in the tail, oldest first with no
-  gap (an assistant message left empty goes too). They stay out from then on.
-  The thinking of the turn in flight is never touched.
+- **Anthropic thinking.** Anthropic keeps a thinking block valid only while
+  the system prompt, the tools and every message before it are unchanged, and
+  asks clients to pass blocks back as they got them. So Endless Mode changes
+  no thinking while the history after the timeline is unchanged: earlier turns
+  that have not folded yet (their observations are late) go exactly as your
+  agent sent them, and the cache keeps reading them. Only a request that folds
+  changes that history; it then leaves out every thinking block before your
+  latest turn that is still in the tail, oldest first with no gap (an
+  assistant message left empty goes too), and they stay out from then on.
+  That only touches bytes after the timeline's end, which the fold changes
+  anyway. The thinking of the turn in flight is never touched.
+- **What starts a turn.** Your words start a turn; text that sits beside a
+  tool result never does, whatever it says. Claude Code puts its own text there
+  ("Tool loaded." after a tool search, a skill's folder, a note about an image),
+  and a message you type while a tool runs lands there too: it stays part of
+  the turn it was typed in.
 
 ### What it saved
 
