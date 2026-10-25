@@ -39,6 +39,14 @@ export function nextAfterSavings(state: Pick<SetupFlowState, 'branch' | 'already
   return state.branch === 'go' && !state.alreadyPro ? 'checkout' : 'finish-setup'
 }
 
+/** The installer's report on the choice (the worker's SetupInstallerStage). */
+export type InstallerStage = 'waiting-for-choice' | 'home-ready' | 'go-kept-existing-pro' | 'go-awaiting-checkout' | 'failed'
+
+/** The installer has applied the choice: the worker refuses a different one for the rest of this installer run. */
+export function choiceLocked(stage: InstallerStage | null | undefined): boolean {
+  return !!stage && stage !== 'waiting-for-choice' && stage !== 'failed'
+}
+
 const BEFORE_CHOICE: SetupStep[] = ['scan', 'reveal']
 const AFTER_SAVINGS: SetupStep[] = ['checkout', 'finish-setup', 'import', 'launch', 'workspace']
 

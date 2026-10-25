@@ -22,10 +22,13 @@ export interface SetupRecentPrompt { agent: string; at: string; text: string }
 /** The worker's subsidized hosted setup extraction. */
 /** On The Go checkout, mirrored from the installer that runs it (`null` until the page asks). */
 export interface SetupCheckoutView { state: 'requested' | 'waiting' | 'paid' | 'failed'; error: string | null }
+/** What the installer in the terminal did with the choice. A `failed` installer has exited: setup restarts from the terminal. */
+export interface SetupInstallerView { stage: InstallerStage; error: string | null }
 export interface SetupExtraction { state: 'idle' | 'running' | 'ok' | 'failed' | 'waiting-for-agent'; step: 'goals' | 'work' | 'rules' | null }
 
 export type { RevealGoal, RevealRule, RevealSets, RevealWork } from './setup-reveal'
 import type { RevealSets } from './setup-reveal'
+import type { InstallerStage } from './setup-flow'
 
 export type { Persona, SetupScanUsage, SetupUsage, UsageCoverage } from './setup-usage'
 
@@ -42,6 +45,8 @@ export interface SetupData {
   extraction: SetupExtraction | null
   recentPrompts: SetupRecentPrompt[]
   checkout: SetupCheckoutView | null
+  /** `null` until an installer reports. */
+  installer: SetupInstallerView | null
   usage: SetupUsage | null
   alreadyPro: boolean
   /** Finish Setup tool ids found on this machine; they come pre-ticked. */
@@ -72,8 +77,10 @@ export interface SetupSource {
   /** Uploads this machine's observations to the CMEM account (POST /api/setup/import). */
   startHistoryImport(): Promise<void>
   search(query: string): Promise<MemoryResult[]>
-  /** Keep as note: saves `text` as a new memory (POST /api/memory/save). */
-  keepNote(record: MemoryResult, text: string): Promise<void>
+  /** Keep as note: saves `text` as a new memory (POST /api/memory/save) and answers its observation id. */
+  keepNote(record: MemoryResult, text: string): Promise<number>
+  /** Removes a note this page saved, once its edited copy is saved (DELETE /api/observation/:id). */
+  forgetNote(id: number): Promise<void>
 }
 
 export const EMPTY_SETUP_DATA: SetupData = {
@@ -82,6 +89,7 @@ export const EMPTY_SETUP_DATA: SetupData = {
   extraction: null,
   recentPrompts: [],
   checkout: null,
+  installer: null,
   usage: null,
   alreadyPro: false,
   detectedTools: [],
@@ -103,6 +111,7 @@ interface WorkerScanState extends Omit<SetupScanView, 'agents' | 'improveProduct
 interface WorkerHistoryImport { state: 'idle' | 'running' | 'done' | 'failed'; percent: number; imported: number; error: string | null }
 interface WorkerSetupState {
   status: 'pending' | 'complete'; alreadyPro: boolean; checkout?: SetupCheckoutView | null
+  installer?: SetupInstallerView | null
   history?: SetupHistory | null; historyImport?: WorkerHistoryImport | null
 }
 const toHistoryImport = (run: WorkerHistoryImport | null | undefined): HistoryImportProgress | null =>
@@ -170,6 +179,7 @@ export const localSetupSource: SetupSource = {
     const applyState = (state: WorkerSetupState) => publish({
       alreadyPro: state.alreadyPro,
       checkout: state.checkout ? { state: state.checkout.state, error: state.checkout.error } : null,
+      installer: state.installer ? { stage: state.installer.stage, error: state.installer.error } : null,
       // Nothing to bring along on a new install: the import offer stays hidden.
       history: state.history && state.history.observations > 0 ? state.history : null,
       historyImport: toHistoryImport(state.historyImport),
@@ -249,7 +259,12 @@ export const localSetupSource: SetupSource = {
   async complete(tools) { await postJson('/api/setup/complete', { tools }) },
   async startHistoryImport() { await postJson('/api/setup/import', {}) },
   async search(query) { return toMemoryResults(await workerJson<WorkerSearchResult>(searchUrl(query))) },
-  async keepNote(record, text) { await postJson('/api/memory/save', noteFor(record, text)) },
+  async keepNote(record, text) {
+    const saved = await postJson<{ success?: boolean; id?: unknown; reason?: unknown }>('/api/memory/save', noteFor(record, text))
+    if (saved.success !== true || typeof saved.id !== 'number') throw new Error(`The note was not saved${typeof saved.reason === 'string' ? `: ${saved.reason}` : '.'}`)
+    return saved.id
+  },
+  async forgetNote(id) { await workerJson(`/api/observation/${id}`, { method: 'DELETE' }) },
 }
 
 /** D6 plan prices, in cents. Plan prices only, never per-run spend. */

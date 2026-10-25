@@ -1,7 +1,7 @@
 // Run with `npm test`. The funnel step machine (install-funnel plan Phase 3, item 1).
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { guardStep, initialFlowState, nextAfterSavings, type SetupFlowState } from './setup-flow.ts'
+import { choiceLocked, guardStep, initialFlowState, nextAfterSavings, type SetupFlowState } from './setup-flow.ts'
 
 const state = (changes: Partial<SetupFlowState> = {}): SetupFlowState => ({ ...initialFlowState(false), ...changes })
 const decided = (changes: Partial<SetupFlowState> = {}) => state({ scanComplete: true, revealContinued: true, choiceContinued: true, savingsComplete: true, ...changes })
@@ -44,5 +44,14 @@ describe('guardStep', () => {
     assert.equal(guardStep('workspace', decided({ branch: 'home', finishTools: ['claude-code'] })), 'finish-setup')
     assert.equal(guardStep('launch', decided({ branch: 'home', setupComplete: true, finishTools: ['claude-code'] })), 'launch')
     assert.equal(guardStep('workspace', decided({ branch: 'home', setupComplete: true, finishTools: ['claude-code'] })), 'workspace')
+  })
+})
+
+describe('choiceLocked', () => {
+  it('locks the choice once the installer applied it, and not while it waits or after it failed', () => {
+    assert.equal(choiceLocked(null), false)
+    assert.equal(choiceLocked('waiting-for-choice'), false)
+    assert.equal(choiceLocked('failed'), false)
+    for (const stage of ['home-ready', 'go-kept-existing-pro', 'go-awaiting-checkout'] as const) assert.equal(choiceLocked(stage), true)
   })
 })

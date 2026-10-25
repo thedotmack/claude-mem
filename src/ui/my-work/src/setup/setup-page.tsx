@@ -5,7 +5,7 @@ import { CheckIcon } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { CmemMark } from '@/components/brand'
 import { EMPTY_SETUP_DATA, localSetupSource, SETUP_TOOLS, type SetupData, type SetupSource } from './setup-data'
-import { guardStep, initialFlowState, nextAfterSavings, progressItemFor, type MemoryBranch, type SetupFlowState, type SetupStep } from './setup-flow'
+import { choiceLocked, guardStep, initialFlowState, nextAfterSavings, progressItemFor, type MemoryBranch, type SetupFlowState, type SetupStep } from './setup-flow'
 import { CheckoutScreen } from './screens/checkout-screen'
 import { ChoiceScreen } from './screens/choice-screen'
 import { FinishSetupScreen } from './screens/finish-setup-screen'
@@ -155,6 +155,9 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
     setRequested('launch')
   }
 
+  // The installer stops after a failed hand-off (e.g. On The Go sign-in could not start); only the terminal can restart it.
+  const installerFailed = data.installer?.stage === 'failed'
+
   const screens: Record<SetupStep, () => ReactNode> = {
     scan: () => <ScanScreen scan={{ ...data.scan, improveProduct: improveProduct ?? data.scan.improveProduct }} onImproveProductChange={(checked) => void changeImproveProduct(checked)} preferenceError={preferenceError} onRetry={() => void retryScan()} retrying={retrying} retryError={retryError} />,
     reveal: () => <RevealScreen agents={data.scan.agents} reveal={data.reveal} extraction={data.extraction} recentPrompts={data.recentPrompts} onContinue={() => update({ revealContinued: true }, 'choice')} />,
@@ -165,19 +168,19 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
         onExistingPlan={() => void toFinishSetup({ memoryBilling: 'existing' })}
         onSkip={() => void toFinishSetup({})} />
     ),
-    checkout: () => <CheckoutScreen checkout={data.checkout} onBack={() => setRequested('savings')} onContinue={() => void handOff(() => source!.checkout())} />,
+    checkout: () => <CheckoutScreen checkout={data.checkout} installerStopped={installerFailed} onBack={() => setRequested('savings')} onContinue={() => void handOff(() => source!.checkout())} />,
     'finish-setup': () => (
       <FinishSetupScreen branch={flow.branch} tools={tools} selected={flow.finishTools} onSelect={(finishTools) => update({ finishTools })}
         history={flow.branch === 'go' && historyAvailable ? data.history : null} importStatus={flow.importStatus}
         importResult={data.historyImport}
         onImport={() => void handOff(() => source!.startHistoryImport()).then((started) => { if (started) update({ importStatus: 'running' }, 'import') })}
         onSkipImport={() => update({ importStatus: 'skipped' })}
-        onBack={() => setRequested(nextAfterSavings(flow) === 'checkout' ? 'checkout' : 'savings')}
+        onBack={nextAfterSavings(flow) === 'checkout' ? () => setRequested('checkout') : choiceLocked(data.installer?.stage) ? undefined : () => setRequested('savings')}
         onContinue={() => void finishSetup()} />
     ),
     import: () => <ImportScreen progress={data.historyImport} />,
     launch: () => <LaunchScreen tools={pickedTools} onDone={() => setRequested('workspace')} />,
-    workspace: () => <WorkspaceScreen suggestions={data.suggestions} search={(query) => source!.search(query)} keepNote={(record, text) => source!.keepNote(record, text)} onContinue={() => void handOff(() => source!.complete(flow.finishTools)).then((done) => { if (done) onComplete() })} />,
+    workspace: () => <WorkspaceScreen suggestions={data.suggestions} search={(query) => source!.search(query)} keepNote={(record, text) => source!.keepNote(record, text)} forgetNote={(id) => source!.forgetNote(id)} onContinue={() => void handOff(() => source!.complete(flow.finishTools)).then((done) => { if (done) onComplete() })} />,
   }
 
   return (
@@ -189,6 +192,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
       </header>
       <main id="setup-main" ref={main} tabIndex={-1} className={`setup-main step-${step}${['scan', 'reveal', 'choice', 'savings', 'workspace'].includes(step) ? ' is-centered' : ''}`}>
         {handOffError && <p className="scan-error" role="alert">{handOffError}</p>}
+        {installerFailed && <p className="scan-error" role="alert">Setup stopped in the terminal: {data.installer?.error ?? 'the installer did not say why.'} Run <code>npx claude-mem install</code> again to restart setup.</p>}
         {screens[step]()}
       </main>
     </div>

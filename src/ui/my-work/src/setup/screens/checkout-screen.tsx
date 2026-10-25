@@ -28,7 +28,7 @@ function SecureCardArt() {
  * Step 5, On The Go only (PROTO #route-checkout-pro). Continue asks the terminal to open the CMEM Pro checkout (sign-in,
  * then Stripe); the page moves on to Finish Setup when the terminal reports it paid. While it is open, Continue opens it again.
  */
-export function CheckoutScreen({ checkout, onBack, onContinue }: { checkout: SetupCheckoutView | null; onBack: () => void; onContinue: () => void }) {
+export function CheckoutScreen({ checkout, installerStopped, onBack, onContinue }: { checkout: SetupCheckoutView | null; installerStopped: boolean; onBack: () => void; onContinue: () => void }) {
   const open = checkout?.state === 'requested' || checkout?.state === 'waiting'
   return (
     <section aria-labelledby="checkout-title">
@@ -64,7 +64,8 @@ export function CheckoutScreen({ checkout, onBack, onContinue }: { checkout: Set
       </div>
       <div className="actions">
         <button type="button" className="secondary" onClick={onBack}><ArrowLeftIcon aria-hidden="true" />Back</button>
-        <button type="button" className="primary" onClick={onContinue}>{open ? 'Open checkout again' : 'Continue to Finish Setup'} <ArrowRightIcon aria-hidden="true" /></button>
+        {/* No installer is left to open checkout; the page's alert says how to restart. */}
+        {!installerStopped && <button type="button" className="primary" onClick={onContinue}>{open ? 'Open checkout again' : 'Continue to Finish Setup'} <ArrowRightIcon aria-hidden="true" /></button>}
       </div>
     </section>
   )

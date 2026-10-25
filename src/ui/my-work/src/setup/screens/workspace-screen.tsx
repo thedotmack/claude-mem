@@ -5,8 +5,8 @@ import { prefersReducedMotion } from '../format'
 
 const formatDay = (day: string) => new Date(`${day}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 
-/** `saved` is the text last written to memory; an edit saves again when the note loses focus. */
-interface KeptNote { record: MemoryResult; text: string; saved: string }
+/** `saved` is the text last written to memory, as observation `savedId`; an edit replaces that copy when the note loses focus. */
+interface KeptNote { record: MemoryResult; text: string; saved: string; savedId: number }
 
 function ResultCard({ record, note, onDiscard, onKeep, onEdit, onSave }: { record: MemoryResult; note?: KeptNote; onDiscard: () => void; onKeep?: () => void; onEdit?: (text: string) => void; onSave?: () => void }) {
   const source = `${record.project} · ${record.agent} · ${record.session} · ${formatDay(record.date)}`
@@ -39,8 +39,9 @@ function ResultCard({ record, note, onDiscard, onKeep, onEdit, onSave }: { recor
  * Step 8, "What's next?" (PROTO #route-workspace, D7). Suggestion chips come from the person's own goals and open asks.
  * Results stack as cards: Discard hides one, Keep as note makes an editable copy; the source memory never changes.
  */
-export function WorkspaceScreen({ suggestions, search, keepNote, onContinue }: {
-  suggestions: string[]; search: (query: string) => Promise<MemoryResult[]>; keepNote: (record: MemoryResult, text: string) => Promise<void>; onContinue: () => void
+export function WorkspaceScreen({ suggestions, search, keepNote, forgetNote, onContinue }: {
+  suggestions: string[]; search: (query: string) => Promise<MemoryResult[]>; keepNote: (record: MemoryResult, text: string) => Promise<number>
+  forgetNote: (id: number) => Promise<void>; onContinue: () => void
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const formRef = useRef<HTMLFormElement>(null)
@@ -68,20 +69,29 @@ export function WorkspaceScreen({ suggestions, search, keepNote, onContinue }: {
   const submit = (event: FormEvent) => { event.preventDefault(); void run(query) }
   const discard = (id: string) => { setResults((current) => current.filter((record) => record.id !== id)); setStatus('Removed from this view.'); inputRef.current?.focus() }
   // A kept note is a new memory; the result it came from is never changed.
-  const save = async (record: MemoryResult, text: string, message: string) => {
-    try { await keepNote(record, text) } catch (error) { setStatus(error instanceof Error ? error.message : String(error)); return false }
+  const save = async (record: MemoryResult, text: string, message: string): Promise<number | null> => {
+    let id: number
+    try { id = await keepNote(record, text) } catch (error) { setStatus(error instanceof Error ? error.message : String(error)); return null }
     setStatus(message)
-    return true
+    return id
   }
   const keep = async (record: MemoryResult) => {
-    if (!await save(record, record.body, 'Kept as a note in your memory.')) return
-    setNotes((current) => [{ record, text: record.body, saved: record.body }, ...current])
+    const savedId = await save(record, record.body, 'Kept as a note in your memory.')
+    if (savedId === null) return
+    setNotes((current) => [{ record, text: record.body, saved: record.body, savedId }, ...current])
     setResults((current) => current.filter((entry) => entry.id !== record.id))
     requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(`[data-record-id="${record.id}"] textarea`)?.focus())
   }
+  // The edited text is saved first, then the earlier copy is removed, so memory holds one copy of the note.
   const saveEdit = async (note: KeptNote) => {
     if (!note.text.trim() || note.text === note.saved) return
-    if (await save(note.record, note.text, 'Note saved.')) setNotes((current) => current.map((entry) => entry.record.id === note.record.id ? { ...entry, saved: note.text } : entry))
+    const savedId = await save(note.record, note.text, 'Note saved.')
+    if (savedId === null) return
+    setNotes((current) => current.map((entry) => entry.record.id === note.record.id ? { ...entry, saved: note.text, savedId } : entry))
+    if (savedId === note.savedId) return
+    try { await forgetNote(note.savedId) } catch (error) {
+      setStatus(`Note saved, but its earlier copy is still in your memory: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 
   return (

@@ -79,7 +79,8 @@ export function FinishSetupScreen({ branch, tools, selected, onSelect, history, 
   importResult: HistoryImportProgress | null
   onImport: () => void
   onSkipImport: () => void
-  onBack: () => void
+  /** Absent once the installer has applied the choice and there is no earlier screen left to change. */
+  onBack?: () => void
   onContinue: () => void
 }) {
   const [showError, setShowError] = useState(false)
@@ -127,7 +128,7 @@ export function FinishSetupScreen({ branch, tools, selected, onSelect, history, 
           {history && <HistoryPanel history={history} status={importStatus} result={importResult} onImport={onImport} onSkip={onSkipImport} />}
         </div>
         <div className="actions">
-          <button type="button" className="text-action" onClick={onBack}><ArrowLeftIcon aria-hidden="true" />Back</button>
+          {onBack && <button type="button" className="text-action" onClick={onBack}><ArrowLeftIcon aria-hidden="true" />Back</button>}
           <button type="submit" className="primary">Continue <ArrowRightIcon aria-hidden="true" /></button>
         </div>
       </form>

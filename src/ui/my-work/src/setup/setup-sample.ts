@@ -64,6 +64,7 @@ function sampleData(newInstall: boolean, usage: SampleUsage, waitingForAgent: bo
     extraction: waitingForAgent ? { state: 'waiting-for-agent', step: null } : null,
     recentPrompts: RECENT_PROMPTS,
     checkout: null,
+    installer: null,
     usage: toSetupUsage(sampleUsage(usage, newInstall)),
     alreadyPro: false,
     detectedTools: ['claude-code', 'codex', 'chatgpt'],
@@ -125,7 +126,8 @@ export function createSampleSetupSource(newInstall: boolean, holdScanAtPercent: 
         if (percent === 100) clearInterval(timer)
       }, TICK_MS)
     },
-    async keepNote() {},
+    async keepNote() { return 0 },
+    async forgetNote() {},
     async search(query) {
       const words = query.toLowerCase().match(/[a-z0-9]+/g)?.filter((word) => word.length > 3) ?? []
       return RECORDS.filter((record) => words.some((word) => `${record.title} ${record.body} ${record.project} ${record.session}`.toLowerCase().includes(word)))
