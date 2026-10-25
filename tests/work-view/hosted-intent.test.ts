@@ -221,6 +221,17 @@ describe('hosted setup extraction', () => {
     ]);
   });
 
+  it('leaves conversations Cloud did not place undecided instead of failing the save', async () => {
+    const partial = answer();
+    partial.groups.groups[0].conversations = ['one', 'two'];
+    const { run, dir } = fixture((async () => Response.json(partial)) as typeof fetch);
+    await run.run(prompts, true);
+    expect(run.state()).toMatchObject({ state: 'ok', error: null });
+    const { conversations, ignored } = readLedger(join(dir, 'work-view')).groups;
+    expect(Object.keys(conversations).sort()).toEqual(['["conversation","codex","one"]', '["conversation","codex","two"]']);
+    expect(ignored).toEqual({});
+  });
+
   it('reuses the saved result when setup resumes after a successful run, with no second upload', async () => {
     let uploads = 0;
     const test = fixture((async () => { uploads++; return Response.json(answer()); }) as typeof fetch);
