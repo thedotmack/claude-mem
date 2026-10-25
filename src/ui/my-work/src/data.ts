@@ -2,7 +2,7 @@
 // The store holds the active data source's WorkModel: fixtures in sample mode, real records otherwise (spec §12).
 import { useSyncExternalStore } from 'react'
 import type { ConnectionStatus } from './live/connection-status.ts'
-import { freshlyUpdatedRequestIds, shouldHoldWorkModelUpdate, type ReadingSignals } from './live/update-queue.ts'
+import { freshlyUpdatedRequestIds } from './live/update-queue.ts'
 import type { ReviewResult } from './live/review-response.ts'
 import type { RuleChange } from './data-rules.ts'
 import type { WorkDataSource, WorkModel } from './live/work-data-source.ts'
@@ -249,8 +249,6 @@ export function settleInitialWorkModelLoad(result: { model: WorkModel } | { erro
   setWorkModelLoad('model' in result ? { state: 'loaded', model: result.model } : { state: 'failed', error: result.error })
 }
 
-/** A newer model held back while the person reads (plan Phase 3, item 4). "Show updates" applies it. */
-let pendingWorkModel: WorkModel | null = null
 /** Requests whose recorded content changed in the last applied model; their cards show the "Just updated" dot. */
 let freshlyUpdatedIds: ReadonlySet<string> = new Set()
 const FRESHLY_UPDATED_FOR_MS = 4000
@@ -258,7 +256,6 @@ const FRESHLY_UPDATED_FOR_MS = 4000
 function applyWorkModel(model: WorkModel) {
   const shown = workModelLoad.state === 'loaded' ? workModelLoad.model.requests : []
   const changedIds = new Set(freshlyUpdatedRequestIds(shown, model.requests))
-  pendingWorkModel = null
   if (changedIds.size > 0) {
     freshlyUpdatedIds = changedIds
     setTimeout(() => {
@@ -270,33 +267,20 @@ function applyWorkModel(model: WorkModel) {
   setWorkModelLoad({ state: 'loaded', model })
 }
 
-/** A model from the live feed: applied now, or held while the person is reading (copies app.js `apply`). */
-export function receiveLiveWorkModel(model: WorkModel, readingSignals: ReadingSignals) {
+/** A model from the live feed, shown as soon as it arrives. */
+export function receiveLiveWorkModel(model: WorkModel) {
   if (workModelLoad.state !== 'loaded') { setWorkModelLoad({ state: 'loaded', model }); return }
-  if (shouldHoldWorkModelUpdate(workModelLoad.model.requests.length > 0, readingSignals)) {
-    pendingWorkModel = model
-    listeners.forEach((listener) => listener())
-    return
-  }
   applyWorkModel(model)
-}
-
-export function applyPendingWorkModel() {
-  if (!pendingWorkModel) throw new Error('No held work updates to show')
-  applyWorkModel(pendingWorkModel)
 }
 
 const sameConnection = (a: ConnectionStatus, b: ConnectionStatus) => a.state === b.state && a.label === b.label && a.detail === b.detail && a.tooltip === b.tooltip
 
-/** The feed's health changes even while updates are held, so it goes to the shown model and the held one. */
+/** The feed's health, shown on the current model. */
 export function receiveConnectionStatus(connection: ConnectionStatus) {
   if (workModelLoad.state !== 'loaded' || sameConnection(workModelLoad.model.connection, connection)) return
-  if (pendingWorkModel) pendingWorkModel = { ...pendingWorkModel, connection }
   setWorkModelLoad({ state: 'loaded', model: { ...workModelLoad.model, connection } })
 }
 
-/** True while newer work is held back. */
-export const useHasPendingWorkModel = () => useSyncExternalStore(subscribe, () => pendingWorkModel !== null)
 /** True for a few seconds after this request's recorded content changed. */
 export const useFreshlyUpdated = (requestId: string) => useSyncExternalStore(subscribe, () => freshlyUpdatedIds.has(requestId))
 
@@ -358,8 +342,7 @@ export function setActiveWorkDataSource(source: WorkDataSource) { activeWorkData
 
 /**
  * Check (or undo the check of) the version of a request on screen, through the active source. Checking hands it
- * back to you to ship; it never marks it shipped. Whatever model the source answers with is shown at once, even
- * while updates are held: it is the version the answer is about.
+ * back to you to ship; it never marks it shipped. Whatever model the source answers with is shown at once.
  */
 export async function setRequestChecked(requestId: string, checked: boolean): Promise<ReviewResult> {
   if (!activeWorkDataSource) throw new Error('No data source to save the check to')

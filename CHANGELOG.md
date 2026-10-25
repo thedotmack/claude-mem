@@ -4,6 +4,40 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [15.1.0] - 2026-10-25
+
+## claude-mem 15.1.0
+
+### Highlights
+
+- **New My Work viewer (React, live data).** The localhost viewer at `http://localhost:37777` is replaced by the React My Work viewer on live worker data: one card per human request, progress meters, owner goals, goal alignment, shipping velocity and the build story (#5010).
+- **My Work is always live.** Updates appear as they arrive; the "Show updates" button is gone. The header now reads "claude-mem", links to the Classic viewer at `/viewer`, and shows a GitHub stars button. An open request drawer no longer reopens by itself when its request returns to the feed (#5056).
+- **Request grouping and progress review.** The build story stays under its cap and the story update is told how much room it has (#5053, #5054); every agent's refresh failure is shown; finished subagents show as finished, and a subagent can be marked finished from its agent card; Claude Code subagent stops are recorded.
+
+### Server
+
+- Per-prompt semantic injection in server mode (#5004).
+- The configured embedding model is baked into the Docker image (#5003).
+
+### MCP
+
+- Opt-in loopback HTTP transport with per-session workspaces (#5028).
+
+### Fixes
+
+- Observer: reasoning gets its own budget and cut-off replies are reported (#5033).
+- Search: unfiltered timelines are scoped to their anchor project (#5013).
+- Worker: cross-origin loopback writes to `/api/import` are rejected (#5025); Edit payloads carrying new scalar flags keep being trimmed (#5027).
+- Redaction: AWS secret keys under lowercase key names, PGP private key blocks and encrypted PKCS#8 keys (#5014, #5017).
+- Security: private prompt text stays out of Goals.
+- Smart-read: tree-sitter probe output read when Bun returns a Buffer (#5024), Go type aliases (#5020), Swift extension methods (#5016), symbols ending at column 0 (#5015).
+- Hooks: `last_assistant_message` mapped in the raw adapter (#5011).
+- Agent runner: npm-installed codex and gemini are found and started.
+
+### Tests
+
+- Suite split into fast and integration lanes; slow, failing and source-grep tests cut (#5032).
+
 ## [15.0.2] - 2026-10-23
 
 # Stop observer reasoning from consuming the output budget
