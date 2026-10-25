@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [15.2.0] - 2026-10-25
+
+## Highlights
+
+### Install funnel in the browser (#5031)
+Fresh installs now open a browser setup flow that finds your recent work and turns it into Work, Goals and Rules before setup finishes. Existing installations keep opening My Work as before.
+
+1. **Install** — `npx claude-mem install` installs the detected hooks, starts the worker and opens the browser.
+2. **Scan** — reads the last 30 days of supported local agent history. Configured excluded projects and agent-authored prompts are left out, stored prompts are deduplicated, and private-tag cleanup and configured redaction run before anything is shown or extracted.
+3. **Reveal** — uploads the filtered owner prompts (gzip) to CMEM Cloud for hosted intent extraction. Anonymous installs get a private, persistent installation credential that retries and sign-in reuse. Returned goals, rules and request groups fill the local My Work snapshots. Upload and extraction errors are shown and can be retried. The pre-checked product-improvement box only changes `improveProduct`.
+4. **Storage choice** — At Home or On The Go. On The Go uses the existing pairing, login and checkout flow; delivered memory credentials are activated before checkout is marked paid, and sync-only accounts keep their provider.
+5. **Finish Setup** — installs any other selected local tools and can import existing memory. Extraction or import in progress is kept when a settings change restarts the worker.
+6. **What's next** — search saved memory and prompts, keep a result as a note, then hand off to My Work. The terminal exits successfully.
+
+Ongoing goals and progress refresh uses an installed, logged-in agent: Claude Code gets bounded file tools and memory recall only; Codex runs with a strict read-only workspace/runtime profile (no writes, no network), with native and npm runtime layouts supported; Gemini gets prepared evidence inline with no builtin tools, hooks or YOLO mode. Every saved answer passes the worker's validators.
+
+### Setup no longer fails when Cloud leaves conversations ungrouped (#5060)
+On real 30-day scans the hosted model sometimes leaves conversations out of every group. The worker used to throw `Hosted extraction omitted conversation …` and fail setup after a successful hosted run. Now the groups Cloud returned are saved and conversations it did not place stay undecided: they show in My Work as their own request, and the local refresh can group them later. Unknown or repeated conversation ids still fail loudly.
+
+## Requirements
+- Node `^20.19.0 || >=22.12.0`.
+- Uses CMEM Cloud hosted history import and intent extraction (claude-mem-pro #353, #355, #358).
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v15.1.0...v15.2.0
+
 ## [15.1.0] - 2026-10-25
 
 ## claude-mem 15.1.0
