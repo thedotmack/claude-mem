@@ -20,8 +20,13 @@ export function getObservationsByFilePath(
   // candidate path forms and match observations whose files_read/files_modified
   // contain ANY of them, so context injection keyed on path is consistent
   // across the two events. De-duplicate to keep the IN() clause minimal.
+  // A Windows tool input is stored as written (`C:\proj\src\a.ts`) while
+  // callers send forward-slashed forms, so each candidate also matches its
+  // backslashed spelling, as folder lookups already do.
   const candidatePaths = Array.from(
-    new Set((Array.isArray(filePath) ? filePath : [filePath]).filter(p => typeof p === 'string' && p.length > 0))
+    new Set((Array.isArray(filePath) ? filePath : [filePath])
+      .filter(p => typeof p === 'string' && p.length > 0)
+      .flatMap(p => [p, p.replaceAll('/', '\\')]))
   );
   if (candidatePaths.length === 0) {
     logger.debug('DB', 'Skipping observation file lookup with no candidate paths');

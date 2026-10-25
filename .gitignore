@@ -60,3 +60,6 @@ reports/
 # Python bytecode (Hermes provider and tests)
 __pycache__/
 *.pyc
+
+# Fixture homes written by tests (tests/services/prompt-import/token-usage.test.ts)
+tests/**/.generated/

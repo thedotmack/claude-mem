@@ -3694,8 +3694,8 @@ export class SessionStore {
     return mutation;
   }
 
-  saveUserPrompt(contentSessionId: string, promptNumber: number, promptText: string, sessionDbId?: number, nativePromptId?: string, nativePromptHash?: string): number {
-    const now = new Date();
+  saveUserPrompt(contentSessionId: string, promptNumber: number, promptText: string, sessionDbId?: number, nativePromptId?: string, nativePromptHash?: string, createdAtEpoch?: number): number {
+    const now = new Date(createdAtEpoch ?? Date.now());
     const nowEpoch = now.getTime();
     const storedPromptText = normalizeStoredPromptText(promptText);
     const resolvedSessionDbId = this.resolvePromptSessionDbId(contentSessionId, sessionDbId);
@@ -3714,7 +3714,8 @@ export class SessionStore {
    * Equal text with a different key is a new real turn. No time window applies.
    * It is scoped by the DB session (platform_source + content_session_id).
    */
-  saveNativeUserPrompt(contentSessionId: string, sessionDbId: number, nativePromptId: string, promptText: string, identityPromptText = promptText): {
+  saveNativeUserPrompt(contentSessionId: string, sessionDbId: number, nativePromptId: string, promptText: string, identityPromptText = promptText,
+    options: { createdAtEpoch?: number; reopenSession?: boolean } = {}): {
     id: number; promptNumber: number; duplicate: boolean;
   } {
     if (!nativePromptId || nativePromptId.length > 256 || /[\s\x00-\x1f\x7f]/.test(nativePromptId)) {
@@ -3733,10 +3734,87 @@ export class SessionStore {
         return { id: existing.id, promptNumber: existing.prompt_number, duplicate: true };
       }
       const promptNumber = this.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId) + 1;
-      this.reopenCompletedSession(sessionDbId);
-      const id = this.saveUserPrompt(contentSessionId, promptNumber, text, sessionDbId, nativePromptId, promptHash);
+      if (options.reopenSession !== false) this.reopenCompletedSession(sessionDbId);
+      const id = this.saveUserPrompt(contentSessionId, promptNumber, text, sessionDbId, nativePromptId, promptHash, options.createdAtEpoch);
       return { id, promptNumber, duplicate: false };
     }).immediate();
+  }
+
+  /**
+   * A prompt read back from an agent's own transcript (setup prompt import).
+   * It joins the session claude-mem's hooks recorded for the same conversation,
+   * keeps the transcript's time, and never reopens a finished session.
+   *
+   * Two copies of one prompt count once:
+   * - a re-scan finds the transcript's native key (`transcript:` prefix + the
+   *   agent's message id, compared with its SHA-256 by saveNativeUserPrompt);
+   * - a hook-recorded row carries no native key, so it is matched by session,
+   *   stored text (or one of `hookTextVariants`, e.g. a slash command's short
+   *   form) and the nearest time within `hookMatchWindowMs`. Each hook row is
+   *   claimed by one transcript prompt at most (`claimedHookRowIds`), so a
+   *   prompt typed twice is still two prompts.
+   * A prompt that is entirely private stores nothing.
+   */
+  importTranscriptUserPrompt(prompt: {
+    platformSource: string; contentSessionId: string; project: string;
+    nativePromptId: string; promptText: string; createdAtEpoch: number;
+    hookTextVariants?: string[]; hookMatchWindowMs: number; claimedHookRowIds: Set<number>;
+  }): { reason: 'new' | 'already-imported' | 'recorded-by-hook' | 'private'; hookRowId?: number } {
+    const text = normalizeStoredPromptText(prompt.promptText);
+    if (!text) return { reason: 'private' };
+    const platformSource = normalizePlatformSource(prompt.platformSource);
+    const session = this.db.prepare(`SELECT id FROM sdk_sessions
+      WHERE COALESCE(NULLIF(platform_source, ''), ?) = ? AND content_session_id = ?`)
+      .get(DEFAULT_PLATFORM_SOURCE, platformSource, prompt.contentSessionId) as { id: number } | null;
+    let sessionDbId = session?.id;
+    if (sessionDbId !== undefined) {
+      const texts = [text, ...(prompt.hookTextVariants ?? []).map(normalizeStoredPromptText).filter(Boolean)];
+      const hookRows = this.db.prepare(`SELECT id, created_at_epoch FROM user_prompts
+        WHERE session_db_id = ? AND native_prompt_id IS NULL
+          AND prompt_text IN (${texts.map(() => '?').join(', ')})
+          AND ABS(created_at_epoch - ?) <= ?
+        ORDER BY ABS(created_at_epoch - ?), id`)
+        .all(sessionDbId, ...texts, prompt.createdAtEpoch, prompt.hookMatchWindowMs, prompt.createdAtEpoch) as Array<{ id: number }>;
+      const hookRow = hookRows.find(row => !prompt.claimedHookRowIds.has(row.id));
+      if (hookRow) {
+        prompt.claimedHookRowIds.add(hookRow.id);
+        return { reason: 'recorded-by-hook', hookRowId: hookRow.id };
+      }
+    } else {
+      const at = new Date(prompt.createdAtEpoch).toISOString();
+      const inserted = this.db.prepare(`INSERT INTO sdk_sessions
+        (content_session_id, memory_session_id, project, platform_source, user_prompt, started_at, started_at_epoch, completed_at, completed_at_epoch, status)
+        VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, 'completed')`)
+        .run(prompt.contentSessionId, prompt.project, platformSource, text, at, prompt.createdAtEpoch, at, prompt.createdAtEpoch);
+      sessionDbId = Number(inserted.lastInsertRowid);
+    }
+    const result = this.saveNativeUserPrompt(prompt.contentSessionId, sessionDbId, `transcript:${prompt.nativePromptId}`,
+      prompt.promptText, prompt.promptText, { createdAtEpoch: prompt.createdAtEpoch, reopenSession: false });
+    return { reason: result.duplicate ? 'already-imported' : 'new' };
+  }
+
+  /** Prompts claude-mem's hooks recorded since `sinceEpochMs` (everything the transcript import did not write). */
+  listHookRecordedPrompts(sinceEpochMs: number): Array<{
+    id: number; platformSource: string; contentSessionId: string; project: string; cwd: string | null; promptText: string; createdAtEpoch: number;
+  }> {
+    return this.db.prepare(`SELECT up.id, COALESCE(NULLIF(s.platform_source, ''), ?) AS platformSource,
+        s.content_session_id AS contentSessionId, s.project, s.cwd, up.prompt_text AS promptText, up.created_at_epoch AS createdAtEpoch
+      FROM user_prompts up JOIN sdk_sessions s ON s.id = up.session_db_id
+      WHERE up.created_at_epoch >= ? AND s.project != ?
+        AND (up.native_prompt_id IS NULL OR up.native_prompt_id NOT LIKE 'transcript:%')
+      ORDER BY up.created_at_epoch, up.id`)
+      .all(DEFAULT_PLATFORM_SOURCE, sinceEpochMs, OBSERVER_SESSIONS_PROJECT) as Array<{
+        id: number; platformSource: string; contentSessionId: string; project: string; cwd: string | null; promptText: string; createdAtEpoch: number;
+      }>;
+  }
+
+  /** Every observation's token fields, streamed in id order (setup Token Savings feeds them to calculateTokenEconomics). */
+  streamObservationTokenFields(): Iterable<{
+    title: string | null; subtitle: string | null; narrative: string | null; facts: string | null; discovery_tokens: number | null;
+  }> {
+    return streamRows(this.db.prepare(`SELECT title, subtitle, narrative, facts, discovery_tokens FROM observations ORDER BY id`)) as Iterable<{
+      title: string | null; subtitle: string | null; narrative: string | null; facts: string | null; discovery_tokens: number | null;
+    }>;
   }
 
   getUserPrompt(contentSessionId: string, promptNumber: number, sessionDbId?: number): string | null {

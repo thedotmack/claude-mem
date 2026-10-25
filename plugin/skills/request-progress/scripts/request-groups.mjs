@@ -1918,6 +1918,7 @@ var OWNER_GOALS_LIST = "owner-goals";
 // src/services/work-view/request-groups.mjs
 var DATA_DIR2 = process.env.CLAUDE_MEM_DATA_DIR || join7(homedir6(), ".claude-mem");
 var LEDGER_DIR = join7(DATA_DIR2, "work-view");
+var AGENT_WRITTEN_PROMPTS_FILE = "agent-written-prompts.json";
 var DAY_MS = 864e5;
 var GOALS_STALE_MS = DAY_MS;
 var MAX_CONVERSATIONS_PER_LINKING_LIST = 8;
@@ -1932,7 +1933,7 @@ var groupIdFor = (anchorConversationKey) => `g_${createHash("sha256").update(anc
 function placeholders(values) {
   return values.map(() => "?").join(",");
 }
-function readCandidates(database, { sinceEpoch = 0, conversationKeys = null, fullAsks = false }) {
+function readCandidates(database, { sinceEpoch = 0, conversationKeys = null, fullAsks = false, excludedPromptIds = null }) {
   const columns = "SELECT id, platform_source, content_session_id, project, user_prompt, started_at_epoch FROM sdk_sessions";
   const pairs = conversationKeys?.map((key) => JSON.parse(key).slice(1));
   const stored = pairs ? pairs.length ? database.prepare(`${columns} WHERE (platform_source, content_session_id) IN (VALUES ${pairs.map(() => "(?, ?)").join(",")})`).all(...pairs.flat()) : [] : database.prepare(`${columns} WHERE started_at_epoch >= ?
@@ -1961,8 +1962,10 @@ function readCandidates(database, { sinceEpoch = 0, conversationKeys = null, ful
   const candidates = /* @__PURE__ */ new Map();
   for (const session of sessions) {
     const key = conversationKey(session);
-    const own = promptsBySession.get(session.id) ?? [];
-    const original = key ? originalFor(session, own) : null;
+    const all = promptsBySession.get(session.id) ?? [];
+    const own = all.filter((prompt) => !excludedPromptIds?.has(prompt.id));
+    const openingRejected = all.some((prompt) => excludedPromptIds?.has(prompt.id) && (prompt.prompt_number === 1 || prompt.prompt_text === session.user_prompt));
+    const original = key ? originalFor(openingRejected ? { ...session, user_prompt: null } : session, own) : null;
     if (!original) continue;
     own.sort((a, b) => a.created_at_epoch - b.created_at_epoch || a.id - b.id);
     const lastPrompt = own.at(-1)?.created_at_epoch ?? 0;
@@ -2059,7 +2062,8 @@ function readGoals(database) {
     product: item.product ?? null,
     latestAt: item.latest_at ?? null,
     timesAsked: Number(item.times_asked) || null,
-    evidence: String(item.evidence ?? "").split("\n").filter(Boolean).map((line) => {
+    // A later local refresh changes snapshot, so it cannot reuse an older hosted JSON evidence field.
+    evidence: item.source === "hosted-intent" && item.hosted_snapshot === item.snapshot ? JSON.parse(item.evidence_json) : String(item.evidence ?? "").split("\n").filter(Boolean).map((line) => {
       const [at, ...quote] = line.split(" | ");
       return { at, quote: quote.join(" | ") };
     })
@@ -2158,7 +2162,8 @@ function applyGroupDecisions(stored, decisions, now = Date.now(), { projectOf = 
 var isIsoOrNull = (value) => value === null || typeof value === "string" && Number.isFinite(Date.parse(value));
 function boundedText(value, max, label, optional = false) {
   if (optional && (value == null || value === "")) return "";
-  if (typeof value !== "string" || !value.trim() || value.length > max) throw new TypeError(`${label} must be 1\u2013${max} characters.`);
+  if (typeof value !== "string" || !value.trim()) throw new TypeError(`${label} must be 1\u2013${max} characters.`);
+  if (value.length > max) throw new TypeError(`${label} is ${value.length} characters; it must be 1\u2013${max}. Cut at least ${value.length - max} characters.`);
   return value.trim();
 }
 var evidenceList = (value) => (Array.isArray(value) ? value : []).map(String).slice(0, 8);
@@ -2257,11 +2262,12 @@ function reviewIsCurrent(review, conversationKeys, lastActivityEpoch) {
   if (current.length !== review.reviewedConversations.length || current.some((key, index) => key !== review.reviewedConversations[index])) return false;
   return Date.parse(review.reviewedThrough) >= lastActivityEpoch;
 }
+var STORY_NARRATIVE_MAX = 12e3;
 function validateStory(story) {
   const preferences = story?.preferences ?? [];
   if (!Array.isArray(preferences) || preferences.length > 30) throw new TypeError("preferences must be an array of at most 30.");
   return {
-    narrative: boundedText(story?.narrative, 12e3, "narrative"),
+    narrative: boundedText(story?.narrative, STORY_NARRATIVE_MAX, "narrative"),
     preferences: preferences.map((preference, index) => ({
       preference: boundedText(preference.preference, 200, `preferences[${index}].preference`),
       kind: PREFERENCE_KINDS.includes(preference.kind) ? preference.kind : "directive",
@@ -2283,7 +2289,14 @@ function readLedger(dir = LEDGER_DIR) {
     const entry = readJson(join7(dir, "progress", name), null);
     if (entry?.groupId && groups.groups[entry.groupId]) progress[entry.groupId] = { ...entry, title: groups.groups[entry.groupId].title };
   }
-  return { groups, progress, story: readJson(join7(dir, "story.json"), null), alignment: readJson(join7(dir, "alignment.json"), null), refresh: readJson(join7(dir, "refresh.json"), null) };
+  return {
+    groups,
+    progress,
+    story: readJson(join7(dir, "story.json"), null),
+    alignment: readJson(join7(dir, "alignment.json"), null),
+    refresh: readJson(join7(dir, "refresh.json"), null),
+    agentWrittenPromptIds: new Set(readJson(join7(dir, AGENT_WRITTEN_PROMPTS_FILE), { promptIds: [] }).promptIds ?? [])
+  };
 }
 function groupDetails(groupId, ledger, candidatesByKey) {
   const group = ledger.groups.groups[groupId];
@@ -2303,7 +2316,7 @@ function groupDetails(groupId, ledger, candidatesByKey) {
   };
 }
 function pendingReviews(ledger, database, sinceEpoch) {
-  const candidates = new Map(readCandidates(database, { sinceEpoch }).map((candidate) => [candidate.conversationKey, candidate]));
+  const candidates = new Map(readCandidates(database, { sinceEpoch, excludedPromptIds: ledger.agentWrittenPromptIds }).map((candidate) => [candidate.conversationKey, candidate]));
   const ungrouped = [...candidates.keys()].filter((key) => !ledger.groups.conversations[key] && !ledger.groups.ignored?.[key]).length;
   const ids = [...new Set([...candidates.keys()].map((key) => ledger.groups.conversations[key]).filter(Boolean))];
   const due = ids.map((id) => groupDetails(id, ledger, candidates)).filter((group) => !reviewIsCurrent(group.previousReview, group.conversations.map((conversation) => conversation.conversationKey), group.lastActivityEpoch)).sort((a, b) => b.lastActivityEpoch - a.lastActivityEpoch);
@@ -2371,7 +2384,7 @@ function readConversationProjects(database, conversationKeys) {
 var GROUPING_BATCH = 20;
 var CLOSED_STATES = /* @__PURE__ */ new Set(["shipped", "abandoned"]);
 function groupingInput(ledger, database, { sinceEpoch, limit = GROUPING_BATCH }) {
-  const candidates = readCandidates(database, { sinceEpoch });
+  const candidates = readCandidates(database, { sinceEpoch, excludedPromptIds: ledger.agentWrittenPromptIds });
   const decided = (key) => Boolean(ledger.groups.conversations[key] || ledger.groups.ignored?.[key]);
   const fresh = candidates.filter((candidate) => !decided(candidate.conversationKey));
   if (!fresh.length) return { root: null, conversations: [], openRequests: [], proposedLinks: [], remaining: 0 };
@@ -2411,8 +2424,9 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
   const since = () => now - option(args, "days", 14) * DAY_MS;
   if (command === "candidates") {
     const wantedRoot = textOption(args, "project");
-    const stored = readLedger(dir).groups;
-    const candidates = readCandidates(db(), { sinceEpoch: since() }).filter((candidate) => !stored.ignored?.[candidate.conversationKey] && (wantedRoot == null || projectRoot(candidate.project) === wantedRoot));
+    const ledger = readLedger(dir);
+    const stored = ledger.groups;
+    const candidates = readCandidates(db(), { sinceEpoch: since(), excludedPromptIds: ledger.agentWrittenPromptIds }).filter((candidate) => !stored.ignored?.[candidate.conversationKey] && (wantedRoot == null || projectRoot(candidate.project) === wantedRoot));
     const { proposedGroups, skippedLists } = linkBackwards(candidates);
     const brief = args.includes("--brief");
     const shown = candidates.map(({ lastActivityEpoch, startedAtEpoch, original, ...candidate }) => {
@@ -2431,7 +2445,7 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
     const existing = Object.entries(stored.conversations).filter(([, id]) => touchedGroups.has(id)).map(([key]) => key);
     const next = applyGroupDecisions(stored, decisions, now, { projectOf: readConversationProjects(database2, [...touched, ...existing]) });
     const missing = Object.values(next.groups).filter((group) => !group.anchorAsk).map((group) => group.anchor);
-    const anchors = new Map(readCandidates(database2, { conversationKeys: missing }).map((candidate) => [candidate.conversationKey, candidate.original]));
+    const anchors = new Map(readCandidates(database2, { conversationKeys: missing, excludedPromptIds: readLedger(dir).agentWrittenPromptIds }).map((candidate) => [candidate.conversationKey, candidate.original]));
     for (const group of Object.values(next.groups)) if (!group.anchorAsk && anchors.has(group.anchor)) group.anchorAsk = anchors.get(group.anchor);
     writeJsonAtomic(join7(dir, "request-groups.json"), next);
     return print({ groups: Object.keys(next.groups).length, conversations: Object.keys(next.conversations).length });
@@ -2441,7 +2455,7 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
     if (command === "show") {
       if (!ledger.groups.groups[args[0]]) throw new TypeError(`Unknown group ${args[0]}.`);
       const keys = Object.entries(ledger.groups.conversations).filter(([, id]) => id === args[0]).map(([key]) => key);
-      const candidates = new Map(readCandidates(db(), { conversationKeys: keys, fullAsks: true }).map((candidate) => [candidate.conversationKey, candidate]));
+      const candidates = new Map(readCandidates(db(), { conversationKeys: keys, fullAsks: true, excludedPromptIds: ledger.agentWrittenPromptIds }).map((candidate) => [candidate.conversationKey, candidate]));
       const details = groupDetails(args[0], ledger, candidates);
       const previous = details.previousReview;
       const amendSince = previous && reviewIsCurrent(previous, keys, 0) ? previous.reviewedThrough : null;
@@ -2478,7 +2492,16 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
     const reviews = Object.values(progress).sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
     const writtenAt = Date.parse(story?.writtenAt ?? "");
     const update = Number.isFinite(writtenAt);
-    return print({ groups: Object.keys(groups.groups).length, update, reviews: update ? reviews.filter((review) => Date.parse(review.changedAt ?? review.checkedAt) > writtenAt) : reviews, previousStory: story });
+    const previousNarrativeChars = story?.narrative?.length ?? 0;
+    return print({
+      groups: Object.keys(groups.groups).length,
+      update,
+      narrativeLimit: STORY_NARRATIVE_MAX,
+      previousNarrativeChars,
+      roomChars: STORY_NARRATIVE_MAX - previousNarrativeChars,
+      reviews: update ? reviews.filter((review) => Date.parse(review.changedAt ?? review.checkedAt) > writtenAt) : reviews,
+      previousStory: story
+    });
   }
   if (command === "record-story") {
     const story = { ...validateStory(readInput(args[0] ?? "-")), writtenAt: iso(now) };
