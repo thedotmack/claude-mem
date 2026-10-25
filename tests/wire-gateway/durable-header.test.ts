@@ -272,7 +272,7 @@ describe('durable header: golden bytes per protocol, frozen, changed only at a t
     });
   }
 
-  it('anthropic: the rules go before the memory context, each its own system block with no new breakpoint', async () => {
+  it('anthropic: the rules go before the memory context, each its own system block; only the timeline block gets a breakpoint', async () => {
     headerAnswer = RULES_A;
     contextAnswer = CONTEXT_TEXT;
     try {
@@ -282,7 +282,10 @@ describe('durable header: golden bytes per protocol, frozen, changed only at a t
       expect(blocks).toHaveLength(4);
       expect(blocks[2]).toStartWith('{"type":"text","text":"<claude-mem-rules>');
       expect(blocks[3]).toStartWith('{"type":"text","text":"<claude-mem-context>');
-      expect(countOf(textOf(sent), '"cache_control"')).toBe(countOf(textOf(first), '"cache_control"'));
+      // The head's one breakpoint goes on its last gateway block, the timeline; the header holds none.
+      expect(blocks[2]).not.toContain('cache_control');
+      expect(blocks[3]).toEndWith(',"cache_control":{"type":"ephemeral"}}');
+      expect(countOf(textOf(sent), '"cache_control"')).toBe(countOf(textOf(first), '"cache_control"') + 1);
     } finally {
       contextAnswer = new Error('no context in this test');
     }

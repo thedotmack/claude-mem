@@ -182,20 +182,20 @@ describe('memory injection: golden bytes per protocol, frozen across requests an
     });
   }
 
-  it('anthropic: the attribution block stays first and byte-identical; cache_control breakpoints are not added to (≤4)', async () => {
+  it('anthropic: the attribution block stays first and byte-identical; the timeline block gets the head\'s one breakpoint (≤4)', async () => {
     contextAnswer = CONTEXT_TEXT;
     const first = readBornInput('anthropic');
     const sent = await send('inject-anthropic', '/v1/messages', first, nextSession('attribution'));
     expect(rawText(sent, spanAt(sent, ['system', 0]))).toBe(rawText(first, spanAt(first, ['system', 0])));
     expect(rawText(sent, spanAt(sent, ['system', 0, 'text']))).toStartWith('"x-anthropic-billing-header:');
+    // The input uses 3 breakpoints, all 5-minute: the head's own makes 4, the most Anthropic allows, also 5-minute.
     const breakpoints = countOf(textOf(sent), '"cache_control"');
-    expect(breakpoints).toBe(countOf(textOf(first), '"cache_control"'));
+    expect(breakpoints).toBe(countOf(textOf(first), '"cache_control"') + 1);
     expect(breakpoints).toBeLessThanOrEqual(4);
-    // The appended block is the last system block, without a breakpoint.
     const systemBlocks = [...arrayElements(sent, spanAt(sent, ['system']))];
     const appended = rawText(sent, systemBlocks[systemBlocks.length - 1]);
     expect(appended).toStartWith('{"type":"text","text":"<claude-mem-context>');
-    expect(appended).not.toContain('cache_control');
+    expect(appended).toEndWith(',"cache_control":{"type":"ephemeral"}}');
   });
 
   it('anthropic: a string system prompt is appended to before its closing quote, its own escapes kept', async () => {

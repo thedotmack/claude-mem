@@ -57,9 +57,14 @@ export type WireLedgerEntry =
    * Finished tool work culled (Endless Mode): in user turn `turnOrdinal`, the
    * messages through the result of call `throughCallId` are replaced by the
    * timeline `lines` of the observations they produced. For one turn, the
-   * entry recorded last is the one applied.
+   * entry recorded last is the one applied. `linesPlacement` says where the
+   * lines go (CULL_LINES_PLACEMENTS); a line written before it existed has
+   * none and is put back as it was sent, appended to the turn's user message.
    */
-  | { type: 'cull'; turnOrdinal: number; throughCallId: string; lines: string[]; observationIds: number[]; culledTokensEst: number }
+  | {
+    type: 'cull'; turnOrdinal: number; throughCallId: string; lines: string[]; observationIds: number[]; culledTokensEst: number;
+    linesPlacement?: CullLinesPlacement;
+  }
   /**
    * A tool result replaced by an observation's text (Endless Mode v1): the
    * observation it shows, or, with `coveredByCallId`, the earlier call whose
@@ -84,6 +89,18 @@ export type WireLedgerEntry =
   | { type: 'suspended'; stage: string; at: string };
 
 export type WireLedgerEntryType = WireLedgerEntry['type'];
+
+/**
+ * Where a cull's timeline lines go:
+ * - `appended-to-turn-start-message`: at the end of the user message that
+ *   started the turn (its content string, or a new last block or part). How
+ *   every cull went before `linesPlacement` was recorded, and how Gemini's
+ *   still go (a new last part keeps contents alternating).
+ * - `own-message-at-cull-point`: as a message of their own where the culled
+ *   run began, so every byte the turn-start request sent stays as it was.
+ */
+export const CULL_LINES_PLACEMENTS = ['appended-to-turn-start-message', 'own-message-at-cull-point'] as const;
+export type CullLinesPlacement = typeof CULL_LINES_PLACEMENTS[number];
 
 /**
  * What an entry is first-write-wins by: one of each kind per conversation, a
@@ -152,9 +169,11 @@ function ledgerEntryFromLine(line: string): WireLedgerEntry | null {
         && Array.isArray(record.observationIds) && record.observationIds.every(isNonNegativeInteger)
         && record.lines.length === record.observationIds.length
         && isNonNegativeInteger(record.culledTokensEst)
+        && (record.linesPlacement === undefined || CULL_LINES_PLACEMENTS.includes(record.linesPlacement as CullLinesPlacement))
         ? {
           type: 'cull', turnOrdinal: record.turnOrdinal, throughCallId: record.throughCallId,
           lines: record.lines as string[], observationIds: record.observationIds as number[], culledTokensEst: record.culledTokensEst,
+          ...(record.linesPlacement === undefined ? {} : { linesPlacement: record.linesPlacement as CullLinesPlacement }),
         }
         : null;
     case 'swap': {

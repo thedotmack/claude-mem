@@ -220,7 +220,12 @@ of a conversation that began under the gateway has five parts, in this order:
 | 5 | Tail: tool work no observation covers yet | not touched | your agent |
 
 Parts 2 and 3 go at the end of the system prompt, after your agent's own
-text, so part 1 stays first and byte for byte the same.
+text, so part 1 stays first and byte for byte the same. On Anthropic, when the
+request uses fewer than the 4 cache breakpoints Anthropic allows, the last of
+them (the timeline, or the header when there is no timeline) gets a
+`cache_control` breakpoint of its own, so parts 1 to 3 are cached as one entry.
+It is 1-hour when a breakpoint after it is (Claude Code's are), else the
+5-minute default, since Anthropic needs longer-lived breakpoints first.
 
 Providers cache a prompt by its exact prefix: a change at one point throws
 away the cache from that point on. Everything above the newest change keeps
@@ -270,13 +275,26 @@ changes nothing.
   turn's final reply are never culled. There is no age or size rule: the only
   trigger is that the observation exists. The gateway never waits for one: it
   asks the worker in the background, and work whose observation is not there
-  yet stays as it is. With the worker down, requests go exactly as your agent
-  sent them.
-- The timeline lines go at the end of the message of yours that started the
-  turn, as one `<claude-mem-work>` block, one `#<id> <time> <icon> <title>`
-  line per observation (the same line the session-start timeline shows),
-  never in a reply: the model would read them as its own words. A later cull
-  in the same turn adds its lines to the same block.
+  yet stays as it is. With the worker down, nothing is culled (on Anthropic,
+  each turn start still leaves out the thinking before it; see below).
+- The timeline lines go in one `<claude-mem-work>` block, one
+  `#<id> <time> <icon> <title>` line per observation (the same line the
+  session-start timeline shows), never in a reply: the model would read them
+  as its own words, and never as a turn of yours. Where the block goes:
+
+  | Provider | Where | Why |
+  |---|---|---|
+  | Anthropic, after a system message (Claude Code's notes) | a system message of its own, where the culled work began | a system message must come last or before the model's reply, so a user message there would break that rule for the note before it |
+  | Anthropic, otherwise | a user message of its own, where the culled work began | Anthropic merges it with your message after its last block |
+  | OpenAI Chat Completions | a user message of its own, where the culled work began | OpenAI caches at the end of each user message; yours stays as it was |
+  | OpenAI Responses | a user message item of its own, where the culled work began | the same |
+  | Gemini | a new last part of your message that started the turn | turns keep alternating between you and the model, and nothing before the new part changes |
+
+  Everything the turn's first request sent stays byte for byte, so the cache
+  that request wrote is still read when the cull is made. A later cull in the
+  same turn adds its lines to the same block, in the same place. A
+  conversation culled by a gateway from before these placements keeps its
+  lines where that gateway put them (at the end of your message).
 - Capture strips `<claude-mem-work>` and `<claude-mem-rules>`, and neither
   counts as words of yours, so they never start or hide a turn and never
   become new memory.
@@ -303,12 +321,16 @@ changes nothing.
   your My Rules file (the agent loads `MY-RULES.md` itself) gets no header, so
   the rules are never there twice.
 - **Anthropic thinking.** Anthropic accepts a thinking block only while the
-  system prompt, the tools and every message before it are unchanged. So a
-  request that makes a new cull or header change also leaves out every
-  thinking block before your latest turn, oldest first with no gap (an
-  assistant message left empty goes too). They stay out from then on: putting
-  them back would be a change of its own. The thinking of the turn in flight
-  is never touched.
+  system prompt, the tools and every message before it are unchanged. So every
+  request that starts one of your turns, with Endless Mode on, and every
+  request that makes a new cull or header change, leaves out every thinking
+  block before your latest turn, oldest first with no gap (an assistant
+  message left empty goes too). They stay out from then on: putting them back
+  would be a change of its own. Because each turn start does this, cull or
+  not, it only ever takes out the thinking of the turn just finished, which
+  comes after everything the previous turn start sent: a later cull never
+  reaches back into what that request cached. The thinking of the turn in
+  flight is never touched.
 
 ### What it saved
 

@@ -28,9 +28,10 @@ import { expectDiffersOnlyInsideDeclaredSpans, expectMatchesGoldenFile, type Dec
 // Endless Mode v2 (plan Phase 4), through the real relay: per protocol, a
 // conversation born under the gateway has each finished stretch of tool
 // work whose observation exists culled (whole messages out, the
-// observations' timeline lines appended to the turn's user message), at a
-// turn start, or mid-turn when the turn holds no reasoning; the result is
-// the same bytes on every later request and after a restart.
+// observations' timeline lines in a message of their own where the run
+// began; Gemini's appended to the turn's user message), at a turn start, or
+// mid-turn when the turn holds no reasoning; the result is the same bytes
+// on every later request and after a restart.
 
 const testRoot = join(WIRE_GATEWAY_DIR, 'endless-mode-test');
 const routesFilePath = join(testRoot, 'routes.json');
@@ -307,6 +308,19 @@ function anthropicThinkingSpans(body: Uint8Array, from: number, until: number): 
   return spans;
 }
 
+/** Whether a turn culled for the first time gets its lines in a message of their own at the cull point (every protocol but Gemini). */
+const linesGoInOwnMessage = (protocolCase: ProtocolCase) => protocolCase.protocol !== 'gemini';
+
+/**
+ * The bytes a cull of elements range.first..last may change: the removed
+ * range (where a message of their own takes the lines), and on Gemini the
+ * end of the turn's user message at element `userIndex` too.
+ */
+function cullSpansOf(protocolCase: ProtocolCase, body: Uint8Array, userIndex: number, range: { first: number; last: number }): DeclaredSpan[] {
+  const removed = removedRangeOf(body, protocolCase, range);
+  return linesGoInOwnMessage(protocolCase) ? [removed] : [appendPointOf(body, protocolCase.userContentPath(userIndex)), removed];
+}
+
 function expectPairsWhole(protocolCase: ProtocolCase, original: string, rewritten: string): void {
   const parse = (body: string) => parseWireRequest(protocolCase.protocol, encoder.encode(body), protocolCase.path);
   const originalRequest = parse(original);
@@ -348,26 +362,29 @@ describe('Endless Mode v2 per protocol', () => {
       // Nothing before the turn start, mid-turn included: the turn holds reasoning bound to the prefix.
       for (const index of [0, 1, 2]) expect(sent[index]).toBe(requests[index]);
 
-      // The turn start culls turn 1's work whole and appends its lines to turn 1's user message.
+      // The turn start culls turn 1's work whole; its lines take the work's place (Gemini: the end of turn 1's user message).
       const culled = sent[3];
       expect(culled).toContain(escapedInJson(workBlockOf(101, 102)));
       for (const call of [callA, callB]) expect(culled).not.toContain(call.id);
       expect(culled).toContain('read both');
       expect(culled.indexOf('<claude-mem-work>')).toBeGreaterThan(culled.indexOf(`${tag}: read two files`));
       expect(culled.indexOf('<claude-mem-work>')).toBeLessThan(culled.indexOf('read both'));
+      // Every byte turn 1's turn-start request sent stays: the cache entry it wrote is still the prefix.
+      if (linesGoInOwnMessage(protocolCase)) expect(culled.startsWith(prefixOf(sent[0]))).toBe(true);
       const input3 = encoder.encode(requests[3]);
       const declared: DeclaredSpan[] = [
-        appendPointOf(input3, protocolCase.userContentPath(conversation.range('u1').first)),
-        removedRangeOf(input3, protocolCase, { first: conversation.range('ca').first, last: conversation.range('rb').last }),
+        ...cullSpansOf(protocolCase, input3, conversation.range('u1').first, { first: conversation.range('ca').first, last: conversation.range('rb').last }),
         // Anthropic: the thinking of turn 1's final reply is cut too (the rest went with the culled messages).
         ...(protocolCase.protocol === 'anthropic' ? anthropicThinkingSpans(input3, conversation.range('f1').first, conversation.range('f1').last + 1) : []),
       ];
       expectMatchesGoldenFile(`endless-cull-${protocolCase.protocol}`, encoder.encode(culled));
       expectDiffersOnlyInsideDeclaredSpans(input3, encoder.encode(culled), declared);
 
-      // Every later request starts with the one before; call c has no observation, so nothing more is culled.
+      // Every later request starts with the turn-start request before it; call c has no observation, so nothing
+      // more is culled. (Anthropic: turn 3's start cuts turn 2's thinking, cull or not, all of it after sent[3].)
       expect(sent[4].startsWith(prefixOf(sent[3]))).toBe(true);
-      expect(sent[5].startsWith(prefixOf(sent[4]))).toBe(true);
+      expect(sent[5].startsWith(prefixOf(protocolCase.protocol === 'anthropic' ? sent[3] : sent[4]))).toBe(true);
+      if (protocolCase.protocol === 'anthropic') expect(sent[5]).not.toContain('"type":"thinking"');
       expect(sent[5]).toContain(callC.id);
       expectPairsWhole(protocolCase, requests[5], sent[5]);
 
@@ -378,7 +395,10 @@ describe('Endless Mode v2 per protocol', () => {
       const entries = ledgerEntriesOf(protocolCase.agentId, session);
       const culls = entries.filter(entry => entry.type === 'cull');
       expect(culls).toHaveLength(1);
-      expect(culls[0]).toMatchObject({ turnOrdinal: 1, throughCallId: callB.id, lines: [lineOf(101), lineOf(102)], observationIds: [101, 102] });
+      expect(culls[0]).toMatchObject({
+        turnOrdinal: 1, throughCallId: callB.id, lines: [lineOf(101), lineOf(102)], observationIds: [101, 102],
+        linesPlacement: linesGoInOwnMessage(protocolCase) ? 'own-message-at-cull-point' : 'appended-to-turn-start-message',
+      });
       expect(culls[0].culledTokensEst as number).toBeGreaterThan(0);
       if (protocolCase.protocol === 'anthropic') {
         // Recorded before the cull that needs it.
@@ -417,10 +437,8 @@ describe('Endless Mode v2 per protocol', () => {
       expect(midTurn).not.toContain(callA.id);
       expect(midTurn).toContain(callB.id);
       const input = encoder.encode(conversation.body());
-      expectDiffersOnlyInsideDeclaredSpans(input, encoder.encode(midTurn), [
-        appendPointOf(input, protocolCase.userContentPath(0)),
-        removedRangeOf(input, protocolCase, { first: conversation.range('ca').first, last: conversation.range('ra').last }),
-      ]);
+      expectDiffersOnlyInsideDeclaredSpans(input, encoder.encode(midTurn),
+        cullSpansOf(protocolCase, input, 0, { first: conversation.range('ca').first, last: conversation.range('ra').last }));
       expectPairsWhole(protocolCase, conversation.body(), midTurn);
 
       // The next step of the loop: b is no longer the latest, so the cull grows through b, its lines kept and added to.
@@ -609,7 +627,38 @@ describe('Endless Mode v2 per protocol', () => {
       .add('r', [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: call.id, content: 'cached', cache_control: { type: 'ephemeral' } }] }]);
     await sendAndSettle(anthropicCase, conversation.body(), session);
     conversation.add('f1', anthropicCase.final('done', true)).add('u2', anthropicCase.user(`${tag}: next`));
-    expect(await send(anthropicCase, conversation.body(), session)).toBe(conversation.body());
+    // Nothing is culled; only the turn start's thinking cut applies.
+    const thinkingCut = anthropicCase.body([
+      ...anthropicCase.user(`${tag}: go`),
+      { role: 'assistant', content: [{ type: 'tool_use', id: call.id, name: 'read_file', input: { path: `/repo/${call.id}` } }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: call.id, content: 'cached', cache_control: { type: 'ephemeral' } }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'done' }] },
+      ...anthropicCase.user(`${tag}: next`),
+    ]);
+    expect(await send(anthropicCase, conversation.body(), session)).toBe(thinkingCut);
+    expect(ledgerEntriesOf(anthropicCase.agentId, session).filter(entry => entry.type === 'cull')).toEqual([]);
+  });
+
+  it('anthropic: every turn start cuts the thinking before it, cull or not, so a later cull never reaches into a cached prefix', async () => {
+    fetcherMode = 'table';
+    const tag = 'every-turn-cut';
+    const session = nextSession(tag);
+    const call = { id: `call_${tag}` };
+    observationsByToolUseId.set(call.id, observationFor(299));
+    // Turn 1 answers with no tool: nothing to cull at turn 2's start, but its thinking is cut there.
+    const conversation = new Conversation(anthropicCase).add('u1', anthropicCase.user(`${tag}: explain`));
+    await sendAndSettle(anthropicCase, conversation.body(), session);
+    conversation.add('f1', anthropicCase.final('explained', true)).add('u2', anthropicCase.user(`${tag}: now read`));
+    const turn2 = await sendAndSettle(anthropicCase, conversation.body(), session);
+    expect(turn2).not.toContain('"type":"thinking"');
+    expect(ledgerEntriesOf(anthropicCase.agentId, session).filter(entry => entry.type === 'thinkingCut')).toEqual([{ type: 'thinkingCut', untilTurnOrdinal: 2 }]);
+    conversation.add('c', anthropicCase.calls([call], true)).add('r', anthropicCase.results([call]));
+    await sendAndSettle(anthropicCase, conversation.body(), session);
+    conversation.add('f2', anthropicCase.final('read', true)).add('u3', anthropicCase.user(`${tag}: next`));
+    // Turn 3's start culls turn 2's work and cuts its thinking: every byte turn 2's start sent stays.
+    const turn3 = await send(anthropicCase, conversation.body(), session);
+    expect(turn3).toContain(escapedInJson(workBlockOf(299)));
+    expect(turn3.startsWith(prefixOf(turn2))).toBe(true);
   });
 
   it('gemini: a turn whose calls have only position ids is never culled', async () => {
@@ -632,20 +681,58 @@ describe('Endless Mode v2 per protocol', () => {
     }
   });
 
+  it('a cull recorded before placements were is put back as it was sent: its lines appended to the turn\'s user message', async () => {
+    fetcherMode = 'down';
+    const tag = 'legacy-placement';
+    const session = nextSession(tag);
+    const call = { id: `call_${tag}` };
+    const conversation = new Conversation(anthropicCase).add('u1', anthropicCase.user(`${tag}: one`))
+      .add('c', anthropicCase.calls([call], true)).add('r', anthropicCase.results([call]))
+      .add('f1', anthropicCase.final('done', true)).add('u2', anthropicCase.user(`${tag}: two`));
+    // The ledger an earlier gateway wrote: its cull line has no linesPlacement.
+    mkdirSync(ledgerDirectory, { recursive: true });
+    writeFileSync(join(ledgerDirectory, `${conversationKeyOf({ agentId: anthropicCase.agentId, sessionId: session })}.jsonl`), [
+      { type: 'born', at: '2026-10-20T00:00:00.000Z' },
+      { type: 'thinkingCut', untilTurnOrdinal: 2 },
+      { type: 'cull', turnOrdinal: 1, throughCallId: call.id, lines: [lineOf(297)], observationIds: [297], culledTokensEst: 40 },
+    ].map(entry => JSON.stringify(entry)).join('\n') + '\n');
+    // What that gateway sent: turn 1's work out, its lines at the end of turn 1's user message, the reply's thinking cut.
+    const sentBefore = anthropicCase.body([
+      ...anthropicCase.user(`${tag}: one\n\n${workBlockOf(297)}`),
+      { role: 'assistant', content: [{ type: 'text', text: 'done' }] },
+      ...anthropicCase.user(`${tag}: two`),
+    ]);
+    try {
+      expect(await send(anthropicCase, conversation.body(), session)).toBe(sentBefore);
+      // The turn's later requests build on it, byte for byte.
+      const next = { id: `call_${tag}_next` };
+      conversation.add('c2', anthropicCase.calls([next], true)).add('r2', anthropicCase.results([next]));
+      expect((await send(anthropicCase, conversation.body(), session)).startsWith(prefixOf(sentBefore))).toBe(true);
+    } finally {
+      fetcherMode = 'table';
+    }
+  });
+
   it('a recorded cull whose lines no longer have a place suspends the conversation instead of failing on every request', async () => {
     fetcherMode = 'table';
+    const geminiCase = protocolCases[3];
     const tag = 'no-place';
     const session = nextSession(tag);
-    const bodies = killSwitchConversation(tag, 296);
-    for (const body of bodies.slice(0, 2)) await sendAndSettle(anthropicCase, body, session);
-    expect(await send(anthropicCase, bodies[2], session)).toContain('#296');
+    const call = { id: `call_${tag}` };
+    observationsByToolUseId.set(call.id, observationFor(296));
+    const conversation = new Conversation(geminiCase).add('u1', geminiCase.user(`${tag}: one`));
+    await sendAndSettle(geminiCase, conversation.body(), session);
+    conversation.add('c', geminiCase.calls([call], false)).add('r', geminiCase.results([call]));
+    await sendAndSettle(geminiCase, conversation.body(), session);
+    conversation.add('f1', geminiCase.final('done', false)).add('u2', geminiCase.user(`${tag}: two`));
+    expect(await send(geminiCase, conversation.body(), session)).toContain('#296');
     // The agent now sends turn 1's message already ending with the block: the frozen lines cannot be appended again.
     const block = workBlockOf(296);
-    const altered = bodies[3].replace(`"${tag}: one"`, JSON.stringify(`${tag}: one\n\n${block}`));
-    expect(altered).not.toBe(bodies[3]);
-    expect(await send(anthropicCase, altered, session)).toBe(altered);
-    expect(ledgerEntriesOf(anthropicCase.agentId, session).filter(entry => entry.type === 'suspended').map(entry => entry.stage)).toEqual(['endless-mode']);
-    expect(await send(anthropicCase, bodies[4], session)).toBe(bodies[4]);
+    const altered = conversation.body().replace(`{"text":"${tag}: one"}`, `{"text":"${tag}: one"},${JSON.stringify({ text: block })}`);
+    expect(altered).not.toBe(conversation.body());
+    expect(await send(geminiCase, altered, session)).toBe(altered);
+    expect(ledgerEntriesOf(geminiCase.agentId, session).filter(entry => entry.type === 'suspended').map(entry => entry.stage)).toEqual(['endless-mode']);
+    expect(await send(geminiCase, conversation.body(), session)).toBe(conversation.body());
   });
 
   it('never culls in a conversation it first saw mid-way', async () => {
@@ -673,11 +760,12 @@ describe('Endless Mode v2 per protocol', () => {
         let started = performance.now();
         expect(await send(anthropicCase, conversation.body(), session, routeId)).toBe(conversation.body());
         slowestTurnStartMs = Math.max(slowestTurnStartMs, performance.now() - started);
-        conversation.add(`c${n}`, anthropicCase.calls([call], true)).add(`r${n}`, anthropicCase.results([call]));
+        // Thinking off: with it on, each turn start would cut the turns before it whether the worker answers or not.
+        conversation.add(`c${n}`, anthropicCase.calls([call], false)).add(`r${n}`, anthropicCase.results([call]));
         started = performance.now();
         expect(await send(anthropicCase, conversation.body(), session, routeId)).toBe(conversation.body());
         loopMs += performance.now() - started;
-        conversation.add(`f${n}`, anthropicCase.final(`done ${n}`, true));
+        conversation.add(`f${n}`, anthropicCase.final(`done ${n}`, false));
       }
       return { loopMs, slowestTurnStartMs };
     };
@@ -728,7 +816,7 @@ describe('Endless Mode v2 per protocol', () => {
     const calls = ['a', 'b', 'c'].map(name => ({ id: `call_${tag}_${name}` }));
     for (const [index, call] of calls.entries()) observationsByToolUseId.set(call.id, observationFor(310 + index));
     const conversation = new Conversation(anthropicCase).add('u1', anthropicCase.user(`${tag}: make main.py`)).add('n0', [tokensLeft(15000000)]);
-    await sendAndSettle(anthropicCase, conversation.body(), session);
+    const turnStart1 = await sendAndSettle(anthropicCase, conversation.body(), session);
     conversation
       .add('ca', anthropicCase.calls([calls[0]], true)).add('ra', anthropicCase.results([calls[0]])).add('na', [tokensLeft(14999832)])
       .add('cb', anthropicCase.calls([calls[1]], true)).add('rb', anthropicCase.results([calls[1]])).add('nb', [fileNote, tokensLeft(14999800)])
@@ -745,9 +833,12 @@ describe('Endless Mode v2 per protocol', () => {
     expect(turn2).not.toContain('changed on disk');
     expect(turn2).toContain('<total_tokens>15000000 tokens left</total_tokens>');
     expect(turn2).toContain('14999217');
+    // The turn-start request ended on a system note, so the lines go in a system message after it, followed by the
+    // note after the last result and then the model's reply; every byte that request sent stays.
+    expect(turn2.startsWith(prefixOf(turnStart1))).toBe(true);
+    expect(turn2).toContain(`<total_tokens>15000000 tokens left</total_tokens>"},{"role":"system","content":${JSON.stringify(workBlockOf(310, 311, 312))}},{"role":"system","content":"<total_tokens>14999217`);
     const inputBytes = encoder.encode(input);
     expectDiffersOnlyInsideDeclaredSpans(inputBytes, encoder.encode(turn2), [
-      appendPointOf(inputBytes, anthropicCase.userContentPath(0)),
       removedRangeOf(inputBytes, anthropicCase, { first: conversation.range('ca').first, last: conversation.range('rc').last }),
       ...anthropicThinkingSpans(inputBytes, conversation.range('f1').first, conversation.range('f1').last + 1),
     ]);

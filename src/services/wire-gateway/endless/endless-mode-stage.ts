@@ -3,8 +3,9 @@
 // Endless Mode at the wire (Endless Mode v2, plan Phase 4): the "work/tools
 // → observations" loop. In a conversation born under the gateway, a
 // finished stretch of tool work whose observation exists leaves the request
-// whole, and the one-line timeline entry of each observation it produced is
-// appended to the user message that started its turn:
+// whole, and the one-line timeline entry of each observation it produced
+// takes its place, as a message of its own where the run began (Gemini: at
+// the end of the user message that started the turn):
 //
 //   <claude-mem-work>
 //   #<id> <time> <icon> <title>
@@ -37,14 +38,29 @@
 //   when the current turn holds no thinking, sealed reasoning or signature
 //   (then nothing in it is bound to the prefix). The latest assistant
 //   message of the in-flight loop, and what follows it, is never culled.
-// - Lines go in the turn's user message, never an assistant message (the
-//   model would read them as its own words). A later cull of the same turn
+// - Lines go where the run began, in a message of their own (a user
+//   message; on Anthropic a system message after a system one), never in
+//   an assistant message (the model would read them as its own words). Every
+//   byte before the cull point stays, so the cache entry the turn-start
+//   request's breakpoint wrote (Anthropic) or its user message's ending
+//   (OpenAI) is still read. Appending them to the turn's user message
+//   instead changed that message, which every later request's prefix went
+//   through: each cull rewrote the conversation at the cache-write price.
+//   Gemini's go there still, as a new last part (see
+//   linesPlacementOfNewTurn), and so do those of a cull recorded before
+//   placements were, as they were sent. A later cull of the same turn
 //   records a new entry with the later call and the full line list, the
-//   lines already frozen kept as they were.
+//   lines already frozen kept as they were, in the place they went first.
 // - Anthropic: culling changes the messages earlier thinking was signed
 //   against, so a request that records a cull first records a
 //   `thinkingCut` up to the latest turn (held writes commit in order), and
-//   every request applies the cut in force.
+//   every request applies the cut in force. Every turn-start request
+//   records that cut too, cull or not: then a cut only ever takes out the
+//   thinking of the turn just finished, after the previous turn-start
+//   request's last message, and stays contiguous from message 0. Cut only
+//   with a cull, a turn that went unculled (a no-tool answer, a lookup that
+//   timed out) kept its reply's thinking until a later cull cut it, from
+//   inside a prefix an earlier turn-start request had cached.
 // - Positions are turn ordinals and call ids, never message indexes.
 // - The agent never waits: observations come from a cache a background
 //   lookup fills (observation-lookup.ts); no observation, no cull.
@@ -61,8 +77,8 @@ import { ScannedObject } from '../ir/scanned-object.js';
 import type { WireRequest } from '../ir/types.js';
 import { applyByteSplices, type ByteSplice } from '../json/byte-splices.js';
 import { arrayElements, objectMembers, rawText, scanDocument, type JsonSpan } from '../json/scanner.js';
-import { appendArrayItemSplice, arrayItemRemovalSplices } from '../json/splice.js';
-import type { WireConversationLedgerView, WireLedgerEntry } from '../ledger/conversation-ledger.js';
+import { appendArrayItemSplice, arrayItemRemovalSplices, encodeJsonString } from '../json/splice.js';
+import type { CullLinesPlacement, WireConversationLedgerView, WireLedgerEntry } from '../ledger/conversation-ledger.js';
 import { appendToStringSplice, tagWrappedBlock, textBlockJson } from '../memory/memory-injection-stage.js';
 import { estimateTextTokens } from '../metrics/context-buckets.js';
 import type { WireGatewayRoute } from '../routes.js';
@@ -83,6 +99,8 @@ export const ENDLESS_MODE_SETTING = 'CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE';
 
 const WORK_TAG_NAME = 'claude-mem-work';
 
+const utf8Encoder = new TextEncoder();
+
 const SUSPENDED_ENTRY_ID = `suspended:${ENDLESS_MODE_STAGE_NAME}`;
 
 type CullEntry = Extract<WireLedgerEntry, { type: 'cull' }>;
@@ -92,9 +110,28 @@ export function endlessModeEnabledFor(route: WireGatewayRoute, settings: Readonl
   return route.features?.endlessMode ?? settings[ENDLESS_MODE_SETTING] === 'true';
 }
 
-/** The block a cull appends to its turn's user message: one timeline line per observation. */
+/** The block that carries a cull's lines: one timeline line per observation. */
 export function culledWorkBlock(lines: readonly string[]): string {
   return tagWrappedBlock(WORK_TAG_NAME, lines.join('\n'));
+}
+
+/**
+ * Where a turn culled for the first time puts its lines: a message of their
+ * own at the cull point, so every byte the turn-start request sent stays
+ * as it was and the cache entry its breakpoint wrote is still read
+ * (Anthropic writes entries only at breakpoints; OpenAI at message
+ * endings, the turn-start message's among them). Gemini's go at the end of
+ * the turn's user message as a new last part: a content of their own would
+ * put two user contents in a row, which the Gemini docs this follows do not
+ * allow for, and a new last part changes nothing before it.
+ */
+function linesPlacementOfNewTurn(protocol: WireRequest['protocol']): CullLinesPlacement {
+  return protocol === 'gemini' ? 'appended-to-turn-start-message' : 'own-message-at-cull-point';
+}
+
+/** Where a recorded cull's lines go: as recorded, or, for a line written before placements were, appended to the turn's user message as they were sent. */
+function linesPlacementOf(entry: CullEntry): CullLinesPlacement {
+  return entry.linesPlacement ?? 'appended-to-turn-start-message';
 }
 
 interface UserTurn {
@@ -328,6 +365,60 @@ function appendToTurnStartSplice(request: WireRequest, conversationElements: Jso
   return null;
 }
 
+/**
+ * The message that carries a cull's lines at the cull point, as JSON; null
+ * when the protocol's rules leave it no place there.
+ * - Anthropic: after a system message (Claude Code's turn-start request ends
+ *   on one), a system message, and only when the next message that is not a
+ *   system one is the model's: a mid-conversation system message must be
+ *   last or be followed by an assistant turn, so a user message there would
+ *   break that rule for the system message before it. Anywhere else, a user
+ *   message: Anthropic merges it with a user message before it, after its
+ *   last block, so the bytes and blocks before it stay as they were.
+ * - OpenAI Chat: a user message; Responses: a user message item. Neither
+ *   starts a turn (the block is never the user's words).
+ */
+function linesMessageJson(request: WireRequest, run: CullRun, block: string): string | null {
+  const encoded = encodeJsonString(block);
+  switch (request.protocol) {
+    case 'anthropic': {
+      if (request.messages[run.firstIndex - 1].role !== 'system') return `{"role":"user","content":${encoded}}`;
+      const next = request.messages.slice(run.lastIndex + 1).find(message => message.role !== 'system');
+      return next?.role === 'assistant' ? `{"role":"system","content":${encoded}}` : null;
+    }
+    case 'openai-chat':
+      return `{"role":"user","content":${encoded}}`;
+    case 'openai-responses':
+      return `{"type":"message","role":"user","content":[{"type":"input_text","text":${encoded}}]}`;
+    case 'gemini':
+      return null;
+  }
+}
+
+/** A cull as splices: the one that puts its lines in, and the run's elements left for the removal. */
+interface PlacedCull {
+  linesSplice: ByteSplice;
+  removedElements: JsonSpan[];
+}
+
+/**
+ * How a run and its lines go into the request at `placement`; null when the
+ * lines have no place. At the cull point the run's first element is
+ * replaced by the lines' message and the rest removed; appended to the
+ * turn's user message, the whole run is removed.
+ */
+function placedCullOf(request: WireRequest, conversationElements: JsonSpan[], run: CullRun, lines: readonly string[], placement: CullLinesPlacement): PlacedCull | null {
+  const block = culledWorkBlock(lines);
+  if (placement === 'appended-to-turn-start-message') {
+    const linesSplice = appendToTurnStartSplice(request, conversationElements, run.turn, block);
+    return linesSplice ? { linesSplice, removedElements: run.elements } : null;
+  }
+  const messageJson = linesMessageJson(request, run, block);
+  if (messageJson === null) return null;
+  const [first, ...rest] = run.elements;
+  return { linesSplice: { start: first.start, end: first.end, replacement: utf8Encoder.encode(messageJson) }, removedElements: rest };
+}
+
 /** What a run takes out, less what its lines put back, in estimated tokens. */
 function culledTokensOf(request: WireRequest, run: CullRun, block: string): number {
   const removedTokens = run.elements.reduce((sum, element) => sum + estimateTextTokens(rawText(request.body, element)), 0);
@@ -439,8 +530,8 @@ export function createEndlessModeStage(options: EndlessModeStageOptions): WireRe
         }
       }
 
-      const runs: Array<{ run: CullRun; entry: CullEntry; appendSplice: ByteSplice }> = [];
-      const newCulls: Array<{ run: CullRun; entry: CullEntry; appendSplice: ByteSplice }> = [];
+      const runs: Array<{ run: CullRun; entry: CullEntry; placed: PlacedCull }> = [];
+      const newCulls: Array<{ run: CullRun; entry: CullEntry; placed: PlacedCull }> = [];
       for (const turn of turns) {
         const calls = callsOf(request, turn);
         if (calls.length === 0) continue;
@@ -455,17 +546,17 @@ export function createEndlessModeStage(options: EndlessModeStageOptions): WireRe
           continue;
         }
         if (recorded && recordedRun) {
-          const appendSplice = appendToTurnStartSplice(request, conversationElements, turn, culledWorkBlock(recorded.lines));
-          if (!appendSplice) {
+          const placed = placedCullOf(request, conversationElements, recordedRun, recorded.lines, linesPlacementOf(recorded));
+          if (!placed) {
             // Without its lines the cull cannot be put back as it was frozen; failing open on every request would
             // send the original history, so the conversation goes as it comes from now on.
             suspend(ledger);
-            logger.warn('WIRE', 'Endless Mode suspended a conversation: a recorded cull\'s lines have no place in its turn\'s user message', {
-              conversationKey: ledger.conversationKey, turnOrdinal: turn.ordinal,
+            logger.warn('WIRE', 'Endless Mode suspended a conversation: a recorded cull\'s lines have no place in its turn', {
+              conversationKey: ledger.conversationKey, turnOrdinal: turn.ordinal, linesPlacement: linesPlacementOf(recorded),
             });
             return undefined;
           }
-          runs.push({ run: recordedRun, entry: recorded, appendSplice });
+          runs.push({ run: recordedRun, entry: recorded, placed });
         }
         if (!mayCullNow) continue;
 
@@ -499,23 +590,32 @@ export function createEndlessModeStage(options: EndlessModeStageOptions): WireRe
         }
         // A cull needs a line; one that grows needs none of its own (the worker links a whole batch to its first observation).
         if (observationIds.length === 0) continue;
-        const appendSplice = appendToTurnStartSplice(request, conversationElements, turn, culledWorkBlock(lines));
-        if (!appendSplice) {
-          logger.debug('WIRE', 'Endless Mode left a turn as it came: its user message has no content to append lines to', {
-            conversationKey: ledger.conversationKey, turnOrdinal: turn.ordinal,
+        // A turn culled before keeps its lines where they went then: moving them would change bytes already sent.
+        const linesPlacement = recorded ? linesPlacementOf(recorded) : linesPlacementOfNewTurn(request.protocol);
+        const placed = placedCullOf(request, conversationElements, run, lines, linesPlacement);
+        if (!placed) {
+          logger.debug('WIRE', 'Endless Mode left a turn as it came: its lines have no place in it', {
+            conversationKey: ledger.conversationKey, turnOrdinal: turn.ordinal, linesPlacement,
           });
           continue;
         }
         newCulls.push({
           run,
-          appendSplice,
-          entry: { type: 'cull', turnOrdinal: turn.ordinal, throughCallId, lines, observationIds, culledTokensEst: culledTokensOf(request, run, culledWorkBlock(lines)) },
+          placed,
+          entry: {
+            type: 'cull', turnOrdinal: turn.ordinal, throughCallId, lines, observationIds,
+            culledTokensEst: culledTokensOf(request, run, culledWorkBlock(lines)), linesPlacement,
+          },
         });
       }
 
-      // Recorded before the culls that need it: held writes commit in order, with no rollback.
+      // Recorded before the culls that need it: held writes commit in order, with no rollback. Every turn start
+      // cuts up to itself, cull or not, so each cut only takes out thinking after the previous turn-start
+      // request's last message: a later cull never reaches back into a prefix that request cached.
       let cutUntilTurnOrdinal = request.protocol === 'anthropic' ? thinkingCutInForce(ledger) : null;
-      if (newCulls.length > 0 && request.protocol === 'anthropic' && (cutUntilTurnOrdinal === null || cutUntilTurnOrdinal < latestTurn.ordinal)) {
+      // (Turn 1's start has nothing before it to cut.)
+      if ((newCulls.length > 0 || (context.identity.turnStart && latestTurn.ordinal > 1)) && request.protocol === 'anthropic'
+        && (cutUntilTurnOrdinal === null || cutUntilTurnOrdinal < latestTurn.ordinal)) {
         ledger.record({ type: 'thinkingCut', untilTurnOrdinal: latestTurn.ordinal });
         cutUntilTurnOrdinal = latestTurn.ordinal;
       }
@@ -528,10 +628,10 @@ export function createEndlessModeStage(options: EndlessModeStageOptions): WireRe
           context.estimates.culledTokens += Math.max(0, recorded.culledTokensEst - earlierCulledTokensEst);
         }
         const index = runs.findIndex(applied => applied.run.turn === newCull.run.turn);
-        // First write wins: an entry already there under this id keeps its own lines.
-        const appendSplice = recorded === newCull.entry ? newCull.appendSplice : appendToTurnStartSplice(request, conversationElements, newCull.run.turn, culledWorkBlock(recorded.lines));
-        if (!appendSplice) continue;
-        const applied = { run: newCull.run, entry: recorded, appendSplice };
+        // First write wins: an entry already there under this id keeps its own lines, where it put them.
+        const placed = recorded === newCull.entry ? newCull.placed : placedCullOf(request, conversationElements, newCull.run, recorded.lines, linesPlacementOf(recorded));
+        if (!placed) continue;
+        const applied = { run: newCull.run, entry: recorded, placed };
         if (index >= 0) runs[index] = applied;
         else runs.push(applied);
       }
@@ -554,10 +654,11 @@ export function createEndlessModeStage(options: EndlessModeStageOptions): WireRe
 
       let rewritten = request.body;
       if (runs.length > 0) {
-        const removedElementStarts = new Set(runs.flatMap(({ run }) => run.elements.map(element => element.start)));
+        // A run's first element replaced by its lines' message ends where the removal of the next begins: no overlap.
+        const removedElementStarts = new Set(runs.flatMap(({ placed }) => placed.removedElements.map(element => element.start)));
         const splices = [
           ...arrayItemRemovalSplices(body, conversationArraySpan, element => removedElementStarts.has(element.start)),
-          ...runs.map(({ appendSplice }) => appendSplice),
+          ...runs.map(({ placed }) => placed.linesSplice),
         ];
         rewritten = applyByteSplices(body, splices);
       }

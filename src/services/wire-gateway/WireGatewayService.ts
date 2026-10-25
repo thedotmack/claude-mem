@@ -92,6 +92,7 @@ import { WireConversationLedger } from './ledger/conversation-ledger.js';
 import { WireRewriteSeam, type WireRewriteStage } from './rewrite/rewrite-stage.js';
 import { createEndlessModeStage } from './endless/endless-mode-stage.js';
 import { createDurableHeaderStage, type DurableHeaderStageOptions } from './header/durable-header-stage.js';
+import { createHeadCacheBreakpointStage } from './header/head-cache-breakpoint-stage.js';
 import { WireObservationLookup } from './endless/observation-lookup.js';
 import { formatEndlessModeReport, readEndlessModeReport } from './endless/endless-report.js';
 import {
@@ -257,8 +258,10 @@ export interface WireGatewayServiceOptions {
 /**
  * The stages the gateway runs, in request order (D7, plan Phase 10 task 1):
  * durable header → memory injection → Endless Mode → the memory_search
- * tool definition. The header goes before memory injection so the rules
- * sit before the timeline in the system prompt (Endless Mode v2 Phase 3).
+ * tool definition → the head's cache breakpoint. The header goes before
+ * memory injection so the rules sit before the timeline in the system
+ * prompt (Endless Mode v2 Phase 3); the breakpoint goes last, so it counts
+ * every breakpoint the request ends up with.
  */
 function defaultRewriteStages(
   observationLookup: WireObservationLookup,
@@ -271,6 +274,7 @@ function defaultRewriteStages(
     createMemoryInjectionStage({ contextTimeoutMs, ...memory.injection }),
     createEndlessModeStage({ observationLookup, contextTimeoutMs }),
     createMemorySearchStage({ ...memory.search }),
+    createHeadCacheBreakpointStage(),
   ];
 }
 

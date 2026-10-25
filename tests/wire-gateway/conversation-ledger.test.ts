@@ -95,7 +95,10 @@ describe('conversation ledger', () => {
     const noHeader = { type: 'header', text: null, hash: 'h0', sequence: 1, turnOrdinal: 3 } as const;
     const cut = { type: 'thinkingCut', untilTurnOrdinal: 3 } as const;
     const cull = { type: 'cull', turnOrdinal: 2, throughCallId: 'toolu_7', lines: ['12 3:04p 🔵 Read the ledger'], observationIds: [12], culledTokensEst: 900 } as const;
-    const longerCull = { ...cull, throughCallId: 'toolu_9', lines: ['12 3:04p 🔵 Read the ledger', '13 3:05p 🟣 Added cull'], observationIds: [12, 13] };
+    const longerCull = {
+      ...cull, throughCallId: 'toolu_9', lines: ['12 3:04p 🔵 Read the ledger', '13 3:05p 🟣 Added cull'], observationIds: [12, 13],
+      linesPlacement: 'own-message-at-cull-point',
+    } as const;
     expect(view.record(header)).toEqual(header);
     // One header per sequence number: a second one with the same number is ignored.
     expect(view.record({ ...header, text: 'other', hash: 'h2' })).toEqual(header);
@@ -111,6 +114,7 @@ describe('conversation ledger', () => {
     expect(restarted.get('header:0')).toEqual(header);
     expect(restarted.get('header:1')).toEqual(noHeader);
     expect(restarted.get('thinkingCut:3')).toEqual(cut);
+    // A cull line with no linesPlacement (written before there was one) reads back without one: put back as it was sent.
     expect(restarted.get('cull:2:toolu_7')).toEqual(cull);
     expect(restarted.get('cull:2:toolu_9')).toEqual(longerCull);
     expect(restarted.entries().map(ledgerEntryIdOf)).toEqual(['born', 'header:0', 'thinkingCut:3', 'header:1', 'cull:2:toolu_7', 'cull:2:toolu_9']);
@@ -160,6 +164,8 @@ describe('conversation ledger', () => {
       { type: 'cull', turnOrdinal: 2, throughCallId: 'c', lines: ['x', 'y'], observationIds: [1], culledTokensEst: 1 },
       { type: 'cull', turnOrdinal: 2, throughCallId: 'c', lines: ['x'], observationIds: [1, 2], culledTokensEst: 1 },
       { type: 'cull', turnMessageIndex: 2, throughMessageIndex: 7, lines: ['x'], observationIds: [1], culledTokensEst: 1 },
+      { type: 'cull', turnOrdinal: 2, throughCallId: 'c', lines: ['x'], observationIds: [1], culledTokensEst: 1, linesPlacement: 'in-the-reply' },
+      { type: 'cull', turnOrdinal: 2, throughCallId: 'c', lines: ['x'], observationIds: [1], culledTokensEst: 1, linesPlacement: null },
     ];
     malformed.forEach((entry, index) => {
       const sessionId = `malformed-${index}`;

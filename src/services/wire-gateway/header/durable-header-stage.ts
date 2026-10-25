@@ -75,7 +75,7 @@ export function durableHeaderBlock(rulesText: string): string {
 }
 
 /** The header in force: the one with the largest sequence number. */
-function headerInForce(ledger: WireConversationLedgerView): HeaderEntry | undefined {
+export function headerInForce(ledger: WireConversationLedgerView): HeaderEntry | undefined {
   let inForce: HeaderEntry | undefined;
   for (const entry of ledger.entries()) {
     if (entry.type === 'header' && (!inForce || entry.sequence > inForce.sequence)) inForce = entry;
