@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import express from 'express';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Server } from 'node:http';
-import { WorkViewRoutes } from '../../../../src/services/worker/http/routes/WorkViewRoutes.js';
+import { isReportedReadyForCheck, WorkViewRoutes } from '../../../../src/services/worker/http/routes/WorkViewRoutes.js';
 import { contentFingerprint } from '../../../../src/services/work-view/review-store.js';
 import { reduceWorkState } from '../../../../src/services/work-view/data-source.mjs';
 import { HumanCopyWorker } from '../../../../src/services/work-view/human-copy-worker.mjs';
@@ -26,7 +26,7 @@ function append(fields: Record<string, unknown>) {
 }
 
 async function start(humanCopy: HumanCopyWorker | null = null) {
-  routes = new WorkViewRoutes({ databasePath, reviewPath, pollIntervalMs: 20, humanCopy });
+  routes = new WorkViewRoutes({ databasePath, reviewPath, pollIntervalMs: 20, humanCopy, ledgerDir: null, setupStatePath: join(directory, 'setup-state.json') });
   const app = express();
   app.use(express.json());
   routes.setupRoutes(app);
@@ -105,6 +105,28 @@ function seedLinkedEvidence(promptText = 'Build a local work viewer') {
 }
 
 describe('local work view', () => {
+  it('serves a work-product file only through the work-state entry that attached it', async () => {
+    const image = join(directory, 'hero.png');
+    writeFileSync(image, 'png-bytes');
+    append({ task: 'Make the hero image', status: 'done', request_id: 'viewer-request', human_request: 'Build a local work viewer', work_product: [{ title: 'Hero', path: image }, 'https://claude.ai/artifact/abc'] });
+    const view = await (await fetch(`${origin}/api/work-view`)).json();
+    const products = view.humanRequests[0].workProduct;
+    expect(products.map((product: { title: string }) => product.title)).toEqual(['Hero', 'claude.ai']);
+    expect(products[0].fileUrl).toBe('/api/work-view/file/work-state/2/0');
+    expect(products[0].available).toBe(true);
+    const file = await fetch(`${origin}${products[0].fileUrl}`);
+    expect(file.status).toBe(200);
+    expect(file.headers.get('content-type')).toContain('image/png');
+    expect(file.headers.get('content-security-policy')).toBe('sandbox allow-scripts');
+    expect(await file.text()).toBe('png-bytes');
+    // Another local page cannot read the file through worker CORS.
+    const foreign = await fetch(`${origin}${products[0].fileUrl}`, { headers: { Origin: 'http://localhost:1' } });
+    expect(foreign.status).toBe(403);
+    expect((await fetch(`${origin}${products[0].fileUrl}`, { headers: { Origin: origin } })).status).toBe(200);
+    expect((await fetch(`${origin}/api/work-view/file/work-state/2/1`)).status).toBe(404);
+    expect((await fetch(`${origin}/api/work-view/file/work-state/1/0`)).status).toBe(404);
+  });
+
   it('projects explicit completion and evidence without inventing presence or altering source', async () => {
     const before = source.prepare('SELECT * FROM work_state_entries').all();
     const view = await snapshot();
@@ -154,6 +176,26 @@ describe('local work view', () => {
     append({ task: 'Build the local viewer', request_complete: false });
     const request = (await snapshot()).humanRequests[0];
     expect((await review(request)).status).toBe(409);
+    expect((await snapshot()).humanRequests[0].review.checked).toBe(false);
+  });
+
+  it('a memory review at 100% makes a request checkable, unless an explicit status came after it', () => {
+    const at = Date.parse('2026-10-22T12:00:00Z');
+    const doing = { explicit: true, status: 'in-progress', complete: null, atEpoch: at - 60000 };
+    expect(isReportedReadyForCheck({ lifecycle: null, progress: { percent: 100, checkedAt: '2026-10-22T12:00:00Z' } })).toBe(true);
+    expect(isReportedReadyForCheck({ lifecycle: doing, progress: { percent: 100, checkedAt: '2026-10-22T12:00:00Z' } })).toBe(true);
+    // Reopened after the review: the older 100% no longer counts.
+    expect(isReportedReadyForCheck({ lifecycle: { ...doing, atEpoch: at + 60000 }, progress: { percent: 100, checkedAt: '2026-10-22T12:00:00Z' } })).toBe(false);
+    expect(isReportedReadyForCheck({ lifecycle: null, progress: { percent: 90, checkedAt: '2026-10-22T12:00:00Z' } })).toBe(false);
+  });
+
+  it('lets a request waiting for review be checked and unchecked', async () => {
+    append({ task: 'Build the local viewer', request_status: 'needs_review' });
+    const request = (await snapshot()).humanRequests[0];
+    expect(request.lifecycle.status).toBe('needs_review');
+    expect((await review(request)).status).toBe(200);
+    expect((await snapshot()).humanRequests[0].review.checked).toBe(true);
+    expect((await review(request, false)).status).toBe(200);
     expect((await snapshot()).humanRequests[0].review.checked).toBe(false);
   });
 
@@ -407,5 +449,43 @@ describe('review content versions', () => {
     expect(request.humanCopy.state).toBe('current');
     expect(request.humanCopy.summary).toBe('The viewer is ready to use.');
     expect(request.contentFingerprint).toBe(before.contentFingerprint);
+  });
+
+  it('does not spend user tokens on display copy during hosted setup, then resumes after completion', async () => {
+    await stop();
+    let calls = 0;
+    const humanCopy = new HumanCopyWorker({ cachePath: null, quietMs: 0, minIntervalMs: 0, provider: async (input: any) => {
+      calls++;
+      return { output: { title: 'Build a local work viewer', summary: 'The viewer is ready.', next: '',
+        workstreams: input.workstreams.map((stream: { id: string }) => ({ id: stream.id, title: 'Viewer', summary: 'Ready.' })) } };
+    } });
+    const setupPath = join(directory, 'setup-state.json');
+    writeFileSync(setupPath, JSON.stringify({ status: 'pending' }));
+    writeFileSync(join(directory, 'setup-session.json'), JSON.stringify({ pid: process.pid }));
+    await start(humanCopy);
+    await snapshot();
+    expect(calls).toBe(0);
+    expect(humanCopy.status().queued).toBe(0);
+    writeFileSync(setupPath, JSON.stringify({ status: 'complete' }));
+    await snapshot();
+    expect(calls).toBe(1);
+  });
+
+  it('resumes display copy with saved pending setup when the installer has exited', async () => {
+    await stop();
+    let calls = 0;
+    const humanCopy = new HumanCopyWorker({ cachePath: null, quietMs: 0, minIntervalMs: 0, provider: async (input: any) => {
+      calls++;
+      return { output: { title: 'Build a local work viewer', summary: 'The viewer is ready.', next: '',
+        workstreams: input.workstreams.map((stream: { id: string }) => ({ id: stream.id, title: 'Viewer', summary: 'Ready.' })) } };
+    } });
+    const setupPath = join(directory, 'setup-state.json');
+    const saved = { status: 'pending', choice: { branch: 'home', memoryBilling: 'existing', chosenAt: 'earlier' } };
+    writeFileSync(setupPath, JSON.stringify(saved));
+    writeFileSync(join(directory, 'setup-session.json'), JSON.stringify({ pid: 2 ** 22 + 12345 }));
+    await start(humanCopy);
+    await snapshot();
+    expect(calls).toBe(1);
+    expect(JSON.parse(readFileSync(setupPath, 'utf8'))).toEqual(saved);
   });
 });

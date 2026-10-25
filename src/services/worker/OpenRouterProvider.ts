@@ -45,6 +45,7 @@ import {
   reasoningBudgetGiveUpMessage,
   reasoningBudgetRetryMessage,
   reasoningBudgetSkippedMessage,
+  OBSERVER_REASONING_BUDGET_TOKENS_BY_EFFORT,
   requestDisablesReasoning,
   startReasoningRetryDeadline,
 } from './reasoning-budget.js';
@@ -464,10 +465,12 @@ export function parseOpenRouterReasoningEffort(raw: unknown): OpenRouterReasonin
 
 /**
  * OpenRouter's `reasoning` field for an effort. `none` is sent as
- * `{ enabled: false }`, the shape the wrap-up already uses.
+ * `{ enabled: false }`, the shape the wrap-up already uses. Every other effort
+ * is sent as its own token budget (`max_tokens`, which OpenRouter accepts
+ * instead of `effort`, never with it), so reasoning has a cap of its own.
  */
 function reasoningControl(effort: OpenRouterReasoningEffort): Record<string, unknown> {
-  return effort === 'none' ? { enabled: false } : { effort };
+  return effort === 'none' ? { enabled: false } : { max_tokens: OBSERVER_REASONING_BUDGET_TOKENS_BY_EFFORT[effort] };
 }
 
 function hasProcessEnvOverride(key: string): boolean {
@@ -533,6 +536,30 @@ function openRouterRequestLabels(label: ObserverRequestLabel): Record<string, un
 }
 
 /**
+ * The reasoning budget this request sends as `reasoning.max_tokens`, which is
+ * also added to the answer's cap in the request's `max_tokens` (reasoning
+ * counts against it): the typed effort's entry in
+ * OBSERVER_REASONING_BUDGET_TOKENS_BY_EFFORT for an effort other than `none`
+ * sent to openrouter.ai, else 0 (every other request sends reasoning off, or
+ * no reasoning field at all). Shared by the body, the #4003 resend and the
+ * cut-off warning so all three carry the same cap.
+ */
+export function openRouterReasoningBudgetTokens(input: {
+  apiUrl: string;
+  plainText?: boolean;
+  reasoningEffort?: OpenRouterReasoningEffort;
+  label?: ObserverRequestLabel;
+  forceReasoningOff?: boolean;
+}): number {
+  const answerOnly = (input.plainText || input.label?.kind === 'field_compression') && input.forceReasoningOff !== true;
+  const typedReasoning = isOpenRouterApiUrl(input.apiUrl) && !answerOnly && input.forceReasoningOff !== true
+    && input.reasoningEffort !== undefined;
+  return typedReasoning && input.reasoningEffort && input.reasoningEffort !== 'none'
+    ? OBSERVER_REASONING_BUDGET_TOKENS_BY_EFFORT[input.reasoningEffort]
+    : 0;
+}
+
+/**
  * Build the chat-completions request body.
  *
  * Exported so the body shape is testable without a network round trip, which
@@ -589,7 +616,10 @@ export function buildOpenRouterRequestBody(input: {
       : { model: input.model }),
     messages: input.messages,
     temperature: 0.3,  // Lower temperature for structured extraction
-    max_tokens: input.maxOutputTokens ?? DEFAULT_OBSERVER_MAX_OUTPUT_TOKENS,
+    // The answer's budget plus reasoning's own budget, which `reasoning`
+    // below caps, when this request turns reasoning on: reasoning counts
+    // against max_tokens, so the answer keeps its whole budget.
+    max_tokens: (input.maxOutputTokens ?? DEFAULT_OBSERVER_MAX_OUTPUT_TOKENS) + openRouterReasoningBudgetTokens(input),
     // Streamed, so liveness (tokens, `:` pings) rather than a guessed deadline
     // decides when a request is dead; the reply is assembled back into one
     // chat.completion (streamed-chat-completion.ts), usage from the final
@@ -907,7 +937,10 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       body: buildOpenRouterRequestBody({
         model, fallbackModels, messages, apiUrl, plainText, maxOutputTokens, extraBody, reasoningEffort, label, forceReasoningOff,
       }),
-      maxOutputTokens,
+      // The #4003 resend carries the body's whole cap: answer plus reasoning.
+      maxOutputTokens: maxOutputTokens + openRouterReasoningBudgetTokens({
+        apiUrl, plainText, reasoningEffort, label, forceReasoningOff,
+      }),
       signal: attemptSignal,
       liveness,
       label: 'OpenRouter',
@@ -1007,13 +1040,21 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     // parsed, taking the whole batch when none did. Logged before the plain-text
     // and empty-reply exits so a reply cut off before any text is named too.
     let finishReason = typeof choice?.finish_reason === 'string' ? choice.finish_reason : undefined;
-    const warnIfCutOff = (reason: string | undefined, response: OpenRouterResponse, chars: number) => {
+    // The cap a request actually sent: the answer's, plus reasoning's own
+    // budget when that request turned reasoning on (the forced retry never does).
+    const reasoningMaxTokensSent = (forceReasoningOff: boolean) => openRouterReasoningBudgetTokens({
+      apiUrl, plainText, reasoningEffort, label, forceReasoningOff,
+    });
+    const warnIfCutOff = (reason: string | undefined, response: OpenRouterResponse, chars: number, forceReasoningOff = false) => {
       if (reason !== 'length') return;
+      const reasoningMaxTokens = reasoningMaxTokensSent(forceReasoningOff);
       logger.warn('SDK', 'OpenRouter reply was cut off at the output-token limit', {
         model: response.model ?? model,
         requestId: finalRequestId,
         clientAttemptId,
-        maxTokens: maxOutputTokens,
+        maxTokens: maxOutputTokens + reasoningMaxTokens,
+        answerMaxTokens: maxOutputTokens,
+        reasoningMaxTokens,
         outputTokens: response.usage?.completion_tokens,
         contentChars: chars,
         messagesInContext: history.length,
@@ -1033,7 +1074,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
           model: data.model ?? model,
           requestId: finalRequestId,
           finishReason,
-          maxTokens: maxOutputTokens,
+          maxTokens: maxOutputTokens + reasoningMaxTokensSent(false),
         });
       } else {
         const firstUsage = data.usage;
@@ -1041,7 +1082,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
           model: data.model ?? model,
           requestId: finalRequestId,
           finishReason,
-          maxTokens: maxOutputTokens,
+          maxTokens: maxOutputTokens + reasoningMaxTokensSent(false),
         });
         const deadline = liveness ? undefined : startReasoningRetryDeadline(signal, perAttemptTimeoutMs);
         try {
@@ -1067,7 +1108,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
           message = retryChoice?.message;
           content = assistantText(message?.content);
           finishReason = typeof retryChoice?.finish_reason === 'string' ? retryChoice.finish_reason : undefined;
-          warnIfCutOff(finishReason, data, content.length);
+          warnIfCutOff(finishReason, data, content.length, true);
           if (isLengthTruncatedEmptyReply(content, finishReason)) {
             logger.error('SDK', reasoningBudgetGiveUpMessage('OpenRouter', finishReason), {
               model: data.model ?? model,
@@ -1087,7 +1128,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       logger.error('SDK', reasoningBudgetGiveUpMessage('OpenRouter', finishReason), {
         model: data.model ?? model,
         requestId: finalRequestId,
-        maxTokens: maxOutputTokens,
+        maxTokens: maxOutputTokens + reasoningMaxTokensSent(false),
       });
     }
 

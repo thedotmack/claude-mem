@@ -17,6 +17,35 @@ import { resolveLlmTimeoutMs } from './retry.js';
 
 export const REASONING_DISABLED: { enabled: false } = { enabled: false };
 
+/**
+ * Reasoning's own token budget per CLAUDE_MEM_OPENROUTER_REASONING_EFFORT
+ * value, sent to openrouter.ai as `reasoning.max_tokens`. OpenRouter takes
+ * `reasoning.effort` or `reasoning.max_tokens`, never both, and only
+ * `max_tokens` is a cap; the request's own `max_tokens` is this budget plus the
+ * answer's CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS, because reasoning counts
+ * against it.
+ *
+ * Reason for the numbers: OpenRouter's documented effort shares of max_tokens
+ * (minimal 10%, low 20%, medium 50%, high 80%) applied to the default 4,096
+ * answer: budget = 4096 * share / (1 - share). OpenRouter gives an effort-only
+ * model (OpenAI, Grok) the effort matching the budget's share of max_tokens, so
+ * at the default answer cap that model gets exactly the typed effort.
+ * Measured 2026-10-23 on six real observer inputs (deepseek-v4-flash-0731):
+ * 56-423 reasoning tokens at effort "low" (budget 1,024), up to 1,098 at the
+ * provider's default effort. Unused budget is not billed.
+ *
+ * Models that take a token budget (Anthropic, Gemini, Qwen) enforce it;
+ * Anthropic raises anything under 1,024 to 1,024, so `minimal` there may use up
+ * to 569 tokens of the answer's share. A model with neither control reasons
+ * uncapped inside the request's max_tokens.
+ */
+export const OBSERVER_REASONING_BUDGET_TOKENS_BY_EFFORT = {
+  minimal: 455,
+  low: 1024,
+  medium: 4096,
+  high: 16384,
+} as const;
+
 /** '' | off | false | disabled | none → off. on | true | enabled → on. Anything else is invalid. */
 export function parseOpenAICompatReasoning(raw: unknown): 'off' | 'on' | undefined {
   const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';

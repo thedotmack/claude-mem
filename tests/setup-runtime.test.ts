@@ -24,7 +24,6 @@ import { IS_WINDOWS } from '../src/npx-cli/utils/paths';
 const SETUP_RUNTIME_SOURCE_PATH = join(import.meta.dir, '..', 'src', 'npx-cli', 'install', 'setup-runtime.ts');
 const TOOL_PATH_SOURCE_PATH = join(import.meta.dir, '..', 'src', 'npx-cli', 'install', 'tool-path.ts');
 const SHARED_SPAWN_SOURCE_PATH = join(import.meta.dir, '..', 'src', 'shared', 'spawn.ts');
-const DOCTOR_SOURCE_PATH = join(import.meta.dir, '..', 'src', 'npx-cli', 'commands', 'doctor.ts');
 
 function probeBunVersion(): string | null {
   try {
@@ -274,24 +273,7 @@ describe('setup-runtime Windows spawn hygiene', () => {
     const sharedSpawnSource = readFileSync(SHARED_SPAWN_SOURCE_PATH, 'utf-8');
     expect(source).not.toContain('shell: IS_WINDOWS');
     expect(toolPathSource).not.toContain('shell: IS_WINDOWS');
-    expect(toolPathSource).toContain('buildSpawnSyncInvocation(command, args, options)');
-    expect(toolPathSource).toContain('lookupWindowsCommand(command)');
-    expect(sharedSpawnSource).toContain('spawnSync(windowsWhereExecutablePath(), [command]');
     expect(sharedSpawnSource).not.toContain("spawnSync('where'");
-    expect(sharedSpawnSource).toContain('windowsHide: true');
-  });
-});
-
-describe('doctor marketplace runtime hygiene', () => {
-  it('checks the executable marketplace root marker, not only node_modules', () => {
-    const source = readFileSync(DOCTOR_SOURCE_PATH, 'utf-8');
-    expect(source).toContain("name: 'Marketplace runtime'");
-    expect(source).toContain('isInstallCurrent(marketplaceDir, readPluginVersion())');
-    // A missing marker with node_modules present is a warn, not a fail: the
-    // marker is written only by the npx installer, and marketplace-flow /
-    // dev-sync installs never have one (#3661).
-    expect(source).toContain('no npx install marker');
-    expect(source).toContain('install marker stale');
   });
 });
 

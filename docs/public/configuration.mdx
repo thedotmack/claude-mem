@@ -205,9 +205,9 @@ Use [LiteLLM Gateway](configuration/litellm-gateway) when you want `CLAUDE_MEM_P
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `CLAUDE_MEM_OBSERVER_THINKING` | `disabled` | The `thinking` parameter the Claude observer sends. `disabled` saves tokens on Anthropic-native endpoints. `omit` sends no `thinking` field, for a gateway whose upstream model always thinks and rejects `disabled` (for example GLM's error 1210). `enabled` or `enabled:<budget>` (default budget `1024`) turns thinking on and spends thinking tokens on every observer request |
+| `CLAUDE_MEM_OBSERVER_THINKING` | `disabled` | The `thinking` parameter the Claude observer sends. `disabled` saves tokens on Anthropic-native endpoints. `omit` sends no `thinking` field, for a gateway whose upstream model always thinks and rejects `disabled` (for example GLM's error 1210). `adaptive` lets the model decide how much to think, the only way to turn thinking on for models that accept no budget, such as Claude Haiku 5.5. `enabled` or `enabled:<budget>` (default budget `1024`) turns thinking on and spends thinking tokens on every observer request. The server runtime's `claude` provider reads the same setting from its environment, and adds an enabled budget to `CLAUDE_MEM_SERVER_MAX_OUTPUT_TOKENS` so thinking can't spend the answer's tokens |
 
-If an Anthropic-compatible gateway rejects the `thinking` parameter with a 400, the observer drops the parameter for the rest of that session and retries the same batch, so nothing is lost while you change the setting.
+If an Anthropic-compatible gateway rejects the `thinking` parameter with a 400, the worker's observer drops the parameter for the rest of that session and retries the same batch, so nothing is lost while you change the setting. The server's provider doesn't retry; set `omit` for such a gateway.
 
 ### System Configuration
 

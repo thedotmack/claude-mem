@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'bun:test';
+import { mkdtempSync, rmSync, symlinkSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import {
   findOrphanedChromaRoots,
   parseProcessTable,
+  readProcessTablePosix,
   sweepOrphanedChromaTrees,
   type ProcessRow,
 } from '../../src/supervisor/orphan-chroma-sweep.js';
@@ -36,8 +40,46 @@ const TABLE: ProcessRow[] = [
 
 const alive = (pid: number): boolean => TABLE.some((r) => r.pid === pid);
 
+describe('readProcessTablePosix', () => {
+  it.skipIf(process.platform === 'win32')('reads this process with the platform ps', async () => {
+    const rows = await readProcessTablePosix();
+    const row = rows.find((row) => row.pid === process.pid);
+    expect(row?.ppid).toBe(process.ppid);
+    expect(row?.command).toContain('bun');
+  });
+
+  const busybox = process.platform === 'linux' ? Bun.which('busybox') : null;
+
+  it.skipIf(!busybox)('reads PID, parent PID and arguments with BusyBox ps', () => {
+    const binDir = mkdtempSync(join(tmpdir(), 'claude-mem-busybox-ps-'));
+    try {
+      symlinkSync(busybox!, join(binDir, 'ps'));
+      const modulePath = new URL('../../src/supervisor/orphan-chroma-sweep.ts', import.meta.url).href;
+      // Use a child so replacing ps on PATH cannot affect other tests. This only reads
+      // the process table; it never invokes the orphan sweep or signals any process.
+      const child = Bun.spawnSync([process.execPath, '-e', `
+        import { readProcessTablePosix } from ${JSON.stringify(modulePath)};
+        const rows = await readProcessTablePosix();
+        console.log(JSON.stringify(rows.find(row => row.pid === process.pid) ?? null));
+      `], {
+        env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ''}` },
+        timeout: 15_000,
+      });
+      expect(child.exitCode).toBe(0);
+      const row: ProcessRow = JSON.parse(child.stdout.toString());
+      expect(row).not.toBeNull();
+      expect(row.pid).toBeGreaterThan(0);
+      expect(row.ppid).toBe(process.pid);
+      expect(row.command).toContain(process.execPath);
+      expect(row.command).toContain('readProcessTablePosix');
+    } finally {
+      rmSync(binDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('parseProcessTable', () => {
-  it('parses ps -eo pid=,ppid=,command= rows and ignores garbage', () => {
+  it('parses PID, parent PID and argument rows and ignores garbage', () => {
     const rows = parseProcessTable([
       '  1     0 /sbin/launchd',
       ' 6001     1 ' + UVX,

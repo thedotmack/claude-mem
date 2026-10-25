@@ -24,6 +24,7 @@ bun.lock
 !plugin/bun.lock
 !workers/sync-hub/bun.lock
 !services/sync-api/bun.lock
+!src/ui/my-work/package-lock.json
 private/
 Auto Run Docs/
 
@@ -59,3 +60,6 @@ reports/
 # Python bytecode (Hermes provider and tests)
 __pycache__/
 *.pyc
+
+# Fixture homes written by tests (tests/services/prompt-import/token-usage.test.ts)
+tests/**/.generated/

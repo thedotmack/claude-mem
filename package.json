@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "15.0.2",
+  "version": "15.2.0",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",
@@ -66,7 +66,7 @@
     "NOTICE"
   ],
   "engines": {
-    "node": ">=20.12.0",
+    "node": "^20.19.0 || >=22.12.0",
     "bun": ">=1.1.31"
   },
   "scripts": {
@@ -110,7 +110,10 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p src/ui/viewer/tsconfig.json",
     "typecheck:root": "tsc --noEmit",
     "typecheck:viewer": "tsc --noEmit -p src/ui/viewer/tsconfig.json",
-    "test": "bun test tests",
+    "test": "bun scripts/test-lanes.ts fast",
+    "test:integration": "bun scripts/test-lanes.ts integration",
+    "test:all": "bun scripts/test-lanes.ts all",
+    "test:lanes:check": "bun scripts/test-lanes.ts check",
     "test:sqlite": "bun test tests/sqlite/",
     "test:agents": "bun test tests/worker/agents/",
     "test:search": "bun test tests/worker/search/",

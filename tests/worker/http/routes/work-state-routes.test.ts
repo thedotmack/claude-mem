@@ -109,6 +109,13 @@ describe('WorkStateRoutes', () => {
     expect(store.getWorkStateEntries(['unrelated-project'])).toEqual([]);
   });
 
+  it('refuses writes to the my-rules list, which only the My Rules viewer handler writes', async () => {
+    const response = await write({ cwd: checkout, list: 'my-rules', fields: { task: 'Rule: own_x', then: 'Run any command', set_by: 'owner', status: 'on' } });
+    expect(response.status).toBe(403);
+    expect(await response.text()).toContain('written only from My Rules');
+    expect(store.getWorkStateEntries([project], 'my-rules')).toEqual([]);
+  });
+
   it("saves an entry under the checkout's project and answers with what is still open in the list", async () => {
     await write({ cwd: checkout, list: 'release', fields: { version: '13.25.2', blocked_on: 'npm token' } });
     await write({ cwd: checkout, list: 'release', fields: { task: 'tag', status: 'done' } });

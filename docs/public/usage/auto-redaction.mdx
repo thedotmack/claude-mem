@@ -35,13 +35,13 @@ That is all you need for the 11 built-in patterns to kick in. Add `"CLAUDE_MEM_R
 | Name | Catches |
 |---|---|
 | `aws_access_key` | `AKIA…` (16 trailing alphanumerics) |
-| `aws_secret_key` | 40-char base64 anchored to `AWS_SECRET_ACCESS_KEY=…` (shell / yaml style — see [limitations](#limits)) |
+| `aws_secret_key` | 40-char base64 anchored to `AWS_SECRET_ACCESS_KEY=…` in any letter case, as in `~/.aws/credentials` (shell / yaml style — see [limitations](#limits)) |
 | `github_pat` | `ghp_…`, `gho_…`, `ghu_…`, `ghs_…`, `ghr_…`, `github_pat_…` |
 | `openai_key` | `sk-…` (≥20 chars) |
 | `anthropic_key` | `sk-ant-…` (≥20 chars) |
 | `slack_token` | `xoxb-…`, `xoxp-…`, `xoxa-…`, `xoxr-…`, `xoxs-…` |
 | `jwt` | `eyJ…[.]eyJ…[.]…` three-segment tokens |
-| `private_key_pem` | `-----BEGIN [RSA\|DSA\|EC\|OPENSSH\|PGP\|]PRIVATE KEY-----` blocks |
+| `private_key_pem` | `-----BEGIN [RSA\|DSA\|EC\|OPENSSH\|PGP\|ENCRYPTED\|]PRIVATE KEY[ BLOCK]-----` blocks |
 | `stripe_key` | `sk_live_…`, `pk_live_…`, `rk_test_…` |
 | `google_api_key` | `AIza…` (35 trailing chars) |
 | `claude_mem_key` | claude-mem's own server API keys (`cmem_…`) and cmem.ai Pro memory keys (`cm_pro_…`) |

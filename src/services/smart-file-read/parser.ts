@@ -146,6 +146,10 @@ const QUERIES: Record<string, string> = {
 (function_declaration name: (identifier) @name) @func
 (method_declaration receiver: (parameter_list (parameter_declaration type: (_) @receiver)) name: (field_identifier) @name) @method
 (type_declaration (type_spec name: (type_identifier) @name)) @tdef
+(type_declaration (type_alias name: (type_identifier) @name)) @tdef
+(type_declaration "(" (type_spec name: (type_identifier) @name) @tdef)
+(type_declaration "(" (type_alias name: (type_identifier) @name) @tdef)
+(type_declaration "(") @go_type_group
 (import_declaration) @imp
 `,
 
@@ -216,6 +220,7 @@ const QUERIES: Record<string, string> = {
 (deinit_declaration "deinit" @name) @method
 (function_declaration name: (simple_identifier) @name) @func
 (class_declaration name: (type_identifier) @name) @cls
+(class_declaration declaration_kind: "extension" name: (_) @name) @impl_def
 (protocol_declaration name: (type_identifier) @name) @iface
 (import_declaration) @imp
 `,
@@ -620,9 +625,19 @@ const DECORATOR_LANGUAGES = new Set(["python", "javascript", "typescript", "tsx"
 function findCommentAbove(lines: string[], startRow: number, language: string): string | undefined {
   const commentLines: string[] = [];
   let foundComment = false;
+  // Every line inside a /* ... */ block is comment text, whatever it starts
+  // with. Scanning upward, a block is entered at its closing `*/` and left at
+  // its opening `/*`. A `//` or `#` line that happens to end in `*/`
+  // (`// Matches /a*/`) closes nothing.
+  let inBlockComment = false;
 
   for (let i = startRow - 1; i >= 0; i--) {
     const trimmed = lines[i].trim();
+    if (inBlockComment) {
+      commentLines.unshift(lines[i]);
+      if (trimmed.startsWith("/*")) inBlockComment = false;
+      continue;
+    }
     if (trimmed === "") {
       if (foundComment) break;
       continue;
@@ -638,6 +653,8 @@ function findCommentAbove(lines: string[], startRow: number, language: string): 
         (DECORATOR_LANGUAGES.has(language) && trimmed.startsWith("@"))) {
       commentLines.unshift(lines[i]);
       foundComment = true;
+      if (trimmed.endsWith("*/") && !trimmed.startsWith("/*") &&
+          !trimmed.startsWith("//") && !trimmed.startsWith("#")) inBlockComment = true;
     } else {
       break;
     }
@@ -719,6 +736,9 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   const imports: string[] = [];
   const exportRanges: RawCapture[] = [];
   const singletonScopes: RawCapture[] = [];
+  // A grouped Go `type ( … )` lists each member through its own capture, so
+  // the whole-group match a member also produces is dropped.
+  const goTypeGroups = new Set<string>();
   const decoratedRanges = new Map<string, RawCapture>();
   const swiftParameters = new Map<string, string[]>();
   const swiftHeaders = new Map<string, { generics?: string; constraints?: string }>();
@@ -759,6 +779,9 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       if (cap.tag === "singleton_scope") {
         singletonScopes.push(cap);
       }
+      if (cap.tag === "go_type_group") {
+        goTypeGroups.add(`${cap.startRow}:${cap.startCol}:${cap.endRow}:${cap.endCol}`);
+      }
       if (cap.tag === "imp") {
         // Outlines go straight into an agent's context, so each entry is one
         // line capped at the 200-char signature budget: a Go `import ( … )`
@@ -798,9 +821,16 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
         ? findFunctionName(kindCapture)
         : undefined);
     if (!kindCapture) continue;
+    if (kindCapture.tag === "tdef" && goTypeGroups.has(
+      `${kindCapture.startRow}:${kindCapture.startCol}:${kindCapture.endRow}:${kindCapture.endCol}`)) continue;
 
     const startRow = kindCapture.startRow;
-    const endRow = kindCapture.endRow;
+    // An end at column 0 is just past a newline: the node's last line is the one
+    // before. A TOML table and an indented Scala 3 body end where the next
+    // declaration starts, and that line is not theirs.
+    const endRow = kindCapture.endCol === 0 && kindCapture.endRow > startRow
+      ? kindCapture.endRow - 1
+      : kindCapture.endRow;
     const kind = KIND_MAP[kindCapture.tag];
     // The CLI prints `text` only for one-row captures and cuts it at the first
     // backtick, so names come from the source range. A zero-width MISSING node
@@ -833,7 +863,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       }
       const headingLine = lines[startRow] || "";
       const hashMatch = headingLine.match(/^(#{1,6})\s/);
-      const underline = lines[endRow - (kindCapture.endCol === 0 ? 1 : 0)] || "";
+      const underline = lines[endRow] || "";
       const level = hashMatch ? hashMatch[1].length : /^\s*-+\s*$/.test(underline) ? 2 : 1;
       signature = `${"#".repeat(level)} ${name}`;
     } else if (language === "markdown" && kind === "code") {

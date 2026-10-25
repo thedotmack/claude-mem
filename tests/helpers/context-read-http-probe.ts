@@ -46,6 +46,11 @@ export async function assertContextReadResponsive(options: { entry?: string; cwd
       CLAUDE_CONFIG_DIR: directory,
       CLAUDE_MEM_MODES_DIR: join(process.cwd(), 'plugin/modes'),
       CLAUDE_MEM_TELEMETRY_ENABLED: 'false',
+      // Bun 1.3.9 inlines `process.env.X` reads into the runtime transpiler cache
+      // for worker-thread files (>= 50 KB, keyed by content). The reader bundle is
+      // byte-identical between runs, so its worker would read the data dir of the
+      // first run that cached it and render no context. Disable the cache here.
+      BUN_RUNTIME_TRANSPILER_CACHE_PATH: '0',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -83,8 +88,9 @@ export async function assertContextReadResponsive(options: { entry?: string; cwd
     expect(health.ok).toBe(true);
     expect(await health.json()).toEqual({ status: 'ok' });
     const context = await contextRequest;
-    expect(context.ok).toBe(true);
-    expect(await context.text()).toContain('KEEP_CONTEXT_RECORD');
+    const contextBody = await context.text();
+    if (!context.ok) throw new Error(`Context read failed with ${context.status}: ${contextBody}\nfixture stderr: ${output.stderr}`);
+    expect(contextBody).toContain('KEEP_CONTEXT_RECORD');
   } finally {
     clearTimeout(startupTimeout);
     if (unlockTimer.value) clearTimeout(unlockTimer.value);
