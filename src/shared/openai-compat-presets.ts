@@ -104,6 +104,16 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     hint: 'One Atlas Cloud key for vendor-prefixed model ids such as deepseek-ai/deepseek-v4-flash or zai-org/glm-5.3.',
   },
   {
+    id: 'runcrate',
+    label: 'Runcrate (runcrate.ai)',
+    baseUrl: 'https://api.runcrate.ai/v1',
+    // A small, fast open model for the same reason as NVIDIA's default:
+    // extraction is high volume. Ids are vendor-prefixed and passed verbatim.
+    defaultModel: 'deepseek-ai/DeepSeek-V4.1-Flash',
+    requiresApiKey: true,
+    hint: 'rc_live_ key from runcrate.ai; vendor-prefixed open model ids such as deepseek-ai/DeepSeek-V4.1-Flash or zai-org/GLM-5.3.',
+  },
+  {
     id: 'deepseek',
     label: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com/v1',
