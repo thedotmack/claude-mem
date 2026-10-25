@@ -143,10 +143,20 @@ describe('agent runner', () => {
       expect(calls).toHaveLength(1);
       const { command, args, options, child } = calls[0];
       expect(command).toBe('/bin/codex');
-      expect(args.slice(0, 8)).toEqual(['exec', '-s', 'read-only', '--ephemeral', '--ignore-user-config', '--skip-git-repo-check', '-C', cwd]);
-      expect(args[8]).toBe('-o');
-      expect(args[9].startsWith(join(cwd, 'agent-runs'))).toBe(true);
-      expect(args[10]).toBe('-');
+      expect(args[0]).toBe('exec');
+      expect(args).toContain('--strict-config');
+      expect(args).not.toContain('-s'); // legacy sandbox flags would override the scoped profile
+      expect(args).toContain('default_permissions="claude-mem-refresh"');
+      const policy = args.find(arg => arg.startsWith('permissions.claude-mem-refresh.filesystem='))!;
+      expect(policy).toContain('":root"="deny"');
+      expect(policy).toContain('":workspace_roots"={"."="read"}');
+      expect(policy).toContain('"/bin"="read"');
+      expect(args).toContain('permissions.claude-mem-refresh.network.enabled=false');
+      expect(args).toContain('--ephemeral');
+      expect(args).toContain('--ignore-user-config');
+      expect(args[args.indexOf('-C') + 1]).toBe(cwd);
+      expect(args[args.indexOf('-o') + 1].startsWith(join(cwd, 'agent-runs'))).toBe(true);
+      expect(args.at(-1)).toBe('-');
       expect(args.join(' ')).not.toMatch(/bypass|dangerous|full-auto|yolo/i);
       expect(child.stdinText).toBe('inline prompt for codex');
       expect(options.cwd).toBe(cwd);
@@ -169,24 +179,31 @@ describe('agent runner', () => {
       const result = await runTask(schemaTask, { detect: async () => agents('codex'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
       expect(result).toMatchObject({ state: 'ok', agent: 'codex', result: '{"ok":true}' });
       const { args } = calls[0];
-      expect(args.slice(10, 12)).toEqual(['--output-schema', args[11]]);
-      expect(args[11].startsWith(join(cwd, 'agent-runs'))).toBe(true);
-      expect(args.slice(12)).toEqual(['-m', 'gpt-6-luna', '-c', 'model_reasoning_effort="low"', '-']);
+      const schemaIndex = args.indexOf('--output-schema');
+      expect(args[schemaIndex + 1].startsWith(join(cwd, 'agent-runs'))).toBe(true);
+      expect(args.slice(schemaIndex + 2)).toEqual(['-m', 'gpt-6-luna', '-c', 'model_reasoning_effort="low"', '-']);
       expect(schemaSeen).toEqual(schema);
-      expect(existsSync(args[11])).toBe(false);
+      expect(existsSync(args[schemaIndex + 1])).toBe(false);
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 
-  it('Gemini: gemini -p in plan (read-only) mode, no extensions or MCP servers, JSON output, prompt on stdin', async () => {
+  it('Gemini: gemini -p in plan (read-only) mode, never --skip-trust, no extensions or MCP servers, JSON output, prompt on stdin', async () => {
     const calls: SpawnCall[] = [];
     const spawnImpl = fakeSpawn(calls, call => {
+      const policyPath = (call.options.env as Record<string, string>).GEMINI_CLI_SYSTEM_SETTINGS_PATH;
+      expect(JSON.parse(readFileSync(policyPath, 'utf8'))).toEqual({
+        tools: { core: [] },
+        security: { disableYoloMode: true }, hooksConfig: { enabled: false },
+      });
       call.child.stdout.emit('data', JSON.stringify({ response: '{"ok":"gemini"}', stats: {} }));
       call.child.emit('close', 0);
     });
     const result = await runTask(task('/data'), { detect: async () => agents('gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
     expect(result).toEqual({ state: 'ok', agent: 'gemini', result: 'inline done: {"ok":"gemini"}', error: null, attempts: [] });
+    expect(existsSync((calls[0].options.env as Record<string, string>).GEMINI_CLI_SYSTEM_SETTINGS_PATH)).toBe(false);
     expect(calls[0].command).toBe('/bin/gemini');
     expect(calls[0].args).toEqual(['-p', 'Follow the instructions above.', '--approval-mode', 'plan', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json']);
+    expect(calls[0].args).not.toContain('--skip-trust');
     expect(calls[0].child.stdinText).toBe('inline prompt for gemini');
   });
 
@@ -206,6 +223,20 @@ describe('agent runner', () => {
       expect(result.attempts.map(attempt => attempt.agent)).toEqual(['claude-code', 'codex']);
       expect(result.attempts[0].error).toMatch(/quota/);
       expect(result.attempts[1].error).toMatch(/codex exec exited 1: not signed in/);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  it('when every agent fails, the error names each one\'s failure in the order tried', async () => {
+    const query = (() => (async function* () { yield { type: 'result', subtype: 'error_during_execution', is_error: true, result: 'narrative is 22000 characters' }; })()) as never;
+    const spawnImpl = fakeSpawn([], call => {
+      if (call.command === '/bin/codex') { call.child.stderr.emit('data', 'story refused'); call.child.emit('close', 1); return; }
+      call.child.stderr.emit('data', 'not running in a trusted directory'); call.child.emit('close', 55);
+    });
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-all-fail-'));
+    try {
+      const result = await runTask(task(cwd), { detect: async () => agents('claude-code', 'codex', 'gemini'), query, spawn: spawnImpl, buildEnv: env });
+      expect(result).toMatchObject({ state: 'failed', agent: 'gemini' });
+      expect(result.error).toMatch(/^Claude Code: .*narrative is 22000 characters.* · Codex: codex exec exited 1: story refused · Gemini: gemini exited 55: not running in a trusted directory$/);
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 

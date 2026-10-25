@@ -4,6 +4,65 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [15.2.0] - 2026-10-25
+
+## Highlights
+
+### Install funnel in the browser (#5031)
+Fresh installs now open a browser setup flow that finds your recent work and turns it into Work, Goals and Rules before setup finishes. Existing installations keep opening My Work as before.
+
+1. **Install** — `npx claude-mem install` installs the detected hooks, starts the worker and opens the browser.
+2. **Scan** — reads the last 30 days of supported local agent history. Configured excluded projects and agent-authored prompts are left out, stored prompts are deduplicated, and private-tag cleanup and configured redaction run before anything is shown or extracted.
+3. **Reveal** — uploads the filtered owner prompts (gzip) to CMEM Cloud for hosted intent extraction. Anonymous installs get a private, persistent installation credential that retries and sign-in reuse. Returned goals, rules and request groups fill the local My Work snapshots. Upload and extraction errors are shown and can be retried. The pre-checked product-improvement box only changes `improveProduct`.
+4. **Storage choice** — At Home or On The Go. On The Go uses the existing pairing, login and checkout flow; delivered memory credentials are activated before checkout is marked paid, and sync-only accounts keep their provider.
+5. **Finish Setup** — installs any other selected local tools and can import existing memory. Extraction or import in progress is kept when a settings change restarts the worker.
+6. **What's next** — search saved memory and prompts, keep a result as a note, then hand off to My Work. The terminal exits successfully.
+
+Ongoing goals and progress refresh uses an installed, logged-in agent: Claude Code gets bounded file tools and memory recall only; Codex runs with a strict read-only workspace/runtime profile (no writes, no network), with native and npm runtime layouts supported; Gemini gets prepared evidence inline with no builtin tools, hooks or YOLO mode. Every saved answer passes the worker's validators.
+
+### Setup no longer fails when Cloud leaves conversations ungrouped (#5060)
+On real 30-day scans the hosted model sometimes leaves conversations out of every group. The worker used to throw `Hosted extraction omitted conversation …` and fail setup after a successful hosted run. Now the groups Cloud returned are saved and conversations it did not place stay undecided: they show in My Work as their own request, and the local refresh can group them later. Unknown or repeated conversation ids still fail loudly.
+
+## Requirements
+- Node `^20.19.0 || >=22.12.0`.
+- Uses CMEM Cloud hosted history import and intent extraction (claude-mem-pro #353, #355, #358).
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v15.1.0...v15.2.0
+
+## [15.1.0] - 2026-10-25
+
+## claude-mem 15.1.0
+
+### Highlights
+
+- **New My Work viewer (React, live data).** The localhost viewer at `http://localhost:37777` is replaced by the React My Work viewer on live worker data: one card per human request, progress meters, owner goals, goal alignment, shipping velocity and the build story (#5010).
+- **My Work is always live.** Updates appear as they arrive; the "Show updates" button is gone. The header now reads "claude-mem", links to the Classic viewer at `/viewer`, and shows a GitHub stars button. An open request drawer no longer reopens by itself when its request returns to the feed (#5056).
+- **Request grouping and progress review.** The build story stays under its cap and the story update is told how much room it has (#5053, #5054); every agent's refresh failure is shown; finished subagents show as finished, and a subagent can be marked finished from its agent card; Claude Code subagent stops are recorded.
+
+### Server
+
+- Per-prompt semantic injection in server mode (#5004).
+- The configured embedding model is baked into the Docker image (#5003).
+
+### MCP
+
+- Opt-in loopback HTTP transport with per-session workspaces (#5028).
+
+### Fixes
+
+- Observer: reasoning gets its own budget and cut-off replies are reported (#5033).
+- Search: unfiltered timelines are scoped to their anchor project (#5013).
+- Worker: cross-origin loopback writes to `/api/import` are rejected (#5025); Edit payloads carrying new scalar flags keep being trimmed (#5027).
+- Redaction: AWS secret keys under lowercase key names, PGP private key blocks and encrypted PKCS#8 keys (#5014, #5017).
+- Security: private prompt text stays out of Goals.
+- Smart-read: tree-sitter probe output read when Bun returns a Buffer (#5024), Go type aliases (#5020), Swift extension methods (#5016), symbols ending at column 0 (#5015).
+- Hooks: `last_assistant_message` mapped in the raw adapter (#5011).
+- Agent runner: npm-installed codex and gemini are found and started.
+
+### Tests
+
+- Suite split into fast and integration lanes; slow, failing and source-grep tests cut (#5032).
+
 ## [15.0.2] - 2026-10-23
 
 # Stop observer reasoning from consuming the output budget
