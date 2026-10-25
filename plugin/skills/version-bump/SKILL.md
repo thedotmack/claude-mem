@@ -75,13 +75,15 @@ description: Automated semantic versioning and release workflow for Claude Code 
     npm view claude-mem dist-tags.latest
     npm view claude-mem@X.Y.Z dist.attestations --json   # provenance from the workflow
     ```
-    Then run the Discord notification from `~/Scripts/claude-mem/`, where the
-    `.env` with webhook details lives:
-    ```bash
-    cd ~/Scripts/claude-mem/ && npm run discord:notify vX.Y.Z
-    ```
-    Do this only after npm verification, and even when the release worktree does
-    not have a local `.env`.
+    Then post the release to X, only after npm verification:
+    - Generate one image about the release with an available image-generation
+      tool, drawn from the release notes.
+    - In a browser that is already logged in to X (for example Claude in
+      Chrome), open x.com and check the active account is `@Claude_Memory`.
+      If no browser is logged in, or the account is a different one, skip the
+      post and say so in the release report. Never sign in or switch accounts.
+    - Post a short summary of the release with the version, the GitHub release
+      URL and the image attached, then report the post's URL.
 13. **Finalize**: `git status` — working tree must be clean and everything must
     be pushed.
 
@@ -96,5 +98,5 @@ description: Automated semantic versioning and release workflow for Claude Code 
 - [ ] Pre-publish audit passed
 - [ ] `Publish to npm` workflow run for the tag succeeded (no local `npm publish`)
 - [ ] Exact npm version and `latest` both verified after publishing
-- [ ] Discord notification run from `~/Scripts/claude-mem/` only after npm verification
+- [ ] Release posted to X as `@Claude_Memory` with a generated image after npm verification (or skipped because no browser was logged in as that account)
 - [ ] `git status` shows clean tree
