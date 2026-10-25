@@ -247,6 +247,19 @@ describe('Plugin Distribution - Codex Marketplace', () => {
     expect(codexHooks.hooks.PostToolUse[0].matcher).toBe('.*');
   });
 
+  it('bounds the synchronous Codex observation hook to a short fail-open wait', () => {
+    const codexHooks = readJson('plugin/hooks/codex-hooks.json');
+    const observation = codexHooks.hooks.PostToolUse[0].hooks[0];
+
+    expect(observation.command).toContain('hook codex observation');
+    expect(observation.timeout).toBe(5);
+    expect(observation).not.toHaveProperty('async');
+
+    for (const event of ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'Stop', 'PostCompact']) {
+      expect(codexHooks.hooks[event][0].hooks[0]).not.toHaveProperty('async');
+    }
+  });
+
   it('sets the Codex hook marker on every Codex command', () => {
     for (const command of commandHooksFrom('plugin/hooks/codex-hooks.json')) {
       expect(command).toContain('CLAUDE_MEM_CODEX_HOOK=1');
@@ -669,9 +682,10 @@ const codexHook = (tail: string[]) => buildShellCommand({
   extraEnv: { CLAUDE_MEM_CODEX_HOOK: '1' },
   requireDependencies: true,
 });
-const codexHookPair = (tail: string[]) => ({
+const codexHookPair = (tail: string[], entryOptions: Record<string, unknown> = {}) => ({
   command: codexHook(tail),
   commandWindows: buildCodexWindowsCommand(tail, { requireDependencies: true }),
+  ...entryOptions,
 });
 
 const SESSION_INIT_HOOK_TIMEOUT_SECONDS = 15;
@@ -717,7 +731,10 @@ const RULE_A_EXPECTATIONS: Record<string, Record<string, RuleAExpectation>> = {
     'SessionStart.0.0': codexHookPair(['hook', 'codex', 'context']),
     'UserPromptSubmit.0.0': codexHookPair(['hook', 'codex', 'session-init']),
     'PreToolUse.0.0': codexHookPair(['hook', 'codex', 'file-context']),
-    'PostToolUse.0.0': codexHookPair(['hook', 'codex', 'observation']),
+    'PostToolUse.0.0': codexHookPair(
+      ['hook', 'codex', 'observation'],
+      { timeout: 5 },
+    ),
     'Stop.0.0': codexHookPair(['hook', 'codex', 'summarize']),
     'PostCompact.0.0': codexHookPair(['hook', 'codex', 'post-compact']),
   },
@@ -754,6 +771,9 @@ describe('Spawn-Contract Templating - Rule A generator parity', () => {
         expect(entry?.command ?? null).toBe(expectedCommand);
         if (typeof expected !== 'string' && expected.commandWindows !== undefined) {
           expect(entry?.commandWindows ?? null).toBe(expected.commandWindows);
+        }
+        if (typeof expected !== 'string' && expected.timeout !== undefined) {
+          expect(entry?.timeout ?? null).toBe(expected.timeout);
         }
       });
     }

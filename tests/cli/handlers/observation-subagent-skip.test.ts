@@ -40,15 +40,22 @@ mock.module('../../../src/shared/worker-utils.js', () => ({
 // Mutable runtime context so individual cases can flip between the `worker` and
 // `server` runtimes. The skip check must run BEFORE this branch, so a
 // skipped subagent observation must reach neither dispatchToWorker nor recordEvent.
-const recordEventLog: Array<unknown> = [];
+interface RecordEventCall {
+  event: unknown;
+  options?: { timeoutMs?: number };
+}
+
+const recordEventLog: RecordEventCall[] = [];
+let recordEventError: Error | null = null;
 let mockRuntime: Record<string, unknown> = { runtime: 'worker' };
 const serverRuntime = () => ({
   runtime: 'server',
   projectId: 'proj-test',
   serverBaseUrl: 'http://127.0.0.1:0',
   client: {
-    recordEvent: (evt: unknown) => {
-      recordEventLog.push(evt);
+    recordEvent: (event: unknown, options?: { timeoutMs?: number }) => {
+      recordEventLog.push({ event, options });
+      if (recordEventError) return Promise.reject(recordEventError);
       return Promise.resolve();
     },
   },
@@ -60,6 +67,7 @@ mock.module('../../../src/services/hooks/runtime-selector.js', () => ({
 
 import { logger } from '../../../src/utils/logger.js';
 import { codexAdapter } from '../../../src/cli/adapters/codex.js';
+import { ServerClientError } from '../../../src/services/hooks/server-client.js';
 import { spooledEntries, useTempHookSpoolDataDir } from '../../helpers/temp-hook-spool.js';
 
 /** Observations handed to the worker (via the hook spool). */
@@ -75,6 +83,7 @@ beforeEach(() => {
   tempSpool = useTempHookSpoolDataDir();
   awaitedWorkerCallLog.length = 0;
   recordEventLog.length = 0;
+  recordEventError = null;
   mockRuntime = { runtime: 'worker' };
   mockSettings = {
     CLAUDE_MEM_EXCLUDED_PROJECTS: '',
@@ -235,7 +244,33 @@ describe('observationHandler — subagent observation filtering (#2736)', () => 
     const result = await observationHandler.execute(baseInput()); // no agentId
     expect(result.continue).toBe(true);
     expect(recordEventLog.length).toBe(1);
+    expect(recordEventLog[0]?.options).toBeUndefined();
     expect(spooled().length).toBe(0);
+  });
+
+  it('bounds Codex server observations while preserving the success path', async () => {
+    mockRuntime = serverRuntime();
+    const { observationHandler } = await import('../../../src/cli/handlers/observation.js');
+
+    const result = await observationHandler.execute(baseInput({ platform: 'codex' }));
+
+    expect(result.continue).toBe(true);
+    expect(recordEventLog).toHaveLength(1);
+    expect(recordEventLog[0]?.options).toEqual({ timeoutMs: 2_000 });
+    expect(spooled()).toHaveLength(0);
+  });
+
+  it('falls back to exactly one worker spool entry within the bounded server deadline', async () => {
+    mockRuntime = serverRuntime();
+    recordEventError = new ServerClientError('timeout', 'server request timed out');
+    const { observationHandler } = await import('../../../src/cli/handlers/observation.js');
+
+    const result = await observationHandler.execute(baseInput({ platform: 'codex' }));
+
+    expect(result.continue).toBe(true);
+    expect(recordEventLog).toHaveLength(1);
+    expect(recordEventLog[0]?.options).toEqual({ timeoutMs: 2_000 });
+    expect(spooled()).toHaveLength(1);
   });
 
   it('honors CLAUDE_MEM_SKIP_TOOLS on the server runtime (worker ingest never sees server events)', async () => {
