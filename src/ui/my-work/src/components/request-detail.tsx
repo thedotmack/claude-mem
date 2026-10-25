@@ -79,7 +79,7 @@ function CheckAction({ request }: { request: Request }) {
   const save = async (checked: boolean) => {
     setSaving(true)
     try {
-      setNotice(noticeFor(await setRequestChecked(request.id, checked), checked))
+      setNotice(noticeFor(await setRequestChecked(request.id, checked, request.contentFingerprint), checked))
     } catch (error) {
       setNotice({ tone: 'problem', message: error instanceof Error ? error.message : String(error) })
     } finally {

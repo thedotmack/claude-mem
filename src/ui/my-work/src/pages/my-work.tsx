@@ -15,10 +15,8 @@ import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
 import { deviceById, markAgentFinished, SAMPLE_RUNS, startedTimestamp, useWorkModel, type Agent as WorkAgent, type LiveState, type Request } from '@/data'
 import type { BuildStory, RequestReadError } from '@/live/work-data-source'
+import { useViewStore, type WorkView as View, type WorkFilter as Filter, type WorkSort as SortKey } from '@/stores/view-store'
 
-type View = 'cards' | 'list' | 'agents' | 'team'
-type Filter = 'all' | 'needs-you' | 'shipped' | 'closed'
-type SortKey = 'attention' | 'started' | 'progress'
 const needsYou = (request: Request) => request.state === 'your-move' || request.state === 'needs-check'
 // Closed requests (every item dropped) show only under Closed, and that filter appears only when there are some.
 const FILTERS: { value: Filter; label: string; matches: (request: Request) => boolean; dot?: string }[] = [
@@ -334,9 +332,12 @@ export function MyWork({ onOpen, onOpenGoal, onOpenRules }: { onOpen: (request: 
   const { team } = useWorkspace()
   const { sourceKind, requests, requestReadErrors, unlinkedWorkCount, sourceHealth, buildStory, lastRuns, refresh } = useWorkModel()
   const sample = sourceKind === 'sample'
-  const [view, setView] = useState<View>('cards')
-  const [filter, setFilter] = useState<Filter>('all')
-  const [sort, setSort] = useState<SortKey>('attention')
+  const view = useViewStore((state) => state.view)
+  const setView = useViewStore((state) => state.setView)
+  const filter = useViewStore((state) => state.filter)
+  const setFilter = useViewStore((state) => state.setFilter)
+  const sort = useViewStore((state) => state.sort)
+  const setSort = useViewStore((state) => state.setSort)
   const [storyOpen, setStoryOpen] = useState(false)
   const matches = FILTERS.find((entry) => entry.value === filter)!.matches
   const visible = useMemo(() => sortRequests(requests.filter(matches), sort), [requests, matches, sort])

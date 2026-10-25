@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useMemo, useRef, useState, type ReactNode } from 'react'
 import { ArrowUpIcon, CheckIcon, ChevronDownIcon, FileTextIcon, HistoryIcon, PencilIcon, PlusIcon, SparklesIcon, XIcon } from 'lucide-react'
 import { Artifact, ArtifactDescription, ArtifactHeader, ArtifactTitle } from '@/components/ai-elements/artifact'
 import { Confirmation, ConfirmationAccepted, ConfirmationAction, ConfirmationActions, ConfirmationRejected, ConfirmationRequest, ConfirmationTitle, type ConfirmationProps } from '@/components/ai-elements/confirmation'
@@ -17,6 +17,7 @@ import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
 import { loadRulesInClaudeCode, SAMPLE_DEVICES, SAMPLE_RUNS, saveRuleChange, useWorkModel } from '@/data'
 import { RULE_TIERS, type OwnerRule, type RuleChange, type RuleQuote, type RuleScope, type RuleTier } from '@/data-rules'
+import { currentRuleDecisions, ruleUndoIsCurrent, ruleVersion, type RuleDecision, type SavedRuleDecision } from '@/live/rule-actions'
 
 // ---------- Derived facts ----------
 
@@ -140,6 +141,7 @@ const savedWhere = (mode: 'home' | 'web', sample: boolean) => !sample
 // ---------- Rule blocks ----------
 
 interface RuleActions {
+  saving: boolean
   onToggle: (rule: OwnerRule, on: boolean) => void
   onEdit: (rule: OwnerRule) => void
   onJump: (ruleId: string) => void
@@ -151,10 +153,10 @@ function RuleBlock({ rule, replaces, justApproved, highlighted, actions }: { rul
   const controls = (
     <Req ids={['R14.9', 'R11.1']}>
       <div className="flex shrink-0 items-center">
-        <Button variant="ghost" size="icon" className="size-11 text-muted-foreground sm:size-9" aria-label="Edit rule" onClick={() => actions.onEdit(rule)}><PencilIcon /></Button>
+        <Button variant="ghost" size="icon" className="size-11 text-muted-foreground sm:size-9" aria-label="Edit rule" onClick={() => actions.onEdit(rule)} disabled={actions.saving}><PencilIcon /></Button>
         <label className="flex size-11 cursor-pointer items-center justify-center">
           <span className="sr-only">{off ? 'Turn rule on' : 'Turn rule off'}</span>
-          <Switch checked={!off} onCheckedChange={(next) => actions.onToggle(rule, next)} />
+          <Switch checked={!off} onCheckedChange={(next) => actions.onToggle(rule, next)} disabled={actions.saving} />
         </label>
       </div>
     </Req>
@@ -248,10 +250,10 @@ function SuggestedPointer({ waiting, rejected }: { waiting: OwnerRule[]; rejecte
 
 // ---------- Needs a decision ----------
 
-type Decision = 'approved' | 'rejected'
+type Decision = RuleDecision
 
 /** One suggestion: the rule and Approve / Edit / Reject first, then strength and one quote, the rest on demand. */
-function SuggestionCard({ rule, decision, onDecide, onEdit, onUndo, onShow }: { rule: OwnerRule; decision: Decision | undefined; onDecide: (decision: Decision) => void; onEdit: () => void; onUndo: () => void; onShow: () => void }) {
+function SuggestionCard({ rule, decision, saving, onDecide, onEdit, onUndo, onShow }: { rule: OwnerRule; decision: Decision | undefined; saving: boolean; onDecide: (decision: Decision) => void; onEdit: () => void; onUndo: () => void; onShow: () => void }) {
   const scope = useRuleScope(rule.scopeId)
   const approval = (decision ? { id: rule.id, approved: decision === 'approved' } : { id: rule.id }) as ConfirmationProps['approval']
   const [first, ...more] = rule.quotes
@@ -266,9 +268,9 @@ function SuggestionCard({ rule, decision, onDecide, onEdit, onUndo, onShow }: { 
         <ConfirmationRequest>
           <Req ids={['R11.1']}>
             <ConfirmationActions className="grid w-full grid-cols-3 gap-2 self-stretch sm:flex sm:w-auto sm:self-start">
-              <ConfirmationAction className="order-last h-11 sm:order-first sm:h-9" onClick={() => onDecide('approved')}><CheckIcon />Approve</ConfirmationAction>
-              <ConfirmationAction variant="outline" className="h-11 sm:h-9" onClick={onEdit}><PencilIcon />Edit</ConfirmationAction>
-              <ConfirmationAction variant="ghost" className="order-first h-11 sm:order-last sm:h-9" onClick={() => onDecide('rejected')}><XIcon />Reject</ConfirmationAction>
+              <ConfirmationAction className="order-last h-11 sm:order-first sm:h-9" onClick={() => onDecide('approved')} disabled={saving}><CheckIcon />Approve</ConfirmationAction>
+              <ConfirmationAction variant="outline" className="h-11 sm:h-9" onClick={onEdit} disabled={saving}><PencilIcon />Edit</ConfirmationAction>
+              <ConfirmationAction variant="ghost" className="order-first h-11 sm:order-last sm:h-9" onClick={() => onDecide('rejected')} disabled={saving}><XIcon />Reject</ConfirmationAction>
             </ConfirmationActions>
           </Req>
         </ConfirmationRequest>
@@ -277,14 +279,14 @@ function SuggestionCard({ rule, decision, onDecide, onEdit, onUndo, onShow }: { 
             <ConfirmationTitle className="text-sm text-shipped-foreground">Approved. It’s now under {scopeHeading(scope)} and in MY-RULES.md.</ConfirmationTitle>
             <div className="flex">
               <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" onClick={onShow}>Show it</Button>
-              <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" onClick={onUndo}>Undo</Button>
+              <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" onClick={onUndo} disabled={saving}>Undo</Button>
             </div>
           </div>
         </ConfirmationAccepted>
         <ConfirmationRejected>
           <div className="flex flex-wrap items-center justify-between gap-x-3">
             <ConfirmationTitle className="text-sm text-muted-foreground">Rejected. It won’t be suggested again unless you say it again.</ConfirmationTitle>
-            <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" onClick={onUndo}>Undo</Button>
+            <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" onClick={onUndo} disabled={saving}>Undo</Button>
           </div>
         </ConfirmationRejected>
 
@@ -307,7 +309,7 @@ function SuggestionCard({ rule, decision, onDecide, onEdit, onUndo, onShow }: { 
   )
 }
 
-function DecisionQueue({ suggestions, decisions, onDecide, onEdit, onUndo, onShow }: { suggestions: OwnerRule[]; decisions: Record<string, Decision>; onDecide: (rule: OwnerRule, decision: Decision) => void; onEdit: (rule: OwnerRule) => void; onUndo: (rule: OwnerRule) => void; onShow: (rule: OwnerRule) => void }) {
+function DecisionQueue({ suggestions, decisions, saving, onDecide, onEdit, onUndo, onShow }: { suggestions: OwnerRule[]; decisions: Record<string, Decision>; saving: boolean; onDecide: (rule: OwnerRule, decision: Decision) => void; onEdit: (rule: OwnerRule) => void; onUndo: (rule: OwnerRule) => void; onShow: (rule: OwnerRule) => void }) {
   const waiting = suggestions.filter((rule) => !decisions[rule.id]).length
   return (
     <Req ids={['R14.2', 'R12.3', 'R12.2']}>
@@ -323,7 +325,7 @@ function DecisionQueue({ suggestions, decisions, onDecide, onEdit, onUndo, onSho
           </Req>
         ) : (
           <div className="space-y-3">
-            {suggestions.map((rule) => <SuggestionCard key={rule.id} rule={rule} decision={decisions[rule.id]} onDecide={(decision) => onDecide(rule, decision)} onEdit={() => onEdit(rule)} onUndo={() => onUndo(rule)} onShow={() => onShow(rule)} />)}
+            {suggestions.map((rule) => <SuggestionCard key={rule.id} rule={rule} decision={decisions[rule.id]} saving={saving} onDecide={(decision) => onDecide(rule, decision)} onEdit={() => onEdit(rule)} onUndo={() => onUndo(rule)} onShow={() => onShow(rule)} />)}
           </div>
         )}
       </section>
@@ -563,20 +565,20 @@ function draftToRule(draft: Draft, scopes: RuleScope[]): NonNullable<RuleChange[
 }
 
 /** Add, edit, or edit-then-approve a rule (§14: people set rules too). */
-function RuleEditor({ draft, error, onChange, onClose, onSave }: { draft: Draft | null; error: string | null; onChange: (draft: Draft) => void; onClose: () => void; onSave: () => void }) {
+function RuleEditor({ draft, error, saving, onChange, onClose, onSave }: { draft: Draft | null; error: string | null; saving: boolean; onChange: (draft: Draft) => void; onClose: () => void; onSave: () => void }) {
   const { mode } = useWorkspace()
   const { sourceKind, ruleScopes } = useWorkModel()
   const newTier = draft ? NEW_SCOPE[draft.scopeId] : undefined
   return (
     <Req ids={['R14.9', 'R13.7']}>
-      <Dialog open={draft !== null} onOpenChange={(open) => { if (!open) onClose() }}>
+      <Dialog open={draft !== null} onOpenChange={(open) => { if (!open && !saving) onClose() }}>
         {draft && (
           <DialogContent>
             <DialogHeader>
               <DialogTitle>{draft.approving ? 'Edit, then approve' : draft.id ? 'Edit rule' : 'Add a rule'}</DialogTitle>
               <DialogDescription>Write it the way you’d say it. Saving puts it in MY-RULES.md, which loads with your user-level instructions from the next session.</DialogDescription>
             </DialogHeader>
-            <div className="grid gap-3">
+            <fieldset className="grid gap-3" disabled={saving}>
               <div className="grid gap-1.5"><Label htmlFor="rule-scope">Applies</Label>
                 <Select value={draft.scopeId} onValueChange={(scopeId) => onChange({ ...draft, scopeId })}>
                   <SelectTrigger id="rule-scope" className="w-full"><SelectValue /></SelectTrigger>
@@ -595,10 +597,10 @@ function RuleEditor({ draft, error, onChange, onClose, onSave }: { draft: Draft 
               <div className="grid gap-1.5"><Label htmlFor="rule-when">When <span className="font-normal text-muted-foreground">(optional)</span></Label><Input id="rule-when" value={draft.when} placeholder="you open a pull request" onChange={(event) => onChange({ ...draft, when: event.target.value })} /></div>
               <div className="grid gap-1.5"><Label htmlFor="rule-then">Then</Label><Textarea id="rule-then" value={draft.then} placeholder="Never open it as a draft." onChange={(event) => onChange({ ...draft, then: event.target.value })} /></div>
               {error && <p role="alert" className="text-xs text-attention-foreground">{error}</p>}
-            </div>
+            </fieldset>
             <DialogFooter className="items-center gap-3 sm:justify-between">
               <p className="text-xs text-muted-foreground">{sourceKind !== 'sample' ? 'Saves on this computer as a work-state record.' : mode === 'web' ? 'Saves from the web; every machine pulls it down.' : `Saves on ${HERE.name} and syncs to your other machines.`}</p>
-              <Button className="h-11 sm:h-9" onClick={onSave} disabled={!draft.then.trim() || (!!newTier && !draft.newScopeName.trim())}>{draft.approving ? 'Save and approve' : 'Save rule'}</Button>
+              <Button className="h-11 sm:h-9" onClick={onSave} disabled={saving || !draft.then.trim() || (!!newTier && !draft.newScopeName.trim())}>{saving ? 'Saving…' : draft.approving ? 'Save and approve' : 'Save rule'}</Button>
             </DialogFooter>
           </DialogContent>
         )}
@@ -610,7 +612,7 @@ function RuleEditor({ draft, error, onChange, onClose, onSave }: { draft: Draft 
 // ---------- Page ----------
 
 /** One saved change, with the change that reverses it (null when it can't be reversed from here). */
-interface Change { text: string; ruleId: string; undo: RuleChange | null }
+interface Change { text: string; ruleId: string; undo: RuleChange | null; expectedVersion?: string | null }
 
 /** No story and no saved rules yet: say so, and how to get learned rules, instead of showing anything made up. */
 function NoRulesYet({ onAdd, readError }: { onAdd: () => void; readError: string | null }) {
@@ -636,7 +638,10 @@ export function MyRules() {
   const { sourceKind, rules, ruleScopes, rulesLearning, rulesReadError, lastRuns, refresh } = useWorkModel()
   const sample = sourceKind === 'sample'
   // Decisions made on this page stay in the queue (with Undo) until you leave; the saved records are the truth.
-  const [decisions, setDecisions] = useState<Record<string, Decision>>({})
+  const [savedDecisions, setDecisions] = useState<Record<string, SavedRuleDecision>>({})
+  const decisions = useMemo(() => currentRuleDecisions(rules, savedDecisions), [rules, savedDecisions])
+  const pending = useRef(false)
+  const [saving, setSaving] = useState(false)
   // Every change pushes the previous one, so the saved note's Undo reverses exactly the last change.
   const [history, setHistory] = useState<Change[]>([])
   const [changedIds, setChangedIds] = useState<Set<string>>(new Set())
@@ -646,6 +651,7 @@ export function MyRules() {
   const [highlighted, setHighlighted] = useState<string | null>(null)
   const [fileOpen, setFileOpen] = useState(false)
   const lastChange = history.at(-1) ?? null
+  const canUndoLast = !!lastChange?.undo && ruleUndoIsCurrent(lastChange.ruleId, lastChange.expectedVersion ?? null, rules)
 
   const suggestions = useMemo(() => rules.filter((rule) => rule.status === 'suggested' || rule.id in decisions).sort(byStrength), [rules, decisions])
   const waiting = suggestions.filter((rule) => !decisions[rule.id]).length
@@ -660,22 +666,31 @@ export function MyRules() {
 
   /** Saves one change; on success records it for the note and Undo. Returns the saved model's rules, or null when it failed. */
   const save = async (change: RuleChange, describe: (savedRules: OwnerRule[]) => Change | null) => {
+    if (pending.current) return null
+    pending.current = true
+    setSaving(true)
     setSaveError(null)
     try {
       const model = await saveRuleChange(change)
       const done = describe(model.rules)
       if (done) {
-        setHistory((previous) => [...previous, done])
+        setHistory((previous) => [...previous, { ...done, expectedVersion: ruleVersion(model.rules.find((rule) => rule.id === done.ruleId)) }])
         setChangedIds((previous) => new Set(previous).add(done.ruleId))
       }
       return model.rules
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : String(error))
       return null
+    } finally {
+      pending.current = false
+      setSaving(false)
     }
   }
   const undoLast = async () => {
-    if (!lastChange?.undo) return
+    if (!lastChange?.undo || pending.current) return
+    if (!canUndoLast) { setSaveError('This rule changed since your edit. Review its current version before changing it again.'); return }
+    pending.current = true
+    setSaving(true)
     setSaveError(null)
     try {
       await saveRuleChange(lastChange.undo)
@@ -683,6 +698,9 @@ export function MyRules() {
       setHistory((previous) => previous.slice(0, -1))
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : String(error))
+    } finally {
+      pending.current = false
+      setSaving(false)
     }
   }
   const jump = (ruleId: string) => {
@@ -693,8 +711,9 @@ export function MyRules() {
   const ruleName = (rule: Pick<OwnerRule, 'then'>) => `“${lowerFirst(rule.then).replace(/\.$/, '')}”`
   const headingFor = (scopeId: string) => { const scope = ruleScopes.find((entry) => entry.id === scopeId); return scope ? scopeHeading(scope) : 'its scope' }
 
-  const decide = (rule: OwnerRule, decision: Decision) => save({ action: decision === 'approved' ? 'approve' : 'dismiss', ruleId: rule.id }, () => {
-    setDecisions((previous) => ({ ...previous, [rule.id]: decision }))
+  const decide = (rule: OwnerRule, decision: Decision) => save({ action: decision === 'approved' ? 'approve' : 'dismiss', ruleId: rule.id }, (savedRules) => {
+    const version = ruleVersion(savedRules.find((savedRule) => savedRule.id === rule.id))
+    if (version) setDecisions((previous) => ({ ...previous, [rule.id]: { decision, version } }))
     return { text: decision === 'approved' ? `Approved ${ruleName(rule)} under ${headingFor(rule.scopeId)}` : `Rejected ${ruleName(rule)}`, ruleId: rule.id, undo: { action: 'restore-suggestion', ruleId: rule.id } }
   })
   const undoDecision = (rule: OwnerRule) => save({ action: 'restore-suggestion', ruleId: rule.id }, () => {
@@ -702,35 +721,42 @@ export function MyRules() {
     return { text: `Put ${ruleName(rule)} back in Needs your decision`, ruleId: rule.id, undo: null }
   })
   const actions: RuleActions = {
+    saving,
     onToggle: (rule, on) => save({ action: on ? 'turn-on' : 'turn-off', ruleId: rule.id },
       () => ({ text: `Turned ${on ? 'on' : 'off'} ${ruleName(rule)}`, ruleId: rule.id, undo: { action: on ? 'turn-off' : 'turn-on', ruleId: rule.id } })),
     onEdit: (rule) => { setDraftError(null); setDraft({ id: rule.id, scopeId: rule.scopeId, newScopeName: '', when: rule.when, then: rule.then, approving: false }) },
     onJump: jump,
   }
   const saveDraft = async () => {
-    if (!draft) return
+    if (!draft || pending.current) return
     setDraftError(null)
     let rule: NonNullable<RuleChange['rule']>
     try { rule = draftToRule(draft, ruleScopes) } catch (error) { setDraftError(error instanceof Error ? error.message : String(error)); return }
     const before = draft.id ? rules.find((entry) => entry.id === draft.id) : undefined
     const previousRule = before && { ...draftToRule({ ...draft, scopeId: before.scopeId, when: before.when, then: before.then }, ruleScopes) }
     const change: RuleChange = draft.id ? { action: draft.approving ? 'approve' : 'edit', ruleId: draft.id, rule } : { action: 'add', rule }
+    pending.current = true
+    setSaving(true)
     try {
       const savedRules = await saveRuleChange(change).then((model) => model.rules)
       let done: Change
       if (draft.id) {
-        if (draft.approving) setDecisions((previous) => ({ ...previous, [draft.id!]: 'approved' }))
+        const version = ruleVersion(savedRules.find((savedRule) => savedRule.id === draft.id))
+        if (draft.approving && version) setDecisions((previous) => ({ ...previous, [draft.id!]: { decision: 'approved', version } }))
         done = { text: `${draft.approving ? 'Edited and approved' : 'Edited'} ${ruleName(rule)}`, ruleId: draft.id, undo: draft.approving ? { action: 'restore-suggestion', ruleId: draft.id } : { action: 'edit', ruleId: draft.id, rule: previousRule } }
       } else {
         const added = savedRules.find((entry) => !rules.some((existing) => existing.id === entry.id))
         if (!added) throw new Error('The rule was saved, but it is not in the rules the worker sent back. Reload to see it.')
         done = { text: `Added ${ruleName(added)} under ${headingFor(added.scopeId)}`, ruleId: added.id, undo: { action: 'dismiss', ruleId: added.id } }
       }
-      setHistory((previous) => [...previous, done])
+      setHistory((previous) => [...previous, { ...done, expectedVersion: ruleVersion(savedRules.find((rule) => rule.id === done.ruleId)) }])
       setChangedIds((previous) => new Set(previous).add(done.ruleId))
       setDraft(null)
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : String(error))
+    } finally {
+      pending.current = false
+      setSaving(false)
     }
   }
   const startAdding = () => { setDraftError(null); setDraft({ id: null, scopeId: 'everywhere', newScopeName: '', when: '', then: '', approving: false }) }
@@ -739,7 +765,7 @@ export function MyRules() {
     return (
       <div className="space-y-5">
         <NoRulesYet onAdd={startAdding} readError={rulesReadError} />
-        <RuleEditor draft={draft} error={draftError} onChange={setDraft} onClose={() => setDraft(null)} onSave={saveDraft} />
+        <RuleEditor draft={draft} error={draftError} saving={saving} onChange={setDraft} onClose={() => setDraft(null)} onSave={saveDraft} />
       </div>
     )
   }
@@ -758,7 +784,7 @@ export function MyRules() {
             </div>
           </Req>
           <div className="flex flex-wrap items-center gap-2">
-            <Req ids={['R14.9']}><Button className="h-11 sm:h-8" size="sm" onClick={startAdding}><PlusIcon />Add rule</Button></Req>
+            <Req ids={['R14.9']}><Button className="h-11 sm:h-8" size="sm" onClick={startAdding} disabled={saving}><PlusIcon />Add rule</Button></Req>
             {sample ? <>
               <RefreshButton run={SAMPLE_RUNS.rules} ids={['R14.13']} />
               <Req ids={['R14.10', 'R11.1']}><span className="text-xs leading-tight text-muted-foreground sm:hidden">Last run {SAMPLE_RUNS.rules.lastRunAt.replace('Today, ', '')}<br />on {SAMPLE_DEVICES.find((device) => device.id === SAMPLE_RUNS.rules.deviceId)!.name}</span></Req>
@@ -775,8 +801,9 @@ export function MyRules() {
               <div className="-ml-2 flex flex-wrap">
                 <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" onClick={() => setFileOpen(true)}>View in MY-RULES.md</Button>
                 {rules.some((rule) => rule.id === lastChange.ruleId && (rule.status === 'on' || rule.status === 'off')) && <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" onClick={() => jump(lastChange.ruleId)}>Show the rule</Button>}
-                <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" onClick={undoLast} disabled={!lastChange.undo}>Undo</Button>
+                <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" onClick={undoLast} disabled={saving || !canUndoLast}>Undo</Button>
               </div>
+              {lastChange.undo && !canUndoLast && <p className="text-muted-foreground">This rule changed again. Review its current version before changing it.</p>}
             </div>
           </Req>
         )}
@@ -785,7 +812,7 @@ export function MyRules() {
 
         <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_15rem]">
           <div className="min-w-0 space-y-10">
-            <DecisionQueue suggestions={suggestions} decisions={decisions} onDecide={decide} onUndo={undoDecision} onShow={(rule) => jump(rule.id)}
+            <DecisionQueue suggestions={suggestions} decisions={decisions} saving={saving} onDecide={decide} onUndo={undoDecision} onShow={(rule) => jump(rule.id)}
               onEdit={(rule) => { setDraftError(null); setDraft({ id: rule.id, scopeId: rule.scopeId, newScopeName: '', when: rule.when, then: rule.then, approving: true }) }} />
             {ruleScopes.map((scope) => (
               <ScopeSection key={scope.id} scope={scope} rules={rules.filter((rule) => rule.scopeId === scope.id)} counts={countsByScope.get(scope.id)!}
@@ -803,7 +830,7 @@ export function MyRules() {
           </aside>
         </div>
 
-        <RuleEditor draft={draft} error={draftError} onChange={setDraft} onClose={() => setDraft(null)} onSave={saveDraft} />
+        <RuleEditor draft={draft} error={draftError} saving={saving} onChange={setDraft} onClose={() => setDraft(null)} onSave={saveDraft} />
       </div>
     </Req>
   )

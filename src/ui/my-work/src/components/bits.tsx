@@ -8,7 +8,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
-import { agentById, deviceById, isSampleHref, measuredEstimate, SAMPLE_DEVICES, useWorkModel, type Device, type LiveState, type Request, type Run, type SkillRun } from '@/data'
+import { agentById, deviceById, isSampleHref, measuredEstimate, SAMPLE_DEVICES, useWorkConnection, useWorkModel, type Device, type LiveState, type Request, type Run, type SkillRun } from '@/data'
 import type { AutoRefresh } from '@/live/work-data-source'
 import { AgentMark } from './brand'
 
@@ -162,7 +162,8 @@ export function ProductLink({ href, children, className }: { href?: string; chil
  */
 export function LiveIndicator() {
   const { mode } = useWorkspace()
-  const { sourceKind, connection } = useWorkModel()
+  const { sourceKind, connection: initialConnection } = useWorkModel()
+  const connection = useWorkConnection() ?? initialConnection
   const demonstration = sourceKind === 'sample'
   const live = demonstration || connection.isLive
   return (
@@ -189,7 +190,8 @@ export function LiveIndicator() {
 
 /** Which machines are reporting and how fresh each one is (§13.6). This computer's freshness is the live feed's. */
 export function DeviceFreshness() {
-  const { sourceKind, devices, connection } = useWorkModel()
+  const { sourceKind, devices, connection: initialConnection } = useWorkModel()
+  const connection = useWorkConnection() ?? initialConnection
   const reportingNow = (device: Device) => sourceKind === 'sample' || device.syncedMinutesAgo !== 0 ? device.online : connection.isLive
   return (
     <Req ids={['R13.8', 'R13.2']}>

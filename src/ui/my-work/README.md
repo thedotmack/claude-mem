@@ -1,11 +1,13 @@
-# My Work wireframe
+# My Work worker UI
 
-A structural wireframe of the My Work LIVE spec (`.scratch/work-state-spec/SPEC.md`), in React with shadcn/ui and AI Elements. Sample data only. Visual design still goes through image mockups (spec §11).
+The released worker's My Work MVP, in React with shadcn/ui and AI Elements. It reads the local worker at `localhost:37777` and stays current through server-sent events. `?source=sample` explicitly selects the design fixtures; a failed live read never falls back to sample data.
 
 ```bash
 npm install
 npm run dev        # http://localhost:5173
 npm run coverage   # checks every UI requirement is on screen, writes COVERAGE.md
+npm test           # mapping, transport, store and setup regressions
+npm run build      # typecheck and bundle into plugin/ui/work-view
 ```
 
 ## How coverage works
@@ -24,10 +26,16 @@ npm run coverage   # checks every UI requirement is on screen, writes COVERAGE.m
 | My Goals | `src/pages/my-goals.tsx` | Inline Citation |
 | My Rules: decision queue, scopes, replaced history | `src/pages/my-rules.tsx`, sample rules in `src/data-rules.ts` | Confirmation, Inline Citation, Artifact |
 
-The top bar switches between **At home** (localhost) and **On the go** (cmem.ai), which changes the live source, Refresh behavior and where edits are saved from.
+The sample top bar demonstrates **At home** and **On the go**. In live mode the source determines the workspace; cloud transport is not implemented here.
 
-## Shared request state
+## Shared state and live updates
 
-`src/data.ts` `REQUESTS` is the one source of request state. `updateRequest()` replaces an entry in place and checks the lifecycle rules (`assertConsistentRequest`: state, stage, progress and next move must agree), and `useRequests()` re-renders on change, so My Work, the request page and My Goals show the same state. The 7-second demo (`playDemoUpdates`) finishes the wireframe request as one coherent change; "Mark checked" hands a request back to you to ship and never marks it shipped.
+`src/stores/work-store.ts` owns the current worker model in Zustand. Every page reads that model through `src/data.ts`; requests, goals, rules and the open drawer update together. Source sessions fence initial reads, refreshes and saves so an old session cannot replace current work. Heartbeats update the connection state separately from the model, avoiding full-page renders each second. Failed startup reads offer Retry; reconnects keep the last received work visible.
+
+`src/stores/view-store.ts` owns navigation, selection, theme and view preferences. The URL carries page/request/goal navigation, including Back/Forward and reload. Versioned browser storage holds validated display preferences only, never copies of private work or pending writes. Forms and disclosures keep their temporary state locally.
+
+The October 2026 state audit fixed three additional gaps: snapshot comparison omitted story/device fields; delayed save responses could replace newer SSE content; and changes to the rules-file import were not broadcast to other tabs. Transport regression tests cover stale reads/writes, full snapshot delivery, disposal and reconnects. Route tests cover rules-file events.
+
+The sample demo (`playDemoUpdates`) runs only against explicit fixtures. "Mark checked" saves a check of the displayed content fingerprint through the worker; it never marks work shipped.
 
 Truth rules in the sample: the ship estimate only shows with two or more advancing progress readings (`measuredEstimate`), progress states its review coverage, and work-product links without a real target render as **sample** instead of a dead link. Agent marks and the cmem mark are inlined in `src/components/brand.tsx`. Generation cost is not shown (the owner dropped it on Oct 20, 2026).

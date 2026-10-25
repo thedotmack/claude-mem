@@ -686,6 +686,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     const updated = this.snapshot();
     res.setHeader('Cache-Control', 'no-store');
     res.json(updated);
+    this.publish(updated);
   };
 
   private review = (req: Request, res: Response): void => {
@@ -757,7 +758,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   private publish(snapshot = this.snapshot()): void {
     if (this.closed) return;
-    const signature = JSON.stringify([snapshot.revision, snapshot.source.connected, snapshot.source.error, snapshot.setup]);
+    const signature = JSON.stringify([snapshot.revision, snapshot.source.connected, snapshot.source.error, snapshot.setup, snapshot.rulesFile]);
     if (signature === this.signature) return;
     this.signature = signature;
     for (const client of this.clients) this.send(client, 'work-view', snapshot);

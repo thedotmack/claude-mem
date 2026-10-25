@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect } from 'react'
 import { MotionConfig } from 'motion/react'
 import { GoalIcon, InboxIcon, ListChecksIcon, UsersIcon } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
@@ -18,13 +18,13 @@ import { MyWork } from '@/pages/my-work'
 import { Req, SpecOverlayContext } from '@/spec/req'
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { Spinner } from '@/components/ui/spinner'
-import { playDemoUpdates, receiveConnectionStatus, receiveLiveWorkModel, requestById, setActiveWorkDataSource, settleInitialWorkModelLoad, useWorkModel, useWorkModelLoad, type Request } from '@/data'
+import { playDemoUpdates, refreshWorkModel, startWorkModel, useWorkModel, useWorkModelLoad, type Request } from '@/data'
+import { startViewNavigation, useViewStore, type Page } from '@/stores/view-store'
 import { localSource } from '@/live/local-source'
 import { sampleSource } from '@/live/sample-source'
 import type { WorkDataSource } from '@/live/work-data-source'
 
 /** `setup` is the install funnel (`?setup=1`): a full page outside the nav that becomes My Work when it completes. */
-type Page = 'setup' | 'work' | 'goals' | 'rules'
 type NavPage = Exclude<Page, 'setup'>
 const PAGES: { id: NavPage; label: string; icon: typeof InboxIcon; section: string }[] = [
   { id: 'work', label: 'My Work', icon: InboxIcon, section: 'Monitor' },
@@ -33,16 +33,6 @@ const PAGES: { id: NavPage; label: string; icon: typeof InboxIcon; section: stri
 ]
 const NAV_SECTIONS = [...new Set(PAGES.map((entry) => entry.section))]
 
-
-/** Wireframe-only theme switch: starts from ?theme=dark|light, else the system preference. */
-function useDarkMode() {
-  const [dark, setDark] = useState(() => {
-    const requested = new URLSearchParams(window.location.search).get('theme')
-    return requested ? requested === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches
-  })
-  useEffect(() => { document.documentElement.classList.toggle('dark', dark) }, [dark])
-  return [dark, setDark] as const
-}
 
 /** Small rounded icon tile behind each nav icon, after the fly.io sidebar. Flat: a hairline, no shadow. */
 function NavTile({ icon: Icon, active }: { icon: typeof InboxIcon; active: boolean }) {
@@ -73,20 +63,17 @@ function TeamSwitch({ team, onChange }: { team: boolean; onChange: (team: boolea
 
 /** `?source=sample` shows the fixtures; otherwise the local worker (through the dev proxy, or same origin when the worker serves this page). Never falls back to sample data. */
 const ACTIVE_SOURCE: WorkDataSource = new URLSearchParams(window.location.search).get('source') === 'sample' ? sampleSource : localSource
-setActiveWorkDataSource(ACTIVE_SOURCE)
 
 const SetupPage = lazy(() => import('@/setup/setup-page'))
 export default function App() {
-  // Only the explicit installer handoff opens setup. Missing state on an
-  // existing installation must never lock My Work behind checkout.
-  const [page, setPage] = useState<Page>(() => new URLSearchParams(window.location.search).get('setup') === '1' ? 'setup' : 'work')
+  const page = useViewStore((state) => state.page)
+  const dark = useViewStore((state) => state.dark)
+  useEffect(startViewNavigation, [])
+  useEffect(() => { document.documentElement.classList.toggle('dark', dark) }, [dark])
   if (page !== 'setup') return <WorkApp />
   const finishSetup = () => {
-    const url = new URL(window.location.href)
-    url.searchParams.delete('setup')
-    window.history.replaceState(null, '', url)
+    useViewStore.getState().goToPage('work', true)
     window.scrollTo(0, 0)
-    setPage('work')
   }
   return <Suspense fallback={null}><SetupPage onComplete={finishSetup} /></Suspense>
 }
@@ -94,14 +81,7 @@ export default function App() {
 /** Reads the active source once and subscribes to its live feed, then renders the app. A failed load says so plainly instead of showing anything made up. */
 function WorkApp() {
   const load = useWorkModelLoad()
-  useEffect(() => {
-    const unsubscribe = ACTIVE_SOURCE.subscribeToLiveUpdates(receiveLiveWorkModel, receiveConnectionStatus)
-    ACTIVE_SOURCE.loadWorkModel().then(
-      (model) => settleInitialWorkModelLoad({ model }),
-      (error: unknown) => settleInitialWorkModelLoad({ error: error instanceof Error ? error.message : String(error) }),
-    )
-    return unsubscribe
-  }, [])
+  useEffect(() => startWorkModel(ACTIVE_SOURCE), [])
   if (load.state === 'loaded') return <LoadedApp />
   return (
     <div className="flex min-h-svh items-center justify-center p-4 text-foreground">
@@ -111,6 +91,7 @@ function WorkApp() {
             <>
               <EmptyTitle>Can't read local work right now</EmptyTitle>
               <EmptyDescription>{load.error}</EmptyDescription>
+              <Button variant="outline" onClick={() => void refreshWorkModel()}>Retry</Button>
             </>
           )}
         </EmptyHeader>
@@ -120,29 +101,35 @@ function WorkApp() {
 }
 
 function LoadedApp() {
-  const { sourceKind } = useWorkModel()
+  const { sourceKind, requests, goalOnlyRequests } = useWorkModel()
   const sample = sourceKind === 'sample'
-  const [page, setPage] = useState<NavPage>('work')
-  const [workspaceChoice, setWorkspace] = useState<Workspace>({ mode: 'home', team: false, connected: false })
-  // Outside sample mode the place comes from the source: the local worker is at home, cmem.ai is on the go.
-  const workspace: Workspace = sample ? workspaceChoice : { ...workspaceChoice, mode: sourceKind === 'cloud' ? 'web' : 'home' }
-  const [showSpec, setShowSpec] = useState(false)
-  const [dark, setDark] = useDarkMode()
-  // Whether the opened request was in today's live feed, so the drawer can tell "left the feed" from "never in it".
-  const [openRequest, setOpenRequestState] = useState<{ request: Request; fromLiveFeed: boolean } | null>(null)
-  const setOpenRequest = (request: Request | null) => setOpenRequestState(request ? { request, fromLiveFeed: requestById(request.id) !== null } : null)
-  const [focusGoalId, setFocusGoalId] = useState<string | undefined>()
-  const { requests } = useWorkModel()
+  const page = useViewStore((state) => state.page)
+  const team = useViewStore((state) => state.team)
+  const sampleMode = useViewStore((state) => state.sampleMode)
+  const setSampleMode = useViewStore((state) => state.setSampleMode)
+  const setTeam = useViewStore((state) => state.setTeam)
+  const showSpec = useViewStore((state) => state.showSpec)
+  const setShowSpec = useViewStore((state) => state.setShowSpec)
+  const dark = useViewStore((state) => state.dark)
+  const setDark = useViewStore((state) => state.setDark)
+  const selection = useViewStore((state) => state.selection)
+  const focusGoalId = useViewStore((state) => state.goalId)
+  const goToPage = useViewStore((state) => state.goToPage)
+  const goToGoal = useViewStore((state) => state.goToGoal)
+  const workspace: Workspace = { mode: sample ? sampleMode : sourceKind === 'cloud' ? 'web' : 'home', team, connected: sampleMode === 'web' }
   const yourMoveCount = requests.filter((request) => request.state === 'your-move' || request.state === 'needs-check').length
-  // The drawer always shows the current state of today's requests; older goal-only requests come as passed.
-  // A request that leaves the live feed closes the drawer: its agent and device may have left the model with it.
-  const liveOpenRequest = openRequest ? requestById(openRequest.request.id) ?? (openRequest.fromLiveFeed ? null : openRequest.request) : null
-  // Forget the closed selection, so the drawer never reopens by itself if that request later returns to the feed.
-  useEffect(() => { if (openRequest && liveOpenRequest === null) setOpenRequestState(null) }, [openRequest, liveOpenRequest])
-  // The demo flip is sample data; it never runs against real requests.
+  const setOpenRequest = (request: Request | null) => {
+    const state = useViewStore.getState()
+    if (request) state.openRequest(request, requests.some((entry) => entry.id === request.id))
+    else state.closeRequest()
+  }
+  // Resolve against current records so live updates also refresh an open drawer.
+  const liveOpenRequest = selection
+    ? requests.find((request) => request.id === selection.id)
+      ?? (selection.fromLiveFeed === true ? null : goalOnlyRequests.find((request) => request.id === selection.id) ?? selection.fallback)
+    : null
+  useEffect(() => { useViewStore.getState().reconcileRequests(requests, goalOnlyRequests) }, [requests, goalOnlyRequests, selection])
   useEffect(() => (sample ? playDemoUpdates() : undefined), [sample])
-  const goToPage = (next: NavPage) => { setFocusGoalId(undefined); setPage(next) }
-  const goToGoal = (goalId: string) => { setOpenRequest(null); setFocusGoalId(goalId); setPage('goals') }
 
   return (
     <MotionConfig reducedMotion="user">
@@ -155,7 +142,7 @@ function LoadedApp() {
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border/70 bg-card/50 px-4 py-1.5 text-xs whitespace-nowrap md:px-6">
                 {sample && <Badge variant="outline" className="font-normal">Wireframe · sample data</Badge>}
                 {sample && <Req ids={['R13.1']}>
-                  <ToggleGroup type="single" size="sm" variant="outline" spacing={1} className="flex-nowrap" value={workspace.mode} onValueChange={(mode) => mode && setWorkspace({ ...workspace, mode: mode as Workspace['mode'], connected: mode === 'web' || workspace.connected })}>
+                  <ToggleGroup type="single" size="sm" variant="outline" spacing={1} className="flex-nowrap" value={workspace.mode} onValueChange={(mode) => (mode === 'home' || mode === 'web') && setSampleMode(mode)}>
                     <ToggleGroupItem value="home" className="h-7 text-xs">At home<span className="hidden md:inline">· localhost:37777</span></ToggleGroupItem>
                     <ToggleGroupItem value="web" className="h-7 text-xs">On the go<span className="hidden md:inline">· cmem.ai</span></ToggleGroupItem>
                   </ToggleGroup>
@@ -182,7 +169,7 @@ function LoadedApp() {
                   </Req>
                   <h1 className="text-lg font-semibold tracking-tight md:hidden">{PAGES.find((entry) => entry.id === page)!.label}</h1>
                   <div className="ml-auto flex items-center gap-0.5 md:gap-2">
-                    <TeamSwitch team={workspace.team} onChange={(team) => setWorkspace({ ...workspace, team })} />
+                    <TeamSwitch team={workspace.team} onChange={setTeam} />
                     <DeviceFreshness />
                     <LiveIndicator />
                     <ClassicViewerLink />
@@ -211,7 +198,7 @@ function LoadedApp() {
 
                 <main className="min-w-0">
                   {page === 'work' && <MyWork onOpen={setOpenRequest} onOpenGoal={goToGoal} onOpenRules={() => goToPage('rules')} />}
-                  {page === 'goals' && <MyGoals onOpen={setOpenRequest} focusGoalId={focusGoalId} />}
+                  {page === 'goals' && <MyGoals onOpen={setOpenRequest} focusGoalId={focusGoalId ?? ''} />}
                   {page === 'rules' && <MyRules />}
                 </main>
               </div>
@@ -227,7 +214,7 @@ function LoadedApp() {
                 </nav>
               </Req>
 
-              <RequestDetail request={liveOpenRequest} onClose={() => setOpenRequest(null)} onOpenGoal={goToGoal} />
+              <RequestDetail key={liveOpenRequest?.id} request={liveOpenRequest} onClose={() => setOpenRequest(null)} onOpenGoal={goToGoal} />
             </div>
           </Req>
         </TooltipProvider>

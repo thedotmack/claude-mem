@@ -149,6 +149,46 @@ describe('My Rules routes', () => {
     expect(readFileSync(rulesFilePath, 'utf8')).toContain(`- ${PREFERENCE}`);
   });
 
+  it('streams rules loading and external import changes without a work revision change', async () => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    try {
+      const response = await fetch(`${origin}/api/work-view/events`, { signal: controller.signal });
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      const nextSnapshot = async (loadedInClaudeCode: boolean): Promise<any> => {
+        for (;;) {
+          const end = buffer.indexOf('\n\n');
+          if (end >= 0) {
+            const frame = buffer.slice(0, end);
+            buffer = buffer.slice(end + 2);
+            if (!frame.includes('event: work-view')) continue;
+            const view = JSON.parse(frame.split('\n').find(line => line.startsWith('data: '))!.slice(6));
+            if (view.rulesFile.loadedInClaudeCode === loadedInClaudeCode) return view;
+          } else {
+            const part = await reader.read();
+            if (part.done) throw new Error('Work stream ended before the rules change');
+            buffer += decoder.decode(part.value, { stream: true });
+          }
+        }
+      };
+      const before = await nextSnapshot(false);
+      const loaded = await fetch(`${origin}/api/work-view/rules/load-in-claude-code`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin }, body: '{}',
+      });
+      expect(loaded.status).toBe(200);
+      expect((await nextSnapshot(true)).revision).toBe(before.revision);
+
+      // An editor can also remove the import without writing any work-state row.
+      writeFileSync(claudeInstructionsPath, '# My instructions\n');
+      expect((await nextSnapshot(false)).revision).toBe(before.revision);
+    } finally {
+      clearTimeout(timeout);
+      controller.abort();
+    }
+  });
+
   it('rebuilds MY-RULES.md when rule rows arrive through sync', async () => {
     await saveRule({ action: 'approve', ruleId: SUGGESTED_ID });
     expect(readFileSync(rulesFilePath, 'utf8')).toContain(PREFERENCE);

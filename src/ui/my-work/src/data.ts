@@ -1,11 +1,11 @@
 // Request types, the sample fixtures (SAMPLE_*), and the one request store every page reads.
 // The store holds the active data source's WorkModel: fixtures in sample mode, real records otherwise (spec §12).
-import { useSyncExternalStore } from 'react'
-import type { ConnectionStatus } from './live/connection-status.ts'
-import { freshlyUpdatedRequestIds } from './live/update-queue.ts'
+import { useStore } from 'zustand'
 import type { ReviewResult } from './live/review-response.ts'
 import type { RuleChange } from './data-rules.ts'
 import type { WorkDataSource, WorkModel } from './live/work-data-source.ts'
+import { workStore } from './stores/work-store.ts'
+export type { WorkModelLoad } from './stores/work-store.ts'
 
 export interface Device { id: string; name: string; syncedMinutesAgo: number; online: boolean }
 /** 'other' is any platform without its own mark (a neutral mark is shown). */
@@ -230,64 +230,19 @@ export function assertConsistentRequest(request: Request): Request {
 }
 SAMPLE_REQUESTS.forEach(assertConsistentRequest)
 
-export type WorkModelLoad =
-  | { state: 'loading' }
-  | { state: 'loaded'; model: WorkModel }
-  | { state: 'failed'; error: string }
-
-let workModelLoad: WorkModelLoad = { state: 'loading' }
-const listeners = new Set<() => void>()
-const subscribe = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener) } }
-export function setWorkModelLoad(next: WorkModelLoad) {
-  workModelLoad = next
-  listeners.forEach((listener) => listener())
-}
-
-/** The page's first read. A live model that already arrived wins over it, and a late failure never replaces shown work. */
-export function settleInitialWorkModelLoad(result: { model: WorkModel } | { error: string }) {
-  if (workModelLoad.state === 'loaded') return
-  setWorkModelLoad('model' in result ? { state: 'loaded', model: result.model } : { state: 'failed', error: result.error })
-}
-
-/** Requests whose recorded content changed in the last applied model; their cards show the "Just updated" dot. */
-let freshlyUpdatedIds: ReadonlySet<string> = new Set()
-const FRESHLY_UPDATED_FOR_MS = 4000
-
-function applyWorkModel(model: WorkModel) {
-  const shown = workModelLoad.state === 'loaded' ? workModelLoad.model.requests : []
-  const changedIds = new Set(freshlyUpdatedRequestIds(shown, model.requests))
-  if (changedIds.size > 0) {
-    freshlyUpdatedIds = changedIds
-    setTimeout(() => {
-      if (freshlyUpdatedIds !== changedIds) return
-      freshlyUpdatedIds = new Set()
-      listeners.forEach((listener) => listener())
-    }, FRESHLY_UPDATED_FOR_MS)
-  }
-  setWorkModelLoad({ state: 'loaded', model })
-}
-
-/** A model from the live feed, shown as soon as it arrives. */
-export function receiveLiveWorkModel(model: WorkModel) {
-  if (workModelLoad.state !== 'loaded') { setWorkModelLoad({ state: 'loaded', model }); return }
-  applyWorkModel(model)
-}
-
-const sameConnection = (a: ConnectionStatus, b: ConnectionStatus) => a.state === b.state && a.label === b.label && a.detail === b.detail && a.tooltip === b.tooltip
-
-/** The feed's health, shown on the current model. */
-export function receiveConnectionStatus(connection: ConnectionStatus) {
-  if (workModelLoad.state !== 'loaded' || sameConnection(workModelLoad.model.connection, connection)) return
-  setWorkModelLoad({ state: 'loaded', model: { ...workModelLoad.model, connection } })
-}
+const applyWorkModel = (model: WorkModel) => workStore.getState().receiveModel(model)
 
 /** True for a few seconds after this request's recorded content changed. */
-export const useFreshlyUpdated = (requestId: string) => useSyncExternalStore(subscribe, () => freshlyUpdatedIds.has(requestId))
+export const useFreshlyUpdated = (requestId: string) => useStore(workStore, (state) => state.freshlyUpdatedIds.has(requestId))
 
 /** Loading, loaded or failed. Only App reads this; everything under it uses useWorkModel(). */
-export const useWorkModelLoad = () => useSyncExternalStore(subscribe, () => workModelLoad)
+export const useWorkModelLoad = () => useStore(workStore, (state) => state.load)
+export const startWorkModel = (source: WorkDataSource) => workStore.getState().start(source)
+export const refreshWorkModel = () => workStore.getState().refresh()
+export const useWorkConnection = () => useStore(workStore, (state) => state.connection)
 
 function currentWorkModel(): WorkModel {
+  const workModelLoad = workStore.getState().load
   if (workModelLoad.state !== 'loaded') throw new Error(`Work model read before it loaded (${workModelLoad.state})`)
   return workModelLoad.model
 }
@@ -300,7 +255,8 @@ export function useWorkModel(): WorkModel {
 }
 
 /** Today's requests, re-rendering when any changes. */
-export const useRequests = () => useWorkModel().requests
+export const useRequests = () => useStore(workStore, (state) => state.load.state === 'loaded' ? state.load.model.requests : EMPTY_REQUESTS)
+const EMPTY_REQUESTS: Request[] = []
 export const requestById = (id: string) => currentWorkModel().requests.find((request) => request.id === id) ?? null
 
 /**
@@ -312,9 +268,8 @@ export function updateRequest(id: string, change: (request: Request) => Request)
   if (model.sourceKind !== 'sample') throw new Error(`updateRequest edits sample data only; ${model.sourceKind} requests change through their data source`)
   const index = SAMPLE_REQUESTS.findIndex((request) => request.id === id)
   if (index < 0) throw new Error(`No request ${id}`)
-  // Mutated in place so My Goals, which reads the same fixture objects, sees the change too.
   SAMPLE_REQUESTS[index] = assertConsistentRequest(change(SAMPLE_REQUESTS[index]))
-  setWorkModelLoad({ state: 'loaded', model: { ...model, requests: [...SAMPLE_REQUESTS] } })
+  applyWorkModel({ ...model, requests: [...SAMPLE_REQUESTS] })
 }
 
 /**
@@ -336,42 +291,44 @@ export function playDemoUpdates() {
   return () => clearTimeout(timer)
 }
 
-/** The source App reads from. Checks go to it, so they are saved where the work came from. */
-let activeWorkDataSource: WorkDataSource | null = null
-export function setActiveWorkDataSource(source: WorkDataSource) { activeWorkDataSource = source }
-
 /**
  * Check (or undo the check of) the version of a request on screen, through the active source. Checking hands it
  * back to you to ship; it never marks it shipped. Whatever model the source answers with is shown at once.
  */
-export async function setRequestChecked(requestId: string, checked: boolean): Promise<ReviewResult> {
+export async function setRequestChecked(requestId: string, checked: boolean, displayedFingerprint?: string): Promise<ReviewResult> {
+  const { source: activeWorkDataSource, sessionId } = workStore.getState()
   if (!activeWorkDataSource) throw new Error('No data source to save the check to')
   const request = requestById(requestId)
   if (!request) throw new Error(`No request ${requestId}`)
   // Sample fixtures carry no fingerprint and the sample source ignores it; the local source refuses an empty one.
-  const result = await activeWorkDataSource.setRequestChecked(requestId, request.contentFingerprint ?? '', checked)
-  if ('model' in result) applyWorkModel(result.model)
+  const result = await activeWorkDataSource.setRequestChecked(requestId, displayedFingerprint ?? request.contentFingerprint ?? '', checked)
+  if ('model' in result && workStore.getState().sessionId === sessionId) applyWorkModel(result.model)
   return result
 }
 
 /** Saves one change to My Rules through the active source and shows the model it answers with. Rejects with the reason. */
 export async function saveRuleChange(change: RuleChange): Promise<WorkModel> {
+  const { source: activeWorkDataSource, sessionId } = workStore.getState()
   if (!activeWorkDataSource) throw new Error('No data source to save the rule change to')
   const model = await activeWorkDataSource.saveRuleChange(change)
-  applyWorkModel(model)
+  if (workStore.getState().sessionId === sessionId) applyWorkModel(model)
   return model
 }
 
 /** Records that a subagent finished, for one no recorded stop covers. Rejects with the reason. */
 export async function markAgentFinished(agentId: string): Promise<void> {
+  const { source: activeWorkDataSource, sessionId } = workStore.getState()
   if (!activeWorkDataSource) throw new Error('No data source to save the agent to')
-  applyWorkModel(await activeWorkDataSource.markAgentFinished(agentId))
+  const model = await activeWorkDataSource.markAgentFinished(agentId)
+  if (workStore.getState().sessionId === sessionId) applyWorkModel(model)
 }
 
 /** Adds the MY-RULES.md import to ~/.claude/CLAUDE.md through the active source. */
 export async function loadRulesInClaudeCode(): Promise<void> {
+  const { source: activeWorkDataSource, sessionId } = workStore.getState()
   if (!activeWorkDataSource) throw new Error('No data source to load the rules from')
-  applyWorkModel(await activeWorkDataSource.loadRulesInClaudeCode())
+  const model = await activeWorkDataSource.loadRulesInClaudeCode()
+  if (workStore.getState().sessionId === sessionId) applyWorkModel(model)
 }
 
 /** The ship estimate only from measured pace: two or more readings, the latest moving forward (decision 3). */
