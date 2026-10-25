@@ -10,17 +10,19 @@
  * skills' CLI uses.
  */
 
+import { spawn } from 'child_process';
 import { randomBytes } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import type { AgentTask, AnswerSchema, AskAgent, StepModels } from '../agent-runner/run.js';
 import type { UsableAgentId } from '../agent-runner/detect.js';
 import { runCommand } from '../agent-runner/detect.js';
+import { writeOwnerPromptsFile, type OwnerPromptsFile } from '../prompt-import/owner-prompts-file.js';
 import { readGoals, runCli, validateGroupingAnswer, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
 
 /** claude-mem MCP tools a refresh may call: reads only. Saves go through the skills' scripts and their
  * validators (save_goals.py, the request-groups CLI), never a raw work_state_write. */
-export const MEMORY_TOOLS = ['search', 'dumb_search', 'smart_search', 'timeline', 'get_observations', 'get_tool_uses', 'smart_outline', 'smart_unfold', 'work_state_read'];
+export const MEMORY_TOOLS = ['search', 'dumb_search', 'timeline', 'get_observations', 'get_tool_uses', 'work_state_read'];
 const PLUGIN_MCP_PREFIX = 'mcp__plugin_claude-mem_mcp-search__';
 const REVIEW_BATCH = 8;
 
@@ -58,6 +60,9 @@ export interface RefreshTaskOptions {
   pluginRoot: string;
   openDatabase: () => LedgerDatabase & { close(): void };
   now?: () => number;
+  spawnImpl?: typeof spawn;
+  /** Owner-goals step 1: writes owner-prompts.md into the folder from every agent's transcripts (prompt importer). */
+  writeOwnerPrompts?: (folder: string, sinceMinute: string | null) => Promise<OwnerPromptsFile>;
 }
 
 function skillPaths(pluginRoot: string) {
@@ -66,7 +71,6 @@ function skillPaths(pluginRoot: string) {
     requestProgressSkill: join(skills, 'request-progress', 'SKILL.md'),
     ownerGoalsSkill: join(skills, 'owner-goals', 'SKILL.md'),
     cli: join(skills, 'request-progress', 'scripts', 'request-groups.mjs'),
-    exportScript: join(skills, 'owner-goals', 'scripts', 'export_owner_prompts.py'),
     saveScript: join(skills, 'owner-goals', 'scripts', 'save_goals.py'),
   };
 }
@@ -105,15 +109,42 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
   const now = options.now ?? Date.now;
   const paths = skillPaths(pluginRoot);
   const goalsFolder = join(ledgerDir, 'owner-goals', localDay(now()));
+  const writeOwnerPrompts = options.writeOwnerPrompts ?? ((folder, sinceMinute) => writeOwnerPromptsFile({ folder, sinceMinute }));
+  // Owner-goals step 1 is the prompt importer's (one filter for every agent), run once as the task's prepare step:
+  // with saved goals, it also writes the prompts typed since they were saved (new-owner-prompts.md).
+  let savedGoals: ReturnType<typeof readGoals> | null = null;
+  let since: string | null = null;
+  let exported: OwnerPromptsFile | null = null;
+  let exportedAt = new Date(now()).toISOString();
+  const prepareGoals = async () => {
+    const database = openDatabase();
+    try { savedGoals = readGoals(database); } finally { database.close(); }
+    since = savedGoals.goals.length && Number.isFinite(Date.parse(savedGoals.generatedAt ?? '')) ? localMinute(Date.parse(savedGoals.generatedAt!)) : null;
+    exportedAt = new Date(now()).toISOString();
+    exported = await writeOwnerPrompts(goalsFolder, since);
+  };
 
   const steps: StepTiming[] = [];
-  const run = async (ask: AskAgent, agent: UsableAgentId): Promise<string> => {
+  const run = async (askBackend: AskAgent, agent: UsableAgentId): Promise<string> => {
     const runDir = join(ledgerDir, 'agent-runs', randomBytes(6).toString('hex'));
     mkdirSync(runDir, { recursive: true });
     let fileNumber = 0;
+    const inlineEvidence = new Map<string, string>();
+    if (agent === 'gemini' && needs.goalsStale) {
+      for (const name of ['owner-prompts.md', 'new-owner-prompts.md']) {
+        const path = join(goalsFolder, name);
+        if (existsSync(path)) inlineEvidence.set(path, readFileSync(path, 'utf8'));
+      }
+    }
+    const ask: AskAgent = (prompt, models, schema) => {
+      const supplied = agent === 'gemini' ? [...inlineEvidence].filter(([path]) => prompt.includes(path)) : [];
+      return askBackend(supplied.length ? `${prompt}\n\nThe following input files are supplied inline; no file tools are available:\n${supplied.map(([path, contents]) => `--- ${path} ---\n${contents}`).join('\n\n')}` : prompt, models, schema);
+    };
     const writeInput = (name: string, value: unknown) => {
       const path = join(runDir, `${++fileNumber}-${name}.json`);
-      writeFileSync(path, typeof value === 'string' ? value : JSON.stringify(value, null, 2), { mode: 0o600 });
+      const contents = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+      writeFileSync(path, contents, { mode: 0o600 });
+      inlineEvidence.set(path, contents);
       return path;
     };
     const cli = (argv: string[], input?: unknown) => {
@@ -125,7 +156,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
     };
     /** Runs a skill script; resolves with its output. */
     const runScript = async (args: string[]) => {
-      const result = await runCommand('python3', args, { cwd: dataDir, env: { ...process.env, CLAUDE_MEM_INTERNAL: '1' } });
+      const result = await runCommand(options.spawnImpl ?? spawn, 'python3', args, { cwd: dataDir, env: { ...process.env, CLAUDE_MEM_INTERNAL: '1' } });
       if (result.spawnError) throw result.spawnError;
       if (result.exitCode !== 0) throw new Error(`${args[0].split('/').pop()} exited ${result.exitCode}: ${`${result.stdout}\n${result.stderr}`.trim().slice(-800)}`);
       return result.stdout;
@@ -162,22 +193,21 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
     try {
       const done: string[] = [];
       if (needs.goalsStale) {
-        const database = openDatabase();
-        let saved: ReturnType<typeof readGoals>;
-        try { saved = readGoals(database); } finally { database.close(); }
         // With saved goals, update them from the prompts typed since; otherwise map the whole window.
-        const since = saved.goals.length && Number.isFinite(Date.parse(saved.generatedAt ?? '')) ? localMinute(Date.parse(saved.generatedAt!)) : null;
-        // The saved goals cover the prompts up to the export, so the next --since starts there: prompts typed
-        // while the agent answers are read by the next update (--since is inclusive of its minute).
-        const exportedAt = new Date(now()).toISOString();
-        const exported = JSON.parse((await timed('goals-export', () => runScript([paths.exportScript, '--out', goalsFolder, '--days', '31', ...(since ? ['--since', since] : [])]))).trim().split('\n').pop()!);
+        if (!savedGoals || !exported) throw new Error('The owner prompts were not prepared.');
+        const saved: ReturnType<typeof readGoals> = savedGoals, { ownerPrompts, newPrompts } = exported as OwnerPromptsFile;
         const goalsPath = join(goalsFolder, 'owner-goals.json'), promptsPath = join(goalsFolder, 'owner-prompts.md');
         const save = async (goals: Record<string, unknown>, mapPath: string | null) => {
-          writeFileSync(goalsPath, JSON.stringify({ ...goals, source_prompt_count: exported.owner_prompts }, null, 2), { mode: 0o600 });
+          writeFileSync(goalsPath, JSON.stringify({ ...goals, source_prompt_count: ownerPrompts }, null, 2), { mode: 0o600 });
           await runScript([paths.saveScript, '--goals', goalsPath, '--prompts', promptsPath, ...(mapPath ? ['--map', mapPath] : []), ...(since ? ['--carried-before', since] : [])]);
         };
         const previousMap = saved.mapPath && existsSync(saved.mapPath) ? saved.mapPath : null;
-        if (!since) {
+        if (!ownerPrompts) {
+          // No evidence needs no model call. Save the validated empty snapshot so
+          // the scheduler can continue grouping and will not retry every check.
+          await save({ generated_at: exportedAt, window_days: 31, human_summary: 'No owner prompts in this window.', priorities: [], open_asks: [] }, null);
+          done.push('goals empty');
+        } else if (!since) {
           await step('goals', [
             inlineSkill(paths.ownerGoalsSkill), '---', readOnly,
             `Step 1 is done: the owner's prompts are in ${promptsPath}. Do step 2 yourself (no subagent). Instead of writing owner-map.md and owner-goals.json, reply with only one JSON object: {"map": "<the owner-map.md markdown>", "goals": <the owner-goals.json object>}. The worker saves it with step 3.`,
@@ -187,7 +217,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
             await save({ ...answer.goals, generated_at: exportedAt }, join(goalsFolder, 'owner-map.md'));
           });
           done.push('goals mapped');
-        } else if (!exported.new_prompts) {
+        } else if (!newPrompts) {
           // Nothing new typed: the saved goals still hold; re-save them as current.
           await save({ ...goalsJson(saved), generated_at: exportedAt }, previousMap);
           done.push('goals unchanged');
@@ -195,7 +225,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
           const previousPath = writeInput('previous-owner-goals', goalsJson(saved));
           await step('goals', [
             inlineSkill(paths.ownerGoalsSkill), '---', readOnly,
-            `Do "Update the saved goals" yourself (no subagent). The saved goals are in ${previousPath}; the ${exported.new_prompts} prompts the owner typed since they were saved are in ${join(goalsFolder, 'new-owner-prompts.md')}. Reply with only the updated owner-goals.json object. The worker saves it with step 3.`,
+            `Do "Update the saved goals" yourself (no subagent). The saved goals are in ${previousPath}; the ${newPrompts} prompts the owner typed since they were saved are in ${join(goalsFolder, 'new-owner-prompts.md')}. Reply with only the updated owner-goals.json object. The worker saves it with step 3.`,
           ].join('\n\n'), answer => save({ ...answer, generated_at: exportedAt }, previousMap));
           done.push('goals updated');
         }
@@ -280,6 +310,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
 
   return {
     reason,
+    steps,
     // The work-view folder holds every input file; the data dir above it holds .env and settings.json.
     cwd: ledgerDir,
     claudeCode: {
@@ -291,6 +322,6 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       readableFolders: [ledgerDir],
     },
     run,
-    steps,
+    prepare: needs.goalsStale ? prepareGoals : undefined,
   };
 }

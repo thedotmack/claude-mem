@@ -27,6 +27,8 @@ import { NO_PROJECT, projectRoot, upgradedGroupRoot, withDerivedProjects } from 
 
 const DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
 export const LEDGER_DIR = join(DATA_DIR, 'work-view');
+/** Hook-recorded prompts the setup scan judged agent-written; they never become asks. */
+export const AGENT_WRITTEN_PROMPTS_FILE = 'agent-written-prompts.json';
 const DAY_MS = 86400000;
 /** Goals older than this make the automatic refresh run owner-goals again. */
 export const GOALS_STALE_MS = DAY_MS;
@@ -47,7 +49,8 @@ function placeholders(values) { return values.map(() => '?').join(','); }
 
 // Pass sinceEpoch for a time window, or conversationKeys for specific conversations.
 // fullAsks returns every qualifying ask untruncated (for `show`); listings stay short.
-export function readCandidates(database, { sinceEpoch = 0, conversationKeys = null, fullAsks = false }) {
+// excludedPromptIds: hook-recorded prompts the setup scan found an agent wrote (agent-written-prompts.json).
+export function readCandidates(database, { sinceEpoch = 0, conversationKeys = null, fullAsks = false, excludedPromptIds = null }) {
   const columns = 'SELECT id, platform_source, content_session_id, project, user_prompt, started_at_epoch FROM sdk_sessions';
   const pairs = conversationKeys?.map((key) => JSON.parse(key).slice(1));
   const stored = pairs
@@ -81,8 +84,11 @@ export function readCandidates(database, { sinceEpoch = 0, conversationKeys = nu
   const candidates = new Map();
   for (const session of sessions) {
     const key = conversationKey(session);
-    const own = promptsBySession.get(session.id) ?? [];
-    const original = key ? originalFor(session, own) : null;
+    const all = promptsBySession.get(session.id) ?? [];
+    const own = all.filter((prompt) => !excludedPromptIds?.has(prompt.id));
+    // The session's stored opening prompt is a copy of its first prompt row: a rejected first prompt stays rejected.
+    const openingRejected = all.some((prompt) => excludedPromptIds?.has(prompt.id) && (prompt.prompt_number === 1 || prompt.prompt_text === session.user_prompt));
+    const original = key ? originalFor(openingRejected ? { ...session, user_prompt: null } : session, own) : null;
     if (!original) continue;
     own.sort((a, b) => a.created_at_epoch - b.created_at_epoch || a.id - b.id);
     const lastPrompt = own.at(-1)?.created_at_epoch ?? 0;
@@ -158,7 +164,10 @@ export function readGoals(database) {
   const goals = [...items.values()].filter((item) => !['done', 'dropped'].includes(String(item.status).toLowerCase())).map((item) => ({
     goal: item.task, kind: item.goal_kind === 'open-ask' ? 'open-ask' : 'priority', rank: Number(item.rank) || null,
     title: item.title ?? item.task, product: item.product ?? null, latestAt: item.latest_at ?? null, timesAsked: Number(item.times_asked) || null,
-    evidence: String(item.evidence ?? '').split('\n').filter(Boolean).map((line) => { const [at, ...quote] = line.split(' | '); return { at, quote: quote.join(' | ') }; }),
+    // A later local refresh changes snapshot, so it cannot reuse an older hosted JSON evidence field.
+    evidence: item.source === 'hosted-intent' && item.hosted_snapshot === item.snapshot
+      ? JSON.parse(item.evidence_json)
+      : String(item.evidence ?? '').split('\n').filter(Boolean).map((line) => { const [at, ...quote] = line.split(' | '); return { at, quote: quote.join(' | ') }; }),
   })).sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'priority' ? -1 : 1) || (a.rank ?? Infinity) - (b.rank ?? Infinity));
   return { summary: listState.human_summary ?? null, generatedAt: listState.generated_at ?? null, mapPath: listState.map_path ?? null, goals };
 }
@@ -383,7 +392,10 @@ export function readLedger(dir = LEDGER_DIR) {
     const entry = readJson(join(dir, 'progress', name), null);
     if (entry?.groupId && groups.groups[entry.groupId]) progress[entry.groupId] = { ...entry, title: groups.groups[entry.groupId].title };
   }
-  return { groups, progress, story: readJson(join(dir, 'story.json'), null), alignment: readJson(join(dir, 'alignment.json'), null), refresh: readJson(join(dir, 'refresh.json'), null) };
+  return {
+    groups, progress, story: readJson(join(dir, 'story.json'), null), alignment: readJson(join(dir, 'alignment.json'), null), refresh: readJson(join(dir, 'refresh.json'), null),
+    agentWrittenPromptIds: new Set(readJson(join(dir, AGENT_WRITTEN_PROMPTS_FILE), { promptIds: [] }).promptIds ?? []),
+  };
 }
 
 /** Cheap change detector for the monitor's one-second poll. */
@@ -412,7 +424,7 @@ function groupDetails(groupId, ledger, candidatesByKey) {
 // Re-review only groups with activity after their last review; finished
 // groups stay finished unless new work arrives.
 function pendingReviews(ledger, database, sinceEpoch) {
-  const candidates = new Map(readCandidates(database, { sinceEpoch }).map((candidate) => [candidate.conversationKey, candidate]));
+  const candidates = new Map(readCandidates(database, { sinceEpoch, excludedPromptIds: ledger.agentWrittenPromptIds }).map((candidate) => [candidate.conversationKey, candidate]));
   const ungrouped = [...candidates.keys()].filter((key) => !ledger.groups.conversations[key] && !ledger.groups.ignored?.[key]).length;
   const ids = [...new Set([...candidates.keys()].map((key) => ledger.groups.conversations[key]).filter(Boolean))];
   const due = ids.map((id) => groupDetails(id, ledger, candidates))
@@ -511,7 +523,7 @@ const CLOSED_STATES = new Set(['shipped', 'abandoned']);
  * ask, beside that root's open requests. Decided conversations are never sent
  * again. `remaining` counts the new conversations left for later questions. */
 export function groupingInput(ledger, database, { sinceEpoch, limit = GROUPING_BATCH }) {
-  const candidates = readCandidates(database, { sinceEpoch });
+  const candidates = readCandidates(database, { sinceEpoch, excludedPromptIds: ledger.agentWrittenPromptIds });
   const decided = (key) => Boolean(ledger.groups.conversations[key] || ledger.groups.ignored?.[key]);
   const fresh = candidates.filter((candidate) => !decided(candidate.conversationKey));
   if (!fresh.length) return { root: null, conversations: [], openRequests: [], proposedLinks: [], remaining: 0 };
@@ -582,8 +594,9 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
   const since = () => now - option(args, 'days', 14) * DAY_MS;
   if (command === 'candidates') {
     const wantedRoot = textOption(args, 'project');
-    const stored = readLedger(dir).groups;
-    const candidates = readCandidates(db(), { sinceEpoch: since() })
+    const ledger = readLedger(dir);
+    const stored = ledger.groups;
+    const candidates = readCandidates(db(), { sinceEpoch: since(), excludedPromptIds: ledger.agentWrittenPromptIds })
       .filter((candidate) => !stored.ignored?.[candidate.conversationKey] && (wantedRoot == null || projectRoot(candidate.project) === wantedRoot));
     const { proposedGroups, skippedLists } = linkBackwards(candidates);
     const brief = args.includes('--brief');
@@ -608,7 +621,7 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
     // Keep each group's first ask in the ledger so a card's start never moves
     // forward when the anchor conversation ages out of My Work's reads.
     const missing = Object.values(next.groups).filter((group) => !group.anchorAsk).map((group) => group.anchor);
-    const anchors = new Map(readCandidates(database, { conversationKeys: missing }).map((candidate) => [candidate.conversationKey, candidate.original]));
+    const anchors = new Map(readCandidates(database, { conversationKeys: missing, excludedPromptIds: readLedger(dir).agentWrittenPromptIds }).map((candidate) => [candidate.conversationKey, candidate.original]));
     for (const group of Object.values(next.groups)) if (!group.anchorAsk && anchors.has(group.anchor)) group.anchorAsk = anchors.get(group.anchor);
     writeJsonAtomic(join(dir, 'request-groups.json'), next);
     return print({ groups: Object.keys(next.groups).length, conversations: Object.keys(next.conversations).length });
@@ -618,7 +631,7 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
     if (command === 'show') {
       if (!ledger.groups.groups[args[0]]) throw new TypeError(`Unknown group ${args[0]}.`);
       const keys = Object.entries(ledger.groups.conversations).filter(([, id]) => id === args[0]).map(([key]) => key);
-      const candidates = new Map(readCandidates(db(), { conversationKeys: keys, fullAsks: true }).map((candidate) => [candidate.conversationKey, candidate]));
+      const candidates = new Map(readCandidates(db(), { conversationKeys: keys, fullAsks: true, excludedPromptIds: ledger.agentWrittenPromptIds }).map((candidate) => [candidate.conversationKey, candidate]));
       const details = groupDetails(args[0], ledger, candidates);
       // Same conversations as the previous review: the reviewer amends it from what happened since.
       // A membership change (a merge, a split) needs a full review.
