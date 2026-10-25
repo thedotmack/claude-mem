@@ -1,9 +1,6 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import { EventEmitter } from 'node:events';
-import { setFakeSpawn } from '../helpers/fake-spawn.js';
 import { resolvePythonCommand } from '../../src/services/work-view/python.js';
-
-afterEach(() => setFakeSpawn(null));
 
 describe('work-view Python discovery', () => {
   for (const scenario of [
@@ -14,7 +11,7 @@ describe('work-view Python discovery', () => {
   ] as const) {
     it(scenario.name, async () => {
       const tried: string[] = [];
-      setFakeSpawn(((command: string, args: string[]) => {
+      const fakeSpawn = ((command: string, args: string[]) => {
         tried.push(command);
         expect(args.slice(-2)).toEqual(['-c', 'import sys; sys.exit(sys.version_info < (3, 9))']);
         if (command === 'py') expect(args[0]).toBe('-3');
@@ -24,14 +21,14 @@ describe('work-view Python discovery', () => {
         child.stderr = Object.assign(new EventEmitter(), { setEncoding() {} });
         queueMicrotask(() => child.emit('close', command === scenario.available ? 0 : 1));
         return child;
-      }) as any);
-      expect(await resolvePythonCommand(scenario.platform)).toEqual(scenario.expected);
+      }) as any;
+      expect(await resolvePythonCommand(fakeSpawn, scenario.platform)).toEqual(scenario.expected);
       expect(tried).toEqual(scenario.tried);
     });
   }
 
   it('reports all candidates when no supported interpreter is installed', async () => {
-    setFakeSpawn((() => { throw Object.assign(new Error('not installed'), { code: 'ENOENT' }); }) as any);
-    await expect(resolvePythonCommand('win32')).rejects.toThrow('Python 3.9 or newer on PATH (tried python3, python, py -3)');
+    const fakeSpawn = (() => { throw Object.assign(new Error('not installed'), { code: 'ENOENT' }); }) as any;
+    await expect(resolvePythonCommand(fakeSpawn, 'win32')).rejects.toThrow('Python 3.9 or newer on PATH (tried python3, python, py -3)');
   });
 });
