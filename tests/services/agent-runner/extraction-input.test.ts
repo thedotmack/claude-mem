@@ -12,7 +12,7 @@ import { writeOwnerPromptsFile } from '../../../src/services/prompt-import/owner
 import { SetupScan } from '../../../src/services/prompt-import/setup-scan.js';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { buildRefreshTask } from '../../../src/services/work-view/refresh-task.js';
-import { AGENT_WRITTEN_PROMPTS_FILE, readCandidates, readLedger } from '../../../src/services/work-view/request-groups.mjs';
+import { AGENT_WRITTEN_PROMPTS_FILE, groupingInput, readCandidates, readLedger } from '../../../src/services/work-view/request-groups.mjs';
 
 const FIXTURE_HOME = join(import.meta.dir, '..', '..', 'fixtures', 'prompt-import', 'home');
 const FIXTURE_NOW = Date.parse('2026-10-10T00:00:00.000Z');
@@ -124,6 +124,24 @@ describe('agent-written hook rows', () => {
       expect(asks(null).some((text: string) => text.startsWith('Reply with ok'))).toBe(true);
       expect(asks(excluded).some((text: string) => text.startsWith('Reply with ok'))).toBe(false);
       expect(asks(excluded)).toContain('make the scan screen show each agent');
+    } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('automatic grouping leaves out a conversation whose only ask is a rejected opening prompt', () => {
+    const store = new SessionStore(':memory:');
+    const dir = mkdtempSync(join(import.meta.dir, '..', '..', '..', '.scratch', 'agent-written-grouping-'));
+    try {
+      const owner = '11111111-aaaa-bbbb-cccc-000000000002';
+      const agent = '11111111-aaaa-bbbb-cccc-000000000003';
+      const ownerDbId = store.createSDKSession(owner, 'alpha', 'build the deploy script for the agents', undefined, 'claude');
+      store.saveUserPrompt(owner, 1, 'build the deploy script for the agents', ownerDbId, undefined, undefined, Date.parse('2026-10-01T10:01:00.000Z'));
+      const agentDbId = store.createSDKSession(agent, 'alpha', 'Reply with ok and then build the release notes page', undefined, 'claude');
+      store.saveUserPrompt(agent, 1, 'Reply with ok and then build the release notes page', agentDbId, undefined, undefined, Date.parse('2026-10-01T10:02:00.000Z'));
+      const rejected = (store.db.prepare('SELECT id FROM user_prompts WHERE session_db_id = ?').get(agentDbId) as { id: number }).id;
+      writeFileSync(join(dir, AGENT_WRITTEN_PROMPTS_FILE), JSON.stringify({ promptIds: [rejected] }));
+      const keys = groupingInput(readLedger(dir), store.db, { sinceEpoch: 0 }).conversations.map((conversation: { conversationKey: string }) => conversation.conversationKey);
+      expect(keys.some((key: string) => key.includes(owner))).toBe(true);
+      expect(keys.some((key: string) => key.includes(agent))).toBe(false);
     } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
   });
 });

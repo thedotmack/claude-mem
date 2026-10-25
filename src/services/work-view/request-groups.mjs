@@ -84,8 +84,11 @@ export function readCandidates(database, { sinceEpoch = 0, conversationKeys = nu
   const candidates = new Map();
   for (const session of sessions) {
     const key = conversationKey(session);
-    const own = (promptsBySession.get(session.id) ?? []).filter((prompt) => !excludedPromptIds?.has(prompt.id));
-    const original = key ? originalFor(session, own) : null;
+    const all = promptsBySession.get(session.id) ?? [];
+    const own = all.filter((prompt) => !excludedPromptIds?.has(prompt.id));
+    // The session's stored opening prompt is a copy of its first prompt row: a rejected first prompt stays rejected.
+    const openingRejected = all.some((prompt) => excludedPromptIds?.has(prompt.id) && (prompt.prompt_number === 1 || prompt.prompt_text === session.user_prompt));
+    const original = key ? originalFor(openingRejected ? { ...session, user_prompt: null } : session, own) : null;
     if (!original) continue;
     own.sort((a, b) => a.created_at_epoch - b.created_at_epoch || a.id - b.id);
     const lastPrompt = own.at(-1)?.created_at_epoch ?? 0;
@@ -520,7 +523,7 @@ const CLOSED_STATES = new Set(['shipped', 'abandoned']);
  * ask, beside that root's open requests. Decided conversations are never sent
  * again. `remaining` counts the new conversations left for later questions. */
 export function groupingInput(ledger, database, { sinceEpoch, limit = GROUPING_BATCH }) {
-  const candidates = readCandidates(database, { sinceEpoch });
+  const candidates = readCandidates(database, { sinceEpoch, excludedPromptIds: ledger.agentWrittenPromptIds });
   const decided = (key) => Boolean(ledger.groups.conversations[key] || ledger.groups.ignored?.[key]);
   const fresh = candidates.filter((candidate) => !decided(candidate.conversationKey));
   if (!fresh.length) return { root: null, conversations: [], openRequests: [], proposedLinks: [], remaining: 0 };
