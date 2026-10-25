@@ -8,6 +8,7 @@ export class HumanCopyWorker {
   load(): Promise<void>;
   start(): void;
   close(): void;
+  pauseWhile(shouldPause: () => boolean): void;
   observe<T extends { humanRequests?: unknown[] }>(view: T): T;
   status(): { cached: number; queued: number; generating: number; failures: Array<{ reason: string; at: number }>; revision: number };
 }

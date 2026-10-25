@@ -89,6 +89,28 @@ describe('setup scan endpoints', () => {
     expect((await (await fetch(`${origin}/api/setup/scan`)).json()).phase).toBe('idle');
   });
 
+  it('keeps a failed extraction stopped until an explicit start and then completes the retry', async () => {
+    const setupScan = scanWithFixtures();
+    const attempts: boolean[] = [];
+    const message = 'Hosted setup failed (HTTP 503): Please try again later.';
+    setupScan.setExtractor(async (_prompts, improveProduct) => {
+      attempts.push(improveProduct);
+      if (attempts.length === 1) throw new Error(message);
+    });
+    await start(setupScan);
+    expect((await postScan(undefined, '{"improveProduct":false}')).status).toBe(202);
+    await setupScan.finished();
+    const failed = await (await fetch(`${origin}/api/setup/scan`)).json();
+    expect(failed).toMatchObject({ phase: 'failed', done: true, error: message });
+    expect(attempts).toEqual([false]);
+
+    expect((await postScan()).status).toBe(202);
+    await setupScan.finished();
+    const retried = await (await fetch(`${origin}/api/setup/scan`)).json();
+    expect(retried).toMatchObject({ phase: 'done', done: true, error: null, improveProduct: false, added: 0 });
+    expect(attempts).toEqual([false, false]);
+  });
+
   it('start the scan, stream its progress on the work view events, and report where prompts came from', async () => {
     await start(scanWithFixtures());
     const events = scanEventsUntilDone();

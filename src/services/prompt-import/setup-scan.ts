@@ -17,7 +17,7 @@ import { scanOwnerPrompts, scanWindowStart, type MemoryPrompt, type OwnerPrompt,
 /** How far apart the hook's time and the transcript's time may be for one prompt (measured: under 7 s on the owner's Mac). */
 export const HOOK_MATCH_WINDOW_MS = 10 * 60_000;
 
-export type SetupScanPhase = 'idle' | 'reading' | 'checking' | 'saving' | 'done' | 'failed';
+export type SetupScanPhase = 'idle' | 'reading' | 'checking' | 'saving' | 'uploading' | 'done' | 'failed';
 
 export interface SetupScanAgent {
   id: PromptAgentId;
@@ -39,6 +39,8 @@ export interface SetupScanAgent {
 }
 
 export interface SetupScanState {
+  /** Optional improvement use only; false still runs the complete hosted extraction. */
+  improveProduct: boolean;
   agents: SetupScanAgent[];
   percent: number;
   phase: SetupScanPhase;
@@ -101,6 +103,7 @@ const AGENT_LABELS: Array<[PromptAgentId, string]> = [
 
 function idleState(): SetupScanState {
   return {
+    improveProduct: true,
     agents: AGENT_LABELS.map(([id, label]) => ({ id, label, detected: false, prompts: 0, fromMemory: 0, fromTranscripts: 0, canRunSetup: null, cannotRunReason: null })),
     percent: 0, phase: 'idle', done: false, windowStart: null, startedAt: null, finishedAt: null, durationMs: null,
     added: 0, skippedSources: 0, error: null, usage: null, usageError: null, recentPrompts: [],
@@ -113,6 +116,7 @@ export class SetupScan {
   private listeners = new Set<(state: SetupScanState) => void>();
   private lastNotified = 0;
   private now: () => number;
+  private extract: ((prompts: OwnerPrompt[], improveProduct: boolean) => Promise<void>) | null = null;
 
   constructor(private options: SetupScanOptions) {
     this.now = options.now ?? Date.now;
@@ -127,9 +131,21 @@ export class SetupScan {
     return () => this.listeners.delete(listener);
   }
 
+  /** Setup has one extraction path, supplied by the worker's hosted service. */
+  setExtractor(extract: (prompts: OwnerPrompt[], improveProduct: boolean) => Promise<void>): void {
+    this.extract = extract;
+  }
+
+  setImproveProduct(improveProduct: boolean): SetupScanState {
+    if (this.current.phase === 'uploading') throw new Error('The setup upload has already started.');
+    this.update({ improveProduct }, true);
+    return this.state();
+  }
+
   /** Starts a scan unless one is running. Resolves with the state at start. */
-  start(): SetupScanState {
+  start(improveProduct?: boolean): SetupScanState {
     if (!this.running) {
+      if (improveProduct !== undefined) this.setImproveProduct(improveProduct);
       this.running = this.run().finally(() => { this.running = null; });
     }
     return this.state();
@@ -179,7 +195,7 @@ export class SetupScan {
   private async run(): Promise<void> {
     const startedAt = this.now();
     const windowStart = scanWindowStart(startedAt);
-    this.current = { ...idleState(), phase: 'reading', windowStart: new Date(windowStart).toISOString(), startedAt: new Date(startedAt).toISOString() };
+    this.current = { ...idleState(), improveProduct: this.current.improveProduct, phase: 'reading', windowStart: new Date(windowStart).toISOString(), startedAt: new Date(startedAt).toISOString() };
     this.update({}, true);
     try {
       const runnerCheck = this.checkRunners();
@@ -250,6 +266,11 @@ export class SetupScan {
       const { usage, usageError } = await this.tokenSavings(store, tokenUsage);
       const recentPrompts = [...result.ownerPrompts].sort((left, right) => right.at - left.at).slice(0, RECENT_PROMPTS)
         .map(prompt => ({ agent: prompt.agent, at: new Date(prompt.at).toISOString(), text: prompt.text.trim().slice(0, RECENT_PROMPT_CHARACTERS) }));
+      if (this.extract) {
+        // Keep the scan screen open until results are saved; its existing error slot shows Cloud failures.
+        this.update({ phase: 'uploading', percent: 99, agents, added, skippedSources: result.skippedSources.length, usage, usageError, recentPrompts }, true);
+        await this.extract(result.ownerPrompts, this.current.improveProduct);
+      }
       const finishedAt = this.now();
       this.update({
         phase: 'done', done: true, percent: 100, agents, added, skippedSources: result.skippedSources.length, usage, usageError, recentPrompts,

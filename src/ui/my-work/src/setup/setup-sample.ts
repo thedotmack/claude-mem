@@ -59,7 +59,7 @@ const RECENT_PROMPTS = [
 
 function sampleData(newInstall: boolean, usage: SampleUsage, waitingForAgent: boolean): SetupData {
   return {
-    scan: { agents: [], percent: 0, phase: 'reading', done: false, error: null },
+    scan: { agents: [], percent: 0, phase: 'reading', done: false, error: null, improveProduct: true },
     reveal: { goals: null, work: null, rules: null },
     extraction: waitingForAgent ? { state: 'waiting-for-agent', step: null } : null,
     recentPrompts: RECENT_PROMPTS,
@@ -90,7 +90,7 @@ export function createSampleSetupSource(newInstall: boolean, holdScanAtPercent: 
       }))
       const done = share === 1
       if (holdScanAtPercent !== null && share === holdScanAtPercent / 100) clearInterval(timer)
-      publish({ scan: { agents, percent: Math.floor(share * 100), phase: done ? 'done' : share < 0.5 ? 'reading' : share < 0.95 ? 'checking' : 'saving', done, error: null } })
+      publish({ scan: { ...data.scan, agents, percent: Math.floor(share * 100), phase: done ? 'done' : share < 0.5 ? 'reading' : share < 0.95 ? 'checking' : 'saving', done, error: null } })
       if (!done) return
       clearInterval(timer)
       if (waitingForAgent) return
@@ -107,6 +107,8 @@ export function createSampleSetupSource(newInstall: boolean, holdScanAtPercent: 
       if (!playing) play()
       return () => listeners.delete(onData)
     },
+    async retryScan() { if (!playing) play() },
+    async setImproveProduct(improveProduct) { publish({ scan: { ...data.scan, improveProduct } }) },
     // Review fixtures hand nothing to an installer.
     async choose() {},
     // Plays the checkout the terminal would open: waiting, then paid.

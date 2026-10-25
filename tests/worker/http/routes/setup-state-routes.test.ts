@@ -3,7 +3,7 @@ import express from 'express';
 import type { Server } from 'node:http';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { WorkViewRoutes } from '../../../../src/services/worker/http/routes/WorkViewRoutes.js';
+import { defaultAutoRefresh, WorkViewRoutes } from '../../../../src/services/worker/http/routes/WorkViewRoutes.js';
 
 const FIXTURE_HOME = join(import.meta.dir, '..', '..', '..', 'fixtures', 'prompt-import', 'home');
 // Project-local scratch (gitignored), never the system temp folder.
@@ -11,6 +11,7 @@ const scratchRoot = join(import.meta.dir, '..', '..', '..', '..', '.scratch', 't
 mkdirSync(scratchRoot, { recursive: true });
 const dir = mkdtempSync(join(scratchRoot, 'setup-state-routes-'));
 const statePath = join(dir, 'setup-state.json');
+const sessionPath = join(dir, 'setup-session.json');
 const settingsPath = join(dir, 'settings.json');
 
 let server: Server;
@@ -35,6 +36,7 @@ afterEach(async () => {
   routes.close();
   await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   rmSync(statePath, { force: true });
+  rmSync(sessionPath, { force: true });
   rmSync(settingsPath, { force: true });
 });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -49,6 +51,64 @@ describe('setup state endpoints', () => {
     await start();
     expect(await state()).toEqual({ status: 'pending', choice: null, installer: null, checkout: null, tools: null, completedAt: null, alreadyPro: false, history: { projects: 0, sessions: 0, observations: 0 }, historyImport: null, backgroundWorkRunning: [] });
     expect(existsSync(statePath)).toBe(false);
+  });
+
+  it('pauses local auto refresh only for active setup, preserving non-GUI installs and completed setup', async () => {
+    await start();
+    let scanning = false;
+    const refresh = defaultAutoRefresh(dir, settingsPath, statePath, () => scanning);
+    const enabled = () => (refresh as unknown as { enabled: () => boolean }).enabled();
+    expect(enabled()).toBe(true); // Non-GUI installs do not write a funnel marker.
+    scanning = true;
+    expect(enabled()).toBe(false);
+    scanning = false;
+    writeFileSync(sessionPath, JSON.stringify({ pid: process.pid }));
+    await post('/api/setup/installer', { stage: 'waiting-for-choice' });
+    expect(enabled()).toBe(false);
+    await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' });
+    await post('/api/setup/installer', { stage: 'home-ready' });
+    await post('/api/setup/complete', {});
+    expect(enabled()).toBe(true);
+    refresh.close();
+  });
+
+  it('resumes local refresh after an interrupted installer without discarding saved setup progress', async () => {
+    const saved = { status: 'pending', choice: { branch: 'home', memoryBilling: 'existing', chosenAt: 'earlier' } };
+    writeFileSync(statePath, JSON.stringify(saved));
+    writeFileSync(sessionPath, JSON.stringify({ pid: 2 ** 22 + 12345 }));
+    await start();
+    const refresh = defaultAutoRefresh(dir, settingsPath, statePath);
+    try {
+      expect((refresh as unknown as { enabled: () => boolean }).enabled()).toBe(true);
+      expect(JSON.parse(readFileSync(statePath, 'utf8'))).toEqual(saved);
+    } finally {
+      refresh.close();
+    }
+  });
+
+  it('resumes after normal session removal and surfaces a corrupt session marker', async () => {
+    await start();
+    const refresh = defaultAutoRefresh(dir, settingsPath, statePath);
+    const enabled = () => (refresh as unknown as { enabled: () => boolean }).enabled();
+    try {
+      writeFileSync(sessionPath, JSON.stringify({ pid: process.pid }));
+      expect(enabled()).toBe(false);
+      rmSync(sessionPath);
+      expect(enabled()).toBe(true);
+      writeFileSync(sessionPath, '{broken');
+      expect(enabled).toThrow();
+    } finally {
+      refresh.close();
+    }
+  });
+
+  it('keeps local work paused until an active scan ends after the installer exits', async () => {
+    await start();
+    const testRoutes = routes as unknown as { setupScan: unknown; setupIsActive: () => boolean };
+    let phase = 'reading';
+    testRoutes.setupScan = { state: () => ({ phase }) };
+    for (phase of ['reading', 'checking', 'saving', 'uploading']) expect(testRoutes.setupIsActive()).toBe(true);
+    for (phase of ['idle', 'done', 'failed']) expect(testRoutes.setupIsActive()).toBe(false);
   });
 
   it('report a live extraction run as background work (the installer holds any restart for it), not one a restart cut off', async () => {

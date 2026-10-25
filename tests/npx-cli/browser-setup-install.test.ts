@@ -57,6 +57,9 @@ const port = await new Promise<number>((resolve) => {
 const workerBase = `http://127.0.0.1:${port}`;
 const settingsPath = join(data, 'settings.json');
 const statePath = join(data, 'setup-state.json');
+const sessionPath = join(data, 'setup-session.json');
+const intentCredentialsPath = join(data, 'intent-install.json');
+const intentCredentials = { install_id: '1'.repeat(32), intent_token: '2'.repeat(64) };
 // The worker is managed "externally" so the installer never tries to stop it: the fixture owns its lifecycle.
 const baseSettings = { CLAUDE_MEM_WORKER_PORT: String(port), CLAUDE_MEM_WORKER_AUTOSTART: 'false' };
 
@@ -74,6 +77,9 @@ const questions: string[] = [];
 const ranTasks: string[] = [];
 const offeredTasks: string[] = [];
 let workerStarts = 0;
+const workerStartStates: unknown[] = [];
+const workerStartSessions: unknown[] = [];
+let fixtureWorkerResult: 'ready' | 'dead' = 'ready';
 mock.module('@clack/prompts', () => ({
   ...prompts,
   intro: () => {}, outro: (value: string) => lines.push(value), cancel: (value: string) => lines.push(value),
@@ -135,7 +141,15 @@ async function stopFixtureWorker(): Promise<void> {
 }
 mock.module('../../src/services/worker-spawner.js', () => ({
   ...spawner,
-  ensureWorkerStarted: async () => { workerStarts++; if (extraction.running) extraction.restartsWhileRunning++; await startFixtureWorker(); return 'ready'; },
+  ensureWorkerStarted: async () => {
+    workerStarts++;
+    workerStartStates.push(existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : null);
+    workerStartSessions.push(existsSync(sessionPath) ? JSON.parse(readFileSync(sessionPath, 'utf8')) : null);
+    if (extraction.running) extraction.restartsWhileRunning++;
+    if (fixtureWorkerResult === 'dead') return 'dead';
+    await startFixtureWorker();
+    return 'ready';
+  },
   getLastWorkerBootFailure: () => undefined,
 }));
 
@@ -152,6 +166,7 @@ const spawnSyncSpy = spyOn(childProcess, 'spawnSync').mockImplementation(((comma
 const realFetch = globalThis.fetch;
 const { CMEM_INSTALLER_OAUTH_START_URL, CMEM_INSTALLER_OAUTH_POLL_URL } = await import('../../src/npx-cli/cmem-pro-costs.js');
 const pairingStarts: number[] = [];
+const pairingStartHeaders: Headers[] = [];
 /** What cmem.ai's pairing poll answers next, in order (a 410 is a cancelled or expired checkout). */
 const pollAnswers: Array<{ status: number; body: unknown }> = [];
 const READY_BODY = {
@@ -174,6 +189,7 @@ const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async (input: an
   }
   if (url === CMEM_INSTALLER_OAUTH_START_URL) {
     pairingStarts.push(Date.now());
+    pairingStartHeaders.push(new Headers(init?.headers));
     return Response.json({
       pairing_id: pairingId, secret: 'b'.repeat(48), user_code: 'ABCD-EFGH', poll_interval: 3, expires_in: 900,
       authorization_url: `${startOrigin}/login?next=${encodeURIComponent(`/api/pro/trial/claim?pairing=${pairingId}&login_only=1`)}`,
@@ -190,9 +206,14 @@ const { runInstallCommand } = await import('../../src/npx-cli/commands/install.j
 beforeEach(async () => {
   await stopFixtureWorker();
   rmSync(statePath, { force: true });
+  rmSync(sessionPath, { force: true });
+  rmSync(intentCredentialsPath, { force: true });
   writeFileSync(settingsPath, JSON.stringify(baseSettings, null, 2));
   lines.length = 0; questions.length = 0; ranTasks.length = 0; offeredTasks.length = 0; opened.length = 0;
-  pairingStarts.length = 0; setupRequests.length = 0; unexpected.length = 0; workerStarts = 0; pollAnswers.length = 0;
+  pairingStarts.length = 0; pairingStartHeaders.length = 0; setupRequests.length = 0; unexpected.length = 0; workerStarts = 0; pollAnswers.length = 0;
+  workerStartStates.length = 0;
+  workerStartSessions.length = 0;
+  fixtureWorkerResult = 'ready';
   extraction.running = false; extraction.restartsWhileRunning = 0;
 });
 afterAll(async () => {
@@ -228,6 +249,8 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     await waitForStage('waiting-for-choice');
     // The worker is up before any login or provider question, and the page is open.
     expect(workerStarts).toBe(1);
+    expect(workerStartStates).toEqual([{ status: 'pending', choice: null, installer: null, checkout: null, tools: null, completedAt: null }]);
+    expect(workerStartSessions).toEqual([{ pid: process.pid }]);
     expect(opened).toEqual([`${workerBase}/?setup=1`]);
     expect(pairingStarts).toEqual([]);
 
@@ -244,8 +267,23 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     expect(JSON.parse(readFileSync(statePath, 'utf8'))).toMatchObject({ status: 'complete', choice: { branch: 'home' }, installer: { stage: 'home-ready' } });
     expect(lines.join('\n')).toContain('Not required (local provider)');
     expect(lines.join('\n')).toContain('claude-mem installed successfully!');
+    expect(existsSync(sessionPath)).toBe(false);
     expect(ranTasks).toContain('Claude Code: registering plugin');
     expect(unexpected).toEqual([]);
+  });
+
+  it('clears an interrupted GUI hand-off before the worker starts', async () => {
+    writeFileSync(statePath, JSON.stringify({ status: 'pending', choice: { branch: 'go', memoryBilling: 'hosted', chosenAt: 'earlier' },
+      installer: { stage: 'go-awaiting-checkout', error: null, updatedAt: 'earlier' },
+      checkout: { state: 'requested', requests: 1, error: null, updatedAt: 'earlier' }, tools: ['codex'], completedAt: null }));
+    const install = runInstallCommand({});
+    await waitForStage('waiting-for-choice');
+    expect(workerStartStates[0]).toEqual({ status: 'pending', choice: null, installer: null, checkout: null, tools: null, completedAt: null });
+    expect(pairingStarts).toEqual([]);
+    await browserPost('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' });
+    await waitForStage('home-ready');
+    await browserPost('/api/setup/complete', {});
+    await install;
   });
 
   it('Finish Setup: local tools picked in the browser that this run did not install are set up after the page finishes', async () => {
@@ -264,6 +302,7 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
   });
 
   it('On The Go: the pairing starts only after the choice, checkout runs when the page asks, and setup finishes once paid', async () => {
+    writeFileSync(intentCredentialsPath, JSON.stringify(intentCredentials), { mode: 0o600 });
     const install = runInstallCommand({});
     await waitForStage('waiting-for-choice');
     expect(pairingStarts).toEqual([]);
@@ -271,6 +310,8 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     expect((await browserPost('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' })).status).toBe(200);
     const handOff = await waitForStage('go-awaiting-checkout');
     expect(pairingStarts).toHaveLength(1);
+    expect(pairingStartHeaders[0].get('X-Intent-Install-Id')).toBe(intentCredentials.install_id);
+    expect(pairingStartHeaders[0].get('X-Intent-Token')).toBe(intentCredentials.intent_token);
     expect(handOff.choice).toMatchObject({ branch: 'go', memoryBilling: 'hosted' });
     expect(opened).toEqual([`${workerBase}/?setup=1`]);
     // Not before checkout.
@@ -282,7 +323,14 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     expect(paid.alreadyPro).toBe(true);
     // The existing path: the pairing's checkout URL (/api/pro/trial/claim), opened by the installer.
     expect(opened).toEqual([`${workerBase}/?setup=1`, `${startOrigin}/api/pro/trial/claim?pairing=${pairingId}&trial=1`]);
-    expect(readSettings()).toMatchObject({ CLAUDE_MEM_PRO_TRIAL_STATE: 'active', CLAUDE_MEM_PRO_MEMORY_KEY: 'pro-memory-key', CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'sync-token' });
+    // Paid checkout promotes the staged key to the active observer configuration.
+    expect(readSettings()).toMatchObject({
+      CLAUDE_MEM_PRO_TRIAL_STATE: 'active', CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'sync-token',
+      CLAUDE_MEM_PROVIDER: 'openrouter', CLAUDE_MEM_OPENROUTER_API_KEY: 'pro-memory-key',
+      CLAUDE_MEM_OPENROUTER_BASE_URL: READY_BODY.memory_base_url,
+      CLAUDE_MEM_OPENROUTER_MODEL: READY_BODY.memory_model, CLAUDE_MEM_PRO_MEMORY_KEY: '',
+    });
+    expect(JSON.parse(readFileSync(intentCredentialsPath, 'utf8'))).toEqual(intentCredentials);
 
     expect((await browserPost('/api/setup/complete', {})).status).toBe(200);
     await install;
@@ -292,6 +340,7 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
   });
 
   it('On The Go: a cancelled checkout returns to the checkout screen and the next Continue starts a fresh one', async () => {
+    writeFileSync(intentCredentialsPath, JSON.stringify(intentCredentials), { mode: 0o600 });
     const install = runInstallCommand({});
     await waitForStage('waiting-for-choice');
     await browserPost('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' });
@@ -307,6 +356,10 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     await browserPost('/api/setup/checkout', {});
     await waitForCheckout('paid');
     expect(pairingStarts).toHaveLength(2);
+    for (const headers of pairingStartHeaders) {
+      expect(headers.get('X-Intent-Install-Id')).toBe(intentCredentials.install_id);
+      expect(headers.get('X-Intent-Token')).toBe(intentCredentials.intent_token);
+    }
     await browserPost('/api/setup/complete', {});
     await install;
     expect(readSettings().CLAUDE_MEM_PRO_TRIAL_STATE).toBe('active');
@@ -331,6 +384,7 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
   });
 
   it('On The Go: cloud sync needs a restart, which waits for the running extraction to finish', async () => {
+    writeFileSync(intentCredentialsPath, JSON.stringify(intentCredentials), { mode: 0o600 });
     const install = runInstallCommand({});
     let installed = false;
     void install.then(() => { installed = true; });
@@ -360,17 +414,52 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
   });
 
   it('a machine that already finished setup keeps the terminal flow', async () => {
-    writeFileSync(statePath, JSON.stringify({ status: 'complete', choice: { branch: 'home', memoryBilling: 'existing', chosenAt: 'x' }, installer: null, completedAt: 'x' }));
+    const completed = { status: 'complete', choice: { branch: 'home', memoryBilling: 'existing', chosenAt: 'x' }, installer: null, completedAt: 'x' };
+    writeFileSync(statePath, JSON.stringify(completed));
     // The terminal flow's login step reaches cmem.ai, which this fixture refuses outside the pairing start.
     // Stopping at the login boundary is enough to show no browser hand-off ran.
     fetchSpy.mockImplementationOnce(async () => { throw new Error('OWNED_LOGIN_BOUNDARY'); });
     await expect(runInstallCommand({})).rejects.toThrow('EXIT_1');
     expect(opened).toEqual([]);
     expect(setupRequests).toEqual([]);
+    expect(JSON.parse(readFileSync(statePath, 'utf8'))).toEqual(completed);
+  });
+
+  it('releases the GUI session when the worker fails while preserving saved setup state', async () => {
+    fixtureWorkerResult = 'dead';
+    fetchSpy.mockImplementationOnce(async () => { throw new Error('OWNED_LOGIN_BOUNDARY'); });
+    await expect(runInstallCommand({})).rejects.toThrow('EXIT_1');
+    expect(workerStartStates[0]).toMatchObject({ status: 'pending' });
+    expect(workerStartSessions[0]).toEqual({ pid: process.pid });
+    expect(JSON.parse(readFileSync(statePath, 'utf8')).status).toBe('pending');
+    expect(existsSync(sessionPath)).toBe(false);
+    expect(opened).toEqual([]);
+    expect(lines.join('\n')).toContain('Continuing setup here in the terminal.');
+  });
+
+  it('releases the GUI session when the browser handoff fails and propagates the server error', async () => {
+    fetchSpy.mockImplementationOnce(async () => {
+      expect(JSON.parse(readFileSync(sessionPath, 'utf8'))).toEqual({ pid: process.pid });
+      return Response.json({ error: 'This setup session was refused by the worker.' }, { status: 403 });
+    });
+    await expect(runInstallCommand({})).rejects.toThrow('This setup session was refused by the worker.');
+    expect(JSON.parse(readFileSync(statePath, 'utf8')).status).toBe('pending');
+    expect(existsSync(sessionPath)).toBe(false);
   });
 });
 
 describe('install with --provider claude (interactive TTY)', () => {
+  it('preserves interrupted browser progress and leaves local work unpaused', async () => {
+    const saved = { status: 'pending', choice: { branch: 'home', memoryBilling: 'existing', chosenAt: 'earlier' },
+      installer: { stage: 'home-ready', error: null, updatedAt: 'earlier' }, checkout: null, tools: ['codex'], completedAt: null };
+    writeFileSync(statePath, JSON.stringify(saved));
+    writeFileSync(sessionPath, JSON.stringify({ pid: 2 ** 22 + 12345 }));
+    await runInstallCommand({ provider: 'claude', providerSource: 'flag' });
+    expect(opened).toEqual([]);
+    expect(JSON.parse(readFileSync(statePath, 'utf8'))).toEqual(saved);
+    expect((worker!.routes as unknown as { setupIsActive: () => boolean }).setupIsActive()).toBe(false);
+  });
+
   it('keeps the terminal flow: no setup page, no login, the model question in the terminal', async () => {
     await runInstallCommand({ provider: 'claude', providerSource: 'flag' });
     expect(opened).toEqual([]);
@@ -380,6 +469,7 @@ describe('install with --provider claude (interactive TTY)', () => {
     expect(readSettings()).toMatchObject({ CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription' });
     expect(lines.join('\n')).toContain('--provider claude runs memory on your own Anthropic plan.');
     expect(existsSync(statePath)).toBe(false);
+    expect(workerStartStates.every(state => state === null)).toBe(true);
   });
 });
 

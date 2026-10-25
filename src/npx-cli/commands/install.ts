@@ -57,7 +57,8 @@ import {
 } from '../cmem-memory-credentials.js';
 import { parseTeamBrainTeamRef, type TeamBrainTeamRef } from '../../shared/teambrain.js';
 import { relayedLine } from '../../shared/relayed-text.js';
-import { readSetupState } from '../../shared/setup-state.js';
+import { endSetupSession, INITIAL_SETUP_STATE, readSetupState, startSetupSession, writeSetupState } from '../../shared/setup-state.js';
+import { intentCredentialHeaders, readIntentCredentials } from '../../shared/intent-credentials.js';
 import { runBrowserSetup, settingsChangesNeedingRestart, shouldUseBrowserSetup, waitForBackgroundWorkToFinish, type BrowserSetupOutcome } from '../install/browser-setup.js';
 
 function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[K] {
@@ -1627,14 +1628,19 @@ export function parseInstallerOAuthStartBody(body: unknown): InstallerOAuthPairi
   };
 }
 
-export type OAuthStartFailure = 'http_error' | 'network' | 'timeout' | 'bad_body';
+export type OAuthStartFailure = 'http_error' | 'network' | 'timeout' | 'bad_body' | 'credentials';
 
 // Why the most recent startInstallerOAuthPairing() returned null. A closed enum
 // for the installer_oauth_start_failed telemetry event — never a URL, status
 // text, or error message.
 let lastStartFailure: OAuthStartFailure | null = null;
+let lastStartErrorMessage: string | null = null;
 export function lastOAuthStartFailure(): OAuthStartFailure | null {
   return lastStartFailure;
+}
+/** User-visible server/configuration details stay out of the telemetry failure enum. */
+export function lastOAuthStartErrorMessage(): string | null {
+  return lastStartErrorMessage;
 }
 
 export type InstallState = 'fresh' | 'update';
@@ -1675,18 +1681,37 @@ export async function startInstallerOAuthPairing(
   opts: { source?: string; timeoutMs?: number; teamInvite?: string } = {},
 ): Promise<InstallerOAuthPairing | null> {
   const source = opts.source ?? 'npx-installer';
+  lastStartFailure = null;
+  lastStartErrorMessage = null;
+  let installHeaders: Record<string, string>;
+  try {
+    // Bind the already-issued installation at sign-in. An invalid explicit
+    // identity must stop here, before any request can create another pairing.
+    installHeaders = intentCredentialHeaders(readIntentCredentials());
+  } catch (error: unknown) {
+    lastStartFailure = 'credentials';
+    lastStartErrorMessage = error instanceof Error ? error.message : String(error);
+    return null;
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? OAUTH_START_TIMEOUT_MS);
-  lastStartFailure = null;
   try {
     const response = await fetch(CMEM_INSTALLER_OAUTH_START_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...installHeaders },
       body: JSON.stringify(buildInstallerOAuthStartBody(source, hostname(), signupContext, opts.teamInvite)),
       signal: controller.signal,
     });
     if (!response.ok) {
       lastStartFailure = 'http_error';
+      try {
+        const body: unknown = await response.json();
+        if (body && typeof body === 'object') {
+          lastStartErrorMessage = nonEmptyTrimmedString((body as { message?: unknown }).message);
+        }
+      } catch (error: unknown) {
+        if (error instanceof Error && error.name === 'AbortError') throw error;
+      }
       return null;
     }
     // A 2xx with unparseable JSON is a server-response problem, not a
@@ -2075,7 +2100,7 @@ async function requireInstallerOAuthLogin(version: string): Promise<InstallerOAu
       phase: 'login',
     });
     spinner?.stop(styleText('red', 'Could not start OAuth login.'));
-    log.error('OAuth login is required. Run npx claude-mem install again when cmem.ai is reachable.');
+    log.error(lastOAuthStartErrorMessage() ?? 'OAuth login is required. Run npx claude-mem install again when cmem.ai is reachable.');
     return null;
   }
   spinner?.stop('OAuth login ready.');
@@ -2119,6 +2144,7 @@ export async function offerDeferredLogin(options: InstallOptions, version: strin
       interactive: false,
       phase: 'deferred',
     });
+    log.error(lastOAuthStartErrorMessage() ?? 'Could not start the optional claude-mem sign-in. Run npx claude-mem install again when cmem.ai is reachable.');
     return;
   }
 
@@ -2647,8 +2673,8 @@ function readSettingsSnapshot(): string {
 }
 
 /**
- * On The Go in the browser funnel: the first moment this install talks to
- * cmem.ai. Only starts the pairing; the checkout that completes it is the
+ * On The Go in the browser funnel: starts the sign-in pairing, carrying any
+ * earlier hosted-intent installation identity. The checkout that completes it is the
  * funnel's next step (completeCmemTrialPairing, funnel Phase 8).
  */
 async function startOnTheGoPairing(version: string): Promise<InstallerOAuthPairing> {
@@ -2663,7 +2689,7 @@ async function startOnTheGoPairing(version: string): Promise<InstallerOAuthPairi
       phase: 'enrollment',
     });
     spinner?.stop(styleText('red', 'Could not start the CMEM Pro sign-in.'));
-    throw new Error('Could not start the CMEM Pro sign-in. Run npx claude-mem install again when cmem.ai is reachable.');
+    throw new Error(lastOAuthStartErrorMessage() ?? 'Could not start the CMEM Pro sign-in. Run npx claude-mem install again when cmem.ai is reachable.');
   }
   spinner?.stop('CMEM Pro sign-in ready; checkout continues in the browser.');
   return pairing;
@@ -2996,18 +3022,22 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     runtime: selectedRuntime,
     setupComplete: readSetupState().status === 'complete',
   })) {
-    settingsBeforeBrowserSetup = readSettingsSnapshot();
-    await runTasks([{
-      title: 'Starting worker daemon',
-      task: async (message) => {
-        workerStartResult = await startInstallWorker(version, summary, message);
-        return describeWorkerStart(workerStartResult);
-      },
-    }]);
-    if ((workerStartResult as WorkerStartResult) === 'dead') {
-      log.warn('The setup page needs the worker, which did not start. Continuing setup here in the terminal.');
-    } else {
-      try {
+    startSetupSession();
+    try {
+      // Mark this GUI setup before the worker's first refresh tick: its scan uses hosted extraction,
+      // so existing prompts must not launch a local agent while the browser is still opening.
+      writeSetupState({ ...INITIAL_SETUP_STATE });
+      settingsBeforeBrowserSetup = readSettingsSnapshot();
+      await runTasks([{
+        title: 'Starting worker daemon',
+        task: async (message) => {
+          workerStartResult = await startInstallWorker(version, summary, message);
+          return describeWorkerStart(workerStartResult);
+        },
+      }]);
+      if ((workerStartResult as WorkerStartResult) === 'dead') {
+        log.warn('The setup page needs the worker, which did not start. Continuing setup here in the terminal.');
+      } else {
         browserOutcome = await runBrowserSetup({
           workerBaseUrl: `http://127.0.0.1:${getSetting('CLAUDE_MEM_WORKER_PORT')}`,
           openBrowser,
@@ -3045,11 +3075,10 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
             },
           },
         });
-      } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error);
-        p.cancel(message);
-        process.exit(1);
       }
+    } finally {
+      // Preserve saved choices and errors, but release the local-work pause on every hand-off exit.
+      endSetupSession();
     }
   }
 
