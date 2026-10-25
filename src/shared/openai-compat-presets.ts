@@ -104,6 +104,14 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     hint: 'One Atlas Cloud key for vendor-prefixed model ids such as deepseek-ai/deepseek-v4-flash or zai-org/glm-5.3.',
   },
   {
+    id: 'apiclaw',
+    label: 'APIClaw (apiclaw.biz)',
+    baseUrl: 'https://apiclaw.biz/v1',
+    defaultModel: '',
+    requiresApiKey: true,
+    hint: 'APIClaw key on a flat monthly plan; pick a chat-completions model id your key lists at /v1/models. Model ids are passed verbatim.',
+  },
+  {
     id: 'deepseek',
     label: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com/v1',

@@ -99,6 +99,7 @@ endpoint or model you pinned yourself.
 | `api-route` | `https://global.api-route.com/v1` | yes |
 | `opper` | `https://api.opper.ai/v3/compat` | yes |
 | `atlascloud` | `https://api.atlascloud.ai/v1` | yes |
+| `apiclaw` | `https://apiclaw.biz/v1` | yes |
 | `deepseek` | `https://api.deepseek.com/v1` | yes |
 | `opencode-go` | `https://opencode.ai/zen/go/v1` | yes |
 | `opencode-zen` | `https://opencode.ai/zen/v1` | yes |
@@ -307,6 +308,30 @@ at `https://api.atlascloud.ai/v1/models`, and keys come from
   "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek-ai/deepseek-v4-flash"
 }
 ```
+
+## APIClaw
+
+[APIClaw](https://apiclaw.biz) is an OpenAI-compatible gateway billed as a flat
+monthly plan sized by daily requests rather than per token. It uses the
+`apiclaw` preset with an APIClaw key. It has no default model: set
+`CLAUDE_MEM_OPENAI_COMPAT_MODEL` to an exact model id your key lists at
+`https://apiclaw.biz/v1/models` (that endpoint needs the key). Choose a model
+served on `/chat/completions`; the id is passed verbatim. Setup is described in
+the [APIClaw docs](https://apiclaw.biz/docs/).
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "apiclaw",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your APIClaw key>",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "<your chat-completions model id>"
+}
+```
+
+Alternatively, store the key as `OPENAI_COMPAT_API_KEY` in
+`~/.claude-mem/.env`. Restart the worker after changing the configuration.
+Without a model or key, this provider is unconfigured and dispatch falls
+through to Claude.
 
 ## Troubleshooting
 
