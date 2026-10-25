@@ -54,7 +54,7 @@ description: Automated semantic versioning and release workflow for Claude Code 
     and publishes through npm trusted publishing (GitHub OIDC), so it needs no
     npm token. Watch the run:
     ```bash
-    gh run list --workflow npm-publish.yml --limit 1
+    gh run list --workflow npm-publish.yml --branch vX.Y.Z   # tag runs report the tag as their branch
     gh run watch <run-id> --exit-status
     ```
     **Do not run `npm publish` locally**, even if a local npm login works: the
