@@ -61,13 +61,12 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   // SSO and instance roles hand out (`aws sts assume-role`, `aws configure
   // export-credentials`), printed next to its secret and session token.
   { name: 'aws_access_key',  regex: /(?:AKIA|ASIA)[0-9A-Z]{16}/g },
-  // Known limitation: only matches shell-style (`KEY=val`, `KEY='val'`) and
-  // yaml-style (`KEY: val`); JSON-style `"KEY": "val"` is not anchored
-  // because the lookbehind expects `=`/`:` directly after the key name.
-  // Whitespace is bounded for the same reason as BOUNDED_SPACE. The key name
-  // matches in any letter case: the AWS CLI writes `aws_secret_access_key = …`
-  // to ~/.aws/credentials, and the SDKs take it as a lowercase argument.
-  { name: 'aws_secret_key',  regex: /(?<=AWS_SECRET_ACCESS_KEY\s{0,8}[=:]\s{0,8}['"]?)[A-Za-z0-9/+=]{40}/gi },
+  // Anchored to its key names: `AWS_SECRET_ACCESS_KEY=…` in env output,
+  // `aws_secret_access_key = …` in ~/.aws/credentials and SDK arguments (any
+  // letter case), and `"SecretAccessKey": "…"` in `aws sts` / `aws configure
+  // export-credentials` JSON, which prints it beside the ASIA key ID and the
+  // session token. keyedLookbehind also takes JSON-style `"KEY": "val"`.
+  { name: 'aws_secret_key',  regex: new RegExp(`${keyedLookbehind(String.raw`(?:aws_secret_access_key|\bSecretAccessKey)`)}[A-Za-z0-9/+=]{40}`, 'gi') },
   // The session token of temporary credentials (STS, SSO, `aws configure
   // export-credentials`) grants access together with the key pair, so it is
   // anchored to its key names the same way: `AWS_SESSION_TOKEN=…` in env
@@ -339,6 +338,16 @@ function awsSessionTokenMarkerForKeyedValue(key: string, value: string, config: 
   return "<redacted type='aws_session_token'/>";
 }
 
+// The same pairing for the secret key of `{"Credentials": {"SecretAccessKey": "…"}}`.
+const AWS_SECRET_KEY_KEY = /^(?:aws_secret_access_key|SecretAccessKey)$/i;
+const WHOLE_AWS_SECRET_KEY_VALUE = /^[A-Za-z0-9/+=]{40}$/;
+
+function awsSecretKeyMarkerForKeyedValue(key: string, value: string, config: RedactionConfig): string | null {
+  if (config.disabledBuiltinPatterns?.includes('aws_secret_key')) return null;
+  if (!AWS_SECRET_KEY_KEY.test(key) || !WHOLE_AWS_SECRET_KEY_VALUE.test(value)) return null;
+  return "<redacted type='aws_secret_key'/>";
+}
+
 /**
  * The value with every string in it (object values and array items, at any
  * depth) redacted, while redaction is on; the caller's value is not mutated.
@@ -352,6 +361,7 @@ export function redactJsonStrings<T>(value: T, config: RedactionConfig = getReda
       const result = redactSensitive(node, config);
       if (key === undefined || Object.keys(result.counts).length > 0) return result.redacted;
       return awsSessionTokenMarkerForKeyedValue(key, node, config)
+        ?? awsSecretKeyMarkerForKeyedValue(key, node, config)
         ?? genericMarkerForKeyedValue(key, node, config)
         ?? result.redacted;
     }

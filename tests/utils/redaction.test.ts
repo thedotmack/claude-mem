@@ -107,6 +107,30 @@ text after`;
     expect(redactSensitive(sdkArgument, cfg).counts.aws_secret_key).toBe(1);
   });
 
+  it('redacts the SecretAccessKey of aws sts JSON output', () => {
+    const marker = "<redacted type='aws_secret_key'/>";
+    const stsJson = '{"Credentials": {"AccessKeyId": "ASIAIOSFODNN7EXAMPLE", "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "Expiration": "2026-10-26T00:00:00Z"}}';
+    const result = redactSensitive(stsJson, cfg);
+    expect(result.redacted).toBe(`{"Credentials": {"AccessKeyId": "<redacted type='aws_access_key'/>", "SecretAccessKey": "${marker}", "Expiration": "2026-10-26T00:00:00Z"}}`);
+    expect(result.counts.aws_secret_key).toBe(1);
+
+    // JSON-escaped, as the worker scans JSON.stringify(toolInput), and the
+    // env-style key written as a JSON property.
+    expect(redactSensitive(JSON.stringify(stsJson), cfg).counts.aws_secret_key).toBe(1);
+    expect(redactSensitive('{"AWS_SECRET_ACCESS_KEY": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"}', cfg).redacted)
+      .toBe(`{"AWS_SECRET_ACCESS_KEY": "${marker}"}`);
+  });
+
+  it('redacts a SecretAccessKey value stored apart from its key', () => {
+    const secret = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
+    const marker = "<redacted type='aws_secret_key'/>";
+    expect(redactJsonStrings({ Credentials: { SecretAccessKey: secret } }, cfg)).toEqual({ Credentials: { SecretAccessKey: marker } });
+    expect(redactJsonStrings({ env: { AWS_SECRET_ACCESS_KEY: secret } }, cfg)).toEqual({ env: { AWS_SECRET_ACCESS_KEY: marker } });
+    expect(redactJsonStrings({ SecretAccessKey: 'changeme' }, cfg)).toEqual({ SecretAccessKey: 'changeme' });
+    const disabled = { enabled: true, disabledBuiltinPatterns: ['aws_secret_key'] };
+    expect(redactJsonStrings({ SecretAccessKey: secret }, disabled)).toEqual({ SecretAccessKey: secret });
+  });
+
   it('redacts the AWS session token of temporary credentials', () => {
     const token = 'IQoJb3JpZ2luX2VjEJr//////////wEaCXVzLWVhc3QtMSJHMEUCIQDexample+sessiontokenvalue0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij==';
     const marker = "<redacted type='aws_session_token'/>";
