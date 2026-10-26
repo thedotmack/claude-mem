@@ -290,7 +290,7 @@ function extractTypeField(content: string): string | null {
   const match = /<type>((?:(?!<type>)[\s\S])*?)<\/type>/i.exec(content);
   if (!match) return null;
 
-  const value = decodeXmlReferences(match[1].replace(/<\/?[A-Za-z_][\w-]*\b[^>]*>/g, '').trim());
+  const value = decodeXmlReferences(match[1].replace(/<\/?[A-Za-z_][\w-]*\b[^>]*>/g, '')).trim();
   return value === '' ? null : value;
 }
 

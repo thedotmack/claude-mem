@@ -338,6 +338,17 @@ Oops, let me restate the output cleanly.
     expect(result[0].type).toBe('discovery');
   });
 
+  it('falls back to the first mode type when the type is only encoded whitespace', () => {
+    const xml = `<observation>
+      <type>&#32;</type>
+      <title>Encoded whitespace type</title>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result[0].type).toBe('bugfix');
+  });
+
   it('returns a fail-fast result when no observation/summary blocks are present', () => {
     const result = parseAgentXml('Some text without any observations.');
     expect(result.valid).toBe(false);
