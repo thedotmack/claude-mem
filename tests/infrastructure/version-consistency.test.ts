@@ -63,6 +63,25 @@ describe('Version Consistency', () => {
     });
   }
 
+  for (const manifestPath of [
+    '.claude-plugin/plugin.json',
+    '.codex-plugin/plugin.json',
+    '.qoder-plugin/plugin.json',
+    '.grok-plugin/plugin.json',
+    'dsh/package.json',
+    'openclaw/openclaw.plugin.json',
+    'plugin/.codex-plugin/plugin.json',
+    'plugin/.qoder-plugin/plugin.json',
+  ]) {
+    it(`should have matching version in ${manifestPath}`, () => {
+      const filePath = path.join(projectRoot, manifestPath);
+      expect(existsSync(filePath)).toBe(true);
+
+      const manifest = JSON.parse(readFileSync(filePath, 'utf-8'));
+      expect(manifest.version).toBe(rootVersion);
+    });
+  }
+
   it('should list both cursor marketplace plugin sources', () => {
     const marketplaceJsonPath = path.join(projectRoot, '.cursor-plugin', 'marketplace.json');
     expect(existsSync(marketplaceJsonPath)).toBe(true);
