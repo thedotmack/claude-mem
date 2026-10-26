@@ -1,0 +1,18 @@
+{
+  "extends": "../../../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "rootDir": "../.."
+  },
+  "include": [
+    "./**/*",
+    "../types.ts",
+    "../model/**/*",
+    "../cognition/limbic-engine.ts",
+    "../../services/dedup/idf.ts",
+    "../../services/dedup/tfidfCosine.ts",
+    "../../services/reinforcement/rank.ts",
+    "../../services/reinforcement/strength.ts"
+  ],
+  "exclude": []
+}
