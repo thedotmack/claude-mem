@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { basename, join } from 'path';
 import {
   copyDeliverableIntoBucket,
   deliverableBucketFileName,
@@ -40,6 +40,30 @@ describe('deliverableBucketFolderName', () => {
     expect(Buffer.byteLength(name, 'utf8')).toBeLessThanOrEqual(255);
     expect(name).toMatch(/-[a-f0-9]{8}$/);
     expect(deliverableBucketFolderName(`${long}x`)).not.toBe(name);
+    // Cut at a code point, never inside one: an emoji key keeps whole emoji.
+    const emoji = deliverableBucketFolderName('🎉'.repeat(100));
+    expect(Buffer.byteLength(emoji, 'utf8')).toBeLessThanOrEqual(255);
+    expect(emoji).not.toMatch(/\ufffd/);
+    expect(emoji).toMatch(/^(?:🎉)+-[a-f0-9]{8}$/u);
+  });
+});
+
+describe('deliverableBucketFileName', () => {
+  const sha = 'a'.repeat(64);
+
+  it('keeps the whole name within NAME_MAX: the stem gives way, the hash and extension stay', () => {
+    expect(deliverableBucketFileName('/w/Launch report: final?.html', sha)).toBe('Launch report- final-aaaaaaaa.html');
+    const long = deliverableBucketFileName(`/w/${'r'.repeat(250)}.html`, sha);
+    expect(Buffer.byteLength(long, 'utf8')).toBe(255);
+    expect(long).toMatch(/^r+-aaaaaaaa\.html$/);
+    const wide = deliverableBucketFileName(`/w/${'é'.repeat(250)}.pdf`, sha);
+    expect(Buffer.byteLength(wide, 'utf8')).toBeLessThanOrEqual(255);
+    expect(wide).toMatch(/^é+-aaaaaaaa\.pdf$/);
+    expect(deliverableBucketFileName('/w/.hidden', sha)).toBe('hidden-aaaaaaaa');
+  });
+
+  it('refuses an extension that leaves no room for a name', () => {
+    expect(() => deliverableBucketFileName(`/w/x.${'e'.repeat(260)}`, sha)).toThrow(/leaves no room/);
   });
 });
 
@@ -63,6 +87,22 @@ describe('copyDeliverableIntoBucket', () => {
     expect(revised.bucketPath).not.toBe(first.bucketPath);
     expect(existsSync(first.bucketPath)).toBe(true);
     expect(readFileSync(revised.bucketPath, 'utf8')).toBe('# Launch report, revised\n');
+  });
+
+  it('copies a file whose name is at NAME_MAX, and names and records the bytes it copied', () => {
+    const source = join(dir, `${'n'.repeat(250)}.html`);
+    writeFileSync(source, '<h1>Long name</h1>');
+    const copy = copyDeliverableIntoBucket(source, 'p', deliverablesDir);
+    expect(existsSync(copy.bucketPath)).toBe(true);
+    expect(Buffer.byteLength(basename(copy.bucketPath), 'utf8')).toBeLessThanOrEqual(255);
+    // The recorded hash and the hash in the name are of the copy itself, never of a source read a second time.
+    expect(sha256OfFile(copy.bucketPath)).toBe(copy.sha256);
+    expect(basename(copy.bucketPath)).toContain(`-${copy.sha256.slice(0, 8)}.html`);
+    expect(copy.bytes).toBe(18);
+    // Nothing temporary is left in the bucket, whether the copy was kept or already there.
+    copyDeliverableIntoBucket(source, 'p', deliverablesDir);
+    expect(readdirSync(join(deliverablesDir, 'p')).filter(name => name.startsWith('.partial-'))).toEqual([]);
+    expect(readdirSync(join(deliverablesDir, 'p'))).toHaveLength(1);
   });
 
   it('refuses anything but a regular file and leaves no partial copy behind', () => {
