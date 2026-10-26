@@ -8,13 +8,13 @@ call, paid request, bucket or production database was touched.
 
 ## Migration
 
-- **SQLite v61** (`src/services/sqlite/media.ts` `ensureMediaSchema`, called
+- **SQLite v69** (`src/services/sqlite/media.ts` `ensureMediaSchema`, called
   last in the `SessionStore` constructor after v60). It uses the same
   transaction plus `INSERT OR IGNORE INTO schema_versions` bookkeeping as v60.
   All DDL is `IF NOT EXISTS` and runs on every startup, with no early return
   once the version is recorded. Older migrations rebuild `observations` and
   `sdk_sessions`, and SQLite drops the triggers on those tables when that
-  happens. Running v61 every startup puts the triggers back.
+  happens. Running v69 every startup puts the triggers back.
 - Tables:
   - `media_events(event_key PK, session_db_id, platform, event_identity, state retained|deleted, result_state, created_at)`: the durable source-event manifest, written before the RAM enqueue.
   - `media_attachments(id UUIDv4 PK, replay_key UNIQUE, provenance, recipe, state converting|ready|failed|deleted, failure_code, encoder_version, variants, lease_until, upload_state pending|uploaded|failed|cancelled, created_at)`: holds provenance, variant descriptors (sha256/width/height/bytes) and state. No source bytes are stored.
@@ -46,7 +46,7 @@ New:
 - `src/services/media/capture.ts`: ingest-boundary capture. It handles platform event identity, trusted Read locators and descriptor substitution.
 - `src/services/media/store.ts`: `MediaStore`: capture/convert/publish, replay reuse, linking, event deletion and reconciliation.
 - `src/services/media/files.ts`: contained, no-symlink, bounded file-descriptor reads (fd reads).
-- `src/services/sqlite/media.ts`: the v61 schema and triggers.
+- `src/services/sqlite/media.ts`: the v69 schema and triggers.
 - `src/services/worker/http/routes/MediaRoutes.ts`: the UUID routes.
 - Tests: `tests/media/ingress.test.ts`, `tests/media/capture.test.ts`, `tests/worker/http/routes/media-routes.test.ts`.
 
@@ -58,7 +58,7 @@ Modified:
 - `src/services/worker/SessionManager.ts`: passes the side fields to the buffer.
 - `src/services/worker/DatabaseManager.ts`: `MediaStore` and a 30 s unref'd reconciliation timer.
 - `src/services/worker-service.ts`: registers `MediaRoutes`.
-- `src/services/sqlite/SessionStore.ts`: calls v61.
+- `src/services/sqlite/SessionStore.ts`: calls v69.
 - `scripts/build-hooks.js`: `sharp` is now external in `transcript-watcher.cjs` too, because `processor.ts` reaches the lazy converter.
 - Regenerated build output: `plugin/scripts/{worker-service,server-service,transcript-watcher}.cjs(.map)` and `plugin/sqlite/SessionStore.js(.map)`. Unrelated regenerated artifacts reflected main-source drift, not this change, so I restored them with `git checkout`: viewer html/bundle, onboarding md, context-generator, mcp-server and observations/files.
 
@@ -90,7 +90,7 @@ Anti-pattern scan: I ran the Phase 1 rg pattern over the Phase 2 files. Matches 
 - Recipe is fixed to `screenshot-v1` at capture. There is no content classification, per the contract.
 - The converter uses the frozen single no-wait slot. A concurrent capture fails with `conversion_busy`, and the row is retryable on replay.
 - A replay of the same event and pointer with different bytes is rejected with `checksum_mismatch`, never re-pointed. A deleted event or attachment is never resurrected.
-- Fixed a bug in the prior session's v61 SQL: cleanup previously tombstoned every attachment that had a cleanup job. That included still-referenced failed conversions whose temporary files were being cleaned. Now only unreferenced attachments are tombstoned.
+- Fixed a bug in the prior session's v69 SQL: cleanup previously tombstoned every attachment that had a cleanup job. That included still-referenced failed conversions whose temporary files were being cleaned. Now only unreferenced attachments are tombstoned.
 - Physical file removal is asynchronous through the durable outbox. It runs on reconciliation at startup, on each capture, and every 30 s. Metadata becomes unreadable immediately inside the existing deletion transaction.
 - Tests write scratch data under the project-local `.scratch/` (gitignored), not the system temp directory. The route test's 1x1 PNG was replaced with a Sharp-generated fixture, because the strict decoder rejected the tiny PNG.
 - `docs/media-contract-v1.md` is unchanged. It must stay byte-identical with Pro, so the capture-matrix update is recorded here instead.

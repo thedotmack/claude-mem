@@ -1,5 +1,5 @@
 // Phase 2 durable local capture through the real ingest boundary, real SQLite
-// v61 schema, real MediaStore and the real Sharp converter. Scratch files live
+// v69 schema, real MediaStore and the real Sharp converter. Scratch files live
 // in the project-local, gitignored .scratch directory.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';

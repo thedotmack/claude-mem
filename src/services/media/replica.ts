@@ -6,7 +6,7 @@ import { parseObservationMetadata } from './linkage.js';
 /**
  * Second-device media (plan Phase 5 item 4, copying SyncApply's replica
  * behavior). An unresolved replica placeholder is stored as origin='replica',
- * state='failed', failure_code=NULL, variants=NULL (the v61 state CHECK has no
+ * state='failed', failure_code=NULL, variants=NULL (the v69 state CHECK has no
  * spare value). It is never a failure: MediaStore.getMetadata projects it as
  * the distinct state 'unresolved_replica', and every count of failed media
  * must filter origin='native'. A replica observation keeps the canonical media IDs from its

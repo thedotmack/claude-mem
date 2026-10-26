@@ -1,5 +1,5 @@
 // Phase 4 end to end through the real OpenRouterProvider observation turn,
-// real ingest capture, real SQLite (v61/v62), real MediaStore derivatives and
+// real ingest capture, real SQLite (v69/v70), real MediaStore derivatives and
 // the real response processor, with HTTP mocked at fetch. Scratch files live
 // in the project-local, gitignored .scratch directory.
 import { afterEach, beforeAll, beforeEach, describe, expect, it, spyOn } from 'bun:test';

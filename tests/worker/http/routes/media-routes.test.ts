@@ -56,7 +56,7 @@ beforeEach(async () => {
   storeAccesses = 0;
   const app = express();
   new MediaRoutes(() => { storeAccesses++; return media; }).setupRoutes(app);
-  // Exercise the existing deletion API and real v61 triggers; no separate
+  // Exercise the existing deletion API and real v69 triggers; no separate
   // attachment deletion route or production worker/service is introduced.
   new DataRoutes({} as any, { getSessionStore: () => sessions, getCloudSync: () => null } as any,
     { getSession: () => undefined } as any, { broadcast: () => {} } as any, {} as any, Date.now()).setupRoutes(app);

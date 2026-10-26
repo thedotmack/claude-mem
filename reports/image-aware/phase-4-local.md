@@ -54,7 +54,7 @@ Modified files:
   - Cloud sync is notified when a native row's manifest changed.
   - Logs carry reason codes and counts only, never label text.
 - `sdk/parser.ts`: adds an optional `attachments` list to `ParsedObservation`. It comes from the first lowercase `<attachments>` block, matched case-sensitively, at most 16 elements of at most 128 characters each. `attachments` and `attachment` are added to the schema tag set, and `attachments` to the salvage strip regex.
-- `sqlite/media.ts`: adds the `media_event_results(event_key, observation_id)` table and records schema version **62** in the same `ensureMediaSchema` run. The observation-delete and session-delete triggers and `MediaStore.deleteEvent` also remove these rows.
+- `sqlite/media.ts`: adds the `media_event_results(event_key, observation_id)` table and records schema version **70** in the same `ensureMediaSchema` run. The observation-delete and session-delete triggers and `MediaStore.deleteEvent` also remove these rows.
 - `http/shared.ts`: on replay, an event whose `result_state` is already `stored` or `skipped` returns `{status:'skipped', reason:'already_processed'}` and is not re-queued, so there is no model call.
 - Regenerated build output: `plugin/scripts/{worker-service,server-service,transcript-watcher}.cjs(.map)` and `plugin/sqlite/SessionStore.js(.map)`. Unrelated regenerated artifacts were restored with `git checkout`.
 
@@ -87,7 +87,7 @@ Gemini and history-pruning): 3012 pass, 2 fail.
 - **Replica rows.** Replica rows (`origin_device_id` set) are never written. Their refs stay event-level (`media_event_refs`) with no junction, so the "junctions exactly match the manifest" rule holds.
 - **Gateway cache key.** Gateway capability is cached by base URL plus a SHA-256 of the key, a superset of the contract's "keyed by base URL".
 - **Text-only fallback writes no manifest.** A text-only turn (disabled, unqualified, unreadable derivatives, or a gateway 400) writes no manifest or junction. It still records `media_events.result_state`. Images stay in `media_event_refs` as uninspected.
-- **Schema version.** Schema version 62 is recorded inside `ensureMediaSchema`. All DDL is `IF NOT EXISTS`, the same pattern as v61.
+- **Schema version.** Schema version 70 is recorded inside `ensureMediaSchema`. All DDL is `IF NOT EXISTS`, the same pattern as v69.
 
 ## Verification fixes
 
