@@ -326,6 +326,19 @@ function genericMarkerForKeyedValue(key: string, value: string, config: Redactio
   return `<redacted type='${name}'/>`;
 }
 
+// The aws_session_token built-in anchors on `SessionToken: …`, so a payload
+// like `{"Credentials": {"SessionToken": "…"}}` needs the key paired with the
+// value again. Same key names and value floor as the text pattern; it is a
+// built-in, so it applies whether or not the generic group is on.
+const AWS_SESSION_TOKEN_KEY = /^(?:aws_session_token|SessionToken)$/i;
+const WHOLE_AWS_SESSION_TOKEN_VALUE = /^[A-Za-z0-9/+=]{100,}$/;
+
+function awsSessionTokenMarkerForKeyedValue(key: string, value: string, config: RedactionConfig): string | null {
+  if (config.disabledBuiltinPatterns?.includes('aws_session_token')) return null;
+  if (!AWS_SESSION_TOKEN_KEY.test(key) || !WHOLE_AWS_SESSION_TOKEN_VALUE.test(value)) return null;
+  return "<redacted type='aws_session_token'/>";
+}
+
 /**
  * The value with every string in it (object values and array items, at any
  * depth) redacted, while redaction is on; the caller's value is not mutated.
@@ -338,7 +351,9 @@ export function redactJsonStrings<T>(value: T, config: RedactionConfig = getReda
     if (typeof node === 'string') {
       const result = redactSensitive(node, config);
       if (key === undefined || Object.keys(result.counts).length > 0) return result.redacted;
-      return genericMarkerForKeyedValue(key, node, config) ?? result.redacted;
+      return awsSessionTokenMarkerForKeyedValue(key, node, config)
+        ?? genericMarkerForKeyedValue(key, node, config)
+        ?? result.redacted;
     }
     if (Array.isArray(node)) return node.map((child) => walk(child));
     if (node !== null && typeof node === 'object') {
