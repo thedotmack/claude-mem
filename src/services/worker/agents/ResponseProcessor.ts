@@ -40,8 +40,8 @@ export interface ObservationFileEvidence {
   files_modified: string[];
 }
 
-const READ_TOOL_NAMES = new Set(['Read']);
-const WRITE_TOOL_NAMES = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit', 'write_file']);
+const READ_TOOL_NAMES = new Set(['Read', 'read_file', 'view_file']);
+const WRITE_TOOL_NAMES = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit', 'write_file', 'edit_file']);
 const PATCH_TOOL_NAMES = new Set(['apply_patch']);
 
 export function extractObservationFileEvidence(messages: ReadonlyArray<ObservationFileEvidenceMessage>): ObservationFileEvidence {
@@ -131,6 +131,9 @@ function extractPathsFromToolInput(
   }
 
   const paths: string[] = [];
+  // A read's canonical `file_path` wins over a conflicting `path` (Kimi and
+  // OpenClaw send both), so reads never take `path`. agy's `Path` argument is
+  // mapped to `file_path` by its adapter (normalizeAgyToolInput).
   const directFields = mode === 'read'
     ? ['file_path', 'filePath', 'notebook_path', 'notebookPath', 'filePaths']
     : ['file_path', 'filePath', 'notebook_path', 'notebookPath', 'path', 'filePaths'];

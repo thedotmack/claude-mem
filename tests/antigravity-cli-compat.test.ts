@@ -31,6 +31,7 @@ describe('AntigravityCliHooksInstaller - agy event map', () => {
   it.each([
     // SessionStart is the injectSteps startup context-injection point (issue #4911).
     ['SessionStart', 'context'],
+    ['PreInvocation', 'session-init'],
     ['PostToolUse', 'observation'],
     ['PostInvocation', 'observation'],
     ['Stop', 'summarize'],
@@ -39,7 +40,7 @@ describe('AntigravityCliHooksInstaller - agy event map', () => {
   });
 
   it('registers only the agy event names, none of the legacy Gemini-CLI ones', () => {
-    expect(Object.keys(claudeMem).sort()).toEqual(['PostInvocation', 'PostToolUse', 'SessionStart', 'Stop']);
+    expect(Object.keys(claudeMem).sort()).toEqual(['PostInvocation', 'PostToolUse', 'PreInvocation', 'SessionStart', 'Stop']);
   });
 
   // agy reads a PreToolUse "allow" as auto-approval, so registering it skipped
@@ -87,7 +88,7 @@ describe('AntigravityCliHooksInstaller - agy hooks.json schema (issue #4196)', (
 
   it('nests every event under the "claude-mem" hook name (not event names)', () => {
     expect(Object.keys(config)).toEqual(['claude-mem']);
-    for (const event of ['SessionStart', 'PostToolUse', 'PostInvocation', 'Stop']) {
+    for (const event of ['SessionStart', 'PreInvocation', 'PostToolUse', 'PostInvocation', 'Stop']) {
       expect(Array.isArray(claudeMem[event])).toBe(true);
     }
   });
@@ -102,8 +103,8 @@ describe('AntigravityCliHooksInstaller - agy hooks.json schema (issue #4196)', (
     }
   });
 
-  it('uses flat handler arrays for SessionStart/PostInvocation/Stop', () => {
-    for (const event of ['SessionStart', 'PostInvocation', 'Stop']) {
+  it('uses flat handler arrays for SessionStart/PreInvocation/PostInvocation/Stop', () => {
+    for (const event of ['SessionStart', 'PreInvocation', 'PostInvocation', 'Stop']) {
       const handlers = claudeMem[event];
       expect(handlers).toHaveLength(1);
       expect(handlers[0].command).toContain('hook antigravity-cli');
@@ -115,6 +116,7 @@ describe('AntigravityCliHooksInstaller - agy hooks.json schema (issue #4196)', (
   it('writes timeout in seconds (agy default 30), never the old 10000', () => {
     const handlers = [
       claudeMem.SessionStart[0],
+      claudeMem.PreInvocation[0],
       claudeMem.PostToolUse[0].hooks[0],
       claudeMem.PostInvocation[0],
       claudeMem.Stop[0],
@@ -151,7 +153,9 @@ describe('AntigravityCliHooksInstaller - merge/uninstall migrate and preserve', 
     expect(merged['lint-checker']).toEqual(existing['lint-checker']);
     expect(merged['claude-mem'].SessionStart).toHaveLength(1);
     expect(merged['claude-mem'].SessionStart[0].command).not.toBe('stale-command');
-    expect(merged['claude-mem'].PreInvocation).toBeUndefined();
+    expect(merged['claude-mem'].PreInvocation).toHaveLength(1);
+    expect(merged['claude-mem'].PreInvocation[0].command).toContain('session-init');
+    expect(merged['claude-mem'].PreInvocation[0].command).not.toContain('legacy-pre-inv');
     expect(merged['claude-mem'].PreToolUse).toBeUndefined();
 
     const twice = mergeHooksIntoConfig(
@@ -211,7 +215,7 @@ describe('AntigravityCliHooksInstaller - status sees leftover legacy hooks (issu
 
     const { installedEvents, legacyHandlerCount, hasStalePreInvocation } = describeAntigravityHooks(config);
 
-    expect(installedEvents).toEqual(['SessionStart', 'PostToolUse', 'PostInvocation', 'Stop']);
+    expect(installedEvents).toEqual(['SessionStart', 'PreInvocation', 'PostToolUse', 'PostInvocation', 'Stop']);
     expect(legacyHandlerCount).toBe(2);
     expect(hasStalePreInvocation).toBe(false);
     expect((config as Record<string, any>).PreToolUse[0].hooks).toHaveLength(2);
@@ -229,8 +233,22 @@ describe('AntigravityCliHooksInstaller - status sees leftover legacy hooks (issu
     const { installedEvents, legacyHandlerCount, hasStalePreInvocation } = describeAntigravityHooks(config);
 
     expect(hasStalePreInvocation).toBe(true);
+    // The stale context handler is not the session-init mapping, so it isn't installed.
     expect(installedEvents).toEqual(['PostToolUse']);
     expect(legacyHandlerCount).toBe(0);
+  });
+
+  it('treats a PreInvocation routed to session-init as current, not stale (#5078)', () => {
+    const config = {
+      'claude-mem': {
+        PreInvocation: [{ command: 'bun worker-service.cjs hook antigravity-cli session-init' }],
+      },
+    } as unknown as Parameters<typeof describeAntigravityHooks>[0];
+
+    const { installedEvents, hasStalePreInvocation } = describeAntigravityHooks(config);
+
+    expect(hasStalePreInvocation).toBe(false);
+    expect(installedEvents).toEqual(['PreInvocation']);
   });
 
   it("does not count another tool's top-level event arrays as claude-mem leftovers", () => {
@@ -360,7 +378,7 @@ describe('antigravityCliAdapter - native camelCase and toolCall support', () => 
     expect(result.sessionId).toBe('conv-12345');
     expect(result.cwd).toBe('/path/to/project');
     expect(result.toolName).toBe('run_command');
-    expect(result.toolInput).toEqual({ CommandLine: 'npm test' });
+    expect(result.toolInput).toEqual({ CommandLine: 'npm test', command: 'npm test' });
   });
 
   it('normalizes Antigravity CLI Stop event termination payload', () => {
