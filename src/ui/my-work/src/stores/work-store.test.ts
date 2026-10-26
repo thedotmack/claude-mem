@@ -103,6 +103,7 @@ describe('work model Zustand store', () => {
 
   it('isolates heartbeat notifications from the model and expires update highlights', (context) => {
     context.mock.timers.enable({ apis: ['setTimeout'] })
+    context.after(() => context.mock.timers.reset())
     const store = createWorkStore()
     store.getState().receiveModel(model('first'))
     const beforeHeartbeat = store.getState().load

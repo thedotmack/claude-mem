@@ -14,6 +14,10 @@ const pending = <T>() => {
   return { promise, resolve }
 }
 
+const stubFetch = (implementation: (url: string) => Promise<Response>) => {
+  globalThis.fetch = implementation as typeof fetch
+}
+
 function transport(t: TestContext) {
   class FakeEventSource {
     static CLOSED = 2
@@ -30,6 +34,10 @@ function transport(t: TestContext) {
     close() { this.readyState = 2 }
     fail() { this.readyState = 2; this.onerror?.() }
   }
+  // Bun's node:test MockTracker can leak repeated fetch replacements into later files.
+  // Own this global explicitly so the following HTTP suites use the real fetch.
+  const originalFetch = globalThis.fetch
+  t.after(() => { globalThis.fetch = originalFetch })
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'EventSource')
   Object.defineProperty(globalThis, 'EventSource', { configurable: true, writable: true, value: FakeEventSource })
   t.after(() => {
@@ -57,7 +65,7 @@ test('story-only changes reach subscribers and unchanged snapshots do not repeat
 test('a fresh snapshot wins over an older in-flight HTTP read', async (t) => {
   const { source, stream, models } = transport(t)
   const read = pending<Response>()
-  t.mock.method(globalThis, 'fetch', () => read.promise)
+  stubFetch(() => read.promise)
   const loading = source.loadWorkModel()
   stream.emit('work-view', snapshot('newer event'))
   read.resolve(response(snapshot('older read')))
@@ -69,7 +77,7 @@ test('a heartbeat during an HTTP read does not discard that read', async (t) => 
   const { source, stream } = transport(t)
   stream.emit('work-view', snapshot('existing'))
   const read = pending<Response>()
-  t.mock.method(globalThis, 'fetch', () => read.promise)
+  stubFetch(() => read.promise)
   const loading = source.loadWorkModel()
   stream.emit('heartbeat', { source: snapshot().source })
   read.resolve(response(snapshot('newer HTTP')))
@@ -80,7 +88,7 @@ test('a slow save re-reads after an intervening event instead of rolling it back
   const { source, stream } = transport(t)
   const saved = pending<Response>()
   const requests: string[] = []
-  t.mock.method(globalThis, 'fetch', (url: string) => {
+  stubFetch((url: string) => {
     requests.push(url)
     return url.endsWith('/rules') ? saved.promise : Promise.resolve(response(snapshot('saved and current')))
   })
@@ -98,7 +106,7 @@ test('a slow save re-reads after an intervening event instead of rolling it back
 test('a slow review save also keeps the newer model', async (t) => {
   const { source, stream } = transport(t)
   const saved = pending<Response>()
-  t.mock.method(globalThis, 'fetch', (url: string) => url.endsWith('/review') ? saved.promise : Promise.resolve(response(snapshot('checked and current'))))
+  stubFetch((url: string) => url.endsWith('/review') ? saved.promise : Promise.resolve(response(snapshot('checked and current'))))
   const saving = source.setRequestChecked('example', 'a'.repeat(64), true)
   stream.emit('work-view', snapshot('newer event'))
   saved.resolve(response(snapshot('old review response')))
@@ -120,7 +128,7 @@ test('a saved rule receipt keeps version B while the display advances to C', asy
     }],
   })
   const saved = pending<Response>()
-  t.mock.method(globalThis, 'fetch', (url: string) => url.endsWith('/rules')
+  stubFetch((url: string) => url.endsWith('/rules')
     ? saved.promise : Promise.resolve(response(ruleSnapshot('C: another tab changed it'))))
   stream.emit('work-view', ruleSnapshot('A: original rule'))
   const saving = source.saveRuleChange({ action: 'edit', ruleId: 'example', rule: { scopeTier: 'everywhere', scopeName: 'Everywhere', when: '', then: 'B: my change' } })
@@ -136,7 +144,7 @@ test('a confirmed save survives failed refresh and keeps the newer cached model'
   const { source, stream } = transport(t)
   const saved = pending<Response>()
   const fetched: string[] = []
-  t.mock.method(globalThis, 'fetch', (url: string) => {
+  stubFetch((url: string) => {
     fetched.push(url)
     return url.endsWith('/rules') ? saved.promise : Promise.reject(new Error('refresh disconnected'))
   })
@@ -151,7 +159,7 @@ test('a confirmed save survives failed refresh and keeps the newer cached model'
   assert.deepEqual(fetched, ['/api/work-view/rules', '/api/work-view'])
   // A later read that loses to another event must still find C in the transport cache, not B.
   const nextRead = pending<Response>()
-  t.mock.method(globalThis, 'fetch', () => nextRead.promise)
+  stubFetch(() => nextRead.promise)
   const reading = source.loadWorkModel()
   stream.emit('work-view', snapshot('C: current work'))
   nextRead.resolve(response(snapshot('old read')))
@@ -161,7 +169,7 @@ test('a confirmed save survives failed refresh and keeps the newer cached model'
 test('a review saved before a failed refresh still reports saved', async (t) => {
   const { source, stream } = transport(t)
   const saved = pending<Response>()
-  t.mock.method(globalThis, 'fetch', (url: string) => url.endsWith('/review')
+  stubFetch((url: string) => url.endsWith('/review')
     ? saved.promise : Promise.reject(new Error('review refresh disconnected')))
   const saving = source.setRequestChecked('example', 'a'.repeat(64), true)
   stream.emit('work-view', snapshot('C: current work'))
@@ -178,7 +186,7 @@ test('the own-save SSE followed by failed refresh does not make Add look failed'
   const { source, stream } = transport(t)
   const saved = pending<Response>()
   let posts = 0
-  t.mock.method(globalThis, 'fetch', (url: string) => {
+  stubFetch((url: string) => {
     if (url.endsWith('/rules')) { posts++; return saved.promise }
     return Promise.reject(new Error('refresh unavailable'))
   })
@@ -196,7 +204,7 @@ test('the own-save SSE followed by failed refresh does not make Add look failed'
 test('a rejected mutation POST still rejects without a follow-up read', async (t) => {
   const { source } = transport(t)
   const requests: string[] = []
-  t.mock.method(globalThis, 'fetch', (url: string) => {
+  stubFetch((url: string) => {
     requests.push(url)
     return Promise.resolve(response({ error: 'Local work is unavailable.' }, 503))
   })
@@ -206,7 +214,7 @@ test('a rejected mutation POST still rejects without a follow-up read', async (t
 
 test('a successful rule POST forwards the confirmed rule ID', async (t) => {
   const { source } = transport(t)
-  t.mock.method(globalThis, 'fetch', () => Promise.resolve(response({ ...snapshot('confirmed add'), savedRuleId: 'created-rule' })))
+  stubFetch(() => Promise.resolve(response({ ...snapshot('confirmed add'), savedRuleId: 'created-rule' })))
   const result = await source.saveRuleChange({ action: 'add', rule: { scopeTier: 'everywhere', scopeName: 'Everywhere', when: '', then: 'My rule' } })
   assert.equal(result.savedRuleId, 'created-rule')
   assert.equal(result.savedModel.buildStory?.recap, 'confirmed add')
@@ -216,6 +224,7 @@ test('a successful rule POST forwards the confirmed rule ID', async (t) => {
 
 test('cleanup blocks queued callbacks and cancels stream reopening', (t) => {
   t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] })
+  t.after(() => t.mock.timers.reset())
   const { stream, streams, models, connections, stop } = transport(t)
   stream.fail()
   stream.fail()
@@ -233,6 +242,7 @@ test('cleanup blocks queued callbacks and cancels stream reopening', (t) => {
 
 test('a permanently closed stream gets exactly one replacement and ignores old events', (t) => {
   t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] })
+  t.after(() => t.mock.timers.reset())
   const { stream, streams, models } = transport(t)
   stream.fail()
   stream.fail()
@@ -261,7 +271,7 @@ test('separate source instances do not share cached work or connection evidence'
   const { stream } = transport(t)
   stream.emit('work-view', snapshot('source one'))
   const second = createLocalSource()
-  t.mock.method(globalThis, 'fetch', () => Promise.resolve(response(snapshot('source two'))))
+  stubFetch(() => Promise.resolve(response(snapshot('source two'))))
   const loaded = await second.loadWorkModel()
   assert.equal(loaded.buildStory?.recap, 'source two')
   assert.equal(loaded.connection.isLive, false)
@@ -269,6 +279,6 @@ test('separate source instances do not share cached work or connection evidence'
 
 test('an invalid HTTP snapshot rejects before entering the live cache', async (t) => {
   const { source } = transport(t)
-  t.mock.method(globalThis, 'fetch', () => Promise.resolve(response({ error: 'no model' })))
+  stubFetch(() => Promise.resolve(response({ error: 'no model' })))
   await assert.rejects(source.loadWorkModel(), /not a work snapshot/)
 })

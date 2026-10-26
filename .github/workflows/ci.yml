@@ -79,7 +79,7 @@ jobs:
 
       # The My Work app's pure-logic tests live with the app (src/ui/my-work), outside tests/.
       - name: Test (My Work viewer)
-        run: bun test src/ui/my-work/src/live src/ui/my-work/src/setup
+        run: bun test src/ui/my-work/src/live src/ui/my-work/src/setup src/ui/my-work/src/stores
 
       # The cowork plugin's suite lives outside tests/ (cowork/test), so the
       # scoped lane check above never reaches it — run it explicitly, the same

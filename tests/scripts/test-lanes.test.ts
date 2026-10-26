@@ -10,6 +10,13 @@ import {
 describe('test-lanes command-line batching', () => {
   const commandPrefix = [process.execPath, 'test', '--timeout', '20000'];
 
+  it('includes the My Work stores in the root CI test lane', () => {
+    const files = filesForLane('fast');
+    expect(files).toContain('src/ui/my-work/src/stores/work-store.test.ts');
+    expect(files).toContain('src/ui/my-work/src/stores/work-mutations.test.ts');
+    expect(files).toContain('src/ui/my-work/src/stores/view-store.test.ts');
+  });
+
   it('splits the real fast lane into batches that each fit a Windows command line, in order', () => {
     const fastLaneFiles = filesForLane('fast').map(path => `./${path}`);
     // Guard the premise: one command line for the whole lane would be over the limit.
