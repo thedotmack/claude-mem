@@ -1,10 +1,11 @@
-import { existsSync, unlinkSync } from 'fs';
+import { existsSync, renameSync as fsRenameSync, unlinkSync } from 'fs';
 import { copyFile } from 'fs/promises';
 import { join } from 'path';
 import { Database } from 'bun:sqlite';
 import { logger } from '../../utils/logger.js';
 import { renameWithWindowsRetry } from '../../shared/atomic-json.js';
 import { runSqliteFileJob } from './sqlite-file-job.js';
+import { ChromaSyncState } from '../sync/ChromaSyncState.js';
 import {
   clearPendingRestore,
   readPendingRestore,
@@ -24,6 +25,52 @@ export interface SwapOptions {
   preRestoreDir: string;
   /** Test seam for the one step whose failure the swap must survive. */
   renameSync?: (from: string, to: string) => void;
+  /**
+   * How long to keep retrying while another process holds the live database
+   * (0 = fail at once). See applyPendingRestore for where the window comes from.
+   */
+  busyRetryWindowMs?: number;
+}
+
+/** Pause between "in use" retries: short next to the retry window, long next to a checkpoint. */
+const BUSY_RETRY_INTERVAL_MS = 500;
+
+const IN_USE_MESSAGE = 'the database is in use by another process; stop it and retry the restore';
+
+class DatabaseInUseError extends Error {}
+
+/**
+ * Checkpoint the live database in the child process. Throws DatabaseInUseError
+ * when another connection holds it, and returns false when the file is too
+ * damaged to checkpoint at all.
+ */
+async function checkpointLiveDatabase(dbPath: string): Promise<boolean> {
+  try {
+    const { busy } = await runSqliteFileJob({ kind: 'checkpoint', target: dbPath });
+    if (busy) throw new DatabaseInUseError(IN_USE_MESSAGE);
+    return true;
+  } catch (error) {
+    if (error instanceof DatabaseInUseError) throw error;
+    // SQLITE_BUSY / SQLITE_LOCKED surface as thrown errors when another
+    // connection holds a lock: that is "in use", not damage.
+    if (error instanceof Error && /database is (locked|busy)|SQLITE_(BUSY|LOCKED)/i.test(error.message)) {
+      throw new DatabaseInUseError(`${IN_USE_MESSAGE} (${error.message})`);
+    }
+    logger.warn('BACKUP', 'Live database could not be checkpointed; keeping its -wal with the pre-restore copy', {}, error instanceof Error ? error : new Error(String(error)));
+    return false;
+  }
+}
+
+async function checkpointWithRetry(dbPath: string, retryWindowMs: number): Promise<boolean> {
+  const giveUpAt = Date.now() + retryWindowMs;
+  for (;;) {
+    try {
+      return await checkpointLiveDatabase(dbPath);
+    } catch (error) {
+      if (!(error instanceof DatabaseInUseError) || Date.now() + BUSY_RETRY_INTERVAL_MS > giveUpAt) throw error;
+      await new Promise(resolve => setTimeout(resolve, BUSY_RETRY_INTERVAL_MS));
+    }
+  }
 }
 
 function removeIfPresent(path: string): void {
@@ -89,18 +136,18 @@ function carryAutoincrementCounters(stagedDb: string, counters: Array<{ name: st
  *   1. Stage a copy of the snapshot (and its -wal, if any) next to the live
  *      file and make it one standalone, quick_check-verified file. Nothing
  *      live has been touched yet.
- *   2. Checkpoint the live database (TRUNCATE) so its main file holds every
- *      committed row; refuse if another connection holds it. A database too
- *      damaged to checkpoint is still restorable: its -wal is kept with the
- *      pre-restore copy instead.
- *   3. Copy the live database into preRestoreDir as a snapshot-named file,
- *      so `restore` can put it back.
+ *   2. Copy the live database and its -wal, untouched, into preRestoreDir as
+ *      a snapshot-named file, so `restore` can put it back.
+ *   3. Checkpoint the live database (TRUNCATE) so its main file holds every
+ *      committed row; refuse, and drop the copy, if another connection holds
+ *      it. A database too damaged to checkpoint is still restorable.
  *   4. Raise the staged AUTOINCREMENT counters to the live ones.
- *   5. Delete the live -wal/-shm (empty after step 2, and they must never sit
- *      next to the new main file), then rename the staged file over the live
- *      one (atomic on one filesystem).
- * A failure before the rename leaves the old database in place and removes
- * the staged copy; nothing is ever copied over the live file.
+ *   5. Move the live -wal/-shm aside (they must never sit next to the new
+ *      main file), then rename the staged file over the live one (atomic on
+ *      one filesystem).
+ * A failure before the rename leaves the old database in place, with its
+ * sidecars moved back, and removes the staged copy; nothing is ever copied
+ * over the live file.
  */
 export async function swapDatabaseFromSnapshot(
   dbPath: string,
@@ -114,6 +161,7 @@ export async function swapDatabaseFromSnapshot(
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
   const stagedDb = `${dbPath}.restore-staging-${ts}`;
   let preRestoreCopy: string | null = null;
+  const movedSidecars: string[] = [];
 
   try {
     await copyFile(snapshotPath, stagedDb);
@@ -121,31 +169,51 @@ export async function swapDatabaseFromSnapshot(
     await runSqliteFileJob({ kind: 'standalone', target: stagedDb });
 
     if (existsSync(dbPath)) {
-      let liveWalKept = false;
+      // Copy the live db and its -wal exactly as they are on disk, before
+      // anything opens them: opening a damaged database can make SQLite
+      // discard its WAL, and this copy is the only way back.
+      const copyPath = join(options.preRestoreDir, `claude-mem-${ts}-pre-restore.db`);
+      await copyFile(dbPath, copyPath);
+      if (existsSync(`${dbPath}-wal`)) await copyFile(`${dbPath}-wal`, `${copyPath}-wal`);
+      preRestoreCopy = copyPath;
+
+      let checkpointed: boolean;
       try {
-        const { busy } = await runSqliteFileJob({ kind: 'checkpoint', target: dbPath });
-        if (busy) throw Object.assign(new Error('the database is in use by another process; stop it and retry the restore'), { busy: true });
+        checkpointed = await checkpointWithRetry(dbPath, options.busyRetryWindowMs ?? 0);
       } catch (error) {
-        if ((error as { busy?: boolean }).busy) throw error;
-        // SQLITE_BUSY / SQLITE_LOCKED surface as thrown errors when another
-        // connection holds a lock: that is "in use", not damage.
-        if (error instanceof Error && /database is (locked|busy)|SQLITE_(BUSY|LOCKED)/i.test(error.message)) {
-          throw new Error(`the database is in use by another process; stop it and retry the restore (${error.message})`);
-        }
-        liveWalKept = true;
-        logger.warn('BACKUP', 'Live database could not be checkpointed; keeping its -wal with the pre-restore copy', {}, error instanceof Error ? error : new Error(String(error)));
+        // Refused: the live database stays as it is, so its copy is not needed.
+        removeIfPresent(copyPath);
+        removeIfPresent(`${copyPath}-wal`);
+        preRestoreCopy = null;
+        throw error;
       }
-      preRestoreCopy = join(options.preRestoreDir, `claude-mem-${ts}-pre-restore.db`);
-      await copyFile(dbPath, preRestoreCopy);
-      if (liveWalKept && existsSync(`${dbPath}-wal`)) await copyFile(`${dbPath}-wal`, `${preRestoreCopy}-wal`);
-      // Read from the live file: it is about to be replaced, so the sidecars
-      // this open may leave behind are deleted in the next step.
-      carryAutoincrementCounters(stagedDb, readAutoincrementCounters(dbPath));
+      if (checkpointed) {
+        // Read from the live file: it is about to be replaced, so the
+        // sidecars this open may leave behind are moved aside next.
+        carryAutoincrementCounters(stagedDb, readAutoincrementCounters(dbPath));
+      } else {
+        logger.warn('BACKUP', 'Restoring over a database that could not be read; new ids may repeat ids it used', { dbPath });
+      }
     }
 
-    for (const ext of SIDECAR_EXTS) removeIfPresent(`${dbPath}${ext}`);
+    // Move the live sidecars aside rather than deleting them: if the rename
+    // below fails they go back, so a -wal that still held committed frames
+    // (a database too damaged to checkpoint) is never lost.
+    for (const ext of SIDECAR_EXTS) {
+      if (existsSync(`${dbPath}${ext}`)) {
+        fsRenameSync(`${dbPath}${ext}`, `${stagedDb}.live${ext}`);
+        movedSidecars.push(ext);
+      }
+    }
     rename(stagedDb, dbPath);
   } catch (error) {
+    for (const ext of movedSidecars) {
+      try {
+        fsRenameSync(`${stagedDb}.live${ext}`, `${dbPath}${ext}`);
+      } catch (restoreError) {
+        logger.error('BACKUP', 'Could not put a live sidecar back after a failed restore', { sidecar: `${dbPath}${ext}`, parkedAt: `${stagedDb}.live${ext}` }, restoreError instanceof Error ? restoreError : new Error(String(restoreError)));
+      }
+    }
     for (const leftover of [stagedDb, ...SIDECAR_EXTS.map(ext => `${stagedDb}${ext}`)]) {
       try {
         removeIfPresent(leftover);
@@ -156,8 +224,25 @@ export async function swapDatabaseFromSnapshot(
     throw error instanceof Error ? error : new Error(String(error));
   }
 
+  // The swap is done; the old sidecars belong to the replaced database.
+  for (const ext of movedSidecars) removeIfPresent(`${stagedDb}.live${ext}`);
   logger.info('BACKUP', 'Database swapped from snapshot', { snapshot: snapshotPath, preRestoreCopy });
   return { preRestoreCopy };
+}
+
+/**
+ * The semantic index still describes the replaced database: rows deleted or
+ * edited after the snapshot come back older than their vectors, and the
+ * backfill watermarks sit past them. Flag every project for a rebuild from
+ * zero, the same path a dropped corrupt collection takes; the next backfill
+ * re-upserts every row. Failure only leaves search stale, so it is logged.
+ */
+function queueSemanticIndexRebuild(): void {
+  try {
+    ChromaSyncState.markAllForRebuild();
+  } catch (error) {
+    logger.error('BACKUP', 'Could not flag the semantic index for a rebuild after the restore; semantic search may miss restored rows', {}, error instanceof Error ? error : new Error(String(error)));
+  }
 }
 
 /**
@@ -167,7 +252,11 @@ export async function swapDatabaseFromSnapshot(
  * boot. The outcome goes to last-restore.json, which GET /api/backup/status
  * reports. Never throws.
  */
-export async function applyPendingRestore(dbPath: string, backupsDir: string): Promise<LastRestoreResult | null> {
+export async function applyPendingRestore(
+  dbPath: string,
+  backupsDir: string,
+  options: { busyRetryWindowMs?: number } = {},
+): Promise<LastRestoreResult | null> {
   let snapshot = '(unreadable restore marker)';
   let result: LastRestoreResult;
   try {
@@ -179,9 +268,13 @@ export async function applyPendingRestore(dbPath: string, backupsDir: string): P
     if (snapshotPath === null) {
       throw new Error(`refusing a restore target outside the backups directory: ${pending.snapshot}`);
     }
-    const { preRestoreCopy } = await swapDatabaseFromSnapshot(dbPath, snapshotPath, { preRestoreDir: backupsDir });
+    const { preRestoreCopy } = await swapDatabaseFromSnapshot(dbPath, snapshotPath, {
+      preRestoreDir: backupsDir,
+      busyRetryWindowMs: options.busyRetryWindowMs,
+    });
     result = { snapshot, at: Date.now(), ok: true, preRestoreCopy, error: null };
     logger.info('BACKUP', 'Pending restore applied', { snapshot, preRestoreCopy });
+    queueSemanticIndexRebuild();
   } catch (error) {
     const normalized = error instanceof Error ? error : new Error(String(error));
     // A marker that cannot be read or applied is cleared, never retried on

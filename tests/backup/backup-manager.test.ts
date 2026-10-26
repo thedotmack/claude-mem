@@ -103,30 +103,31 @@ describe('BackupManager.createSnapshot standalone output', () => {
     }
   });
 
-  it('folds WAL-only commits into one standalone file when VACUUM INTO fails', async () => {
+  it('fails loudly and keeps nothing under a snapshot name when VACUUM INTO fails', async () => {
     tempRoot = mkdtempSync(join(tmpdir(), 'claude-mem-backup-'));
-    const dbPath = createSourceDb(tempRoot);
-    // A live writer whose newest rows are only in the -wal sidecar.
-    const writer = new Database(dbPath);
-    writer.run('PRAGMA wal_autocheckpoint = 0');
-    writer.run("INSERT INTO observations (note) VALUES ('wal-only-1'), ('wal-only-2')");
-    try {
-      const manager = makeManager(tempRoot, {}, { forceCopyFallback: true });
-      const result = await manager.createSnapshot();
+    writeFileSync(join(tempRoot, 'claude-mem.db'), 'not a database');
+    const manager = makeManager(tempRoot);
 
-      expect(result.method).toBe('copy');
-      expect(existsSync(`${result.path}-wal`)).toBe(false);
-      expect(existsSync(`${result.path}-shm`)).toBe(false);
-      const snapshot = new Database(result.path, { readonly: true });
-      try {
-        const count = snapshot.query('SELECT COUNT(*) AS n FROM observations').get() as { n: number };
-        expect(count.n).toBe(27);
-      } finally {
-        snapshot.close();
-      }
-    } finally {
-      writer.close();
-    }
+    await expect(manager.runNow()).rejects.toThrow();
+
+    expect(readdirSync(join(tempRoot, 'backups', 'auto'))).toEqual([]);
+    expect(manager.status().snapshotCount).toBe(0);
+    expect(manager.status().lastError).not.toBeNull();
+  });
+
+  it('removes a partial snapshot left by an interrupted run, and never lists it', async () => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'claude-mem-backup-'));
+    createSourceDb(tempRoot);
+    const backupsDir = join(tempRoot, 'backups', 'auto');
+    mkdirSync(backupsDir, { recursive: true });
+    writeFileSync(join(backupsDir, 'claude-mem-2026-10-01T00-00-00-000Z.db.partial'), 'half written');
+    const manager = makeManager(tempRoot);
+    expect(manager.status().snapshotCount).toBe(0);
+
+    await manager.createSnapshot();
+
+    expect(readdirSync(backupsDir).filter(name => name.endsWith('.partial'))).toEqual([]);
+    expect(manager.status().snapshotCount).toBe(1);
   });
 });
 

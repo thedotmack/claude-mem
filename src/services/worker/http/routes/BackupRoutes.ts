@@ -6,6 +6,7 @@ import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { paths } from '../../../../shared/paths.js';
 import { SNAPSHOT_FILE_PATTERN, readLastRestoreResult } from '../../../backup/snapshot-files.js';
 import type { DatabaseManager } from '../../DatabaseManager.js';
+import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 
 /** Test seam: snapshot and restore-result locations default to the data dir. */
 export interface BackupRoutesOptions {
@@ -59,7 +60,14 @@ export class BackupRoutes extends BaseRouteHandler {
     res.json({ ...backupManager.status(), lastRestore });
   });
 
-  private handleRun = this.wrapHandler(async (_req: Request, res: Response): Promise<void> => {
+  private handleRun = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    // A snapshot writes a full database copy to disk: refuse it from other
+    // localhost pages, as settings writes are. Origin-less clients (the CLI,
+    // curl) keep the loopback-trust model.
+    if (isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({ error: 'Backup runs from a different localhost origin are not allowed' });
+      return;
+    }
     const backupManager = this.dbManager.getBackupManager();
     if (!backupManager) {
       res.status(400).json({ error: 'Backups are not enabled (set CLAUDE_MEM_BACKUP_ENABLED to "true" and restart the worker)' });

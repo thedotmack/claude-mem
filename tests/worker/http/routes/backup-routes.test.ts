@@ -143,7 +143,7 @@ describe('BackupRoutes', () => {
 
   describe('POST /api/backup/run', () => {
     it('triggers a snapshot and returns the result', async () => {
-      const snapshot = { path: '/tmp/claude-mem-x.db', bytes: 4096, createdAt: 1751990400000, method: 'vacuum-into' };
+      const snapshot = { path: '/tmp/claude-mem-x.db', bytes: 4096, createdAt: 1751990400000 };
       const runNow = mock(async () => snapshot);
       const mockDbManager = { getBackupManager: () => ({ runNow }) };
       const chains = buildChains(new BackupRoutes(mockDbManager as any));
@@ -154,6 +154,19 @@ describe('BackupRoutes', () => {
       expect(runNow).toHaveBeenCalledTimes(1);
       expect(jsonSpy).toHaveBeenCalledWith({ success: true, snapshot });
       expect(statusSpy).not.toHaveBeenCalled();
+    });
+
+    it('refuses a run from another localhost page (403) without starting a snapshot', async () => {
+      const runNow = mock(async () => null);
+      const mockDbManager = { getBackupManager: () => ({ runNow }) };
+      const chains = buildChains(new BackupRoutes(mockDbManager as any));
+
+      const { req, res, jsonSpy, statusSpy } = createMockReqRes('/api/backup/run');
+      (req as any).headers = { origin: 'http://localhost:3000', host: '127.0.0.1:37777' };
+      await invokeChain(chains['POST /api/backup/run'], req, res, jsonSpy);
+
+      expect(statusSpy).toHaveBeenCalledWith(403);
+      expect(runNow).not.toHaveBeenCalled();
     });
 
     it('returns 409 when a snapshot is already running (single-flight guard)', async () => {

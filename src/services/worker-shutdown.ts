@@ -37,6 +37,14 @@ import { logger } from '../utils/logger.js';
  */
 export type WorkerShutdownReason = 'stop' | 'restart' | 'signal' | 'idle';
 
+/**
+ * Base deadline (before getPlatformTimeout scaling) for the dying worker's
+ * graceful shutdown. A restart successor can boot while its predecessor is
+ * still inside this window, so anything the successor must wait out (a
+ * staged restore waiting for the old process to release SQLite) uses it too.
+ */
+export const WORKER_GRACEFUL_SHUTDOWN_DEADLINE_BASE_MS = 10_000;
+
 export interface RestartHandoffDeps {
   port: number;
   /** Budget for the old worker's port to close before giving up on the spawn. */

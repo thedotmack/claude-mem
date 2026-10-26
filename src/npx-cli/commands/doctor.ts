@@ -582,7 +582,14 @@ export async function runDoctorCommand(): Promise<void> {
     if (existsSync(backupsDir)) {
       for (const name of readdirSync(backupsDir)) {
         if (!SNAPSHOT_FILE_PATTERN.test(name)) continue;
-        const mtime = statSync(join(backupsDir, name)).mtimeMs;
+        // Retention can delete a snapshot between the listing and the stat;
+        // skip it rather than abort the whole report.
+        let mtime: number;
+        try {
+          mtime = statSync(join(backupsDir, name)).mtimeMs;
+        } catch {
+          continue;
+        }
         if (newestMtime === null || mtime > newestMtime) newestMtime = mtime;
       }
     }

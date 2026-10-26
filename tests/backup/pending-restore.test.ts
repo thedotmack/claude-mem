@@ -6,6 +6,7 @@ import { join } from 'path';
 import { applyPendingRestore } from '../../src/services/backup/restore-swap.js';
 import { readLastRestoreResult, resolveSnapshotInside, stagePendingRestore } from '../../src/services/backup/snapshot-files.js';
 import { paths } from '../../src/shared/paths.js';
+import { ChromaSyncState } from '../../src/services/sync/ChromaSyncState.js';
 
 let tempRoot: string | undefined;
 
@@ -79,6 +80,18 @@ describe('applyPendingRestore', () => {
     expect(readLastRestoreResult()).toEqual(result);
     // A second boot finds nothing to do.
     expect(await applyPendingRestore(dbPath, backupsDir)).toBeNull();
+  });
+
+  it('flags the semantic index for a rebuild after a successful restore', async () => {
+    const { dbPath, backupsDir, snapshotName } = setup();
+    ChromaSyncState.resetCacheForTests();
+    ChromaSyncState.replace('restore-test-project', { observations: 40, summaries: 4, prompts: 9 });
+    stagePendingRestore(snapshotName);
+
+    await applyPendingRestore(dbPath, backupsDir);
+
+    ChromaSyncState.resetCacheForTests();
+    expect(ChromaSyncState.isRebuildPending('restore-test-project')).toBe(true);
   });
 
   it('records a failure, clears the marker and leaves the database unchanged', async () => {

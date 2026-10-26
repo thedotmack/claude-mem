@@ -12,16 +12,14 @@
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 
 export type SqliteFileJob =
-  /** Snapshot `source` into `target` (VACUUM INTO, else a db+WAL copy), then make it standalone. */
-  | { kind: 'snapshot'; source: string; target: string; forceCopyFallback?: boolean }
+  /** VACUUM INTO `target` from `source`, then make it standalone. */
+  | { kind: 'snapshot'; source: string; target: string }
   /** Fold any `-wal` into `target`, switch it to rollback-journal mode, require quick_check ok. */
   | { kind: 'standalone'; target: string }
   /** PRAGMA wal_checkpoint(TRUNCATE) on `target`; reports whether another connection blocked it. */
   | { kind: 'checkpoint'; target: string };
 
 export interface SqliteFileJobResult {
-  method?: 'vacuum-into' | 'copy';
-  vacuumError?: string;
   busy?: boolean;
 }
 
@@ -49,21 +47,12 @@ try {
     } finally { db.close(); }
   } else {
     if (job.kind === 'snapshot') {
-      let vacuumError = job.forceCopyFallback ? 'copy fallback forced' : null;
-      if (!vacuumError) {
-        const src = new Database(job.source, { readonly: true });
-        try { src.run("VACUUM INTO '" + job.target.replace(/'/g, "''") + "'"); }
-        catch (e) { vacuumError = e && e.message ? e.message : String(e); }
-        finally { src.close(); }
-      }
-      result.method = 'vacuum-into';
-      if (vacuumError) {
-        result.method = 'copy';
-        result.vacuumError = vacuumError;
-        for (const p of [job.target, job.target + '-wal', job.target + '-shm']) rm(p);
-        fs.copyFileSync(job.source, job.target);
-        if (fs.existsSync(job.source + '-wal')) fs.copyFileSync(job.source + '-wal', job.target + '-wal');
-      }
+      // VACUUM INTO is the only consistent online copy. A raw copy of a live
+      // db and its WAL can pair two different states, so there is no copy
+      // fallback: a failed VACUUM INTO fails the snapshot.
+      const src = new Database(job.source, { readonly: true });
+      try { src.run("VACUUM INTO '" + job.target.replace(/'/g, "''") + "'"); }
+      finally { src.close(); }
     }
     standalone(job.target);
   }

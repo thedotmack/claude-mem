@@ -8,7 +8,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { formatHostForUrl, getWorkerPort, getWorkerHost, fetchWithTimeout, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js';
-import { runShutdownSequence, type WorkerShutdownReason } from './worker-shutdown.js';
+import { runShutdownSequence, WORKER_GRACEFUL_SHUTDOWN_DEADLINE_BASE_MS, type WorkerShutdownReason } from './worker-shutdown.js';
 import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensureDir, paths } from '../shared/paths.js';
 import { HookSpool, migrateLegacySessionEndReplay } from '../shared/hook-spool.js';
 import { HookSpoolDrainer, hookSpoolConsumedMarkers } from './worker/hook-spool-drain.js';
@@ -792,7 +792,11 @@ export class WorkerService implements WorkerRef {
       // child process, so health checks keep answering. It never throws: a
       // failed restore is logged, reported by GET /api/backup/status, and the
       // worker starts on the unchanged database.
-      await applyPendingRestore(DB_PATH, paths.backups());
+      // A predecessor still inside its graceful-shutdown deadline may hold
+      // the database; the restore waits that long for it to let go.
+      await applyPendingRestore(DB_PATH, paths.backups(), {
+        busyRetryWindowMs: getPlatformTimeout(WORKER_GRACEFUL_SHUTDOWN_DEADLINE_BASE_MS),
+      });
 
       logger.info('WORKER', 'Checking for one-time CWD remap...');
       runOneTimeCwdRemap();
@@ -1261,7 +1265,7 @@ export class WorkerService implements WorkerRef {
         dbManager: this.dbManager,
         chromaMcpManager: this.chromaMcpManager || undefined
       }),
-      gracefulDeadlineMs: getPlatformTimeout(10000),
+      gracefulDeadlineMs: getPlatformTimeout(WORKER_GRACEFUL_SHUTDOWN_DEADLINE_BASE_MS),
       restartHandoff: {
         port: getWorkerPort(),
         portFreeTimeoutMs: getPlatformTimeout(5000),

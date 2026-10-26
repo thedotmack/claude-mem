@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { swapDatabaseFromSnapshot } from '../../src/services/backup/restore-swap.js';
@@ -158,6 +158,53 @@ describe('swapDatabaseFromSnapshot', () => {
 
     expect(readNotes(dbPath)).toEqual(['snap-1']);
     expect(existsSync(preRestoreCopy!)).toBe(true);
+  });
+
+  it('keeps a damaged database and its -wal byte for byte when the rename fails', async () => {
+    const { dbPath, snapshotPath, backupsDir } = setup();
+    writeFileSync(dbPath, 'damaged beyond repair');
+    writeFileSync(`${dbPath}-wal`, 'frames that may still matter');
+    const failingRename = (): void => {
+      throw new Error('EPERM: injected rename failure');
+    };
+
+    await expect(swapDatabaseFromSnapshot(dbPath, snapshotPath, { preRestoreDir: backupsDir, renameSync: failingRename }))
+      .rejects.toThrow('injected rename failure');
+
+    expect(readFileSync(dbPath, 'utf8')).toBe('damaged beyond repair');
+    // Copied before SQLite ever opened it, so nothing it discarded is lost.
+    const copy = readdirSync(backupsDir).find(name => name.endsWith('-pre-restore.db'))!;
+    expect(readFileSync(join(backupsDir, copy), 'utf8')).toBe('damaged beyond repair');
+    expect(readFileSync(join(backupsDir, `${copy}-wal`), 'utf8')).toBe('frames that may still matter');
+  });
+
+  it('puts the live sidecars back when the rename fails', async () => {
+    const { dbPath, snapshotPath, backupsDir } = setup();
+    const failingRename = (): void => {
+      throw new Error('EPERM: injected rename failure');
+    };
+    const hadWal = existsSync(`${dbPath}-wal`);
+
+    await expect(swapDatabaseFromSnapshot(dbPath, snapshotPath, { preRestoreDir: backupsDir, renameSync: failingRename }))
+      .rejects.toThrow('injected rename failure');
+
+    expect(existsSync(`${dbPath}-wal`)).toBe(hadWal);
+    expect(readdirSync(join(dbPath, '..')).filter(name => name.includes('.live-'))).toEqual([]);
+  });
+
+  it('waits out a connection that lets go within the retry window', async () => {
+    const { dbPath, snapshotPath, backupsDir } = setup();
+    const reader = new Database(dbPath);
+    reader.run('BEGIN');
+    reader.query('SELECT COUNT(*) FROM observations').get();
+    setTimeout(() => {
+      reader.run('COMMIT');
+      reader.close();
+    }, 300);
+
+    await swapDatabaseFromSnapshot(dbPath, snapshotPath, { preRestoreDir: backupsDir, busyRetryWindowMs: 5_000 });
+
+    expect(readNotes(dbPath)).toEqual(['snap-1']);
   });
 
   it('throws when the snapshot is missing and leaves the live database untouched', async () => {
