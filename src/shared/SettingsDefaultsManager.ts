@@ -6,6 +6,7 @@ import { HOOK_TIMEOUTS, defaultSessionInitRequestTimeoutMs, getTimeout } from '.
 import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
 import { isOpenRouterApiUrl } from './openrouter-base-url.js';
 import { settingsTarget, withoutStaleRootCopies } from './settings-document.js';
+import { expandHome } from './expand-home.js';
 
 // A fresh settings.json is seeded with EVERY default (see loadFromFile), and
 // persisted values then win over DEFAULTS. So any install created after the
@@ -712,12 +713,14 @@ export class SettingsDefaultsManager {
   private static finalizeSettings(settings: SettingsDefaults, applyEnvOverrides: boolean): SettingsDefaults {
     const result = applyEnvOverrides ? this.applyEnvOverrides(settings) : settings;
     result.CLAUDE_MEM_WORKER_HOST = this.normalizeWorkerHost(result.CLAUDE_MEM_WORKER_HOST);
-    // The default names ~/.claude-mem literally, and fresh settings files persist
+    // The default points at <home>/.claude-mem, and fresh settings files persist
     // it, so a custom CLAUDE_MEM_DATA_DIR would still share the home install's
     // transcript watches. Only an explicitly configured path is kept as is.
+    // The data dir is home-expanded the same way paths.ts resolves it, so every
+    // reader of this setting gets one absolute path.
     const dataDir = result.CLAUDE_MEM_DATA_DIR?.trim();
     if (dataDir && result.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH === this.DEFAULTS.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH) {
-      result.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH = join(dataDir, 'transcript-watch.json');
+      result.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH = join(expandHome(dataDir), 'transcript-watch.json');
     }
     return result;
   }

@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync, statSync, chmodSync, symlinkSync } from 'fs';
 import { join } from 'path';
-import { tmpdir } from 'os';
+import { homedir, tmpdir } from 'os';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 import { readFlatSettings } from '../../src/npx-cli/utils/settings.js';
 import { DEFAULT_SETTINGS as VIEWER_DEFAULT_SETTINGS } from '../../src/ui/viewer/constants/settings.js';
@@ -1368,6 +1368,18 @@ describe('transcript-watch config path follows the data dir', () => {
     writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_DATA_DIR: dataDir, CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: legacyDefault }));
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
     expect(settings.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH).toBe(join(dataDir, 'transcript-watch.json'));
+  });
+
+  it('expands a ~ data dir from the environment to an absolute path under home', () => {
+    process.env.CLAUDE_MEM_DATA_DIR = '~/x';
+    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+    expect(settings.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH).toBe(join(homedir(), 'x', 'transcript-watch.json'));
+  });
+
+  it('expands a ~ data dir from settings.json to an absolute path under home', () => {
+    writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_DATA_DIR: '~/x', CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: legacyDefault }));
+    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+    expect(settings.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH).toBe(join(homedir(), 'x', 'transcript-watch.json'));
   });
 
   it('keeps an explicitly configured path', () => {
