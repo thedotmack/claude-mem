@@ -9,7 +9,6 @@ import { Database } from 'bun:sqlite';
 import { CLAUDE_CONFIG_DIR, DATA_DIR, DB_PATH, getPackageRoot, USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { onContextInvalidation } from '../../../../shared/context-invalidation.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
-import { resolveOpenRouterChatCompletionsUrl } from '../../../../shared/openrouter-base-url.js';
 import { logger } from '../../../../utils/logger.js';
 import { hasForwardedClientHeaders, hasLoopbackHostHeader, isLocalhost } from '../../../../server/middleware/request-auth-helpers.js';
 import { WorkStateSource, type WorkViewSnapshot } from '../../../work-view/data-source.mjs';
@@ -19,6 +18,8 @@ import { MY_RULES_LIST, renderRulesFile, ruleRowFields, type SavedRule } from '.
 import { AGENT_LIFECYCLE_LIST, agentStopFields } from '../../../work-view/agent-lifecycle.mjs';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { chatCompletionsHumanCopyProvider, HumanCopyWorker } from '../../../work-view/human-copy-worker.mjs';
+import { resolveOpenRouterConfig } from '../../OpenRouterProvider.js';
+import { resolveOpenAICompatConfig } from '../../OpenAICompatProvider.js';
 import { AutoRefreshWorker } from '../../../work-view/auto-refresh-worker.mjs';
 import { buildRefreshTask } from '../../../work-view/refresh-task.js';
 import { HostedIntent } from '../../../work-view/hosted-intent.js';
@@ -175,17 +176,43 @@ const setupImportBody = z.object({}).strict();
 
 type HumanCopyProvider = ReturnType<typeof chatCompletionsHumanCopyProvider>;
 
-/** Readable request summaries use the observer endpoint the user already
- * configured. Other providers keep the recorded wording. */
-export function configuredHumanCopyProvider(settingsPath = USER_SETTINGS_PATH): HumanCopyProvider | null {
+/** Resolve the explicitly selected copy endpoint, or follow today's primary-provider behavior. */
+function resolveConfiguredHumanCopyProvider(settingsPath: string): HumanCopyProvider | null {
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true });
-  const apiKey = settings.CLAUDE_MEM_OPENROUTER_API_KEY?.trim();
-  if (settings.CLAUDE_MEM_PROVIDER !== 'openrouter' || !apiKey) return null;
-  return chatCompletionsHumanCopyProvider({
-    url: resolveOpenRouterChatCompletionsUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL),
-    apiKey,
-    model: settings.CLAUDE_MEM_OPENROUTER_MODEL,
-  });
+  const selection = settings.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER?.trim() || settings.CLAUDE_MEM_PROVIDER;
+  const modelOverride = settings.CLAUDE_MEM_WORK_VIEW_COPY_MODEL?.trim();
+
+  if (selection === 'openrouter') {
+    const config = resolveOpenRouterConfig(settingsPath);
+    if (!config.apiUrl || !config.apiKey || !config.model) return null;
+    return chatCompletionsHumanCopyProvider({ url: config.apiUrl, apiKey: config.apiKey, model: modelOverride || config.model });
+  }
+  if (selection === 'openai-compatible') {
+    const config = resolveOpenAICompatConfig(settingsPath);
+    if (!config.apiUrl || !config.model || (config.requiresApiKey && !config.apiKey)) return null;
+    return chatCompletionsHumanCopyProvider({ url: config.apiUrl, apiKey: config.apiKey, model: modelOverride || config.model });
+  }
+  return null;
+}
+
+/**
+ * My Work summaries follow the primary OpenRouter/OpenAI-compatible provider by
+ * default. A different configured endpoint is used only when selected here;
+ * the observer's quota-fallback key is never activated merely because it exists.
+ * Settings and credentials are resolved for each availability check/request so
+ * saves take effect without rebuilding the routes.
+ */
+export function configuredHumanCopyProvider(settingsPath = USER_SETTINGS_PATH): HumanCopyProvider {
+  const provider = (async (input: unknown) => {
+    const resolved = resolveConfiguredHumanCopyProvider(settingsPath);
+    if (!resolved) throw new Error('No supported My Work summary provider is configured.');
+    return resolved(input);
+  }) as HumanCopyProvider & { isAvailable: () => boolean };
+  provider.isAvailable = () => {
+    try { return resolveConfiguredHumanCopyProvider(settingsPath) !== null; }
+    catch { return false; }
+  };
+  return provider;
 }
 
 /** My Work's automatic refresh on the user's own logged-in agent, unless

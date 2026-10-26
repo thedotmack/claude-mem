@@ -1,4 +1,4 @@
-type HumanCopyProvider = (input: unknown) => Promise<Record<string, unknown>>;
+type HumanCopyProvider = ((input: unknown) => Promise<Record<string, unknown>>) & { isAvailable?: () => boolean };
 export function chatCompletionsHumanCopyProvider(options: { url: string; apiKey: string; model: string; fetchImpl?: typeof fetch }): HumanCopyProvider;
 export function fitGeneratedCopy(output: unknown): unknown;
 export class HumanCopyWorker {

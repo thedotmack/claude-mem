@@ -212,6 +212,34 @@ test('without a configured summary provider, requests are marked unavailable and
   assert.equal(instance.status().queued, 0);
 });
 
+test('a provider whose settings are off is not queued or called, then resolves after opt-in', async t => {
+  let enabled = false, calls = 0;
+  const provider = Object.assign(async input => { calls++; return { output: copy(input) }; }, { isAvailable: () => enabled });
+  const instance = worker(provider);
+  t.after(() => instance.close());
+  const source = request();
+  assert.equal(instance.observe(view(source)).humanRequests[0].humanCopy.state, 'unavailable');
+  assert.equal(instance.status().queued, 0);
+  assert.equal(calls, 0);
+
+  enabled = true;
+  assert.equal(instance.observe(view(source)).humanRequests[0].humanCopy.state, 'pending');
+  await settle();
+  assert.equal(calls, 1);
+  assert.equal(instance.observe(view(source)).humanRequests[0].humanCopy.state, 'current');
+});
+
+test('the chat-completions provider omits authorization for a configured keyless local endpoint', async () => {
+  let sent;
+  const provider = chatCompletionsHumanCopyProvider({
+    url: 'http://127.0.0.1:1234/v1/chat/completions', apiKey: '', model: 'local-model',
+    fetchImpl: async (url, init) => { sent = { url, init }; return new Response(JSON.stringify({ choices: [{ message: { content: '{"title":"t"}' } }] })); },
+  });
+  await provider({ version: 1 });
+  assert.equal(sent.url, 'http://127.0.0.1:1234/v1/chat/completions');
+  assert.equal(Object.hasOwn(sent.init.headers, 'Authorization'), false);
+});
+
 test('the chat-completions provider sends the configured model and key and parses JSON copy', async () => {
   let sent;
   const provider = chatCompletionsHumanCopyProvider({
