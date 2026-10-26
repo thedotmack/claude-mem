@@ -244,7 +244,11 @@ class FileTailer {
   private fileIdentity?: string;
   /** sha256 of the up-to-4 KiB before the checkpoint (fingerprintBeforeOffset). Persisted. */
   private checkpointFingerprint?: string;
-  /** Checkpoint after every JSONL line: set when checkpoints are held in memory, so they cost no write. */
+  /**
+   * Take a recovery point after every JSONL line: set when checkpoints are
+   * held in memory. Those per-line points are only held; the state file is
+   * written at most once per YIELD_EVERY_N_LINES batch, poll tick, or read end.
+   */
   checkpointEachLine = false;
 
   constructor(
@@ -257,7 +261,9 @@ class FileTailer {
       frameLinesDone: number,
       fileIdentity?: string,
       checkpointFingerprint?: string,
-      partialBytes?: string
+      partialBytes?: string,
+      /** Held in memory only; a later checkpoint or the poll writes it. */
+      recoveryPointOnly?: boolean
     ) => void,
     // zstd only: the unterminated JSONL prefix and the lines of the frame at
     // the offset already dispatched, persisted with the frame-aligned offset.
@@ -378,14 +384,14 @@ class FileTailer {
   }
 
   /** Durable checkpoint: record and persist where the next pass (or a restart) resumes. */
-  private checkpoint(offset: number, partial = '', partialBytes = this.zstdPartialBytes): void {
+  private checkpoint(offset: number, partial = '', partialBytes = this.zstdPartialBytes, recoveryPointOnly = false): void {
     this.zstdPartialBytes = partialBytes;
     this.tailState.offset = offset;
     this.tailState.partial = partial;
     this.checkpointFingerprint = this.fileIdentity === undefined
       ? undefined
       : fingerprintBeforeOffset(this.filePath, offset, this.fileIdentity) ?? undefined;
-    this.onOffset(offset, partial, this.frameLinesDone, this.fileIdentity, this.checkpointFingerprint, this.zstdPartialBytes?.toString('base64'));
+    this.onOffset(offset, partial, this.frameLinesDone, this.fileIdentity, this.checkpointFingerprint, this.zstdPartialBytes?.toString('base64'), recoveryPointOnly);
   }
 
   /**
@@ -437,7 +443,7 @@ class FileTailer {
         this.checkpoint(this.tailState.offset);
         await yieldToEventLoop();
       } else if (line && this.checkpointEachLine) {
-        this.checkpoint(this.tailState.offset);
+        this.checkpoint(this.tailState.offset, '', undefined, true);
       }
     }
 
@@ -634,7 +640,7 @@ export class TranscriptWatcher {
     }
   }
 
-  private holdCheckpoint(file: string, apply: () => void): void {
+  private holdCheckpoint(file: string, apply: () => void, commitNow: boolean): void {
     const gate = this.checkpointGate!;
     const sequence = gate.sequence();
     const held = this.heldCheckpoints.get(file) ?? [];
@@ -642,7 +648,9 @@ export class TranscriptWatcher {
     if (held.length > 0 && held[held.length - 1].sequence === sequence) held[held.length - 1] = { sequence, apply };
     else held.push({ sequence, apply });
     this.heldCheckpoints.set(file, held);
-    this.commitHeldCheckpoints();
+    // A per-line recovery point stays in memory: committing writes the whole
+    // state file, so that waits for the batch's checkpoint or the poll.
+    if (commitNow) this.commitHeldCheckpoints();
     if (this.heldCheckpoints.size > 0 && !this.heldCheckpointTimer) {
       this.heldCheckpointTimer = setInterval(() => this.commitHeldCheckpoints(), HELD_CHECKPOINT_POLL_MS);
       this.heldCheckpointTimer.unref?.();
@@ -841,6 +849,9 @@ export class TranscriptWatcher {
       const context = this.fileContexts.get(file);
       if (context) this.processor.retireFileContext(context);
       this.fileContexts.delete(file);
+      // A held checkpoint carries its own copy of these tool calls: committing it
+      // would write the retired inputs back.
+      this.heldCheckpoints.delete(file);
       if (this.state.pendingTools?.[file]) {
         delete this.state.pendingTools[file];
         retired = true;
@@ -1118,7 +1129,7 @@ export class TranscriptWatcher {
           }
         }
       },
-      (newOffset: number, partial: string, frameLinesDone: number, fileIdentity?: string, checkpointFingerprint?: string, partialBytes?: string) => {
+      (newOffset: number, partial: string, frameLinesDone: number, fileIdentity?: string, checkpointFingerprint?: string, partialBytes?: string, recoveryPointOnly = false) => {
         const pendingTools = this.checkpointGate && fileContext.pendingTools
           ? Object.fromEntries(Object.entries(fileContext.pendingTools).map(([key, tools]) => [key, { ...tools }]))
           : undefined;
@@ -1145,7 +1156,7 @@ export class TranscriptWatcher {
           }
         };
         if (this.checkpointGate) {
-          this.holdCheckpoint(filePath, apply);
+          this.holdCheckpoint(filePath, apply, !recoveryPointOnly);
           return;
         }
         apply();

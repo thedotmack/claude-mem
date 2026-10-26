@@ -75,3 +75,64 @@ it('saves the newest checkpoint once everything is stored', async () => {
     watcher.stop();
   }
 });
+
+it('drops a retired transcript\'s held checkpoints, so its saved tool inputs are never written back', async () => {
+  const path = join(root, 'retired.jsonl');
+  const statePath = join(root, 'retired-state.json');
+  writeFileSync(path, '{"n":1}\n{"n":2}\n');
+  const schema = { name: 'retired', events: [] };
+  const watch = { name: 'retired', path, schema };
+  let sequence = 0;
+  let storedThrough = 0;
+  const gate: TranscriptCheckpointGate = { sequence: () => sequence, drainedThrough: (_s, upTo) => upTo <= storedThrough };
+  const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath, 'in-process', gate);
+  // Each line buffers one message and leaves a tool call whose input holds a secret.
+  (watcher as any).handleLine = async (_line: string, _w: unknown, _s: unknown, _f: string, _o: unknown, fileContext: any) => {
+    sequence++;
+    fileContext.pendingTools = { session: { [`tool-${sequence}`]: { toolName: 'Bash', toolInput: { command: 'export TOKEN=secret' } } } };
+  };
+  try {
+    await readAll(watcher, path, watch, schema);
+    expect((watcher as any).heldCheckpoints.has(path)).toBe(true);
+
+    // The transcript disappears and is retired while its checkpoints are still held.
+    (watcher as any).tailers.get(path).close();
+    (watcher as any).tailers.delete(path);
+    rmSync(path);
+    (watcher as any).retirementCandidates.add(path);
+    (watcher as any).retireMissingTranscripts();
+
+    storedThrough = sequence;
+    (watcher as any).commitHeldCheckpoints();
+    const state = loadWatchState(statePath);
+    expect(state.pendingTools?.[path]).toBeUndefined();
+    expect(state.offsets[path]).toBeUndefined();
+    expect((watcher as any).heldCheckpoints.has(path)).toBe(false);
+  } finally {
+    watcher.stop();
+  }
+});
+
+it('keeps per-line recovery points in memory and writes the state file once per batch, not after every line', async () => {
+  const path = join(root, 'batched.jsonl');
+  const statePath = join(root, 'batched-state.json');
+  writeFileSync(path, '{"n":1}\n{"n":2}\n{"n":3}\n');
+  const schema = { name: 'batched', events: [] };
+  const watch = { name: 'batched', path, schema };
+  let sequence = 0;
+  const gate: TranscriptCheckpointGate = { sequence: () => sequence, drainedThrough: () => true };
+  const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath, 'in-process', gate);
+  const savedOffsetSeenByLine: number[] = [];
+  (watcher as any).handleLine = async () => {
+    sequence++;
+    savedOffsetSeenByLine.push(loadWatchState(statePath).offsets[path] ?? 0);
+  };
+  try {
+    await readAll(watcher, path, watch, schema);
+    // Every line's work was stored at once, yet nothing was written mid-read.
+    expect(savedOffsetSeenByLine).toEqual([0, 0, 0]);
+    expect(loadWatchState(statePath).offsets[path]).toBe(statSync(path).size);
+  } finally {
+    watcher.stop();
+  }
+});
