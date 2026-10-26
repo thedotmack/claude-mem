@@ -849,7 +849,9 @@ describe('cmem gateway request correlation (phase 6)', () => {
     await ingest('toolu_corr_retry', redPng);
     const message = pending(queued[0]);
     chatReplies.push(
-      () => new Response(JSON.stringify({ error: { code: 'upstream_error', message: 'busy' } }), { status: 503 }),
+      // Refused before any work, so withRetry resends it in place (an ambiguous
+      // 5xx is never resent: never pay twice).
+      () => new Response(JSON.stringify({ error: { code: 429, message: 'Rate limit exceeded' } }), { status: 429, headers: { 'retry-after': '0' } }),
       reply('<observation><type>discovery</type><title>Viewport</title></observation>'),
     );
     await runTurn(message, gatewayConfig());

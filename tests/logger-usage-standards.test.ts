@@ -61,6 +61,9 @@ const EXCLUDED_PATTERNS = [
   /servers\/worker-restart\.ts$/,  // MCP refused-connection retry; the restart is logged by ensureWorkerConnection and failures by callWorker in mcp-server.ts
   /servers\/request-context\.ts$/,  // AsyncLocalStorage holder for the per-call project directory: no I/O and no failure path to log; mcp-http.ts logs the sessions
   /worker\/http\/origin-policy\.ts$/,  // Pure Origin predicates moved out of middleware.ts; the guards that refuse a request (middleware.ts, mcp-http.ts) log it
+  /media\/smoke\.ts$/,  // `worker-service media-smoke` prints its one JSON result line to the terminal for the binary smoke check
+  /sqlite\/media\.ts$/,  // Media schema DDL and cleanup SQL with no failure handling of its own; every error throws to its caller (SessionStore construction, MediaStore)
+  /worker\/cmem-request-correlation\.ts$/,  // Pure ID-only header builder; invalid input throws to its caller in OpenRouterProvider
 ];
 
 const HIGH_PRIORITY_PATTERNS = [

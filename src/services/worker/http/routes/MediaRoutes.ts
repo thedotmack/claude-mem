@@ -4,6 +4,7 @@ import { MediaError, isMediaErrorCode, type MediaErrorCode } from '../../../../s
 import { assertMediaId, type MediaMetadata, type MediaStore } from '../../../media/store.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { isOwnPageOrigin } from '../middleware.js';
+import { logger } from '../../../../utils/logger.js';
 
 const LOOPBACK_PEERS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
@@ -159,6 +160,8 @@ export class MediaRoutes extends BaseRouteHandler {
       ? error.code : 'storage_unavailable';
     const status = code === 'invalid_manifest' ? 400 : code === 'media_not_found' ? 404
       : code === 'media_not_ready' ? 409 : 503;
+    // Only the bounded code is logged: storage errors can contain paths.
+    if (status === 503) logger.warn('HTTP', 'Media request failed', { code });
     if (!res.headersSent) sendJsonWithoutCacheValidators(res, status, { error: 'Media request failed', code });
   }
 }
