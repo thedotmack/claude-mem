@@ -1,6 +1,6 @@
 // Human requests own the top level. Agent work and observations are evidence
 // beneath a proven native conversation, never substitutes for a human ask.
-import { bucketFileAvailable, fileUrl, mergeProducts, productsFromDeliverable, productsFromObservation, productsFromToolUse, servableFile } from './work-product.mjs';
+import { bucketFileAvailable, copyCoversSource, fileUrl, mergeProducts, productsFromDeliverable, productsFromObservation, productsFromToolUse, servableFile } from './work-product.mjs';
 import { NO_PROJECT, projectRoot, upgradedGroupRoot } from './session-project.mjs';
 
 export function requestText(value, max = 1200) {
@@ -275,9 +275,11 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
   }
   for (const request of requests.values()) {
     const merged = mergeProducts([...(recordedProducts.get(request) ?? []), ...request.items.flatMap((item) => item.workProduct ?? [])]);
-    // The bucket copy of a file replaces the record that points at where it was made: that place is often deleted later.
-    const copiedFrom = new Set(merged.filter((product) => product.deliverable && product.sourcePath).map((product) => product.sourcePath));
-    request.workProduct = merged.filter((product) => !(product.path && copiedFrom.has(product.path)))
+    // A bucket copy that is on disk replaces the record that points at where the file was made (that place is often
+    // deleted later), unless the file has been written since the copy: then the record is a newer version and stays.
+    const copies = merged.filter((product) => product.deliverable && product.sourcePath);
+    const covered = (product) => Boolean(product.path) && copies.some((copy) => copy.sourcePath === product.path && copyCoversSource(copy, product.path));
+    request.workProduct = merged.filter((product) => !covered(product))
       .map((product) => ({ ...product, fileUrl: fileUrl(product), available: product.path ? Boolean(servableFile(product)) : product.deliverable ? bucketFileAvailable(product) : true }));
     const relatedIds = new Set(request.conversationKeys.flatMap((key) => sessionIdsByKey.get(key) ?? []));
     const related = [...relatedIds].flatMap((id) => promptsBySession.get(id) ?? []);

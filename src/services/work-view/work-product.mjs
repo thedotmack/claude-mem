@@ -335,6 +335,17 @@ export function bucketFileAvailable(product) {
   try { return statSync(product.bucketPath).isFile(); }
   catch { return false; }
 }
+// True when a bucket copy stands in for the record of the file it was copied
+// from: the copy is on disk, and the source is gone or has not been written
+// since the copy was made. A copy that is missing, or older than the source's
+// last write, leaves the source record in place beside it.
+export function copyCoversSource(copy, sourcePath) {
+  if (typeof copy?.atEpoch !== 'number' || !bucketFileAvailable(copy)) return false;
+  try {
+    const source = statSync(sourcePath);
+    return !source.isFile() || source.mtimeMs <= copy.atEpoch;
+  } catch { return true; }
+}
 
 /** A local file is served only while it still exists as a regular file. */
 export function servableFile(product) {
