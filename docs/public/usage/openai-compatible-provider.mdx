@@ -99,6 +99,7 @@ endpoint or model you pinned yourself.
 | `api-route` | `https://global.api-route.com/v1` | yes |
 | `opper` | `https://api.opper.ai/v3/compat` | yes |
 | `atlascloud` | `https://api.atlascloud.ai/v1` | yes |
+| `runcrate` | `https://api.runcrate.ai/v1` | yes |
 | `deepseek` | `https://api.deepseek.com/v1` | yes |
 | `opencode-go` | `https://opencode.ai/zen/go/v1` | yes |
 | `opencode-zen` | `https://opencode.ai/zen/v1` | yes |
@@ -305,6 +306,24 @@ at `https://api.atlascloud.ai/v1/models`, and keys come from
   "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "atlascloud",
   "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your Atlas Cloud key>",
   "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek-ai/deepseek-v4-flash"
+}
+```
+
+## Runcrate
+
+[Runcrate](https://www.runcrate.ai) is a GPU cloud that also serves open
+models such as DeepSeek V4.1 Flash, GLM-5.3, Qwen3.8 Flash and gpt-oss 120B
+behind one OpenAI-compatible API key. Model ids are vendor-prefixed, such as `deepseek-ai/DeepSeek-V4.1-Flash` (the preset's default) or
+`zai-org/GLM-5.3`, and are passed verbatim. The model list is public at
+`https://api.runcrate.ai/v1/models`, and keys come from
+[the Runcrate dashboard](https://www.runcrate.ai/dashboard/api-keys).
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "runcrate",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your Runcrate key>",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek-ai/DeepSeek-V4.1-Flash"
 }
 ```
 
