@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, readdirSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
@@ -9,8 +9,11 @@ import { setIngestContext } from '../../src/services/worker/http/shared.js';
 import { drainHookSpool, HookSpoolDrainer } from '../../src/services/worker/hook-spool-drain.js';
 import { HookSpool, hookSpoolKeyFor, HOOK_SPOOL_SESSION_END_UNKNOWN_GRACE_MS } from '../../src/shared/hook-spool.js';
 import { logger } from '../../src/utils/logger.js';
+import { resolveDeliverableBucketDir } from '../../src/shared/deliverables.js';
+import { useTempHookSpoolDataDir } from '../helpers/temp-hook-spool.js';
 
 let spoolDir: string;
+let dataDir: ReturnType<typeof useTempHookSpoolDataDir>;
 let store: SessionStore;
 let loggerSpies: Array<ReturnType<typeof spyOn>> = [];
 let sessionManager: {
@@ -37,6 +40,8 @@ beforeEach(() => {
     spyOn(logger, 'error').mockImplementation(() => {}),
   ];
   spoolDir = mkdtempSync(join(tmpdir(), 'claude-mem-hook-spool-drain-'));
+  // The deliverables bucket the worker checks copies against lives under the data dir.
+  dataDir = useTempHookSpoolDataDir();
   store = new SessionStore(new Database(':memory:'));
   sessionManager = {
     queueObservation: mock(async () => {}),
@@ -60,6 +65,7 @@ beforeEach(() => {
 afterEach(() => {
   loggerSpies.forEach(spy => spy.mockRestore());
   store.close();
+  dataDir.restore();
   rmSync(spoolDir, { recursive: true, force: true });
 });
 
@@ -86,9 +92,17 @@ describe('drainHookSpool', () => {
       contentSessionId: 'session-a', platformSource: 'claude', cwd: '/repo',
       calls: [{ toolUseId: 'srvtoolu_1', advice: 'Look at the retry budget.', occurredAtEpoch: 1 }],
     });
+    // One copy the hook made on this disk, and one a hook on another host would name: only the first becomes a row.
+    const bucketDir = resolveDeliverableBucketDir('repo');
+    mkdirSync(bucketDir, { recursive: true });
+    const bucketPath = join(bucketDir, 'report-abcdef12.html');
+    writeFileSync(bucketPath, '<h1>report</h1>');
     spool.enqueue('deliverables', {
       contentSessionId: 'session-a', platformSource: 'claude', cwd: '/repo', project: 'repo',
-      files: [{ sourcePath: '/repo/.scratch/report.html', bucketPath: '/data/deliverables/repo/report-abcdef12.html', title: 'report.html', kind: 'page', bytes: 12, sha256: 'a'.repeat(64), declared: false, occurredAtEpoch: 1 }],
+      files: [
+        { sourcePath: '/repo/.scratch/report.html', bucketPath, title: 'report.html', kind: 'page', bytes: 15, sha256: 'a'.repeat(64), declared: false, occurredAtEpoch: 1 },
+        { sourcePath: '/elsewhere/.scratch/deck.pdf', bucketPath: '/elsewhere/.claude-mem/deliverables/repo/deck-01234567.pdf', title: 'deck.pdf', kind: 'document', bytes: 9, sha256: 'b'.repeat(64), declared: true, occurredAtEpoch: 1 },
+      ],
       errors: [{ sourcePath: '/repo/.scratch/huge.mov', error: 'over the limit' }],
     });
     spool.enqueue('summarize', { contentSessionId: 'session-a', platformSource: 'claude', lastAssistantMessage: 'done <private>x</private>' });
@@ -112,7 +126,8 @@ describe('drainHookSpool', () => {
     expect(sessionManager.queueSummarize).toHaveBeenCalledWith(sessionDbId, 'done', 0, expect.any(Number));
     expect(sessionManager.requestSessionWrapup).toHaveBeenCalledWith(sessionDbId);
     expect(store.getAdvisorCalls(0, 10).items.map(call => call.tool_use_id)).toEqual(['srvtoolu_1']);
-    expect(store.getDeliverable(1)).toMatchObject({ project: 'repo', content_session_id: 'session-a', bucket_path: '/data/deliverables/repo/report-abcdef12.html', kind: 'page' });
+    expect(store.getDeliverable(1)).toMatchObject({ project: 'repo', content_session_id: 'session-a', bucket_path: bucketPath, kind: 'page' });
+    expect(store.getDeliverable(2)).toBeNull();
     expect(ensureGeneratorRunning).toHaveBeenCalledWith(sessionDbId, 'summarize');
 
     Object.values(spies).forEach(spy => spy.mockRestore());
