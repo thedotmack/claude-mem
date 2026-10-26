@@ -34,14 +34,3 @@ export const PRO_TRIAL_SHORT = PRO_TRIAL_LABEL;
  */
 export const TEAMBRAIN_START_URL = 'https://cmem.ai/teambrain/start';
 export const TEAMBRAIN_PITCH = 'TeamBrain: see who on your team is working on what, inside every session';
-export const PRO_TRIAL_SHORT = 'Get 2x more from your Max plan';
-
-/**
- * Backup add-on upsell (pro-backup plan Phase 4). Mirrors
- * `src/shared/pro-promo.ts` backupAddonUrl('viewer')/BACKUP_ADDON_PITCH —
- * change both together. Price-free on purpose: no dollar values in promo copy.
- */
-export const BACKUP_ADDON_URL = 'https://cmem.ai/dashboard?from=backup-viewer';
-
-export const BACKUP_ADDON_PITCH =
-  'Cloud backups are a cmem Pro add-on. Your local snapshots are safe — add encrypted cloud copies:';

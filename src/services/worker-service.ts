@@ -9,7 +9,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { formatHostForUrl, getWorkerPort, getWorkerHost, fetchWithTimeout, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js';
 import { runShutdownSequence, type WorkerShutdownReason } from './worker-shutdown.js';
-import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensureDir } from '../shared/paths.js';
+import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensureDir, paths } from '../shared/paths.js';
 import { HookSpool, migrateLegacySessionEndReplay } from '../shared/hook-spool.js';
 import { HookSpoolDrainer, hookSpoolConsumedMarkers } from './worker/hook-spool-drain.js';
 import { HookSpoolRoutes } from './worker/http/routes/HookSpoolRoutes.js';
@@ -166,6 +166,7 @@ import { ChromaRoutes } from './worker/http/routes/ChromaRoutes.js';
 import { CloudSyncRoutes } from './worker/http/routes/CloudSyncRoutes.js';
 import { TeamBrainRoutes } from './worker/http/routes/TeamBrainRoutes.js';
 import { BackupRoutes } from './worker/http/routes/BackupRoutes.js';
+import { applyPendingRestore } from './backup/restore-swap.js';
 
 import { CorpusStore } from './worker/knowledge/CorpusStore.js';
 import { CorpusBuilder } from './worker/knowledge/CorpusBuilder.js';
@@ -785,6 +786,12 @@ export class WorkerService implements WorkerRef {
       provisionTreeSitterCliForPluginRoot(pluginRoot).catch(error => {
         logger.warn('SYSTEM', 'tree-sitter CLI provisioning failed: smart_search, smart_outline and smart_unfold cannot parse, and the File Read Gate stays off, until the next worker start retries (or npx claude-mem repair)', { pluginRoot }, error instanceof Error ? error : new Error(String(error)));
       });
+
+      // A restore staged by `npx claude-mem restore` lands here, before
+      // anything in this worker opens the database. It never throws: a
+      // failed restore is logged, reported by GET /api/backup/status, and the
+      // worker starts on the unchanged database.
+      applyPendingRestore(DB_PATH, paths.backups());
 
       logger.info('WORKER', 'Checking for one-time CWD remap...');
       runOneTimeCwdRemap();

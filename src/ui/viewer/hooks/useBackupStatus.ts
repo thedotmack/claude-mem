@@ -13,10 +13,6 @@ export interface BackupStatusResponse {
   snapshotCount?: number;
   lastError?: string | null;
   nextRunAt?: number | null;
-  cloudEnabled?: boolean;
-  lastUploadAt?: number | null;
-  lastUploadKey?: string | null;
-  addonRequired?: boolean;
 }
 
 interface UseBackupStatusResult {

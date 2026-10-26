@@ -1,11 +1,8 @@
 
-// Pro-backup plan Phase 2 verification for /api/backup/*: status answers
-// {configured: false} when backups are disabled, run triggers a snapshot
-// (409 when one is already in flight), list returns snapshots newest first,
-// and restore rejects a missing confirm and path traversal. The restore
-// success path ends in process.exit(0) (flushResponseThen self-recycle) and
-// is deliberately NOT exercised in-process — assertions stop at the response.
-// Harness copied from cloud-sync-routes.test.ts.
+// /api/backup/*: status answers {configured: false} when backups are
+// disabled and always carries the last restore outcome, run triggers a
+// snapshot (409 when one is already in flight), and list returns snapshots
+// newest first. Harness copied from cloud-sync-routes.test.ts.
 
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
 import type { Request, Response } from 'express';
@@ -102,18 +99,19 @@ describe('BackupRoutes', () => {
 
   describe('GET /api/backup/status', () => {
     it('returns {configured: false} with 200 (not 500) when backups are disabled', async () => {
+      tempRoot = mkdtempSync(join(tmpdir(), 'claude-mem-backup-routes-'));
       const mockDbManager = { getBackupManager: () => null };
-      const chains = buildChains(new BackupRoutes(mockDbManager as any));
+      const chains = buildChains(new BackupRoutes(mockDbManager as any, { lastRestorePath: join(tempRoot, 'last-restore.json') }));
 
       const { req, res, jsonSpy, statusSpy } = createMockReqRes('/api/backup/status');
       await invokeChain(chains['GET /api/backup/status'], req, res, jsonSpy);
 
       expect(jsonSpy).toHaveBeenCalledTimes(1);
-      expect(jsonSpy).toHaveBeenCalledWith({ configured: false });
+      expect(jsonSpy).toHaveBeenCalledWith({ configured: false, lastRestore: null });
       expect(statusSpy).not.toHaveBeenCalled(); // no error status set
     });
 
-    it('returns BackupManager.status() when configured', async () => {
+    it('returns BackupManager.status() and the last restore outcome when configured', async () => {
       const status: BackupStatus = {
         configured: true,
         lastSnapshotAt: 1751990400000,
@@ -122,13 +120,23 @@ describe('BackupRoutes', () => {
         lastError: null,
         nextRunAt: 1752076800000,
       };
+      tempRoot = mkdtempSync(join(tmpdir(), 'claude-mem-backup-routes-'));
+      const lastRestorePath = join(tempRoot, 'last-restore.json');
+      const lastRestore = {
+        snapshot: 'claude-mem-2026-10-01T00-00-00-000Z.db',
+        at: 1759276800000,
+        ok: false,
+        preRestoreCopy: null,
+        error: 'the database is in use by another process; stop it and retry the restore',
+      };
+      writeFileSync(lastRestorePath, JSON.stringify(lastRestore));
       const mockDbManager = { getBackupManager: () => ({ status: () => status }) };
-      const chains = buildChains(new BackupRoutes(mockDbManager as any));
+      const chains = buildChains(new BackupRoutes(mockDbManager as any, { lastRestorePath }));
 
       const { req, res, jsonSpy, statusSpy } = createMockReqRes('/api/backup/status');
       await invokeChain(chains['GET /api/backup/status'], req, res, jsonSpy);
 
-      expect(jsonSpy).toHaveBeenCalledWith(status);
+      expect(jsonSpy).toHaveBeenCalledWith({ ...status, lastRestore });
       expect(statusSpy).not.toHaveBeenCalled();
     });
   });
@@ -207,73 +215,6 @@ describe('BackupRoutes', () => {
 
       const payload = (jsonSpy.mock.calls[0] as unknown[])[0] as { snapshots: unknown[] };
       expect(payload.snapshots).toEqual([]);
-    });
-  });
-
-  describe('POST /api/backup/restore', () => {
-    it('rejects a body without confirm: true (validateBody 400)', async () => {
-      const close = mock(async () => {});
-      const mockDbManager = { getBackupManager: () => null, close };
-      tempRoot = mkdtempSync(join(tmpdir(), 'claude-mem-backup-routes-'));
-      const chains = buildChains(new BackupRoutes(mockDbManager as any, { backupsDir: tempRoot }));
-
-      const { req, res, jsonSpy, statusSpy } = createMockReqRes('/api/backup/restore', { file: 'claude-mem-x.db' });
-      await invokeChain(chains['POST /api/backup/restore'], req, res, jsonSpy);
-
-      expect(statusSpy).toHaveBeenCalledWith(400);
-      const payload = (jsonSpy.mock.calls[0] as unknown[])[0] as Record<string, unknown>;
-      expect(payload.error).toBe('ValidationError');
-      expect(close).not.toHaveBeenCalled();
-    });
-
-    it('rejects path traversal (../../etc/passwd) before touching anything', async () => {
-      const close = mock(async () => {});
-      const mockDbManager = { getBackupManager: () => null, close };
-      tempRoot = mkdtempSync(join(tmpdir(), 'claude-mem-backup-routes-'));
-      const chains = buildChains(new BackupRoutes(mockDbManager as any, { backupsDir: tempRoot }));
-
-      const { req, res, jsonSpy, statusSpy } = createMockReqRes('/api/backup/restore', {
-        file: '../../etc/passwd',
-        confirm: true,
-      });
-      await invokeChain(chains['POST /api/backup/restore'], req, res, jsonSpy);
-
-      expect(statusSpy).toHaveBeenCalledWith(400);
-      const payload = (jsonSpy.mock.calls[0] as unknown[])[0] as Record<string, unknown>;
-      expect(String(payload.error)).toContain('backups directory');
-      expect(close).not.toHaveBeenCalled();
-    });
-
-    it('rejects an absolute path outside the backups dir', async () => {
-      const close = mock(async () => {});
-      const mockDbManager = { getBackupManager: () => null, close };
-      tempRoot = mkdtempSync(join(tmpdir(), 'claude-mem-backup-routes-'));
-      const chains = buildChains(new BackupRoutes(mockDbManager as any, { backupsDir: tempRoot }));
-
-      const { req, res, jsonSpy, statusSpy } = createMockReqRes('/api/backup/restore', {
-        file: '/etc/passwd',
-        confirm: true,
-      });
-      await invokeChain(chains['POST /api/backup/restore'], req, res, jsonSpy);
-
-      expect(statusSpy).toHaveBeenCalledWith(400);
-      expect(close).not.toHaveBeenCalled();
-    });
-
-    it('returns 404 for a well-formed file that does not exist', async () => {
-      const close = mock(async () => {});
-      const mockDbManager = { getBackupManager: () => null, close };
-      tempRoot = mkdtempSync(join(tmpdir(), 'claude-mem-backup-routes-'));
-      const chains = buildChains(new BackupRoutes(mockDbManager as any, { backupsDir: tempRoot }));
-
-      const { req, res, jsonSpy, statusSpy } = createMockReqRes('/api/backup/restore', {
-        file: 'claude-mem-2026-01-01T00-00-00-000Z.db',
-        confirm: true,
-      });
-      await invokeChain(chains['POST /api/backup/restore'], req, res, jsonSpy);
-
-      expect(statusSpy).toHaveBeenCalledWith(404);
-      expect(close).not.toHaveBeenCalled();
     });
   });
 });

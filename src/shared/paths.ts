@@ -143,6 +143,10 @@ export const paths = {
   // the manager's retention sweep never touches the legacy one-off backups
   // that live directly in backups/.
   backups: () => join(DATA_DIR, 'backups', 'auto'),
+  // A restore staged by `npx claude-mem restore`, applied by the next worker
+  // boot before it opens the database, and the outcome of the last one.
+  pendingRestore: () => join(DATA_DIR, 'backups', 'restore-pending.json'),
+  lastRestore: () => join(DATA_DIR, 'backups', 'last-restore.json'),
   chroma: () => join(DATA_DIR, 'chroma'),
   combinedCerts: () => join(DATA_DIR, 'combined_certs.pem'),
   transcriptsConfig: () => join(DATA_DIR, 'transcript-watch.json'),

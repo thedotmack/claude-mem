@@ -32,6 +32,7 @@ function createSourceDb(dir: string): string {
   for (let i = 0; i < 25; i++) {
     insert.run(`observation ${i}`);
   }
+  insert.finalize();
   db.close();
   return dbPath;
 }
@@ -82,6 +83,52 @@ describe('BackupManager.createSnapshot', () => {
     const result = await manager.createSnapshot();
 
     expect(result.path.endsWith('claude-mem-2026-08-26T12-34-56-789Z.db')).toBe(true);
+  });
+});
+
+describe('BackupManager.createSnapshot standalone output', () => {
+  it('writes a single standalone file (no sidecars) from the VACUUM INTO path', async () => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'claude-mem-backup-'));
+    createSourceDb(tempRoot);
+
+    const result = await makeManager(tempRoot).createSnapshot();
+
+    expect(existsSync(`${result.path}-wal`)).toBe(false);
+    expect(existsSync(`${result.path}-shm`)).toBe(false);
+    const snapshot = new Database(result.path, { readonly: true });
+    try {
+      expect((snapshot.query('PRAGMA journal_mode').get() as { journal_mode: string }).journal_mode).toBe('delete');
+    } finally {
+      snapshot.close();
+    }
+  });
+
+  it('folds WAL-only commits into one standalone file when VACUUM INTO fails', async () => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'claude-mem-backup-'));
+    const dbPath = createSourceDb(tempRoot);
+    // A live writer whose newest rows are only in the -wal sidecar.
+    const writer = new Database(dbPath);
+    writer.run('PRAGMA wal_autocheckpoint = 0');
+    writer.run("INSERT INTO observations (note) VALUES ('wal-only-1'), ('wal-only-2')");
+    try {
+      const manager = makeManager(tempRoot, {}, {
+        vacuumInto: () => { throw new Error('injected VACUUM INTO failure'); },
+      });
+      const result = await manager.createSnapshot();
+
+      expect(result.method).toBe('copy');
+      expect(existsSync(`${result.path}-wal`)).toBe(false);
+      expect(existsSync(`${result.path}-shm`)).toBe(false);
+      const snapshot = new Database(result.path, { readonly: true });
+      try {
+        const count = snapshot.query('SELECT COUNT(*) AS n FROM observations').get() as { n: number };
+        expect(count.n).toBe(27);
+      } finally {
+        snapshot.close();
+      }
+    } finally {
+      writer.close();
+    }
   });
 });
 

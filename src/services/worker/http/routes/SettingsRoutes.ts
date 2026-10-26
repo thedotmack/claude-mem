@@ -293,9 +293,6 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_BACKUP_ENABLED',
       'CLAUDE_MEM_BACKUP_INTERVAL_HOURS',
       'CLAUDE_MEM_BACKUP_RETAIN_COUNT',
-      'CLAUDE_MEM_BACKUP_INCLUDE_VECTORS',
-      'CLAUDE_MEM_BACKUP_CLOUD',
-      'CLAUDE_MEM_BACKUP_ENCRYPTION_KEY',
     ];
 
     // Every rule runs inside the settings-document boundary's mutate callback,
@@ -510,8 +507,6 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_FILE_READ_GATE_ENABLED',
       'CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY',
       'CLAUDE_MEM_BACKUP_ENABLED',
-      'CLAUDE_MEM_BACKUP_INCLUDE_VECTORS',
-      'CLAUDE_MEM_BACKUP_CLOUD',
     ];
 
     for (const key of booleanSettings) {
@@ -534,6 +529,10 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
+    // Backup bounds. Each snapshot is a full VACUUM INTO copy of the database:
+    // a 1-hour floor caps that I/O at 24 full copies a day, and a 168-hour
+    // (one week) ceiling keeps doctor's two-interval staleness warning
+    // meaningful. The 100-snapshot cap bounds disk use at 100 database copies.
     if (settings.CLAUDE_MEM_BACKUP_INTERVAL_HOURS) {
       const hours = parseFloat(settings.CLAUDE_MEM_BACKUP_INTERVAL_HOURS);
       if (isNaN(hours) || hours < 1 || hours > 168) {

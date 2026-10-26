@@ -1,12 +1,11 @@
 /**
- * `npx claude-mem backup [run|status|list]` — local DB snapshots
- * (pro-backup plan Phase 2). Thin client over the worker's /api/backup/*
- * endpoints; the worker owns the snapshot engine (BackupManager).
+ * `npx claude-mem backup [run|status|list]`: local DB snapshots. A thin
+ * client over the worker's /api/backup/* endpoints; the worker owns the
+ * snapshot engine (BackupManager).
  */
 
 import { styleText } from 'node:util';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { BACKUP_ADDON_PITCH, backupAddonUrl } from '../../shared/pro-promo.js';
 
 function printBackupUsage(): void {
   console.error(`Usage: npx claude-mem backup [run|status|list]`);
@@ -72,8 +71,10 @@ async function runBackupStatus(): Promise<void> {
   }
   const status = await readJsonOrExit(response, 'Backup status');
 
+  printLastRestore(status.lastRestore);
+
   if (status.configured === false) {
-    console.log(styleText('yellow', 'Backups are not enabled.'));
+    console.log(styleText('yellow', 'Automatic backups are not enabled.'));
     console.log(`Enable them by setting ${styleText('bold', 'CLAUDE_MEM_BACKUP_ENABLED')} to "true" in ~/.claude-mem/settings.json and restarting the worker.`);
     return;
   }
@@ -86,10 +87,17 @@ async function runBackupStatus(): Promise<void> {
   if (status.lastError) {
     console.log(`  Last error:      ${styleText('red', String(status.lastError))}`);
   }
-  if (status.addonRequired === true) {
-    console.log('');
-    console.log(styleText('yellow', BACKUP_ADDON_PITCH));
-    console.log(`  ${styleText('bold', backupAddonUrl('status'))}`);
+}
+
+function printLastRestore(lastRestore: unknown): void {
+  if (typeof lastRestore !== 'object' || lastRestore === null) return;
+  const restore = lastRestore as { snapshot?: string; at?: number; ok?: boolean; preRestoreCopy?: string | null; error?: string | null };
+  if (restore.ok === true) {
+    console.log(styleText('green', `Last restore: ${restore.snapshot} at ${formatTimestamp(restore.at)} succeeded.`));
+    if (restore.preRestoreCopy) console.log(`  The database it replaced was saved to: ${restore.preRestoreCopy}`);
+  } else {
+    console.log(styleText('red', `Last restore: ${restore.snapshot} at ${formatTimestamp(restore.at)} FAILED: ${restore.error ?? 'unknown error'}`));
+    console.log('  The worker kept the database it had.');
   }
 }
 

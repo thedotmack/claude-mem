@@ -58,7 +58,6 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem project merge <from> <into> [--dry-run]')}    Fold one project's memory into another (non-destructive, syncs)
   ${styleText('cyan', 'npx claude-mem backup run|status|list')}   Manage local DB snapshots
   ${styleText('cyan', 'npx claude-mem restore <file>')}       Restore the DB from a snapshot
-  ${styleText('cyan', 'npx claude-mem restore --cloud [<key>]')}  Restore from an encrypted cloud backup
   ${styleText('cyan', 'npx claude-mem transcript watch')}     Start transcript watcher
   ${styleText('cyan', 'npx claude-mem antigravity-cli install|status|uninstall')}   Manage Antigravity CLI hooks + MCP config
   ${styleText('cyan', 'npx claude-mem kimi install|status|uninstall')}   Manage Kimi Code CLI hooks + MCP config

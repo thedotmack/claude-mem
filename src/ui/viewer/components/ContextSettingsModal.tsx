@@ -8,7 +8,6 @@ import { DEFAULT_SETTINGS } from '../constants/settings';
 import { isClaudeMemObserverBaseUrl } from '../utils/observer-endpoint';
 import { claudeProviderOptionLabel } from '../utils/claude-auth-method';
 import { OPENAI_COMPAT_PRESET_OPTIONS, openAICompatPresetOption } from '../constants/openai-compat-presets';
-import { BACKUP_ADDON_PITCH, BACKUP_ADDON_URL } from '../constants/promo';
 
 interface ContextSettingsModalProps {
   isOpen: boolean;
@@ -188,19 +187,7 @@ function BackupStatusPanel() {
     <div className="toggle-group">
       <BackupStatusRow label="Last snapshot" value={formatEpochMs(status.lastSnapshotAt)} />
       <BackupStatusRow label="Snapshots on disk" value={String(status.snapshotCount ?? 0)} />
-      <BackupStatusRow label="Cloud copies" value={status.cloudEnabled ? 'on' : 'off'} />
-      {status.cloudEnabled && (
-        <BackupStatusRow label="Last upload" value={formatEpochMs(status.lastUploadAt)} />
-      )}
       {status.lastError && <BackupStatusRow label="Last error" value={status.lastError} />}
-      {status.addonRequired && (
-        <span className="toggle-description">
-          {BACKUP_ADDON_PITCH}{' '}
-          <a href={BACKUP_ADDON_URL} target="_blank" rel="noopener noreferrer">
-            cmem.ai dashboard
-          </a>
-        </span>
-      )}
     </div>
   );
 }
@@ -444,13 +431,6 @@ export function ContextSettingsModal({
                   checked={formState.CLAUDE_MEM_BACKUP_ENABLED === 'true'}
                   onChange={() => toggleBoolean('CLAUDE_MEM_BACKUP_ENABLED')}
                 />
-                <ToggleSwitch
-                  id="backup-cloud"
-                  label="Cloud copies"
-                  description="Encrypt each snapshot and upload it to your cmem.ai account (Pro add-on)"
-                  checked={formState.CLAUDE_MEM_BACKUP_CLOUD === 'true'}
-                  onChange={() => toggleBoolean('CLAUDE_MEM_BACKUP_CLOUD')}
-                />
               </div>
 
               <div style={{ marginTop: '12px' }}>
@@ -478,17 +458,6 @@ export function ContextSettingsModal({
                     onChange={(e) => updateSetting('CLAUDE_MEM_BACKUP_RETAIN_COUNT', e.target.value)}
                   />
                 </FormField>
-                {/* The key itself is NEVER rendered — presence only. */}
-                <FormField
-                  label="Encryption key"
-                  tooltip="Cloud copies are encrypted with a key minted on this machine. It never leaves your machine — and it is never shown here."
-                >
-                  <span className="toggle-description">
-                    {formState.CLAUDE_MEM_BACKUP_ENCRYPTION_KEY
-                      ? 'Key present (stored in settings.json; it never leaves this machine)'
-                      : 'Not yet minted — created automatically on the first cloud upload'}
-                  </span>
-                </FormField>
               </div>
 
               <div className="display-subsection" style={{ marginTop: '12px' }}>
@@ -498,7 +467,7 @@ export function ContextSettingsModal({
 
               <div style={{ marginTop: '12px' }}>
                 <span className="toggle-description">
-                  Restore from a snapshot: <code>npx claude-mem restore &lt;file&gt;</code> (or <code>--cloud</code>).
+                  Restore from a snapshot: <code>npx claude-mem restore &lt;file&gt;</code>
                 </span>
               </div>
             </CollapsibleSection>
