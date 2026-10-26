@@ -233,8 +233,22 @@ describe('AntigravityCliHooksInstaller - status sees leftover legacy hooks (issu
     const { installedEvents, legacyHandlerCount, hasStalePreInvocation } = describeAntigravityHooks(config);
 
     expect(hasStalePreInvocation).toBe(true);
-    expect(installedEvents).toEqual(['PreInvocation', 'PostToolUse']);
+    // The stale context handler is not the session-init mapping, so it isn't installed.
+    expect(installedEvents).toEqual(['PostToolUse']);
     expect(legacyHandlerCount).toBe(0);
+  });
+
+  it('treats a PreInvocation routed to session-init as current, not stale (#5078)', () => {
+    const config = {
+      'claude-mem': {
+        PreInvocation: [{ command: 'bun worker-service.cjs hook antigravity-cli session-init' }],
+      },
+    } as unknown as Parameters<typeof describeAntigravityHooks>[0];
+
+    const { installedEvents, hasStalePreInvocation } = describeAntigravityHooks(config);
+
+    expect(hasStalePreInvocation).toBe(false);
+    expect(installedEvents).toEqual(['PreInvocation']);
   });
 
   it("does not count another tool's top-level event arrays as claude-mem leftovers", () => {

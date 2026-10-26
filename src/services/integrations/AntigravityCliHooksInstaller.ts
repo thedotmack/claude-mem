@@ -109,10 +109,15 @@ const HOOK_TIMEOUT_SECONDS = ANTIGRAVITY_HOOK_TIMEOUT_MS / 1000;
 // builtin docs/hooks.md, "Supported Event Types").
 const ANTIGRAVITY_GROUPED_EVENTS = new Set<string>(['PreToolUse', 'PostToolUse']);
 
-// The 4 hook events claude-mem registers in `agy`, mapped to its internal handlers:
+// The 5 hook events claude-mem registers in `agy`, mapped to its internal handlers:
 //   - SessionStart   → context     (inject startup memory once when a session starts;
 //                                    prevents invalidating LLM prefix cache on every
 //                                    turn/invocation, issue #4911)
+//   - PreInvocation  → session-init (agy has no prompt-submit hook. Records the
+//                                    prompt on the first model call of a user turn
+//                                    only; a follow-up call after a tool step gets
+//                                    file-context for the files that step read.
+//                                    See runAntigravityPreInvocation, #5078)
 //   - PostToolUse    → observation (records the tool result)
 //   - PostInvocation → observation (records the assistant response, pulled from
 //                                    the transcript's PLANNER_RESPONSE node)
@@ -123,7 +128,12 @@ const ANTIGRAVITY_GROUPED_EVENTS = new Set<string>(['PreToolUse', 'PostToolUse']
 // call twice (#5078). Observations come from PostToolUse, as on Claude Code.
 // Note: SessionStart is the official agy lifecycle event for startup context injection
 // (builtin `agy-customizations/docs/hooks.md`). Mapping PreInvocation to context
-// injected ephemeral context into every model call, destroying prefix cache hit rates.
+// injected the memory timeline into every model call, destroying prefix cache hit
+// rates (#4911). PreInvocation → session-init doesn't bring that back: it injects
+// nothing on most calls. It injects only (a) file-context after a tool step read a
+// file with history, deduped per session and file, so a file's timeline is injected
+// once until a newer observation lands, and (b) semantic context on a new user turn
+// when CLAUDE_MEM_SEMANTIC_INJECT is on (default off).
 // Legacy Gemini-CLI names (BeforeAgent/AfterAgent/BeforeTool/AfterTool/Notification/
 // PreCompress) are not present in agy.
 const ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT: Record<string, string> = {
@@ -288,7 +298,8 @@ function mergeNamedHook(
 
   // Prior versions of claude-mem (#4057) mapped context to PreInvocation,
   // which injected context on every turn and invalidated prefix caching (#4911).
-  // Clean up PreInvocation on upgrade if it was registered for claude-mem.
+  // Drop whatever PreInvocation entry the hook has; the loop below re-adds the
+  // current session-init mapping, so a stale `context` handler never survives.
   delete merged.PreInvocation;
   // Prior versions also registered PreToolUse, which auto-approved every tool
   // call (#5078).
@@ -660,19 +671,23 @@ export function describeAntigravityHooks(
   let hasStalePreInvocation = false;
   const namedHook = config[HOOK_NAME];
   if (namedHook && typeof namedHook === 'object' && !Array.isArray(namedHook)) {
-    for (const event of Object.keys(ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT)) {
-      const value = (namedHook as Record<string, unknown>)[event];
-      if (Array.isArray(value) && value.length > 0) {
-        installedEvents.push(event);
-      }
-    }
-
+    // PreInvocation is current when it routes to session-init; only the
+    // pre-#4911 handler that routed it to `context` is stale, and that one is
+    // not the mapped event, so it isn't listed as installed.
     const preInvocation = (namedHook as Record<string, unknown>)['PreInvocation'];
     if (
       Array.isArray(preInvocation) &&
       preInvocation.some((h: any) => typeof h?.command === 'string' && /\bcontext\s*$/.test(h.command))
     ) {
       hasStalePreInvocation = true;
+    }
+
+    for (const event of Object.keys(ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT)) {
+      if (event === 'PreInvocation' && hasStalePreInvocation) continue;
+      const value = (namedHook as Record<string, unknown>)[event];
+      if (Array.isArray(value) && value.length > 0) {
+        installedEvents.push(event);
+      }
     }
   }
 
