@@ -19,7 +19,7 @@ Default window: 14 days. Use the window the user asks for.
 
 ## 1. Group conversations into overall requests
 
-A human request is the top level of My Work: every conversation's opening ask either starts a request or continues one. Grouping decides **once per conversation**, from its opening substantive ask, and decisions already in the ledger are kept. Requests stay inside one project root (the project key before its first `/`, so worktrees of one repo share requests); a conversation never joins a request from another root, and `apply` refuses one that does.
+A human request is the top level of My Work: every conversation's opening ask either starts a request or continues one. Grouping decides **once per conversation**, from its opening substantive ask, and decisions already in the ledger are kept. Requests stay inside one project root (the project key before its first `/`, so worktrees of one repo share requests): `apply` refuses a group whose conversations come from different roots unless the decision names the request's `projectRoot`, in which case every conversation it lists joins that request and the request records that root.
 
 ```bash
 $CLI grouping-input --days 14
@@ -64,7 +64,7 @@ The command fails fast; fix the input and rerun. Its rules:
 - List `conversations` **earliest first**. The first one anchors the group id, so reviews survive later merges.
 - A group of more than one conversation needs at least one link (`shared-work-list`, `shared-request-id` or `agent-judgment`) with evidence text. Quote the human's words where you can.
 - `title` is the goal in plain words (≤120 chars), not the process.
-- Every conversation in a group comes from one project root.
+- Every conversation in a group comes from one project root, unless the group gives an explicit `projectRoot` (a root as `grouping-input` reports it), which lets conversations from other roots join and is recorded on the request.
 
 Then run `$CLI pending --days 14 --limit 48`. `ungroupedConversations` should be 0; `groups` lists the overall requests due for a review (new, or active since their last review).
 

@@ -206,7 +206,8 @@ const emptyGroups = () => ({ version: 1, updatedAt: null, conversations: {}, gro
 
 /** Merge decisions into the stored ledger. Conversations listed in a decision
  * move to that group; others keep their previous group. `projectOf` maps a
- * conversation key to its project: a group holds one project root only. */
+ * conversation key to its project: a group holds one project root only, unless
+ * the decision names the request's `projectRoot` itself. */
 export function applyGroupDecisions(stored, decisions, now = Date.now(), { projectOf = new Map() } = {}) {
   if (!Array.isArray(decisions?.groups)) throw new TypeError('Decisions need a groups array.');
   const next = structuredClone(stored ?? emptyGroups());
@@ -228,7 +229,11 @@ export function applyGroupDecisions(stored, decisions, now = Date.now(), { proje
     const unsupported = decision.conversations.filter((key) => find(key) !== find(decision.conversations[0]));
     if (unsupported.length) throw new TypeError(`${label} joins ${unsupported.join(', ')} without evidence linking it to the anchor.`);
     const id = groupIdFor(decision.conversations[0]);
-    // A request stays in one project root, members it already has included.
+    // A decision may name the request's root itself: conversations from other roots may then join it, and
+    // the group records that root. Without one, a request stays in one project root, members it already
+    // has included.
+    const explicitRoot = decision.projectRoot;
+    if (explicitRoot != null && (typeof explicitRoot !== 'string' || !explicitRoot.trim())) throw new TypeError(`${label}.projectRoot must be a non-empty string when given.`);
     const allMembers = [...new Set([...decision.conversations, ...Object.entries(next.conversations).filter(([key, groupId]) => groupId === id && !decision.conversations.includes(key)).map(([key]) => key)])];
     const storedRoot = upgradedGroupRoot(next.groups[id]?.projectRoot, projectRoot(projectOf.get(next.groups[id]?.anchor)),
       allMembers.map((key) => projectRoot(projectOf.get(key))));
@@ -242,8 +247,8 @@ export function applyGroupDecisions(stored, decisions, now = Date.now(), { proje
       roots.set(root, [...(roots.get(root) ?? []), key]);
     }
     if (typeof storedRoot === 'string' && !rootWasUnknown && !roots.has(storedRoot)) roots.set(storedRoot, []);
-    if (roots.size > 1) throw new TypeError(`${label} joins conversations from different projects (${[...roots.keys()].map((root) => root || 'no project').join(', ')}); a request stays inside one project root.`);
-    const projectRootOfGroup = roots.size ? [...roots.keys()][0] : storedRoot ?? null;
+    if (explicitRoot == null && roots.size > 1) throw new TypeError(`${label} joins conversations from different projects (${[...roots.keys()].map((root) => root || 'no project').join(', ')}); a request stays inside one project root.`);
+    const projectRootOfGroup = explicitRoot != null ? explicitRoot.trim() : roots.size ? [...roots.keys()][0] : storedRoot ?? null;
     for (const key of decision.conversations) {
       next.conversations[key] = id;
       // A later decision can correct an earlier ignore; the viewer checks ignored first.
