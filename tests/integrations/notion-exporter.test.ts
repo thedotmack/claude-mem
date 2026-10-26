@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   NOTION_API_VERSION,
   NOTION_PROPERTIES,
@@ -6,6 +9,7 @@ import {
   buildNotionChildren,
   buildNotionProperties,
   getNotionExporter,
+  loadOrCreateNotionSourceId,
   normalizeNotionId,
   notifyNotion,
   resetNotionExporterForTests,
@@ -16,6 +20,7 @@ import { logger } from '../../src/utils/logger.js';
 
 const DATABASE_ID = '0123456789abcdef0123456789abcdef';
 const DASHED_ID = '01234567-89ab-cdef-0123-456789abcdef';
+const SOURCE_ID = 'source-a';
 
 const observation = {
   type: 'bugfix',
@@ -73,6 +78,7 @@ function harness(responder: Responder, options: Partial<ConstructorParameters<ty
   const exporter = new NotionExporter({
     token: 'ntn_test_token',
     databaseId: DASHED_ID,
+    sourceId: SOURCE_ID,
     fetchImpl,
     now: () => clock,
     sleep: async ms => {
@@ -84,7 +90,7 @@ function harness(responder: Responder, options: Partial<ConstructorParameters<ty
   return { exporter, calls, sleeps, requestTimes };
 }
 
-/** Routes a healthy Notion: schema GET, query (no match unless `existingPageId`), create/update. */
+/** Routes a healthy Notion: schema GET, query (no match unless `existingPageId`), create. */
 function healthyNotion(existingPageId: string | null = null, schema = fullSchema()): Responder {
   return call => {
     if (call.method === 'GET') return json({ object: 'database', properties: schema });
@@ -96,20 +102,24 @@ function healthyNotion(existingPageId: string | null = null, schema = fullSchema
 
 describe('Notion exporter', () => {
   let errorSpy: ReturnType<typeof spyOn>;
+  let warnSpy: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
     errorSpy = spyOn(logger, 'error').mockImplementation(() => {});
+    warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
   });
 
   afterEach(() => {
     errorSpy.mockRestore();
+    warnSpy.mockRestore();
     resetNotionExporterForTests();
   });
 
   describe('mapping', () => {
     it('maps every observation field onto its database property', () => {
-      const properties = buildNotionProperties(record(), 'Name') as Record<string, any>;
+      const properties = buildNotionProperties(record(), 'Name', SOURCE_ID) as Record<string, any>;
       expect(properties.Name.title[0].text.content).toBe('Fixed retry loop');
+      expect(properties['Export Key'].rich_text[0].text.content).toBe('source-a:42');
       expect(properties['Observation ID']).toEqual({ number: 42 });
       expect(properties.Type).toEqual({ select: { name: 'bugfix' } });
       expect(properties.Project).toEqual({ select: { name: 'claude-mem' } });
@@ -135,6 +145,7 @@ describe('Notion exporter', () => {
       const properties = buildNotionProperties(
         record({ project: 'a,b', observation: { ...observation, subtitle: long } }),
         'Name',
+        SOURCE_ID,
       ) as Record<string, any>;
       expect(properties.Subtitle.rich_text.map((t: any) => t.text.content.length)).toEqual([2000, 2000, 500]);
       expect(properties.Project.select.name).toBe('a b');
@@ -144,8 +155,31 @@ describe('Notion exporter', () => {
       const properties = buildNotionProperties(
         record({ observation: { ...observation, title: null, subtitle: null } }),
         'Title',
+        SOURCE_ID,
       ) as Record<string, any>;
       expect(properties.Title.title[0].text.content).toBe('Observation #42');
+    });
+
+    it('keeps the title when the title column shares a name with an exporter property', () => {
+      const properties = buildNotionProperties(record(), 'Project', SOURCE_ID) as Record<string, any>;
+      expect(properties.Project).toEqual({ title: [{ type: 'text', text: { content: 'Fixed retry loop' } }] });
+    });
+
+    it('truncates over-long property text at the Notion limit and logs it', () => {
+      const properties = buildNotionProperties(
+        record({ observation: { ...observation, subtitle: 'x'.repeat(100 * 2000 + 1) } }),
+        'Name',
+        SOURCE_ID,
+      ) as Record<string, any>;
+      expect(properties.Subtitle.rich_text).toHaveLength(100);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0][1]).toContain('truncating');
+    });
+
+    it('splits a very long paragraph across blocks instead of cutting it', () => {
+      const blocks = buildNotionChildren({ ...observation, facts: [], narrative: 'y'.repeat(150 * 2000) }) as any[];
+      expect(blocks.map(block => block.paragraph.rich_text.length)).toEqual([100, 50]);
+      expect(warnSpy).not.toHaveBeenCalled();
     });
 
     it('normalizes a bare, dashed, or URL database id', () => {
@@ -157,12 +191,12 @@ describe('Notion exporter', () => {
   });
 
   describe('upsert / dedupe', () => {
-    it('creates a page when no page holds the observation id', async () => {
+    it('creates a page when no page holds the export key', async () => {
       const { exporter, calls } = harness(healthyNotion());
       expect(await exporter.upsert(record())).toBe('created');
 
       const query = calls.find(call => call.url.endsWith('/query'))!;
-      expect(query.body.filter).toEqual({ property: 'Observation ID', number: { equals: 42 } });
+      expect(query.body.filter).toEqual({ property: 'Export Key', rich_text: { equals: 'source-a:42' } });
 
       const create = calls.at(-1)!;
       expect(create.method).toBe('POST');
@@ -173,13 +207,47 @@ describe('Notion exporter', () => {
       expect(create.headers['notion-version']).toBe(NOTION_API_VERSION);
     });
 
-    it('updates the existing page instead of creating a duplicate', async () => {
+    it('leaves an existing page alone instead of duplicating or overwriting it', async () => {
       const { exporter, calls } = harness(healthyNotion('page-123'));
-      expect(await exporter.upsert(record())).toBe('updated');
-      const last = calls.at(-1)!;
-      expect(last.method).toBe('PATCH');
-      expect(last.url).toBe('https://api.notion.com/v1/pages/page-123');
-      expect(calls.some(call => call.method === 'POST' && call.url.endsWith('/pages'))).toBe(false);
+      expect(await exporter.upsert(record())).toBe('exists');
+      expect(calls.at(-1)!.url.endsWith('/query')).toBe(true);
+      expect(calls.some(call => call.url.includes('/pages'))).toBe(false);
+    });
+
+    it('keeps two computers apart: the same observation id from another source creates its own page', async () => {
+      const pagesByKey = new Map<string, string>([['source-b:42', 'page-from-b']]);
+      const ok = healthyNotion();
+      const { exporter, calls } = harness(call => {
+        if (call.url.endsWith('/query')) {
+          const id = pagesByKey.get(call.body.filter.rich_text.equals);
+          return json({ results: id ? [{ id }] : [] });
+        }
+        return ok(call);
+      });
+      expect(await exporter.upsert(record())).toBe('created');
+      expect(calls.some(call => call.url.includes('page-from-b'))).toBe(false);
+    });
+
+    it('sends a long body 100 blocks at a time', async () => {
+      const narrative = Array.from({ length: 230 }, (_, i) => `Paragraph ${i}`).join('\n\n');
+      const { exporter, calls } = harness(healthyNotion());
+      await exporter.upsert(record({ observation: { ...observation, narrative } }));
+
+      const create = calls.find(call => call.method === 'POST' && call.url.endsWith('/pages'))!;
+      expect(create.body.children).toHaveLength(100);
+      const appends = calls.filter(call => call.url.endsWith('/blocks/new-page/children'));
+      expect(appends.map(call => call.body.children.length)).toEqual([100, 33]); // 230 paragraphs + heading + 2 facts
+      expect(appends.at(-1)!.body.children.at(-1).bulleted_list_item.rich_text[0].text.content).toBe('Cap is 60s');
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
+
+    it('logs how much of the body is missing when an append fails', async () => {
+      const narrative = Array.from({ length: 150 }, (_, i) => `Paragraph ${i}`).join('\n\n');
+      const ok = healthyNotion();
+      const { exporter } = harness(call => (call.url.includes('/blocks/') ? json({ code: 'validation_error' }, 400) : ok(call)));
+      expect(await exporter.upsert(record({ observation: { ...observation, facts: [], narrative } }))).toBe('created');
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      expect(errorSpy.mock.calls[0][2]).toMatchObject({ blocksSent: 100, blocksTotal: 150 });
     });
 
     it('reads the schema once and auto-creates missing properties', async () => {
@@ -202,7 +270,7 @@ describe('Notion exporter', () => {
       await exporter.upsert(record());
 
       expect(calls.some(call => call.method === 'PATCH')).toBe(false);
-      // No Observation ID property means no dedupe query is possible.
+      // No Export Key property means no dedupe query is possible.
       expect(calls.some(call => call.url.endsWith('/query'))).toBe(false);
       const create = calls.at(-1)!;
       // Type exists with the wrong type, so it is skipped rather than failing the write.
@@ -261,7 +329,7 @@ describe('Notion exporter', () => {
       await exporter.idle();
 
       expect(calls.filter(call => call.method === 'POST' && call.url.endsWith('/pages'))).toHaveLength(1);
-      expect(calls.at(-1)!.method).toBe('PATCH');
+      expect(calls.at(-1)!.url.endsWith('/query')).toBe(true);
     });
 
     it('does not retry a 400 and keeps exporting the next observation', async () => {
@@ -293,8 +361,12 @@ describe('Notion exporter', () => {
       expect(calls).toHaveLength(1);
       expect(errorSpy).toHaveBeenCalledTimes(1);
       expect(errorSpy.mock.calls[0][1]).toContain('disabled until settings change');
+      expect(errorSpy.mock.calls[0][2]).toMatchObject({ droppedObservationIds: [1, 2] });
+      // A later observation is not dropped silently either.
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0][2]).toMatchObject({ observationId: 3 });
       // The token never reaches the log.
-      expect(JSON.stringify(errorSpy.mock.calls)).not.toContain('ntn_test_token');
+      expect(JSON.stringify([...errorSpy.mock.calls, ...warnSpy.mock.calls])).not.toContain('ntn_test_token');
     });
   });
 
@@ -318,9 +390,24 @@ describe('Notion exporter', () => {
       exporter.enqueue(record({ observationId: 3 }));
       await exporter.idle();
 
-      const ids = calls.filter(call => call.url.endsWith('/query')).map(call => call.body.filter.number.equals);
-      expect(ids).toEqual([1, 3]);
+      const keys = calls.filter(call => call.url.endsWith('/query')).map(call => call.body.filter.rich_text.equals);
+      expect(keys).toEqual(['source-a:1', 'source-a:3']);
       expect(errorSpy.mock.calls[0][1]).toContain('queue full');
+    });
+  });
+
+  describe('source id', () => {
+    it('is created once and then reused', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'notion-source-id-'));
+      try {
+        const path = join(dir, 'nested', 'notion-export-source-id');
+        const first = loadOrCreateNotionSourceId(path);
+        expect(first).toMatch(/^[0-9a-f-]{36}$/);
+        expect(loadOrCreateNotionSourceId(path)).toBe(first);
+        expect(readFileSync(path, 'utf8').trim()).toBe(first);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     });
   });
 
