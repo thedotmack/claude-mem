@@ -18,6 +18,7 @@ import {
 } from '../../types/database.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
 import { computeObservationContentHash, hasStorableTitle } from './observations/store.js';
+import { replaceObservationFileIndex } from './observations/files.js';
 import { seedReinforcement, reinforceObservation } from '../reinforcement/persist.js';
 import {
   createToolUsesSchema,
@@ -34,6 +35,7 @@ import {
   createWorkStateSchema,
   appendWorkStateEntry as appendWorkStateEntryRow,
   getWorkStateEntries as getWorkStateEntriesRows,
+  scopeWorkStateEntries,
   type WorkStateEntry,
   type WorkStateFields,
 } from './work-state.js';
@@ -62,6 +64,41 @@ import {
 // a slow request while allowing a later SessionEnd delivery to recover work
 // abandoned by a process crash between claiming and marking the row sent.
 export const TELEGRAM_WRAPUP_CLAIM_STALE_AFTER_MS = 5 * 60_000;
+
+// The sync ledgers whose `kind` CHECK must name every content kind
+// (CanonicalContent ContentKind). Their DDL lives here so widenSyncKindCheck
+// can rebuild a table created before a kind existed from the same text.
+const SYNC_ENTITY_HEADS_DDL = `
+  CREATE TABLE IF NOT EXISTS sync_entity_heads (
+    entity_id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('observation', 'summary', 'prompt', 'work_state')),
+    origin_device_id TEXT NOT NULL,
+    origin_local_id TEXT NOT NULL,
+    entity_rev TEXT NOT NULL,
+    operation_sha256 TEXT NOT NULL,
+    deleted INTEGER NOT NULL CHECK (deleted IN (0, 1)),
+    updated_at_epoch INTEGER NOT NULL
+  )`;
+const SYNC_CONTENT_OUTBOX_DDL = `
+  CREATE TABLE IF NOT EXISTS sync_content_outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('observation', 'summary', 'prompt', 'work_state')),
+    origin_local_id TEXT NOT NULL,
+    entity_rev TEXT NOT NULL,
+    body TEXT NOT NULL,
+    operation_sha256 TEXT NOT NULL,
+    deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1)),
+    created_at_epoch INTEGER NOT NULL,
+    UNIQUE(entity_id, entity_rev)
+  )`;
+const SYNC_LAUNCH_EXCLUSIONS_DDL = `
+  CREATE TABLE IF NOT EXISTS sync_launch_exclusions (
+    kind TEXT NOT NULL CHECK (kind IN ('observation', 'summary', 'prompt', 'work_state')),
+    origin_local_id TEXT NOT NULL,
+    through_rev TEXT NOT NULL,
+    PRIMARY KEY (kind, origin_local_id)
+  )`;
 
 /**
  * Coerce a value to something bun:sqlite can bind. The cloud/export shape
@@ -193,6 +230,8 @@ export class SessionStore {
   private readonly syncOpsEnabled: boolean;
   /** See cachedStatement. Keyed by SQL text; only fixed SQL ever goes in. */
   private readonly statementCache = new Map<string, Statement>();
+  /** This device's sync id; native work-state rows fold as its writes (setLocalSyncDeviceId). */
+  private localSyncDeviceId = '';
 
   constructor(dbPathOrDb: string | Database = DB_PATH, options: SessionStoreOptions = {}) {
     this.syncOpsEnabled = options.syncOpsEnabled ?? true;
@@ -275,6 +314,46 @@ export class SessionStore {
     this.ensureProjectRecencyIndexes();
     this.ensureMergedIntoProjectCoveringIndexes();
     this.ensureNativePromptIdentity();
+    this.ensureObservationFileIndex();
+  }
+
+  /**
+   * v68: file-context looks observations up by file path. json_each over
+   * files_read/files_modified scanned the whole table on the one shared
+   * connection, so concurrent lookups queued past the hook budget. Index each
+   * path instead and answer the lookup from it.
+   */
+  private ensureObservationFileIndex(): void {
+    this.db.transaction(() => {
+      if (this.db.query('SELECT version FROM schema_versions WHERE version = 68').get()) return;
+      this.db.run(`CREATE TABLE IF NOT EXISTS observation_files (
+        path TEXT NOT NULL,
+        observation_id INTEGER NOT NULL REFERENCES observations(id) ON DELETE CASCADE,
+        PRIMARY KEY (path, observation_id)
+      )`);
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_observation_files_observation ON observation_files(observation_id)');
+      // One statement, in SQL: expanding 90k rows in JS would reread every body.
+      const expand = (column: string): string =>
+        `SELECT o.id, je.value FROM observations o, json_each(o.${column}) je
+         WHERE json_valid(o.${column}) AND json_type(o.${column}) = 'array' AND je.type = 'text'`;
+      this.db.run(`INSERT OR IGNORE INTO observation_files(observation_id, path)
+        ${expand('files_read')} UNION ${expand('files_modified')}`);
+      this.db.prepare('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)')
+        .run(68, new Date().toISOString());
+    }).immediate();
+  }
+
+  /** Record the file paths an observation touches so by-file lookup is an index seek. */
+  private indexObservationFiles(observationId: number, filesRead: readonly string[], filesModified: readonly string[]): void {
+    const paths = new Set<string>();
+    for (const filePath of [...filesRead, ...filesModified]) {
+      if (typeof filePath === 'string' && filePath.length > 0) paths.add(filePath);
+    }
+    if (paths.size === 0) return;
+    const insert = this.db.prepare(
+      'INSERT OR IGNORE INTO observation_files(path, observation_id) VALUES (?, ?)',
+    );
+    for (const filePath of paths) insert.run(filePath, observationId);
   }
 
   /** Local host retry identity. Runs after every legacy user_prompts rebuild. */
@@ -908,32 +987,9 @@ export class SessionStore {
    * decimal TEXT so a remote value is never rounded through a JS number.
    */
   private ensureSyncEntityLedger(): void {
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS sync_entity_heads (
-        entity_id TEXT PRIMARY KEY,
-        kind TEXT NOT NULL CHECK (kind IN ('observation', 'summary', 'prompt')),
-        origin_device_id TEXT NOT NULL,
-        origin_local_id TEXT NOT NULL,
-        entity_rev TEXT NOT NULL,
-        operation_sha256 TEXT NOT NULL,
-        deleted INTEGER NOT NULL CHECK (deleted IN (0, 1)),
-        updated_at_epoch INTEGER NOT NULL
-      )
-    `);
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS sync_content_outbox (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        entity_id TEXT NOT NULL,
-        kind TEXT NOT NULL CHECK (kind IN ('observation', 'summary', 'prompt')),
-        origin_local_id TEXT NOT NULL,
-        entity_rev TEXT NOT NULL,
-        body TEXT NOT NULL,
-        operation_sha256 TEXT NOT NULL,
-        deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1)),
-        created_at_epoch INTEGER NOT NULL,
-        UNIQUE(entity_id, entity_rev)
-      )
-    `);
+    this.db.run(SYNC_ENTITY_HEADS_DDL);
+    this.widenSyncKindCheck('sync_entity_heads', SYNC_ENTITY_HEADS_DDL);
+    this.db.run(SYNC_CONTENT_OUTBOX_DDL);
     const contentColumns = new Set(
       (this.db.query('PRAGMA table_info(sync_content_outbox)').all() as TableColumnInfo[]).map(column => column.name)
     );
@@ -944,6 +1000,7 @@ export class SessionStore {
         SET deleted = CASE WHEN json_extract(body, '$.deleted') = 1 THEN 1 ELSE 0 END
       `);
     }
+    this.widenSyncKindCheck('sync_content_outbox', SYNC_CONTENT_OUTBOX_DDL);
     this.db.run(`
       CREATE TABLE IF NOT EXISTS sync_dead_letter (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -986,6 +1043,32 @@ export class SessionStore {
       .run(45, new Date().toISOString());
   }
 
+  /**
+   * v67 — a sync ledger's CHECK on `kind` was written for the three launch
+   * kinds; work_state joined later (work-state.ts). SQLite cannot alter a
+   * CHECK, so a table whose stored DDL predates the kind is rebuilt in place
+   * from the current DDL, its rows copied by column name. Idempotent: the
+   * rebuilt table's DDL names the kind, so later boots skip it.
+   */
+  private widenSyncKindCheck(table: string, createSql: string): void {
+    const stored = this.db.prepare(
+      `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`
+    ).get(table) as { sql: string } | undefined;
+    if (!stored || stored.sql.includes("'work_state'")) return;
+    const columns = (this.db.query(`PRAGMA table_info(${table})`).all() as TableColumnInfo[])
+      .map(column => column.name)
+      .join(', ');
+    const previous = `${table}_pre_work_state`;
+    this.db.transaction(() => {
+      this.db.run(`DROP TABLE IF EXISTS ${previous}`);
+      this.db.run(`ALTER TABLE ${table} RENAME TO ${previous}`);
+      this.db.run(createSql);
+      this.db.run(`INSERT INTO ${table} (${columns}) SELECT ${columns} FROM ${previous}`);
+      this.db.run(`DROP TABLE ${previous}`);
+    }).immediate();
+    logger.info('DB', `Rebuilt ${table} to admit the work_state sync kind`);
+  }
+
 
   /**
    * One-time launch boundary (v47) plus its durable revision exclusions
@@ -1005,14 +1088,8 @@ export class SessionStore {
       SELECT 1 AS present FROM sqlite_master
       WHERE type = 'table' AND name = 'sync_launch_exclusions'
     `).get() !== undefined;
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS sync_launch_exclusions (
-        kind TEXT NOT NULL CHECK (kind IN ('observation', 'summary', 'prompt')),
-        origin_local_id TEXT NOT NULL,
-        through_rev TEXT NOT NULL,
-        PRIMARY KEY (kind, origin_local_id)
-      )
-    `);
+    this.db.run(SYNC_LAUNCH_EXCLUSIONS_DDL);
+    this.widenSyncKindCheck('sync_launch_exclusions', SYNC_LAUNCH_EXCLUSIONS_DDL);
 
     const applied = this.db.prepare(
       'SELECT version, applied_at FROM schema_versions WHERE version = ?'
@@ -2014,6 +2091,13 @@ export class SessionStore {
   private ensureWorkStateTable(): void {
     createWorkStateSchema(this.db);
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(61, new Date().toISOString());
+    // Both work-state sync steps are introspection-guarded, so a database that
+    // already ran v65 still gets them; v65 itself is the run-once gate of
+    // refreshUnicodeTitleNormKeys, which these rows must never claim.
+    // v66 — cloud sync columns on the same table (work-state.ts ensureWorkStateSyncColumns).
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(66, new Date().toISOString());
+    // v67 — the sync ledgers admit the work_state kind (widenSyncKindCheck).
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(67, new Date().toISOString());
   }
 
   // v63 — SessionStart reads the newest N rows per project key. Ordered
@@ -3096,16 +3180,24 @@ export class SessionStore {
     return entryId;
   }
 
+  /**
+   * The id CloudSync syncs this device under, once it is resolved: work-state
+   * reads order native rows as this device's writes, the way other devices
+   * and cmem.ai order them. Empty (the default) when sync has no device id.
+   */
+  setLocalSyncDeviceId(deviceId: string): void {
+    this.localSyncDeviceId = deviceId;
+  }
+
+  getLocalSyncDeviceId(): string {
+    return this.localSyncDeviceId;
+  }
+
   getWorkStateEntries(projects: string[], listName?: string): WorkStateEntry[] {
-    const entries = getWorkStateEntriesRows(this.db, this.getProjectReadKeys(projects), listName);
-    // Keys explicitly supplied by the checkout describe one list history.
-    // Adopted projects discovered by getProjectReadKeys retain their own scope.
-    const foldKey = (key: string) => key.replace(/[A-Z]/g, character => character.toLowerCase());
-    const aliases = new Set(projects.map(foldKey));
-    const primary = projects.at(-1);
-    return entries.map(entry => primary && aliases.has(foldKey(entry.project))
-      ? { ...entry, scope_project: primary }
-      : entry);
+    return scopeWorkStateEntries(
+      getWorkStateEntriesRows(this.db, this.getProjectReadKeys(projects), listName, this.localSyncDeviceId),
+      projects,
+    );
   }
 
   countToolUses(filters: ToolUseQueryFilters = {}): Array<{ tool_name: string; uses: number }> {
@@ -3500,9 +3592,18 @@ export class SessionStore {
 
     if (existing) {
       if (project) {
+        // 'unknown' is the placeholder ingest paths register when a payload has
+        // no cwd (#4772); a later init with the real project must repair it, but
+        // a real project is never demoted back to the placeholder. 'unknown' is
+        // also a legitimate path-mode project name — a non-git checkout literally
+        // named `unknown` resolves to it (#4774 review) — so only repair rows
+        // that provably hold the placeholder: every ingest/init path that
+        // resolves a real cwd also records it via setSessionCwd (first-write-wins,
+        // guarded on cwd IS NULL), so a stored 'unknown' with a NULL cwd can only
+        // come from a no-cwd payload.
         this.db.prepare(`
           UPDATE sdk_sessions SET project = ?
-          WHERE id = ? AND (project IS NULL OR project = '')
+          WHERE id = ? AND (project IS NULL OR project = '' OR (project = 'unknown' AND cwd IS NULL))
         `).run(project, existing.id);
       }
       // A tool-first init persists the placeholder; the first real prompt repairs it.
@@ -3593,8 +3694,8 @@ export class SessionStore {
     return mutation;
   }
 
-  saveUserPrompt(contentSessionId: string, promptNumber: number, promptText: string, sessionDbId?: number, nativePromptId?: string, nativePromptHash?: string): number {
-    const now = new Date();
+  saveUserPrompt(contentSessionId: string, promptNumber: number, promptText: string, sessionDbId?: number, nativePromptId?: string, nativePromptHash?: string, createdAtEpoch?: number): number {
+    const now = new Date(createdAtEpoch ?? Date.now());
     const nowEpoch = now.getTime();
     const storedPromptText = normalizeStoredPromptText(promptText);
     const resolvedSessionDbId = this.resolvePromptSessionDbId(contentSessionId, sessionDbId);
@@ -3613,7 +3714,8 @@ export class SessionStore {
    * Equal text with a different key is a new real turn. No time window applies.
    * It is scoped by the DB session (platform_source + content_session_id).
    */
-  saveNativeUserPrompt(contentSessionId: string, sessionDbId: number, nativePromptId: string, promptText: string, identityPromptText = promptText): {
+  saveNativeUserPrompt(contentSessionId: string, sessionDbId: number, nativePromptId: string, promptText: string, identityPromptText = promptText,
+    options: { createdAtEpoch?: number; reopenSession?: boolean } = {}): {
     id: number; promptNumber: number; duplicate: boolean;
   } {
     if (!nativePromptId || nativePromptId.length > 256 || /[\s\x00-\x1f\x7f]/.test(nativePromptId)) {
@@ -3632,10 +3734,87 @@ export class SessionStore {
         return { id: existing.id, promptNumber: existing.prompt_number, duplicate: true };
       }
       const promptNumber = this.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId) + 1;
-      this.reopenCompletedSession(sessionDbId);
-      const id = this.saveUserPrompt(contentSessionId, promptNumber, text, sessionDbId, nativePromptId, promptHash);
+      if (options.reopenSession !== false) this.reopenCompletedSession(sessionDbId);
+      const id = this.saveUserPrompt(contentSessionId, promptNumber, text, sessionDbId, nativePromptId, promptHash, options.createdAtEpoch);
       return { id, promptNumber, duplicate: false };
     }).immediate();
+  }
+
+  /**
+   * A prompt read back from an agent's own transcript (setup prompt import).
+   * It joins the session claude-mem's hooks recorded for the same conversation,
+   * keeps the transcript's time, and never reopens a finished session.
+   *
+   * Two copies of one prompt count once:
+   * - a re-scan finds the transcript's native key (`transcript:` prefix + the
+   *   agent's message id, compared with its SHA-256 by saveNativeUserPrompt);
+   * - a hook-recorded row carries no native key, so it is matched by session,
+   *   stored text (or one of `hookTextVariants`, e.g. a slash command's short
+   *   form) and the nearest time within `hookMatchWindowMs`. Each hook row is
+   *   claimed by one transcript prompt at most (`claimedHookRowIds`), so a
+   *   prompt typed twice is still two prompts.
+   * A prompt that is entirely private stores nothing.
+   */
+  importTranscriptUserPrompt(prompt: {
+    platformSource: string; contentSessionId: string; project: string;
+    nativePromptId: string; promptText: string; createdAtEpoch: number;
+    hookTextVariants?: string[]; hookMatchWindowMs: number; claimedHookRowIds: Set<number>;
+  }): { reason: 'new' | 'already-imported' | 'recorded-by-hook' | 'private'; hookRowId?: number } {
+    const text = normalizeStoredPromptText(prompt.promptText);
+    if (!text) return { reason: 'private' };
+    const platformSource = normalizePlatformSource(prompt.platformSource);
+    const session = this.db.prepare(`SELECT id FROM sdk_sessions
+      WHERE COALESCE(NULLIF(platform_source, ''), ?) = ? AND content_session_id = ?`)
+      .get(DEFAULT_PLATFORM_SOURCE, platformSource, prompt.contentSessionId) as { id: number } | null;
+    let sessionDbId = session?.id;
+    if (sessionDbId !== undefined) {
+      const texts = [text, ...(prompt.hookTextVariants ?? []).map(normalizeStoredPromptText).filter(Boolean)];
+      const hookRows = this.db.prepare(`SELECT id, created_at_epoch FROM user_prompts
+        WHERE session_db_id = ? AND native_prompt_id IS NULL
+          AND prompt_text IN (${texts.map(() => '?').join(', ')})
+          AND ABS(created_at_epoch - ?) <= ?
+        ORDER BY ABS(created_at_epoch - ?), id`)
+        .all(sessionDbId, ...texts, prompt.createdAtEpoch, prompt.hookMatchWindowMs, prompt.createdAtEpoch) as Array<{ id: number }>;
+      const hookRow = hookRows.find(row => !prompt.claimedHookRowIds.has(row.id));
+      if (hookRow) {
+        prompt.claimedHookRowIds.add(hookRow.id);
+        return { reason: 'recorded-by-hook', hookRowId: hookRow.id };
+      }
+    } else {
+      const at = new Date(prompt.createdAtEpoch).toISOString();
+      const inserted = this.db.prepare(`INSERT INTO sdk_sessions
+        (content_session_id, memory_session_id, project, platform_source, user_prompt, started_at, started_at_epoch, completed_at, completed_at_epoch, status)
+        VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, 'completed')`)
+        .run(prompt.contentSessionId, prompt.project, platformSource, text, at, prompt.createdAtEpoch, at, prompt.createdAtEpoch);
+      sessionDbId = Number(inserted.lastInsertRowid);
+    }
+    const result = this.saveNativeUserPrompt(prompt.contentSessionId, sessionDbId, `transcript:${prompt.nativePromptId}`,
+      prompt.promptText, prompt.promptText, { createdAtEpoch: prompt.createdAtEpoch, reopenSession: false });
+    return { reason: result.duplicate ? 'already-imported' : 'new' };
+  }
+
+  /** Prompts claude-mem's hooks recorded since `sinceEpochMs` (everything the transcript import did not write). */
+  listHookRecordedPrompts(sinceEpochMs: number): Array<{
+    id: number; platformSource: string; contentSessionId: string; project: string; cwd: string | null; promptText: string; createdAtEpoch: number;
+  }> {
+    return this.db.prepare(`SELECT up.id, COALESCE(NULLIF(s.platform_source, ''), ?) AS platformSource,
+        s.content_session_id AS contentSessionId, s.project, s.cwd, up.prompt_text AS promptText, up.created_at_epoch AS createdAtEpoch
+      FROM user_prompts up JOIN sdk_sessions s ON s.id = up.session_db_id
+      WHERE up.created_at_epoch >= ? AND s.project != ?
+        AND (up.native_prompt_id IS NULL OR up.native_prompt_id NOT LIKE 'transcript:%')
+      ORDER BY up.created_at_epoch, up.id`)
+      .all(DEFAULT_PLATFORM_SOURCE, sinceEpochMs, OBSERVER_SESSIONS_PROJECT) as Array<{
+        id: number; platformSource: string; contentSessionId: string; project: string; cwd: string | null; promptText: string; createdAtEpoch: number;
+      }>;
+  }
+
+  /** Every observation's token fields, streamed in id order (setup Token Savings feeds them to calculateTokenEconomics). */
+  streamObservationTokenFields(): Iterable<{
+    title: string | null; subtitle: string | null; narrative: string | null; facts: string | null; discovery_tokens: number | null;
+  }> {
+    return streamRows(this.db.prepare(`SELECT title, subtitle, narrative, facts, discovery_tokens FROM observations ORDER BY id`)) as Iterable<{
+      title: string | null; subtitle: string | null; narrative: string | null; facts: string | null; discovery_tokens: number | null;
+    }>;
   }
 
   getUserPrompt(contentSessionId: string, promptNumber: number, sessionDbId?: number): string | null {
@@ -3988,6 +4167,7 @@ export class SessionStore {
 
         if (inserted) {
           if (dedup.enabled) this.maintainDedupOnInsert(project, inserted.id, observation.title, dedup);
+          this.indexObservationFiles(inserted.id, observation.files_read, observation.files_modified);
           observationIds.push(inserted.id);
           mergedIntoExisting.push(false);
           insertedObservationIds.push(inserted.id);
@@ -4173,13 +4353,14 @@ export class SessionStore {
     depthBefore: number = 10,
     depthAfter: number = 10,
     project?: string,
-    platformSource?: string
+    platformSource?: string,
+    projects?: string[]
   ): {
     observations: any[];
     sessions: any[];
     prompts: any[];
   } {
-    return this.getTimelineAroundObservation(null, anchorEpoch, depthBefore, depthAfter, project, platformSource);
+    return this.getTimelineAroundObservation(null, anchorEpoch, depthBefore, depthAfter, project, platformSource, projects);
   }
 
   getTimelineAroundObservation(
@@ -4188,25 +4369,23 @@ export class SessionStore {
     depthBefore: number = 10,
     depthAfter: number = 10,
     project?: string,
-    platformSource?: string
+    platformSource?: string,
+    projects?: string[]
   ): {
     observations: any[];
     sessions: any[];
     prompts: any[];
   } {
     const normalizedPlatformSource = platformSource ? normalizePlatformSource(platformSource) : undefined;
+    const readProjects = scopedProjects({ project, projects });
     const buildScope = (rowAlias: string, sessionAlias: string, includeMergedProject: boolean = false): { clause: string; params: any[] } => {
       const conditions: string[] = [];
       const params: any[] = [];
 
-      if (project) {
-        if (includeMergedProject) {
-          conditions.push(`(${rowAlias}.project COLLATE NOCASE = ? OR ${rowAlias}.merged_into_project COLLATE NOCASE = ?)`);
-          params.push(project, project);
-        } else {
-          conditions.push(`${rowAlias}.project COLLATE NOCASE = ?`);
-          params.push(project);
-        }
+      if (readProjects.length > 0) {
+        const scope = projectScopeSql(rowAlias, readProjects, { includeMerged: includeMergedProject });
+        conditions.push(scope.sql);
+        params.push(...scope.params);
       }
 
       if (normalizedPlatformSource) {
@@ -4608,28 +4787,37 @@ export class SessionStore {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    const result = stmt.run(
-      obs.memory_session_id,
-      obs.project,
-      coerceBindValue(obs.text),
-      obs.type,
-      coerceBindValue(obs.title),
-      coerceBindValue(obs.subtitle),
-      coerceBindValue(obs.facts),
-      coerceBindValue(obs.narrative),
-      coerceBindValue(obs.concepts),
-      coerceBindValue(obs.files_read),
-      coerceBindValue(obs.files_modified),
-      obs.prompt_number,
-      obs.discovery_tokens || 0,
-      obs.agent_type ?? null,
-      obs.agent_id ?? null,
-      obs.created_at,
-      obs.created_at_epoch
-    );
+    // The row and its observation_files mappings commit together: an import
+    // interrupted between the two writes leaves an observation permanently
+    // unsearchable by file — the replay match skips the existing row and the
+    // v68 migration is already stamped, so neither repairs the gap.
+    const importedId = this.db.transaction(() => {
+      const result = stmt.run(
+        obs.memory_session_id,
+        obs.project,
+        coerceBindValue(obs.text),
+        obs.type,
+        coerceBindValue(obs.title),
+        coerceBindValue(obs.subtitle),
+        coerceBindValue(obs.facts),
+        coerceBindValue(obs.narrative),
+        coerceBindValue(obs.concepts),
+        coerceBindValue(obs.files_read),
+        coerceBindValue(obs.files_modified),
+        obs.prompt_number,
+        obs.discovery_tokens || 0,
+        obs.agent_type ?? null,
+        obs.agent_id ?? null,
+        obs.created_at,
+        obs.created_at_epoch
+      );
+      const id = result.lastInsertRowid as number;
+      replaceObservationFileIndex(this.db, id, obs.files_read, obs.files_modified);
+      return id;
+    })();
     emitContextInvalidation({ projects: [obs.project] }, 'importObservation');
 
-    return { imported: true, id: result.lastInsertRowid as number };
+    return { imported: true, id: importedId };
   }
 
   rebuildObservationsFTSIndex(): void {

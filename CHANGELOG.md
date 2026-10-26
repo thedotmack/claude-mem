@@ -4,6 +4,229 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [15.2.1] - 2026-10-25
+
+## What changed
+
+- **npm publishing now uses trusted publishing (OIDC).** The "Publish to npm" GitHub Actions workflow authenticates to npm with a short-lived OIDC token issued for this repository's workflow instead of the long-lived `NPM_TOKEN` secret, which had been failing on every tag since v13.26.1. Trusted publishes also carry an npm provenance attestation linking the package to the commit and workflow that built it. (#5063)
+
+No runtime behavior changes in the plugin or worker; this release exists to ship through the new publishing path.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v15.2.0...v15.2.1
+
+## [15.2.0] - 2026-10-25
+
+## Highlights
+
+### Install funnel in the browser (#5031)
+Fresh installs now open a browser setup flow that finds your recent work and turns it into Work, Goals and Rules before setup finishes. Existing installations keep opening My Work as before.
+
+1. **Install** — `npx claude-mem install` installs the detected hooks, starts the worker and opens the browser.
+2. **Scan** — reads the last 30 days of supported local agent history. Configured excluded projects and agent-authored prompts are left out, stored prompts are deduplicated, and private-tag cleanup and configured redaction run before anything is shown or extracted.
+3. **Reveal** — uploads the filtered owner prompts (gzip) to CMEM Cloud for hosted intent extraction. Anonymous installs get a private, persistent installation credential that retries and sign-in reuse. Returned goals, rules and request groups fill the local My Work snapshots. Upload and extraction errors are shown and can be retried. The pre-checked product-improvement box only changes `improveProduct`.
+4. **Storage choice** — At Home or On The Go. On The Go uses the existing pairing, login and checkout flow; delivered memory credentials are activated before checkout is marked paid, and sync-only accounts keep their provider.
+5. **Finish Setup** — installs any other selected local tools and can import existing memory. Extraction or import in progress is kept when a settings change restarts the worker.
+6. **What's next** — search saved memory and prompts, keep a result as a note, then hand off to My Work. The terminal exits successfully.
+
+Ongoing goals and progress refresh uses an installed, logged-in agent: Claude Code gets bounded file tools and memory recall only; Codex runs with a strict read-only workspace/runtime profile (no writes, no network), with native and npm runtime layouts supported; Gemini gets prepared evidence inline with no builtin tools, hooks or YOLO mode. Every saved answer passes the worker's validators.
+
+### Setup no longer fails when Cloud leaves conversations ungrouped (#5060)
+On real 30-day scans the hosted model sometimes leaves conversations out of every group. The worker used to throw `Hosted extraction omitted conversation …` and fail setup after a successful hosted run. Now the groups Cloud returned are saved and conversations it did not place stay undecided: they show in My Work as their own request, and the local refresh can group them later. Unknown or repeated conversation ids still fail loudly.
+
+## Requirements
+- Node `^20.19.0 || >=22.12.0`.
+- Uses CMEM Cloud hosted history import and intent extraction (claude-mem-pro #353, #355, #358).
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v15.1.0...v15.2.0
+
+## [15.1.0] - 2026-10-25
+
+## claude-mem 15.1.0
+
+### Highlights
+
+- **New My Work viewer (React, live data).** The localhost viewer at `http://localhost:37777` is replaced by the React My Work viewer on live worker data: one card per human request, progress meters, owner goals, goal alignment, shipping velocity and the build story (#5010).
+- **My Work is always live.** Updates appear as they arrive; the "Show updates" button is gone. The header now reads "claude-mem", links to the Classic viewer at `/viewer`, and shows a GitHub stars button. An open request drawer no longer reopens by itself when its request returns to the feed (#5056).
+- **Request grouping and progress review.** The build story stays under its cap and the story update is told how much room it has (#5053, #5054); every agent's refresh failure is shown; finished subagents show as finished, and a subagent can be marked finished from its agent card; Claude Code subagent stops are recorded.
+
+### Server
+
+- Per-prompt semantic injection in server mode (#5004).
+- The configured embedding model is baked into the Docker image (#5003).
+
+### MCP
+
+- Opt-in loopback HTTP transport with per-session workspaces (#5028).
+
+### Fixes
+
+- Observer: reasoning gets its own budget and cut-off replies are reported (#5033).
+- Search: unfiltered timelines are scoped to their anchor project (#5013).
+- Worker: cross-origin loopback writes to `/api/import` are rejected (#5025); Edit payloads carrying new scalar flags keep being trimmed (#5027).
+- Redaction: AWS secret keys under lowercase key names, PGP private key blocks and encrypted PKCS#8 keys (#5014, #5017).
+- Security: private prompt text stays out of Goals.
+- Smart-read: tree-sitter probe output read when Bun returns a Buffer (#5024), Go type aliases (#5020), Swift extension methods (#5016), symbols ending at column 0 (#5015).
+- Hooks: `last_assistant_message` mapped in the raw adapter (#5011).
+- Agent runner: npm-installed codex and gemini are found and started.
+
+### Tests
+
+- Suite split into fast and integration lanes; slow, failing and source-grep tests cut (#5032).
+
+## [15.0.2] - 2026-10-23
+
+# Stop observer reasoning from consuming the output budget
+
+Observer requests to OpenRouter, the cmem.ai gateway, and OpenAI-compatible endpoints now disable reasoning by default, so reasoning tokens no longer fill the output budget and leave a session with zero observations.
+
+- An empty reply with finish_reason=length is logged and retried once with reasoning forced off. That retry counts against the existing paid-send budget and is bounded by the per-attempt timeout.
+- Billed usage keeps the retry's prompt size and adds completion tokens and cost from both attempts.
+- Health status names the active OpenRouter credential, including a custom OPENROUTER_BASE_URL.
+- OpenAI "Unsupported parameter" responses drop the reasoning field and remember the endpoint. Mandatory-reasoning and invalid-effort refusals are left in place.
+- Empty replies that finish with stop stay accepted.
+
+Ships the observer repair from #5029.
+
+## [15.0.1] - 2026-10-20
+
+# Keep Smart recall consistent across merged projects
+
+Smart search, timeline context, and selected observation details now use the same checkout project scope. An observation found through a merged project alias remains available in the next two steps, instead of incorrectly returning “not found.”
+
+- Resolves the same project read keys for search results, explicit timeline anchors, query-selected timeline anchors, and selected observation reads.
+- Keeps adopted records visible while excluding unrelated or unadopted records and respecting platform-source filters.
+- Preserves the Smart default three-step workflow and the optional `dumb_search` alternative introduced in 15.0.0. No API or schema migration is required.
+
+Regression coverage includes real HTTP/SQLite cases that fail on 15.0.0 and pass with this repair, plus related scope-isolation checks.
+
+## [15.0.0] - 2026-10-20
+
+# Smart memory search by default
+
+Memory recall now defaults to Smart: search the compact index, inspect context around relevant results, then fetch only the selected details. The agent reasons about relevance between these three steps. Local, cloud/Pro, and standalone-server instructions describe the tools available in that runtime.
+
+The optional one-call lookup is now `dumb_search`. Its description is explicit: “Doesn’t reason about the results. Fast, but shallow. Use Smart for reliable recall.” It performs deterministic title matching and does not reason about relevance.
+
+## Migration
+
+- Use the `mem-search` skill for default Smart recall. Local tools are `search` → `timeline` → `get_observations`; Cloud/Pro starts with `memory_search` and can fetch selected summaries with `get_summaries`.
+- Replace calls to the old `mem_search` guided/auto API and `flash_search` with the Smart workflow, or explicitly choose `dumb_search` for a shallow lookup. Auto/guided modes and continuation cursors are removed.
+- Refresh existing MCP connections so clients load the new tool catalog and descriptions.
+
+## Correctness
+
+- Cloud timeline supports context anchored to a selected search result.
+- Standalone-server recall stays scoped to its configured server project rather than reading a local worker's memory.
+- Selected-detail output reports its bounds honestly and preserves selected record identities when long content must be shortened.
+- Native memory lookup uses observation-only indexes, and mixed local indexes retain session/prompt ID prefixes so follow-up reads cannot select a different record kind with the same number.
+- Installer prompts, public documentation, integration instructions, and generated memory guidance use the same Smart-first policy.
+
+## Other changes since v14.0.1
+
+- Added Hermes Agent memory support and installation, including safe handling of existing YAML configuration.
+- Added fallback between an Anthropic API key and the Claude subscription, with quota classification and recovery back to the primary provider at a message boundary.
+- Kept worker HTTP requests responsive during local context reads, bounded broad full-text fallback searches, and removed quadratic tag-stripping stalls.
+- Improved memory correctness: `type="all"` searches every category, deleted observations remove their Chroma documents, unexpected Chroma exits reject pending requests, and failed Windows checkpoint renames preserve the previous checkpoint.
+- Tightened privacy and request handling: fully private prompts no longer become stored user requests; key redaction handles trailing dashes; internal Grok research briefs do not become user work; multilingual work requests are recognized; and OpenRouter field condensation avoids unnecessary reasoning.
+- Improved installation and runtime reliability across Windows, macOS, Conda, Qoder, Goose, OpenCode, Antigravity, Codex, and TeamBrain. Fixes include launcher self-recursion and working-directory handling, stale temporary-directory cleanup, actionable authentication and missing-runtime errors, and correct host hook registration.
+- Added optional cross-project context with `CLAUDE_MEM_CONTEXT_PROJECTS=all`, corrected folder context ordering and glob matching, expired orphaned summary spool entries, and improved effective-data-directory log lookup and cloud authentication telemetry.
+
+Validation and delivery identities are recorded separately in the release receipt after the final builds, deployment, and package checks complete.
+
+## [14.0.1] - 2026-10-17
+
+Cards keep the agent who did the work when new updates arrive, instead of showing Unassigned work.
+
+## [14.0.0] - 2026-10-17
+
+## Claude-Mem 14.0.0: My Work and TeamBrain
+
+### My Work: see what you asked for, and where it stands
+Claude-Mem now opens on **My Work**, a local, human-readable view of the requests you've given your agents.
+
+- **Cards, List and Agents views.** Full-width request cards with the title, a plain-language summary, who worked on it and the project. Switch to a sortable list or a view by agent. "Attention first" sorting brings anything that needs you to the top.
+- **Readable summaries.** Each request gets a short everyday-language summary of what happened and the next step, written by the model you've already configured. The last good summary stays visible while a new one is written. With no compatible provider, you see the recorded wording.
+- **Live status.** In progress, Needs you, No recent update, Ready to check and Checked update as work is recorded, without the page jumping while you read.
+- **Review.** Mark a result as checked yourself, so an agent reporting "done" is never mistaken for a person confirming it.
+- **Drill down.** Open any request to see the work behind it: workstreams, recorded evidence and the original request.
+
+My Work is free, open source and runs on your machine.
+
+### TeamBrain: shared work for teams (optional)
+TeamBrain brings the work your team chooses to share into the same experience: open work, useful context and handoffs, without anyone's private work being broadcast. Teams can set it up self-serve at **$50 per seat per month** at https://cmem.ai/teambrain.
+
+### Also in this release
+- Codex: skips next-message suggestion and rollout-consolidation helper prompts (#4812).
+- Windows tests now spawn the running Bun directly (#4814).
+
+**Upgrade:** `npx claude-mem@latest install`
+
+## [13.41.0] - 2026-10-17
+
+# Build, release, and work-state visibility
+
+## Workflow skills
+
+- `build` delegates a coding session through `make-plan`, `do`, and `babysit`.
+- `release` delegates publication through `version-bump` and `childhood`.
+- `build-and-release` runs both, merging the ready PR before continuing from updated main.
+- Restores the existing `childhood` skill so post-release verification is included.
+
+The new wrappers are deliberately short. They reuse the existing workflows.
+
+## Work-state telemetry
+
+Adds privacy-preserving PostHog rollups for work-state usage by release, host platform, and recorded agent role. The rollups distinguish captured reads and writes, outcomes, native to-do use, instruction handoffs, and missing attribution.
+
+MCP execution receipts also cover failures before a worker responds. They are a separate observation source and must not be added to captured-call totals.
+
+Instruction handoffs are measured after the platform adapter formats the model-bound output and stdout succeeds. Cached context is included; discarded context and failed output are not counted as successful handoffs. Delayed or untimestamped captures cannot inherit a later instruction handoff.
+
+These are diagnostic signals, not a compliance score. Returning instructions does not prove that a host accepted them or an agent followed them, and an ordinary question may correctly require no write.
+
+No task titles, prompt text, project paths, or raw session/agent IDs are sent. Existing telemetry opt-out remains in effect. This release does not backfill earlier usage.
+
+Local replay deduplication lasts 30 days; older events are dropped. Public/private turn boundaries remain content-free and prevent private activity from inheriting an earlier public prompt. Hosts without verified original timestamps remain outside captured prompt/tool totals.
+
+## [13.40.0] - 2026-10-16
+
+## What's new
+
+### TeamBrain from the terminal
+- `npx claude-mem teambrain join <invite-link>` connects this install to a TeamBrain team using the same device-code sign-in as `install`. You approve the device in the browser, then choose which projects to share. Also: `teambrain status`, `teambrain share`, `teambrain leave`, `teambrain start`. (#4815)
+- Members who join with a team seat keep their own local observer — joining never switches your observer provider.
+- When an install belongs to a team, SessionStart adds a short **team brief**: open collisions in this project, recent plans and decisions, who else is active, and items delegated to you. Agents also get read-only `team_brief` and `team_search` MCP tools. Installs that are not in a team see no change.
+
+### Work-state sync
+- The agent's work-state tracker (`work_state_write` / `work_state_read`) now syncs to the cloud as a `work_state` content kind, for accounts where the sync server enables it. Until then rows wait locally — they are never dropped. Devices that skipped work-state ops on older builds apply them once after upgrading. (#4569)
+
+### Also new
+- The Claude observer can batch queued events (opt-in). (#4793)
+- Viewer: the NOTES summary section has its own icon (#4776); long prompts clamp behind a "Show more" disclosure (#4765).
+
+## Fixes
+- Codex: bundle Zod so cached hooks load without `node_modules` (#4771); reject a host root without its dependencies in the hook resolver (#4766); finish teardown before removing the private runtime (#4792).
+- Search: reject an unparseable `dateStart`/`dateEnd` with `400 INVALID_DATE` (#4786); validate `limit`/`offset` with `400 INVALID_PAGINATION` (#4787); make the implicit 90-day recency window configurable (#4773).
+- Privacy: strip nested and overlapping memory tags (#4761); opt-in generic credential patterns, with the redaction settings documented (#4762).
+- Ingest: register an unknown project when hook payloads have no cwd (#4774); apply `CLAUDE_MEM_SKIP_BASH_PATTERNS` to the PowerShell tool (#4756).
+- Hooks: skip SessionEnd for sessions that are never tracked (#4780); fix hook spool delivery to remote workers (#4626).
+- Worker: spare a silent worker whose liveness heartbeat is fresh, for a bounded time (#4794).
+- Projects: promote a merged-from project to a read key only for whole-project merges (#4789).
+- Context files: keep CLAUDE.md/AGENTS.md symlinks when refreshing context (#4784).
+- Exclusions: a trailing `/**` pattern also excludes the directory itself (#4785).
+- Cursor: preserve your own `hooks.json` entries on install/uninstall (#4783).
+- Logger: keep the day log open instead of re-opening it per line (#4791).
+- Launcher: ad-hoc re-sign the compiled binary on macOS before the protocol probe (#4781).
+- CLI: show help for `install`, `update`, `uninstall` and other action verbs instead of running them (#4767).
+- DSH: keep every table's header when collapsing duplicate rows (#4790).
+- Tree-sitter: verify the CLI loads, not just that it exists (#4777).
+- Build: leave posthog-node's optional OpenTelemetry import unresolved (#4795).
+
+## Upgrade notes
+- The local database schema moves to **v67** on first open. Older builds refuse a database a newer build has opened (no downgrade), so update every install that shares `~/.claude-mem`.
+- If work-state sync is enabled for your account, your existing work-state history uploads once.
+- Using claude-mem on more than one machine? Update all of them — builds older than v13.29.0 cannot skip sync content they don't recognize.
+
 ## [13.39.0] - 2026-10-13
 
 ## Codex: memory timeline returns to subagent threads after compaction

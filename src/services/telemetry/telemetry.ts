@@ -40,6 +40,9 @@ function hasConsent(): boolean {
   return value;
 }
 
+/** Worker-side collectors share the transport's bounded consent cache. */
+export function hasTelemetryConsent(): boolean { return hasConsent(); }
+
 /**
  * Whether THIS process is the long-lived worker. Only the worker enables
  * uncaught-exception autocapture (enableExceptionAutocapture) — short-lived CLI

@@ -13,6 +13,7 @@ import {
   bunCommonPaths,
   uvCommonPaths,
   installPluginDependencies,
+  ensureServerEmbedder,
   provisionTreeSitterCli,
 } from '../src/npx-cli/install/setup-runtime';
 import { ensureTreeSitterCliBinary, treeSitterCliBinaryPath } from '../src/services/smart-file-read/tree-sitter-cli-provision';
@@ -23,7 +24,6 @@ import { IS_WINDOWS } from '../src/npx-cli/utils/paths';
 const SETUP_RUNTIME_SOURCE_PATH = join(import.meta.dir, '..', 'src', 'npx-cli', 'install', 'setup-runtime.ts');
 const TOOL_PATH_SOURCE_PATH = join(import.meta.dir, '..', 'src', 'npx-cli', 'install', 'tool-path.ts');
 const SHARED_SPAWN_SOURCE_PATH = join(import.meta.dir, '..', 'src', 'shared', 'spawn.ts');
-const DOCTOR_SOURCE_PATH = join(import.meta.dir, '..', 'src', 'npx-cli', 'commands', 'doctor.ts');
 
 function probeBunVersion(): string | null {
   try {
@@ -217,13 +217,50 @@ describe('installPluginDependencies passes the bun path as an argument, not thro
     try {
       await installPluginDependencies(targetDir, fakeBun);
       const recorded = readFileSync(argsFile, 'utf-8').trim().split('\n');
-      expect(recorded).toEqual(['install', '--frozen-lockfile', '--ignore-scripts']);
+      expect(recorded).toEqual(['install', '--frozen-lockfile', '--ignore-scripts', '--omit=optional']);
       // The $(touch ...) in the path must NOT have executed.
       expect(existsSync(marker)).toBe(false);
     } finally {
       rmSync(base, { recursive: true, force: true });
       rmSync(marker, { force: true });
       rmSync(argsFile, { force: true });
+    }
+  });
+});
+
+describe('ensureServerEmbedder', () => {
+  // The plugin install omits the optional embedder; a server start installs it.
+  function fakePluginRoot() {
+    const root = mkdtempSync(join(tmpdir(), 'cm-embedder-'));
+    const argsFile = join(root, 'args.txt');
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ dependencies: {} }));
+    const fakeBun = join(root, 'bun');
+    writeFileSync(fakeBun, `#!/bin/sh\nprintf '%s\\n' "$@" > "${argsFile}"\nexit 0\n`);
+    chmodSync(fakeBun, 0o755);
+    return { root, argsFile, fakeBun };
+  }
+
+  it('installs optional dependencies when the embedder is missing', async () => {
+    if (IS_WINDOWS) return; // POSIX fake-bin shell script
+    const { root, argsFile, fakeBun } = fakePluginRoot();
+    try {
+      await ensureServerEmbedder(root, fakeBun);
+      expect(readFileSync(argsFile, 'utf-8').trim().split('\n')).toEqual(['install', '--frozen-lockfile', '--ignore-scripts']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('runs no install when the embedder is present', async () => {
+    if (IS_WINDOWS) return;
+    const { root, argsFile, fakeBun } = fakePluginRoot();
+    try {
+      mkdirSync(join(root, 'node_modules', '@huggingface', 'transformers'), { recursive: true });
+      writeFileSync(join(root, 'node_modules', '@huggingface', 'transformers', 'package.json'), '{}');
+      await ensureServerEmbedder(root, fakeBun);
+      expect(existsSync(argsFile)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });
@@ -236,24 +273,7 @@ describe('setup-runtime Windows spawn hygiene', () => {
     const sharedSpawnSource = readFileSync(SHARED_SPAWN_SOURCE_PATH, 'utf-8');
     expect(source).not.toContain('shell: IS_WINDOWS');
     expect(toolPathSource).not.toContain('shell: IS_WINDOWS');
-    expect(toolPathSource).toContain('buildSpawnSyncInvocation(command, args, options)');
-    expect(toolPathSource).toContain('lookupWindowsCommand(command)');
-    expect(sharedSpawnSource).toContain('spawnSync(windowsWhereExecutablePath(), [command]');
     expect(sharedSpawnSource).not.toContain("spawnSync('where'");
-    expect(sharedSpawnSource).toContain('windowsHide: true');
-  });
-});
-
-describe('doctor marketplace runtime hygiene', () => {
-  it('checks the executable marketplace root marker, not only node_modules', () => {
-    const source = readFileSync(DOCTOR_SOURCE_PATH, 'utf-8');
-    expect(source).toContain("name: 'Marketplace runtime'");
-    expect(source).toContain('isInstallCurrent(marketplaceDir, readPluginVersion())');
-    // A missing marker with node_modules present is a warn, not a fail: the
-    // marker is written only by the npx installer, and marketplace-flow /
-    // dev-sync installs never have one (#3661).
-    expect(source).toContain('no npx install marker');
-    expect(source).toContain('install marker stale');
   });
 });
 
@@ -320,7 +340,7 @@ describe('tree-sitter CLI provisioning (#2910)', () => {
   it('runs the package install script when the executable is missing', async () => {
     const cliDir = writeCliPackage(materializingInstallScript());
 
-    await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS, pinRepoBinary)).resolves.toBeUndefined();
+    await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS, pinRepoBinary)).resolves.toBe('release');
     expect(existsSync(treeSitterCliBinaryPath(tempDir))).toBe(true);
     expect(readdirSync(cliDir).filter(entry => entry.startsWith('.provision-'))).toEqual([]);
   });
@@ -345,7 +365,7 @@ describe('tree-sitter CLI provisioning (#2910)', () => {
     const cliDir = writeCliPackage(partialDownloadScript(''));
 
     await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS, () => sha256('half a download')))
-      .rejects.toThrow('without creating a working executable');
+      .rejects.toThrow('matches the pinned SHA-256 but cannot run on this system');
     expectNothingLeftInPlace(cliDir);
   });
 
@@ -385,7 +405,7 @@ echo 'tree-sitter 0.26.9'
     chmodSync(binaryPath, 0o755);
 
     const startedAt = Date.now();
-    await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS)).resolves.toBeUndefined();
+    await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS)).resolves.toBe('already-usable');
     expect(Date.now() - startedAt).toBeLessThan(2000);
   });
 

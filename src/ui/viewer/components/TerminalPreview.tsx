@@ -47,8 +47,8 @@ export function TerminalPreview({ content, isLoading = false, className = '' }: 
     fontSize: '12px',
     lineHeight: '1.6',
     overflow: 'auto',
-    color: 'var(--color-text-primary)',
-    backgroundColor: 'var(--color-bg-card)',
+    color: '#dcd6cc',
+    backgroundColor: '#252320',
     whiteSpace: wordWrap ? 'pre-wrap' : 'pre',
     wordBreak: wordWrap ? 'break-word' : 'normal',
     position: 'absolute',
@@ -59,8 +59,8 @@ export function TerminalPreview({ content, isLoading = false, className = '' }: 
     <div
       className={className}
       style={{
-        backgroundColor: 'var(--color-bg-card)',
-        border: '1px solid var(--color-border-primary)',
+        backgroundColor: '#252320',
+        border: '1px solid #45423c',
         borderRadius: '8px',
         overflow: 'hidden',
         height: '100%',
@@ -73,11 +73,11 @@ export function TerminalPreview({ content, isLoading = false, className = '' }: 
       <div
         style={{
           padding: '12px',
-          borderBottom: '1px solid var(--color-border-primary)',
+          borderBottom: '1px solid #45423c',
           display: 'flex',
           gap: '6px',
           alignItems: 'center',
-          backgroundColor: 'var(--color-bg-header)'
+          backgroundColor: '#1f1d1a'
         }}
       >
         <div style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#ff5f57' }} />
@@ -85,28 +85,29 @@ export function TerminalPreview({ content, isLoading = false, className = '' }: 
         <div style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#28c840' }} />
 
         <button
+          aria-pressed={wordWrap}
           onClick={() => setWordWrap(!wordWrap)}
           style={{
             marginLeft: 'auto',
             padding: '4px 8px',
             fontSize: '11px',
             fontWeight: 500,
-            color: wordWrap ? 'var(--color-text-secondary)' : 'var(--color-accent-primary)',
+            color: wordWrap ? '#b8b0a4' : '#79b8ff',
             backgroundColor: 'transparent',
             border: '1px solid',
-            borderColor: wordWrap ? 'var(--color-border-primary)' : 'var(--color-accent-primary)',
+            borderColor: wordWrap ? '#6d675e' : '#79b8ff',
             borderRadius: '4px',
             cursor: 'pointer',
             transition: 'all 0.2s',
             whiteSpace: 'nowrap'
           }}
           onMouseEnter={(e) => {
-            e.currentTarget.style.borderColor = 'var(--color-accent-primary)';
-            e.currentTarget.style.color = 'var(--color-accent-primary)';
+            e.currentTarget.style.borderColor = '#79b8ff';
+            e.currentTarget.style.color = '#79b8ff';
           }}
           onMouseLeave={(e) => {
-            e.currentTarget.style.borderColor = wordWrap ? 'var(--color-border-primary)' : 'var(--color-accent-primary)';
-            e.currentTarget.style.color = wordWrap ? 'var(--color-text-secondary)' : 'var(--color-accent-primary)';
+            e.currentTarget.style.borderColor = wordWrap ? '#6d675e' : '#79b8ff';
+            e.currentTarget.style.color = wordWrap ? '#b8b0a4' : '#79b8ff';
           }}
           title={wordWrap ? 'Disable word wrap (scroll horizontally)' : 'Enable word wrap'}
         >
@@ -121,7 +122,7 @@ export function TerminalPreview({ content, isLoading = false, className = '' }: 
             padding: '16px',
             fontFamily: 'var(--font-terminal)',
             fontSize: '12px',
-            color: 'var(--color-text-secondary)'
+            color: '#b8b0a4'
           }}
         >
           Loading preview...

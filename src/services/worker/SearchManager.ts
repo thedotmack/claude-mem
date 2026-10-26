@@ -1,6 +1,7 @@
 
 import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
+import type { ContextReadWorkerClient } from '../context/ContextReadWorkerClient.js';
 import { ChromaSync, type ChromaQueryProgress } from '../sync/ChromaSync.js';
 import { FormattingService } from './FormattingService.js';
 import { TimelineService } from './TimelineService.js';
@@ -19,7 +20,7 @@ import {
 } from './search/index.js';
 import type { SearchResults, StrategySearchResult, DateRange } from './search/index.js';
 import { assertSearchHasQueryOrFilter } from './search/SearchOrchestrator.js';
-import { isCategoryRequested, buildCategoryWhereFilter } from './search/types.js';
+import { isCategoryRequested } from './search/types.js';
 import { ResultFormatter } from './search/ResultFormatter.js';
 import { ChromaUnavailableError } from './search/errors.js';
 import { buildProjectWhereFilter, projectReadKeysFor } from './search/project-where-filter.js';
@@ -45,12 +46,21 @@ export class SearchManager {
     private sessionStore: SessionStore,
     private chromaSync: ChromaSync | null,
     private formatter: FormattingService,
-    private timelineService: TimelineService
+    private timelineService: TimelineService,
+    /**
+     * Implicit window, in milliseconds, that date-less semantic searches
+     * apply (CLAUDE_MEM_SEARCH_RECENCY_DAYS). Defaults to the shipped 90
+     * days; 0 disables the window so every semantic match stays eligible.
+     * An explicit `dateRange` on a request always wins over it.
+     */
+    private searchRecencyWindowMs: number = SEARCH_CONSTANTS.RECENCY_WINDOW_MS,
+    private contextReader: ContextReadWorkerClient | null = null
   ) {
     this.orchestrator = new SearchOrchestrator(
       sessionSearch,
       sessionStore,
-      chromaSync
+      chromaSync,
+      searchRecencyWindowMs
     );
   }
 
@@ -118,7 +128,7 @@ export class SearchManager {
     const whereFilter = this.buildDocTypeWhereFilter(docType, readKeys, platformSource);
     const startEpoch = dateRange
       ? dateRange.start != null ? resolveDateBound(dateRange.start, 'start') : undefined
-      : Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
+      : this.searchRecencyWindowMs > 0 ? Date.now() - this.searchRecencyWindowMs : undefined;
     const endEpoch = dateRange?.end != null ? resolveDateBound(dateRange.end, 'end') : undefined;
     let candidateLimit: number = SEARCH_CONSTANTS.CHROMA_BATCH_SIZE;
     // Five ranked windows (100..1600), at most ten Chroma transport calls.
@@ -162,9 +172,10 @@ export class SearchManager {
     }
   }
 
-  private async searchChromaForTimeline(query: string, project?: string, platformSource?: string): Promise<ObservationSearchResult[]> {
-    return this.hybridSemanticHydrate(query, 'observation', project, platformSource, (ids) =>
-      this.sessionStore.getObservationsByIds(ids, { orderBy: 'relevance', limit: 1, project, platformSource })
+  private async searchChromaForTimeline(query: string, project?: string, platformSource?: string, projects?: string[]): Promise<ObservationSearchResult[]> {
+    return this.hybridSemanticHydrate(query, 'observation', project, platformSource, (ids, readKeys) =>
+      this.sessionStore.getObservationsByIds(ids, { orderBy: 'relevance', limit: 1, project, projects: readKeys, platformSource }),
+      projects,
     );
   }
 
@@ -361,7 +372,7 @@ export class SearchManager {
    * observations — the only category obs_type applies to.
    */
   private resolveTypeFilters(type: any, obs_type: any): { category: any; effectiveObsType: any } {
-    const CATEGORY_TYPES = ['observations', 'sessions', 'prompts'];
+    const CATEGORY_TYPES = ['all', 'observations', 'sessions', 'prompts'];
 
     if (type == null) {
       return { category: type, effectiveObsType: obs_type };
@@ -371,7 +382,7 @@ export class SearchManager {
     const isCategorySelector = typeValues.length > 0 && typeValues.every(t => CATEGORY_TYPES.includes(t));
 
     if (isCategorySelector) {
-      return { category: type, effectiveObsType: obs_type };
+      return { category: typeValues.includes('all') ? 'all' : type, effectiveObsType: obs_type };
     }
 
     const existingObsType = Array.isArray(obs_type)
@@ -383,123 +394,19 @@ export class SearchManager {
   }
 
   /**
-   * PATH 2 body for search(): Chroma semantic query -> date-window filter ->
-   * SQLite hydration. Categories left empty here (no Chroma match, or every hit
-   * dropped by the date window or a filter) are refilled by search() through
-   * SearchOrchestrator.supplementEmptyCategories. Extracted so search()'s try
-   * block stays narrow; any error here is handled by search()'s Chroma-failure
-   * fallback.
-   */
-  private async performChromaSemanticSearch(
-    query: string,
-    whereFilter: Record<string, any> | undefined,
-    options: any,
-    scope: {
-      obs_type: any;
-      concepts: any;
-      files: any;
-      searchObservations: boolean;
-      searchSessions: boolean;
-      searchPrompts: boolean;
-    }
-  ): Promise<SearchResults> {
-    const { obs_type, concepts, files, searchObservations, searchSessions, searchPrompts } = scope;
-    let observations: ObservationSearchResult[] = [];
-    let sessions: SessionSummarySearchResult[] = [];
-    let prompts: UserPromptSearchResult[] = [];
-
-    // Hydration applies `limit`, so a requested date order has to reach it; otherwise the wrong
-    // end of the candidates is kept (date_asc hydrated newest-first keeps the newest rows).
-    const requestedDateOrder: 'date_desc' | 'date_asc' | undefined =
-      options.orderBy === 'date_desc' || options.orderBy === 'date_asc' ? options.orderBy : undefined;
-    const chromaResults = await this.queryChroma(query, SEARCH_CONSTANTS.CHROMA_BATCH_SIZE, whereFilter);
-    logger.debug('SEARCH', 'ChromaDB returned semantic matches', { matchCount: chromaResults.ids.length });
-
-    if (chromaResults.ids.length > 0) {
-      const { dateRange } = options;
-      let startEpoch: number | undefined;
-      let endEpoch: number | undefined;
-
-      if (dateRange) {
-        if (dateRange.start) {
-          startEpoch = resolveDateBound(dateRange.start, 'start');
-        }
-        if (dateRange.end) {
-          endEpoch = resolveDateBound(dateRange.end, 'end');
-        }
-      } else {
-        startEpoch = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
-      }
-
-      const recentMetadata = chromaResults.metadatas.map((meta, idx) => ({
-        id: chromaResults.ids[idx],
-        meta,
-        isRecent: meta && meta.created_at_epoch != null
-          && (!startEpoch || meta.created_at_epoch >= startEpoch)
-          && (!endEpoch || meta.created_at_epoch <= endEpoch)
-      })).filter(item => item.isRecent);
-
-      logger.debug('SEARCH', dateRange ? 'Results within user date range' : 'Results within 90-day window', { count: recentMetadata.length });
-
-      const obsIds: number[] = [];
-      const sessionIds: number[] = [];
-      const promptIds: number[] = [];
-
-      for (const item of recentMetadata) {
-        const docType = item.meta?.doc_type;
-        if (docType === 'observation' && searchObservations) {
-          obsIds.push(item.id);
-        } else if (docType === 'session_summary' && searchSessions) {
-          sessionIds.push(item.id);
-        } else if (docType === 'user_prompt' && searchPrompts) {
-          promptIds.push(item.id);
-        }
-      }
-
-      if (obsIds.length > 0) {
-        const obsOptions = { ...options, type: obs_type, concepts, files, orderBy: requestedDateOrder ?? 'relevance' };
-        observations = this.sessionStore.getObservationsByIds(obsIds, obsOptions);
-        if (!requestedDateOrder) {
-          observations.sort((a, b) => obsIds.indexOf(a.id) - obsIds.indexOf(b.id));
-        }
-      }
-      if (sessionIds.length > 0) {
-        sessions = this.sessionStore.getSessionSummariesByIds(sessionIds, {
-          orderBy: requestedDateOrder ?? 'date_desc',
-          limit: options.limit,
-          project: options.project,
-          projects: options.projects,
-          platformSource: options.platformSource
-        });
-      }
-      if (promptIds.length > 0) {
-        prompts = this.sessionStore.getUserPromptsByIds(promptIds, {
-          orderBy: requestedDateOrder ?? 'date_desc',
-          limit: options.limit,
-          project: options.project,
-          projects: options.projects,
-          platformSource: options.platformSource
-        });
-      }
-    }
-
-    return { observations, sessions, prompts };
-  }
-
-  /**
    * Exact selection for a date-ordered search on the Chroma path (#4135). Chroma picks its
    * top-N candidates by relevance, so re-sorting only those by date misses the newest (or
    * oldest) matches outside them. Each requested category is unioned with its FTS5 keyword
    * matches, which SQL selects by date, then deduped by id, sorted by date and cut to `limit`.
    */
-  private mergeKeywordMatchesByDate(
+  private async mergeKeywordMatchesByDate(
     query: string,
     dateOrder: 'date_desc' | 'date_asc',
     chromaResults: SearchResults,
     observationOptions: any,
     options: any,
     scope: { searchObservations: boolean; searchSessions: boolean; searchPrompts: boolean }
-  ): SearchResults {
+  ): Promise<SearchResults> {
     const limit = options.limit || SEARCH_CONSTANTS.DEFAULT_LIMIT;
     const byDate = (a: { id: number; created_at_epoch: number }, b: { id: number; created_at_epoch: number }) =>
       dateOrder === 'date_desc'
@@ -515,13 +422,19 @@ export class SearchManager {
 
     return {
       observations: scope.searchObservations
-        ? mergeByDate(chromaResults.observations, this.sessionSearch.searchObservations(query, { ...observationOptions, orderBy: dateOrder, limit }))
+        ? mergeByDate(chromaResults.observations, this.contextReader
+            ? await this.contextReader.searchObservations(query, { ...observationOptions, orderBy: dateOrder, limit })
+            : this.sessionSearch.searchObservations(query, { ...observationOptions, orderBy: dateOrder, limit }))
         : chromaResults.observations,
       sessions: scope.searchSessions
-        ? mergeByDate(chromaResults.sessions, this.sessionSearch.searchSessions(query, { ...options, orderBy: dateOrder, limit }))
+        ? mergeByDate(chromaResults.sessions, this.contextReader
+            ? await this.contextReader.searchSessions(query, { ...options, orderBy: dateOrder, limit })
+            : this.sessionSearch.searchSessions(query, { ...options, orderBy: dateOrder, limit }))
         : chromaResults.sessions,
       prompts: scope.searchPrompts
-        ? mergeByDate(chromaResults.prompts, this.sessionSearch.searchUserPrompts(query, { ...options, orderBy: dateOrder, limit }))
+        ? mergeByDate(chromaResults.prompts, this.contextReader
+            ? await this.contextReader.searchUserPrompts(query, { ...options, orderBy: dateOrder, limit })
+            : this.sessionSearch.searchUserPrompts(query, { ...options, orderBy: dateOrder, limit }))
         : chromaResults.prompts,
     };
   }
@@ -586,24 +499,6 @@ export class SearchManager {
       let chromaSucceeded = false;
       logger.debug('SEARCH', 'Using ChromaDB semantic search', { typeFilter: category || 'all' });
 
-      const whereFilters: Array<Record<string, any>> = [];
-      const categoryFilter = buildCategoryWhereFilter(category);
-      if (categoryFilter) whereFilters.push(categoryFilter);
-
-      if (projectReadKeys.length > 0) {
-        whereFilters.push(buildProjectWhereFilter(projectReadKeys));
-      }
-
-      if (options.platformSource) {
-        whereFilters.push({ platform_source: normalizePlatformSource(options.platformSource) });
-      }
-
-      const whereFilter = whereFilters.length === 0
-        ? undefined
-        : whereFilters.length === 1
-          ? whereFilters[0]
-          : { $and: whereFilters };
-
       // HTTP pagination values can be strings. Keep enough filtered rows to
       // reach the page, and apply the offset only after supplementation/union.
       const offset = Number(options.offset || 0);
@@ -612,7 +507,20 @@ export class SearchManager {
       const candidateOptions = { ...options, offset: 0, limit: limit === undefined ? undefined : offset + limit };
 
       try {
-        const chromaResults = await this.performChromaSemanticSearch(query, whereFilter, candidateOptions, { obs_type: effectiveObsType, concepts, files, searchObservations, searchSessions, searchPrompts });
+        const chromaResult = await this.orchestrator.searchChroma({
+          ...candidateOptions,
+          // The strategy resolves stored project keys itself; do not expand
+          // the already-resolved candidateOptions.projects a second time.
+          projects: normalized.projects,
+          query,
+          searchType: category ?? 'all',
+          obsType: effectiveObsType,
+          concepts,
+          files,
+          orderBy: options.orderBy ?? 'relevance',
+          // Omitted-limit JSON searches historically expose the ranked window.
+          limit: candidateOptions.limit ?? SEARCH_CONSTANTS.CHROMA_BATCH_SIZE,
+        });
         chromaSucceeded = true;
         // Same fallback policy as the orchestrator pipeline: SQLite refills every requested
         // category Chroma left empty, or answers alone when Chroma left them all empty.
@@ -627,7 +535,7 @@ export class SearchManager {
             files,
             orderBy: options.orderBy ?? 'relevance',
           },
-          { results: chromaResults, usedChroma: true, strategy: 'chroma' }
+          chromaResult
         );
         ({ observations, sessions, prompts } = supplemented.results);
         chromaSupplementStrategy = supplemented.strategy;
@@ -644,13 +552,19 @@ export class SearchManager {
         // leaves an empty answer, not a failed request.
         try {
           if (searchObservations) {
-            observations = this.sessionSearch.searchObservations(query, { ...options, type: effectiveObsType, concepts, files });
+            observations = this.contextReader
+              ? await this.contextReader.searchObservations(query, { ...options, type: effectiveObsType, concepts, files })
+              : this.sessionSearch.searchObservations(query, { ...options, type: effectiveObsType, concepts, files });
           }
           if (searchSessions) {
-            sessions = this.sessionSearch.searchSessions(query, options);
+            sessions = this.contextReader
+              ? await this.contextReader.searchSessions(query, options)
+              : this.sessionSearch.searchSessions(query, options);
           }
           if (searchPrompts) {
-            prompts = this.sessionSearch.searchUserPrompts(query, options);
+            prompts = this.contextReader
+              ? await this.contextReader.searchUserPrompts(query, options)
+              : this.sessionSearch.searchUserPrompts(query, options);
           }
         } catch (ftsError) {
           const ftsErrorObject = ftsError instanceof Error ? ftsError : new Error(String(ftsError));
@@ -659,7 +573,7 @@ export class SearchManager {
       }
 
       if (!chromaFailed && (options.orderBy === 'date_desc' || options.orderBy === 'date_asc')) {
-        ({ observations, sessions, prompts } = this.mergeKeywordMatchesByDate(
+        ({ observations, sessions, prompts } = await this.mergeKeywordMatchesByDate(
           query,
           options.orderBy,
           { observations, sessions, prompts },
@@ -681,13 +595,19 @@ export class SearchManager {
       logger.debug('SEARCH', 'ChromaDB not initialized — falling back to FTS5 keyword search', {});
       try {
         if (searchObservations) {
-          observations = this.sessionSearch.searchObservations(query, { ...options, type: effectiveObsType, concepts, files });
+          observations = this.contextReader
+            ? await this.contextReader.searchObservations(query, { ...options, type: effectiveObsType, concepts, files })
+            : this.sessionSearch.searchObservations(query, { ...options, type: effectiveObsType, concepts, files });
         }
         if (searchSessions) {
-          sessions = this.sessionSearch.searchSessions(query, options);
+          sessions = this.contextReader
+            ? await this.contextReader.searchSessions(query, options)
+            : this.sessionSearch.searchSessions(query, options);
         }
         if (searchPrompts) {
-          prompts = this.sessionSearch.searchUserPrompts(query, options);
+          prompts = this.contextReader
+            ? await this.contextReader.searchUserPrompts(query, options)
+            : this.sessionSearch.searchUserPrompts(query, options);
         }
       } catch (ftsError) {
         const errorObject = ftsError instanceof Error ? ftsError : new Error(String(ftsError));
@@ -871,7 +791,14 @@ export class SearchManager {
 
   async timeline(args: any): Promise<any> {
     const normalized = this.normalizeParams(args);
-    const { anchor, query, depth_before, depth_after, project, platformSource } = normalized;
+    const { anchor, query, depth_before, depth_after, project, projects, platformSource } = normalized;
+    const readKeys = projectReadKeysFor(this.sessionStore, project, projects);
+    const scope = { project, projects: readKeys, platformSource };
+    // A record anchor supplies the default project for its surrounding context.
+    // Explicit scopes win; timestamp-only anchors have no project to infer.
+    const readKeysForAnchor = (anchorProject: string): string[] => readKeys.length > 0
+      ? readKeys
+      : projectReadKeysFor(this.sessionStore, anchorProject, undefined);
     // HTTP query strings and MCP numbers must describe whole, bounded SQL LIMITs.
     const parseDepth = (value: unknown): number => value == null ? 10
       : typeof value === 'number' || (typeof value === 'string' && value.trim() !== '')
@@ -918,7 +845,7 @@ export class SearchManager {
       if (this.chromaSync) {
         logger.debug('SEARCH', 'Using hybrid semantic search for timeline query', {});
         try {
-          results = await this.searchChromaForTimeline(query, project, platformSource);
+          results = await this.searchChromaForTimeline(query, project, platformSource, projects);
         } catch (chromaError) {
           const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
           logger.error('WORKER', 'Chroma search failed for timeline, continuing without semantic results', {}, errorObject);
@@ -927,7 +854,7 @@ export class SearchManager {
 
       if (results.length === 0) {
         try {
-          const ftsResults = this.sessionSearch.searchObservations(query, { project, platformSource, limit: 1 });
+          const ftsResults = this.sessionSearch.searchObservations(query, { ...scope, limit: 1 });
           if (ftsResults.length > 0) {
             results = ftsResults;
           }
@@ -949,11 +876,11 @@ export class SearchManager {
       anchorId = topResult.id;
       anchorEpoch = topResult.created_at_epoch;
       logger.debug('SEARCH', 'Query mode: Using observation as timeline anchor', { observationId: topResult.id });
-      timelineData = this.sessionStore.getTimelineAroundObservation(topResult.id, topResult.created_at_epoch, depthBefore, depthAfter, project, platformSource);
+      timelineData = this.sessionStore.getTimelineAroundObservation(topResult.id, topResult.created_at_epoch, depthBefore, depthAfter, project, platformSource, readKeysForAnchor(topResult.project));
     }
     // MODE 2: Anchor-based timeline
     else if (anchorAsNumber !== null) {
-      const obs = this.sessionStore.getObservationsByIds([anchorAsNumber], { project, platformSource, limit: 1 })[0] ?? null;
+      const obs = this.sessionStore.getObservationsByIds([anchorAsNumber], { ...scope, limit: 1 })[0] ?? null;
       if (!obs) {
         return {
           content: [{
@@ -965,7 +892,7 @@ export class SearchManager {
       }
       anchorId = anchorAsNumber;
       anchorEpoch = obs.created_at_epoch;
-      timelineData = this.sessionStore.getTimelineAroundObservation(anchorAsNumber, anchorEpoch, depthBefore, depthAfter, project, platformSource);
+      timelineData = this.sessionStore.getTimelineAroundObservation(anchorAsNumber, anchorEpoch, depthBefore, depthAfter, project, platformSource, readKeysForAnchor(obs.project));
     } else if (typeof anchor === 'string') {
       if (anchor.startsWith('S') || anchor.startsWith('#S')) {
         const sessionMatch = /^#?S(\d+)$/.exec(anchor);
@@ -973,7 +900,7 @@ export class SearchManager {
         if (!Number.isSafeInteger(sessionNum) || sessionNum <= 0) {
           return { content: [{ type: 'text' as const, text: 'Invalid session anchor: must be S followed by a positive safe integer' }], isError: true };
         }
-        const sessions = this.sessionStore.getSessionSummariesByIds([sessionNum], { project, platformSource });
+        const sessions = this.sessionStore.getSessionSummariesByIds([sessionNum], scope);
         if (sessions.length === 0) {
           return {
             content: [{
@@ -985,7 +912,7 @@ export class SearchManager {
         }
         anchorEpoch = sessions[0].created_at_epoch;
         anchorId = `S${sessionNum}`;
-        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project, platformSource);
+        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project, platformSource, readKeysForAnchor(sessions[0].project));
       } else {
         const date = new Date(anchor);
         if (isNaN(date.getTime())) {
@@ -999,7 +926,7 @@ export class SearchManager {
         }
         anchorEpoch = date.getTime();
         anchorId = anchor;
-        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project, platformSource);
+        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project, platformSource, readKeys);
       }
     } else {
       return {
@@ -1261,7 +1188,7 @@ export class SearchManager {
 
   async getTimelineByQuery(args: any): Promise<any> {
     const normalized = this.normalizeParams(args);
-    const { query, mode = 'auto', limit = 5, project, platformSource } = normalized;
+    const { query, mode, limit = 5, project, platformSource } = normalized;
 
     if (mode !== 'interactive') {
       return this.timeline(args);

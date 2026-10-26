@@ -18,6 +18,8 @@ function unwrapAgyUserInput(text: string): string {
 // field (issue #4057). The event is encoded by which hook fired (the CLI arg in
 // hooks.json → internal handler), and the payload key shape is the reliable
 // discriminator for output formatting:
+//   - SessionStart   : { conversationId, workspacePaths, transcriptPath,
+//                        artifactDirectoryPath, modelName }
 //   - PreToolUse     : { conversationId, workspacePaths, transcriptPath,
 //                        toolCall, stepIdx }                 (toolCall, no error)
 //   - PostToolUse    : { ..., toolCall, error? }            (toolCall + error key)
@@ -107,8 +109,9 @@ export const antigravityCliAdapter: PlatformAdapter = {
   // Antigravity deserializes hook stdout with strict protojson: unknown fields
   // (continue / suppressOutput / systemMessage / hookSpecificOutput) make it
   // discard the whole payload (issue #4057). Emit ONLY fields agy understands:
+  //   - SessionStart   → { "injectSteps": [ ... ] } (startup context injection, issue #4911)
   //   - PreToolUse     → { "decision": "allow" }   (or "deny" to block)
-  //   - PreInvocation  → { "injectSteps": [ ... ] } (context injection)
+  //   - PreInvocation  → { "injectSteps": [ ... ] } (transient injection if enabled)
   //   - PostToolUse / PostInvocation / Stop → {}
   formatOutput(result) {
     const r = result ?? {};
@@ -119,7 +122,7 @@ export const antigravityCliAdapter: PlatformAdapter = {
       return { decision: 'deny', reason: r.reason ?? 'Denied by hook' };
     }
 
-    // Context injection (PreInvocation) surfaces as additionalContext /
+    // Context injection (SessionStart / PreInvocation) surfaces as additionalContext /
     // systemMessage on the result. Antigravity injects it via injectSteps.
     const additionalContext = r.hookSpecificOutput?.additionalContext ?? r.systemMessage;
     if (additionalContext) {

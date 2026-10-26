@@ -12,7 +12,7 @@ Restart Pi. The installer places a self-contained extension at `~/.pi/agent/exte
 
 Pi 0.79.6 provides manual recall only. Automatic capture compatibility is source-reviewed for Pi 1.0.2 and 1.0.4; other or unknown versions need a compatibility check. Check your Pi version and update Pi yourself if needed using the [Pi capture compatibility and update guidance](./pi-native-capture.md#install-and-check-capture-compatibility). A compatible Pi host and Claude-Mem worker use Pi's genuine session ID, capture the prompt before tool results, and summarize once per turn. Worker failures leave Pi usable; excluded projects remain excluded.
 
-Pi provides `mem_search`, `mem_timeline`, and `mem_get_observations`. Search for IDs, inspect a timeline, and fetch only the useful records. Context injection uses the worker's checkout resolver. Observations are labeled `pi`.
+Pi provides Smart search by default through `mem_search`, `mem_timeline`, and `mem_get_observations`. Search for IDs, inspect a timeline, and fetch only the useful records. Context injection uses the worker's checkout resolver. Observations are labeled `pi`.
 
 ```sh
 npx claude-mem pi status
@@ -31,7 +31,7 @@ Install DSH and its package manager (`pnpm`) first, then:
 npx claude-mem install --ide dsh --dsh-profile web
 ```
 
-`web` is the default profile for DSH 0.2; start it with `dsh web`. Choose another profile with `--dsh-profile`, including an existing `tui` profile on an older host. The installer uses DSH's own `plugin --profile <name> add --workspace-root` command to install the bundled `@claude-mem/dsh` package in that profile's pnpm workspace. Restart DSH and start or restart the Claude-Mem worker. The plugin awaits DSH's `agent/created` event to inject checkout context before the first turn. It offers `mem_search`, `mem_timeline`, `mem_get_observations`, `mem_save`, and `mem_context`.
+`web` is the default profile for DSH 0.2; start it with `dsh web`. Choose another profile with `--dsh-profile`, including an existing `tui` profile on an older host. The installer uses DSH's own `plugin --profile <name> add --workspace-root` command to install the bundled `@claude-mem/dsh` package in that profile's pnpm workspace. Restart DSH and start or restart the Claude-Mem worker. The plugin awaits DSH's `agent/created` event to inject checkout context before the first turn. Smart search follows `mem_search` → `mem_timeline` → selected `mem_get_observations`. It offers `mem_search`, `mem_timeline`, `mem_get_observations`, `mem_save`, and `mem_context`.
 
 Automatic capture belongs to the worker's existing DSH transcript watcher. The installer adds one managed watch under `~/.dsh/sessions` (`DSH_HOME` overrides the directory), using the configured `CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH`. New installations start at the end of existing transcripts, avoiding an unexpected historical import. Current and legacy tool results use the real session-header ID, which survives a watcher restart, and `turn/end` summarizes once per turn. Existing user-managed DSH watches remain authoritative and are preserved during uninstall. Plugin ingestion and plugin summarization are off, so live capture has one writer.
 

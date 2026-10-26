@@ -100,11 +100,8 @@ export function configureCursorMcp(mcpJsonPath: string, mcpServerScriptPath: str
         config.mcpServers = {};
       }
     } catch (error) {
-      logger.error('CONFIG', 'Failed to read MCP config, starting fresh', {
-        file: mcpJsonPath,
-        error: error instanceof Error ? error.message : String(error)
-      });
-      config = { mcpServers: {} };
+      // Rewriting it would drop every other MCP server the user configured.
+      throw new Error(`Corrupt JSON in ${mcpJsonPath}, refusing to overwrite (${error instanceof Error ? error.message : String(error)})`);
     }
   }
 

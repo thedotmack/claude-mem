@@ -1,5 +1,5 @@
 
-import { statSync, readFileSync } from 'fs';
+import { existsSync, statSync, readFileSync } from 'fs';
 import path from 'path';
 import { logger } from './logger.js';
 
@@ -79,5 +79,36 @@ export function detectWorktree(cwd: string): WorktreeInfo {
     };
   }
 
+  // A worktree of a bare repository: `<repo>.git/worktrees/<name>`, or
+  // `<project>/.bare/worktrees/<name>`. There is no `.git` directory in that
+  // path, so without this every bare-repo worktree keyed on its own folder name
+  // and the `main` worktrees of two different repositories shared one project.
+  // Git writes `commondir` into every linked worktree's gitdir, which tells a
+  // worktree apart from a gitdir that merely sits in a folder named `worktrees`.
+  const bareWorktreeMatch = gitdirPath.match(/^(.+)[/\\]worktrees[/\\]([^/\\]+)$/);
+  if (bareWorktreeMatch && existsSync(path.join(gitdirPath, 'commondir'))) {
+    const parentRepoPath = bareWorktreeMatch[1];
+    const parentProjectName = bareRepositoryProjectName(parentRepoPath);
+    if (parentProjectName) {
+      return {
+        isWorktree: true,
+        isSubmodule: false,
+        worktreeName: path.basename(cwd),
+        parentRepoPath,
+        parentProjectName
+      };
+    }
+  }
+
   return NOT_A_WORKTREE;
+}
+
+/**
+ * The project a bare repository stands for: `app.git` is `app`, and a hidden
+ * bare directory such as `app/.bare` is named after the folder holding it.
+ */
+export function bareRepositoryProjectName(bareRepoPath: string): string | null {
+  const name = path.basename(bareRepoPath).replace(/\.git$/, '');
+  if (name && !name.startsWith('.')) return name;
+  return path.basename(path.dirname(bareRepoPath)) || null;
 }

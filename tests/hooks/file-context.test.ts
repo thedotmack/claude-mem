@@ -97,6 +97,7 @@ let treeSitterCliAvailable = true;
 mock.module('../../src/services/smart-file-read/tree-sitter-bin-path.js', () => ({
   ...realTreeSitterBinPathSnapshot,
   isTreeSitterCliAvailable: () => treeSitterCliAvailable,
+  checkTreeSitterCliLoadable: () => ({ present: treeSitterCliAvailable, loadable: treeSitterCliAvailable }),
 }));
 
 // The gate asks the smart tools' own containment check (realpath on both
@@ -798,9 +799,13 @@ describe('fileContextHandler — File Read Gate', () => {
     expect(output.additionalContext).toBe('');
     expect((output as any).updatedInput).toBeUndefined();
     const reason = output.permissionDecisionReason!;
-    expect(reason).toContain(`Full-file Read blocked by claude-mem: ${gatedFile} has prior observations (listed below).`);
-    expect(reason).toContain(`smart_outline(file_path="${gatedFile}")`);
-    expect(reason).toContain(`smart_unfold(file_path="${gatedFile}", symbol_name="<name>")`);
+    // The handler escapes backslashes for the quoted tool-call hints
+    // (escapePathForHint in src/cli/handlers/file-context.ts), so a Windows path
+    // reaches the reason with doubled separators.
+    const hintPath = gatedFile.replace(/\\/g, '\\\\');
+    expect(reason).toContain(`Full-file Read blocked by claude-mem: ${hintPath} has prior observations (listed below).`);
+    expect(reason).toContain(`smart_outline(file_path="${hintPath}")`);
+    expect(reason).toContain(`smart_unfold(file_path="${hintPath}", symbol_name="<name>")`);
     expect(reason).toContain(`get_observations(ids=[${GATED_OBSERVATION_ID}])`);
     expect(reason).toContain('history from earlier sessions');
     expect(reason).toMatch(new RegExp(`^${GATED_OBSERVATION_ID} \\S+ \\S+ Rate table refactor$`, 'm'));
@@ -860,7 +865,9 @@ describe('fileContextHandler — File Read Gate', () => {
     expect(result.hookSpecificOutput!.additionalContext).toContain('Rate table refactor');
   });
 
-  it('does not deny a Read whose file stat fails with anything but ENOENT — the timeline is still context', async () => {
+  // Windows reports ENOENT for a path through a regular file, so the
+  // "anything but ENOENT" premise this test exercises cannot be expressed there.
+  it.skipIf(process.platform === 'win32')('does not deny a Read whose file stat fails with anything but ENOENT — the timeline is still context', async () => {
     // A path through a regular file: stat fails with ENOTDIR, so the lookup
     // goes on without its size and mtime checks. A claude-mem failure must
     // never block a Read.
@@ -952,7 +959,9 @@ describe('fileContextHandler — File Read Gate', () => {
     expectContextNotDeny(result);
   });
 
-  it('never denies a symlink in the project to a code file outside it — the smart tools refuse that path', async () => {
+  // Creating a file symlink on Windows needs Developer Mode (or an elevated
+  // process); without it symlinkSync throws EPERM.
+  it.skipIf(process.platform === 'win32')('never denies a symlink in the project to a code file outside it — the smart tools refuse that path', async () => {
     const projectDir = join(tmpDir, 'project');
     const outsideDir = join(tmpDir, 'outside');
     mkdirSync(projectDir);
@@ -971,7 +980,7 @@ describe('fileContextHandler — File Read Gate', () => {
     await expect(realWorkspacePathSnapshot.resolveWithinWorkspace(linkInProject, projectDir)).rejects.toThrow(/Access denied/);
   });
 
-  it('still denies a symlink in the project to a file inside it', async () => {
+  it.skipIf(process.platform === 'win32')('still denies a symlink in the project to a file inside it', async () => {
     const projectDir = join(tmpDir, 'project');
     mkdirSync(join(projectDir, 'src'), { recursive: true });
     const realFile = join(projectDir, 'src', 'rate-table.ts');

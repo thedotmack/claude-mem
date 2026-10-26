@@ -8,6 +8,7 @@ import { CorpusBuilder } from '../../knowledge/CorpusBuilder.js';
 import { KnowledgeAgent } from '../../knowledge/KnowledgeAgent.js';
 import type { CorpusFilter } from '../../knowledge/types.js';
 import { logger } from '../../../../utils/logger.js';
+import { resolveDateBound } from '../../../../shared/date-bounds.js';
 
 const ALLOWED_CORPUS_TYPES = ['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change', 'security_alert', 'security_note', 'sensitive'] as const;
 const ALLOWED_CORPUS_TYPE_SET = new Set<string>(ALLOWED_CORPUS_TYPES);
@@ -222,11 +223,24 @@ export class CorpusRoutes extends BaseRouteHandler {
     }
   }
 
-  private handleBuildCorpus = this.wrapHandler((req: Request, res: Response) => this.runLongCorpusWork(req, res, async () => {
+  private handleBuildCorpus = this.wrapHandler((req: Request, res: Response) => {
     const body = req.body as z.infer<typeof buildCorpusSchema>;
-    const { name, description, project, types, concepts, files, query, limit } = body;
     const dateStart = body.date_start ?? body.dateStart;
     const dateEnd = body.date_end ?? body.dateEnd;
+    // Reject an unparseable date with a 400 before the long work starts (and
+    // before any SSE headers go out). Left alone it reaches the search
+    // strategies, whose error handling turns it into a failed or unfiltered build.
+    if (dateStart) resolveDateBound(dateStart, 'start');
+    if (dateEnd) resolveDateBound(dateEnd, 'end');
+    return this.runLongCorpusWork(req, res, () => this.buildCorpus(body, dateStart, dateEnd));
+  });
+
+  private async buildCorpus(
+    body: z.infer<typeof buildCorpusSchema>,
+    dateStart: string | undefined,
+    dateEnd: string | undefined,
+  ): Promise<CorpusOutcome> {
+    const { name, description, project, types, concepts, files, query, limit } = body;
 
     const filter: CorpusFilter = {};
     if (project) filter.project = project;
@@ -243,7 +257,7 @@ export class CorpusRoutes extends BaseRouteHandler {
 
     const { observations, ...metadata } = corpus;
     return { status: 200, body: metadata };
-  }));
+  }
 
   private handleListCorpora = this.wrapHandler((_req: Request, res: Response): void => {
     const corpora = this.corpusStore.list();

@@ -26,6 +26,7 @@ import {
   SYNC_FAILING_WARN_AFTER_MS,
   type SyncHealthState,
 } from '../../../src/shared/sync-health.js';
+import { logger } from '../../../src/utils/logger.js';
 
 const ISO = '2026-09-26T00:00:00.000Z';
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -204,6 +205,27 @@ describe('CloudSync failure handling', () => {
     expect(sync.status().authError?.code).toBe('invalid_token');
     expect(sync.status().authError?.message).toContain('Reconnect at https://cmem.ai');
     sync.stop();
+  });
+
+  it('does not send an auth pause to error tracking', async () => {
+    const sunk: unknown[] = [];
+    logger.setErrorSink((err) => { sunk.push(err); });
+    try {
+      for (const [status, body] of [
+        [403, '{"code":"subscription_inactive"}'],
+        [401, '{"code":"invalid_token"}'],
+      ] as const) {
+        const impl = (async () => new Response(body, { status })) as typeof fetch;
+        const sync = makeSync(impl);
+        seedObservation(`obs-${status}`);
+        await sync.flush();
+        expect(sync.status().health.state).toBe('auth_paused');
+        sync.stop();
+      }
+      expect(sunk).toEqual([]);
+    } finally {
+      logger.setErrorSink(null);
+    }
   });
 
   it('records a failure streak in the ledger and clears it on success', async () => {

@@ -1,6 +1,8 @@
 import type { WorkStateEntry, WorkStateFields, WorkStateValue } from '../../sqlite/work-state.js';
 import { describeDuration } from '../../../shared/observer-health.js';
 import { relativeTimePlaceholder } from '../../../shared/context-cache.js';
+import { isOwnerGoalsList } from '../../work-view/owner-goals.mjs';
+import { isMyRulesList } from '../../work-view/my-rules.mjs';
 
 /**
  * When "updated N ago" is measured from: an epoch, or 'placeholders' to leave
@@ -14,12 +16,13 @@ export const WORK_STATE_SECTION_CHARACTER_LIMIT = 3_000;
 
 const CLOSED_STATUSES = new Set(['done', 'dropped']);
 
-const WORK_STATE_RULE = [
+export const WORK_STATE_RULE = [
   '# Work state: your to-do lists and working state',
   "Use claude-mem's work_state_write tool to track all to-do lists and multi-step work. It is your canonical to-do list: use it instead of any built-in to-do tool. Also use it to track the state of anything you need an ongoing understanding of. Whatever is still open is shown here at the start of every session in this project.",
   '- One list per to-do list or tracked thing: work_state_write with list="<name>" and the fields to set',
   '- To-do item: fields {"task": "<name>", "status": "todo" | "doing" | "done" | "dropped", ...any details}',
   '- State: fields {"<key>": <value>} (the latest value of each key wins; null clears a key; "status": "done" closes the list)',
+  '- Made something a person can open (PR, deck, page, image, report)? Attach it to that item: fields {"work_product": "https://…" or "/absolute/file"}; several, with titles, as one JSON string: "[{\\"title\\": \\"<name>\\", \\"url\\": \\"https://…\\"}]"',
   '- Read every list, closed items included: work_state_read with includeClosed=true',
 ].join('\n');
 
@@ -101,7 +104,9 @@ export function renderWorkStateList(
 export function renderWorkStateLines(entries: WorkStateEntry[], nowEpoch: WorkStateClock, includeClosed: boolean = false): string[] {
   const entriesByList = new Map<string, WorkStateEntry[]>();
   const listProjectCounts = new Map<string, number>();
-  for (const entry of entries) {
+  /** Position of each list's latest entry in `entries`, which arrive in write order. */
+  const lastPositionByList = new Map<WorkStateEntry[], number>();
+  entries.forEach((entry, position) => {
     // Checkout aliases share one list; adopted source projects keep separate lists.
     const projectKey = (entry.scope_project ?? entry.project).replace(/[A-Z]/g, character => character.toLowerCase());
     const key = JSON.stringify([projectKey, entry.list_name]);
@@ -112,9 +117,15 @@ export function renderWorkStateLines(entries: WorkStateEntry[], nowEpoch: WorkSt
       listProjectCounts.set(entry.list_name, (listProjectCounts.get(entry.list_name) ?? 0) + 1);
     }
     listEntries.push(entry);
-  }
+    lastPositionByList.set(listEntries, position);
+  });
+  // Most recently written list first, by write clock rather than rowid: a list
+  // pulled from another device sorts by when it was written, not when it landed.
+  // A same-millisecond tie goes by write order, not by this device's rowids,
+  // so every device lists them alike.
   return [...entriesByList.values()]
-    .sort((a, b) => b[b.length - 1].id - a[a.length - 1].id)
+    .sort((a, b) => (b[b.length - 1].created_at_epoch - a[a.length - 1].created_at_epoch)
+      || (lastPositionByList.get(b)! - lastPositionByList.get(a)!))
     .flatMap(listEntries => {
       const first = listEntries[0];
       const label = (listProjectCounts.get(first.list_name) ?? 0) > 1
@@ -130,7 +141,9 @@ export function buildWorkStateContextSection(
   nowEpoch: WorkStateClock,
   characterLimit: number = WORK_STATE_SECTION_CHARACTER_LIMIT,
 ): string {
-  const openLines = renderWorkStateLines(entries, nowEpoch);
+  // Goals lists (owner-goals and its past months) and My Rules show in My Work; their quotes would fill this section.
+  // Approved rules reach agents through ~/.claude-mem/MY-RULES.md instead.
+  const openLines = renderWorkStateLines(entries.filter(entry => !isOwnerGoalsList(entry.list_name) && !isMyRulesList(entry.list_name)), nowEpoch);
   if (openLines.length === 0) {
     return `${WORK_STATE_RULE}\n\nNothing open yet.`;
   }

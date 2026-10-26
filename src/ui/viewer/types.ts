@@ -23,6 +23,7 @@ export interface Summary {
   id: number;
   session_id: string;
   project: string;
+  merged_into_project?: string | null;
   platform_source: string;
   request?: string;
   investigated?: string;
@@ -109,8 +110,10 @@ export interface Settings {
   CLAUDE_MEM_OPENAI_COMPAT_API_KEYS?: string;
   CLAUDE_MEM_OPENAI_COMPAT_BASE_URL?: string;
   CLAUDE_MEM_OPENAI_COMPAT_MODEL?: string;
+  CLAUDE_MEM_OPENAI_COMPAT_REASONING?: string;
   CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER?: string;
   CLAUDE_MEM_QUOTA_FALLBACK_MODEL?: string;
+  CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD?: string;
 
   CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS?: string;
   CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS?: string;
@@ -127,4 +130,6 @@ export interface Settings {
 
   /** File/env only — shown read-only. Not written via POST /api/settings. */
   CLAUDE_CODE_PATH?: string;
+  /** Written by `npx claude-mem teambrain join`; read-only here. Set once this install is in a team. */
+  CLAUDE_MEM_TEAMBRAIN_URL?: string;
 }

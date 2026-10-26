@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import extension, { extractTextContent, type PiExtensionAPI } from '../../src/integrations/pi-extension/index.js';
 
 type Handler = (event: any, context: any) => any;
@@ -67,13 +67,32 @@ describe('native Pi capture', () => {
     const result = await request();
     expect(inits()[0].body).toMatchObject({
       contentSessionId: 'real-session-id', cwd: '/work/project', platformSource: 'pi',
-      prompt: 'Fix the parser', nativePromptId: 'persisted-user-1',
+      prompt: 'Fix the parser', nativePromptId: 'persisted-user-1', telemetryPromptEpochMs: user.timestamp,
     });
     expect(result.messages[0]).toMatchObject({ toolsAdded: [{ name: 'read' }] });
     expect(result.messages[0].content).toContain('Base prompt');
     expect(result.messages[0].content).toContain('Useful project memory');
     expect(result.messages[1]).toBe(user);
     expect(messages[0].content).toBe('Base prompt');
+  });
+
+  it('captures and injects when a custom message comes before the system message', async () => {
+    await emit('session_start');
+    await emit('before_agent_start', { prompt: 'Run the tests', systemPrompt: 'Base prompt' });
+    const user = { role: 'user', content: 'Run the tests', timestamp: ++stamp };
+    await emit('message_end', { message: user });
+    branch.push({ type: 'message', id: 'user-after-custom', message: user });
+    const custom = { role: 'custom', customType: 'extension-context', content: 'Extra context', display: false };
+    messages = [custom, { role: 'system', content: 'Base prompt', toolsAdded: [{ name: 'read' }] }, user];
+    const result = await request();
+    expect(inits()[0].body).toMatchObject({ prompt: 'Run the tests', nativePromptId: 'user-after-custom' });
+    expect(result.messages).toHaveLength(3);
+    expect(result.messages[0]).toBe(custom);
+    expect(result.messages[1]).toMatchObject({ role: 'system', toolsAdded: [{ name: 'read' }] });
+    expect(result.messages[1].content).toContain('Useful project memory');
+    expect(result.messages[2]).toBe(user);
+    await emit('tool_result', { toolName: 'read', toolCallId: 'tool-1', content: 'file text' });
+    expect(calls.some(call => call.route === '/api/sessions/observations')).toBe(true);
   });
 
   it('queues native prompt before tool before summary and preserves tool-call identity', async () => {
@@ -85,7 +104,9 @@ describe('native Pi capture', () => {
     const pending = ask('Read the file', 'user-read');
     // Wait for the mocked init request before enqueueing a tool.
     await initStarted;
+    const clock = spyOn(Date, 'now').mockReturnValue(1234);
     const tool = emit('tool_result', { toolName: 'read', toolCallId: 'tool-7', input: { path: 'x.ts' }, content: [{ type: 'text', text: 'file text' }] });
+    clock.mockRestore();
     expect(calls.some(call => call.route === '/api/sessions/observations')).toBe(false);
     finishInit(acknowledge({ nativePromptId: 'user-read' }));
     await Promise.all([pending, tool]);
@@ -94,7 +115,7 @@ describe('native Pi capture', () => {
     expect(calls.filter(call => call.body).map(call => call.route)).toEqual([
       '/api/sessions/init', '/api/sessions/observations', '/api/sessions/summarize',
     ]);
-    expect(calls.find(call => call.route === '/api/sessions/observations')?.body).toMatchObject({ tool_use_id: 'tool-7', tool_response: 'file text' });
+    expect(calls.find(call => call.route === '/api/sessions/observations')?.body).toMatchObject({ tool_use_id: 'tool-7', tool_response: 'file text', telemetryToolEpochMs: 1234 });
     expect(calls.at(-1)?.body.last_assistant_message).toBe('The fix works');
   });
 
@@ -161,8 +182,8 @@ describe('native Pi capture', () => {
     expect(calls.filter(call => call.route === '/api/sessions/native-prompt-capability')).toHaveLength(2);
     expect(inits()).toHaveLength(2);
     expect(inits().map(call => call.body)).toEqual([
-      { contentSessionId: 'real-session-id', cwd: '/work/project', prompt: 'Stable native prompt', platformSource: 'pi', nativePromptId: 'recovered-entry' },
-      { contentSessionId: 'real-session-id', cwd: '/work/project', prompt: 'Stable native prompt', platformSource: 'pi', nativePromptId: 'recovered-entry' },
+      { contentSessionId: 'real-session-id', cwd: '/work/project', prompt: 'Stable native prompt', platformSource: 'pi', nativePromptId: 'recovered-entry', telemetryPromptEpochMs: acceptedEntry.message.timestamp },
+      { contentSessionId: 'real-session-id', cwd: '/work/project', prompt: 'Stable native prompt', platformSource: 'pi', nativePromptId: 'recovered-entry', telemetryPromptEpochMs: acceptedEntry.message.timestamp },
     ]);
     expect(recovered.messages[0].content).toContain('Useful project memory');
     expect(recovered.messages[1]).toBe(acceptedEntry.message);
@@ -272,6 +293,7 @@ describe('native Pi capture', () => {
     await emit('tool_result', { toolName: 'read', content: 'older branch result' });
     await emit('agent_end');
     expect(inits().map(call => call.body.nativePromptId)).toEqual(['branch-a', 'branch-b', 'branch-a']);
+    expect(inits().map(call => call.body.telemetryPromptEpochMs)).toEqual([101, 102, 101]);
     expect(calls.some(call => call.route === '/api/sessions/observations' || call.route === '/api/sessions/summarize')).toBe(false);
   });
 
@@ -288,6 +310,76 @@ describe('native Pi capture', () => {
     await request();
     expect(inits()[0].body.prompt).toBe('Explain image');
     expect(JSON.stringify(inits()[0].body)).not.toContain('IMAGE-SECRET');
+  });
+
+  // Another extension may add per-request context to the outgoing messages (pi-lens
+  // appends a user-role message or an extra text part). Rule: such a request still
+  // carries the memory block, so the system prompt does not flip between requests.
+  it('keeps the memory block when another extension appends a user-role message after the real prompt', async () => {
+    await emit('session_start');
+    const plain = await ask('Run the tests', 'user-tests');
+    const real = branch[0].message;
+    messages = [
+      messages[0], real,
+      { role: 'assistant', content: [{ type: 'toolCall', id: 'call-1', name: 'bash', arguments: {} }] },
+      { role: 'toolResult', toolCallId: 'call-1', content: [{ type: 'text', text: 'ok' }] },
+      { role: 'user', content: '[automated check — not a user request] address blockers' },
+    ];
+    const injected = await request();
+    expect(injected.messages[0].content).toBe(plain.messages[0].content);
+    expect(injected.messages.slice(1)).toEqual(messages.slice(1));
+    expect(inits().at(-1)?.body).toMatchObject({ nativePromptId: 'user-tests', prompt: 'Run the tests' });
+  });
+
+  it('keeps the memory block and records only the typed prompt when another extension appends text to the real prompt', async () => {
+    await emit('session_start');
+    await emit('before_agent_start', { prompt: 'Fix the parser', systemPrompt: 'Base prompt' });
+    const real = { role: 'user', content: [{ type: 'text', text: 'Fix the parser' }], timestamp: ++stamp };
+    branch.push({ type: 'message', id: 'user-parser', message: real });
+    const withInjection = {
+      ...real,
+      content: [...real.content, { type: 'text', text: '[automated context — not a user request] guidance' }],
+    };
+    messages = [{ role: 'system', content: 'Base prompt', toolsAdded: [{ name: 'read' }] }, withInjection];
+    const injected = await request();
+    expect(injected.messages[0].content).toContain('Useful project memory');
+    expect(injected.messages[1]).toBe(withInjection);
+    expect(inits()).toHaveLength(1);
+    expect(inits()[0].body).toMatchObject({ nativePromptId: 'user-parser', prompt: 'Fix the parser' });
+    expect(JSON.stringify(inits()[0].body)).not.toContain('automated context');
+  });
+
+  it('refuses a request whose user message has the persisted timestamp but different text', async () => {
+    await emit('session_start');
+    await emit('before_agent_start', { prompt: 'Fix the parser', systemPrompt: 'Base prompt' });
+    const real = { role: 'user', content: 'Fix the parser', timestamp: ++stamp };
+    branch.push({ type: 'message', id: 'user-parser', message: real });
+    messages = [{ role: 'system', content: 'Base prompt' }, { ...real, content: 'A different prompt' }];
+    expect(await request()).toBeUndefined();
+    expect(inits()).toHaveLength(0);
+  });
+
+  it('keeps the memory block when an injected user message carries the same timestamp as the real prompt', async () => {
+    await emit('session_start');
+    await emit('before_agent_start', { prompt: 'Fix the parser', systemPrompt: 'Base prompt' });
+    const real = { role: 'user', content: 'Fix the parser', timestamp: ++stamp };
+    branch.push({ type: 'message', id: 'user-parser', message: real });
+    const injected = { role: 'user', content: '[automated check — not a user request] address blockers', timestamp: real.timestamp };
+    messages = [{ role: 'system', content: 'Base prompt' }, real, injected];
+    const result = await request();
+    expect(result.messages[0].content).toContain('Useful project memory');
+    expect(result.messages.slice(1)).toEqual([real, injected]);
+    expect(inits()[0].body).toMatchObject({ nativePromptId: 'user-parser', prompt: 'Fix the parser' });
+  });
+
+  it('refuses a request that only repeats the persisted text under a different timestamp', async () => {
+    await emit('session_start');
+    await emit('before_agent_start', { prompt: 'Fix the parser', systemPrompt: 'Base prompt' });
+    const real = { role: 'user', content: 'Fix the parser', timestamp: ++stamp };
+    branch.push({ type: 'message', id: 'user-parser', message: real });
+    messages = [{ role: 'system', content: 'Base prompt' }, { ...real, timestamp: real.timestamp - 1 }];
+    expect(await request()).toBeUndefined();
+    expect(inits()).toHaveLength(0);
   });
 
   it('disarms a prior anchor when the genuine branch getter refuses', async () => {

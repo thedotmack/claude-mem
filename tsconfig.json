@@ -25,6 +25,7 @@
     "node_modules",
     "dist",
     "tests",
-    "src/ui/viewer"
+    "src/ui/viewer",
+    "src/ui/my-work"
   ]
 }

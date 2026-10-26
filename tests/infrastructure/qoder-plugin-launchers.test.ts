@@ -11,6 +11,7 @@ import {
 import { tmpdir } from 'os';
 import path from 'path';
 import { spawnSync } from 'child_process';
+import { sanitizeEnv } from '../../src/supervisor/env-sanitizer.js';
 
 const projectRoot = path.resolve(import.meta.dir, '../..');
 const temporaryRoots: string[] = [];
@@ -46,6 +47,10 @@ const expected = process.env.EXPECTED_QODER_EVENT;
 if (args[1] !== 'hook' || args[2] !== 'codex' || args[3] !== expected) {
   process.stderr.write('bad forwarded args: ' + JSON.stringify(args) + '\\n');
   process.exit(42);
+}
+if (process.env.CLAUDE_MEM_QODER_HOOK !== '1') {
+  process.stderr.write('missing Qoder host marker\\n');
+  process.exit(43);
 }
 process.stdout.write(JSON.stringify({ forwardedEvent: args[3] }) + '\\n');
 `,
@@ -106,6 +111,110 @@ describe('Qoder hook launcher execution', () => {
     expect(result.status).toBe(0);
     expect(result.stderr).toContain('dependency setup failed');
     expect(JSON.parse(result.stdout).hookSpecificOutput.hookEventName).toBe('SessionStart');
+  });
+
+  it('runs Qoder hooks when the Claude Code plugin is disabled', () => {
+    const root = fixture();
+    const scripts = path.join(root, 'scripts');
+    const marker = path.join(root, 'worker-started');
+    const claudeConfig = path.join(root, 'claude-config');
+    mkdirSync(claudeConfig);
+    writeFileSync(
+      path.join(claudeConfig, 'settings.json'),
+      JSON.stringify({ enabledPlugins: { 'claude-mem@thedotmack': false } }),
+    );
+    copyFileSync(
+      path.join(projectRoot, 'plugin/scripts/bun-runner.js'),
+      path.join(scripts, 'bun-runner.js'),
+    );
+    writeFileSync(
+      path.join(scripts, 'worker-service.cjs'),
+      `require('fs').writeFileSync(${JSON.stringify(marker)}, process.env.CLAUDE_MEM_QODER_HOOK || '');\n`,
+    );
+
+    const result = runHook(root, 'session-init', { CLAUDE_CONFIG_DIR: claudeConfig });
+
+    expect(result.status).toBe(0);
+    expect(readFileSync(marker, 'utf-8')).toBe('1');
+  });
+
+  it('keeps the Claude Code disabled-plugin opt-out outside Qoder', () => {
+    const root = fixture();
+    const scripts = path.join(root, 'scripts');
+    const marker = path.join(root, 'worker-started');
+    const claudeConfig = path.join(root, 'claude-config');
+    mkdirSync(claudeConfig);
+    writeFileSync(
+      path.join(claudeConfig, 'settings.json'),
+      JSON.stringify({ enabledPlugins: { 'claude-mem@thedotmack': false } }),
+    );
+    copyFileSync(
+      path.join(projectRoot, 'plugin/scripts/bun-runner.js'),
+      path.join(scripts, 'bun-runner.js'),
+    );
+    writeFileSync(
+      path.join(scripts, 'worker-service.cjs'),
+      `require('fs').writeFileSync(${JSON.stringify(marker)}, 'started');\n`,
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [path.join(scripts, 'bun-runner.js'), path.join(scripts, 'worker-service.cjs')],
+      {
+        encoding: 'utf-8',
+        env: { ...process.env, CLAUDE_CONFIG_DIR: claudeConfig },
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(existsSync(marker)).toBe(false);
+  });
+});
+
+describe('worker-service disabled-plugin gate', () => {
+  // bun-runner is only the first gate: worker-service checks the Claude Code
+  // toggle again for hook, start, restart and --daemon. A bare `hook` with no
+  // platform gets past that gate only to stop at the usage error, so the exit
+  // code shows which side of the gate the process ended on without a worker.
+  function runBareHookCommand(extraEnv: Record<string, string>) {
+    const root = mkdtempSync(path.join(tmpdir(), 'claude-mem-qoder-gate-'));
+    temporaryRoots.push(root);
+    const claudeConfig = path.join(root, 'claude-config');
+    mkdirSync(claudeConfig);
+    writeFileSync(
+      path.join(claudeConfig, 'settings.json'),
+      JSON.stringify({ enabledPlugins: { 'claude-mem@thedotmack': false } }),
+    );
+    const env: Record<string, string | undefined> = {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: claudeConfig,
+      CLAUDE_MEM_DATA_DIR: path.join(root, 'data'),
+      ...extraEnv,
+    };
+    if (!('CLAUDE_MEM_QODER_HOOK' in extraEnv)) delete env.CLAUDE_MEM_QODER_HOOK;
+    return spawnSync(process.execPath, [path.join(projectRoot, 'src/services/worker-service.ts'), 'hook'], {
+      encoding: 'utf-8',
+      env,
+      timeout: 30_000,
+    });
+  }
+
+  it('lets a Qoder hook past the gate when the Claude Code plugin is disabled', () => {
+    const result = runBareHookCommand({ CLAUDE_MEM_QODER_HOOK: '1' });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Usage: claude-mem hook');
+  });
+
+  it('still stops other hooks at the gate when the Claude Code plugin is disabled', () => {
+    const result = runBareHookCommand({});
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).not.toContain('Usage: claude-mem hook');
+  });
+
+  it('keeps the Qoder marker in the environment a spawned worker daemon gets', () => {
+    expect(sanitizeEnv({ CLAUDE_MEM_QODER_HOOK: '1' }).CLAUDE_MEM_QODER_HOOK).toBe('1');
   });
 });
 

@@ -1,13 +1,14 @@
-import { describe, expect, it, spyOn } from 'bun:test';
+import { afterAll, describe, expect, it, spyOn } from 'bun:test';
 import { getSupervisor } from '../../src/supervisor/index.js';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   buildCodexAppServerArgs,
   buildCodexAppServerEnv,
   buildCodexAppServerThreadConfig,
   CodexAppServerClient,
+  sweepStaleAppServerWorkdirs,
   CODEX_ISOLATION_UNATTESTED_CODE,
   CODEX_NO_AGENT_MESSAGE_CODE,
 } from '../../src/services/worker/CodexAppServerClient.js';
@@ -26,82 +27,132 @@ interface FakeCodex {
 
 interface FakeCodexOptions {
   instructionSources?: string[];
-  mode?: 'normal' | 'terminal-response' | 'slow-first-turn' | 'reject-first-init' | 'usage-limit' | 'retried-error'
-    | 'empty-first-turn' | 'empty-always' | 'missing-message';
+  writeOnShutdown?: boolean;
+  /** Give this fake its own executable file, for tests that replace the binary in place. */
+  privateExecutable?: boolean;
+  mode?: 'normal' | 'terminal-response' | 'hold-first-turn' | 'reject-first-init' | 'usage-limit' | 'retried-error'
+    | 'empty-first-turn' | 'empty-always' | 'missing-message' | 'silent-init';
 }
 
+const FAKE_CODEX_CONFIG_FILE = 'fake-codex.json';
+
+// One fake app-server script, configured per test by the fake-codex.json in the
+// test's root. macOS checks every newly written executable on its first exec
+// (~200 ms idle, far longer under load), so writing a fresh script per test made
+// every spawn slow and was the main source of timeouts. The client only passes
+// the fake a private CODEX_HOME whose auth.json links back to the test's own
+// auth home, so the fake finds its configuration through that link.
+const FAKE_CODEX_SOURCE = [
+  '#!/usr/bin/env bun',
+  "import { appendFileSync, statSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';",
+  "import { dirname, join } from 'node:path';",
+  "const authHome = dirname(realpathSync(join(process.env.CODEX_HOME, 'auth.json')));",
+  `const config = JSON.parse(readFileSync(join(dirname(authHome), ${JSON.stringify(FAKE_CODEX_CONFIG_FILE)}), 'utf8'));`,
+  'const { trace, instructionSources, mode, writeOnShutdown } = config;',
+  "const rejectInit = mode === 'reject-first-init' && !existsSync(trace);",
+  "const record = value => appendFileSync(trace, JSON.stringify(value) + '\\n');",
+  // hold-first-turn: turn 1 finishes only when the test sends SIGUSR1.
+  'let releaseFirstTurn = null;',
+  "process.on('SIGUSR1', () => { const release = releaseFirstTurn; releaseFirstTurn = null; release?.(); });",
+  "if (writeOnShutdown) process.on('SIGTERM', () => {",
+  "  mkdirSync(process.env.CODEX_HOME, { recursive: true });",
+  "  writeFileSync(join(process.env.CODEX_HOME, 'shutdown-state.json'), '{}');",
+  "  record({ method: 'process/shutdown' });",
+  "  process.exit(0);",
+  "});",
+  "record({ method: 'process/start', args: process.argv.slice(2), codexHome: process.env.CODEX_HOME, pid: process.pid });",
+  "const send = value => process.stdout.write(JSON.stringify(value) + '\\n');",
+  'let buffer = "";',
+  'let turn = 0;',
+  "process.stdin.setEncoding('utf8');",
+  "process.stdin.on('data', chunk => {",
+  '  buffer += chunk;',
+  "  let newline; while ((newline = buffer.indexOf('\\n')) !== -1) {",
+  '    const line = buffer.slice(0, newline).trim(); buffer = buffer.slice(newline + 1);',
+  '    if (!line) continue;',
+  '    const message = JSON.parse(line);',
+  '    record(message);',
+  "    if (message.method === 'initialized') continue;",
+  "    if (message.method === 'initialize' && mode === 'silent-init') continue;",
+  "    if (message.method === 'initialize') send(rejectInit ? { id: message.id, error: { code: -32600, message: 'initialize rejected' } } : { id: message.id, result: { userAgent: 'fake-codex' } });",
+  "    else if (message.method === 'config/read') send({ id: message.id, result: { config: { mcp_servers: { inherited: { command: 'false' } } }, layers: [] } });",
+  "    else if (message.method === 'thread/start') {",
+  "      const mode = statSync(message.params.cwd).mode & 0o777;",
+  "      record({ method: 'workspace/attestation', mode });",
+  "      send({ id: message.id, result: { thread: { id: 'thread-' + (turn + 1) }, instructionSources } });",
+  '    }',
+  "    else if (message.method === 'mcpServerStatus/list') send({ id: message.id, result: { data: [{ name: 'inherited', serverInfo: null, tools: {} }], nextCursor: null } });",
+  "    else if (message.method === 'turn/start') {",
+  '      turn += 1;',
+  "      const turnId = 'turn-' + turn;",
+  "      const content = JSON.stringify({ content: mode === 'empty-always' || (mode === 'empty-first-turn' && turn === 1) ? '   ' : '<observation><type>discovery</type><title>Turn ' + turn + '</title><narrative>Captured.</narrative></observation>' });",
+  "      const finish = () => {",
+  "        send({ method: 'thread/tokenUsage/updated', params: { threadId: message.params.threadId, tokenUsage: { total: { inputTokens: 10, cachedInputTokens: 2, outputTokens: 3, reasoningOutputTokens: 1 } } } });",
+  "        if (mode !== 'missing-message') send({ method: 'item/completed', params: { threadId: message.params.threadId, turnId, item: { type: 'agentMessage', phase: 'final_answer', text: content } } });",
+  "        send({ method: 'turn/completed', params: { threadId: message.params.threadId, turn: { id: turnId, status: 'completed', items: [] } } });",
+  '      };',
+  "      const turnError = { message: 'You have hit your usage limit.', codexErrorInfo: 'usageLimitExceeded', additionalDetails: null };",
+  "      if (mode === 'usage-limit') {",
+  "        send({ id: message.id, result: { turn: { id: turnId, status: 'inProgress' } } });",
+  "        send({ method: 'error', params: { threadId: message.params.threadId, turnId, willRetry: false, error: turnError } });",
+  "        send({ method: 'turn/completed', params: { threadId: message.params.threadId, turn: { id: turnId, status: 'failed', items: [], error: turnError } } });",
+  "      } else if (mode === 'retried-error') {",
+  "        send({ id: message.id, result: { turn: { id: turnId, status: 'inProgress' } } });",
+  "        send({ method: 'error', params: { threadId: message.params.threadId, turnId, willRetry: true, error: { message: 'stream disconnected', codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: null } }, additionalDetails: null } } });",
+  "        finish();",
+  "      } else if (mode === 'terminal-response') {",
+  "        send({ id: message.id, result: { turn: { id: turnId, status: 'completed', items: [{ type: 'agentMessage', phase: 'final_answer', text: content }] } } });",
+  '      } else {',
+  '        send({ id: message.id, result: { turn: { id: turnId, status: \'inProgress\' } } });',
+  "        if (mode === 'hold-first-turn' && turn === 1) releaseFirstTurn = finish; else finish();",
+  '      }',
+  '    }',
+  "    else if (message.method === 'thread/unsubscribe') send({ id: message.id, result: {} });",
+  "    else if (message.method === 'turn/interrupt') send({ id: message.id, result: {} });",
+  "    else if (message.id !== undefined) send({ id: message.id, error: { code: -32601, message: 'unsupported' } });",
+  '  }',
+  '});',
+].join('\n');
+
+let sharedFakeCodexRoot: string | null = null;
+
+function sharedFakeCodexExecutable(): string {
+  if (!sharedFakeCodexRoot) sharedFakeCodexRoot = mkdtempSync(join(tmpdir(), 'claude-mem-fake-codex-bin-'));
+  const executable = join(sharedFakeCodexRoot, 'codex');
+  if (!existsSync(executable)) writeFileSync(executable, FAKE_CODEX_SOURCE, { mode: 0o700 });
+  return executable;
+}
+
+afterAll(() => {
+  if (sharedFakeCodexRoot) rmSync(sharedFakeCodexRoot, { recursive: true, force: true });
+});
+
 function createFakeCodex(options: FakeCodexOptions = {}): FakeCodex {
-  const instructionSources = options.instructionSources ?? [];
-  const mode = options.mode ?? 'normal';
   const root = mkdtempSync(join(tmpdir(), 'claude-mem-fake-codex-'));
-  const executable = join(root, 'codex');
   const trace = join(root, 'trace.jsonl');
   const authHome = join(root, 'native-codex-home');
   mkdirSync(authHome, { mode: 0o700 });
   writeFileSync(join(authHome, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: {} }), { mode: 0o600 });
-  const source = [
-    '#!/usr/bin/env bun',
-    "import { appendFileSync, statSync, existsSync } from 'node:fs';",
-    `const trace = ${JSON.stringify(trace)};`,
-    `const instructionSources = ${JSON.stringify(instructionSources)};`,
-    `const mode = ${JSON.stringify(mode)};`,
-    "const rejectInit = mode === 'reject-first-init' && !existsSync(trace);",
-    "const record = value => appendFileSync(trace, JSON.stringify(value) + '\\n');",
-    "record({ method: 'process/start', args: process.argv.slice(2), codexHome: process.env.CODEX_HOME, pid: process.pid });",
-    "const send = value => process.stdout.write(JSON.stringify(value) + '\\n');",
-    'let buffer = "";',
-    'let turn = 0;',
-    "process.stdin.setEncoding('utf8');",
-    "process.stdin.on('data', chunk => {",
-    '  buffer += chunk;',
-    "  let newline; while ((newline = buffer.indexOf('\\n')) !== -1) {",
-    '    const line = buffer.slice(0, newline).trim(); buffer = buffer.slice(newline + 1);',
-    '    if (!line) continue;',
-    '    const message = JSON.parse(line);',
-    '    record(message);',
-    "    if (message.method === 'initialized') continue;",
-    "    if (message.method === 'initialize') send(rejectInit ? { id: message.id, error: { code: -32600, message: 'initialize rejected' } } : { id: message.id, result: { userAgent: 'fake-codex' } });",
-    "    else if (message.method === 'config/read') send({ id: message.id, result: { config: { mcp_servers: { inherited: { command: 'false' } } }, layers: [] } });",
-    "    else if (message.method === 'thread/start') {",
-    "      const mode = statSync(message.params.cwd).mode & 0o777;",
-    "      record({ method: 'workspace/attestation', mode });",
-    "      send({ id: message.id, result: { thread: { id: 'thread-' + (turn + 1) }, instructionSources } });",
-    '    }',
-    "    else if (message.method === 'mcpServerStatus/list') send({ id: message.id, result: { data: [{ name: 'inherited', serverInfo: null, tools: {} }], nextCursor: null } });",
-    "    else if (message.method === 'turn/start') {",
-    '      turn += 1;',
-    "      const turnId = 'turn-' + turn;",
-    "      const content = JSON.stringify({ content: mode === 'empty-always' || (mode === 'empty-first-turn' && turn === 1) ? '   ' : '<observation><type>discovery</type><title>Turn ' + turn + '</title><narrative>Captured.</narrative></observation>' });",
-    "      const finish = () => {",
-    "        send({ method: 'thread/tokenUsage/updated', params: { threadId: message.params.threadId, tokenUsage: { total: { inputTokens: 10, cachedInputTokens: 2, outputTokens: 3, reasoningOutputTokens: 1 } } } });",
-    "        if (mode !== 'missing-message') send({ method: 'item/completed', params: { threadId: message.params.threadId, turnId, item: { type: 'agentMessage', phase: 'final_answer', text: content } } });",
-    "        send({ method: 'turn/completed', params: { threadId: message.params.threadId, turn: { id: turnId, status: 'completed', items: [] } } });",
-    '      };',
-    "      const turnError = { message: 'You have hit your usage limit.', codexErrorInfo: 'usageLimitExceeded', additionalDetails: null };",
-    "      if (mode === 'usage-limit') {",
-    "        send({ id: message.id, result: { turn: { id: turnId, status: 'inProgress' } } });",
-    "        send({ method: 'error', params: { threadId: message.params.threadId, turnId, willRetry: false, error: turnError } });",
-    "        send({ method: 'turn/completed', params: { threadId: message.params.threadId, turn: { id: turnId, status: 'failed', items: [], error: turnError } } });",
-    "      } else if (mode === 'retried-error') {",
-    "        send({ id: message.id, result: { turn: { id: turnId, status: 'inProgress' } } });",
-    "        send({ method: 'error', params: { threadId: message.params.threadId, turnId, willRetry: true, error: { message: 'stream disconnected', codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: null } }, additionalDetails: null } } });",
-    "        finish();",
-    "      } else if (mode === 'terminal-response') {",
-    "        send({ id: message.id, result: { turn: { id: turnId, status: 'completed', items: [{ type: 'agentMessage', phase: 'final_answer', text: content }] } } });",
-    '      } else {',
-    '        send({ id: message.id, result: { turn: { id: turnId, status: \'inProgress\' } } });',
-    "        if (mode === 'slow-first-turn' && turn === 1) setTimeout(finish, 250); else finish();",
-    '      }',
-    '    }',
-    "    else if (message.method === 'thread/unsubscribe') send({ id: message.id, result: {} });",
-    "    else if (message.method === 'turn/interrupt') send({ id: message.id, result: {} });",
-    "    else if (message.id !== undefined) send({ id: message.id, error: { code: -32601, message: 'unsupported' } });",
-    '  }',
-    '});',
-  ].join('\n');
-  writeFileSync(executable, source, { mode: 0o700 });
-  chmodSync(executable, 0o700);
+  writeFileSync(join(root, FAKE_CODEX_CONFIG_FILE), JSON.stringify({
+    trace,
+    instructionSources: options.instructionSources ?? [],
+    mode: options.mode ?? 'normal',
+    writeOnShutdown: options.writeOnShutdown === true,
+  }));
+  let executable = sharedFakeCodexExecutable();
+  if (options.privateExecutable) {
+    executable = join(root, 'codex');
+    writeFileSync(executable, FAKE_CODEX_SOURCE, { mode: 0o700 });
+    chmodSync(executable, 0o700);
+  }
   return { authHome, executable, root, trace };
+}
+
+/** Let the fake's held first turn (mode 'hold-first-turn') finish. */
+function releaseFirstTurn(fake: FakeCodex): void {
+  const started = readTrace(fake.trace).find(entry => entry.method === 'process/start');
+  if (!started) throw new Error('fake Codex has not started');
+  process.kill(started.pid, 'SIGUSR1');
 }
 
 function readTrace(path: string): Array<Record<string, any>> {
@@ -226,12 +277,17 @@ itPosix('describes a completed turn without an agent message', async () => {
   }
 });
 
-async function waitForTrace(path: string, predicate: (trace: Array<Record<string, any>>) => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (predicate(readTrace(path))) return;
-    await Bun.sleep(10);
+/** Poll until a condition the test observes directly holds (bounded below bun's 5 s test timeout). */
+async function waitUntil(condition: () => boolean, description: string): Promise<void> {
+  const deadline = Date.now() + 4_000;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error(`Timed out waiting for ${description}`);
+    await Bun.sleep(5);
   }
-  throw new Error('Timed out waiting for fake Codex trace');
+}
+
+function waitForTrace(path: string, predicate: (trace: Array<Record<string, any>>) => boolean): Promise<void> {
+  return waitUntil(() => predicate(readTrace(path)), 'fake Codex trace');
 }
 
 describe('CodexAppServerClient configuration', () => {
@@ -268,7 +324,7 @@ describe('CodexAppServerClient configuration', () => {
 
 describe('CodexAppServerClient transport', () => {
   itPosix('reaps a rejected handshake and initializes a fresh supervised child', async () => {
-    const fake = createFakeCodex({ mode: 'reject-first-init' });
+    const fake = createFakeCodex({ mode: 'reject-first-init', writeOnShutdown: true });
     const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
     const register = spyOn(getSupervisor(), 'registerProcess');
     const unregister = spyOn(getSupervisor(), 'unregisterProcess');
@@ -278,8 +334,10 @@ describe('CodexAppServerClient transport', () => {
       await expect(client.runTurn(options)).rejects.toThrow('initialize rejected');
       expect((client as any).child).toBeNull();
       expect((client as any).privateRoot).toBeNull();
-      const firstPid = readTrace(fake.trace).find(entry => entry.method === 'process/start')!.pid;
+      const firstStart = readTrace(fake.trace).find(entry => entry.method === 'process/start')!;
+      const firstPid = firstStart.pid;
       expect(() => process.kill(firstPid, 0)).toThrow();
+      expect(existsSync(dirname(firstStart.codexHome))).toBe(false);
       expect((await client.runTurn(options)).content).toContain('Captured.');
       const starts = readTrace(fake.trace).filter(entry => entry.method === 'process/start');
       expect(starts).toHaveLength(2);
@@ -290,7 +348,9 @@ describe('CodexAppServerClient transport', () => {
       await (client as any).invalidate(new Error('late old-child failure'), register.mock.calls[0][2]);
       expect((client as any).child.pid).toBe(starts[1].pid);
       await client.close();
-      await Bun.sleep(20);
+      // Unregistration runs from each child's own exit/close event.
+      await waitUntil(() => starts.every(start => unregister.mock.calls.some(call => call[0] === `codex-app-server:${start.pid}`)),
+        'both children to unregister');
       for (const start of starts) {
         expect(unregister).toHaveBeenCalledWith(`codex-app-server:${start.pid}`);
         expect(getSupervisor().getRegistry().getAll().some(entry => entry.pid === start.pid)).toBe(false);
@@ -300,6 +360,9 @@ describe('CodexAppServerClient transport', () => {
       await client.close();
       register.mockRestore();
       unregister.mockRestore();
+      for (const start of readTrace(fake.trace).filter(entry => entry.method === 'process/start')) {
+        rmSync(dirname(start.codexHome), { recursive: true, force: true });
+      }
       rmSync(fake.root, { recursive: true, force: true });
     }
   });
@@ -401,7 +464,7 @@ describe('CodexAppServerClient transport', () => {
   });
 
   itPosix('drops an aborted queued turn without restarting the shared process', async () => {
-    const fake = createFakeCodex({ mode: 'slow-first-turn' });
+    const fake = createFakeCodex({ mode: 'hold-first-turn' });
     const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
     const options = {
       codexPath: fake.executable,
@@ -417,6 +480,7 @@ describe('CodexAppServerClient transport', () => {
       const queued = client.runTurn({ ...options, signal: controller.signal });
       controller.abort();
       await expect(queued).rejects.toThrow(/aborted while queued/);
+      releaseFirstTurn(fake);
       await first;
       await client.runTurn(options);
       expect(readTrace(fake.trace).filter(entry => entry.method === 'process/start')).toHaveLength(1);
@@ -427,7 +491,7 @@ describe('CodexAppServerClient transport', () => {
   });
 
   itPosix('rechecks caller admission after the queue wait and before turn/start', async () => {
-    const fake = createFakeCodex({ mode: 'slow-first-turn' });
+    const fake = createFakeCodex({ mode: 'hold-first-turn' });
     const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
     const options = { codexPath: fake.executable, model: 'test-model', reasoningEffort: 'none',
       prompt: 'Return one durable observation.', timeoutMs: 5_000 };
@@ -439,6 +503,7 @@ describe('CodexAppServerClient transport', () => {
         if (!admitted) throw new Error('quota paused while queued');
       } });
       admitted = false;
+      releaseFirstTurn(fake);
       await first;
       await expect(queued).rejects.toThrow('quota paused while queued');
       expect(readTrace(fake.trace).filter(entry => entry.method === 'turn/start')).toHaveLength(1);
@@ -449,7 +514,7 @@ describe('CodexAppServerClient transport', () => {
   });
 
   itPosix('ignores stale close events after a binary replacement', async () => {
-    const fake = createFakeCodex();
+    const fake = createFakeCodex({ writeOnShutdown: true, privateExecutable: true });
     const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
     const options = {
       codexPath: fake.executable,
@@ -462,11 +527,23 @@ describe('CodexAppServerClient transport', () => {
       await client.runTurn(options);
       writeFileSync(fake.executable, `${readFileSync(fake.executable, 'utf8')}\n`);
       await client.runTurn(options);
-      await Bun.sleep(100);
+      const starts = readTrace(fake.trace).filter(entry => entry.method === 'process/start');
+      expect(starts).toHaveLength(2);
+      const previousRoot = dirname(starts[0].codexHome);
+      const currentRoot = dirname(starts[1].codexHome);
+      // The replaced child's teardown finishes before its root is removed.
+      await (client as any).cleanupPromise;
+      expect(existsSync(previousRoot)).toBe(false);
+      expect(existsSync(currentRoot)).toBe(true);
       await client.runTurn(options);
       expect(readTrace(fake.trace).filter(entry => entry.method === 'process/start')).toHaveLength(2);
+      await client.close();
+      expect(existsSync(currentRoot)).toBe(false);
     } finally {
       await client.close();
+      for (const start of readTrace(fake.trace).filter(entry => entry.method === 'process/start')) {
+        rmSync(dirname(start.codexHome), { recursive: true, force: true });
+      }
       rmSync(fake.root, { recursive: true, force: true });
     }
   });
@@ -492,8 +569,66 @@ describe('CodexAppServerClient transport', () => {
     }
   });
 
+  itPosix('removes the private runtime after the child finishes writing on shutdown', async () => {
+    const fake = createFakeCodex({ writeOnShutdown: true });
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    let runtimeRoot: string | undefined;
+    try {
+      await client.runTurn({
+        codexPath: fake.executable,
+        model: 'test-model',
+        reasoningEffort: 'low',
+        prompt: 'Return one durable observation.',
+        timeoutMs: 5_000,
+      });
+      const started = readTrace(fake.trace).find(entry => entry.method === 'process/start');
+      runtimeRoot = dirname(started!.codexHome);
+      expect(existsSync(runtimeRoot)).toBe(true);
+
+      await client.close();
+
+      expect(readTrace(fake.trace).some(entry => entry.method === 'process/shutdown')).toBe(true);
+      expect(existsSync(runtimeRoot)).toBe(false);
+      expect(existsSync(join(fake.authHome, 'auth.json'))).toBe(true);
+    } finally {
+      await client.close();
+      if (runtimeRoot) rmSync(runtimeRoot, { recursive: true, force: true });
+      rmSync(fake.root, { recursive: true, force: true });
+    }
+  });
+
+  itPosix('awaits cleanup already started by a handshake timeout when closed', async () => {
+    const fake = createFakeCodex({ mode: 'silent-init', writeOnShutdown: true });
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    let runtimeRoot: string | undefined;
+    try {
+      await expect(client.runTurn({
+        codexPath: fake.executable,
+        model: 'test-model',
+        reasoningEffort: 'low',
+        prompt: 'Return one durable observation.',
+        timeoutMs: 300,
+      })).rejects.toThrow('initialize timed out');
+      // The handshake really reached the running fake and went unanswered.
+      expect(readTrace(fake.trace).some(entry => entry.method === 'initialize')).toBe(true);
+      const started = readTrace(fake.trace).find(entry => entry.method === 'process/start');
+      runtimeRoot = dirname(started!.codexHome);
+
+      await client.close();
+
+      expect(() => process.kill(started!.pid, 0)).toThrow();
+      expect(existsSync(runtimeRoot)).toBe(false);
+    } finally {
+      await client.close();
+      // On the regressed implementation, the first teardown is still pending.
+      await waitForTrace(fake.trace, trace => trace.some(entry => entry.method === 'process/shutdown'));
+      if (runtimeRoot) rmSync(runtimeRoot, { recursive: true, force: true });
+      rmSync(fake.root, { recursive: true, force: true });
+    }
+  });
+
   itPosix('rejects queued and future turns without restarting after close', async () => {
-    const fake = createFakeCodex({ mode: 'slow-first-turn' });
+    const fake = createFakeCodex({ mode: 'hold-first-turn' });
     const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
     const options = {
       codexPath: fake.executable,
@@ -522,5 +657,76 @@ describe('CodexAppServerClient transport', () => {
       await client.close();
       rmSync(fake.root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('sweepStaleAppServerWorkdirs (#4788)', () => {
+  const longAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const deadPid = 999_001;
+  const livePid = 999_002;
+  const isPidAlive = (pid: number) => pid === livePid;
+
+  function withBase(run: (base: string, make: (name: string, options: { ownerPid?: number; old: boolean }) => string) => Promise<void>) {
+    return async () => {
+      const base = mkdtempSync(join(tmpdir(), 'claude-mem-sweep-'));
+      const make = (name: string, { ownerPid, old }: { ownerPid?: number; old: boolean }) => {
+        const dir = join(base, name);
+        mkdirSync(join(dir, 'codex-home'), { recursive: true });
+        if (ownerPid !== undefined) writeFileSync(join(dir, 'owner.json'), JSON.stringify({ pid: ownerPid }));
+        if (old) utimesSync(dir, longAgo, longAgo);
+        return dir;
+      };
+      try {
+        await run(base, make);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    };
+  }
+
+  it('keeps an old workdir whose owner process is still alive', withBase(async (base, make) => {
+    const live = make('claude-mem-codex-app-server-live', { ownerPid: livePid, old: true });
+
+    expect(await sweepStaleAppServerWorkdirs({ baseDir: base, isPidAlive })).toEqual([]);
+    expect(existsSync(live)).toBe(true);
+  }));
+
+  it('removes a workdir whose owner process is dead, however recent', withBase(async (base, make) => {
+    const orphan = make('claude-mem-codex-app-server-orphan', { ownerPid: deadPid, old: false });
+
+    expect(await sweepStaleAppServerWorkdirs({ baseDir: base, isPidAlive })).toEqual([orphan]);
+    expect(existsSync(orphan)).toBe(false);
+  }));
+
+  it('removes an old workdir with no owner file and keeps a fresh one', withBase(async (base, make) => {
+    const legacy = make('claude-mem-codex-app-server-legacy', { old: true });
+    const fresh = make('claude-mem-codex-app-server-fresh', { old: false });
+    const unrelated = make('someone-elses-dir', { ownerPid: deadPid, old: true });
+
+    expect(await sweepStaleAppServerWorkdirs({ baseDir: base, isPidAlive })).toEqual([legacy]);
+    expect(existsSync(legacy)).toBe(false);
+    expect(existsSync(fresh)).toBe(true);
+    expect(existsSync(unrelated)).toBe(true);
+  }));
+
+  it('returns before the removal finishes, so the caller is not blocked', withBase(async (base, make) => {
+    const orphan = make('claude-mem-codex-app-server-orphan', { ownerPid: deadPid, old: true });
+
+    const sweep = sweepStaleAppServerWorkdirs({ baseDir: base, isPidAlive });
+    expect(sweep).toBeInstanceOf(Promise);
+    expect(existsSync(orphan)).toBe(true);
+    expect(await sweep).toEqual([orphan]);
+    expect(existsSync(orphan)).toBe(false);
+  }));
+
+  it('treats the current process as a live owner by default', withBase(async (base, make) => {
+    const own = make('claude-mem-codex-app-server-own', { ownerPid: process.pid, old: true });
+
+    expect(await sweepStaleAppServerWorkdirs({ baseDir: base })).toEqual([]);
+    expect(existsSync(own)).toBe(true);
+  }));
+
+  it('returns nothing when the temp directory cannot be read', async () => {
+    expect(await sweepStaleAppServerWorkdirs({ baseDir: join(tmpdir(), 'claude-mem-no-such-dir-4788') })).toEqual([]);
   });
 });

@@ -5,13 +5,14 @@
  * friendly.
  */
 
-import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { existsSync, readFileSync, realpathSync } from 'fs';
+import { isAbsolute, join, posix as posixPath, win32 as windowsPath } from 'path';
 import { styleText } from 'node:util';
 import { IS_WINDOWS, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
 import { formatHostForUrl, getWorkerHost, getWorkerPort, resolvePluginRoot, type PluginRootResolution } from '../../shared/worker-utils.js';
 import { getBunVersion, getUvVersion, isInstallCurrent } from '../install/setup-runtime.js';
-import { isTreeSitterCliBinaryUsable, treeSitterCliBinaryPath } from '../../services/smart-file-read/tree-sitter-cli-provision.js';
+import { treeSitterCliBinaryPath } from '../../services/smart-file-read/tree-sitter-cli-provision.js';
+import { checkTreeSitterCliLoadable, resolveTreeSitterBinPathFor, TREE_SITTER_CLI_PATH_WORKAROUND } from '../../services/smart-file-read/tree-sitter-bin-path.js';
 import { resolveDataDir } from '../../shared/paths.js';
 import { paths } from '../../shared/paths.js';
 import { findOrphanedChromaRoots, readProcessTablePosix } from '../../supervisor/orphan-chroma-sweep.js';
@@ -25,7 +26,7 @@ import {
 import {
   currentLauncherHostEnvironment,
   findExecutableOnPath,
-  readLauncherProtocol,
+  probeLauncherVersion,
   resolveLauncherBinaryPath,
   type LauncherHostEnvironment,
 } from '../../launcher/install-launcher.js';
@@ -234,18 +235,32 @@ export function pluginRootCheck(resolution: PluginRootResolution | null): CheckR
   };
 }
 
-/** The "tree-sitter CLI" row for the plugin root the worker runs from. Exported for tests. */
-export async function treeSitterCliCheck(pluginRoot: string): Promise<CheckResult> {
+/**
+ * The "tree-sitter CLI" row for the plugin root the worker runs from. It
+ * resolves the CLI the same way the parser does, so a working tree-sitter on
+ * PATH counts when the package-local one is missing or cannot run (#4858).
+ * Exported for tests, which also pass searchPath.
+ */
+export async function treeSitterCliCheck(pluginRoot: string, searchPath: string = process.env.PATH ?? ''): Promise<CheckResult> {
   const name = 'tree-sitter CLI';
-  const binaryPath = treeSitterCliBinaryPath(pluginRoot);
-  return (await isTreeSitterCliBinaryUsable(pluginRoot))
-    ? { name, status: 'ok', detail: binaryPath, required: false }
-    : {
-        name,
-        status: 'warn',
-        detail: `missing or unusable at ${binaryPath} — smart_search/smart_outline disabled; run \`npx claude-mem repair\``,
-        required: false,
-      };
+  const packageLocalBinPath = treeSitterCliBinaryPath(pluginRoot);
+  const resolvedBinPath = resolveTreeSitterBinPathFor(packageLocalBinPath, searchPath);
+  const check = checkTreeSitterCliLoadable(resolvedBinPath, searchPath);
+  if (check.loadable) {
+    return {
+      name,
+      status: 'ok',
+      detail: isAbsolute(resolvedBinPath) ? resolvedBinPath : `${resolvedBinPath} on PATH`,
+      required: false,
+    };
+  }
+  const problem = check.present ? check.reason : `missing at ${packageLocalBinPath} and not on PATH`;
+  return {
+    name,
+    status: 'warn',
+    detail: `${problem} — smart_search/smart_outline disabled; run \`npx claude-mem repair\`, or ${TREE_SITTER_CLI_PATH_WORKAROUND}`,
+    required: false,
+  };
 }
 
 /** The "Marketplace manifest" row. Exported for tests. */
@@ -262,6 +277,78 @@ export function marketplaceManifestCheck(marketplaceDir: string): CheckResult {
 }
 
 /**
+ * PATH minus the directories whose `claude-mem` resolves to the running CLI, when that CLI is npx's temporary copy
+ * (`<cache>/_npx/<hash>/node_modules`). No persistent PATH points into npx's cache, so hooks never reach it. A global
+ * or local install of the CLI stays: hooks do reach it, and it is not the launcher.
+ */
+function pathWithoutRunningCli(pathValue: string, platform: NodeJS.Platform, runningCliPath: string | undefined): string {
+  const platformPath = platform === 'win32' ? windowsPath : posixPath;
+  const runningCli = runningCliPath ? realPathOrNull(runningCliPath) : null;
+  if (!runningCli || !runningCli.includes(`${platformPath.sep}_npx${platformPath.sep}`)) return pathValue;
+  return pathValue
+    .split(platformPath.delimiter)
+    .filter(directory => !directoryRunsCli(directory.trim(), platform, runningCli))
+    .join(platformPath.delimiter);
+}
+
+/**
+ * True when `claude-mem` in `directory` is the running CLI. On POSIX, npx's `node_modules/.bin/claude-mem` is a
+ * symlink to it. On Windows, npm writes `claude-mem.cmd` / `claude-mem.ps1` wrappers instead, whose script path
+ * points at that same file.
+ */
+function directoryRunsCli(directory: string, platform: NodeJS.Platform, runningCli: string): boolean {
+  if (!directory) return false;
+  if (platform !== 'win32') return realPathOrNull(join(directory, 'claude-mem')) === runningCli;
+  return ['claude-mem.cmd', 'claude-mem.ps1'].some((shimFileName) => {
+    const shimPath = windowsPath.join(directory, shimFileName);
+    let shimText: string;
+    try {
+      shimText = readFileSync(shimPath, 'utf-8');
+    } catch {
+      return false;
+    }
+    return windowsShimScriptPaths(shimPath, shimText).some((scriptPath) => realPathOrNull(scriptPath) === runningCli);
+  });
+}
+
+/**
+ * Script paths a Windows npm cmd-shim (`.cmd` / `.ps1`) launches, resolved
+ * against the shim's directory. npm's wrapper and `process.argv[1]` are
+ * different files: the wrapper is `claude-mem.cmd`, and argv is
+ * `dist/npx-cli/index.js`. Exported for tests.
+ */
+export function windowsShimScriptPaths(shimPath: string, shimText: string): string[] {
+  const shimDirectory = windowsPath.dirname(shimPath);
+  const targets: string[] = [];
+  const seen = new Set<string>();
+  const add = (scriptPath: string) => {
+    const trimmed = scriptPath.trim().replace(/^["']|["']$/g, '');
+    if (!trimmed || !/\.js$/i.test(trimmed)) return;
+    const resolved = windowsPath.isAbsolute(trimmed)
+      ? windowsPath.normalize(trimmed)
+      : windowsPath.normalize(windowsPath.join(shimDirectory, trimmed));
+    const key = resolved.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    targets.push(resolved);
+  };
+
+  // cmd-shim: `"%_prog%"  "%dp0%\..\claude-mem\dist\npx-cli\index.js" %*`
+  for (const match of shimText.matchAll(/%dp0%\\+([^"%\r\n]+)/gi)) add(match[1]);
+  // cmd-shim .ps1: `& "node$exe" "$basedir/../claude-mem/dist/npx-cli/index.js" $args`
+  for (const match of shimText.matchAll(/\$basedir[\\/]+([^"'\s]+)/gi)) add(match[1]);
+  return targets;
+}
+
+function realPathOrNull(path: string): string | null {
+  try {
+    return realpathSync(path);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The "Hook launcher" row: where `claude-mem` resolves on PATH, the protocol it
  * prints, and one timed `--version` round trip. Hooks call `claude-mem` in exec
  * form, so a missing launcher surfaces in Claude Code as
@@ -269,11 +356,19 @@ export function marketplaceManifestCheck(marketplaceDir: string): CheckResult {
  * missing launcher, or a `claude-mem` on PATH that is not the launcher, fails
  * doctor. An older protocol only warns, because the SessionStart self-heal
  * (ensure-launcher.cjs) replaces it on the next startup. Exported for tests.
+ *
+ * `npx claude-mem doctor` runs with npx's own `node_modules/.bin` first on PATH, where `claude-mem` is this CLI.
+ * Hooks run outside npx, so when this CLI (`runningCliPath`) is npx's copy, PATH directories that resolve to it
+ * are skipped.
  */
-export function hookLauncherCheck(host: LauncherHostEnvironment = currentLauncherHostEnvironment()): CheckResult {
+export function hookLauncherCheck(
+  host: LauncherHostEnvironment = currentLauncherHostEnvironment(),
+  runningCliPath: string | undefined = process.argv[1],
+): CheckResult {
   const name = 'Hook launcher';
   const reinstallHint = 'run `npx claude-mem install`';
-  const launcherOnPath = findExecutableOnPath('claude-mem', host.environmentVariables.PATH ?? '', host.platform);
+  const searchPath = pathWithoutRunningCli(host.environmentVariables.PATH ?? '', host.platform, runningCliPath);
+  const launcherOnPath = findExecutableOnPath('claude-mem', searchPath, host.platform);
   if (!launcherOnPath) {
     const placedBinaryPath = resolveLauncherBinaryPath(host);
     return {
@@ -286,13 +381,13 @@ export function hookLauncherCheck(host: LauncherHostEnvironment = currentLaunche
     };
   }
   const probeStartedAt = performance.now();
-  const printedProtocol = readLauncherProtocol(launcherOnPath);
+  const { protocol: printedProtocol, failure: probeFailure } = probeLauncherVersion(launcherOnPath);
   const roundTripMilliseconds = Math.round(performance.now() - probeStartedAt);
   if (printedProtocol === null) {
     return {
       name,
       status: 'fail',
-      detail: `${launcherOnPath} is not the claude-mem hook launcher (--version printed no protocol number); ${reinstallHint}`,
+      detail: `${launcherOnPath} did not report a launcher protocol (--version ${probeFailure}); ${reinstallHint}`,
       required: true,
     };
   }

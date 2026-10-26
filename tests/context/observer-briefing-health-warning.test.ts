@@ -46,7 +46,7 @@ interface ChildRender {
 }
 
 function runChild(): ChildRender {
-  const result = Bun.spawnSync(['bun', '-e', `
+  const result = Bun.spawnSync([process.execPath, '-e', `
     import { generateContext, healthWarningForContext } from './src/services/context/ContextBuilder.ts';
     import { loadSessionStartContext } from './src/services/worker/session/recycle-conversation.ts';
     import { ModeManager } from './src/services/domain/ModeManager.ts';

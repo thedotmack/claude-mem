@@ -9,6 +9,7 @@ import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { logger } from '../../../../utils/logger.js';
 import type { WorkStateFields } from '../../../sqlite/work-state.js';
+import { isMyRulesList } from '../../../work-view/my-rules.mjs';
 import {
   fitWorkStateLines,
   renderWorkStateLines,
@@ -20,13 +21,15 @@ export const MAX_WORK_STATE_FIELDS_JSON_CHARS = 2_000;
 
 // z.record intentionally drops __proto__; here every field is a primitive,
 // so validate own entries and copy with spread to keep literal data keys safely.
+// An integer past 2^53 cannot cross cloud sync's canonical JSON
+// (CanonicalContent), so it is refused here instead of quarantined later.
 const workStateFieldsSchema = z.custom<WorkStateFields>(value =>
   value !== null && typeof value === 'object' && !Array.isArray(value)
     && Object.entries(value).every(([key, field]) => key.length > 0 && (
       field === null || typeof field === 'string' || typeof field === 'boolean'
-      || (typeof field === 'number' && Number.isFinite(field))
+      || (typeof field === 'number' && Number.isFinite(field) && (!Number.isInteger(field) || Number.isSafeInteger(field)))
     )),
-  'fields must map non-empty keys to strings, finite numbers, booleans or null',
+  'fields must map non-empty keys to strings, safe finite numbers, booleans or null',
 ).transform(fields => ({ ...fields }));
 
 const workStateWriteSchema = z.object({
@@ -68,10 +71,19 @@ export class WorkStateRoutes extends BaseRouteHandler {
       return;
     }
 
+    // My Rules rows become the user-level CLAUDE.md import (MY-RULES.md), so they are written only by the
+    // origin-checked /api/work-view/rules handler, never by an agent session or another local page.
+    if (isMyRulesList(list)) {
+      res.status(403).send(`Not saved: "${list}" is written only from My Rules in the claude-mem viewer.`);
+      return;
+    }
+
     const checkout = getProjectContext(cwd);
     const store = this.dbManager.getSessionStore();
     store.appendWorkStateEntry({ project: checkout.primary, listName: list, fields });
     logger.debug('WORKER', 'Work state entry saved', { project: checkout.primary, list });
+    // The row is a `work_state` sync op: nudge the push drain (null when sync is off).
+    this.dbManager.getCloudSync()?.notify();
     // Only what is still open, cut like the SessionStart section, so a long-kept
     // list does not repeat its closed items on every write.
     const openLines = renderWorkStateLines(store.getWorkStateEntries(checkout.allProjects, list), Date.now());

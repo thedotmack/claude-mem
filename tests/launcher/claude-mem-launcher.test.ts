@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, w
 import { spawnSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { LAUNCHER_PROTOCOL } from '../../src/launcher/launcher-protocol.js';
 
 // Runs the BUILT bundle (plugin/scripts/claude-mem-launcher.cjs) under Bun, the
 // same file the installer compiles onto PATH. Case shapes mirror the Rule A
@@ -161,7 +162,7 @@ describe('claude-mem launcher', () => {
   it('prints the integer LAUNCHER_PROTOCOL for --version', () => {
     const result = runLauncher(['--version'], { temporaryHome: makeTemporaryHome() });
     expect(result.status).toBe(0);
-    expect(result.stdout.trim()).toBe('1');
+    expect(result.stdout.trim()).toBe(String(LAUNCHER_PROTOCOL));
   });
 
   it('prints usage on stderr and exits 0 with no arguments', () => {
@@ -300,6 +301,23 @@ describe('claude-mem launcher', () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toBe('');
     expect(result.stderr).toBe('claude-mem: plugin scripts not found, continuing without memory\n');
+  });
+
+  // #4933: a launcher compiled with Bun < 1.2.16 ignores BUN_BE_BUN, so the
+  // self-exec fallback ran the launcher again, which re-exec'd itself forever.
+  it('refuses to run when started with BUN_BE_BUN=1 already set, and never spawns (#4933)', () => {
+    const temporaryHome = makeTemporaryHome();
+    const environmentRoot = makeStubPluginRoot(path.join(temporaryHome, 'env-root'));
+
+    const result = runObservationHook({
+      temporaryHome,
+      extraEnvironment: { CLAUDE_PLUGIN_ROOT: environmentRoot, BUN_BE_BUN: '1' },
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr.trim().split('\n')).toHaveLength(1);
+    expect(result.stderr).toContain('BUN_BE_BUN');
   });
 
   it('exits 0 silently without running the worker when the plugin is disabled', () => {

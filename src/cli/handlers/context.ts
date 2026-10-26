@@ -17,10 +17,11 @@ import { HOOK_EXIT_CODES, HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
 import { logger } from '../../utils/logger.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
+import { isProjectExcluded } from '../../utils/project-filter.js';
 import { readStaleMarker } from '../../shared/oauth-token.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { proTrialLine } from '../../shared/pro-promo.js';
-import { MEMORY_PLUGIN_INSTRUCTIONS } from '../../shared/memory-instructions.js';
+import { memoryInstructionsForRuntime } from '../../shared/memory-instructions.js';
 import {
   cmemGatewayRole,
   hasShownProFallbackNotice,
@@ -28,11 +29,66 @@ import {
   proFallbackNotice,
   trialDaysRemaining,
 } from '../../shared/cmem-gateway.js';
-import { resolveRuntimeContext, type ServerRuntimeContext } from '../../services/hooks/runtime-selector.js';
+import { resolveRuntimeContext, selectRuntime, type ServerRuntimeContext } from '../../services/hooks/runtime-selector.js';
 import type { ContextInput } from '../../services/context/types.js';
 import { serverSessionStartBudgetMs } from '../../shared/host-hook-limits.js';
 import { contextCacheKeys, fillContextPlaceholders, readContextCache } from '../../shared/context-cache.js';
 import { clearTimelinePending } from '../../shared/codex-compaction-gate.js';
+import { CONTEXT_OUTPUT_LIMIT } from '../../services/context/ContextBudget.js';
+import {
+  fetchTeamBrief,
+  formatTeamBrief,
+  hasShownTeamBrainDiscoveryNotice,
+  markTeamBrainDiscoveryNoticeShown,
+  teamBrainConnection,
+  teamBriefReserveChars,
+  TEAMBRAIN_DISCOVERY_LINE,
+  type TeamBrainBrief,
+  type TeamBrainResult,
+} from '../../shared/teambrain.js';
+
+/**
+ * How long SessionStart waits for the TeamBrain brief. It is asked at the
+ * start, so the wait runs alongside the local context read.
+ */
+export const TEAM_BRIEF_TIMEOUT_MS = 2_000;
+
+/** Below this much room a cut brief says too little to be worth sending. */
+const MIN_CUT_TEAM_BRIEF_CHARS = 300;
+
+/** The brief for this session, or the one line naming why there is none. */
+export function teamBriefSection(result: TeamBrainResult<TeamBrainBrief>): string {
+  return result.ok
+    ? formatTeamBrief(result.value)
+    : `[claude-mem] TeamBrain brief unavailable: ${result.reason}`;
+}
+
+/**
+ * Keep the whole block inside the host's delivery limit (ContextBudget.ts):
+ * one character over and the host replaces all of it with a stub. The body is
+ * fitted with room left for the brief (teamBriefReserveChars), so this only
+ * cuts when it was not, e.g. a block rendered before the install joined. Then
+ * the brief is cut to the room `otherChars` leaves, or, with too little room
+ * to be useful, replaced by one line saying it was left out. A block with no
+ * room even for that line is logged, since nothing more can be added to it.
+ */
+export function fitTeamBriefSection(section: string, otherChars: number, limit: number = CONTEXT_OUTPUT_LIMIT): string {
+  if (!section) return '';
+  const room = limit - otherChars - 2; // the blank line that joins it to the rest
+  if (section.length <= room) return section;
+  if (room >= MIN_CUT_TEAM_BRIEF_CHARS) {
+    const cut = section.slice(0, room - 1).replace(/[\uD800-\uDBFF]$/, '').trimEnd();
+    return `${cut}…`;
+  }
+  const notices = [
+    `[claude-mem] TeamBrain brief left out: this session's context is already at the ${limit.toLocaleString('en-US')}-character limit.`,
+    '[claude-mem] TeamBrain brief left out: context full.',
+  ];
+  const notice = notices.find(candidate => candidate.length <= room);
+  if (notice) return notice;
+  logger.warn('HOOK', 'TeamBrain brief left out: the SessionStart block has no room left even for a notice', { room, limit });
+  return '';
+}
 
 // Plan-24 step 4 (#2991): in server runtime every write goes to the shared
 // server, so SessionStart reads from it too, straight from this hook process.
@@ -65,9 +121,48 @@ async function renderSessionStartFromServer(
   return { model, terminal: terminal ?? model };
 }
 
+/**
+ * The projects SessionStart reads. By default only this checkout's keys.
+ * With CLAUDE_MEM_CONTEXT_PROJECTS=all, every project in the local catalog
+ * (minus excluded ones), sorted so the context cache keys stay stable, with
+ * this checkout's keys last because the last key titles the rendered block.
+ * Any catalog failure falls back to this checkout. The server runtime has no
+ * local catalog, so it keeps this checkout.
+ */
+export async function resolveSessionStartProjects(
+  settings: { CLAUDE_MEM_CONTEXT_PROJECTS?: string; CLAUDE_MEM_EXCLUDED_PROJECTS?: string },
+  checkoutProjects: string[],
+  runtime: 'worker' | 'server',
+): Promise<string[]> {
+  if (settings.CLAUDE_MEM_CONTEXT_PROJECTS !== 'all') return checkoutProjects;
+  if (runtime === 'server') {
+    logger.debug('HOOK', 'CLAUDE_MEM_CONTEXT_PROJECTS=all is not supported in server runtime');
+    return checkoutProjects;
+  }
+  try {
+    const catalog = await executeWithWorkerFallback<{ projects?: unknown }>('/api/projects', 'GET', undefined, {
+      workerStartupTimeoutMs: HOOK_TIMEOUTS.POST_SPAWN_WAIT,
+      timeoutMs: 2_000,
+    });
+    if (isWorkerFallback(catalog) || !Array.isArray(catalog?.projects)) return checkoutProjects;
+    const excludedPatterns = settings.CLAUDE_MEM_EXCLUDED_PROJECTS ?? '';
+    const otherProjects = catalog.projects
+      .filter((project): project is string => typeof project === 'string' && project.length > 0)
+      .filter(project => !checkoutProjects.includes(project) && !isProjectExcluded(project, excludedPatterns))
+      .sort();
+    return [...otherProjects, ...checkoutProjects];
+  } catch (error) {
+    logger.debug('HOOK', 'Project catalog unavailable; SessionStart reads this checkout only', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return checkoutProjects;
+  }
+}
+
 export const contextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     const emptyResult: HookResult = {
+      workStateTelemetry: 'measure',
       hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
       exitCode: HOOK_EXIT_CODES.SUCCESS,
     };
@@ -83,6 +178,7 @@ export const contextHandler: EventHandler = {
     // A fresh timeline would change its prompt prefix and invalidate the cache.
     // Also guard direct calls from older hook registrations that include resume.
     if (input.platform === 'claude-code' && input.sessionSource === 'resume') {
+      delete emptyResult.workStateTelemetry;
       return emptyResult;
     }
 
@@ -93,6 +189,7 @@ export const contextHandler: EventHandler = {
     // SessionStart summary was injected regardless — so an excluded dir (e.g.
     // "~") still got a context dump on every new session. Suppress it here.
     if (!shouldTrackProject(cwd)) {
+      emptyResult.workStateTelemetry = 'excluded';
       return emptyResult;
     }
 
@@ -100,8 +197,15 @@ export const contextHandler: EventHandler = {
     const port = getWorkerPort();
 
     const settings = loadFromFileOnce();
-    const memoryInstructions = settings.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED === 'false' ? '' : MEMORY_PLUGIN_INSTRUCTIONS;
+    const memoryInstructions = settings.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED === 'false' ? '' : memoryInstructionsForRuntime(selectRuntime());
     emptyResult.hookSpecificOutput!.additionalContext = memoryInstructions;
+
+    // TeamBrain brief: a per-session notice, never part of the cacheable
+    // context body. Asked now so its budget overlaps the local context read;
+    // the request never rejects, and it is not asked at all without a team.
+    const teamBrain = teamBrainConnection(settings);
+    const teamBriefRequest = teamBrain ? fetchTeamBrief(teamBrain, context.primary, TEAM_BRIEF_TIMEOUT_MS) : null;
+
     // Codex already receives the timeline through additionalContext. Repeating
     // it as systemMessage can push SessionStart stdout past Codex's hook-output
     // limit, causing Codex to discard the entire payload (including context).
@@ -109,7 +213,14 @@ export const contextHandler: EventHandler = {
       settings.CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT === 'true'
       && input.platform !== 'codex';
 
-    const projectsParam = context.allProjects.join(',');
+    // Server runtime reads the shared server (plan-24 step 4). When the server
+    // settings are incomplete, resolveRuntimeContext() falls back to the worker,
+    // exactly as the write hooks do, so reads and writes stay on one corpus.
+    const runtime = resolveRuntimeContext();
+    const serverRuntime = runtime.runtime === 'server' ? runtime : null;
+
+    const scopeProjects = await resolveSessionStartProjects(settings, context.allProjects, runtime.runtime);
+    const projectsParam = scopeProjects.join(',');
     const normalizedPlatformSource = input.platform
       ? normalizePlatformSource(input.platform)
       : undefined;
@@ -125,19 +236,15 @@ export const contextHandler: EventHandler = {
     const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}${platformSourceParam}&cwd=${encodeURIComponent(cwd)}${sessionParam}`;
     const colorApiPath = input.platform === 'claude-code' ? `${apiPath}&colors=true` : apiPath;
 
-    // Server runtime reads the shared server (plan-24 step 4). When the server
-    // settings are incomplete, resolveRuntimeContext() falls back to the worker,
-    // exactly as the write hooks do, so reads and writes stay on one corpus.
-    const runtime = resolveRuntimeContext();
-    const serverRuntime = runtime.runtime === 'server' ? runtime : null;
     const serverRender = serverRuntime
       ? await renderSessionStartFromServer(
           serverRuntime,
           {
             session_id: input.sessionId,
             cwd,
-            projects: context.allProjects,
+            projects: scopeProjects,
             ...(platformSourceParam ? { platformSource: normalizedPlatformSource } : {}),
+            reserveChars: teamBriefReserveChars(settings),
           },
           showTerminalOutput && input.platform === 'claude-code',
           settings.CLAUDE_MEM_MODE,
@@ -153,7 +260,7 @@ export const contextHandler: EventHandler = {
     const cacheNowEpochMs = Date.now();
     const readCachedRender = (colors: boolean): string | null => {
       if (serverRuntime) return null;
-      const keys = contextCacheKeys(context.allProjects, platformSourceParam ? normalizedPlatformSource : undefined, colors, cwd);
+      const keys = contextCacheKeys(scopeProjects, platformSourceParam ? normalizedPlatformSource : undefined, colors, cwd);
       const cached = readContextCache(keys, cacheNowEpochMs);
       if (!cached) return null;
       logger.debug('HOOK', 'SessionStart context served from the context cache', {
@@ -181,6 +288,7 @@ export const contextHandler: EventHandler = {
       }
     }
     if (isWorkerFallback(contextResult)) {
+      emptyResult.workStateTelemetry = 'unknown';
       // SessionStart context is synchronous, so a systemMessage here is shown
       // to the user: the once-per-session worker-outage notice, if any.
       const outageNotice = await consumeWorkerOutageNotice(input.sessionId);
@@ -194,6 +302,7 @@ export const contextHandler: EventHandler = {
       additionalContext = '';
     } else {
       logger.warn('HOOK', 'Context response was not a string', { type: typeof contextResult });
+      emptyResult.workStateTelemetry = 'unknown';
       return emptyResult;
     }
 
@@ -261,7 +370,13 @@ export const contextHandler: EventHandler = {
     }
 
     const platform = input.platform;
-    additionalContext = [additionalContext, memoryInstructions].filter(Boolean).join('\n\n');
+    const teamSection = teamBriefRequest
+      ? fitTeamBriefSection(
+          teamBriefSection(await teamBriefRequest),
+          [additionalContext, memoryInstructions].filter(Boolean).join('\n\n').length,
+        )
+      : '';
+    additionalContext = [additionalContext, teamSection, memoryInstructions].filter(Boolean).join('\n\n');
 
     // Antigravity CLI (like the former Gemini CLI) is hooks-based, not an
     // MCP-context-fetch platform like Codex — colorApiPath never populates
@@ -282,11 +397,19 @@ export const contextHandler: EventHandler = {
     // In server runtime the viewer is served by the server (#2552), not by a
     // local worker, so the link points there.
     const viewerUrl = serverRuntime ? serverRuntime.serverBaseUrl : getViewerBaseUrl(port);
-    const systemMessage = showTerminalOutput && displayContent
-      ? `${displayContent}\n\nView Observations Live @ ${viewerUrl}\n${proTrialLine('session-start')}${trialDaysLine ? `\n${trialDaysLine}` : ''}`
+    const showsBanner = showTerminalOutput && Boolean(displayContent);
+    // TeamBrain discovery: one line on the banner the user already reads, once
+    // per claude-mem version, and never once this install is in a team.
+    const teamBrainDiscoveryLine = showsBanner && !teamBrain && !hasShownTeamBrainDiscoveryNotice()
+      ? TEAMBRAIN_DISCOVERY_LINE
+      : null;
+    if (teamBrainDiscoveryLine) markTeamBrainDiscoveryNoticeShown();
+    const systemMessage = showsBanner
+      ? `${displayContent}\n\nView Observations Live @ ${viewerUrl}\n${proTrialLine('session-start')}${trialDaysLine ? `\n${trialDaysLine}` : ''}${teamBrainDiscoveryLine ? `\n${teamBrainDiscoveryLine}` : ''}`
       : undefined;
 
     return {
+      workStateTelemetry: 'measure',
       hookSpecificOutput: {
         hookEventName: 'SessionStart',
         additionalContext

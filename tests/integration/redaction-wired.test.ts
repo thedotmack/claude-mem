@@ -14,11 +14,12 @@ const OPENAI_KEY = 'sk-ABCDEFGHIJ1234567890abcdef';
 describe('redaction at the tag-stripping choke point', () => {
   let loadSpy: ReturnType<typeof spyOn> | undefined;
 
-  function useRedactionSetting(enabled: boolean): void {
+  function useRedactionSetting(enabled: boolean, genericEnabled = false): void {
     loadSpy?.mockRestore();
     loadSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
       ...SettingsDefaultsManager.getAllDefaults(),
       CLAUDE_MEM_REDACT_ENABLED: enabled ? 'true' : 'false',
+      CLAUDE_MEM_REDACT_GENERIC_ENABLED: genericEnabled ? 'true' : 'false',
     }));
     _resetRedactionConfigCache();
   }
@@ -51,6 +52,24 @@ describe('redaction at the tag-stripping choke point', () => {
     const parsed = JSON.parse(stripMemoryTags(serialized));
     expect(parsed.headers.Authorization).toBe("Bearer <redacted type='openai_key'/>");
     expect(parsed.url).toBe('https://api.example.com');
+  });
+
+  // #4745: the worker stores stripMemoryTags(JSON.stringify(toolInput)), so
+  // quotes inside a command reach the generic patterns backslash-escaped.
+  it.each([
+    [{ command: 'echo DB_PASSWORD="Sup3rSecretValue"' }, 'Sup3rSecretValue'],
+    [{ command: `curl -d '{"password":"Hunter22Example"}'` }, 'Hunter22Example'],
+  ])('redacts generic credentials in a stringified tool input (%j)', (toolInput, secret) => {
+    useRedactionSetting(true, true);
+    const stored = stripMemoryTags(JSON.stringify(toolInput));
+    expect(stored).not.toContain(secret);
+    expect(stored).toContain("<redacted type='generic_password'/>");
+    expect(() => JSON.parse(stored)).not.toThrow();
+  });
+
+  it('leaves generic credentials alone until CLAUDE_MEM_REDACT_GENERIC_ENABLED is on', () => {
+    const stored = stripMemoryTags(JSON.stringify({ command: 'echo DB_PASSWORD="Sup3rSecretValue"' }));
+    expect(stored).toContain('Sup3rSecretValue');
   });
 
   it('is a no-op while CLAUDE_MEM_REDACT_ENABLED is false (the default)', () => {

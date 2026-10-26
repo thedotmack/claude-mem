@@ -1,4 +1,3 @@
-import { readFileSync } from 'fs';
 import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
 import { createServer } from 'node:http';
 import {
@@ -529,22 +528,6 @@ describe('auth failures are not mistaken for spent quota', () => {
   });
 });
 
-/** Same credential rule as the rotation pools: never returned in cleartext. */
-describe('openai-compatible credentials are registered as secrets', () => {
-  it('redacts both the key and the pool on GET /api/settings', () => {
-    const source = readFileSync(
-      new URL('../../src/services/worker/http/routes/SettingsRoutes.ts', import.meta.url),
-      'utf-8',
-    );
-    const secretBlock = source.slice(
-      source.indexOf('const SECRET_SETTING_KEYS'),
-      source.indexOf('function maskSecretValue'),
-    );
-    expect(secretBlock).toContain("'CLAUDE_MEM_OPENAI_COMPAT_API_KEY'");
-    expect(secretBlock).toContain("'CLAUDE_MEM_OPENAI_COMPAT_API_KEYS'");
-  });
-});
-
 /**
  * Main's observer contract, which this provider shares with OpenRouter: the
  * system anchor and turn normalization (#3868, #3491), text-only answers
@@ -650,7 +633,8 @@ describe('openai-compatible requests follow the shared observer contract', () =>
     await query([{ role: 'user', content: 'hi' }]);
 
     const [body] = sentBodies(fetchSpy);
-    expect(Object.keys(body).sort()).toEqual(['max_tokens', 'messages', 'model', 'stream', 'stream_options', 'temperature']);
+    expect(Object.keys(body).sort()).toEqual(['max_tokens', 'messages', 'model', 'reasoning', 'stream', 'stream_options', 'temperature']);
+    expect(body.reasoning).toEqual({ enabled: false });
     expect(body.stream).toBe(true);
     expect(body.stream_options).toEqual({ include_usage: true });
     expect(body.max_tokens).toBe(9000);

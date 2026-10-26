@@ -1,6 +1,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
-import { stripMemoryTags, stripMemoryTagsFromJsonStrings, isInternalProtocolPayload, isCodexInternalPrompt } from '../../src/utils/tag-stripping.js';
+import { stripMemoryTags, stripMemoryTagsFromJsonStrings, isInternalProtocolPayload, isCodexInternalPrompt, isGrokBotInternalPrompt } from '../../src/utils/tag-stripping.js';
 import { logger } from '../../src/utils/logger.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
@@ -70,6 +70,120 @@ describe('Tag Stripping Utilities', () => {
         expect(result).not.toContain('<claude-mem-context>');
         expect(result).toContain('start');
         expect(result).toContain('end');
+      });
+    });
+
+    describe('nested and overlapping memory tags', () => {
+      it('should strip a same-name tag nested inside itself', () => {
+        const input = '<private>outer<private>inner</private>TAIL_SECRET</private>';
+        const result = stripMemoryTags(input);
+        expect(result).toBe('');
+      });
+
+      it('should strip a nested same-name tag and preserve the surrounding public text', () => {
+        const input = 'before <private>outer<private>inner</private>secret tail</private> after';
+        const result = stripMemoryTags(input);
+        expect(result).toBe('before  after');
+      });
+
+      it('should strip nested <claude-mem-context> tags', () => {
+        const input = '<claude-mem-context>a<claude-mem-context>b</claude-mem-context>LEAK</claude-mem-context>';
+        const result = stripMemoryTags(input);
+        expect(result).toBe('');
+      });
+
+      it('should strip a tag nested three levels deep', () => {
+        const input = '<private>1<private>2<private>3</private>tail3</private>tail2</private>';
+        const result = stripMemoryTags(input);
+        expect(result).toBe('');
+      });
+
+      it('should strip a memory tag nested inside a different memory tag', () => {
+        const input = '<system-reminder>keep<claude-mem-context>drop</claude-mem-context>TAIL</system-reminder>';
+        const result = stripMemoryTags(input);
+        expect(result).toBe('');
+      });
+
+      it('should keep text between two balanced nested blocks', () => {
+        const input = '<private>a<private>b</private>c</private> KEEP <private>d</private>';
+        const result = stripMemoryTags(input);
+        expect(result).toBe('KEEP');
+      });
+
+      it('should strip a mis-nested block rather than letting tag order preserve private content', () => {
+        const input = '<private>a<claude-mem-context>b</private>c</claude-mem-context>';
+        const result = stripMemoryTags(input);
+        expect(result).not.toContain('<private>');
+        expect(result).not.toContain('b');
+      });
+
+      it('should strip a memory tag whose attribute contains a less-than sign', () => {
+        const input = '<private note="<">SECRET</private>';
+        const result = stripMemoryTags(input);
+        expect(result).not.toContain('SECRET');
+        expect(result).toBe('');
+      });
+
+      it('should strip a memory tag whose attribute contains angle brackets', () => {
+        const input = 'keep <private data-x="a<b>c">SECRET</private> end';
+        const result = stripMemoryTags(input);
+        expect(result).not.toContain('SECRET');
+        expect(result).toBe('keep  end');
+      });
+
+      it('should strip a memory tag whose attribute contains closing-tag text', () => {
+        const input = '<private note="</private>">SECRET</private>';
+        const result = stripMemoryTags(input);
+        expect(result).not.toContain('SECRET');
+        expect(result).toBe('');
+      });
+
+      it('should strip a memory tag whose attribute contains closing-tag text', () => {
+        const input = '<private note="</private>">SECRET</private>';
+        const result = stripMemoryTags(input);
+        expect(result).not.toContain('SECRET');
+        expect(result).toBe('');
+      });
+
+      it('should strip a completed inner block when an outer opener is never terminated', () => {
+        const input = '<claude-mem-context prose <private>SECRET</private>';
+        const result = stripMemoryTags(input);
+        expect(result).not.toContain('SECRET');
+        expect(result).toBe('<claude-mem-context prose');
+      });
+
+      it('should strip a private block nested inside an unfinished outer attribute', () => {
+        const input = '<claude-mem-context note="<private>SECRET</private>">';
+        const result = stripMemoryTags(input);
+        expect(result).not.toContain('SECRET');
+        expect(result).toBe('<claude-mem-context note="">');
+      });
+
+      it('should strip a private block after an unquoted apostrophe in an attribute', () => {
+        const input = "<private note=don't>SECRET</private> public ' >";
+        const result = stripMemoryTags(input);
+        expect(result).not.toContain('SECRET');
+        expect(result).toBe("public ' >");
+      });
+
+      it('should strip the outer tail when a same-name opener is left unclosed before a completed one', () => {
+        const input = '<private>SECRET1<private>SECRET2</private>';
+        const result = stripMemoryTags(input);
+        expect(result).not.toContain('SECRET');
+        expect(result).toBe('');
+      });
+
+      it('should leave an unclosed tag untouched so ordinary prose mentioning the tag is not swallowed', () => {
+        const input = 'Explain how <private> works in this project';
+        const result = stripMemoryTags(input);
+        expect(result).toBe('Explain how <private> works in this project');
+      });
+
+      it('should strip a completed inner block even when the outer memory tag is unfinished', () => {
+        const input = '<claude-mem-context>prose<private>SECRET</private>';
+        const result = stripMemoryTags(input);
+        expect(result).not.toContain('SECRET');
+        expect(result).toBe('<claude-mem-context>prose');
       });
     });
 
@@ -175,6 +289,48 @@ finish`;
 
         expect(duration).toBeLessThan(1000);
         expect(result).toBe('keep this');
+      });
+
+      it('should stay linear on many unclosed opens and non-matching close tags', () => {
+        // Adversarial input for the depth scanner: unbalanced opens plus close
+        // tags that match nothing, repeated enough that a stack scan per close
+        // tag would be quadratic.
+        const content = '<private>'.repeat(20000) + '</nope>'.repeat(20000) + ' tail';
+
+        const startTime = Date.now();
+        const result = stripMemoryTags(content);
+        const duration = Date.now() - startTime;
+
+        expect(duration).toBeLessThan(2000);
+        expect(result).toContain('tail');
+      });
+
+      it('should stay linear on repeated non-memory open tags with no closing bracket', () => {
+        // `'<div '` has no `>`, so an attribute scan that runs before the name
+        // check re-reads the whole suffix at every `<` and goes quadratic.
+        const content = '<div '.repeat(60000) + ' tail';
+
+        const startTime = Date.now();
+        const result = stripMemoryTags(content);
+        const duration = Date.now() - startTime;
+
+        expect(duration).toBeLessThan(2000);
+        expect(result).toContain('tail');
+      });
+
+      it('should stay fast on a large untagged input that contains no tag opener', () => {
+        // Ordinary tool output with no `<` at all must not pay for the tag
+        // scanner: no per-character lookup table, no second pass over the
+        // whole string. 64 MiB is the shape Greptile measured; the bound is
+        // generous so the test is about the fast path, not the machine.
+        const content = 'x'.repeat(64 * 1024 * 1024);
+
+        const startTime = Date.now();
+        const result = stripMemoryTags(content);
+        const duration = Date.now() - startTime;
+
+        expect(result).toBe(content);
+        expect(duration).toBeLessThan(500);
       });
     });
   });
@@ -478,6 +634,63 @@ after`;
       expect(isCodexInternalPrompt('# Overview\r\n\r\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do')).toBe(true);
       expect(isCodexInternalPrompt(' # Overview\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do')).toBe(true);
     });
+
+    it('returns true for the Codex-app next-message suggestion request (#4811)', () => {
+      expect(isCodexInternalPrompt('This is an app-generated request for a suggested next user message. The user did not write this message.\n\nYour suggestion will appear in the user\'s empty message composer')).toBe(true);
+    });
+
+    it('returns true for the Codex memories rollout-summary consolidation prompt (#4811)', () => {
+      expect(isCodexInternalPrompt('Consolidate the supplied rollout summaries into `memory_summary.md` so another\nagent understands the user, finds relevant prior work, and continues correctly.')).toBe(true);
+    });
+
+    it('does not match a person asking about suggestions or rollout summaries', () => {
+      expect(isCodexInternalPrompt('This is an app-generated request? I did not expect that.')).toBe(false);
+      expect(isCodexInternalPrompt('Consolidate the supplied rollout summaries please')).toBe(false);
+    });
+  });
+
+  describe('isGrokBotInternalPrompt', () => {
+    it('returns false for empty input', () => {
+      expect(isGrokBotInternalPrompt('')).toBe(false);
+    });
+
+    it('returns false for general user queries', () => {
+      expect(isGrokBotInternalPrompt('How do I run a backup?')).toBe(false);
+      expect(isGrokBotInternalPrompt('Investigate why the tests fail on CI')).toBe(false);
+      expect(isGrokBotInternalPrompt('Break the build into smaller modules')).toBe(false);
+    });
+
+    it('does not match a person paraphrasing a brief opening', () => {
+      expect(isGrokBotInternalPrompt('Verify every candidate claim in the JSON packet below, please')).toBe(false);
+      expect(isGrokBotInternalPrompt('Investigate the question in the JSON file I attached')).toBe(false);
+      expect(isGrokBotInternalPrompt('Rewrite the research findings to be shorter')).toBe(false);
+    });
+
+    it('matches a brief with leading whitespace', () => {
+      expect(isGrokBotInternalPrompt('  Independently verify every candidate claim in the JSON packet below')).toBe(true);
+    });
+
+    it('returns false for non-matching user queries and incomplete openings', () => {
+      expect(isGrokBotInternalPrompt('Independently verify this claim? I typed it myself.')).toBe(false);
+      expect(isGrokBotInternalPrompt('Please break the JSON-encoded research query for me')).toBe(false);
+      expect(isGrokBotInternalPrompt('Rewrite the verified research')).toBe(false);
+    });
+
+    it('returns true for the research verification briefing', () => {
+      expect(isGrokBotInternalPrompt('Independently verify every candidate claim in the JSON packet below.\n\n{"claims": []}')).toBe(true);
+    });
+
+    it('returns true for the verified findings rewrite briefing', () => {
+      expect(isGrokBotInternalPrompt('   Rewrite the verified research findings into a clear answer.')).toBe(true);
+    });
+
+    it('returns true for the research question investigation briefing', () => {
+      expect(isGrokBotInternalPrompt('Investigate the JSON-encoded question below.\n\n{"question": "How does this work?"}')).toBe(true);
+    });
+
+    it('returns true for the research query decomposition briefing', () => {
+      expect(isGrokBotInternalPrompt('Break the JSON-encoded research query into focused research tasks.')).toBe(true);
+    });
   });
 
   describe('stripMemoryTagsFromJsonStrings', () => {
@@ -491,6 +704,12 @@ after`;
       expect(JSON.stringify(output)).not.toMatch(/drop-\d/);
       expect(output).toEqual({ a: 'keep', list: ['', 'plain'], nested: { deep: { value: 'x' }, n: 3, ok: true, nil: null } });
       expect(input.a).toBe('keep <private>drop-1</private>');
+    });
+
+    it('strips every tag form the string stripper accepts, including whitespace before the closing >', () => {
+      const input = { prompt: 'a <private>secret</private > b', meta: ['<private>x</private\t>'] };
+      expect(stripMemoryTagsFromJsonStrings(input)).toEqual({ prompt: stripMemoryTags(input.prompt), meta: [''] });
+      expect(JSON.stringify(stripMemoryTagsFromJsonStrings(input))).not.toContain('secret');
     });
 
     it('leaves untagged strings byte-identical', () => {

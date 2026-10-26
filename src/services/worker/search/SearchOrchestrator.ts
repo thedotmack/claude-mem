@@ -74,12 +74,19 @@ export class SearchOrchestrator {
   constructor(
     private sessionSearch: SessionSearch,
     private sessionStore: SessionStore,
-    private chromaSync: ChromaSync | null
+    private chromaSync: ChromaSync | null,
+    /**
+     * Implicit window, in milliseconds, that date-less semantic searches
+     * apply (CLAUDE_MEM_SEARCH_RECENCY_DAYS); 0 disables it. Forwarded to the
+     * Chroma strategy; corpus builds bypass it per request via
+     * `ignoreDefaultRecencyWindow`.
+     */
+    private defaultRecencyWindowMs: number = SEARCH_CONSTANTS.RECENCY_WINDOW_MS
   ) {
     this.sqliteStrategy = new SQLiteSearchStrategy(sessionSearch);
 
     if (chromaSync) {
-      this.chromaStrategy = new ChromaSearchStrategy(chromaSync, sessionStore);
+      this.chromaStrategy = new ChromaSearchStrategy(chromaSync, sessionStore, defaultRecencyWindowMs);
       this.hybridStrategy = new HybridSearchStrategy(chromaSync, sessionStore, sessionSearch);
     }
   }
@@ -89,6 +96,12 @@ export class SearchOrchestrator {
     assertSearchHasQueryOrFilter(options);
 
     return await this.executeWithFallback(options);
+  }
+
+  /** Shared semantic candidate selection; callers retain their own fallback/formatting. */
+  async searchChroma(options: StrategySearchOptions): Promise<StrategySearchResult> {
+    if (!this.chromaStrategy) throw new Error('Chroma is not configured');
+    return await this.chromaStrategy.search(options);
   }
 
   private async executeWithFallback(
@@ -108,7 +121,7 @@ export class SearchOrchestrator {
       const candidateOptions = { ...options, offset: 0, limit: offset + limit };
       let chromaResult: StrategySearchResult;
       try {
-        chromaResult = await this.chromaStrategy.search(candidateOptions);
+        chromaResult = await this.searchChroma(candidateOptions);
       } catch (error) {
         const errorObj = error instanceof Error ? error : new Error(String(error));
         throw new ChromaUnavailableError(
@@ -144,6 +157,8 @@ export class SearchOrchestrator {
    * otherwise refill each empty category from SQLite and keep Chroma's results for the rest.
    * No recency window is applied on the SQLite side: an exact keyword hit older than 90 days
    * is the row this exists to surface, and the no-Chroma path applies none either.
+   * At the semantic work cap, also fill partial pages without dropping their
+   * semantic rows. These additions honor the active date window and row filters.
    */
   async supplementEmptyCategories(
     options: StrategySearchOptions,
@@ -151,10 +166,14 @@ export class SearchOrchestrator {
   ): Promise<StrategySearchResult> {
     const requestedCategories = SEARCH_CATEGORIES
       .filter(category => isCategoryRequested(options.searchType, category));
+    const limit = Number(options.limit ?? SEARCH_CONSTANTS.DEFAULT_LIMIT);
     const emptyCategories = requestedCategories
       .filter(category => chromaResult.results[category].length === 0);
+    const refillCategories = requestedCategories.filter(category =>
+      chromaResult.results[category].length === 0
+      || (chromaResult.semanticBudgetReached && chromaResult.results[category].length < limit));
 
-    if (emptyCategories.length === 0) {
+    if (refillCategories.length === 0) {
       return chromaResult;
     }
 
@@ -163,16 +182,36 @@ export class SearchOrchestrator {
       return await this.sqliteStrategy.search(options);
     }
 
-    logger.debug('SEARCH', 'Orchestrator: Chroma returned zero matches for some categories; supplementing from SQLite', {
-      categories: emptyCategories.join(',')
+    logger.debug('SEARCH', 'Orchestrator: Supplementing semantic categories from SQLite', {
+      categories: refillCategories.join(',')
     });
 
     const mergedResults: SearchResults = { ...chromaResult.results };
     let supplemented = false;
-    for (const category of emptyCategories) {
-      const sqliteResult = await this.sqliteStrategy.search({ ...options, searchType: category });
+    for (const category of refillCategories) {
+      const semanticRows = chromaResult.results[category];
+      // Empty categories keep the existing all-history fallback. A partial
+      // page at the work cap must retain its active semantic date window.
+      const dateRange = semanticRows.length > 0 && !options.dateRange
+        && !options.ignoreDefaultRecencyWindow && this.defaultRecencyWindowMs > 0
+        ? { start: Date.now() - this.defaultRecencyWindowMs } : options.dateRange;
+      const sqliteResult = await this.sqliteStrategy.search({ ...options, dateRange, searchType: category });
       if (sqliteResult.results[category].length > 0) {
-        copyCategory(mergedResults, sqliteResult.results, category);
+        if (semanticRows.length === 0) {
+          copyCategory(mergedResults, sqliteResult.results, category);
+        } else {
+          const seen = new Set(semanticRows.map(row => row.id));
+          const rows = [...semanticRows, ...sqliteResult.results[category].filter(row => {
+            if (seen.has(row.id)) return false;
+            seen.add(row.id);
+            return true;
+          })];
+          if (options.orderBy === 'date_asc' || options.orderBy === 'date_desc') rows.sort((a, b) => options.orderBy === 'date_asc'
+            ? a.created_at_epoch - b.created_at_epoch || a.id - b.id
+            : b.created_at_epoch - a.created_at_epoch || b.id - a.id);
+          // Each category owns a separate SQLite ID space.
+          copyCategory(mergedResults, { ...mergedResults, [category]: rows.slice(0, limit) }, category);
+        }
         supplemented = true;
       }
     }

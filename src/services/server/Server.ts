@@ -196,6 +196,13 @@ export class Server {
    */
   private lastRequestAt: number | null = null;
   private inFlightRequests = 0;
+  /**
+   * When a response last finished sending (epoch ms; null before the first).
+   * Only 'finish' counts: a request whose client gave up is not an answer.
+   * The worker's liveness heartbeat publishes it, so a hook can tell a slow
+   * worker that still answers from one whose every request hangs.
+   */
+  private lastResponseFinishedAt: number | null = null;
   private readonly options: ServerOptions;
   private readonly startTime: number = Date.now();
 
@@ -235,6 +242,11 @@ export class Server {
     return this.inFlightRequests;
   }
 
+  /** When a response last finished sending (epoch ms), or null if none has. */
+  getLastResponseFinishedAt(): number | null {
+    return this.lastResponseFinishedAt;
+  }
+
   /**
    * Count one request as in flight until its response finishes or its
    * connection closes, whichever comes first, and stamp both ends.
@@ -256,6 +268,7 @@ export class Server {
     res.on('finish', settle);
     res.on('close', settle);
     socket?.on('close', settle);
+    res.once('finish', () => { this.lastResponseFinishedAt = Date.now(); });
   }
 
   async listen(port: number, host: string): Promise<void> {

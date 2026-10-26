@@ -37,7 +37,7 @@ describe('SessionStart reads one hop of a merge chain (gate P2-4)', () => {
   it('includes rows merged into a project that was itself merged into this one', () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-merge-hop-'));
     try {
-      const result = Bun.spawnSync(['bun', '-e', childScript], {
+      const result = Bun.spawnSync([process.execPath, '-e', childScript], {
         cwd: repoRoot,
         env: {
           ...process.env,

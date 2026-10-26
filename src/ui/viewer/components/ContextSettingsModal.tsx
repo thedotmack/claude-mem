@@ -1,4 +1,5 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useId } from 'react';
+import { useDialogFocus } from '../hooks/useDialogFocus';
 import type { Settings } from '../types';
 import { TerminalPreview } from './TerminalPreview';
 import { useContextPreview } from '../hooks/useContextPreview';
@@ -37,6 +38,7 @@ function CollapsibleSection({
   defaultOpen?: boolean;
 }) {
   const [isOpen, setIsOpen] = useState(defaultOpen);
+  const contentId = useId();
 
   return (
     <div className={`settings-section-collapsible ${isOpen ? 'open' : ''}`}>
@@ -44,6 +46,8 @@ function CollapsibleSection({
         className="section-header-btn"
         onClick={() => setIsOpen(!isOpen)}
         type="button"
+        aria-expanded={isOpen}
+        aria-controls={contentId}
       >
         <div className="section-header-content">
           <span className="section-title">{title}</span>
@@ -61,7 +65,7 @@ function CollapsibleSection({
           <polyline points="6 9 12 15 18 9" />
         </svg>
       </button>
-      {isOpen && <div className="section-content">{children}</div>}
+      {isOpen && <div className="section-content" id={contentId}>{children}</div>}
     </div>
   );
 }
@@ -75,9 +79,15 @@ function FormField({
   tooltip?: string;
   children: React.ReactNode;
 }) {
+  const fieldId = useId();
+  const control = React.Children.map(children, child => {
+    if (!React.isValidElement<{ id?: string; 'aria-describedby'?: string }>(child)
+      || typeof child.type !== 'string' || !['input', 'select', 'textarea'].includes(child.type)) return child;
+    return React.cloneElement(child, { id: fieldId, 'aria-describedby': tooltip ? `${fieldId}-hint` : undefined });
+  });
   return (
     <div className="form-field">
-      <label className="form-field-label">
+      <label className="form-field-label" htmlFor={fieldId}>
         {label}
         {tooltip && (
           <span className="tooltip-trigger" title={tooltip}>
@@ -89,7 +99,8 @@ function FormField({
           </span>
         )}
       </label>
-      {children}
+      {control}
+      {tooltip && <span className="visually-hidden" id={`${fieldId}-hint`}>{tooltip}</span>}
     </div>
   );
 }
@@ -141,6 +152,7 @@ export function ContextSettingsModal({
   isSaving,
   saveStatus
 }: ContextSettingsModalProps) {
+  const dialogRef = useDialogFocus(isOpen);
   const [formState, setFormState] = useState<Settings>(settings);
   // From the saved settings, not the form: the field stays editable while a
   // user types any other URL, and read-only for the observer's own endpoint.
@@ -191,10 +203,10 @@ export function ContextSettingsModal({
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="context-settings-modal" onClick={(e) => e.stopPropagation()}>
+      <div ref={dialogRef} tabIndex={-1} className="context-settings-modal" role="dialog" aria-modal="true" aria-labelledby="memory-settings-title" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="modal-header">
-          <h2>Settings</h2>
+          <div className="settings-heading"><h2 id="memory-settings-title">Settings</h2><p>Choose the context your next session receives.</p></div>
           <div className="header-controls">
             <label className="preview-selector">
               Source:
@@ -225,6 +237,7 @@ export function ContextSettingsModal({
               onClick={onClose}
               className="modal-close-btn"
               title="Close (Esc)"
+              aria-label="Close settings"
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <line x1="18" y1="6" x2="6" y2="18" />
@@ -238,6 +251,7 @@ export function ContextSettingsModal({
         <div className="modal-body">
           {/* Left column - Terminal Preview */}
           <div className="preview-column">
+            <div className="settings-preview-heading"><h3>Saved context preview</h3><p>Preview the saved configuration for the selected source and project.</p></div>
             <div className="preview-content">
               {error ? (
                 <div style={{ color: 'var(--color-accent-error)' }}>
@@ -501,13 +515,13 @@ export function ContextSettingsModal({
                   {!observerManagesBaseUrl && (
                     <FormField
                       label="Reasoning effort"
-                      tooltip="openrouter.ai models only. None turns reasoning off, for models that spend the output budget thinking. Default sends nothing."
+                      tooltip="openrouter.ai only. Empty (the default) sends reasoning off. Set an effort to opt back in. A custom gateway does not get this field until an empty length-truncated reply retries once."
                     >
                       <select
                         value={formState.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT || ''}
                         onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_REASONING_EFFORT', e.target.value)}
                       >
-                        <option value="">Model default</option>
+                        <option value="">Off (default)</option>
                         <option value="none">None (reasoning off)</option>
                         <option value="minimal">Minimal</option>
                         <option value="low">Low</option>
@@ -583,6 +597,18 @@ export function ContextSettingsModal({
                       placeholder={openAICompatPresetOption(formState.CLAUDE_MEM_OPENAI_COMPAT_PRESET).defaultModel || 'model id'}
                     />
                   </FormField>
+                  <FormField
+                    label="Reasoning"
+                    tooltip="Off (default) sends reasoning disabled so a reasoning model cannot spend the output cap thinking. On leaves it to the endpoint. A server that rejects the field is retried once without it."
+                  >
+                    <select
+                      value={formState.CLAUDE_MEM_OPENAI_COMPAT_REASONING || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENAI_COMPAT_REASONING', e.target.value)}
+                    >
+                      <option value="">Off (default)</option>
+                      <option value="on">On (endpoint decides)</option>
+                    </select>
+                  </FormField>
                   <span className="toggle-description">
                     The API key is set outside the viewer: <code>CLAUDE_MEM_OPENAI_COMPAT_API_KEY</code> in{' '}
                     <code>~/.claude-mem/settings.json</code>, or <code>OPENAI_COMPAT_API_KEY</code> in{' '}
@@ -636,6 +662,20 @@ export function ContextSettingsModal({
                   </FormField>
                 </>
               )}
+
+              <FormField
+                label="Claude Credential Fallback"
+                tooltip="For a Claude observer: the other credential to run on while the primary one is held for quota, tried before the Quota Fallback provider. Subscription: a spent ANTHROPIC_API_KEY (e.g. credit balance too low) hands over to your Claude Code login, still protected by the quota guard. API key: a login that is spent or paused by the quota guard hands over to ANTHROPIC_FALLBACK_API_KEY in ~/.claude-mem/.env, billed per request. Either returns to the primary once it recovers; neither applies under ANTHROPIC_BASE_URL."
+              >
+                <select
+                  value={formState.CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD || ''}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD', e.target.value)}
+                >
+                  <option value="">Off (wait for the primary credential)</option>
+                  <option value="subscription">Subscription (Claude Code login)</option>
+                  <option value="api-key">API key (ANTHROPIC_FALLBACK_API_KEY)</option>
+                </select>
+              </FormField>
 
               <FormField
                 label="Claude Code CLI path"
@@ -695,7 +735,7 @@ export function ContextSettingsModal({
 
         {/* Footer with Save button */}
         <div className="modal-footer">
-          <div className="save-status">
+          <div className="save-status" role="status" aria-live="polite">
             {loadError ? (
               <span className="error" role="alert">
                 {loadError}{' '}
@@ -712,7 +752,7 @@ export function ContextSettingsModal({
             onClick={handleSave}
             disabled={isSaving || !isLoaded}
           >
-            {isSaving ? 'Saving...' : 'Save'}
+            {isSaving ? 'Saving...' : 'Save settings'}
           </button>
         </div>
       </div>

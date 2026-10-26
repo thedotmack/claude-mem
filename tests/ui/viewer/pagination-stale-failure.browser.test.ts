@@ -1,17 +1,11 @@
 import { expect, it } from 'bun:test';
-import { build } from 'esbuild';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import {
+  FIXTURE_PAGE_HTML, chromeExecutablePath, compileBrowserFixture, htmlResponse, launchChrome, scriptResponse, withTimeout,
+  type OwnedChrome,
+} from '../../helpers/chrome-devtools';
 
-const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
-  ?? (existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
-    ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : null);
-
-(chrome ? it : it.skip)('an old session network failure cannot block the new session feed', async () => {
-  const bundle = await build({ write: false, bundle: true, platform: 'browser', format: 'iife',
-    define: { 'process.env.NODE_ENV': '"production"' },
-    stdin: { resolveDir: resolve(import.meta.dir, '../../..'), loader: 'tsx', contents: `
+(chromeExecutablePath ? it : it.skip)('an old session network failure cannot block the new session feed', async () => {
+  const bundle = compileBrowserFixture(`
       import React from 'react';
       import { createRoot } from 'react-dom/client';
       import { App } from './src/ui/viewer/App';
@@ -63,16 +57,15 @@ const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
           }) });
         } catch (error) { await originalFetch('/result', { method: 'POST', body: JSON.stringify({ failure: String(error) }) }); }
       })();
-    ` },
-  });
+    `);
   let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
   let report!: (value: unknown) => void;
   const result = new Promise<unknown>(resolve => { report = resolve; });
   const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
     const url = new URL(request.url);
-    if (url.pathname === '/') return new Response('<div id="root"></div><script src="/fixture.js"></script>', { headers: { 'Content-Type': 'text/html' } });
-    if (url.pathname === '/fixture.js') return new Response(bundle.outputFiles[0].text, { headers: { 'Content-Type': 'application/javascript' } });
+    if (url.pathname === '/') return htmlResponse(FIXTURE_PAGE_HTML);
+    if (url.pathname === '/fixture.js') return scriptResponse(bundle);
     if (url.pathname === '/stream') return new Response(new ReadableStream({ start(controller) {
       controller.enqueue(new TextEncoder().encode('data: {"type":"initial_load","projects":["owned-project"]}\n\n'));
     } }), { headers: { 'Content-Type': 'text/event-stream' } });
@@ -96,14 +89,12 @@ const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
     if (url.pathname === '/result') { report(await request.json()); return new Response('received'); }
     return Response.json({});
   } });
-  const profile = mkdtempSync(join(tmpdir(), 'claude-mem-stale-feed-'));
-  const child = Bun.spawn([chrome!, '--headless', '--no-sandbox', '--disable-gpu', '--disable-background-networking', '--no-first-run', '--window-size=800,600', `--user-data-dir=${profile}`, server.url.href], { stdout: 'ignore', stderr: 'ignore' });
-  let timeout: ReturnType<typeof setTimeout>;
+  let chrome: OwnedChrome | undefined;
   try {
-    const reported = await Promise.race([result, new Promise(resolve => { timeout = setTimeout(() => resolve({ failure: 'Browser timed out' }), 25000); })]);
+    chrome = launchChrome(server.url.href, { profilePrefix: 'claude-mem-stale-feed-', extraFlags: ['--window-size=800,600'] });
+    const reported = await withTimeout(result, 25000, 'Browser timed out');
     expect(reported).toEqual({ staleAlert: false, recovered: true, sessionView: true, aFailed: true });
   } finally {
-    clearTimeout(timeout!); release(); child.kill(); await child.exited; server.stop(true);
-    rmSync(profile, { recursive: true, force: true });
+    release(); await chrome?.close(); server.stop(true);
   }
 }, 40000);
