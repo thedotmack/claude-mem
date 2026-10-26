@@ -9,6 +9,8 @@
  * an `ERROR:` line on failure.
  */
 
+import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
+
 export type SqliteFileJob =
   /** Snapshot `source` into `target` (VACUUM INTO, else a db+WAL copy), then make it standalone. */
   | { kind: 'snapshot'; source: string; target: string; forceCopyFallback?: boolean }
@@ -84,7 +86,7 @@ export async function runSqliteFileJob(job: SqliteFileJob): Promise<SqliteFileJo
   const child = Bun.spawn([process.execPath, '-e', CHILD_SCRIPT], {
     // BUN_BE_BUN makes a `bun build --compile` worker binary act as the bun
     // CLI for this child, so `-e` runs the script there too.
-    env: { ...process.env, BUN_BE_BUN: '1', CLAUDE_MEM_SQLITE_FILE_JOB: JSON.stringify(job) },
+    env: { ...sanitizeEnv(process.env), BUN_BE_BUN: '1', CLAUDE_MEM_SQLITE_FILE_JOB: JSON.stringify(job) },
     stdout: 'pipe',
     stderr: 'pipe',
     windowsHide: true,
