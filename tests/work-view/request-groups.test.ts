@@ -397,9 +397,16 @@ describe('overall requests and progress reviews', () => {
     const input = run(['story-input']);
     expect(input.reviews.map((entry: { groupId: string }) => entry.groupId)).toEqual([groupIdFor(key('c'))]);
     expect(input.previousStory.narrative).toBe('Two requests under way.');
-    // The agent gets its budget up front, and an over-long story is refused with its length.
-    expect(input).toMatchObject({ narrativeLimit: 12000, previousNarrativeChars: 'Two requests under way.'.length, roomChars: 12000 - 'Two requests under way.'.length });
-    expect(() => run(['record-story', write('s.json', { narrative: 'x'.repeat(12001) })])).toThrow('narrative is 12001 characters; it must be 1–12000. Cut at least 1 characters.');
+    // The agent gets its budget up front: room is counted to the target, well under the cap (#5090).
+    expect(input).toMatchObject({ narrativeLimit: 12000, narrativeTarget: 8000, previousNarrativeChars: 'Two requests under way.'.length, roomChars: 8000 - 'Two requests under way.'.length });
+    // An over-long story is refused with its length, and the refusal (the retry's prompt) asks for the target, not the cap.
+    expect(() => run(['record-story', write('s.json', { narrative: 'x'.repeat(12001) })])).toThrow('narrative is 12001 characters; it must be 1–12000. Rewrite it to at most 8000 characters');
+    // A story already past the target has no room left, so the update condenses instead of adding.
+    run(['record-story', write('s.json', { narrative: 'y'.repeat(10000) })], NOW + 4000);
+    review('c', 80, NOW + 5000);
+    expect(run(['story-input'])).toMatchObject({ previousNarrativeChars: 10000, roomChars: 0 });
+    // Between the target and the cap is still accepted: the target is an aim, not a second cap.
+    expect(() => run(['record-story', write('s.json', { narrative: 'z'.repeat(11000) })], NOW + 6000)).not.toThrow();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

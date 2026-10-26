@@ -366,10 +366,17 @@ export function reviewIsCurrent(review, conversationKeys, lastActivityEpoch) {
 }
 
 export const STORY_NARRATIVE_MAX = 12000;
+// What an update aims for. Aimed at the cap, every update landed a little over it and was refused twice (#5090:
+// nine refusals at 12,108-13,614 on Oct 24-26), so updates aim well under it and keep room for the next one.
+export const STORY_NARRATIVE_TARGET = 8000;
 
 export function validateStory(story) {
   const preferences = story?.preferences ?? [];
   if (!Array.isArray(preferences) || preferences.length > 30) throw new TypeError('preferences must be an array of at most 30.');
+  // The refusal is the retry's instruction, so it names the target: "cut at least N" landed the retry just over the cap again.
+  if (typeof story?.narrative === 'string' && story.narrative.length > STORY_NARRATIVE_MAX) {
+    throw new TypeError(`narrative is ${story.narrative.length} characters; it must be 1–${STORY_NARRATIVE_MAX}. Rewrite it to at most ${STORY_NARRATIVE_TARGET} characters: condense the oldest finished chapters to a few sentences each and keep their dated facts and ids.`);
+  }
   return {
     narrative: boundedText(story?.narrative, STORY_NARRATIVE_MAX, 'narrative'),
     preferences: preferences.map((preference, index) => ({
@@ -678,8 +685,9 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
     // so the agent is told the budget and the previous story's length up front.
     // With only the limit and length, an update at 11,836 of 12,000 still added ~1,300 characters and condensed nothing (Oct 24),
     // so the room left is spelled out as well.
+    // Room is measured against the target, not the cap, so a story already past the target gets 0 and is condensed (#5090).
     const previousNarrativeChars = story?.narrative?.length ?? 0;
-    return print({ groups: Object.keys(groups.groups).length, update, narrativeLimit: STORY_NARRATIVE_MAX, previousNarrativeChars, roomChars: STORY_NARRATIVE_MAX - previousNarrativeChars,
+    return print({ groups: Object.keys(groups.groups).length, update, narrativeLimit: STORY_NARRATIVE_MAX, narrativeTarget: STORY_NARRATIVE_TARGET, previousNarrativeChars, roomChars: Math.max(0, STORY_NARRATIVE_TARGET - previousNarrativeChars),
       reviews: update ? reviews.filter((review) => Date.parse(review.changedAt ?? review.checkedAt) > writtenAt) : reviews, previousStory: story });
   }
   if (command === 'record-story') {
