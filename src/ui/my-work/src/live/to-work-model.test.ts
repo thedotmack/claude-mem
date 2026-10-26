@@ -271,3 +271,22 @@ test('a subagent shows Finished only on a recorded stop, and quiet otherwise; ma
   assert.equal(quiet.canMarkFinished, true)
   assert.equal(toAgent({ ...base, isSubagent: true, canMarkFinished: true, presence: { status: 'recent' } }).status, 'working')
 })
+
+test('a bucket copy keeps its deliverable mark for the front of the card; other products carry none, and a gone copy is left out', async () => {
+  const { isCardDeliverable } = await import('../lib/deliverables.ts')
+  const { request } = mapOne({ workProduct: [
+    { kind: 'page', title: 'Launch report', url: '/api/deliverables/21/report-3f9a1c2b.html', available: true, deliverable: true, sourcePath: '/w/.scratch/report.html' },
+    { kind: 'file', title: 'notes.txt', url: '/api/deliverables/22/notes-ab12cd34.txt', available: true, deliverable: true },
+    { kind: 'page', title: 'Gone', url: '/api/deliverables/23/gone-00000000.html', available: false, deliverable: true },
+    { kind: 'commit', title: 'bc8cd09 feat: progress readings', sha: 'bc8cd096b', branch: 'main' },
+    { kind: 'pull-request', title: 'Add work product', url: 'https://github.com/o/r/pull/42' },
+  ] })
+  assert.deepEqual(request.workProduct, [
+    { kind: 'Page', label: 'Launch report', href: '/api/deliverables/21/report-3f9a1c2b.html', deliverable: true },
+    { kind: 'File', label: 'notes.txt', href: '/api/deliverables/22/notes-ab12cd34.txt', deliverable: true },
+    { kind: 'Commit', label: 'bc8cd09 feat: progress readings', href: undefined },
+    { kind: 'PR', label: 'Add work product', href: 'https://github.com/o/r/pull/42' },
+  ])
+  // The card's front links deliverables and PRs; commits and branches stay in the drawer.
+  assert.deepEqual(request.workProduct.filter(isCardDeliverable).map((product) => product.label), ['Launch report', 'notes.txt', 'Add work product'])
+})

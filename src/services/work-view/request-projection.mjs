@@ -1,6 +1,6 @@
 // Human requests own the top level. Agent work and observations are evidence
 // beneath a proven native conversation, never substitutes for a human ask.
-import { fileUrl, mergeProducts, productsFromObservation, productsFromToolUse, servableFile } from './work-product.mjs';
+import { bucketFileAvailable, copyCoversSource, fileUrl, mergeProducts, productsFromDeliverable, productsFromObservation, productsFromToolUse, servableFile } from './work-product.mjs';
 import { NO_PROJECT, projectRoot, upgradedGroupRoot } from './session-project.mjs';
 
 export function requestText(value, max = 1200) {
@@ -261,6 +261,8 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
   };
   for (const call of records.productCalls ?? []) attach(sessions.get(call.session_db_id), productsFromToolUse(call));
   for (const observation of records.productObservations ?? []) attach(sessionsByMemory.get(observation.memory_session_id), productsFromObservation(observation));
+  // A deliverables row names its conversation itself (platform + content session), so it needs no loaded session row.
+  for (const row of records.productDeliverables ?? []) attach(row, productsFromDeliverable(row));
 
   const sessionIdsByKey = new Map(), promptsBySession = new Map();
   for (const session of sessions.values()) {
@@ -272,8 +274,13 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
     promptsBySession.get(prompt.session_db_id).push(prompt);
   }
   for (const request of requests.values()) {
-    request.workProduct = mergeProducts([...(recordedProducts.get(request) ?? []), ...request.items.flatMap((item) => item.workProduct ?? [])])
-      .map((product) => ({ ...product, fileUrl: fileUrl(product), available: product.path ? Boolean(servableFile(product)) : true }));
+    const merged = mergeProducts([...(recordedProducts.get(request) ?? []), ...request.items.flatMap((item) => item.workProduct ?? [])]);
+    // A bucket copy that is on disk replaces the record that points at where the file was made (that place is often
+    // deleted later), unless the file has been written since the copy: then the record is a newer version and stays.
+    const copies = merged.filter((product) => product.deliverable && product.sourcePath);
+    const covered = (product) => Boolean(product.path) && copies.some((copy) => copy.sourcePath === product.path && copyCoversSource(copy, product.path));
+    request.workProduct = merged.filter((product) => !covered(product))
+      .map((product) => ({ ...product, fileUrl: fileUrl(product), available: product.path ? Boolean(servableFile(product)) : product.deliverable ? bucketFileAvailable(product) : true }));
     const relatedIds = new Set(request.conversationKeys.flatMap((key) => sessionIdsByKey.get(key) ?? []));
     const related = [...relatedIds].flatMap((id) => promptsBySession.get(id) ?? []);
     // A new ask is activity on its request, even before any agent records work.
