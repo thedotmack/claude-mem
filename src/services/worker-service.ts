@@ -8,8 +8,8 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { formatHostForUrl, getWorkerPort, getWorkerHost, fetchWithTimeout, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js';
-import { runShutdownSequence, type WorkerShutdownReason } from './worker-shutdown.js';
-import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensureDir } from '../shared/paths.js';
+import { runShutdownSequence, WORKER_GRACEFUL_SHUTDOWN_DEADLINE_BASE_MS, type WorkerShutdownReason } from './worker-shutdown.js';
+import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensureDir, paths } from '../shared/paths.js';
 import { HookSpool, migrateLegacySessionEndReplay } from '../shared/hook-spool.js';
 import { HookSpoolDrainer, hookSpoolConsumedMarkers } from './worker/hook-spool-drain.js';
 import { HookSpoolRoutes } from './worker/http/routes/HookSpoolRoutes.js';
@@ -165,6 +165,8 @@ import { CorpusRoutes } from './worker/http/routes/CorpusRoutes.js';
 import { ChromaRoutes } from './worker/http/routes/ChromaRoutes.js';
 import { CloudSyncRoutes } from './worker/http/routes/CloudSyncRoutes.js';
 import { TeamBrainRoutes } from './worker/http/routes/TeamBrainRoutes.js';
+import { BackupRoutes } from './worker/http/routes/BackupRoutes.js';
+import { applyPendingRestore } from './backup/restore-swap.js';
 
 import { CorpusStore } from './worker/knowledge/CorpusStore.js';
 import { CorpusBuilder } from './worker/knowledge/CorpusBuilder.js';
@@ -785,6 +787,17 @@ export class WorkerService implements WorkerRef {
         logger.warn('SYSTEM', 'tree-sitter CLI provisioning failed: smart_search, smart_outline and smart_unfold cannot parse, and the File Read Gate stays off, until the next worker start retries (or npx claude-mem repair)', { pluginRoot }, error instanceof Error ? error : new Error(String(error)));
       });
 
+      // A restore staged by `npx claude-mem restore` lands here, before
+      // anything in this worker opens the database. Its file work runs in a
+      // child process, so health checks keep answering. It never throws: a
+      // failed restore is logged, reported by GET /api/backup/status, and the
+      // worker starts on the unchanged database.
+      // A predecessor still inside its graceful-shutdown deadline may hold
+      // the database; the restore waits that long for it to let go.
+      await applyPendingRestore(DB_PATH, paths.backups(), {
+        busyRetryWindowMs: getPlatformTimeout(WORKER_GRACEFUL_SHUTDOWN_DEADLINE_BASE_MS),
+      });
+
       logger.info('WORKER', 'Checking for one-time CWD remap...');
       runOneTimeCwdRemap();
 
@@ -932,6 +945,12 @@ export class WorkerService implements WorkerRef {
       logger.info('WORKER', 'TeamBrainRoutes registered');
       this.initPhaseTracker.setInitPhase('routes_ready');
 
+      // Backup endpoints (pro-backup plan Phase 2). Same late/unconditional
+      // registration: status answers {configured: false} when backups are
+      // disabled, and list/restore work against snapshots already on disk.
+      this.server.registerRoutes(new BackupRoutes(this.dbManager));
+      logger.info('WORKER', 'BackupRoutes registered');
+
       this.initializationCompleteFlag = true;
       this.resolveInitialization();
       this.initPhaseTracker.setInitPhase('ready');
@@ -1033,6 +1052,10 @@ export class WorkerService implements WorkerRef {
       // Pull loop start (plan Phase 3 task 3): immediate catch-up pull, then
       // 30 s active / 5 min idle / suspended after 1 h without sessions.
       this.syncClient?.start();
+      // Automatic local DB snapshots (opt-in via CLAUDE_MEM_BACKUP_ENABLED;
+      // null when disabled — DatabaseManager gates construction). First run
+      // lands ~5 minutes after start, then every backup interval.
+      this.dbManager.getBackupManager()?.start();
 
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
       this.mcpReady = existsSync(mcpServerPath);
@@ -1242,7 +1265,7 @@ export class WorkerService implements WorkerRef {
         dbManager: this.dbManager,
         chromaMcpManager: this.chromaMcpManager || undefined
       }),
-      gracefulDeadlineMs: getPlatformTimeout(10000),
+      gracefulDeadlineMs: getPlatformTimeout(WORKER_GRACEFUL_SHUTDOWN_DEADLINE_BASE_MS),
       restartHandoff: {
         port: getWorkerPort(),
         portFreeTimeoutMs: getPlatformTimeout(5000),

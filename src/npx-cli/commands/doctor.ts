@@ -5,7 +5,7 @@
  * friendly.
  */
 
-import { existsSync, readFileSync, realpathSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'fs';
 import { isAbsolute, join, posix as posixPath, win32 as windowsPath } from 'path';
 import { styleText } from 'node:util';
 import { IS_WINDOWS, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
@@ -17,6 +17,9 @@ import { resolveDataDir } from '../../shared/paths.js';
 import { paths } from '../../shared/paths.js';
 import { findOrphanedChromaRoots, readProcessTablePosix } from '../../supervisor/orphan-chroma-sweep.js';
 import { isPidAlive } from '../../supervisor/process-registry.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { SNAPSHOT_FILE_PATTERN } from '../../services/backup/snapshot-files.js';
 import { checkWindowsGitBash } from '../utils/windows-git-bash-preflight.js';
 import {
   claudeCodeVersionTooOldWarning,
@@ -558,6 +561,51 @@ export async function runDoctorCommand(): Promise<void> {
       name: 'Last install error',
       status: 'warn',
       detail,
+      required: false,
+    });
+  }
+
+  // Backups (informational). Backup settings live in settings.json, which the
+  // env-only SettingsDefaultsManager.get cannot see; readOnly keeps doctor from
+  // seeding or migrating the file.
+  const backupSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, true, { readOnly: true });
+  if (backupSettings.CLAUDE_MEM_BACKUP_ENABLED !== 'true') {
+    checks.push({
+      name: 'Backups',
+      status: 'ok',
+      detail: 'disabled',
+      required: false,
+    });
+  } else {
+    const backupsDir = paths.backups();
+    let newestMtime: number | null = null;
+    if (existsSync(backupsDir)) {
+      for (const name of readdirSync(backupsDir)) {
+        if (!SNAPSHOT_FILE_PATTERN.test(name)) continue;
+        // Retention can delete a snapshot between the listing and the stat;
+        // skip it rather than abort the whole report.
+        let mtime: number;
+        try {
+          mtime = statSync(join(backupsDir, name)).mtimeMs;
+        } catch {
+          continue;
+        }
+        if (newestMtime === null || mtime > newestMtime) newestMtime = mtime;
+      }
+    }
+    const intervalHours = Number.parseFloat(backupSettings.CLAUDE_MEM_BACKUP_INTERVAL_HOURS);
+    // Two missed intervals before warning: one late cycle (a worker that was
+    // idle-exited when the timer would have fired) is normal, two is not.
+    const staleThresholdMs = 2 * (Number.isFinite(intervalHours) && intervalHours > 0 ? intervalHours : 24) * 3_600_000;
+    const fresh = newestMtime !== null && Date.now() - newestMtime <= staleThresholdMs;
+    checks.push({
+      name: 'Backups',
+      status: fresh ? 'ok' : 'warn',
+      detail: newestMtime === null
+        ? 'enabled but no snapshots yet (the first one is taken a few minutes after the worker starts)'
+        : fresh
+          ? `last snapshot ${new Date(newestMtime).toLocaleString()}`
+          : `last snapshot stale (${new Date(newestMtime).toLocaleString()}); is the worker running?`,
       required: false,
     });
   }

@@ -114,7 +114,8 @@
         "pages": [
           "hosted-server",
           "cloud-sync",
-          "cmem-pro-headless"
+          "cmem-pro-headless",
+          "usage/backups"
         ]
       },
       {

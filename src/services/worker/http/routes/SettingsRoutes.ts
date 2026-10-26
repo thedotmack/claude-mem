@@ -291,6 +291,9 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_FILE_READ_GATE_ENABLED',
       'CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY',
       'CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED',
+      'CLAUDE_MEM_BACKUP_ENABLED',
+      'CLAUDE_MEM_BACKUP_INTERVAL_HOURS',
+      'CLAUDE_MEM_BACKUP_RETAIN_COUNT',
     ];
 
     // Every rule runs inside the settings-document boundary's mutate callback,
@@ -504,6 +507,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
       'CLAUDE_MEM_FILE_READ_GATE_ENABLED',
       'CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY',
+      'CLAUDE_MEM_BACKUP_ENABLED',
     ];
 
     for (const key of booleanSettings) {
@@ -523,6 +527,24 @@ export class SettingsRoutes extends BaseRouteHandler {
       const count = parseContextCountValue(settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT);
       if (count === undefined || count < 1 || count > 50) {
         return { valid: false, error: 'CLAUDE_MEM_CONTEXT_SESSION_COUNT must be between 1 and 50' };
+      }
+    }
+
+    // Backup bounds. Each snapshot is a full VACUUM INTO copy of the database:
+    // a 1-hour floor caps that I/O at 24 full copies a day, and a 168-hour
+    // (one week) ceiling keeps doctor's two-interval staleness warning
+    // meaningful. The 100-snapshot cap bounds disk use at 100 database copies.
+    if (settings.CLAUDE_MEM_BACKUP_INTERVAL_HOURS) {
+      const hours = parseFloat(settings.CLAUDE_MEM_BACKUP_INTERVAL_HOURS);
+      if (isNaN(hours) || hours < 1 || hours > 168) {
+        return { valid: false, error: 'CLAUDE_MEM_BACKUP_INTERVAL_HOURS must be between 1 and 168' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_BACKUP_RETAIN_COUNT) {
+      const count = parseInt(settings.CLAUDE_MEM_BACKUP_RETAIN_COUNT, 10);
+      if (isNaN(count) || count < 1 || count > 100) {
+        return { valid: false, error: 'CLAUDE_MEM_BACKUP_RETAIN_COUNT must be between 1 and 100' };
       }
     }
 

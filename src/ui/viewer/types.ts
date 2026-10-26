@@ -132,4 +132,8 @@ export interface Settings {
   CLAUDE_CODE_PATH?: string;
   /** Written by `npx claude-mem teambrain join`; read-only here. Set once this install is in a team. */
   CLAUDE_MEM_TEAMBRAIN_URL?: string;
+
+  CLAUDE_MEM_BACKUP_ENABLED?: string;
+  CLAUDE_MEM_BACKUP_INTERVAL_HOURS?: string;
+  CLAUDE_MEM_BACKUP_RETAIN_COUNT?: string;
 }

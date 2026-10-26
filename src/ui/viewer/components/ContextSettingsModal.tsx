@@ -3,6 +3,7 @@ import { useDialogFocus } from '../hooks/useDialogFocus';
 import type { Settings } from '../types';
 import { TerminalPreview } from './TerminalPreview';
 import { useContextPreview } from '../hooks/useContextPreview';
+import { useBackupStatus } from '../hooks/useBackupStatus';
 import { DEFAULT_SETTINGS } from '../constants/settings';
 import { isClaudeMemObserverBaseUrl } from '../utils/observer-endpoint';
 import { claudeProviderOptionLabel } from '../utils/claude-auth-method';
@@ -137,6 +138,56 @@ function ToggleSwitch({
       >
         <span className="toggle-knob" />
       </button>
+    </div>
+  );
+}
+
+function formatEpochMs(epochMs: number | null | undefined): string {
+  if (typeof epochMs !== 'number' || !Number.isFinite(epochMs)) return 'never';
+  return new Date(epochMs).toLocaleString();
+}
+
+/** One label/value line in the backup status readout (toggle-row styling). */
+function BackupStatusRow({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="toggle-row">
+      <div className="toggle-info">
+        <span className="toggle-label">{label}</span>
+      </div>
+      <span className="toggle-description">{value}</span>
+    </div>
+  );
+}
+
+/**
+ * Live backup status readout (GET /api/backup/status). Rendered inside the
+ * Backups CollapsibleSection's content, so it mounts — and fetches — only
+ * while the section is open.
+ */
+function BackupStatusPanel() {
+  const { status, isLoading, error } = useBackupStatus();
+
+  if (isLoading) {
+    return <span className="toggle-description">Loading backup status...</span>;
+  }
+  if (error) {
+    return <span className="toggle-description">{error}</span>;
+  }
+  if (!status) return null;
+
+  if (!status.configured) {
+    return (
+      <span className="toggle-description">
+        Backups are not running. Turn on automatic snapshots, save, and restart the worker.
+      </span>
+    );
+  }
+
+  return (
+    <div className="toggle-group">
+      <BackupStatusRow label="Last snapshot" value={formatEpochMs(status.lastSnapshotAt)} />
+      <BackupStatusRow label="Snapshots on disk" value={String(status.snapshotCount ?? 0)} />
+      {status.lastError && <BackupStatusRow label="Last error" value={status.lastError} />}
     </div>
   );
 }
@@ -363,6 +414,61 @@ export function ContextSettingsModal({
                     onChange={() => toggleBoolean('CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT')}
                   />
                 </div>
+              </div>
+            </CollapsibleSection>
+
+            {/* Section 3: Backups */}
+            <CollapsibleSection
+              title="Backups"
+              description="Automatic snapshots of your memory database"
+              defaultOpen={false}
+            >
+              <div className="toggle-group">
+                <ToggleSwitch
+                  id="backup-enabled"
+                  label="Automatic snapshots"
+                  description="Snapshot the database on a schedule (restart the worker to apply)"
+                  checked={formState.CLAUDE_MEM_BACKUP_ENABLED === 'true'}
+                  onChange={() => toggleBoolean('CLAUDE_MEM_BACKUP_ENABLED')}
+                />
+              </div>
+
+              <div style={{ marginTop: '12px' }}>
+                <FormField
+                  label="Interval (hours)"
+                  tooltip="Hours between automatic snapshots (1-168)"
+                >
+                  <input
+                    type="number"
+                    min="1"
+                    max="168"
+                    value={formState.CLAUDE_MEM_BACKUP_INTERVAL_HOURS || '24'}
+                    onChange={(e) => updateSetting('CLAUDE_MEM_BACKUP_INTERVAL_HOURS', e.target.value)}
+                  />
+                </FormField>
+                <FormField
+                  label="Snapshots to keep"
+                  tooltip="How many local snapshots to retain before old ones are deleted (1-100)"
+                >
+                  <input
+                    type="number"
+                    min="1"
+                    max="100"
+                    value={formState.CLAUDE_MEM_BACKUP_RETAIN_COUNT || '7'}
+                    onChange={(e) => updateSetting('CLAUDE_MEM_BACKUP_RETAIN_COUNT', e.target.value)}
+                  />
+                </FormField>
+              </div>
+
+              <div className="display-subsection" style={{ marginTop: '12px' }}>
+                <span className="subsection-label">Status</span>
+                <BackupStatusPanel />
+              </div>
+
+              <div style={{ marginTop: '12px' }}>
+                <span className="toggle-description">
+                  Restore from a snapshot: <code>npx claude-mem restore &lt;file&gt;</code>
+                </span>
               </div>
             </CollapsibleSection>
 
