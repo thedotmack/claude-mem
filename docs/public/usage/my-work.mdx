@@ -85,9 +85,16 @@ Two things count as a deliverable:
   attaches it if it is a deliverable.
 
 Markdown and text deliverables open inline; pages and images open sandboxed, the
-same way recorded files do. The bucket is local to this computer and is not
-uploaded by cloud sync. `CLAUDE_MEM_DELIVERABLES_ENABLED=false` turns the copy
-off; files already in the bucket stay.
+same way recorded files do. While a copy is in the bucket and the file it came
+from has not been written since, the copy stands in for the record of where the
+file was made; a file revised after the copy shows beside it as a newer version.
+
+A turn whose prompt is entirely `<private>` leaves no copy and no record, the
+same rule observations and summaries follow. The bucket is local to this
+computer and is not uploaded by cloud sync; when the worker runs on another
+machine (`CLAUDE_MEM_WORKER_HOST` is not this computer), nothing is copied,
+because that worker could not open the copy. `CLAUDE_MEM_DELIVERABLES_ENABLED=false`
+turns the copy off; files already in the bucket stay.
 
 ## Optional Claude.ai and ChatGPT connections
 
