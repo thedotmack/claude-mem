@@ -2,12 +2,14 @@
 import { existsSync, readFileSync, writeFileSync, renameSync } from 'fs';
 import path from 'path';
 import { logger } from './logger.js';
+import { ensureDirectoryExists, resolveSymlinkWriteTarget } from '../shared/atomic-json.js';
 import { formatDate, groupByDate } from '../shared/timeline-formatting.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { workerHttpRequest } from '../shared/worker-utils.js';
 import { paths } from '../shared/paths.js';
 import { matchesAnyGlob } from './project-filter.js';
 import { toBmpSafe } from './bmp-safe.js';
+import { CONTEXT_TAG_CLOSE, CONTEXT_TAG_OPEN, findContextBlockRange } from './context-injection.js';
 
 const SETTINGS_PATH = paths.settings();
 
@@ -55,23 +57,21 @@ function isValidPathForClaudeMd(filePath: string, projectRoot?: string): boolean
 }
 
 export function replaceTaggedContent(existingContent: string, newContent: string): string {
-  const startTag = '<claude-mem-context>';
-  const endTag = '</claude-mem-context>';
+  const wrappedContent = `${CONTEXT_TAG_OPEN}\n${newContent}\n${CONTEXT_TAG_CLOSE}`;
 
   if (!existingContent) {
-    return `${startTag}\n${newContent}\n${endTag}`;
+    return wrappedContent;
   }
 
-  const startIdx = existingContent.indexOf(startTag);
-  const endIdx = existingContent.indexOf(endTag);
+  const block = findContextBlockRange(existingContent);
 
-  if (startIdx !== -1 && endIdx !== -1) {
-    return existingContent.substring(0, startIdx) +
-      `${startTag}\n${newContent}\n${endTag}` +
-      existingContent.substring(endIdx + endTag.length);
+  if (block) {
+    return existingContent.substring(0, block.start) +
+      wrappedContent +
+      existingContent.substring(block.end);
   }
 
-  return existingContent + `\n\n${startTag}\n${newContent}\n${endTag}`;
+  return existingContent + `\n\n${wrappedContent}`;
 }
 
 export function writeClaudeMdToFolder(folderPath: string, newContent: string, targetFilename?: string): void {
@@ -81,7 +81,6 @@ export function writeClaudeMdToFolder(folderPath: string, newContent: string, ta
 
   const filename = targetFilename ?? getTargetFilename();
   const claudeMdPath = path.join(folderPath, filename);
-  const tempFile = `${claudeMdPath}.tmp`;
 
   if (!existsSync(folderPath)) {
     logger.debug('FOLDER_INDEX', 'Skipping non-existent folder', { folderPath });
@@ -97,8 +96,13 @@ export function writeClaudeMdToFolder(folderPath: string, newContent: string, ta
   // context — a Claude Code truncation can split a pair and brick the session.
   const finalContent = replaceTaggedContent(existingContent, toBmpSafe(newContent));
 
+  // A symlinked CLAUDE.md stays a symlink: write onto its final target. A
+  // symlink loop or an unwritable target throws, as any write failure does.
+  const writeTarget = resolveSymlinkWriteTarget(claudeMdPath);
+  ensureDirectoryExists(path.dirname(writeTarget));
+  const tempFile = `${writeTarget}.tmp`;
   writeFileSync(tempFile, finalContent);
-  renameSync(tempFile, claudeMdPath);
+  renameSync(tempFile, writeTarget);
 }
 
 interface ParsedObservation {
@@ -132,7 +136,9 @@ export function formatTimelineForClaudeMd(timelineText: string): string {
       continue;
     }
 
-    const match = line.match(/^\|\s*(#[S]?\d+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|/);
+    // The title cell is written verbatim and may itself contain `|`, so it runs
+    // up to the Read cell (`~N`, or `-` for sessions) instead of the next pipe.
+    const match = line.match(/^\|\s*(#[S]?\d+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*(.+?)\s*\|\s*(~\d+|-)\s*\|/);
     if (match) {
       const [, id, timeStr, typeEmoji, title, tokens] = match;
 
@@ -172,7 +178,8 @@ export function formatTimelineForClaudeMd(timelineText: string): string {
     return '';
   }
 
-  const byDate = groupByDate(observations, obs => new Date(obs.epoch).toISOString());
+  // Same newest-first day order the by-file route renders; rows inside a day keep the route's order.
+  const byDate = groupByDate(observations, obs => new Date(obs.epoch).toISOString(), { order: 'desc' });
 
   for (const [day, dayObs] of byDate) {
     lines.push(`### ${day}`);
@@ -201,8 +208,10 @@ const EXCLUDED_UNSAFE_DIRECTORIES = new Set([
   '__pycache__'
 ]);
 
-function isExcludedUnsafeDirectory(folderPath: string): boolean {
-  const normalized = path.normalize(folderPath);
+function isExcludedUnsafeDirectory(folderPath: string, projectRoot?: string): boolean {
+  // Only directories inside the project count: a project checked out under
+  // ~/build or ~/res is not itself an unsafe directory.
+  const normalized = path.normalize(projectRoot ? path.relative(projectRoot, folderPath) : folderPath);
   const segments = normalized.split(path.sep);
   return segments.some(segment => EXCLUDED_UNSAFE_DIRECTORIES.has(segment));
 }
@@ -294,7 +303,7 @@ export async function updateFolderClaudeMdFiles(
         logger.debug('FOLDER_INDEX', 'Skipping project root CLAUDE.md', { folderPath });
         continue;
       }
-      if (isExcludedUnsafeDirectory(folderPath)) {
+      if (isExcludedUnsafeDirectory(folderPath, projectRoot)) {
         logger.debug('FOLDER_INDEX', 'Skipping unsafe directory for CLAUDE.md', { folderPath });
         continue;
       }
@@ -360,7 +369,7 @@ export async function updateFolderClaudeMdFiles(
       continue;
     }
 
-    if (hasNoActivity && !fileExists) {
+    if (isEmptyOrSkeleton && !fileExists) {
       logger.debug('FOLDER_INDEX', 'Skipping empty context file creation', { folderPath, targetFilename });
       continue;
     }

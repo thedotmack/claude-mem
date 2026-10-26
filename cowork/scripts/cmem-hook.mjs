@@ -11,6 +11,7 @@
  *
  * Design rule #1: NEVER break the session. Every hook path exits 0 no matter what.
  * Failed ingest posts are spooled to ~/.claude-mem (0600) and re-flushed on later hook fires.
+ * On a machine with a local claude-mem install every hook is a no-op (localClaudeMemInstalled).
  *
  * Usage: node cmem-hook.mjs <event>
  *   events: context | session-init | observation | agent-context |
@@ -178,7 +179,7 @@ async function http(method, url, body, timeoutMs, headers = {}) {
         'Authorization': `Bearer ${CFG.apiKey}`,
         'Content-Type': 'application/json',
         'X-CMEM-Platform': 'cowork',
-        'X-CMEM-Plugin': 'claude-mem-cowork/0.1.3',
+        'X-CMEM-Plugin': 'claude-mem-cowork/0.1.4',
         ...(CFG.userId ? { 'X-CMEM-User-Id': CFG.userId } : {}),
         ...headers
       },
@@ -306,14 +307,50 @@ async function mcpRpc(methodName, params, id) {
 }
 
 function viewerPort() {
-  // the worker port lives in claude-mem's own config; the uid formula is only
-  // the documented default for installs that never set one
+  // the worker port lives in claude-mem's own config (env wins, as in claude-mem);
+  // the uid formula is only the documented default for installs that never set one
+  const envPort = Number(process.env.CLAUDE_MEM_WORKER_PORT);
+  if (Number.isFinite(envPort) && envPort > 0) return envPort;
   try {
     const st = JSON.parse(readFileSync(join(process.env.HOME || '', '.claude-mem', 'settings.json'), 'utf8'));
     const p = Number(st.CLAUDE_MEM_WORKER_PORT ?? st.workerPort ?? st.worker_port ?? st.port ?? (st.worker && st.worker.port));
     if (Number.isFinite(p) && p > 0) return p;
   } catch { /* no local settings — use default formula */ }
   try { return 37700 + ((process.getuid?.() ?? 0) % 100); } catch { return 37700; }
+}
+
+// Local-first: on a machine with a local claude-mem install this plugin does
+// nothing. The local hooks capture and inject from the local db, and the local
+// plugin's cloud sync is what carries that work to cmem.ai. Capturing here too
+// would send every prompt and tool call to cmem.ai a second time (its observer
+// records the session again under a cmem_work_* project) and hold each prompt
+// on a cmem.ai round trip. An agent with no local install (a Cowork container,
+// a remote machine) captures to and reads from the cloud.
+// The install is what Claude Code loads: an enabled plugin registered in
+// installed_plugins.json with its hook and worker files. Worker health doesn't
+// decide it, so a cold start or a worker on ::1 or a LAN address still counts.
+// A disabled plugin or an orphaned cache copy doesn't, so those sessions get
+// cloud context instead of no memory.
+function localClaudeMemInstalled() {
+  const configDir = process.env.CLAUDE_CONFIG_DIR || join(process.env.HOME || '', '.claude');
+  let settings = null;
+  try {
+    settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8').replace(/^\uFEFF/, ''));
+  } catch { /* missing or unreadable settings: the local launcher treats the plugin as enabled too */ }
+  // The same opt-out the local launcher honors (plugin/scripts/bun-runner.js).
+  if (settings?.enabledPlugins?.['claude-mem@thedotmack'] === false) return false;
+  try {
+    const registryRaw = readFileSync(join(configDir, 'plugins', 'installed_plugins.json'), 'utf8');
+    const registry = JSON.parse(registryRaw.replace(/^\uFEFF/, ''));
+    const entries = registry?.plugins?.['claude-mem@thedotmack'];
+    return Array.isArray(entries) && entries.some(entry => {
+      if (typeof entry?.installPath !== 'string' || !entry.installPath) return false;
+      const root = existsSync(join(entry.installPath, 'hooks', 'hooks.json'))
+        ? entry.installPath : join(entry.installPath, 'plugin');
+      return existsSync(join(root, 'hooks', 'hooks.json'))
+        && existsSync(join(root, 'scripts', 'worker-service.cjs'));
+    });
+  } catch { return false; /* no readable registry: nothing is registered */ }
 }
 
 // project-scoped wrapper: parses memory_search rows and keeps only this project's.
@@ -355,6 +392,9 @@ async function mcpSearch(query, limit, project) {
 async function fetchContext(scope, query, cwd) {
   const project = resolveProject(cwd);
   if (!CFG.apiKey) return null;
+  // the query leaves the machine (URL and fallback body): strip <private> regions
+  // and redact secrets first, as every capture path does, then apply the caps below
+  query = clean(query, PROMPT_CAP);
   // 1) purpose-built endpoint (see PRO-ENDPOINT-SPEC) — best quality, Pro compiles the block
   try {
     const url = `${CFG.apiBase}/api/hooks/context?project=${encodeURIComponent(project)}&scope=${scope}` +
@@ -488,6 +528,7 @@ async function cliStatus() {
   console.log(`api base : ${CFG.apiBase}`);
   console.log(`project  : ${resolveProject()} (auto — derived from the working folder)`);
   console.log(`api key  : ${CFG.apiKey ? 'configured (…' + CFG.apiKey.slice(-4) + ')' : 'MISSING'}`);
+  console.log(`hooks    : ${localClaudeMemInstalled() ? 'off — the local claude-mem install handles memory on this machine' : 'on'}`);
   if (!CFG.apiKey) return;
   try {
     const res = await http('GET', `${CFG.apiBase}/api/hooks/context?project=${encodeURIComponent(resolveProject())}&scope=status`, undefined, HTTP_TIMEOUT_MS.fast);
@@ -519,6 +560,7 @@ const HANDLERS = {
     if (event === 'status') return await cliStatus();
     const handler = HANDLERS[event];
     if (!handler) return;                 // unknown event — inert
+    if (localClaudeMemInstalled()) return; // local-first: the local plugin owns memory here
     const input = readStdin();
     await handler(input);
   } catch { /* rule #1: never break the session */ }

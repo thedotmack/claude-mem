@@ -1,0 +1,8 @@
+name: claude-mem
+version: 1.0.0
+description: "claude-mem memory: Hermes shares one memory per project with your other coding agents."
+author: Michael Ashley
+kind: exclusive
+requires_hermes: ">=0.21"
+hooks:
+  - post_tool_call

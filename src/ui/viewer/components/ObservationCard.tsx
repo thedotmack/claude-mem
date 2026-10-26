@@ -1,9 +1,13 @@
 import React, { useState } from 'react';
 import { Observation } from '../types';
 import { formatDate } from '../utils/formatters';
+import { DeleteButton } from './DeleteButton';
+import type { DeletableItemType } from '../utils/feed-deletion';
+import { parseStoredStringList } from '../utils/stored-string-list';
 
 interface ObservationCardProps {
   observation: Observation;
+  onDeleted: (itemType: DeletableItemType, id: number) => void;
 }
 
 function stripProjectRoot(filePath: string): string {
@@ -25,15 +29,15 @@ function stripProjectRoot(filePath: string): string {
   return parts.length > 3 ? parts.slice(-3).join('/') : filePath;
 }
 
-export function ObservationCard({ observation }: ObservationCardProps) {
+export function ObservationCard({ observation, onDeleted }: ObservationCardProps) {
   const [showFacts, setShowFacts] = useState(false);
   const [showNarrative, setShowNarrative] = useState(false);
   const date = formatDate(observation.created_at_epoch);
 
-  const facts = observation.facts ? JSON.parse(observation.facts) : [];
-  const concepts = observation.concepts ? JSON.parse(observation.concepts) : [];
-  const filesRead = observation.files_read ? JSON.parse(observation.files_read).map(stripProjectRoot) : [];
-  const filesModified = observation.files_modified ? JSON.parse(observation.files_modified).map(stripProjectRoot) : [];
+  const facts = parseStoredStringList(observation.facts);
+  const concepts = parseStoredStringList(observation.concepts);
+  const filesRead = parseStoredStringList(observation.files_read).map(stripProjectRoot);
+  const filesModified = parseStoredStringList(observation.files_modified).map(stripProjectRoot);
 
   const hasFactsContent = facts.length > 0 || concepts.length > 0 || filesRead.length > 0 || filesModified.length > 0;
 
@@ -59,6 +63,7 @@ export function ObservationCard({ observation }: ObservationCardProps) {
           {hasFactsContent && (
             <button
               className={`view-mode-toggle ${showFacts ? 'active' : ''}`}
+              aria-pressed={showFacts}
               onClick={() => {
                 setShowFacts(!showFacts);
                 if (!showFacts) setShowNarrative(false); 
@@ -74,6 +79,7 @@ export function ObservationCard({ observation }: ObservationCardProps) {
           {observation.narrative && (
             <button
               className={`view-mode-toggle ${showNarrative ? 'active' : ''}`}
+              aria-pressed={showNarrative}
               onClick={() => {
                 setShowNarrative(!showNarrative);
                 if (!showNarrative) setShowFacts(false); 
@@ -88,11 +94,12 @@ export function ObservationCard({ observation }: ObservationCardProps) {
               <span>narrative</span>
             </button>
           )}
+          <DeleteButton itemType="observation" id={observation.id} onDeleted={onDeleted} />
         </div>
       </div>
 
       {/* Title */}
-      <div className="card-title">{observation.title || 'Untitled'}</div>
+      <h3 className="card-title">{observation.title || 'Untitled'}</h3>
 
       {/* Content based on toggle state */}
       <div className="view-mode-content">

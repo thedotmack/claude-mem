@@ -198,7 +198,7 @@ For a developer running claude-mem on one machine, server-beta is invisible. Her
 2. `bootstrapServerApiKey()` (`src/services/hooks/server-bootstrap.ts`) runs on first hook fire. It:
    - finds-or-creates a `local-hook-team` row in `teams`,
    - finds-or-creates a `local-hook-project` row in `projects`,
-   - generates a 48-byte url-safe random api key, hashes it (sha256), and creates an `api_keys` row scoped to that team+project with hook-only scopes (`events:write`, `sessions:write`, `observations:read`, `jobs:read`),
+   - generates a 48-byte url-safe random api key, hashes it (sha256), and creates an `api_keys` row scoped to that team+project with the scopes the `/v1` routes require (`memories:read`, `memories:write`),
    - writes the raw key + project id + server URL into `~/.claude-mem/settings.json` so subsequent hook fires can authenticate.
 3. The server-beta daemon starts on a UID-derived port: `37877 + (uid % 100)`. (This was a Phase-12 review fix — previously it hardcoded `37877` and two profiles on the same machine collided.)
 4. Hooks now `POST /v1/events` to that local port with the api key. From the user's perspective, their context still appears in their next session, search still returns relevant observations, the viewer still works.
@@ -406,7 +406,7 @@ This is the "we don't pick winners" property: a team that prefers Gemini for cos
 POSTGRES_USER=… POSTGRES_PASSWORD=… POSTGRES_DB=… docker compose exec claude-mem-server \
   bun /opt/claude-mem/scripts/server-service.cjs server api-key create \
     --team <team_id> --project <project_id> \
-    --scope events:write,sessions:write,observations:read,jobs:read \
+    --scope memories:read,memories:write \
     --name alice-laptop
 ```
 

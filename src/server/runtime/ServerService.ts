@@ -22,6 +22,7 @@ import { ServerV1PostgresRoutes } from '../routes/v1/ServerV1PostgresRoutes.js';
 import { SessionsObservationsAdapter } from '../compat/SessionsObservationsAdapter.js';
 import { SessionsSummarizeAdapter } from '../compat/SessionsSummarizeAdapter.js';
 import { ActiveServerQueueManager } from './ActiveServerQueueManager.js';
+import { getVectorSearchStatus } from '../services/ObservationEmbeddingService.js';
 import { ServerViewerRoutes } from './ServerViewerRoutes.js';
 import type { ServerServiceGraph, ServerQueueLaneMetric } from './types.js';
 
@@ -71,6 +72,10 @@ class ServerRuntimeInfoRoutes implements RouteHandler {
     // the lane with `unavailable: true` rather than crashing the route.
     app.get('/v1/info', async (_req, res) => {
       const queueLanes = await collectQueueLaneMetrics(this.graph);
+      const vectorSearch = await getVectorSearchStatus(this.graph.postgres.pool).catch((error: unknown) => ({
+        unavailable: true,
+        error: error instanceof Error ? error.message : String(error),
+      }));
       res.json({
         name: 'claude-mem-server',
         runtime: SERVER_RUNTIME,
@@ -84,6 +89,7 @@ class ServerRuntimeInfoRoutes implements RouteHandler {
           generationWorkerManager: this.graph.generationWorkerManager.getHealth(),
         },
         queueLanes,
+        vectorSearch,
       });
     });
   }
@@ -246,6 +252,7 @@ export class ServerService {
       await Promise.all([
         this.graph.queueManager.close(),
         this.graph.generationWorkerManager.close(),
+        this.graph.stopBackgroundWork?.(),
       ]);
       await this.graph.postgres.pool.end();
     } finally {
@@ -858,10 +865,17 @@ function getServerPort(): number {
 
 function spawnServerDaemon(port: number): number | undefined {
   const scriptPath = typeof __filename !== 'undefined' ? __filename : fileURLToPath(import.meta.url);
+  // A cwd that does not exist makes spawn fail with ENOENT, and paths.ts resolves
+  // DATA_DIR without creating it — so create it rather than depend on some earlier
+  // caller having done so. Idempotent.
+  mkdirSync(paths.dataDir(), { recursive: true });
   const child = spawn(process.execPath, [scriptPath, '--daemon'], {
     detached: true,
     stdio: 'ignore',
     windowsHide: true,
+    // Never the caller's directory: a daemon holds its cwd open for its whole life, and
+    // on Windows that locks the folder against rename or move (#3706).
+    cwd: paths.dataDir(),
     // Strip host CLI bleed-through (CLAUDE_CODE_*, including EFFORT_LEVEL) and
     // Anthropic credentials before handing env to the detached daemon. The
     // daemon re-reads credentials from ~/.claude-mem/.env at SDK spawn time.

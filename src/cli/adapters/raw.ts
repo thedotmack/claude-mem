@@ -4,7 +4,7 @@ import { AdapterRejectedInput, isValidCwd } from './errors.js';
 export const rawAdapter: PlatformAdapter = {
   normalizeInput(raw) {
     const r = (raw ?? {}) as any;
-    const cwd = r.cwd ?? process.cwd();
+    const cwd = r.cwd || process.cwd();
     if (!isValidCwd(cwd)) {
       throw new AdapterRejectedInput('invalid_cwd');
     }
@@ -15,7 +15,9 @@ export const rawAdapter: PlatformAdapter = {
       toolName: r.toolName ?? r.tool_name,
       toolInput: r.toolInput ?? r.tool_input,
       toolResponse: r.toolResponse ?? r.tool_response,
+      toolUseId: r.toolUseId ?? r.tool_use_id,
       transcriptPath: r.transcriptPath ?? r.transcript_path,
+      lastAssistantMessage: r.lastAssistantMessage ?? r.last_assistant_message,
       filePath: r.filePath ?? r.file_path,
       edits: r.edits,
     };

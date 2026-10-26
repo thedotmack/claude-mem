@@ -1,0 +1,257 @@
+// SPDX-License-Identifier: Apache-2.0
+
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import {
+  OPENROUTER_REASONING_EFFORTS,
+  buildOpenRouterRequestBody,
+  openRouterReasoningBudgetTokens,
+  parseOpenRouterReasoningEffort,
+  resolveOpenRouterConfig,
+} from '../../src/services/worker/OpenRouterProvider.js';
+import { SettingsRoutes } from '../../src/services/worker/http/routes/SettingsRoutes.js';
+import { logger } from '../../src/utils/logger.js';
+import { OBSERVER_REASONING_BUDGET_TOKENS_BY_EFFORT } from '../../src/services/worker/reasoning-budget.js';
+
+// CLAUDE_MEM_OPENROUTER_REASONING_EFFORT (#3001, #2995): a typed reasoning
+// control for openrouter.ai. Unset disables reasoning on openrouter.ai and the
+// cmem gateway. A typed effort never reaches a custom gateway or the cmem
+// gateway, and never overrides a wrap-up's own control.
+
+const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const base = {
+  model: 'vendor/model',
+  fallbackModels: [],
+  messages: [{ role: 'user' as const, content: 'observe' }],
+  maxOutputTokens: 4096,
+};
+
+describe('buildOpenRouterRequestBody reasoning effort', () => {
+  it('disables reasoning on openrouter.ai and the cmem gateway when unset, and leaves a custom gateway alone', () => {
+    expect(buildOpenRouterRequestBody({ ...base, apiUrl: OPENROUTER_URL }).reasoning).toEqual({ enabled: false });
+    expect(buildOpenRouterRequestBody({ ...base, apiUrl: 'https://cmem.ai/api/inference/v1/chat/completions' }).reasoning)
+      .toEqual({ enabled: false });
+    expect(buildOpenRouterRequestBody({ ...base, apiUrl: 'https://api.deepseek.com/chat/completions' }).reasoning)
+      .toBeUndefined();
+  });
+
+  it('maps none to enabled:false and every other value to that effort\'s reasoning token budget', () => {
+    expect(buildOpenRouterRequestBody({ ...base, apiUrl: OPENROUTER_URL, reasoningEffort: 'none' }).reasoning)
+      .toEqual({ enabled: false });
+    // OpenRouter takes `effort` or `max_tokens` in `reasoning`, never both;
+    // only `max_tokens` is a cap the provider enforces.
+    expect(OBSERVER_REASONING_BUDGET_TOKENS_BY_EFFORT).toEqual({ minimal: 455, low: 1024, medium: 4096, high: 16384 });
+    for (const effort of ['minimal', 'low', 'medium', 'high'] as const) {
+      expect(buildOpenRouterRequestBody({ ...base, apiUrl: OPENROUTER_URL, reasoningEffort: effort }).reasoning)
+        .toEqual({ max_tokens: OBSERVER_REASONING_BUDGET_TOKENS_BY_EFFORT[effort] });
+    }
+  });
+
+  it('sends a typed effort to openrouter.ai only; cmem stays reasoning-off and a custom gateway stays unset', () => {
+    expect(buildOpenRouterRequestBody({ ...base, apiUrl: 'https://api.deepseek.com/chat/completions', reasoningEffort: 'low' }).reasoning)
+      .toBeUndefined();
+    expect(buildOpenRouterRequestBody({ ...base, apiUrl: 'https://cmem.ai/api/inference/v1/chat/completions', reasoningEffort: 'low' }).reasoning)
+      .toEqual({ enabled: false });
+  });
+
+  it('wins over a reasoning field in CLAUDE_MEM_OPENROUTER_EXTRA_BODY, keeping the rest of it', () => {
+    const body = buildOpenRouterRequestBody({
+      ...base,
+      apiUrl: OPENROUTER_URL,
+      reasoningEffort: 'low',
+      extraBody: { reasoning: { effort: 'high' }, provider: { sort: 'price' } },
+    });
+    expect(body.reasoning).toEqual({ max_tokens: OBSERVER_REASONING_BUDGET_TOKENS_BY_EFFORT.low });
+    expect(body.provider).toEqual({ sort: 'price' });
+  });
+
+  it('leaves the extra body\'s reasoning alone when the typed setting is unset', () => {
+    const body = buildOpenRouterRequestBody({
+      ...base,
+      apiUrl: OPENROUTER_URL,
+      extraBody: { reasoning: { enabled: false } },
+    });
+    expect(body.reasoning).toEqual({ enabled: false });
+  });
+
+  it('never overrides a Telegram wrap-up\'s own reasoning control', () => {
+    const body = buildOpenRouterRequestBody({ ...base, apiUrl: OPENROUTER_URL, plainText: true, reasoningEffort: 'high' });
+    expect(body.reasoning).toEqual({ enabled: false });
+    expect(body.response_format).toEqual({ type: 'text' });
+  });
+
+  it('asks a field condensation for an answer instead of reasoning, over the effort setting', () => {
+    const label = { kind: 'field_compression' as const, sessionId: 'session-1' };
+    for (const apiUrl of [OPENROUTER_URL, 'https://cmem.ai/api/inference/v1/chat/completions']) {
+      const body = buildOpenRouterRequestBody({ ...base, apiUrl, label, reasoningEffort: 'high' });
+      expect(body.reasoning).toEqual({ enabled: false });
+      expect(body.response_format).toEqual({ type: 'text' });
+    }
+    const observation = buildOpenRouterRequestBody({
+      ...base, apiUrl: OPENROUTER_URL, label: { kind: 'observation', sessionId: 'session-1' }, reasoningEffort: 'high',
+    });
+    expect(observation.reasoning).toEqual({ max_tokens: OBSERVER_REASONING_BUDGET_TOKENS_BY_EFFORT.high });
+  });
+
+  it('leaves a custom gateway field condensation to its own extra body', () => {
+    const body = buildOpenRouterRequestBody({
+      ...base,
+      apiUrl: 'https://api.deepseek.com/chat/completions',
+      label: { kind: 'field_compression', sessionId: 'session-1' },
+      extraBody: { thinking: { type: 'disabled' }, reasoning: { effort: 'low' } },
+    });
+    expect(body.thinking).toEqual({ type: 'disabled' });
+    expect(body.reasoning).toEqual({ effort: 'low' });
+    expect(body.response_format).toBeUndefined();
+  });
+});
+
+describe('reasoning gets its own budget, separate from the answer', () => {
+  it('caps reasoning itself and keeps max_tokens at answer plus reasoning when a typed effort turns reasoning on', () => {
+    for (const effort of ['minimal', 'low', 'medium', 'high'] as const) {
+      const body = buildOpenRouterRequestBody({ ...base, apiUrl: OPENROUTER_URL, reasoningEffort: effort });
+      const reasoningBudget = OBSERVER_REASONING_BUDGET_TOKENS_BY_EFFORT[effort];
+      expect(body.reasoning).toEqual({ max_tokens: reasoningBudget });
+      expect(body.max_tokens).toBe(base.maxOutputTokens + reasoningBudget);
+    }
+  });
+
+  it('gives an effort-only model the typed effort back at the default answer cap', () => {
+    // OpenRouter turns a reasoning budget into effort as its share of max_tokens:
+    // minimal 10%, low 20%, medium 50%, high 80%.
+    const documentedShares = { minimal: 0.1, low: 0.2, medium: 0.5, high: 0.8 } as const;
+    for (const effort of ['minimal', 'low', 'medium', 'high'] as const) {
+      const body = buildOpenRouterRequestBody({ ...base, apiUrl: OPENROUTER_URL, reasoningEffort: effort });
+      const share = (body.reasoning as { max_tokens: number }).max_tokens / (body.max_tokens as number);
+      expect(Math.abs(share - documentedShares[effort])).toBeLessThan(0.001);
+    }
+  });
+
+  it('keeps the answer cap alone when reasoning is off', () => {
+    const cases = [
+      { apiUrl: OPENROUTER_URL },
+      { apiUrl: OPENROUTER_URL, reasoningEffort: 'none' as const },
+      { apiUrl: 'https://cmem.ai/api/inference/v1/chat/completions', reasoningEffort: 'high' as const },
+      { apiUrl: 'https://api.deepseek.com/chat/completions', reasoningEffort: 'high' as const },
+      { apiUrl: OPENROUTER_URL, reasoningEffort: 'high' as const, plainText: true },
+      { apiUrl: OPENROUTER_URL, reasoningEffort: 'high' as const, label: { kind: 'field_compression' as const, sessionId: 's' } },
+      { apiUrl: OPENROUTER_URL, reasoningEffort: 'high' as const, forceReasoningOff: true },
+    ];
+    for (const input of cases) {
+      expect(openRouterReasoningBudgetTokens(input)).toBe(0);
+      expect(buildOpenRouterRequestBody({ ...base, ...input }).max_tokens).toBe(base.maxOutputTokens);
+    }
+  });
+});
+
+describe('parseOpenRouterReasoningEffort', () => {
+  it('accepts the documented values, case-insensitively', () => {
+    expect(parseOpenRouterReasoningEffort('LOW')).toBe('low');
+    expect(parseOpenRouterReasoningEffort(' none ')).toBe('none');
+  });
+
+  it('reads anything else as unset', () => {
+    for (const raw of ['', 'off', 'xhigh', undefined, 3]) {
+      expect(parseOpenRouterReasoningEffort(raw)).toBeUndefined();
+    }
+  });
+});
+
+describe('resolveOpenRouterConfig reads the reasoning effort', () => {
+  const ENV_KEYS = [
+    'CLAUDE_MEM_OPENROUTER_API_KEY',
+    'CLAUDE_MEM_OPENROUTER_BASE_URL',
+    'CLAUDE_MEM_OPENROUTER_MODEL',
+    'CLAUDE_MEM_OPENROUTER_REASONING_EFFORT',
+    'OPENROUTER_BASE_URL',
+    'CLAUDE_MEM_ENV_FILE',
+    'CMEM_PRO_ORIGIN',
+  ];
+  let tempDir: string;
+  let settingsPath: string;
+  let savedEnv: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    tempDir = join(tmpdir(), `openrouter-reasoning-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(tempDir, { recursive: true });
+    settingsPath = join(tempDir, 'settings.json');
+    savedEnv = {};
+    for (const key of ENV_KEYS) {
+      savedEnv[key] = process.env[key];
+      delete process.env[key];
+    }
+    process.env.CLAUDE_MEM_ENV_FILE = join(tempDir, '.env');
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS) {
+      if (savedEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnv[key];
+    }
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const writeSettings = (settings: Record<string, unknown>) =>
+    writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_PROVIDER: 'openrouter', ...settings }));
+
+  it('carries a valid value', () => {
+    writeSettings({ CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-or-v1-personal', CLAUDE_MEM_OPENROUTER_REASONING_EFFORT: 'minimal' });
+    expect(resolveOpenRouterConfig(settingsPath).reasoningEffort).toBe('minimal');
+  });
+
+  it('ignores an invalid value with one warning, never throwing on a status poll', () => {
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      writeSettings({ CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-or-v1-personal', CLAUDE_MEM_OPENROUTER_REASONING_EFFORT: 'turbo' });
+      expect(resolveOpenRouterConfig(settingsPath).reasoningEffort).toBeUndefined();
+      expect(resolveOpenRouterConfig(settingsPath).reasoningEffort).toBeUndefined();
+      expect(warn.mock.calls.filter(call => String(call[1]).includes('REASONING_EFFORT')).length).toBe(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('attaches nothing for the cmem gateway tuple', () => {
+    writeSettings({
+      CLAUDE_MEM_OPENROUTER_API_KEY: 'cm_pro_0123456789abcdef01234567',
+      CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://cmem.ai/api/inference/v1',
+      CLAUDE_MEM_OPENROUTER_MODEL: 'cmem-observer',
+      CLAUDE_MEM_OPENROUTER_REASONING_EFFORT: 'none',
+    });
+    expect(resolveOpenRouterConfig(settingsPath).reasoningEffort).toBeUndefined();
+  });
+});
+
+describe('the viewer reasoning-effort select', () => {
+  const modal = readFileSync('src/ui/viewer/components/ContextSettingsModal.tsx', 'utf-8');
+  const select = modal.slice(modal.indexOf('label="Reasoning effort"'), modal.indexOf('</select>', modal.indexOf('label="Reasoning effort"')));
+
+  it('offers exactly the accepted values, defaulting to reasoning off', () => {
+    const values = [...select.matchAll(/<option value="([^"]*)"/g)].map(match => match[1]);
+    expect(values).toEqual(['', ...OPENROUTER_REASONING_EFFORTS]);
+  });
+
+  it('is hidden for the claude-mem observer, which sets its own reasoning policy', () => {
+    const gate = modal.lastIndexOf('{!observerManagesBaseUrl && (', modal.indexOf('label="Reasoning effort"'));
+    expect(gate).toBeGreaterThan(-1);
+    expect(modal.indexOf('label="Reasoning effort"') - gate).toBeLessThan(200);
+  });
+});
+
+describe('the settings API validates the reasoning effort', () => {
+  const validate = (value: string) => (new SettingsRoutes({} as never) as unknown as {
+    validateSettings(settings: unknown): { valid: boolean; error?: string };
+  }).validateSettings({ CLAUDE_MEM_OPENROUTER_REASONING_EFFORT: value });
+
+  it('accepts empty and the documented values', () => {
+    for (const value of ['', 'none', 'minimal', 'low', 'medium', 'high']) expect(validate(value).valid).toBe(true);
+  });
+
+  it('rejects anything else with the allowed values', () => {
+    const result = validate('turbo');
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain('none, minimal, low, medium, high');
+  });
+});

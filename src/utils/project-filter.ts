@@ -1,24 +1,47 @@
 
-import { homedir } from 'os';
 import { basename } from 'path';
+import { expandHome } from '../shared/expand-home.js';
 import { logger } from './logger.js';
 
 function globToRegex(pattern: string): RegExp {
-  let expanded = pattern.startsWith('~')
-    ? homedir() + pattern.slice(1)
-    : pattern;
+  // Separators first, then home expansion. A pattern written on Windows as `~\projects\secret`
+  // is home-relative, but `expandHome` only recognises `~` and `~/` on POSIX — resolving
+  // another user's home is deliberately out of its scope. Expanding before normalising left
+  // that pattern as a literal `~/projects/secret`, which matches no absolute path, so a
+  // configured exclusion silently stopped excluding.
+  let expanded = expandHome(pattern.replace(/\\/g, '/'));
 
+  // Again on the way out: on Windows `homedir()` itself returns backslashes, so the
+  // expanded path needs normalising even when the pattern arrived POSIX-form.
   expanded = expanded.replace(/\\/g, '/');
 
   let regex = expanded.replace(/[.+^${}()|[\]\\]/g, '\\$&');
 
   regex = regex
+    // A complete **/ directory segment also matches no directory. Keep its
+    // slash until after tokenization so consecutive globstars are recognized.
+    .replace(/(^|\/)\*\*(?=\/)/g, '$1<<<GLOBSTAR_DIR>>>')
     .replace(/\*\*/g, '<<<GLOBSTAR>>>')  
     .replace(/\*/g, '[^/]*')              
     .replace(/\?/g, '[^/]')               
-    .replace(/<<<GLOBSTAR>>>/g, '.*');    
+    .replace(/<<<GLOBSTAR>>>/g, '.*')
+    .replace(/<<<GLOBSTAR_DIR>>>\//g, '(?:.*/)?');
 
   return new RegExp(`^${regex}$`);
+}
+
+/**
+ * `dir/**` means "everything under dir" and users also expect it to cover `dir`
+ * itself, but the regex needs a character after `dir/`. Match the pattern with
+ * its trailing `/**` removed against the path as well.
+ */
+function matchesGlobPattern(pattern: string, normalizedPath: string, pathBasename: string): boolean {
+  const regex = globToRegex(pattern);
+  if (regex.test(normalizedPath) || regex.test(pathBasename)) return true;
+  if (pattern.replace(/\\/g, '/').endsWith('/**')) {
+    return globToRegex(pattern.slice(0, -3)).test(normalizedPath.replace(/\/+$/, ''));
+  }
+  return false;
 }
 
 /**
@@ -35,8 +58,7 @@ export function matchesAnyGlob(folderPath: string, patterns: string[]): boolean 
     const pattern = rawPattern.trim();
     if (!pattern) continue;
     try {
-      const regex = globToRegex(pattern);
-      if (regex.test(normalizedPath) || regex.test(pathBasename)) {
+      if (matchesGlobPattern(pattern, normalizedPath, pathBasename)) {
         return true;
       }
     } catch (error: unknown) {
@@ -62,8 +84,7 @@ export function isProjectExcluded(projectPath: string, exclusionPatterns: string
 
   for (const pattern of patternList) {
     try {
-      const regex = globToRegex(pattern);
-      if (regex.test(normalizedProjectPath) || regex.test(projectBasename)) {
+      if (matchesGlobPattern(pattern, normalizedProjectPath, projectBasename)) {
         return true;
       }
     } catch (error: unknown) {

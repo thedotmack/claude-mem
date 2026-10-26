@@ -1,0 +1,307 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+    --font-heading: var(--font-sans);
+    --font-sans: 'Geist Variable', sans-serif;
+    --color-working: var(--working);
+    --color-working-foreground: var(--working-foreground);
+    --color-working-border: var(--working-border);
+    --color-review: var(--review);
+    --color-review-foreground: var(--review-foreground);
+    --color-review-border: var(--review-border);
+    --color-attention: var(--attention);
+    --color-attention-foreground: var(--attention-foreground);
+    --color-attention-border: var(--attention-border);
+    --color-idle: var(--idle);
+    --color-idle-foreground: var(--idle-foreground);
+    --color-idle-border: var(--idle-border);
+    --color-shipped: var(--shipped);
+    --color-shipped-foreground: var(--shipped-foreground);
+    --color-shipped-border: var(--shipped-border);
+    --color-goal: var(--goal);
+    --color-goal-foreground: var(--goal-foreground);
+    --color-goal-border: var(--goal-border);
+    --color-agent-claude: var(--agent-claude);
+    --color-agent-claude-foreground: var(--agent-claude-foreground);
+    --color-agent-claude-border: var(--agent-claude-border);
+    --color-agent-codex: var(--agent-codex);
+    --color-agent-codex-foreground: var(--agent-codex-foreground);
+    --color-agent-codex-border: var(--agent-codex-border);
+    --color-agent-gemini: var(--agent-gemini);
+    --color-agent-gemini-foreground: var(--agent-gemini-foreground);
+    --color-agent-gemini-border: var(--agent-gemini-border);
+    --color-terminal: var(--terminal);
+    --color-terminal-foreground: var(--terminal-foreground);
+    --color-terminal-border: var(--terminal-border);
+    --color-surface: var(--surface);
+    --color-surface-warm: var(--surface-warm);
+    --color-surface-cool: var(--surface-cool);
+    --color-sidebar-ring: var(--sidebar-ring);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar: var(--sidebar);
+    --color-chart-5: var(--chart-5);
+    --color-chart-4: var(--chart-4);
+    --color-chart-3: var(--chart-3);
+    --color-chart-2: var(--chart-2);
+    --color-chart-1: var(--chart-1);
+    --color-ring: var(--ring);
+    --color-input: var(--input);
+    --color-border: var(--border);
+    --color-destructive: var(--destructive);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-primary-bright: var(--primary-bright);
+    --color-primary-deep: var(--primary-deep);
+    --color-accent-border: var(--accent-border);
+    --shadow-panel: var(--panel-shadow);
+    --shadow-control: var(--control-shadow);
+    --shadow-primary: var(--primary-shadow);
+    --shadow-popover: var(--popover-shadow);
+    --shadow-tile: var(--tile-shadow);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-popover: var(--popover);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --color-foreground: var(--foreground);
+    --color-background: var(--background);
+    --radius-sm: calc(var(--radius) * 0.6);
+    --radius-md: calc(var(--radius) * 0.8);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) * 1.4);
+    --radius-2xl: calc(var(--radius) * 1.8);
+    --radius-3xl: calc(var(--radius) * 2.2);
+    --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+/*
+ * Warm paper canvas in the claude-mem brand: brand orange #FD6500 for primary actions,
+ * warm neutrals everywhere else. Elevation is reserved for panels and primary actions.
+ */
+:root {
+    --background: #f7f1e9;
+    --foreground: #1f1a17;
+    --card: #fffdf9;
+    --card-foreground: #1f1a17;
+    --popover: #fffdf9;
+    --popover-foreground: #1f1a17;
+    --primary: #fd6500;
+    --primary-bright: #ff7b1a;
+    --primary-deep: #e55800;
+    --primary-foreground: #ffffff;
+    --secondary: #f3ece3;
+    --secondary-foreground: #3b3029;
+    --muted: #f3ece3;
+    --muted-foreground: #776a5e;
+    --accent: #fdebdd;
+    --accent-foreground: #b04800;
+    --accent-border: #f6cdac;
+    --destructive: #c2413d;
+    --border: #ebe2d6;
+    --input: #e1d6c8;
+    --ring: #fd8a3d;
+    --chart-1: #fd6500;
+    --chart-2: #4db8d4;
+    --chart-3: #7eb663;
+    --chart-4: #ffb366;
+    --chart-5: #5ba3c7;
+    --radius: 0.625rem;
+    --sidebar: #fbf7f1;
+    --sidebar-foreground: #1f1a17;
+    --sidebar-primary: #fd6500;
+    --sidebar-primary-foreground: #ffffff;
+    --sidebar-accent: #fdebdd;
+    --sidebar-accent-foreground: #b04800;
+    --sidebar-border: #ebe2d6;
+    --sidebar-ring: #fd8a3d;
+
+    /* Soft semantic surfaces keep state and ownership readable without shadows. */
+    --surface: #f8f3ec;
+    --surface-warm: #fff7ee;
+    --surface-cool: #f5f1eb;
+    --working: #eaf4f9;
+    --working-foreground: #2b6c8f;
+    --working-border: #c7e0ed;
+    --review: #fdf3e0;
+    --review-foreground: #925e0e;
+    --review-border: #efd6a6;
+    --attention: #fdecea;
+    --attention-foreground: #b43e3a;
+    --attention-border: #f2c7c3;
+    --idle: #f3eee8;
+    --idle-foreground: #6f6358;
+    --idle-border: #e1d8cd;
+    --shipped: #eef6e8;
+    --shipped-foreground: #477a30;
+    --shipped-border: #cce2bc;
+    --goal: #e3f3ee;
+    --goal-foreground: #1d7562;
+    --goal-border: #b6dccf;
+    --agent-claude: #fdeee2;
+    --agent-claude-foreground: #b2500f;
+    --agent-claude-border: #f4d1b6;
+    --agent-codex: #eef0f1;
+    --agent-codex-foreground: #465663;
+    --agent-codex-border: #d4dbe0;
+    --agent-gemini: #eaf0fb;
+    --agent-gemini-foreground: #3b5ea6;
+    --agent-gemini-border: #cad7ef;
+    --terminal: #f7f2eb;
+    --terminal-foreground: #54483e;
+    --terminal-border: #e2d7c9;
+
+    /* Elevation: hairline plus a soft diffuse lift, warm-tinted, never a hard drop. */
+    --panel-shadow: 0 1px 2px rgb(74 46 20 / 0.04), 0 14px 36px -18px rgb(96 58 22 / 0.16);
+    --popover-shadow: 0 2px 6px rgb(74 46 20 / 0.06), 0 18px 44px -16px rgb(96 58 22 / 0.22);
+    --control-shadow: inset 0 1px 0 rgb(255 255 255 / 0.9), 0 1px 2px rgb(74 46 20 / 0.06);
+    --primary-shadow: inset 0 1px 0 rgb(255 255 255 / 0.3), inset 0 -1px 0 rgb(120 40 0 / 0.18), 0 1px 2px rgb(150 60 0 / 0.22), 0 6px 14px -6px rgb(253 101 0 / 0.45);
+    --tile-shadow: inset 0 1px 0 rgb(255 255 255 / 0.85), 0 1px 1.5px rgb(74 46 20 / 0.1);
+
+    /* Canvas: warm paper with a faint peach haze and a barely-there grain. */
+    --haze-a: rgb(255 196 150 / 0.42);
+    --haze-b: rgb(255 179 102 / 0.24);
+    --haze-c: rgb(253 101 0 / 0.07);
+    --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .35 0 0 0 0 .22 0 0 0 0 .1 0 0 0 .035 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+.dark {
+    --background: #0f0c0a;
+    --foreground: #f4ece2;
+    --card: #201b17;
+    --card-foreground: #f4ece2;
+    --popover: #27211c;
+    --popover-foreground: #f4ece2;
+    --primary: #fd6500;
+    --primary-bright: #ff7b1a;
+    --primary-deep: #e55800;
+    --primary-foreground: #ffffff;
+    --secondary: #29231e;
+    --secondary-foreground: #e6dbcd;
+    --muted: #29231e;
+    --muted-foreground: #ae9f8e;
+    --accent: #3a2415;
+    --accent-foreground: #ffb27a;
+    --accent-border: #5f3719;
+    --destructive: #f08a86;
+    --border: #3a312a;
+    --input: #483d34;
+    --ring: #ff8a3d;
+    --chart-1: #ff7b1a;
+    --chart-2: #4db8d4;
+    --chart-3: #7eb663;
+    --chart-4: #ffb366;
+    --chart-5: #5ba3c7;
+    --sidebar: #15110f;
+    --sidebar-foreground: #f4ece2;
+    --sidebar-primary: #ff7b1a;
+    --sidebar-primary-foreground: #ffffff;
+    --sidebar-accent: #3a2415;
+    --sidebar-accent-foreground: #ffb27a;
+    --sidebar-border: #3a312a;
+    --sidebar-ring: #ff8a3d;
+
+    /* Soft semantic surfaces keep state and ownership readable without shadows. */
+    --surface: #29231e;
+    --surface-warm: #231b15;
+    --surface-cool: #1b1815;
+    --working: #142632;
+    --working-foreground: #8cc6e3;
+    --working-border: #26475a;
+    --review: #2d2214;
+    --review-foreground: #f2c27a;
+    --review-border: #574124;
+    --attention: #341a1a;
+    --attention-foreground: #f4a19c;
+    --attention-border: #5f2d2b;
+    --idle: #24201c;
+    --idle-foreground: #b4a798;
+    --idle-border: #3c352f;
+    --shipped: #1a2816;
+    --shipped-foreground: #a9d590;
+    --shipped-border: #33502a;
+    --goal: #112822;
+    --goal-foreground: #86d3bf;
+    --goal-border: #22503f;
+    --agent-claude: #34210f;
+    --agent-claude-foreground: #ffb27a;
+    --agent-claude-border: #5f3a1c;
+    --agent-codex: #22262a;
+    --agent-codex-foreground: #b8c3cc;
+    --agent-codex-border: #3a434b;
+    --agent-gemini: #182238;
+    --agent-gemini-foreground: #a9c0f0;
+    --agent-gemini-border: #2f4470;
+    --terminal: #181411;
+    --terminal-foreground: #cdbfae;
+    --terminal-border: #362d26;
+
+    --panel-shadow: inset 0 1px 0 rgb(255 240 225 / 0.035), 0 1px 2px rgb(0 0 0 / 0.3), 0 16px 40px -18px rgb(0 0 0 / 0.7);
+    --popover-shadow: inset 0 1px 0 rgb(255 240 225 / 0.04), 0 18px 44px -14px rgb(0 0 0 / 0.75);
+    --control-shadow: inset 0 1px 0 rgb(255 240 225 / 0.05), 0 1px 2px rgb(0 0 0 / 0.35);
+    --primary-shadow: inset 0 1px 0 rgb(255 255 255 / 0.25), inset 0 -1px 0 rgb(80 25 0 / 0.3), 0 1px 2px rgb(0 0 0 / 0.4), 0 6px 16px -6px rgb(253 101 0 / 0.4);
+    --tile-shadow: inset 0 1px 0 rgb(255 240 225 / 0.06), 0 1px 1.5px rgb(0 0 0 / 0.4);
+
+    --haze-a: rgb(253 101 0 / 0.09);
+    --haze-b: rgb(255 179 102 / 0.05);
+    --haze-c: rgb(253 101 0 / 0.04);
+    --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 .9 0 0 0 0 .8 0 0 0 .025 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+    }
+  html {
+    /* Generous 17px base on desktop, like the fly.io dashboard; 16px on phones. Rem sizes scale with it. */
+    font-size: 100%;
+    @media (width >= 48rem) { font-size: 106.25%; }
+    color-scheme: light;
+    @apply font-sans;
+    }
+  html.dark {
+    color-scheme: dark;
+    }
+  body {
+    @apply bg-background text-foreground antialiased;
+    background-image:
+      var(--grain),
+      radial-gradient(1100px 620px at -5% -10%, var(--haze-a), transparent 62%),
+      radial-gradient(900px 560px at 105% 0%, var(--haze-b), transparent 60%),
+      radial-gradient(1200px 720px at 60% 115%, var(--haze-c), transparent 62%);
+    background-attachment: fixed;
+    }
+}
+
+/* Small caps section label, as in the fly.io sidebar (BUILD, MONITOR). */
+@utility section-label {
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+/* Reduced motion everywhere: spinners stop, pulses and slides are instant, the text simply swaps (decision 5). */
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -4,6 +4,7 @@ import {
   waitForSlot,
   type SlotReservation,
 } from '../../src/supervisor/process-registry.js';
+import { guardSharedProcessRegistrySingleton } from './process-registry-singleton-guard.js';
 
 /**
  * Concurrency contract of waitForSlot() (#3287).
@@ -20,7 +21,22 @@ import {
  * registry plus a module-level reservation count, so every test releases
  * everything it acquired (afterEach re-releases defensively; release is
  * idempotent).
+ *
+ * This file drives that same real, module-level process-registry singleton
+ * as tests/supervisor/process-registry.test.ts,
+ * tests/worker/http/routes/session-routes-provider-switch.test.ts, and
+ * tests/worker/http/routes/data-routes-processing-status.test.ts (#2756) —
+ * see process-registry-singleton-guard.ts for why a leak here needs to fail
+ * loudly in THIS file rather than surface as a confusing, misattributed
+ * failure in one of those three.
  */
+
+// Registered at true file top level, outside the describe below (whose own
+// afterEach, nested one level in, already runs its own cleanup): see
+// process-registry-singleton-guard.ts for why the relative nesting — not
+// just declaration order — is load-bearing under bun's LIFO afterEach
+// order.
+guardSharedProcessRegistrySingleton('wait-for-slot.test.ts');
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 

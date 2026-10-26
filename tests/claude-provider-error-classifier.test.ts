@@ -191,3 +191,68 @@ describe('classifyClaudeError — model identifier rejections without .status (#
     expect(classified.kind).toBe('transient');
   });
 });
+
+/**
+ * An observer working directory that cannot be created (the data dir is a file
+ * or unwritable) is a setup problem: retrying cannot fix it. The CLI's own
+ * `Path "..." does not exist` result is not: telemetry shows it once per install
+ * and never again, so it stays transient.
+ */
+describe('classifyClaudeError — observer working directory', () => {
+  it('classifies the ensureObserverSessionsDir setup message as setup_required', () => {
+    const err = new Error('Observer working directory could not be prepared: /home/u/data/observer-sessions (ENOTDIR): not a directory');
+    expect(classifyClaudeError(err).kind).toBe('setup_required');
+  });
+
+  it('keeps the CLI "Path ... does not exist" result transient', () => {
+    const err = new Error('Claude Code returned an error result: Path "/home/u/.claude-mem/observer-sessions/1" does not exist');
+    expect(classifyClaudeError(err).kind).toBe('transient');
+  });
+
+  it('only matches the message at its start', () => {
+    const err = new Error('upstream said: Observer working directory could not be prepared: /x (EACCES): denied');
+    expect(classifyClaudeError(err).kind).toBe('transient');
+  });
+
+  it('does not treat an unrelated "does not exist" message as setup_required', () => {
+    const err = new Error('the requested record does not exist');
+    expect(classifyClaudeError(err).kind).toBe('transient');
+  });
+});
+
+/**
+ * A spent Anthropic API key: the CLI wraps the billing notice in a 400
+ * invalid_request_error. It is a spent allowance, so it books a quota pause
+ * (and the quota fallback), not a permanent bad request.
+ */
+describe('classifyClaudeError — spent API key credit balance', () => {
+  const WRAPPED =
+    'API Error: 400 {"error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API."}}';
+
+  it('classifies the status-less wrapped 400 as quota_exhausted', () => {
+    expect(classifyClaudeError(new Error(WRAPPED)).kind).toBe('quota_exhausted');
+  });
+
+  it('classifies the statused wrapped 400 as quota_exhausted', () => {
+    const sdkErr = Object.assign(new Error(WRAPPED), { status: 400 });
+    expect(classifyClaudeError(sdkErr).kind).toBe('quota_exhausted');
+  });
+
+  it('classifies a statused 400 that carries the notice only in its body as quota_exhausted', () => {
+    const sdkErr = Object.assign(new Error('Bad request'), {
+      status: 400,
+      body: { error: { type: 'invalid_request_error', message: 'Your credit balance is too low to access the Anthropic API.' } },
+    });
+    expect(classifyClaudeError(sdkErr).kind).toBe('quota_exhausted');
+  });
+
+  it('classifies the CLI error result wording as quota_exhausted', () => {
+    const err = new Error('Claude Code returned an error result: Credit balance is too low');
+    expect(classifyClaudeError(err).kind).toBe('quota_exhausted');
+  });
+
+  it('keeps other invalid_request_error 400s unrecoverable', () => {
+    const err = new Error('API Error: 400 {"error":{"type":"invalid_request_error","message":"max_tokens: too large"}}');
+    expect(classifyClaudeError(err).kind).toBe('unrecoverable');
+  });
+});

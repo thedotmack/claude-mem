@@ -114,6 +114,27 @@ describe('replaceTaggedContent', () => {
     expect(result).toBe('Some content\n</claude-mem-context>\nMore content\n\n<claude-mem-context>\nNew content\n</claude-mem-context>');
   });
 
+  it('replaces only the block when a closing tag comes before it, and does not grow on refresh', () => {
+    // A closing tag taken for the end of the block copied the text between it
+    // and the block, and kept the old block, on every refresh of an
+    // auto-loaded CLAUDE.md or AGENTS.md.
+    const before = 'Notes\n</claude-mem-context>\nKeep this line.\n';
+    let content = `${before}<claude-mem-context>\nold\n</claude-mem-context>\n## After\n`;
+
+    content = replaceTaggedContent(content, 'first refresh');
+    content = replaceTaggedContent(content, 'second refresh');
+
+    expect(content).toBe(`${before}<claude-mem-context>\nsecond refresh\n</claude-mem-context>\n## After\n`);
+  });
+
+  it('keeps the text after a dangling opening tag once a later refresh finds the block', () => {
+    const appended = replaceTaggedContent('Some content\n<claude-mem-context>\nIncomplete tag section', 'first');
+
+    expect(replaceTaggedContent(appended, 'second')).toBe(
+      'Some content\n<claude-mem-context>\nIncomplete tag section\n\n<claude-mem-context>\nsecond\n</claude-mem-context>',
+    );
+  });
+
   it('should preserve newlines in new content', () => {
     const existingContent = '<claude-mem-context>\nOld content\n</claude-mem-context>';
     const newContent = 'Line 1\nLine 2\nLine 3';
@@ -163,6 +184,29 @@ describe('formatTimelineForClaudeMd', () => {
     expect(result).toContain('"');
   });
 
+  it('keeps the by-file route\'s newest-first order across days', () => {
+    // /api/search/by-file renders days and rows newest-first.
+    const input = `### Oct 17, 2026
+
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #4 | 5:00 PM | 🔵 | Newest | ~10 |
+| #3 | 3:00 PM | 🔵 | Third | ~10 |
+
+### Oct 16, 2026
+
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #2 | 5:00 PM | 🔵 | Second | ~10 |
+| #1 | 3:00 PM | 🔵 | Oldest | ~10 |`;
+
+    const result = formatTimelineForClaudeMd(input);
+
+    const ids = [...result.matchAll(/^\| (#\d+) \|/gm)].map(m => m[1]);
+    expect(ids).toEqual(['#4', '#3', '#2', '#1']);
+    expect(result.indexOf('### Oct 17, 2026')).toBeLessThan(result.indexOf('### Oct 16, 2026'));
+  });
+
   it('should parse session ID format (#S123) correctly', () => {
     const input = '| #S123 | 4:30 PM | 🟣 | Session started | ~200 |';
 
@@ -172,6 +216,20 @@ describe('formatTimelineForClaudeMd', () => {
     expect(result).toContain('4:30 PM');
     expect(result).toContain('🟣');
     expect(result).toContain('Session started');
+  });
+
+  it('keeps titles that contain a pipe intact', () => {
+    // FormattingService writes titles (and session requests) verbatim, so a
+    // `|` inside the title is part of the cell, not a column separator.
+    const input = `| #7 | 3:00 PM | 🔵 | Parse a | b union types | ~120 | - |
+| #8 | ″ | 🔵 | Default with a || b fallback | ~90 | - |
+| #S9 | 3:05 PM | 🎯 | run ls | grep foo | - | - |`;
+
+    const result = formatTimelineForClaudeMd(input);
+
+    expect(result).toContain('| #7 | 3:00 PM | 🔵 | Parse a | b union types | ~120 |');
+    expect(result).toContain('| #8 | " | 🔵 | Default with a || b fallback | ~90 |');
+    expect(result).toContain('| #S9 | 3:05 PM | 🎯 | run ls | grep foo | - |');
   });
 });
 
@@ -963,6 +1021,32 @@ describe('issue #912 - skip unsafe directories for CLAUDE.md generation', () => 
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('only checks directory names below the project root', async () => {
+    // A project that itself lives under ~/build or ~/res must still get folder CLAUDE.md files.
+    for (const parent of ['build', 'res', 'node_modules']) {
+      const apiResponse = {
+        content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
+      };
+      const fetchMock = mock(() => Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve(apiResponse)
+      } as Response));
+      global.fetch = fetchMock;
+      const projectRoot = join(tempDir, parent, 'myapp');
+      mkdirSync(join(projectRoot, 'src', 'utils'), { recursive: true });
+
+      await updateFolderClaudeMdFiles(
+        ['src/utils/file.ts'],
+        'test-project',
+        37777,
+        projectRoot
+      );
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(readFileSync(join(projectRoot, 'src', 'utils', 'CLAUDE.md'), 'utf-8')).toContain('#123');
+    }
+  });
+
   it('should skip deeply nested unsafe directories', async () => {
     const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
     global.fetch = fetchMock;
@@ -1109,6 +1193,23 @@ describe('skeleton CLAUDE.md deny-list (#2400)', () => {
   const emptySkeletonResponse = {
     content: [{ text: 'no observation rows here' }],
   };
+
+  it('does not create a new CLAUDE.md when the formatted timeline is empty', async () => {
+    delete process.env[ENV_KEY];
+
+    const folderPath = join(tempDir, 'empty-timeline');
+    mkdirSync(folderPath, { recursive: true });
+    const filePath = join(folderPath, 'file.ts');
+
+    global.fetch = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(emptySkeletonResponse),
+    } as Response));
+
+    await updateFolderClaudeMdFiles([filePath], 'test-project', 37777, tempDir);
+
+    expect(existsSync(join(folderPath, 'CLAUDE.md'))).toBe(false);
+  });
 
   it('does NOT overwrite an existing CLAUDE.md with a skeleton when the folder matches the deny-list', async () => {
     process.env[ENV_KEY] = JSON.stringify(['**/transient']);

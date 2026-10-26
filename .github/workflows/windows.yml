@@ -38,6 +38,20 @@ jobs:
 
       - run: npm run build
 
+      - name: Hook compatibility with Git Bash and Windows overrides
+        shell: pwsh
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
+          & $bun test tests/infrastructure/hook-shell.test.ts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $bun test tests/infrastructure/plugin-distribution.test.ts --test-name-pattern 'Codex Windows payload dependency check'
+
+      - name: Context reader responsiveness and packaging
+        shell: pwsh
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
+          & $bun test tests/context/context-read-responsiveness.test.ts tests/context/context-read-results.test.ts tests/context/context-read-worker-lifecycle.test.ts tests/context/context-read-routes.test.ts tests/context/context-work-state-order.test.ts tests/infrastructure/context-reader-packaging.test.ts --timeout 60000
+
       # Covers the Windows-only bun resolver path that Linux CI skips, plus the
       # scripts that replaced rsync and tail: mirror pattern matching, --delete
       # protection and -a metadata reconciliation against real NTFS paths, and
@@ -46,6 +60,18 @@ jobs:
         run: |
           $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
           & $bun test tests/bun-runner.test.ts tests/scripts/mirror-dir.test.ts tests/scripts/worker-logs.test.ts
+
+      # The installer's refusal boundaries: non-TTY and TTY cases that require
+      # exit 1, require --runtime worker, untouched settings (mode included) and
+      # zero bootstrap/HTTP/task calls. They only ran on Linux (the test-lanes
+      # check gate) until the 0o600 mode assertion and fixture caps were fixed
+      # for Windows; run them here so installer regressions ship unseen on no
+      # lane. The Pi+DSH detection describe stays skipped (needs real installs).
+      - name: Combined-installer boundary suites
+        shell: pwsh
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
+          & $bun test tests/npx-cli/combined-installer-non-tty-boundaries.test.ts tests/npx-cli/combined-installer-boundaries.test.ts --timeout 30000
 
       # The step that used to be impossible on Windows: sync-marketplace shelled
       # out to rsync. Runs the real script against a scratch USERPROFILE (Node's
@@ -89,8 +115,8 @@ jobs:
           $env:USERPROFILE = Join-Path $env:RUNNER_TEMP 'log-home'
           $logs = Join-Path $env:USERPROFILE '.claude-mem\logs'
           New-Item -ItemType Directory -Force -Path $logs | Out-Null
-          $stamp = Get-Date -Format 'yyyy-MM-dd'
-          Set-Content -Path (Join-Path $logs "worker-$stamp.log") -Value (1..60 | ForEach-Object { "line $_" })
+          $stamp = [DateTime]::UtcNow.ToString('yyyy-MM-dd')
+          Set-Content -Path (Join-Path $logs "claude-mem-$stamp.log") -Value (1..60 | ForEach-Object { "line $_" })
 
           $out = node scripts/worker-logs.cjs
           if ($out.Count -ne 50) { throw "expected 50 lines, got $($out.Count)" }
@@ -200,6 +226,19 @@ jobs:
         run: |
           $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
           & $bun test tests/integration/worker-recycle-orphans.test.ts --timeout 600000
+
+      # Ghost-listener recovery gate (plan-15 #3603). Fails on main: a worker
+      # killed OUT-OF-BAND (taskkill /F without /T) leaves its chroma sidecar
+      # chain holding the inherited listening socket, and no launcher reclaims
+      # the port — ensureWorkerStarted returns 'dead' forever. Passes once the
+      # spawn path reclaims the dead owner's sidecar descendants and starts.
+      - name: Ghost-listener recovery gate (#3603)
+        shell: pwsh
+        env:
+          CLAUDE_MEM_DATA_DIR: ${{ runner.temp }}\claude-mem-ghost-data
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
+          & $bun test tests/integration/worker-ghost-port-recovery.test.ts --timeout 600000
 
       # Diagnostic only — never fails the job. Ancestry/identity filtering is
       # done inside the tests; this is just a human-readable postmortem for

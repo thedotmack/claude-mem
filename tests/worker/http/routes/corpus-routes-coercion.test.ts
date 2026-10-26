@@ -12,8 +12,8 @@ function createMockReqRes(body: any): {
   const jsonSpy = mock(() => {});
   const statusSpy = mock(() => ({ json: jsonSpy }));
   return {
-    req: { body, path: '/api/corpus', params: {}, query: {} } as Partial<Request>,
-    res: { json: jsonSpy, status: statusSpy, headersSent: false } as unknown as Partial<Response>,
+    req: { body, path: '/api/corpus', params: {}, query: {}, headers: {}, socket: { on: mock(() => {}), off: mock(() => {}) } } as unknown as Partial<Request>,
+    res: { json: jsonSpy, status: statusSpy, headersSent: false, on: mock(() => {}), off: mock(() => {}), end: mock(() => {}) } as unknown as Partial<Response>,
     jsonSpy,
     statusSpy,
   };
@@ -131,6 +131,38 @@ describe('CorpusRoutes Type Coercion', () => {
     });
   });
 
+  it('persists camelCase dateStart/dateEnd from the MCP tool into the filter', async () => {
+    const { req, res } = createMockReqRes({
+      name: 'camel-dates',
+      dateStart: '2025-01-01',
+      dateEnd: '2025-03-01',
+    });
+
+    handler(req as Request, res as Response);
+    await flushPromises();
+
+    expect(mockBuild).toHaveBeenCalledWith('camel-dates', '', {
+      date_start: '2025-01-01',
+      date_end: '2025-03-01',
+    });
+  });
+
+  it('persists snake_case date_start/date_end into the filter', async () => {
+    const { req, res } = createMockReqRes({
+      name: 'snake-dates',
+      date_start: '2025-01-01',
+      date_end: '2025-03-01',
+    });
+
+    handler(req as Request, res as Response);
+    await flushPromises();
+
+    expect(mockBuild).toHaveBeenCalledWith('snake-dates', '', {
+      date_start: '2025-01-01',
+      date_end: '2025-03-01',
+    });
+  });
+
   it('coerces comma-separated filters and trims whitespace', async () => {
     const { req, res } = createMockReqRes({
       name: 'comma-strings',
@@ -159,6 +191,22 @@ describe('CorpusRoutes Type Coercion', () => {
     await flushPromises();
 
     expect(statusSpy).toHaveBeenCalledWith(400);
+    expect(mockBuild).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['dateStart', 'not-a-date'],
+    ['date_start', 'not-a-date'],
+    ['dateEnd', '2025-13-45'],
+    ['date_end', 'yesterday-ish'],
+  ])('rejects an unparseable %s with 400 INVALID_DATE before calling CorpusBuilder', async (key, value) => {
+    const { req, res, statusSpy, jsonSpy } = createMockReqRes({ name: 'bad-date', [key]: value });
+
+    handler(req as Request, res as Response);
+    await flushPromises();
+
+    expect(statusSpy).toHaveBeenCalledWith(400);
+    expect(jsonSpy).toHaveBeenCalledWith(expect.objectContaining({ code: 'INVALID_DATE' }));
     expect(mockBuild).not.toHaveBeenCalled();
   });
 

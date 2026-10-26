@@ -2,7 +2,7 @@
 import { spawnSync, spawn } from 'child_process';
 import { existsSync, readFileSync, mkdirSync, appendFileSync, writeFileSync } from 'fs';
 import { join, dirname, resolve } from 'path';
-import { homedir } from 'os';
+import { homedir, tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 
 const IS_WINDOWS = process.platform === 'win32';
@@ -21,6 +21,44 @@ function fixBrokenScriptPath(argPath) {
 }
 
 function findBun() {
+  const bunInstall = typeof process.env.BUN_INSTALL === 'string' ? process.env.BUN_INSTALL.trim() : '';
+  const bunEnv = typeof process.env.BUN === 'string' ? process.env.BUN.trim() : '';
+  const bunPathEnv = typeof process.env.BUN_PATH === 'string' ? process.env.BUN_PATH.trim() : '';
+
+  // Explicit overrides + BUN_INSTALL (official installer) + well-known homes.
+  // Hook PATH from Git Bash often omits ~/.bun/bin (#3224).
+  const bunPaths = IS_WINDOWS
+    ? [
+        bunEnv,
+        bunPathEnv,
+        bunInstall ? join(bunInstall, 'bin', 'bun.exe') : '',
+        bunInstall ? join(bunInstall, 'bin', 'bun') : '',
+        bunInstall ? join(bunInstall, 'bun.exe') : '',
+        join(homedir(), '.bun', 'bin', 'bun.exe'),
+      ]
+    : [
+        bunEnv,
+        bunPathEnv,
+        bunInstall ? join(bunInstall, 'bin', 'bun') : '',
+        bunInstall ? join(bunInstall, 'bun') : '',
+        join(homedir(), '.bun', 'bin', 'bun'),
+        '/usr/local/bin/bun',
+        '/opt/homebrew/bin/bun',
+        '/home/linuxbrew/.linuxbrew/bin/bun'
+      ];
+
+  // Windows: an explicit or well-known Bun wins over PATH, so the usual
+  // ~/.bun install never pays a synchronous `where bun`, which can stall for
+  // seconds over a long PATH and blow the hook timeout (#4934). This matches
+  // the compiled launcher (src/launcher/bun-runtime.ts).
+  if (IS_WINDOWS) {
+    for (const bunPath of bunPaths) {
+      if (bunPath && existsSync(bunPath)) {
+        return bunPath;
+      }
+    }
+  }
+
   const pathCheck = IS_WINDOWS
     ? spawnSync('where', ['bun'], {
         encoding: 'utf-8',
@@ -34,7 +72,15 @@ function findBun() {
 
   if (pathCheck.status === 0 && pathCheck.stdout.trim()) {
     if (IS_WINDOWS) {
-      const bunPaths = pathCheck.stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+      // where.exe writes the console's active code page (e.g. cp949 on ko-KR,
+      // cp932 on ja-JP) but the `encoding: 'utf-8'` above decodes those bytes
+      // as UTF-8, so a non-ASCII profile folder name arrives as U+FFFD and the
+      // reported path does not exist (#4694, #3865). Keep only the lines that
+      // resolve on disk and thread this filtered list through EVERY return
+      // below — re-reading the raw stdout would hand the garbled path back
+      // even after the list was filtered.
+      const bunPaths = pathCheck.stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+        .filter(line => existsSync(line));
       const firstBunPath = bunPaths.find(line => {
         const lowerPath = line.toLowerCase();
         return lowerPath.endsWith('bun.exe') || lowerPath.endsWith('bun.cmd');
@@ -55,25 +101,20 @@ function findBun() {
       // the resolved absolute path instead of falling through to the bare
       // name: resolving a bare `bun` later relies on the child's PATH, which
       // cmd.exe drops entirely when it exceeds ~8191 chars (issue #3196).
-      const firstWherePath = pathCheck.stdout.split(/\r?\n/).map(line => line.trim()).find(Boolean);
+      const firstWherePath = bunPaths.find(Boolean);
       if (firstWherePath) {
         return firstWherePath;
       }
+      // Every where hit was garbled or stale (#4694): fall through to the
+      // explicit overrides and well-known install homes below instead of
+      // returning a path that can only fail with ENOENT.
+    } else {
+      return 'bun';
     }
-    return 'bun';
   }
 
-  const bunPaths = IS_WINDOWS
-    ? [join(homedir(), '.bun', 'bin', 'bun.exe')]
-    : [
-        join(homedir(), '.bun', 'bin', 'bun'),
-        '/usr/local/bin/bun',
-        '/opt/homebrew/bin/bun',
-        '/home/linuxbrew/.linuxbrew/bin/bun'
-      ];
-
   for (const bunPath of bunPaths) {
-    if (existsSync(bunPath)) {
+    if (bunPath && existsSync(bunPath)) {
       return bunPath;
     }
   }
@@ -101,7 +142,9 @@ function isPluginDisabledInClaudeSettings() {
   }
 }
 
-if (isPluginDisabledInClaudeSettings()) {
+// Claude Code's plugin toggle is host-local. Qoder can remain enabled while
+// the Claude plugin is disabled, so a Qoder hook must not inherit that opt-out.
+if (process.env.CLAUDE_MEM_QODER_HOOK !== '1' && isPluginDisabledInClaudeSettings()) {
   process.exit(0);
 }
 
@@ -113,6 +156,8 @@ if (args.length === 0) {
 }
 
 args[0] = fixBrokenScriptPath(args[0]);
+// Resolve a relative script path against the launch directory before the child starts in tmpdir() (#4628)
+args[0] = resolve(process.cwd(), args[0]);
 
 const bunPath = findBun();
 
@@ -148,10 +193,15 @@ function collectStdin() {
 
 const stdinData = await collectStdin();
 
+// Bun reads tsconfig.json from its working directory and prints any warnings
+// about it to stderr, which hosts show as hook errors (#4628). Start it in a
+// neutral directory and hand it the launch directory; the hook entry point
+// (src/cli/hook-original-cwd.ts) moves back there before adapters run.
 const spawnOptions = {
   stdio: ['pipe', 'inherit', 'inherit'],
   windowsHide: true,
-  env: process.env
+  env: Object.assign({}, process.env, { CLAUDE_MEM_HOOK_ORIGINAL_CWD: process.cwd() }),
+  cwd: tmpdir()
 };
 
 let spawnCmd = bunPath;
@@ -175,6 +225,7 @@ if (needsCmdShell) {
 const child = spawn(spawnCmd, spawnArgs, spawnOptions);
 
 if (child.stdin) {
+  child.stdin.on('error', () => {});
   if (stdinData && stdinData.length > 0) {
     child.stdin.write(stdinData);
     child.stdin.end();

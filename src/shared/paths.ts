@@ -3,7 +3,8 @@ import { homedir } from 'os';
 import { existsSync, mkdirSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
-import { parseJsonWithBom } from './atomic-json.js';
+import { readJsonFileWithBom } from './atomic-json.js';
+import { settingsTarget } from './settings-document.js';
 import { expandHome } from './expand-home.js';
 
 export { expandHome } from './expand-home.js';
@@ -26,9 +27,10 @@ export function resolveDataDir(): string {
   const settingsPath = join(defaultDataDir, 'settings.json');
   try {
     if (existsSync(settingsPath)) {
-      const raw = parseJsonWithBom<Record<string, any>>(readFileSync(settingsPath, 'utf-8'));
-      const settings = raw.env ?? raw;
-      if (settings.CLAUDE_MEM_DATA_DIR) {
+      const raw = readJsonFileWithBom<unknown>(settingsPath);
+      if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return defaultDataDir;
+      const settings = settingsTarget(raw as Record<string, unknown>);
+      if (typeof settings.CLAUDE_MEM_DATA_DIR === 'string' && settings.CLAUDE_MEM_DATA_DIR) {
         return expandHome(settings.CLAUDE_MEM_DATA_DIR);
       }
     }
@@ -40,13 +42,30 @@ export function resolveDataDir(): string {
 }
 
 export const DATA_DIR = resolveDataDir();
-export const CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
+// #2753 — the literal default config dir, independent of process.env state.
+// Lets callers (oauth-token.ts) compare an *effective* config dir against the
+// TRUE default rather than against CLAUDE_CONFIG_DIR (which already folds in
+// process.env). Purely additive: does not change CLAUDE_CONFIG_DIR's own
+// derivation or MARKETPLACE_ROOT below.
+export const DEFAULT_CLAUDE_CONFIG_DIR = join(homedir(), '.claude');
+export const CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || DEFAULT_CLAUDE_CONFIG_DIR;
 
 export const MARKETPLACE_ROOT = join(CLAUDE_CONFIG_DIR, 'plugins', 'marketplaces', 'thedotmack');
 
 export const LOGS_DIR = join(DATA_DIR, 'logs');
 export const USER_SETTINGS_PATH = join(DATA_DIR, 'settings.json');
-export const DB_PATH = join(DATA_DIR, 'claude-mem.db');
+export const DB_FILENAME = 'claude-mem.db';
+
+/**
+ * Database path resolved at CALL time. `DB_PATH` freezes `DATA_DIR` at import,
+ * which is right for long-lived processes but wrong for anything that must
+ * honor a `CLAUDE_MEM_DATA_DIR` set after this module was loaded.
+ */
+export function resolveDbPath(): string {
+  return join(resolveDataDir(), DB_FILENAME);
+}
+
+export const DB_PATH = join(DATA_DIR, DB_FILENAME);
 
 export const OBSERVER_SESSIONS_DIR = join(DATA_DIR, 'observer-sessions');
 
@@ -54,6 +73,35 @@ export const OBSERVER_SESSIONS_PROJECT = basename(OBSERVER_SESSIONS_DIR);
 
 export function ensureDir(dirPath: string): void {
   mkdirSync(dirPath, { recursive: true });
+}
+
+/** mkdir failures that retrying can never fix: the data dir is a file, sits under one, or is not writable. */
+const PERMANENT_DIRECTORY_ERROR_CODES = new Set(['ENOTDIR', 'EEXIST', 'EACCES', 'EPERM', 'EROFS']);
+
+export const OBSERVER_WORKING_DIRECTORY_ERROR_PREFIX = 'Observer working directory could not be prepared';
+
+/**
+ * Create the Observer/KnowledgeAgent working directory before an SDK spawn.
+ *
+ * A permanent mkdir failure is rethrown as a message that classifyClaudeError
+ * maps to `setup_required`, so it is recorded once instead of retried on every
+ * ingest. Anything else (EMFILE, ENFILE, EIO, ENOSPC …) is rethrown unchanged:
+ * a passing file-system hiccup must not park Claude starts behind the setup
+ * cooldown. `makeDirectory` is a test seam; production callers omit it.
+ */
+export function ensureObserverSessionsDir(
+  dir: string = OBSERVER_SESSIONS_DIR,
+  makeDirectory: (dirPath: string) => void = ensureDir,
+): string {
+  try {
+    makeDirectory(dir);
+  } catch (error) {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code !== 'string' || !PERMANENT_DIRECTORY_ERROR_CODES.has(code)) throw error;
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`${OBSERVER_WORKING_DIRECTORY_ERROR_PREFIX}: ${dir} (${code}): ${detail}`);
+  }
+  return dir;
 }
 
 export function getPackageRoot(): string {
@@ -82,6 +130,7 @@ export function expandTilde(
 export const paths = {
   dataDir: () => DATA_DIR,
   workerPid: () => join(DATA_DIR, 'worker.pid'),
+  workerHeartbeat: () => join(DATA_DIR, 'worker-heartbeat.json'),
   // Phase 1b: identifier renamed to `server*`; the on-disk file basenames
   // remain `.server-beta.*` so existing installations keep finding their
   // pid/port/runtime state. Plan §1d will migrate the basenames.
@@ -89,7 +138,7 @@ export const paths = {
   serverPort: () => join(DATA_DIR, '.server-beta.port'),
   serverRuntime: () => join(DATA_DIR, '.server-beta.runtime.json'),
   settings: () => join(DATA_DIR, 'settings.json'),
-  database: () => join(DATA_DIR, 'claude-mem.db'),
+  database: () => join(DATA_DIR, DB_FILENAME),
   // Automatic snapshot target (BackupManager). Nested under backups/auto so
   // the manager's retention sweep never touches the legacy one-off backups
   // that live directly in backups/.

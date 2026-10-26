@@ -6,22 +6,26 @@ import { pathToFileURL } from 'url';
 import type { Database } from 'bun:sqlite';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { getWorkerPort, getWorkerHost, fetchWithTimeout, resolveWorkerScriptPath } from '../shared/worker-utils.js';
+import { formatHostForUrl, getWorkerPort, getWorkerHost, fetchWithTimeout, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js';
 import { runShutdownSequence, type WorkerShutdownReason } from './worker-shutdown.js';
-import { DATA_DIR, DB_PATH, ensureDir } from '../shared/paths.js';
+import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensureDir } from '../shared/paths.js';
+import { HookSpool, migrateLegacySessionEndReplay } from '../shared/hook-spool.js';
+import { HookSpoolDrainer, hookSpoolConsumedMarkers } from './worker/hook-spool-drain.js';
+import { HookSpoolRoutes } from './worker/http/routes/HookSpoolRoutes.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { getUptimeSeconds } from '../shared/uptime.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
-import { getAuthMethodDescription } from '../shared/EnvManager.js';
+import { describeObserverAuthMethod } from './worker/observer-auth-method.js';
 import { logger } from '../utils/logger.js';
 import { ChromaMcpManager } from './sync/ChromaMcpManager.js';
 import { ChromaSync } from './sync/ChromaSync.js';
 import { openConfiguredSqliteDatabase } from './sqlite/connection.js';
 import { configureSupervisorSignalHandlers, getSupervisor, startSupervisor } from '../supervisor/index.js';
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
+import { setRegistryDegradedReporter } from '../supervisor/process-registry.js';
 
-import { ensureWorkerStarted as ensureWorkerStartedShared, type WorkerStartResult } from './worker-spawner.js';
+import { ensureWorkerStarted as ensureWorkerStartedShared, getLastWorkerBootFailure, type WorkerStartResult } from './worker-spawner.js';
 import { acquireSpawnLock, releaseSpawnLock } from '../shared/worker-spawn-gate.js';
 import { snapshotDependencyHealth, type DependencyHealthSnapshot } from '../shared/dependency-health.js';
 import { captureEvent, captureException, shutdownTelemetry, enableExceptionAutocaptureForWorker } from './telemetry/telemetry.js';
@@ -29,12 +33,32 @@ import { telemetryBuffer } from './telemetry/buffer.js';
 import { collectInstallStats } from './telemetry/install-stats.js';
 import { runHistoricalBackfill } from './telemetry/backfill.js';
 import { runWorkerDependencyPreflight } from './worker/dependency-preflight.js';
+import { provisionTreeSitterCliForPluginRoot } from './worker/tree-sitter-cli-provisioning.js';
+import { IdleExitMonitor, MIN_IDLE_EXIT_MS, parseIdleExitMs } from './worker/idle-exit-monitor.js';
+import { isWorkerAutostartDisabled } from '../shared/worker-autostart.js';
 
 export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
+import { resolveRuntimeContext } from './hooks/runtime-selector.js';
 
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
+
+// Exit code for "started but could not serve": the worker booted but never
+// bound the port (#3557). Kept distinct from the deliberate exit 0 used for
+// duplicate suppression and Windows Terminal tab management, so a genuine dead
+// boot is never laundered as success.
+export const WORKER_BOOT_FAILED_EXIT_CODE = 78;
+
+/** Subcommands that read or write the caller's project, so they run in its directory (#4628). */
+export const COMMANDS_THAT_ACT_ON_CALLER_PROJECT: ReadonlySet<string> = new Set(['generate', 'clean', 'adopt', 'memory', 'cursor']);
+
+// The bind must happen within this window. server.listen() is the first ref'd
+// handle in the boot path, so a stall before it lets the event loop empty and
+// the process exit 0 with no trace. A ref'd watchdog holds the loop open and
+// exits loudly if the bind never lands. 60s clears the slowest healthy Windows
+// cold boot with margin (the spawner's own readiness wait is 30s).
+const BOOT_BIND_DEADLINE_MS = 60_000;
 
 import {
   writePidFile,
@@ -43,22 +67,30 @@ import {
   getPlatformTimeout,
   runOneTimeCwdRemap,
   cleanStalePidFile,
-  verifyPidFileOwnership,
+  verifyWorkerPidFileOwnership,
   spawnDaemon,
-  touchPidFile
+  touchPidFile,
+  pinDaemonWorkingDirectory
 } from './infrastructure/ProcessManager.js';
 import { runOneTimeV12_4_3Cleanup } from './infrastructure/CleanupV12_4_3.js';
+import { scheduleOneTimeFtsBloatReclaim } from './infrastructure/FtsMaintenance.js';
+import { reclaimGhostListeningPort, startWorkerHeartbeat } from '../shared/port-reclaim.js';
 import {
   isPortInUse,
+  probePortBind,
   waitForHealth,
   waitForReadiness,
   waitForPortFree,
   httpShutdown
 } from './infrastructure/HealthMonitor.js';
+import { UNBINDABLE_PORT_REMEDIATION } from '../shared/connection-errors.js';
 import { performGracefulShutdown } from './infrastructure/GracefulShutdown.js';
 import { adoptMergedWorktrees, adoptMergedWorktreesForAllKnownRepos, formatAdoptionErrors } from './infrastructure/WorktreeAdoption.js';
+import { runProjectMergeCommand } from './infrastructure/ProjectMerge.js';
 
 import { Server } from './server/Server.js';
+import { InitPhaseTracker } from './server/init-phase.js';
+import { buildWorkerOriginPolicy } from './worker/http/middleware.js';
 import { BetterAuthRoutes } from '../server/auth/BetterAuthRoutes.js';
 import {
   createServerApiKey,
@@ -73,40 +105,66 @@ import {
   handleCursorCommand
 } from './integrations/CursorHooksInstaller.js';
 import {
+  handleKimiCommand
+} from './integrations/KimiHooksInstaller.js';
+import {
   handleAntigravityCliCommand
 } from './integrations/AntigravityCliHooksInstaller.js';
+import { notifyGrokBotIndex, watchGrokBotIndexSettings } from './integrations/GrokBotIndexWriter.js';
 
 import { DatabaseManager } from './worker/DatabaseManager.js';
 import { SessionManager } from './worker/SessionManager.js';
 import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
 import { ClaudeProvider, classifyClaudeError } from './worker/ClaudeProvider.js';
 import type { WorkerRef } from './worker/agents/types.js';
-import { GeminiProvider, classifyGeminiError, isGeminiSelected, isGeminiAvailable } from './worker/GeminiProvider.js';
-import { OpenRouterProvider, classifyOpenRouterError, isOpenRouterSelected, isOpenRouterAvailable } from './worker/OpenRouterProvider.js';
+import { GeminiProvider, classifyGeminiError } from './worker/GeminiProvider.js';
+import { OpenRouterProvider, classifyOpenRouterError } from './worker/OpenRouterProvider.js';
+import { OpenAICompatProvider } from './worker/OpenAICompatProvider.js';
+import { getSelectedProvider } from './worker/provider-dispatch.js';
+import { CodexProvider } from './worker/CodexProvider.js';
 import { ClassifiedProviderError, isClassified, type ProviderErrorClass } from './worker/provider-errors.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
 import { SearchManager } from './worker/SearchManager.js';
+import { parseSearchRecencyWindowMs, SEARCH_CONSTANTS } from './worker/search/types.js';
 import { FormattingService } from './worker/FormattingService.js';
 import { TimelineService } from './worker/TimelineService.js';
 import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
 import { SessionCompletionHandler } from './worker/session/SessionCompletionHandler.js';
 import { setIngestContext, attachIngestGeneratorStarter } from './worker/http/shared.js';
-import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, filterNativeHookBackedCodexWatches, loadTranscriptWatchConfig } from './transcripts/config.js';
+import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, scopeNativeHookBackedCodexWatches, loadTranscriptWatchConfig } from './transcripts/config.js';
 import { TranscriptWatcher } from './transcripts/watcher.js';
+import { runMemoryCommand } from './memory/cli.js';
 import { SyncApply } from './sync/SyncApply.js';
+import { ContextCacheService } from './worker/ContextCacheService.js';
+import { getContextReadWorker, closeContextReadWorker } from './context/ContextReadWorkerClient.js';
+import { emitContextInvalidation } from '../shared/context-invalidation.js';
 import { SyncClient } from './sync/SyncClient.js';
 
 import { ViewerRoutes } from './worker/http/routes/ViewerRoutes.js';
+import { SetupScan } from './prompt-import/setup-scan.js';
+import { AGENT_WRITTEN_PROMPTS_FILE, writeJsonAtomic } from './work-view/request-groups.mjs';
+import { HistoryImport } from './setup/history-import.js';
+import { cmemProOrigin } from '../shared/cmem-gateway.js';
+import { Database as BunDatabase } from 'bun:sqlite';
+import { WorkViewRoutes } from './worker/http/routes/WorkViewRoutes.js';
 import { SessionRoutes } from './worker/http/routes/SessionRoutes.js';
 import { DataRoutes } from './worker/http/routes/DataRoutes.js';
+import { AdvisorRoutes } from './worker/http/routes/AdvisorRoutes.js';
+import { WorkStateRoutes } from './worker/http/routes/WorkStateRoutes.js';
 import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
 import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
+import { MemoryFileWatcher } from './memory/file-watcher.js';
+import { parseMemoryWatchRoots } from './memory/config.js';
+import { saveMemory } from './memory/save-memory.js';
+import { MemoryIngestRoutes } from './worker/http/routes/MemoryIngestRoutes.js';
+import { DedupRoutes } from './worker/http/routes/DedupRoutes.js';
 import { CorpusRoutes } from './worker/http/routes/CorpusRoutes.js';
 import { ChromaRoutes } from './worker/http/routes/ChromaRoutes.js';
 import { CloudSyncRoutes } from './worker/http/routes/CloudSyncRoutes.js';
+import { TeamBrainRoutes } from './worker/http/routes/TeamBrainRoutes.js';
 import { BackupRoutes } from './worker/http/routes/BackupRoutes.js';
 
 import { CorpusStore } from './worker/knowledge/CorpusStore.js';
@@ -120,24 +178,39 @@ export interface StatusOutput {
   message?: string;
 }
 
-export interface StatusOutputOptions {
-  includeSuppressOutput?: boolean;
+export interface CodexSessionStartOutput {
+  continue: true;
+  systemMessage?: string;
 }
 
 export function buildStatusOutput(
   status: 'ready' | 'error',
-  message?: string,
-  options: StatusOutputOptions = {}
+  message?: string
 ): StatusOutput {
-  const output: StatusOutput = {
+  return {
     continue: true,
     status,
-    ...(message && { message })
+    ...(message && { message }),
+    suppressOutput: true
   };
-  if (options.includeSuppressOutput !== false) {
-    output.suppressOutput = true;
-  }
-  return output;
+}
+
+export function buildCodexSessionStartOutput(
+  status: 'ready' | 'error',
+  message?: string
+): CodexSessionStartOutput {
+  // Codex validates SessionStart stdout against its event schema. Keep custom
+  // worker status fields and raw diagnostics internal; systemMessage gets only
+  // a fixed, actionable summary.
+  const systemMessage = status === 'error'
+    ? 'claude-mem worker failed to start. Run npx claude-mem doctor.'
+    : message
+      ? 'claude-mem worker is still warming up.'
+      : undefined;
+  return {
+    continue: true,
+    ...(systemMessage && { systemMessage })
+  };
 }
 
 // Closed enum for worker_stopped telemetry — definition (and its
@@ -202,11 +275,19 @@ export class WorkerService implements WorkerRef {
   // the previous run's stale PID file + the clean-shutdown sentinel.
   private previousShutdown: 'clean' | 'crash' | 'unknown' = 'unknown';
   private previousUptimeSeconds: number | null = null;
+  // Observation TV shared secret, resolved once in the constructor. Empty = off.
+  private tvToken: string = '';
   private mcpClient: Client;
 
   private mcpReady: boolean = false;
   private initializationCompleteFlag: boolean = false;
+  /** Boot progress streamed on GET /api/ready (starting → db_ready → routes_ready → ready | failed). */
+  readonly initPhaseTracker = new InitPhaseTracker();
   private isShuttingDown: boolean = false;
+  private bootWatchdog: ReturnType<typeof setTimeout> | null = null;
+  private pendingSessionResumeTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly hookSpool = new HookSpool();
+  private readonly hookSpoolDrainer = new HookSpoolDrainer(this.hookSpool);
 
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
@@ -214,6 +295,8 @@ export class WorkerService implements WorkerRef {
   private sdkAgent: ClaudeProvider;
   private geminiAgent: GeminiProvider;
   private openRouterAgent: OpenRouterProvider;
+  private openAICompatAgent: OpenAICompatProvider;
+  private codexAgent: CodexProvider;
   private paginationHelper: PaginationHelper;
   private settingsManager: SettingsManager;
   private sessionEventBroadcaster: SessionEventBroadcaster;
@@ -221,10 +304,14 @@ export class WorkerService implements WorkerRef {
   private corpusStore: CorpusStore;
 
   private searchRoutes: SearchRoutes | null = null;
+  private workViewRoutes: WorkViewRoutes | null = null;
 
   private chromaMcpManager: ChromaMcpManager | null = null;
   private transcriptWatcher: TranscriptWatcher | null = null;
+  private memoryFileWatcher: MemoryFileWatcher | null = null;
   private syncClient: SyncClient | null = null;
+  private contextCacheService: ContextCacheService | null = null;
+  private idleExitMonitor: IdleExitMonitor | null = null;
   private initializationComplete: Promise<void>;
   private resolveInitialization!: () => void;
 
@@ -234,6 +321,9 @@ export class WorkerService implements WorkerRef {
     provider: string;
     error?: string;
   } | null = null;
+
+  /** Queue depth of the last processing_status frame; null before the first (broadcastProcessingStatus). */
+  private lastBroadcastQueueDepth: number | null = null;
 
   constructor() {
     this.initializationComplete = new Promise((resolve) => {
@@ -246,6 +336,8 @@ export class WorkerService implements WorkerRef {
     this.sdkAgent = new ClaudeProvider(this.dbManager, this.sessionManager);
     this.geminiAgent = new GeminiProvider(this.dbManager, this.sessionManager);
     this.openRouterAgent = new OpenRouterProvider(this.dbManager, this.sessionManager);
+    this.openAICompatAgent = new OpenAICompatProvider(this.dbManager, this.sessionManager);
+    this.codexAgent = new CodexProvider(this.dbManager, this.sessionManager);
 
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
@@ -270,20 +362,34 @@ export class WorkerService implements WorkerRef {
       version: packageVersion
     }, { capabilities: {} });
 
+    // Observation TV remote broadcast secret. Must be read from settings.json —
+    // SettingsDefaultsManager.get() only consults process.env and DEFAULTS, so a
+    // token written to ~/.claude-mem/settings.json would be invisible to it.
+    // Whitespace-only is OFF, not a secret equal to a space.
+    // RESOLUTION POINT: the token is the single switch. It is passed to the
+    // Server below as `remoteReadOnly`, and only when it is non-empty — so a
+    // token-less install constructs an options object identical to today's and
+    // the read-only guard is never mounted.
+    const workerSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const tvToken = (workerSettings.CLAUDE_MEM_TV_TOKEN ?? '').trim();
+    this.tvToken = tvToken;
+
     this.server = new Server({
       getInitializationComplete: () => this.initializationCompleteFlag,
+      initPhaseSource: this.initPhaseTracker,
       getMcpReady: () => this.mcpReady,
       getDependencyHealth: () => snapshotDependencyHealth(),
+      getChromaCrashState: () => this.chromaMcpManager
+        ? { ...this.chromaMcpManager.getCrashState(), collectionDrop: ChromaSync.getLastCollectionDrop() }
+        : undefined,
       onShutdown: (reason) => this.shutdown(reason ?? 'stop'),
       onRestart: () => this.shutdown('restart'),
       workerPath: __filename,
       getAiStatus: () => {
-        let provider = 'claude';
-        if (isOpenRouterSelected() && isOpenRouterAvailable()) provider = 'openrouter';
-        else if (isGeminiSelected() && isGeminiAvailable()) provider = 'gemini';
+        const provider = getSelectedProvider();
         return {
           provider,
-          authMethod: getAuthMethodDescription(),
+          authMethod: describeObserverAuthMethod(provider),
           lastInteraction: this.lastAiInteraction
             ? {
                 timestamp: this.lastAiInteraction.timestamp,
@@ -296,6 +402,10 @@ export class WorkerService implements WorkerRef {
       preBodyParserRoutes: [
         new BetterAuthRoutes(() => this.dbManager.getConnection()),
       ],
+      ...(tvToken ? { remoteReadOnly: { getToken: () => tvToken } } : {}),
+      // Browser access: same-host and CLAUDE_MEM_ALLOWED_ORIGINS for CORS, plus
+      // the DNS-rebinding Host check. Read once at boot; restart to change it.
+      originPolicy: buildWorkerOriginPolicy(workerSettings),
     });
 
     this.registerRoutes();
@@ -311,6 +421,109 @@ export class WorkerService implements WorkerRef {
     configureSupervisorSignalHandlers(async () => {
       await this.shutdown('signal');
     });
+  }
+
+  /**
+   * Opt-in idle exit (CLAUDE_MEM_IDLE_EXIT_SEC, default '0' = never): after
+   * the window elapses with no session activity or running generator, no
+   * queued work, no open or recent request and no AI interaction, the worker
+   * shuts itself down through the same graceful sequence as `claude-mem stop`
+   * (reason 'idle').
+   *
+   * Never armed where nothing would start the worker again: with
+   * CLAUDE_MEM_WORKER_AUTOSTART=false hooks and the MCP server never launch
+   * one (and a clean exit 0 is not restarted by an on-failure process
+   * manager), and a running transcript watcher is the only capture for the
+   * hosts it watches.
+   */
+  private startIdleExitMonitor(settings: ReturnType<typeof SettingsDefaultsManager.loadFromFile>): void {
+    const configuredIdleExitMs = parseIdleExitMs(settings.CLAUDE_MEM_IDLE_EXIT_SEC);
+    if (configuredIdleExitMs === null) {
+      logger.warn('SYSTEM', 'Ignoring invalid CLAUDE_MEM_IDLE_EXIT_SEC (expected a non-negative integer of seconds)', {
+        value: settings.CLAUDE_MEM_IDLE_EXIT_SEC,
+      });
+      return;
+    }
+    if (configuredIdleExitMs === 0) return;
+    if (isWorkerAutostartDisabled(settings)) {
+      logger.warn('SYSTEM', 'Idle exit stays off: CLAUDE_MEM_WORKER_AUTOSTART=false, so nothing would start the worker again', {
+        value: settings.CLAUDE_MEM_IDLE_EXIT_SEC,
+      });
+      return;
+    }
+    if (this.transcriptWatcher !== null) {
+      logger.warn('SYSTEM', 'Idle exit stays off: transcript watches are active, and only a running worker captures them', {
+        value: settings.CLAUDE_MEM_IDLE_EXIT_SEC,
+      });
+      return;
+    }
+    if (this.memoryFileWatcher != null) {
+      logger.warn('SYSTEM', 'Idle exit stays off: memory-file watches are active, and only a running worker captures them', {
+        value: settings.CLAUDE_MEM_IDLE_EXIT_SEC,
+      });
+      return;
+    }
+    let idleExitMs = configuredIdleExitMs;
+    if (idleExitMs < MIN_IDLE_EXIT_MS) {
+      logger.warn('SYSTEM', 'CLAUDE_MEM_IDLE_EXIT_SEC is below the 60 s minimum; using 60', {
+        value: settings.CLAUDE_MEM_IDLE_EXIT_SEC,
+      });
+      idleExitMs = MIN_IDLE_EXIT_MS;
+    }
+
+    this.idleExitMonitor = new IdleExitMonitor({
+      idleExitMs,
+      hasSessionActivitySince: (cutoffMs) => this.sessionManager.hasSessionActivitySince(cutoffMs),
+      getQueueDepth: () => this.sessionManager.getTotalQueueDepth(),
+      getLastRequestAt: () => this.server.getLastRequestAt(),
+      getInFlightRequestCount: () => this.server.getInFlightRequestCount(),
+      getViewerClientCount: () => this.sseBroadcaster.getClientCount() + (this.workViewRoutes?.getClientCount() ?? 0),
+      getLastAiInteractionAt: () => this.lastAiInteraction?.timestamp ?? null,
+      onIdle: () => {
+        // The sequence never exits the process for non-restart reasons —
+        // the route path exits via flushResponseThen and the signal path via
+        // the supervisor's signal handler — so the idle path owns its exit.
+        void this.shutdown('idle').then(
+          () => process.exit(0),
+          () => process.exit(0),
+        );
+      },
+    });
+    this.idleExitMonitor.start();
+    logger.info('SYSTEM', 'Idle exit enabled', { idleExitSec: idleExitMs / 1000 });
+  }
+
+  /**
+   * Write hooks (observation, file edit, summarize, advisor calls, SessionEnd)
+   * spool one file per event and exit without waiting on the worker. Start
+   * draining as soon as SQLite is ready: migrate any leftover entries of the
+   * retired SessionEnd replay queue, then drain now and on every fs.watch
+   * event, hook nudge (POST /api/spool/nudge) and 30 s safety sweep.
+   */
+  private startHookSpoolDrain(): void {
+    try {
+      migrateLegacySessionEndReplay(this.hookSpool);
+    } catch (error: unknown) {
+      logger.error('HOOK', 'Legacy SessionEnd replay migration failed; its directory is left in place', {},
+        error instanceof Error ? error : new Error(String(error)));
+    }
+    this.hookSpoolDrainer.start();
+  }
+
+  private startPendingSessionResume(sessionRoutes: SessionRoutes): void {
+    if (this.pendingSessionResumeTimer !== null || this.isShuttingDown) return;
+    this.pendingSessionResumeTimer = setInterval(() => {
+      if (!this.initializationCompleteFlag || this.isShuttingDown) return;
+      sessionRoutes.resumePendingSessions('periodic-resume');
+    }, 60_000);
+    this.pendingSessionResumeTimer.unref?.();
+  }
+
+  private stopPendingSessionResume(): void {
+    if (this.pendingSessionResumeTimer !== null) {
+      clearInterval(this.pendingSessionResumeTimer);
+      this.pendingSessionResumeTimer = null;
+    }
   }
 
   private registerRoutes(): void {
@@ -332,6 +545,7 @@ export class WorkerService implements WorkerRef {
         req.path === '/chroma/status' ||
         req.path === '/health' ||
         req.path === '/readiness' ||
+        req.path === '/ready' ||
         req.path === '/version' ||
         req.path === '/settings/dependency-health'
       ) {
@@ -352,16 +566,59 @@ export class WorkerService implements WorkerRef {
       return;
     });
 
+    // Hook spool nudge. Behind the init gate on purpose: before init it gets a
+    // harmless 503 (the hook ignores the result) and the boot drain covers the
+    // entry. Answers immediately; the drain is single-flight.
+    this.server.app.post('/api/spool/nudge', (_req, res) => {
+      void this.hookSpoolDrainer.requestDrain();
+      res.status(202).json({ status: 'draining' });
+    });
+
+    this.server.registerRoutes(new HookSpoolRoutes(
+      this.hookSpool,
+      () => hookSpoolConsumedMarkers(this.dbManager.getSessionStore()),
+      () => { void this.hookSpoolDrainer.requestDrain(); },
+      () => SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_INGEST_TOKEN,
+      SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_INGEST_MAX_BYTES,
+    ));
+
+    this.workViewRoutes = new WorkViewRoutes({
+      getLocalDeviceId: () => this.dbManager.getCloudSync()?.status().deviceId ?? '',
+      // My Rules saves as work-state rows, so a rule change syncs like any other write.
+      appendWorkStateEntry: (entry) => {
+        this.dbManager.getSessionStore().appendWorkStateEntry(entry);
+        this.dbManager.getCloudSync()?.notify();
+      },
+      // The install funnel's Scan step stores typed prompts read from every agent's transcripts.
+      // Hook rows an agent wrote are kept out of goals, work and rules extraction.
+      setupScan: new SetupScan({
+        getStore: () => this.dbManager.getSessionStore(),
+        // Hosted setup does not probe or wait for an agent login.
+        saveAgentWrittenPromptIds: promptIds => writeJsonAtomic(path.join(DATA_DIR, 'work-view', AGENT_WRITTEN_PROMPTS_FILE), { promptIds, updatedAt: new Date().toISOString() }),
+      }),
+      // Finish Setup's history upload to CMEM Pro, with the setup token checkout saved.
+      historyImport: new HistoryImport({
+        openDatabase: () => new BunDatabase(DB_PATH, { readonly: true, create: false }),
+        origin: () => cmemProOrigin(),
+        token: () => SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_CLOUD_SYNC_TOKEN?.trim() || null,
+      }),
+    });
+    this.server.registerRoutes(this.workViewRoutes);
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
-    const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this, this.completionHandler);
+    const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this, this.completionHandler, this.codexAgent, this.openAICompatAgent);
     this.server.registerRoutes(sessionRoutes);
+    this.startPendingSessionResume(sessionRoutes);
     attachIngestGeneratorStarter((sessionDbId, source) =>
       sessionRoutes.ensureGeneratorRunning(sessionDbId, source),
     );
     this.server.registerRoutes(new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime));
+    this.server.registerRoutes(new AdvisorRoutes(this.dbManager));
+    this.server.registerRoutes(new WorkStateRoutes(this.dbManager));
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
     this.server.registerRoutes(new LogsRoutes());
     this.server.registerRoutes(new MemoryRoutes(this.dbManager, 'claude-mem'));
+    this.server.registerRoutes(new MemoryIngestRoutes(this.dbManager));
+    this.server.registerRoutes(new DedupRoutes(this.dbManager));
     this.server.registerRoutes(new ServerV1Routes({
       getDatabase: () => this.dbManager.getConnection(),
     }));
@@ -412,6 +669,26 @@ export class WorkerService implements WorkerRef {
     // construction — so it is set here at the very top of worker start.
     enableExceptionAutocaptureForWorker();
     logger.setErrorSink((err) => captureException(err));
+    // Bridge a degraded (unwritable) supervisor registry into a low-volume
+    // operational event WITHOUT the supervisor layer importing telemetry. Fires
+    // once per degraded episode, so it measures the recovery, not each failure.
+    setRegistryDegradedReporter(({ errorCategory }) =>
+      captureEvent('supervisor_registry_degraded', { error_category: errorCategory })
+    );
+
+    // Boot watchdog (#3557): nothing in the boot path below holds a ref'd
+    // handle until server.listen(), so a stall before the bind lets the event
+    // loop empty and the process exit 0 — a silent capture-dead install. This
+    // ref'd timer keeps the loop open through boot; if the bind never lands it
+    // exits non-zero with a log instead of vanishing mid-boot.
+    this.bootWatchdog = setTimeout(() => {
+      logger.failure('SYSTEM', 'Worker boot timed out before binding port — exiting', {
+        host,
+        port,
+        deadlineMs: BOOT_BIND_DEADLINE_MS,
+      });
+      process.exit(WORKER_BOOT_FAILED_EXIT_CODE);
+    }, BOOT_BIND_DEADLINE_MS);
 
     // Must run before startSupervisor(): its validateWorkerPidFile() removes
     // the dead previous run's stale PID file, which crash detection needs.
@@ -419,13 +696,41 @@ export class WorkerService implements WorkerRef {
 
     await startSupervisor();
 
+    // Log the decision to bind before the call, so the log names the last boot
+    // step reached instead of stopping mid-sentence when a bind stalls (#3557).
+    logger.info('SYSTEM', 'Binding worker HTTP server', { host, port });
     await this.server.listen(port, host);
+
+    // Bound successfully — the watchdog has done its job.
+    clearTimeout(this.bootWatchdog);
+    this.bootWatchdog = null;
+
+    if (this.tvToken) {
+      // Operators need to see, in the log, that a remote surface is open.
+      // Never log the token itself.
+      logger.info('SYSTEM', 'Observation TV remote broadcast enabled', {
+        host,
+        allowedPaths: ['/tv', '/tv.html', '/stream', 'GET /api/observations'],
+      });
+    } else if (host !== '127.0.0.1' && host !== '::1' && host !== '::ffff:127.0.0.1' && host !== 'localhost') {
+      // Warn, do not refuse to bind: docs/docker.md tells people to set
+      // CLAUDE_MEM_WORKER_HOST=0.0.0.0, and refusing would break that install.
+      logger.warn(
+        'SECURITY',
+        'Worker bound to a non-loopback host with no CLAUDE_MEM_TV_TOKEN — the full worker API, including provider API keys via GET /api/settings, is reachable from the network',
+        { host }
+      );
+    }
 
     writePidFile({
       pid: process.pid,
       port,
       startedAt: new Date().toISOString()
     });
+    // Liveness heartbeat: a fresh beat with a recently finished response means
+    // a silent worker is slow, not dead, so the hooks' wedged-worker reclaim spares it.
+    const server = this.server;
+    startWorkerHeartbeat({ readLastResponseAtMs: () => server.getLastResponseFinishedAt() });
 
     getSupervisor().registerProcess('worker', {
       pid: process.pid,
@@ -474,6 +779,13 @@ export class WorkerService implements WorkerRef {
         logger.info('SYSTEM', 'Dependency preflight passed');
       }
 
+      // Not awaited: a download must not hold readiness. See
+      // provisionTreeSitterCliForPluginRoot for why the worker does it.
+      const pluginRoot = path.dirname(__dirname);
+      provisionTreeSitterCliForPluginRoot(pluginRoot).catch(error => {
+        logger.warn('SYSTEM', 'tree-sitter CLI provisioning failed: smart_search, smart_outline and smart_unfold cannot parse, and the File Read Gate stays off, until the next worker start retries (or npx claude-mem repair)', { pluginRoot }, error instanceof Error ? error : new Error(String(error)));
+      });
+
       logger.info('WORKER', 'Checking for one-time CWD remap...');
       runOneTimeCwdRemap();
 
@@ -487,8 +799,19 @@ export class WorkerService implements WorkerRef {
 
       logger.info('WORKER', 'Initializing database manager...');
       await this.dbManager.initialize();
+      this.initPhaseTracker.setInitPhase('db_ready');
+
+      // Write hooks never wait on the worker: they spool one file per event.
+      // Drain it as soon as SQLite is ready (not awaited — a backlog after an
+      // outage must not hold readiness), then on watch/nudge/sweep.
+      this.startHookSpoolDrain();
 
       runOneTimeV12_4_3Cleanup();
+
+      // One-time, deferred and bounded: reclaim the FTS5 bloat an install already
+      // accumulated (#2793). Schema v54 stops new bloat at the source; the reclaim runs
+      // on an unref'd timer so startup and health checks never wait for it.
+      scheduleOneTimeFtsBloatReclaim(this.dbManager.getConnection());
 
       // Worktree adoption stays fire-and-forget (#2122) — init never awaits
       // it — but it is kicked only after dbManager.initialize() and the
@@ -500,6 +823,7 @@ export class WorkerService implements WorkerRef {
         if (adoptions) {
           for (const adoption of adoptions) {
             if (adoption.adoptedObservations > 0 || adoption.adoptedSummaries > 0 || adoption.chromaUpdates > 0) {
+              emitContextInvalidation('all', 'worktree-adoption');
               logger.info('SYSTEM', 'Merged worktrees adopted in background', adoption);
             }
             if (adoption.errors.length > 0) {
@@ -555,15 +879,36 @@ export class WorkerService implements WorkerRef {
       logger.info('WORKER', 'Initializing search services...');
       const formattingService = new FormattingService();
       const timelineService = new TimelineService();
+      const parsedRecencyWindowMs = parseSearchRecencyWindowMs(settings.CLAUDE_MEM_SEARCH_RECENCY_DAYS);
+      if (parsedRecencyWindowMs === null) {
+        logger.warn('WORKER', `CLAUDE_MEM_SEARCH_RECENCY_DAYS: invalid value "${settings.CLAUDE_MEM_SEARCH_RECENCY_DAYS}" — keeping the default ${SEARCH_CONSTANTS.RECENCY_WINDOW_MS / 86_400_000}-day window. Use a non-negative integer of days; 0 disables the window.`, { value: settings.CLAUDE_MEM_SEARCH_RECENCY_DAYS });
+      }
+      const searchRecencyWindowMs = parsedRecencyWindowMs ?? SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
+      const contextReader = getContextReadWorker();
       const searchManager = new SearchManager(
         this.dbManager.getSessionSearch(),
         this.dbManager.getSessionStore(),
         this.dbManager.getChromaSync(),
         formattingService,
-        timelineService
+        timelineService,
+        searchRecencyWindowMs,
+        contextReader
       );
-      this.searchRoutes = new SearchRoutes(searchManager, this.syncClient);
+      // Precomputed SessionStart context (liveness plan, Phase 6): the route
+      // records each live render, the service re-renders on writes.
+      this.contextCacheService = new ContextCacheService({
+        renderVariant: (keys) => {
+          if (!this.searchRoutes) throw new Error('Context cache render before search routes exist');
+          return this.searchRoutes.renderContextVariant(keys);
+        },
+        expandProjectReadKeys: (projects) => contextReader.readKeys(projects),
+        // Local-first: the local db is the source of truth, so the files are
+        // servable with or without cloud sync. Sync applies other devices' ops in
+        // the background, and every applied op invalidates the files (SyncApply).
+      });
+      this.searchRoutes = new SearchRoutes(searchManager, this.contextCacheService, this.syncClient, contextReader);
       this.server.registerRoutes(this.searchRoutes);
+      this.contextCacheService.start();
       logger.info('WORKER', 'SearchManager initialized and search routes registered');
 
       const corpusBuilder = new CorpusBuilder(
@@ -581,6 +926,12 @@ export class WorkerService implements WorkerRef {
       // unconfigured install answers {configured: false} instead of 404.
       this.server.registerRoutes(new CloudSyncRoutes(this.dbManager));
       logger.info('WORKER', 'CloudSyncRoutes registered');
+      // TeamBrain proxy for the team_* MCP tools, beside cloud sync because it
+      // signs with the same credentials. Settings are read per request, so a
+      // join or leave applies without a restart.
+      this.server.registerRoutes(new TeamBrainRoutes(() => SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)));
+      logger.info('WORKER', 'TeamBrainRoutes registered');
+      this.initPhaseTracker.setInitPhase('routes_ready');
 
       // Backup endpoints (pro-backup plan Phase 2). Same late/unconditional
       // registration: status answers {configured: false} when backups are
@@ -590,6 +941,7 @@ export class WorkerService implements WorkerRef {
 
       this.initializationCompleteFlag = true;
       this.resolveInitialization();
+      this.initPhaseTracker.setInitPhase('ready');
       logger.info('SYSTEM', 'Core initialization complete (DB + search ready)');
 
       // Lifecycle telemetry (person profile = anonymous install UUID). ide is
@@ -650,10 +1002,30 @@ export class WorkerService implements WorkerRef {
       });
 
       await this.startTranscriptWatcher(settings);
+      try {
+        const roots = parseMemoryWatchRoots(settings.CLAUDE_MEM_MEMORY_WATCH_ROOTS);
+        if (roots.length) {
+          this.memoryFileWatcher = new MemoryFileWatcher(roots, input => saveMemory(this.dbManager, 'claude-mem', input));
+          this.memoryFileWatcher.start();
+        }
+      } catch (error) {
+        logger.warn('HOOK', 'Memory folder bridge configuration unavailable', { error: error instanceof Error ? error.message : String(error) });
+      }
+
+      // Seed Grok Bot Memory INDEX files from current observations so seats
+      // do not wait for the next store before the mid-attach file exists.
+      notifyGrokBotIndex();
+      // Standing line / project-map edits must reach idle seats too.
+      watchGrokBotIndexSettings();
 
       if (this.chromaMcpManager) {
-        ChromaSync.backfillAllProjects(this.dbManager.getSessionStore()).then(() => {
-          logger.info('CHROMA_SYNC', 'Backfill check complete for all projects');
+        ChromaSync.registerBackfillStore(this.dbManager.getSessionStore());
+        ChromaSync.backfillAllProjects(this.dbManager.getSessionStore()).then(completed => {
+          if (completed) {
+            logger.info('CHROMA_SYNC', 'Backfill check complete for all projects');
+          } else {
+            logger.info('CHROMA_SYNC', 'Backfill check ended before every project finished; the next start resumes from the saved watermarks');
+          }
         }).catch(error => {
           logger.error('CHROMA_SYNC', 'Backfill failed (non-blocking)', {}, error as Error);
         });
@@ -680,9 +1052,23 @@ export class WorkerService implements WorkerRef {
         logger.debug('WORKER', 'MCP self-check failed (non-fatal)', { error: err.message });
       });
 
+      // Idle exit: arm only once the worker is fully up — the monitor's
+      // activity clock starts here, so boot can never race the window — and
+      // after startTranscriptWatcher, which decides whether it may arm at
+      // all. The next hook that reads memory (or the MCP server's next call)
+      // starts the worker again; plugin hosts that never start it (OpenCode,
+      // OpenClaw) are why the docs say to leave idle exit off there.
+      this.startIdleExitMonitor(settings);
+
       return;
     } catch (error) {
       logger.error('SYSTEM', 'Background initialization failed', {}, error instanceof Error ? error : undefined);
+      // A throw after `ready` (transcript watcher, telemetry, …) leaves a worker
+      // that serves requests; only a pre-ready failure is the wedged state that
+      // /api/ready readers must recycle.
+      if (!this.initializationCompleteFlag) {
+        this.initPhaseTracker.setInitPhase('failed', error instanceof Error ? error.message : String(error));
+      }
     }
   }
 
@@ -738,17 +1124,33 @@ export class WorkerService implements WorkerRef {
       return;
     }
 
-    const allowCodexTranscriptIngestion = settings.CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION === 'true';
-    const { config: transcriptConfig, removed } = filterNativeHookBackedCodexWatches(
-      loadTranscriptWatchConfig(configPath),
-      allowCodexTranscriptIngestion
-    );
+    let loadedConfig: ReturnType<typeof scopeNativeHookBackedCodexWatches>;
+    try {
+      loadedConfig = scopeNativeHookBackedCodexWatches(loadTranscriptWatchConfig(configPath), settings);
+    } catch (error) {
+      // Background init awaits this method, so a throw here would also skip the
+      // Chroma backfill, CloudSync, the pull loop and the MCP self-check for the
+      // worker's lifetime. An unreadable or invalid config turns off transcript
+      // capture only.
+      logger.error('TRANSCRIPT', 'Invalid transcript watch config (continuing without transcript ingestion)', {
+        configPath: resolvedConfigPath
+      }, error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+    const { config: transcriptConfig, scoped, removed } = loadedConfig;
     const statePath = expandHomePath(transcriptConfig.stateFile ?? DEFAULT_STATE_PATH);
 
+    if (scoped > 0) {
+      logger.info('TRANSCRIPT', 'Scoped Codex transcript watch to subagent sessions; native hooks own top-level sessions', {
+        scoped,
+        enabledBy: 'CLAUDE_MEM_CODEX_SUBAGENT_INGESTION=true',
+        skipSetting: 'CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS=true',
+      });
+    }
     if (removed > 0) {
-      logger.warn('TRANSCRIPT', 'Skipped Codex transcript watch because native Codex hooks are authoritative', {
+      logger.info('TRANSCRIPT', 'Skipped Codex transcript watch: native hooks own top-level sessions; Codex subagent capture is opt-in', {
         removed,
-        optInSetting: 'CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION=true',
+        subagentOptInSetting: 'CLAUDE_MEM_CODEX_SUBAGENT_INGESTION=true',
       });
     }
 
@@ -802,6 +1204,23 @@ export class WorkerService implements WorkerRef {
       isShuttingDown: () => this.isShuttingDown,
       markShuttingDown: () => { this.isShuttingDown = true; },
       beforeGracefulShutdown: async () => {
+        this.workViewRoutes?.close();
+        this.workViewRoutes = null;
+        this.stopPendingSessionResume();
+        this.hookSpoolDrainer.stop();
+        // Stop the idle monitor before the drain: its own trigger has
+        // already disarmed it, and a route- or signal-initiated drain must
+        // not let a late tick fire into the sequence (it would be a guarded
+        // no-op, but stopped-by-construction is better).
+        this.idleExitMonitor?.stop();
+        this.idleExitMonitor = null;
+        // Before the DB closes: a pending re-render would read a closed connection.
+        this.contextCacheService?.stop();
+        this.contextCacheService = null;
+        this.memoryFileWatcher?.stop();
+        this.memoryFileWatcher = null;
+
+        await this.codexAgent.close();
         if (this.transcriptWatcher) {
           this.transcriptWatcher.stop();
           this.transcriptWatcher = null;
@@ -830,6 +1249,7 @@ export class WorkerService implements WorkerRef {
         server: this.server.getHttpServer(),
         sessionManager: this.sessionManager,
         mcpClient: this.mcpClient,
+        contextReader: { close: closeContextReadWorker },
         dbManager: this.dbManager,
         chromaMcpManager: this.chromaMcpManager || undefined
       }),
@@ -852,24 +1272,48 @@ export class WorkerService implements WorkerRef {
     });
   }
 
+  /**
+   * Send viewers a processing_status frame when the queue depth changes.
+   *
+   * Only a change goes out (#4087). Every buffer mutation calls this, and a
+   * claim or a reset leaves the depth as it was (claimed messages still
+   * count), so a signed-out observer cycling one batch re-sent the same frame
+   * about 83 times a second and logged each one at INFO, until the log filled
+   * the disk. The change check is the fix; the log line is DEBUG so that real
+   * changes stay out of the default log too. A viewer that connects later
+   * gets the current status from ViewerRoutes when it connects.
+   */
   broadcastProcessingStatus(): void {
-    void (async () => {
-      const queueDepth = await this.sessionManager.getTotalActiveWork();
-      const isProcessing = queueDepth > 0;
-      const activeSessions = this.sessionManager.getActiveSessionCount();
+    const queueDepth = this.sessionManager.getTotalQueueDepth();
+    if (queueDepth === this.lastBroadcastQueueDepth) return;
+    this.lastBroadcastQueueDepth = queueDepth;
+    const isProcessing = queueDepth > 0;
 
-      logger.info('WORKER', 'Broadcasting processing status', {
-        isProcessing,
-        queueDepth,
-        activeSessions
-      });
+    logger.debug('WORKER', 'Broadcasting processing status', {
+      isProcessing,
+      queueDepth,
+      activeSessions: this.sessionManager.getActiveSessionCount()
+    });
 
-      this.sseBroadcaster.broadcast({
-        type: 'processing_status',
-        isProcessing,
-        queueDepth
-      });
-    })();
+    this.sseBroadcaster.broadcast({
+      type: 'processing_status',
+      isProcessing,
+      queueDepth
+    });
+  }
+
+  /**
+   * Record the outcome of the latest observer response for /api/health's
+   * ai.lastInteraction. `provider` is the one that produced the response (the
+   * session's), passed by the caller; it is only a label, never a routing input.
+   */
+  recordAiInteraction(result: { success: boolean; error?: string; provider: string }): void {
+    this.lastAiInteraction = {
+      timestamp: Date.now(),
+      success: result.success,
+      provider: result.provider,
+      ...(result.error ? { error: result.error } : {}),
+    };
   }
 }
 
@@ -1077,24 +1521,67 @@ async function main() {
 
   const hookInitiatedCommands = ['start', 'hook', 'restart', '--daemon'];
   if ((command === undefined || hookInitiatedCommands.includes(command)) && isPluginDisabledInClaudeSettings()) {
+    // Log the reason instead of exiting silently. Without this line, a disabled
+    // plugin makes the worker refuse every start/hook/--daemon with a bare
+    // exit(0) and no trace — indistinguishable from a crash, and only
+    // discoverable by reverse-engineering the bundle. One INFO line turns
+    // "memory mysteriously stopped" into an obvious cause.
+    logger.info('SYSTEM', 'Worker not starting: claude-mem is disabled in Claude settings (enabledPlugins["claude-mem@thedotmack"] === false). Re-enable the plugin to resume memory capture.', {
+      command: command ?? '(none)',
+      configDir: process.env.CLAUDE_CONFIG_DIR || '~/.claude',
+    });
     process.exit(0);
+  }
+
+  // The launcher and bun-runner.js start Bun in a neutral directory (#4628);
+  // commands that act on the caller's project return there. `hook` restores
+  // separately, after its argument checks, to keep the hook IO-discipline
+  // ordering; the worker itself (`start`, `--daemon`) keeps the neutral cwd.
+  if (command !== undefined && COMMANDS_THAT_ACT_ON_CALLER_PROJECT.has(command)) {
+    const { restoreHookOriginalCwd } = await import('../cli/hook-original-cwd.js');
+    restoreHookOriginalCwd();
   }
 
   const port = getWorkerPort();
 
   function exitWithStatus(status: 'ready' | 'error', message?: string): never {
-    const output = buildStatusOutput(status, message, {
-      includeSuppressOutput: process.env.CLAUDE_MEM_CODEX_HOOK !== '1',
-    });
+    // Keep the `start` + CLAUDE_MEM_CODEX_HOOK=1 compatibility path valid for
+    // legacy or custom integrations.
+    const output = process.env.CLAUDE_MEM_CODEX_HOOK === '1'
+      ? buildCodexSessionStartOutput(status, message)
+      : buildStatusOutput(status, message);
     console.log(JSON.stringify(output));
     process.exit(0);
   }
 
   switch (command) {
+    case 'upload-spool': {
+      const { uploadRemoteHookSpool } = await import('../cli/spool-hook-event.js');
+      await uploadRemoteHookSpool();
+      process.exit(0);
+      break;
+    }
     case 'start': {
+      // hooks.json runs `start` at every SessionStart, whatever the runtime. In
+      // server runtime the hooks talk to the shared server and nothing uses a
+      // local worker, so there is nothing to start (plan-24 step 4). Probing the
+      // worker port there waits on health checks that never answer when another
+      // process holds the port, stalling session start until the hook timeout.
+      // Incomplete server settings resolve to the worker runtime, as every other
+      // hook does, and start it as usual.
+      if (resolveRuntimeContext().runtime === 'server') {
+        exitWithStatus('ready');
+      }
       const result = await ensureWorkerStarted(port);
       if (result === 'dead') {
-        exitWithStatus('error', 'Failed to start worker');
+        // Worker-spawner records the detailed boot failure for diagnostics.
+        // Claude keeps the existing detailed status; Codex receives only the
+        // fixed summary from buildCodexSessionStartOutput().
+        const bootFailure = getLastWorkerBootFailure();
+        exitWithStatus(
+          'error',
+          bootFailure ? `Failed to start worker: ${bootFailure}` : 'Failed to start worker'
+        );
       } else {
         exitWithStatus('ready', result === 'warming' ? 'Worker started; still warming up' : undefined);
       }
@@ -1316,6 +1803,22 @@ async function main() {
       break;
     }
 
+    case 'memory': {
+      // Auto-memory ingest (sibling to transcript). Dry-run runs client-side;
+      // the real store reaches the worker over HTTP from inside runMemoryCommand.
+      const subcommand = process.argv[3];
+      const memoryResult = await runMemoryCommand(subcommand, process.argv.slice(4));
+      process.exit(memoryResult);
+      break;
+    }
+
+    case 'kimi': {
+      const kimiSubcommand = process.argv[3];
+      const kimiResult = await handleKimiCommand(kimiSubcommand, process.argv.slice(4));
+      process.exit(kimiResult);
+      break;
+    }
+
     case 'antigravity-cli': {
       const antigravitySubcommand = process.argv[3];
       const antigravityResult = await handleAntigravityCliCommand(antigravitySubcommand, process.argv.slice(4));
@@ -1338,11 +1841,8 @@ async function main() {
         process.exit(1);
       }
 
-      const workerStartResult = await ensureWorkerStarted(port);
-      if (workerStartResult === 'dead') {
-        logger.warn('SYSTEM', 'Worker failed to start before hook, handler will proceed gracefully');
-      }
-
+      const { restoreHookOriginalCwd } = await import('../cli/hook-original-cwd.js');
+      restoreHookOriginalCwd();
       const { hookCommand } = await import('../cli/hook-command.js');
       await hookCommand(platform, event);
       break;
@@ -1401,6 +1901,7 @@ async function main() {
       console.log(`  Repo:                 ${result.repoPath}`);
       console.log(`  Worktrees scanned:    ${result.scannedWorktrees}`);
       console.log(`  Merged branches:      ${result.mergedBranches.join(', ') || '(none)'}`);
+      console.log(`  Orphaned worktrees:   ${result.orphanedWorktrees.join(', ') || '(none)'}`);
       console.log(`  Observations adopted: ${result.adoptedObservations}`);
       console.log(`  Summaries adopted:    ${result.adoptedSummaries}`);
       console.log(`  Chroma docs updated:  ${result.chromaUpdates}`);
@@ -1409,6 +1910,28 @@ async function main() {
       }
       for (const err of result.errors) {
         console.log(`  ! ${err.worktree}: ${err.error}`);
+      }
+      process.exit(0);
+    }
+
+    case 'project': {
+      // `project merge <from> <into> [--dry-run]` (plan-20 step 2): fold one
+      // project's memory into another, sync-safe and non-destructive. Runs
+      // inside the worker when one is up, so the Chroma patch can land.
+      const [projectSubcommand, from, into] = process.argv.slice(3).filter(arg => !arg.startsWith('--'));
+      if (projectSubcommand !== 'merge' || !from || !into) {
+        console.error('Usage: project merge <from> <into> [--dry-run]');
+        process.exit(1);
+      }
+      const merge = await runProjectMergeCommand({ from, into, dryRun: process.argv.includes('--dry-run') });
+      console.log(`\nProject merge ${merge.dryRun ? '(dry-run, no changes made)' : '(applied)'}${merge.ranIn === 'worker' ? ' by the running worker' : ''}`);
+      console.log(`  From:                 ${merge.from}`);
+      console.log(`  Into:                 ${merge.into}`);
+      console.log(`  Observations merged:  ${merge.mergedObservations}`);
+      console.log(`  Summaries merged:     ${merge.mergedSummaries}`);
+      console.log(`  Chroma docs updated:  ${merge.chromaUpdates}`);
+      if (merge.chromaFailed > 0) {
+        console.log(`  Chroma sync failures: ${merge.chromaFailed} (run the command again to retry)`);
       }
       process.exit(0);
     }
@@ -1432,12 +1955,56 @@ async function main() {
 
     case '--daemon':
     default: {
+      // Before anything below spawns a child (the reclaim probes, the
+      // supervisor, chroma-mcp), stand in claude-mem's data dir rather than
+      // whatever cwd this daemon was launched with (#3706; EPERM on
+      // cross-spawn's chdir-back from an ACL-locked cwd).
+      pinDaemonWorkingDirectory();
+
+      // A host and port the system refuses to bind (EACCES / EADDRNOTAVAIL)
+      // is a boot failure, never a duplicate: no other worker holds the port
+      // and no retry will bind it. Decided by the bind probe, before the
+      // duplicate gate (#3219 exited 0 there) and before start(): under Bun,
+      // listen() reports it only as "Is port N in use?", without the errno.
+      const bind = await probePortBind(port);
+      if (bind.occupancy === 'unbindable') {
+        logger.failure('SYSTEM', 'Worker port cannot be bound — not a duplicate; fix the port or host setting', {
+          port,
+          host: getWorkerHost(),
+          code: bind.bindErrorCode,
+          fix: UNBINDABLE_PORT_REMEDIATION,
+        });
+        captureEvent('worker_start_failed', { outcome: 'dead', error_category: 'port_unbindable' });
+        await shutdownTelemetry();
+        process.exit(WORKER_BOOT_FAILED_EXIT_CODE);
+      }
+
       // Duplicate gate, ground truth FIRST (Phase 5): a live worker owns the
       // port — the port cannot be faked by a stale or clobbered file. Exit 0:
       // duplicate suppression is a success, not a failure.
       if (await isPortInUse(port)) {
-        logger.info('SYSTEM', 'Port already in use, refusing to start duplicate', { port });
-        process.exit(0);
+        // A live worker answers health — this is a genuine duplicate.
+        if (await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.HEALTH_CHECK))) {
+          logger.info('SYSTEM', 'Worker already running (health verified), refusing to start duplicate', { port });
+          process.exit(0);
+        }
+        // Bound but silent: a wedged worker we own that stopped answering
+        // /health (#4127), or a ghost listener — a dead worker whose chroma
+        // sidecar chain holds the inherited socket (plan-15 #3603). Reclaim
+        // both; a live FOREIGN owner keeps the duplicate refusal.
+        const reclaim = await reclaimGhostListeningPort(port);
+        if (reclaim.reclaimed) {
+          logger.info('SYSTEM', 'Reclaimed the worker port (wedged or dead-owner ghost listener) — starting anyway', {
+            port,
+            killedPids: reclaim.killedPids,
+          });
+        } else {
+          logger.info('SYSTEM', 'Port already in use, refusing to start duplicate', {
+            port,
+            reclaimReason: reclaim.reason,
+          });
+          process.exit(0);
+        }
       }
 
       // PID file second, ADVISORY only: it covers a dying-but-still-alive
@@ -1448,7 +2015,7 @@ async function main() {
       // The worker itself remains the sole writer of this file
       // (writePidFile/touchPidFile stay as diagnostics).
       const existingPidInfo = readPidFile();
-      if (verifyPidFileOwnership(existingPidInfo)) {
+      if (verifyWorkerPidFileOwnership(existingPidInfo)) {
         logger.info('SYSTEM', 'Worker already running (PID alive), refusing to start duplicate', {
           existingPid: existingPidInfo.pid,
           existingPort: existingPidInfo.port,
@@ -1483,10 +2050,10 @@ async function main() {
         // competitor's — e.g. a port-conflict loser whose error didn't match
         // the EADDRINUSE detection above must not clobber the winner's file.
         removePidFileIfOwner(process.pid);
-        // Genuine start failure (not duplicate suppression): exit non-zero so
-        // the restart verifier and any supervising caller see a dead boot
-        // instead of a silent "success".
-        process.exit(1);
+        // Genuine start failure (not duplicate suppression): exit with the
+        // distinct "could not serve" code so the restart verifier and any
+        // supervising caller see a dead boot instead of a silent "success".
+        process.exit(WORKER_BOOT_FAILED_EXIT_CODE);
       });
     }
   }
@@ -1521,6 +2088,9 @@ export function formatDependencyHealthHint(health: WorkerHealthSnapshot): string
     if (status.dependency === 'claude_cli' && status.kind === 'setup_required') {
       return 'Claude CLI setup required';
     }
+    if (status.dependency === 'codex_cli' && status.kind === 'setup_required') {
+      return 'Codex CLI setup required';
+    }
     if (status.dependency === 'uvx' && status.kind === 'vector_search_unavailable') {
       return 'uvx unavailable for vector search';
     }
@@ -1542,7 +2112,7 @@ export function formatDependencyHealthHint(health: WorkerHealthSnapshot): string
  */
 async function fetchWorkerHealth(port: number, timeoutMs: number): Promise<WorkerHealthSnapshot | null> {
   try {
-    const response = await fetchWithTimeout(`http://${getWorkerHost()}:${port}/api/health`, {}, timeoutMs);
+    const response = await fetchWithTimeout(`http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`, {}, timeoutMs);
     return await response.json() as WorkerHealthSnapshot;
   } catch {
     // [ANTI-PATTERN IGNORED]: health probe — connection refused/timeout IS the "worker not running" answer, polled on every status check; logging would spam. null is the documented recovery value the callers branch on.
@@ -1581,6 +2151,11 @@ const isMainModule = typeof require !== 'undefined' && typeof module !== 'undefi
 if (isMainModule) {
   main().catch((error) => {
     logger.error('SYSTEM', 'Fatal error in main', {}, error instanceof Error ? error : undefined);
-    process.exit(0);  
+    // A fatal error on the daemon boot path is a dead boot, not a success:
+    // exit non-zero so it is not laundered (#3557). Every other command keeps
+    // the deliberate exit 0 (Windows Terminal tab management per CLAUDE.md).
+    const { command } = parseWorkerServiceCommand(process.argv.slice(2));
+    const isDaemonBoot = command === undefined || command === '--daemon';
+    process.exit(isDaemonBoot ? WORKER_BOOT_FAILED_EXIT_CODE : 0);
   });
 }

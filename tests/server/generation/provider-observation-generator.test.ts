@@ -12,7 +12,8 @@ import { ProviderObservationGenerator } from '../../../src/server/generation/Pro
 import type { ServerGenerationProvider } from '../../../src/server/generation/providers/shared/types.js';
 import type { Job } from 'bullmq';
 import type { GenerateObservationsForEventJob } from '../../../src/server/jobs/types.js';
-import { quoteIdentifier } from '../../sdk/pg-isolation.js';
+import { createIsolatedSchema, poolForSchema, quoteIdentifier } from '../../sdk/pg-isolation.js';
+import { ModeManager } from '../../../src/services/domain/ModeManager.js';
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
 
@@ -35,7 +36,7 @@ describe('ProviderObservationGenerator', () => {
     return;
   }
 
-  const pool = new pg.Pool({ connectionString: testDatabaseUrl });
+  let pool: pg.Pool;
   let client: PostgresPoolClient;
   let schemaName: string;
   let storage: PostgresStorageRepositories;
@@ -45,16 +46,15 @@ describe('ProviderObservationGenerator', () => {
   let jobId: string;
 
   beforeEach(async () => {
+    // The generation path reads the active ModeManager mode; load it so this
+    // file runs standalone instead of relying on another test file's side effect.
+    ModeManager.getInstance().loadMode('code');
+    schemaName = await createIsolatedSchema(testDatabaseUrl!, 'cm_phase5_gen');
+    pool = poolForSchema(testDatabaseUrl!, schemaName);
     client = await pool.connect();
-    schemaName = `cm_phase5_gen_${crypto.randomUUID().replaceAll('-', '_')}`;
-    await client.query(`CREATE SCHEMA ${quoteIdentifier(schemaName)}`);
-    await client.query(`SET search_path TO ${quoteIdentifier(schemaName)}`);
     await bootstrapServerPostgresSchema(client);
     storage = createPostgresStorageRepositories(client);
 
-    pool.on('connect', (poolClient) => {
-      poolClient.query(`SET search_path TO ${quoteIdentifier(schemaName)}`).catch(() => {});
-    });
 
     const team = await storage.teams.create({ name: 'team' });
     const project = await storage.projects.create({ teamId: team.id, name: 'p' });
@@ -87,7 +87,7 @@ describe('ProviderObservationGenerator', () => {
       } catch {}
       client.release();
     }
-    pool.removeAllListeners('connect');
+    await pool.end();
   });
 
   function makeJob(): Job<GenerateObservationsForEventJob> {
@@ -131,6 +131,33 @@ describe('ProviderObservationGenerator', () => {
     expect(reloaded?.status).toBe('completed');
   });
 
+  it('fails fast with an UnrecoverableError when provider returns an empty response', async () => {
+    const provider = new StubProvider('');
+    const generator = new ProviderObservationGenerator({
+      pool: pool as unknown as pg.Pool,
+      provider,
+    } as unknown as ConstructorParameters<typeof ProviderObservationGenerator>[0]);
+
+    // UnrecoverableError name is what makes BullMQ skip its remaining retry
+    // attempts instead of re-dispatching a job whose outbox row is terminal.
+    const rejection = await generator.process(makeJob()).then(
+      () => null,
+      (error: unknown) => error as Error,
+    );
+    expect(rejection).not.toBeNull();
+    expect(rejection?.name).toBe('UnrecoverableError');
+    expect(rejection?.message).toMatch(/empty response/);
+    expect(provider.calls).toBe(1);
+
+    const reloaded = await storage.observationGenerationJobs.getByIdForScope({
+      id: jobId,
+      projectId,
+      teamId,
+    });
+    expect(reloaded?.status).toBe('failed');
+    expect(reloaded?.lastError?.classification).toBe('empty_response');
+  });
+
   it('marks a job as failed (no retry) when provider returns malformed XML', async () => {
     const provider = new StubProvider('not xml at all');
     const generator = new ProviderObservationGenerator({
@@ -146,5 +173,36 @@ describe('ProviderObservationGenerator', () => {
       teamId,
     });
     expect(reloaded?.status).toBe('failed');
+  });
+
+  it('times out a hung provider call and requeues it as transient (#4100)', async () => {
+    let receivedSignal: AbortSignal | undefined;
+    const provider: ServerGenerationProvider = {
+      providerLabel: 'openrouter',
+      generate(_context, signal) {
+        receivedSignal = signal;
+        // Never resolves on its own; settles only when the signal aborts,
+        // mirroring fetch()/response.json() in the real providers.
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      },
+    };
+    const generator = new ProviderObservationGenerator({
+      pool: pool as unknown as ConstructorParameters<typeof ProviderObservationGenerator>[0]['pool'],
+      provider,
+      providerTimeoutMs: 50,
+    });
+
+    await expect(generator.process(makeJob())).rejects.toThrow(/timed out after 50ms/);
+    expect(receivedSignal?.aborted).toBe(true);
+
+    const reloaded = await storage.observationGenerationJobs.getByIdForScope({
+      id: jobId,
+      projectId,
+      teamId,
+    });
+    expect(reloaded?.status).toBe('queued');
+    expect(reloaded?.lastError).toMatchObject({ classification: 'transient' });
   });
 });

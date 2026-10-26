@@ -17,8 +17,18 @@ import {
 } from '../../../storage/postgres/generation-jobs.js';
 import { PostgresAuthRepository } from '../../../storage/postgres/auth.js';
 import { PostgresObservationRepository } from '../../../storage/postgres/observations.js';
+import {
+  embedObservationRows,
+  embedSearchQuery,
+} from '../../services/ObservationEmbeddingService.js';
+import { PostgresObservationEmbeddingsRepository } from '../../../storage/postgres/observation-embeddings.js';
 import { PostgresProjectsRepository } from '../../../storage/postgres/projects.js';
 import { logger } from '../../../utils/logger.js';
+import {
+  SEMANTIC_CONTEXT_MAX_LIMIT,
+  SEMANTIC_CONTEXT_MIN_QUERY_CHARS,
+  renderSemanticContext,
+} from '../../../shared/semantic-context.js';
 import { requirePostgresServerAuth } from '../../middleware/postgres-auth.js';
 import { PostgresDataDeletionRepository } from '../../../storage/postgres/data-deletion.js';
 import { requestIdMiddleware } from '../../middleware/request-id.js';
@@ -29,11 +39,16 @@ import { createRecallMcpServer, type RecallBackend } from '../../mcp/recall-mcp-
 import { requireRateLimit, requireMonthlyQuota } from '../../middleware/rate-limit.js';
 import { meterRequests } from '../../middleware/usage-metering.js';
 import { PostgresUsageRepository } from '../../../storage/postgres/usage.js';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { PostgresServerSessionsRepository } from '../../../storage/postgres/server-sessions.js';
 import { IngestEventsService, type EnqueueOutcome } from '../../services/IngestEventsService.js';
 import { EndSessionService } from '../../services/EndSessionService.js';
 import { normalizePlatformSource, normalizePlatformSourceOrNull } from '../../../shared/platform-source.js';
+import {
+  SERVER_CONTEXT_MAX_LIMIT,
+  SERVER_CONTEXT_QUERY_DEFAULT_LIMIT,
+  SERVER_CONTEXT_RECENT_DEFAULT_LIMIT,
+} from '../../../shared/server-context-limits.js';
 
 const SOURCE_ADAPTER_DEFAULT = 'api';
 
@@ -874,27 +889,82 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       z.object({
         projectId: z.string().min(1),
         serverSessionId: z.string().min(1).nullable().optional(),
+        // Callers that write memories from inside a session know the agent's own
+        // session id, not the server_sessions row UUID. /v1/events already accepts
+        // contentSessionId and resolves it (#2634); without the same affordance here
+        // every such memory lands with server_session_id NULL and can never be
+        // grouped, scoped or compared by session.
+        contentSessionId: z.string().min(1).nullable().optional(),
+        // Two sessions in the same team/project can share a contentSessionId across
+        // platforms; without the scope the lookup picks whichever started last, so a
+        // Cursor memory can land on a Codex session. /v1/events already scopes this.
+        platformSource: z.string().min(1).nullable().optional(),
         kind: z.string().min(1).optional(),
         content: z.string().min(1),
+        // Idempotency key: a repeat returns the existing row instead of a
+        // duplicate. `generation:` is the server generator's own namespace.
+        generationKey: z.string().min(1).max(200)
+          .refine(key => !key.startsWith('generation:'), 'generationKey prefix "generation:" is reserved')
+          .optional(),
         metadata: z.record(z.string(), z.unknown()).optional(),
       }),
       async (req, res, body) => {
         const teamId = this.requireTeamId(req, res);
         if (!teamId) return;
         if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
-        const createInput = {
+        const linkedSessionId = await this.resolveMemorySessionLink({
+          serverSessionId: body.serverSessionId ?? null,
+          contentSessionId: body.contentSessionId ?? null,
           projectId: body.projectId,
           teamId,
-          serverSessionId: body.serverSessionId ?? null,
+          // same normalization the ingest path applies, so an omitted field and an
+          // explicit null keep meaning different things
+          ...this.sessionLookupPlatformScope(req.body),
+        });
+        const createInput = {
+          id: randomUUID(),
+          generationKey: body.generationKey,
+          projectId: body.projectId,
+          teamId,
+          serverSessionId: linkedSessionId,
           kind: body.kind ?? 'manual',
           content: body.content,
           metadata: body.metadata ?? {},
         };
         try {
           const repo = new PostgresObservationRepository(this.options.pool);
+          const embedded = await embedObservationRows(this.options.pool, [createInput]);
           const observation = await repo.create(createInput);
-          await this.auditWrite(req, 'memory.write', observation.id, observation.projectId);
-          res.status(201).json({ memory: serializeObservation(observation) });
+          if (observation.id === createInput.id) {
+            if (embedded) {
+              // The memory is saved; its vectors are best-effort. A failed write
+              // is logged and left to the backfill, rather than answering 500
+              // for a memory that exists, which a retry would duplicate.
+              await new PostgresObservationEmbeddingsRepository(this.options.pool)
+                .upsert({ observationId: observation.id, ...embedded[0]! })
+                .catch((error: unknown) => {
+                  logger.warn('SYSTEM', 'memory saved without vectors; the backfill embeds it at the next start', {
+                    observationId: observation.id,
+                    error: error instanceof Error ? error.message : String(error),
+                  });
+                });
+            }
+            await this.auditWrite(req, 'memory.write', observation.id, observation.projectId);
+            res.status(201).json({ memory: serializeObservation(observation) });
+            return;
+          }
+          // A repeated generationKey returns the existing row, keeping its
+          // original ID. This route only needs memories:write, so a key that
+          // can't read memories gets the id back, not another writer's content.
+          await this.auditWrite(req, 'memory.write', observation.id, observation.projectId, {
+            outcome: 'existing_generation_key',
+          });
+          const scopes = req.authContext?.scopes ?? [];
+          const canRead = req.authContext?.mode === 'local-dev'
+            || scopes.includes('memories:read') || scopes.includes('*');
+          res.status(200).json(canRead
+            ? { memory: serializeObservation(observation), existing: true }
+            : { memory: { id: observation.id, projectId: observation.projectId }, existing: true });
         } catch (error) {
           const err = error instanceof Error ? error : new Error(String(error));
           logger.warn('SYSTEM', 'memory.write failed', { requestId: req.requestId ?? null }, err);
@@ -928,6 +998,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
             query: body.query,
             limit: body.limit ?? 20,
             platformSource,
+            queryEmbedding: await embedSearchQuery(this.options.pool, body.query),
           });
         } catch (error) {
           const err = error instanceof Error ? error : new Error(String(error));
@@ -949,6 +1020,40 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       },
     ));
 
+    app.post('/v1/timeline', readAuth, this.handleCreate(
+      z.object({
+        projectId: z.string().trim().min(1),
+        anchorId: z.string().trim().min(1).max(256),
+        depthBefore: z.number().int().min(0).max(20).optional(),
+        depthAfter: z.number().int().min(0).max(20).optional(),
+      }).strict(),
+      async (req, res, body) => {
+        const teamId = this.requireTeamId(req, res);
+        if (!teamId || !this.ensureProjectAllowed(req, res, body.projectId)) return;
+        const rows = await new PostgresObservationRepository(this.options.pool).timelineAround({ ...body, teamId });
+        await this.auditWrite(req, 'observation.read', body.anchorId, body.projectId, {
+          mode: 'timeline', resultCount: rows.length,
+        });
+        res.json({ observations: rows.map(serializeObservation) });
+      },
+    ));
+
+    app.post('/v1/observations/batch', readAuth, this.handleCreate(
+      z.object({
+        projectId: z.string().trim().min(1),
+        ids: z.array(z.string().trim().min(1).max(256)).min(1).max(100),
+      }).strict(),
+      async (req, res, body) => {
+        const teamId = this.requireTeamId(req, res);
+        if (!teamId || !this.ensureProjectAllowed(req, res, body.projectId)) return;
+        const rows = await new PostgresObservationRepository(this.options.pool).getManyForScope({ ...body, teamId });
+        await this.auditWrite(req, 'observation.read', null, body.projectId, {
+          mode: 'selected', resultCount: rows.length, observationIds: rows.map(row => row.id),
+        });
+        res.json({ observations: rows.map(serializeObservation) });
+      },
+    ));
+
     // Phase 8 — context pack: same FTS path as `/v1/search`, but also returns
     // a concatenated context string for direct prompt injection. The MCP
     // `observation_context` tool calls this so MCP and any future REST
@@ -956,25 +1061,65 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     app.post('/v1/context', readAuth, this.handleCreate(
       z.object({
         projectId: z.string().min(1),
-        query: z.string().min(1),
-        limit: z.number().int().positive().max(50).optional(),
+        // Optional: a context request with no query asks for the most RECENT
+        // observations, which is what a session-start block actually wants.
+        query: z.string().min(1).optional(),
+        // A recency read needs more rows than a relevance lookup, so the cap is
+        // the CLAUDE_MEM_CONTEXT_OBSERVATIONS range and the default depends on
+        // whether a query was given.
+        limit: z.number().int().positive().max(SERVER_CONTEXT_MAX_LIMIT).optional(),
+        // Portion of the recency limit reserved for session summaries. Without
+        // it, MCP/relevance consumers keep the existing mixed result window.
+        summaryLimit: z.number().int().nonnegative().max(SERVER_CONTEXT_MAX_LIMIT).optional(),
         platformSource: z.string().min(1).nullable().optional(),
-      }),
+        // Folder labels (observations.metadata.project). When set, only rows
+        // generated for one of these folders are returned (ASCII
+        // case-insensitive, like the SQLite read path).
+        folderProjects: z.array(z.string().min(1)).min(1).max(20).optional(),
+        // CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY: leave out rows generated from
+        // subagent hook events.
+        excludeSubagents: z.boolean().optional(),
+      }).refine(body => body.summaryLimit === undefined || (
+        body.query === undefined
+        && body.summaryLimit <= (body.limit ?? SERVER_CONTEXT_RECENT_DEFAULT_LIMIT)
+      ), { message: 'summaryLimit requires recency mode and must not exceed limit' }),
       async (req, res, body) => {
         const teamId = this.requireTeamId(req, res);
         if (!teamId) return;
         if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
         const platformSource = normalizePlatformSourceOrNull(body.platformSource);
+        const limit = body.limit
+          ?? (body.query ? SERVER_CONTEXT_QUERY_DEFAULT_LIMIT : SERVER_CONTEXT_RECENT_DEFAULT_LIMIT);
         let results;
         try {
           const repo = new PostgresObservationRepository(this.options.pool);
-          results = await repo.search({
+          // Both category reads use the same project/platform/folder/subagent
+          // scope as the ordinary mixed read, with filtering before LIMIT.
+          const searchInput = {
             projectId: body.projectId,
             teamId,
-            query: body.query,
-            limit: body.limit ?? 10,
+            query: body.query ?? null,
+            limit,
             platformSource,
-          });
+            folderProjects: body.folderProjects ?? null,
+            excludeSubagents: body.excludeSubagents === true,
+            queryEmbedding: await embedSearchQuery(this.options.pool, body.query),
+          };
+          if (body.summaryLimit === undefined) {
+            results = await repo.search(searchInput);
+          } else {
+            const observationLimit = limit - body.summaryLimit;
+            const [observations, summaries] = await Promise.all([
+              observationLimit > 0
+                ? repo.search({ ...searchInput, limit: observationLimit, summary: false })
+                : Promise.resolve([]),
+              body.summaryLimit > 0
+                ? repo.search({ ...searchInput, limit: body.summaryLimit, summary: true })
+                : Promise.resolve([]),
+            ]);
+            results = [...observations, ...summaries].sort((a, b) =>
+              b.createdAtEpoch - a.createdAtEpoch || b.updatedAtEpoch - a.updatedAtEpoch);
+          }
         } catch (error) {
           const err = error instanceof Error ? error : new Error(String(error));
           logger.warn('SYSTEM', 'observation.context failed', { requestId: req.requestId ?? null }, err);
@@ -987,15 +1132,90 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           .join('\n\n');
         await this.auditWrite(req, 'observation.read', null, body.projectId, {
           mode: 'context',
-          query: body.query,
-          limit: body.limit ?? 10,
+          ...(body.summaryLimit === undefined ? {} : { summaryLimit: body.summaryLimit }),
+          query: body.query ?? null,
+          limit,
           platformSource,
+          folderProjects: body.folderProjects ?? null,
+          excludeSubagents: body.excludeSubagents === true,
           resultCount: results.length,
           observationIds: results.map(o => o.id),
         });
         res.status(200).json({
           observations: results.map(serializeObservation),
           context,
+        });
+      },
+    ));
+
+    // Per-prompt injection: observations near a user prompt in meaning,
+    // rendered as the worker's /api/context/semantic renders them, so the
+    // session-init hook can treat either runtime's answer alike. Prompts under
+    // SEMANTIC_CONTEXT_MIN_QUERY_CHARS, and databases without vectors, get an
+    // empty answer, and limit is clamped as the worker clamps it: a
+    // keyword match on a whole prompt is not what this injection is for.
+    app.post('/v1/context/semantic', readAuth, this.handleCreate(
+      z.object({
+        projectId: z.string().min(1),
+        query: z.string(),
+        limit: z.number().int().positive().optional(),
+        platformSource: z.string().min(1).nullable().optional(),
+        folderProjects: z.array(z.string().min(1)).min(1).max(20).optional(),
+      }),
+      async (req, res, body) => {
+        const teamId = this.requireTeamId(req, res);
+        if (!teamId) return;
+        if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
+        const platformSource = normalizePlatformSourceOrNull(body.platformSource);
+        const limit = Math.min(body.limit ?? 5, SEMANTIC_CONTEXT_MAX_LIMIT);
+        const queryEmbedding = body.query.length >= SEMANTIC_CONTEXT_MIN_QUERY_CHARS
+          ? await embedSearchQuery(this.options.pool, body.query)
+          : null;
+        if (!queryEmbedding) {
+          res.status(200).json({ observations: [], context: '', count: 0 });
+          return;
+        }
+        let results;
+        try {
+          const repo = new PostgresObservationRepository(this.options.pool);
+          results = await repo.search({
+            projectId: body.projectId,
+            teamId,
+            query: body.query,
+            limit,
+            platformSource,
+            folderProjects: body.folderProjects ?? null,
+            queryEmbedding,
+          });
+        } catch (error) {
+          const err = error instanceof Error ? error : new Error(String(error));
+          logger.warn('SYSTEM', 'observation.semantic_context failed', { requestId: req.requestId ?? null }, err);
+          this.handleDbError(err, res, 'observation.semantic_context');
+          return;
+        }
+        // Always the worker's 'narrative' format. Its 'index' format lists ids
+        // for get_observations to expand, and that tool reads the worker by
+        // numeric id; a server id is a UUID nothing here can expand.
+        // Summaries and manual memories have no title or narrative; their text
+        // is the content, which renders in the narrative's place.
+        const text = (value: unknown) => (typeof value === 'string' && value.trim() ? value : null);
+        const context = renderSemanticContext(results.map(observation => ({
+          title: text(observation.metadata.title) ?? (observation.kind === 'summary' ? 'Session summary' : null),
+          narrative: text(observation.metadata.narrative) ?? text(observation.content),
+          date: new Date(observation.createdAtEpoch).toISOString().slice(0, 10),
+        })));
+        await this.auditWrite(req, 'observation.read', null, body.projectId, {
+          mode: 'semantic_context',
+          limit,
+          platformSource,
+          folderProjects: body.folderProjects ?? null,
+          resultCount: results.length,
+          observationIds: results.map(o => o.id),
+        });
+        res.status(200).json({
+          observations: results.map(serializeObservation),
+          context,
+          count: results.length,
         });
       },
     ));
@@ -1020,7 +1240,8 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       const backend: RecallBackend = {
         search: async ({ projectId, query, limit }) => {
           assertProjectAllowed(projectId);
-          const rows = await repo.search({ projectId, teamId, query, limit });
+          const queryEmbedding = await embedSearchQuery(this.options.pool, query);
+          const rows = await repo.search({ projectId, teamId, query, limit, queryEmbedding });
           // Audit the read, same as POST /v1/search — the MCP path is no exception.
           await this.auditWrite(req, 'observation.read', null, projectId, {
             mode: 'search', via: 'mcp', query, limit,
@@ -1028,9 +1249,26 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           });
           return rows.map(serializeObservation);
         },
+        timeline: async ({ projectId, anchorId, depthBefore, depthAfter }) => {
+          assertProjectAllowed(projectId);
+          const rows = await repo.timelineAround({ projectId, teamId, anchorId, depthBefore, depthAfter });
+          await this.auditWrite(req, 'observation.read', anchorId, projectId, {
+            mode: 'timeline', via: 'mcp', resultCount: rows.length,
+          });
+          return rows.map(serializeObservation);
+        },
+        getObservations: async ({ projectId, ids }) => {
+          assertProjectAllowed(projectId);
+          const rows = await repo.getManyForScope({ projectId, teamId, ids });
+          await this.auditWrite(req, 'observation.read', null, projectId, {
+            mode: 'selected', via: 'mcp', resultCount: rows.length, observationIds: rows.map(row => row.id),
+          });
+          return rows.map(serializeObservation);
+        },
         context: async ({ projectId, query, limit }) => {
           assertProjectAllowed(projectId);
-          const rows = await repo.search({ projectId, teamId, query, limit });
+          const queryEmbedding = await embedSearchQuery(this.options.pool, query);
+          const rows = await repo.search({ projectId, teamId, query, limit, queryEmbedding });
           await this.auditWrite(req, 'observation.read', null, projectId, {
             mode: 'context', via: 'mcp', query, limit,
             resultCount: rows.length, observationIds: rows.map(o => o.id),
@@ -1183,6 +1421,49 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       return null;
     }
     return teamId;
+  }
+
+
+  /**
+   * Resolve the server_sessions row for a memory write.
+   *
+   * Callers writing from inside a session know the agent's own session id, not the
+   * server_sessions row UUID. /v1/events already accepts contentSessionId and resolves
+   * it (#2634); without the same affordance on the memory path every such write lands
+   * with server_session_id NULL and can never be grouped or scoped by session.
+   *
+   * Explicit serverSessionId always wins. The lookup is best-effort, mirroring the
+   * ingest path: a failure must not fail the write — store unlinked, as before.
+   * Unlike /v1/events there is no idempotency concern: observations key off `id`, and
+   * server_session_id is a plain FK (ON DELETE SET NULL), so linking later cannot
+   * drift a key.
+   */
+  private async resolveMemorySessionLink(input: {
+    serverSessionId: string | null;
+    contentSessionId: string | null;
+    projectId: string;
+    teamId: string;
+    platformSource?: string | null;
+  }): Promise<string | null> {
+    if (input.serverSessionId) return input.serverSessionId;
+    if (!input.contentSessionId) return null;
+    const platformScope = Object.prototype.hasOwnProperty.call(input, 'platformSource')
+      ? { platformSource: input.platformSource ?? null }
+      : {};
+    try {
+      return await new PostgresServerSessionsRepository(this.options.pool)
+        .findIdByContentSessionId({
+          contentSessionId: input.contentSessionId,
+          projectId: input.projectId,
+          teamId: input.teamId,
+          ...platformScope,
+        });
+    } catch (err) {
+      logger.warn('HTTP', 'session linkage lookup failed; storing memory unlinked', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
   }
 
   private async applyContentSessionLinks(
@@ -1951,6 +2232,7 @@ function serializeObservation(observation: {
   projectId: string;
   teamId: string;
   serverSessionId: string | null;
+  contentSessionId?: string | null;
   kind: string;
   content: string;
   metadata: Record<string, unknown>;
@@ -1962,6 +2244,7 @@ function serializeObservation(observation: {
     projectId: observation.projectId,
     teamId: observation.teamId,
     serverSessionId: observation.serverSessionId,
+    ...(observation.contentSessionId !== undefined ? { contentSessionId: observation.contentSessionId } : {}),
     kind: observation.kind,
     content: observation.content,
     metadata: observation.metadata,

@@ -17,14 +17,15 @@ export function shouldShowSummary(
     mostRecentSummary.investigated ||
     mostRecentSummary.learned ||
     mostRecentSummary.completed ||
-    mostRecentSummary.next_steps
+    mostRecentSummary.next_steps ||
+    mostRecentSummary.notes
   );
 
   if (!hasContent) {
     return false;
   }
 
-  if (mostRecentObservation && mostRecentSummary.created_at_epoch <= mostRecentObservation.created_at_epoch) {
+  if (mostRecentObservation && mostRecentSummary.created_at_epoch < mostRecentObservation.created_at_epoch) {
     return false;
   }
 
@@ -42,11 +43,13 @@ export function renderSummaryFields(
     output.push(...Human.renderHumanSummaryField('Learned', summary.learned, colors.yellow));
     output.push(...Human.renderHumanSummaryField('Completed', summary.completed, colors.green));
     output.push(...Human.renderHumanSummaryField('Next Steps', summary.next_steps, colors.magenta));
+    output.push(...Human.renderHumanSummaryField('Notes', summary.notes ?? null, colors.cyan));
   } else {
     output.push(...Agent.renderAgentSummaryField('Investigated', summary.investigated));
     output.push(...Agent.renderAgentSummaryField('Learned', summary.learned));
     output.push(...Agent.renderAgentSummaryField('Completed', summary.completed));
     output.push(...Agent.renderAgentSummaryField('Next Steps', summary.next_steps));
+    output.push(...Agent.renderAgentSummaryField('Notes', summary.notes ?? null));
   }
 
   return output;

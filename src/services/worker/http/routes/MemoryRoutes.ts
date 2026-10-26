@@ -1,16 +1,22 @@
-
 import express, { Request, Response } from 'express';
 import { z } from 'zod';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
-import { logger } from '../../../../utils/logger.js';
 import type { DatabaseManager } from '../../DatabaseManager.js';
+import { saveMemory } from '../../../memory/save-memory.js';
+import { logger } from '../../../../utils/logger.js';
+import { getProjectContext } from '../../../../utils/project-name.js';
+import { isProjectExcluded } from '../../../../utils/project-filter.js';
+import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
+import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 
 const saveMemorySchema = z.object({
   text: z.string().trim().min(1),
   title: z.string().optional(),
   project: z.string().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
+  cwd: z.string().optional(),
 }).strict();
 
 export class MemoryRoutes extends BaseRouteHandler {
@@ -26,79 +32,27 @@ export class MemoryRoutes extends BaseRouteHandler {
   }
 
   private handleSaveMemory = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { text, title, project, metadata } = req.body as z.infer<typeof saveMemorySchema>;
-    const explicitProject = typeof project === 'string' && project.trim()
-      ? project.trim()
-      : undefined;
-    const metadataProject = typeof metadata?.project === 'string' && metadata.project.trim()
-      ? metadata.project.trim()
-      : undefined;
-    const targetProject = explicitProject || metadataProject || this.defaultProject;
-
-    const sessionStore = this.dbManager.getSessionStore();
-    const chromaSync = this.dbManager.getChromaSync();
-
-    const memorySessionId = sessionStore.getOrCreateManualSession(targetProject);
-
-    const observation = {
-      type: 'discovery',  // Use existing valid type
-      title: title || text.substring(0, 60).trim() + (text.length > 60 ? '...' : ''),
-      subtitle: 'Manual memory',
-      facts: [] as string[],
-      narrative: text,
-      concepts: [] as string[],
-      files_read: [] as string[],
-      files_modified: [] as string[],
-      metadata: metadata ? JSON.stringify(metadata) : null,
-    };
-
-    const result = sessionStore.storeObservation(
-      memorySessionId,
-      targetProject,
-      observation,
-      0,  // promptNumber
-      0   
-    );
-
-    logger.info('HTTP', 'Manual observation saved', {
-      id: result.id,
-      project: targetProject,
-      title: observation.title
-    });
-
-    // Fire-and-forget cloud sync nudge — every local write must nudge
-    // (placed before the chroma branch so the chroma-disabled early return
-    // cannot skip it).
-    this.dbManager.getCloudSync()?.notify();
-
-    if (!chromaSync) {
-      logger.debug('CHROMA', 'ChromaDB sync skipped (chromaSync not available)', { id: result.id });
-      res.json({
-        success: true,
-        id: result.id,
-        title: observation.title,
-        project: targetProject,
-        message: `Memory saved as observation #${result.id}`
-      });
+    // An explicit save writes a user-visible memory observation, so other
+    // localhost pages may not trigger it. Origin-less clients (the MCP
+    // save_memory tool, Hermes, grok-bot) keep the existing loopback-trust model.
+    if (isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({ error: 'Memory saves from a different localhost origin are not allowed' });
       return;
     }
-    chromaSync.syncObservation(
-      result.id,
-      memorySessionId,
-      targetProject,
-      observation,
-      0,
-      result.createdAtEpoch
-    ).catch(err => {
-      logger.error('CHROMA', 'ChromaDB sync failed', { id: result.id }, err as Error);
-    });
-
-    res.json({
-      success: true,
-      id: result.id,
-      title: observation.title,
-      project: targetProject,
-      message: `Memory saved as observation #${result.id}`
-    });
+    const { cwd, ...input } = req.body as z.infer<typeof saveMemorySchema>;
+    const checkout = cwd?.trim();
+    if (checkout) {
+      const excluded = process.env.CLAUDE_MEM_EXCLUDED_PROJECTS
+        ?? SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_EXCLUDED_PROJECTS;
+      if (isProjectExcluded(checkout, excluded)) {
+        res.json({ success: false, skipped: true, reason: 'project_excluded' });
+        return;
+      }
+      const named = input.project?.trim() || (typeof input.metadata?.project === 'string' && input.metadata.project.trim());
+      if (!named) input.project = getProjectContext(checkout).primary;
+    }
+    const result = saveMemory(this.dbManager, this.defaultProject, input);
+    logger.debug('HTTP', 'Explicit memory request completed', { id: result.id });
+    res.json(result);
   });
 }

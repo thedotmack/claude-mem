@@ -6,7 +6,7 @@ export const CONTENT_PAYLOAD_SCHEMA_VERSION = 2 as const;
 export const CONTENT_BODY_MAX_BYTES = 256_000;
 export const MUTATION_FIELD_MAX_BYTES = 4_096;
 
-export type ContentKind = 'observation' | 'summary' | 'prompt';
+export type ContentKind = 'observation' | 'summary' | 'prompt' | 'work_state';
 export type CanonicalKind = ContentKind | 'mutation';
 
 export interface CanonicalMutation {
@@ -41,7 +41,10 @@ export interface CanonicalHubChange extends CanonicalWireOp {
   server_ts?: string;
 }
 
-const CONTENT_KINDS = new Set<ContentKind>(['observation', 'summary', 'prompt']);
+// `work_state` (the agent's to-do lists, sqlite/work-state.ts) joined the three
+// launch kinds later; the hub advertises the kinds it accepts in its status
+// response and CloudSync pushes a kind only once the hub does (hubAcceptsKind).
+const CONTENT_KINDS = new Set<ContentKind>(['observation', 'summary', 'prompt', 'work_state']);
 const MUTATION_OPS = new Set(['set_title', 'set_prompt_session', 'remap_project']);
 const CANONICAL_DECIMAL = /^(?:0|[1-9][0-9]*)$/;
 const UINT64_MAX = 18_446_744_073_709_551_615n;
@@ -279,6 +282,7 @@ const PAYLOAD_FIELDS: Record<ContentKind, readonly string[]> = {
     'content_session_id', 'created_at', 'created_at_epoch', 'memory_session_id',
     'platform_source', 'project', 'prompt_number', 'prompt_text',
   ],
+  work_state: ['created_at', 'created_at_epoch', 'fields', 'list_name', 'project'],
 };
 const PAYLOAD_ARRAY_FIELDS = new Set(['concepts', 'facts', 'files_edited', 'files_modified', 'files_read']);
 const PAYLOAD_DECIMAL_FIELDS = new Set(['created_at_epoch', 'discovery_tokens', 'prompt_number']);
@@ -310,7 +314,7 @@ function validateBody(body: CanonicalContentBody): void {
     return;
   }
 
-  if (!CONTENT_KINDS.has(record.kind as ContentKind)) jsonError('kind must be observation, summary, or prompt');
+  if (!CONTENT_KINDS.has(record.kind as ContentKind)) jsonError('kind must be observation, summary, prompt, or work_state');
   const kind = record.kind as ContentKind;
   const originLocalId = assertCanonicalDecimal(record.origin_local_id);
   if (record.id !== stableDocumentId(kind, originDeviceId, originLocalId)) {
@@ -347,12 +351,16 @@ function validatePayload(kind: ContentKind, value: unknown): void {
   requiredDecimal(normalized, 'created_at_epoch', kind);
   if (kind === 'observation' || kind === 'summary') {
     requiredString(normalized, 'memory_session_id', kind);
-  } else {
+  } else if (kind === 'prompt') {
     requiredString(normalized, 'content_session_id', kind);
     requiredString(normalized, 'prompt_text', kind);
+  } else {
+    requiredString(normalized, 'list_name', kind);
+    validateWorkStateFields(normalized.fields, kind);
   }
   for (const [key, item] of Object.entries(normalized)) {
     if (item === null) continue;
+    if (key === 'fields') continue; // work_state only; validated above
     if (PAYLOAD_ARRAY_FIELDS.has(key)) {
       if (!Array.isArray(item) || item.some((entry) => typeof entry !== 'string')) {
         jsonError(`${kind}.${key} must be a string array or null`);
@@ -375,6 +383,23 @@ function validatePayload(kind: ContentKind, value: unknown): void {
       if (Buffer.byteLength(item, 'utf8') > 4_096) {
         jsonError(`${kind}.${key} exceeds the 4096-byte filterable limit`);
       }
+    }
+  }
+}
+
+/**
+ * work_state.fields: the keys one write set, each a string, a safe finite
+ * number, a boolean, or null (null clears the key when the list is folded).
+ * Nested values never occur: the local route refuses them before a row exists.
+ */
+function validateWorkStateFields(value: unknown, kind: ContentKind): void {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    jsonError(`${kind}.fields must be an object`);
+  }
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (key.length === 0) jsonError(`${kind}.fields keys must be non-empty`);
+    if (item !== null && typeof item !== 'string' && typeof item !== 'boolean' && typeof item !== 'number') {
+      jsonError(`${kind}.fields.${key} must be a string, number, boolean or null`);
     }
   }
 }

@@ -1,18 +1,31 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useId } from 'react';
+import { useDialogFocus } from '../hooks/useDialogFocus';
 import type { Settings } from '../types';
 import { TerminalPreview } from './TerminalPreview';
 import { useContextPreview } from '../hooks/useContextPreview';
 import { useBackupStatus } from '../hooks/useBackupStatus';
 import { DEFAULT_SETTINGS } from '../constants/settings';
+import { isClaudeMemObserverBaseUrl } from '../utils/observer-endpoint';
+import { claudeProviderOptionLabel } from '../utils/claude-auth-method';
+import { OPENAI_COMPAT_PRESET_OPTIONS, openAICompatPresetOption } from '../constants/openai-compat-presets';
 import { BACKUP_ADDON_PITCH, BACKUP_ADDON_URL } from '../constants/promo';
 
 interface ContextSettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
   settings: Settings;
+  /** False until GET /api/settings succeeds; `settings` holds defaults until then. */
+  isLoaded: boolean;
+  /** Why the initial GET failed, or null. */
+  loadError: string | null;
+  onRetryLoad: () => void;
   onSave: (settings: Settings) => void;
   isSaving: boolean;
   saveStatus: string;
+}
+
+export function saveStatusClass(saveStatus: string): string {
+  return saveStatus.includes('✗') ? 'error' : saveStatus.includes('✓') ? 'success' : '';
 }
 
 function CollapsibleSection({
@@ -27,6 +40,7 @@ function CollapsibleSection({
   defaultOpen?: boolean;
 }) {
   const [isOpen, setIsOpen] = useState(defaultOpen);
+  const contentId = useId();
 
   return (
     <div className={`settings-section-collapsible ${isOpen ? 'open' : ''}`}>
@@ -34,6 +48,8 @@ function CollapsibleSection({
         className="section-header-btn"
         onClick={() => setIsOpen(!isOpen)}
         type="button"
+        aria-expanded={isOpen}
+        aria-controls={contentId}
       >
         <div className="section-header-content">
           <span className="section-title">{title}</span>
@@ -51,7 +67,7 @@ function CollapsibleSection({
           <polyline points="6 9 12 15 18 9" />
         </svg>
       </button>
-      {isOpen && <div className="section-content">{children}</div>}
+      {isOpen && <div className="section-content" id={contentId}>{children}</div>}
     </div>
   );
 }
@@ -65,9 +81,15 @@ function FormField({
   tooltip?: string;
   children: React.ReactNode;
 }) {
+  const fieldId = useId();
+  const control = React.Children.map(children, child => {
+    if (!React.isValidElement<{ id?: string; 'aria-describedby'?: string }>(child)
+      || typeof child.type !== 'string' || !['input', 'select', 'textarea'].includes(child.type)) return child;
+    return React.cloneElement(child, { id: fieldId, 'aria-describedby': tooltip ? `${fieldId}-hint` : undefined });
+  });
   return (
     <div className="form-field">
-      <label className="form-field-label">
+      <label className="form-field-label" htmlFor={fieldId}>
         {label}
         {tooltip && (
           <span className="tooltip-trigger" title={tooltip}>
@@ -79,7 +101,8 @@ function FormField({
           </span>
         )}
       </label>
-      {children}
+      {control}
+      {tooltip && <span className="visually-hidden" id={`${fieldId}-hint`}>{tooltip}</span>}
     </div>
   );
 }
@@ -186,11 +209,18 @@ export function ContextSettingsModal({
   isOpen,
   onClose,
   settings,
+  isLoaded,
+  loadError,
+  onRetryLoad,
   onSave,
   isSaving,
   saveStatus
 }: ContextSettingsModalProps) {
+  const dialogRef = useDialogFocus(isOpen);
   const [formState, setFormState] = useState<Settings>(settings);
+  // From the saved settings, not the form: the field stays editable while a
+  // user types any other URL, and read-only for the observer's own endpoint.
+  const observerManagesBaseUrl = isClaudeMemObserverBaseUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL);
 
   useEffect(() => {
     setFormState(settings);
@@ -237,10 +267,10 @@ export function ContextSettingsModal({
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="context-settings-modal" onClick={(e) => e.stopPropagation()}>
+      <div ref={dialogRef} tabIndex={-1} className="context-settings-modal" role="dialog" aria-modal="true" aria-labelledby="memory-settings-title" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="modal-header">
-          <h2>Settings</h2>
+          <div className="settings-heading"><h2 id="memory-settings-title">Settings</h2><p>Choose the context your next session receives.</p></div>
           <div className="header-controls">
             <label className="preview-selector">
               Source:
@@ -249,6 +279,7 @@ export function ContextSettingsModal({
                 onChange={(e) => setSelectedSource(e.target.value)}
                 disabled={sources.length === 0}
               >
+                <option value="">All sources</option>
                 {sources.map(source => (
                   <option key={source} value={source}>{source}</option>
                 ))}
@@ -270,6 +301,7 @@ export function ContextSettingsModal({
               onClick={onClose}
               className="modal-close-btn"
               title="Close (Esc)"
+              aria-label="Close settings"
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <line x1="18" y1="6" x2="6" y2="18" />
@@ -283,9 +315,10 @@ export function ContextSettingsModal({
         <div className="modal-body">
           {/* Left column - Terminal Preview */}
           <div className="preview-column">
+            <div className="settings-preview-heading"><h3>Saved context preview</h3><p>Preview the saved configuration for the selected source and project.</p></div>
             <div className="preview-content">
               {error ? (
-                <div style={{ color: '#ff6b6b' }}>
+                <div style={{ color: 'var(--color-accent-error)' }}>
                   Error loading preview: {error}
                 </div>
               ) : (
@@ -294,8 +327,10 @@ export function ContextSettingsModal({
             </div>
           </div>
 
-          {/* Right column - Settings Panel */}
-          <div className="settings-column">
+          {/* Right column - Settings Panel. Before the initial load the form
+              holds defaults; saving them would overwrite settings.json. */}
+          <fieldset className="settings-column" disabled={isSaving || !isLoaded}
+            style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
             {/* Section 1: Loading */}
             <CollapsibleSection
               title="Loading"
@@ -309,10 +344,17 @@ export function ContextSettingsModal({
                   type="number"
                   min="1"
                   max="200"
-                  value={formState.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50'}
-                  onChange={(e) => updateSetting('CLAUDE_MEM_CONTEXT_OBSERVATIONS', e.target.value)}
+                  value={formState.CLAUDE_MEM_CONTEXT_OBSERVATIONS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATIONS}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_CONTEXT_OBSERVATIONS', e.target.value || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATIONS)}
                 />
               </FormField>
+              <ToggleSwitch
+                id="session-start-all-sources"
+                label="Include all sources at session start"
+                description="Show observations from Claude, Codex, and other harnesses in startup context"
+                checked={formState.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES === 'true'}
+                onChange={() => toggleBoolean('CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES')}
+              />
               <FormField
                 label="Sessions"
                 tooltip="Number of recent sessions to pull observations from (1-50)"
@@ -321,8 +363,8 @@ export function ContextSettingsModal({
                   type="number"
                   min="1"
                   max="50"
-                  value={formState.CLAUDE_MEM_CONTEXT_SESSION_COUNT || '10'}
-                  onChange={(e) => updateSetting('CLAUDE_MEM_CONTEXT_SESSION_COUNT', e.target.value)}
+                  value={formState.CLAUDE_MEM_CONTEXT_SESSION_COUNT || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SESSION_COUNT}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_CONTEXT_SESSION_COUNT', e.target.value || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SESSION_COUNT)}
                 />
               </FormField>
             </CollapsibleSection>
@@ -342,8 +384,8 @@ export function ContextSettingsModal({
                     type="number"
                     min="0"
                     max="20"
-                    value={formState.CLAUDE_MEM_CONTEXT_FULL_COUNT || '5'}
-                    onChange={(e) => updateSetting('CLAUDE_MEM_CONTEXT_FULL_COUNT', e.target.value)}
+                    value={formState.CLAUDE_MEM_CONTEXT_FULL_COUNT || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_FULL_COUNT}
+                    onChange={(e) => updateSetting('CLAUDE_MEM_CONTEXT_FULL_COUNT', e.target.value || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_FULL_COUNT)}
                   />
                 </FormField>
                 <FormField
@@ -469,31 +511,63 @@ export function ContextSettingsModal({
             >
               <FormField
                 label="AI Provider"
-                tooltip="Choose between Claude (via Agent SDK) or Gemini (via REST API)"
+                tooltip="Choose the provider that generates observations: Claude (via Agent SDK), Gemini (via REST API), OpenRouter (also used by the claude-mem observer), Codex (your ChatGPT subscription), or any OpenAI-compatible endpoint"
               >
                 <select
                   value={formState.CLAUDE_MEM_PROVIDER || 'claude'}
                   onChange={(e) => updateSetting('CLAUDE_MEM_PROVIDER', e.target.value)}
                 >
-                  <option value="claude">Claude (uses your Claude account)</option>
+                  <option value="claude">{claudeProviderOptionLabel(formState.CLAUDE_MEM_CLAUDE_AUTH_METHOD)}</option>
                   <option value="gemini">Gemini (uses API key)</option>
-                  <option value="openrouter">OpenRouter (multi-model)</option>
+                  <option value="openrouter">OpenRouter / claude-mem observer</option>
+                  <option value="codex">Codex (uses your ChatGPT subscription)</option>
+                  <option value="openai-compatible">OpenAI-compatible endpoint (BYOK)</option>
                 </select>
               </FormField>
 
               {formState.CLAUDE_MEM_PROVIDER === 'claude' && (
-                <FormField
-                  label="Claude Model"
-                  tooltip="Claude model used for generating observations"
-                >
-                  <select
-                    value={formState.CLAUDE_MEM_MODEL || 'haiku'}
-                    onChange={(e) => updateSetting('CLAUDE_MEM_MODEL', e.target.value)}
+                <>
+                  <FormField
+                    label="Claude Model"
+                    tooltip="Claude model used for generating observations"
                   >
-                    <option value="haiku">haiku (fastest)</option>
-                    <option value="sonnet">sonnet (balanced)</option>
-                    <option value="opus">opus (highest quality)</option>
-                  </select>
+                    <select
+                      value={formState.CLAUDE_MEM_MODEL || 'haiku'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_MODEL', e.target.value)}
+                    >
+                      <option value="haiku">haiku (fastest)</option>
+                      <option value="sonnet">sonnet (balanced)</option>
+                      <option value="opus">opus (highest quality)</option>
+                    </select>
+                  </FormField>
+                  <FormField
+                    label="Claude Auth Method"
+                    tooltip="Records which Claude credential this install uses: your Claude account login (subscription), an ANTHROPIC_API_KEY (api-key), a custom ANTHROPIC_BASE_URL endpoint (gateway), or Claude Code's own credentials (cli). The credential itself comes from ~/.claude-mem/.env: an ANTHROPIC_BASE_URL or ANTHROPIC_API_KEY there is used even when this says subscription. Shared with the Quota Fallback Claude option."
+                  >
+                    <select
+                      value={formState.CLAUDE_MEM_CLAUDE_AUTH_METHOD || 'subscription'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_CLAUDE_AUTH_METHOD', e.target.value)}
+                    >
+                      <option value="subscription">subscription (Claude account login)</option>
+                      <option value="api-key">api-key (ANTHROPIC_API_KEY)</option>
+                      <option value="gateway">gateway (custom endpoint + token)</option>
+                      <option value="cli">cli (Claude Code credentials)</option>
+                    </select>
+                  </FormField>
+                </>
+              )}
+
+              {formState.CLAUDE_MEM_PROVIDER === 'codex' && (
+                <FormField
+                  label="Codex Model"
+                  tooltip="Optional model available through your Codex subscription; leave empty for the Codex default. Run codex login before starting the worker."
+                >
+                  <input
+                    type="text"
+                    value={formState.CLAUDE_MEM_CODEX_MODEL || ''}
+                    onChange={(e) => updateSetting('CLAUDE_MEM_CODEX_MODEL', e.target.value)}
+                    placeholder="Codex default (e.g. gpt-6-luna)"
+                  />
                 </FormField>
               )}
 
@@ -552,15 +626,47 @@ export function ContextSettingsModal({
                   </FormField>
                   <FormField
                     label="OpenRouter Model"
-                    tooltip="Model identifier from OpenRouter (e.g., anthropic/claude-3.5-sonnet, google/gemini-2.0-flash-thinking-exp)"
+                    tooltip="Model identifier from openrouter.ai/models (e.g., anthropic/claude-haiku-4.5, google/gemini-2.5-flash)"
                   >
                     <input
                       type="text"
-                      value={formState.CLAUDE_MEM_OPENROUTER_MODEL || 'xiaomi/mimo-v2-flash:free'}
+                      value={formState.CLAUDE_MEM_OPENROUTER_MODEL || DEFAULT_SETTINGS.CLAUDE_MEM_OPENROUTER_MODEL}
                       onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_MODEL', e.target.value)}
-                      placeholder="e.g., xiaomi/mimo-v2-flash:free"
+                      placeholder={`e.g., ${DEFAULT_SETTINGS.CLAUDE_MEM_OPENROUTER_MODEL}`}
                     />
                   </FormField>
+                  <FormField
+                    label="OpenRouter Base URL"
+                    tooltip={observerManagesBaseUrl
+                      ? 'Managed by the claude-mem observer. Run npx claude-mem install to use your own endpoint.'
+                      : 'Optional OpenAI-compatible base URL. Leave blank to use openrouter.ai.'}
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_OPENROUTER_BASE_URL || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_BASE_URL', e.target.value)}
+                      placeholder="https://openrouter.ai/api/v1"
+                      readOnly={observerManagesBaseUrl}
+                    />
+                  </FormField>
+                  {!observerManagesBaseUrl && (
+                    <FormField
+                      label="Reasoning effort"
+                      tooltip="openrouter.ai only. Empty (the default) sends reasoning off. Set an effort to opt back in. A custom gateway does not get this field until an empty length-truncated reply retries once."
+                    >
+                      <select
+                        value={formState.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT || ''}
+                        onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_REASONING_EFFORT', e.target.value)}
+                      >
+                        <option value="">Off (default)</option>
+                        <option value="none">None (reasoning off)</option>
+                        <option value="minimal">Minimal</option>
+                        <option value="low">Low</option>
+                        <option value="medium">Medium</option>
+                        <option value="high">High</option>
+                      </select>
+                    </FormField>
+                  )}
                   <FormField
                     label="Site URL (Optional)"
                     tooltip="Your site URL for OpenRouter analytics (optional)"
@@ -585,6 +691,144 @@ export function ContextSettingsModal({
                   </FormField>
                 </>
               )}
+
+              {formState.CLAUDE_MEM_PROVIDER === 'openai-compatible' && (
+                <>
+                  <FormField
+                    label="Endpoint preset"
+                    tooltip="Fills in the base URL and default model; the fields below override it"
+                  >
+                    <select
+                      value={openAICompatPresetOption(formState.CLAUDE_MEM_OPENAI_COMPAT_PRESET).id}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENAI_COMPAT_PRESET', e.target.value)}
+                    >
+                      {OPENAI_COMPAT_PRESET_OPTIONS.map(preset => (
+                        <option key={preset.id} value={preset.id}>{preset.label}</option>
+                      ))}
+                    </select>
+                  </FormField>
+                  {openAICompatPresetOption(formState.CLAUDE_MEM_OPENAI_COMPAT_PRESET).note && (
+                    <span className="toggle-description">
+                      {openAICompatPresetOption(formState.CLAUDE_MEM_OPENAI_COMPAT_PRESET).note}
+                    </span>
+                  )}
+                  <FormField
+                    label="Base URL"
+                    tooltip="Leave blank to use the preset's endpoint"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENAI_COMPAT_BASE_URL', e.target.value)}
+                      placeholder={openAICompatPresetOption(formState.CLAUDE_MEM_OPENAI_COMPAT_PRESET).baseUrl || 'https://my-gateway.example.com/v1'}
+                    />
+                  </FormField>
+                  <FormField
+                    label="Model"
+                    tooltip="Model id, passed verbatim. Leave blank to use the preset's default"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_OPENAI_COMPAT_MODEL || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENAI_COMPAT_MODEL', e.target.value)}
+                      placeholder={openAICompatPresetOption(formState.CLAUDE_MEM_OPENAI_COMPAT_PRESET).defaultModel || 'model id'}
+                    />
+                  </FormField>
+                  <FormField
+                    label="Reasoning"
+                    tooltip="Off (default) sends reasoning disabled so a reasoning model cannot spend the output cap thinking. On leaves it to the endpoint. A server that rejects the field is retried once without it."
+                  >
+                    <select
+                      value={formState.CLAUDE_MEM_OPENAI_COMPAT_REASONING || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENAI_COMPAT_REASONING', e.target.value)}
+                    >
+                      <option value="">Off (default)</option>
+                      <option value="on">On (endpoint decides)</option>
+                    </select>
+                  </FormField>
+                  <span className="toggle-description">
+                    The API key is set outside the viewer: <code>CLAUDE_MEM_OPENAI_COMPAT_API_KEY</code> in{' '}
+                    <code>~/.claude-mem/settings.json</code>, or <code>OPENAI_COMPAT_API_KEY</code> in{' '}
+                    <code>~/.claude-mem/.env</code>. Local servers need none.
+                  </span>
+                </>
+              )}
+
+              <FormField
+                label="Quota Fallback"
+                tooltip="While the selected provider cannot serve (allowance spent, rate limited or over capacity past its retries, unavailable, or repeatedly returning unusable replies), send observation work here until it recovers. Claude (your Anthropic plan) is the default and is used only when a Claude login or key exists. Off: work waits for the provider."
+              >
+                <select
+                  value={formState.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER || 'claude'}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER', e.target.value)}
+                >
+                  <option value="claude">{claudeProviderOptionLabel(formState.CLAUDE_MEM_CLAUDE_AUTH_METHOD)}</option>
+                  <option value="off">Off (wait for the provider)</option>
+                  <option value="gemini">Gemini (uses API key)</option>
+                  <option value="openrouter">OpenRouter / claude-mem observer</option>
+                  <option value="openai-compatible">OpenAI-compatible endpoint</option>
+                </select>
+              </FormField>
+
+              {(formState.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER || 'claude') === 'claude' && (
+                <>
+                  <FormField
+                    label="Claude Auth Method"
+                    tooltip="The same CLAUDE_MEM_CLAUDE_AUTH_METHOD setting as the AI Provider's Claude Auth Method. Fallback Claude runs use the same credential, which comes from ~/.claude-mem/.env when an ANTHROPIC_BASE_URL or ANTHROPIC_API_KEY is set there."
+                  >
+                    <select
+                      value={formState.CLAUDE_MEM_CLAUDE_AUTH_METHOD || 'subscription'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_CLAUDE_AUTH_METHOD', e.target.value)}
+                    >
+                      <option value="subscription">subscription (Claude account login)</option>
+                      <option value="api-key">api-key (ANTHROPIC_API_KEY)</option>
+                      <option value="gateway">gateway (custom endpoint + token)</option>
+                      <option value="cli">cli (Claude Code credentials)</option>
+                    </select>
+                  </FormField>
+                  <FormField
+                    label="Fallback Claude Model"
+                    tooltip="Claude model for fallback runs only. Blank uses the Claude Model setting and tier routing."
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_QUOTA_FALLBACK_MODEL || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_QUOTA_FALLBACK_MODEL', e.target.value)}
+                      placeholder="e.g., claude-haiku-4-5-20251001"
+                    />
+                  </FormField>
+                </>
+              )}
+
+              <FormField
+                label="Claude Credential Fallback"
+                tooltip="For a Claude observer: the other credential to run on while the primary one is held for quota, tried before the Quota Fallback provider. Subscription: a spent ANTHROPIC_API_KEY (e.g. credit balance too low) hands over to your Claude Code login, still protected by the quota guard. API key: a login that is spent or paused by the quota guard hands over to ANTHROPIC_FALLBACK_API_KEY in ~/.claude-mem/.env, billed per request. Either returns to the primary once it recovers; neither applies under ANTHROPIC_BASE_URL."
+              >
+                <select
+                  value={formState.CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD || ''}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD', e.target.value)}
+                >
+                  <option value="">Off (wait for the primary credential)</option>
+                  <option value="subscription">Subscription (Claude Code login)</option>
+                  <option value="api-key">API key (ANTHROPIC_FALLBACK_API_KEY)</option>
+                </select>
+              </FormField>
+
+              <FormField
+                label="Claude Code CLI path"
+                tooltip="Executable path for the Claude Code CLI. File/env only — edit ~/.claude-mem/settings.json or set CLAUDE_CODE_PATH in the environment, then restart the worker."
+              >
+                <input
+                  type="text"
+                  value={formState.CLAUDE_CODE_PATH || ''}
+                  readOnly
+                  disabled
+                  placeholder="Auto-detect (set via settings.json or env)"
+                />
+                <span className="toggle-description">
+                  Read-only here. Set <code>CLAUDE_CODE_PATH</code> in <code>~/.claude-mem/settings.json</code> or the environment.
+                </span>
+              </FormField>
 
               <FormField
                 label="Worker Port"
@@ -614,22 +858,38 @@ export function ContextSettingsModal({
                   checked={formState.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE === 'true'}
                   onChange={() => toggleBoolean('CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE')}
                 />
+                <ToggleSwitch
+                  id="file-read-gate"
+                  label="Block full-file reads"
+                  description="Send Claude to smart_outline/smart_unfold and past observations instead of reading whole code files of 32 KB and up that have history"
+                  checked={formState.CLAUDE_MEM_FILE_READ_GATE_ENABLED !== 'false'}
+                  onChange={(checked) => updateSetting('CLAUDE_MEM_FILE_READ_GATE_ENABLED', checked ? 'true' : 'false')}
+                />
               </div>
             </CollapsibleSection>
-          </div>
+          </fieldset>
         </div>
 
         {/* Footer with Save button */}
         <div className="modal-footer">
-          <div className="save-status">
-            {saveStatus && <span className={saveStatus.includes('✓') ? 'success' : saveStatus.includes('✗') ? 'error' : ''}>{saveStatus}</span>}
+          <div className="save-status" role="status" aria-live="polite">
+            {loadError ? (
+              <span className="error" role="alert">
+                {loadError}{' '}
+                <button type="button" onClick={onRetryLoad}>Retry</button>
+              </span>
+            ) : !isLoaded ? (
+              <span>Loading settings…</span>
+            ) : (
+              saveStatus && <span className={saveStatusClass(saveStatus)}>{saveStatus}</span>
+            )}
           </div>
           <button
             className="save-btn"
             onClick={handleSave}
-            disabled={isSaving}
+            disabled={isSaving || !isLoaded}
           >
-            {isSaving ? 'Saving...' : 'Save'}
+            {isSaving ? 'Saving...' : 'Save settings'}
           </button>
         </div>
       </div>

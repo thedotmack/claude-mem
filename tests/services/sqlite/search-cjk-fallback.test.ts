@@ -1,0 +1,222 @@
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
+import { SessionSearch } from '../../../src/services/sqlite/SessionSearch.js';
+
+// FTS5's unicode61 tokenizer has no delimiter to split CJK on, so an entire run of
+// ideographs folds into ONE token and no substring of it can ever match (#3801).
+// Queries in those scripts are answered by substring, the way searchUserPrompts
+// has always answered every query.
+describe('search in scripts FTS5 cannot segment', () => {
+  let store: SessionStore;
+  let search: SessionSearch;
+
+  function seedObservation(sessionId: string, project: string, title: string, narrative: string): void {
+    const sdkId = store.createSDKSession(sessionId, project, 'prompt');
+    store.ensureMemorySessionIdRegistered(sdkId, `${sessionId}-mem`);
+    store.storeObservation(`${sessionId}-mem`, project, {
+      type: 'discovery',
+      title,
+      subtitle: null,
+      facts: [],
+      narrative,
+      concepts: [],
+      files_read: [],
+      files_modified: [],
+    }, 1);
+  }
+
+  function seedSummary(memorySessionId: string, project: string, request: string): void {
+    const sdkId = store.createSDKSession(`${memorySessionId}-raw`, project, 'prompt');
+    store.ensureMemorySessionIdRegistered(sdkId, memorySessionId);
+    store.importSessionSummary({
+      memory_session_id: memorySessionId,
+      project,
+      request,
+      investigated: null,
+      learned: null,
+      completed: null,
+      next_steps: null,
+      files_read: null,
+      files_edited: null,
+      notes: null,
+      prompt_number: 1,
+      discovery_tokens: 0,
+      created_at: new Date(1_700_000_000_000).toISOString(),
+      created_at_epoch: 1_700_000_000_000,
+    });
+  }
+
+  beforeEach(() => {
+    store = new SessionStore(':memory:');
+    search = new SessionSearch(store.db);
+    seedObservation('cjk-1', 'cjk-project', '用户身份验证流程', '这是关于用户身份的观察记录');
+    seedObservation('cjk-2', 'cjk-project', '数据库连接池配置', '调整数据库连接池的大小');
+    seedObservation('jp-1', 'cjk-project', 'ユーザー認証の設計', 'ユーザー認証をやり直した');
+    seedObservation('ko-1', 'cjk-project', '프로젝트 설정을 변경했습니다', '설정을 바꾼 기록');
+    seedObservation('bpmf-1', 'cjk-project', 'ㄓㄨㄛ ㄖㄣ ㄊㄢ', 'ㄓㄨㄛ 的紀錄');
+    seedObservation('en-1', 'cjk-project', 'Database Path resolution', 'the database path is resolved at startup');
+    seedObservation('mix-1', 'cjk-project', 'claude-mem 队列积压排查', 'worker 的 pending 队列在重启时被清空');
+    seedObservation('glue-1', 'cjk-project', 'payload解析失败', 'manifest文件在启动时读取');
+    seedSummary('glue-2-mem', 'cjk-project', 'cache缓存重建流程');
+    seedObservation('fts-1', 'cjk-project', 'orphaned memory cleanup', 'plugin hooks now track version metadata with ambient-total counters');
+    seedObservation('other-1', 'other-project', '用户身份验证流程', '另一个项目里的同名观察');
+    seedSummary('sum-cjk', 'cjk-project', '重构用户身份验证的会话');
+    seedSummary('sum-en', 'cjk-project', 'refactor the database path');
+    seedSummary('sum-fts', 'cjk-project', 'orphaned plugin migration ambient-total version');
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  it('finds a Chinese keyword that appears inside a longer run', () => {
+    const results = search.searchObservations('用户身份', { project: 'cjk-project' });
+    expect(results.map(r => r.title)).toEqual(['用户身份验证流程']);
+  });
+
+  it('finds a two-character Chinese keyword, which a trigram index could not', () => {
+    const results = search.searchObservations('数据', { project: 'cjk-project' });
+    expect(results.map(r => r.title)).toEqual(['数据库连接池配置']);
+  });
+
+  it('finds Japanese, which has no word delimiter either', () => {
+    const results = search.searchObservations('ユーザー認証', { project: 'cjk-project' });
+    expect(results.map(r => r.title)).toEqual(['ユーザー認証の設計']);
+  });
+
+  // Korean spaces its words, so only the sub-word case breaks — but that case is every
+  // partial-word query. Against tokenize='unicode61', 설정 inside 설정을 returns 0 rows
+  // while the whole token 설정을 returns 1, which is the tokenizer folding the run.
+  it('finds a Korean keyword inside a word, which the tokenizer folds', () => {
+    const results = search.searchObservations('설정', { project: 'cjk-project' });
+    expect(results.map(r => r.title)).toEqual(['프로젝트 설정을 변경했습니다']);
+  });
+
+  // Bopomofo has no delimiters at all, the same as the ideographs.
+  it('finds a Bopomofo keyword inside a longer run', () => {
+    const results = search.searchObservations('ㄓㄨ', { project: 'cjk-project' });
+    expect(results.map(r => r.title)).toEqual(['ㄓㄨㄛ ㄖㄣ ㄊㄢ']);
+  });
+
+  it('searches session summaries the same way', () => {
+    const results = search.searchSessions('用户身份', { project: 'cjk-project' });
+    expect(results.map(r => r.request)).toEqual(['重构用户身份验证的会话']);
+  });
+
+  it('still applies the project filter on this path', () => {
+    expect(search.searchObservations('用户身份', { project: 'other-project' }).map(r => r.memory_session_id))
+      .toEqual(['other-1-mem']);
+    expect(search.searchObservations('用户身份', {}).length).toBe(2);
+  });
+
+  it('still applies the type filter on this path', () => {
+    expect(search.searchObservations('用户身份', { project: 'cjk-project', type: 'discovery' }).length).toBe(1);
+    expect(search.searchObservations('用户身份', { project: 'cjk-project', type: 'decision' }).length).toBe(0);
+  });
+
+  it('treats LIKE wildcards in the query as literal characters', () => {
+    expect(search.searchObservations('用户%验证', { project: 'cjk-project' })).toEqual([]);
+    expect(search.searchObservations('用户_验证', { project: 'cjk-project' })).toEqual([]);
+  });
+
+  // A mixed-script query is routed here by the presence of one ideograph, and the whole
+  // string was then matched as one literal substring — so the Latin and the CJK halves
+  // had to sit adjacent in the text to match at all. Term by term is the fix.
+  it('finds a mixed-script query whose terms are not adjacent', () => {
+    const results = search.searchObservations('claude 队列', { project: 'cjk-project' });
+    expect(results.map(r => r.title)).toEqual(['claude-mem 队列积压排查']);
+  });
+
+  it('does not care which order the mixed terms are given in', () => {
+    const results = search.searchObservations('队列 claude', { project: 'cjk-project' });
+    expect(results.map(r => r.title)).toEqual(['claude-mem 队列积压排查']);
+  });
+
+  it('requires every term, not any of them', () => {
+    expect(search.searchObservations('claude 数据库', { project: 'cjk-project' })).toEqual([]);
+  });
+
+  it('matches terms that sit far apart in the same column', () => {
+    const results = search.searchObservations('pending 重启', { project: 'cjk-project' });
+    expect(results.map(r => r.title)).toEqual(['claude-mem 队列积压排查']);
+  });
+
+  // The tokenizer glues a Latin run to the ideographs touching it, so `payload优先使用LLM`
+  // is one token that no FTS term can reach. When FTS finds nothing at all, the query is
+  // answered by substring, term by term.
+  it('finds a Latin word glued to the ideographs that follow it', () => {
+    const results = search.searchObservations('payload', { project: 'cjk-project' });
+    expect(results.map(r => r.title)).toEqual(['payload解析失败']);
+  });
+
+  it('finds a glued Latin word in the narrative, not just the title', () => {
+    const results = search.searchObservations('manifest', { project: 'cjk-project' });
+    expect(results.map(r => r.title)).toEqual(['payload解析失败']);
+  });
+
+  it('applies the same fallback to session summaries', () => {
+    const results = search.searchSessions('cache', { project: 'cjk-project' });
+    expect(results.map(r => r.request)).toEqual(['cache缓存重建流程']);
+  });
+
+  it('finds a Latin word glued to the ideographs before it', () => {
+    seedObservation('glue-3', 'cjk-project', '优先使用LLM', '模型选择');
+    const results = search.searchObservations('LLM', { project: 'cjk-project' });
+    expect(results.map(r => r.title)).toEqual(['优先使用LLM']);
+  });
+
+  it('pages through fallback results', () => {
+    seedObservation('glue-4', 'cjk-project', 'payload重试', '第二条');
+    const firstPage = search.searchObservations('payload', { project: 'cjk-project', limit: 1 });
+    const secondPage = search.searchObservations('payload', { project: 'cjk-project', limit: 1, offset: 1 });
+    expect(firstPage).toHaveLength(1);
+    expect(secondPage).toHaveLength(1);
+    expect(secondPage[0].id).not.toBe(firstPage[0].id);
+  });
+
+  it('does not widen an English query that FTS5 already answers', () => {
+    const results = search.searchObservations('Database Path', { project: 'cjk-project' });
+    expect(results.map(r => r.title)).toEqual(['Database Path resolution']);
+    expect(search.searchSessions('database path', { project: 'cjk-project' }).map(r => r.request))
+      .toEqual(['refactor the database path']);
+  });
+
+  it('does not widen a word to the longer words it prefixes', () => {
+    seedObservation('en-2', 'cjk-project', 'data pipeline stalls', 'the ingest data queue backs up');
+    const results = search.searchObservations('data', { project: 'cjk-project' });
+    expect(results.map(r => r.title)).toEqual(['data pipeline stalls']);
+  });
+
+  // Thai, Lao, Myanmar and Khmer put no spaces between words either, so a run folds into one
+  // token. A query that equals a whole token somewhere must still find it inside longer runs.
+  it('matches Thai and Khmer inside longer runs, not only where the query stands alone', () => {
+    seedObservation('th-1', 'sea-project', 'ภาษาไทย', 'หัวข้อสั้น');
+    seedObservation('th-2', 'sea-project', 'ภาษาไทยเป็นภาษาที่สวยงาม', 'บันทึกยาว');
+    seedObservation('km-1', 'sea-project', 'ខ្មែរ', 'ចំណងជើងខ្លី');
+    seedObservation('km-2', 'sea-project', 'ភាសាខ្មែរស្រស់ស្អាត', 'កំណត់ត្រាវែង');
+
+    expect(search.searchObservations('ภาษาไทย', { project: 'sea-project' }).map(r => r.title).sort())
+      .toEqual(['ภาษาไทย', 'ภาษาไทยเป็นภาษาที่สวยงาม'].sort());
+    expect(search.searchObservations('ខ្មែរ', { project: 'sea-project' }).map(r => r.title).sort())
+      .toEqual(['ខ្មែរ', 'ភាសាខ្មែរស្រស់ស្អាត'].sort());
+  });
+
+  it('treats multi-word FTS input as ANDed terms instead of one exact phrase', () => {
+    const observationResults = search.searchObservations('orphaned plugin version', { project: 'cjk-project' });
+    expect(observationResults.map(r => r.memory_session_id)).toContain('fts-1-mem');
+
+    const sessionResults = search.searchSessions('orphaned plugin version', { project: 'cjk-project' });
+    expect(sessionResults.map(r => r.memory_session_id)).toContain('sum-fts');
+  });
+
+  it('treats FTS metacharacters in tokens literally when combined with other terms', () => {
+    const query = 'ambient-total orphaned plugin version';
+    expect(() => search.searchObservations(query, { project: 'cjk-project' })).not.toThrow();
+    expect(search.searchObservations(query, { project: 'cjk-project' }).map(r => r.memory_session_id))
+      .toContain('fts-1-mem');
+
+    expect(() => search.searchSessions(query, { project: 'cjk-project' })).not.toThrow();
+    expect(search.searchSessions(query, { project: 'cjk-project' }).map(r => r.memory_session_id))
+      .toContain('sum-fts');
+  });
+});

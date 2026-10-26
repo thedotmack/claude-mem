@@ -3,6 +3,7 @@ declare const __DEFAULT_PACKAGE_VERSION__: string;
 const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
 
 import { logger } from '../utils/logger.js';
+import { spoolWorkStateMcpResult } from '../cli/work-state-telemetry.js';
 
 console['log'] = (...args: any[]) => {
   logger.error('CONSOLE', 'Intercepted console output (MCP protocol protection)', undefined, { args });
@@ -17,9 +18,12 @@ import {
 import { getWorkerPort, workerHttpRequest, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { ensureWorkerStarted } from '../services/worker-spawner.js';
 import { searchCodebase, formatSearchResults } from '../services/smart-file-read/search.js';
-import { parseFile, formatFoldedView, unfoldSymbol } from '../services/smart-file-read/parser.js';
+import { parseFile, formatFoldedView, unfoldSymbol, formatAvailableSymbols } from '../services/smart-file-read/parser.js';
+import { treeSitterCliUnavailableMessage } from '../services/smart-file-read/tree-sitter-bin-path.js';
+import { resolveWithinWorkspace } from '../services/smart-file-read/workspace-path.js';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { marketplaceDirectoryCandidates } from '../shared/known-marketplace-location.js';
 import { dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -38,7 +42,40 @@ import {
   type ServerRuntimeContext,
 } from '../services/hooks/runtime-selector.js';
 import { normalizePlatformSource } from '../shared/platform-source.js';
-import { getAdvertisedMcpToolsForRuntime } from './mcp-tool-visibility.js';
+import {
+  getAdvertisedMcpToolsForRuntime,
+  TEAMBRAIN_TOOL_NAMES,
+  withoutDisabledWorkStateTools,
+  withoutUnjoinedTeamBrainTools,
+  WORK_STATE_TOOL_NAMES,
+} from './mcp-tool-visibility.js';
+import { loadFromFileOnce } from '../shared/hook-settings.js';
+import { teamBrainConnection } from '../shared/teambrain.js';
+import { isWorkStateEnabled } from '../shared/work-state-setting.js';
+import { getProjectContext, type ProjectContext } from '../utils/project-name.js';
+import { withCheckoutProjects } from './checkout-search-scope.js';
+import { postCorpusRequestOverSse } from './corpus-worker-stream.js';
+import { withWorkerRestartOnRefusedConnection } from './worker-restart.js';
+import { ProgressiveSearchError, progressiveSearchToolError } from '../shared/progressive-search.js';
+import { formatMcpPayload, formatWorkerMcpResponse, mcpTextResult, workerFailureText, serverFailureText, type McpTextPurpose } from './mcp-text-format.js';
+import { getRequestCwd, runWithCwd } from './request-context.js';
+import { parseHttpArgs, startMcpHttpServer, type CwdResolver, type McpHttpOptions } from './mcp-http.js';
+import { buildWorkerOriginPolicy } from '../services/worker/http/origin-policy.js';
+
+/**
+ * The checkout of the running tool call, resolved once per directory. Over stdio that is
+ * the workspace Claude Code started this process in; over HTTP it is the session's cwd.
+ */
+const checkoutByCwd = new Map<string, ProjectContext>();
+function currentCheckout(): ProjectContext {
+  const cwd = getRequestCwd();
+  let checkout = checkoutByCwd.get(cwd);
+  if (!checkout) {
+    checkout = getProjectContext(cwd);
+    checkoutByCwd.set(cwd, checkout);
+  }
+  return checkout;
+}
 
 let mcpServerDirResolutionFailed = false;
 const mcpServerDir = (() => {
@@ -69,54 +106,88 @@ function errorIfWorkerScriptMissing(): void {
   );
 }
 
-async function callWorker(
-  endpoint: string,
-  opts: { query?: Record<string, any>; body?: Record<string, any>; text?: boolean } = {}
-): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+interface WorkerCallOptions {
+  query?: Record<string, any>;
+  body?: Record<string, any>;
+  text?: boolean;
+  /** Long corpus work: read the worker's SSE heartbeat stream instead of one JSON reply. */
+  streamCorpusProgress?: boolean;
+}
+
+type WorkerToolResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
+
+function workerResultPurpose(endpoint: string, writes: boolean): McpTextPurpose {
+  if (endpoint === '/api/memory/save') return 'save';
+  if (endpoint === '/api/observations/batch') return 'observations';
+  if (endpoint === '/api/tool-uses/batch') return 'tool-uses';
+  if (endpoint === '/api/corpus') return writes ? 'corpus-build' : 'corpus-list';
+  if (/\/corpus\/[^/]+\/(?:prime|reprime)$/.test(endpoint)) return 'corpus-prime';
+  if (/\/corpus\/[^/]+\/rebuild$/.test(endpoint)) return 'corpus-build';
+  if (/\/corpus\/[^/]+\/query$/.test(endpoint)) return 'corpus-query';
+  return endpoint === '/api/search' ? 'search' : 'context';
+}
+
+async function callWorker(endpoint: string, opts: WorkerCallOptions = {}): Promise<WorkerToolResult> {
   logger.debug('SYSTEM', '→ Worker API', undefined, { endpoint });
 
   try {
-    let response: Response;
-    if (opts.body) {
-      response = await workerHttpRequest(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(opts.body)
-      });
-    } else {
-      const searchParams = new URLSearchParams();
-      for (const [key, value] of Object.entries(opts.query ?? {})) {
-        if (value !== undefined && value !== null) {
-          searchParams.append(key, String(value));
-        }
-      }
-      response = await workerHttpRequest(`${endpoint}?${searchParams}`);
-    }
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Worker API error (${response.status}): ${errorText}`);
-    }
-
-    logger.debug('SYSTEM', '← Worker API success', undefined, { endpoint });
-
-    if (opts.text) {
-      return { content: [{ type: 'text' as const, text: await response.text() }] };
-    }
-    if (opts.body) {
-      return { content: [{ type: 'text' as const, text: JSON.stringify(await response.json(), null, 2) }] };
-    }
-    return await response.json() as { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
+    // The worker can exit while this server runs (idle exit, a crash,
+    // `claude-mem stop`); a refused connection starts it once and resends.
+    return await withWorkerRestartOnRefusedConnection(
+      () => requestWorker(endpoint, opts),
+      startWorkerAfterRefusedConnection,
+    );
   } catch (error: unknown) {
     logger.error('SYSTEM', '← Worker API error', { endpoint }, error instanceof Error ? error : new Error(String(error)));
-    return {
-      content: [{
-        type: 'text' as const,
-        text: `Error calling Worker API: ${error instanceof Error ? error.message : String(error)}`
-      }],
-      isError: true
-    };
+    return mcpTextResult(workerFailureText(error instanceof Error ? error.message : ''), true);
   }
+}
+
+async function requestWorker(endpoint: string, opts: WorkerCallOptions): Promise<WorkerToolResult> {
+  if (opts.streamCorpusProgress && opts.body) {
+    const corpusResult = await postCorpusRequestOverSse(endpoint, opts.body);
+    logger.debug('SYSTEM', '← Worker API success', undefined, { endpoint });
+    return formatWorkerMcpResponse(workerResultPurpose(endpoint, true), corpusResult);
+  }
+
+  let response: Response;
+  if (opts.body) {
+    response = await workerHttpRequest(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(opts.body)
+    });
+  } else {
+    const searchParams = new URLSearchParams();
+    for (const [key, value] of Object.entries(opts.query ?? {})) {
+      if (value !== undefined && value !== null) {
+        searchParams.append(key, String(value));
+      }
+    }
+    response = await workerHttpRequest(`${endpoint}?${searchParams}`);
+  }
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Worker API error (${response.status}): ${errorText}`);
+  }
+
+  logger.debug('SYSTEM', '← Worker API success', undefined, { endpoint });
+
+  if (opts.text) {
+    return mcpTextResult(await response.text());
+  }
+  return formatWorkerMcpResponse(workerResultPurpose(endpoint, Boolean(opts.body)), await response.json());
+}
+
+/**
+ * Start the worker after it refused a tool call. Same rule as startup: with
+ * CLAUDE_MEM_RUNTIME=server the MCP server never starts it, and
+ * ensureWorkerStarted itself honors CLAUDE_MEM_WORKER_AUTOSTART=false.
+ */
+async function startWorkerAfterRefusedConnection(): Promise<boolean> {
+  if (selectRuntime() === 'server') return false;
+  return ensureWorkerConnection();
 }
 
 async function verifyWorkerConnection(): Promise<boolean> {
@@ -174,13 +245,9 @@ function resolveServerToolContext(): ServerResolution | null {
 
 function formatToolError(error: unknown): { content: Array<{ type: 'text'; text: string }>; isError: true } {
   if (isServerClientError(error)) {
-    return {
-      content: [{
-        type: 'text' as const,
-        text: `Server error (${error.kind}${error.status ? ` ${error.status}` : ''}): ${error.message}`,
-      }],
-      isError: true as const,
-    };
+    const text = error.kind === 'transport' && error.message.includes(' requires CLAUDE_MEM_RUNTIME=server.')
+      ? error.message : serverFailureText(error.kind, error.status);
+    return { content: mcpTextResult(text).content, isError: true };
   }
   return {
     content: [{
@@ -188,15 +255,6 @@ function formatToolError(error: unknown): { content: Array<{ type: 'text'; text:
       text: `Tool error: ${error instanceof Error ? error.message : String(error)}`,
     }],
     isError: true as const,
-  };
-}
-
-function formatJsonResult(payload: unknown): { content: Array<{ type: 'text'; text: string }> } {
-  return {
-    content: [{
-      type: 'text' as const,
-      text: JSON.stringify(payload, null, 2),
-    }],
   };
 }
 
@@ -222,8 +280,8 @@ function wrapHandler<Args>(
     try {
       return await execute(args);
     } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      logger.warn('SYSTEM', `${toolName} failed`, undefined, err);
+      if (isServerClientError(error)) logger.warn('SYSTEM', `${toolName} failed`, { errorKind: error.kind, status: error.status });
+      else logger.warn('SYSTEM', `${toolName} failed`, undefined, error instanceof Error ? error : new Error(String(error)));
       return formatToolError(error);
     }
   };
@@ -232,6 +290,8 @@ function wrapHandler<Args>(
 interface ObservationAddArgs {
   projectId?: string;
   serverSessionId?: string | null;
+  contentSessionId?: string | null;
+  platformSource?: string | null;
   kind?: string;
   content: string;
   metadata?: Record<string, unknown>;
@@ -247,11 +307,13 @@ const handleObservationAdd = wrapHandler('observation_add', async (args: Observa
     projectId,
     content: args.content,
     ...(args.serverSessionId !== undefined ? { serverSessionId: args.serverSessionId } : {}),
+    ...(args.contentSessionId !== undefined ? { contentSessionId: args.contentSessionId } : {}),
+    ...(args.platformSource !== undefined ? { platformSource: args.platformSource } : {}),
     ...(args.kind !== undefined ? { kind: args.kind } : {}),
     ...(args.metadata !== undefined ? { metadata: args.metadata } : {}),
   };
   const response = await ctx.client.addObservation(request);
-  return formatJsonResult(response);
+  return formatMcpPayload('observation-add', response);
 });
 
 interface ObservationRecordEventArgs {
@@ -290,7 +352,7 @@ const handleObservationRecordEvent = wrapHandler('observation_record_event', asy
     ...(args.generate !== undefined ? { generate: args.generate } : {}),
   };
   const response = await ctx.client.recordEvent(request);
-  return formatJsonResult(response);
+  return formatMcpPayload('event', response);
 });
 
 interface ObservationSearchArgs {
@@ -313,30 +375,30 @@ const handleObservationSearch = wrapHandler('observation_search', async (args: O
     ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
   };
   const response = await ctx.client.searchObservations(request);
-  return formatJsonResult(response);
+  return formatMcpPayload('server-search', response);
 });
 
 interface ObservationContextArgs {
   projectId?: string;
-  query: string;
+  // Optional: omit for "recent" (recency-ordered) context instead of a
+  // relevance-ranked search (plan-24 step 4, #2991).
+  query?: string;
   limit?: number;
   platformSource?: string | null;
 }
 
 const handleObservationContext = wrapHandler('observation_context', async (args: ObservationContextArgs) => {
   const ctx = requireServerForObservationTool('observation_context');
-  if (typeof args?.query !== 'string' || args.query.trim().length === 0) {
-    throw new Error('observation_context: "query" is required');
-  }
+  const hasQuery = typeof args?.query === 'string' && args.query.trim().length > 0;
   const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
   const request: ServerContextObservationsRequest = {
     projectId,
-    query: args.query,
+    ...(hasQuery ? { query: args.query } : {}),
     ...(args.limit !== undefined ? { limit: args.limit } : {}),
     ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
   };
   const response = await ctx.client.contextObservations(request);
-  return formatJsonResult(response);
+  return formatMcpPayload('context', response);
 });
 
 interface ObservationGenerationStatusArgs {
@@ -402,7 +464,7 @@ const handleObservationGenerationStatus = wrapHandler('observation_generation_st
     throw new Error('observation_generation_status: "jobId" is required');
   }
   const response = await ctx.client.getJobStatus(jobId);
-  return formatJsonResult(response);
+  return formatMcpPayload('job', response);
 });
 
 async function ensureWorkerConnection(): Promise<boolean> {
@@ -435,22 +497,90 @@ async function ensureWorkerConnection(): Promise<boolean> {
   }
 }
 
+// Plan mode lets an MCP tool run without a prompt only when it declares
+// readOnlyHint (#3483). The File Read Gate sends Claude to smart_outline,
+// smart_unfold and get_observations, so those must work in plan mode too.
+// Tools that write (work_state_write, observation_add, the corpus builders and
+// query_corpus, which appends to the corpus session) keep prompting.
+const READ_ONLY_TOOL_ANNOTATIONS = { readOnlyHint: true } as const;
+
 const tools = [
   {
+    name: 'dumb_search',
+    description: 'Dumb search (optional): Doesn’t reason about the results. Fast, but shallow. Use Smart for reliable recall. This one-call lookup picks records by title word overlap, adds nearby context, and returns up to maxDetails records. Smart search is the default mem-search workflow: search → timeline → selected get_observations.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search query, up to 500 characters.' },
+        project: { type: 'string', description: 'Optional project filter.' },
+        limit: { type: 'integer', minimum: 1, maximum: 20, description: 'Index result count, default 20.' },
+        maxDetails: { type: 'integer', minimum: 1, maximum: 5, description: 'Maximum full details, default 3.' },
+        depthBefore: { type: 'integer', minimum: 0, maximum: 3, description: 'Context rows before each selected anchor, default 2.' },
+        depthAfter: { type: 'integer', minimum: 0, maximum: 3, description: 'Context rows after each selected anchor, default 2.' },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    handler: async (args: any) => {
+      try {
+        if (selectRuntime() === 'server') {
+          throw new ProgressiveSearchError('unsupported_runtime', 'Use the hosted claude-mem MCP connection for server memory, or select worker runtime for local dumb_search.');
+        }
+        const body = withCheckoutProjects(args ?? {}, currentCheckout());
+        const response = await withWorkerRestartOnRefusedConnection(() => workerHttpRequest('/api/dumb-search', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        }), startWorkerAfterRefusedConnection);
+        if (!response.ok) throw new Error(`Worker API error (${response.status})`);
+        const result = await response.json() as WorkerToolResult;
+        return {
+          content: result.content.filter(item => item.type === 'text' && typeof item.text === 'string').map(item => ({ type: 'text' as const, text: item.text })),
+          ...(result.isError ? { isError: true } : {}),
+        };
+      } catch (error) {
+        logger.warn('SYSTEM', 'dumb_search failed', undefined, error instanceof Error ? error : new Error(String(error)));
+        return progressiveSearchToolError(error);
+      }
+    },
+  },
+  {
+    name: 'save_memory',
+    description: 'Save an explicit durable note, decision, correction or handoff into worker-mode claude-mem. Use this for your own note taking after searching memory for duplicates. Include project when the note belongs to a specific project. Server runtime uses observation_add to write to the selected server.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'Durable memory text.' },
+        title: { type: 'string', description: 'Concise searchable title.' },
+        project: { type: 'string', description: 'Project receiving the note; defaults to the active checkout.' },
+        metadata: { type: 'object', additionalProperties: true, description: 'Optional provenance or source metadata.' },
+      },
+      required: ['text'],
+      additionalProperties: false,
+    },
+    handler: async (args: any) => {
+      if (selectRuntime() === 'server') return mcpTextResult('save_memory requires worker runtime. To save a note in the selected server, use observation_add with content and optional projectId.', true);
+      return callWorker('/api/memory/save', { body: { ...args, project: args?.project || currentCheckout().primary } });
+    },
+  },
+  {
     name: 'important_workflow',
-    description: `3-LAYER WORKFLOW (ALWAYS FOLLOW):
+    description: `SMART SEARCH (DEFAULT): Use the mem-search skill in three steps; no auto or guided modes. In server runtime, search, timeline, and get_observations use the configured server project.
 1. search(query) → Get index with IDs (~50-100 tokens/result)
 2. timeline(anchor=ID) → Get context around interesting results
-3. get_observations([IDs]) → Fetch full details ONLY for filtered IDs
+3. get_observations([IDs]) → Fetch selected details ONLY for filtered IDs
+Exceptional follow-up: get_tool_uses([IDs]) for raw tool_input/tool_response, ONLY when the summary is not enough
 NEVER fetch full details without filtering first. 10x token savings.`,
     inputSchema: {
       type: 'object',
       properties: {}
     },
-    handler: async () => ({
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    handler: async () => selectRuntime() === 'server' ? mcpTextResult('Smart search (default): 1. search({query}) for the server index. 2. timeline({anchor: ID}) for context around interesting results. 3. get_observations({ids}) for only records selected after reviewing the index and timeline. These tools use the configured server project; optional projectId selects another authorized server project. No auto or guided modes. Dumb search is unavailable in this runtime.') : ({
       content: [{
         type: 'text' as const,
-        text: `# Memory Search Workflow
+        text: `# Smart Search (Default)
+
+Use the original three-step mem-search workflow. Reason about the index and timeline before selecting full details. No auto or guided modes.
 
 **3-Layer Pattern (ALWAYS follow this):**
 
@@ -462,23 +592,30 @@ NEVER fetch full details without filtering first. 10x token savings.`,
    \`timeline(anchor=<ID>, depth_before=3, depth_after=3)\`
    Returns: Chronological context showing what was happening
 
-3. **Fetch** - Get full details ONLY for relevant IDs
+3. **Fetch** - Get selected details ONLY for relevant IDs
    \`get_observations(ids=[...])\`  # ALWAYS batch for 2+ items
-   Returns: Complete details (~500-1000 tokens/result)
+   Returns: Selected useful fields, with any shortening marked (~500-1000 tokens/result)
 
-**Why:** 10x token savings. Never fetch full details without filtering first.`
+**Exceptional follow-up: raw tool I/O** - Last resort, when the observation summary does not answer the question
+   \`get_tool_uses(ids=[...])\`
+   Returns: The original tool_input / tool_response bodies (UNSUMMARIZED — can be thousands of tokens each)
+
+**Why:** 10x token savings. Never fetch full details without filtering first, and never reach for raw tool I/O before the three-step workflow.
+
+Optional Dumb search: \`dumb_search({query, project})\`. Doesn’t reason about the results. Fast, but shallow. Use Smart for reliable recall.`
       }]
     })
   },
   {
     name: 'search',
-    description: 'Step 1: Search memory. Returns index with IDs. Params: query, limit, project, platformSource, type, obs_type, dateStart, dateEnd, offset, orderBy',
+    description: 'Smart search (default), step 1: search memory for an index with IDs. Review it, use timeline for context, then get_observations only for selected IDs. Params: query, limit, project, platformSource, type, obs_type, dateStart, dateEnd, offset, orderBy',
     inputSchema: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Search query' },
         limit: { type: 'number', description: 'Max results (default 20)' },
-        project: { type: 'string', description: 'Filter by project name' },
+        project: { type: 'string', description: 'Worker project name' },
+        projectId: { type: 'string', description: 'Server project ID; defaults to the configured server project' },
         platformSource: { type: 'string', description: "Filter by platform source (e.g. claude, codex, cursor) — restricts results to that agent's own memory" },
         type: { type: 'string', description: "Document category to search: 'observations', 'sessions', or 'prompts' (default: all). Any other value is treated as an observation-type filter (alias for obs_type)." },
         obs_type: { type: 'string', description: 'Filter observations by their type (e.g. bugfix, feature). Comma-separated for multiple.' },
@@ -489,36 +626,24 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       },
       additionalProperties: true
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
-      // In server-beta runtime the local worker /api/search reads the local SQLite via
-      // the Chroma-backed SearchOrchestrator. When the install runs server-beta (where
-      // generated observations live in Postgres, not local SQLite) and Chroma is not
-      // configured, observation text queries return empty — so `search` silently yields
-      // 0 observations even though the data is in PG.
-      //
-      // Route to the PG-backed /v1/search (same path as observation_search) ONLY when it
-      // can serve the request faithfully: server-beta is available, there is a text query,
-      // the result type is observations (or unspecified), and no filter /v1/search cannot
-      // honor is set. /v1/search is observations-only and takes only { projectId, query,
-      // limit } — so prompt/session-typed queries and platformSource/project/obs_type/date/
-      // offset/orderBy filters must keep the worker path (which applies them), otherwise we
-      // would silently drop the filter or mis-route the query.
-      const sb = resolveServerToolContext();
-      const hasText = typeof args?.query === 'string' && args.query.trim().length > 0;
-      const typeIsObservations = args?.type === undefined || args?.type === 'observations';
-      const hasUnsupportedFilter =
-        args?.platformSource !== undefined || args?.project !== undefined ||
-        args?.obs_type !== undefined || args?.dateStart !== undefined ||
-        args?.dateEnd !== undefined || args?.offset !== undefined || args?.orderBy !== undefined;
-      if (sb && sb.available && hasText && typeIsObservations && !hasUnsupportedFilter) {
-        const request: ServerSearchObservationsRequest = {
-          projectId: sb.projectId,
+      if (selectRuntime() === 'server') {
+        const ctx = requireServerForObservationTool('search');
+        const unsupported = ['project', 'obs_type', 'dateStart', 'dateEnd', 'offset', 'orderBy']
+          .filter(key => args?.[key] !== undefined);
+        if (unsupported.length || (args?.type !== undefined && args.type !== 'observations')) {
+          return mcpTextResult('Server search supports query, projectId, limit, and platformSource. Remove unsupported local filters; this request was not sent to the local worker.', true);
+        }
+        if (typeof args?.query !== 'string' || !args.query.trim()) return mcpTextResult('Server search requires a nonempty query.', true);
+        return formatMcpPayload('server-search', await ctx.client.searchObservations({
+          projectId: args.projectId || ctx.projectId,
           query: args.query,
           ...(args.limit !== undefined ? { limit: args.limit } : {}),
-        };
-        return formatJsonResult(await sb.client.searchObservations(request));
+          ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
+        }));
       }
-      return await callWorker('/api/search', { query: args });
+      return await callWorker('/api/search', { query: withCheckoutProjects(args ?? {}, currentCheckout()) });
     }
   },
   {
@@ -527,36 +652,152 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     inputSchema: {
       type: 'object',
       properties: {
-        anchor: { type: 'number', description: 'Observation ID to center the timeline around' },
+        anchor: { type: ['number', 'string'], description: 'Observation ID to center the timeline around (string ID in server runtime)' },
         query: { type: 'string', description: 'Query to find anchor automatically' },
         depth_before: { type: 'number', description: 'Items before anchor (default 3)' },
         depth_after: { type: 'number', description: 'Items after anchor (default 3)' },
-        project: { type: 'string', description: 'Filter by project name' }
+        project: { type: 'string', description: 'Worker project name' },
+        projectId: { type: 'string', description: 'Server project ID; defaults to the configured server project' }
       },
       additionalProperties: true
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
-      return await callWorker('/api/timeline', { query: args });
+      if (selectRuntime() === 'server') {
+        const ctx = requireServerForObservationTool('timeline');
+        if ((typeof args?.anchor !== 'string' && typeof args?.anchor !== 'number') || !String(args.anchor).trim()) return mcpTextResult('Server timeline requires an anchor ID from search.', true);
+        if (args?.project !== undefined || args?.query !== undefined) return mcpTextResult('Server timeline uses anchor and optional projectId; local project and query arguments are unsupported.', true);
+        return formatMcpPayload('server-timeline', await ctx.client.timelineObservations({
+          projectId: args.projectId || ctx.projectId, anchorId: String(args.anchor),
+          ...(args.depth_before !== undefined ? { depthBefore: args.depth_before } : {}),
+          ...(args.depth_after !== undefined ? { depthAfter: args.depth_after } : {}),
+        }));
+      }
+      return await callWorker('/api/timeline', { query: withCheckoutProjects(args ?? {}, currentCheckout()) });
     }
   },
   {
     name: 'get_observations',
-    description: 'Step 3: Fetch full details for filtered IDs. Params: ids (array of observation IDs, required), orderBy, limit, project',
+    description: 'Step 3: Fetch selected useful details for the IDs chosen after reviewing the index and timeline. Any shortening is marked. Params: ids (required), orderBy, limit, project (worker) or projectId (server)',
     inputSchema: {
       type: 'object',
       properties: {
         ids: {
           type: 'array',
-          items: { type: 'number' },
-          description: 'Array of observation IDs to fetch (required)'
-        }
+          items: { type: ['number', 'string'] },
+          description: 'Array of selected observation IDs to fetch (string IDs in server runtime)'
+        },
+        projectId: { type: 'string', description: 'Server project ID; defaults to the configured server project' }
       },
       required: ['ids'],
       additionalProperties: true
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
-      return await callWorker('/api/observations/batch', { body: args });
+      if (selectRuntime() === 'server') {
+        const ctx = requireServerForObservationTool('get_observations');
+        if (!Array.isArray(args?.ids) || !args.ids.length || args.ids.some((id: unknown) => (typeof id !== 'string' && typeof id !== 'number') || !String(id).trim())) return mcpTextResult('Select nonempty observation IDs from search and timeline.', true);
+        if (args?.project !== undefined || args?.orderBy !== undefined || args?.limit !== undefined) return mcpTextResult('Server get_observations uses ids and optional projectId; local filters are unsupported.', true);
+        return formatMcpPayload('observations', await ctx.client.selectedObservations({ projectId: args.projectId || ctx.projectId, ids: args.ids.map(String) }));
+      }
+      return await callWorker('/api/observations/batch', { body: withCheckoutProjects(args ?? {}, currentCheckout()) });
     }
+  },
+  {
+    name: 'get_tool_uses',
+    description: 'Exceptional follow-up (raw tool I/O, rarely needed): fetch the ORIGINAL tool_input/tool_response for tool calls you already identified. Requires ids — run search/timeline/get_observations first and pass only the ids you actually need; these payloads are large and unsummarized. ids accept numeric tool_uses ids or tool_use_id strings. Params: ids (required), limit, project, contentSessionId.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ids: {
+          type: 'array',
+          items: { type: ['number', 'string'] },
+          description: 'Tool-use ids to fetch (required). Numeric tool_uses.id or opaque tool_use_id strings.'
+        },
+        limit: { type: 'number', description: 'Max rows to return' },
+        project: { type: 'string', description: 'Filter by project name' },
+        contentSessionId: { type: 'string', description: 'Filter to one content session' }
+      },
+      required: ['ids'],
+      additionalProperties: true
+    },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    handler: async (args: any) => {
+      if (selectRuntime() === 'server') return mcpTextResult('Raw tool I/O is unavailable in server runtime. Use selected server observations; no local worker request was made.', true);
+      return await callWorker('/api/tool-uses/batch', { body: args });
+    }
+  },
+  {
+    name: 'work_state_write',
+    description: 'Your canonical to-do list and working state for this project, kept across sessions: whatever is still open is shown at the start of every session. Each call appends one entry to a list. To-do item: fields {"task": "<name>", "status": "todo" | "doing" | "done" | "dropped", ...details}. State on the list itself: any other fields (the latest value of each key wins; null clears a key; "status": "done" closes the list). Returns what is still open in the list. Params: list (required), fields (required).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        list: { type: 'string', description: 'The to-do list or tracked thing this entry belongs to, e.g. "release" or "auth-refactor"' },
+        fields: {
+          type: 'object',
+          description: 'Keys to set. Include "task" to update a to-do item. Values are strings, numbers, booleans, or null to clear a key.',
+          additionalProperties: { type: ['string', 'number', 'boolean', 'null'] },
+        },
+      },
+      required: ['list', 'fields'],
+      additionalProperties: false,
+    },
+    handler: async (args: any) => callWorker('/api/work-state/entries', {
+      body: { cwd: getRequestCwd(), list: args?.list, fields: args?.fields },
+      text: true,
+    }),
+  },
+  {
+    name: 'work_state_read',
+    description: "Read this project's to-do lists and working state written with work_state_write: every open item, or one list, with done and dropped items when includeClosed is true. Params: list, includeClosed.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        list: { type: 'string', description: 'Read only this list' },
+        includeClosed: { type: 'boolean', description: 'Also show done and dropped items and closed lists' },
+      },
+      additionalProperties: false,
+    },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    handler: async (args: any) => callWorker('/api/work-state', {
+      query: { cwd: getRequestCwd(), list: args?.list, includeClosed: args?.includeClosed },
+      text: true,
+    }),
+  },
+  {
+    name: 'team_brief',
+    description: "TeamBrain brief for a project: where teammates' work collides with yours, recent plans and decisions, who is active in it now, and work delegated to you. Params: project (defaults to this checkout).",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: { type: 'string', description: 'Project name; defaults to this checkout' },
+      },
+      additionalProperties: false,
+    },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    handler: async (args: any) => callWorker('/api/teambrain/brief', {
+      query: { project: args?.project || currentCheckout().primary },
+      text: true,
+    }),
+  },
+  {
+    name: 'team_search',
+    description: "Search what your team shared with TeamBrain: teammates' observations, plans and decisions across the projects they share. Params: query (required), limit.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'What to look for, up to 500 characters' },
+        limit: { type: 'integer', minimum: 1, maximum: 50, description: 'Max results' },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    handler: async (args: any) => callWorker('/api/teambrain/search', {
+      body: { query: args?.query, limit: args?.limit },
+      text: true,
+    }),
   },
   {
     name: 'session_start_context',
@@ -578,6 +819,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       },
       additionalProperties: false,
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => handleSessionStartContext(args ?? {}),
   },
   // Phase 8 — observation_* tools backed by server REST core.
@@ -622,7 +864,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'observation_search',
-    description: 'Full-text search across generated observations using the server\'s GIN tsvector index (Phase 1). Calls /v1/search. Server runtime only. Params: query (required), projectId (optional), platformSource, limit (default 20, max 100).',
+    description: 'Search generated observations by keyword (Postgres full-text) and, when the server has search by meaning (pgvector, CLAUDE_MEM_SERVER_VECTOR_SEARCH), by meaning (embedding similarity), fused by reciprocal rank. A natural-language question works. Search by meaning has no relevance cutoff, so it always returns the nearest matches; keyword-only search returns only observations containing a query term. Calls /v1/search. Server runtime only. Params: query (required), projectId (optional), platformSource, limit (default 20, max 100).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -634,27 +876,28 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['query'],
       additionalProperties: false,
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => handleObservationSearch(args ?? {}),
   },
   {
     name: 'observation_context',
-    description: 'Get top-N relevant observations for context injection. Returns matched observations AND a pre-joined context string suitable for prompt injection. Calls /v1/context. Server runtime only.',
+    description: 'Get top-N relevant observations for context injection. Returns matched observations AND a pre-joined context string suitable for prompt injection. Calls /v1/context. Server runtime only. Omit "query" for recency-ordered "recent" context instead of a relevance-ranked search.',
     inputSchema: {
       type: 'object',
       properties: {
         projectId: { type: 'string' },
-        query: { type: 'string', description: 'Search query (required)' },
+        query: { type: 'string', description: 'Optional search query. Omit for recency-ordered recent context.' },
         platformSource: { type: 'string', description: 'Optional platform source filter, e.g. claude, codex, cursor' },
-        limit: { type: 'number', description: 'Max observations (default 10, max 50)' },
+        limit: { type: 'number', description: 'Max observations (default 10 with a query, 50 without; max 200)' },
       },
-      required: ['query'],
       additionalProperties: false,
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => handleObservationContext(args ?? {}),
   },
   {
     name: 'observation_generation_status',
-    description: 'Look up the status of an observation generation job by id. Calls /v1/jobs/:id. Server runtime only. Returns the same payload as REST.',
+    description: 'Look up the status of an observation generation job by id. Calls /v1/jobs/:id. Server runtime only. Returns a concise job receipt.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -663,6 +906,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['jobId'],
       additionalProperties: false,
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => handleObservationGenerationStatus(args ?? {}),
   },
   {
@@ -690,15 +934,26 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       },
       required: ['query']
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
-      const rootDir = resolve(args.path || process.cwd());
+      const rootDir = await resolveWithinWorkspace(args.path || getRequestCwd(), getRequestCwd());
+      // Check the CLI before any parsing (#4758): with a broken install,
+      // symbol extraction stalls on build/query timeouts, so skip it up
+      // front while keeping path matches, which need no tree-sitter.
+      const unavailableCli = treeSitterCliUnavailableMessage();
       const result = await searchCodebase(rootDir, args.query, {
         maxResults: args.max_results || 20,
-        filePattern: args.file_pattern
+        filePattern: args.file_pattern,
+        skipSymbolExtraction: unavailableCli !== null,
       });
       const formatted = formatSearchResults(result, args.query);
+      // Path matches need no tree-sitter, so a broken CLI only degrades symbol
+      // extraction: keep the results and warn instead of blocking the search.
+      const text = unavailableCli
+        ? `Note: symbol extraction is unavailable (${unavailableCli}); path matches below are unaffected.\n\n${formatted}`
+        : formatted;
       return {
-        content: [{ type: 'text' as const, text: formatted }]
+        content: [{ type: 'text' as const, text }]
       };
     }
   },
@@ -719,9 +974,16 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       },
       required: ['file_path', 'symbol_name']
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
-      const filePath = resolve(args.file_path);
+      const filePath = await resolveWithinWorkspace(args.file_path, getRequestCwd());
       const content = await readFile(filePath, 'utf-8');
+      const unavailableCli = treeSitterCliUnavailableMessage();
+      if (unavailableCli) {
+        return {
+          content: [{ type: 'text' as const, text: `Could not parse ${args.file_path}: ${unavailableCli}.` }]
+        };
+      }
       const unfolded = unfoldSymbol(content, filePath, args.symbol_name);
       if (unfolded) {
         return {
@@ -730,7 +992,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       }
       const parsed = parseFile(content, filePath);
       if (parsed.symbols.length > 0) {
-        const available = parsed.symbols.map(s => `  - ${s.name} (${s.kind})`).join('\n');
+        const available = formatAvailableSymbols(parsed, args.symbol_name);
         return {
           content: [{
             type: 'text' as const,
@@ -759,9 +1021,16 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       },
       required: ['file_path']
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
-      const filePath = resolve(args.file_path);
+      const filePath = await resolveWithinWorkspace(args.file_path, getRequestCwd());
       const content = await readFile(filePath, 'utf-8');
+      const unavailableCli = treeSitterCliUnavailableMessage();
+      if (unavailableCli) {
+        return {
+          content: [{ type: 'text' as const, text: `Could not parse ${args.file_path}: ${unavailableCli}.` }]
+        };
+      }
       const parsed = parseFile(content, filePath);
       if (parsed.symbols.length > 0) {
         return {
@@ -797,7 +1066,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true
     },
     handler: async (args: any) => {
-      return await callWorker('/api/corpus', { body: args });
+      return await callWorker('/api/corpus', { body: args, streamCorpusProgress: true });
     }
   },
   {
@@ -808,6 +1077,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       properties: {},
       additionalProperties: true
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
       return await callWorker('/api/corpus', { query: args });
     }
@@ -826,7 +1096,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       const { name, ...rest } = args;
       if (typeof name !== 'string' || name.trim() === '') throw new Error('Missing required argument: name');
-      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/prime`, { body: rest });
+      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/prime`, { body: rest, streamCorpusProgress: true });
     }
   },
   {
@@ -844,16 +1114,17 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       const { name, ...rest } = args;
       if (typeof name !== 'string' || name.trim() === '') throw new Error('Missing required argument: name');
-      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/query`, { body: rest });
+      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/query`, { body: rest, streamCorpusProgress: true });
     }
   },
   {
     name: 'rebuild_corpus',
-    description: 'Rebuild a knowledge corpus from its stored filter — re-runs the search to refresh with new observations. Does not re-prime the session.',
+    description: 'Rebuild a knowledge corpus from its stored filter — re-runs the search to refresh with new observations. Does not re-prime the session. Refuses and keeps the existing corpus if the rebuild would drop a large share of observations, unless force is set.',
     inputSchema: {
       type: 'object',
       properties: {
-        name: { type: 'string', description: 'Name of the corpus to rebuild' }
+        name: { type: 'string', description: 'Name of the corpus to rebuild' },
+        force: { type: 'boolean', description: 'Accept a rebuild that shrinks the corpus significantly instead of keeping the existing one' }
       },
       required: ['name'],
       additionalProperties: true
@@ -861,7 +1132,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       const { name, ...rest } = args;
       if (typeof name !== 'string' || name.trim() === '') throw new Error('Missing required argument: name');
-      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/rebuild`, { body: rest });
+      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/rebuild`, { body: rest, streamCorpusProgress: true });
     }
   },
   {
@@ -878,54 +1149,100 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       const { name, ...rest } = args;
       if (typeof name !== 'string' || name.trim() === '') throw new Error('Missing required argument: name');
-      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/reprime`, { body: rest });
+      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/reprime`, { body: rest, streamCorpusProgress: true });
     }
   }
 ];
 
-const server = new Server(
-  {
-    name: 'claude-mem',
-    version: packageVersion,
-  },
-  {
-    capabilities: {
-      tools: {},  // Exposes tools capability (handled by ListToolsRequestSchema and CallToolRequestSchema)
+function workStateEnabled(): boolean {
+  return isWorkStateEnabled(loadFromFileOnce().CLAUDE_MEM_WORK_STATE_ENABLED);
+}
+
+function teamBrainJoined(): boolean {
+  return teamBrainConnection(loadFromFileOnce()) !== null;
+}
+
+/**
+ * One MCP Server. Over stdio there is exactly one; over HTTP every session gets its own.
+ * `getCwd` returns the project directory of the request carrying a tool call, resolved
+ * for every call, so the project-scoped tools see the caller's project. Without it they
+ * use process.cwd().
+ */
+function createMcpServer(getCwd?: CwdResolver): Server {
+  const server = new Server(
+    {
+      name: 'claude-mem',
+      version: packageVersion,
     },
-  }
-);
+    {
+      capabilities: {
+        tools: {},  // Exposes tools capability (handled by ListToolsRequestSchema and CallToolRequestSchema)
+      },
+    }
+  );
 
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  const advertisedTools = getAdvertisedMcpToolsForRuntime(tools, selectRuntime());
-  return {
-    tools: advertisedTools.map(tool => ({
-      name: tool.name,
-      description: tool.description,
-      inputSchema: tool.inputSchema
-    }))
-  };
-});
-
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const tool = tools.find(t => t.name === request.params.name);
-
-  if (!tool) {
-    throw new Error(`Unknown tool: ${request.params.name}`);
-  }
-
-  try {
-    return await tool.handler(request.params.arguments || {});
-  } catch (error: unknown) {
-    logger.error('SYSTEM', 'Tool execution failed', { tool: request.params.name }, error instanceof Error ? error : new Error(String(error)));
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    const advertisedTools = withoutUnjoinedTeamBrainTools(
+      withoutDisabledWorkStateTools(getAdvertisedMcpToolsForRuntime(tools, selectRuntime()), workStateEnabled()),
+      teamBrainJoined(),
+    );
     return {
-      content: [{
-        type: 'text' as const,
-        text: `Tool execution failed: ${error instanceof Error ? error.message : String(error)}`
-      }],
-      isError: true
+      tools: advertisedTools.map(tool => ({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+        annotations: tool.annotations
+      }))
     };
-  }
-});
+  });
+
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+    const tool = tools.find(t => t.name === request.params.name);
+
+    if (!tool) {
+      throw new Error(`Unknown tool: ${request.params.name}`);
+    }
+
+    if ((WORK_STATE_TOOL_NAMES as readonly string[]).includes(tool.name) && !workStateEnabled()) {
+      const result = {
+        content: [{ type: 'text' as const, text: 'Work state is turned off (CLAUDE_MEM_WORK_STATE_ENABLED=false).' }],
+        isError: true
+      };
+      spoolWorkStateMcpResult(tool.name, result);
+      return result;
+    }
+
+    if ((TEAMBRAIN_TOOL_NAMES as readonly string[]).includes(tool.name) && !teamBrainJoined()) {
+      return {
+        content: [{
+          type: 'text' as const,
+          text: 'TeamBrain is not set up on this install. Join a team with `npx claude-mem teambrain join <invite-link>`, or start one with `npx claude-mem teambrain start`.',
+        }],
+        isError: true
+      };
+    }
+
+    try {
+      const args = request.params.arguments || {};
+      const result = await (getCwd ? runWithCwd(getCwd(extra), () => tool.handler(args)) : tool.handler(args));
+      spoolWorkStateMcpResult(tool.name, result);
+      return result;
+    } catch (error: unknown) {
+      logger.error('SYSTEM', 'Tool execution failed', { tool: request.params.name }, error instanceof Error ? error : new Error(String(error)));
+      const result = {
+        content: [{
+          type: 'text' as const,
+          text: `Tool execution failed: ${error instanceof Error ? error.message : String(error)}`
+        }],
+        isError: true
+      };
+      spoolWorkStateMcpResult(tool.name, result);
+      return result;
+    }
+  });
+
+  return server;
+}
 
 const HEARTBEAT_INTERVAL_MS = 30_000;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -986,10 +1303,9 @@ process.on('SIGINT', cleanup);
 
 function detectMissingMarketplaceMarker(): void {
   const home = homedir();
-  const marketplaceCandidates = [
-    resolve(home, '.claude', 'plugins', 'marketplaces', 'thedotmack'),
-    resolve(home, '.config', 'claude', 'plugins', 'marketplaces', 'thedotmack'),
-  ];
+  // Includes the installLocation Claude Code records for a marketplace added
+  // from a local folder (`/plugin marketplace add <path>`).
+  const marketplaceCandidates = marketplaceDirectoryCandidates(home);
   const present = marketplaceCandidates.some(p => p && existsSync(p));
   const cacheCandidates = [
     resolve(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem'),
@@ -1001,7 +1317,7 @@ function detectMissingMarketplaceMarker(): void {
   if (!present && cachePresent) {
     logger.error(
       'SYSTEM',
-      'claude-mem MCP started but no marketplace directory was found at ~/.claude/plugins/marketplaces/thedotmack or the XDG equivalent. The IDE plugin loader needs that directory to fire claude-mem hooks (SessionStart, PostToolUse, Stop, etc.). Without it, MCP search will work but no new memories will be captured. To self-heal, run: node ~/.claude/plugins/cache/thedotmack/claude-mem/*/scripts/smart-install.js (or reinstall the plugin from the marketplace).',
+      'claude-mem MCP started but no marketplace directory was found at ~/.claude/plugins/marketplaces/thedotmack, the XDG equivalent, or the thedotmack installLocation in known_marketplaces.json. The IDE plugin loader needs that directory to fire claude-mem hooks (SessionStart, PostToolUse, Stop, etc.). Without it, MCP search will work but no new memories will be captured. To self-heal, reinstall the plugin from the marketplace (/plugin marketplace add thedotmack/claude-mem, then /plugin install claude-mem@thedotmack).',
       { marketplaceCandidates, cacheRoot }
     );
   }
@@ -1015,16 +1331,7 @@ function checkMarketplaceMarker(): void {
   }
 }
 
-async function main() {
-  const transport = new StdioServerTransport();
-  attachStdioLifecycle();
-  await server.connect(transport);
-  logger.info('SYSTEM', 'Claude-mem search server started');
-
-  checkMarketplaceMarker();
-
-  startParentHeartbeat();
-
+function scheduleWorkerAutostart(): void {
   setTimeout(async () => {
     // Phase 8 — when CLAUDE_MEM_RUNTIME=server (or legacy `server-beta`,
     // normalized to `'server'` by selectRuntime), MCP must NOT auto-start
@@ -1047,7 +1354,55 @@ async function main() {
   }, 0);
 }
 
-main().catch((error) => {
+async function main() {
+  // Built here, not at module load, so HTTP mode never creates this unused stdio server.
+  const server = createMcpServer();
+  const transport = new StdioServerTransport();
+  attachStdioLifecycle();
+  await server.connect(transport);
+  logger.info('SYSTEM', 'Claude-mem search server started');
+
+  checkMarketplaceMarker();
+
+  startParentHeartbeat();
+
+  scheduleWorkerAutostart();
+}
+
+/**
+ * HTTP mode (`--http`): one long-lived process serves many MCP clients. No stdin lifecycle
+ * and no parent heartbeat, since no single client owns this process.
+ */
+async function mainHttp(options: McpHttpOptions) {
+  const handle = await startMcpHttpServer({
+    ...options,
+    originPolicy: buildWorkerOriginPolicy(loadFromFileOnce()),
+    createServer: createMcpServer,
+  });
+  logger.info('SYSTEM', 'Claude-mem MCP HTTP server started', { host: options.host, port: handle.port });
+
+  checkMarketplaceMarker();
+
+  scheduleWorkerAutostart();
+}
+
+// stdio keeps its historical exit code 0 on a fatal error. HTTP mode, including a
+// refused --host or --port, exits 1 so a process manager reports the failure.
+let fatalExitCode = 0;
+async function start(): Promise<void> {
+  let httpOptions: McpHttpOptions | null;
+  try {
+    httpOptions = parseHttpArgs(process.argv.slice(2), process.env);
+  } catch (error) {
+    fatalExitCode = 1; // parseHttpArgs only throws when HTTP mode was requested.
+    throw error;
+  }
+  if (!httpOptions) return main();
+  fatalExitCode = 1;
+  return mainHttp(httpOptions);
+}
+
+start().catch((error) => {
   logger.error('SYSTEM', 'Fatal error', undefined, error);
-  process.exit(0);
+  process.exit(fatalExitCode);
 });

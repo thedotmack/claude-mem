@@ -35,14 +35,22 @@
         "pages": [
           "introduction",
           "installation",
+          "t3code-integration",
           "usage/getting-started",
+          "usage/my-work",
+          "usage/teambrain",
           "usage/openrouter-provider",
           "usage/gemini-provider",
+          "usage/openai-compatible-provider",
+          "usage/multi-key-rotation",
+          "usage/quota-fallback",
           "usage/search-tools",
           "usage/knowledge-agents",
           "usage/claude-desktop",
           "usage/private-tags",
+          "usage/auto-redaction",
           "usage/export-import",
+          "usage/memory-ingest",
           "usage/manual-recovery",
           "usage/folder-context"
         ]
@@ -54,6 +62,13 @@
           "cursor/index",
           "cursor/gemini-setup",
           "cursor/openrouter-setup"
+        ]
+      },
+      {
+        "group": "Grok Bot Integration",
+        "icon": "robot",
+        "pages": [
+          "grok-bot/index"
         ]
       },
       {
@@ -83,10 +98,13 @@
           "modes",
           "telemetry",
           "development",
-          "branches",
           "troubleshooting",
           "platform-integration",
-          "openclaw-integration"
+          "openclaw-integration",
+          "hermes-integration",
+          "kimi-integration",
+          "qoder-integration",
+          "screenpipe-integration"
         ]
       },
       {
@@ -95,6 +113,7 @@
         "pages": [
           "hosted-server",
           "cloud-sync",
+          "cmem-pro-headless",
           "usage/backups"
         ]
       },
@@ -164,5 +183,11 @@
     "telemetry": {
       "enabled": false
     }
-  }
+  },
+  "redirects": [
+    {
+      "source": "/branches",
+      "destination": "/development"
+    }
+  ]
 }
