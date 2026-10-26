@@ -20,6 +20,7 @@ import { runCommand } from '../agent-runner/detect.js';
 import { writeOwnerPromptsFile, type OwnerPromptsFile } from '../prompt-import/owner-prompts-file.js';
 import { resolvePythonCommand } from './python.js';
 import { readGoals, runCli, validateGroupingAnswer, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
+import { routeUndecided, type RequestJudge } from './request-judge.mjs';
 
 /** claude-mem MCP tools a refresh may call: reads only. Saves go through the skills' scripts and their
  * validators (save_goals.py, the request-groups CLI), never a raw work_state_write. */
@@ -60,6 +61,10 @@ export interface RefreshTaskOptions {
   /** The installed plugin folder holding skills/ and .mcp.json. */
   pluginRoot: string;
   openDatabase: () => LedgerDatabase & { close(): void };
+  /** Files each new conversation under the request it continues before the grouping agent sees it (Jev on
+   * a CMEM Pro or OpenRouter install, request-judge.mjs). Null or absent: code links alone route, and the
+   * agent decides the rest as before. */
+  judge?: RequestJudge | null;
   now?: () => number;
   spawnImpl?: typeof spawn;
   /** Owner-goals step 1: writes owner-prompts.md into the folder from every agent's transcripts (prompt importer). */
@@ -236,6 +241,16 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       }
 
       const requestProgress = inlineSkill(paths.requestProgressSkill);
+      // The judge files each new conversation first: a code link joins at once, and Jev (when the
+      // install has it) joins, suggests or starts a request from the opening ask. Only what it cannot
+      // place reaches the agent batches below.
+      const judgeStartedAt = new Date(now()).toISOString();
+      const judgeDatabase = openDatabase();
+      let routing: Awaited<ReturnType<typeof routeUndecided>>;
+      try { routing = await routeUndecided({ dir: ledgerDir, database: judgeDatabase, judge: options.judge ?? null, now: now(), days: 14, apply: true }); }
+      finally { judgeDatabase.close(); }
+      if (routing.routed.length || routing.unplaced.length) steps.push({ step: 'judge', agent, startedAt: judgeStartedAt, finishedAt: new Date(now()).toISOString(), groups: routing.routed.length });
+      if (routing.routed.length) done.push(`${routing.routed.length} new conversations judged (${routing.counts.joined} joined, ${routing.counts.suggested} suggested, ${routing.counts.new} new)`);
       // Only conversations the ledger has not decided, one project root per question, each beside
       // that root's open requests. Every batch is saved before the next is read, so a later batch
       // sees the requests an earlier one started.

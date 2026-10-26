@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { activitySignature, buildAgentView, readAgentRecords, readEvidence } from './agent-view.mjs';
-import { goalsAddedSince, ledgerSignature, readLedger } from './request-groups.mjs';
+import { goalsAddedSince, ledgerSignature, openSuggestions, readLedger } from './request-groups.mjs';
 import { recordedFile } from './work-product.mjs';
 
 const CLOSED = new Set(['done', 'dropped']);
@@ -305,9 +305,18 @@ export class WorkStateSource {
 
   agentsSnapshot() {
     const now = Date.now();
+    const linked = this.goalLinks();
+    // The judge's suggestions ("Looks like part of <request>"), each on the card of the conversation it is about.
+    const suggestions = openSuggestions(this.ledger);
+    const humanRequests = (linked.humanRequests ?? this.agentView.humanRequests ?? []).map((request) => {
+      const suggestion = suggestions.find((entry) => entry.requestId !== request.groupId && (request.conversationKeys ?? []).includes(entry.conversationKey));
+      return suggestion ? { ...request, suggestion } : request;
+    });
     return {
       ...this.agentView,
-      ...this.goalLinks(),
+      ...linked,
+      humanRequests,
+      suggestions,
       teamMode: process.env.WORK_STATE_TEAM_MODE === '1',
       // Progress reviews and the build story come from the request-progress
       // skill; they are assessments, separate from recorded lifecycle.

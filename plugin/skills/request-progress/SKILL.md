@@ -21,6 +21,8 @@ Default window: 14 days. Use the window the user asks for.
 
 A human request is the top level of My Work: every conversation's opening ask either starts a request or continues one. Grouping decides **once per conversation**, from its opening substantive ask, and decisions already in the ledger are kept. Requests stay inside one project root (the project key before its first `/`, so worktrees of one repo share requests): `apply` refuses a group whose conversations come from different roots unless the decision names the request's `projectRoot`, in which case every conversation it lists joins that request and the request records that root.
 
+Before any batch reaches you, the worker's judge files each new conversation on its own (`$CLI judge --days 14` shows what it would do; `--apply` writes it). A code link (the conversation wrote to the same work-state list, or recorded the same `request_id`, as one open request) joins at once. On a CMEM Pro or OpenRouter install, Jev then checks the opening ask against the root's open requests: a check score of 0.8 or more joins the request (a `judge` link whose evidence names the judge and its score, and the request records its root), 0.5 to 0.8 makes the conversation its own request with a suggestion the owner accepts or declines on its card in My Work ("Looks like part of …"), and below 0.5 it starts its own request. Only conversations the judge could not place (no code link and no Jev, or a refused or failed call) come to `grouping-input`.
+
 ```bash
 $CLI grouping-input --days 14
 ```
