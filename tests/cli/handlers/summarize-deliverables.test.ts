@@ -10,10 +10,13 @@ import * as realWorkerUtils from '../../../src/shared/worker-utils.js';
 const realRuntimeSelectorSnapshot = { ...realRuntimeSelector };
 const realWorkerUtilsSnapshot = { ...realWorkerUtils };
 
-// The Stop hook spools and exits: no awaited worker call, only the nudge.
+// The Stop hook spools and exits: no awaited worker call, only the nudge. The worker host is the
+// real setting unless a test moves the worker to another machine.
+let workerHostForTest: string | null = null;
 mock.module('../../../src/shared/worker-utils.js', () => ({
   ...realWorkerUtilsSnapshot,
   workerHttpRequest: () => Promise.resolve(new Response('{"status":"draining"}', { status: 202 })),
+  getWorkerHost: () => workerHostForTest ?? realWorkerUtilsSnapshot.getWorkerHost(),
 }));
 mock.module('../../../src/services/hooks/runtime-selector.js', () => ({
   ...realRuntimeSelectorSnapshot,
@@ -33,18 +36,19 @@ let outside: string;
 let transcriptPath: string;
 const savedEnabled = process.env.CLAUDE_MEM_DELIVERABLES_ENABLED;
 
-const user = (content: unknown) => JSON.stringify({ type: 'user', message: { role: 'user', content } });
-const assistant = (content: unknown) => JSON.stringify({ type: 'assistant', timestamp: '2026-10-26T20:00:00.000Z', message: { role: 'assistant', content } });
+const user = (content: unknown, extra: Record<string, unknown> = {}) => JSON.stringify({ type: 'user', message: { role: 'user', content }, ...extra });
+const assistant = (content: unknown, extra: Record<string, unknown> = {}) => JSON.stringify({ type: 'assistant', timestamp: '2026-10-26T20:00:00.000Z', message: { role: 'assistant', content }, ...extra });
 const toolUse = (id: string, name: string, input: unknown) => ({ type: 'tool_use', id, name, input });
 const toolResult = (id: string) => ({ type: 'tool_result', tool_use_id: id, content: 'ok' });
 
-/** A repository that ignores .scratch/, with this turn's files already on disk, and the transcript that wrote them. */
-function makeTurn(): void {
+/**
+ * A repository that ignores .scratch/, with this turn's files already on disk, and the transcript that wrote them.
+ * `sidechain` writes the transcript the way Claude Code writes a subagent's own file: isSidechain on every entry.
+ */
+function makeTurn({ prompt = 'Make me a launch report', sidechain = false }: { prompt?: string; sidechain?: boolean } = {}): void {
   execFileSync('git', ['init', '-q'], { cwd: repo });
   writeFileSync(join(repo, '.gitignore'), '.scratch/\n');
-  mkdirSync(join(repo, '.scratch'));
-  mkdirSync(join(repo, 'src'));
-  mkdirSync(join(repo, 'out'));
+  for (const folder of ['.scratch', 'src', 'out']) mkdirSync(join(repo, folder), { recursive: true });
   writeFileSync(join(repo, '.scratch', 'report.html'), '<h1>Launch report</h1>');
   writeFileSync(join(repo, 'src', 'page.html'), '<p>a component</p>');
   writeFileSync(join(repo, 'src', 'index.ts'), 'export {}');
@@ -60,17 +64,18 @@ function makeTurn(): void {
       summary: 'done',
     },
   };
+  const extra = sidechain ? { isSidechain: true, agentId: 'agent-7' } : {};
   writeFileSync(transcriptPath, [
-    user('Make me a launch report'),
-    assistant([toolUse('toolu_1', 'Write', { file_path: join(repo, '.scratch', 'report.html'), content: '' })]),
-    user([toolResult('toolu_1')]),
-    assistant([toolUse('toolu_2', 'Write', { file_path: join(repo, 'src', 'page.html'), content: '' })]),
-    user([toolResult('toolu_2')]),
-    assistant([toolUse('toolu_3', 'Write', { file_path: join(repo, 'src', 'index.ts'), content: '' })]),
-    user([toolResult('toolu_3')]),
-    assistant([toolUse('toolu_4', 'mcp__plugin_claude-mem_mcp-search__work_state_write', workState)]),
-    user([toolResult('toolu_4')]),
-    assistant([{ type: 'text', text: 'Done.' }]),
+    user(prompt, extra),
+    assistant([toolUse('toolu_1', 'Write', { file_path: join(repo, '.scratch', 'report.html'), content: '' })], extra),
+    user([toolResult('toolu_1')], extra),
+    assistant([toolUse('toolu_2', 'Write', { file_path: join(repo, 'src', 'page.html'), content: '' })], extra),
+    user([toolResult('toolu_2')], extra),
+    assistant([toolUse('toolu_3', 'Write', { file_path: join(repo, 'src', 'index.ts'), content: '' })], extra),
+    user([toolResult('toolu_3')], extra),
+    assistant([toolUse('toolu_4', 'mcp__plugin_claude-mem_mcp-search__work_state_write', workState)], extra),
+    user([toolResult('toolu_4')], extra),
+    assistant([{ type: 'text', text: 'Done.' }], extra),
     '',
   ].join('\n'));
 }
@@ -93,6 +98,7 @@ beforeEach(() => {
   outside = mkdtempSync(join(tmpdir(), 'claude-mem-deliverables-outside-'));
   transcriptPath = join(outside, 'transcript.jsonl');
   delete process.env.CLAUDE_MEM_DELIVERABLES_ENABLED;
+  workerHostForTest = null;
   loggerSpies = [
     spyOn(logger, 'debug').mockImplementation(() => {}),
     spyOn(logger, 'warn').mockImplementation(() => {}),
@@ -171,12 +177,14 @@ describe('Stop hook deliverables capture', () => {
     expect(spooledEntries('deliverables')).toHaveLength(0);
   });
 
-  it('records a subagent\'s deliverables from its own transcript at SubagentStop', async () => {
-    makeTurn();
+  it('records a subagent\'s deliverables from its own transcript at SubagentStop, whose entries are all sidechain', async () => {
+    makeTurn({ sidechain: true });
+    const mainTranscript = join(outside, 'main.jsonl');
+    writeFileSync(mainTranscript, [user('Have an agent make the launch report'), assistant([toolUse('toolu_a', 'Agent', { prompt: 'Make the launch report' })]), ''].join('\n'));
     const { subagentStopHandler } = await import('../../../src/cli/handlers/subagent-stop.js');
     const input = claudeCodeAdapter.normalizeInput({
       session_id: 'session-deliverables-1', cwd: repo, agent_id: 'agent-7', agent_type: 'general-purpose',
-      transcript_path: join(outside, 'main.jsonl'), agent_transcript_path: transcriptPath,
+      transcript_path: mainTranscript, agent_transcript_path: transcriptPath,
     });
     input.platform = 'claude-code';
 
@@ -187,5 +195,67 @@ describe('Stop hook deliverables capture', () => {
     const payload = entry.payload as SpooledDeliverablesPayload;
     expect(payload.agentId).toBe('agent-7');
     expect(payload.files.map(file => file.title).sort()).toEqual(['Launch notes', 'report.html', 'slides.pdf']);
+  });
+
+  it('copies nothing for a private turn, at Stop and for the turn\'s subagents', async () => {
+    makeTurn({ prompt: '<private>Make me a launch report about the layoffs</private>' });
+    const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
+    await summarizeHandler.execute(stopInput());
+    expect(spooledEntries('deliverables')).toHaveLength(0);
+    expect(existsSync(resolveDeliverablesDir())).toBe(false);
+
+    // The session's current prompt is private; the subagent's own transcript is scanned only when it is not.
+    makeTurn({ sidechain: true });
+    const mainTranscript = join(outside, 'main.jsonl');
+    writeFileSync(mainTranscript, [user('<private>Have an agent write the severance letters</private>'), assistant([{ type: 'text', text: 'On it.' }]), ''].join('\n'));
+    const { subagentStopHandler } = await import('../../../src/cli/handlers/subagent-stop.js');
+    const input = claudeCodeAdapter.normalizeInput({
+      session_id: 'session-deliverables-1', cwd: repo, agent_id: 'agent-7', agent_type: 'general-purpose',
+      transcript_path: mainTranscript, agent_transcript_path: transcriptPath,
+    });
+    input.platform = 'claude-code';
+    await subagentStopHandler.execute(input);
+    expect(spooledEntries('subagent_stop')).toHaveLength(1);
+    expect(spooledEntries('deliverables')).toHaveLength(0);
+    expect(existsSync(resolveDeliverablesDir())).toBe(false);
+  });
+
+  it('copies nothing when the worker runs on another host, which could not open the copy', async () => {
+    makeTurn();
+    workerHostForTest = 'memory.example.net';
+    const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
+    await summarizeHandler.execute(stopInput());
+    expect(spooledEntries('deliverables')).toHaveLength(0);
+    expect(existsSync(resolveDeliverablesDir())).toBe(false);
+    expect(spooledEntries('summarize')).toHaveLength(1);
+  });
+
+  it('copies the first 50 files of an over-full turn and reports the rest within the remote schema\'s bound', async () => {
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    writeFileSync(join(repo, '.gitignore'), '.scratch/\n');
+    mkdirSync(join(repo, '.scratch'));
+    const lines = [user('Render every slide as an image')];
+    const total = 50 + 128 + 1;
+    for (let i = 0; i < total; i++) {
+      const file = join(repo, '.scratch', `slide-${String(i).padStart(3, '0')}.png`);
+      writeFileSync(file, `png ${i}`);
+      lines.push(assistant([toolUse(`toolu_${i}`, 'Write', { file_path: file, content: '' })]), user([toolResult(`toolu_${i}`)]));
+    }
+    lines.push(assistant([{ type: 'text', text: 'Done.' }]), '');
+    writeFileSync(transcriptPath, lines.join('\n'));
+    const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
+
+    await summarizeHandler.execute(stopInput());
+
+    const [entry] = spooledEntries('deliverables');
+    const payload = entry.payload as SpooledDeliverablesPayload;
+    expect(payload.files).toHaveLength(50);
+    expect(payload.files.map(file => file.title)).toEqual(Array.from({ length: 50 }, (_, i) => `slide-${String(i).padStart(3, '0')}.png`));
+    expect(payload.errors).toHaveLength(128);
+    expect(payload.errors!.slice(0, 127).every(failure => failure.error.includes('over the 50-file limit'))).toBe(true);
+    expect(payload.errors!.at(-1)).toEqual({ sourcePath: '', error: '2 more files were not copied; the hook log names each one' });
+    // The event is one a remote worker would accept, so the 50 records are never lost to the error list.
+    const { remoteSpoolEnvelopeSchema } = await import('../../../src/shared/hook-spool-remote.js');
+    expect(remoteSpoolEnvelopeSchema.safeParse({ protocolVersion: 1, entry }).success).toBe(true);
   });
 });

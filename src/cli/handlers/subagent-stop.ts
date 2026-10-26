@@ -36,10 +36,11 @@ export const subagentStopHandler: EventHandler = {
       ...(input.cwd ? { cwd: input.cwd } : {}),
     });
     // A subagent that made a deck or a report hands it to the session: its own
-    // transcript is one run, so the whole tail is scanned. Failure-isolated.
+    // transcript is one run, scanned whole with its sidechain entries (every
+    // entry in it is one). Failure-isolated.
     if (input.agentTranscriptPath) {
       try {
-        captureDeliverables(input, { transcriptPath: input.agentTranscriptPath, currentTurnOnly: false });
+        captureDeliverables(input, { subagentTranscriptPath: input.agentTranscriptPath });
       } catch (err) {
         logger.warn('HOOK', 'Deliverables capture failed for a subagent; its stop is still recorded', {
           sessionId, agentId, error: err instanceof Error ? err.message : String(err),

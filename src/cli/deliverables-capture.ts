@@ -12,7 +12,9 @@ import { loadFromFileOnce } from '../shared/hook-settings.js';
 import { normalizePlatformSource } from '../shared/platform-source.js';
 import { copyDeliverableIntoBucket } from '../shared/deliverables.js';
 import { extractTranscriptFileActivity, type TranscriptWorkStateWrite } from '../shared/deliverables-transcript.js';
-import type { SpooledDeliverable, SpooledDeliverablesPayload } from '../shared/hook-spool.js';
+import { DELIVERABLE_ERRORS_PER_EVENT, type SpooledDeliverable, type SpooledDeliverablesPayload } from '../shared/hook-spool.js';
+import { usesRemoteHookSpool } from '../shared/hook-spool-remote.js';
+import { getWorkerHost } from '../shared/worker-utils.js';
 import { resolveRuntimeContext } from '../services/hooks/runtime-selector.js';
 import { getProjectContext } from '../utils/project-name.js';
 import { fileKind, isWorkProductField } from '../services/work-view/work-product.mjs';
@@ -34,6 +36,10 @@ import type { NormalizedHookInput } from './types.js';
  *    folder such as .scratch/, or outside any repository such as a scratchpad.
  *    A source file is never copied by inference; an agent attaches it if it
  *    is a deliverable.
+ *
+ * Nothing is copied for a turn whose prompt was entirely <private>, the rule
+ * the worker applies to observations and summaries, nor for a worker on
+ * another host, which could not open a copy made on this disk.
  */
 
 /** Each copy runs synchronously inside the Stop hook (120 s host timeout); 50 keeps the worst turn well inside it. Files past the cap are reported, not dropped silently. */
@@ -110,76 +116,140 @@ export function declaredCandidates(write: TranscriptWorkStateWrite, cwd: string)
   return candidates;
 }
 
-function git(args: string[], cwd: string): { status: number | null; stdout: string } {
+export interface GitResult {
+  /** The exit status; null when git did not run (not installed) or did not finish (killed at GIT_TIMEOUT_MS). */
+  status: number | null;
+  stdout: string;
+  stderr: string;
+}
+export type GitRunner = (args: string[], cwd: string) => GitResult;
+
+const runGit: GitRunner = (args, cwd) => {
   try {
-    const stdout = execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, timeout: GIT_TIMEOUT_MS });
-    return { status: 0, stdout };
+    const stdout = execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, timeout: GIT_TIMEOUT_MS });
+    return { status: 0, stdout, stderr: '' };
   } catch (error: unknown) {
-    const status = error && typeof error === 'object' && typeof (error as { status?: unknown }).status === 'number' ? (error as { status: number }).status : null;
-    return { status, stdout: '' };
+    const failure = error && typeof error === 'object' ? error as { status?: unknown; stderr?: unknown } : {};
+    return {
+      status: typeof failure.status === 'number' ? failure.status : null,
+      stdout: '',
+      stderr: typeof failure.stderr === 'string' ? failure.stderr : '',
+    };
   }
+};
+
+/** Where git places the folder a written file is in: a repository, confirmed outside every repository, or unknown when git could not answer. */
+export type RepositoryLookup =
+  | { kind: 'repository'; root: string }
+  | { kind: 'none' }
+  | { kind: 'unknown'; detail: string };
+
+/** Git's one answer that means no repository holds the folder; every other failure (git missing, hung, or refusing a repository it finds dubious) leaves the question open. */
+const NOT_A_REPOSITORY = /not a git repository/i;
+
+function lookupRepository(dir: string, git: GitRunner): RepositoryLookup {
+  try {
+    statSync(dir);
+  } catch (error: unknown) {
+    return { kind: 'unknown', detail: `the folder cannot be read: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  const result = git(['rev-parse', '--show-toplevel'], dir);
+  const root = result.stdout.trim();
+  if (result.status === 0 && root) return { kind: 'repository', root };
+  if (result.status === 128 && NOT_A_REPOSITORY.test(result.stderr)) return { kind: 'none' };
+  const firstLine = result.stderr.trim().split('\n')[0];
+  return {
+    kind: 'unknown',
+    detail: result.status === null ? 'git did not run or did not finish' : `git exited ${result.status}${firstLine ? `: ${firstLine}` : ''}`,
+  };
 }
 
 /**
  * A written file is outside the source tree when no repository holds it or
  * the repository ignores it. In a repository and not ignored means source,
- * whether tracked yet or not; when git cannot say, the file is treated as
- * source so nothing is copied by accident.
+ * whether tracked yet or not. When git cannot say — it is missing, hung, or
+ * refuses to open the repository — the file is treated as source, so a
+ * failed check never copies anything.
  */
-export function isOutsideSourceTree(path: string, repoRootCache: Map<string, string | null> = new Map()): boolean {
+export function isOutsideSourceTree(path: string, repositoryCache: Map<string, RepositoryLookup> = new Map(), git: GitRunner = runGit): boolean {
   const dir = dirname(path);
-  let root = repoRootCache.get(dir);
-  if (root === undefined) {
-    try {
-      statSync(dir);
-      const result = git(['rev-parse', '--show-toplevel'], dir);
-      root = result.status === 0 ? result.stdout.trim() || null : null;
-    } catch {
-      root = null;
+  let lookup = repositoryCache.get(dir);
+  if (!lookup) {
+    lookup = lookupRepository(dir, git);
+    repositoryCache.set(dir, lookup);
+    if (lookup.kind === 'unknown') {
+      logger.warn('HOOK', 'git could not say whether a folder is in a repository; files written there are left out of the deliverables bucket', { dir, detail: lookup.detail });
     }
-    repoRootCache.set(dir, root);
   }
-  if (!root) return true;
-  const ignored = git(['check-ignore', '-q', '--', path], root);
+  if (lookup.kind === 'none') return true;
+  if (lookup.kind === 'unknown') return false;
+  const ignored = git(['check-ignore', '-q', '--', path], lookup.root);
   if (ignored.status === 0) return true;
   if (ignored.status === 1) return false;
   logger.warn('HOOK', 'git check-ignore could not tell whether a written file is source; leaving it out of the deliverables bucket', { path, status: ignored.status });
   return false;
 }
 
+/**
+ * The error list kept to DELIVERABLE_ERRORS_PER_EVENT entries, the last one a
+ * count of those cut, so a turn with more failures than that never costs the
+ * records of the files that did copy. The hook log names every file.
+ */
+export function boundedErrors(errors: Array<{ sourcePath: string; error: string }>): Array<{ sourcePath: string; error: string }> {
+  if (errors.length <= DELIVERABLE_ERRORS_PER_EVENT) return errors;
+  const kept = errors.slice(0, DELIVERABLE_ERRORS_PER_EVENT - 1);
+  return [...kept, { sourcePath: '', error: `${errors.length - kept.length} more files were not copied; the hook log names each one` }];
+}
+
 export interface CaptureDeliverablesOptions {
-  /** The transcript to read; the session's by default, the subagent's for SubagentStop. */
-  transcriptPath?: string;
-  /** Only the final turn (Stop runs once per turn). A subagent's transcript is one run, so SubagentStop scans all of it. */
-  currentTurnOnly?: boolean;
+  /**
+   * SubagentStop: the finished subagent's own transcript, scanned whole and
+   * with its sidechain entries (every entry in it is one) for what the
+   * subagent made. The session's transcript still decides the turn's privacy.
+   */
+  subagentTranscriptPath?: string;
 }
 
 /**
  * Copies this turn's deliverables into the project bucket and spools one
  * `deliverables` event for the worker. Returns how many files were copied,
  * reused or failed; nothing when capture is off, when there is no transcript,
- * or when the turn made nothing for a person.
+ * when the turn is private, when the worker is on another host, or when the
+ * turn made nothing for a person.
  */
 export function captureDeliverables(input: NormalizedHookInput, options: CaptureDeliverablesOptions = {}): { copied: number; reused: number; failed: number } | null {
-  const transcriptPath = options.transcriptPath ?? input.transcriptPath;
-  const { sessionId, cwd } = input;
-  if (!transcriptPath || !sessionId || !cwd) return null;
+  const { sessionId, cwd, transcriptPath } = input;
+  if (!sessionId || !cwd || !(options.subagentTranscriptPath ?? transcriptPath)) return null;
   if (!isDeliverablesCaptureEnabled(process.env.CLAUDE_MEM_DELIVERABLES_ENABLED ?? loadFromFileOnce().CLAUDE_MEM_DELIVERABLES_ENABLED)) return null;
   // Server runtime has no local worker to record the copies; the bucket is a worker-runtime feature.
   if (resolveRuntimeContext().runtime === 'server') return null;
+  // A worker on another host could not open a copy made on this disk, and My Work would hide its record: the bucket is for a worker that shares the disk.
+  const workerHost = getWorkerHost();
+  if (usesRemoteHookSpool(workerHost)) {
+    logger.debug('HOOK', 'Deliverables are not captured for a worker on another host', { workerHost });
+    return null;
+  }
 
-  const activity = extractTranscriptFileActivity(transcriptPath, { currentTurnOnly: options.currentTurnOnly ?? true });
-  if (activity.writes.length === 0 && activity.workStateWrites.length === 0) return null;
+  // The prompt that started the session's current turn decides its privacy, for a subagent's files too: they belong to that turn.
+  const turn = transcriptPath ? extractTranscriptFileActivity(transcriptPath, { currentTurnOnly: true }) : null;
+  if (turn?.privateTurn) {
+    logger.debug('HOOK', 'Deliverables are not captured for a private turn', { sessionId });
+    return null;
+  }
+  const activity = options.subagentTranscriptPath
+    ? extractTranscriptFileActivity(options.subagentTranscriptPath, { currentTurnOnly: false, includeSidechain: true })
+    : turn;
+  if (!activity || (activity.writes.length === 0 && activity.workStateWrites.length === 0)) return null;
 
   // Declared first: an agent's title and kind win over what a write infers.
   const candidates = new Map<string, Candidate>();
   for (const write of activity.workStateWrites) {
     for (const candidate of declaredCandidates(write, cwd)) if (!candidates.has(candidate.path)) candidates.set(candidate.path, candidate);
   }
-  const repoRootCache = new Map<string, string | null>();
+  const repositoryCache = new Map<string, RepositoryLookup>();
   for (const write of activity.writes) {
     const path = resolveCandidatePath(write.path, cwd);
-    if (!path || candidates.has(path) || !fileKind(path) || !isOutsideSourceTree(path, repoRootCache)) continue;
+    if (!path || candidates.has(path) || !fileKind(path) || !isOutsideSourceTree(path, repositoryCache)) continue;
     candidates.set(path, { path, title: basename(path), kind: deliverableKind(path), declared: false, list: null, field: null, toolUseId: write.toolUseId, occurredAtEpoch: write.occurredAtEpoch });
   }
   if (candidates.size === 0) return null;
@@ -190,8 +260,9 @@ export function captureDeliverables(input: NormalizedHookInput, options: Capture
   const errors: Array<{ sourcePath: string; error: string }> = [];
   let reused = 0;
   if (ordered.length > DELIVERABLES_PER_STOP) {
-    logger.warn('HOOK', `Deliverables: this turn made ${ordered.length} files; only the first ${DELIVERABLES_PER_STOP} are copied in one Stop`, { project });
-    for (const candidate of ordered.slice(DELIVERABLES_PER_STOP)) errors.push({ sourcePath: candidate.path, error: `over the ${DELIVERABLES_PER_STOP}-file limit for one Stop` });
+    const leftOut = ordered.slice(DELIVERABLES_PER_STOP);
+    logger.warn('HOOK', `Deliverables: this turn made ${ordered.length} files; only the first ${DELIVERABLES_PER_STOP} are copied in one Stop`, { project, leftOut: leftOut.map(candidate => candidate.path) });
+    for (const candidate of leftOut) errors.push({ sourcePath: candidate.path, error: `over the ${DELIVERABLES_PER_STOP}-file limit for one Stop` });
   }
   for (const candidate of ordered.slice(0, DELIVERABLES_PER_STOP)) {
     try {
@@ -217,7 +288,7 @@ export function captureDeliverables(input: NormalizedHookInput, options: Capture
     project,
     ...(input.agentId ? { agentId: input.agentId } : {}),
     files,
-    ...(errors.length ? { errors } : {}),
+    ...(errors.length ? { errors: boundedErrors(errors) } : {}),
   };
   spoolHookEvent('deliverables', payload);
   logger.info('HOOK', 'Deliverables copied into the project bucket', { project, files: files.length, reused, failed: errors.length });

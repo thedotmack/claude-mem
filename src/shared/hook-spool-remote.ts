@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { HookSpoolEntry } from './hook-spool.js';
+import { DELIVERABLE_ERRORS_PER_EVENT, type HookSpoolEntry } from './hook-spool.js';
 import { normalizePlatformSource } from './platform-source.js';
 import { formatHostForUrl } from './worker-url.js';
 
@@ -71,7 +71,7 @@ const entrySchema = z.discriminatedUnion('kind', [
       toolUseId: z.string().max(2048).nullable().optional(),
       occurredAtEpoch: timestamp,
     }).passthrough()).min(1).max(128),
-    errors: z.array(z.object({ sourcePath: z.string().max(32768), error: z.string().max(2048) }).passthrough()).max(128).optional(),
+    errors: z.array(z.object({ sourcePath: z.string().max(32768), error: z.string().max(2048) }).passthrough()).max(DELIVERABLE_ERRORS_PER_EVENT).optional(),
   }), enqueuedAtEpochMs: timestamp }),
   z.object({ kind: z.literal('work_state_telemetry'), payload: z.discriminatedUnion('kind', [
     workStateTelemetryPayload.extend({

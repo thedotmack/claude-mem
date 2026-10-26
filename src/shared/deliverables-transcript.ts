@@ -1,12 +1,13 @@
 import { existsSync } from 'fs';
 import { readTranscriptTail } from './advisor-transcript.js';
-import { stripSystemReminderBlocks } from '../utils/tag-stripping.js';
+import { stripMemoryTags, stripSystemReminderBlocks } from '../utils/tag-stripping.js';
 
 /**
  * What a Claude Code transcript says the agent made this turn: the files its
- * Write / Edit / NotebookEdit calls touched, and the work-state writes that
- * may attach a work product. The Stop hook reads these to find the turn's
- * deliverables (src/cli/deliverables-capture.ts).
+ * Write / Edit / NotebookEdit calls touched, the work-state writes that may
+ * attach a work product, and whether the prompt that started the turn was
+ * private. The Stop hook reads these to find the turn's deliverables
+ * (src/cli/deliverables-capture.ts).
  *
  * Same shape as the advisor scan (advisor-transcript.ts): assistant entries
  * carry `tool_use` content blocks `{ id, name, input }`; the following user
@@ -14,7 +15,13 @@ import { stripSystemReminderBlocks } from '../utils/tag-stripping.js';
  * call failed. A failed write made no file, so it is dropped.
  */
 
-/** Same bound and reason as ADVISOR_SCAN_TAIL_BYTES: the scan runs on every Stop and a turn's calls sit at the end of the file. */
+/**
+ * The first read's bound, the same as ADVISOR_SCAN_TAIL_BYTES and for the same
+ * reason: the scan runs on every Stop and a turn's calls sit at the end of the
+ * file. A turn longer than this is read further back, the tail doubling until
+ * its prompt is in view (extractTranscriptFileActivity), because the prompt
+ * decides whether the turn is private.
+ */
 export const DELIVERABLE_SCAN_TAIL_BYTES = 2 * 1024 * 1024;
 
 /** Tools whose call names the file they wrote: `file_path` (Write, Edit, MultiEdit) or `notebook_path` (NotebookEdit). */
@@ -40,15 +47,37 @@ export interface TranscriptFileActivity {
   /** One entry per path, the last write to it. */
   writes: TranscriptFileWrite[];
   workStateWrites: TranscriptWorkStateWrite[];
+  /** True when the prompt that started the scan's last turn was in the text read; false when the read began after it. */
+  promptSeen: boolean;
+  /** True when that prompt was entirely <private>: the turn leaves no copy and no record (isPrivatePrompt). */
+  privateTurn: boolean;
 }
 
 export interface ExtractFileActivityOptions {
   /** Only the transcript's final turn (after the last user prompt). The Stop hook runs once per turn, so each turn is scanned once. */
   currentTurnOnly?: boolean;
   maxTailBytes?: number;
+  /**
+   * Read entries marked `isSidechain` too. A session's transcript marks what
+   * its subagents did that way, and Stop leaves those to SubagentStop; a
+   * subagent's own transcript marks every entry that way, so SubagentStop
+   * sets this when it scans the finished subagent's file.
+   */
+  includeSidechain?: boolean;
 }
 
-const NO_ACTIVITY: TranscriptFileActivity = { writes: [], workStateWrites: [] };
+const NO_ACTIVITY: TranscriptFileActivity = { writes: [], workStateWrites: [], promptSeen: false, privateTurn: false };
+
+/**
+ * A prompt that is entirely <private> (or other memory tags) marks a private
+ * turn: the same test the worker applies to the prompt it stores
+ * (prompt-storage.ts), after which observations and summaries for the turn are
+ * skipped (PrivacyCheckValidator). A prompt with a private section and other
+ * text is not private as a whole.
+ */
+export function isPrivatePrompt(text: string): boolean {
+  return text.trim() !== '' && stripMemoryTags(text).trim() === '';
+}
 
 function textFromContent(content: unknown): string {
   if (typeof content === 'string') return content;
@@ -68,15 +97,22 @@ function parseEpoch(timestamp: unknown): number | null {
 
 export function extractTranscriptFileActivity(transcriptPath: string, options: ExtractFileActivityOptions = {}): TranscriptFileActivity {
   if (!transcriptPath || !existsSync(transcriptPath)) return NO_ACTIVITY;
-  const { text } = readTranscriptTail(transcriptPath, options.maxTailBytes ?? DELIVERABLE_SCAN_TAIL_BYTES);
-  if (!text.trim()) return NO_ACTIVITY;
-  return extractTranscriptFileActivityFromJsonl(text, options);
+  let maxTailBytes = options.maxTailBytes ?? DELIVERABLE_SCAN_TAIL_BYTES;
+  for (;;) {
+    const { text, startOffset } = readTranscriptTail(transcriptPath, maxTailBytes);
+    if (!text.trim()) return NO_ACTIVITY;
+    const activity = extractTranscriptFileActivityFromJsonl(text, options);
+    // The turn's prompt decides its privacy, so a read that began after the prompt is widened until the prompt is in it or the file is read whole.
+    if (activity.promptSeen || startOffset === 0 || options.currentTurnOnly === false) return activity;
+    maxTailBytes *= 2;
+  }
 }
 
 export function extractTranscriptFileActivityFromJsonl(content: string, options: ExtractFileActivityOptions = {}): TranscriptFileActivity {
   const currentTurnOnly = options.currentTurnOnly ?? true;
   const lines = content.split('\n');
   let lastUserLine = 0;
+  let lastPrompt = '';
   const failed = new Set<string>();
   const writes: Array<TranscriptFileWrite & { userTurnLine: number }> = [];
   const workStateWrites: Array<TranscriptWorkStateWrite & { userTurnLine: number }> = [];
@@ -91,7 +127,7 @@ export function extractTranscriptFileActivityFromJsonl(content: string, options:
     } catch {
       continue;
     }
-    if (entry?.isSidechain === true) continue;
+    if (entry?.isSidechain === true && !options.includeSidechain) continue;
 
     const entryType = entry?.type ?? entry?.message?.role;
     const msgContent = entry?.message?.content;
@@ -108,7 +144,10 @@ export function extractTranscriptFileActivityFromJsonl(content: string, options:
       // Tool results are user-role records too, but do not start a turn; a prompt with only an image or document does.
       const hasMedia = Array.isArray(msgContent) && msgContent.some(block =>
         block && typeof block === 'object' && (block.type === 'image' || block.type === 'document'));
-      if (text || hasMedia) lastUserLine = i + 1;
+      if (text || hasMedia) {
+        lastUserLine = i + 1;
+        lastPrompt = text;
+      }
       continue;
     }
 
@@ -139,5 +178,7 @@ export function extractTranscriptFileActivityFromJsonl(content: string, options:
   return {
     writes: [...lastWriteByPath.values()],
     workStateWrites: workStateWrites.filter(inTurn).map(({ userTurnLine: _turn, ...write }) => write),
+    promptSeen: lastUserLine > 0,
+    privateTurn: isPrivatePrompt(lastPrompt),
   };
 }

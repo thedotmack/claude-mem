@@ -106,6 +106,14 @@ export interface SpooledDeliverable {
   occurredAtEpoch: number;
 }
 
+/**
+ * Bound on `errors` in one deliverables event: the remote spool schema
+ * (hook-spool-remote.ts) admits this many, and the hook keeps to it
+ * (deliverables-capture.ts boundedErrors) so a turn with more failures than
+ * this never costs the records of the files that did copy.
+ */
+export const DELIVERABLE_ERRORS_PER_EVENT = 128;
+
 /** The Stop (or SubagentStop) hook's deliverables for one turn, already copied into the bucket. */
 export interface SpooledDeliverablesPayload {
   contentSessionId: string;
