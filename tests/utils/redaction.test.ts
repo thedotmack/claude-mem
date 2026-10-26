@@ -106,6 +106,29 @@ text after`;
     expect(redactSensitive(sdkArgument, cfg).counts.aws_secret_key).toBe(1);
   });
 
+  it('redacts the AWS session token of temporary credentials', () => {
+    const token = 'IQoJb3JpZ2luX2VjEJr//////////wEaCXVzLWVhc3QtMSJHMEUCIQDexample+sessiontokenvalue0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij==';
+    const marker = "<redacted type='aws_session_token'/>";
+
+    const env = `export AWS_SESSION_TOKEN=${token}\n`;
+    expect(redactSensitive(env, cfg).redacted).toBe(`export AWS_SESSION_TOKEN=${marker}\n`);
+
+    const credentials = `[default]\naws_session_token = ${token}\n`;
+    expect(redactSensitive(credentials, cfg).redacted).toBe(`[default]\naws_session_token = ${marker}\n`);
+
+    const stsJson = `{"Credentials": {"SessionToken": "${token}", "Expiration": "2026-10-26T00:00:00Z"}}`;
+    const result = redactSensitive(stsJson, cfg);
+    expect(result.redacted).toBe(`{"Credentials": {"SessionToken": "${marker}", "Expiration": "2026-10-26T00:00:00Z"}}`);
+    expect(result.counts.aws_session_token).toBe(1);
+
+    // JSON-escaped, as the worker scans JSON.stringify(toolInput).
+    expect(redactSensitive(JSON.stringify(stsJson), cfg).counts.aws_session_token).toBe(1);
+
+    // Short placeholders and unanchored base64 stay as written.
+    expect(redactSensitive('AWS_SESSION_TOKEN=changeme', cfg).counts.aws_session_token).toBeUndefined();
+    expect(redactSensitive(`random ${token} here`, cfg).counts.aws_session_token).toBeUndefined();
+  });
+
   it('does NOT match near-miss strings', () => {
     const negatives = [
       'sk-short',                                  // openai_key too short
