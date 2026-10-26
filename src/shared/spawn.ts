@@ -141,6 +141,38 @@ export function lookupWindowsCommand(command: string): string | null {
   );
 }
 
+export interface CommandInvocation {
+  command: string;
+  args: string[];
+  /** Set for a .cmd/.bat shim run through cmd.exe: Node must pass the payload unescaped. */
+  windowsVerbatimArguments: boolean;
+}
+
+/**
+ * How to start `command` with `args` (spawn or spawnSync). Node cannot start a
+ * .cmd/.bat shim directly on Windows, so one runs through cmd.exe.
+ */
+export function commandInvocation(
+  command: string,
+  args: readonly string[],
+  platform: NodeJS.Platform = process.platform,
+): CommandInvocation {
+  if (platform === 'win32' && WINDOWS_CMD_EXTENSIONS.has(extname(command).toLowerCase())) {
+    const commandLine = [command, ...args].map(quoteWindowsCmdArgument).join(' ');
+    return {
+      command: process.env.ComSpec ?? 'cmd.exe',
+      // Wrap the per-arg-quoted command line in ONE outer quote pair: `cmd /s /c`
+      // strips the outermost quotes and leaves the inner per-arg quoting intact,
+      // so a shim path (or any arg) containing spaces survives. Pairs with
+      // windowsVerbatimArguments, which stops Node re-escaping this payload
+      // (without it the leading `"` becomes `\"` and cmd.exe rejects the command).
+      args: ['/d', '/s', '/c', `"${commandLine}"`],
+      windowsVerbatimArguments: true,
+    };
+  }
+  return { command, args: [...args], windowsVerbatimArguments: false };
+}
+
 export function buildSpawnSyncInvocation(
   command: string,
   args: readonly string[],
@@ -152,24 +184,10 @@ export function buildSpawnSyncInvocation(
     // Force hide on Windows last so callers cannot override it off (#3521).
     ...(platform === 'win32' ? { windowsHide: true } : {}),
   };
-
-  if (platform === 'win32' && WINDOWS_CMD_EXTENSIONS.has(extname(command).toLowerCase())) {
-    const commandLine = [command, ...args].map(quoteWindowsCmdArgument).join(' ');
-    return {
-      command: process.env.ComSpec ?? 'cmd.exe',
-      // Wrap the per-arg-quoted command line in ONE outer quote pair: `cmd /s /c`
-      // strips the outermost quotes and leaves the inner per-arg quoting intact,
-      // so a shim path (or any arg) containing spaces survives. Pairs with
-      // windowsVerbatimArguments below, which stops Node re-escaping this payload
-      // (without it the leading `"` becomes `\"` and cmd.exe rejects the command).
-      args: ['/d', '/s', '/c', `"${commandLine}"`],
-      options: { ...invocationOptions, windowsVerbatimArguments: true },
-    };
-  }
-
+  const invocation = commandInvocation(command, args, platform);
   return {
-    command,
-    args: [...args],
-    options: invocationOptions,
+    command: invocation.command,
+    args: invocation.args,
+    options: invocation.windowsVerbatimArguments ? { ...invocationOptions, windowsVerbatimArguments: true } : invocationOptions,
   };
 }

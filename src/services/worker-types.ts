@@ -1,6 +1,7 @@
 
 import type { Response } from 'express';
 import type { PaidSendBudget } from './worker/paid-send-budget.js';
+import type { ClaudeCredential } from '../shared/quota-cooldown.js';
 
 export interface ConversationMessage {
   role: 'user' | 'assistant';
@@ -36,6 +37,17 @@ export interface ActiveSession {
    * changed while it ran.
    */
   observerProfile?: string;
+  /**
+   * The credential the latest Claude generator was spawned with; fixed at spawn
+   * like observerProfile. Unset for a gateway token, which is neither.
+   */
+  observerAuth?: ClaudeCredential;
+  /**
+   * The credential admission runs this session on while the primary one's
+   * quota breaker holds (CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD), else null.
+   * Cleared on every normal admission, so a recovered primary is used again.
+   */
+  claudeAuthOverride?: ClaudeCredential | null;
   /**
    * The provider the current run stands in for when dispatch routed around it
    * (the provider fallback), else null/undefined. A stand-in that is refused
@@ -135,12 +147,26 @@ export interface ActiveSession {
   idleTimedOut?: boolean;  
   lastGeneratorActivity: number;
   modelOverride?: string;
+  /**
+   * Set when tier routing put this generator on CLAUDE_MEM_TIER_SIMPLE_MODEL.
+   * The model is fixed for the generator's lifetime, so it ends at the next
+   * message that is not a simple-tool observation and a fresh one picks the
+   * tier again (#4963).
+   */
+  simpleTierRun?: boolean;
   lastSummaryStored?: boolean;
   pendingAgentId?: string | null;
   pendingAgentType?: string | null;
   abortReason?: 'idle' | 'shutdown' | 'overflow' | 'restart-guard' | 'quota' | 'provider_switch' | string | null;
   /** Why buffered work was last parked after a generator exit. */
   pausedReason?: string | null;
+  /**
+   * Set when dispatch selects a provider other than the one the running
+   * generator uses (the primary is back after a fallback, or settings
+   * changed). The generator ends at its next message boundary, before it
+   * sends again, and a fresh one starts on the selected provider.
+   */
+  providerSwitchPending?: boolean;
   respawnTimer?: ReturnType<typeof setTimeout>;
   /** When the latest compression prompt was dispatched to the model — telemetry compression_ms. */
   lastPromptSentAt?: number | null;
@@ -282,6 +308,7 @@ export interface Summary {
   id: number;
   session_id: string; 
   project: string;
+  merged_into_project?: string | null;
   platform_source: string;
   request: string | null;
   investigated: string | null;

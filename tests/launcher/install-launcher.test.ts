@@ -6,10 +6,12 @@ import { fileURLToPath } from 'url';
 import {
   appendDirectoryToWindowsPathValue,
   buildLauncherCompileArguments,
+  createAdhocCodesigner,
   ensureDirectoryOnWindowsUserPath,
   ensureLauncherOnPath,
   ensureLocalBinOnShellPath,
   findExecutableOnPath,
+  probeLauncherVersion,
   removeInstalledLauncher,
   resolveLauncherBinaryPath,
   shellPathSetupMarkerComment,
@@ -22,7 +24,7 @@ import {
 } from '../../src/launcher/install-launcher.js';
 import { LAUNCHER_PROTOCOL } from '../../src/launcher/launcher-protocol.js';
 import { bunCommonPaths } from '../../src/npx-cli/install/tool-path.js';
-import { hookLauncherCheck } from '../../src/npx-cli/commands/doctor.js';
+import { hookLauncherCheck, windowsShimScriptPaths } from '../../src/npx-cli/commands/doctor.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '../..');
@@ -95,6 +97,43 @@ const codesignMustNotRun: LauncherCodesignRunner = () => {
 
 /** Signing is a no-op for fake compiles, so no test reaches the real `codesign`. */
 const codesignNoop: LauncherCodesignRunner = () => ({ status: 0, stderr: '' });
+
+/** The thrown error's message, so a test can assert on more than one fragment of it. */
+function thrownMessage(action: () => unknown): string {
+  try {
+    action();
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  throw new Error('expected the action to throw');
+}
+
+/**
+ * Zeroes the signature blob of a 64-bit Mach-O, so `codesign --force --sign -`
+ * refuses it with "invalid or unsupported format for signature" — the way it
+ * refuses Bun 1.3.12's `--compile` output (#4947). Corrupting the blob rather
+ * than trusting the installed Bun to emit a malformed signature keeps the
+ * regression test meaningful if a later Bun signs its output correctly.
+ */
+function zeroMachOCodeSignature(binaryPath: string): void {
+  const binary = readFileSync(binaryPath);
+  if (binary.readUInt32LE(0) !== 0xfeedfacf) {
+    throw new Error(`${binaryPath} is not a 64-bit Mach-O`);
+  }
+  const loadCommandCount = binary.readUInt32LE(16);
+  let loadCommandOffset = 32;
+  for (let loadCommandIndex = 0; loadCommandIndex < loadCommandCount; loadCommandIndex++) {
+    // LC_CODE_SIGNATURE, the load command that points at the embedded blob.
+    if (binary.readUInt32LE(loadCommandOffset) === 0x1d) {
+      const signatureOffset = binary.readUInt32LE(loadCommandOffset + 8);
+      const signatureSize = binary.readUInt32LE(loadCommandOffset + 12);
+      writeFileSync(binaryPath, binary.fill(0, signatureOffset, signatureOffset + signatureSize));
+      return;
+    }
+    loadCommandOffset += binary.readUInt32LE(loadCommandOffset + 4);
+  }
+  throw new Error(`${binaryPath} has no LC_CODE_SIGNATURE load command to corrupt`);
+}
 
 beforeAll(() => {
   mkdirSync(scratchParentDirectory, { recursive: true });
@@ -224,7 +263,7 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
     });
 
     expect(ensureResult).toEqual({ status: 'foreign-binary-kept', binaryPath, pathSetupOutcome: null });
-    expect(logger.lines).toEqual([`warn: ${binaryPath} exists and is not the claude-mem hook launcher; not replacing`]);
+    expect(logger.lines).toEqual([`warn: ${binaryPath} exists and is not the claude-mem hook launcher (--version printed "13.28.0" instead of a protocol number); not replacing`]);
     expect(readFileSync(binaryPath, 'utf-8')).toContain('13.28.0');
   });
 
@@ -275,12 +314,53 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
     expect(ensureResult).toMatchObject({ status: 'installed', pathSetupOutcome: 'already-on-path' });
   });
 
+  // #4934/#4940: the Bun discovery fixes live in the compiled launcher, so a
+  // protocol-1 binary already on PATH must be recompiled, by the installer and
+  // by the SessionStart self-heal alike, for existing installs to get them.
+  it('recompiles a protocol-1 launcher from before the Bun discovery fixes, in both contexts (#4934)', () => {
+    expect(LAUNCHER_PROTOCOL).toBeGreaterThanOrEqual(2);
+    for (const invocationContext of ['npx-installer', 'session-start-self-heal'] as const) {
+      const scratchHome = makeScratchHome();
+      const host = posixHost(scratchHome, { PATH: `${path.join(scratchHome, '.local', 'bin')}:/usr/bin` });
+      writeFakeLauncher(resolveLauncherBinaryPath(host), '1');
+      const compile = fakeCompile();
+
+      const ensureResult = ensureLauncherOnPath({
+        pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host, runCompile: compile, runCodesign: codesignNoop, invocationContext,
+      });
+
+      expect(compile.calls).toHaveLength(1);
+      expect(ensureResult.status).toBe('installed');
+    }
+  });
+
   it('reports bun-not-found without compiling', () => {
     const host = posixHost(makeScratchHome());
     const ensureResult = ensureLauncherOnPath({
       pluginRoot, resolveBunPath: () => null, logger: recordingLogger(), host, runCompile: compileMustNotRun, invocationContext: 'npx-installer',
     });
     expect(ensureResult.status).toBe('bun-not-found');
+  });
+
+  // #4933: Bun < 1.2.16 ignores BUN_BE_BUN, so a launcher compiled with it
+  // re-execs itself forever when no `bun` is on the hook PATH.
+  it('refuses to compile with a Bun older than 1.2.16, naming the version and the upgrade (#4933)', () => {
+    const host = posixHost(makeScratchHome());
+    expect(() => ensureLauncherOnPath({
+      pluginRoot, resolveBunPath: () => '/fake/bun', readBunVersion: () => '1.2.4', logger: recordingLogger(),
+      host, runCompile: compileMustNotRun, runCodesign: codesignNoop, invocationContext: 'npx-installer',
+    })).toThrow('Bun 1.2.4 at /fake/bun is older than 1.2.16');
+    expect(existsSync(resolveLauncherBinaryPath(host))).toBe(false);
+  });
+
+  it('compiles with Bun 1.2.16 or newer', () => {
+    for (const bunVersion of ['1.2.16', '1.3.0', '1.4.3']) {
+      const ensureResult = ensureLauncherOnPath({
+        pluginRoot, resolveBunPath: () => '/fake/bun', readBunVersion: () => bunVersion, logger: recordingLogger(),
+        host: posixHost(makeScratchHome()), runCompile: fakeCompile(), runCodesign: codesignNoop, invocationContext: 'npx-installer',
+      });
+      expect(ensureResult.status).toBe('installed');
+    }
   });
 
   it('throws on a failed compile and leaves no temp file', () => {
@@ -317,11 +397,24 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
     expect(readdirSync(path.join(scratchHome, '.local', 'bin'))).toEqual([]);
   });
 
+  it.skipIf(!isPosixHost)('puts the --version failure in the error when the compiled binary does not run', () => {
+    const scratchHome = makeScratchHome();
+    const compileCrashingLauncher: LauncherCompileRunner = (_bunPath, compileArguments) => {
+      const outfilePath = compileArguments[compileArguments.indexOf('--outfile') + 1];
+      writeFileSync(outfilePath, '#!/bin/sh\necho "blocked by policy" >&2\nexit 5\n');
+      chmodSync(outfilePath, 0o755);
+      return { status: 0, stderr: '' };
+    };
+    expect(() => ensureLauncherOnPath({
+      pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host: posixHost(scratchHome), runCompile: compileCrashingLauncher, runCodesign: codesignNoop, invocationContext: 'npx-installer',
+    })).toThrow(`compiled launcher printed protocol null, expected ${LAUNCHER_PROTOCOL} (--version exited 5: blocked by policy)`);
+  });
+
   it('ad-hoc re-signs the compiled binary before the protocol probe (macOS 27 kills invalidly-signed builds, #4778)', () => {
     const scratchHome = makeScratchHome();
     const host = posixHost(scratchHome);
     const binDirectory = path.join(scratchHome, '.local', 'bin');
-    // The compile output prints garbage — what readLauncherProtocol sees when
+    // The compile output prints garbage — what probeLauncherVersion sees when
     // macOS kills the binary — and only the signing step, which must run
     // first, repairs it.
     const compileThenResign: LauncherCompileRunner = (_bunPath, compileArguments) => {
@@ -338,6 +431,122 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
     expect(ensureResult.status).toBe('installed');
     expect(codesign.calls).toEqual([path.join(binDirectory, `.claude-mem-${process.pid}.tmp`)]);
     expect(readdirSync(binDirectory)).toEqual(['claude-mem']);
+  });
+
+  it('clears the old signature before re-signing, and reports only the sign step (#4947)', () => {
+    const invocations: string[][] = [];
+    const signer = createAdhocCodesigner((codesignArguments) => {
+      invocations.push([...codesignArguments]);
+      // The clear fails and the sign succeeds: clearing is best effort, so the
+      // clear's failure must neither stop the sign nor be reported.
+      return codesignArguments[0] === '--remove-signature'
+        ? { status: 1, stderr: 'code object is not signed at all\n' }
+        : { status: 0, stderr: '' };
+    });
+
+    expect(signer('/tmp/claude-mem')).toEqual({ status: 0, stderr: '' });
+    expect(invocations).toEqual([
+      ['--remove-signature', '/tmp/claude-mem'],
+      ['--force', '--sign', '-', '/tmp/claude-mem'],
+    ]);
+  });
+
+  it('reports the signing failure, not the successful clear, when only signing fails', () => {
+    const signer = createAdhocCodesigner((codesignArguments) =>
+      codesignArguments[0] === '--remove-signature'
+        ? { status: 0, stderr: 'replacing existing signature\n' }
+        : { status: 3, stderr: 'sign step failed\n' });
+
+    // Returning the clear's result would hide the failure that matters.
+    expect(signer('/tmp/claude-mem')).toEqual({ status: 3, stderr: 'sign step failed\n' });
+  });
+
+  it('reports the signing failure when both steps fail', () => {
+    const signer = createAdhocCodesigner((codesignArguments) =>
+      codesignArguments[0] === '--remove-signature'
+        ? { status: 1, stderr: 'clear step failed\n' }
+        : { status: 2, stderr: 'sign step failed\n' });
+
+    expect(signer('/tmp/claude-mem')).toEqual({ status: 2, stderr: 'sign step failed\n' });
+  });
+
+  it.skipIf(process.platform !== 'darwin')('installs a real build whose signature codesign --force cannot replace (Bun 1.3.12, #4947)', () => {
+    const scratchHome = makeScratchHome();
+    const host = posixHost(scratchHome);
+    const logger = recordingLogger();
+    // Compile the real launcher bundle, then reproduce Bun 1.3.12's malformed
+    // signature. No runCodesign: the real `codesign` runs the repair.
+    const compileThenCorruptSignature: LauncherCompileRunner = (bunPath, compileArguments, workingDirectory) => {
+      const compileResult = spawnSync(bunPath, compileArguments, { cwd: workingDirectory, encoding: 'utf-8' });
+      zeroMachOCodeSignature(compileArguments[compileArguments.indexOf('--outfile') + 1]);
+      return { status: compileResult.status, stderr: compileResult.stderr };
+    };
+
+    const ensureResult = ensureLauncherOnPath({
+      pluginRoot, resolveBunPath: () => process.execPath, logger, host,
+      runCompile: compileThenCorruptSignature, invocationContext: 'npx-installer',
+    });
+
+    expect(ensureResult.status).toBe('installed');
+    expect(logger.lines.filter((line) => line.includes('codesign'))).toEqual([]);
+    const placedBinaryPath = resolveLauncherBinaryPath(host);
+    expect(spawnSync(placedBinaryPath, ['--version'], { encoding: 'utf-8' }).stdout.trim())
+      .toBe(String(LAUNCHER_PROTOCOL));
+    // The cleared signature is replaced by an ad-hoc one, not left absent.
+    expect(spawnSync('codesign', ['-dv', placedBinaryPath], { encoding: 'utf-8' }).stderr)
+      .toContain('flags=0x2(adhoc)');
+  }, 60_000);
+
+  it('quotes the signing failure when the probe cannot run the binary', () => {
+    const scratchHome = makeScratchHome();
+    // What macOS does to an invalidly-signed launcher: the exec fails before
+    // the protocol can be printed.
+    const compileCrashingLauncher: LauncherCompileRunner = (_bunPath, compileArguments) => {
+      const outfilePath = compileArguments[compileArguments.indexOf('--outfile') + 1];
+      writeFileSync(outfilePath, '#!/bin/sh\necho "killed on exec" >&2\nexit 137\n');
+      chmodSync(outfilePath, 0o755);
+      return { status: 0, stderr: '' };
+    };
+    const failingCodesign: LauncherCodesignRunner = () => ({
+      status: 1,
+      stderr: 'warning: first line\n.claude-mem-1.tmp: invalid or unsupported format for signature\n',
+    });
+
+    const message = thrownMessage(() => ensureLauncherOnPath({
+      pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host: posixHost(scratchHome),
+      runCompile: compileCrashingLauncher, runCodesign: failingCodesign, invocationContext: 'npx-installer',
+    }));
+
+    // The protocol message still says what the probe saw ...
+    expect(message).toContain(`compiled launcher printed protocol null, expected ${LAUNCHER_PROTOCOL}`);
+    // ... and the actionable half names the signing failure, last stderr line only.
+    expect(message).toContain('codesign --force --sign - failed (exit 1): .claude-mem-1.tmp: invalid or unsupported format for signature');
+    expect(message).not.toContain('warning: first line');
+  });
+
+  it('does not blame signing when signing succeeded but the probe still failed', () => {
+    const scratchHome = makeScratchHome();
+    const message = thrownMessage(() => ensureLauncherOnPath({
+      pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host: posixHost(scratchHome),
+      runCompile: fakeCompile('garbage'), runCodesign: codesignNoop, invocationContext: 'npx-installer',
+    }));
+
+    expect(message).toContain(`compiled launcher printed protocol null, expected ${LAUNCHER_PROTOCOL}`);
+    expect(message).not.toContain('codesign');
+  });
+
+  it('does not mention signing on a host where codesign never runs', () => {
+    const scratchHome = makeScratchHome();
+    const linuxHost: LauncherHostEnvironment = {
+      homeDirectory: scratchHome, platform: 'linux', environmentVariables: { PATH: '/usr/bin', SHELL: '/bin/bash' },
+    };
+    const message = thrownMessage(() => ensureLauncherOnPath({
+      pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host: linuxHost,
+      runCompile: fakeCompile('garbage'), runCodesign: codesignMustNotRun, invocationContext: 'npx-installer',
+    }));
+
+    expect(message).toContain(`compiled launcher printed protocol null, expected ${LAUNCHER_PROTOCOL}`);
+    expect(message).not.toContain('codesign');
   });
 
   it('warns and still installs when ad-hoc signing fails (codesign missing or broken)', () => {
@@ -447,6 +656,46 @@ describe.skipIf(!isPosixHost)('ensureLocalBinOnShellPath keeps the Claude Code a
   });
 });
 
+describe.skipIf(!isPosixHost)('probeLauncherVersion says why no protocol came back', () => {
+  function writeScript(body: string): string {
+    const scriptPath = path.join(makeScratchHome(), 'claude-mem');
+    writeFileSync(scriptPath, `#!/bin/sh\n${body}\n`);
+    chmodSync(scriptPath, 0o755);
+    return scriptPath;
+  }
+
+  it('returns the protocol and no failure for the launcher', () => {
+    expect(probeLauncherVersion(writeScript(`echo ${LAUNCHER_PROTOCOL}`))).toEqual({ protocol: LAUNCHER_PROTOCOL, failure: null, failedToStart: false });
+  });
+
+  it('reports a non-zero exit with the last stderr line', () => {
+    expect(probeLauncherVersion(writeScript('echo first >&2\necho "access denied" >&2\nexit 3')))
+      .toEqual({ protocol: null, failure: 'exited 3: access denied', failedToStart: false });
+  });
+
+  it('reports a kill signal', () => {
+    expect(probeLauncherVersion(writeScript('kill -KILL $$')).failure).toBe('killed by SIGKILL');
+  });
+
+  it('reports a timeout', () => {
+    expect(probeLauncherVersion(writeScript('exec sleep 5'), 200).failure).toBe('timed out after 200 ms');
+  });
+
+  it('reports a binary that cannot start as a spawn failure', () => {
+    const scriptPath = writeScript('echo 1');
+    chmodSync(scriptPath, 0o644);
+    const versionProbe = probeLauncherVersion(scriptPath);
+    expect(versionProbe.protocol).toBeNull();
+    expect(versionProbe.failedToStart).toBe(true);
+    expect(versionProbe.failure).toStartWith('could not start: ');
+    expect(versionProbe.failure).toContain('EACCES');
+  });
+
+  it('reports a missing file', () => {
+    expect(probeLauncherVersion(path.join(makeScratchHome(), 'claude-mem')).failure).toBe('file not found');
+  });
+});
+
 describe('Windows user Path append (pure)', () => {
   const launcherDirectory = 'C:\\Users\\alex\\AppData\\Local\\claude-mem\\bin';
 
@@ -502,7 +751,7 @@ describe('ensureDirectoryOnWindowsUserPath', () => {
     expect(script).toBe(WINDOWS_USER_PATH_APPEND_SCRIPT);
     expect(script).toContain("GetValue('Path', '', 'DoNotExpandEnvironmentNames')");
     expect(script).toContain("SetValue('Path', $updatedUserPath, $pathValueKind)");
-    expect(script).toContain("SetEnvironmentVariable('CLAUDE_MEM_PATH_BROADCAST', $null, 'User')");
+    expect(script).toContain("DeleteValue('CLAUDE_MEM_PATH_BROADCAST', $false)");
     expect(script).not.toContain(launcherDirectory);
     expect(script).not.toContain('setx');
     expect(extraEnvironment).toEqual({ CLAUDE_MEM_LAUNCHER_DIRECTORY: launcherDirectory });
@@ -533,6 +782,69 @@ describe('ensureDirectoryOnWindowsUserPath', () => {
   });
 });
 
+describe('WINDOWS_USER_PATH_APPEND_SCRIPT #5044 guards', () => {
+  // Regression: https://github.com/thedotmack/claude-mem/issues/5044 — one run
+  // of this script left HKCU\Environment\Path as an empty string and the
+  // broadcast variable behind as an empty REG_SZ (PowerShell 5.1 passes $null
+  // to string parameters as ""). The script is a published constant, so each
+  // guard is pinned by asserting on its line and its position relative to the
+  // write it must precede.
+  const lines = WINDOWS_USER_PATH_APPEND_SCRIPT.split('\n');
+  const indexOfLine = (fragment: string): number => lines.findIndex((line) => line.includes(fragment));
+  const setValuePathIndex = indexOfLine("SetValue('Path'");
+
+  it('refuses to write Path when the launcher directory env var is missing or empty (#5044)', () => {
+    const guardIndex = indexOfLine("{ 'missing-launcher-directory'; exit 1 }");
+    expect(guardIndex).toBeGreaterThan(-1);
+    expect(guardIndex).toBeGreaterThan(indexOfLine(`$launcherDirectory = $env:`));
+    // Before the present-check reads it too: ExpandEnvironmentVariables(null) would abort mid-script.
+    expect(guardIndex).toBeLessThan(indexOfLine('& $normalizePathEntry $launcherDirectory'));
+    expect(guardIndex).toBeLessThan(setValuePathIndex);
+  });
+
+  it('refuses to write a Path value shorter than the existing one (#5044)', () => {
+    // An append can only ever grow the value; a shorter update is corruption.
+    const guardIndex = indexOfLine("{ 'shortened-user-path'; exit 1 }");
+    expect(guardIndex).toBeGreaterThan(-1);
+    expect(guardIndex).toBeGreaterThan(indexOfLine('$updatedUserPath ='));
+    expect(guardIndex).toBeLessThan(setValuePathIndex);
+  });
+
+  it('backs the existing value up to %LOCALAPPDATA%\\claude-mem\\user-path.bak before writing (#5044)', () => {
+    const backupFileIndex = indexOfLine('user-path.bak');
+    const writeBackupIndex = indexOfLine('[System.IO.File]::WriteAllText($backupFile, $existingUserPath)');
+    expect(backupFileIndex).toBeGreaterThan(-1);
+    expect(writeBackupIndex).toBeGreaterThan(backupFileIndex);
+    expect(writeBackupIndex).toBeGreaterThan(indexOfLine('$existingUserPath ='));
+    expect(writeBackupIndex).toBeLessThan(setValuePathIndex);
+  });
+
+  it('writes the backup only when the existing value is non-empty, so a later run never overwrites the last good copy (#5044)', () => {
+    const nonEmptyGuardIndex = lines.findIndex((line) => line.trim() === 'if ($existingUserPath) {');
+    const writeBackupIndex = indexOfLine('[System.IO.File]::WriteAllText($backupFile, $existingUserPath)');
+    const closingBraceIndex = lines.findIndex((line, index) => index > writeBackupIndex && line.trim() === '}');
+    expect(nonEmptyGuardIndex).toBeGreaterThan(-1);
+    expect(nonEmptyGuardIndex).toBeLessThan(writeBackupIndex);
+    expect(closingBraceIndex).toBeGreaterThan(writeBackupIndex);
+    expect(closingBraceIndex).toBeLessThan(setValuePathIndex);
+  });
+
+  it('reports a failed backup on stderr without terminating the append (#5044)', () => {
+    const catchLine = lines.find((line) => line.includes('catch {')) ?? '';
+    expect(catchLine).toContain('[Console]::Error.WriteLine(');
+    expect(catchLine).toContain('user-path-backup-failed');
+    // Write-Error is terminating under $ErrorActionPreference = 'Stop'.
+    expect(WINDOWS_USER_PATH_APPEND_SCRIPT).not.toContain('Write-Error');
+    expect(WINDOWS_USER_PATH_APPEND_SCRIPT).not.toMatch(/catch \{\s*\}/);
+  });
+
+  it('deletes the broadcast variable through the registry API, leaving no empty value behind (#5044)', () => {
+    expect(WINDOWS_USER_PATH_APPEND_SCRIPT).toContain("DeleteValue('CLAUDE_MEM_PATH_BROADCAST', $false)");
+    // SetEnvironmentVariable(..., $null) keeps the value as "" on Windows PowerShell 5.1.
+    expect(WINDOWS_USER_PATH_APPEND_SCRIPT).not.toContain("SetEnvironmentVariable('CLAUDE_MEM_PATH_BROADCAST', $null");
+  });
+});
+
 describe.skipIf(!isPosixHost)('removeInstalledLauncher (uninstall)', () => {
   it('removes the placed launcher and names the rc line to remove, leaving the rc untouched', () => {
     const scratchHome = makeScratchHome();
@@ -549,6 +861,22 @@ describe.skipIf(!isPosixHost)('removeInstalledLauncher (uninstall)', () => {
     expect(removal.pathCleanupHint).toContain(path.join(scratchHome, '.zshrc'));
     expect(removal.pathCleanupHint).toContain('export PATH="$HOME/.local/bin:$PATH"');
     expect(readFileSync(path.join(scratchHome, '.zshrc'), 'utf-8')).toBe(zshrcBefore);
+  });
+
+  it('names the fish PATH line the installer actually wrote', () => {
+    const scratchHome = makeScratchHome();
+    const host = posixHost(scratchHome, { SHELL: '/usr/local/bin/fish' });
+    writeFakeLauncher(resolveLauncherBinaryPath(host), String(LAUNCHER_PROTOCOL));
+    ensureLocalBinOnShellPath({ purposeLabel: 'claude-mem', logger: recordingLogger(), host: posixHost(scratchHome, { SHELL: '/usr/local/bin/fish' }) });
+    const configFish = path.join(scratchHome, '.config', 'fish', 'config.fish');
+    const fishLine = `set -gx PATH ${path.join(scratchHome, '.local', 'bin')} $PATH`;
+    expect(readFileSync(configFish, 'utf-8')).toContain(fishLine);
+
+    const removal = removeInstalledLauncher(host);
+
+    expect(removal.pathCleanupHint).toContain(configFish);
+    expect(removal.pathCleanupHint).toContain(fishLine);
+    expect(removal.pathCleanupHint).not.toContain('export PATH=');
   });
 
   it('leaves a claude-mem that is not our launcher in place', () => {
@@ -584,7 +912,7 @@ describe.skipIf(!isPosixHost)('doctor hook launcher row', () => {
     writeFakeLauncher(path.join(binDirectory, 'claude-mem'), '13.28.0');
     const row = hookLauncherCheck(posixHost(scratchHome, { PATH: binDirectory }));
     expect(row).toMatchObject({ status: 'fail', required: true });
-    expect(row.detail).toContain('is not the claude-mem hook launcher');
+    expect(row.detail).toContain('did not report a launcher protocol (--version printed "13.28.0" instead of a protocol number)');
   });
 
   it('finds the first PATH hit without spawning', () => {
@@ -597,7 +925,38 @@ describe.skipIf(!isPosixHost)('doctor hook launcher row', () => {
     expect(findExecutableOnPath('claude-mem', '/nope', 'darwin')).toBeNull();
   });
 
-  it.skipIf(process.platform !== 'win32')('reports an earlier npm .cmd shim on Windows, in PATHEXT order', () => {
+});
+
+describe('Windows cmd-shim script paths', () => {
+  it('resolves a cmd-shim %dp0% target and a pwsh $basedir target to the CLI script', () => {
+    const shimPath = 'C:\\cache\\_npx\\hash\\node_modules\\.bin\\claude-mem.cmd';
+    const cliScript = 'C:\\cache\\_npx\\hash\\node_modules\\claude-mem\\dist\\npx-cli\\index.js';
+    const cmdText = '"%_prog%"  "%dp0%\\..\\claude-mem\\dist\\npx-cli\\index.js" %*\r\n';
+    const ps1Text = '& "node$exe" "$basedir/../claude-mem/dist/npx-cli/index.js" $args\n';
+    expect(windowsShimScriptPaths(shimPath, cmdText)).toEqual([cliScript]);
+    expect(windowsShimScriptPaths(shimPath.replace(/\.cmd$/, '.ps1'), ps1Text)).toEqual([cliScript]);
+  });
+});
+
+describe.skipIf(process.platform !== 'win32')('doctor hook launcher row on Windows', () => {
+  function windowsHost(homeDirectory: string, environmentVariables: NodeJS.ProcessEnv): LauncherHostEnvironment {
+    return { homeDirectory, platform: 'win32', environmentVariables };
+  }
+
+  function writeProtocolCmd(cmdPath: string, printedVersion: string): void {
+    mkdirSync(path.dirname(cmdPath), { recursive: true });
+    writeFileSync(cmdPath, `@echo off\r\necho ${printedVersion}\r\n`);
+  }
+
+  function writeCmdShim(cmdPath: string, relativeScriptPath: string): void {
+    mkdirSync(path.dirname(cmdPath), { recursive: true });
+    writeFileSync(
+      cmdPath,
+      `@ECHO off\r\n"%_prog%"  "%dp0%\\${relativeScriptPath}" %*\r\n`,
+    );
+  }
+
+  it('reports an earlier npm .cmd shim, in PATHEXT order', () => {
     const scratchHome = makeScratchHome();
     const npmDirectory = path.join(scratchHome, 'npm');
     const launcherDirectory = path.join(scratchHome, 'launcher');
@@ -609,6 +968,47 @@ describe.skipIf(!isPosixHost)('doctor hook launcher row', () => {
       .toBe(path.join(npmDirectory, 'claude-mem.cmd'));
     expect(findExecutableOnPath('claude-mem', `${npmDirectory};${launcherDirectory}`, 'win32', '.EXE'))
       .toBe(path.join(launcherDirectory, 'claude-mem.exe'));
+  });
+
+  it('skips npx\'s claude-mem.cmd wrapper and reports the launcher', () => {
+    const scratchHome = makeScratchHome();
+    // npx runs packages from npm's cache, `<cache>\\_npx\\<hash>\\node_modules`.
+    const cliScript = path.join(scratchHome, '_npx', 'abc123', 'node_modules', 'claude-mem', 'dist', 'npx-cli', 'index.js');
+    const npxBinDirectory = path.join(scratchHome, '_npx', 'abc123', 'node_modules', '.bin');
+    mkdirSync(path.dirname(cliScript), { recursive: true });
+    writeFileSync(cliScript, 'console.log("13.41.0")\n');
+    writeCmdShim(path.join(npxBinDirectory, 'claude-mem.cmd'), '..\\claude-mem\\dist\\npx-cli\\index.js');
+    const launcherDirectory = path.join(scratchHome, 'launcher');
+    writeProtocolCmd(path.join(launcherDirectory, 'claude-mem.cmd'), String(LAUNCHER_PROTOCOL));
+
+    const row = hookLauncherCheck(
+      windowsHost(scratchHome, { PATH: `${npxBinDirectory};${launcherDirectory}` }),
+      cliScript,
+    );
+
+    expect(row).toMatchObject({ status: 'ok', required: true });
+    expect(row.detail).toContain(path.join(launcherDirectory, 'claude-mem.cmd'));
+    expect(row.detail).toContain(`protocol ${LAUNCHER_PROTOCOL}`);
+  });
+
+  it('fails when a permanent claude-mem.cmd wrapper is the running CLI and hides the launcher', () => {
+    const scratchHome = makeScratchHome();
+    const cliScript = path.join(scratchHome, 'npm-global', 'node_modules', 'claude-mem', 'dist', 'npx-cli', 'index.js');
+    const globalBinDirectory = path.join(scratchHome, 'npm-global');
+    mkdirSync(path.dirname(cliScript), { recursive: true });
+    writeFileSync(cliScript, 'console.log("13.41.0")\n');
+    writeCmdShim(path.join(globalBinDirectory, 'claude-mem.cmd'), 'node_modules\\claude-mem\\dist\\npx-cli\\index.js');
+    const launcherDirectory = path.join(scratchHome, 'launcher');
+    writeProtocolCmd(path.join(launcherDirectory, 'claude-mem.cmd'), String(LAUNCHER_PROTOCOL));
+
+    const row = hookLauncherCheck(
+      windowsHost(scratchHome, { PATH: `${globalBinDirectory};${launcherDirectory}` }),
+      cliScript,
+    );
+
+    expect(row).toMatchObject({ status: 'fail', required: true });
+    expect(row.detail).toContain(path.join(globalBinDirectory, 'claude-mem.cmd'));
+    expect(row.detail).toContain('is not the claude-mem hook launcher');
   });
 });
 

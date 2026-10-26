@@ -5,6 +5,7 @@ import { writeJsonFileAtomic } from './atomic-json.js';
 import { resolveDataDir } from './paths.js';
 import { normalizePlatformSource } from './platform-source.js';
 import { logger } from '../utils/logger.js';
+import type { AgentRole, InstructionState, WorkStateOutcome } from './work-state-telemetry.js';
 
 /**
  * Durable hand-off from short-lived write hooks to the worker.
@@ -29,12 +30,14 @@ import { logger } from '../utils/logger.js';
  * each file all-or-nothing.
  */
 
-export const HOOK_SPOOL_KINDS = ['observation', 'file_edit', 'summarize', 'session_end', 'advisor_calls'] as const;
+export const HOOK_SPOOL_KINDS = ['observation', 'file_edit', 'summarize', 'session_end', 'subagent_stop', 'advisor_calls', 'work_state_telemetry'] as const;
 export type HookSpoolKind = typeof HOOK_SPOOL_KINDS[number];
 
 export interface SpooledObservationPayload {
   contentSessionId: string;
   platformSource: string;
+  /** Preserve missing host attribution separately from the legacy DB default. */
+  telemetryPlatformSource?: string;
   toolName: string;
   toolInput?: unknown;
   toolResponse?: unknown;
@@ -56,6 +59,15 @@ export interface SpooledSummarizePayload {
 export interface SpooledSessionEndPayload {
   contentSessionId: string;
   platformSource: string;
+}
+
+/** Claude Code's SubagentStop: one subagent of the session finished. */
+export interface SpooledSubagentStopPayload {
+  contentSessionId: string;
+  platformSource: string;
+  agentId: string;
+  agentType?: string;
+  cwd?: string;
 }
 
 export interface SpooledAdvisorCall {
@@ -80,7 +92,19 @@ export interface HookSpoolPayloadByKind {
   file_edit: SpooledObservationPayload;
   summarize: SpooledSummarizePayload;
   session_end: SpooledSessionEndPayload;
+  subagent_stop: SpooledSubagentStopPayload;
   advisor_calls: SpooledAdvisorCallsPayload;
+  work_state_telemetry: {
+    contentSessionId: string;
+    platformSource: string;
+    eventId: string;
+    agentId?: string;
+    agentRole?: AgentRole;
+    kind: 'instruction' | 'mcp';
+    state?: InstructionState;
+    tool?: 'read' | 'write';
+    outcome?: WorkStateOutcome;
+  };
 }
 
 export type HookSpoolEntry = {
@@ -224,9 +248,20 @@ function parseHookSpoolEntry(raw: string): HookSpoolEntry | { corruptReason: str
   if (kind === 'summarize' && typeof payload.lastAssistantMessage !== 'string') {
     return { corruptReason: 'summarize payload missing lastAssistantMessage' };
   }
+  if (kind === 'subagent_stop' && !isNonEmptyString(payload.agentId)) {
+    return { corruptReason: 'subagent_stop payload missing agentId' };
+  }
   if (kind === 'advisor_calls' && (!Array.isArray(payload.calls) || payload.calls.length === 0)) {
     return { corruptReason: 'advisor_calls payload has no calls' };
   }
+  if (kind === 'work_state_telemetry' && (
+    !isNonEmptyString(payload.eventId)
+    || !['main', 'subagent', 'unknown', undefined].includes(payload.agentRole as any)
+    || (payload.kind === 'instruction'
+      ? !['returned', 'disabled', 'excluded', 'missing', 'unknown'].includes(String(payload.state))
+      : payload.kind !== 'mcp' || !['read', 'write'].includes(String(payload.tool))
+        || !['ok', 'error', 'excluded', 'disabled', 'unknown'].includes(String(payload.outcome)))
+  )) return { corruptReason: 'invalid work-state telemetry shape' };
   return {
     kind,
     payload: { ...payload, platformSource: normalizePlatformSource(payload.platformSource as string | undefined) },
@@ -521,7 +556,10 @@ export class HookSpool {
     return false;
   }
 
-  /** Moves an entry older than `windowMs` to `expired/`, with an error log. */
+  /**
+   * Moves an entry older than `windowMs` to `expired/`, with an error log.
+   * True when the file is gone (moved here, or by a concurrent drain).
+   */
   private expireIfPastWindow(file: HookSpoolFile, windowMs: number, windowDescription: string): boolean {
     const ageMs = Date.now() - file.entry.enqueuedAtEpochMs;
     if (ageMs <= windowMs) return false;
@@ -538,6 +576,8 @@ export class HookSpool {
       mkdirSync(this.expiredDirectory, { recursive: true });
       renameSync(file.path, join(this.expiredDirectory, file.filename));
     } catch (error) {
+      // ENOENT: a concurrent drain (another worker process) already moved it.
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
       logger.error('HOOK', `Hook spool entry is past its ${windowDescription} but could not be moved to expired/; keeping it`, details,
         error instanceof Error ? error : new Error(String(error)));
       return false;
@@ -572,6 +612,8 @@ export class HookSpool {
       });
       return true;
     } catch (error) {
+      // ENOENT: a concurrent drain (another worker process) already moved it.
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
       logger.error('HOOK', 'Corrupt hook spool entry could not be quarantined; leaving it in place', {
         file: filename,
         reason,

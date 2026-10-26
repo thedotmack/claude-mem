@@ -24,16 +24,21 @@ it('preserves a commented sibling table while removing the legacy table', () => 
   expect(Bun.TOML.parse(removeLegacyCodexMcpSearchConfig(input))).toEqual({ mcp_servers: { other: { command: 'other-server' } } });
 });
 
+// TOML trims a newline that immediately follows an opening multi-line delimiter.
+// Bun.TOML.parse up to at least 1.3.9 keeps it, so normalize that one character
+// to keep these assertions about the installer, not the local Bun parser version.
+const multilineStringValue = (parsedValue: string) => parsedValue.replace(/^\n/, '');
+
 for (const delimiter of ['"""', "'''"]) {
   it(`preserves feature and legacy-server examples inside ${delimiter} instructions`, () => {
     const instructions = '[features] # example\nhooks = false\n[mcp_servers."mcp-search"] # example\nargs = ["claude-mem/example"]';
     const input = `developer_instructions = ${delimiter}\n${instructions}\n${delimiter}\n[features] # real table\nhooks = false\n[mcp_servers."mcp-search"] # real legacy server\nargs = ["claude-mem/mcp-server.cjs"]\n[mcp_servers.other]\ncommand = "other-server"\n`;
     const enabled = setTomlFeatureEnabled(input, 'hooks', true);
     const parsed = Bun.TOML.parse(enabled) as any;
-    expect(parsed.developer_instructions).toBe(instructions + '\n');
+    expect(multilineStringValue(parsed.developer_instructions)).toBe(instructions + '\n');
     expect(parsed.features.hooks).toBe(true);
     const cleaned = Bun.TOML.parse(removeLegacyCodexMcpSearchConfig(enabled)) as any;
-    expect(cleaned.developer_instructions).toBe(instructions + '\n');
+    expect(multilineStringValue(cleaned.developer_instructions)).toBe(instructions + '\n');
     expect(cleaned.features.hooks).toBe(true);
     expect(cleaned.mcp_servers).toEqual({ other: { command: 'other-server' } });
   });
@@ -42,14 +47,15 @@ for (const delimiter of ['"""', "'''"]) {
     const instructions = 'hooks = false\n[features] # example';
     const input = `[features]\ndeveloper_instructions = ${delimiter}\n${instructions}\n${delimiter}\nother = true\n`;
     const parsed = Bun.TOML.parse(setTomlFeatureEnabled(input, 'hooks', true)) as any;
-    expect(parsed.features).toEqual({ hooks: true, other: true, developer_instructions: instructions + '\n' });
+    expect({ ...parsed.features, developer_instructions: multilineStringValue(parsed.features.developer_instructions) })
+      .toEqual({ hooks: true, other: true, developer_instructions: instructions + '\n' });
   });
 
   it(`adds a real feature table when only a ${delimiter} example exists`, () => {
     const instructions = '[features] # example\nhooks = false';
     const input = `developer_instructions = ${delimiter}\n${instructions}\n${delimiter}\n`;
     const parsed = Bun.TOML.parse(setTomlFeatureEnabled(input, 'hooks', true)) as any;
-    expect(parsed.developer_instructions).toBe(instructions + '\n');
+    expect(multilineStringValue(parsed.developer_instructions)).toBe(instructions + '\n');
     expect(parsed.features.hooks).toBe(true);
     expect(removeLegacyCodexMcpSearchConfig(input)).toBe(input);
   });

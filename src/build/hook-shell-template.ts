@@ -35,6 +35,14 @@ export interface ShellTemplateOptions {
   /** Optional second required script (hooks needing bun-runner.js AND worker-service.cjs). */
   requireFileSecondary?: string;
   /**
+   * Also require `<root>/node_modules` for a root to count. Codex's own plugin
+   * copy carries the scripts but never its dependencies (the CLI rebuilds that
+   * folder on every `codex plugin add`), so a hook resolving to it crashes with
+   * `Cannot find module` — accepting the host root only when the dependencies
+   * are present lets the resolver fall back to a prepared copy (#4763).
+   */
+  requireDependencies?: boolean;
+  /**
    * Trailing command tokens run after `_P` resolves. Tokens are emitted
    * verbatim (callers pass already-quoted `"$_P/scripts/X"` forms), matching
    * the hand-authored files. Required for every shell host; the `mcp` host
@@ -86,12 +94,18 @@ function pathPrelude(host: ShellTemplateHost): string {
   }
 }
 
-function fileExistsClause(options: ShellTemplateOptions): string {
+function fileExistsClause(options: ShellTemplateOptions, includeDependencies = false): string {
   const primary = `[ -f "$_Q/scripts/${options.requireFile}" ]`;
-  if (options.requireFileSecondary) {
-    return `${primary} && [ -f "$_Q/scripts/${options.requireFileSecondary}" ]`;
-  }
-  return primary;
+  const secondary = options.requireFileSecondary
+    ? ` && [ -f "$_Q/scripts/${options.requireFileSecondary}" ]`
+    : '';
+  // A host-injected root without its dependencies (Codex's rebuilt plugin copy
+  // carries the scripts but no node_modules) resolves to a hook that dies on
+  // its first import, so it must not count as a candidate — the fallback chain
+  // then reaches a copy the installer prepared (#4763). Only the host root is
+  // checked: the fallback directories are already installer-prepared.
+  const dependencies = includeDependencies && options.requireDependencies ? ' && [ -d "$_Q/node_modules" ]' : '';
+  return `${primary}${secondary}${dependencies}`;
 }
 
 /**
@@ -167,11 +181,14 @@ function candidateBlock(options: ShellTemplateOptions): string {
 
   // The host-injected root is overwhelmingly the common path. Resolve it
   // directly so every hook does not enumerate and sort versioned caches even
-  // when the host already supplied a usable installation root.
+  // when the host already supplied a usable installation root. A host root
+  // missing its dependencies is rejected here — see fileExistsClause — so the
+  // hook falls through to the installer-prepared fallbacks (#4763).
+  const hostFileClause = fileExistsClause(options, true);
   return (
     `_P=; if [ -n "$_E" ]; then _R="\${_E%/}"; ` +
     `[ -d "$_R/plugin/scripts" ] && _Q="$_R/plugin" || _Q="$_R"; ` +
-    `${fileClause} && _P="$_Q"; fi; ` +
+    `${hostFileClause} && _P="$_Q"; fi; ` +
     `if [ -z "$_P" ]; then ${fallbackBlock} fi;`
   );
 }
@@ -284,8 +301,19 @@ function toolHookOptOutVariable(args: string[] | undefined): string | undefined 
  */
 export function buildCodexWindowsCommand(
   workerArgs: string[],
+  options: { requireDependencies?: boolean } = {},
 ): string {
   const optOutVariable = toolHookOptOutVariable(workerArgs);
+  // A host-injected root without its dependencies (Codex's rebuilt plugin copy
+  // carries the scripts but no node_modules) resolves to a hook that dies on
+  // its first import, so it must not count as a candidate — the fallback chain
+  // then reaches a copy the installer prepared (#4763). Only the host roots
+  // (pushed before `hn` is taken) are checked; the fallback directories are
+  // already installer-prepared.
+  const hostRootCount = options.requireDependencies ? ["const hn=roots.length;"] : [];
+  const rootLoop = options.requireDependencies
+    ? "for(let i=0;i<roots.length;i++){const k=roots[i];const r=fs.existsSync(p.join(k,'plugin','scripts'))?p.join(k,'plugin'):k;if(fs.existsSync(p.join(r,'scripts','bun-runner.js'))&&fs.existsSync(p.join(r,'scripts','worker-service.cjs'))&&(i>=hn||fs.existsSync(p.join(r,'node_modules')))){R=r;break}}"
+    : "for(const k of roots){const r=fs.existsSync(p.join(k,'plugin','scripts'))?p.join(k,'plugin'):k;if(fs.existsSync(p.join(r,'scripts','bun-runner.js'))&&fs.existsSync(p.join(r,'scripts','worker-service.cjs'))){R=r;break}}";
   const parts = [
     ...(optOutVariable ? [`if(process.env.CLAUDE_MEM_DISABLE_TOOL_HOOKS==='1'||process.env.${optOutVariable}==='1')process.exit(0);`] : []),
     "const fs=require('fs'),p=require('path'),o=require('os'),c=require('child_process');",
@@ -293,6 +321,7 @@ export function buildCodexWindowsCommand(
     "const C=process.env.CLAUDE_CONFIG_DIR||p.join(h,'.claude');",
     "const roots=[];",
     "for(const v of [process.env.CLAUDE_PLUGIN_ROOT,process.env.PLUGIN_ROOT])if(v)roots.push(v);",
+    ...hostRootCount,
     "const cache=p.join(C,'plugins','cache','thedotmack','claude-mem');",
     // S/W mirror compareVersionsDescending in src/shared/worker-utils.ts and
     // the filter skips .orphaned_at-stamped cache dirs, same as
@@ -303,7 +332,7 @@ export function buildCodexWindowsCommand(
     "try{roots.push(...fs.readdirSync(cache).filter(n=>{const ch=n.charAt(0);return ch>='0'&&ch<='9'}).map(n=>p.join(cache,n)).filter(r=>{try{return fs.statSync(r).isDirectory()&&!fs.existsSync(p.join(r,'.orphaned_at'))}catch{return false}}).sort((a,b)=>W(p.basename(a),p.basename(b))))}catch{}",
     "roots.push(p.join(C,'plugins','marketplaces','thedotmack','plugin'));",
     "let R=null;",
-    "for(const k of roots){const r=fs.existsSync(p.join(k,'plugin','scripts'))?p.join(k,'plugin'):k;if(fs.existsSync(p.join(r,'scripts','bun-runner.js'))&&fs.existsSync(p.join(r,'scripts','worker-service.cjs'))){R=r;break}}",
+    rootLoop,
     "if(!R){process.stderr.write('claude-mem: plugin scripts not found\\n');process.exit(1)}",
     "const env={...process.env,CLAUDE_MEM_CODEX_HOOK:'1'};",
   ];
@@ -317,6 +346,17 @@ export function buildCodexWindowsCommand(
   );
 
   return `node -e "${parts.join('')}"`;
+}
+
+/**
+ * An extraEnv value is a shell word: anything with a space, quote, or
+ * metacharacter would split the assignment or run as a separate command.
+ * Values that are already safe stay bare so the generated commands for the
+ * shipped hosts do not churn; everything else is single-quoted.
+ */
+function shellEnvValue(value: string): string {
+  if (/^[A-Za-z0-9_@%+=:,./-]*$/.test(value)) return value;
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 /**
@@ -355,7 +395,7 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
 
   const envPrefix = options.extraEnv
     ? Object.entries(options.extraEnv)
-        .map(([key, value]) => `${key}=${value} `)
+        .map(([key, value]) => `${key}=${shellEnvValue(value)} `)
         .join('')
     : '';
 
@@ -370,7 +410,14 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
   }
   parts.push(command);
 
-  return parts.join(' ');
+  // Inside single quotes Fish treats only `\\` and `\'` as escapes, so a
+  // backslash is moved outside the quotes only when the next character is a
+  // backslash or a quote (or it ends the body). Every other backslash, like
+  // the `\n` in the cache scan's printf formats, stays inside the quotes as
+  // is: Git Bash's runtime collapses `\\` to `\` when it re-parses its Windows
+  // command line, so a hook body must not contain backslash pairs it can avoid.
+  const quotedCommand = parts.join(' ').replace(/'|\\(?=[\\']|$)/g, char => `'\\${char}'`);
+  return `/bin/sh -c '${quotedCommand}'`;
 }
 
 /**

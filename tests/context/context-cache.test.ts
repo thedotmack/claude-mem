@@ -33,7 +33,8 @@ import { emitContextInvalidation } from '../../src/shared/context-invalidation.j
 import { formatHeaderDateTime } from '../../src/shared/timeline-formatting.js';
 import { describeDuration, recordObserverFailure, recordObserverSuccess } from '../../src/shared/observer-health.js';
 import { writeSyncHealth } from '../../src/shared/sync-health.js';
-import { MEMORY_PLUGIN_INSTRUCTIONS } from '../../src/shared/memory-instructions.js';
+import { memoryInstructionsForRuntime } from '../../src/shared/memory-instructions.js';
+const MEMORY_PLUGIN_INSTRUCTIONS = memoryInstructionsForRuntime('worker');
 import { ContextCacheService, type ContextVariantRender } from '../../src/services/worker/ContextCacheService.js';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { SyncApply, type SyncOp } from '../../src/services/sync/SyncApply.js';
@@ -273,7 +274,7 @@ describe('ContextCacheService invalidation', () => {
     let deleteHandler: ((req: any, res: any) => void) | undefined;
     const routes = new DataRoutes(
       {} as any,
-      { getSessionStore: () => store, getCloudSync: () => null } as any,
+      { getSessionStore: () => store, getCloudSync: () => null, getChromaSync: () => null } as any,
       {} as any,
       { broadcast: () => {} } as any,
       {} as any,
@@ -301,7 +302,7 @@ describe('ContextCacheService invalidation', () => {
     let deleteHandler: ((req: any, res: any) => void) | undefined;
     const routes = new DataRoutes(
       {} as any,
-      { getSessionStore: () => store, getCloudSync: () => null } as any,
+      { getSessionStore: () => store, getCloudSync: () => null, getChromaSync: () => null } as any,
       {} as any,
       { broadcast: () => {} } as any,
       {} as any,
@@ -756,7 +757,7 @@ describe('precomputed context end to end', () => {
         CLAUDE_MEM_CHROMA_ENABLED: 'false',
         CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: 'true',
       }));
-      const child = Bun.spawn(['bun', '-e', childScript], {
+      const child = Bun.spawn([process.execPath, '-e', childScript], {
         cwd: process.cwd(),
         env: { ...process.env, CLAUDE_MEM_DATA_DIR: dataDir, HOOK_CWD: hookCwd, DO_NOT_TRACK: '1' },
         stdout: 'pipe',

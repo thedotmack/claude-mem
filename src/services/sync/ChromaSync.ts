@@ -49,6 +49,20 @@ export interface ChromaDocument {
 }
 
 /**
+ * Chroma doc_type → row-writer kind, mirroring the worker routes'
+ * CHROMA_DOC_TYPES. Row cleanup (`deleteRowDocuments`) receives the doc_type
+ * but must queue on the same `rowWriters` turn live writes and backfill key by
+ * kind, so the two string spaces meet here. Unknown doc types fall back to
+ * their own name: they match no writer key, which only matters if a new doc
+ * type is added without updating this table.
+ */
+const DOC_TYPE_ROW_KIND: Record<string, string> = {
+  observation: 'observations',
+  session_summary: 'summaries',
+  user_prompt: 'prompts',
+};
+
+/**
  * Why a backfill run stopped before attempting every row: the worker began
  * shutting down (local Chroma then refuses every write), Chroma refused
  * writes for MAX_CONSECUTIVE_BATCH_FAILURES rows in a row, or the collection
@@ -260,6 +274,19 @@ function buildClientSidePredicate(where: unknown): MetadataPredicate | null {
 
 function isMetadataScalar(value: unknown): value is string | number | boolean {
   return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
+}
+
+// One `IN (...)` per chunk keeps a large pending list under SQLite's bound
+// parameter limit (#4818).
+const PENDING_ID_QUERY_CHUNK_SIZE = 500;
+
+function selectRowsByIdChunks<T>(ids: number[], select: (placeholders: string, chunk: number[]) => T[]): T[] {
+  const rows: T[] = [];
+  for (let start = 0; start < ids.length; start += PENDING_ID_QUERY_CHUNK_SIZE) {
+    const chunk = ids.slice(start, start + PENDING_ID_QUERY_CHUNK_SIZE);
+    rows.push(...select(chunk.map(() => '?').join(', '), chunk));
+  }
+  return rows;
 }
 
 export class ChromaSync {
@@ -858,16 +885,18 @@ export class ChromaSync {
     return written;
   }
 
-  /** Remove only disappeared fragments; surviving deterministic IDs update in place. */
-  private async removeObsoleteFragments(docType: string, sqliteId: number, documents: ChromaDocument[]): Promise<void> {
+  /**
+   * Look up the deterministic fragment ids of one content row that belong to
+   * `docType`. Query by sqlite_id alone: chromadb 1.5.9 evaluates an $and
+   * member over every document matching it before the selective condition
+   * narrows anything, so a doc_type prefix scanned ~1.2M observation docs per
+   * lookup and blew the chroma-mcp 60s timeout on a cold page cache (#4682).
+   * doc_type still matters — observation and session_summary ids overlap —
+   * so it is filtered client-side here.
+   */
+  private async lookupRowFragmentIds(docType: string, sqliteId: number): Promise<string[]> {
     await this.ensureCollectionExists();
     const manager = ChromaMcpManager.getInstance();
-    // Query by sqlite_id alone: chromadb 1.5.9 evaluates an $and member over
-    // every document matching it before the selective condition narrows
-    // anything, so a doc_type prefix scanned ~1.2M observation docs per lookup
-    // and blew the chroma-mcp 60s timeout on a cold page cache (#4682).
-    // doc_type still matters — observation and session_summary ids overlap —
-    // so it is filtered client-side below.
     const existing = await manager.callTool('chroma_get_documents', {
       collection_name: this.collectionName,
       where: { sqlite_id: sqliteId },
@@ -886,12 +915,45 @@ export class ChromaSync {
       || (ids.length > 0 && (!Array.isArray(metadatas) || metadatas.length !== ids.length))) {
       throw new Error('Chroma fragment lookup did not return a valid document ID list with metadatas');
     }
+    return (ids as string[]).filter((id, k) =>
+      (metadatas as Array<Record<string, unknown> | null>)[k]?.doc_type === docType);
+  }
+
+  /** Remove only disappeared fragments; surviving deterministic IDs update in place. */
+  private async removeObsoleteFragments(docType: string, sqliteId: number, documents: ChromaDocument[]): Promise<void> {
     const currentIds = new Set(documents.map(doc => doc.id));
-    const obsolete = (ids as string[]).filter((id, k) =>
-      (metadatas as Array<Record<string, unknown> | null>)[k]?.doc_type === docType
-      && !currentIds.has(id));
+    const obsolete = (await this.lookupRowFragmentIds(docType, sqliteId))
+      .filter(id => !currentIds.has(id));
+    const manager = ChromaMcpManager.getInstance();
     for (let i = 0; i < obsolete.length; i += this.BATCH_SIZE) {
       await manager.callTool('chroma_delete_documents', { collection_name: this.collectionName, ids: obsolete.slice(i, i + this.BATCH_SIZE) });
+    }
+  }
+
+  /**
+   * Delete every remaining fragment of one content row. The delete routes call
+   * this after the SQLite row is committed gone; without it the row's documents
+   * stay in the index forever (#4805) — backfill walks SQLite rows and never
+   * reconciles toward Chroma, so nothing else reclaims them.
+   * Returns the number of fragments removed.
+   */
+  public async deleteRowDocuments(docType: string, sqliteId: number): Promise<number> {
+    // Queue on the same per-row writer turn live writes and backfill use: a
+    // batch still being written when the delete committed must land before the
+    // lookup below, or it would finish after these deletions and orphan its
+    // fragments again even though every Chroma call here succeeded (Greptile
+    // P1 on PR #4813). Holding the turn through deletion also makes a write
+    // that races the delete wait instead of interleaving with it.
+    const release = await this.acquireRowWriter(DOC_TYPE_ROW_KIND[docType] ?? docType, sqliteId);
+    try {
+      const doomed = await this.lookupRowFragmentIds(docType, sqliteId);
+      const manager = ChromaMcpManager.getInstance();
+      for (let i = 0; i < doomed.length; i += this.BATCH_SIZE) {
+        await manager.callTool('chroma_delete_documents', { collection_name: this.collectionName, ids: doomed.slice(i, i + this.BATCH_SIZE) });
+      }
+      return doomed.length;
+    } finally {
+      release();
     }
   }
 
@@ -1107,7 +1169,12 @@ export class ChromaSync {
     const watermark = existingIds.size ? Math.max(...existingIds) : 0;
     return {
       watermark,
-      pending: sourceIds.filter(id => id <= watermark && !existingIds.has(id)),
+      // Every unindexed row is pending, including rows above the watermark:
+      // bootstrap snapshots every project up front while each backfill runs
+      // much later, so a live bump() in between would advance the watermark
+      // past them and hide them from the `id > watermark` scan (#4818). A
+      // live bump() only removes the id it actually wrote from pending.
+      pending: sourceIds.filter(id => !existingIds.has(id)),
     };
   }
 
@@ -1227,6 +1294,22 @@ export class ChromaSync {
     const observationBootstrap = this.summarizeBootstrapPending(observationRows.sourceIds, observationRows.completeIds);
     const summaryBootstrap = this.summarizeBootstrapPending(summaryRows.sourceIds, summaryRows.completeIds);
     const promptBootstrap = this.summarizeBootstrapPending(promptIds.map(row => row.id), existing.prompts);
+
+    const hasSourceRows = observationRows.sourceIds.length > 0
+      || summaryRows.sourceIds.length > 0
+      || promptIds.length > 0;
+    const hasIndexedRows = observationRows.completeIds.size > 0
+      || summaryRows.completeIds.size > 0
+      || existing.prompts.size > 0;
+    if (hasSourceRows && !hasIndexedRows) {
+      // Chroma holds none of this project's rows (a wiped or fresh collection).
+      // Rebuild it from zero at its backfill turn rather than listing every
+      // row pending: resetForRebuild drops whatever watermark live writes
+      // bumped while the project waited in the queue (#4818).
+      ChromaSyncState.replace(project, { observations: 0, summaries: 0, prompts: 0, rebuildPending: true });
+      logger.info('CHROMA_SYNC', 'Bootstrapped watermarks from Chroma: no rows indexed, project will rebuild from SQLite', { project });
+      return;
+    }
 
     ChromaSyncState.replace(project, {
       observations: observationBootstrap.watermark,
@@ -1602,16 +1685,16 @@ export class ChromaSync {
     `).all(backfillProject, watermark) as StoredObservation[];
     let pendingRows: StoredObservation[] = [];
     if (pendingIds.length > 0) {
-      const placeholders = pendingIds.map(() => '?').join(', ');
-      pendingRows = db.db.prepare(`
-        SELECT
-          o.*,
-          COALESCE(NULLIF(s.platform_source, ''), 'claude') as platform_source
-        FROM observations o
-        LEFT JOIN sdk_sessions s ON s.memory_session_id = o.memory_session_id
-        WHERE o.project = ? AND o.id IN (${placeholders})
-        ORDER BY o.id ASC
-      `).all(backfillProject, ...pendingIds) as StoredObservation[];
+      pendingRows = selectRowsByIdChunks(pendingIds, (placeholders, chunk) =>
+        db.db.prepare(`
+          SELECT
+            o.*,
+            COALESCE(NULLIF(s.platform_source, ''), 'claude') as platform_source
+          FROM observations o
+          LEFT JOIN sdk_sessions s ON s.memory_session_id = o.memory_session_id
+          WHERE o.project = ? AND o.id IN (${placeholders})
+          ORDER BY o.id ASC
+        `).all(backfillProject, ...chunk) as StoredObservation[]);
       const foundPendingIds = new Set(pendingRows.map(row => row.id));
       const missingPendingIds = pendingIds.filter(id => !foundPendingIds.has(id));
       if (missingPendingIds.length > 0) {
@@ -1667,16 +1750,16 @@ export class ChromaSync {
     `).all(backfillProject, watermark) as StoredSummary[];
     let pendingRows: StoredSummary[] = [];
     if (pendingIds.length > 0) {
-      const placeholders = pendingIds.map(() => '?').join(', ');
-      pendingRows = db.db.prepare(`
-        SELECT
-          ss.*,
-          COALESCE(NULLIF(s.platform_source, ''), 'claude') as platform_source
-        FROM session_summaries ss
-        LEFT JOIN sdk_sessions s ON s.memory_session_id = ss.memory_session_id
-        WHERE ss.project = ? AND ss.id IN (${placeholders})
-        ORDER BY ss.id ASC
-      `).all(backfillProject, ...pendingIds) as StoredSummary[];
+      pendingRows = selectRowsByIdChunks(pendingIds, (placeholders, chunk) =>
+        db.db.prepare(`
+          SELECT
+            ss.*,
+            COALESCE(NULLIF(s.platform_source, ''), 'claude') as platform_source
+          FROM session_summaries ss
+          LEFT JOIN sdk_sessions s ON s.memory_session_id = ss.memory_session_id
+          WHERE ss.project = ? AND ss.id IN (${placeholders})
+          ORDER BY ss.id ASC
+        `).all(backfillProject, ...chunk) as StoredSummary[]);
       const foundPendingIds = new Set(pendingRows.map(row => row.id));
       const missingPendingIds = pendingIds.filter(id => !foundPendingIds.has(id));
       if (missingPendingIds.length > 0) {
@@ -1734,18 +1817,18 @@ export class ChromaSync {
     `).all(backfillProject, watermark) as StoredUserPrompt[];
     let pendingRows: StoredUserPrompt[] = [];
     if (pendingIds.length > 0) {
-      const placeholders = pendingIds.map(() => '?').join(', ');
-      pendingRows = db.db.prepare(`
-        SELECT
-          up.*,
-          s.project,
-          s.memory_session_id,
-          COALESCE(NULLIF(s.platform_source, ''), 'claude') as platform_source
-        FROM user_prompts up
-        JOIN sdk_sessions s ON up.session_db_id = s.id
-        WHERE s.project = ? AND up.id IN (${placeholders})
-        ORDER BY up.id ASC
-      `).all(backfillProject, ...pendingIds) as StoredUserPrompt[];
+      pendingRows = selectRowsByIdChunks(pendingIds, (placeholders, chunk) =>
+        db.db.prepare(`
+          SELECT
+            up.*,
+            s.project,
+            s.memory_session_id,
+            COALESCE(NULLIF(s.platform_source, ''), 'claude') as platform_source
+          FROM user_prompts up
+          JOIN sdk_sessions s ON up.session_db_id = s.id
+          WHERE s.project = ? AND up.id IN (${placeholders})
+          ORDER BY up.id ASC
+        `).all(backfillProject, ...chunk) as StoredUserPrompt[]);
       const foundPendingIds = new Set(pendingRows.map(row => row.id));
       const missingPendingIds = pendingIds.filter(id => !foundPendingIds.has(id));
       if (missingPendingIds.length > 0) {

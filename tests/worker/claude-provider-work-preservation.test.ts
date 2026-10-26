@@ -2,6 +2,9 @@ import { describe, it, expect, beforeEach, afterEach, afterAll, mock, spyOn } fr
 import codeMode from '../../plugin/modes/code.json';
 import type { ActiveSession } from '../../src/services/worker-types.js';
 import * as observerHealth from '../../src/shared/observer-health.js';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 // Buffered work is preserved across SDK stream failure and recycle.
 //
@@ -133,6 +136,8 @@ class FakeSdk {
 }
 
 let currentSdk: FakeSdk | null = null;
+/** Credentials the mocked spawn env carries; none = the CLI runs on its own stored login. */
+let spawnCredentials: Record<string, string> = {};
 
 mock.module('@anthropic-ai/claude-agent-sdk', () => ({
   ...actualAgentSdk,
@@ -149,7 +154,7 @@ mock.module('../../src/shared/find-claude-executable.js', () => ({
 
 mock.module('../../src/shared/EnvManager.js', () => ({
   ...actualEnvManager,
-  buildIsolatedEnvWithFreshOAuth: async () => ({ PATH: process.env.PATH ?? '' }),
+  buildIsolatedEnvWithFreshOAuth: async () => ({ PATH: process.env.PATH ?? '', ...spawnCredentials }),
   // Not an API key: the subscription quota guard applies.
   getAuthMethodDescription: () => 'test-auth',
 }));
@@ -193,14 +198,15 @@ afterAll(() => {
   resetQuotaCooldownsForTesting();
 });
 
-const { ClaudeProvider } = await import('../../src/services/worker/ClaudeProvider.js');
+const { ClaudeProvider, observerCredentialOf } = await import('../../src/services/worker/ClaudeProvider.js');
 const { SessionManager } = await import('../../src/services/worker/SessionManager.js');
 const { SessionStore } = await import('../../src/services/sqlite/SessionStore.js');
 const { handleGeneratorExit } = await import('../../src/services/worker/session/GeneratorExitHandler.js');
 const { PRESERVED_ABORT_CATEGORIES, abortCategoryOf } = await import('../../src/services/worker/session/abort-reason.js');
+const { isClassified } = await import('../../src/services/worker/provider-errors.js');
 const { globalRateLimitStore } = await import('../../src/services/worker/RateLimitStore.js');
 const { SessionRoutes } = await import('../../src/services/worker/http/routes/SessionRoutes.js');
-const { resetQuotaCooldownsForTesting } = await import('../../src/shared/quota-cooldown.js');
+const { getQuotaCooldown, resetQuotaCooldownsForTesting } = await import('../../src/shared/quota-cooldown.js');
 const { resetDependencyStatusesForTesting } = await import('../../src/shared/dependency-health.js');
 
 const SESSION_ID = 6106;
@@ -457,6 +463,25 @@ describe('work preservation — the SDK stream ends or breaks', () => {
       expect(h.session.consecutiveSdkStreamExits ?? 0).toBe(0);
     });
   }
+
+  it('a spent API key thrown mid-batch pauses on quota and preserves the batch', async () => {
+    const h = createHarness(1);
+    liveSessions.push(h.session);
+    const { run } = await claimFirstObservation(h);
+
+    sdk().fail(new Error(
+      'API Error: 400 {"error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API."}}',
+    ));
+    const thrown = await withTimeout(run, 'startSession after spent key').then(() => null, (error: unknown) => error);
+
+    expect(isClassified(thrown) && thrown.kind).toBe('quota_exhausted');
+    expect(abortCategoryOf(h.session.abortReason)).toBe('quota');
+    expect(h.session.consecutiveSdkStreamExits ?? 0).toBe(0);
+    expect(h.pending()).toBe(1);
+    expect(h.session.claimedMessageIds).toEqual([]);
+    const outcome = await h.exit();
+    expect(outcome).toEqual({ finalized: 0, sessionKept: true, pending: 1 });
+  });
 
   it('books observer health once when the stream keeps exiting without answering', async () => {
     const h = createHarness(1);
@@ -774,6 +799,110 @@ describe('work preservation — a generator that throws, seen from the runner', 
     } finally {
       recordFailure.mockRestore();
     }
+  });
+
+  /**
+   * CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD set to `target`, with both a Claude
+   * Code login (a temp profile's .credentials.json) and a fallback API key (a
+   * temp .env) present. Returns the cleanup.
+   */
+  function useCredentialFallback(target: 'subscription' | 'api-key'): () => void {
+    const keys = ['CLAUDE_MEM_PROVIDER', 'CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD', 'CLAUDE_MEM_CLAUDE_CONFIG_DIR',
+      'CLAUDE_MEM_ENV_FILE', 'CLAUDE_MEM_TIER_ROUTING_ENABLED', 'CLAUDE_CODE_OAUTH_TOKEN'];
+    const saved = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+    const dir = mkdtempSync(join(tmpdir(), 'claude-mem-credential-handover-'));
+    writeFileSync(join(dir, '.credentials.json'), '{}');
+    writeFileSync(join(dir, '.env'), 'ANTHROPIC_FALLBACK_API_KEY=sk-ant-fallback\n', { mode: 0o600 });
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    Object.assign(process.env, {
+      CLAUDE_MEM_PROVIDER: 'claude',
+      CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD: target,
+      CLAUDE_MEM_CLAUDE_CONFIG_DIR: dir,
+      CLAUDE_MEM_ENV_FILE: join(dir, '.env'),
+      CLAUDE_MEM_TIER_ROUTING_ENABLED: 'false',
+    });
+    return () => {
+      spawnCredentials = {};
+      for (const key of keys) {
+        if (saved[key] === undefined) delete process.env[key];
+        else process.env[key] = saved[key];
+      }
+      rmSync(dir, { recursive: true, force: true });
+      resetQuotaCooldownsForTesting();
+    };
+  }
+
+  /** Start the real provider through admission and claim the first observation. */
+  async function startAndClaim(routes: InstanceType<typeof SessionRoutes>, session: ActiveSession): Promise<void> {
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+    await sdkStarted();
+    await sdk().until(() => sdk().prompts.length >= 1, 'init prompt');
+    sdk().answer(SKIP_REPLY);
+    await sdk().until(() => sdk().prompts.length >= 2, 'first observation');
+  }
+
+  it('a spent API key thrown mid-batch arms the breaker for the key, and the next run goes on the subscription login', async () => {
+    const cleanUp = useCredentialFallback('subscription');
+    const recordFailure = spyOn(observerHealth, 'recordObserverFailure').mockImplementation(() => {});
+    try {
+      spawnCredentials = { ANTHROPIC_API_KEY: 'sk-ant-spent' };
+      const { routes, session, sessionManager } = await buildRoutesWithRealProvider(6120);
+      liveSessions.push(session);
+      await startAndClaim(routes, session);
+
+      sdk().fail(new Error(
+        'API Error: 400 {"error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API."}}',
+      ));
+      await withTimeout(session.generatorPromise ?? Promise.resolve(), 'generator chain after spent key');
+      await settle(5);
+
+      expect(getQuotaCooldown('claude')?.auth).toBe('api-key');
+      expect(sessionManager.getSession(session.sessionDbId)).toBe(session);
+      expect(sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId)).toBe(1);
+
+      currentSdk = null;
+      await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+      expect(session.claudeAuthOverride).toBe('subscription');
+      await sdkStarted();
+    } finally {
+      recordFailure.mockRestore();
+      cleanUp();
+    }
+  });
+
+  it('a guard-paused login the CLI manages itself (no token injected) hands over to the fallback API key', async () => {
+    const cleanUp = useCredentialFallback('api-key');
+    try {
+      // The token read came back expired or absent: no key, no token, no gateway.
+      spawnCredentials = {};
+      const { routes, session } = await buildRoutesWithRealProvider(6121);
+      liveSessions.push(session);
+      await startAndClaim(routes, session);
+      expect(session.observerAuth).toBe('subscription');
+
+      sdk().frame({ type: 'rate_limit_event', rate_limit_info: { rateLimitType: 'seven_day', utilization: 0.95 } });
+      await withTimeout(session.generatorPromise ?? Promise.resolve(), 'generator chain after quota guard');
+      await settle(5);
+      expect(getQuotaCooldown('claude')?.auth).toBe('subscription');
+
+      currentSdk = null;
+      await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+      expect(session.claudeAuthOverride).toBe('api-key');
+      await sdkStarted();
+    } finally {
+      globalRateLimitStore.set({ rateLimitType: 'seven_day', utilization: 0, status: 'allowed' });
+      cleanUp();
+    }
+  });
+
+  it.each([
+    [{ ANTHROPIC_API_KEY: 'sk-ant' }, 'api-key'],
+    [{ CLAUDE_CODE_OAUTH_TOKEN: 'oauth' }, 'subscription'],
+    [{}, 'subscription'],
+    [{ ANTHROPIC_AUTH_TOKEN: 'gw' }, undefined],
+    [{ ANTHROPIC_BASE_URL: 'https://gateway.example' }, undefined],
+  ] as const)('tags a spawn with %j as %s', (spawnEnv, expected) => {
+    expect(observerCredentialOf(spawnEnv)).toBe(expected);
   });
 
   it('books an unclassified stream failure in observer health and does not retry it', async () => {

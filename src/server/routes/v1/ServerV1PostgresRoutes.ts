@@ -17,8 +17,18 @@ import {
 } from '../../../storage/postgres/generation-jobs.js';
 import { PostgresAuthRepository } from '../../../storage/postgres/auth.js';
 import { PostgresObservationRepository } from '../../../storage/postgres/observations.js';
+import {
+  embedObservationRows,
+  embedSearchQuery,
+} from '../../services/ObservationEmbeddingService.js';
+import { PostgresObservationEmbeddingsRepository } from '../../../storage/postgres/observation-embeddings.js';
 import { PostgresProjectsRepository } from '../../../storage/postgres/projects.js';
 import { logger } from '../../../utils/logger.js';
+import {
+  SEMANTIC_CONTEXT_MAX_LIMIT,
+  SEMANTIC_CONTEXT_MIN_QUERY_CHARS,
+  renderSemanticContext,
+} from '../../../shared/semantic-context.js';
 import { requirePostgresServerAuth } from '../../middleware/postgres-auth.js';
 import { PostgresDataDeletionRepository } from '../../../storage/postgres/data-deletion.js';
 import { requestIdMiddleware } from '../../middleware/request-id.js';
@@ -923,8 +933,22 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         };
         try {
           const repo = new PostgresObservationRepository(this.options.pool);
+          const embedded = await embedObservationRows(this.options.pool, [createInput]);
           const observation = await repo.create(createInput);
           if (observation.id === createInput.id) {
+            if (embedded) {
+              // The memory is saved; its vectors are best-effort. A failed write
+              // is logged and left to the backfill, rather than answering 500
+              // for a memory that exists, which a retry would duplicate.
+              await new PostgresObservationEmbeddingsRepository(this.options.pool)
+                .upsert({ observationId: observation.id, ...embedded[0]! })
+                .catch((error: unknown) => {
+                  logger.warn('SYSTEM', 'memory saved without vectors; the backfill embeds it at the next start', {
+                    observationId: observation.id,
+                    error: error instanceof Error ? error.message : String(error),
+                  });
+                });
+            }
             await this.auditWrite(req, 'memory.write', observation.id, observation.projectId);
             res.status(201).json({ memory: serializeObservation(observation) });
             return;
@@ -974,6 +998,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
             query: body.query,
             limit: body.limit ?? 20,
             platformSource,
+            queryEmbedding: await embedSearchQuery(this.options.pool, body.query),
           });
         } catch (error) {
           const err = error instanceof Error ? error : new Error(String(error));
@@ -992,6 +1017,40 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         res.status(200).json({
           observations: results.map(serializeObservation),
         });
+      },
+    ));
+
+    app.post('/v1/timeline', readAuth, this.handleCreate(
+      z.object({
+        projectId: z.string().trim().min(1),
+        anchorId: z.string().trim().min(1).max(256),
+        depthBefore: z.number().int().min(0).max(20).optional(),
+        depthAfter: z.number().int().min(0).max(20).optional(),
+      }).strict(),
+      async (req, res, body) => {
+        const teamId = this.requireTeamId(req, res);
+        if (!teamId || !this.ensureProjectAllowed(req, res, body.projectId)) return;
+        const rows = await new PostgresObservationRepository(this.options.pool).timelineAround({ ...body, teamId });
+        await this.auditWrite(req, 'observation.read', body.anchorId, body.projectId, {
+          mode: 'timeline', resultCount: rows.length,
+        });
+        res.json({ observations: rows.map(serializeObservation) });
+      },
+    ));
+
+    app.post('/v1/observations/batch', readAuth, this.handleCreate(
+      z.object({
+        projectId: z.string().trim().min(1),
+        ids: z.array(z.string().trim().min(1).max(256)).min(1).max(100),
+      }).strict(),
+      async (req, res, body) => {
+        const teamId = this.requireTeamId(req, res);
+        if (!teamId || !this.ensureProjectAllowed(req, res, body.projectId)) return;
+        const rows = await new PostgresObservationRepository(this.options.pool).getManyForScope({ ...body, teamId });
+        await this.auditWrite(req, 'observation.read', null, body.projectId, {
+          mode: 'selected', resultCount: rows.length, observationIds: rows.map(row => row.id),
+        });
+        res.json({ observations: rows.map(serializeObservation) });
       },
     ));
 
@@ -1044,6 +1103,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
             platformSource,
             folderProjects: body.folderProjects ?? null,
             excludeSubagents: body.excludeSubagents === true,
+            queryEmbedding: await embedSearchQuery(this.options.pool, body.query),
           };
           if (body.summaryLimit === undefined) {
             results = await repo.search(searchInput);
@@ -1088,6 +1148,78 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       },
     ));
 
+    // Per-prompt injection: observations near a user prompt in meaning,
+    // rendered as the worker's /api/context/semantic renders them, so the
+    // session-init hook can treat either runtime's answer alike. Prompts under
+    // SEMANTIC_CONTEXT_MIN_QUERY_CHARS, and databases without vectors, get an
+    // empty answer, and limit is clamped as the worker clamps it: a
+    // keyword match on a whole prompt is not what this injection is for.
+    app.post('/v1/context/semantic', readAuth, this.handleCreate(
+      z.object({
+        projectId: z.string().min(1),
+        query: z.string(),
+        limit: z.number().int().positive().optional(),
+        platformSource: z.string().min(1).nullable().optional(),
+        folderProjects: z.array(z.string().min(1)).min(1).max(20).optional(),
+      }),
+      async (req, res, body) => {
+        const teamId = this.requireTeamId(req, res);
+        if (!teamId) return;
+        if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
+        const platformSource = normalizePlatformSourceOrNull(body.platformSource);
+        const limit = Math.min(body.limit ?? 5, SEMANTIC_CONTEXT_MAX_LIMIT);
+        const queryEmbedding = body.query.length >= SEMANTIC_CONTEXT_MIN_QUERY_CHARS
+          ? await embedSearchQuery(this.options.pool, body.query)
+          : null;
+        if (!queryEmbedding) {
+          res.status(200).json({ observations: [], context: '', count: 0 });
+          return;
+        }
+        let results;
+        try {
+          const repo = new PostgresObservationRepository(this.options.pool);
+          results = await repo.search({
+            projectId: body.projectId,
+            teamId,
+            query: body.query,
+            limit,
+            platformSource,
+            folderProjects: body.folderProjects ?? null,
+            queryEmbedding,
+          });
+        } catch (error) {
+          const err = error instanceof Error ? error : new Error(String(error));
+          logger.warn('SYSTEM', 'observation.semantic_context failed', { requestId: req.requestId ?? null }, err);
+          this.handleDbError(err, res, 'observation.semantic_context');
+          return;
+        }
+        // Always the worker's 'narrative' format. Its 'index' format lists ids
+        // for get_observations to expand, and that tool reads the worker by
+        // numeric id; a server id is a UUID nothing here can expand.
+        // Summaries and manual memories have no title or narrative; their text
+        // is the content, which renders in the narrative's place.
+        const text = (value: unknown) => (typeof value === 'string' && value.trim() ? value : null);
+        const context = renderSemanticContext(results.map(observation => ({
+          title: text(observation.metadata.title) ?? (observation.kind === 'summary' ? 'Session summary' : null),
+          narrative: text(observation.metadata.narrative) ?? text(observation.content),
+          date: new Date(observation.createdAtEpoch).toISOString().slice(0, 10),
+        })));
+        await this.auditWrite(req, 'observation.read', null, body.projectId, {
+          mode: 'semantic_context',
+          limit,
+          platformSource,
+          folderProjects: body.folderProjects ?? null,
+          resultCount: results.length,
+          observationIds: results.map(o => o.id),
+        });
+        res.status(200).json({
+          observations: results.map(serializeObservation),
+          context,
+          count: results.length,
+        });
+      },
+    ));
+
     // Remote authenticated MCP endpoint. The "secure MCP link" a user pastes
     // into Claude Code (or any MCP client) to recall their cloud memory:
     //   claude mcp add --transport http claude-mem <base>/v1/mcp \
@@ -1108,7 +1240,8 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       const backend: RecallBackend = {
         search: async ({ projectId, query, limit }) => {
           assertProjectAllowed(projectId);
-          const rows = await repo.search({ projectId, teamId, query, limit });
+          const queryEmbedding = await embedSearchQuery(this.options.pool, query);
+          const rows = await repo.search({ projectId, teamId, query, limit, queryEmbedding });
           // Audit the read, same as POST /v1/search — the MCP path is no exception.
           await this.auditWrite(req, 'observation.read', null, projectId, {
             mode: 'search', via: 'mcp', query, limit,
@@ -1116,9 +1249,26 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           });
           return rows.map(serializeObservation);
         },
+        timeline: async ({ projectId, anchorId, depthBefore, depthAfter }) => {
+          assertProjectAllowed(projectId);
+          const rows = await repo.timelineAround({ projectId, teamId, anchorId, depthBefore, depthAfter });
+          await this.auditWrite(req, 'observation.read', anchorId, projectId, {
+            mode: 'timeline', via: 'mcp', resultCount: rows.length,
+          });
+          return rows.map(serializeObservation);
+        },
+        getObservations: async ({ projectId, ids }) => {
+          assertProjectAllowed(projectId);
+          const rows = await repo.getManyForScope({ projectId, teamId, ids });
+          await this.auditWrite(req, 'observation.read', null, projectId, {
+            mode: 'selected', via: 'mcp', resultCount: rows.length, observationIds: rows.map(row => row.id),
+          });
+          return rows.map(serializeObservation);
+        },
         context: async ({ projectId, query, limit }) => {
           assertProjectAllowed(projectId);
-          const rows = await repo.search({ projectId, teamId, query, limit });
+          const queryEmbedding = await embedSearchQuery(this.options.pool, query);
+          const rows = await repo.search({ projectId, teamId, query, limit, queryEmbedding });
           await this.auditWrite(req, 'observation.read', null, projectId, {
             mode: 'context', via: 'mcp', query, limit,
             resultCount: rows.length, observationIds: rows.map(o => o.id),

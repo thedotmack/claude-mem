@@ -17,6 +17,7 @@ import { ensureSettingsDocument, updateSettingsDocument } from '../../../../shar
 import { isHttpUrl } from '../../../../shared/openrouter-base-url.js';
 import { parseContextCountValue } from '../../../../shared/context-count.js';
 import { OPENROUTER_REASONING_EFFORTS, parseOpenRouterReasoningEffort } from '../../OpenRouterProvider.js';
+import { parseOpenAICompatReasoning } from '../../reasoning-budget.js';
 import { CODEX_REASONING_EFFORTS, isCodexReasoningEffort } from '../../CodexProvider.js';
 import { emitContextInvalidation, noteUserSettingsSaved } from '../../../../shared/context-invalidation.js';
 
@@ -264,11 +265,13 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_OPENAI_COMPAT_PRESET',
       'CLAUDE_MEM_OPENAI_COMPAT_BASE_URL',
       'CLAUDE_MEM_OPENAI_COMPAT_MODEL',
+      'CLAUDE_MEM_OPENAI_COMPAT_REASONING',
       'CLAUDE_MEM_OPENROUTER_REASONING_EFFORT',
       'CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW',
       'CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS',
       'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER',
       'CLAUDE_MEM_QUOTA_FALLBACK_MODEL',
+      'CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD',
       'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
@@ -331,6 +334,18 @@ export class SettingsRoutes extends BaseRouteHandler {
   });
 
   private handleToggleMcp = this.wrapHandler((req: Request, res: Response): void => {
+    // The MCP toggle renames the plugin's .mcp.json, so it gets the same
+    // browser cross-port rejection as POST /api/settings: the viewer's own
+    // page keeps working, another localhost origin cannot flip the MCP server.
+    // Origin-less clients (hooks, CLI, curl) keep the loopback-trust model.
+    if (isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({
+        success: false,
+        error: 'Settings writes from a different localhost origin are not allowed'
+      });
+      return;
+    }
+
     const { enabled } = req.body as z.infer<typeof toggleMcpSchema>;
 
     this.toggleMcp(enabled);
@@ -369,6 +384,11 @@ export class SettingsRoutes extends BaseRouteHandler {
       if (!validFallbacks.includes(settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER)) {
         return { valid: false, error: 'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER must be "claude" (or empty, the default), "gemini", "openrouter", "openai-compatible", or "off"' };
       }
+    }
+
+    if (settings.CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD
+      && !['subscription', 'api-key'].includes(settings.CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD)) {
+      return { valid: false, error: 'CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD must be "subscription", "api-key", or empty (off, the default)' };
     }
 
     if (settings.CLAUDE_MEM_CLAUDE_AUTH_METHOD) {
@@ -517,6 +537,11 @@ export class SettingsRoutes extends BaseRouteHandler {
       return { valid: false, error: `CLAUDE_MEM_OPENROUTER_REASONING_EFFORT must be empty or one of: ${OPENROUTER_REASONING_EFFORTS.join(', ')}` };
     }
 
+    if (settings.CLAUDE_MEM_OPENAI_COMPAT_REASONING !== undefined
+      && parseOpenAICompatReasoning(settings.CLAUDE_MEM_OPENAI_COMPAT_REASONING) === undefined) {
+      return { valid: false, error: 'CLAUDE_MEM_OPENAI_COMPAT_REASONING must be "off" (default) or "on"' };
+    }
+
     if (settings.CLAUDE_MEM_OPENROUTER_SITE_URL) {
       try {
         new URL(settings.CLAUDE_MEM_OPENROUTER_SITE_URL);
@@ -557,16 +582,25 @@ export class SettingsRoutes extends BaseRouteHandler {
     return { valid: true };
   }
 
-  private isMcpEnabled(): boolean {
+  // Installed plugin: the worker bundle runs from <pluginRoot>/scripts, so the
+  // package root is the plugin root and holds .mcp.json. Repo checkout: plugin/.
+  // Same layout resolution as ViewerRoutes' UI assets.
+  private mcpConfigDir(): string {
     const packageRoot = getPackageRoot();
-    const mcpPath = path.join(packageRoot, 'plugin', '.mcp.json');
-    return existsSync(mcpPath);
+    const candidates = [packageRoot, path.join(packageRoot, 'plugin')];
+    return candidates.find(dir =>
+      existsSync(path.join(dir, '.mcp.json')) || existsSync(path.join(dir, '.mcp.json.disabled'))
+    ) ?? candidates[0];
+  }
+
+  private isMcpEnabled(): boolean {
+    return existsSync(path.join(this.mcpConfigDir(), '.mcp.json'));
   }
 
   private toggleMcp(enabled: boolean): void {
-    const packageRoot = getPackageRoot();
-    const mcpPath = path.join(packageRoot, 'plugin', '.mcp.json');
-    const mcpDisabledPath = path.join(packageRoot, 'plugin', '.mcp.json.disabled');
+    const mcpDir = this.mcpConfigDir();
+    const mcpPath = path.join(mcpDir, '.mcp.json');
+    const mcpDisabledPath = path.join(mcpDir, '.mcp.json.disabled');
 
     if (enabled && existsSync(mcpDisabledPath)) {
       renameSync(mcpDisabledPath, mcpPath);

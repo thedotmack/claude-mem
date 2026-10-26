@@ -227,7 +227,7 @@ describe("OpenCode V2 hook registration", () => {
     const { ctx, tools } = createV2Context();
     await setupV2(ctx);
 
-    expect(tools.length).toBe(1);
+    expect(tools.map(tool => tool.name)).toEqual(["claude_mem_search", "claude_mem_timeline", "claude_mem_get_observations"]);
     const tool = tools[0];
     expect(tool.name).toBe("claude_mem_search");
     expect(typeof tool.description).toBe("string");
@@ -319,10 +319,18 @@ describe("OpenCode V2 checkout resolution", () => {
     expect(cwd).toBe("C:/repo/sub");
   });
 
-  it("falls back to an empty string when location is absent, never undefined", async () => {
+  it("registers nothing and sends no write when location is absent", async () => {
     promptCallbacks.length = 0;
     const cwd = await captureCheckout({ session: recordingSession });
-    expect(cwd).toBe("");
+    expect(promptCallbacks.length).toBe(0);
+    expect(cwd).toBeUndefined();
+  });
+
+  it("registers nothing and sends no write when location.directory is empty", async () => {
+    promptCallbacks.length = 0;
+    const cwd = await captureCheckout({ location: { directory: "" }, session: recordingSession });
+    expect(promptCallbacks.length).toBe(0);
+    expect(cwd).toBeUndefined();
   });
 
   it("ignores a top-level ctx.directory, which V2 does not provide", async () => {
@@ -767,5 +775,36 @@ describe("OpenCode V2 callbacks drive the worker", () => {
     expect(result).toEqual({ content: "1 observation" });
     const [search] = worker.to("/api/search/observations");
     expect(search.url.searchParams.get("query")).toBe("parser");
+  });
+});
+
+describe("OpenCode V2 setup with a context that is not a plugin context", () => {
+  it("returns early with one warning, no banner, and no registrations or worker calls", async () => {
+    const worker = recordWorkerRequests();
+    const originalLog = console.log;
+    const originalWarn = console.warn;
+    const logs: string[] = [];
+    const warnings: string[] = [];
+    console.log = (...args: unknown[]) => { logs.push(args.join(" ")); };
+    console.warn = (...args: unknown[]) => { warnings.push(args.join(" ")); };
+    let registered = 0;
+    try {
+      // The shape OpenCode 1.18.35 passes on its extra setup() calls (#4878).
+      const hostRegistry = {
+        options: {}, agent: {}, aisdk: {}, catalog: {}, command: {},
+        integration: {}, plugin: {}, reference: {}, skill: {},
+        tool: { hook: async () => { registered++; return { dispose: async () => {} }; } },
+      } as unknown as OpenCodePluginContextV2;
+      const cleanup = await setupV2(hostRegistry);
+      await cleanup();
+    } finally {
+      console.log = originalLog;
+      console.warn = originalWarn;
+      worker.restore();
+    }
+    expect(logs.filter((line) => line.includes("OpenCode plugin loading"))).toEqual([]);
+    expect(warnings.length).toBe(1);
+    expect(registered).toBe(0);
+    expect(worker.requests).toEqual([]);
   });
 });

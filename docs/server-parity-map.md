@@ -51,7 +51,7 @@ replaced by `/v1/info` for Server beta clients.
 | Legacy path                        | Native server-beta replacement | Adapter | Status                                |
 | ---------------------------------- | ------------------------------ | ------- | ------------------------------------- |
 | `GET  /api/search`                 | `POST /v1/search`              | _(none)_ | unsupported (legacy GET — see note 1) |
-| `GET  /api/timeline`               | _(none yet)_                   | _(none)_ | unsupported                           |
+| `GET  /api/timeline` | `POST /v1/timeline` | MCP tool adapter | Native Smart timeline; legacy HTTP GET remains unsupported |
 | `GET  /api/search/observations`    | `POST /v1/search`              | _(none)_ | unsupported (legacy shape; new clients use `/v1/search`) |
 | `GET  /api/search/by-file`         | _(none yet)_                   | _(none)_ | unsupported                           |
 | `GET  /api/context/recent`         | `POST /v1/context`             | _(none)_ | unsupported (legacy GET shape)        |
@@ -69,6 +69,8 @@ replaced by `/v1/info` for Server beta clients.
 > the MCP search tool which goes through `/v1/search`, (b) supporting the
 > SQLite shape would require shimming a SQLite read layer back into the
 > Postgres runtime, which contradicts the Phase 9 anti-pattern guard.
+
+The Smart MCP workflow uses `search` → `timeline` → selected `get_observations`. The final step calls `POST /v1/observations/batch` with `{projectId, ids}`. All three server calls enforce team and project scope; they do not fall back to local SQLite.
 
 ## Memory write paths
 

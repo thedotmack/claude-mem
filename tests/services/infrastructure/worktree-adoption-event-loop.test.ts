@@ -56,7 +56,7 @@ console.log('PROBE:' + JSON.stringify({ proven, callMs, maxTickDriftMs }));
 `;
 
       try {
-        const child = Bun.spawnSync(['bun', '-e', childScript], {
+        const child = Bun.spawnSync([process.execPath, '-e', childScript], {
           cwd: REPO_ROOT,
           env: {
             ...process.env,

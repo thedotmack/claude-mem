@@ -371,6 +371,34 @@ describe('OMP Claude Mem hook', () => {
     expect(requests.map(request => request.body.prompt)).toEqual(['first', 'second', undefined]);
   });
 
+  it('keeps live prompt and tool timestamps from before their queued delivery', async () => {
+    const requests: CapturedRequest[] = [];
+    const { releaseNextInit } = installHeldInitCapture(requests);
+    const handlers = registerHook();
+    const cwd = { cwd: '/tmp/omp-telemetry-time' };
+    const at = Date.now();
+    const clock = spyOn(Date, 'now').mockReturnValue(at);
+    try {
+      await handlers.session_start?.();
+      await handlers.before_agent_start?.({ prompt: 'first' }, cwd);
+      clock.mockReturnValue(at + 10);
+      await handlers.before_agent_start?.({ prompt: 'second' }, cwd);
+      clock.mockReturnValue(at + 20);
+      await handlers.tool_result?.({ toolName: 'read', content: 'result' }, cwd);
+      await drainMicrotasks();
+      clock.mockReturnValue(at + 1000);
+      releaseNextInit();
+      await drainMicrotasks();
+      releaseNextInit();
+      await drainMicrotasks();
+      const inits = requests.filter(request => request.path === '/api/sessions/init');
+      expect(inits.map(request => request.body.telemetryPromptEpochMs)).toEqual([at, at + 10]);
+      const tool = requests.find(request => request.path === '/api/sessions/observations');
+      expect(tool?.body.telemetryToolEpochMs).toBe(at + 20);
+      expect(tool?.body.tool_use_id).toBeUndefined();
+    } finally { clock.mockRestore(); }
+  });
+
   it('counts an init whose reply never finishes as a failure', async () => {
     const paths: string[] = [];
     globalThis.fetch = (async (input: RequestInfo | URL) => {

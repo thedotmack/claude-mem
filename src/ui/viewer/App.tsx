@@ -20,6 +20,7 @@ import {
   deleteSession,
   parseViewRoute,
   removeSessionRows,
+  rowInProject,
   sameSession,
   sessionHash,
   sessionKey,
@@ -111,9 +112,9 @@ export function App() {
     if (route.view === 'sessions') void refreshCatalog(currentFilter);
   }, [route.view, currentFilter, refreshCatalog]);
 
-  const matchesScope = useCallback((item: SessionScopedRow & { project: string }) => {
+  const matchesScope = useCallback((item: SessionScopedRow & { project: string; merged_into_project?: string | null }) => {
     if (feedScope.session) return sameSession(sessionRefOf(item), feedScope.session);
-    return !feedScope.project || item.project === feedScope.project;
+    return !feedScope.project || rowInProject(item, feedScope.project);
   }, [feedScope]);
 
   useEffect(() => {
@@ -294,10 +295,23 @@ export function App() {
   const hasMore = pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore;
   const activeTab: ViewTab = route.view === 'timeline' ? 'timeline' : 'sessions';
   const tabs = (
-    <ViewTabs
-      active={activeTab}
-      onSelect={tab => navigate(tab === 'sessions' ? sessionsHash() : '')}
-    />
+    <>
+      <div className="memory-page-heading">
+        <div>
+          <p className="memory-eyebrow">Your saved context</p>
+          <h2>{route.view === 'timeline' ? 'Memory timeline' : route.view === 'sessions' ? 'Sessions' : 'Session memory'}</h2>
+          <p>{route.view === 'timeline'
+            ? 'Browse observations, summaries, and prompts from your work.'
+            : route.view === 'sessions'
+              ? 'Open a session to revisit what happened and what was learned.'
+              : 'Review the context captured during this session.'}</p>
+        </div>
+        <ViewTabs
+          active={activeTab}
+          onSelect={tab => navigate(tab === 'sessions' ? sessionsHash() : '')}
+        />
+      </div>
+    </>
   );
 
   let content: React.ReactNode;
@@ -359,6 +373,7 @@ export function App() {
           setStoredWelcomeDismissed(false);
           setWelcomeDismissed(false);
         }}
+        showTeamBrainLink={settingsLoaded && !settings.CLAUDE_MEM_TEAMBRAIN_URL?.trim()}
       />
 
       {content}
@@ -382,7 +397,9 @@ export function App() {
       <button
         className="console-toggle-btn"
         onClick={toggleLogsModal}
-        title="Toggle Console"
+        title="Open memory logs"
+        aria-label={logsModalOpen ? 'Close memory logs' : 'Open memory logs'}
+        aria-expanded={logsModalOpen}
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <polyline points="4 17 10 11 4 5"></polyline>

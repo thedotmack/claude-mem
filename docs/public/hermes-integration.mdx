@@ -1,0 +1,90 @@
+---
+title: Hermes Agent Integration
+description: Hermes Agent remembers its work with claude-mem and shares one memory per project with your other coding agents
+icon: feather
+---
+
+## Overview
+
+claude-mem plugs into [Hermes Agent](https://hermes-agent.nousresearch.com) as a memory provider. Hermes records its prompts, tool calls and memory notes in claude-mem, and at the start of each turn it is handed the notes that match the prompt. A Hermes session and a Claude Code session in the same checkout read and write the same project memory.
+
+## Install
+
+```bash
+npx claude-mem install --ide hermes
+```
+
+The installer:
+
+1. Copies the provider to `$HERMES_HOME/plugins/claude-mem/`. The default home is `~/.hermes` on macOS and Linux, or `%LOCALAPPDATA%\hermes` on Windows (`%USERPROFILE%\AppData\Local\hermes` if `LOCALAPPDATA` is unset).
+2. Selects it in `$HERMES_HOME/config.yaml`:
+
+   ```yaml
+   memory:
+     provider: claude-mem
+   ```
+
+3. Adds claude-mem's search tools as an MCP server, unless you already have an `mcp_servers.claude-mem` entry:
+
+   ```yaml
+   mcp_servers:
+     claude-mem:
+       command: "/path/to/node"
+       args:
+         - "/path/to/claude-mem/plugin/scripts/mcp-server.cjs"
+       enabled: true
+   ```
+
+The installer keeps unrelated settings and comments. It refuses YAML shapes it cannot safely edit. Start a new Hermes session to load the provider.
+
+<Info>
+Hermes runs one external memory provider at a time. If another one was selected, the installer says so and `npx claude-mem uninstall` puts it back. Hermes's built-in memory (`MEMORY.md` / `USER.md`) stays on; what it saves is also filed in claude-mem.
+</Info>
+
+## How it works
+
+| Hermes event | claude-mem call | Purpose |
+| --- | --- | --- |
+| `on_turn_start` | `POST /api/sessions/init` | Record each user prompt, in order |
+| `post_tool_call` hook | `POST /api/sessions/observations` | Record each tool call after its prompt |
+| `prefetch(query)` | `POST /api/context/semantic` | Notes matching this prompt, from every agent in the project |
+| `system_prompt_block()` | `GET /api/context/inject` | The project's recent work, once per session |
+| `on_memory_write` | `POST /api/memory/save` | Hermes's own memory notes become claude-mem notes |
+| `on_session_end` / `on_session_switch` | `POST /api/sessions/summarize` | Close the session with its last answer |
+
+Recording a prompt does not guarantee a recalled note: the worker can finish a session without producing notes or a summary. Recorded prompts remain searchable through the MCP tools.
+
+- **One project key for every agent.** Each call carries the session's working directory and the worker resolves the project the same way it does for Claude Code (git root, worktrees, configured overrides). Excluded projects (`CLAUDE_MEM_EXCLUDED_PROJECTS`) are skipped.
+- **Hermes never waits on writes.** They go through one background thread, in order. Reads wait at most 3 seconds.
+- **Fail-soft.** If claude-mem is not running, every call returns nothing; after three failures in a row calls pause for 30 seconds.
+- **Scheduled jobs and other non-primary Hermes agents** read memory but record nothing, as Hermes asks of memory providers.
+- **Tools that are not recorded:** Hermes's `memory` tool (its writes arrive through `on_memory_write`), claude-mem's own search tools, and tool calls from delegated child agents.
+
+## Hosted server
+
+With these settings (in the environment or `~/.claude-mem/settings.json`) the provider sends the same events to the hosted server's `/v1` API instead of the local worker:
+
+```json
+{
+  "CLAUDE_MEM_RUNTIME": "server",
+  "CLAUDE_MEM_SERVER_URL": "https://your-server",
+  "CLAUDE_MEM_SERVER_API_KEY": "...",
+  "CLAUDE_MEM_SERVER_PROJECT_ID": "..."
+}
+```
+
+If any of the three server values is missing, the provider uses the local worker, as the other integrations do.
+
+In hosted mode the provider labels its notes with the checkout's project key itself (the git root's folder name, or `<repo>/<worktree>` for a linked worktree), so Hermes and Claude Code share notes per checkout. The opt-in `CLAUDE_MEM_PROJECT_NAME_SOURCE=git-remote` keys and configured project environments are not mirrored in hosted mode yet; with the local worker, every key mode applies.
+
+## Search from Hermes
+
+The MCP entry gives Hermes `dumb_search`, `search`, `timeline`, `get_observations` and `save_memory`.
+
+## Uninstall
+
+```bash
+npx claude-mem uninstall
+```
+
+Removes the provider files, puts back the `memory.provider` you had before (unless you changed it since), and removes `mcp_servers.claude-mem` only if the installer added it and it has not been edited since.

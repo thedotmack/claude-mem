@@ -42,8 +42,21 @@ COPY plugin/ /opt/claude-mem/
 RUN chown -R node:node /opt/claude-mem
 
 USER node
+# onnxruntime-node's postinstall would add its CUDA provider (about 370 MB) on
+# linux/x64. The embedder runs on the CPU, and this image has no CUDA runtime
+# to load it with, so skip it, and drop the npm cache the install leaves.
 RUN cd /opt/claude-mem \
- && npm install --omit=dev --legacy-peer-deps
+ && ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm install --omit=dev --legacy-peer-deps \
+ && npm cache clean --force
+
+# The embedding model search by meaning uses, fetched into transformers.js's
+# cache inside the image; otherwise every new container downloads it at its
+# first embed, and one without network access searches by keyword only. The
+# default is the `repo` of the default model in src/services/vector/models.ts;
+# pass the repo of the model CLAUDE_MEM_EMBEDDING_MODEL names to bake that one.
+ARG EMBEDDING_REPO=Xenova/all-MiniLM-L6-v2
+RUN cd /opt/claude-mem \
+ && node -e "import('@huggingface/transformers').then(t => t.pipeline('feature-extraction', process.argv[1], { dtype: 'fp32' }))" "$EMBEDDING_REPO"
 
 USER root
 RUN mkdir -p /home/node/.claude /home/node/.claude-mem /data/claude-mem \
