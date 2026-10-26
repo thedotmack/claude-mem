@@ -65,8 +65,9 @@ export function teamBriefSection(result: TeamBrainResult<TeamBrainBrief>): strin
 
 /**
  * The lines under the SessionStart terminal preview. The preview leaves
- * TERMINAL_BANNER_RESERVE_CHARS for them, so the whole `systemMessage` stays
- * within Claude Code's 10,000-character field cap (#5079).
+ * TERMINAL_BANNER_RESERVE_CHARS for them, and composeSessionStartSystemMessage
+ * keeps the whole `systemMessage` within Claude Code's 10,000-character field
+ * cap (#5079).
  */
 export function sessionStartBannerFooter(
   viewerUrl: string,
@@ -74,6 +75,48 @@ export function sessionStartBannerFooter(
   teamBrainDiscoveryLine: string | null,
 ): string {
   return `\n\nView Observations Live @ ${viewerUrl}\n${proTrialLine('session-start')}${trialDaysLine ? `\n${trialDaysLine}` : ''}${teamBrainDiscoveryLine ? `\n${teamBrainDiscoveryLine}` : ''}`;
+}
+
+/**
+ * The user-visible SessionStart `systemMessage`: the once-per-session
+ * worker-outage notice, the terminal preview, then the footer. Claude Code
+ * replaces a field over CONTEXT_OUTPUT_LIMIT with a saved-to-disk stub
+ * (#5079), and neither the notice nor a server-runtime viewer URL is bounded
+ * by TERMINAL_BANNER_RESERVE_CHARS, so the message is measured whole: when it
+ * is over, the preview is cut at a line boundary until it fits. The notice and
+ * the footer are never cut. With no preview (banner off) the notice is the
+ * whole message.
+ */
+export function composeSessionStartSystemMessage(
+  preview: string | null,
+  footer: string,
+  workerOutageNotice: string | null,
+  limit: number = CONTEXT_OUTPUT_LIMIT,
+): string | undefined {
+  if (preview === null) return workerOutageNotice ?? undefined;
+  const noticePrefix = workerOutageNotice ? `${workerOutageNotice}\n\n` : '';
+  const previewRoom = limit - noticePrefix.length - footer.length;
+  let fittedPreview = preview;
+  if (preview.length > previewRoom) {
+    const previewCutToRoom = previewRoom > 0 ? preview.slice(0, previewRoom) : '';
+    const lastLineBreak = previewCutToRoom.lastIndexOf('\n');
+    fittedPreview = lastLineBreak > 0 ? previewCutToRoom.slice(0, lastLineBreak) : '';
+    logger.debug('HOOK', 'SessionStart terminal preview cut at a line boundary to keep systemMessage within the field cap', {
+      previewChars: preview.length,
+      keptPreviewChars: fittedPreview.length,
+      noticeChars: noticePrefix.length,
+      footerChars: footer.length,
+      limit,
+    });
+  }
+  const systemMessage = `${noticePrefix}${fittedPreview}${footer}`;
+  if (systemMessage.length > limit) {
+    logger.warn('HOOK', 'SessionStart systemMessage is over the field cap even with no preview', {
+      systemMessageChars: systemMessage.length,
+      limit,
+    });
+  }
+  return systemMessage;
 }
 
 /**
@@ -417,9 +460,11 @@ export const contextHandler: EventHandler = {
       ? TEAMBRAIN_DISCOVERY_LINE
       : null;
     if (teamBrainDiscoveryLine) markTeamBrainDiscoveryNoticeShown();
-    const systemMessage = showsBanner
-      ? `${displayContent}${sessionStartBannerFooter(viewerUrl, trialDaysLine, teamBrainDiscoveryLine)}`
-      : undefined;
+    const systemMessage = composeSessionStartSystemMessage(
+      showsBanner ? displayContent : null,
+      sessionStartBannerFooter(viewerUrl, trialDaysLine, teamBrainDiscoveryLine),
+      workerOutageNotice,
+    );
 
     return {
       workStateTelemetry: 'measure',
@@ -427,9 +472,7 @@ export const contextHandler: EventHandler = {
         hookEventName: 'SessionStart',
         additionalContext
       },
-      systemMessage: workerOutageNotice
-        ? [workerOutageNotice, systemMessage].filter(Boolean).join('\n\n')
-        : systemMessage
+      systemMessage
     };
   }
 };
