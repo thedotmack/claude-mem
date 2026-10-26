@@ -16,25 +16,18 @@ function unwrapAgyUserInput(text: string): string {
 
 // Antigravity's hook stdin is camelCase protojson with NO explicit event-name
 // field (issue #4057). The event is encoded by which hook fired (the CLI arg in
-// hooks.json → internal handler), and the payload key shape is the reliable
-// discriminator for output formatting:
+// hooks.json → internal handler), and the payload key shape tells the events
+// apart:
 //   - SessionStart   : { conversationId, workspacePaths, transcriptPath,
 //                        artifactDirectoryPath, modelName }
-//   - PreToolUse     : { conversationId, workspacePaths, transcriptPath,
-//                        toolCall, stepIdx }                 (toolCall, no error)
-//   - PostToolUse    : { ..., toolCall, error? }            (toolCall + error key)
+//   - PostToolUse    : { ..., toolCall, error? }            (error only on failure)
 //   - Pre/PostInvocation : { ..., invocationNum, initialNumSteps } (no toolCall)
 //   - Stop           : { ..., terminationReason }
-//
-// formatOutput() must key its protojson response off the same raw payload, so we
-// stash the last normalized raw input here (one normalizeInput→formatOutput
-// cycle per hook process, so module state is safe).
-let lastRawInput: Record<string, any> = {};
+// PreToolUse is never registered (#5078), so a toolCall payload is a PostToolUse.
 
 export const antigravityCliAdapter: PlatformAdapter = {
   normalizeInput(raw) {
     const r = (raw ?? {}) as any;
-    lastRawInput = r;
 
     const cwd = r.workspacePaths?.[0]
       ?? r.cwd
@@ -54,7 +47,6 @@ export const antigravityCliAdapter: PlatformAdapter = {
     const transcriptPath = r.transcriptPath ?? r.transcript_path;
 
     const hasToolCall = Boolean(r.toolCall);
-    const hasErrorKey = 'error' in r;
     // Pre/PostInvocation payloads are identical; both carry invocationNum and no
     // toolCall.
     const isInvocationEvent = 'invocationNum' in r && !hasToolCall;
@@ -83,13 +75,9 @@ export const antigravityCliAdapter: PlatformAdapter = {
       toolResponse = { response: response || 'Completed' };
     }
 
-    if (hasToolCall && !hasErrorKey && toolName && !toolResponse) {
-      // PreToolUse — the tool has not executed yet.
-      toolResponse = { _preExecution: true };
-    }
-
-    if (hasToolCall && hasErrorKey && toolName && !toolResponse) {
-      // PostToolUse — record the outcome.
+    if (hasToolCall && toolName && !toolResponse) {
+      // PostToolUse, the only tool event claude-mem registers (#5078). agy
+      // sends `error` only when the tool failed.
       toolResponse = typeof r.error === 'string' && r.error
         ? { error: r.error }
         : { status: 'completed' };
@@ -110,13 +98,10 @@ export const antigravityCliAdapter: PlatformAdapter = {
   // (continue / suppressOutput / systemMessage / hookSpecificOutput) make it
   // discard the whole payload (issue #4057). Emit ONLY fields agy understands:
   //   - SessionStart   → { "injectSteps": [ ... ] } (startup context injection, issue #4911)
-  //   - PreToolUse     → { "decision": "allow" }   (or "deny" to block)
   //   - PreInvocation  → { "injectSteps": [ ... ] } (transient injection if enabled)
   //   - PostToolUse / PostInvocation / Stop → {}
   formatOutput(result) {
     const r = result ?? {};
-    const raw = lastRawInput ?? {};
-    const isPreTool = Boolean(raw.toolCall) && !('error' in raw);
 
     if (r.continue === false || r.decision === 'block') {
       return { decision: 'deny', reason: r.reason ?? 'Denied by hook' };
@@ -129,10 +114,6 @@ export const antigravityCliAdapter: PlatformAdapter = {
       const ansiRegex = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
       const cleanMessage = (additionalContext as string).replace(ansiRegex, '');
       return { injectSteps: [{ ephemeralMessage: cleanMessage }] };
-    }
-
-    if (isPreTool) {
-      return { decision: 'allow' };
     }
 
     return {};
