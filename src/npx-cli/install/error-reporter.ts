@@ -13,7 +13,7 @@
  * See plans/04-installer-transparency.md (Phase 3).
  */
 
-import { mkdirSync, writeFileSync } from 'fs';
+import { mkdirSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import {
   classifyError,
@@ -99,6 +99,16 @@ function writeLastInstallError(
   } catch {
     // Diagnostics are best-effort; never let them mask the real failure.
   }
+}
+
+/**
+ * Remove the record of an earlier aborted run. Called when an install or repair
+ * finishes: the record describes an abort, and nothing else ever removed it, so
+ * doctor kept showing that old error and its advice after later runs succeeded
+ * (#4858: a 14.0.1 network error still shown by 15.0.1).
+ */
+export function clearLastInstallError(dataDir: string = resolveDataDir()): void {
+  rmSync(join(dataDir, 'last-install-error.json'), { force: true });
 }
 
 /**

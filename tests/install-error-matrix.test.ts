@@ -11,6 +11,7 @@ import {
 import {
   createInstallSummary,
   installerError,
+  clearLastInstallError,
   flushSummary,
   InstallAbortError,
 } from '../src/npx-cli/install/error-reporter';
@@ -179,6 +180,29 @@ describe('installerError decision logic', () => {
     expect(record.categoryId).toBe('tree-sitter-eresolve');
     expect(record.severity).toBe('ABORT');
     expect(record.details).toContain('While resolving');
+  });
+
+  // The record describes an aborted run. Nothing removed it, so doctor kept
+  // showing an old error and its advice after later runs succeeded (#4858).
+  it('a finished run clears the record of an earlier abort', () => {
+    const recordPath = join(home, 'last-install-error.json');
+    expect(() => installerError(ErrorSeverity.ABORT, {
+      component: 'marketplace-npm-install',
+      phase: 'marketplace-deps',
+      cause: new Error('npm error code ERESOLVE'),
+    }, createInstallSummary())).toThrow(InstallAbortError);
+    expect(existsSync(recordPath)).toBe(true);
+
+    clearLastInstallError();
+    expect(existsSync(recordPath)).toBe(false);
+    // Nothing to clear is not an error.
+    expect(() => clearLastInstallError()).not.toThrow();
+  });
+
+  it('install and repair clear the record only after their run finishes', () => {
+    const source = readFileSync(join(import.meta.dir, '..', 'src', 'npx-cli', 'commands', 'install.ts'), 'utf-8');
+    expect(source).toMatch(/await runInstallCommandInner\(options, summary\);\r?\n\s*clearLastInstallError\(\);/);
+    expect(source).toMatch(/await runRepairCommandInner\(summary\);\r?\n\s*clearLastInstallError\(\);/);
   });
 
   it('WARN_CONTINUE appends to summary and does not throw', () => {
