@@ -109,16 +109,18 @@ const HOOK_TIMEOUT_SECONDS = ANTIGRAVITY_HOOK_TIMEOUT_MS / 1000;
 // builtin docs/hooks.md, "Supported Event Types").
 const ANTIGRAVITY_GROUPED_EVENTS = new Set<string>(['PreToolUse', 'PostToolUse']);
 
-// The 5 hook events `agy` fires, mapped to claude-mem's internal handlers:
+// The 4 hook events claude-mem registers in `agy`, mapped to its internal handlers:
 //   - SessionStart   → context     (inject startup memory once when a session starts;
 //                                    prevents invalidating LLM prefix cache on every
 //                                    turn/invocation, issue #4911)
-//   - PreToolUse     → observation (records tool intent; adapter emits
-//                                    `{"decision":"allow"}` so the call proceeds)
 //   - PostToolUse    → observation (records the tool result)
 //   - PostInvocation → observation (records the assistant response, pulled from
 //                                    the transcript's PLANNER_RESPONSE node)
 //   - Stop           → summarize   (session/turn end → summary)
+// PreToolUse is not registered. A PreToolUse hook must answer with a decision,
+// and agy treats "allow" as auto-approval, so a `*`-matched observation hook
+// there skipped agy's own permission prompt for every tool and recorded each
+// call twice (#5078). Observations come from PostToolUse, as on Claude Code.
 // Note: SessionStart is the official agy lifecycle event for startup context injection
 // (builtin `agy-customizations/docs/hooks.md`). Mapping PreInvocation to context
 // injected ephemeral context into every model call, destroying prefix cache hit rates.
@@ -127,7 +129,6 @@ const ANTIGRAVITY_GROUPED_EVENTS = new Set<string>(['PreToolUse', 'PostToolUse']
 const ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT: Record<string, string> = {
   'SessionStart': 'context',
   'PreInvocation': 'session-init',
-  'PreToolUse': 'observation',
   'PostToolUse': 'observation',
   'PostInvocation': 'observation',
   'Stop': 'summarize',
@@ -289,6 +290,9 @@ function mergeNamedHook(
   // which injected context on every turn and invalidated prefix caching (#4911).
   // Clean up PreInvocation on upgrade if it was registered for claude-mem.
   delete merged.PreInvocation;
+  // Prior versions also registered PreToolUse, which auto-approved every tool
+  // call (#5078).
+  delete merged.PreToolUse;
 
   for (const event of Object.keys(ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT)) {
     const value = (incoming as Record<string, unknown>)[event];
@@ -601,11 +605,13 @@ function removeAntigravityHooksFromSettings(): void {
 }
 
 // Count the underlying handler objects in a named hook (used for the uninstall
-// summary so grouped and flat events are both counted).
+// summary so grouped and flat events are both counted). Every event on the hook
+// is counted, since uninstall removes the whole hook, including the PreToolUse
+// entry an older install left there (#5078).
 function countNamedHookHandlers(namedHook: AntigravityNamedHook): number {
   let count = 0;
 
-  for (const event of Object.keys(ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT)) {
+  for (const event of Object.keys(namedHook)) {
     const value = (namedHook as Record<string, unknown>)[event];
     if (!Array.isArray(value)) continue;
 
