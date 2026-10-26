@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { execFileSync } from 'child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -212,6 +212,48 @@ describe('Stop hook deliverables capture', () => {
     const input = claudeCodeAdapter.normalizeInput({
       session_id: 'session-deliverables-1', cwd: repo, agent_id: 'agent-7', agent_type: 'general-purpose',
       transcript_path: mainTranscript, agent_transcript_path: transcriptPath,
+    });
+    input.platform = 'claude-code';
+    await subagentStopHandler.execute(input);
+    expect(spooledEntries('subagent_stop')).toHaveLength(1);
+    expect(spooledEntries('deliverables')).toHaveLength(0);
+    expect(existsSync(resolveDeliverablesDir())).toBe(false);
+  });
+
+  it('copies a declared file only from the checkout or the temp folders, never through a symlink that leads elsewhere', async () => {
+    makeTurn();
+    // This repository's own package.json: a readable file outside the test checkout and outside the temp folders.
+    const elsewhere = join(import.meta.dir, '..', '..', '..', 'package.json');
+    expect(existsSync(elsewhere)).toBe(true);
+    let symlinked = false;
+    try { symlinkSync(elsewhere, join(repo, '.scratch', 'leak.md')); symlinked = true; } catch { /* no symlinks on this host */ }
+    const workState = { list: 'launch', fields: { task: 'report', status: 'done', work_product: JSON.stringify([{ title: 'Keys', path: elsewhere }, { title: 'Leak', path: '.scratch/leak.md' }, { title: 'Report', path: '.scratch/report.html' }]) } };
+    writeFileSync(transcriptPath, [
+      user('Make me a launch report'),
+      assistant([toolUse('toolu_4', 'mcp__plugin_claude-mem_mcp-search__work_state_write', workState)]),
+      user([toolResult('toolu_4')]),
+      assistant([{ type: 'text', text: 'Done.' }]),
+      '',
+    ].join('\n'));
+    const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
+
+    await summarizeHandler.execute(stopInput());
+
+    const [entry] = spooledEntries('deliverables');
+    const payload = entry.payload as SpooledDeliverablesPayload;
+    expect(payload.files.map(file => file.title)).toEqual(['Report']);
+    const refused = (logger.warn as unknown as { mock: { calls: unknown[][] } }).mock.calls
+      .filter(call => String(call[1]).includes('outside the checkout and the temp folders'))
+      .map(call => (call[2] as { path: string }).path);
+    expect(refused).toEqual(symlinked ? [elsewhere, join(repo, '.scratch', 'leak.md')] : [elsewhere]);
+  });
+
+  it('copies nothing when the session transcript, which carries the turn\'s prompt, cannot be read', async () => {
+    makeTurn({ sidechain: true });
+    const { subagentStopHandler } = await import('../../../src/cli/handlers/subagent-stop.js');
+    const input = claudeCodeAdapter.normalizeInput({
+      session_id: 'session-deliverables-1', cwd: repo, agent_id: 'agent-7', agent_type: 'general-purpose',
+      transcript_path: join(outside, 'missing-main.jsonl'), agent_transcript_path: transcriptPath,
     });
     input.platform = 'claude-code';
     await subagentStopHandler.execute(input);

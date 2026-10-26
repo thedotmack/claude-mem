@@ -3,9 +3,9 @@
 // never process.stdout.write / console.* / process.exit. Errors are caught by
 // the caller and never fail the hook.
 import { execFileSync } from 'child_process';
-import { statSync } from 'fs';
-import { homedir } from 'os';
-import { basename, dirname, isAbsolute, join, resolve } from 'path';
+import { realpathSync, statSync } from 'fs';
+import { homedir, tmpdir } from 'os';
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'path';
 import { spoolHookEvent } from './spool-hook-event.js';
 import { logger } from '../utils/logger.js';
 import { loadFromFileOnce } from '../shared/hook-settings.js';
@@ -39,7 +39,10 @@ import type { NormalizedHookInput } from './types.js';
  *
  * Nothing is copied for a turn whose prompt was entirely <private>, the rule
  * the worker applies to observations and summaries, nor for a worker on
- * another host, which could not open a copy made on this disk.
+ * another host, which could not open a copy made on this disk. A file is
+ * copied only from the checkout or the system temp folders (deliverableRoots):
+ * a work-state field can name any path without a permission prompt, so a path
+ * elsewhere is left out and logged.
  */
 
 /** Each copy runs synchronously inside the Stop hook (120 s host timeout); 50 keeps the worst turn well inside it. Files past the cap are reported, not dropped silently. */
@@ -75,18 +78,51 @@ const shortText = (value: unknown): string | null => {
   return text.length > MAX_TITLE ? `${text.slice(0, MAX_TITLE - 1).trimEnd()}…` : text;
 };
 
-/** A field value as an existing regular file: absolute, `~/…`, or relative to the checkout. URLs and plain words are not files. */
-export function resolveCandidatePath(value: unknown, cwd: string): string | null {
+/**
+ * Where a deliverable may be copied from: the checkout the agent works in and
+ * the system temp folders, where the host's scratchpad lives. The same
+ * containment as claude-mem's own file tools (resolveWithinWorkspace, #3861),
+ * realpath on both sides, so a symlink in the checkout that points outside it
+ * is outside. A work_state_write can name any path without a permission
+ * prompt; without this, `work_product: ~/.ssh/id_rsa` would land a copy of the
+ * key in the bucket. A root that does not exist admits nothing.
+ */
+export function deliverableRoots(cwd: string): string[] {
+  const roots = new Set<string>();
+  for (const root of [cwd, tmpdir(), '/tmp']) {
+    try { roots.add(realpathSync(root)); } catch { /* not on this machine */ }
+  }
+  return [...roots];
+}
+
+function isWithinRoots(realPath: string, roots: string[]): boolean {
+  return roots.some(root => realPath === root || realPath.startsWith(root + sep));
+}
+
+/**
+ * A field value as an existing regular file inside one of `roots`: absolute,
+ * `~/…`, or relative to the checkout; URLs and plain words are not files. The
+ * path is returned as the agent wrote it (the recorded sourcePath), the check
+ * is made on what it resolves to.
+ */
+export function resolveCandidatePath(value: unknown, cwd: string, roots: string[] = deliverableRoots(cwd)): string | null {
   if (typeof value !== 'string') return null;
   const text = value.trim();
   if (!text || text.includes('\0') || /^[a-z][a-z0-9+.-]*:\/\//i.test(text)) return null;
   const expanded = text.startsWith('~/') ? join(homedir(), text.slice(2)) : text;
   const path = isAbsolute(expanded) ? expanded : resolve(cwd, expanded);
+  let real: string;
   try {
-    return statSync(path).isFile() ? path : null;
+    real = realpathSync(path);
+    if (!statSync(real).isFile()) return null;
   } catch {
     return null;
   }
+  if (!isWithinRoots(real, roots)) {
+    logger.warn('HOOK', 'A deliverable path is outside the checkout and the temp folders; not copied', { path, resolvesTo: real, roots });
+    return null;
+  }
+  return path;
 }
 
 function parseJson(value: string): unknown {
@@ -94,7 +130,7 @@ function parseJson(value: string): unknown {
 }
 
 /** The files one work-state write attached. */
-export function declaredCandidates(write: TranscriptWorkStateWrite, cwd: string): Candidate[] {
+export function declaredCandidates(write: TranscriptWorkStateWrite, cwd: string, roots: string[] = deliverableRoots(cwd)): Candidate[] {
   const candidates: Candidate[] = [];
   const base = { declared: true, list: write.list, toolUseId: write.toolUseId, occurredAtEpoch: write.occurredAtEpoch };
   for (const [field, value] of Object.entries(write.fields)) {
@@ -103,14 +139,14 @@ export function declaredCandidates(write: TranscriptWorkStateWrite, cwd: string)
       const decoded = typeof value === 'string' && /^\s*[[{]/.test(value) ? parseJson(value) ?? value : value;
       for (const entry of Array.isArray(decoded) ? decoded : [decoded]) {
         const record: Record<string, unknown> = entry && typeof entry === 'object' && !Array.isArray(entry) ? entry as Record<string, unknown> : { url: entry };
-        const path = resolveCandidatePath(record.path ?? record.url ?? record.link, cwd);
+        const path = resolveCandidatePath(record.path ?? record.url ?? record.link, cwd, roots);
         if (!path) continue;
         // Attached on purpose: any file counts, whatever its extension.
         candidates.push({ ...base, path, title: shortText(record.title ?? record.name) ?? basename(path), kind: shortText(record.kind) ?? deliverableKind(path), field });
       }
       continue;
     }
-    const path = resolveCandidatePath(value, cwd);
+    const path = resolveCandidatePath(value, cwd, roots);
     if (path && fileKind(path)) candidates.push({ ...base, path, title: basename(path), kind: deliverableKind(path), field });
   }
   return candidates;
@@ -230,9 +266,14 @@ export function captureDeliverables(input: NormalizedHookInput, options: Capture
     return null;
   }
 
-  // The prompt that started the session's current turn decides its privacy, for a subagent's files too: they belong to that turn.
+  // The prompt that started the session's current turn decides its privacy, for a subagent's files too: they belong to
+  // that turn. A prompt that cannot be read (no session transcript, none in it) decides nothing, and nothing is copied.
   const turn = transcriptPath ? extractTranscriptFileActivity(transcriptPath, { currentTurnOnly: true }) : null;
-  if (turn?.privateTurn) {
+  if (!turn?.promptSeen) {
+    logger.debug('HOOK', 'Deliverables are not captured when the turn\'s prompt cannot be read', { sessionId, transcriptPath: transcriptPath ?? null });
+    return null;
+  }
+  if (turn.privateTurn) {
     logger.debug('HOOK', 'Deliverables are not captured for a private turn', { sessionId });
     return null;
   }
@@ -242,13 +283,14 @@ export function captureDeliverables(input: NormalizedHookInput, options: Capture
   if (!activity || (activity.writes.length === 0 && activity.workStateWrites.length === 0)) return null;
 
   // Declared first: an agent's title and kind win over what a write infers.
+  const roots = deliverableRoots(cwd);
   const candidates = new Map<string, Candidate>();
   for (const write of activity.workStateWrites) {
-    for (const candidate of declaredCandidates(write, cwd)) if (!candidates.has(candidate.path)) candidates.set(candidate.path, candidate);
+    for (const candidate of declaredCandidates(write, cwd, roots)) if (!candidates.has(candidate.path)) candidates.set(candidate.path, candidate);
   }
   const repositoryCache = new Map<string, RepositoryLookup>();
   for (const write of activity.writes) {
-    const path = resolveCandidatePath(write.path, cwd);
+    const path = resolveCandidatePath(write.path, cwd, roots);
     if (!path || candidates.has(path) || !fileKind(path) || !isOutsideSourceTree(path, repositoryCache)) continue;
     candidates.set(path, { path, title: basename(path), kind: deliverableKind(path), declared: false, list: null, field: null, toolUseId: write.toolUseId, occurredAtEpoch: write.occurredAtEpoch });
   }

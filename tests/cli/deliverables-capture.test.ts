@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { execFileSync } from 'child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { boundedErrors, isOutsideSourceTree, type GitRunner, type RepositoryLookup } from '../../src/cli/deliverables-capture.js';
+import { boundedErrors, deliverableRoots, isOutsideSourceTree, resolveCandidatePath, type GitRunner, type RepositoryLookup } from '../../src/cli/deliverables-capture.js';
 import { DELIVERABLE_ERRORS_PER_EVENT } from '../../src/shared/hook-spool.js';
 import { logger } from '../../src/utils/logger.js';
 
@@ -75,5 +75,40 @@ describe('boundedErrors', () => {
     expect(bounded).toHaveLength(DELIVERABLE_ERRORS_PER_EVENT);
     expect(bounded.slice(0, -1)).toEqual(errors.slice(0, DELIVERABLE_ERRORS_PER_EVENT - 1));
     expect(bounded.at(-1)).toEqual({ sourcePath: '', error: '52 more files were not copied; the hook log names each one' });
+  });
+});
+
+describe('resolveCandidatePath', () => {
+  it('accepts a file inside the checkout or the temp folders and refuses one elsewhere, through a symlink too', () => {
+    const checkout = join(dir, 'checkout');
+    const elsewhere = join(dir, 'elsewhere');
+    mkdirSync(join(checkout, '.scratch'), { recursive: true });
+    mkdirSync(elsewhere);
+    writeFileSync(join(checkout, '.scratch', 'report.html'), 'x');
+    writeFileSync(join(elsewhere, 'id_rsa'), 'secret');
+    // The temp dir this test runs in is itself inside the temp folders, so the roots are made explicit.
+    const roots = [realpathSync(checkout)];
+    expect(resolveCandidatePath('.scratch/report.html', checkout, roots)).toBe(join(checkout, '.scratch', 'report.html'));
+    expect(resolveCandidatePath(join(checkout, '.scratch', 'report.html'), checkout, roots)).toBe(join(checkout, '.scratch', 'report.html'));
+    expect(resolveCandidatePath(join(elsewhere, 'id_rsa'), checkout, roots)).toBeNull();
+    expect(warnings).toHaveBeenCalledTimes(1);
+    expect(resolveCandidatePath('../elsewhere/id_rsa', checkout, roots)).toBeNull();
+    let symlinked = false;
+    try { symlinkSync(join(elsewhere, 'id_rsa'), join(checkout, '.scratch', 'notes.md')); symlinked = true; } catch { /* no symlinks on this host */ }
+    if (symlinked) expect(resolveCandidatePath('.scratch/notes.md', checkout, roots)).toBeNull();
+    // Not files, or not there: no warning, just nothing.
+    warnings.mockClear();
+    expect(resolveCandidatePath(join(checkout, '.scratch'), checkout, roots)).toBeNull();
+    expect(resolveCandidatePath(join(checkout, 'missing.pdf'), checkout, roots)).toBeNull();
+    expect(resolveCandidatePath('https://example.com/report.pdf', checkout, roots)).toBeNull();
+    expect(warnings).not.toHaveBeenCalled();
+  });
+
+  it('roots are the checkout and the temp folders, realpath\'d, and only the ones that exist', () => {
+    const roots = deliverableRoots(dir);
+    expect(roots).toContain(realpathSync(dir));
+    expect(roots).toContain(realpathSync(tmpdir()));
+    expect(roots.every(root => !root.endsWith('/') || root === '/')).toBe(true);
+    expect(deliverableRoots(join(dir, 'missing'))).not.toContain(join(dir, 'missing'));
   });
 });
