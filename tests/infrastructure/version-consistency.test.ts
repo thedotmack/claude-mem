@@ -43,11 +43,10 @@ function discoverShippedVersionManifests(root: string = projectRoot): string[] {
     }
   }
 
+  // No filter on the manifest's contents: a shipped manifest that lost its
+  // `version` must stay in the list so its version test fails, not vanish.
   return [...candidates]
-    .filter(candidate => {
-      if (candidate === 'package.json' || independentVersionManifests.has(candidate)) return false;
-      return typeof readManifest(root, candidate).version === 'string';
-    })
+    .filter(candidate => candidate !== 'package.json' && !independentVersionManifests.has(candidate))
     .sort();
 }
 
@@ -66,14 +65,41 @@ describe('Version Consistency', () => {
   });
 
   it('discovers shipped version manifests from package.json#files', () => {
-    const discovered = discoverShippedVersionManifests();
+    // The exact set, so a required manifest that drops out of discovery fails
+    // here instead of silently losing its version test.
+    expect(discoverShippedVersionManifests()).toEqual([
+      '.claude-plugin/plugin.json',
+      '.codex-plugin/plugin.json',
+      '.qoder-plugin/plugin.json',
+      'dsh/package.json',
+      'openclaw/openclaw.plugin.json',
+      'plugin/.claude-plugin/plugin.json',
+      'plugin/.codex-plugin/plugin.json',
+      'plugin/.qoder-plugin/plugin.json',
+      'plugin/package.json',
+    ]);
+  });
 
-    expect(discovered).toContain('plugin/package.json');
-    expect(discovered).toContain('plugin/.claude-plugin/plugin.json');
-    expect(discovered).toContain('plugin/.codex-plugin/plugin.json');
-    expect(discovered).toContain('openclaw/openclaw.plugin.json');
-    expect(discovered).toContain('dsh/package.json');
-    expect(discovered).not.toContain('openclaw/package.json');
+  it('still discovers a listed manifest that has no version', () => {
+    const fixtureRoot = mkdtempSync(path.join(tmpdir(), 'cmem-manifest-discovery-'));
+
+    try {
+      mkdirSync(path.join(fixtureRoot, 'new-host'), { recursive: true });
+      writeFileSync(
+        path.join(fixtureRoot, 'package.json'),
+        JSON.stringify({ files: ['new-host'] }),
+      );
+      writeFileSync(
+        path.join(fixtureRoot, 'new-host', 'plugin.json'),
+        JSON.stringify({ name: 'new-host' }),
+      );
+
+      expect(discoverShippedVersionManifests(fixtureRoot)).toEqual([
+        'new-host/plugin.json',
+      ]);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
   });
 
   it('picks up a new manifest directory listed in package.json#files', () => {
