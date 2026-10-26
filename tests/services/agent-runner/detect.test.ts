@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { EventEmitter } from 'events';
 import type { spawn } from 'child_process';
+import { join } from 'node:path';
 import {
   detectUsableAgents,
   GEMINI_NO_MCP_SERVERS,
@@ -192,13 +193,13 @@ describe('detectUsableAgents', () => {
     it('uses where.exe on Windows', async () => {
       const calls: string[] = [];
       await detectOne('codex', { platform: () => 'win32', spawn: fakeSpawn({}, calls) });
-      expect(calls).toContain('C:\\Windows/System32/where.exe codex');
+      expect(calls).toContain(`${join('C:\\Windows', 'System32', 'where.exe')} codex`);
     });
   });
 
   describe('Gemini', () => {
-    const settingsPath = `${HOME}/.gemini/settings.json`;
-    const credentialsPath = `${HOME}/.gemini/oauth_creds.json`;
+    const settingsPath = join(HOME, '.gemini', 'settings.json');
+    const credentialsPath = join(HOME, '.gemini', 'oauth_creds.json');
     const settings = JSON.stringify({ security: { auth: { selectedType: 'oauth-personal' } } });
 
     it('not installed', async () => {

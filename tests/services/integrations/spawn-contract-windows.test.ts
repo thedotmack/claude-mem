@@ -2,7 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import { spawnSync } from 'child_process';
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { delimiter, join } from 'path';
+import { basename, delimiter, join } from 'path';
 import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
 import {
   codexSpawn,
@@ -59,7 +59,7 @@ describe('Windows #2695 - codex spawn resolves the .cmd shim without a shell', (
       'win32',
     );
 
-    expect(invocation.command).toBe('cmd.exe');
+    expect(basename(invocation.command).toLowerCase()).toBe('cmd.exe');
     expect(invocation.args).toEqual([
       '/d',
       '/s',
@@ -87,7 +87,7 @@ describe('Windows #2695 - codex spawn resolves the .cmd shim without a shell', (
       () => 'C:\\Program Files\\nodejs\\codex.cmd',
     );
 
-    expect(invocation.command).toBe('cmd.exe');
+    expect(basename(invocation.command).toLowerCase()).toBe('cmd.exe');
     expect(invocation.args).toEqual([
       '/d',
       '/s',
@@ -102,7 +102,7 @@ describe('Windows #2695 - codex spawn resolves the .cmd shim without a shell', (
   it('wraps the codex.cmd fallback with cmd.exe /d /s /c without shell:true', () => {
     const invocation = resolveCodexSpawnInvocation(['--version'], 'win32', () => null);
 
-    expect(invocation.command).toBe('cmd.exe');
+    expect(basename(invocation.command).toLowerCase()).toBe('cmd.exe');
     expect(invocation.args).toEqual(['/d', '/s', '/c', '""codex.cmd" "--version""']);
     expect(invocation.options.windowsVerbatimArguments).toBe(true);
     expect('shell' in invocation.options).toBe(false);

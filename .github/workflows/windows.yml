@@ -46,6 +46,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $bun test tests/infrastructure/plugin-distribution.test.ts --test-name-pattern 'Codex Windows payload dependency check'
 
+      - name: Path and executable assertions
+        shell: pwsh
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
+          & $bun test tests/services/smart-file-read/path-search.test.ts tests/services/agent-runner/detect.test.ts tests/services/integrations/spawn-contract-windows.test.ts --timeout 120000
+
       - name: Context reader responsiveness and packaging
         shell: pwsh
         run: |
