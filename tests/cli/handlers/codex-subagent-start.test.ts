@@ -72,6 +72,7 @@ describe('Codex SubagentStart', () => {
 
   beforeEach(() => {
     contextSpy = spyOn(contextHandler, 'execute').mockImplementation(async () => ({
+      workStateTelemetry: 'measure',
       hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'memory timeline' },
     }));
   });
@@ -89,6 +90,8 @@ describe('Codex SubagentStart', () => {
     });
     expectOutputCodexAccepts(output);
     expect(contextSpy).toHaveBeenCalledTimes(1);
+    // hook-command measures the work-state instruction the subagent was given.
+    expect(result.workStateTelemetry).toBe('measure');
   });
 
   it('leaves a forked subagent alone: it starts from a copy of its parent history, timeline included', async () => {
