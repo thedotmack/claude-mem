@@ -23,6 +23,7 @@ describe('redactSensitive built-in patterns', () => {
 
   it.each([
     ['aws_access_key',  'export X=AKIAIOSFODNN7EXAMPLE done',                                          "<redacted type='aws_access_key'/>"],
+    ['aws_access_key',  'export AWS_ACCESS_KEY_ID=ASIAIOSFODNN7EXAMPLE done',                          "<redacted type='aws_access_key'/>"],
     ['github_pat',      'token: ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789 trailing',                  "<redacted type='github_pat'/>"],
     ['github_pat',      'oauth: gho_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789 tail',                      "<redacted type='github_pat'/>"],
     ['github_pat',      'refresh: ghr_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789 tail',                    "<redacted type='github_pat'/>"],

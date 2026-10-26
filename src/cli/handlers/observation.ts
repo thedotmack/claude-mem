@@ -17,6 +17,15 @@ import { isServerClientError, type ServerRecordEventRequest } from '../../servic
 import { isRecursiveMemoryTool, isExplicitMemoryWrite } from '../../shared/memory-retrieval-tools.js';
 import { workStatePlatform } from '../../shared/work-state-telemetry.js';
 
+// Derived from the Codex PostToolUse wire timeout of 5 s (`timeout: 5` on
+// 'PostToolUse.0.0' in scripts/build-hooks.js). Measured hook startup plus
+// spool write is ~0.3 s warm and ~0.5 s on a first run (Apple Silicon Mac,
+// 2026-10-25); Windows cold start was not measured. 5 s minus that cost
+// leaves ~4.5 s; 2 s for the server attempt keeps more than half of that
+// as margin for slow starts, so a stalled server still falls back to the
+// local spool before Codex kills the hook. Change both values together.
+const SERVER_OBSERVATION_TIMEOUT_MS = 2_000;
+
 function spoolObservation(input: NormalizedHookInput, platformSource: string): HookResult {
   spoolHookEvent('observation', {
     contentSessionId: input.sessionId,
@@ -110,7 +119,10 @@ export const observationHandler: EventHandler = {
         },
       };
       try {
-        await runtime.client.recordEvent(event);
+        await runtime.client.recordEvent(
+          event,
+          input.platform === 'codex' ? { timeoutMs: SERVER_OBSERVATION_TIMEOUT_MS } : undefined,
+        );
         logger.debug('HOOK', 'Observation sent successfully via server', { toolName });
         return { continue: true, suppressOutput: true };
       } catch (error: unknown) {

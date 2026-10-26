@@ -374,6 +374,19 @@ const runPowerShellHidden: PowerShellRunner = (script, extraEnvironment) => {
  * - Raw registry writes do not notify Explorer; setting and clearing a dummy
  *   variable through `SetEnvironmentVariable(..., 'User')` broadcasts
  *   WM_SETTINGCHANGE so new terminals pick up the change.
+ * - Guards (#5044): the script refuses to write `Path` when the launcher
+ *   directory env var is missing or empty, or when the new value would be
+ *   shorter than the existing one (an append can only grow the value), and it
+ *   backs the old value up to `%LOCALAPPDATA%\claude-mem\user-path.bak` first
+ *   — one bad run must never be able to blank the user Path. The backup is
+ *   written only when the existing value is non-empty, so a run after a
+ *   blanking never overwrites the last good copy; a failed backup is reported
+ *   on stderr (not `Write-Error`, which `Stop` would make terminating) and the
+ *   append continues.
+ * - The broadcast variable is removed with `DeleteValue`, not
+ *   `SetEnvironmentVariable(..., $null)`: PowerShell 5.1 passes `$null` to
+ *   .NET string parameters as `""`, which leaves the value behind as an empty
+ *   REG_SZ instead of deleting it.
  * - `setx` is never used: it truncates at 1024 characters.
  */
 export const WINDOWS_USER_PATH_APPEND_SCRIPT = [
@@ -382,12 +395,19 @@ export const WINDOWS_USER_PATH_APPEND_SCRIPT = [
   "$existingUserPath = [string]$environmentKey.GetValue('Path', '', 'DoNotExpandEnvironmentNames')",
   "$pathValueKind = if ($environmentKey.GetValueNames() -contains 'Path') { $environmentKey.GetValueKind('Path') } else { 'ExpandString' }",
   `$launcherDirectory = $env:${LAUNCHER_DIRECTORY_ENVIRONMENT_VARIABLE}`,
+  "if (-not $launcherDirectory) { 'missing-launcher-directory'; exit 1 }",
   "$normalizePathEntry = { param($pathEntry) [Environment]::ExpandEnvironmentVariables($pathEntry).Trim().Trim('\"').TrimEnd('\\') }",
   "if ($existingUserPath -split ';' | Where-Object { $_ -and ((& $normalizePathEntry $_) -ieq (& $normalizePathEntry $launcherDirectory)) }) { 'present'; exit 0 }",
   "$updatedUserPath = if ($existingUserPath -eq '') { $launcherDirectory } elseif ($existingUserPath.EndsWith(';')) { $existingUserPath + $launcherDirectory } else { \"$existingUserPath;$launcherDirectory\" }",
+  "if ($updatedUserPath.Length -lt $existingUserPath.Length) { 'shortened-user-path'; exit 1 }",
+  "$backupFile = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'claude-mem\\user-path.bak'",
+  "if ($existingUserPath) {",
+  "  try { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $backupFile) | Out-Null; [System.IO.File]::WriteAllText($backupFile, $existingUserPath) }",
+  "  catch { [Console]::Error.WriteLine(\"user-path-backup-failed: $($_.Exception.Message)\") }",
+  "}",
   "$environmentKey.SetValue('Path', $updatedUserPath, $pathValueKind)",
   "[Environment]::SetEnvironmentVariable('CLAUDE_MEM_PATH_BROADCAST', '1', 'User')",
-  "[Environment]::SetEnvironmentVariable('CLAUDE_MEM_PATH_BROADCAST', $null, 'User')",
+  "$environmentKey.DeleteValue('CLAUDE_MEM_PATH_BROADCAST', $false)",
   "'added'",
 ].join('\n');
 

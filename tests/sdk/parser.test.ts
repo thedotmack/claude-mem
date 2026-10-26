@@ -286,6 +286,69 @@ describe('parseAgentXml — observations', () => {
     expect(result[0].type).toBe('code');
   });
 
+  it('takes the re-opened type when a stray closing tag precedes it', () => {
+    const xml = `<observation>
+      <type>bugfix</parameter>
+      <type>bugfix</type>
+      <title>Stray closing tag inside type</title>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].type).toBe('bugfix');
+  });
+
+  it('keeps the corrected type when the model re-opens type with a different value', () => {
+    const xml = `<observation>
+      <type>bugfix</reasoning_effort>
+      <type>discovery</type>
+      <title>Self-corrected type</title>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result[0].type).toBe('discovery');
+  });
+
+  it('takes the restated type when the model restarts the observation mid-type', () => {
+    const xml = `<observation>
+      <type>refactor</reasoning_effort>
+Oops, let me restate the output cleanly.
+
+<observation>
+      <type>refactor</type>
+      <title>Restated observation</title>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result[0].type).toBe('refactor');
+    expect(result[0].title).toBe('Restated observation');
+  });
+
+  it('never stores markup as the type when the value itself carries a stray tag', () => {
+    const xml = `<observation>
+      <type>discovery</parameter></type>
+      <title>Stray tag before the real close</title>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result[0].type).toBe('discovery');
+  });
+
+  it('falls back to the first mode type when the type is only encoded whitespace', () => {
+    const xml = `<observation>
+      <type>&#32;</type>
+      <title>Encoded whitespace type</title>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result[0].type).toBe('bugfix');
+  });
+
   it('returns a fail-fast result when no observation/summary blocks are present', () => {
     const result = parseAgentXml('Some text without any observations.');
     expect(result.valid).toBe(false);

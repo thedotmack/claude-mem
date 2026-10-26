@@ -221,6 +221,15 @@ describe('OpenRouter secret stream', () => {
     expect(isClassified(error) && error.failedBeforeOutput).toBe(true);
   });
 
+  it('a chunk that cannot be read before any output is resent only once', async () => {
+    const mock = installFetch(streamScript([{ chunk: 'data: {not json\n\n' }]));
+    const error = await new TestOpenRouterProvider().runQuery().catch((caught: unknown) => caught);
+    expect(mock.calls).toHaveLength(2);
+    expect(paidSendOutcomeOf(error)).toBe('ambiguous');
+    expect(isClassified(error) && error.failedBeforeOutput).toBe(true);
+    expect(isClassified(error) && error.code).toBe(STREAM_INTERRUPTED_CODE);
+  });
+
   it('a failure before the first delta is not resent when the batch budget is spent', async () => {
     const mock = installFetch({ hangBeforeHeaders: true });
     const budget = new PaidSendBudget(1);
@@ -257,6 +266,17 @@ describe('OpenRouter secret stream', () => {
     expect(mock.calls).toHaveLength(1);
     expect(paidSendOutcomeOf(error)).toBe('output_failure');
     expect(String((error as Error).message)).toContain('Provider disconnected');
+  });
+
+  it('a chunk that cannot be read after output started is an output failure, never resent', async () => {
+    const mock = installFetch(streamScript([
+      delta('<observation>'),
+      { chunk: 'data: {not json\n\n' },
+    ]));
+    const error = await new TestOpenRouterProvider().runQuery().catch((caught: unknown) => caught);
+    expect(mock.calls).toHaveLength(1);
+    expect(paidSendOutcomeOf(error)).toBe('output_failure');
+    expect(isClassified(error) && error.code).toBe(STREAM_INTERRUPTED_CODE);
   });
 
   it('reads one JSON body from a backend that ignores stream: true', async () => {

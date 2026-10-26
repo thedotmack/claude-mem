@@ -76,7 +76,11 @@ describe('automatic refresh scheduler', () => {
       expect(await worker.check()).toBe('idle');
       expect(ran).toBe(false);
       expect(worker.status()).toMatchObject({ state: 'idle', needs: { needed: false } });
-      // runNow runs whatever refreshNeeds says (the install funnel after its scan).
+      // The install funnel's runNow after a re-scan that found nothing new starts no agent either.
+      expect(await worker.runNow({ reason: 'setup-scan' })).toBe('idle');
+      expect(ran).toBe(false);
+      // Once something is due (a new conversation), runNow runs right away instead of at the next check.
+      writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: {} }));
       expect(await worker.runNow({ reason: 'setup-scan' })).toBe('ok');
       expect(ran).toBe(true);
     } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -111,6 +115,7 @@ describe('automatic refresh scheduler', () => {
       writeFileSync(join(dir, 'refresh.json'), JSON.stringify({ state: 'running', pid: 2 ** 22 + 12345, startedAt: new Date(NOW - DAY).toISOString() }));
       expect(await worker.check()).toBe('idle');
       expect(worker.status()).toMatchObject({ state: 'failed', error: 'The previous refresh stopped before finishing.' });
+      writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: {} }));
       expect(await worker.runNow({ reason: 'manual' })).toBe('failed');
       expect(worker.status()).toMatchObject({ state: 'failed', agent: 'gemini', error: 'gemini exited 1' });
     } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -131,7 +136,7 @@ describe('refresh task', () => {
     expect(claudeCode.allowedTools).toContain('mcp__plugin_claude-mem_mcp-search__search');
     expect(claudeCode.allowedTools).toContain('mcp__plugin_claude-mem_mcp-search__work_state_read');
     // No raw work-state writes: they would skip the skills' validators.
-    expect(claudeCode.allowedTools.filter(tool => /Bash|Write|Edit|work_state_write|save_memory|Agent|Skill/.test(tool))).toEqual([]);
+    expect(claudeCode.allowedTools.filter(tool => /Bash|Write|Edit|work_state_write|save_memory|smart_search|smart_outline|smart_unfold|Agent|Skill/.test(tool))).toEqual([]);
     expect(JSON.stringify(task)).not.toMatch(/bypass|dangerous/i);
   });
 
@@ -154,7 +159,9 @@ describe('refresh task', () => {
         const file = /is in (\S+\.json)/.exec(prompt)?.[1];
         if (prompt.includes('Do only section 1')) return '```json\n{"groups": [{"title": "Release cards", "conversations": [' + JSON.stringify(key('a')) + ']}]}\n```';
         if (prompt.includes("Do only section 2")) {
-          const [show] = JSON.parse(readFileSync(file!, 'utf8'));
+          const supplied = prompt.split(`--- ${file} ---\n`)[1];
+          expect(supplied).toBeDefined();
+          const [show] = JSON.parse(supplied);
           // The first answer forgets reviewBasis; the refusal is sent back and fixed.
           if (reviewAnswers++ === 0) return JSON.stringify({ reviews: [{ groupId: show.groupId, state: 'in-progress', percent: 40, summary: 'Cards are being built.' }] });
           expect(prompt).toMatch(/refused for these groups/);
@@ -163,7 +170,7 @@ describe('refresh task', () => {
         if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'One request is under way.', preferences: [] });
         throw new Error(`Unexpected prompt: ${prompt.slice(-200)}`);
       };
-      expect(await task.run(ask, 'codex')).toBe('1 new conversations grouped, 1 requests reviewed, story written.');
+      expect(await task.run(ask, 'gemini')).toBe('1 new conversations grouped, 1 requests reviewed, story written.');
       const ledger = readLedger(dir);
       expect(Object.values(ledger.groups.groups).map((group: any) => group.title)).toEqual(['Release cards']);
       expect(Object.values(ledger.progress).map((review: any) => review.percent)).toEqual([40]);
@@ -291,17 +298,28 @@ describe('parallel reviews', () => {
 });
 
 describe('incremental owner goals', () => {
-  /** A python3 stand-in: the export reports `newPrompts` prompts since the saved goals; save_goals records its goals file. */
-  function fakePython(newPrompts: number, calls: Array<{ args: string[]; goals?: any }>) {
+  /** The prompt importer stand-in: 40 owner prompts, `newPrompts` of them since the saved goals; records each since minute. */
+  function fakeOwnerPrompts(newPrompts: number, sinceMinutes: Array<string | null>) {
+    return async (folder: string, sinceMinute: string | null) => {
+      sinceMinutes.push(sinceMinute);
+      mkdirSync(folder, { recursive: true });
+      return { path: join(folder, 'owner-prompts.md'), ownerPrompts: 40, excludedAgentWritten: 0, newPrompts: sinceMinute ? newPrompts : 0 };
+    };
+  }
+  /** A python3 stand-in: save_goals records its goals file. */
+  function fakePython(calls: Array<{ args: string[]; goals?: any }>) {
     return ((_command: string, args: string[]) => {
       const child: any = new EventEmitter();
       child.stdout = Object.assign(new EventEmitter(), { setEncoding() {} }); child.stderr = Object.assign(new EventEmitter(), { setEncoding() {} });
+      // The interpreter probe (`python3 -c ...`): answer "Python 3.9+" without recording a script call.
+      if (args.includes('-c')) {
+        queueMicrotask(() => child.emit('close', 0));
+        return child;
+      }
       const call: { args: string[]; goals?: any } = { args };
       calls.push(call);
       queueMicrotask(() => {
-        if (args[0].endsWith('export_owner_prompts.py')) mkdirSync(args[args.indexOf('--out') + 1], { recursive: true });
-        if (args[0].endsWith('export_owner_prompts.py')) child.stdout.emit('data', JSON.stringify({ owner_prompts: 40, ...(args.includes('--since') ? { new_prompts: newPrompts } : {}) }) + '\n');
-        else call.goals = JSON.parse(readFileSync(args[args.indexOf('--goals') + 1], 'utf8'));
+        call.goals = JSON.parse(readFileSync(args[args.indexOf('--goals') + 1], 'utf8'));
         child.emit('close', 0);
       });
       return child;
@@ -314,10 +332,10 @@ describe('incremental owner goals', () => {
       const database = fixtureDatabase();
       saveGoals(database, new Date(NOW - 2 * DAY).toISOString());
       writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
-      const calls: Array<{ args: string[]; goals?: any }> = [];
       let clock = NOW;
-      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => clock });
-      setFakeSpawn(fakePython(3, calls));
+      const calls: Array<{ args: string[]; goals?: any }> = [], sinceMinutes: Array<string | null> = [];
+      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => clock, spawnImpl: fakePython(calls), writeOwnerPrompts: fakeOwnerPrompts(3, sinceMinutes) });
+      await task.prepare!();
       const prompts: string[] = [];
       const ask = async (prompt: string) => {
         prompts.push(prompt);
@@ -331,10 +349,79 @@ describe('incremental owner goals', () => {
       expect(prompts).toHaveLength(1);
       expect(prompts[0]).toContain('new-owner-prompts.md');
       expect(prompts[0]).toContain('3 prompts the owner typed since');
-      const exportCall = calls[0].args;
-      expect(exportCall.slice(exportCall.indexOf('--since'), exportCall.indexOf('--since') + 2)).toEqual(['--since', new Date(NOW - 2 * DAY).toLocaleString('sv').slice(0, 16)]);
-      // The next --since starts at the export, not the answer, so prompts typed while the agent worked are read next time.
-      expect(calls[1].goals).toMatchObject({ generated_at: new Date(NOW).toISOString(), source_prompt_count: 40, priorities: [{ title: 'Ship cards', rank: 2 }] });
+      expect(sinceMinutes).toEqual([new Date(NOW - 2 * DAY).toLocaleString('sv').slice(0, 16)]);
+      expect(calls[0].goals).toMatchObject({ generated_at: new Date(NOW).toISOString(), source_prompt_count: 40, priorities: [{ title: 'Ship cards', rank: 2 }] });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('an empty history saves an empty snapshot without any model call', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-empty-goals-'));
+    try {
+      const database = fixtureDatabase();
+      writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
+      const calls: Array<{ args: string[]; goals?: any }> = [];
+      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl: fakePython(calls), writeOwnerPrompts: async (folder, sinceMinute) => ({ ...await fakeOwnerPrompts(0, [])(folder, sinceMinute), ownerPrompts: 0 }) });
+      await task.prepare!();
+      expect(await task.run(async () => { throw new Error('empty input must not call a model'); }, 'codex')).toBe('goals empty.');
+      expect(calls[0].goals).toMatchObject({ generated_at: new Date(NOW).toISOString(), source_prompt_count: 0, priorities: [], open_asks: [] });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('refreshes goals with python when python3 is not installed', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-python-'));
+    try {
+      const database = fixtureDatabase();
+      saveGoals(database, new Date(NOW - 2 * DAY).toISOString());
+      writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
+      const calls: Array<{ args: string[]; goals?: any }> = [], sinceMinutes: Array<string | null> = [];
+      const python = fakePython(calls);
+      const scripts: string[] = [];
+      let probes = 0;
+      const spawnImpl = ((command: string, args: string[], spawnOptions: any) => {
+        if (command !== 'python') throw Object.assign(new Error(`Executable not found: ${command}`), { code: 'ENOENT' });
+        if (args.includes('-c')) probes++;
+        else {
+          scripts.push(command);
+          expect(spawnOptions.env.PYTHONUTF8).toBe('1');
+          expect(spawnOptions.env.CLAUDE_MEM_INTERNAL).toBe('1');
+        }
+        return python(command, args, spawnOptions);
+      }) as any;
+      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl, writeOwnerPrompts: fakeOwnerPrompts(0, sinceMinutes) });
+      await task.prepare!();
+      expect(await task.run(async () => { throw new Error('no agent needed'); }, 'codex')).toBe('goals unchanged.');
+      // The export runs in TypeScript; only save_goals.py goes through Python.
+      expect(scripts).toEqual(['python']);
+      expect(probes).toBe(1);
+      expect(calls[0].args[0]).toEndWith('save_goals.py');
+      expect(calls[0].goals).toMatchObject({ priorities: [{ title: 'Ship cards' }] });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('does not retry a failing save script with another interpreter', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-python-'));
+    try {
+      const database = fixtureDatabase();
+      saveGoals(database, new Date(NOW - 2 * DAY).toISOString());
+      writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
+      const scripts: Array<{ command: string; script: string }> = [];
+      const spawnImpl = ((command: string, args: string[]) => {
+        const child: any = new EventEmitter();
+        child.stdout = Object.assign(new EventEmitter(), { setEncoding() {} });
+        child.stderr = Object.assign(new EventEmitter(), { setEncoding() {} });
+        const probe = args.includes('-c');
+        queueMicrotask(() => {
+          if (!probe) { scripts.push({ command, script: args[0] }); child.stderr.emit('data', 'save failed'); }
+          child.emit('close', probe ? 0 : 7);
+        });
+        return child;
+      }) as any;
+      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl, writeOwnerPrompts: fakeOwnerPrompts(0, []) });
+      await task.prepare!();
+      await expect(task.run(async () => { throw new Error('no agent needed'); }, 'codex')).rejects.toThrow('save_goals.py exited 7: save failed');
+      expect(scripts).toHaveLength(1);
+      expect(scripts[0].command).toBe('python3');
+      expect(scripts[0].script).toEndWith('save_goals.py');
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
@@ -344,11 +431,11 @@ describe('incremental owner goals', () => {
       const database = fixtureDatabase();
       saveGoals(database, new Date(NOW - 2 * DAY).toISOString());
       writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
-      const calls: Array<{ args: string[]; goals?: any }> = [];
-      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW });
-      setFakeSpawn(fakePython(0, calls));
+      const calls: Array<{ args: string[]; goals?: any }> = [], sinceMinutes: Array<string | null> = [];
+      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl: fakePython(calls), writeOwnerPrompts: fakeOwnerPrompts(0, sinceMinutes) });
+      await task.prepare!();
       expect(await task.run(async () => { throw new Error('no agent needed'); }, 'codex')).toBe('goals unchanged.');
-      expect(calls[1].goals).toMatchObject({ generated_at: new Date(NOW).toISOString(), priorities: [{ title: 'Ship cards', rank: 1 }] });
+      expect(calls[0].goals).toMatchObject({ generated_at: new Date(NOW).toISOString(), priorities: [{ title: 'Ship cards', rank: 1 }] });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

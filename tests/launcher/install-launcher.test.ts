@@ -751,7 +751,7 @@ describe('ensureDirectoryOnWindowsUserPath', () => {
     expect(script).toBe(WINDOWS_USER_PATH_APPEND_SCRIPT);
     expect(script).toContain("GetValue('Path', '', 'DoNotExpandEnvironmentNames')");
     expect(script).toContain("SetValue('Path', $updatedUserPath, $pathValueKind)");
-    expect(script).toContain("SetEnvironmentVariable('CLAUDE_MEM_PATH_BROADCAST', $null, 'User')");
+    expect(script).toContain("DeleteValue('CLAUDE_MEM_PATH_BROADCAST', $false)");
     expect(script).not.toContain(launcherDirectory);
     expect(script).not.toContain('setx');
     expect(extraEnvironment).toEqual({ CLAUDE_MEM_LAUNCHER_DIRECTORY: launcherDirectory });
@@ -779,6 +779,69 @@ describe('ensureDirectoryOnWindowsUserPath', () => {
       expect(logger.lines[0]).toStartWith('warn: Could not update the user Path: ');
       expect(host.environmentVariables.PATH).toBe('C:\\Windows');
     }
+  });
+});
+
+describe('WINDOWS_USER_PATH_APPEND_SCRIPT #5044 guards', () => {
+  // Regression: https://github.com/thedotmack/claude-mem/issues/5044 — one run
+  // of this script left HKCU\Environment\Path as an empty string and the
+  // broadcast variable behind as an empty REG_SZ (PowerShell 5.1 passes $null
+  // to string parameters as ""). The script is a published constant, so each
+  // guard is pinned by asserting on its line and its position relative to the
+  // write it must precede.
+  const lines = WINDOWS_USER_PATH_APPEND_SCRIPT.split('\n');
+  const indexOfLine = (fragment: string): number => lines.findIndex((line) => line.includes(fragment));
+  const setValuePathIndex = indexOfLine("SetValue('Path'");
+
+  it('refuses to write Path when the launcher directory env var is missing or empty (#5044)', () => {
+    const guardIndex = indexOfLine("{ 'missing-launcher-directory'; exit 1 }");
+    expect(guardIndex).toBeGreaterThan(-1);
+    expect(guardIndex).toBeGreaterThan(indexOfLine(`$launcherDirectory = $env:`));
+    // Before the present-check reads it too: ExpandEnvironmentVariables(null) would abort mid-script.
+    expect(guardIndex).toBeLessThan(indexOfLine('& $normalizePathEntry $launcherDirectory'));
+    expect(guardIndex).toBeLessThan(setValuePathIndex);
+  });
+
+  it('refuses to write a Path value shorter than the existing one (#5044)', () => {
+    // An append can only ever grow the value; a shorter update is corruption.
+    const guardIndex = indexOfLine("{ 'shortened-user-path'; exit 1 }");
+    expect(guardIndex).toBeGreaterThan(-1);
+    expect(guardIndex).toBeGreaterThan(indexOfLine('$updatedUserPath ='));
+    expect(guardIndex).toBeLessThan(setValuePathIndex);
+  });
+
+  it('backs the existing value up to %LOCALAPPDATA%\\claude-mem\\user-path.bak before writing (#5044)', () => {
+    const backupFileIndex = indexOfLine('user-path.bak');
+    const writeBackupIndex = indexOfLine('[System.IO.File]::WriteAllText($backupFile, $existingUserPath)');
+    expect(backupFileIndex).toBeGreaterThan(-1);
+    expect(writeBackupIndex).toBeGreaterThan(backupFileIndex);
+    expect(writeBackupIndex).toBeGreaterThan(indexOfLine('$existingUserPath ='));
+    expect(writeBackupIndex).toBeLessThan(setValuePathIndex);
+  });
+
+  it('writes the backup only when the existing value is non-empty, so a later run never overwrites the last good copy (#5044)', () => {
+    const nonEmptyGuardIndex = lines.findIndex((line) => line.trim() === 'if ($existingUserPath) {');
+    const writeBackupIndex = indexOfLine('[System.IO.File]::WriteAllText($backupFile, $existingUserPath)');
+    const closingBraceIndex = lines.findIndex((line, index) => index > writeBackupIndex && line.trim() === '}');
+    expect(nonEmptyGuardIndex).toBeGreaterThan(-1);
+    expect(nonEmptyGuardIndex).toBeLessThan(writeBackupIndex);
+    expect(closingBraceIndex).toBeGreaterThan(writeBackupIndex);
+    expect(closingBraceIndex).toBeLessThan(setValuePathIndex);
+  });
+
+  it('reports a failed backup on stderr without terminating the append (#5044)', () => {
+    const catchLine = lines.find((line) => line.includes('catch {')) ?? '';
+    expect(catchLine).toContain('[Console]::Error.WriteLine(');
+    expect(catchLine).toContain('user-path-backup-failed');
+    // Write-Error is terminating under $ErrorActionPreference = 'Stop'.
+    expect(WINDOWS_USER_PATH_APPEND_SCRIPT).not.toContain('Write-Error');
+    expect(WINDOWS_USER_PATH_APPEND_SCRIPT).not.toMatch(/catch \{\s*\}/);
+  });
+
+  it('deletes the broadcast variable through the registry API, leaving no empty value behind (#5044)', () => {
+    expect(WINDOWS_USER_PATH_APPEND_SCRIPT).toContain("DeleteValue('CLAUDE_MEM_PATH_BROADCAST', $false)");
+    // SetEnvironmentVariable(..., $null) keeps the value as "" on Windows PowerShell 5.1.
+    expect(WINDOWS_USER_PATH_APPEND_SCRIPT).not.toContain("SetEnvironmentVariable('CLAUDE_MEM_PATH_BROADCAST', $null");
   });
 });
 

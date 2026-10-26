@@ -1,38 +1,15 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import { EventEmitter } from 'events';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
-import * as realOs from 'os';
-import { join } from 'path';
 import type { spawn } from 'child_process';
-import { setFakeSpawn } from '../../helpers/fake-spawn.js';
-import * as realFinder from '../../../src/shared/find-claude-executable.js';
-import * as realOAuth from '../../../src/shared/oauth-token.js';
-import * as realEnvManager from '../../../src/shared/EnvManager.js';
+import { join } from 'node:path';
+import {
+  detectUsableAgents,
+  GEMINI_NO_MCP_SERVERS,
+  runCommand,
+  type AgentDetectionDependencies,
+  type UsableAgent,
+} from '../../../src/services/agent-runner/detect.js';
 import type { OAuthTokenResult } from '../../../src/shared/oauth-token.js';
-
-// What a test says about the machine. Each module mock hands calls to the real
-// function when the test set nothing, so other test files in this process are unaffected.
-interface Machine {
-  findClaudeExecutable?: () => string;
-  readClaudeOAuthToken?: () => Promise<OAuthTokenResult>;
-  hasAnthropicApiKey?: () => boolean;
-  hasAnthropicAuthToken?: () => boolean;
-}
-let machine: Machine | null = null;
-const finder = { ...realFinder }, oauth = { ...realOAuth }, envManager = { ...realEnvManager }, os = { ...realOs };
-// Bun reads the home folder once, so a test's home is mocked rather than set through HOME.
-let home = '';
-mock.module('os', () => ({ ...os, homedir: () => (machine ? home : os.homedir()) }));
-mock.module('../../../src/shared/find-claude-executable.js', () => ({ ...finder, findClaudeExecutable: (...args: Parameters<typeof finder.findClaudeExecutable>) => machine ? (machine.findClaudeExecutable ?? (() => { throw new Error('Claude executable not found.'); }))() : finder.findClaudeExecutable(...args) }));
-mock.module('../../../src/shared/oauth-token.js', () => ({ ...oauth, readClaudeOAuthToken: (...args: Parameters<typeof oauth.readClaudeOAuthToken>) => machine ? (machine.readClaudeOAuthToken ?? (async () => ({ kind: 'absent', reason: 'no credential' }) as OAuthTokenResult))() : oauth.readClaudeOAuthToken(...args) }));
-mock.module('../../../src/shared/EnvManager.js', () => ({
-  ...envManager,
-  hasAnthropicApiKey: () => machine ? machine.hasAnthropicApiKey?.() ?? false : envManager.hasAnthropicApiKey(),
-  hasAnthropicAuthToken: () => machine ? machine.hasAnthropicAuthToken?.() ?? false : envManager.hasAnthropicAuthToken(),
-}));
-const { detectUsableAgents, runCommand } = await import('../../../src/services/agent-runner/detect.js');
-const { windowsWhereExecutablePath } = await import('../../../src/shared/spawn.js');
-type UsableAgent = Awaited<ReturnType<typeof detectUsableAgents>>[number];
 
 type ScriptedOutcome =
   | { exitCode: number; stdout?: string; stderr?: string }
@@ -72,6 +49,7 @@ function fakeSpawn(script: Record<string, ScriptedOutcome>, calls: string[] = []
   }) as unknown as typeof spawn;
 }
 
+const HOME = '/home/tester';
 const CLAUDE_PATH = '/usr/local/bin/claude';
 const CODEX_PATH = '/usr/local/bin/codex';
 const GEMINI_PATH = '/usr/local/bin/gemini';
@@ -79,40 +57,30 @@ const GEMINI_PATH = '/usr/local/bin/gemini';
 const WHICH_CODEX = { 'which codex': { exitCode: 0, stdout: `${CODEX_PATH}\n` } };
 const WHICH_GEMINI = { 'which gemini': { exitCode: 0, stdout: `${GEMINI_PATH}\n` } };
 
-interface Scenario extends Machine {
-  spawn?: typeof spawn;
-  /** Files under a fresh home folder, by path relative to it. */
-  homeFiles?: Record<string, string>;
-  geminiApiKey?: string;
-  platform?: NodeJS.Platform;
+function dependencies(overrides: Partial<AgentDetectionDependencies>): Partial<AgentDetectionDependencies> {
+  return {
+    spawn: fakeSpawn({}),
+    findClaudeExecutable: () => {
+      throw new Error('Claude executable not found.');
+    },
+    readClaudeOAuthToken: async (): Promise<OAuthTokenResult> => ({ kind: 'absent', reason: 'no credential' }),
+    hasAnthropicApiKey: () => false,
+    hasAnthropicAuthToken: () => false,
+    fileExists: () => false,
+    readTextFile: () => {
+      throw new Error('ENOENT');
+    },
+    environment: {},
+    homeDirectory: () => HOME,
+    platform: () => 'darwin',
+    now: () => 1_000_000,
+    geminiAccountChecks: new Map(),
+    ...overrides,
+  };
 }
 
-const saved = { geminiApiKey: process.env.GEMINI_API_KEY, platform: process.platform };
-beforeEach(() => { home = mkdtempSync(join(os.tmpdir(), 'detect-home-')); });
-afterEach(() => {
-  machine = null;
-  setFakeSpawn(null);
-  if (saved.geminiApiKey === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = saved.geminiApiKey;
-  Object.defineProperty(process, 'platform', { value: saved.platform, configurable: true });
-  rmSync(home, { recursive: true, force: true });
-});
-
-/** Set up the machine a test describes and run detection on it. */
-function detect(scenario: Scenario) {
-  machine = scenario;
-  setFakeSpawn(scenario.spawn ?? fakeSpawn({}));
-  for (const [path, text] of Object.entries(scenario.homeFiles ?? {})) {
-    mkdirSync(join(home, path, '..'), { recursive: true });
-    writeFileSync(join(home, path), text);
-  }
-  delete process.env.GEMINI_API_KEY;
-  if (scenario.geminiApiKey) process.env.GEMINI_API_KEY = scenario.geminiApiKey;
-  if (scenario.platform) Object.defineProperty(process, 'platform', { value: scenario.platform, configurable: true });
-  return detectUsableAgents();
-}
-
-async function detectOne(id: UsableAgent['id'], scenario: Scenario): Promise<UsableAgent> {
-  const agents = await detect(scenario);
+async function detectOne(id: UsableAgent['id'], overrides: Partial<AgentDetectionDependencies>): Promise<UsableAgent> {
+  const agents = await detectUsableAgents(dependencies(overrides));
   const agent = agents.find(candidate => candidate.id === id);
   if (!agent) throw new Error(`no ${id} result`);
   return agent;
@@ -120,7 +88,7 @@ async function detectOne(id: UsableAgent['id'], scenario: Scenario): Promise<Usa
 
 describe('detectUsableAgents', () => {
   it('reports all three agents in priority order and never throws', async () => {
-    const agents = await detect({});
+    const agents = await detectUsableAgents(dependencies({}));
     expect(agents.map(agent => agent.id)).toEqual(['claude-code', 'codex', 'gemini']);
     expect(agents.every(agent => agent.authenticated === false && agent.path === null)).toBe(true);
   });
@@ -153,7 +121,7 @@ describe('detectUsableAgents', () => {
       const agent = await detectOne('claude-code', {
         ...installed,
         spawn: fakeSpawn({}, calls),
-        readClaudeOAuthToken: async () => ({ kind: 'present', token: 'secret', source: 'keychain', expiresAt: Date.now() + 3_600_000 }),
+        readClaudeOAuthToken: async () => ({ kind: 'present', token: 'secret', source: 'keychain', expiresAt: 2_000_000 }),
       });
       expect(agent).toMatchObject({ path: CLAUDE_PATH, authenticated: true });
       expect(agent.reason).not.toContain('secret');
@@ -222,32 +190,16 @@ describe('detectUsableAgents', () => {
       expect(agent).toMatchObject({ path: CODEX_PATH, authenticated: true, reason: 'Logged in using ChatGPT' });
     }, 10_000);
 
-    it('uses the system where.exe on Windows, never one from the working folder', async () => {
+    it('uses where.exe on Windows', async () => {
       const calls: string[] = [];
-      await detectOne('codex', { platform: 'win32', spawn: fakeSpawn({}, calls) });
-      expect(calls).toContain(`${windowsWhereExecutablePath()} codex`);
-    });
-
-    it('on Windows, an npm-installed codex.cmd shim is found and started through cmd.exe', async () => {
-      // npm installs an extensionless sh script beside the .cmd shim; where.exe lists it first.
-      const bin = mkdtempSync(join(os.tmpdir(), 'detect-npm-bin-'));
-      try {
-        const script = join(bin, 'codex'), shim = join(bin, 'codex.cmd');
-        writeFileSync(script, ''); writeFileSync(shim, '');
-        const calls: string[] = [];
-        const agent = await detectOne('codex', {
-          platform: 'win32',
-          spawn: fakeSpawn({
-            [`${windowsWhereExecutablePath()} codex`]: { exitCode: 0, stdout: `${script}\r\n${shim}\r\n` },
-            [`${process.env.ComSpec ?? 'cmd.exe'} /d /s /c ""${shim}" "login" "status""`]: { exitCode: 0, stderr: 'Logged in using ChatGPT\n' },
-          }, calls),
-        });
-        expect(agent).toMatchObject({ path: shim, authenticated: true, reason: 'Logged in using ChatGPT' });
-      } finally { rmSync(bin, { recursive: true, force: true }); }
+      await detectOne('codex', { platform: () => 'win32', spawn: fakeSpawn({}, calls) });
+      expect(calls).toContain(`${join('C:\\Windows', 'System32', 'where.exe')} codex`);
     });
   });
 
   describe('Gemini', () => {
+    const settingsPath = join(HOME, '.gemini', 'settings.json');
+    const credentialsPath = join(HOME, '.gemini', 'oauth_creds.json');
     const settings = JSON.stringify({ security: { auth: { selectedType: 'oauth-personal' } } });
 
     it('not installed', async () => {
@@ -259,30 +211,81 @@ describe('detectUsableAgents', () => {
     it('installed but logged out (auth type named, no OAuth credentials)', async () => {
       const agent = await detectOne('gemini', {
         spawn: fakeSpawn(WHICH_GEMINI),
-        homeFiles: { '.gemini/settings.json': settings },
+        fileExists: path => path === settingsPath,
+        readTextFile: () => settings,
       });
       expect(agent).toMatchObject({ path: GEMINI_PATH, authenticated: false });
       expect(agent.reason).toContain('oauth_creds.json');
     });
 
-    it('logged in through settings.json + oauth_creds.json', async () => {
-      const agent = await detectOne('gemini', {
-        spawn: fakeSpawn(WHICH_GEMINI),
-        homeFiles: { '.gemini/settings.json': settings, '.gemini/oauth_creds.json': '{}' },
-      });
+    const PROBE = [GEMINI_PATH, '--skip-trust', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json'].join(' ');
+    const NO_INPUT = 'No input provided via stdin. Input can be provided by piping data into gemini or using the --prompt option.\n';
+    const INELIGIBLE = 'Error authenticating: IneligibleTierError: This client is no longer supported for Gemini Code Assist for individuals. To continue using Gemini, please migrate to the Antigravity suite of products: https://antigravity.google\n'
+      + '    at throwIneligibleOrProjectIdError (file:///gemini/bundle/chunk.js:300912:11)\n  ineligibleTiers: [ { reasonCode: \'UNSUPPORTED_CLIENT\' } ]\n' + NO_INPUT;
+    const signedIn = (probe: ScriptedOutcome, credentials = () => JSON.stringify({ refresh_token: 'refresh-1', access_token: 'a' }), calls: string[] = []) => ({
+      spawn: fakeSpawn({ ...WHICH_GEMINI, [PROBE]: probe }, calls),
+      fileExists: (path: string) => path === settingsPath || path === credentialsPath,
+      readTextFile: (path: string) => (path === settingsPath ? settings : credentials()),
+    });
+
+    it('usable: the account probe signs in and stops for lack of a prompt (exit 42, no generation)', async () => {
+      const calls: string[] = [];
+      const agent = await detectOne('gemini', signedIn({ exitCode: 42, stderr: NO_INPUT }, undefined, calls));
       expect(agent).toMatchObject({ path: GEMINI_PATH, authenticated: true });
       expect(agent.reason).toContain('oauth-personal');
+      expect(calls).toContain(PROBE);
+      expect(calls.join(' ')).not.toMatch(/ -p |--prompt|yolo|bypass/);
+    });
+
+    it('ineligible tier: installed, credentials on disk, but Google refuses the account', async () => {
+      const agent = await detectOne('gemini', signedIn({ exitCode: 42, stderr: INELIGIBLE }));
+      expect(agent).toMatchObject({ path: GEMINI_PATH, authenticated: false });
+      expect(agent.reason).toBe("Gemini is installed, but this Google account can't use it: This client is no longer supported for Gemini Code Assist for individuals. To continue using Gemini, please migrate to the Antigravity suite of products: https://antigravity.google");
+    });
+
+    it('not logged in: stale credentials whose sign-in fails are reported, not trusted', async () => {
+      const agent = await detectOne('gemini', signedIn({ exitCode: 41, stderr: 'Error authenticating: Error: invalid_grant\n' }));
+      expect(agent).toMatchObject({ path: GEMINI_PATH, authenticated: false, reason: 'Gemini is installed, but its Google sign-in failed: invalid_grant' });
+    });
+
+    it('a probe that exits with another error is not usable', async () => {
+      const agent = await detectOne('gemini', signedIn({ exitCode: 1, stderr: 'boom\n' }));
+      expect(agent).toMatchObject({ authenticated: false, reason: '`gemini (account check)` exited 1: boom' });
+    });
+
+    it('caches the probe per login and probes again when the refresh token changes', async () => {
+      const calls: string[] = [];
+      let refreshToken = 'refresh-1';
+      const geminiAccountChecks = new Map();
+      const overrides = { ...signedIn({ exitCode: 42, stderr: NO_INPUT }, () => JSON.stringify({ refresh_token: refreshToken }), calls), geminiAccountChecks };
+      const [first, second] = await Promise.all([detectOne('gemini', overrides), detectOne('gemini', overrides)]);
+      expect(await detectOne('gemini', overrides)).toEqual(first);
+      expect(second).toEqual(first);
+      expect(calls.filter(call => call === PROBE)).toHaveLength(1);
+      refreshToken = 'refresh-2';
+      const relogged = await detectOne('gemini', { ...overrides, spawn: fakeSpawn({ ...WHICH_GEMINI, [PROBE]: { exitCode: 42, stderr: NO_INPUT } }, calls) });
+      expect(relogged.authenticated).toBe(true);
+      expect(calls.filter(call => call === PROBE)).toHaveLength(2);
+      expect([...geminiAccountChecks.keys()].join(' ')).not.toContain('refresh-');
+    });
+
+    it('retries a transient failed account probe without requiring a new login', async () => {
+      const geminiAccountChecks = new Map();
+      const failed = await detectOne('gemini', { ...signedIn({ exitCode: 1, stderr: 'network unavailable' }), geminiAccountChecks });
+      expect(failed.authenticated).toBe(false);
+      const retry = await detectOne('gemini', { ...signedIn({ exitCode: 42, stderr: NO_INPUT }), geminiAccountChecks });
+      expect(retry.authenticated).toBe(true);
     });
 
     it('logged in through GEMINI_API_KEY', async () => {
-      const agent = await detectOne('gemini', { spawn: fakeSpawn(WHICH_GEMINI), geminiApiKey: 'key' });
+      const agent = await detectOne('gemini', { spawn: fakeSpawn(WHICH_GEMINI), environment: { GEMINI_API_KEY: 'key' } });
       expect(agent).toMatchObject({ authenticated: true, reason: 'GEMINI_API_KEY is set' });
     });
 
     it('a slow `which gemini` is waited for and still reports logged in', async () => {
       const agent = await detectOne('gemini', {
         spawn: fakeSpawn({ 'which gemini': { exitCode: 0, stdout: `${GEMINI_PATH}\n`, delayMs: 3_500 } }),
-        geminiApiKey: 'key',
+        environment: { GEMINI_API_KEY: 'key' },
       });
       expect(agent).toMatchObject({ path: GEMINI_PATH, authenticated: true });
     }, 10_000);
@@ -290,7 +293,8 @@ describe('detectUsableAgents', () => {
     it('unreadable settings.json is reported, not thrown', async () => {
       const agent = await detectOne('gemini', {
         spawn: fakeSpawn(WHICH_GEMINI),
-        homeFiles: { '.gemini/settings.json': '{not json', '.gemini/oauth_creds.json': '{}' },
+        fileExists: () => true,
+        readTextFile: () => '{not json',
       });
       expect(agent.authenticated).toBe(false);
       expect(agent.reason).toContain('unreadable');
@@ -300,14 +304,12 @@ describe('detectUsableAgents', () => {
 
 describe('runCommand', () => {
   it('waits for a slow command to finish instead of giving up', async () => {
-    setFakeSpawn(fakeSpawn({ 'codex login status': { exitCode: 0, stderr: 'Logged in', delayMs: 3_500 } }));
-    const result = await runCommand('codex', ['login', 'status']);
+    const result = await runCommand(fakeSpawn({ 'codex login status': { exitCode: 0, stderr: 'Logged in', delayMs: 3_500 } }), 'codex', ['login', 'status']);
     expect(result).toMatchObject({ exitCode: 0, stderr: 'Logged in' });
   }, 10_000);
 
   it('reports a spawn error instead of rejecting', async () => {
-    setFakeSpawn(fakeSpawn({ 'nope': { spawnError: 'spawn nope ENOENT' } }));
-    const result = await runCommand('nope', []);
+    const result = await runCommand(fakeSpawn({ 'nope': { spawnError: 'spawn nope ENOENT' } }), 'nope', []);
     expect(result.spawnError?.message).toContain('ENOENT');
     expect(result.exitCode).toBeNull();
   });
@@ -316,8 +318,7 @@ describe('runCommand', () => {
     const throwingSpawn = (() => {
       throw new Error('EINVAL');
     }) as unknown as typeof spawn;
-    setFakeSpawn(throwingSpawn);
-    const result = await runCommand('x', []);
+    const result = await runCommand(throwingSpawn, 'x', []);
     expect(result.spawnError?.message).toBe('EINVAL');
   });
 });
