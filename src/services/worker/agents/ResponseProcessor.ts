@@ -131,8 +131,12 @@ function extractPathsFromToolInput(
   }
 
   const paths: string[] = [];
-  // `Path` is agy's read_file/view_file argument.
-  const directFields = ['file_path', 'filePath', 'Path', 'path', 'notebook_path', 'notebookPath', 'filePaths'];
+  // A read's canonical `file_path` wins over a conflicting `path` (Kimi and
+  // OpenClaw send both), so reads never take `path`. agy's `Path` argument is
+  // mapped to `file_path` by its adapter (normalizeAgyToolInput).
+  const directFields = mode === 'read'
+    ? ['file_path', 'filePath', 'notebook_path', 'notebookPath', 'filePaths']
+    : ['file_path', 'filePath', 'notebook_path', 'notebookPath', 'path', 'filePaths'];
 
   for (const field of directFields) {
     const value = input[field];
