@@ -57,7 +57,10 @@ function keyedLookbehind(key: string): string {
 }
 
 export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
-  { name: 'aws_access_key',  regex: /AKIA[0-9A-Z]{16}/g },
+  // `AKIA` is a long-term access key ID; `ASIA` is the temporary one that STS,
+  // SSO and instance roles hand out (`aws sts assume-role`, `aws configure
+  // export-credentials`), printed next to its secret and session token.
+  { name: 'aws_access_key',  regex: /(?:AKIA|ASIA)[0-9A-Z]{16}/g },
   // Known limitation: only matches shell-style (`KEY=val`, `KEY='val'`) and
   // yaml-style (`KEY: val`); JSON-style `"KEY": "val"` is not anchored
   // because the lookbehind expects `=`/`:` directly after the key name.

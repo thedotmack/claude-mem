@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { searchCodebase, formatSearchResults } from '../../../src/services/smart-file-read/search.js';
 
 async function searchFiles(files: Record<string, string>, query: string, options = {}) {
@@ -26,7 +26,7 @@ const search = (query: string, options = {}) => searchFiles(billingFiles, query,
 describe('smart search path matches', () => {
   test('lists a filename match on one line when no symbol name matches', async () => {
     const result = await search('invoice-ledger');
-    expect(result.matchingFiles.map(file => file.filePath)).toEqual(['billing/invoice-ledger.js']);
+    expect(result.matchingFiles.map(file => file.filePath)).toEqual([join('billing', 'invoice-ledger.js')]);
     expect(result.foldedFiles).toEqual([]);
     expect(result.matchingSymbols).toEqual([]);
     expect(result.tokenEstimate).toBe(0);
@@ -37,21 +37,21 @@ describe('smart search path matches', () => {
     const output = formatSearchResults(result, 'invoice-ledger');
     expect(output).toContain('0 symbol matches; 0 matched files (~0 tokens for folded view); 1 file matched by path only');
     expect(output).toContain('── Matching Files ──');
-    expect(output).toContain(`  billing/invoice-ledger.js (javascript, 2 lines, ~${file.foldedTokenEstimate} tokens folded) — smart_outline to expand`);
+    expect(output).toContain(`  ${join('billing', 'invoice-ledger.js')} (javascript, 2 lines, ~${file.foldedTokenEstimate} tokens folded) — smart_outline to expand`);
     expect(output).not.toContain('── Folded File Views ──');
     expect(output).not.toContain('📁');
   }, 120000);
   test('lists directory matches within the requested result limit', async () => {
     const result = await search('billing', { maxResults: 1 });
     expect(result.matchingFiles).toHaveLength(1);
-    expect(result.matchingFiles[0].filePath).toStartWith('billing/');
+    expect(result.matchingFiles[0].filePath).toStartWith(`billing${sep}`);
     expect(result.foldedFiles).toEqual([]);
     expect(result.matchingSymbols).toEqual([]);
     expect(formatSearchResults(result, 'billing')).toContain(result.matchingFiles[0].filePath);
   }, 120000);
   test('continues returning symbol matches and their folded files', async () => {
     const result = await search('salutation');
-    expect(result.foldedFiles.map(file => file.filePath)).toEqual(['billing/invoice-ledger.js']);
+    expect(result.foldedFiles.map(file => file.filePath)).toEqual([join('billing', 'invoice-ledger.js')]);
     expect(result.matchingSymbols.map(symbol => symbol.symbolName)).toEqual(['salutation']);
     expect(result.matchingFiles).toEqual([]);
     expect(formatSearchResults(result, 'salutation')).not.toContain('── Matching Files ──');
@@ -89,11 +89,11 @@ test('keeps symbol files folded and lists other path hits on one line each', asy
   };
   const one = await searchFiles(files, 'billing', { maxResults: 1 });
   expect(one.matchingSymbols.map(symbol => symbol.symbolName)).toEqual(['billingReport']);
-  expect(one.foldedFiles.map(file => file.filePath)).toEqual(['billing/z.js']);
-  expect(one.matchingFiles.map(file => file.filePath)).toEqual(['billing/a.js']);
+  expect(one.foldedFiles.map(file => file.filePath)).toEqual([join('billing', 'z.js')]);
+  expect(one.matchingFiles.map(file => file.filePath)).toEqual([join('billing', 'a.js')]);
   const two = await searchFiles(files, 'billing', { maxResults: 2 });
-  expect(two.foldedFiles.map(file => file.filePath)).toEqual(['billing/z.js']);
-  expect(two.matchingFiles.map(file => file.filePath)).toEqual(['billing/a.js']);
+  expect(two.foldedFiles.map(file => file.filePath)).toEqual([join('billing', 'z.js')]);
+  expect(two.matchingFiles.map(file => file.filePath)).toEqual([join('billing', 'a.js')]);
   const symbolFiles = new Set(two.matchingSymbols.map(symbol => symbol.filePath));
   expect(two.foldedFiles.every(file => symbolFiles.has(file.filePath))).toBe(true);
   expect(two.tokenEstimate).toBe(two.foldedFiles[0].foldedTokenEstimate);
@@ -112,15 +112,15 @@ test('ranks file-name hits above directory-only hits before capping', async () =
   };
   const all = await searchFiles(files, 'billing');
   expect(all.matchingFiles.map(file => file.filePath))
-    .toEqual(['reports/billing.js', 'reports/billing-summary.js', 'billing/a.js']);
+    .toEqual([join('reports', 'billing.js'), join('reports', 'billing-summary.js'), join('billing', 'a.js')]);
   const capped = await searchFiles(files, 'billing', { maxResults: 1 });
-  expect(capped.matchingFiles.map(file => file.filePath)).toEqual(['reports/billing.js']);
+  expect(capped.matchingFiles.map(file => file.filePath)).toEqual([join('reports', 'billing.js')]);
 }, 120000);
 
 describe('skipSymbolExtraction (broken tree-sitter CLI, #4758)', () => {
   test('returns path matches without attempting symbol extraction', async () => {
     const result = await search('invoice-ledger', { skipSymbolExtraction: true });
-    expect(result.matchingFiles.map(file => file.filePath)).toEqual(['billing/invoice-ledger.js']);
+    expect(result.matchingFiles.map(file => file.filePath)).toEqual([join('billing', 'invoice-ledger.js')]);
     expect(result.matchingSymbols).toEqual([]);
     expect(result.foldedFiles).toEqual([]);
     expect(result.totalSymbolsFound).toBe(0);

@@ -34,7 +34,7 @@ That is all you need for the 12 built-in patterns to kick in. Add `"CLAUDE_MEM_R
 
 | Name | Catches |
 |---|---|
-| `aws_access_key` | `AKIA…` (16 trailing alphanumerics) |
+| `aws_access_key` | `AKIA…` and temporary `ASIA…` key IDs (16 trailing alphanumerics) |
 | `aws_secret_key` | 40-char base64 anchored to `AWS_SECRET_ACCESS_KEY=…` in any letter case, as in `~/.aws/credentials` (shell / yaml style — see [limitations](#limits)) |
 | `aws_session_token` | 100+ char base64 anchored to `AWS_SESSION_TOKEN=…`, `aws_session_token = …` or JSON `"SessionToken": "…"` (temporary STS/SSO credentials) |
 | `github_pat` | `ghp_…`, `gho_…`, `ghu_…`, `ghs_…`, `ghr_…`, `github_pat_…` |
