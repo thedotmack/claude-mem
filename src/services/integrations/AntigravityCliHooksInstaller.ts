@@ -126,6 +126,7 @@ const ANTIGRAVITY_GROUPED_EVENTS = new Set<string>(['PreToolUse', 'PostToolUse']
 // PreCompress) are not present in agy.
 const ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT: Record<string, string> = {
   'SessionStart': 'context',
+  'PreInvocation': 'session-init',
   'PreToolUse': 'observation',
   'PostToolUse': 'observation',
   'PostInvocation': 'observation',
@@ -661,7 +662,10 @@ export function describeAntigravityHooks(
     }
 
     const preInvocation = (namedHook as Record<string, unknown>)['PreInvocation'];
-    if (Array.isArray(preInvocation) && preInvocation.length > 0) {
+    if (
+      Array.isArray(preInvocation) &&
+      preInvocation.some((h: any) => typeof h?.command === 'string' && /\bcontext\s*$/.test(h.command))
+    ) {
       hasStalePreInvocation = true;
     }
   }

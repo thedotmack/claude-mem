@@ -130,9 +130,26 @@ export const observationWithPendingTimelineHandler: EventHandler = {
   }
 };
 
+export const antigravitySessionInitOrFileContextHandler: EventHandler = {
+  async execute(input) {
+    // On Antigravity CLI, PreInvocation fires before every model call. On the
+    // first invocation of a user turn (submittedPrompt !== null), run
+    // session-init to record the user prompt (and optional semantic context).
+    // On follow-up invocations after tool calls (submittedPrompt === null),
+    // surface file-context for any files read in the preceding tool step.
+    if (
+      (input.platform === 'antigravity-cli' || input.platform === 'antigravity') &&
+      input.submittedPrompt === null
+    ) {
+      return fileContextHandler.execute(input);
+    }
+    return sessionInitHandler.execute(input);
+  }
+};
+
 const handlers: Record<EventType, EventHandler> = {
   'context': contextHandler,
-  'session-init': sessionInitHandler,
+  'session-init': antigravitySessionInitOrFileContextHandler,
   'session-init-context': sessionInitContextHandler,
   'observation': observationWithPendingTimelineHandler,
   'summarize': summarizeHandler,

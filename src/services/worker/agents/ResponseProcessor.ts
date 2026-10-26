@@ -40,8 +40,8 @@ export interface ObservationFileEvidence {
   files_modified: string[];
 }
 
-const READ_TOOL_NAMES = new Set(['Read']);
-const WRITE_TOOL_NAMES = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit', 'write_file']);
+const READ_TOOL_NAMES = new Set(['Read', 'read_file', 'view_file']);
+const WRITE_TOOL_NAMES = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit', 'write_file', 'edit_file']);
 const PATCH_TOOL_NAMES = new Set(['apply_patch']);
 
 export function extractObservationFileEvidence(messages: ReadonlyArray<ObservationFileEvidenceMessage>): ObservationFileEvidence {
@@ -132,8 +132,8 @@ function extractPathsFromToolInput(
 
   const paths: string[] = [];
   const directFields = mode === 'read'
-    ? ['file_path', 'filePath', 'notebook_path', 'notebookPath', 'filePaths']
-    : ['file_path', 'filePath', 'notebook_path', 'notebookPath', 'path', 'filePaths'];
+    ? ['file_path', 'filePath', 'Path', 'path', 'notebook_path', 'notebookPath', 'filePaths']
+    : ['file_path', 'filePath', 'Path', 'path', 'notebook_path', 'notebookPath', 'filePaths'];
 
   for (const field of directFields) {
     const value = input[field];

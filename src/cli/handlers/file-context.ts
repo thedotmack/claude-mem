@@ -7,6 +7,7 @@ import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker
 import { logger } from '../../utils/logger.js';
 import { parseJsonArray, formatTime, formatDate, formatHeaderDateTime } from '../../shared/timeline-formatting.js';
 import { closeSync, openSync, readSync, statSync } from 'fs';
+import { homedir } from 'os';
 import path from 'path';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
@@ -474,10 +475,16 @@ async function lookupFileObservationHistory(
   // never matched absolute-path storage. Send both candidate forms (forward-
   // slashed, de-duped) as repeated `path` params so the key matches across
   // both events regardless of how the path was stored.
+  const absForward = absolutePath.split(path.sep).join("/");
+  const homeForward = homedir().split(path.sep).join("/");
+  const tildePath = absForward.startsWith(homeForward + "/")
+    ? "~/" + absForward.slice(homeForward.length + 1)
+    : undefined;
   const candidateQueryPaths = Array.from(new Set([
-    absolutePath.split(path.sep).join("/"),
+    absForward,
     relativePath,
-  ].filter(Boolean)));
+    tildePath,
+  ].filter((p): p is string => Boolean(p))));
   const queryParams = new URLSearchParams();
   for (const candidate of candidateQueryPaths) {
     queryParams.append('path', candidate);

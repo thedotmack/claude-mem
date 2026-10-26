@@ -1,6 +1,8 @@
+import { existsSync, readFileSync } from 'fs';
 import type { PlatformAdapter } from '../types.js';
 import { AdapterRejectedInput, isValidCwd } from './errors.js';
 import { extractLastMessage } from '../../shared/transcript-parser.js';
+import { extractFilePaths } from './codex-file-context.js';
 
 // `agy` wraps the real user message in <USER_REQUEST>...</USER_REQUEST> and
 // appends injected <ADDITIONAL_METADATA> (local time) and <USER_SETTINGS_CHANGE>
@@ -12,6 +14,115 @@ function unwrapAgyUserInput(text: string): string {
     .replace(/<ADDITIONAL_METADATA>[\s\S]*?<\/ADDITIONAL_METADATA>/g, '')
     .replace(/<USER_SETTINGS_CHANGE>[\s\S]*?<\/USER_SETTINGS_CHANGE>/g, '')
     .trim();
+}
+
+// Antigravity transcript tool_calls encode string args as JSON-quoted literals
+// (e.g. `"\"/path/to/file\""`), whereas hook stdin passes plain strings.
+function unwrapArgString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (typeof parsed === 'string') return parsed.trim() || undefined;
+    } catch {
+      return trimmed.slice(1, -1).trim() || undefined;
+    }
+  }
+  return trimmed;
+}
+
+function normalizeAgyToolInput(toolName: string | undefined, toolInput: unknown, cwd: string): unknown {
+  if (!toolName || !toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)) {
+    return toolInput;
+  }
+  const input = toolInput as Record<string, unknown>;
+  if (toolName === 'read_file' || toolName === 'view_file' || toolName === 'edit_file' || toolName === 'write_file') {
+    const filePath = unwrapArgString(input.file_path ?? input.Path ?? input.path);
+    if (filePath && input.file_path !== filePath) {
+      return { ...input, file_path: filePath };
+    }
+    return input;
+  }
+  if (toolName === 'run_command') {
+    const command = unwrapArgString(input.command ?? input.CommandLine);
+    if (!command) return input;
+    const filePaths = extractFilePaths('Bash', { command }, cwd);
+    return {
+      ...input,
+      command,
+      ...(filePaths.length > 0 ? { filePaths } : {}),
+    };
+  }
+  return input;
+}
+
+// Inspect the tail of an Antigravity transcript to distinguish:
+//   1. The first PreInvocation of a user turn (the newest USER_INPUT has no
+//      PLANNER_RESPONSE after it yet → isNewUserTurn = true).
+//   2. Follow-up PreInvocations after tool calls (the newest conversational
+//      node is a PLANNER_RESPONSE → isNewUserTurn = false, and any files read
+//      in that PLANNER_RESPONSE's tool_calls are extracted for file-context).
+function inspectAgyTranscript(
+  transcriptPath: string | undefined,
+  cwd: string,
+): { isNewUserTurn: boolean; filePaths: string[] } {
+  if (!transcriptPath || !existsSync(transcriptPath)) {
+    return { isNewUserTurn: true, filePaths: [] };
+  }
+  let content: string;
+  try {
+    content = readFileSync(transcriptPath, 'utf-8');
+  } catch {
+    return { isNewUserTurn: true, filePaths: [] };
+  }
+
+  const lines = content.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const rawLine = lines[i].trim();
+    if (!rawLine) continue;
+    let node: Record<string, any>;
+    try {
+      node = JSON.parse(rawLine);
+    } catch {
+      continue;
+    }
+
+    if (node.type === 'USER_INPUT') {
+      return { isNewUserTurn: true, filePaths: [] };
+    }
+
+    if (node.type === 'PLANNER_RESPONSE') {
+      const filePaths: string[] = [];
+      const seen = new Set<string>();
+      const toolCalls = Array.isArray(node.tool_calls) ? node.tool_calls : [];
+      for (const call of toolCalls) {
+        const callName = typeof call?.name === 'string' ? call.name : '';
+        const args = (call?.args && typeof call.args === 'object') ? call.args as Record<string, unknown> : {};
+        if (callName === 'read_file' || callName === 'view_file') {
+          const p = unwrapArgString(args.Path ?? args.file_path ?? args.path);
+          if (p && !seen.has(p)) {
+            seen.add(p);
+            filePaths.push(p);
+          }
+        } else if (callName === 'run_command') {
+          const cmd = unwrapArgString(args.CommandLine ?? args.command);
+          if (cmd) {
+            for (const p of extractFilePaths('Bash', { command: cmd }, cwd)) {
+              if (!seen.has(p)) {
+                seen.add(p);
+                filePaths.push(p);
+              }
+            }
+          }
+        }
+      }
+      return { isNewUserTurn: false, filePaths };
+    }
+  }
+
+  return { isNewUserTurn: true, filePaths: [] };
 }
 
 // Antigravity's hook stdin is camelCase protojson with NO explicit event-name
@@ -60,26 +171,39 @@ export const antigravityCliAdapter: PlatformAdapter = {
     const isInvocationEvent = 'invocationNum' in r && !hasToolCall;
 
     let toolName: string | undefined = r.toolCall?.name ?? r.tool_name;
-    let toolInput: unknown = r.toolCall?.args ?? r.tool_input;
+    let toolInput: unknown = normalizeAgyToolInput(toolName, r.toolCall?.args ?? r.tool_input, cwd);
     let toolResponse: unknown = r.tool_response;
+    let submittedPrompt: string | null | undefined;
 
-    // Antigravity does not put the user's prompt on stdin — it lives in the
-    // transcript's USER_INPUT node. Pull it (unwrapped) for both invocation
-    // observations and context injection.
+    // Antigravity puts the user's prompt in the transcript's USER_INPUT node
+    // (and may also include `lastUserInput` on stdin). Pull it (unwrapped) for
+    // session-init, invocation observations, and context injection.
     const transcriptPrompt = transcriptPath
       ? unwrapAgyUserInput(extractLastMessage(transcriptPath, 'user'))
       : '';
-    const prompt: string | undefined = r.prompt ?? (transcriptPrompt || undefined);
+    const lastUserInputPrompt = typeof r.lastUserInput === 'string' && r.lastUserInput.trim()
+      ? unwrapAgyUserInput(r.lastUserInput)
+      : '';
+    const prompt: string | undefined = r.prompt ?? (transcriptPrompt || lastUserInputPrompt || undefined);
 
     if (isInvocationEvent) {
-      // PreInvocation routes to the context handler (ignores tool fields);
+      // PreInvocation routes to session-init (on the first invocation of a user
+      // turn) or file-context (on follow-up invocations after tool calls);
       // PostInvocation routes to observation and records the assistant's turn,
       // which lives in the transcript's PLANNER_RESPONSE node.
+      const { isNewUserTurn, filePaths } = inspectAgyTranscript(transcriptPath, cwd);
+      submittedPrompt = isNewUserTurn ? (prompt ?? undefined) : null;
       const response = transcriptPath
         ? extractLastMessage(transcriptPath, 'assistant')
         : '';
       toolName = 'AntigravityProvider';
-      toolInput = { prompt: prompt ?? 'User Query' };
+      toolInput = filePaths.length > 0
+        ? {
+            prompt: prompt ?? 'User Query',
+            filePaths,
+            ...(filePaths.length === 1 ? { file_path: filePaths[0] } : {}),
+          }
+        : { prompt: prompt ?? 'User Query' };
       toolResponse = { response: response || 'Completed' };
     }
 
@@ -99,6 +223,7 @@ export const antigravityCliAdapter: PlatformAdapter = {
       sessionId,
       cwd,
       prompt,
+      ...(submittedPrompt !== undefined ? { submittedPrompt } : {}),
       toolName,
       toolInput,
       toolResponse,
