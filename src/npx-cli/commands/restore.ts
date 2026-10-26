@@ -5,8 +5,8 @@
  * The CLI never touches the database itself. It stages the restore in
  * backups/restore-pending.json and restarts the worker (the same path as
  * `npx claude-mem restart`, which also starts a worker that is not running).
- * The new worker applies the restore before it opens the database, keeps a
- * pre-restore copy of the current one, and records the outcome, which
+ * The new worker applies the restore before it opens the database, saves the
+ * current one as a `-pre-restore` snapshot, and records the outcome, which
  * `npx claude-mem backup status` prints.
  */
 

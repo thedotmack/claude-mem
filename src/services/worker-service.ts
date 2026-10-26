@@ -788,10 +788,11 @@ export class WorkerService implements WorkerRef {
       });
 
       // A restore staged by `npx claude-mem restore` lands here, before
-      // anything in this worker opens the database. It never throws: a
+      // anything in this worker opens the database. Its file work runs in a
+      // child process, so health checks keep answering. It never throws: a
       // failed restore is logged, reported by GET /api/backup/status, and the
       // worker starts on the unchanged database.
-      applyPendingRestore(DB_PATH, paths.backups());
+      await applyPendingRestore(DB_PATH, paths.backups());
 
       logger.info('WORKER', 'Checking for one-time CWD remap...');
       runOneTimeCwdRemap();

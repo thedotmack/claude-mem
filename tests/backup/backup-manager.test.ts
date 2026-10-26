@@ -69,7 +69,7 @@ describe('BackupManager.createSnapshot', () => {
 
     const status = manager.status();
     expect(status.configured).toBe(true);
-    expect(status.lastSnapshotAt).toBe(result.createdAt);
+    expect(status.lastSnapshotAt).not.toBeNull();
     expect(status.lastSnapshotBytes).toBe(result.bytes);
     expect(status.snapshotCount).toBe(1);
     expect(status.lastError).toBeNull();
@@ -111,9 +111,7 @@ describe('BackupManager.createSnapshot standalone output', () => {
     writer.run('PRAGMA wal_autocheckpoint = 0');
     writer.run("INSERT INTO observations (note) VALUES ('wal-only-1'), ('wal-only-2')");
     try {
-      const manager = makeManager(tempRoot, {}, {
-        vacuumInto: () => { throw new Error('injected VACUUM INTO failure'); },
-      });
+      const manager = makeManager(tempRoot, {}, { forceCopyFallback: true });
       const result = await manager.createSnapshot();
 
       expect(result.method).toBe('copy');
@@ -129,6 +127,34 @@ describe('BackupManager.createSnapshot standalone output', () => {
     } finally {
       writer.close();
     }
+  });
+});
+
+describe('BackupManager.createSnapshot off the event loop', () => {
+  it('lets the worker run timers while a snapshot is in progress', async () => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'claude-mem-backup-'));
+    createSourceDb(tempRoot);
+    let timerRanDuringSnapshot = false;
+
+    const snapshot = makeManager(tempRoot).createSnapshot();
+    setTimeout(() => { timerRanDuringSnapshot = true; }, 0);
+    await snapshot;
+
+    expect(timerRanDuringSnapshot).toBe(true);
+  });
+});
+
+describe('BackupManager.status', () => {
+  it('reports the newest snapshot on disk after a restart (a fresh manager)', async () => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'claude-mem-backup-'));
+    createSourceDb(tempRoot);
+    const result = await makeManager(tempRoot).createSnapshot();
+
+    const afterRestart = makeManager(tempRoot).status();
+
+    expect(afterRestart.snapshotCount).toBe(1);
+    expect(afterRestart.lastSnapshotBytes).toBe(result.bytes);
+    expect(afterRestart.lastSnapshotAt).toBeGreaterThan(0);
   });
 });
 

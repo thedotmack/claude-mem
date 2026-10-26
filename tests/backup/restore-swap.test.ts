@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { copyFileSync, existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { swapDatabaseFromSnapshot } from '../../src/services/backup/restore-swap.js';
+import { SNAPSHOT_FILE_PATTERN } from '../../src/services/backup/snapshot-files.js';
 
 let tempRoot: string | undefined;
 
@@ -12,10 +13,12 @@ afterEach(() => {
   tempRoot = undefined;
 });
 
+const CREATE_TABLE = 'CREATE TABLE IF NOT EXISTS observations (id INTEGER PRIMARY KEY AUTOINCREMENT, note TEXT NOT NULL)';
+
 function makeDb(path: string, notes: string[]): void {
   const db = new Database(path);
   db.run('PRAGMA journal_mode = WAL');
-  db.run('CREATE TABLE IF NOT EXISTS observations (id INTEGER PRIMARY KEY, note TEXT NOT NULL)');
+  db.run(CREATE_TABLE);
   const insert = db.prepare('INSERT INTO observations (note) VALUES (?)');
   for (const note of notes) insert.run(note);
   insert.finalize();
@@ -42,7 +45,7 @@ function makeCrashedLiveDb(dir: string): string {
   const writer = new Database(scratch);
   writer.run('PRAGMA journal_mode = WAL');
   writer.run('PRAGMA wal_autocheckpoint = 0');
-  writer.run('CREATE TABLE observations (id INTEGER PRIMARY KEY, note TEXT NOT NULL)');
+  writer.run(CREATE_TABLE);
   writer.run("INSERT INTO observations (note) VALUES ('live-1'), ('live-2-wal-only')");
   const dbPath = join(dir, 'claude-mem.db');
   copyFileSync(scratch, dbPath);
@@ -51,89 +54,125 @@ function makeCrashedLiveDb(dir: string): string {
   return dbPath;
 }
 
-function setup(): { dir: string; dbPath: string; snapshotPath: string } {
+function setup(): { dir: string; dbPath: string; snapshotPath: string; backupsDir: string } {
   tempRoot = mkdtempSync(join(tmpdir(), 'restore-swap-test-'));
+  const backupsDir = join(tempRoot, 'backups', 'auto');
+  mkdirSync(backupsDir, { recursive: true });
   const dbPath = makeCrashedLiveDb(tempRoot);
-  const snapshotPath = join(tempRoot, 'claude-mem-2026-10-01T00-00-00-000Z.db');
-  makeDb(snapshotPath, ['snap-1', 'snap-2', 'snap-3']);
-  return { dir: tempRoot, dbPath, snapshotPath };
+  const snapshotPath = join(backupsDir, 'claude-mem-2026-10-01T00-00-00-000Z.db');
+  makeDb(snapshotPath, ['snap-1']);
+  return { dir: tempRoot, dbPath, snapshotPath, backupsDir };
+}
+
+function leftovers(dir: string): string[] {
+  return readdirSync(dir).filter(name => name.includes('restore-staging'));
 }
 
 describe('swapDatabaseFromSnapshot', () => {
-  it('replaces the live database and keeps a complete pre-restore copy, WAL-only commits included', () => {
-    const { dbPath, snapshotPath } = setup();
+  it('replaces the live database and keeps a restorable pre-restore snapshot, WAL-only commits included', async () => {
+    const { dbPath, snapshotPath, backupsDir } = setup();
 
-    const { preRestoreCopy } = swapDatabaseFromSnapshot(dbPath, snapshotPath);
+    const { preRestoreCopy } = await swapDatabaseFromSnapshot(dbPath, snapshotPath, { preRestoreDir: backupsDir });
 
-    expect(readNotes(dbPath)).toEqual(['snap-1', 'snap-2', 'snap-3']);
+    expect(readNotes(dbPath)).toEqual(['snap-1']);
     expect(preRestoreCopy).not.toBeNull();
-    // The copy is one standalone file: no sidecar is needed to read it.
-    expect(existsSync(`${preRestoreCopy!}-wal`)).toBe(false);
+    expect(preRestoreCopy!.startsWith(backupsDir)).toBe(true);
+    expect(SNAPSHOT_FILE_PATTERN.test(preRestoreCopy!.slice(backupsDir.length + 1))).toBe(true);
     expect(readNotes(preRestoreCopy!)).toEqual(['live-1', 'live-2-wal-only']);
   });
 
-  it('leaves no stale sidecar from the old database next to the restored one', () => {
-    const { dbPath, snapshotPath } = setup();
+  it('leaves no stale sidecar from the old database next to the restored one', async () => {
+    const { dbPath, snapshotPath, backupsDir } = setup();
 
-    swapDatabaseFromSnapshot(dbPath, snapshotPath);
+    await swapDatabaseFromSnapshot(dbPath, snapshotPath, { preRestoreDir: backupsDir });
 
     expect(existsSync(`${dbPath}-wal`)).toBe(false);
     expect(existsSync(`${dbPath}-shm`)).toBe(false);
   });
 
-  it('keeps the old database whole and readable when the final rename fails', () => {
-    const { dir, dbPath, snapshotPath } = setup();
+  it('never reuses an id the replaced database already handed out', async () => {
+    const { dbPath, snapshotPath, backupsDir } = setup();
+
+    await swapDatabaseFromSnapshot(dbPath, snapshotPath, { preRestoreDir: backupsDir });
+
+    const db = new Database(dbPath, { readwrite: true, create: false });
+    try {
+      db.run("INSERT INTO observations (note) VALUES ('after-restore')");
+      const row = db.query("SELECT id FROM observations WHERE note = 'after-restore'").get() as { id: number };
+      // The live database had used ids 1 and 2; the snapshot only 1.
+      expect(row.id).toBe(3);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('keeps the old database whole and readable when the final rename fails', async () => {
+    const { dir, dbPath, snapshotPath, backupsDir } = setup();
     const failingRename = (): void => {
       throw new Error('EXDEV: injected rename failure');
     };
 
-    expect(() => swapDatabaseFromSnapshot(dbPath, snapshotPath, { renameSync: failingRename })).toThrow('injected rename failure');
+    await expect(swapDatabaseFromSnapshot(dbPath, snapshotPath, { preRestoreDir: backupsDir, renameSync: failingRename }))
+      .rejects.toThrow('injected rename failure');
 
     // Every committed row of the old database is still there, and nothing
     // from the snapshot was published next to it.
     expect(readNotes(dbPath)).toEqual(['live-1', 'live-2-wal-only']);
-    expect(readdirSync(dir).filter(name => name.includes('restore-staging'))).toEqual([]);
+    expect(leftovers(dir)).toEqual([]);
   });
 
-  it('refuses to swap while another connection holds the live database, and touches nothing', () => {
-    const { dir, dbPath, snapshotPath } = setup();
+  it('refuses to swap while another connection holds the live database, and touches nothing', async () => {
+    const { dir, dbPath, snapshotPath, backupsDir } = setup();
     const reader = new Database(dbPath);
     reader.run('BEGIN');
     reader.query('SELECT COUNT(*) FROM observations').get();
     try {
-      expect(() => swapDatabaseFromSnapshot(dbPath, snapshotPath)).toThrow(/in use/);
+      await expect(swapDatabaseFromSnapshot(dbPath, snapshotPath, { preRestoreDir: backupsDir })).rejects.toThrow(/in use/);
     } finally {
       reader.run('COMMIT');
       reader.close();
     }
     expect(readNotes(dbPath)).toEqual(['live-1', 'live-2-wal-only']);
-    expect(readdirSync(dir).filter(name => name.includes('pre-restore') || name.includes('restore-staging'))).toEqual([]);
+    expect(leftovers(dir)).toEqual([]);
+    expect(readdirSync(backupsDir).filter(name => name.includes('pre-restore'))).toEqual([]);
   });
 
-  it('rejects a snapshot that is not a valid database before touching the live one', () => {
-    const { dir, dbPath } = setup();
-    const corrupt = join(dir, 'claude-mem-2026-10-02T00-00-00-000Z.db');
+  it('rejects a snapshot that is not a valid database before touching the live one', async () => {
+    const { dir, dbPath, backupsDir } = setup();
+    const corrupt = join(backupsDir, 'claude-mem-2026-10-02T00-00-00-000Z.db');
     writeFileSync(corrupt, 'this is not sqlite');
 
-    expect(() => swapDatabaseFromSnapshot(dbPath, corrupt)).toThrow();
+    await expect(swapDatabaseFromSnapshot(dbPath, corrupt, { preRestoreDir: backupsDir })).rejects.toThrow();
 
     expect(readNotes(dbPath)).toEqual(['live-1', 'live-2-wal-only']);
-    expect(readdirSync(dir).filter(name => name.includes('pre-restore') || name.includes('restore-staging'))).toEqual([]);
+    expect(leftovers(dir)).toEqual([]);
+    expect(readdirSync(backupsDir).filter(name => name.includes('pre-restore'))).toEqual([]);
   });
 
-  it('throws when the snapshot is missing and leaves the live database untouched', () => {
-    const { dir, dbPath } = setup();
-    expect(() => swapDatabaseFromSnapshot(dbPath, join(dir, 'nope.db'))).toThrow();
+  it('still restores over a live database too damaged to open, and keeps it', async () => {
+    const { dbPath, snapshotPath, backupsDir } = setup();
+    writeFileSync(dbPath, 'damaged beyond repair');
+    rmSync(`${dbPath}-wal`, { force: true });
+
+    const { preRestoreCopy } = await swapDatabaseFromSnapshot(dbPath, snapshotPath, { preRestoreDir: backupsDir });
+
+    expect(readNotes(dbPath)).toEqual(['snap-1']);
+    expect(existsSync(preRestoreCopy!)).toBe(true);
+  });
+
+  it('throws when the snapshot is missing and leaves the live database untouched', async () => {
+    const { dbPath, backupsDir } = setup();
+    await expect(swapDatabaseFromSnapshot(dbPath, join(backupsDir, 'nope.db'), { preRestoreDir: backupsDir })).rejects.toThrow();
     expect(readNotes(dbPath)).toEqual(['live-1', 'live-2-wal-only']);
   });
 
-  it('restores into an empty data dir with no pre-restore copy', () => {
+  it('restores into an empty data dir with no pre-restore copy', async () => {
     tempRoot = mkdtempSync(join(tmpdir(), 'restore-swap-test-'));
     const dbPath = join(tempRoot, 'claude-mem.db');
     const snapshotPath = join(tempRoot, 'snap.db');
     makeDb(snapshotPath, ['snap-only']);
 
-    const { preRestoreCopy } = swapDatabaseFromSnapshot(dbPath, snapshotPath);
+    const { preRestoreCopy } = await swapDatabaseFromSnapshot(dbPath, snapshotPath, { preRestoreDir: tempRoot });
 
     expect(preRestoreCopy).toBeNull();
     expect(readNotes(dbPath)).toEqual(['snap-only']);

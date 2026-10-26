@@ -59,32 +59,33 @@ describe('resolveSnapshotInside', () => {
 });
 
 describe('applyPendingRestore', () => {
-  it('does nothing when no restore is staged', () => {
+  it('does nothing when no restore is staged', async () => {
     const { dbPath, backupsDir } = setup();
-    expect(applyPendingRestore(dbPath, backupsDir)).toBeNull();
+    expect(await applyPendingRestore(dbPath, backupsDir)).toBeNull();
     expect(readNote(dbPath)).toBe('live');
   });
 
-  it('applies a staged restore once, clears the marker and records the outcome', () => {
+  it('applies a staged restore once, clears the marker and records the outcome', async () => {
     const { dbPath, backupsDir, snapshotName } = setup();
     stagePendingRestore(snapshotName);
 
-    const result = applyPendingRestore(dbPath, backupsDir);
+    const result = await applyPendingRestore(dbPath, backupsDir);
 
     expect(result?.ok).toBe(true);
     expect(readNote(dbPath)).toBe('snapshot');
     expect(readNote(result!.preRestoreCopy!)).toBe('live');
+    expect(result!.preRestoreCopy!.startsWith(backupsDir)).toBe(true);
     expect(existsSync(paths.pendingRestore())).toBe(false);
     expect(readLastRestoreResult()).toEqual(result);
     // A second boot finds nothing to do.
-    expect(applyPendingRestore(dbPath, backupsDir)).toBeNull();
+    expect(await applyPendingRestore(dbPath, backupsDir)).toBeNull();
   });
 
-  it('records a failure, clears the marker and leaves the database unchanged', () => {
+  it('records a failure, clears the marker and leaves the database unchanged', async () => {
     const { dbPath, backupsDir } = setup();
     stagePendingRestore('claude-mem-2099-01-01T00-00-00-000Z.db');
 
-    const result = applyPendingRestore(dbPath, backupsDir);
+    const result = await applyPendingRestore(dbPath, backupsDir);
 
     expect(result?.ok).toBe(false);
     expect(result?.error).toContain('snapshot not found');
@@ -92,23 +93,23 @@ describe('applyPendingRestore', () => {
     expect(existsSync(paths.pendingRestore())).toBe(false);
   });
 
-  it('refuses a marker that points outside the backups dir', () => {
+  it('refuses a marker that points outside the backups dir', async () => {
     const { dbPath, backupsDir } = setup();
     stagePendingRestore('../../claude-mem.db');
 
-    const result = applyPendingRestore(dbPath, backupsDir);
+    const result = await applyPendingRestore(dbPath, backupsDir);
 
     expect(result?.ok).toBe(false);
     expect(result?.error).toContain('outside the backups directory');
     expect(readNote(dbPath)).toBe('live');
   });
 
-  it('clears and reports an unreadable marker instead of failing every boot', () => {
+  it('clears and reports an unreadable marker instead of failing every boot', async () => {
     const { dbPath, backupsDir } = setup();
     mkdirSync(join(paths.pendingRestore(), '..'), { recursive: true });
     writeFileSync(paths.pendingRestore(), '{not json');
 
-    const result = applyPendingRestore(dbPath, backupsDir);
+    const result = await applyPendingRestore(dbPath, backupsDir);
 
     expect(result?.ok).toBe(false);
     expect(existsSync(paths.pendingRestore())).toBe(false);

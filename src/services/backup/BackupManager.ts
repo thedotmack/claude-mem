@@ -1,9 +1,8 @@
 import { join, dirname } from 'path';
-import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync, statfsSync, unlinkSync } from 'fs';
-import { Database } from 'bun:sqlite';
+import { existsSync, mkdirSync, readdirSync, statSync, statfsSync, unlinkSync } from 'fs';
 import { DB_PATH, paths } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
-import { makeStandaloneDatabaseFile } from './restore-swap.js';
+import { runSqliteFileJob } from './sqlite-file-job.js';
 import { SNAPSHOT_FILE_PATTERN } from './snapshot-files.js';
 
 /** Settings keys BackupManager reads (subset of SettingsDefaults). */
@@ -23,8 +22,8 @@ export interface BackupManagerOptions {
   initialDelayMs?: number;
   /** Injectable clock (tests). */
   now?: () => number;
-  /** Test seam: the VACUUM INTO step, so the copy fallback can be exercised. */
-  vacuumInto?: (source: Database, targetPath: string) => void;
+  /** Test seam: skip VACUUM INTO so the copy fallback runs. */
+  forceCopyFallback?: boolean;
 }
 
 export interface BackupSnapshotResult {
@@ -50,16 +49,13 @@ export interface BackupStatus {
  */
 const DEFAULT_INITIAL_DELAY_MS = 5 * 60_000;
 
-function vacuumIntoPath(source: Database, targetPath: string): void {
-  source.run(`VACUUM INTO '${targetPath.replace(/'/g, "''")}'`);
-}
-
 /**
  * Automatic local SQLite snapshots with retention.
  *
  * Snapshot engine extracted from the one-time v12.4.3 cleanup backup
  * (CleanupV12_4_3.ts): disk pre-flight, then `VACUUM INTO`, then a copy of the
- * db and its WAL as the fallback. Every snapshot ends as one standalone,
+ * db and its WAL as the fallback, all in a child process so the worker keeps
+ * serving requests during a multi-GB snapshot. Every snapshot ends as one standalone,
  * quick_check-verified file in rollback-journal mode, so a snapshot never
  * depends on a sidecar. The schedule loop is SyncClient's self-rescheduling
  * unref'd setTimeout chain (the worker has no setInterval of its own) with a
@@ -76,7 +72,7 @@ export class BackupManager {
   private readonly retainCount: number;
   private readonly initialDelayMs: number;
   private readonly now: () => number;
-  private readonly vacuumInto: (source: Database, targetPath: string) => void;
+  private readonly forceCopyFallback: boolean;
 
   private timer: ReturnType<typeof setTimeout> | null = null;
   private started = false;
@@ -84,8 +80,6 @@ export class BackupManager {
   /** Single-flight: true while a snapshot cycle is in progress. */
   private running = false;
 
-  private lastSnapshotAt: number | null = null;
-  private lastSnapshotBytes: number | null = null;
   private lastError: string | null = null;
   private nextRunAt: number | null = null;
 
@@ -99,7 +93,7 @@ export class BackupManager {
     this.preflightDir = options.preflightDir ?? dirname(this.dbPath);
     this.initialDelayMs = options.initialDelayMs ?? DEFAULT_INITIAL_DELAY_MS;
     this.now = options.now ?? Date.now;
-    this.vacuumInto = options.vacuumInto ?? vacuumIntoPath;
+    this.forceCopyFallback = options.forceCopyFallback ?? false;
   }
 
   /** Arm the cadence loop; the first run lands initialDelayMs after start. */
@@ -123,12 +117,18 @@ export class BackupManager {
     this.nextRunAt = null;
   }
 
+  /**
+   * Snapshot facts come from the files on disk, so they survive the worker
+   * restarts that enabling backups and restoring both go through.
+   */
   status(): BackupStatus {
+    const names = this.listSnapshotNames();
+    const newest = names[0] ? statSync(join(this.backupsDir, names[0])) : null;
     return {
       configured: true,
-      lastSnapshotAt: this.lastSnapshotAt,
-      lastSnapshotBytes: this.lastSnapshotBytes,
-      snapshotCount: this.listSnapshotNames().length,
+      lastSnapshotAt: newest ? newest.mtimeMs : null,
+      lastSnapshotBytes: newest ? newest.size : null,
+      snapshotCount: names.length,
       lastError: this.lastError,
       nextRunAt: this.nextRunAt,
     };
@@ -136,10 +136,10 @@ export class BackupManager {
 
   /**
    * One consistent, standalone snapshot of the live DB. Disk pre-flight, then
-   * `VACUUM INTO` on a readonly connection; if that fails, a copy of the db
-   * and its -wal (never the -shm, which SQLite rebuilds) that is then folded
-   * into one file. Throws when no verified snapshot could be produced, and
-   * leaves no partial snapshot behind.
+   * (in a child process, see sqlite-file-job.ts) `VACUUM INTO` on a readonly
+   * connection; if that fails, a copy of the db and its -wal (never the -shm,
+   * which SQLite rebuilds) folded into one file. Throws when no verified
+   * snapshot could be produced, and leaves no partial snapshot behind.
    */
   async createSnapshot(): Promise<BackupSnapshotResult> {
     const dbSize = statSync(this.dbPath).size;
@@ -150,39 +150,29 @@ export class BackupManager {
     const ts = new Date(createdAt).toISOString().replace(/[:.]/g, '-');
     const backupPath = join(this.backupsDir, `claude-mem-${ts}.db`);
 
-    let method: BackupSnapshotResult['method'] = 'vacuum-into';
-    const source = new Database(this.dbPath, { readonly: true });
+    let method: BackupSnapshotResult['method'];
     try {
-      this.vacuumInto(source, backupPath);
-    } catch (err: unknown) {
-      method = 'copy';
-      logger.warn('BACKUP', 'VACUUM INTO failed, falling back to a file copy', {}, err instanceof Error ? err : new Error(String(err)));
-    } finally {
-      source.close();
-    }
-
-    try {
-      if (method === 'copy') {
-        for (const leftover of [backupPath, `${backupPath}-wal`, `${backupPath}-shm`]) {
-          if (existsSync(leftover)) unlinkSync(leftover);
-        }
-        copyFileSync(this.dbPath, backupPath);
-        if (existsSync(`${this.dbPath}-wal`)) copyFileSync(`${this.dbPath}-wal`, `${backupPath}-wal`);
+      const result = await runSqliteFileJob({
+        kind: 'snapshot',
+        source: this.dbPath,
+        target: backupPath,
+        forceCopyFallback: this.forceCopyFallback,
+      });
+      method = result.method ?? 'vacuum-into';
+      if (result.vacuumError) {
+        logger.warn('BACKUP', 'VACUUM INTO failed; the snapshot was made from a file copy', { vacuumError: result.vacuumError });
       }
-      makeStandaloneDatabaseFile(backupPath);
     } catch (err: unknown) {
       const error = err instanceof Error ? err : new Error(String(err));
       for (const leftover of [backupPath, `${backupPath}-wal`, `${backupPath}-shm`]) {
         if (existsSync(leftover)) unlinkSync(leftover);
       }
-      logger.error('BACKUP', 'Snapshot failed; no snapshot was kept', { backupPath, method }, error);
+      logger.error('BACKUP', 'Snapshot failed; no snapshot was kept', { backupPath }, error);
       throw error;
     }
 
     const bytes = statSync(backupPath).size;
     logger.info('BACKUP', 'Snapshot created', { backupPath, method, dbSize, bytes });
-    this.lastSnapshotAt = createdAt;
-    this.lastSnapshotBytes = bytes;
     this.lastError = null;
     return { path: backupPath, bytes, createdAt, method };
   }

@@ -87,9 +87,11 @@ npx claude-mem backup status
 
 `restore` stages the snapshot and restarts the worker (it also starts a
 worker that is not running). The new worker swaps the database in before it
-opens it, saves the database it replaced as
-`~/.claude-mem/claude-mem.db.pre-restore-<timestamp>`, and records the
-outcome. `backup status` then prints a "Last restore" line: on success it
+opens it, saves the database it replaced in the same folder as
+`claude-mem-<timestamp>-pre-restore.db` (restore that file to undo; it counts
+toward the retain count), and records the outcome. With cloud sync on, the
+restored database resumes syncing from the snapshot's position and can pull
+back changes that reached the cloud after it. `backup status` then prints a "Last restore" line: on success it
 names the saved copy; on failure it gives the reason, and the worker kept
 the database it had.
 

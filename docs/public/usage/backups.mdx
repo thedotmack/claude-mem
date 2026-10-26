@@ -60,14 +60,23 @@ npx claude-mem backup status
 ```
 
 `restore` stages the snapshot and restarts the worker. The new worker swaps
-the database in before it opens it, and saves the database it replaced as
-`~/.claude-mem/claude-mem.db.pre-restore-<timestamp>`, so a restore can be
-undone. `backup status` prints the outcome. If the swap could not run (for
-example, another process still had the database open), it says why and the
-worker keeps the database it had.
+the database in before it opens it, and saves the database it replaced in the
+same folder as `claude-mem-<timestamp>-pre-restore.db`. To undo a restore,
+restore that file. It counts toward the retain count like any snapshot, so
+copy it elsewhere if you want to keep it longer. `backup status` prints the
+outcome. If the swap could not run (for example, another process still had
+the database open), it says why and the worker keeps the database it had.
 
 The swap is crash-safe: at every step the database on disk is either the old
-one or the restored one, each complete.
+one or the restored one, each complete. New memories written after a restore
+never reuse an id from the database it replaced.
+
+<Note>
+With cloud sync on, the restored database resumes syncing from the position
+saved in the snapshot, so it can pull back changes that reached the cloud
+after the snapshot was taken. Restore is for recovering a damaged or lost
+local database, not for undoing synced changes.
+</Note>
 
 ## Settings
 
