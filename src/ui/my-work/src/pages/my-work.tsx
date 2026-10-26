@@ -374,7 +374,7 @@ export function MyWork({ onOpen, onOpenGoal, onOpenRules }: { onOpen: (request: 
         )}
         <div className="flex w-full items-center gap-1 md:w-auto">
           <ToggleGroup type="single" variant="outline" size="sm" spacing={1} value={filter} onValueChange={(next) => next && setFilter(next as Filter)} aria-label="Filter" className="flex-nowrap">
-            {FILTERS.filter((entry) => entry.value !== 'closed' || requests.some(entry.matches)).map(({ value, label, dot, matches: test }) => (
+            {FILTERS.filter((entry) => entry.value !== 'closed' || filter === 'closed' || requests.some(entry.matches)).map(({ value, label, dot, matches: test }) => (
               <ToggleGroupItem key={value} value={value} className="h-11 gap-1.5 px-3 md:h-8">
                 {dot && <span className={cn('size-1.5 rounded-full', dot)} />}
                 {label}

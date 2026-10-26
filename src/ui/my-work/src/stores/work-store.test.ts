@@ -29,9 +29,9 @@ function sourceHarness() {
       return () => { stream.closed = true }
     },
     setRequestChecked: async () => ({ outcome: 'unavailable' as const, serverMessage: 'unused' }),
-    saveRuleChange: async () => model('unused'),
-    loadRulesInClaudeCode: async () => model('unused'),
-    markAgentFinished: async () => model('unused'),
+    saveRuleChange: async () => ({ model: model('unused'), savedModel: model('unused'), refreshError: null }),
+    loadRulesInClaudeCode: async () => ({ model: model('unused'), savedModel: model('unused'), refreshError: null }),
+    markAgentFinished: async () => ({ model: model('unused'), savedModel: model('unused'), refreshError: null }),
   } satisfies WorkDataSource
   return { source, loads, streams }
 }

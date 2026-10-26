@@ -64,6 +64,16 @@ export interface BuildStory { recap: string; paragraphs: string[]; writtenAt: st
 /** What the pure mapper produces; the source adds the connection it measured. */
 export type MappedWorkModel = Omit<WorkModel, 'connection'>
 
+/** The confirmed write is its own receipt; a newer live model must never become that receipt. */
+export interface WorkMutationResult {
+  savedModel: WorkModel
+  model: WorkModel
+  /** The rule this POST changed, when the worker reports it (older workers omit it). */
+  savedRuleId?: string
+  /** A failed refresh does not turn an already-confirmed write into a failed save. */
+  refreshError: string | null
+}
+
 export interface WorkDataSource {
   readonly sourceKind: SourceKind
   loadWorkModel(): Promise<WorkModel>
@@ -75,9 +85,9 @@ export interface WorkDataSource {
    */
   setRequestChecked(requestId: string, expectedFingerprint: string, checked: boolean): Promise<ReviewResult>
   /** Saves one change to My Rules and answers with the model after it. Rejects with the reason it was not saved. */
-  saveRuleChange(change: RuleChange): Promise<WorkModel>
+  saveRuleChange(change: RuleChange): Promise<WorkMutationResult>
   /** Records the owner's stop for a subagent no recorded stop covers, and answers with the model after it. */
-  markAgentFinished(agentId: string): Promise<WorkModel>
+  markAgentFinished(agentId: string): Promise<WorkMutationResult>
   /** Adds the MY-RULES.md import to ~/.claude/CLAUDE.md (once). Rejects with the reason when it can't. */
-  loadRulesInClaudeCode(): Promise<WorkModel>
+  loadRulesInClaudeCode(): Promise<WorkMutationResult>
 }

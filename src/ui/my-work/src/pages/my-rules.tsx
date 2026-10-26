@@ -17,7 +17,8 @@ import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
 import { loadRulesInClaudeCode, SAMPLE_DEVICES, SAMPLE_RUNS, saveRuleChange, useWorkModel } from '@/data'
 import { RULE_TIERS, type OwnerRule, type RuleChange, type RuleQuote, type RuleScope, type RuleTier } from '@/data-rules'
-import { currentRuleDecisions, ruleUndoIsCurrent, ruleVersion, type RuleDecision, type SavedRuleDecision } from '@/live/rule-actions'
+import { addedRuleFromSave, currentRuleDecisions, ruleUndoIsCurrent, ruleVersion, type RuleDecision, type SavedRuleDecision } from '@/live/rule-actions'
+import type { WorkModel } from '@/live/work-data-source'
 
 // ---------- Derived facts ----------
 
@@ -612,7 +613,7 @@ function RuleEditor({ draft, error, saving, onChange, onClose, onSave }: { draft
 // ---------- Page ----------
 
 /** One saved change, with the change that reverses it (null when it can't be reversed from here). */
-interface Change { text: string; ruleId: string; undo: RuleChange | null; expectedVersion?: string | null }
+interface Change { text: string; ruleId: string | null; undo: RuleChange | null; expectedVersion?: string | null }
 
 /** No story and no saved rules yet: say so, and how to get learned rules, instead of showing anything made up. */
 function NoRulesYet({ onAdd, readError }: { onAdd: () => void; readError: string | null }) {
@@ -651,7 +652,7 @@ export function MyRules() {
   const [highlighted, setHighlighted] = useState<string | null>(null)
   const [fileOpen, setFileOpen] = useState(false)
   const lastChange = history.at(-1) ?? null
-  const canUndoLast = !!lastChange?.undo && ruleUndoIsCurrent(lastChange.ruleId, lastChange.expectedVersion ?? null, rules)
+  const canUndoLast = !!lastChange?.undo && !!lastChange.ruleId && ruleUndoIsCurrent(lastChange.ruleId, lastChange.expectedVersion ?? null, rules)
 
   const suggestions = useMemo(() => rules.filter((rule) => rule.status === 'suggested' || rule.id in decisions).sort(byStrength), [rules, decisions])
   const waiting = suggestions.filter((rule) => !decisions[rule.id]).length
@@ -664,20 +665,20 @@ export function MyRules() {
   }))
   const onCount = rules.filter((rule) => rule.status === 'on').length
 
-  /** Saves one change; on success records it for the note and Undo. Returns the saved model's rules, or null when it failed. */
-  const save = async (change: RuleChange, describe: (savedRules: OwnerRule[]) => Change | null) => {
+  /** Receipts and Undo describe the exact POST result, even if the live model has already moved on. */
+  const save = async (change: RuleChange, describe: (savedModel: WorkModel) => Change | null) => {
     if (pending.current) return null
     pending.current = true
     setSaving(true)
     setSaveError(null)
     try {
-      const model = await saveRuleChange(change)
-      const done = describe(model.rules)
+      const { savedModel } = await saveRuleChange(change)
+      const done = describe(savedModel)
       if (done) {
-        setHistory((previous) => [...previous, { ...done, expectedVersion: ruleVersion(model.rules.find((rule) => rule.id === done.ruleId)) }])
-        setChangedIds((previous) => new Set(previous).add(done.ruleId))
+        setHistory((previous) => [...previous, { ...done, expectedVersion: ruleVersion(savedModel.rules.find((rule) => rule.id === done.ruleId)) }])
+        if (done.ruleId) setChangedIds((previous) => new Set(previous).add(done.ruleId!))
       }
-      return model.rules
+      return savedModel.rules
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : String(error))
       return null
@@ -694,7 +695,7 @@ export function MyRules() {
     setSaveError(null)
     try {
       await saveRuleChange(lastChange.undo)
-      if (lastChange.undo.action === 'restore-suggestion') setDecisions(({ [lastChange.ruleId]: _undone, ...rest }) => rest)
+      if (lastChange.undo.action === 'restore-suggestion' && lastChange.ruleId) setDecisions(({ [lastChange.ruleId!]: _undone, ...rest }) => rest)
       setHistory((previous) => previous.slice(0, -1))
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : String(error))
@@ -709,21 +710,23 @@ export function MyRules() {
     setTimeout(() => setHighlighted(null), 1800)
   }
   const ruleName = (rule: Pick<OwnerRule, 'then'>) => `“${lowerFirst(rule.then).replace(/\.$/, '')}”`
-  const headingFor = (scopeId: string) => { const scope = ruleScopes.find((entry) => entry.id === scopeId); return scope ? scopeHeading(scope) : 'its scope' }
+  const headingFor = (scopeId: string, scopes: RuleScope[]) => { const scope = scopes.find((entry) => entry.id === scopeId); return scope ? scopeHeading(scope) : 'its scope' }
 
-  const decide = (rule: OwnerRule, decision: Decision) => save({ action: decision === 'approved' ? 'approve' : 'dismiss', ruleId: rule.id }, (savedRules) => {
-    const version = ruleVersion(savedRules.find((savedRule) => savedRule.id === rule.id))
+  const decide = (rule: OwnerRule, decision: Decision) => save({ action: decision === 'approved' ? 'approve' : 'dismiss', ruleId: rule.id }, (savedModel) => {
+    const savedRule = savedModel.rules.find((savedRule) => savedRule.id === rule.id)
+    const version = ruleVersion(savedRule)
     if (version) setDecisions((previous) => ({ ...previous, [rule.id]: { decision, version } }))
-    return { text: decision === 'approved' ? `Approved ${ruleName(rule)} under ${headingFor(rule.scopeId)}` : `Rejected ${ruleName(rule)}`, ruleId: rule.id, undo: { action: 'restore-suggestion', ruleId: rule.id } }
+    const describedRule = savedRule ?? rule
+    return { text: decision === 'approved' ? `Approved ${ruleName(describedRule)} under ${headingFor(describedRule.scopeId, savedModel.ruleScopes)}` : `Rejected ${ruleName(describedRule)}`, ruleId: rule.id, undo: { action: 'restore-suggestion', ruleId: rule.id } }
   })
-  const undoDecision = (rule: OwnerRule) => save({ action: 'restore-suggestion', ruleId: rule.id }, () => {
+  const undoDecision = (rule: OwnerRule) => save({ action: 'restore-suggestion', ruleId: rule.id }, (savedModel) => {
     setDecisions(({ [rule.id]: _undone, ...rest }) => rest)
-    return { text: `Put ${ruleName(rule)} back in Needs your decision`, ruleId: rule.id, undo: null }
+    return { text: `Put ${ruleName(savedModel.rules.find((savedRule) => savedRule.id === rule.id) ?? rule)} back in Needs your decision`, ruleId: rule.id, undo: null }
   })
   const actions: RuleActions = {
     saving,
     onToggle: (rule, on) => save({ action: on ? 'turn-on' : 'turn-off', ruleId: rule.id },
-      () => ({ text: `Turned ${on ? 'on' : 'off'} ${ruleName(rule)}`, ruleId: rule.id, undo: { action: on ? 'turn-off' : 'turn-on', ruleId: rule.id } })),
+      (savedModel) => ({ text: `Turned ${on ? 'on' : 'off'} ${ruleName(savedModel.rules.find((savedRule) => savedRule.id === rule.id) ?? rule)}`, ruleId: rule.id, undo: { action: on ? 'turn-off' : 'turn-on', ruleId: rule.id } })),
     onEdit: (rule) => { setDraftError(null); setDraft({ id: rule.id, scopeId: rule.scopeId, newScopeName: '', when: rule.when, then: rule.then, approving: false }) },
     onJump: jump,
   }
@@ -738,19 +741,21 @@ export function MyRules() {
     pending.current = true
     setSaving(true)
     try {
-      const savedRules = await saveRuleChange(change).then((model) => model.rules)
+      const { savedModel, savedRuleId } = await saveRuleChange(change)
+      const savedRules = savedModel.rules
       let done: Change
       if (draft.id) {
         const version = ruleVersion(savedRules.find((savedRule) => savedRule.id === draft.id))
         if (draft.approving && version) setDecisions((previous) => ({ ...previous, [draft.id!]: { decision: 'approved', version } }))
-        done = { text: `${draft.approving ? 'Edited and approved' : 'Edited'} ${ruleName(rule)}`, ruleId: draft.id, undo: draft.approving ? { action: 'restore-suggestion', ruleId: draft.id } : { action: 'edit', ruleId: draft.id, rule: previousRule } }
+        done = { text: `${draft.approving ? 'Edited and approved' : 'Edited'} ${ruleName(savedRules.find((savedRule) => savedRule.id === draft.id) ?? rule)}`, ruleId: draft.id, undo: draft.approving ? { action: 'restore-suggestion', ruleId: draft.id } : { action: 'edit', ruleId: draft.id, rule: previousRule } }
       } else {
-        const added = savedRules.find((entry) => !rules.some((existing) => existing.id === entry.id))
-        if (!added) throw new Error('The rule was saved, but it is not in the rules the worker sent back. Reload to see it.')
-        done = { text: `Added ${ruleName(added)} under ${headingFor(added.scopeId)}`, ruleId: added.id, undo: { action: 'dismiss', ruleId: added.id } }
+        const added = addedRuleFromSave(savedModel, rules, rule, savedRuleId)
+        done = added
+          ? { text: `Added ${ruleName(added)} under ${headingFor(added.scopeId, savedModel.ruleScopes)}`, ruleId: added.id, undo: { action: 'dismiss', ruleId: added.id } }
+          : { text: `Saved ${ruleName(rule)}`, ruleId: null, undo: null }
       }
       setHistory((previous) => [...previous, { ...done, expectedVersion: ruleVersion(savedRules.find((rule) => rule.id === done.ruleId)) }])
-      setChangedIds((previous) => new Set(previous).add(done.ruleId))
+      if (done.ruleId) setChangedIds((previous) => new Set(previous).add(done.ruleId!))
       setDraft(null)
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : String(error))
@@ -800,7 +805,7 @@ export function MyRules() {
               <p className="text-muted-foreground">{savedWhere(mode, sample)}.{sample && <span className="italic"> Wireframe: not actually written.</span>}</p>
               <div className="-ml-2 flex flex-wrap">
                 <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" onClick={() => setFileOpen(true)}>View in MY-RULES.md</Button>
-                {rules.some((rule) => rule.id === lastChange.ruleId && (rule.status === 'on' || rule.status === 'off')) && <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" onClick={() => jump(lastChange.ruleId)}>Show the rule</Button>}
+                {lastChange.ruleId && rules.some((rule) => rule.id === lastChange.ruleId && (rule.status === 'on' || rule.status === 'off')) && <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" onClick={() => jump(lastChange.ruleId!)}>Show the rule</Button>}
                 <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" onClick={undoLast} disabled={saving || !canUndoLast}>Undo</Button>
               </div>
               {lastChange.undo && !canUndoLast && <p className="text-muted-foreground">This rule changed again. Review its current version before changing it.</p>}

@@ -634,7 +634,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     this.writeRulesFile((updated.rules ?? []) as SavedRule[]);
     logger.debug('HTTP', 'My Rules updated', { action });
     res.setHeader('Cache-Control', 'no-store');
-    res.json(updated);
+    res.json({ ...updated, savedRuleId: rows[0].rule_id });
     this.publish(updated);
   };
 

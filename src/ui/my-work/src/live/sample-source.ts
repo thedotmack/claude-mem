@@ -16,6 +16,7 @@ const sampleDeviceName = (deviceId: string) => SAMPLE_DEVICES.find((device) => d
 
 /** The same change the worker saves, applied to the sample rules (see WorkViewRoutes `saveRule`). */
 function applySampleRuleChange({ action, ruleId, rule }: RuleChange) {
+  let savedRuleId = ruleId
   const index = sampleRules.findIndex((entry) => entry.id === ruleId)
   const current = sampleRules[index]
   if (action !== 'add' && !current) throw new Error(`No sample rule ${ruleId}`)
@@ -29,9 +30,14 @@ function applySampleRuleChange({ action, ruleId, rule }: RuleChange) {
   const written = rule ? { scopeId, when: rule.when.trim(), then: rule.then.trim() } : {}
   const ownRule = (): OwnerRule => ({ id: `added-${addedSampleRules++}`, scopeId, setBy: 'owner', when: '', then: '', ...written, quotes: [], timesSeen: 1, latestAt: 'today', latestDaysAgo: 0, source: 'you', status: 'on', records: [{ kind: 'Instructions', label: 'Written in My Rules', at: 'today' }] })
   const replaceAt = (next: OwnerRule) => { sampleRules = sampleRules.map((entry, at) => at === index ? next : entry) }
-  if (action === 'add') sampleRules = [...sampleRules, ownRule()]
+  if (action === 'add') {
+    const added = ownRule()
+    savedRuleId = added.id
+    sampleRules = [...sampleRules, added]
+  }
   else if (action === 'replace') {
     const replacement = ownRule()
+    savedRuleId = replacement.id
     replaceAt({ ...current, status: 'replaced', replacedBy: { ruleId: replacement.id, at: 'today' } })
     sampleRules = [...sampleRules, replacement]
   } else if (action === 'approve') replaceAt({ ...current, ...written, setBy: current.setBy === 'learned' ? 'approved' : current.setBy, status: 'on' })
@@ -41,6 +47,7 @@ function applySampleRuleChange({ action, ruleId, rule }: RuleChange) {
     if (current.source === 'you') sampleRules = sampleRules.filter((entry) => entry.id !== ruleId)
     else replaceAt({ ...current, status: 'dismissed' })
   } else replaceAt(SAMPLE_OWNER_RULES.find((entry) => entry.id === ruleId) ?? (() => { throw new Error(`Sample rule ${ruleId} was never a suggestion`) })())
+  return savedRuleId
 }
 
 const loadSampleWorkModel = async (): Promise<WorkModel> => ({
@@ -77,6 +84,11 @@ const loadSampleWorkModel = async (): Promise<WorkModel> => ({
   connection: getConnectionStatus({ now: 0 }),
 })
 
+async function sampleMutationResult() {
+  const model = await loadSampleWorkModel()
+  return { savedModel: model, model, refreshError: null }
+}
+
 export const sampleSource: WorkDataSource = {
   sourceKind: 'sample',
   loadWorkModel: loadSampleWorkModel,
@@ -84,11 +96,11 @@ export const sampleSource: WorkDataSource = {
   subscribeToLiveUpdates: () => () => {},
 
   async saveRuleChange(change) {
-    applySampleRuleChange(change)
-    return loadSampleWorkModel()
+    const savedRuleId = applySampleRuleChange(change)
+    return { ...await sampleMutationResult(), savedRuleId }
   },
   // The sample file is always loaded; there is no CLAUDE.md to change.
-  loadRulesInClaudeCode: loadSampleWorkModel,
+  loadRulesInClaudeCode: sampleMutationResult,
   // Sample agents are fixtures with no recorded state to change.
   markAgentFinished: () => Promise.reject(new Error('Sample agents have no recorded state to change.')),
 
@@ -107,6 +119,6 @@ export const sampleSource: WorkDataSource = {
       SAMPLE_REQUESTS[index] = requestBeforeCheck
       sampleRequestsBeforeCheck.delete(requestId)
     }
-    return { outcome: 'saved', model: await loadSampleWorkModel() }
+    return { outcome: 'saved', ...await sampleMutationResult() }
   },
 }

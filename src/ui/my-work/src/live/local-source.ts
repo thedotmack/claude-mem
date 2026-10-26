@@ -5,7 +5,7 @@
 import { getConnectionStatus, type ConnectionStatus } from './connection-status.ts'
 import { conflictReason, readReviewResponse, type ReviewResult } from './review-response.ts'
 import { toWorkModel } from './to-work-model.ts'
-import type { MappedWorkModel, WorkDataSource, WorkModel } from './work-data-source.ts'
+import type { MappedWorkModel, WorkDataSource, WorkModel, WorkMutationResult } from './work-data-source.ts'
 import type { WorkViewSnapshot, WorkViewSource } from './work-view-api-types.ts'
 
 const WORK_VIEW_URL = '/api/work-view'
@@ -78,14 +78,20 @@ export function createLocalSource(): WorkDataSource {
     return acceptSnapshot(snapshot)
   }
 
-  async function acceptMutation(snapshot: WorkViewSnapshot, versionBeforeSave: number, generationBeforeSave: number): Promise<WorkModel> {
-    if (subscriptionGeneration !== generationBeforeSave) return currentModel() ?? withConnection(toWorkModel(snapshot, Date.now()))
+  async function acceptMutation(snapshot: WorkViewSnapshot, versionBeforeSave: number, generationBeforeSave: number): Promise<WorkMutationResult> {
+    const savedModel = withConnection(toWorkModel(snapshot, Date.now()))
+    if (subscriptionGeneration !== generationBeforeSave) return { savedModel, model: currentModel() ?? savedModel, refreshError: null }
     // The write succeeded, but its response may predate a newer event. Re-read after the write so
     // the mutation is retained without rolling back unrelated requests, rules or agent updates.
-    return snapshotVersion !== versionBeforeSave ? loadWorkModel() : acceptSnapshot(snapshot)
+    if (snapshotVersion === versionBeforeSave) return { savedModel, model: acceptSnapshot(snapshot), refreshError: null }
+    try {
+      return { savedModel, model: await loadWorkModel(), refreshError: null }
+    } catch (reason) {
+      return { savedModel, model: currentModel() ?? savedModel, refreshError: reason instanceof Error ? reason.message : String(reason) }
+    }
   }
 
-  async function postForWorkModel(url: string, body: unknown, whatWasSaved: string): Promise<WorkModel> {
+  async function postForWorkModel(url: string, body: unknown, whatWasSaved: string): Promise<WorkMutationResult> {
     const versionBeforeSave = snapshotVersion
     const generationBeforeSave = subscriptionGeneration
     const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
@@ -96,7 +102,11 @@ export function createLocalSource(): WorkDataSource {
       throw new Error(`${whatWasSaved} was not saved: ${typeof reason === 'string' ? reason : `the worker answered ${response.status}`}`)
     }
     if (!isWorkViewSnapshot(answer)) throw new Error(`${whatWasSaved} was saved, but the worker sent back something that is not a work snapshot. Reload to see it.`)
-    return acceptMutation(answer, versionBeforeSave, generationBeforeSave)
+    const result = await acceptMutation(answer, versionBeforeSave, generationBeforeSave)
+    const savedRuleId = (answer as WorkViewSnapshot & { savedRuleId?: unknown }).savedRuleId
+    return url === WORK_VIEW_RULES_URL && typeof savedRuleId === 'string'
+      ? { ...result, savedRuleId }
+      : result
   }
 
   return {
@@ -123,7 +133,7 @@ export function createLocalSource(): WorkDataSource {
           : { outcome: 'changed-while-reading', model: latest }
       }
       if (!isWorkViewSnapshot(answer.snapshot)) throw new Error('The local review was saved, but the worker sent back something that is not a work snapshot. Reload to see it.')
-      return { outcome: 'saved', model: await acceptMutation(answer.snapshot, versionBeforeSave, generationBeforeSave) }
+      return { outcome: 'saved', ...await acceptMutation(answer.snapshot, versionBeforeSave, generationBeforeSave) }
     },
 
     saveRuleChange: (change) => postForWorkModel(WORK_VIEW_RULES_URL, change, 'The rule change'),

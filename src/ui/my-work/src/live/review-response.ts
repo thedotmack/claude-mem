@@ -1,7 +1,7 @@
 // The pure part of the fingerprint-guarded check, from claude-mem v15.0.1 plugin/ui/work-view/app.js:125-138
 // (`saveReview`) and the worker's POST /api/work-view/review (WorkViewRoutes.ts:132-152). The fetch lives in
 // local-source.ts; this reads the worker's answer.
-import type { WorkModel } from './work-data-source.ts'
+import type { WorkModel, WorkMutationResult } from './work-data-source.ts'
 
 /** What the review POST answered. Anything else throws: a failed save is never silent. */
 export type ReviewResponse =
@@ -13,7 +13,7 @@ export type ReviewResponse =
 
 /** What the person is told after pressing Check or Undo. */
 export type ReviewResult =
-  | { outcome: 'saved'; model: WorkModel }
+  | ({ outcome: 'saved' } & WorkMutationResult)
   /** The version on screen is not the latest one; the latest is shown now and nothing was saved. */
   | { outcome: 'changed-while-reading'; model: WorkModel }
   /** The latest version was refused as it is (409 "not reported complete"); nothing was saved. */

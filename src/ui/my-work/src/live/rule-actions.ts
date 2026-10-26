@@ -1,4 +1,4 @@
-import type { OwnerRule } from '../data-rules.ts'
+import type { OwnerRule, RuleDraft, RuleScope } from '../data-rules.ts'
 
 export type RuleDecision = 'approved' | 'rejected'
 export interface SavedRuleDecision { decision: RuleDecision; version: string }
@@ -29,4 +29,16 @@ export function currentRuleDecisions(rules: OwnerRule[], saved: Record<string, S
 
 export function ruleUndoIsCurrent(ruleId: string, expectedVersion: string | null, rules: OwnerRule[]): boolean {
   return expectedVersion !== null && expectedVersion === ruleVersion(rules.find((rule) => rule.id === ruleId))
+}
+
+/** New workers identify the saved row. Older workers need a unique matching addition, never the first new row. */
+export function addedRuleFromSave(saved: { rules: OwnerRule[]; ruleScopes: RuleScope[] }, previous: OwnerRule[], draft: RuleDraft, savedRuleId?: string): OwnerRule | undefined {
+  if (savedRuleId) return saved.rules.find((rule) => rule.id === savedRuleId)
+  const previousIds = new Set(previous.map((rule) => rule.id))
+  const matches = saved.rules.filter((rule) => {
+    if (previousIds.has(rule.id) || rule.setBy !== 'owner' || rule.when !== draft.when || rule.then !== draft.then) return false
+    const scope = saved.ruleScopes.find((scope) => scope.id === rule.scopeId)
+    return scope?.tier === draft.scopeTier && (draft.scopeTier === 'everywhere' || scope.name === draft.scopeName)
+  })
+  return matches.length === 1 ? matches[0] : undefined
 }

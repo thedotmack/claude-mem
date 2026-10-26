@@ -18,7 +18,7 @@ import { MyWork } from '@/pages/my-work'
 import { Req, SpecOverlayContext } from '@/spec/req'
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { Spinner } from '@/components/ui/spinner'
-import { playDemoUpdates, refreshWorkModel, startWorkModel, useWorkModel, useWorkModelLoad, type Request } from '@/data'
+import { playDemoUpdates, refreshWorkModel, startWorkModel, useWorkModel, useWorkModelLoad, useWorkRefreshError, useWorkRefreshing, type Request } from '@/data'
 import { startViewNavigation, useViewStore, type Page } from '@/stores/view-store'
 import { localSource } from '@/live/local-source'
 import { sampleSource } from '@/live/sample-source'
@@ -102,6 +102,8 @@ function WorkApp() {
 
 function LoadedApp() {
   const { sourceKind, requests, goalOnlyRequests } = useWorkModel()
+  const refreshError = useWorkRefreshError()
+  const refreshing = useWorkRefreshing()
   const sample = sourceKind === 'sample'
   const page = useViewStore((state) => state.page)
   const team = useViewStore((state) => state.team)
@@ -197,6 +199,10 @@ function LoadedApp() {
                 </Req>
 
                 <main className="min-w-0">
+                  {refreshError && <div role="status" className="mb-4 space-y-2 rounded-lg border border-attention-border p-3 text-sm">
+                    <p>{refreshError}</p>
+                    <Button variant="outline" size="sm" disabled={refreshing} onClick={() => void refreshWorkModel()}>{refreshing ? 'Refreshing…' : 'Retry refresh'}</Button>
+                  </div>}
                   {page === 'work' && <MyWork onOpen={setOpenRequest} onOpenGoal={goToGoal} onOpenRules={() => goToPage('rules')} />}
                   {page === 'goals' && <MyGoals onOpen={setOpenRequest} focusGoalId={focusGoalId ?? ''} />}
                   {page === 'rules' && <MyRules />}

@@ -3,7 +3,7 @@
 import { useStore } from 'zustand'
 import type { ReviewResult } from './live/review-response.ts'
 import type { RuleChange } from './data-rules.ts'
-import type { WorkDataSource, WorkModel } from './live/work-data-source.ts'
+import type { WorkDataSource, WorkModel, WorkMutationResult } from './live/work-data-source.ts'
 import { workStore } from './stores/work-store.ts'
 export type { WorkModelLoad } from './stores/work-store.ts'
 
@@ -240,6 +240,8 @@ export const useWorkModelLoad = () => useStore(workStore, (state) => state.load)
 export const startWorkModel = (source: WorkDataSource) => workStore.getState().start(source)
 export const refreshWorkModel = () => workStore.getState().refresh()
 export const useWorkConnection = () => useStore(workStore, (state) => state.connection)
+export const useWorkRefreshError = () => useStore(workStore, (state) => state.refreshError)
+export const useWorkRefreshing = () => useStore(workStore, (state) => state.refreshing)
 
 function currentWorkModel(): WorkModel {
   const workModelLoad = workStore.getState().load
@@ -302,33 +304,38 @@ export async function setRequestChecked(requestId: string, checked: boolean, dis
   if (!request) throw new Error(`No request ${requestId}`)
   // Sample fixtures carry no fingerprint and the sample source ignores it; the local source refuses an empty one.
   const result = await activeWorkDataSource.setRequestChecked(requestId, displayedFingerprint ?? request.contentFingerprint ?? '', checked)
-  if ('model' in result && workStore.getState().sessionId === sessionId) applyWorkModel(result.model)
+  if (result.outcome === 'saved') applyMutationResult(result, sessionId)
+  else if ('model' in result && workStore.getState().sessionId === sessionId) applyWorkModel(result.model)
   return result
 }
 
 /** Saves one change to My Rules through the active source and shows the model it answers with. Rejects with the reason. */
-export async function saveRuleChange(change: RuleChange): Promise<WorkModel> {
+export async function saveRuleChange(change: RuleChange): Promise<WorkMutationResult> {
   const { source: activeWorkDataSource, sessionId } = workStore.getState()
   if (!activeWorkDataSource) throw new Error('No data source to save the rule change to')
-  const model = await activeWorkDataSource.saveRuleChange(change)
-  if (workStore.getState().sessionId === sessionId) applyWorkModel(model)
-  return model
+  const result = await activeWorkDataSource.saveRuleChange(change)
+  applyMutationResult(result, sessionId)
+  return result
+}
+
+function applyMutationResult(result: WorkMutationResult, sessionId: number) {
+  if (workStore.getState().sessionId !== sessionId) return
+  applyWorkModel(result.model)
+  if (result.refreshError) workStore.setState({ refreshError: `Your change was saved, but the latest work could not be refreshed: ${result.refreshError}` })
 }
 
 /** Records that a subagent finished, for one no recorded stop covers. Rejects with the reason. */
 export async function markAgentFinished(agentId: string): Promise<void> {
   const { source: activeWorkDataSource, sessionId } = workStore.getState()
   if (!activeWorkDataSource) throw new Error('No data source to save the agent to')
-  const model = await activeWorkDataSource.markAgentFinished(agentId)
-  if (workStore.getState().sessionId === sessionId) applyWorkModel(model)
+  applyMutationResult(await activeWorkDataSource.markAgentFinished(agentId), sessionId)
 }
 
 /** Adds the MY-RULES.md import to ~/.claude/CLAUDE.md through the active source. */
 export async function loadRulesInClaudeCode(): Promise<void> {
   const { source: activeWorkDataSource, sessionId } = workStore.getState()
   if (!activeWorkDataSource) throw new Error('No data source to load the rules from')
-  const model = await activeWorkDataSource.loadRulesInClaudeCode()
-  if (workStore.getState().sessionId === sessionId) applyWorkModel(model)
+  applyMutationResult(await activeWorkDataSource.loadRulesInClaudeCode(), sessionId)
 }
 
 /** The ship estimate only from measured pace: two or more readings, the latest moving forward (decision 3). */

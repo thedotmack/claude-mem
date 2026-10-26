@@ -114,9 +114,11 @@ describe('My Rules routes', () => {
     expect(readFileSync(rulesFilePath, 'utf8')).not.toContain('draft');
     const added = await (await saveRule({ action: 'add', rule: { scopeTier: 'situation', scopeName: 'When I am frustrated', when: '', then: 'Stop and ask what I want.' } })).json();
     const own = added.rules.find((rule: any) => rule.setBy === 'owner');
+    expect(added.savedRuleId).toBe(own.ruleId);
     expect(own).toMatchObject({ status: 'on', source: 'you', scopeId: 'situation:When I am frustrated' });
     const replaced = await (await saveRule({ action: 'replace', ruleId: own.ruleId, rule: { scopeTier: 'situation', scopeName: 'When I am frustrated', when: '', then: 'Stop, restate what I want, and wait.' } })).json();
     expect(ruleById(replaced, own.ruleId)).toMatchObject({ status: 'replaced' });
+    expect(replaced.savedRuleId).toBe(ruleById(replaced, own.ruleId).replacedBy);
     expect(ruleById(replaced, ruleById(replaced, own.ruleId).replacedBy).then).toBe('Stop, restate what I want, and wait.');
     expect(readFileSync(rulesFilePath, 'utf8')).toContain('## When I am frustrated\n\n- Stop, restate what I want, and wait.');
     expect(replaced.ruleScopes.map((scope: any) => scope.id)).toEqual(['everywhere', 'project:claude-mem', 'situation:When I am frustrated']);
