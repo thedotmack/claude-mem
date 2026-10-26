@@ -384,8 +384,13 @@ export function resolveCompileBunPath(
 ): string {
   if (platform !== 'win32' || isAsciiPath(bunPath)) return bunPath;
   const shortPathResult = runPowerShell(WINDOWS_SHORT_PATH_SCRIPT, { CLAUDE_MEM_BUN_PATH: bunPath });
+  if (shortPathResult.spawnErrorMessage !== null || shortPathResult.status !== 0) {
+    const lookupFailureDetail = shortPathResult.spawnErrorMessage
+      ?? (shortPathResult.stderr.trim() || `exit ${shortPathResult.status}`);
+    throw new Error(`Could not look up the 8.3 short path for Bun at ${bunPath} (needed because bun build --compile cannot read a non-ASCII path on Windows, #5038): ${lookupFailureDetail}`);
+  }
   const shortPath = shortPathResult.stdout.trim();
-  if (shortPathResult.status === 0 && isAsciiPath(shortPath)) return shortPath;
+  if (isAsciiPath(shortPath)) return shortPath;
   throw new Error(`Bun at ${bunPath} is on a path with non-ASCII characters, which bun build --compile cannot read on Windows, and Windows has no 8.3 short name for it; install Bun in a folder whose path is ASCII only (for example C:\\bun), then run \`npx claude-mem install\``);
 }
 

@@ -150,11 +150,16 @@ describe('resolveCompileBunPath (#5038)', () => {
   const cyrillicBun = 'C:\\Users\\Пользователь\\.bun\\bin\\bun.exe';
   const shortBun = String.raw`C:\Users\5F1B~1\BUN~1\bin\bun.exe`;
   const asciiBun = String.raw`C:\Users\alex\.bun\bin\bun.exe`;
-  const powerShellReturning = (stdout: string, status: number | null = 0) => {
+  const powerShellReturning = (
+    stdout: string,
+    status: number | null = 0,
+    stderr = '',
+    spawnErrorMessage: string | null = null,
+  ) => {
     const calls: Array<{ script: string; extraEnvironment: Record<string, string> }> = [];
     const runner = (script: string, extraEnvironment: Record<string, string>) => {
       calls.push({ script, extraEnvironment });
-      return { status, stdout, stderr: '', spawnErrorMessage: null };
+      return { status, stdout, stderr, spawnErrorMessage };
     };
     return Object.assign(runner, { calls });
   };
@@ -181,7 +186,26 @@ describe('resolveCompileBunPath (#5038)', () => {
     expect(message).toContain(cyrillicBun);
     expect(message).toContain('non-ASCII');
     expect(message).toContain('npx claude-mem install');
-    expect(() => resolveCompileBunPath(cyrillicBun, 'win32', powerShellReturning('', 1))).toThrow('non-ASCII');
+    expect(message).toContain('no 8.3 short name');
+  });
+
+  it('reports a failed short-path lookup with its cause, not as a missing short name', () => {
+    const exitMessage = thrownMessage(() => resolveCompileBunPath(cyrillicBun, 'win32', powerShellReturning('', 1)));
+    expect(exitMessage).toContain('Could not look up the 8.3 short path');
+    expect(exitMessage).toContain(cyrillicBun);
+    expect(exitMessage).toContain('exit 1');
+    expect(exitMessage).not.toContain('no 8.3 short name');
+
+    const stderrMessage = thrownMessage(() => resolveCompileBunPath(cyrillicBun, 'win32', powerShellReturning('', 1, 'Exception calling GetFile\r\n')));
+    expect(stderrMessage).toContain('Exception calling GetFile');
+
+    const spawnFailureMessage = thrownMessage(() => resolveCompileBunPath(
+      cyrillicBun,
+      'win32',
+      powerShellReturning('', null, '', 'spawn powershell.exe ENOENT'),
+    ));
+    expect(spawnFailureMessage).toContain('spawn powershell.exe ENOENT');
+    expect(spawnFailureMessage).not.toContain('no 8.3 short name');
   });
 });
 
