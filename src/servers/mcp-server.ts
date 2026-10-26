@@ -14,6 +14,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+  RootsListChangedNotificationSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { getWorkerPort, workerHttpRequest, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { ensureWorkerStarted } from '../services/worker-spawner.js';
@@ -23,6 +24,7 @@ import { treeSitterCliUnavailableMessage } from '../services/smart-file-read/tre
 import { resolveWithinWorkspace } from '../services/smart-file-read/workspace-path.js';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { marketplaceDirectoryCandidates } from '../shared/known-marketplace-location.js';
 import { dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
@@ -60,6 +62,7 @@ import { ProgressiveSearchError, progressiveSearchToolError } from '../shared/pr
 import { formatMcpPayload, formatWorkerMcpResponse, mcpTextResult, workerFailureText, serverFailureText, type McpTextPurpose } from './mcp-text-format.js';
 import { getRequestCwd, runWithCwd } from './request-context.js';
 import { parseHttpArgs, startMcpHttpServer, type CwdResolver, type McpHttpOptions } from './mcp-http.js';
+import { MAX_MCP_ROOTS_ATTEMPTS, MCP_ROOTS_TIMEOUT_MS, resolveMcpProjectCwd, type McpCwdResolution } from './mcp-project-cwd.js';
 import { buildWorkerOriginPolicy } from '../services/worker/http/origin-policy.js';
 
 /**
@@ -94,6 +97,57 @@ const mcpServerDir = (() => {
 // would otherwise auto-spawn a stale worker. The own-dir resolution stays as
 // the fallback for installs without a marketplace copy.
 const WORKER_SCRIPT_PATH = resolveWorkerScriptPath() ?? resolve(mcpServerDir, 'worker-service.cjs');
+const MCP_PLUGIN_ROOT = resolve(mcpServerDir, '..');
+
+function createStdioCwdResolver(server: Server): () => Promise<string> {
+  let cached: McpCwdResolution | null = null;
+  let rootsAttempts = 0;
+  let rootsStale = true;
+  let loggedResolution: McpCwdResolution | null = null;
+  server.setNotificationHandler(RootsListChangedNotificationSchema, async () => {
+    rootsStale = true;
+    rootsAttempts = 0;
+  });
+
+  return async () => {
+    const supportsRoots = Boolean(server.getClientCapabilities()?.roots);
+    const shouldAskRoots = supportsRoots && rootsAttempts < MAX_MCP_ROOTS_ATTEMPTS
+      && (!cached || rootsStale || cached.source !== 'roots');
+    if (shouldAskRoots) {
+      rootsAttempts++;
+      let roots: Array<{ uri: string }> | undefined;
+      try {
+        roots = (await server.listRoots(undefined, { timeout: MCP_ROOTS_TIMEOUT_MS })).roots;
+      } catch (error) {
+        logger.warn('SYSTEM', 'MCP stdio roots/list failed; resolving the project from the available fallback', {
+          attempt: rootsAttempts,
+          maxAttempts: MAX_MCP_ROOTS_ATTEMPTS,
+        }, error instanceof Error ? error : new Error(String(error)));
+      }
+      cached = resolveMcpProjectCwd({
+        roots,
+        fallbackCwd: process.cwd(),
+        pwd: process.env.PWD,
+        pluginRoot: MCP_PLUGIN_ROOT,
+      });
+      rootsStale = false;
+    } else if (!cached || rootsStale) {
+      cached = resolveMcpProjectCwd({
+        fallbackCwd: process.cwd(),
+        pwd: process.env.PWD,
+        pluginRoot: MCP_PLUGIN_ROOT,
+      });
+      rootsStale = false;
+    }
+
+    if (cached && (!loggedResolution || loggedResolution.source !== cached.source || loggedResolution.cwd !== cached.cwd)) {
+      // Kept intentionally path-free: this records which source won, not a project path.
+      logger.info('SYSTEM', `MCP stdio working directory resolved from ${cached.source}`);
+      loggedResolution = cached;
+    }
+    return cached!.cwd;
+  };
+}
 
 function errorIfWorkerScriptMissing(): void {
   if (!mcpServerDirResolutionFailed) return;
@@ -504,7 +558,23 @@ async function ensureWorkerConnection(): Promise<boolean> {
 // query_corpus, which appends to the corpus session) keep prompting.
 const READ_ONLY_TOOL_ANNOTATIONS = { readOnlyHint: true } as const;
 
-const tools = [
+interface McpToolCallContext {
+  mcpToolUse?: {
+    contentSessionId: string;
+    toolUseId: string;
+    platformSource: 'antigravity-cli';
+  };
+}
+
+interface McpToolDefinition {
+  name: string;
+  description: string;
+  inputSchema: any;
+  annotations?: any;
+  handler: (args: any, context?: McpToolCallContext) => any;
+}
+
+const tools: McpToolDefinition[] = [
   {
     name: 'dumb_search',
     description: 'Dumb search (optional): Doesn’t reason about the results. Fast, but shallow. Use Smart for reliable recall. This one-call lookup picks records by title word overlap, adds nearby context, and returns up to maxDetails records. Smart search is the default mem-search workflow: search → timeline → selected get_observations.',
@@ -743,8 +813,11 @@ Optional Dumb search: \`dumb_search({query, project})\`. Doesn’t reason about 
       required: ['list', 'fields'],
       additionalProperties: false,
     },
-    handler: async (args: any) => callWorker('/api/work-state/entries', {
-      body: { cwd: getRequestCwd(), list: args?.list, fields: args?.fields },
+    handler: async (args: any, context?: McpToolCallContext) => callWorker('/api/work-state/entries', {
+      body: {
+        cwd: getRequestCwd(), list: args?.list, fields: args?.fields,
+        ...(context?.mcpToolUse ? { mcpToolUse: context.mcpToolUse } : {}),
+      },
       text: true,
     }),
   },
@@ -1164,11 +1237,11 @@ function teamBrainJoined(): boolean {
 
 /**
  * One MCP Server. Over stdio there is exactly one; over HTTP every session gets its own.
- * `getCwd` returns the project directory of the request carrying a tool call, resolved
- * for every call, so the project-scoped tools see the caller's project. Without it they
- * use process.cwd().
+ * `getCwd` returns the HTTP request's project directory. Stdio asks the client roots/list,
+ * then uses the process launch directory or a verified PWD fallback from the plugin root.
  */
 function createMcpServer(getCwd?: CwdResolver): Server {
+  const mcpContentSessionId = randomUUID();
   const server = new Server(
     {
       name: 'claude-mem',
@@ -1180,6 +1253,8 @@ function createMcpServer(getCwd?: CwdResolver): Server {
       },
     }
   );
+
+  const resolveStdioCwd = getCwd ? null : createStdioCwdResolver(server);
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const advertisedTools = withoutUnjoinedTeamBrainTools(
@@ -1224,7 +1299,12 @@ function createMcpServer(getCwd?: CwdResolver): Server {
 
     try {
       const args = request.params.arguments || {};
-      const result = await (getCwd ? runWithCwd(getCwd(extra), () => tool.handler(args)) : tool.handler(args));
+      const cwd = getCwd ? getCwd(extra) : await resolveStdioCwd!();
+      const isAntigravity = normalizePlatformSource(server.getClientVersion()?.name) === 'antigravity-cli';
+      const context: McpToolCallContext = isAntigravity && tool.name === 'work_state_write'
+        ? { mcpToolUse: { contentSessionId: mcpContentSessionId, toolUseId: randomUUID(), platformSource: 'antigravity-cli' } }
+        : {};
+      const result = await runWithCwd(cwd, () => tool.handler(args, context));
       spoolWorkStateMcpResult(tool.name, result);
       return result;
     } catch (error: unknown) {
@@ -1376,6 +1456,7 @@ async function main() {
 async function mainHttp(options: McpHttpOptions) {
   const handle = await startMcpHttpServer({
     ...options,
+    pluginRoot: options.pluginRoot ?? MCP_PLUGIN_ROOT,
     originPolicy: buildWorkerOriginPolicy(loadFromFileOnce()),
     createServer: createMcpServer,
   });

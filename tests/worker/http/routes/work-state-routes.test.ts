@@ -18,6 +18,8 @@ import { getProjectContext } from '../../../../src/utils/project-name.js';
 import { SearchRoutes } from '../../../../src/services/worker/http/routes/SearchRoutes.js';
 import { ModeManager } from '../../../../src/services/domain/ModeManager.js';
 import { logger } from '../../../../src/utils/logger.js';
+import { buildAgentView, readAgentRecords } from '../../../../src/services/work-view/agent-view.mjs';
+import { reduceWorkState } from '../../../../src/services/work-view/data-source.mjs';
 
 let server: Server | undefined;
 let port = 0;
@@ -132,6 +134,43 @@ describe('WorkStateRoutes', () => {
       { task: 'tag', status: 'done' },
       { task: 'publish', status: 'todo' },
     ]);
+  });
+
+  it('attributes Antigravity work-state writes to the originating client in My Work', async () => {
+    const mcpToolUse = {
+      contentSessionId: 'agy-content-session',
+      toolUseId: 'agy-work-state-write-1',
+      platformSource: 'antigravity-cli',
+    } as const;
+    const response = await write({
+      cwd: checkout,
+      list: 'release',
+      fields: { task: 'publish', status: 'done' },
+      mcpToolUse,
+    });
+
+    expect(response.status).toBe(200);
+    const [call] = store.queryToolUses({ toolName: 'work_state_write', contentSessionId: mcpToolUse.contentSessionId });
+    expect(call).toMatchObject({
+      tool_use_id: mcpToolUse.toolUseId,
+      project,
+      platform_source: 'antigravity-cli',
+      tool_name: 'work_state_write',
+      cwd: checkout,
+    });
+    expect(JSON.parse(call!.tool_input!)).toEqual({ list: 'release', fields: { task: 'publish', status: 'done' } });
+
+    const entries = store.getWorkStateEntries([project]).map(entry => ({ ...entry, fields: JSON.stringify(entry.fields) }));
+    const now = Date.now();
+    const state = reduceWorkState(entries, { currentProject: project, currentProjectScope: [project] });
+    const records = readAgentRecords(store.db, { workState: state, now });
+    const view = buildAgentView(state, records, { now });
+    const attributed = view.agents.flatMap(agent => agent.work.map(work => ({ agent, work })))
+      .find(({ work }) => work.title === 'publish');
+
+    expect(attributed?.agent.label).toBe('Antigravity CLI');
+    expect(attributed?.work.status).toBe('done');
+    expect(attributed?.work.attribution.meaning).toBe('update-author');
   });
 
   it('says when a write leaves nothing open in the list', async () => {

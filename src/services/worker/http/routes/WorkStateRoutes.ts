@@ -35,6 +35,11 @@ const workStateFieldsSchema = z.custom<WorkStateFields>(value =>
 const workStateWriteSchema = z.object({
   cwd: z.string().trim().min(1),
   list: z.string().trim().min(1).max(200),
+  mcpToolUse: z.object({
+    contentSessionId: z.string().min(1).max(256),
+    toolUseId: z.string().min(1).max(256),
+    platformSource: z.literal('antigravity-cli'),
+  }).strict().optional(),
   fields: workStateFieldsSchema
     .refine(fields => Object.keys(fields).length > 0, 'fields must set at least one key')
     .refine(
@@ -61,7 +66,7 @@ export class WorkStateRoutes extends BaseRouteHandler {
   }
 
   private handleWrite = this.wrapHandler((req: Request, res: Response): void => {
-    const { cwd, list, fields } = req.body as z.infer<typeof workStateWriteSchema>;
+    const { cwd, list, fields, mcpToolUse } = req.body as z.infer<typeof workStateWriteSchema>;
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
 
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
@@ -81,6 +86,25 @@ export class WorkStateRoutes extends BaseRouteHandler {
     const checkout = getProjectContext(cwd);
     const store = this.dbManager.getSessionStore();
     store.appendWorkStateEntry({ project: checkout.primary, listName: list, fields });
+    if (mcpToolUse) {
+      try {
+        const sessionDbId = store.createSDKSession(mcpToolUse.contentSessionId, checkout.primary, '', undefined, mcpToolUse.platformSource);
+        store.setSessionCwd(sessionDbId, cwd, checkout.keySource);
+        store.upsertToolUse({
+          toolUseId: mcpToolUse.toolUseId,
+          contentSessionId: mcpToolUse.contentSessionId,
+          sessionDbId,
+          project: checkout.primary,
+          platformSource: mcpToolUse.platformSource,
+          toolName: 'work_state_write',
+          toolInput: JSON.stringify({ list, fields }),
+          cwd,
+        });
+      } catch (error) {
+        logger.warn('WORKER', 'Failed to record Antigravity MCP work-state call', { project: checkout.primary },
+          error instanceof Error ? error : new Error(String(error)));
+      }
+    }
     logger.debug('WORKER', 'Work state entry saved', { project: checkout.primary, list });
     // The row is a `work_state` sync op: nudge the push drain (null when sync is off).
     this.dbManager.getCloudSync()?.notify();
