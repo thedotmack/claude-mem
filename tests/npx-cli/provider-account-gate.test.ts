@@ -62,3 +62,19 @@ describe('install flow wiring', () => {
     expect(summary.slice(persistedIdx)).toContain("'Kept existing account (no login this run)'");
   });
 });
+
+describe('install help text (#4131)', () => {
+  const help = readFileSync(join(__dirname, '..', '..', 'src', 'npx-cli', 'index.ts'), 'utf-8');
+  const providerLine = help.split('\n').find((line) => line.includes('install --provider'));
+
+  // A headless `--runtime server --provider openrouter` install blocked on a
+  // browser login the help never mentioned.
+  it('says which providers need a cmem.ai sign-in, matching providerNeedsAccount', () => {
+    expect(providerLine).toBeDefined();
+    for (const provider of ['codex', 'gemini', 'openrouter'] as const) {
+      expect(providerNeedsAccount(provider)).toBe(true);
+    }
+    expect(providerLine).toContain('codex, gemini and openrouter need a cmem.ai sign-in');
+    expect(providerLine).toContain('claude and host need no claude-mem account');
+  });
+});
