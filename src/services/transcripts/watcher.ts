@@ -5,7 +5,7 @@ import { basename, join, resolve as resolvePath, sep as pathSep } from 'path';
 import { logger } from '../../utils/logger.js';
 import { expandHomePath } from './config.js';
 import { loadWatchState, saveWatchState, type TranscriptWatchState } from './state.js';
-import type { TranscriptWatchConfig, TranscriptSchema, WatchTarget } from './types.js';
+import type { TranscriptCheckpointGate, TranscriptWatchConfig, TranscriptSchema, WatchTarget } from './types.js';
 import {
   TranscriptAnchorError,
   TranscriptEventProcessor,
@@ -37,6 +37,9 @@ const WRITTEN_SINCE_STARTUP_SLACK_MS = 2000;
  * back) before the tool calls saved for it are retired.
  */
 const MISSING_TRANSCRIPT_GRACE_MS = 1000;
+
+/** How often held checkpoints are checked against the buffer once lines stop arriving. */
+const HELD_CHECKPOINT_POLL_MS = 2000;
 
 /**
  * A transcript discovered after startup with a fresh mtime whose first record
@@ -241,6 +244,8 @@ class FileTailer {
   private fileIdentity?: string;
   /** sha256 of the up-to-4 KiB before the checkpoint (fingerprintBeforeOffset). Persisted. */
   private checkpointFingerprint?: string;
+  /** Checkpoint after every JSONL line: set when checkpoints are held in memory, so they cost no write. */
+  checkpointEachLine = false;
 
   constructor(
     private filePath: string,
@@ -431,6 +436,8 @@ class FileTailer {
       if (line && ++dispatched % YIELD_EVERY_N_LINES === 0) {
         this.checkpoint(this.tailState.offset);
         await yieldToEventLoop();
+      } else if (line && this.checkpointEachLine) {
+        this.checkpoint(this.tailState.offset);
       }
     }
 
@@ -535,6 +542,9 @@ export class TranscriptWatcher {
   /** Transcripts with saved tool calls that may be gone, checked together once the grace has passed. */
   private retirementCandidates = new Set<string>();
   private retirementTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Checkpoints taken but not saved yet, oldest first, while a gate holds them. */
+  private heldCheckpoints = new Map<string, Array<{ sequence: number; apply: () => void }>>();
+  private heldCheckpointTimer: ReturnType<typeof setInterval> | null = null;
   private missingTranscriptGraceMs = MISSING_TRANSCRIPT_GRACE_MS;
   private rootWatchers: Array<ReturnType<typeof fsWatch>> = [];
   /** One-shot re-checks of a root watch on a missing root's ancestor, or one that just moved (WATCH_ROOT_SETTLE_MS). */
@@ -548,7 +558,8 @@ export class TranscriptWatcher {
   constructor(
     private config: TranscriptWatchConfig,
     private statePath: string,
-    observationTransport: TranscriptObservationTransport = 'in-process'
+    observationTransport: TranscriptObservationTransport = 'in-process',
+    private checkpointGate?: TranscriptCheckpointGate
   ) {
     this.processor = new TranscriptEventProcessor(observationTransport);
     this.state = loadWatchState(statePath);
@@ -582,6 +593,60 @@ export class TranscriptWatcher {
     if (this.retirementTimer) clearTimeout(this.retirementTimer);
     this.retirementTimer = null;
     this.retirementCandidates.clear();
+    // Held checkpoints stay unsaved: the buffered work they wait for dies with this process.
+    if (this.heldCheckpointTimer) clearInterval(this.heldCheckpointTimer);
+    this.heldCheckpointTimer = null;
+    this.heldCheckpoints.clear();
+  }
+
+  /**
+   * Saves, for each file, the newest held checkpoint whose buffered work is
+   * stored. Work is stored in sequence order per session, so once a checkpoint
+   * qualifies every older one does too.
+   */
+  private commitHeldCheckpoints(): void {
+    const gate = this.checkpointGate;
+    if (!gate) return;
+    let changed = false;
+    try {
+      for (const [file, held] of this.heldCheckpoints) {
+        const sessions = this.fileContexts.get(file)?.sessions ?? new Map<string, string>();
+        let lo = 0;
+        let hi = held.length - 1;
+        let newest = -1;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          if (gate.drainedThrough(sessions, held[mid].sequence)) { newest = mid; lo = mid + 1; } else hi = mid - 1;
+        }
+        if (newest < 0) continue;
+        held[newest].apply();
+        held.splice(0, newest + 1);
+        if (held.length === 0) this.heldCheckpoints.delete(file);
+        changed = true;
+      }
+    } catch (error) {
+      logger.warn('TRANSCRIPT', 'Could not check buffered work for held checkpoints', {}, error instanceof Error ? error : undefined);
+    }
+    if (changed) saveWatchState(this.statePath, this.state);
+    if (this.heldCheckpoints.size === 0 && this.heldCheckpointTimer) {
+      clearInterval(this.heldCheckpointTimer);
+      this.heldCheckpointTimer = null;
+    }
+  }
+
+  private holdCheckpoint(file: string, apply: () => void): void {
+    const gate = this.checkpointGate!;
+    const sequence = gate.sequence();
+    const held = this.heldCheckpoints.get(file) ?? [];
+    // A checkpoint that buffered nothing new supersedes the one before it.
+    if (held.length > 0 && held[held.length - 1].sequence === sequence) held[held.length - 1] = { sequence, apply };
+    else held.push({ sequence, apply });
+    this.heldCheckpoints.set(file, held);
+    this.commitHeldCheckpoints();
+    if (this.heldCheckpoints.size > 0 && !this.heldCheckpointTimer) {
+      this.heldCheckpointTimer = setInterval(() => this.commitHeldCheckpoints(), HELD_CHECKPOINT_POLL_MS);
+      this.heldCheckpointTimer.unref?.();
+    }
   }
 
   private async setupWatch(watch: WatchTarget): Promise<void> {
@@ -786,6 +851,7 @@ export class TranscriptWatcher {
 
   /** A replaced transcript's tool calls and directory belonged to the old file. */
   private forgetReplacedTranscript(filePath: string, fileContext: TranscriptFileContext): void {
+    this.heldCheckpoints.delete(filePath);
     this.processor.resetFileContext(fileContext);
     delete this.state.pendingTools?.[filePath];
     delete this.state.cwds?.[filePath];
@@ -1043,8 +1109,8 @@ export class TranscriptWatcher {
           }
           await this.handleLine(line, watch, schema, filePath, sessionIdOverride, fileContext);
         } finally {
-          // Saved with the next checkpoint.
-          if (fileContext.pendingTools) {
+          // Saved with the next checkpoint. A gated checkpoint carries its own copy.
+          if (fileContext.pendingTools && !this.checkpointGate) {
             (this.state.pendingTools ??= {})[filePath] = fileContext.pendingTools;
           }
           if (fileContext.cwd && fileContext.cwd !== this.state.cwds?.[filePath]) {
@@ -1053,25 +1119,36 @@ export class TranscriptWatcher {
         }
       },
       (newOffset: number, partial: string, frameLinesDone: number, fileIdentity?: string, checkpointFingerprint?: string, partialBytes?: string) => {
-        if (fileIdentity !== undefined) (this.state.fileIdentities ??= {})[filePath] = fileIdentity;
-        if (checkpointFingerprint !== undefined) {
-          (this.state.checkpointFingerprints ??= {})[filePath] = checkpointFingerprint;
-        } else if (this.state.checkpointFingerprints) {
-          delete this.state.checkpointFingerprints[filePath];
+        const pendingTools = this.checkpointGate && fileContext.pendingTools
+          ? Object.fromEntries(Object.entries(fileContext.pendingTools).map(([key, tools]) => [key, { ...tools }]))
+          : undefined;
+        const apply = () => {
+          if (pendingTools) (this.state.pendingTools ??= {})[filePath] = pendingTools;
+          if (fileIdentity !== undefined) (this.state.fileIdentities ??= {})[filePath] = fileIdentity;
+          if (checkpointFingerprint !== undefined) {
+            (this.state.checkpointFingerprints ??= {})[filePath] = checkpointFingerprint;
+          } else if (this.state.checkpointFingerprints) {
+            delete this.state.checkpointFingerprints[filePath];
+          }
+          this.state.offsets[filePath] = newOffset;
+          if (partial) {
+            (this.state.partials ??= {})[filePath] = partial;
+          } else if (this.state.partials) {
+            delete this.state.partials[filePath];
+          }
+          if (partialBytes) (this.state.partialBytes ??= {})[filePath] = partialBytes;
+          else if (this.state.partialBytes) delete this.state.partialBytes[filePath];
+          if (frameLinesDone > 0) {
+            (this.state.frameLines ??= {})[filePath] = frameLinesDone;
+          } else if (this.state.frameLines) {
+            delete this.state.frameLines[filePath];
+          }
+        };
+        if (this.checkpointGate) {
+          this.holdCheckpoint(filePath, apply);
+          return;
         }
-        this.state.offsets[filePath] = newOffset;
-        if (partial) {
-          (this.state.partials ??= {})[filePath] = partial;
-        } else if (this.state.partials) {
-          delete this.state.partials[filePath];
-        }
-        if (partialBytes) (this.state.partialBytes ??= {})[filePath] = partialBytes;
-        else if (this.state.partialBytes) delete this.state.partialBytes[filePath];
-        if (frameLinesDone > 0) {
-          (this.state.frameLines ??= {})[filePath] = frameLinesDone;
-        } else if (this.state.frameLines) {
-          delete this.state.frameLines[filePath];
-        }
+        apply();
         saveWatchState(this.statePath, this.state);
       },
       this.state.partials?.[filePath] ?? '',
@@ -1082,6 +1159,7 @@ export class TranscriptWatcher {
       this.state.partialBytes?.[filePath]
     );
 
+    tailer.checkpointEachLine = Boolean(this.checkpointGate);
     tailer.start();
     this.tailers.set(filePath, tailer);
     logger.info('TRANSCRIPT', 'Watching transcript file', {
