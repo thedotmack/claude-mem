@@ -362,6 +362,38 @@ const runPowerShellHidden: PowerShellRunner = (script, extraEnvironment) => {
   };
 };
 
+// The bun path goes in by env var, never interpolated; only the ASCII 8.3 form comes out.
+const WINDOWS_SHORT_PATH_SCRIPT = '(New-Object -ComObject Scripting.FileSystemObject).GetFile($env:CLAUDE_MEM_BUN_PATH).ShortPath';
+
+function isAsciiPath(filePath: string): boolean {
+  return /^[\x20-\x7e]+$/.test(filePath);
+}
+
+/**
+ * The bun executable to compile with. On Windows `bun build --compile` copies
+ * the running bun.exe into the output, and Bun cannot open its own executable
+ * when that path has non-ASCII characters, e.g. under a Cyrillic user profile:
+ * "failed to copy bun executable into temporary file: ENOENT" (#5038). The 8.3
+ * short form of the same path is ASCII, so the compile runs bun through it.
+ * Throws when Windows has no short name for it (8.3 names disabled).
+ */
+export function resolveCompileBunPath(
+  bunPath: string,
+  platform: NodeJS.Platform,
+  runPowerShell: PowerShellRunner,
+): string {
+  if (platform !== 'win32' || isAsciiPath(bunPath)) return bunPath;
+  const shortPathResult = runPowerShell(WINDOWS_SHORT_PATH_SCRIPT, { CLAUDE_MEM_BUN_PATH: bunPath });
+  if (shortPathResult.spawnErrorMessage !== null || shortPathResult.status !== 0) {
+    const lookupFailureDetail = shortPathResult.spawnErrorMessage
+      ?? (shortPathResult.stderr.trim() || `exit ${shortPathResult.status}`);
+    throw new Error(`Could not look up the 8.3 short path for Bun at ${bunPath} (needed because bun build --compile cannot read a non-ASCII path on Windows, #5038): ${lookupFailureDetail}`);
+  }
+  const shortPath = shortPathResult.stdout.trim();
+  if (isAsciiPath(shortPath)) return shortPath;
+  throw new Error(`Bun at ${bunPath} is on a path with non-ASCII characters, which bun build --compile cannot read on Windows, and Windows has no 8.3 short name for it; install Bun in a folder whose path is ASCII only (for example C:\\bun), then run \`npx claude-mem install\``);
+}
+
 /**
  * Read-check-append-write of the USER Path in one PowerShell process; the Path
  * value never round-trips through Node. Only the directory goes in (by env
@@ -672,8 +704,8 @@ function moveCompiledLauncherIntoPlace(
  * LauncherEnsureInvocationContext) nothing is compiled, but the cheap PATH
  * step still runs. `resolveBunPath` runs only when a compile is needed.
  * A foreign `claude-mem` at the launcher path is never replaced.
- * Throws on a missing bundle, a Bun older than 1.2.16 (#4933), a failed
- * compile or an unusable result.
+ * Throws on a missing bundle, a Bun older than 1.2.16 (#4933), a Windows Bun
+ * path with no ASCII form (#5038), a failed compile or an unusable result.
  */
 export function ensureLauncherOnPath(options: {
   pluginRoot: string;
@@ -730,6 +762,8 @@ export function ensureLauncherOnPath(options: {
     throw new Error(`Bun ${bunVersion} at ${bunPath} is older than ${MINIMUM_BUN_VERSION_FOR_BUN_BE_BUN}, which the claude-mem launcher needs; run \`bun upgrade\` (or update Bun with your version manager), then \`npx claude-mem install\``);
   }
 
+  const compileBunPath = resolveCompileBunPath(bunPath, host.platform, options.runPowerShell ?? runPowerShellHidden);
+
   mkdirSync(binDirectory, { recursive: true });
   removeStalePlacementLeftovers(binDirectory, platformPath);
   // Compile beside the target, then rename over it, so two concurrent
@@ -740,7 +774,7 @@ export function ensureLauncherOnPath(options: {
   const runCodesign = options.runCodesign ?? runAdhocCodesign;
   try {
     const compileResult = runCompile(
-      bunPath,
+      compileBunPath,
       buildLauncherCompileArguments(launcherBundlePath, temporaryOutfilePath),
       binDirectory,
     );

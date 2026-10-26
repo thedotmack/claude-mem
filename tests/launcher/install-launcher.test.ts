@@ -21,6 +21,7 @@ import {
   type LauncherInstallLogger,
   type PowerShellRunner,
   WINDOWS_USER_PATH_APPEND_SCRIPT,
+  resolveCompileBunPath,
 } from '../../src/launcher/install-launcher.js';
 import { LAUNCHER_PROTOCOL } from '../../src/launcher/launcher-protocol.js';
 import { bunCommonPaths } from '../../src/npx-cli/install/tool-path.js';
@@ -141,6 +142,71 @@ beforeAll(() => {
 
 afterAll(() => {
   rmSync(scratchParentDirectory, { recursive: true, force: true });
+});
+
+// bun build --compile on Windows cannot open its own bun.exe when that path has
+// non-ASCII characters (#5038), so the compile goes through the 8.3 short path.
+describe('resolveCompileBunPath (#5038)', () => {
+  const cyrillicBun = 'C:\\Users\\Пользователь\\.bun\\bin\\bun.exe';
+  const shortBun = String.raw`C:\Users\5F1B~1\BUN~1\bin\bun.exe`;
+  const asciiBun = String.raw`C:\Users\alex\.bun\bin\bun.exe`;
+  const powerShellReturning = (
+    stdout: string,
+    status: number | null = 0,
+    stderr = '',
+    spawnErrorMessage: string | null = null,
+  ) => {
+    const calls: Array<{ script: string; extraEnvironment: Record<string, string> }> = [];
+    const runner = (script: string, extraEnvironment: Record<string, string>) => {
+      calls.push({ script, extraEnvironment });
+      return { status, stdout, stderr, spawnErrorMessage };
+    };
+    return Object.assign(runner, { calls });
+  };
+
+  it('compiles through the 8.3 short path when the Windows bun path is not ASCII', () => {
+    const runPowerShell = powerShellReturning(`${shortBun}\r\n`);
+    expect(resolveCompileBunPath(cyrillicBun, 'win32', runPowerShell)).toBe(shortBun);
+    // The path goes in by env var, never interpolated into the script.
+    expect(runPowerShell.calls).toHaveLength(1);
+    expect(runPowerShell.calls[0].extraEnvironment).toEqual({ CLAUDE_MEM_BUN_PATH: cyrillicBun });
+    expect(runPowerShell.calls[0].script).not.toContain(cyrillicBun);
+  });
+
+  it('keeps an ASCII path, and every POSIX path, without asking PowerShell', () => {
+    const runPowerShell = powerShellReturning('unused');
+    expect(resolveCompileBunPath(asciiBun, 'win32', runPowerShell)).toBe(asciiBun);
+    expect(resolveCompileBunPath('/home/Пользователь/.bun/bin/bun', 'linux', runPowerShell)).toBe('/home/Пользователь/.bun/bin/bun');
+    expect(runPowerShell.calls).toHaveLength(0);
+  });
+
+  it('fails loudly, naming the fix, when Windows has no ASCII short name', () => {
+    // With 8.3 names disabled, ShortPath returns the long path unchanged.
+    const message = thrownMessage(() => resolveCompileBunPath(cyrillicBun, 'win32', powerShellReturning(cyrillicBun)));
+    expect(message).toContain(cyrillicBun);
+    expect(message).toContain('non-ASCII');
+    expect(message).toContain('npx claude-mem install');
+    expect(message).toContain('no 8.3 short name');
+  });
+
+  it('reports a failed short-path lookup with its cause, not as a missing short name', () => {
+    const exitMessage = thrownMessage(() => resolveCompileBunPath(cyrillicBun, 'win32', powerShellReturning('', 1)));
+    expect(exitMessage).toContain('Could not look up the 8.3 short path');
+    expect(exitMessage).toContain(cyrillicBun);
+    expect(exitMessage).toContain('exit 1');
+    expect(exitMessage).not.toContain('no 8.3 short name');
+
+    const stderrMessage = thrownMessage(() => resolveCompileBunPath(cyrillicBun, 'win32', powerShellReturning('', 1, 'Exception calling GetFile\r\n')));
+    expect(stderrMessage).toContain('Exception calling GetFile');
+
+    const spawnFailureMessage = thrownMessage(() => resolveCompileBunPath(
+      cyrillicBun,
+      'win32',
+      powerShellReturning('', null, '', 'spawn powershell.exe ENOENT'),
+    ));
+    expect(spawnFailureMessage).toContain('spawn powershell.exe ENOENT');
+    expect(spawnFailureMessage).not.toContain('no 8.3 short name');
+  });
 });
 
 describe('launcher bin dir and compile arguments per platform', () => {
