@@ -434,6 +434,26 @@ export const fileContextHandler: EventHandler = {
   },
 };
 
+/**
+ * The `path` forms the by-file lookup sends, forward-slashed and de-duped: the
+ * absolute path, the cwd-relative path and, for a file under the home
+ * directory, its `~/` form. An observation can store the `~/` form a tool
+ * argument used (agy's `read_file` takes the path the model typed), and a
+ * lookup by the absolute path alone would miss it.
+ */
+export function fileHistoryQueryPaths(
+  absolutePath: string,
+  relativePath: string,
+  homeDirectory: string = homedir(),
+): string[] {
+  const absoluteForward = absolutePath.split(path.sep).join('/');
+  const homeForward = homeDirectory.split(path.sep).join('/');
+  const homeRelative = absoluteForward.startsWith(homeForward + '/')
+    ? '~/' + absoluteForward.slice(homeForward.length + 1)
+    : '';
+  return Array.from(new Set([absoluteForward, relativePath, homeRelative].filter(Boolean)));
+}
+
 async function lookupFileObservationHistory(
   input: NormalizedHookInput,
   filePath: string,
@@ -475,16 +495,7 @@ async function lookupFileObservationHistory(
   // never matched absolute-path storage. Send both candidate forms (forward-
   // slashed, de-duped) as repeated `path` params so the key matches across
   // both events regardless of how the path was stored.
-  const absForward = absolutePath.split(path.sep).join("/");
-  const homeForward = homedir().split(path.sep).join("/");
-  const tildePath = absForward.startsWith(homeForward + "/")
-    ? "~/" + absForward.slice(homeForward.length + 1)
-    : undefined;
-  const candidateQueryPaths = Array.from(new Set([
-    absForward,
-    relativePath,
-    tildePath,
-  ].filter((p): p is string => Boolean(p))));
+  const candidateQueryPaths = fileHistoryQueryPaths(absolutePath, relativePath);
   const queryParams = new URLSearchParams();
   for (const candidate of candidateQueryPaths) {
     queryParams.append('path', candidate);

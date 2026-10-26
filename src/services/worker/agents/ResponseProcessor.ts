@@ -131,9 +131,8 @@ function extractPathsFromToolInput(
   }
 
   const paths: string[] = [];
-  const directFields = mode === 'read'
-    ? ['file_path', 'filePath', 'Path', 'path', 'notebook_path', 'notebookPath', 'filePaths']
-    : ['file_path', 'filePath', 'Path', 'path', 'notebook_path', 'notebookPath', 'filePaths'];
+  // `Path` is agy's read_file/view_file argument.
+  const directFields = ['file_path', 'filePath', 'Path', 'path', 'notebook_path', 'notebookPath', 'filePaths'];
 
   for (const field of directFields) {
     const value = input[field];

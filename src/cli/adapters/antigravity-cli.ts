@@ -1,8 +1,9 @@
-import { existsSync, readFileSync } from 'fs';
-import type { PlatformAdapter } from '../types.js';
+import { homedir } from 'os';
+import type { NormalizedHookInput, PlatformAdapter } from '../types.js';
 import { AdapterRejectedInput, isValidCwd } from './errors.js';
-import { extractLastMessage } from '../../shared/transcript-parser.js';
-import { extractFilePaths } from './codex-file-context.js';
+import { extractLastMessage, findLastJsonlEntryBackward } from '../../shared/transcript-parser.js';
+import { logger } from '../../utils/logger.js';
+import { expandHomeDirectory, extractFilePaths } from './codex-file-context.js';
 
 // `agy` wraps the real user message in <USER_REQUEST>...</USER_REQUEST> and
 // appends injected <ADDITIONAL_METADATA> (local time) and <USER_SETTINGS_CHANGE>
@@ -58,71 +59,89 @@ function normalizeAgyToolInput(toolName: string | undefined, toolInput: unknown,
   return input;
 }
 
-// Inspect the tail of an Antigravity transcript to distinguish:
-//   1. The first PreInvocation of a user turn (the newest USER_INPUT has no
-//      PLANNER_RESPONSE after it yet → isNewUserTurn = true).
-//   2. Follow-up PreInvocations after tool calls (the newest conversational
-//      node is a PLANNER_RESPONSE → isNewUserTurn = false, and any files read
-//      in that PLANNER_RESPONSE's tool_calls are extracted for file-context).
-function inspectAgyTranscript(
+// Files named by the tool calls of an agy transcript PLANNER_RESPONSE that
+// read them (read_file / view_file, and read commands in run_command).
+function filePathsReadByToolCalls(toolCalls: unknown, cwd: string, homeDirectory: string): string[] {
+  const filePaths: string[] = [];
+  const seen = new Set<string>();
+  const add = (filePath: string) => {
+    if (seen.has(filePath)) return;
+    seen.add(filePath);
+    filePaths.push(filePath);
+  };
+  for (const call of Array.isArray(toolCalls) ? toolCalls : []) {
+    const callName = typeof call?.name === 'string' ? call.name : '';
+    const args = (call?.args && typeof call.args === 'object') ? call.args as Record<string, unknown> : {};
+    if (callName === 'read_file' || callName === 'view_file') {
+      const filePath = unwrapArgString(args.Path ?? args.file_path ?? args.path);
+      if (filePath) add(expandHomeDirectory(filePath, homeDirectory));
+    } else if (callName === 'run_command') {
+      const command = unwrapArgString(args.CommandLine ?? args.command);
+      if (command) extractFilePaths('Bash', { command }, cwd, homeDirectory).forEach(add);
+    }
+  }
+  return filePaths;
+}
+
+export interface AntigravityTurnState {
+  /** True only when the newest conversational node is the user's USER_INPUT. */
+  isNewUserTurn: boolean;
+  /** Files read by the tool calls of the newest PLANNER_RESPONSE. */
+  filePaths: string[];
+}
+
+const NOT_A_NEW_TURN: AntigravityTurnState = { isNewUserTurn: false, filePaths: [] };
+
+// agy fires PreInvocation before EVERY model call of a turn, so it can't be
+// read as a prompt submit. The newest USER_INPUT or PLANNER_RESPONSE node in
+// the transcript tells the calls apart:
+//   - USER_INPUT: the model hasn't answered yet, so this is the turn's first
+//     call and the prompt is recorded once.
+//   - PLANNER_RESPONSE: a follow-up call after a tool step; the files that
+//     step read get their file-context.
+// The scan reads backward in chunks and stops at that node. Anything that
+// can't positively identify a new turn (no transcript, unreadable, no node)
+// counts as a follow-up, so a broken transcript can't bring back one prompt
+// row per model call (#5078).
+export function inspectAntigravityTurn(
   transcriptPath: string | undefined,
   cwd: string,
-): { isNewUserTurn: boolean; filePaths: string[] } {
-  if (!transcriptPath || !existsSync(transcriptPath)) {
-    return { isNewUserTurn: true, filePaths: [] };
-  }
-  let content: string;
+  homeDirectory: string = homedir(),
+): AntigravityTurnState {
+  if (!transcriptPath) return NOT_A_NEW_TURN;
   try {
-    content = readFileSync(transcriptPath, 'utf-8');
-  } catch {
-    return { isNewUserTurn: true, filePaths: [] };
-  }
-
-  const lines = content.split('\n');
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const rawLine = lines[i].trim();
-    if (!rawLine) continue;
-    let node: Record<string, any>;
-    try {
-      node = JSON.parse(rawLine);
-    } catch {
-      continue;
-    }
-
-    if (node.type === 'USER_INPUT') {
-      return { isNewUserTurn: true, filePaths: [] };
-    }
-
-    if (node.type === 'PLANNER_RESPONSE') {
-      const filePaths: string[] = [];
-      const seen = new Set<string>();
-      const toolCalls = Array.isArray(node.tool_calls) ? node.tool_calls : [];
-      for (const call of toolCalls) {
-        const callName = typeof call?.name === 'string' ? call.name : '';
-        const args = (call?.args && typeof call.args === 'object') ? call.args as Record<string, unknown> : {};
-        if (callName === 'read_file' || callName === 'view_file') {
-          const p = unwrapArgString(args.Path ?? args.file_path ?? args.path);
-          if (p && !seen.has(p)) {
-            seen.add(p);
-            filePaths.push(p);
-          }
-        } else if (callName === 'run_command') {
-          const cmd = unwrapArgString(args.CommandLine ?? args.command);
-          if (cmd) {
-            for (const p of extractFilePaths('Bash', { command: cmd }, cwd)) {
-              if (!seen.has(p)) {
-                seen.add(p);
-                filePaths.push(p);
-              }
-            }
-          }
-        }
+    return findLastJsonlEntryBackward<AntigravityTurnState>(transcriptPath, (node) => {
+      if (node?.type === 'USER_INPUT') return { isNewUserTurn: true, filePaths: [] };
+      if (node?.type === 'PLANNER_RESPONSE') {
+        return { isNewUserTurn: false, filePaths: filePathsReadByToolCalls(node.tool_calls, cwd, homeDirectory) };
       }
-      return { isNewUserTurn: false, filePaths };
-    }
+      return undefined;
+    }) ?? NOT_A_NEW_TURN;
+  } catch (error) {
+    logger.warn('HOOK', 'antigravity: transcript unreadable, not recording a prompt for this model call', {
+      transcriptPath,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return NOT_A_NEW_TURN;
   }
+}
 
-  return { isNewUserTurn: true, filePaths: [] };
+// Session-init input for an agy PreInvocation. A new user turn keeps the
+// prompt (as `submittedPrompt`); a follow-up call gets `submittedPrompt: null`,
+// session-init's "not a user turn", plus the files its tool step read.
+export function resolveAntigravityPreInvocation(
+  input: NormalizedHookInput,
+  homeDirectory: string = homedir(),
+): NormalizedHookInput {
+  const { isNewUserTurn, filePaths } = inspectAntigravityTurn(input.transcriptPath, input.cwd, homeDirectory);
+  if (isNewUserTurn) {
+    return input.prompt === undefined ? input : { ...input, submittedPrompt: input.prompt };
+  }
+  return {
+    ...input,
+    submittedPrompt: null,
+    toolInput: { prompt: input.prompt ?? 'User Query', filePaths },
+  };
 }
 
 // Antigravity's hook stdin is camelCase protojson with NO explicit event-name
@@ -165,11 +184,10 @@ export const antigravityCliAdapter: PlatformAdapter = {
     let toolName: string | undefined = r.toolCall?.name ?? r.tool_name;
     let toolInput: unknown = normalizeAgyToolInput(toolName, r.toolCall?.args ?? r.tool_input, cwd);
     let toolResponse: unknown = r.tool_response;
-    let submittedPrompt: string | null | undefined;
 
     // Antigravity puts the user's prompt in the transcript's USER_INPUT node
     // (and may also include `lastUserInput` on stdin). Pull it (unwrapped) for
-    // session-init, invocation observations, and context injection.
+    // session-init and invocation observations.
     const transcriptPrompt = transcriptPath
       ? unwrapAgyUserInput(extractLastMessage(transcriptPath, 'user'))
       : '';
@@ -179,23 +197,15 @@ export const antigravityCliAdapter: PlatformAdapter = {
     const prompt: string | undefined = r.prompt ?? (transcriptPrompt || lastUserInputPrompt || undefined);
 
     if (isInvocationEvent) {
-      // PreInvocation routes to session-init (on the first invocation of a user
-      // turn) or file-context (on follow-up invocations after tool calls);
-      // PostInvocation routes to observation and records the assistant's turn,
-      // which lives in the transcript's PLANNER_RESPONSE node.
-      const { isNewUserTurn, filePaths } = inspectAgyTranscript(transcriptPath, cwd);
-      submittedPrompt = isNewUserTurn ? (prompt ?? undefined) : null;
+      // PreInvocation routes to session-init, which works out whether this
+      // model call starts a user turn (resolveAntigravityPreInvocation, run
+      // only there); PostInvocation routes to observation and records the
+      // assistant's turn, which lives in the transcript's PLANNER_RESPONSE node.
       const response = transcriptPath
         ? extractLastMessage(transcriptPath, 'assistant')
         : '';
       toolName = 'AntigravityProvider';
-      toolInput = filePaths.length > 0
-        ? {
-            prompt: prompt ?? 'User Query',
-            filePaths,
-            ...(filePaths.length === 1 ? { file_path: filePaths[0] } : {}),
-          }
-        : { prompt: prompt ?? 'User Query' };
+      toolInput = { prompt: prompt ?? 'User Query' };
       toolResponse = { response: response || 'Completed' };
     }
 
@@ -211,7 +221,6 @@ export const antigravityCliAdapter: PlatformAdapter = {
       sessionId,
       cwd,
       prompt,
-      ...(submittedPrompt !== undefined ? { submittedPrompt } : {}),
       toolName,
       toolInput,
       toolResponse,
@@ -223,7 +232,9 @@ export const antigravityCliAdapter: PlatformAdapter = {
   // (continue / suppressOutput / systemMessage / hookSpecificOutput) make it
   // discard the whole payload (issue #4057). Emit ONLY fields agy understands:
   //   - SessionStart   → { "injectSteps": [ ... ] } (startup context injection, issue #4911)
-  //   - PreInvocation  → { "injectSteps": [ ... ] } (transient injection if enabled)
+  //   - PreInvocation  → { "injectSteps": [ ... ] } (file-context for files the
+  //                       previous tool step read, or semantic context on a new
+  //                       turn when CLAUDE_MEM_SEMANTIC_INJECT is on; else {})
   //   - PostToolUse / PostInvocation / Stop → {}
   formatOutput(result) {
     const r = result ?? {};
