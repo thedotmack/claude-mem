@@ -26,6 +26,8 @@ import { readGoals, runCli, validateGroupingAnswer, type LedgerDatabase, type Re
 export const MEMORY_TOOLS = ['search', 'dumb_search', 'timeline', 'get_observations', 'get_tool_uses', 'work_state_read'];
 const PLUGIN_MCP_PREFIX = 'mcp__plugin_claude-mem_mcp-search__';
 const REVIEW_BATCH = 8;
+/** Review batches running at the same time, each one agent process. */
+export const REVIEW_CONCURRENCY = 3;
 
 /** The model each step runs on. Small, fast models match conversations and goals; stronger ones judge
  * progress, write the story and pick verbatim quotes. Codex's careful steps use its CLI default model.
@@ -278,10 +280,21 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
         }
         if (shows.length) throw new Error(`reviews: ${refusals.join('; ').slice(0, 500)}`);
       };
-      // Batches are independent, so they run at once; every batch finishes (and saves) before a failure is reported.
+      // Batches are independent, so a few run at once; every batch finishes (and saves) before a failure is reported.
+      // Not all at once: each batch is its own agent process, and a large backlog (Oct 25: ~1,100 due groups,
+      // 138 batches) started every one of them in the same millisecond.
       const batches: Array<Array<{ groupId: string }>> = [];
       for (let index = 0; index < due.length; index += REVIEW_BATCH) batches.push(due.slice(index, index + REVIEW_BATCH));
-      const failed = (await Promise.allSettled(batches.map(batch => timed('review', () => reviewBatch(batch), { groups: batch.length })))).filter(outcome => outcome.status === 'rejected');
+      const outcomes: PromiseSettledResult<void>[] = [];
+      let next = 0;
+      const lane = async () => {
+        while (next < batches.length) {
+          const batch = batches[next++];
+          outcomes.push(...await Promise.allSettled([timed('review', () => reviewBatch(batch), { groups: batch.length })]));
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(REVIEW_CONCURRENCY, batches.length) }, lane));
+      const failed = outcomes.filter(outcome => outcome.status === 'rejected');
       if (failed.length) throw (failed[0] as PromiseRejectedResult).reason;
       if (reviewed) done.push(`${reviewed} requests reviewed`);
 

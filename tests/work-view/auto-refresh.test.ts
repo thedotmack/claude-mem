@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AutoRefreshWorker } from '../../src/services/work-view/auto-refresh-worker.mjs';
-import { buildRefreshTask, GROUPING_ANSWER_SCHEMA, STEP_MODELS } from '../../src/services/work-view/refresh-task.js';
+import { buildRefreshTask, GROUPING_ANSWER_SCHEMA, REVIEW_CONCURRENCY, STEP_MODELS } from '../../src/services/work-view/refresh-task.js';
 import { readLedger, runCli } from '../../src/services/work-view/request-groups.mjs';
 
 const DAY = 86400000, NOW = 100 * DAY;
@@ -118,6 +118,38 @@ describe('automatic refresh scheduler', () => {
       writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: {} }));
       expect(await worker.runNow({ reason: 'manual' })).toBe('failed');
       expect(worker.status()).toMatchObject({ state: 'failed', agent: 'gemini', error: 'gemini exited 1' });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('after failed runs the next scheduled one waits twice as long each time, up to four hours; a run that works resets it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
+    try {
+      const MINUTE = 60000;
+      let now = NOW, works = false, runs = 0;
+      const worker = new AutoRefreshWorker({ dir, openDatabase: handle(fixtureDatabase()), now: () => now, runJob: async () => {
+        runs++;
+        return works ? { state: 'ok', agent: 'claude-code', result: 'done', error: null } : { state: 'failed', agent: 'claude-code', result: null, error: 'reviews: g_1: no review was given.' };
+      } });
+      expect(await worker.check()).toBe('failed');
+      expect(worker.status()).toMatchObject({ failures: 1, nextAt: new Date(now + 10 * MINUTE).toISOString() });
+      now += 10 * MINUTE;
+      expect(await worker.check()).toBe('failed');
+      expect(worker.status()).toMatchObject({ failures: 2, nextAt: new Date(now + 20 * MINUTE).toISOString() });
+      now += 10 * MINUTE;
+      expect(await worker.check()).toBe('backing-off');
+      expect(runs).toBe(2);
+      now += 10 * MINUTE;
+      expect(await worker.check()).toBe('failed');
+      expect(worker.status()).toMatchObject({ failures: 3, nextAt: new Date(now + 40 * MINUTE).toISOString() });
+      // The wait stops growing at four hours.
+      writeFileSync(join(dir, 'refresh.json'), JSON.stringify({ ...worker.status(), failures: 20, nextAt: new Date(now).toISOString() }));
+      expect(await worker.check()).toBe('failed');
+      expect(worker.status()).toMatchObject({ failures: 21, nextAt: new Date(now + 240 * MINUTE).toISOString() });
+      // An explicit run is not held back, and one that works goes back to the ten-minute check.
+      works = true;
+      expect(await worker.runNow({ reason: 'manual' })).toBe('ok');
+      expect(worker.status().failures).toBeUndefined();
+      expect(worker.status().nextAt).toBe(new Date(now + 10 * MINUTE).toISOString());
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
@@ -293,6 +325,37 @@ describe('parallel reviews', () => {
       expect(task.steps.map(timing => [timing.step, timing.agent, timing.groups])).toEqual([['review', 'claude-code', 8], ['review', 'claude-code', 2], ['story', 'claude-code', undefined]]);
       expect(task.steps.every(timing => timing.startedAt === new Date(NOW).toISOString() && timing.finishedAt === timing.startedAt)).toBe(true);
       expect(Object.keys(readLedger(dir).progress)).toHaveLength(10);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a large backlog runs at most REVIEW_CONCURRENCY batches at once, and every batch is saved', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-parallel-'));
+    try {
+      const database = fixtureDatabase();
+      const sessions = Array.from({ length: 39 }, (_, index) => `s${index}`);
+      sessions.forEach((session, index) => {
+        database.prepare('INSERT INTO sdk_sessions VALUES (?, ?, ?, ?, ?, ?, ?)').run(index + 2, 'claude', session, `m${index + 2}`, 'repo/tree', `Build feature ${session}`, NOW - 2 * DAY);
+        database.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)').run(index + 2, 1, `Build feature ${session}`, NOW - 2 * DAY);
+      });
+      const decisions = join(dir, 'decisions.json');
+      writeFileSync(decisions, JSON.stringify({ groups: ['a', ...sessions].map(session => ({ title: `Feature ${session}`, conversations: [key(session)] })) }));
+      runCli(['apply', decisions], { dir, database, now: NOW, print: () => {} });
+      const task = buildRefreshTask({ needs: { due: 40, ungrouped: 0, goalsStale: false, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW });
+      let inFlight = 0, most = 0;
+      const lanesFull = deferred<void>();
+      const ask = async (prompt: string) => {
+        if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'Forty features under way.' });
+        const shows = JSON.parse(readFileSync(/is in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+        most = Math.max(most, ++inFlight);
+        if (inFlight === REVIEW_CONCURRENCY) lanesFull.resolve();
+        await lanesFull.promise;
+        inFlight--;
+        return JSON.stringify({ reviews: shows.map((show: any) => ({ groupId: show.groupId, state: 'in-progress', percent: 30, summary: 'Under way.', reviewBasis: show.reviewBasis })) });
+      };
+      expect(await task.run(ask, 'claude-code')).toBe('40 requests reviewed, story written.');
+      expect(most).toBe(REVIEW_CONCURRENCY);
+      expect(task.steps.filter(timing => timing.step === 'review')).toHaveLength(5);
+      expect(Object.keys(readLedger(dir).progress)).toHaveLength(40);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
