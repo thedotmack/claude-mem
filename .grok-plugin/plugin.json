@@ -5,6 +5,10 @@
   "homepage": "https://github.com/thedotmack/claude-mem",
   "skills": "./claude-mem-grok-bot/skills/",
   "mcpServers": "./claude-mem-grok-bot/mcp.json",
-  "keywords": ["claude-mem", "cmem", "grok-bot"],
+  "keywords": [
+    "claude-mem",
+    "cmem",
+    "grok-bot"
+  ],
   "category": "Productivity"
 }
