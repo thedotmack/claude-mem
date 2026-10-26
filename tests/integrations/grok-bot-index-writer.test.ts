@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
+import { homedir, tmpdir } from 'os';
 import path from 'path';
 import {
   AGENT_ID_RE,
@@ -548,6 +548,17 @@ describe('loadGrokBotIndexConfig', () => {
       GROK_BOT_AGENT_DATA: '/tmp/agent-data-does-not-need-to-exist',
     });
     expect(cfg.standingLine).toBe('Run the self-save skill.');
+  });
+
+  it('expands a ~ transcript-watch path the same way the worker does', () => {
+    const settingsPath = path.join(tempRoot(), 'settings.json');
+    writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: '~/x/transcript-watch.json' }));
+    const cfg = loadGrokBotIndexConfig(settingsPath, {
+      ...process.env,
+      CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: undefined,
+      GROK_BOT_AGENT_DATA: '/tmp/agent-data-does-not-need-to-exist',
+    });
+    expect(cfg.watchConfigFile).toBe(path.join(homedir(), 'x', 'transcript-watch.json'));
   });
 
   it('can be turned off without touching Claude Code hooks', () => {

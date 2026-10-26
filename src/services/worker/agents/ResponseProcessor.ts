@@ -13,6 +13,7 @@ import {
 } from '../../../sdk/output-classifier.js';
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
 import { notifyTelegram } from '../../integrations/TelegramNotifier.js';
+import { notifyNotion } from '../../integrations/NotionExporter.js';
 import { notifyGrokBotAwareness } from '../../integrations/GrokBotAwarenessPusher.js';
 import { notifyGrokBotBrainbeat } from '../../integrations/GrokBotBrainbeat.js';
 import { notifyGrokBotIndex } from '../../integrations/GrokBotIndexWriter.js';
@@ -929,6 +930,16 @@ export async function processAgentResponse(
     observations: fresh.observations,
     observationIds: fresh.observationIds,
     project: context.project,
+  });
+
+  // Optional Notion export (off unless CLAUDE_MEM_NOTION_ENABLED). Queues and
+  // returns; the upserts run in the background and never fail capture.
+  notifyNotion({
+    observations: fresh.observations,
+    observationIds: fresh.observationIds,
+    project: context.project,
+    memorySessionId: registeredMemorySessionId,
+    createdAtEpoch: result.createdAtEpoch,
   });
 
   // Growing Grok Bot INDEX: any new observation (any project) can fill a

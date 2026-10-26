@@ -107,6 +107,55 @@ text after`;
     expect(redactSensitive(sdkArgument, cfg).counts.aws_secret_key).toBe(1);
   });
 
+  it('redacts the AWS session token of temporary credentials', () => {
+    const token = 'IQoJb3JpZ2luX2VjEJr//////////wEaCXVzLWVhc3QtMSJHMEUCIQDexample+sessiontokenvalue0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij==';
+    const marker = "<redacted type='aws_session_token'/>";
+
+    const env = `export AWS_SESSION_TOKEN=${token}\n`;
+    expect(redactSensitive(env, cfg).redacted).toBe(`export AWS_SESSION_TOKEN=${marker}\n`);
+
+    const credentials = `[default]\naws_session_token = ${token}\n`;
+    expect(redactSensitive(credentials, cfg).redacted).toBe(`[default]\naws_session_token = ${marker}\n`);
+
+    const stsJson = `{"Credentials": {"SessionToken": "${token}", "Expiration": "2026-10-26T00:00:00Z"}}`;
+    const result = redactSensitive(stsJson, cfg);
+    expect(result.redacted).toBe(`{"Credentials": {"SessionToken": "${marker}", "Expiration": "2026-10-26T00:00:00Z"}}`);
+    expect(result.counts.aws_session_token).toBe(1);
+
+    // JSON-escaped, as the worker scans JSON.stringify(toolInput).
+    expect(redactSensitive(JSON.stringify(stsJson), cfg).counts.aws_session_token).toBe(1);
+
+    // Short placeholders and unanchored base64 stay as written.
+    expect(redactSensitive('AWS_SESSION_TOKEN=changeme', cfg).counts.aws_session_token).toBeUndefined();
+    expect(redactSensitive(`random ${token} here`, cfg).counts.aws_session_token).toBeUndefined();
+  });
+
+  describe('AWS session token in structured payloads (generic patterns off)', () => {
+    const token = 'IQoJb3JpZ2luX2VjEJr//////////wEaCXVzLWVhc3QtMSJHMEUCIQDexample+sessiontokenvalue0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij==';
+    const marker = "<redacted type='aws_session_token'/>";
+
+    it('redacts a nested SessionToken value stored apart from its key', () => {
+      const event = { Credentials: { AccessKeyId: 'not-a-key', SessionToken: token, Expiration: '2026-10-26T00:00:00Z' } };
+      expect(redactJsonStrings(event, cfg)).toEqual({
+        Credentials: { AccessKeyId: 'not-a-key', SessionToken: marker, Expiration: '2026-10-26T00:00:00Z' },
+      });
+    });
+
+    it('redacts aws_session_token and AWS_SESSION_TOKEN keys', () => {
+      expect(redactJsonStrings({ profile: { aws_session_token: token } }, cfg)).toEqual({ profile: { aws_session_token: marker } });
+      expect(redactJsonStrings({ env: { AWS_SESSION_TOKEN: token } }, cfg)).toEqual({ env: { AWS_SESSION_TOKEN: marker } });
+    });
+
+    it('keeps a short value under the same key as written', () => {
+      expect(redactJsonStrings({ SessionToken: 'changeme' }, cfg)).toEqual({ SessionToken: 'changeme' });
+    });
+
+    it('keeps the value as written when aws_session_token is a disabled built-in', () => {
+      const disabled = { enabled: true, disabledBuiltinPatterns: ['aws_session_token'] };
+      expect(redactJsonStrings({ SessionToken: token }, disabled)).toEqual({ SessionToken: token });
+    });
+  });
+
   it('does NOT match near-miss strings', () => {
     const negatives = [
       'sk-short',                                  // openai_key too short

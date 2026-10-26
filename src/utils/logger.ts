@@ -38,6 +38,7 @@ export type Component =
   | 'HTTP'
   | 'IMPORT'
   | 'INGEST'
+  | 'NOTION'
   | 'OAUTH'
   | 'OMP'
   | 'OPENCLAW'

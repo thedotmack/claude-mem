@@ -4,6 +4,7 @@ import { Database } from 'bun:sqlite';
 import { readJsonFileWithBom } from '../../shared/atomic-json.js';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { DB_PATH, USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { expandHome } from '../../shared/expand-home.js';
 import { SQLITE_BUSY_TIMEOUT_MS } from '../sqlite/connection.js';
 import { loadContextConfig } from '../context/ContextConfigLoader.js';
 import { queryObservationsNewest } from '../context/ObservationCompiler.js';
@@ -127,10 +128,12 @@ export function loadGrokBotIndexConfig(
     debounceMs: Number.isFinite(debounceRaw) && debounceRaw >= 0 ? debounceRaw : DEFAULT_DEBOUNCE_MS,
     standingLine: collapseWhitespace(pick('CLAUDE_MEM_GROK_BOT_INJECT_STANDING_LINE')),
     agentDataRoot: discoverGrokBotAgentDataRoot(env),
-    watchConfigFile: pick('CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH') || path.join(
+    // Home-expanded like the worker (expandHomePath) and the DSH installer, so
+    // all three read the same transcript-watch.json.
+    watchConfigFile: expandHome(pick('CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH') || path.join(
       env.CLAUDE_MEM_DATA_DIR?.trim() || path.join(process.env.HOME || '', '.claude-mem'),
       'transcript-watch.json',
-    ),
+    )),
   };
 }
 

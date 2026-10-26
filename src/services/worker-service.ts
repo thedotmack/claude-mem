@@ -131,7 +131,7 @@ import { FormattingService } from './worker/FormattingService.js';
 import { TimelineService } from './worker/TimelineService.js';
 import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
 import { SessionCompletionHandler } from './worker/session/SessionCompletionHandler.js';
-import { setIngestContext, attachIngestGeneratorStarter } from './worker/http/shared.js';
+import { setIngestContext, attachIngestGeneratorStarter, transcriptCheckpointGate } from './worker/http/shared.js';
 import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, scopeNativeHookBackedCodexWatches, loadTranscriptWatchConfig } from './transcripts/config.js';
 import { TranscriptWatcher } from './transcripts/watcher.js';
 import { runMemoryCommand } from './memory/cli.js';
@@ -1170,7 +1170,7 @@ export class WorkerService implements WorkerRef {
     }
 
     try {
-      this.transcriptWatcher = new TranscriptWatcher(transcriptConfig, statePath);
+      this.transcriptWatcher = new TranscriptWatcher(transcriptConfig, statePath, 'in-process', transcriptCheckpointGate);
       await this.transcriptWatcher.start();
     } catch (error) {
       this.transcriptWatcher?.stop();

@@ -6,6 +6,7 @@ import { HOOK_TIMEOUTS, defaultSessionInitRequestTimeoutMs, getTimeout } from '.
 import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
 import { isOpenRouterApiUrl } from './openrouter-base-url.js';
 import { settingsTarget, withoutStaleRootCopies } from './settings-document.js';
+import { expandHome } from './expand-home.js';
 
 // A fresh settings.json is seeded with EVERY default (see loadFromFile), and
 // persisted values then win over DEFAULTS. So any install created after the
@@ -368,6 +369,10 @@ export interface SettingsDefaults {
   CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_CONCEPTS: string;
   CLAUDE_MEM_GROK_BOT_WEBHOOK_URL: string;
   CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET: string;
+  CLAUDE_MEM_NOTION_ENABLED: string;
+  CLAUDE_MEM_NOTION_TOKEN: string;
+  CLAUDE_MEM_NOTION_DATABASE_ID: string;
+  CLAUDE_MEM_NOTION_AUTO_CREATE_PROPERTIES: string;
   CLAUDE_MEM_GROK_BOT_INJECT_ENABLED: string;
   CLAUDE_MEM_GROK_BOT_INJECT_AGENT_IDS: string;
   CLAUDE_MEM_GROK_BOT_INJECT_TIER: string;
@@ -650,6 +655,13 @@ export class SettingsDefaultsManager {
     // (off while empty). File/env only; both are masked on GET /api/settings.
     CLAUDE_MEM_GROK_BOT_WEBHOOK_URL: '',
     CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET: '',
+    // Optional Notion export: each new observation is upserted into a Notion
+    // database. Off by default; a no-op until the token and database id are set.
+    // The token is file/env only and masked on GET /api/settings.
+    CLAUDE_MEM_NOTION_ENABLED: 'false',
+    CLAUDE_MEM_NOTION_TOKEN: '',
+    CLAUDE_MEM_NOTION_DATABASE_ID: '',
+    CLAUDE_MEM_NOTION_AUTO_CREATE_PROPERTIES: 'true',
     // Live Grok Bot Memory INDEX. Worker writes zz-claude-mem-inject.md as
     // observations land. Default on; no-op when no Grok Bot seats exist.
     CLAUDE_MEM_GROK_BOT_INJECT_ENABLED: 'true',
@@ -720,6 +732,15 @@ export class SettingsDefaultsManager {
   private static finalizeSettings(settings: SettingsDefaults, applyEnvOverrides: boolean): SettingsDefaults {
     const result = applyEnvOverrides ? this.applyEnvOverrides(settings) : settings;
     result.CLAUDE_MEM_WORKER_HOST = this.normalizeWorkerHost(result.CLAUDE_MEM_WORKER_HOST);
+    // The default points at <home>/.claude-mem, and fresh settings files persist
+    // it, so a custom CLAUDE_MEM_DATA_DIR would still share the home install's
+    // transcript watches. Only an explicitly configured path is kept as is.
+    // The data dir is home-expanded the same way paths.ts resolves it, so every
+    // reader of this setting gets one absolute path.
+    const dataDir = result.CLAUDE_MEM_DATA_DIR?.trim();
+    if (dataDir && result.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH === this.DEFAULTS.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH) {
+      result.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH = join(expandHome(dataDir), 'transcript-watch.json');
+    }
     return result;
   }
 
