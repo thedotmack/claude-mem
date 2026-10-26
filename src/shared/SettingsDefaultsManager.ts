@@ -712,6 +712,13 @@ export class SettingsDefaultsManager {
   private static finalizeSettings(settings: SettingsDefaults, applyEnvOverrides: boolean): SettingsDefaults {
     const result = applyEnvOverrides ? this.applyEnvOverrides(settings) : settings;
     result.CLAUDE_MEM_WORKER_HOST = this.normalizeWorkerHost(result.CLAUDE_MEM_WORKER_HOST);
+    // The default names ~/.claude-mem literally, and fresh settings files persist
+    // it, so a custom CLAUDE_MEM_DATA_DIR would still share the home install's
+    // transcript watches. Only an explicitly configured path is kept as is.
+    const dataDir = result.CLAUDE_MEM_DATA_DIR?.trim();
+    if (dataDir && result.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH === this.DEFAULTS.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH) {
+      result.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH = join(dataDir, 'transcript-watch.json');
+    }
     return result;
   }
 
