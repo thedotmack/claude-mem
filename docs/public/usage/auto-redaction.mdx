@@ -35,7 +35,7 @@ That is all you need for the 12 built-in patterns to kick in. Add `"CLAUDE_MEM_R
 | Name | Catches |
 |---|---|
 | `aws_access_key` | `AKIA…` and temporary `ASIA…` key IDs (16 trailing alphanumerics) |
-| `aws_secret_key` | 40-char base64 anchored to `AWS_SECRET_ACCESS_KEY=…` in any letter case, as in `~/.aws/credentials` (shell / yaml style — see [limitations](#limits)) |
+| `aws_secret_key` | 40-char base64 anchored to `AWS_SECRET_ACCESS_KEY=…` in any letter case, as in `~/.aws/credentials`, or JSON `"SecretAccessKey": "…"` (`aws sts` output) |
 | `aws_session_token` | 100+ char base64 anchored to `AWS_SESSION_TOKEN=…`, `aws_session_token = …` or JSON `"SessionToken": "…"` (temporary STS/SSO credentials) |
 | `github_pat` | `ghp_…`, `gho_…`, `ghu_…`, `ghs_…`, `ghr_…`, `github_pat_…` |
 | `openai_key` | `sk-…` (≥20 chars) |
@@ -103,7 +103,6 @@ Writes a `pattern,count` line per invocation to the worker log. The original mat
 ## Limits
 
 - **Fails closed on huge fields**: a single field over about 1M characters (UTF-16 code units) is replaced whole by `<redacted type='oversize'/>` rather than stored unscanned, and a warning is logged. There is no cap on the number of matches: every match is redacted.
-- **`aws_secret_key` shape**: the lookbehind only anchors `KEY=val` (shell) and `KEY: val` (yaml) styles. JSON-style `"AWS_SECRET_ACCESS_KEY": "value"` is **not** matched because the lookbehind expects `=` or `:` directly after the key name. If you commonly handle JSON config, write a custom pattern for it. (The generic built-ins do anchor JSON-style keys, but only the `password`/`*_TOKEN`/`*_SECRET`/`*_API_KEY` families.)
 - **Coverage gap**: Built-ins do not cover Azure / GCP service-account JSON / IBM Cloud / private IDC tokens — use custom patterns for those.
 - **Unreadable settings.json**: if the file stops parsing (for example after a bad hand edit) while redaction is on, claude-mem keeps redacting, with the last configuration that loaded or the built-in patterns, and logs a warning. It does not fall back to the default (off). Repair the file to change the configuration, or set `CLAUDE_MEM_REDACT_ENABLED=false` in the environment to turn redaction off.
 - **Server-beta scope**: in multi-tenant `server-beta` deployments, the redaction config is currently read from the worker's local `~/.claude-mem/settings.json` rather than from tenant-scoped settings. For team deployments, configure redaction at the worker level. A future change will source tenant-scoped redaction config.
