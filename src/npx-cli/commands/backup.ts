@@ -5,16 +5,16 @@
  */
 
 import { styleText } from 'node:util';
-import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { formatHostForUrl, getWorkerHost, getWorkerPort } from '../../shared/worker-utils.js';
 
 function printBackupUsage(): void {
   console.error(`Usage: npx claude-mem backup [run|status|list]`);
 }
 
+// Host and port come from settings.json as well as env (readOnly: the CLI
+// never seeds the file), and an IPv6 host is bracketed.
 function workerBaseUrl(): string {
-  const workerHost = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_HOST');
-  const workerPort = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT');
-  return `http://${workerHost}:${workerPort}`;
+  return `http://${formatHostForUrl(getWorkerHost({ readOnly: true }))}:${getWorkerPort({ readOnly: true })}`;
 }
 
 /**
