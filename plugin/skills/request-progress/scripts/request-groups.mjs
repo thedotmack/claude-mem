@@ -286,6 +286,14 @@ var paths = {
   serverRuntime: () => join3(DATA_DIR, ".server-beta.runtime.json"),
   settings: () => join3(DATA_DIR, "settings.json"),
   database: () => join3(DATA_DIR, DB_FILENAME),
+  // Automatic snapshot target (BackupManager). Nested under backups/auto so
+  // the manager's retention sweep never touches the legacy one-off backups
+  // that live directly in backups/.
+  backups: () => join3(DATA_DIR, "backups", "auto"),
+  // A restore staged by `npx claude-mem restore`, applied by the next worker
+  // boot before it opens the database, and the outcome of the last one.
+  pendingRestore: () => join3(DATA_DIR, "backups", "restore-pending.json"),
+  lastRestore: () => join3(DATA_DIR, "backups", "last-restore.json"),
   chroma: () => join3(DATA_DIR, "chroma"),
   combinedCerts: () => join3(DATA_DIR, "combined_certs.pem"),
   transcriptsConfig: () => join3(DATA_DIR, "transcript-watch.json"),
@@ -772,6 +780,8 @@ var SettingsDefaultsManager = class {
     // #2736 — default empty preserves current behavior; recommended value 'workflow-subagent' to drop Dynamic Workflows fan-out noise
     CLAUDE_MEM_CAPTURE_ADVISOR_CALLS: "false",
     // #3165 — opt-in: the Stop hook scans the transcript's tail for advisor calls and stores the advice locally (worker runtime only)
+    CLAUDE_MEM_DELIVERABLES_ENABLED: "true",
+    // 'false' = the Stop hook neither copies deliverables into the bucket nor records them; files already in the bucket stay
     // Deliberate divergence from the installer prompt: the interactive
     // provider prompt defaults to 'cmem' (the hosted observer), but headless
     // installs land here — no delivered key exists headlessly, so the settings
@@ -1040,6 +1050,12 @@ var SettingsDefaultsManager = class {
     // Backend-supplied model paired with CLAUDE_MEM_PRO_MEMORY_KEY
     CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH: "true",
     // 'false' = My Work never runs owner-goals / request-progress on its own (refresh.json in ~/.claude-mem/work-view)
+    // Automatic local DB snapshots (BackupManager). Off by default; opt-in.
+    CLAUDE_MEM_BACKUP_ENABLED: "false",
+    CLAUDE_MEM_BACKUP_INTERVAL_HOURS: "24",
+    // Snapshot cadence in hours
+    CLAUDE_MEM_BACKUP_RETAIN_COUNT: "7",
+    // Keep the N most-recent snapshots
     CLAUDE_MEM_TELEGRAM_ENABLED: "true",
     CLAUDE_MEM_TELEGRAM_BOT_TOKEN: "",
     CLAUDE_MEM_TELEGRAM_CHAT_ID: "",
@@ -1060,6 +1076,13 @@ var SettingsDefaultsManager = class {
     // (off while empty). File/env only; both are masked on GET /api/settings.
     CLAUDE_MEM_GROK_BOT_WEBHOOK_URL: "",
     CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET: "",
+    // Optional Notion export: each new observation is upserted into a Notion
+    // database. Off by default; a no-op until the token and database id are set.
+    // The token is file/env only and masked on GET /api/settings.
+    CLAUDE_MEM_NOTION_ENABLED: "false",
+    CLAUDE_MEM_NOTION_TOKEN: "",
+    CLAUDE_MEM_NOTION_DATABASE_ID: "",
+    CLAUDE_MEM_NOTION_AUTO_CREATE_PROPERTIES: "true",
     // Live Grok Bot Memory INDEX. Worker writes zz-claude-mem-inject.md as
     // observations land. Default on; no-op when no Grok Bot seats exist.
     CLAUDE_MEM_GROK_BOT_INJECT_ENABLED: "true",
@@ -1142,6 +1165,10 @@ var SettingsDefaultsManager = class {
   static finalizeSettings(settings, applyEnvOverrides) {
     const result = applyEnvOverrides ? this.applyEnvOverrides(settings) : settings;
     result.CLAUDE_MEM_WORKER_HOST = this.normalizeWorkerHost(result.CLAUDE_MEM_WORKER_HOST);
+    const dataDir = result.CLAUDE_MEM_DATA_DIR?.trim();
+    if (dataDir && result.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH === this.DEFAULTS.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH) {
+      result.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH = join5(expandHome(dataDir), "transcript-watch.json");
+    }
     return result;
   }
   static getInt(key) {

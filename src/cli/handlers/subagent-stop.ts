@@ -7,6 +7,7 @@ import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { resolveRuntimeContext } from '../../services/hooks/runtime-selector.js';
+import { captureDeliverables } from '../deliverables-capture.js';
 
 const DONE: HookResult = { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
 
@@ -34,6 +35,17 @@ export const subagentStopHandler: EventHandler = {
       ...(input.agentType ? { agentType: input.agentType } : {}),
       ...(input.cwd ? { cwd: input.cwd } : {}),
     });
+    // A subagent that made a deck or a report hands it to the session: its own
+    // transcript is one run, so the whole tail is scanned. Failure-isolated.
+    if (input.agentTranscriptPath) {
+      try {
+        captureDeliverables(input, { transcriptPath: input.agentTranscriptPath, currentTurnOnly: false });
+      } catch (err) {
+        logger.warn('HOOK', 'Deliverables capture failed for a subagent; its stop is still recorded', {
+          sessionId, agentId, error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
     return DONE;
   },
 };

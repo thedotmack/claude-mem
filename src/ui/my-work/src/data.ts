@@ -65,7 +65,8 @@ export interface Request {
   prompts: Quote[]
   /** `href` is a real published page, PR or commit; '#' means a sample link with nothing behind it; absent means a
    * recorded item with nothing to open, such as a commit whose remote is not GitHub (render with ProductLink). */
-  workProduct: { kind: WorkProductKind; label: string; href?: string }[]
+  /** `deliverable` marks a copy claude-mem keeps in the project's deliverables bucket: a file the agent made, kept after its source is gone. */
+  workProduct: { kind: WorkProductKind; label: string; href?: string; deliverable?: boolean }[]
   followUps: { tag: 'Docs' | 'Promo' | 'Other'; text: string; done: boolean }[]
   story: { label: string; description: string; status: 'complete' | 'active' | 'pending' }[]
   /** The last memory review's account of how the request went (request-progress). */
@@ -195,7 +196,7 @@ export const SAMPLE_REQUESTS: Request[] = [
     goalId: 'g1', askedBy: 'Sam', agentId: 'codex', startedAt: 'Oct 16, 9:39 am', startedAtIso: '2026-10-16T09:39:00-07:00', runningFor: '2 days', stage: 'Shipped', state: 'shipped',
     progress: { percent: 100, readings: 5, reviewedAt: 'Oct 19', completedAt: 'Oct 18', history: [20, 45, 70, 90, 100], coverage: { reviewed: 3, total: 3 } }, estimate: null,
     next: { who: 'human', text: 'Write the release notes' },
-    workProduct: [{ kind: 'PR', label: '#330 live human-request monitor', href: `${PULL_REQUEST}330` }, { kind: 'Deck', label: 'Launch walkthrough', href: '#' }],
+    workProduct: [{ kind: 'PR', label: '#330 live human-request monitor', href: `${PULL_REQUEST}330` }, { kind: 'Deck', label: 'Launch walkthrough', href: '#', deliverable: true }],
     followUps: [{ tag: 'Docs', text: 'Write the release notes', done: false }, { tag: 'Promo', text: 'Launch post with walkthrough', done: false }, { tag: 'Other', text: 'Telemetry dashboard', done: true }],
   },
   {

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join, posix, win32 } from 'node:path';
 import { tmpdir } from 'node:os';
-import { fileKind, isLocalPath, mergeProducts, productsFromFields, productsFromObservation, productsFromToolUse, recordedFile } from '../../../src/services/work-view/work-product.mjs';
+import { bucketFileAvailable, fileKind, isLocalPath, mergeProducts, productsFromDeliverable, productsFromFields, productsFromObservation, productsFromToolUse, recordedFile } from '../../../src/services/work-view/work-product.mjs';
 import { buildHumanRequests } from '../../../src/services/work-view/request-projection.mjs';
 
 const call = (extra) => ({ id: 5, session_db_id: 7, prompt_number: 1, created_at_epoch: 100, ...extra });
@@ -89,4 +89,33 @@ test('the file route resolves only a file its record names', () => {
     assert.equal(recordedFile(read, 'observation', 4, 0), null);
     assert.equal(recordedFile(read, 'session', 4, 1), null);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a bucket copy links the request to the deliverables route and replaces the record of the file it was copied from', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'claude-mem-deliverable-'));
+  const bucketPath = join(dir, 'report-3f9a1c2b.html');
+  writeFileSync(bucketPath, '<h1>Launch report</h1>');
+  const sessions = [{ id: 7, platform_source: 'claude', content_session_id: 'c-7', memory_session_id: 'm-7', user_prompt: 'Write the launch report.', started_at_epoch: 1 }];
+  const agents = sessions.map((session) => ({ id: `a${session.id}`, label: 'Claude Code', sessionId: session.id, work: [{ id: session.id, title: 'work', kind: 'work-state', listId: `l${session.id}`, listName: 'l', project: 'p', lastUpdateEpoch: 5 }] }));
+  const row = { id: 21, project: 'p', content_session_id: 'c-7', platform_source: 'claude', title: 'Launch report', kind: 'page', source_path: '/w/.scratch/report.html', bucket_path: bucketPath, created_at_epoch: 12 };
+  const records = {
+    sessions, prompts: [], productCalls: [],
+    productObservations: [{ id: 3, memory_session_id: 'm-7', files_modified: JSON.stringify(['/w/.scratch/report.html', '/w/design/hero.png']), created_at_epoch: 9 }],
+    productDeliverables: [row, { id: 22, project: 'p', content_session_id: 'c-other', platform_source: 'claude', title: 'Elsewhere', kind: 'page', source_path: '/x.html', bucket_path: bucketPath, created_at_epoch: 13 }],
+  };
+  const [request] = buildHumanRequests({ agents }, records).humanRequests;
+  assert.deepEqual(request.workProduct.map((product) => [product.kind, product.title, product.url ?? product.fileUrl, product.available, product.deliverable ?? false]), [
+    ['page', 'Launch report', '/api/deliverables/21/report-3f9a1c2b.html', true, true],
+    ['image', 'hero.png', '/api/work-view/file/observation/3/1', false, false],
+  ]);
+  assert.deepEqual(request.workProduct[0].sourceRef, { kind: 'deliverable', id: 21 });
+
+  rmSync(dir, { recursive: true, force: true });
+  const [later] = buildHumanRequests({ agents }, records).humanRequests;
+  assert.equal(later.workProduct[0].available, false);
+  assert.equal(bucketFileAvailable({ bucketPath }), false);
+  assert.deepEqual(productsFromDeliverable({ id: 0, bucket_path: '/x' }), []);
+  assert.deepEqual(productsFromDeliverable({ id: 5, bucket_path: '' }), []);
+  assert.equal(productsFromDeliverable({ id: 5, bucket_path: '/b/notes-abcdef12.md', title: '' })[0].title, 'notes-abcdef12.md');
+  assert.equal(productsFromDeliverable({ id: 5, bucket_path: '/b/notes-abcdef12.md' })[0].kind, 'file');
 });

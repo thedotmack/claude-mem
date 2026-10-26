@@ -2,7 +2,7 @@ import { mkdirSync, watch as fsWatch } from 'fs';
 import { HOOK_SPOOL_SESSION_END_UNKNOWN_GRACE_MS, HookSpool, type HookSpoolConsumedMarkers, type HookSpoolDrainResult, type HookSpoolEntry } from '../../shared/hook-spool.js';
 import type { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
-import { ingestAdvisorCalls, ingestObservation, ingestSessionEnd, ingestSubagentStop, ingestSummarize, requireIngestContext } from './http/shared.js';
+import { ingestAdvisorCalls, ingestDeliverables, ingestObservation, ingestSessionEnd, ingestSubagentStop, ingestSummarize, requireIngestContext } from './http/shared.js';
 import { recordWorkStateInstruction, recordWorkStateMcp } from '../telemetry/work-state.js';
 
 const SAFETY_SWEEP_INTERVAL_MS = 30_000;
@@ -70,6 +70,11 @@ async function ingestHookSpoolEntry(entry: HookSpoolEntry, markHandedOff: () => 
       return true;
     case 'advisor_calls':
       ingestAdvisorCalls(entry.payload, undefined, { markHandedOff });
+      return true;
+    case 'deliverables':
+      // The copies are already in the bucket; stamped with the hook's time so
+      // the record says when the turn made them, not when the drain ran.
+      ingestDeliverables({ ...entry.payload, enqueuedAtEpochMs: entry.enqueuedAtEpochMs }, undefined, { markHandedOff });
       return true;
   }
 }

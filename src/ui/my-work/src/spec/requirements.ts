@@ -54,6 +54,7 @@ export const REQUIREMENTS: Requirement[] = [
   { id: 'R5.9', section: '5', kind: 'ui', text: 'Progress meter on the card, with completion and dates.' },
   { id: 'R5.10', section: '5', kind: 'ui', text: 'Work product attached as links (decks, PRs, pages), viewable from the request and goals.' },
   { id: 'R5.11', section: '5', kind: 'ui', text: 'Progress comes from a memory review, not guesses, and shows its evidence.' },
+  { id: 'R5.12', section: '5', kind: 'ui', text: 'Deliverables (decks, reports, pages, files the agent made) are linked on the front of the card, one click to open; claude-mem keeps a copy in the project bucket.' },
 
   // 6. Live behavior
   { id: 'R6.1', section: '6', kind: 'ui', text: 'Runs live off work-state updates.' },

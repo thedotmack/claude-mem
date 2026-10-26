@@ -19,6 +19,7 @@ import { workStateTool } from '../../../shared/work-state-telemetry.js';
 import { recordWorkStateTool, isPublicWorkStateTurn } from '../../telemetry/work-state.js';
 import { AGENT_LIFECYCLE_LIST, agentStopFields } from '../../work-view/agent-lifecycle.mjs';
 import type { TranscriptCheckpointGate } from '../../transcripts/types.js';
+import type { SpooledDeliverablesPayload } from '../../../shared/hook-spool.js';
 
 export interface IngestContext {
   sessionManager: SessionManager;
@@ -470,6 +471,65 @@ export interface SessionEndPayload {
   contentSessionId: string;
   /** Already normalized (normalizePlatformSource). */
   platformSource: string;
+}
+
+export interface DeliverablesIngestResult {
+  status: 'accepted' | 'skipped';
+  reason?: 'project_excluded';
+  stored: number;
+  duplicates: number;
+}
+
+/**
+ * Records the bucket copies a Stop (or SubagentStop) hook made
+ * (src/cli/deliverables-capture.ts). The files are already in the bucket; this
+ * only writes the rows My Work links. A copy the hook could not make is
+ * logged here too, so a missing deliverable is explained in the worker log.
+ */
+export function ingestDeliverables(
+  payload: SpooledDeliverablesPayload & { enqueuedAtEpochMs?: number },
+  dbManager: DatabaseManager = requireIngestContext().dbManager,
+  handoff: IngestHandoff = {},
+): DeliverablesIngestResult {
+  const { contentSessionId, platformSource, cwd, project, agentId, files, errors } = payload;
+
+  const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+  if (cwd && isProjectExcluded(cwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
+    return { status: 'skipped', reason: 'project_excluded', stored: 0, duplicates: 0 };
+  }
+  for (const failure of errors ?? []) {
+    logger.warn('HOOK', 'A deliverable was not copied into the project bucket', { project, sourcePath: failure.sourcePath, error: failure.error });
+  }
+
+  const store = dbManager.getSessionStore();
+  let stored = 0;
+  let duplicates = 0;
+  for (const file of files) {
+    const result = store.recordDeliverable({
+      project,
+      contentSessionId,
+      platformSource,
+      agentId: agentId ?? null,
+      title: file.title,
+      kind: file.kind,
+      sourcePath: file.sourcePath,
+      bucketPath: file.bucketPath,
+      bytes: file.bytes,
+      sha256: file.sha256,
+      declared: file.declared,
+      listName: file.list ?? null,
+      field: file.field ?? null,
+      toolUseId: file.toolUseId ?? null,
+      occurredAtEpoch: file.occurredAtEpoch,
+      createdAtEpoch: payload.enqueuedAtEpochMs,
+    });
+    if (result.inserted) stored++;
+    else duplicates++;
+  }
+  // Every row is written: the hand-off point.
+  handoff.markHandedOff?.();
+  logger.info('HOOK', 'Deliverables recorded', { project, stored, duplicates });
+  return { status: 'accepted', stored, duplicates };
 }
 
 export async function ingestSessionEnd(

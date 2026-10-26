@@ -23,15 +23,16 @@ const EVIDENCE_URL = /^\/api\/work-view\/evidence\/(work-state|observation|promp
 // work-product.mjs kinds onto the drawer's kinds; anything unknown is a plain link.
 const WORK_PRODUCT_KIND: Record<string, WorkProductKind> = {
   'pull-request': 'PR', commit: 'Commit', branch: 'Branch', artifact: 'Page', page: 'Page', deployment: 'Page',
-  deck: 'Deck', document: 'Doc', documentation: 'Doc', image: 'File', video: 'File', spreadsheet: 'File',
+  deck: 'Deck', document: 'Doc', documentation: 'Doc', image: 'File', video: 'File', spreadsheet: 'File', file: 'File',
 }
 
-/** Recorded work product the drawer can show. A local file that is gone is left out. */
+/** Recorded work product the drawer can show. A local file that is gone is left out; a bucket copy keeps its deliverable mark for the card's front. */
 export function mapWorkProduct(products: WorkViewWorkProduct[] | undefined): Request['workProduct'] {
   return (products ?? []).filter((product) => product.available !== false).map((product) => ({
     kind: WORK_PRODUCT_KIND[product.kind] ?? 'Link',
     label: cleanText(product.title, 140) || product.kind,
     href: product.url ?? product.fileUrl ?? undefined,
+    ...(product.deliverable === true ? { deliverable: true as const } : {}),
   }))
 }
 const EVIDENCE_KIND_LABEL: Record<string, string> = { 'work-state': 'Work state', observation: 'Observation', prompt: 'Your prompt', summary: 'Session summary', session: 'Session' }

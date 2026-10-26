@@ -71,6 +71,7 @@ describe('drainHookSpool', () => {
       summarize: spyOn(ingestShared, 'ingestSummarize'),
       sessionEnd: spyOn(ingestShared, 'ingestSessionEnd'),
       advisor: spyOn(ingestShared, 'ingestAdvisorCalls'),
+      deliverables: spyOn(ingestShared, 'ingestDeliverables'),
     };
 
     spool.enqueue('observation', {
@@ -85,18 +86,24 @@ describe('drainHookSpool', () => {
       contentSessionId: 'session-a', platformSource: 'claude', cwd: '/repo',
       calls: [{ toolUseId: 'srvtoolu_1', advice: 'Look at the retry budget.', occurredAtEpoch: 1 }],
     });
+    spool.enqueue('deliverables', {
+      contentSessionId: 'session-a', platformSource: 'claude', cwd: '/repo', project: 'repo',
+      files: [{ sourcePath: '/repo/.scratch/report.html', bucketPath: '/data/deliverables/repo/report-abcdef12.html', title: 'report.html', kind: 'page', bytes: 12, sha256: 'a'.repeat(64), declared: false, occurredAtEpoch: 1 }],
+      errors: [{ sourcePath: '/repo/.scratch/huge.mov', error: 'over the limit' }],
+    });
     spool.enqueue('summarize', { contentSessionId: 'session-a', platformSource: 'claude', lastAssistantMessage: 'done <private>x</private>' });
     spool.enqueue('session_end', { contentSessionId: 'session-a', platformSource: 'claude' });
 
     const result = await drainHookSpool(spool);
 
-    expect(result).toEqual({ drained: 5, retained: 0, quarantined: 0, expired: 0 });
+    expect(result).toEqual({ drained: 6, retained: 0, quarantined: 0, expired: 0 });
     expect(spoolFiles(spool)).toEqual([]);
 
     expect(spies.observation).toHaveBeenCalledTimes(2);
     expect(spies.summarize).toHaveBeenCalledTimes(1);
     expect(spies.sessionEnd).toHaveBeenCalledTimes(1);
     expect(spies.advisor).toHaveBeenCalledTimes(1);
+    expect(spies.deliverables).toHaveBeenCalledTimes(1);
 
     // Observable effects of the real ingest functions, in spool order.
     expect(sessionManager.queueObservation).toHaveBeenCalledTimes(2);
@@ -105,6 +112,7 @@ describe('drainHookSpool', () => {
     expect(sessionManager.queueSummarize).toHaveBeenCalledWith(sessionDbId, 'done', 0, expect.any(Number));
     expect(sessionManager.requestSessionWrapup).toHaveBeenCalledWith(sessionDbId);
     expect(store.getAdvisorCalls(0, 10).items.map(call => call.tool_use_id)).toEqual(['srvtoolu_1']);
+    expect(store.getDeliverable(1)).toMatchObject({ project: 'repo', content_session_id: 'session-a', bucket_path: '/data/deliverables/repo/report-abcdef12.html', kind: 'page' });
     expect(ensureGeneratorRunning).toHaveBeenCalledWith(sessionDbId, 'summarize');
 
     Object.values(spies).forEach(spy => spy.mockRestore());
