@@ -136,11 +136,12 @@ function carryAutoincrementCounters(stagedDb: string, counters: Array<{ name: st
  *   1. Stage a copy of the snapshot (and its -wal, if any) next to the live
  *      file and make it one standalone, quick_check-verified file. Nothing
  *      live has been touched yet.
- *   2. Copy the live database and its -wal, untouched, into preRestoreDir as
- *      a snapshot-named file, so `restore` can put it back.
- *   3. Checkpoint the live database (TRUNCATE) so its main file holds every
- *      committed row; refuse, and drop the copy, if another connection holds
- *      it. A database too damaged to checkpoint is still restorable.
+ *   2. Checkpoint the live database (TRUNCATE) so its main file holds every
+ *      committed row; refuse if another connection holds it.
+ *   3. Copy the live main file into preRestoreDir as a snapshot-named file,
+ *      so `restore` can put it back. A database too damaged to checkpoint is
+ *      still restorable; its copy is the db and -wal as they were on disk
+ *      before anything opened them.
  *   4. Raise the staged AUTOINCREMENT counters to the live ones.
  *   5. Move the live -wal/-shm aside (they must never sit next to the new
  *      main file), then rename the staged file over the live one (atomic on
@@ -169,31 +170,43 @@ export async function swapDatabaseFromSnapshot(
     await runSqliteFileJob({ kind: 'standalone', target: stagedDb });
 
     if (existsSync(dbPath)) {
-      // Copy the live db and its -wal exactly as they are on disk, before
-      // anything opens them: opening a damaged database can make SQLite
-      // discard its WAL, and this copy is the only way back.
+      // Keep a byte-for-byte copy of the live db and its -wal before anything
+      // opens them: opening a damaged database can make SQLite discard its
+      // WAL, and for such a database this copy is the only way back.
       const copyPath = join(options.preRestoreDir, `claude-mem-${ts}-pre-restore.db`);
-      await copyFile(dbPath, copyPath);
-      if (existsSync(`${dbPath}-wal`)) await copyFile(`${dbPath}-wal`, `${copyPath}-wal`);
-      preRestoreCopy = copyPath;
+      const rawCopy = `${dbPath}.restore-raw-${ts}`;
+      await copyFile(dbPath, rawCopy);
+      if (existsSync(`${dbPath}-wal`)) await copyFile(`${dbPath}-wal`, `${rawCopy}-wal`);
+      const dropRawCopy = (): void => {
+        removeIfPresent(rawCopy);
+        removeIfPresent(`${rawCopy}-wal`);
+      };
 
       let checkpointed: boolean;
       try {
         checkpointed = await checkpointWithRetry(dbPath, options.busyRetryWindowMs ?? 0);
       } catch (error) {
-        // Refused: the live database stays as it is, so its copy is not needed.
-        removeIfPresent(copyPath);
-        removeIfPresent(`${copyPath}-wal`);
-        preRestoreCopy = null;
+        // Refused: the live database stays as it is and needs no copy.
+        dropRawCopy();
         throw error;
       }
       if (checkpointed) {
+        // Nothing else holds the database now and its main file has every
+        // committed row, so copy that one file. The raw pair could have been
+        // taken mid-checkpoint by another process, so it is not kept.
+        dropRawCopy();
+        await copyFile(dbPath, copyPath);
         // Read from the live file: it is about to be replaced, so the
         // sidecars this open may leave behind are moved aside next.
         carryAutoincrementCounters(stagedDb, readAutoincrementCounters(dbPath));
       } else {
+        // Too damaged to open, so nothing else can be using it either: the
+        // raw pair is the best copy there is.
+        renameWithWindowsRetry(rawCopy, copyPath);
+        if (existsSync(`${rawCopy}-wal`)) renameWithWindowsRetry(`${rawCopy}-wal`, `${copyPath}-wal`);
         logger.warn('BACKUP', 'Restoring over a database that could not be read; new ids may repeat ids it used', { dbPath });
       }
+      preRestoreCopy = copyPath;
     }
 
     // Move the live sidecars aside rather than deleting them: if the rename
@@ -214,7 +227,8 @@ export async function swapDatabaseFromSnapshot(
         logger.error('BACKUP', 'Could not put a live sidecar back after a failed restore', { sidecar: `${dbPath}${ext}`, parkedAt: `${stagedDb}.live${ext}` }, restoreError instanceof Error ? restoreError : new Error(String(restoreError)));
       }
     }
-    for (const leftover of [stagedDb, ...SIDECAR_EXTS.map(ext => `${stagedDb}${ext}`)]) {
+    const rawCopy = `${dbPath}.restore-raw-${ts}`;
+    for (const leftover of [stagedDb, ...SIDECAR_EXTS.map(ext => `${stagedDb}${ext}`), rawCopy, `${rawCopy}-wal`]) {
       try {
         removeIfPresent(leftover);
       } catch (cleanupError) {

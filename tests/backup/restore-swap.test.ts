@@ -180,16 +180,27 @@ describe('swapDatabaseFromSnapshot', () => {
 
   it('puts the live sidecars back when the rename fails', async () => {
     const { dbPath, snapshotPath, backupsDir } = setup();
+    // An idle second connection keeps the -wal and -shm on disk on every
+    // platform without blocking the checkpoint.
+    const idle = new Database(dbPath);
+    idle.query('SELECT COUNT(*) FROM observations').get();
+    let parkedAtRename: string[] = [];
     const failingRename = (): void => {
+      parkedAtRename = readdirSync(join(dbPath, '..')).filter(name => name.includes('.live-'));
       throw new Error('EPERM: injected rename failure');
     };
-    const hadWal = existsSync(`${dbPath}-wal`);
+    try {
+      await expect(swapDatabaseFromSnapshot(dbPath, snapshotPath, { preRestoreDir: backupsDir, renameSync: failingRename }))
+        .rejects.toThrow('injected rename failure');
 
-    await expect(swapDatabaseFromSnapshot(dbPath, snapshotPath, { preRestoreDir: backupsDir, renameSync: failingRename }))
-      .rejects.toThrow('injected rename failure');
-
-    expect(existsSync(`${dbPath}-wal`)).toBe(hadWal);
-    expect(readdirSync(join(dbPath, '..')).filter(name => name.includes('.live-'))).toEqual([]);
+      expect(parkedAtRename.length).toBeGreaterThan(0);
+      expect(existsSync(`${dbPath}-wal`)).toBe(true);
+      expect(existsSync(`${dbPath}-shm`)).toBe(true);
+      expect(readdirSync(join(dbPath, '..')).filter(name => name.includes('.live-'))).toEqual([]);
+    } finally {
+      idle.close();
+    }
+    expect(readNotes(dbPath)).toEqual(['live-1', 'live-2-wal-only']);
   });
 
   it('waits out a connection that lets go within the retry window', async () => {
