@@ -18,7 +18,6 @@ const claudeMarketplacePath = path.join(rootDir, '.claude-plugin', 'marketplace.
 const grokPluginPath = path.join(rootDir, '.grok-plugin', 'plugin.json');
 const dshPackagePath = path.join(rootDir, 'dsh', 'package.json');
 const openClawPluginPath = path.join(rootDir, 'openclaw', 'openclaw.plugin.json');
-const pluginPackagePath = path.join(rootDir, 'plugin', 'package.json');
 const cursorPluginPaths = [
   path.join(rootDir, 'claude-mem-cursor', '.cursor-plugin', 'plugin.json'),
   path.join(rootDir, 'claude-mem-grok-bot', '.cursor-plugin', 'plugin.json'),
@@ -131,7 +130,6 @@ function main() {
     grokPluginPath,
     dshPackagePath,
     openClawPluginPath,
-    pluginPackagePath,
     ...cursorPluginPaths,
   ]) {
     if (!fs.existsSync(filePath)) {
@@ -151,7 +149,6 @@ function main() {
   const grokPlugin = readJson(grokPluginPath);
   const dshPackage = readJson(dshPackagePath);
   const openClawPlugin = readJson(openClawPluginPath);
-  const pluginPackage = readJson(pluginPackagePath);
   const cursorPlugins = cursorPluginPaths.map(readJson);
 
   writeJson(codexPluginPath, syncCodexPlugin(codexPlugin, pkg));
@@ -164,7 +161,6 @@ function main() {
   writeJson(grokPluginPath, syncVersionOnly(grokPlugin, pkg));
   writeJson(dshPackagePath, syncVersionOnly(dshPackage, pkg));
   writeJson(openClawPluginPath, syncVersionOnly(openClawPlugin, pkg));
-  writeJson(pluginPackagePath, syncVersionOnly(pluginPackage, pkg));
   cursorPluginPaths.forEach((filePath, index) => writeJson(filePath, syncCursorPlugin(cursorPlugins[index], pkg)));
 
   console.log('✓ Synced plugin manifests from package.json');

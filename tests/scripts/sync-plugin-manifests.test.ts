@@ -14,7 +14,6 @@ const rootVersionManifests = [
   '.grok-plugin/plugin.json',
   'dsh/package.json',
   'openclaw/openclaw.plugin.json',
-  'plugin/package.json',
   'plugin/.claude-plugin/plugin.json',
   'plugin/.codex-plugin/plugin.json',
   'plugin/.qoder-plugin/plugin.json',
@@ -46,6 +45,17 @@ describe('sync-plugin-manifests', () => {
         cpSync(join(projectRoot, manifestPath), destination);
       }
 
+      // Every other marketplace entry carries its own version; the sync must
+      // leave each one exactly as it was.
+      const otherPluginVersions = (marketplacePlugins: any[]) => Object.fromEntries(
+        marketplacePlugins
+          .filter((plugin) => plugin.name !== 'claude-mem')
+          .map((plugin) => [plugin.name, plugin.version]),
+      );
+      const otherVersionsBefore = otherPluginVersions(
+        JSON.parse(readFileSync(join(fixtureRoot, marketplacePath), 'utf8')).plugins,
+      );
+
       const result = spawnSync(
         process.execPath,
         [join(fixtureRoot, 'scripts', 'sync-plugin-manifests.js')],
@@ -62,9 +72,8 @@ describe('sync-plugin-manifests', () => {
         readFileSync(join(fixtureRoot, marketplacePath), 'utf8'),
       );
       const claudeMem = marketplace.plugins.find((plugin: any) => plugin.name === 'claude-mem');
-      const cowork = marketplace.plugins.find((plugin: any) => plugin.name === 'claude-mem-cowork');
       expect(claudeMem?.version).toBe('9.9.9');
-      expect(cowork?.version).toBe('0.1.4');
+      expect(otherPluginVersions(marketplace.plugins)).toEqual(otherVersionsBefore);
     } finally {
       rmSync(fixtureRoot, { recursive: true, force: true });
     }
