@@ -241,6 +241,23 @@ describe('Notion exporter', () => {
       expect(errorSpy).not.toHaveBeenCalled();
     });
 
+    it('retries a body append that hits a transient failure', async () => {
+      const narrative = Array.from({ length: 150 }, (_, i) => `Paragraph ${i}`).join('\n\n');
+      let appendFailures = 0;
+      const ok = healthyNotion();
+      const { exporter, calls, sleeps } = harness(call => {
+        if (call.url.includes('/blocks/') && appendFailures++ === 0) return json({ code: 'service_unavailable' }, 503);
+        return ok(call);
+      }, { minRequestIntervalMs: 0 });
+      exporter.enqueue(record({ observation: { ...observation, facts: [], narrative } }));
+      await exporter.idle();
+
+      expect(sleeps).toEqual([1000]);
+      expect(calls.filter(call => call.method === 'POST' && call.url.endsWith('/pages'))).toHaveLength(1);
+      expect(calls.filter(call => call.url.includes('/blocks/')).map(call => call.body.children.length)).toEqual([50, 50]);
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
+
     it('logs how much of the body is missing when an append fails', async () => {
       const narrative = Array.from({ length: 150 }, (_, i) => `Paragraph ${i}`).join('\n\n');
       const ok = healthyNotion();

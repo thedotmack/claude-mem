@@ -385,16 +385,19 @@ export class NotionExporter {
 
   /**
    * Notion takes at most 100 children per request, so the rest of a long body
-   * is appended to the new page 100 blocks at a time. A failure here is logged
-   * with how much of the body is missing, not retried: a retry would find the
-   * page by its Export Key and stop there.
+   * is appended to the new page 100 blocks at a time. Each batch gets the same
+   * retries as an upsert (a whole-upsert retry would find the page by its
+   * Export Key and stop, so the retry has to happen here). A batch that still
+   * fails is logged with how much of the body is missing. A batch that timed
+   * out but landed can be appended twice; a repeated block beats a missing one.
    */
   private async appendRemainingChildren(record: NotionObservationRecord, pageId: string | undefined, children: unknown[]): Promise<void> {
     let sent = MAX_ARRAY_ENTRIES;
     try {
       if (!pageId) throw new Error('Notion create response had no page id');
       for (; sent < children.length; sent += MAX_ARRAY_ENTRIES) {
-        await this.request('PATCH', `/blocks/${pageId}/children`, { children: children.slice(sent, sent + MAX_ARRAY_ENTRIES) });
+        const batch = children.slice(sent, sent + MAX_ARRAY_ENTRIES);
+        await this.withRetry(() => this.request('PATCH', `/blocks/${pageId}/children`, { children: batch }));
       }
     } catch (error) {
       logger.error('NOTION', 'Notion page created, but the rest of its body could not be appended', {
@@ -461,10 +464,14 @@ export class NotionExporter {
    * but landed is found by the next attempt's query instead of duplicated.
    */
   private async upsertWithRetry(record: NotionObservationRecord): Promise<void> {
+    await this.withRetry(() => this.upsert(record));
+  }
+
+  /** Runs `operation`, retrying 409/429/5xx/network failures with backoff; rethrows anything else or the last failure. */
+  private async withRetry<T>(operation: () => Promise<T>): Promise<T> {
     for (let attempt = 0; ; attempt++) {
       try {
-        await this.upsert(record);
-        return;
+        return await operation();
       } catch (error) {
         if (error instanceof NotionHttpError && !isRetryableStatus(error.status)) throw error;
         if (attempt >= this.maxRetries) throw error;
