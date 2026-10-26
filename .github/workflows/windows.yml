@@ -52,6 +52,17 @@ jobs:
           $bun = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
           & $bun test tests/services/smart-file-read/path-search.test.ts tests/services/agent-runner/detect.test.ts tests/services/integrations/spawn-contract-windows.test.ts --timeout 120000
 
+      # These suites either skip on non-Windows or only exercise their real
+      # branch under win32: file-context symlink/stat boundaries, clearing the
+      # inherited listen-socket handle, npm tree termination, and HOME vs
+      # USERPROFILE resolution. Linux CI cannot cover those paths, and none of
+      # these files ran in this workflow before.
+      - name: Windows-only host behavior
+        shell: pwsh
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
+          & $bun test tests/hooks/file-context.test.ts tests/shared/windows-listen-socket.test.ts tests/npm-install-windows-timeout.test.ts tests/scripts/resolve-data-dir-parity.test.ts --timeout 60000
+
       - name: Context reader responsiveness and packaging
         shell: pwsh
         run: |
