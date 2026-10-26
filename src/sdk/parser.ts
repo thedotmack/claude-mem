@@ -124,7 +124,7 @@ function parseObservationBlocks(
   while ((match = observationRegex.exec(text)) !== null) {
     const obsContent = match[1];
 
-    const type = extractField(obsContent, 'type');
+    const type = extractTypeField(obsContent);
     const title = unwrapLabelWrappedTitle(extractField(obsContent, 'title'));
     const subtitle = extractField(obsContent, 'subtitle');
     const narrative = extractField(obsContent, 'narrative');
@@ -277,6 +277,21 @@ function extractField(content: string, fieldName: string): string | null {
 
   const trimmed = decodeXmlReferences(match[1].trim());
   return trimmed.trim() === '' ? null : trimmed;
+}
+
+/**
+ * The type is a single id, so no markup belongs in it. Models sometimes close
+ * it with a stray tag and re-open it (`<type>bugfix</parameter> <type>discovery</type>`),
+ * or restart the whole observation mid-type. The last `<type>` opened before
+ * the first `</type>` is the value the model settled on; any tag left inside
+ * it is dropped.
+ */
+function extractTypeField(content: string): string | null {
+  const match = /<type>((?:(?!<type>)[\s\S])*?)<\/type>/i.exec(content);
+  if (!match) return null;
+
+  const value = decodeXmlReferences(match[1].replace(/<\/?[A-Za-z_][\w-]*\b[^>]*>/g, '')).trim();
+  return value === '' ? null : value;
 }
 
 function extractArrayElements(content: string, arrayName: string, elementName: string): string[] {
