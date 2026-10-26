@@ -9,6 +9,15 @@ import type { ContextConfig } from './types.js';
 export const CONTEXT_OUTPUT_LIMIT = 10_000;
 
 /**
+ * Room the terminal preview leaves for the lines a hook adds after it. The
+ * SessionStart hook puts the viewer link, the trial line, the trial countdown
+ * and the TeamBrain discovery line under the preview in the same
+ * `systemMessage`, so a preview fitted to the full limit pushed that field past
+ * 10,000 and Claude Code showed the saved-to-disk stub instead (#5079).
+ */
+export const TERMINAL_BANNER_RESERVE_CHARS = 512;
+
+/**
  * Item counts cannot keep the block under that limit, because items are not a
  * fixed size: an observation title runs ~150-320 characters, a session-summary
  * line ~250-600, and the last-session summary block 1-5K on its own. Any count

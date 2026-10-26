@@ -64,6 +64,19 @@ export function teamBriefSection(result: TeamBrainResult<TeamBrainBrief>): strin
 }
 
 /**
+ * The lines under the SessionStart terminal preview. The preview leaves
+ * TERMINAL_BANNER_RESERVE_CHARS for them, so the whole `systemMessage` stays
+ * within Claude Code's 10,000-character field cap (#5079).
+ */
+export function sessionStartBannerFooter(
+  viewerUrl: string,
+  trialDaysLine: string | null,
+  teamBrainDiscoveryLine: string | null,
+): string {
+  return `\n\nView Observations Live @ ${viewerUrl}\n${proTrialLine('session-start')}${trialDaysLine ? `\n${trialDaysLine}` : ''}${teamBrainDiscoveryLine ? `\n${teamBrainDiscoveryLine}` : ''}`;
+}
+
+/**
  * Keep the whole block inside the host's delivery limit (ContextBudget.ts):
  * one character over and the host replaces all of it with a stub. The body is
  * fitted with room left for the brief (teamBriefReserveChars), so this only
@@ -405,7 +418,7 @@ export const contextHandler: EventHandler = {
       : null;
     if (teamBrainDiscoveryLine) markTeamBrainDiscoveryNoticeShown();
     const systemMessage = showsBanner
-      ? `${displayContent}\n\nView Observations Live @ ${viewerUrl}\n${proTrialLine('session-start')}${trialDaysLine ? `\n${trialDaysLine}` : ''}${teamBrainDiscoveryLine ? `\n${teamBrainDiscoveryLine}` : ''}`
+      ? `${displayContent}${sessionStartBannerFooter(viewerUrl, trialDaysLine, teamBrainDiscoveryLine)}`
       : undefined;
 
     return {

@@ -13,7 +13,7 @@ import { projectReadKeys } from '../sqlite/project-read-keys.js';
 import type { ContextInput, ContextConfig, Observation, SessionSummary } from './types.js';
 import { colors } from './types.js';
 import { loadContextConfig } from './ContextConfigLoader.js';
-import { fitContextToBudget, CONTEXT_OUTPUT_LIMIT } from './ContextBudget.js';
+import { fitContextToBudget, CONTEXT_OUTPUT_LIMIT, TERMINAL_BANNER_RESERVE_CHARS } from './ContextBudget.js';
 import { calculateTokenEconomics } from './TokenCalculator.js';
 import {
   queryObservationsMulti,
@@ -403,7 +403,7 @@ export function fitContextForDelivery(
     const warningLength = warning ? warning.length + 2 : 0;
     text = appendObserverHealthWarning(warning, truncateTerminalPreview(
       renderPreview(selected, budget.config),
-      limit - warningLength
+      limit - warningLength - TERMINAL_BANNER_RESERVE_CHARS
     ));
   }
 
