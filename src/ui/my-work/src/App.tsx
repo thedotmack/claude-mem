@@ -21,6 +21,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { playDemoUpdates, receiveConnectionStatus, receiveLiveWorkModel, requestById, setActiveWorkDataSource, settleInitialWorkModelLoad, useWorkModel, useWorkModelLoad, type Request } from '@/data'
 import { localSource } from '@/live/local-source'
 import { sampleSource } from '@/live/sample-source'
+import { sendUsageReport, usageReport } from '@/live/usage'
 import type { WorkDataSource } from '@/live/work-data-source'
 
 /** `setup` is the install funnel (`?setup=1`): a full page outside the nav that becomes My Work when it completes. */
@@ -74,18 +75,28 @@ function TeamSwitch({ team, onChange }: { team: boolean; onChange: (team: boolea
 /** `?source=sample` shows the fixtures; otherwise the local worker (through the dev proxy, or same origin when the worker serves this page). Never falls back to sample data. */
 const ACTIVE_SOURCE: WorkDataSource = new URLSearchParams(window.location.search).get('source') === 'sample' ? sampleSource : localSource
 setActiveWorkDataSource(ACTIVE_SOURCE)
+/** Usage counts (the page opened on, the page switched to) describe real local work only; the sample fixtures are not usage. */
+const REPORTS_USAGE = ACTIVE_SOURCE === localSource
+let openReported = false
 
 const SetupPage = lazy(() => import('@/setup/setup-page'))
 export default function App() {
   // Only the explicit installer handoff opens setup. Missing state on an
   // existing installation must never lock My Work behind checkout.
   const [page, setPage] = useState<Page>(() => new URLSearchParams(window.location.search).get('setup') === '1' ? 'setup' : 'work')
+  // One count for the page the viewer opened on. StrictMode runs effects twice in development; the flag keeps it to one.
+  useEffect(() => {
+    if (!REPORTS_USAGE || openReported) return
+    openReported = true
+    sendUsageReport(usageReport(page, null))
+  }, [page])
   if (page !== 'setup') return <WorkApp />
   const finishSetup = () => {
     const url = new URL(window.location.href)
     url.searchParams.delete('setup')
     window.history.replaceState(null, '', url)
     window.scrollTo(0, 0)
+    if (REPORTS_USAGE) sendUsageReport(usageReport('work', 'setup'))
     setPage('work')
   }
   return <Suspense fallback={null}><SetupPage onComplete={finishSetup} /></Suspense>
@@ -141,8 +152,10 @@ function LoadedApp() {
   useEffect(() => { if (openRequest && liveOpenRequest === null) setOpenRequestState(null) }, [openRequest, liveOpenRequest])
   // The demo flip is sample data; it never runs against real requests.
   useEffect(() => (sample ? playDemoUpdates() : undefined), [sample])
-  const goToPage = (next: NavPage) => { setFocusGoalId(undefined); setPage(next) }
-  const goToGoal = (goalId: string) => { setOpenRequest(null); setFocusGoalId(goalId); setPage('goals') }
+  // Showing another page is counted with the page it left; the same page again is not a switch.
+  const showPage = (next: NavPage) => { if (REPORTS_USAGE) sendUsageReport(usageReport(next, page)); setPage(next) }
+  const goToPage = (next: NavPage) => { setFocusGoalId(undefined); showPage(next) }
+  const goToGoal = (goalId: string) => { setOpenRequest(null); setFocusGoalId(goalId); showPage('goals') }
 
   return (
     <MotionConfig reducedMotion="user">

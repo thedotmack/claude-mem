@@ -12,6 +12,12 @@ a cloud account, a new model call, or an internet connection to show your work.
 The original memory timeline, sessions, settings and console remain under
 **Memory & settings**, at `/viewer` on the same worker.
 
+Opening the panel and switching between its pages are the only things it
+reports: two anonymous [telemetry](/telemetry) counts (`work_view_opened`,
+`work_view_switched`) that carry the page name and nothing else. Your requests,
+prompts, observations and file paths stay on this computer, and
+`npx claude-mem telemetry disable` turns the counts off.
+
 ## Working, ready and checked
 
 - **In progress** means the latest saved work state says work is underway. It is
