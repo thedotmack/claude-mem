@@ -246,6 +246,7 @@ export function shellTemplateManifest(buildShellCommand, buildCodexWindowsComman
         ),
         'Stop.0.0': codexHookPair(['hook', 'codex', 'summarize']),
         'PostCompact.0.0': codexHookPair(['hook', 'codex', 'post-compact']),
+        'SubagentStart.0.0': codexHookPair(['hook', 'codex', 'subagent-context']),
       },
     },
     'plugin/.mcp.json': {
@@ -1125,6 +1126,7 @@ async function buildHooks() {
       'PostToolUse',
       'Stop',
       'PostCompact',
+      'SubagentStart',
     ]);
     const requiredDistributionFiles = [
       'plugin/skills/mem-search/SKILL.md',
