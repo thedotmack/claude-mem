@@ -77,6 +77,11 @@ const WORKER_SERVICE = {
   source: 'src/services/worker-service.ts'
 };
 
+const HOOK_SERVICE = {
+  name: 'hook-service',
+  source: 'src/cli/hook-service.ts'
+};
+
 const SERVER_SERVICE = {
   name: 'server-service',
   source: 'src/server/runtime/ServerService.ts'
@@ -648,6 +653,30 @@ async function buildHooks() {
 
     fs.chmodSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`, 0o755);
     const workerStats = fs.statSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`);
+
+    await build({
+      entryPoints: [HOOK_SERVICE.source],
+      bundle: true,
+      platform: 'node',
+      target: 'node20',
+      format: 'cjs',
+      outfile: `${hooksDir}/${HOOK_SERVICE.name}.cjs`,
+      alias: { 'zod/v4': 'zod' },
+      banner: { js: [
+        ...DIRNAME_BANNER,
+        'var __IMPORT_META_URL__ = require("node:url").pathToFileURL(__CM_FILENAME__).href;',
+      ].join('\n') },
+      define: {
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
+        ...DIRNAME_DEFINE,
+        'import.meta.url': '__IMPORT_META_URL__',
+      },
+      external: ['bun:sqlite', ...POSTHOG_OPTIONAL_IMPORTS],
+      minify: true,
+      ...SOURCEMAP_OPTS,
+    });
+    assertBundleIntegrity(`${hooksDir}/${HOOK_SERVICE.name}.cjs`);
+    fs.chmodSync(`${hooksDir}/${HOOK_SERVICE.name}.cjs`, 0o755);
     console.log(`✓ worker-service built (${(workerStats.size / 1024).toFixed(2)} KB)`);
 
     await build({

@@ -159,6 +159,19 @@ args[0] = fixBrokenScriptPath(args[0]);
 // Resolve a relative script path against the launch directory before the child starts in tmpdir() (#4628)
 args[0] = resolve(process.cwd(), args[0]);
 
+// Hook commands need only the adapter/handler graph. Loading the full worker
+// service eagerly initializes its daemon, provider, server, database and UI
+// imports before it reaches the hook switch. New installs ship a compact
+// sibling entry point; old installs (and partial source trees) transparently
+// keep using worker-service.cjs. The public/frozen command remains unchanged.
+if (
+  args[1] === 'hook' &&
+  /worker-service\.cjs$/i.test(args[0])
+) {
+  const hookServicePath = join(dirname(args[0]), 'hook-service.cjs');
+  if (existsSync(hookServicePath)) args[0] = hookServicePath;
+}
+
 const bunPath = findBun();
 
 if (!bunPath) {
