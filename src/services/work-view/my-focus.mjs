@@ -1,0 +1,175 @@
+// My Focus: the owner's focus areas and which area each request sits in.
+// Areas and placements are work-state rows in the "my-focus" list under the home
+// project, so they sync like any other work state (the same pattern as my-rules).
+//   "Focus area: <focusAreaId>"           one area; every row saves the whole area.
+//   "Placement: <anchorConversationKey>"  which area one request sits in.
+// A placement is keyed by the request's anchor conversation key (the input groupIdFor
+// hashes), never by the local g_ id. Area ids are never derived from names, so a
+// rename keeps the id. Rows are append-only and replay in write order.
+import { MAX_WORK_STATE_FIELDS_JSON_CHARS } from './work-state-limits.mjs';
+
+export const MY_FOCUS_LIST = 'my-focus';
+/** The permanent bucket for requests that fit no area. Never an area id. */
+export const OTHER_FOCUS_AREA_ID = 'other';
+const FOCUS_AREA_TASK_PREFIX = 'Focus area: ';
+const PLACEMENT_TASK_PREFIX = 'Placement: ';
+const FOCUS_AREA_STATUSES = ['suggested', 'kept', 'dismissed', 'done'];
+const FOCUS_AREA_SOURCES = ['owner-goals', 'clustering', 'promotion', 'seed', 'owner'];
+// Who wrote an area row: the owner (from My Work), the system (a refresh, a seed script), or the owner
+// handing a decided area back to the system ("restore-suggestion"), after which system rows apply again.
+const FOCUS_AREA_DECIDED_BY = ['owner', 'system', 'owner-restore'];
+const PLACEMENT_PLACED_BY = ['router', 'owner'];
+
+export const isMyFocusList = (name) => name === MY_FOCUS_LIST;
+const focusAreaTaskName = (focusAreaId) => `${FOCUS_AREA_TASK_PREFIX}${focusAreaId}`;
+const placementTaskName = (anchorConversationKey) => `${PLACEMENT_TASK_PREFIX}${anchorConversationKey}`;
+
+const text = (value) => typeof value === 'string' ? value.trim() : '';
+const rank = (value) => typeof value === 'number' && Number.isFinite(value) ? value : null;
+
+function fitsOneWrite(fields, what) {
+  if (JSON.stringify(fields).length > MAX_WORK_STATE_FIELDS_JSON_CHARS) throw new RangeError(`This ${what} is too long to save. Shorten it.`);
+  return fields;
+}
+
+/** The fields one area row saves: the whole area, so the row reads on its own on every device. */
+export function focusAreaRowFields(area) {
+  const focusAreaId = text(area.focusAreaId);
+  if (!focusAreaId || focusAreaId === OTHER_FOCUS_AREA_ID) throw new Error(`A focus area needs an id other than "${OTHER_FOCUS_AREA_ID}".`);
+  if (!text(area.name)) throw new Error('A focus area needs a name.');
+  if (!FOCUS_AREA_STATUSES.includes(area.status)) throw new Error(`Unknown focus area status: ${area.status}`);
+  if (!FOCUS_AREA_SOURCES.includes(area.source)) throw new Error(`Unknown focus area source: ${area.source}`);
+  if (!FOCUS_AREA_DECIDED_BY.includes(area.decidedBy)) throw new Error(`Unknown focus area writer: ${area.decidedBy}`);
+  return fitsOneWrite({
+    task: focusAreaTaskName(focusAreaId), focus_area_id: focusAreaId,
+    name: text(area.name), goal: text(area.goal) || null, status: area.status,
+    priority_rank: rank(area.priorityRank), owner_rank: rank(area.ownerRank),
+    source: area.source, merged_into: text(area.mergedInto) || null,
+    evidence: text(area.evidence) || null, decided_by: area.decidedBy,
+  }, 'focus area');
+}
+
+/** The fields one placement row saves. */
+export function placementRowFields(placement) {
+  const anchor = text(placement.anchorConversationKey);
+  if (!anchor) throw new Error('A placement needs the request\'s anchor conversation key.');
+  if (!text(placement.focusAreaId)) throw new Error('A placement needs a focus area id or "other".');
+  if (!PLACEMENT_PLACED_BY.includes(placement.placedBy)) throw new Error(`Unknown placement writer: ${placement.placedBy}`);
+  return fitsOneWrite({
+    task: placementTaskName(anchor), anchor_conversation_key: anchor,
+    focus_area_id: text(placement.focusAreaId), placed_by: placement.placedBy,
+    confidence: rank(placement.confidence), evidence: text(placement.evidence) || null,
+  }, 'placement');
+}
+
+/** Rows are patches: a null field clears it, like reduceWorkState. */
+function applyPatch(target, fields) {
+  for (const [key, value] of Object.entries(fields)) {
+    if (key === 'task') continue;
+    if (value === null) delete target[key];
+    else target[key] = value;
+  }
+}
+
+/**
+ * Areas and placements from the my-focus rows, replayed in write order (the clock,
+ * then the writing device, then its row id there — reduceWorkState's order), across
+ * every project's my-focus list, since two computers with different home folders save
+ * under different projects.
+ * - The latest accepted row wins.
+ * - Once the owner has written an area, system rows for it are ignored: a refresh
+ *   never overrides a kept area, a rename, a merge or a dismissal. An owner-restore
+ *   row hands the area back, and system rows apply again.
+ * - An owner placement beats any router placement, whatever the order, while it still
+ *   lands in a live area; once its area is dismissed, the router's placement shows.
+ * - A placement into a merged area forwards to the area it was merged into.
+ * A row this build cannot read (unknown status, source or writer, no name, the id
+ * "other") throws: My Focus never guesses what a row meant.
+ */
+export function buildFocusAreas(state) {
+  // The reducer needs every row's own fields, not the merged task: an owner row must
+  // still win after a later router row on the same task. state.events holds them only
+  // when reduceWorkState kept every event (its default).
+  if (typeof state.entryCount === 'number' && state.events.length !== state.entryCount) {
+    throw new Error('My Focus needs every work-state row; the events were cut.');
+  }
+  const areas = new Map(), placements = new Map();
+  // state.events is newest first.
+  for (const event of [...state.events].reverse()) {
+    if (!isMyFocusList(event.listName) || event.task === null) continue;
+    if (event.task.startsWith(FOCUS_AREA_TASK_PREFIX)) {
+      const focusAreaId = text(event.fields.focus_area_id) || event.task.slice(FOCUS_AREA_TASK_PREFIX.length);
+      if (focusAreaId === OTHER_FOCUS_AREA_ID) throw new Error(`A my-focus area row uses the reserved id "${OTHER_FOCUS_AREA_ID}".`);
+      const decidedBy = event.fields.decided_by;
+      if (!FOCUS_AREA_DECIDED_BY.includes(decidedBy)) throw new Error(`Focus area ${focusAreaId} has an unknown writer: ${decidedBy}`);
+      const area = areas.get(focusAreaId) ?? { fields: {}, ownerDecided: false, savedAt: null };
+      if (area.ownerDecided && decidedBy === 'system') continue;
+      applyPatch(area.fields, event.fields);
+      if (decidedBy !== 'system') area.ownerDecided = decidedBy === 'owner';
+      area.savedAt = event.at;
+      areas.set(focusAreaId, area);
+    } else if (event.task.startsWith(PLACEMENT_TASK_PREFIX)) {
+      const anchor = text(event.fields.anchor_conversation_key) || event.task.slice(PLACEMENT_TASK_PREFIX.length);
+      const placedBy = event.fields.placed_by;
+      if (!PLACEMENT_PLACED_BY.includes(placedBy)) throw new Error(`A placement has an unknown writer: ${placedBy}`);
+      // The owner's and the router's latest placements are kept apart: the router's
+      // shows when the owner's area is gone.
+      const placement = placements.get(anchor) ?? { owner: null, router: null };
+      placement[placedBy] ??= {};
+      applyPatch(placement[placedBy], event.fields);
+      placements.set(anchor, placement);
+    }
+  }
+
+  const focusAreas = [...areas].map(([focusAreaId, { fields, savedAt }]) => {
+    if (!text(fields.name)) throw new Error(`Focus area ${focusAreaId} has no name.`);
+    if (!FOCUS_AREA_STATUSES.includes(fields.status)) throw new Error(`Focus area ${focusAreaId} has an unknown status: ${fields.status}`);
+    if (!FOCUS_AREA_SOURCES.includes(fields.source)) throw new Error(`Focus area ${focusAreaId} has an unknown source: ${fields.source}`);
+    return {
+      focusAreaId, name: text(fields.name), goal: text(fields.goal) || null, status: fields.status,
+      priorityRank: rank(fields.priority_rank), ownerRank: rank(fields.owner_rank), source: fields.source,
+      mergedInto: text(fields.merged_into) || null, evidence: text(fields.evidence) || null,
+      decidedBy: fields.decided_by, savedAt,
+    };
+  })
+    // The owner's order wins; areas they have not ordered follow by suggested priority.
+    .sort((a, b) => (a.ownerRank ?? Infinity) - (b.ownerRank ?? Infinity)
+      || (a.priorityRank ?? Infinity) - (b.priorityRank ?? Infinity) || a.name.localeCompare(b.name));
+
+  const byId = new Map(focusAreas.map((area) => [area.focusAreaId, area]));
+  /** The live area a placement lands in, following merges; null when it has none (not sorted yet). */
+  const resolve = (focusAreaId) => {
+    if (focusAreaId === OTHER_FOCUS_AREA_ID) return OTHER_FOCUS_AREA_ID;
+    const seen = new Set();
+    let area = byId.get(focusAreaId);
+    while (area?.mergedInto && byId.has(area.mergedInto) && !seen.has(area.mergedInto)) {
+      seen.add(area.focusAreaId);
+      area = byId.get(area.mergedInto);
+    }
+    // Still merged: a loop written on two devices (A into B here, B into A there), or a target this device
+    // has not received yet. A dismissed area holds no requests, and an unknown area is not received yet.
+    return area && !area.mergedInto && area.status !== 'dismissed' ? area.focusAreaId : null;
+  };
+  const focusAreaIdByAnchor = new Map();
+  for (const [anchor, { owner, router }] of placements) {
+    const focusAreaId = (owner && resolve(text(owner.focus_area_id))) || (router && resolve(text(router.focus_area_id)));
+    if (focusAreaId) focusAreaIdByAnchor.set(anchor, focusAreaId);
+  }
+  return { focusAreas, focusAreaIdByAnchor };
+}
+
+/** The conversation a request's placement is keyed by: its group's anchor, else its own conversation. */
+export function anchorConversationKeyFor(request, ledger) {
+  // A group missing from the ledger (not grouped on this device yet) falls back to the request's own conversation.
+  const anchor = (request.groupId ? ledger?.groups?.groups?.[request.groupId]?.anchor : null) || request.conversationKey;
+  return typeof anchor === 'string' && anchor ? anchor : null;
+}
+
+/** Each request with its anchor and its area: an area id, "other", or absent while it is not sorted yet. */
+export function placeRequests(humanRequests, focusAreaIdByAnchor, ledger) {
+  return humanRequests.map((request) => {
+    const anchorConversationKey = anchorConversationKeyFor(request, ledger);
+    const focusAreaId = anchorConversationKey ? focusAreaIdByAnchor.get(anchorConversationKey) : undefined;
+    return { ...request, anchorConversationKey, ...(focusAreaId ? { focusAreaId } : {}) };
+  });
+}

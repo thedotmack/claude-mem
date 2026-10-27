@@ -116,6 +116,13 @@ describe('WorkStateRoutes', () => {
     expect(store.getWorkStateEntries([project], 'my-rules')).toEqual([]);
   });
 
+  it('refuses writes to the my-focus list, which only the My Focus viewer handler writes', async () => {
+    const response = await write({ cwd: checkout, list: 'my-focus', fields: { task: 'Placement: x', focus_area_id: 'fa_a', placed_by: 'owner' } });
+    expect(response.status).toBe(403);
+    expect(await response.text()).toContain('written only from My Focus');
+    expect(store.getWorkStateEntries([project], 'my-focus')).toEqual([]);
+  });
+
   it("saves an entry under the checkout's project and answers with what is still open in the list", async () => {
     await write({ cwd: checkout, list: 'release', fields: { version: '13.25.2', blocked_on: 'npm token' } });
     await write({ cwd: checkout, list: 'release', fields: { task: 'tag', status: 'done' } });

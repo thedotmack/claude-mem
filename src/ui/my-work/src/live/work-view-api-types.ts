@@ -118,6 +118,10 @@ export interface WorkViewHumanRequest {
   goals?: WorkViewRequestGoal[]
   /** Newest first. Older workers leave it out. */
   workProduct?: WorkViewWorkProduct[]
+  /** The conversation its my-focus placement is keyed by: its group's anchor, else its own. Older workers leave it out. */
+  anchorConversationKey?: string | null
+  /** A focus area id, 'other', or absent while it is not sorted yet. Older workers leave it out. */
+  focusAreaId?: string
 }
 
 export interface WorkViewAgent {
@@ -196,6 +200,25 @@ export interface WorkViewRule {
   savedAt: string | null
 }
 
+/** One focus area from the my-focus list. Merged and dismissed areas are included; the viewer decides what to show. */
+export interface WorkViewFocusArea {
+  focusAreaId: string
+  name: string
+  /** One sentence saying what the area is for. */
+  goal: string | null
+  status: 'suggested' | 'kept' | 'dismissed' | 'done'
+  priorityRank: number | null
+  /** The owner's order; when set it wins over priorityRank. */
+  ownerRank: number | null
+  source: 'owner-goals' | 'clustering' | 'promotion' | 'seed' | 'owner'
+  /** Set when merged: its requests show under this area. */
+  mergedInto: string | null
+  evidence: string | null
+  /** 'owner-restore': the owner handed it back to suggestions, so refreshes may update it again. */
+  decidedBy: 'owner' | 'system' | 'owner-restore'
+  savedAt: string | null
+}
+
 export interface WorkViewRuleScope { id: string; tier: 'everywhere' | 'project' | 'situation'; name: string }
 
 /** What the last request-progress story found; null when it has not run. */
@@ -221,6 +244,8 @@ export interface WorkViewSnapshot {
   ruleScopes?: WorkViewRuleScope[]
   rulesLearning?: WorkViewRulesLearning | null
   rulesFile?: WorkViewRulesFile
+  /** My Focus, in priority order. Older workers leave it out. */
+  focusAreas?: WorkViewFocusArea[]
   /** request-progress reviews and the build story; null when the ledger is empty. Older workers leave it out. */
   story?: { story: WorkViewBuildStory | null } | null
   /** The worker's automatic refresh of goals and progress (refresh.json); null before its first check. Older workers leave it out. */

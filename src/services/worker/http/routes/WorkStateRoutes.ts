@@ -10,14 +10,15 @@ import { getProjectContext } from '../../../../utils/project-name.js';
 import { logger } from '../../../../utils/logger.js';
 import type { WorkStateFields } from '../../../sqlite/work-state.js';
 import { isMyRulesList } from '../../../work-view/my-rules.mjs';
+import { isMyFocusList } from '../../../work-view/my-focus.mjs';
+import { MAX_WORK_STATE_FIELDS_JSON_CHARS } from '../../../work-view/work-state-limits.mjs';
 import {
   fitWorkStateLines,
   renderWorkStateLines,
   WORK_STATE_SECTION_CHARACTER_LIMIT,
 } from '../../../context/sections/WorkStateRenderer.js';
 
-/** One write is a few short fields; anything bigger would crowd the SessionStart section. */
-export const MAX_WORK_STATE_FIELDS_JSON_CHARS = 2_000;
+export { MAX_WORK_STATE_FIELDS_JSON_CHARS };
 
 // z.record intentionally drops __proto__; here every field is a primitive,
 // so validate own entries and copy with spread to keep literal data keys safely.
@@ -75,6 +76,11 @@ export class WorkStateRoutes extends BaseRouteHandler {
     // origin-checked /api/work-view/rules handler, never by an agent session or another local page.
     if (isMyRulesList(list)) {
       res.status(403).send(`Not saved: "${list}" is written only from My Rules in the claude-mem viewer.`);
+      return;
+    }
+    // My Focus rows are the owner's areas and placements; only the origin-checked /api/work-view/focus handler writes them.
+    if (isMyFocusList(list)) {
+      res.status(403).send(`Not saved: "${list}" is written only from My Focus in the claude-mem viewer.`);
       return;
     }
 

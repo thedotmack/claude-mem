@@ -17,6 +17,7 @@ import { FILE_CONTENT_TYPES } from '../../../work-view/work-product.mjs';
 import { isInsideDeliverablesDir } from '../../../../shared/deliverables.js';
 import { contentFingerprint, LocalReviewStore } from '../../../work-view/review-store.js';
 import { MY_RULES_LIST, renderRulesFile, ruleRowFields, type SavedRule } from '../../../work-view/my-rules.mjs';
+import { focusAreaRowFields, MY_FOCUS_LIST, OTHER_FOCUS_AREA_ID, placementRowFields, type FocusArea } from '../../../work-view/my-focus.mjs';
 import { AGENT_LIFECYCLE_LIST, agentStopFields } from '../../../work-view/agent-lifecycle.mjs';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { chatCompletionsHumanCopyProvider, HumanCopyWorker } from '../../../work-view/human-copy-worker.mjs';
@@ -108,6 +109,21 @@ const ruleBody = z.object({
     when: z.string().max(300),
     then: z.string().trim().min(1).max(600),
   }).strict().optional(),
+}).strict();
+
+// Area ids are short generated tokens, bounded like rule ids. A name is a nav label and a goal one sentence:
+// 80 and 300 characters leave room for the evidence inside one 2000-character work-state row.
+// A request id is a JSON key, bounded like reviewBody's.
+const focusAreaIdField = z.string().min(1).max(80);
+const focusBody = z.object({
+  action: z.enum(['keep', 'rename', 'edit-goal', 'merge', 'dismiss', 'done', 'reorder', 'move-request', 'restore-suggestion']),
+  focusAreaId: focusAreaIdField.optional(),
+  name: z.string().trim().min(1).max(80).optional(),
+  goal: z.string().trim().min(1).max(300).optional(),
+  intoFocusAreaId: focusAreaIdField.optional(),
+  /** reorder: every area in the owner's order, first = highest priority. */
+  focusAreaIds: z.array(focusAreaIdField).min(1).optional(),
+  requestId: z.string().min(1).max(2000).optional(),
 }).strict();
 
 const markAgentFinishedBody = z.object({
@@ -396,6 +412,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     }));
     app.post('/api/work-view/review', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(reviewBody), this.wrapHandler(this.review));
     app.post('/api/work-view/rules', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(ruleBody), this.wrapHandler(this.saveRule));
+    app.post('/api/work-view/focus', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(focusBody), this.wrapHandler(this.saveFocus));
     app.post('/api/work-view/agents/mark-finished', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(markAgentFinishedBody), this.wrapHandler(this.markAgentFinished));
     app.post('/api/work-view/rules/load-in-claude-code', workViewLoopbackOnly, requireWorkViewOrigin, this.wrapHandler(this.loadRulesInClaudeCode));
     app.get('/api/setup/scan', workViewLoopbackOnly, this.wrapHandler((_req, res) => {
@@ -662,6 +679,76 @@ export class WorkViewRoutes extends BaseRouteHandler {
     const updated = this.snapshot();
     this.writeRulesFile((updated.rules ?? []) as SavedRule[]);
     logger.debug('HTTP', 'My Rules updated', { action });
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(updated);
+    this.publish(updated);
+  };
+
+  /** The owner's focus decisions, saved as my-focus rows. Owner rows are never overridden by a refresh. */
+  private saveFocus = (req: Request, res: Response): void => {
+    const { action, focusAreaId, name, goal, intoFocusAreaId, focusAreaIds, requestId } = req.body as z.infer<typeof focusBody>;
+    if (!this.appendWorkStateEntry) { res.status(503).json({ error: 'Saving focus areas is unavailable on this worker.' }); return; }
+    const snapshot = this.snapshot();
+    if (!snapshot.source.connected) { res.status(503).json({ error: 'Local work is unavailable. Reconnect before changing focus areas.' }); return; }
+    const areas = (snapshot.focusAreas ?? []) as FocusArea[];
+    const areaById = new Map(areas.map(area => [area.focusAreaId, area]));
+    const ownRow = (area: FocusArea, change: Partial<FocusArea>) => focusAreaRowFields({ ...area, ...change, decidedBy: 'owner' });
+    const rows: Record<string, string | number | boolean | null>[] = [];
+
+    if (action === 'reorder') {
+      if (!focusAreaIds) { this.badRequest(res, 'List the focus areas in the order you want.'); return; }
+      if (new Set(focusAreaIds).size !== focusAreaIds.length) { this.badRequest(res, 'Each focus area can appear once in the order.'); return; }
+      const missing = focusAreaIds.find(id => !areaById.has(id));
+      if (missing) { this.notFound(res, 'That focus area is not in your focus areas.'); return; }
+      // The whole order at once: every live area gets a rank, so no two share one.
+      const live = areas.filter(area => area.status !== 'dismissed' && !area.mergedInto).map(area => area.focusAreaId);
+      if (focusAreaIds.length !== live.length || !live.every(id => focusAreaIds.includes(id))) {
+        this.badRequest(res, 'List every focus area in your focus, each once, in the order you want.'); return;
+      }
+      focusAreaIds.forEach((id, index) => rows.push(ownRow(areaById.get(id)!, { ownerRank: index + 1 })));
+    } else if (action === 'move-request') {
+      if (!requestId || !focusAreaId) { this.badRequest(res, 'Choose the request and the focus area to move it to.'); return; }
+      const request = snapshot.humanRequests.find(item => item.id === requestId);
+      if (!request) { this.notFound(res, 'That request is not in your work.'); return; }
+      if (!request.anchorConversationKey) { res.status(409).json({ error: 'This request has no conversation to file it under.', snapshot }); return; }
+      if (focusAreaId !== OTHER_FOCUS_AREA_ID) {
+        const target = areaById.get(focusAreaId);
+        if (!target) { this.notFound(res, 'That focus area is not in your focus areas.'); return; }
+        if (target.status === 'dismissed' || target.mergedInto) { res.status(409).json({ error: 'Move it to an area that is still in your focus.', snapshot }); return; }
+      }
+      rows.push(placementRowFields({ anchorConversationKey: request.anchorConversationKey, focusAreaId, placedBy: 'owner', evidence: 'Moved by you in My Work.' }));
+    } else {
+      const area = focusAreaId ? areaById.get(focusAreaId) : undefined;
+      if (!area) { this.notFound(res, 'That focus area is not in your focus areas.'); return; }
+      if (area.mergedInto && action !== 'restore-suggestion') { res.status(409).json({ error: 'This area was merged into another. Undo the merge first.', snapshot }); return; }
+      if (action === 'keep') rows.push(ownRow(area, { status: 'kept' }));
+      else if (action === 'dismiss') rows.push(ownRow(area, { status: 'dismissed' }));
+      else if (action === 'done') rows.push(ownRow(area, { status: 'done' }));
+      else if (action === 'rename') {
+        if (!name) { this.badRequest(res, 'Write the new name before saving it.'); return; }
+        rows.push(ownRow(area, { name }));
+      } else if (action === 'edit-goal') {
+        if (!goal) { this.badRequest(res, 'Write the goal before saving it.'); return; }
+        rows.push(ownRow(area, { goal }));
+      } else if (action === 'merge') {
+        if (!intoFocusAreaId) { this.badRequest(res, 'Choose the area to merge it into.'); return; }
+        if (intoFocusAreaId === area.focusAreaId) { this.badRequest(res, 'An area cannot be merged into itself.'); return; }
+        const target = areaById.get(intoFocusAreaId);
+        if (!target) { this.notFound(res, 'That focus area is not in your focus areas.'); return; }
+        // A target that is itself merged or dismissed could close a merge loop or hide the requests.
+        if (target.status === 'dismissed' || target.mergedInto) { res.status(409).json({ error: 'Merge it into an area that is still in your focus.', snapshot }); return; }
+        rows.push(ownRow(area, { mergedInto: target.focusAreaId }));
+      } else {
+        // Back to a suggestion: the undo for keep, merge and dismiss. An area the owner wrote was never a suggestion.
+        if (area.source === 'owner') { res.status(409).json({ error: 'Only a suggested area can go back to being a suggestion.', snapshot }); return; }
+        // owner-restore hands the area back: later refresh rows apply to it again.
+        rows.push(focusAreaRowFields({ ...area, status: 'suggested', mergedInto: null, decidedBy: 'owner-restore' }));
+      }
+    }
+    const project = this.homeProject ?? getProjectContext(homedir()).primary;
+    for (const fields of rows) this.appendWorkStateEntry({ project, listName: MY_FOCUS_LIST, fields });
+    const updated = this.snapshot();
+    logger.debug('HTTP', 'My Focus updated', { action });
     res.setHeader('Cache-Control', 'no-store');
     res.json(updated);
     this.publish(updated);
