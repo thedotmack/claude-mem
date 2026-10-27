@@ -150,7 +150,7 @@ function StorySheet({ open, story, requests, onClose, onOpenRules }: { open: boo
   )
 }
 
-/** The status label flips when it changes: the flipboard, without the skeuomorphism (decision 2). */
+/** The status label flips when it changes: the flipboard nod (decision 2); a skeuomorphic flip is allowed. */
 function FlipStatus({ state }: { state: LiveState }) {
   return <span key={state} className="inline-block motion-safe:animate-in motion-safe:slide-in-from-top-2 motion-safe:fade-in motion-safe:duration-300"><StateBadge state={state} /></span>
 }

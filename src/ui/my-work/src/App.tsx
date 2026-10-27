@@ -49,7 +49,7 @@ function useDarkMode() {
   return [dark, setDark] as const
 }
 
-/** Small rounded icon tile behind each nav icon, after the fly.io sidebar. Flat: a hairline, no shadow. */
+/** Small rounded icon tile behind each nav icon, after the fly.io sidebar: a hairline with a soft tile shadow. */
 function NavTile({ icon: Icon, active }: { icon: typeof InboxIcon; active: boolean }) {
   return (
     <span className={cn('flex size-7 shrink-0 items-center justify-center rounded-lg border', active ? 'border-accent-border bg-card text-primary' : 'bg-card/60 text-muted-foreground')}>
