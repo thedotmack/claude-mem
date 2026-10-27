@@ -167,31 +167,48 @@ if (!bunPath) {
   process.exit(1);
 }
 
-function collectStdin() {
+function collectStdin(input = process.stdin, options = {}) {
   return new Promise((resolve) => {
-    if (process.stdin.isTTY) {
+    if (input.isTTY) {
       resolve(null);
       return;
     }
 
     const chunks = [];
-    process.stdin.on('data', (chunk) => chunks.push(chunk));
-    process.stdin.on('end', () => {
-      resolve(chunks.length > 0 ? Buffer.concat(chunks) : null);
-    });
-    process.stdin.on('error', () => {
-      resolve(null);
-    });
-
-    setTimeout(() => {
-      process.stdin.removeAllListeners();
-      process.stdin.pause();
-      resolve(chunks.length > 0 ? Buffer.concat(chunks) : null);
-    }, 5000);
+    let done = false;
+    const finish = (value) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      input.removeListener('data', onData);
+      input.removeListener('end', onEnd);
+      input.removeListener('error', onError);
+      input.pause();
+      resolve(value);
+    };
+    const buffered = () => chunks.length > 0 ? Buffer.concat(chunks) : null;
+    const onData = (chunk) => {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      // Codex can keep stdin open after delivering the complete hook object.
+      // Other commands retain their EOF framing.
+      if (options.json) {
+        const data = buffered();
+        try {
+          const value = JSON.parse(data.toString('utf8').trim());
+          if (value && typeof value === 'object' && !Array.isArray(value)) finish(data);
+        } catch {}
+      }
+    };
+    const onEnd = () => finish(buffered());
+    const onError = () => finish(null);
+    const timer = setTimeout(() => finish(buffered()), options.timeoutMs === undefined ? 5000 : options.timeoutMs);
+    input.on('data', onData);
+    input.on('end', onEnd);
+    input.on('error', onError);
   });
 }
 
-const stdinData = await collectStdin();
+const stdinData = await collectStdin(process.stdin, { json: args.includes('hook') });
 
 // Bun reads tsconfig.json from its working directory and prints any warnings
 // about it to stderr, which hosts show as hook errors (#4628). Start it in a
