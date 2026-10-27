@@ -323,6 +323,17 @@ test('a group uses its recorded review even when human copy exists for the origi
   assert.equal(model.requests[0].summary, raw.progress!.summary)
 })
 
+for (const state of ['current', 'outdated']) {
+  test(`a group awaiting its first progress review preserves its ${state} human-copy summary`, () => {
+    const raw: WorkViewHumanRequest = { ...reviewedGroup(), progress: null,
+      humanCopy: { state, title: 'Cards', summary: 'The initial design is ready.', next: '', workstreams: [] } }
+    const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))
+    assert.deepEqual(model.requestReadErrors, [])
+    assert.equal(model.requests[0].summary, 'The initial design is ready.')
+    assert.equal(model.requests[0].progress.percent, null)
+  })
+}
+
 test('a cached generated title is displayed without promoting a raw prompt title', () => {
   const requests: WorkViewHumanRequest[] = ['title-cache', 'original-human-request', 'explicit-work-state-request'].map((titleSource, i) => ({
     ...syntheticRequest(), id: `request-${i}`, titleSource: titleSource as WorkViewHumanRequest['titleSource'], humanCopy: null,
@@ -333,6 +344,7 @@ test('a cached generated title is displayed without promoting a raw prompt title
 
 test('reopening a shipped group does not display its older completion summary', () => {
   const raw = reviewedGroup()
+  raw.humanCopy = { state: 'current', title: 'Cards', summary: 'All shipped.', next: '', workstreams: [] }
   raw.progress = { ...raw.progress!, state: 'shipped', percent: 100, summary: 'All shipped.', shippedAt: '2026-10-21T12:00:00Z', readings: [{ at: '2026-10-21T12:00:00Z', percent: 100 }] }
   raw.lifecycle = { status: 'in-progress', explicit: true, atEpoch: Date.parse('2026-10-22T11:00:00Z') }
   raw.updatedAtEpoch = raw.lifecycle.atEpoch!
@@ -353,6 +365,7 @@ test('recorded observations without work-state items do not claim no agent work 
 for (const status of ['shipped', 'blocked']) {
   test(`a newer ${status} lifecycle hides an older partial review summary while retaining its readings`, () => {
     const raw = reviewedGroup()
+    raw.humanCopy = { state: 'current', title: 'Cards', summary: 'Cards are built; review remains.', next: '', workstreams: [] }
     raw.lifecycle = { status, explicit: true, atEpoch: Date.parse('2026-10-22T11:00:00Z') }
     if (status === 'shipped') raw.completedAtEpoch = raw.lifecycle.atEpoch!
     const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))

@@ -170,7 +170,7 @@ export function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], no
     contentFingerprint: raw.contentFingerprint,
     // Group reviews already contain display copy; their source is independent of the optional human-copy writer.
     title: generatedTitle ? raw.title.trim() || null : copyReady && copy.title?.trim() ? copy.title.trim() : null,
-    summary: raw.groupId ? (reviewCounts ? recordedReview.summary.trim() || null : null) : copyReady && copy.summary?.trim() ? copy.summary.trim() : null,
+    summary: raw.groupId && recordedReview ? (reviewCounts ? recordedReview.summary.trim() || null : null) : copyReady && copy.summary?.trim() ? copy.summary.trim() : null,
     stageNote: copy?.stage?.trim() || undefined,
     // From the request-progress alignment: absent reads "Goal not linked yet", null reads "No goal".
     goalId: goalIdFor(raw),
