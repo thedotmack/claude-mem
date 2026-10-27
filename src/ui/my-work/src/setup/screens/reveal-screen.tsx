@@ -1,5 +1,7 @@
 import { ArrowRightIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
+import { useReducedMotion } from 'motion/react'
+import { EncryptedText } from '@/components/aceternity/encrypted-text'
 import { AgentMark } from '@/components/brand'
 import { formatPromptDay } from '@/lib/prompt-time'
 import { agentToolFor, type RevealSets, type SetupExtraction, type SetupRecentPrompt, type SetupScanAgent } from '../setup-data'
@@ -8,6 +10,11 @@ import { joinNames } from '../format'
 import { PageHeading } from './shared'
 
 const timesLabel = (times: number) => times === 1 ? 'asked once' : `asked ${times}×`
+
+/** A landed card's title decrypts from scramble into the words read from the prompts. Reduced motion: plain text. */
+function LandedTitle({ text }: { text: string }) {
+  return useReducedMotion() ? text : <EncryptedText text={text} />
+}
 
 /** One of the three sets. `null` items: still being extracted, so it shows placeholders until they land. */
 function RevealSet<T>({ title, items, render }: { title: string; items: T[] | null; render: (item: T) => ReactNode }) {
@@ -76,7 +83,7 @@ export function RevealScreen({ agents, reveal, extraction, recentPrompts, onCont
           <li key={work.id} className="reveal-card">
             <span className="lead-icon" aria-hidden="true"><AgentMark tool={work.agent} /></span>
             <div>
-              <p className="title">{work.title}</p>
+              <p className="title"><LandedTitle text={work.title} /></p>
               <p className="meta">Last active {formatPromptDay(work.lastActiveAt)}</p>
               {work.progressPercent !== undefined && <div className="bar" role="img" aria-label={`${work.progressPercent}% done`}><span style={{ width: `${work.progressPercent}%` }} /></div>}
             </div>
@@ -86,7 +93,7 @@ export function RevealScreen({ agents, reveal, extraction, recentPrompts, onCont
           <li key={goal.id} className="reveal-card">
             <span className="lead-icon" aria-hidden="true">{goal.rank}</span>
             <div>
-              <p className="title">{goal.title}</p>
+              <p className="title"><LandedTitle text={goal.title} /></p>
               <p className="meta">{timesLabel(goal.timesAsked)}, last {formatPromptDay(goal.latestAt)}</p>
             </div>
           </li>
@@ -95,7 +102,7 @@ export function RevealScreen({ agents, reveal, extraction, recentPrompts, onCont
           <li key={rule.id} className="reveal-card">
             <span className="lead-icon" aria-hidden="true">“</span>
             <div>
-              <p className="title">{rule.text}</p>
+              <p className="title"><LandedTitle text={rule.text} /></p>
               <p className="quote">“{rule.quote}” · {formatPromptDay(rule.quotedAt)}</p>
             </div>
           </li>

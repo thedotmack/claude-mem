@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react'
 import { CheckIcon } from 'lucide-react'
+import { useReducedMotion } from 'motion/react'
 import { Shimmer } from '@/components/ai-elements/shimmer'
 import { Terminal, TerminalContent } from '@/components/ai-elements/terminal'
-import { Button } from '@/components/ui/button'
+import { EncryptedText } from '@/components/aceternity/encrypted-text'
+import { SaveButton } from '@/components/save-button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
@@ -19,6 +22,9 @@ import { AgentIcon, FocusAreaChip, NextMove, ProductLink, ProgressMeter, StateBa
  * newer model brings its first title. Reduced motion: the animation classes are motion-safe only.
  */
 const FRESH_TITLE_FOR_MS = 4000
+// While fresh, the title decrypts from scramble into its text (EncryptedText), paced to finish in the first
+// half of the fresh window so it settles before the card turns back to plain text.
+const DECRYPT_TITLE_IN_MS = FRESH_TITLE_FOR_MS / 2
 function useAgentViewTransform(request: Request) {
   const [phase, setPhase] = useState<'agent' | 'translating' | 'fresh' | 'human'>(request.title ? 'human' : 'agent')
   const untitled = !request.title && !!request.resolvesTo
@@ -85,7 +91,7 @@ export function OpenFollowUps({ request, limit }: { request: Request; limit?: nu
             <li key={followUp.text} className="flex min-h-11 items-center gap-2 text-sm md:min-h-9">
               <span className="w-12 shrink-0 text-[11px] font-medium text-muted-foreground uppercase">{followUp.tag}</span>
               <span className="min-w-0 flex-1 truncate">{followUp.text}</span>
-              {inStore && <Button variant="ghost" size="sm" className="h-11 shrink-0 text-xs md:h-7" onClick={(event) => { event.stopPropagation(); finish(followUp.text) }}><CheckIcon />Done</Button>}
+              {inStore && <SaveButton className={cn(buttonVariants({ variant: 'ghost', size: 'sm' }), 'h-11 shrink-0 text-xs md:h-7')} onClick={() => finish(followUp.text)}><CheckIcon />Done</SaveButton>}
             </li>
           ))}
         </ul>
@@ -139,6 +145,7 @@ export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request
   const { team } = useWorkspace()
   const { phase, text, word } = useAgentViewTransform(request)
   const fresh = phase === 'fresh'
+  const reduceMotion = useReducedMotion()
   // Its recorded content changed in the update just applied (decision 5's "Just updated" dot).
   const contentJustUpdated = useFreshlyUpdated(request.id)
   return (
@@ -161,7 +168,9 @@ export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request
           {text ? (
             <button type="button" onClick={onOpen} className={cn('-mx-1 space-y-1 rounded-md px-1 text-left focus-visible:outline-2 focus-visible:outline-ring', fresh && 'motion-safe:animate-in motion-safe:fade-in motion-safe:blur-in-sm motion-safe:duration-300')}>
               <Req ids={['R2.6', 'R10.5']}>
-                <h3 className="text-[1.06rem] leading-snug font-semibold tracking-tight">{text.title}</h3>
+                <h3 className="text-[1.06rem] leading-snug font-semibold tracking-tight">
+                  {fresh && !reduceMotion ? <EncryptedText text={text.title} revealDelayMs={DECRYPT_TITLE_IN_MS / Math.max(1, text.title.length)} /> : text.title}
+                </h3>
               </Req>
               <p className="line-clamp-2 text-sm text-muted-foreground">{text.summary}</p>
             </button>

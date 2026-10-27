@@ -3,8 +3,9 @@ import { CheckIcon, ChevronDownIcon, FileTextIcon, Undo2Icon } from 'lucide-reac
 import { ChainOfThought, ChainOfThoughtContent, ChainOfThoughtHeader, ChainOfThoughtStep } from '@/components/ai-elements/chain-of-thought'
 import { QueueItem, QueueItemContent, QueueItemIndicator, QueueList } from '@/components/ai-elements/queue'
 import { Task, TaskContent, TaskItem, TaskTrigger } from '@/components/ai-elements/task'
+import { SaveButton } from '@/components/save-button'
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
+import { buttonVariants } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
@@ -79,15 +80,19 @@ function CheckAction({ request }: { request: Request }) {
   const { sourceKind, devices } = useWorkModel()
   const [saving, setSaving] = useState(false)
   const [notice, setNotice] = useState<CheckNotice | null>(null)
+  // Resolves false when the save did not happen, so the button shows no check; the notice line says why.
   const save = async (checked: boolean) => {
     setSaving(true)
+    let next: CheckNotice
     try {
-      setNotice(noticeFor(await setRequestChecked(request.id, checked), checked))
+      next = noticeFor(await setRequestChecked(request.id, checked), checked)
     } catch (error) {
-      setNotice({ tone: 'problem', message: error instanceof Error ? error.message : String(error) })
+      next = { tone: 'problem', message: error instanceof Error ? error.message : String(error) }
     } finally {
       setSaving(false)
     }
+    setNotice(next)
+    return next.tone !== 'problem'
   }
   const noticeLine = notice && (
     <p role="status" className={cn('w-full text-xs', notice.tone === 'problem' ? 'font-medium text-foreground' : 'text-muted-foreground')}>{notice.message}</p>
@@ -97,7 +102,7 @@ function CheckAction({ request }: { request: Request }) {
       <Req ids={['R6.2', 'R13.7']}>
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-review-border bg-review p-4 text-sm text-review-foreground">
           <span>Done. Check it, then mark this version checked.</span>
-          <Button className="h-11 md:h-9" onClick={() => save(true)} disabled={saving}><CheckIcon />Mark checked</Button>
+          <SaveButton className={cn(buttonVariants(), 'h-11 md:h-9')} onClick={() => save(true)} disabled={saving}><CheckIcon />Mark checked</SaveButton>
           {noticeLine}
         </div>
       </Req>
@@ -109,7 +114,7 @@ function CheckAction({ request }: { request: Request }) {
     <Req ids={['R6.2', 'R13.7']}>
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-surface p-4 text-sm">
         <span role="status">{notice?.tone === 'saved' ? notice.message : `Checked ${request.checkedAt}.`} Shipping is still your call. <span className="text-muted-foreground">{savedWhere}</span></span>
-        <Button variant="ghost" className="h-11 md:h-9" onClick={() => save(false)} disabled={saving}><Undo2Icon />Undo</Button>
+        <SaveButton className={cn(buttonVariants({ variant: 'ghost' }), 'h-11 md:h-9')} onClick={() => save(false)} disabled={saving}><Undo2Icon />Undo</SaveButton>
         {notice?.tone === 'problem' && noticeLine}
       </div>
     </Req>

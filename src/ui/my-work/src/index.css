@@ -296,6 +296,17 @@
   color: var(--muted-foreground);
 }
 
+/*
+ * FlipStatus (pages/my-work.tsx): the Aceternity split-flap board is 6 rows of 22 flaps. Cut it to its first
+ * row, 17 flaps wide because the longest state label, "Done, not checked", is 17 characters, at badge size.
+ * The board sets its grid columns and flap font size inline, hence !important.
+ */
+.flip-status-board > div { grid-template-columns: repeat(17, 1fr) !important; gap: 1px !important; }
+.flip-status-board > div > :nth-child(n + 18) { display: none; }
+.flip-status-board > div > div { aspect-ratio: 3 / 5; border-width: 1px; border-radius: 2px; }
+.flip-status-board > div > div > :last-child { display: none; } /* the decorative stripes under each flap */
+.flip-status-board .font-mono { font-size: 10px !important; }
+
 /* Reduced motion everywhere: spinners stop, pulses and slides are instant, the text simply swaps (decision 5). */
 @media (prefers-reduced-motion: reduce) {
   *, ::before, ::after {
