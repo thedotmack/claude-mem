@@ -13,9 +13,15 @@ import {
 export const DraggableCardBody = ({
   className,
   children,
+  dragAxis,
+  onDragRelease,
 }: {
   className?: string;
   children?: React.ReactNode;
+  /** Local addition: lock dragging to one axis ("x" keeps vertical page scroll on touch screens). Free drag when unset. */
+  dragAxis?: "x" | "y";
+  /** Local addition: called on release with how far the card moved from where the drag started; the card springs back. */
+  onDragRelease?: (offset: { x: number; y: number }) => void;
 }) => {
   const mouseX = useMotionValue(0);
   const mouseY = useMotionValue(0);
@@ -106,13 +112,15 @@ export const DraggableCardBody = ({
   return (
     <motion.div
       ref={cardRef}
-      drag
+      drag={dragAxis ?? true}
       dragConstraints={constraints}
+      dragSnapToOrigin={onDragRelease !== undefined}
       onDragStart={() => {
         document.body.style.cursor = "grabbing";
       }}
       onDragEnd={(_event, info) => {
         document.body.style.cursor = "default";
+        onDragRelease?.(info.offset);
 
         controls.start({
           rotateX: 0,

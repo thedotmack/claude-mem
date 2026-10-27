@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react'
-import { useReducedMotion } from 'motion/react'
+import { useMemo, useRef, useState, type ReactNode } from 'react'
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { ArrowRightIcon, ArrowUpDownIcon, ImageIcon, InboxIcon, PlugIcon, TriangleAlertIcon } from 'lucide-react'
 import { Agent, AgentContent, AgentHeader } from '@/components/ai-elements/agent'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -12,6 +12,7 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { ActivePill, AgentIcon, ATTENTION_ORDER, FocusAreaChip, NextMove, ProgressMeter, RefreshButton, RefreshStatus, STATE_LABEL, STATE_SURFACE, StateBadge, useWorkspace } from '@/components/bits'
 import { TextFlippingBoard } from '@/components/aceternity/text-flipping-board'
 import { PointerHighlight } from '@/components/aceternity/pointer-highlight'
+import { TracingBeam } from '@/components/aceternity/tracing-beam'
 import { AgentMark } from '@/components/brand'
 import { FocusChangeBar, useFocusChanges } from '@/components/focus-changes'
 import { FocusHeader, OtherHeader } from '@/components/focus-header'
@@ -126,14 +127,17 @@ function StorySheet({ open, story, requests, onClose, onOpenRules }: { open: boo
   const waiting = requests.filter(needsYou).length
   const { rules } = useWorkModel()
   const learned = rules.filter((rule) => rule.source === 'request-progress' && (rule.status === 'on' || rule.status === 'suggested')).slice(0, 4)
+  // The sheet scrolls, not the window, so the tracing beam follows the sheet's scroll.
+  const scrollRef = useRef<HTMLDivElement>(null)
   return (
     <Sheet open={open} onOpenChange={(next) => { if (!next) onClose() }}>
-      <SheetContent className="overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-lg">
+      <SheetContent ref={scrollRef} className="overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-lg">
         <SheetHeader>
           <SheetTitle>Build story</SheetTitle>
           <SheetDescription>From request-progress, reviewed from memory{story.writtenAt ? `, written ${story.writtenAt}` : ''}.</SheetDescription>
         </SheetHeader>
-        <div className="space-y-6 px-4 pb-6">
+        <TracingBeam scrollContainer={scrollRef} className="pr-4 pb-6 pl-10">
+        <div className="space-y-6">
           <Req ids={['R7.1']}>
             <p className="text-sm">{shipped} request{shipped === 1 ? '' : 's'} shipped and {waiting} waiting on you.</p>
           </Req>
@@ -156,9 +160,35 @@ function StorySheet({ open, story, requests, onClose, onOpenRules }: { open: boo
             </div>
           </Req>
         </div>
+        </TracingBeam>
       </SheetContent>
     </Sheet>
   )
+}
+
+/**
+ * card-hover-effect: one soft panel slides behind whichever card the pointer is on (a shared layoutId).
+ * Each grid passes its own layoutId so two grids never trade the highlight. Reduced motion: it fades, no slide.
+ */
+function HoverCell({ active, layoutId, onHover, children }: { active: boolean; layoutId: string; onHover: (hovered: boolean) => void; children: ReactNode }) {
+  return (
+    <div className="relative min-w-0" onMouseEnter={() => onHover(true)} onMouseLeave={() => onHover(false)}>
+      <AnimatePresence>
+        {active && (
+          <motion.span layoutId={layoutId} aria-hidden="true" className="pointer-events-none absolute -inset-2 block rounded-2xl bg-accent/70"
+            initial={{ opacity: 0 }} animate={{ opacity: 1, transition: { duration: 0.15 } }} exit={{ opacity: 0, transition: { duration: 0.15, delay: 0.2 } }} />
+        )}
+      </AnimatePresence>
+      <div className="relative h-full">{children}</div>
+    </div>
+  )
+}
+
+/** Which card in a grid the pointer is on, and the hover handler each HoverCell gets. */
+function useHoveredCard() {
+  const [hoveredId, setHoveredId] = useState<string | null>(null)
+  const hoverHandler = (id: string) => (hovered: boolean) => setHoveredId((current) => hovered ? id : current === id ? null : current)
+  return { hoveredId, hoverHandler }
 }
 
 // index.css cuts the flipboard to 17 flaps; a longer state label would lose its end, so say so at load.
@@ -290,6 +320,7 @@ function SubagentStatus({ agent }: { agent: WorkAgent }) {
 /** One card per running agent: its mark, its role and machine, so two agents of one tool are told apart (§4, §13.2). */
 function ByAgentView({ requests, onOpen }: { requests: Request[]; onOpen: (request: Request) => void }) {
   const { agents } = useWorkModel()
+  const { hoveredId, hoverHandler } = useHoveredCard()
   return (
     <Req ids={['R4.3', 'R13.2', 'R13.4']}>
       <div className="grid min-w-0 items-start gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -297,7 +328,8 @@ function ByAgentView({ requests, onOpen }: { requests: Request[]; onOpen: (reque
           const device = deviceById(agent.deviceId)
           const theirs = requests.filter((request) => request.agentId === agent.id)
           return (
-            <Agent key={agent.id} className="min-w-0">
+            <HoverCell key={agent.id} active={hoveredId === agent.id} layoutId="agent-card-hover" onHover={hoverHandler(agent.id)}>
+            <Agent className="min-w-0">
               <AgentHeader name={agent.name} role={agent.role} icon={<AgentMark tool={agent.tool} className="size-5" />}
                 model={`${device.name} · ${device.syncedMinutesAgo === 0 ? 'this machine' : `synced ${device.syncedMinutesAgo} min ago`}`} />
               <AgentContent className="space-y-0 px-2 pb-2">
@@ -314,6 +346,7 @@ function ByAgentView({ requests, onOpen }: { requests: Request[]; onOpen: (reque
                 ))}
               </AgentContent>
             </Agent>
+            </HoverCell>
           )
         })}
       </div>
@@ -385,6 +418,7 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
   const [filter, setFilter] = useState<Filter>('all')
   const [sort, setSort] = useState<SortKey>('attention')
   const [storyOpen, setStoryOpen] = useState(false)
+  const { hoveredId, hoverHandler } = useHoveredCard()
   const matches = FILTERS.find((entry) => entry.value === filter)!.matches
   const visible = useMemo(() => sortRequests(requests.filter(matches), sort), [requests, matches, sort])
 
@@ -466,7 +500,11 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
         </Req>
       ) : view === 'cards' ? (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          {visible.map((request) => <RequestCard key={request.id} request={request} onOpen={() => onOpen(request)} onOpenFocus={onOpenFocus} />)}
+          {visible.map((request) => (
+            <HoverCell key={request.id} active={hoveredId === request.id} layoutId="request-card-hover" onHover={hoverHandler(request.id)}>
+              <RequestCard request={request} onOpen={() => onOpen(request)} onOpenFocus={onOpenFocus} />
+            </HoverCell>
+          ))}
           {requestReadErrors.map((readError) => <RequestReadErrorCard key={readError.requestId} readError={readError} />)}
         </div>
       ) : view === 'list' ? <ListView requests={visible} sort={sort} onSort={setSort} onOpen={onOpen} onOpenFocus={onOpenFocus} />

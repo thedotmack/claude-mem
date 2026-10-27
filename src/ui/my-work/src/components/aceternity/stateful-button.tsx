@@ -118,7 +118,8 @@ export const StatefulButton = ({ className, children, ...props }: ButtonProps) =
       <motion.div layout className="flex items-center gap-2">
         <Loader />
         <CheckIcon />
-        <motion.span layout>{children}</motion.span>
+        {/* Local fix: children can be an icon plus a label; preflight makes svg display:block, so lay them out in a row. */}
+        <motion.span layout className="flex items-center gap-1.5">{children}</motion.span>
       </motion.div>
     </motion.button>
   );
