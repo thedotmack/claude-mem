@@ -80,7 +80,7 @@ function TodayPanel({ story, onOpenStory }: { story: BuildStory; onOpenStory: ()
   // The daily recap image is not generated from real records yet, so live mode leaves its slot out.
   const sample = useWorkModel().sourceKind === 'sample'
   return (
-    <div className={cn('grid gap-4 rounded-xl border bg-card/70 p-4 md:p-5', sample && 'sm:grid-cols-[132px_1fr]')}>
+    <div className={cn('grid gap-4 rounded-xl border bg-card/70 p-4 shadow-panel md:p-5', sample && 'sm:grid-cols-[132px_1fr]')}>
       {sample && (
         <Req ids={['R7.4']}>
           <div className="flex aspect-[3/1] items-center justify-center rounded-lg border border-dashed bg-surface text-muted-foreground sm:aspect-square"><ImageIcon className="size-5" /><span className="sr-only">Today's hero image (not generated in the wireframe)</span></div>
@@ -165,7 +165,7 @@ function ListView({ requests, sort, onSort, onOpen, onOpenFocus }: { requests: R
   return (
     <Req ids={['R4.2', 'R4.4', 'R2.1', 'R5.8', 'R11.1']}>
       {/* Phones: stacked rows, request then status then next step. */}
-      <ul className="divide-y rounded-xl border bg-card md:hidden">
+      <ul className="divide-y rounded-xl border bg-card shadow-panel md:hidden">
         {requests.map((request) => (
           <li key={request.id}>
             <button type="button" onClick={() => onOpen(request)} className="flex w-full flex-col gap-2 p-4 text-left focus-visible:outline-2 focus-visible:outline-ring">
@@ -182,7 +182,7 @@ function ListView({ requests, sort, onSort, onOpen, onOpenFocus }: { requests: R
         ))}
       </ul>
 
-      <div className="hidden overflow-hidden rounded-xl border bg-card md:block">
+      <div className="hidden overflow-hidden rounded-xl border bg-card shadow-panel md:block">
         <Table>
           <TableHeader className="bg-surface/60">
             <TableRow>
@@ -300,7 +300,7 @@ function TeamBoard({ requests, onOpen }: { requests: Request[]; onOpen: (request
         )}
         <div className="grid gap-4 md:grid-cols-3">
           {people.map((person) => (
-            <div key={person} className="space-y-2.5 rounded-xl border bg-card/60 p-4">
+            <div key={person} className="space-y-2.5 rounded-xl border bg-card/60 p-4 shadow-panel">
               <p className="section-label">{person}</p>
               {requests.filter((request) => request.askedBy === person).map((request) => (
                 <button key={request.id} type="button" onClick={() => onOpen(request)} className="w-full space-y-2 rounded-lg border bg-card p-3 text-left hover:bg-surface">

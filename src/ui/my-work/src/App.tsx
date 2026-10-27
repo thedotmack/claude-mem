@@ -52,7 +52,7 @@ function useDarkMode() {
 /** Small rounded icon tile behind each nav icon, after the fly.io sidebar: a hairline with a soft tile shadow. */
 function NavTile({ icon: Icon, active }: { icon: typeof InboxIcon; active: boolean }) {
   return (
-    <span className={cn('flex size-7 shrink-0 items-center justify-center rounded-lg border', active ? 'border-accent-border bg-card text-primary' : 'bg-card/60 text-muted-foreground')}>
+    <span className={cn('flex size-7 shrink-0 items-center justify-center rounded-lg border shadow-tile', active ? 'border-accent-border bg-card text-primary' : 'bg-card/60 text-muted-foreground')}>
       <Icon className="size-4" />
     </span>
   )
@@ -93,7 +93,7 @@ export default function App() {
     window.scrollTo(0, 0)
     setPage('work')
   }
-  return <Suspense fallback={null}><SetupPage onComplete={finishSetup} /></Suspense>
+  return <MotionConfig reducedMotion="user"><Suspense fallback={null}><SetupPage onComplete={finishSetup} /></Suspense></MotionConfig>
 }
 
 /** Reads the active source once and subscribes to its live feed, then renders the app. A failed load says so plainly instead of showing anything made up. */
