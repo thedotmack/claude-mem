@@ -259,6 +259,44 @@ describe('alignment prompt', () => {
   });
 });
 
+describe('review repair', () => {
+  it.each(['narrative', 'summary'])('returns the rejected review so an oversized %s can be corrected without repeating accepted groups', async (field) => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-review-repair-'));
+    const database = fixtureDatabase();
+    try {
+      database.prepare('INSERT INTO sdk_sessions VALUES (?, ?, ?, ?, ?, ?, ?)').run(2, 'claude', 'b', 'm2', 'repo/tree', 'Build another feature', NOW - 2 * DAY);
+      database.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)').run(2, 1, 'Build another feature', NOW - 2 * DAY);
+      const decisions = join(dir, 'decisions.json');
+      writeFileSync(decisions, JSON.stringify({ groups: ['a', 'b'].map(session => ({ title: `Feature ${session}`, conversations: [key(session)] })) }));
+      runCli(['apply', decisions], { dir, database, now: NOW, print: () => {} });
+      const refresh = buildRefreshTask({ needs: { due: 2, ungrouped: 0, goalsStale: false, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW });
+      const oversized = 'Retain the evidence while shortening this review. ' + 'x'.repeat(1257);
+      let attempts = 0, rejectedReview: any, acceptedId = '';
+      const ask = async (prompt: string) => {
+        if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'Work continues.' });
+        const shows = JSON.parse(readFileSync(/is in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+        attempts++;
+        if (attempts === 1) {
+          expect(shows).toHaveLength(2);
+          acceptedId = shows[0].groupId;
+          rejectedReview = { groupId: shows[1].groupId, state: 'in-progress', percent: 30, summary: 'Under way.', [field]: oversized, evidence: ['observation 42'], reviewBasis: shows[1].reviewBasis };
+          return JSON.stringify({ reviews: [{ groupId: acceptedId, state: 'in-progress', percent: 10, summary: 'Already accepted review.', reviewBasis: shows[0].reviewBasis }, rejectedReview] });
+        }
+        expect(shows.map((show: any) => show.groupId)).toEqual([rejectedReview.groupId]);
+        expect(prompt).toContain(JSON.stringify(rejectedReview));
+        expect(prompt).not.toContain('Already accepted review.');
+        return JSON.stringify({ reviews: [{ ...rejectedReview, [field]: 'Evidence preserved in a shorter review.' }] });
+      };
+      expect(await refresh.run(ask, 'claude-code')).toBe('2 requests reviewed, story written.');
+      expect(attempts).toBe(2);
+      const progress = readLedger(dir).progress;
+      expect(progress[rejectedReview.groupId][field]).toBe('Evidence preserved in a shorter review.');
+      expect(progress[rejectedReview.groupId].evidence).toEqual(['observation 42']);
+      expect(progress[acceptedId].readings).toHaveLength(1);
+    } finally { database.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
 describe('parallel reviews', () => {
   it('review batches run at the same time, and every batch is saved', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-parallel-'));
