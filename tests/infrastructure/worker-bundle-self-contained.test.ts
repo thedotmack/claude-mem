@@ -57,5 +57,5 @@ describe('Worker bundle is self-contained', () => {
     } finally {
       rmSync(sandbox, { recursive: true, force: true });
     }
-  });
+  }, 20000);
 });

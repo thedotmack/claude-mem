@@ -80,10 +80,19 @@ export function launchChrome(pageUrl: string, options: {
     '--disable-background-networking', '--no-first-run', ...(options.extraFlags ?? []),
     ...(options.remoteDebugging ? ['--remote-debugging-port=0'] : []),
     `--user-data-dir=${profileDirectory}`, pageUrl], { stdout: 'ignore', stderr: 'ignore' });
+  let closed = false;
   return {
     process: child, profileDirectory,
     async close() {
-      child.kill();
+      if (closed) return;
+      closed = true;
+      if (process.platform === 'win32' && child.exitCode === null) {
+        // Terminate only this owned browser tree; killing its parent alone
+        // leaves renderer/utility processes holding the temporary profile.
+        try { execFileSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true, timeout: 5000 }); }
+        catch { /* The browser may already have exited; use the normal fallback. */ }
+      }
+      if (child.exitCode === null) child.kill();
       // SIGKILL after 5 s if Chrome ignores SIGTERM. The timer is cleared once
       // Chrome exits so it never keeps the test process alive.
       let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
