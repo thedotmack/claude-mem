@@ -242,7 +242,7 @@ export function shellTemplateManifest(buildShellCommand, buildCodexWindowsComman
         // start was not measured. Change both values together.
         'PostToolUse.0.0': codexHookPair(
           ['hook', 'codex', 'observation'],
-          { timeout: 5 },
+          { timeout: 20 },
         ),
         'Stop.0.0': codexHookPair(['hook', 'codex', 'summarize']),
         'PostCompact.0.0': codexHookPair(['hook', 'codex', 'post-compact']),
