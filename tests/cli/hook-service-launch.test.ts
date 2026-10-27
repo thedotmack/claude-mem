@@ -67,6 +67,15 @@ describe('bun-runner hook-only service selection', () => {
       });
       expect(await legacy.exited).toBe(0);
       expect(readFileSync(record, 'utf8')).toBe('worker');
+
+      // existsSync also accepts a directory; emulate a mid-update sibling
+      // that cannot be read as a bundle without needing platform ACL tricks.
+      mkdirSync(join(scripts, 'hook-service.cjs'));
+      const unreadable = Bun.spawn(['node', runner, join(scripts, 'worker-service.cjs'), 'hook', 'codex', 'context'], {
+        env: { ...process.env, BUN: process.execPath, CLAUDE_CONFIG_DIR: join(root, 'config') }, stdin: new Blob(['{}']), stdout: 'ignore', stderr: 'pipe',
+      });
+      expect(await unreadable.exited).toBe(0);
+      expect(readFileSync(record, 'utf8')).toBe('worker');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -159,6 +159,7 @@ if (args.length === 0) {
 args[0] = fixBrokenScriptPath(args[0]);
 // Resolve a relative script path against the launch directory before the child starts in tmpdir() (#4628)
 args[0] = resolve(process.cwd(), args[0]);
+const originalScriptPath = args[0];
 
 // Hook commands need only the adapter/handler graph. Loading the full worker
 // service eagerly initializes its daemon, provider, server, database and UI
@@ -173,13 +174,35 @@ if (
   if (existsSync(hookServicePath)) args[0] = hookServicePath;
 }
 
-const bunPath = findBun();
-
-if (!bunPath) {
-  console.error('Error: Bun not found. Please install Bun: https://bun.sh');
-  console.error('After installation, restart your terminal.');
-  process.exit(1);
+function requireBun() {
+  const runtime = findBun();
+  if (!runtime) {
+    console.error('Error: Bun not found. Please install Bun: https://bun.sh');
+    console.error('After installation, restart your terminal.');
+    process.exit(1);
+  }
+  return runtime;
 }
+
+const nodeVersion = process.versions.node.split('.').map(Number);
+const supportsHookLibrary = !process.versions.bun && (
+  (nodeVersion[0] === 20 && nodeVersion[1] >= 19) ||
+  (nodeVersion[0] === 22 && nodeVersion[1] >= 12) || nodeVersion[0] > 22
+);
+const nodeHookEvents = ['context', 'session-init', 'session-init-context', 'observation', 'summarize', 'post-compact', 'subagent-context'];
+let markedHookLibrary = false;
+if (supportsHookLibrary && args[1] === 'hook' && args[2] === 'codex' && nodeHookEvents.includes(args[3]) && /hook-service\.cjs$/i.test(args[0])) {
+  try {
+    markedHookLibrary = readFileSync(args[0], 'utf8').slice(0, 256).includes('// claude-mem hook-service library v1');
+  } catch {
+    // A disappearing/unreadable sibling during an update must not hide the
+    // existing full worker. No hook has run, so this fallback is safe.
+    args[0] = originalScriptPath;
+  }
+}
+// Ordinary/legacy commands keep their early Bun check. A marked Node hook
+// discovers Bun only when it actually needs the fallback runtime.
+const earlyBunPath = markedHookLibrary ? null : requireBun();
 
 function collectStdin(input = process.stdin, options = {}) {
   return new Promise((resolve) => {
@@ -224,17 +247,9 @@ function collectStdin(input = process.stdin, options = {}) {
 
 const stdinData = await collectStdin(process.stdin, { json: args.includes('hook') });
 
-const nodeVersion = process.versions.node.split('.').map(Number);
-const supportsHookLibrary = !process.versions.bun && (
-  (nodeVersion[0] === 20 && nodeVersion[1] >= 19) ||
-  (nodeVersion[0] === 22 && nodeVersion[1] >= 12) || nodeVersion[0] > 22
-);
 // Inspect a nonexecuting build marker before importing: older sibling bundles
 // auto-run on import. Keep their Bun path, and never retry after invocation.
-const nodeHookEvents = ['context', 'session-init', 'session-init-context', 'observation', 'summarize', 'post-compact', 'subagent-context'];
-if (supportsHookLibrary && args[1] === 'hook' && args[2] === 'codex' && nodeHookEvents.includes(args[3]) &&
-    stdinData && stdinData.length > 0 && /hook-service\.cjs$/i.test(args[0]) &&
-    readFileSync(args[0], 'utf8').slice(0, 256).includes('// claude-mem hook-service library v1')) {
+if (markedHookLibrary && stdinData && stdinData.length > 0) {
   let service;
   try {
     const imported = await import(pathToFileURL(args[0]).href);
@@ -243,6 +258,7 @@ if (supportsHookLibrary && args[1] === 'hook' && args[2] === 'codex' && nodeHook
   } catch {
     // No hook has run yet; preserve the Bun path if library loading or its
     // eligibility check cannot complete. Invocation below is never retried.
+    args[0] = originalScriptPath;
   }
   if (service) {
     process.env.CLAUDE_MEM_HOOK_ORIGINAL_CWD = process.cwd();
@@ -250,6 +266,8 @@ if (supportsHookLibrary && args[1] === 'hook' && args[2] === 'codex' && nodeHook
     process.exit(0);
   }
 }
+
+const bunPath = earlyBunPath || requireBun();
 
 // Bun reads tsconfig.json from its working directory and prints any warnings
 // about it to stderr, which hosts show as hook errors (#4628). Start it in a
