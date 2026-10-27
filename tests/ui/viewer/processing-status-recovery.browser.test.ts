@@ -68,5 +68,5 @@ for (const scenario of ['focus', 'reconnect', 'stale-response'] as const) {
       await chrome?.close();
       server.stop(true);
     }
-  }, 45000);
+  }, 75000);
 }

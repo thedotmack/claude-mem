@@ -76,7 +76,17 @@ describe('agent runner', () => {
       mkdirSync(ledger);
       writeFileSync(join(dataDir, '.env'), 'ANTHROPIC_API_KEY=secret');
       writeFileSync(join(ledger, 'show.json'), '{}');
-      symlinkSync(join(dataDir, '.env'), join(ledger, 'env-link'));
+      let linkedSecret = join(ledger, 'env-link');
+      if (process.platform === 'win32') {
+        // Directory junctions exercise the same escape without symlink privileges.
+        const privateDir = join(dataDir, 'private');
+        mkdirSync(privateDir);
+        writeFileSync(join(privateDir, '.env'), 'ANTHROPIC_API_KEY=secret');
+        symlinkSync(privateDir, linkedSecret, 'junction');
+        linkedSecret = join(linkedSecret, '.env');
+      } else {
+        symlinkSync(join(dataDir, '.env'), linkedSecret);
+      }
       const seen: any[] = [];
       const query = ((input: any) => { seen.push(input); return (async function* () { yield { type: 'result', subtype: 'success', is_error: false, result: 'ok' }; })(); }) as never;
       const readTask: AgentTask = { ...task(ledger), claudeCode: { plugins: [], tools: ['Read', 'Grep', 'Glob'], allowedTools: [], readableFolders: [ledger] } };
@@ -87,7 +97,7 @@ describe('agent runner', () => {
       expect(await decide('Read', { file_path: 'show.json' })).toBe('allow');
       expect(await decide('Read', { file_path: join(dataDir, '.env') })).toBe('deny');
       expect(await decide('Read', { file_path: join(ledger, '..', '.env') })).toBe('deny');
-      expect(await decide('Read', { file_path: join(ledger, 'env-link') })).toBe('deny');
+      expect(await decide('Read', { file_path: linkedSecret })).toBe('deny');
       expect(await decide('Grep', { pattern: 'KEY' })).toBe('allow');
       expect(await decide('Grep', { pattern: 'KEY', path: dataDir })).toBe('deny');
       expect(await decide('Glob', { pattern: '*.json' })).toBe('allow');
