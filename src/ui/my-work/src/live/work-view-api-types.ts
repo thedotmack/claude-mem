@@ -73,9 +73,6 @@ export interface WorkViewProgress {
   readings: { at: string; percent: number }[]
 }
 
-/** An owner goal the request-progress alignment linked to this request. */
-export interface WorkViewRequestGoal { goalId: string; goal: string; title: string; kind: WorkViewGoalKind; evidence: string }
-
 /** One thing a request produced (work-product.mjs). Git kinds carry the sha or branch; `url` is absent when there is
  * nothing to open, and `available` is false for a recorded local file that no longer exists. */
 export interface WorkViewWorkProduct {
@@ -114,8 +111,6 @@ export interface WorkViewHumanRequest {
   review: WorkViewReview | null
   /** The last memory review; null when its group has none. Older workers leave it out. */
   progress?: WorkViewProgress | null
-  /** Absent: not aligned yet ("Goal not linked yet"). Empty: aligned to no goal ("No goal"). */
-  goals?: WorkViewRequestGoal[]
   /** Newest first. Older workers leave it out. */
   workProduct?: WorkViewWorkProduct[]
   /** The conversation its my-focus placement is keyed by: its group's anchor, else its own. Older workers leave it out. */
@@ -216,6 +211,8 @@ export interface WorkViewFocusArea {
   name: string
   /** One sentence saying what the area is for. */
   goal: string | null
+  /** What belongs in the area, beyond its goal. Older workers leave it out. */
+  about?: string | null
   status: 'suggested' | 'kept' | 'dismissed' | 'done'
   priorityRank: number | null
   /** The owner's order; when set it wins over priorityRank. */

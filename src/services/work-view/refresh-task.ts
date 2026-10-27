@@ -1,6 +1,6 @@
 /**
  * The job My Work's automatic refresh hands the agent runner: refresh the
- * owner's goals when they are stale, then group, review, align and retell
+ * owner's goals when they are stale, then group, review, sort into focus areas and retell
  * every request that is due. No day window beyond the skill's own default,
  * no group cap and no time limit (owner rule, Oct 22).
  *
@@ -19,9 +19,8 @@ import type { UsableAgentId } from '../agent-runner/detect.js';
 import { runCommand } from '../agent-runner/detect.js';
 import { writeOwnerPromptsFile, type OwnerPromptsFile } from '../prompt-import/owner-prompts-file.js';
 import { resolvePythonCommand } from './python.js';
-import { readGoals, readLedger, runCli, validateGroupingAnswer, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
-import { readFocusAreas } from './data-source.mjs';
-import type { FocusArea } from './my-focus.mjs';
+import { FOCUS_BATCH, readGoals, readLedger, runCli, validateGroupingAnswer, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
+import { PROPOSAL_KINDS, readFocusAreas, type FocusArea, type RouterFocusBody } from './my-focus.mjs';
 
 /** claude-mem MCP tools a refresh may call: reads only. Saves go through the skills' scripts and their
  * validators (save_goals.py, the request-groups CLI), never a raw work_state_write. */
@@ -36,7 +35,7 @@ const SAVE_GOALS_FAILED_AFTER_WRITING_EXIT = 3;
  * Ids checked against claude --help (aliases), codex-cli 0.163.0 models_cache.json and gemini 0.49.0 aliases. */
 const LIGHT: StepModels = { 'claude-code': { model: 'haiku' }, codex: { model: 'gpt-6-luna', reasoningEffort: 'low' }, gemini: { model: 'flash-lite' } };
 const CAREFUL: StepModels = { 'claude-code': { model: 'sonnet' }, codex: {}, gemini: { model: 'flash' } };
-export const STEP_MODELS = { goals: CAREFUL, grouping: LIGHT, review: CAREFUL, alignment: LIGHT, story: CAREFUL } as const;
+export const STEP_MODELS = { goals: CAREFUL, grouping: LIGHT, review: CAREFUL, focus: LIGHT, story: CAREFUL } as const;
 type Step = keyof typeof STEP_MODELS;
 
 const strictObject = (properties: Record<string, unknown>) => ({ type: 'object', additionalProperties: false, required: Object.keys(properties), properties });
@@ -49,6 +48,19 @@ export const GROUPING_ANSWER_SCHEMA: AnswerSchema = strictObject({
     links: { type: 'array', items: strictObject({ kind: { type: 'string', enum: ['shared-work-list', 'shared-request-id', 'agent-judgment'] }, conversations: stringArray, evidence: { type: 'string' } }) },
   }) },
   ignored: { type: 'array', items: strictObject({ conversation: { type: 'string' }, reason: { type: 'string' } }) },
+});
+
+/** The answer `record-focus` takes: every request placed by area id (or "other"), and areas proposed from Other.
+ * sameAs is the model's judgment of which saved area (dismissed ones included) a proposal already is, or null. */
+export const FOCUS_ANSWER_SCHEMA: AnswerSchema = strictObject({
+  placements: { type: 'array', items: strictObject({ anchor: { type: 'string' }, focusAreaId: { type: 'string' }, evidence: { type: 'string' } }) },
+  proposals: { type: 'array', items: strictObject({
+    kind: { type: 'string', enum: [...PROPOSAL_KINDS] },
+    name: { type: 'string' }, goal: { type: 'string' }, about: { type: 'string' },
+    anchors: stringArray,
+    sameAs: { type: ['string', 'null'] },
+    evidence: { type: 'string' },
+  }) },
 });
 
 /** When each step ran, for refresh.json's run record (not shown in My Work). */
@@ -66,8 +78,12 @@ export interface RefreshTaskOptions {
   openDatabase: () => LedgerDatabase & { close(): void };
   now?: () => number;
   spawnImpl?: typeof spawn;
-  /** This worker's sync device id, so my-focus rows replay in the same order the worker's snapshot uses. */
-  localDeviceId?: () => string;
+  /** This worker's sync device id ('' when cloud sync never started), so my-focus rows replay in the same order the
+   * worker's snapshot uses. Required. */
+  localDeviceId: () => string;
+  /** The focus step's write: the worker's system-only my-focus write (WorkViewRoutes.recordRouterFocus), called
+   * in-process. Throws a TypeError when it refused the answer before writing anything. */
+  saveFocus?: (body: RouterFocusBody) => { placed: number; focusAreaIds: string[] } | Promise<{ placed: number; focusAreaIds: string[] }>;
   /** Owner-goals step 1: writes owner-prompts.md into the folder from every agent's transcripts (prompt importer). */
   writeOwnerPrompts?: (folder: string, sinceMinute: string | null) => Promise<OwnerPromptsFile>;
 }
@@ -133,6 +149,7 @@ const focusAreasNote = (path: string) => `The focus areas already saved in My Fo
 
 export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { steps: StepTiming[] } {
   const { needs, reason, dataDir, ledgerDir, pluginRoot, openDatabase } = options;
+  if (typeof options.localDeviceId !== 'function') throw new TypeError('buildRefreshTask needs localDeviceId, the worker\'s sync device id.');
   const now = options.now ?? Date.now;
   const paths = skillPaths(pluginRoot);
   const goalsFolder = join(ledgerDir, 'owner-goals', localDay(now()));
@@ -146,7 +163,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
   let exportedAt = new Date(now()).toISOString();
   const prepareGoals = async () => {
     const database = openDatabase();
-    try { savedGoals = readGoals(database); savedAreas = readFocusAreas(database, { localDeviceId: options.localDeviceId?.() ?? '' }); } finally { database.close(); }
+    try { savedGoals = readGoals(database); savedAreas = readFocusAreas(database, { localDeviceId: options.localDeviceId() }); } finally { database.close(); }
     since = savedGoals.goals.length && Number.isFinite(Date.parse(savedGoals.generatedAt ?? '')) ? localMinute(Date.parse(savedGoals.generatedAt!)) : null;
     exportedAt = new Date(now()).toISOString();
     exported = await writeOwnerPrompts(goalsFolder, since);
@@ -175,12 +192,30 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       inlineEvidence.set(path, contents);
       return path;
     };
+    const localDeviceId = options.localDeviceId();
     const cli = (argv: string[], input?: unknown) => {
       let output: any;
       const database = openDatabase();
-      try { runCli(input === undefined ? argv : [...argv, writeInput(argv[0], input)], { dir: ledgerDir, database, now: now(), print: value => { output = value; } }); }
+      try { runCli(input === undefined ? argv : [...argv, writeInput(argv[0], input)], { dir: ledgerDir, database, now: now(), print: value => { output = value; }, localDeviceId }); }
       finally { database.close(); }
       return output;
+    };
+    /** record-focus: checked against the database, then written by the worker. The worker checks the whole answer before
+     * its first write, so its refusal (a TypeError) is re-asked; any other failure is not, since a retry would not help. */
+    const recordFocus = async (flags: string[], answer: unknown) => {
+      if (!options.saveFocus) throw Object.assign(new Error('The focus step has no way to save: the worker did not pass its my-focus write.'), { retryable: false });
+      let output: any;
+      const database = openDatabase();
+      try {
+        await runCli(['record-focus', ...flags, writeInput('record-focus', answer)], {
+          dir: ledgerDir, database, now: now(), print: value => { output = value; }, localDeviceId,
+          saveFocus: async body => {
+            try { return await options.saveFocus!(body); }
+            catch (error) { throw error instanceof TypeError ? error : Object.assign(error instanceof Error ? error : new Error(String(error)), { retryable: false }); }
+          },
+        });
+      } finally { database.close(); }
+      return output as { placed: number; proposed: number };
     };
     let python: ReturnType<typeof resolvePythonCommand> | undefined;
     /** Resolve once per refresh, and never retry the script with another interpreter. The goals step re-asks the model
@@ -330,17 +365,38 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       if (failed.length) throw (failed[0] as PromiseRejectedResult).reason;
       if (reviewed) done.push(`${reviewed} requests reviewed`);
 
-      // Only groups not yet aligned to the current goals.
-      const alignInput = cli(['align-input']);
-      if (alignInput.groups.length) {
-        const aligned = await step('alignment', [
+      // Focus: place the requests not placed yet (changed since, or whose area is gone) in batches, each saved before the
+      // next is read, then propose areas from Other when the router-placed Other requests changed since the last pass.
+      // The story does not depend on it, so a failed focus step is reported after the story has run.
+      let focusError: unknown = null;
+      try {
+        let placed = 0, proposed = 0;
+        const sorting = (question: string) => [
           requestProgress, '---', readOnly,
-          // Inline with every id named, like grouping: on a file path Codex's light model linked 2 of 60 groups (Oct 23).
-          `Do only section 3 (link each request to the goals it serves) for the groups in this \`align-input\` output (also saved in ${writeInput('align-input', alignInput)}):\n\n\`\`\`json\n${JSON.stringify(alignInput, null, 2)}\n\`\`\``,
-          `Decide each of these ${alignInput.groups.length} groups, in "links" or "unaligned": ${alignInput.groups.map((group: { groupId: string }) => group.groupId).join(', ')}. Reply with only the JSON that \`record-alignment\` takes ({"links": [...], "unaligned": [...]}); every listed group must appear in one of them.`,
-        ].join('\n\n'), answer => cli(['record-alignment'], answer));
-        done.push(`${aligned.aligned} linked to goals`);
-      }
+          // Inline with every anchor named, like grouping: on a file path Codex's light model linked 2 of 60 groups (Oct 23).
+          question,
+        ].join('\n\n');
+        let previousBatch = '';
+        for (let input = cli(['focus-input', '--limit', String(FOCUS_BATCH)]); input.requests.length; input = cli(['focus-input', '--limit', String(FOCUS_BATCH)])) {
+          const anchors: string[] = input.requests.map((request: { anchor: string }) => request.anchor);
+          // A saved batch leaves the queue; the same batch twice means the save did not take, and asking again would loop.
+          if (anchors.join('\n') === previousBatch) throw new Error(`focus: the placed requests are still queued (${anchors.length} starting ${anchors[0]}).`);
+          previousBatch = anchors.join('\n');
+          const saved = await step('focus', sorting([
+            `Do only section 3, steps 1–2 (place each request in a focus area, promoting one that holds several separate asks) for this batch, the \`focus-input\` output (also saved in ${writeInput('focus-input', input)}):\n\n\`\`\`json\n${JSON.stringify(input, null, 2)}\n\`\`\``,
+            `Place each of these ${anchors.length} requests exactly once, by its "anchor": ${anchors.join(', ')}. Reply with only the JSON that \`record-focus\` takes ({"placements": [...], "proposals": [...]}).`,
+          ].join('\n\n')), answer => recordFocus(['--limit', String(FOCUS_BATCH)], answer), FOCUS_ANSWER_SCHEMA);
+          placed += saved.placed; proposed += saved.proposed;
+        }
+        const other = cli(['focus-input', '--other']);
+        if (other.due) {
+          const saved = await step('focus', sorting(
+            `Do only section 3, step 3 (propose focus areas from Other) for the \`focus-input --other\` output (also saved in ${writeInput('focus-input-other', other)}):\n\n\`\`\`json\n${JSON.stringify(other, null, 2)}\n\`\`\`\n\nPlace nothing ("placements": []). Reply with only the JSON that \`record-focus --other\` takes ({"placements": [], "proposals": [...]}), proposing nothing when nothing qualifies.`,
+          ), answer => recordFocus(['--other'], answer), FOCUS_ANSWER_SCHEMA);
+          proposed += saved.proposed;
+        }
+        if (placed || proposed) done.push([...(placed ? [`${placed} requests placed`] : []), ...(proposed ? [`${proposed} focus areas suggested`] : [])].join(', '));
+      } catch (error) { focusError = error; }
 
       // Only reviews whose facts (state, percent, dates, milestones, preferences, outcome) moved since the last story; none means the story still holds.
       const storyInput = cli(['story-input']);
@@ -351,6 +407,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
         ].join('\n\n'), answer => cli(['record-story'], answer));
         done.push(storyInput.update ? 'story updated' : 'story written');
       }
+      if (focusError) throw focusError;
       return done.length ? `${done.join(', ')}.` : 'Nothing was due.';
     } finally {
       rmSync(runDir, { recursive: true, force: true });

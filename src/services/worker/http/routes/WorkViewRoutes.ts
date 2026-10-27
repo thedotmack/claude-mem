@@ -17,7 +17,7 @@ import { FILE_CONTENT_TYPES } from '../../../work-view/work-product.mjs';
 import { isInsideDeliverablesDir } from '../../../../shared/deliverables.js';
 import { contentFingerprint, LocalReviewStore } from '../../../work-view/review-store.js';
 import { MY_RULES_LIST, renderRulesFile, ruleRowFields, type SavedRule } from '../../../work-view/my-rules.mjs';
-import { focusAreaRowFields, MY_FOCUS_LIST, OTHER_FOCUS_AREA_ID, ownerGoalsAreaRows, placementRowFields, type FocusArea } from '../../../work-view/my-focus.mjs';
+import { focusAreaRowFields, MY_FOCUS_LIST, OTHER_FOCUS_AREA_ID, ownerGoalsAreaRows, placementRowFields, PROPOSAL_KINDS, routerFocusRows, type FocusArea, type RouterFocusBody } from '../../../work-view/my-focus.mjs';
 import { AGENT_LIFECYCLE_LIST, agentStopFields } from '../../../work-view/agent-lifecycle.mjs';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { chatCompletionsHumanCopyProvider, HumanCopyWorker } from '../../../work-view/human-copy-worker.mjs';
@@ -140,6 +140,26 @@ const ownerGoalsFocusBody = z.object({
   }).strict()),
 }).strict();
 
+// One checked focus-step answer (request-groups.mjs record-focus): router placements and areas proposed from Other.
+// Same name, sentence and request-id bounds as focusBody and reviewBody; a basis is focusBasis's 16 hex characters.
+// No count caps: every request is placed, and the owner has as many areas as their work holds.
+const anchorField = z.string().min(1).max(2000);
+// focusBasis and the Other pass hash are 16 hex characters.
+const basisField = z.string().regex(/^[0-9a-f]{16}$/);
+const routerFocusBody = z.object({
+  placements: z.array(z.object({
+    anchorConversationKey: anchorField, focusAreaId: focusAreaIdField, basis: basisField, evidence: z.string().trim().min(1).max(300),
+  }).strict()),
+  proposals: z.array(z.object({
+    kind: z.enum(PROPOSAL_KINDS as unknown as ['new', 'promote']),
+    name: z.string().trim().min(1).max(80), goal: z.string().trim().min(1).max(300), about: z.string().trim().min(1).max(300),
+    evidence: z.string().trim().min(1).max(300),
+    sameAs: focusAreaIdField.nullable(),
+    requests: z.array(z.object({ anchorConversationKey: anchorField, basis: basisField }).strict()).min(1),
+  }).strict()),
+  otherPassHash: basisField.nullable().optional(),
+}).strict();
+
 const markAgentFinishedBody = z.object({
   agentGroupId: z.string().min(1).max(2000),
 }).strict();
@@ -229,7 +249,7 @@ export function configuredHumanCopyProvider(settingsPath = USER_SETTINGS_PATH): 
 /** My Work's automatic refresh on the user's own logged-in agent, unless
  * CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH is 'false' (checked on every tick). */
 export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTINGS_PATH, setupPath = setupStatePath(), setupActive = () => false,
-  localDeviceId: () => string = () => ''): AutoRefreshWorker {
+  localDeviceId: () => string, saveFocus: (body: RouterFocusBody) => { placed: number; focusAreaIds: string[] }): AutoRefreshWorker {
   const openDatabase = () => {
     const database = new Database(DB_PATH, { readonly: true, create: false });
     database.exec('PRAGMA busy_timeout = 1500');
@@ -242,10 +262,11 @@ export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTIN
     enabled: () => !setupActive() && (readSetupState(setupPath).status === 'complete' || !hasActiveSetupSession(setupPath))
       && SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true }).CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH !== 'false',
     runJob: async ({ needs, reason }) => {
-      const task = buildRefreshTask({ needs, reason, dataDir: DATA_DIR, ledgerDir, pluginRoot: getPackageRoot(), openDatabase, localDeviceId });
+      const task = buildRefreshTask({ needs, reason, dataDir: DATA_DIR, ledgerDir, pluginRoot: getPackageRoot(), openDatabase, localDeviceId, saveFocus });
       return { ...(await runAgentTask(task)), steps: task.steps };
     },
     log: (level, message, data) => (level === 'info' ? logger.info : logger.warn).call(logger, 'WORKER', message, data),
+    localDeviceId,
   });
 }
 
@@ -297,7 +318,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     // A test or demo with its own ledger never starts an agent unless it passes one in.
     this.autoRefresh = options.autoRefresh === undefined
       ? (options.ledgerDir === undefined && ledgerDir ? defaultAutoRefresh(ledgerDir, options.settingsPath, options.setupStatePath,
-        () => this.setupIsActive(), () => this.getLocalDeviceId()) : null)
+        () => this.setupIsActive(), () => this.getLocalDeviceId(), body => this.recordRouterFocus(body)) : null)
       : options.autoRefresh;
     this.autoRefresh?.start();
     this.appendWorkStateEntry = options.appendWorkStateEntry ?? null;
@@ -432,6 +453,9 @@ export class WorkViewRoutes extends BaseRouteHandler {
     // System-written suggestions only: every row is decided_by system, status suggested, under a new id, so
     // nothing posted here can stand in for an owner decision or change an area the owner decided.
     app.post('/api/work-view/focus/owner-goals', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(ownerGoalsFocusBody), this.wrapHandler(this.suggestOwnerGoalsAreas));
+    // The focus step's answer (request-groups.mjs record-focus run by the request-progress skill): router placements
+    // and suggested areas only, so nothing posted here can stand in for an owner decision.
+    app.post('/api/work-view/focus/router', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(routerFocusBody), this.wrapHandler(this.saveRouterFocus));
     app.post('/api/work-view/agents/mark-finished', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(markAgentFinishedBody), this.wrapHandler(this.markAgentFinished));
     app.post('/api/work-view/rules/load-in-claude-code', workViewLoopbackOnly, requireWorkViewOrigin, this.wrapHandler(this.loadRulesInClaudeCode));
     app.get('/api/setup/scan', workViewLoopbackOnly, this.wrapHandler((_req, res) => {
@@ -788,6 +812,46 @@ export class WorkViewRoutes extends BaseRouteHandler {
     res.setHeader('Cache-Control', 'no-store');
     res.json({ focusAreaIds: planned.focusAreaIds });
     if (planned.rows.length) this.publish();
+  };
+
+  /**
+   * The focus step's answer as my-focus rows: router placements and `suggested` areas, written as the system. The
+   * whole answer is checked against the saved areas before the first row is written, so a refusal (TypeError)
+   * writes nothing. The automatic refresh calls this in-process; the skill's CLI reaches it through saveRouterFocus.
+   */
+  recordRouterFocus = (body: RouterFocusBody): { placed: number; focusAreaIds: string[] } => {
+    if (!this.appendWorkStateEntry) throw new Error('Saving focus areas is unavailable on this worker.');
+    const snapshot = this.snapshot();
+    if (!snapshot.source.connected) throw new Error('Local work is unavailable. Reconnect before placing requests.');
+    let planned: ReturnType<typeof routerFocusRows>;
+    // Every row is built and size-checked before the first write: a refusal here (an unknown or dismissed area, a row too
+    // long to save) wrote nothing, so it is a TypeError the refresh may answer again.
+    try { planned = routerFocusRows(body, (snapshot.focusAreas ?? []) as FocusArea[]); }
+    catch (error) { throw error instanceof RangeError ? new TypeError(error.message) : error; }
+    const project = this.homeProject ?? getProjectContext(homedir()).primary;
+    let written = 0;
+    try {
+      for (const fields of planned.rows) { this.appendWorkStateEntry({ project, listName: MY_FOCUS_LIST, fields }); written++; }
+    } catch (error) {
+      // A failure after a write is never a refusal: asking again would suggest the same areas twice.
+      if (written) this.publish();
+      throw new Error(`Saving the focus step stopped after ${written} of ${planned.rows.length} rows: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    logger.debug('HTTP', 'Focus step saved', { placed: planned.placed, proposed: planned.focusAreaIds.length });
+    if (planned.rows.length) this.publish();
+    return { placed: planned.placed, focusAreaIds: planned.focusAreaIds };
+  };
+
+  private saveRouterFocus = (req: Request, res: Response): void => {
+    let saved: { placed: number; focusAreaIds: string[] };
+    try { saved = this.recordRouterFocus(req.body as z.infer<typeof routerFocusBody>); }
+    catch (error) {
+      if (error instanceof TypeError) { this.badRequest(res, error.message); return; }
+      res.status(503).json({ error: error instanceof Error ? error.message : String(error) });
+      return;
+    }
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(saved);
   };
 
   /**

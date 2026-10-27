@@ -36,7 +36,7 @@ for (const url of SNAPSHOT_FILES) {
       assert.deepEqual(request.progress.history, readings.map((reading) => reading.percent))
       assert.equal(request.progress.percent, request.state === 'shipped' ? 100 : raw.progress?.percent ?? null, 'percent only from a review, or 100 for an explicit ship')
       assert.equal(request.askedBy, raw.requestedBy ?? 'You')
-      if (!raw.goals) assert.equal(request.goalId, undefined, 'goal reads "Goal not linked yet" until request-progress links it')
+      if (!raw.focusAreaId) assert.equal(request.goalId, undefined, 'goal reads "Goal not linked yet" until the focus step places it')
     }
   })
 
@@ -204,17 +204,18 @@ test('a request with only asks maps cleanly: its asks show, no activity, and a f
   assert.equal(old.state, 'idle')
 })
 
-test('goal links: absent is not linked yet, empty is no goal, and an ask lists the requests that serve it', () => {
-  const goalItem = (id: string, kind: 'focus-area' | 'ask') => ({ id, task: id, kind, rank: 1, title: id, goal: null, focusArea: null, focusAreaId: null, product: null, latestAt: null, timesAsked: 1, status: 'todo', evidence: [] })
-  const goals = { listId: 'l', listName: 'owner-goals', history: false, project: 'p', updatedAt: '2026-10-22T00:00:00Z', periodStart: null, periodEnd: null, summary: null, generatedAt: '2026-10-22T00:00:00Z', windowDays: 30, sourcePromptCount: 10, mapPath: null, areas: [goalItem('ship', 'focus-area'), goalItem('docs', 'focus-area')], asks: [goalItem('ask', 'ask')] }
-  const linked = { ...syntheticRequest(), id: 'r1', goals: [{ goalId: 'ask', goal: 'ask', title: 'ask', kind: 'ask' as const, evidence: 'x' }, { goalId: 'ship', goal: 'ship', title: 'ship', kind: 'focus-area' as const, evidence: 'y' }, { goalId: 'docs', goal: 'docs', title: 'docs', kind: 'focus-area' as const, evidence: 'z' }] }
-  const none = { ...syntheticRequest(), id: 'r2', goals: [] }
+test('goal links come from the My Focus placement: not sorted yet, Other, or the area\'s owner-goals item', () => {
+  const goalItem = (id: string, kind: 'focus-area' | 'ask', focusAreaId: string | null) => ({ id, task: id, kind, rank: 1, title: id, goal: null, focusArea: null, focusAreaId, product: null, latestAt: null, timesAsked: 1, status: 'todo', evidence: [] })
+  const goals = { listId: 'l', listName: 'owner-goals', history: false, project: 'p', updatedAt: '2026-10-22T00:00:00Z', periodStart: null, periodEnd: null, summary: null, generatedAt: '2026-10-22T00:00:00Z', windowDays: 30, sourcePromptCount: 10, mapPath: null, areas: [goalItem('ship', 'focus-area', 'fa_ship'), goalItem('docs', 'focus-area', 'fa_docs')], asks: [goalItem('ask', 'ask', 'fa_ship')] }
+  const placed = { ...syntheticRequest(), id: 'r1', focusAreaId: 'fa_ship' }
+  const other = { ...syntheticRequest(), id: 'r2', focusAreaId: 'other' }
   const notYet = { ...syntheticRequest(), id: 'r3' }
-  const model = toWorkModel(snapshotWith([linked, none, notYet], { goals }), Date.parse('2026-10-22T12:00:00Z'))
-  assert.deepEqual(model.requests.map((request) => request.goalId), ['ship', null, undefined])
-  assert.deepEqual(model.openAsks[0].servedBy, ['r1'])
-  // A request linked to two focus areas counts for both, not only the one request.goalId names.
-  assert.deepEqual(model.priorities.map((goal) => goal.servedBy), [['r1'], ['r1']])
+  const unknownArea = { ...syntheticRequest(), id: 'r4', focusAreaId: 'fa_new' }
+  const model = toWorkModel(snapshotWith([placed, other, notYet, unknownArea], { goals }), Date.parse('2026-10-22T12:00:00Z'))
+  assert.deepEqual(model.requests.map((request) => request.goalId), ['ship', null, undefined, undefined])
+  // A request sits in one area; asks are not linked to requests.
+  assert.deepEqual(model.priorities.map((goal) => goal.servedBy), [['r1'], []])
+  assert.equal(model.openAsks[0].servedBy, undefined)
 })
 
 test('the build story recap is its first paragraph; no story hides it', () => {

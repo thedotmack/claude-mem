@@ -120,11 +120,12 @@ function storySteps(progress: WorkViewProgress, now: number): Request['story'] {
     .filter((step) => step.label)
 }
 
-/** Absent goals: not linked yet. Empty: serves none. Otherwise a focus area wins over an ask. */
-function goalIdFor(raw: WorkViewHumanRequest): string | null | undefined {
-  if (!raw.goals) return undefined
-  if (!raw.goals.length) return null
-  return (raw.goals.find((goal) => goal.kind === 'focus-area') ?? raw.goals[0]).goalId
+/** The owner-goals focus area a request's My Focus placement names, until the focus rail replaces My Goals (plan Phase 6).
+ * Not sorted yet: undefined ("Goal not linked yet"). Other: null ("No goal"). An area with no owner-goals item: undefined. */
+function goalIdFor(raw: WorkViewHumanRequest, goalIdByFocusArea: ReadonlyMap<string, string>): string | null | undefined {
+  if (!raw.focusAreaId) return undefined
+  if (raw.focusAreaId === 'other') return null
+  return goalIdByFocusArea.get(raw.focusAreaId)
 }
 
 /** The worker's check route uses the same rule (WorkViewRoutes.ts reviewIsNewerThanLifecycle). */
@@ -135,7 +136,7 @@ export function reviewIsNewerThanLifecycle(review: Pick<WorkViewProgress, 'check
 }
 
 /** One human request → one Request. Throws when the result breaks the lifecycle rules; the caller turns that into a read-error card. */
-export function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: number): Request {
+export function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: number, goalIdByFocusArea: ReadonlyMap<string, string> = new Map()): Request {
   const copy = raw.humanCopy
   const copyReady = !!copy && ['current', 'outdated'].includes(copy.state)
   const updatedAt = raw.updatedAtEpoch ?? Math.max(0, ...raw.items.map((item) => item.lastUpdateEpoch || 0))
@@ -170,8 +171,7 @@ export function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], no
     title: copyReady && copy.title?.trim() ? copy.title.trim() : null,
     summary: copyReady && copy.summary?.trim() ? copy.summary.trim() : null,
     stageNote: copy?.stage?.trim() || undefined,
-    // From the request-progress alignment: absent reads "Goal not linked yet", null reads "No goal".
-    goalId: goalIdFor(raw),
+    goalId: goalIdFor(raw, goalIdByFocusArea),
     askedBy: raw.requestedBy ?? SOLO_REQUESTER,
     agentId,
     startedAt: started ? formatDateTime(started) : 'Start not recorded',
@@ -417,9 +417,11 @@ export function toWorkModel(snapshot: WorkViewSnapshot, now: number): MappedWork
   }
   const requests: Request[] = []
   const requestReadErrors: RequestReadError[] = []
+  // Each My Focus area's owner-goals item, so a request's placement shows on the goals it already links to.
+  const goalIdByFocusArea = new Map((snapshot.goals?.areas ?? []).filter((area) => area.focusAreaId).map((area) => [area.focusAreaId!, area.id]))
   for (const raw of snapshot.humanRequests) {
     try {
-      requests.push(toRequest(raw, snapshot.agents, now))
+      requests.push(toRequest(raw, snapshot.agents, now, goalIdByFocusArea))
     } catch (error) {
       requestReadErrors.push({
         requestId: raw.id,
@@ -430,12 +432,13 @@ export function toWorkModel(snapshot: WorkViewSnapshot, now: number): MappedWork
     }
   }
   const { goalsRun, ...goalsModel } = toGoalsModel(snapshot.goals, snapshot.goalHistory)
-  // Each goal lists every request the alignment linked to it. A request can serve up to three goals,
-  // while request.goalId names only one, so priorities need the list too.
-  const aligned = snapshot.humanRequests.some((raw) => raw.goals)
-  const withServedBy = <T extends { id: string }>(goal: T) => ({ ...goal, servedBy: snapshot.humanRequests.filter((raw) => raw.goals?.some((link) => link.goalId === goal.id)).map((raw) => raw.id) })
-  const priorities = aligned ? goalsModel.priorities.map(withServedBy) : goalsModel.priorities
-  const openAsks = aligned ? goalsModel.openAsks.map(withServedBy) : goalsModel.openAsks
+  // Each focus area lists the requests placed in it. Asks are not linked to requests (a request sits in an area, not
+  // under an ask), so they list none until the focus rail replaces My Goals (plan Phase 6).
+  const sorted = snapshot.humanRequests.some((raw) => raw.focusAreaId)
+  const priorities = sorted
+    ? goalsModel.priorities.map((goal) => ({ ...goal, servedBy: snapshot.humanRequests.filter((raw) => raw.focusAreaId && goalIdByFocusArea.get(raw.focusAreaId) === goal.id).map((raw) => raw.id) }))
+    : goalsModel.priorities
+  const openAsks = goalsModel.openAsks
   const { progressRun, ...rulesModel } = toRulesModel(snapshot, now)
   const agents = snapshot.agents.map(toAgent)
   if (requests.some((request) => request.agentId === UNRECORDED_AGENT.id)) agents.push(UNRECORDED_AGENT)

@@ -1,42 +1,10 @@
-// src/services/work-view/request-groups.mjs
-import { Database } from "bun:sqlite";
-import { createHash } from "node:crypto";
-import { mkdirSync as mkdirSync4, readFileSync as readFileSync6, readdirSync, renameSync as renameSync2, statSync as statSync5, writeFileSync as writeFileSync2 } from "node:fs";
-import { homedir as homedir6 } from "node:os";
-import { join as join7 } from "node:path";
+// src/services/work-view/request-groups-cli.mjs
+import { join as join9 } from "node:path";
 
-// src/services/work-view/work-product.mjs
-var FILE_KINDS = {
-  ".png": "image",
-  ".jpg": "image",
-  ".jpeg": "image",
-  ".webp": "image",
-  ".gif": "image",
-  ".svg": "image",
-  ".mp4": "video",
-  ".mov": "video",
-  ".webm": "video",
-  ".pdf": "document",
-  ".docx": "document",
-  ".pptx": "deck",
-  ".key": "deck",
-  ".xlsx": "spreadsheet",
-  ".csv": "spreadsheet",
-  ".html": "page"
-};
-var GIT_PREFIX = String.raw`(?:^|[;&|(\n])\s*(?:rtk\s+)?(?:\/usr\/bin\/)?git(?:\s+-[Cc]\s+(?:"[^"]*"|'[^']*'|\S+))*\s+`;
-var FILE_EXTENSION_PATTERN = Object.keys(FILE_KINDS).map((extension) => `files_modified LIKE '%${extension}"%'`).join(" OR ");
-
-// src/services/work-view/session-project.mjs
-import { existsSync as existsSync7, realpathSync as realpathSync4 } from "node:fs";
-import { homedir as homedir5, tmpdir as tmpdir2 } from "node:os";
-import { basename as basename5, dirname as dirname5, join as join6, resolve as resolve2 } from "node:path";
-
-// src/utils/project-name.ts
-import path2 from "path";
-import { existsSync as existsSync6, realpathSync as realpathSync3, statSync as statSync4 } from "fs";
-import { homedir as homedir4, tmpdir } from "os";
-import { execFileSync } from "child_process";
+// src/integrations/harness-worker.ts
+import { existsSync, readFileSync } from "node:fs";
+import { homedir as homedir2 } from "node:os";
+import { join as join2 } from "node:path";
 
 // src/shared/expand-home.ts
 import { homedir } from "os";
@@ -50,21 +18,38 @@ function expandHome(filePath, platform = process.platform, home = homedir()) {
   return filePath;
 }
 
+// src/integrations/harness-worker.ts
+function resolveHarnessWorkerUrl() {
+  const dataDir = expandHome(process.env.CLAUDE_MEM_DATA_DIR || join2(homedir2(), ".claude-mem"));
+  let settings = {};
+  try {
+    const document = JSON.parse(readFileSync(join2(dataDir, "settings.json"), "utf8").replace(/^\uFEFF/, ""));
+    const nested = document?.env;
+    settings = nested && typeof nested === "object" && !Array.isArray(nested) && Object.keys(nested).some((key) => key.startsWith("CLAUDE_MEM_")) ? nested : document ?? {};
+  } catch {
+  }
+  const setting = (key, fallback) => process.env[key] || (typeof settings[key] === "string" && settings[key] ? String(settings[key]) : fallback);
+  const configuredHost = setting("CLAUDE_MEM_WORKER_HOST", "127.0.0.1");
+  const host = configuredHost === "localhost" ? "127.0.0.1" : configuredHost;
+  const port = setting("CLAUDE_MEM_WORKER_PORT", String(37700 + (process.getuid?.() ?? 77) % 100));
+  return "http://" + (host.includes(":") && !host.startsWith("[") ? "[" + host + "]" : host) + ":" + port;
+}
+
 // src/shared/paths.ts
-import { join as join3, dirname as dirname2, basename as basename2 } from "path";
-import { homedir as homedir2 } from "os";
-import { existsSync as existsSync2, mkdirSync as mkdirSync2 } from "fs";
+import { join as join4, dirname as dirname2, basename as basename2 } from "path";
+import { homedir as homedir3 } from "os";
+import { existsSync as existsSync3, mkdirSync as mkdirSync2 } from "fs";
 import { fileURLToPath } from "url";
 
 // src/shared/atomic-json.ts
 import {
   closeSync,
-  existsSync,
+  existsSync as existsSync2,
   fsyncSync,
   lstatSync,
   mkdirSync,
   openSync,
-  readFileSync,
+  readFileSync as readFileSync2,
   readlinkSync,
   realpathSync,
   renameSync,
@@ -73,7 +58,7 @@ import {
   writeSync
 } from "fs";
 import { randomBytes } from "crypto";
-import { basename, dirname, join as join2, resolve } from "path";
+import { basename, dirname, join as join3, resolve } from "path";
 
 // src/shared/hook-io.ts
 var pinnedBypassWrite = null;
@@ -95,10 +80,10 @@ function parseJsonWithBom(raw) {
   return JSON.parse(stripUtf8Bom(raw));
 }
 function readJsonFileWithBom(filepath) {
-  return parseJsonWithBom(readFileSync(filepath, "utf-8"));
+  return parseJsonWithBom(readFileSync2(filepath, "utf-8"));
 }
 function ensureDirectoryExists(directoryPath) {
-  if (!existsSync(directoryPath)) {
+  if (!existsSync2(directoryPath)) {
     mkdirSync(directoryPath, { recursive: true });
   }
 }
@@ -109,7 +94,7 @@ function physicalPathOf(filePath) {
     if (err.code !== "ENOENT") throw err;
     const parent = dirname(filePath);
     if (parent === filePath) return filePath;
-    return join2(physicalPathOf(parent), basename(filePath));
+    return join3(physicalPathOf(parent), basename(filePath));
   }
 }
 function resolveSymlinkWriteTarget(filePath) {
@@ -166,7 +151,7 @@ function writeJsonFileAtomic(filepath, data, options = {}) {
   ensureDirectoryExists(dirname(resolved));
   const dir = dirname(resolved);
   const base = basename(resolved);
-  const tmpPath = join2(dir, `.${base}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`);
+  const tmpPath = join3(dir, `.${base}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`);
   const payload = Buffer.from(JSON.stringify(data, null, 2) + "\n", "utf-8");
   let mode = options.mode;
   if (mode === void 0) {
@@ -249,10 +234,10 @@ function resolveDataDir() {
   if (process.env.CLAUDE_MEM_DATA_DIR) {
     return expandHome(process.env.CLAUDE_MEM_DATA_DIR);
   }
-  const defaultDataDir = join3(homedir2(), ".claude-mem");
-  const settingsPath = join3(defaultDataDir, "settings.json");
+  const defaultDataDir = join4(homedir3(), ".claude-mem");
+  const settingsPath = join4(defaultDataDir, "settings.json");
   try {
-    if (existsSync2(settingsPath)) {
+    if (existsSync3(settingsPath)) {
       const raw = readJsonFileWithBom(settingsPath);
       if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return defaultDataDir;
       const settings = settingsTarget(raw);
@@ -265,49 +250,49 @@ function resolveDataDir() {
   return defaultDataDir;
 }
 var DATA_DIR = resolveDataDir();
-var DEFAULT_CLAUDE_CONFIG_DIR = join3(homedir2(), ".claude");
+var DEFAULT_CLAUDE_CONFIG_DIR = join4(homedir3(), ".claude");
 var CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || DEFAULT_CLAUDE_CONFIG_DIR;
-var MARKETPLACE_ROOT = join3(CLAUDE_CONFIG_DIR, "plugins", "marketplaces", "thedotmack");
-var LOGS_DIR = join3(DATA_DIR, "logs");
-var USER_SETTINGS_PATH = join3(DATA_DIR, "settings.json");
+var MARKETPLACE_ROOT = join4(CLAUDE_CONFIG_DIR, "plugins", "marketplaces", "thedotmack");
+var LOGS_DIR = join4(DATA_DIR, "logs");
+var USER_SETTINGS_PATH = join4(DATA_DIR, "settings.json");
 var DB_FILENAME = "claude-mem.db";
-var DB_PATH = join3(DATA_DIR, DB_FILENAME);
-var OBSERVER_SESSIONS_DIR = join3(DATA_DIR, "observer-sessions");
+var DB_PATH = join4(DATA_DIR, DB_FILENAME);
+var OBSERVER_SESSIONS_DIR = join4(DATA_DIR, "observer-sessions");
 var OBSERVER_SESSIONS_PROJECT = basename2(OBSERVER_SESSIONS_DIR);
 var paths = {
   dataDir: () => DATA_DIR,
-  workerPid: () => join3(DATA_DIR, "worker.pid"),
-  workerHeartbeat: () => join3(DATA_DIR, "worker-heartbeat.json"),
+  workerPid: () => join4(DATA_DIR, "worker.pid"),
+  workerHeartbeat: () => join4(DATA_DIR, "worker-heartbeat.json"),
   // Phase 1b: identifier renamed to `server*`; the on-disk file basenames
   // remain `.server-beta.*` so existing installations keep finding their
   // pid/port/runtime state. Plan §1d will migrate the basenames.
-  serverPid: () => join3(DATA_DIR, ".server-beta.pid"),
-  serverPort: () => join3(DATA_DIR, ".server-beta.port"),
-  serverRuntime: () => join3(DATA_DIR, ".server-beta.runtime.json"),
-  settings: () => join3(DATA_DIR, "settings.json"),
-  database: () => join3(DATA_DIR, DB_FILENAME),
+  serverPid: () => join4(DATA_DIR, ".server-beta.pid"),
+  serverPort: () => join4(DATA_DIR, ".server-beta.port"),
+  serverRuntime: () => join4(DATA_DIR, ".server-beta.runtime.json"),
+  settings: () => join4(DATA_DIR, "settings.json"),
+  database: () => join4(DATA_DIR, DB_FILENAME),
   // Automatic snapshot target (BackupManager). Nested under backups/auto so
   // the manager's retention sweep never touches the legacy one-off backups
   // that live directly in backups/.
-  backups: () => join3(DATA_DIR, "backups", "auto"),
+  backups: () => join4(DATA_DIR, "backups", "auto"),
   // A restore staged by `npx claude-mem restore`, applied by the next worker
   // boot before it opens the database, and the outcome of the last one.
-  pendingRestore: () => join3(DATA_DIR, "backups", "restore-pending.json"),
-  lastRestore: () => join3(DATA_DIR, "backups", "last-restore.json"),
-  chroma: () => join3(DATA_DIR, "chroma"),
-  combinedCerts: () => join3(DATA_DIR, "combined_certs.pem"),
-  transcriptsConfig: () => join3(DATA_DIR, "transcript-watch.json"),
-  transcriptsState: () => join3(DATA_DIR, "transcript-watch-state.json"),
-  corpora: () => join3(DATA_DIR, "corpora"),
-  supervisorRegistry: () => join3(DATA_DIR, "supervisor.json"),
-  envFile: () => join3(DATA_DIR, ".env"),
+  pendingRestore: () => join4(DATA_DIR, "backups", "restore-pending.json"),
+  lastRestore: () => join4(DATA_DIR, "backups", "last-restore.json"),
+  chroma: () => join4(DATA_DIR, "chroma"),
+  combinedCerts: () => join4(DATA_DIR, "combined_certs.pem"),
+  transcriptsConfig: () => join4(DATA_DIR, "transcript-watch.json"),
+  transcriptsState: () => join4(DATA_DIR, "transcript-watch-state.json"),
+  corpora: () => join4(DATA_DIR, "corpora"),
+  supervisorRegistry: () => join4(DATA_DIR, "supervisor.json"),
+  envFile: () => join4(DATA_DIR, ".env"),
   logsDir: () => LOGS_DIR
 };
 
 // src/shared/SettingsDefaultsManager.ts
-import { readFileSync as readFileSync4, existsSync as existsSync4, writeFileSync } from "fs";
-import { basename as basename3, dirname as dirname4, join as join5 } from "path";
-import { homedir as homedir3, hostname } from "os";
+import { readFileSync as readFileSync5, existsSync as existsSync5, writeFileSync } from "fs";
+import { basename as basename3, dirname as dirname4, join as join6 } from "path";
+import { homedir as homedir4, hostname } from "os";
 
 // src/shared/hook-constants.ts
 var SESSION_INIT_HOOK_CAP_MS = 15e3;
@@ -344,8 +329,8 @@ function getTimeout(baseTimeout) {
 }
 
 // src/utils/logger.ts
-import { closeSync as closeSync2, existsSync as existsSync3, fstatSync, mkdirSync as mkdirSync3, openSync as openSync2, statSync as statSync2, writeSync as writeSync2 } from "fs";
-import { dirname as dirname3, join as join4 } from "path";
+import { closeSync as closeSync2, existsSync as existsSync4, fstatSync, mkdirSync as mkdirSync3, openSync as openSync2, statSync as statSync2, writeSync as writeSync2 } from "fs";
+import { dirname as dirname3, join as join5 } from "path";
 var LogLevel = /* @__PURE__ */ ((LogLevel2) => {
   LogLevel2[LogLevel2["DEBUG"] = 0] = "DEBUG";
   LogLevel2[LogLevel2["INFO"] = 1] = "INFO";
@@ -374,10 +359,10 @@ var Logger = class {
     this.logFileDate = date;
     try {
       const logsDir = paths.logsDir();
-      if (!existsSync3(logsDir)) {
+      if (!existsSync4(logsDir)) {
         mkdirSync3(logsDir, { recursive: true });
       }
-      this.logFilePath = join4(logsDir, `claude-mem-${date}.log`);
+      this.logFilePath = join5(logsDir, `claude-mem-${date}.log`);
       this.logFileInitialized = true;
     } catch (error) {
       if (firstAttemptToday) {
@@ -405,7 +390,7 @@ var Logger = class {
    * once a day avoids the per-line open. The stat of the path detects an
    * external rename, delete or replace, and the next line re-opens the file.
    */
-  appendLine(path3, text) {
+  appendLine(path3, text2) {
     if (this.logFd !== null) {
       let current = false;
       try {
@@ -421,7 +406,7 @@ var Logger = class {
       this.logFd = openSync2(path3, "a");
     }
     try {
-      let bytes = Buffer.from(text, "utf8");
+      let bytes = Buffer.from(text2, "utf8");
       while (bytes.length > 0) {
         const written = writeSync2(this.logFd, bytes);
         if (written <= 0) throw new Error("log write accepted 0 bytes");
@@ -436,7 +421,7 @@ var Logger = class {
     if (this.level === null) {
       try {
         const settingsPath = paths.settings();
-        if (existsSync3(settingsPath)) {
+        if (existsSync4(settingsPath)) {
           const settings = settingsTarget(readJsonFileWithBom(settingsPath));
           const envLevel = (settings.CLAUDE_MEM_LOG_LEVEL || "INFO").toString().toUpperCase();
           this.level = LogLevel[envLevel] ?? 1 /* INFO */;
@@ -711,7 +696,7 @@ var RAISED_DEADLINE_DEFAULTS = [
   { key: "CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS", legacy: "30000", markerTag: "field-optimize-timeout-migrated-v1" }
 ];
 function raisedDefaultMarkerPath(settingsPath, raised) {
-  return join5(dirname4(settingsPath), `.${basename3(settingsPath)}.${raised.markerTag}`);
+  return join6(dirname4(settingsPath), `.${basename3(settingsPath)}.${raised.markerTag}`);
 }
 function markRaisedDefaultDone(settingsPath, raised) {
   try {
@@ -853,7 +838,7 @@ var SettingsDefaultsManager = class {
     CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY_OPUS: "0.93",
     CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY_SONNET: "0.92",
     CLAUDE_MEM_QUOTA_THRESHOLD_OVERAGE: "0.95",
-    CLAUDE_MEM_DATA_DIR: join5(homedir3(), ".claude-mem"),
+    CLAUDE_MEM_DATA_DIR: join6(homedir4(), ".claude-mem"),
     CLAUDE_MEM_LOG_LEVEL: "INFO",
     CLAUDE_MEM_PYTHON_VERSION: "3.13",
     CLAUDE_CODE_PATH: "",
@@ -890,7 +875,7 @@ var SettingsDefaultsManager = class {
     CLAUDE_MEM_FOLDER_USE_LOCAL_MD: "false",
     // When true, writes to CLAUDE.local.md instead of CLAUDE.md
     CLAUDE_MEM_TRANSCRIPTS_ENABLED: "true",
-    CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: join5(homedir3(), ".claude-mem", "transcript-watch.json"),
+    CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: join6(homedir4(), ".claude-mem", "transcript-watch.json"),
     CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION: "false",
     // Codex subagent rollouts through the transcript watch: each one's tool
     // calls are new observer spend (the gateway allowance, or the user's own
@@ -1167,7 +1152,7 @@ var SettingsDefaultsManager = class {
     result.CLAUDE_MEM_WORKER_HOST = this.normalizeWorkerHost(result.CLAUDE_MEM_WORKER_HOST);
     const dataDir = result.CLAUDE_MEM_DATA_DIR?.trim();
     if (dataDir && result.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH === this.DEFAULTS.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH) {
-      result.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH = join5(expandHome(dataDir), "transcript-watch.json");
+      result.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH = join6(expandHome(dataDir), "transcript-watch.json");
     }
     return result;
   }
@@ -1186,7 +1171,7 @@ var SettingsDefaultsManager = class {
   }
   static loadFromFile(settingsPath, applyEnvOverrides = true, options = {}) {
     try {
-      if (!existsSync4(settingsPath)) {
+      if (!existsSync5(settingsPath)) {
         const defaults = this.getAllDefaults();
         if (!options.readOnly) {
           try {
@@ -1199,7 +1184,7 @@ var SettingsDefaultsManager = class {
         }
         return this.finalizeSettings(defaults, applyEnvOverrides);
       }
-      const settingsData = readFileSync4(settingsPath, "utf-8");
+      const settingsData = readFileSync5(settingsPath, "utf-8");
       const settings = parseJsonWithBom(settingsData);
       let flatSettings = settingsTarget(settings);
       const hasNestedEnv = flatSettings !== settings;
@@ -1275,7 +1260,7 @@ var SettingsDefaultsManager = class {
         }
       }
       for (const raised of RAISED_DEADLINE_DEFAULTS) {
-        if (existsSync4(raisedDefaultMarkerPath(settingsPath, raised))) continue;
+        if (existsSync5(raisedDefaultMarkerPath(settingsPath, raised))) continue;
         if (flatSettings[raised.key] !== raised.legacy) {
           if (!options.readOnly) markRaisedDefaultDone(settingsPath, raised);
           continue;
@@ -1324,8 +1309,48 @@ var SettingsDefaultsManager = class {
   }
 };
 
+// src/services/work-view/request-groups.mjs
+import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
+import { mkdirSync as mkdirSync4, readFileSync as readFileSync7, readdirSync, renameSync as renameSync2, statSync as statSync5, writeFileSync as writeFileSync2 } from "node:fs";
+import { homedir as homedir7 } from "node:os";
+import { join as join8 } from "node:path";
+
+// src/services/work-view/work-product.mjs
+var FILE_KINDS = {
+  ".png": "image",
+  ".jpg": "image",
+  ".jpeg": "image",
+  ".webp": "image",
+  ".gif": "image",
+  ".svg": "image",
+  ".mp4": "video",
+  ".mov": "video",
+  ".webm": "video",
+  ".pdf": "document",
+  ".docx": "document",
+  ".pptx": "deck",
+  ".key": "deck",
+  ".xlsx": "spreadsheet",
+  ".csv": "spreadsheet",
+  ".html": "page"
+};
+var GIT_PREFIX = String.raw`(?:^|[;&|(\n])\s*(?:rtk\s+)?(?:\/usr\/bin\/)?git(?:\s+-[Cc]\s+(?:"[^"]*"|'[^']*'|\S+))*\s+`;
+var FILE_EXTENSION_PATTERN = Object.keys(FILE_KINDS).map((extension) => `files_modified LIKE '%${extension}"%'`).join(" OR ");
+
+// src/services/work-view/session-project.mjs
+import { existsSync as existsSync8, realpathSync as realpathSync4 } from "node:fs";
+import { homedir as homedir6, tmpdir as tmpdir2 } from "node:os";
+import { basename as basename5, dirname as dirname5, join as join7, resolve as resolve2 } from "node:path";
+
+// src/utils/project-name.ts
+import path2 from "path";
+import { existsSync as existsSync7, realpathSync as realpathSync3, statSync as statSync4 } from "fs";
+import { homedir as homedir5, tmpdir } from "os";
+import { execFileSync } from "child_process";
+
 // src/utils/worktree.ts
-import { existsSync as existsSync5, statSync as statSync3, readFileSync as readFileSync5 } from "fs";
+import { existsSync as existsSync6, statSync as statSync3, readFileSync as readFileSync6 } from "fs";
 import path from "path";
 var NOT_A_WORKTREE = {
   isWorktree: false,
@@ -1350,7 +1375,7 @@ function detectWorktree(cwd) {
   }
   let content;
   try {
-    content = readFileSync5(gitPath, "utf-8").trim();
+    content = readFileSync6(gitPath, "utf-8").trim();
   } catch (error) {
     logger.warn("GIT", "Failed to read .git file", { error: error instanceof Error ? error.message : String(error) });
     return NOT_A_WORKTREE;
@@ -1383,7 +1408,7 @@ function detectWorktree(cwd) {
     };
   }
   const bareWorktreeMatch = gitdirPath.match(/^(.+)[/\\]worktrees[/\\]([^/\\]+)$/);
-  if (bareWorktreeMatch && existsSync5(path.join(gitdirPath, "commondir"))) {
+  if (bareWorktreeMatch && existsSync6(path.join(gitdirPath, "commondir"))) {
     const parentRepoPath = bareWorktreeMatch[1];
     const parentProjectName = bareRepositoryProjectName(parentRepoPath);
     if (parentProjectName) {
@@ -1524,7 +1549,7 @@ function isWithin(child, parent) {
   return relative === "" || !relative.startsWith("..") && !path2.isAbsolute(relative);
 }
 function markerWalkStops() {
-  return [homedir4(), tmpdir(), CLAUDE_CONFIG_DIR].flatMap((dir) => {
+  return [homedir5(), tmpdir(), CLAUDE_CONFIG_DIR].flatMap((dir) => {
     const resolved = path2.resolve(dir);
     return [resolved, realpathOrSelf2(resolved)];
   });
@@ -1544,7 +1569,7 @@ function findMarkerProjectRoot(dir) {
     if (parent === current) {
       return null;
     }
-    if (PROJECT_ROOT_MARKERS.some((marker) => existsSync6(path2.join(current, marker)))) {
+    if (PROJECT_ROOT_MARKERS.some((marker) => existsSync7(path2.join(current, marker)))) {
       return current;
     }
     current = parent;
@@ -1746,7 +1771,7 @@ var realpathOrSelf3 = (path3) => {
   }
 };
 var TEMP_FOLDERS = [.../* @__PURE__ */ new Set([resolve2(tmpdir2()), realpathOrSelf3(resolve2(tmpdir2())), "/tmp", "/private/tmp"])];
-var HOME = homedir5();
+var HOME = homedir6();
 var TEMP_PROJECT_NAMES = new Set(TEMP_FOLDERS.map((folder) => basename5(folder)).filter((name) => name && name !== "tmp"));
 var CODEX_SCRATCH = /[/\\]Documents[/\\]Codex[/\\]\d{4}-\d{2}-\d{2}(?:[/\\]|$)/;
 function isAgentScratchFolder(folder) {
@@ -1765,7 +1790,7 @@ function repoRootOf(path3) {
       break;
     }
     visited.push(current);
-    if (existsSync7(join6(current, ".git"))) {
+    if (existsSync8(join7(current, ".git"))) {
       found = current;
       break;
     }
@@ -1777,7 +1802,7 @@ function repoRootOf(path3) {
   return found;
 }
 var PATH_START = /(?:^|[\s"'`=:(])((?:~[/\\]|\/|[A-Za-z]:[/\\])[^\n\r"'`;|&<>()]*)/g;
-var AGENT_HOMES = [".claude", ".codex", ".gemini", ".claude-mem", ".cursor"].map((name) => join6(HOME, name));
+var AGENT_HOMES = [".claude", ".codex", ".gemini", ".claude-mem", ".cursor"].map((name) => join7(HOME, name));
 var isAgentHome = (path3) => AGENT_HOMES.some((home) => path3 === home || path3.startsWith(`${home}/`) || path3.startsWith(`${home}\\`));
 var isAbsoluteOn = (path3, platform) => path3.startsWith("/") && !path3.startsWith("//") || platform === "win32" && /^[A-Za-z]:[/\\]/.test(path3);
 function pathsIn(toolInput, platform = process.platform) {
@@ -1797,21 +1822,21 @@ function pathsIn(toolInput, platform = process.platform) {
   };
   walk(parsed);
   const paths2 = [];
-  for (const text of strings) for (const match of text.matchAll(PATH_START)) {
+  for (const text2 of strings) for (const match of text2.matchAll(PATH_START)) {
     const raw = match[1].trim();
-    const path3 = raw.startsWith("~/") || platform === "win32" && raw.startsWith("~\\") ? join6(HOME, raw.slice(2)) : raw;
+    const path3 = raw.startsWith("~/") || platform === "win32" && raw.startsWith("~\\") ? join7(HOME, raw.slice(2)) : raw;
     if (path3.length > 1 && isAbsoluteOn(path3, platform) && !isAgentHome(path3)) paths2.push(path3);
   }
   return paths2;
 }
 var checkoutForPath = (path3) => {
   let current = path3;
-  while (current !== dirname5(current) && !existsSync7(current)) current = dirname5(current);
+  while (current !== dirname5(current) && !existsSync8(current)) current = dirname5(current);
   return repoRootOf(current);
 };
 function folderNeedsProject(folder, storedProject) {
   if (!folder) return TEMP_PROJECT_NAMES.has(storedProject);
-  if (existsSync7(folder)) return !repoRootOf(folder);
+  if (existsSync8(folder)) return !repoRootOf(folder);
   return isAgentScratchFolder(folder);
 }
 function projectFromToolPaths(toolInputs) {
@@ -1893,15 +1918,15 @@ function withDerivedProjects(database, sessions) {
 function requestText(value, max = 1200) {
   if (typeof value !== "string") return null;
   const requestSection = value.match(/^\s*#{1,2}\s+My request\s*:\s*(?:\r?\n)?([\s\S]*)$/im);
-  const text = (requestSection?.[1] ?? value).replace(/<(environment_context|instructions|system-reminder|turn_aborted|permissions|collaboration_mode|skills_instructions)\b[^>]*>[\s\S]*?<\/\1>/gi, " ").replace(/^\s*#\s*AGENTS\.md instructions[^\n]*(?:\n|$)/gim, " ").replace(/<\/?pasted_content\b[^>]*>/gi, "").trim();
-  if (/^\s*#{1,2}\s+Files mentioned by the user\s*:/i.test(text)) return null;
-  if (!text || /^\s*<(?:environment_context|instructions|system-reminder)\b/i.test(text)) return null;
-  return text.length > max ? `${text.slice(0, max - 1).trimEnd()}\u2026` : text;
+  const text2 = (requestSection?.[1] ?? value).replace(/<(environment_context|instructions|system-reminder|turn_aborted|permissions|collaboration_mode|skills_instructions)\b[^>]*>[\s\S]*?<\/\1>/gi, " ").replace(/^\s*#\s*AGENTS\.md instructions[^\n]*(?:\n|$)/gim, " ").replace(/<\/?pasted_content\b[^>]*>/gi, "").trim();
+  if (/^\s*#{1,2}\s+Files mentioned by the user\s*:/i.test(text2)) return null;
+  if (!text2 || /^\s*<(?:environment_context|instructions|system-reminder)\b/i.test(text2)) return null;
+  return text2.length > max ? `${text2.slice(0, max - 1).trimEnd()}\u2026` : text2;
 }
 function isHumanActionRequest(value) {
-  const text = requestText(value);
-  if (!text) return false;
-  const plain = text.replace(/[*_`#]/g, "").replace(/\s+/g, " ").trim();
+  const text2 = requestText(value);
+  if (!text2) return false;
+  const plain = text2.replace(/[*_`#]/g, "").replace(/\s+/g, " ").trim();
   if (/^(?:please\s+)?read\s+(?:the\s+)?[\w./ -]*(?:AGENTS|KICKOFF|CLAUDE)\.md(?:\s+and\s+(?:follow|obey|read|apply)(?:\s+it|\s+the\s+instructions)?\s*)?[.!]?$/i.test(plain)) return false;
   if (/^(?:hi|hello|hey|thanks|thank you|ok(?:ay)?|yes|no|sure|continue|go ahead|keep going|resume|done)[.!\s]*$/i.test(plain)) return false;
   if (/^(?:You are (?:Codex|an AI)|Available skills|Environment context)\b/i.test(plain)) return false;
@@ -1950,9 +1975,240 @@ function goalKindOf(fields) {
   throw new Error(`Owner-goals item ${JSON.stringify(fields?.task ?? null)} has an unknown goal_kind: ${JSON.stringify(value ?? null)}`);
 }
 
+// src/services/work-view/work-state-reduce.mjs
+var CLOSED = /* @__PURE__ */ new Set(["done", "dropped"]);
+var normalizedKey = (value) => String(value).replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+var iso = (epoch) => epoch == null ? null : new Date(epoch).toISOString();
+var isClosed = (status) => status != null && CLOSED.has(String(status).toLowerCase());
+var effectiveStatus = (status) => status == null || status === "" ? "unknown" : String(status).toLowerCase();
+var listId = (project, name) => JSON.stringify([normalizedKey(project), name]);
+var taskId = (parentId, name) => JSON.stringify([parentId, name]);
+function reduceWorkState(entries, { currentProject, currentProjectScope = [], eventLimit = Infinity, localDeviceId: localDeviceId2 = "" } = {}) {
+  const scope = new Set(currentProjectScope.map(normalizedKey));
+  const listsById = /* @__PURE__ */ new Map();
+  const events = [];
+  let revision = 0;
+  const device = (row) => row.origin_device_id ?? localDeviceId2;
+  for (const row of [...entries].sort((a, b) => {
+    const timeAndDevice = a.created_at_epoch - b.created_at_epoch || (device(a) < device(b) ? -1 : device(a) > device(b) ? 1 : 0);
+    if (timeAndDevice) return timeAndDevice;
+    const left = BigInt(a.origin_local_id ?? a.id), right = BigInt(b.origin_local_id ?? b.id);
+    return left < right ? -1 : left > right ? 1 : 0;
+  })) {
+    revision = Math.max(revision, row.id);
+    const fields = typeof row.fields === "string" ? JSON.parse(row.fields) : row.fields;
+    if (!fields || typeof fields !== "object" || Array.isArray(fields)) throw new Error("Invalid work-state entry");
+    const id = listId(row.scope_project ?? row.project, row.list_name);
+    let list = listsById.get(id);
+    if (!list) {
+      list = { id, project: row.scope_project ?? row.project, name: row.list_name, fields: {}, tasksByName: /* @__PURE__ */ new Map(), updatedAtEpoch: 0, stateUpdatedAtEpoch: null, latestEntryId: 0 };
+      listsById.set(id, list);
+    }
+    const taskName = fields.task == null || fields.task === "" ? null : String(fields.task);
+    let target = list;
+    if (taskName !== null) {
+      target = list.tasksByName.get(taskName);
+      if (!target) {
+        target = { id: taskId(id, taskName), name: taskName, fields: {}, updatedAtEpoch: 0, latestEntryId: 0 };
+        list.tasksByName.set(taskName, target);
+      }
+    } else {
+      list.stateUpdatedAtEpoch = row.created_at_epoch;
+    }
+    const changes = [];
+    for (const [key, value] of Object.entries(fields)) {
+      const hadPrevious = Object.hasOwn(target.fields, key);
+      const previous = target.fields[key];
+      if (key !== "task" && (value === null && hadPrevious || value !== null && (!hadPrevious || previous !== value))) {
+        changes.push({ field: key, ...hadPrevious ? { previous } : {}, value, hadPrevious });
+      }
+      if (value === null) delete target.fields[key];
+      else target.fields[key] = value;
+    }
+    target.updatedAtEpoch = row.created_at_epoch;
+    target.latestEntryId = row.id;
+    list.updatedAtEpoch = row.created_at_epoch;
+    list.latestEntryId = row.id;
+    events.push({
+      id: row.id,
+      project: list.project,
+      originProject: row.project,
+      listName: row.list_name,
+      listId: id,
+      task: taskName,
+      taskId: taskName === null ? null : target.id,
+      type: taskName === null ? "state" : "task",
+      fields,
+      changes,
+      status: taskName === null ? target.fields.status == null ? "open" : String(target.fields.status).toLowerCase() : effectiveStatus(target.fields.status),
+      at: iso(row.created_at_epoch),
+      atEpoch: row.created_at_epoch,
+      sourceOrder: [row.created_at_epoch, device(row), String(row.origin_local_id ?? row.id)],
+      inCurrentScope: scope.has(normalizedKey(row.project))
+    });
+  }
+  const lists = [...listsById.values()].sort((a, b) => b.latestEntryId - a.latestEntryId).map((list) => {
+    const tasks2 = [...list.tasksByName.values()].map((task) => ({
+      ...task,
+      status: effectiveStatus(task.fields.status),
+      isOpen: !isClosed(task.fields.status),
+      updatedAt: iso(task.updatedAtEpoch)
+    }));
+    const stateIsOpen = Object.keys(list.fields).some((key) => key !== "task") && !isClosed(list.fields.status);
+    const { tasksByName, ...record } = list;
+    return {
+      ...record,
+      status: isClosed(list.fields.status) ? String(list.fields.status).toLowerCase() : "open",
+      isOpen: stateIsOpen || tasks2.some((task) => task.isOpen),
+      inCurrentScope: scope.has(normalizedKey(list.project)),
+      updatedAt: iso(list.updatedAtEpoch),
+      stateUpdatedAt: iso(list.stateUpdatedAtEpoch),
+      tasks: tasks2
+    };
+  });
+  const projectsById = /* @__PURE__ */ new Map();
+  for (const list of lists) {
+    const key = normalizedKey(list.project);
+    const project = projectsById.get(key) ?? { id: list.project, name: list.project, lists: 0, openLists: 0, tasks: 0, doing: 0, inCurrentScope: list.inCurrentScope, lastUpdatedAt: list.updatedAt };
+    project.lists++;
+    project.openLists += Number(list.isOpen);
+    project.tasks += list.tasks.length;
+    project.doing += list.tasks.filter((task) => task.isOpen && task.status === "doing").length;
+    projectsById.set(key, project);
+  }
+  const projects = [...projectsById.values()];
+  const tasks = lists.flatMap((list) => list.tasks);
+  const summary = {
+    projects: projects.length,
+    lists: lists.length,
+    openLists: lists.filter((list) => list.isOpen).length,
+    tasks: tasks.length,
+    openTasks: tasks.filter((task) => task.isOpen).length,
+    todo: tasks.filter((task) => task.status === "todo").length,
+    doing: tasks.filter((task) => task.status === "doing").length,
+    done: tasks.filter((task) => task.status === "done").length,
+    dropped: tasks.filter((task) => task.status === "dropped").length,
+    unknown: tasks.filter((task) => task.status === "unknown").length
+  };
+  return {
+    schemaVersion: 1,
+    revision,
+    entryCount: entries.length,
+    currentProject,
+    currentProjectScope,
+    summary,
+    projects,
+    lists,
+    events: events.slice(-eventLimit).reverse(),
+    lastUpdatedAt: events.length ? events.at(-1).at : null
+  };
+}
+
+// src/services/work-view/my-focus.mjs
+var MY_FOCUS_LIST = "my-focus";
+var OTHER_FOCUS_AREA_ID = "other";
+var FOCUS_AREA_TASK_PREFIX = "Focus area: ";
+var PLACEMENT_TASK_PREFIX = "Placement: ";
+var FOCUS_AREA_STATUSES = ["suggested", "kept", "dismissed", "done"];
+var FOCUS_AREA_SOURCES = ["owner-goals", "clustering", "promotion", "seed", "owner"];
+var PROPOSAL_SOURCES = Object.freeze({ new: "clustering", promote: "promotion" });
+var PROPOSAL_KINDS = Object.freeze(Object.keys(PROPOSAL_SOURCES));
+var FOCUS_AREA_DECIDED_BY = ["owner", "system", "owner-restore"];
+var PLACEMENT_PLACED_BY = ["router", "owner"];
+var isMyFocusList = (name) => name === MY_FOCUS_LIST;
+var text = (value) => typeof value === "string" ? value.trim() : "";
+var rank = (value) => typeof value === "number" && Number.isFinite(value) ? value : null;
+function applyPatch(target, fields) {
+  for (const [key, value] of Object.entries(fields)) {
+    if (key === "task") continue;
+    if (value === null) delete target[key];
+    else target[key] = value;
+  }
+}
+function buildFocusAreas(state) {
+  if (typeof state.entryCount === "number" && state.events.length !== state.entryCount) {
+    throw new Error("My Focus needs every work-state row; the events were cut.");
+  }
+  const areas = /* @__PURE__ */ new Map(), placements = /* @__PURE__ */ new Map();
+  let otherPassHash2 = null;
+  for (const event of [...state.events].reverse()) {
+    if (!isMyFocusList(event.listName)) continue;
+    if (event.task === null) {
+      if (Object.hasOwn(event.fields, "other_pass_hash")) otherPassHash2 = text(event.fields.other_pass_hash) || null;
+      continue;
+    }
+    if (event.task.startsWith(FOCUS_AREA_TASK_PREFIX)) {
+      const focusAreaId = text(event.fields.focus_area_id) || event.task.slice(FOCUS_AREA_TASK_PREFIX.length);
+      if (focusAreaId === OTHER_FOCUS_AREA_ID) throw new Error(`A my-focus area row uses the reserved id "${OTHER_FOCUS_AREA_ID}".`);
+      const decidedBy = event.fields.decided_by;
+      if (!FOCUS_AREA_DECIDED_BY.includes(decidedBy)) throw new Error(`Focus area ${focusAreaId} has an unknown writer: ${decidedBy}`);
+      const area = areas.get(focusAreaId) ?? { fields: {}, ownerDecided: false, savedAt: null };
+      if (area.ownerDecided && decidedBy === "system") continue;
+      applyPatch(area.fields, event.fields);
+      if (decidedBy !== "system") area.ownerDecided = decidedBy === "owner";
+      area.savedAt = event.at;
+      areas.set(focusAreaId, area);
+    } else if (event.task.startsWith(PLACEMENT_TASK_PREFIX)) {
+      const anchor = text(event.fields.anchor_conversation_key) || event.task.slice(PLACEMENT_TASK_PREFIX.length);
+      const placedBy = event.fields.placed_by;
+      if (!PLACEMENT_PLACED_BY.includes(placedBy)) throw new Error(`A placement has an unknown writer: ${placedBy}`);
+      const placement = placements.get(anchor) ?? { owner: null, router: null };
+      placement[placedBy] ??= { fields: {}, device: null };
+      applyPatch(placement[placedBy].fields, event.fields);
+      placement[placedBy].device = event.sourceOrder?.[1] ?? null;
+      placements.set(anchor, placement);
+    }
+  }
+  const focusAreas = [...areas].map(([focusAreaId, { fields, savedAt }]) => {
+    if (!text(fields.name)) throw new Error(`Focus area ${focusAreaId} has no name.`);
+    if (!FOCUS_AREA_STATUSES.includes(fields.status)) throw new Error(`Focus area ${focusAreaId} has an unknown status: ${fields.status}`);
+    if (!FOCUS_AREA_SOURCES.includes(fields.source)) throw new Error(`Focus area ${focusAreaId} has an unknown source: ${fields.source}`);
+    return {
+      focusAreaId,
+      name: text(fields.name),
+      goal: text(fields.goal) || null,
+      about: text(fields.about) || null,
+      status: fields.status,
+      priorityRank: rank(fields.priority_rank),
+      ownerRank: rank(fields.owner_rank),
+      source: fields.source,
+      mergedInto: text(fields.merged_into) || null,
+      evidence: text(fields.evidence) || null,
+      decidedBy: fields.decided_by,
+      savedAt
+    };
+  }).sort((a, b) => (a.ownerRank ?? Infinity) - (b.ownerRank ?? Infinity) || (a.priorityRank ?? Infinity) - (b.priorityRank ?? Infinity) || a.name.localeCompare(b.name));
+  const byId = new Map(focusAreas.map((area) => [area.focusAreaId, area]));
+  const resolve3 = (focusAreaId) => {
+    if (focusAreaId === OTHER_FOCUS_AREA_ID) return OTHER_FOCUS_AREA_ID;
+    const seen = /* @__PURE__ */ new Set();
+    let area = byId.get(focusAreaId);
+    while (area?.mergedInto && byId.has(area.mergedInto) && !seen.has(area.mergedInto)) {
+      seen.add(area.focusAreaId);
+      area = byId.get(area.mergedInto);
+    }
+    return area && !area.mergedInto && area.status !== "dismissed" ? area.focusAreaId : null;
+  };
+  const focusAreaIdByAnchor = /* @__PURE__ */ new Map();
+  const placementsByAnchor = /* @__PURE__ */ new Map();
+  const side = (written) => written && { focusAreaId: text(written.fields.focus_area_id), basis: text(written.fields.basis) || null, device: written.device };
+  for (const [anchor, { owner, router }] of placements) {
+    const focusAreaId = owner && resolve3(text(owner.fields.focus_area_id)) || router && resolve3(text(router.fields.focus_area_id));
+    if (focusAreaId) focusAreaIdByAnchor.set(anchor, focusAreaId);
+    placementsByAnchor.set(anchor, { owner: side(owner), router: side(router) });
+  }
+  return { focusAreas, focusAreaIdByAnchor, placementsByAnchor, resolveFocusAreaId: resolve3, otherPassHash: otherPassHash2 };
+}
+function readFocus(database, { localDeviceId: localDeviceId2 } = {}) {
+  if (typeof localDeviceId2 !== "string") throw new TypeError(`readFocus needs the worker's sync device id ("" when cloud sync never started).`);
+  const rows = database.prepare("SELECT * FROM work_state_entries WHERE list_name = ?").all(MY_FOCUS_LIST);
+  return buildFocusAreas(reduceWorkState(rows, { localDeviceId: localDeviceId2 }));
+}
+var isPlaceableArea = (area) => (area.status === "kept" || area.status === "suggested") && !area.mergedInto;
+
 // src/services/work-view/request-groups.mjs
-var DATA_DIR2 = process.env.CLAUDE_MEM_DATA_DIR || join7(homedir6(), ".claude-mem");
-var LEDGER_DIR = join7(DATA_DIR2, "work-view");
+var DATA_DIR2 = process.env.CLAUDE_MEM_DATA_DIR || join8(homedir7(), ".claude-mem");
+var LEDGER_DIR = join8(DATA_DIR2, "work-view");
 var AGENT_WRITTEN_PROMPTS_FILE = "agent-written-prompts.json";
 var DAY_MS = 864e5;
 var GOALS_STALE_MS = DAY_MS;
@@ -1963,7 +2219,7 @@ var USAGE_LEVELS = ["in-use", "some-use", "no-evidence", "unknown"];
 var VALUE_LEVELS = ["high", "medium", "low", "unclear"];
 var LINK_KINDS = ["shared-work-list", "shared-request-id", "agent-judgment"];
 var MAX_READINGS = 20;
-var iso = (epoch) => Number.isFinite(epoch) && epoch > 0 ? new Date(epoch).toISOString() : null;
+var iso2 = (epoch) => Number.isFinite(epoch) && epoch > 0 ? new Date(epoch).toISOString() : null;
 var groupIdFor = (anchorConversationKey) => `g_${createHash("sha256").update(anchorConversationKey).digest("hex").slice(0, 12)}`;
 function placeholders(values) {
   return values.map(() => "?").join(",");
@@ -2004,12 +2260,12 @@ function readCandidates(database, { sinceEpoch = 0, conversationKeys = null, ful
     if (!original) continue;
     own.sort((a, b) => a.created_at_epoch - b.created_at_epoch || a.id - b.id);
     const lastPrompt = own.at(-1)?.created_at_epoch ?? 0;
-    const asks = own.filter((prompt) => isHumanActionRequest(prompt.prompt_text)).map((prompt) => ({ promptId: prompt.id, at: iso(prompt.created_at_epoch), text: requestText(prompt.prompt_text, fullAsks ? Infinity : 280) }));
+    const asks = own.filter((prompt) => isHumanActionRequest(prompt.prompt_text)).map((prompt) => ({ promptId: prompt.id, at: iso2(prompt.created_at_epoch), text: requestText(prompt.prompt_text, fullAsks ? Infinity : 280) }));
     candidates.set(key, {
       conversationKey: key,
       platform: session.platform_source,
       project: session.project,
-      startedAt: iso(original.atEpoch ?? session.started_at_epoch),
+      startedAt: iso2(original.atEpoch ?? session.started_at_epoch),
       startedAtEpoch: original.atEpoch ?? session.started_at_epoch,
       lastActivityEpoch: Math.max(lastPrompt, observationsBySession.get(session.id)?.last_epoch ?? 0, lastToolUseBySession.get(session.id) ?? 0, session.started_at_epoch ?? 0),
       firstAsk: requestText(original.text, 600),
@@ -2037,7 +2293,7 @@ function readCandidates(database, { sinceEpoch = 0, conversationKeys = null, ful
     if (["string", "number"].includes(typeof requestId) && String(requestId).trim() && !candidate.requestIds.includes(String(requestId).trim())) candidate.requestIds.push(String(requestId).trim());
     candidate.lastActivityEpoch = Math.max(candidate.lastActivityEpoch, write.created_at_epoch ?? 0);
   }
-  return [...candidates.values()].sort((a, b) => a.startedAtEpoch - b.startedAtEpoch).map(({ sessionDbId, lastActivityEpoch, ...candidate }) => ({ ...candidate, lastActivityAt: iso(lastActivityEpoch), lastActivityEpoch }));
+  return [...candidates.values()].sort((a, b) => a.startedAtEpoch - b.startedAtEpoch).map(({ sessionDbId, lastActivityEpoch, ...candidate }) => ({ ...candidate, lastActivityAt: iso2(lastActivityEpoch), lastActivityEpoch }));
 }
 function linkBackwards(candidates) {
   const parent = new Map(candidates.map((candidate) => [candidate.conversationKey, candidate.conversationKey]));
@@ -2090,7 +2346,7 @@ function readGoals(database) {
     }
   }
   const goals = [...items.values()].filter((item) => !["done", "dropped"].includes(String(item.status).toLowerCase())).map((item) => ({
-    // taskKey is the item's work-state task, the key alignment links name; goal is only ever a focus area's sentence.
+    // taskKey is the item's work-state task; goal is only ever a focus area's sentence.
     taskKey: item.task,
     ...goalKindOf(item),
     rank: Number(item.rank) || null,
@@ -2108,32 +2364,16 @@ function readGoals(database) {
   })).sort((a, b) => GOAL_KINDS.indexOf(a.kind) - GOAL_KINDS.indexOf(b.kind) || (a.rank ?? Infinity) - (b.rank ?? Infinity));
   return { summary: listState.human_summary ?? null, generatedAt: listState.generated_at ?? null, mapPath: listState.map_path ?? null, goals };
 }
-function validateAlignment(input, { groups, goals }) {
-  const goalNames = new Set(goals.map((goal) => goal.taskKey));
-  if (!Array.isArray(input?.links)) throw new TypeError("Alignment needs a links array.");
-  const links = {};
-  for (const [index, link] of input.links.entries()) {
-    if (!groups[link.groupId]) throw new TypeError(`links[${index}] has unknown group ${link.groupId}.`);
-    if (!goalNames.has(link.goal)) throw new TypeError(`links[${index}].goal must be a current goal's exact "taskKey" value.`);
-    (links[link.groupId] ??= []).push({ goal: link.goal, evidence: boundedText(link.evidence, 300, `links[${index}].evidence`) });
-  }
-  const unaligned = [...new Set(input.unaligned ?? [])];
-  for (const groupId of unaligned) {
-    if (!groups[groupId]) throw new TypeError(`unaligned has unknown group ${groupId}.`);
-    if (links[groupId]) throw new TypeError(`Group ${groupId} is both linked and unaligned.`);
-  }
-  return { links, unaligned };
-}
 function readJson(path3, fallback) {
   try {
-    return JSON.parse(readFileSync6(path3, "utf8"));
+    return JSON.parse(readFileSync7(path3, "utf8"));
   } catch (error) {
     if (error.code === "ENOENT") return fallback;
     throw error;
   }
 }
 function writeJsonAtomic(path3, value) {
-  mkdirSync4(join7(path3, ".."), { recursive: true });
+  mkdirSync4(join8(path3, ".."), { recursive: true });
   const temp = `${path3}.tmp`;
   writeFileSync2(temp, `${JSON.stringify(value, null, 2)}
 `, { mode: 384 });
@@ -2184,7 +2424,7 @@ function applyGroupDecisions(stored, decisions, now = Date.now(), { projectOf = 
       next.conversations[key] = id;
       if (next.ignored) delete next.ignored[key];
     }
-    next.groups[id] = { title: decision.title.trim(), anchor: decision.conversations[0], projectRoot: projectRootOfGroup, links, decidedAt: iso(now), anchorAsk: stored?.groups?.[id]?.anchor === decision.conversations[0] ? stored.groups[id].anchorAsk ?? null : null };
+    next.groups[id] = { title: decision.title.trim(), anchor: decision.conversations[0], projectRoot: projectRootOfGroup, links, decidedAt: iso2(now), anchorAsk: stored?.groups?.[id]?.anchor === decision.conversations[0] ? stored.groups[id].anchorAsk ?? null : null };
   }
   next.ignored ??= {};
   for (const [index, ignored] of (decisions.ignored ?? []).entries()) {
@@ -2194,7 +2434,7 @@ function applyGroupDecisions(stored, decisions, now = Date.now(), { projectOf = 
   }
   const used = new Set(Object.values(next.conversations));
   for (const id of Object.keys(next.groups)) if (!used.has(id)) delete next.groups[id];
-  next.updatedAt = iso(now);
+  next.updatedAt = iso2(now);
   return next;
 }
 var isIsoOrNull = (value) => value === null || typeof value === "string" && Number.isFinite(Date.parse(value));
@@ -2315,25 +2555,24 @@ function validateStory(story) {
   };
 }
 function readLedger(dir = LEDGER_DIR) {
-  const groups = readJson(join7(dir, "request-groups.json"), emptyGroups());
+  const groups = readJson(join8(dir, "request-groups.json"), emptyGroups());
   const progress = {};
   let names = [];
   try {
-    names = readdirSync(join7(dir, "progress")).filter((name) => /^g_[0-9a-f]{12}\.json$/.test(name));
+    names = readdirSync(join8(dir, "progress")).filter((name) => /^g_[0-9a-f]{12}\.json$/.test(name));
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
   }
   for (const name of names) {
-    const entry = readJson(join7(dir, "progress", name), null);
+    const entry = readJson(join8(dir, "progress", name), null);
     if (entry?.groupId && groups.groups[entry.groupId]) progress[entry.groupId] = { ...entry, title: groups.groups[entry.groupId].title };
   }
   return {
     groups,
     progress,
-    story: readJson(join7(dir, "story.json"), null),
-    alignment: readJson(join7(dir, "alignment.json"), null),
-    refresh: readJson(join7(dir, "refresh.json"), null),
-    agentWrittenPromptIds: new Set(readJson(join7(dir, AGENT_WRITTEN_PROMPTS_FILE), { promptIds: [] }).promptIds ?? [])
+    story: readJson(join8(dir, "story.json"), null),
+    refresh: readJson(join8(dir, "refresh.json"), null),
+    agentWrittenPromptIds: new Set(readJson(join8(dir, AGENT_WRITTEN_PROMPTS_FILE), { promptIds: [] }).promptIds ?? [])
   };
 }
 function groupDetails(groupId, ledger, candidatesByKey) {
@@ -2345,8 +2584,8 @@ function groupDetails(groupId, ledger, candidatesByKey) {
     title: group.title,
     links: group.links,
     anchorAsk: group.anchorAsk ?? null,
-    startedAt: iso(Math.min(...loaded.map((conversation) => conversation.startedAtEpoch ?? Infinity))),
-    lastActivityAt: iso(Math.max(0, ...loaded.map((conversation) => conversation.lastActivityEpoch ?? 0))),
+    startedAt: iso2(Math.min(...loaded.map((conversation) => conversation.startedAtEpoch ?? Infinity))),
+    lastActivityAt: iso2(Math.max(0, ...loaded.map((conversation) => conversation.lastActivityEpoch ?? 0))),
     lastActivityEpoch: Math.max(0, ...loaded.map((conversation) => conversation.lastActivityEpoch ?? 0)),
     projects: [...new Set(loaded.map((conversation) => conversation.project))],
     conversations: conversations.map(({ lastActivityEpoch, startedAtEpoch, original, ...conversation }) => conversation),
@@ -2360,37 +2599,162 @@ function pendingReviews(ledger, database, sinceEpoch) {
   const due = ids.map((id) => groupDetails(id, ledger, candidates)).filter((group) => !reviewIsCurrent(group.previousReview, group.conversations.map((conversation) => conversation.conversationKey), group.lastActivityEpoch)).sort((a, b) => b.lastActivityEpoch - a.lastActivityEpoch);
   return { due, ungrouped };
 }
-function goalsAddedSince(alignment, goalKeys) {
-  const seen = new Set(alignment?.goals ?? goalKeys);
-  return goalKeys.filter((goal) => !seen.has(goal));
+var FOCUS_ASK_CHARS = 400;
+var CONVERSATIONS_PER_QUERY = 400;
+var groupConversations = (ledger, groupId) => Object.entries(ledger.groups.conversations).filter(([, id]) => id === groupId).map(([key]) => key).sort();
+function openingAsks(database, ledger, conversationKeys) {
+  const asks = /* @__PURE__ */ new Map();
+  for (let index = 0; index < conversationKeys.length; index += CONVERSATIONS_PER_QUERY) {
+    for (const candidate of readCandidates(database, { conversationKeys: conversationKeys.slice(index, index + CONVERSATIONS_PER_QUERY), excludedPromptIds: ledger.agentWrittenPromptIds })) {
+      asks.set(candidate.conversationKey, candidate.firstAsk);
+    }
+  }
+  return asks;
 }
-function alignmentRecord(ledger, groupId) {
+function requestRecord(ledger, groupId, asks) {
   const group = ledger.groups.groups[groupId], review = ledger.progress[groupId];
-  return { groupId, title: group.title, firstAsk: group.anchorAsk?.text?.slice(0, 400) ?? null, state: review?.state ?? null, percent: review?.percent ?? null, summary: review?.summary ?? null };
+  const conversations = groupConversations(ledger, groupId);
+  return {
+    anchor: group.anchor,
+    groupId,
+    title: group.title,
+    firstAsk: requestText(group.anchorAsk?.text ?? null, FOCUS_ASK_CHARS),
+    state: review?.state ?? null,
+    summary: review?.summary ?? null,
+    // A tag only, never a grouping: the request's project root.
+    repo: group.projectRoot ?? null,
+    conversations: conversations.length,
+    conversationAsks: conversations.map((key) => requestText(asks.get(key) ?? null, FOCUS_ASK_CHARS)).filter(Boolean)
+  };
 }
-function alignmentBasis(ledger, groupId) {
-  const conversations = Object.entries(ledger.groups.conversations).filter(([, id]) => id === groupId).map(([key]) => key).sort();
-  return createHash("sha256").update(JSON.stringify({ ...alignmentRecord(ledger, groupId), conversations })).digest("hex").slice(0, 16);
+var records = (database, ledger, groupIds) => {
+  const asks = openingAsks(database, ledger, groupIds.flatMap((groupId) => groupConversations(ledger, groupId)));
+  return groupIds.map((groupId) => requestRecord(ledger, groupId, asks));
+};
+function focusBasis(ledger, groupId) {
+  const group = ledger.groups.groups[groupId];
+  return createHash("sha256").update(JSON.stringify({ title: group.title, firstAsk: group.anchorAsk?.text ?? null, conversations: groupConversations(ledger, groupId) })).digest("hex").slice(0, 16);
 }
-function alignmentDue(ledger, goals) {
-  if (!goals.goals.length) return [];
-  const current = goals.goals.map((goal) => goal.taskKey);
-  const links = ledger.alignment?.links ?? {}, unaligned = new Set(ledger.alignment?.unaligned ?? []), basis = ledger.alignment?.basis;
-  if (goalsAddedSince(ledger.alignment, current).length) return Object.keys(ledger.groups.groups);
-  const changed = (id) => basis != null && basis[id] !== alignmentBasis(ledger, id);
-  return Object.keys(ledger.groups.groups).filter((id) => changed(id) || (links[id] ? links[id].some((link) => !current.includes(link.goal)) : !unaligned.has(id)));
+function focusDue(ledger, focus, localDeviceId2) {
+  return Object.keys(ledger.groups.groups).filter((groupId) => {
+    const placement = focus.placementsByAnchor.get(ledger.groups.groups[groupId].anchor);
+    if (placement?.owner && focus.resolveFocusAreaId(placement.owner.focusAreaId)) return false;
+    const router = placement?.router;
+    if (!router || !focus.resolveFocusAreaId(router.focusAreaId)) return true;
+    return router.device === localDeviceId2 && router.basis != null && router.basis !== focusBasis(ledger, groupId);
+  });
 }
-function refreshNeeds({ dir = LEDGER_DIR, database, now = Date.now(), days = 14 }) {
+function routerOther(ledger, focus, queued) {
+  return Object.keys(ledger.groups.groups).filter((groupId) => {
+    if (queued.has(groupId)) return false;
+    const placement = focus.placementsByAnchor.get(ledger.groups.groups[groupId].anchor);
+    if (placement?.owner && focus.resolveFocusAreaId(placement.owner.focusAreaId)) return false;
+    return !!placement?.router && focus.resolveFocusAreaId(placement.router.focusAreaId) === OTHER_FOCUS_AREA_ID;
+  });
+}
+var otherPassHash = (anchors) => anchors.length ? createHash("sha256").update(JSON.stringify([...anchors].sort())).digest("hex").slice(0, 16) : null;
+var focusAreaRecord = (area) => ({ focusAreaId: area.focusAreaId, name: area.name, goal: area.goal, about: area.about, status: area.status });
+function focusInput(ledger, focus, localDeviceId2, database, { limit = FOCUS_BATCH } = {}) {
+  const due = focusDue(ledger, focus, localDeviceId2);
+  return {
+    areas: focus.focusAreas.filter(isPlaceableArea).map(focusAreaRecord),
+    dismissed: focus.focusAreas.filter((area) => area.status === "dismissed").map(focusAreaRecord),
+    requests: records(database, ledger, due.slice(0, limit)),
+    remaining: Math.max(0, due.length - limit)
+  };
+}
+function otherInput(ledger, focus, localDeviceId2, database) {
+  const other = routerOther(ledger, focus, new Set(focusDue(ledger, focus, localDeviceId2)));
+  const hash = otherPassHash(other.map((groupId) => ledger.groups.groups[groupId].anchor));
+  return {
+    areas: focus.focusAreas.filter(isPlaceableArea).map(focusAreaRecord),
+    dismissed: focus.focusAreas.filter((area) => area.status === "dismissed").map(focusAreaRecord),
+    other: records(database, ledger, other),
+    due: hash !== null && hash !== focus.otherPassHash
+  };
+}
+var AREA_NAME_MAX = 80;
+var AREA_SENTENCE_MAX = 300;
+function validateFocusAnswer(answer, input, ledger, { other = false } = {}) {
+  if (!Array.isArray(answer?.placements)) throw new TypeError("The answer needs a placements array.");
+  if (!Array.isArray(answer?.proposals)) throw new TypeError("The answer needs a proposals array (empty when there is nothing to propose).");
+  const listed = new Map((other ? input.other : input.requests).map((request) => [request.anchor, request]));
+  const areaIds = new Set(input.areas.map((area) => area.focusAreaId));
+  const dismissed = new Map(input.dismissed.map((area) => [area.focusAreaId, area]));
+  const placed = /* @__PURE__ */ new Map();
+  if (other && answer.placements.length) throw new TypeError('This question places nothing: answer "placements": [] and propose areas only.');
+  for (const [index, placement] of answer.placements.entries()) {
+    const label = `placements[${index}]`;
+    if (!listed.has(placement?.anchor)) throw new TypeError(`${label} names ${placement?.anchor}, which was not asked about.`);
+    if (placed.has(placement.anchor)) throw new TypeError(`${label} places ${placement.anchor} a second time; a request sits in one area.`);
+    if (placement.focusAreaId !== OTHER_FOCUS_AREA_ID && !areaIds.has(placement.focusAreaId)) {
+      if (dismissed.has(placement.focusAreaId)) throw new TypeError(`${label} names ${placement.focusAreaId} ("${dismissed.get(placement.focusAreaId).name}"), which the owner dismissed; it takes no requests. Use a listed area id or "other".`);
+      throw new TypeError(`${label} names ${JSON.stringify(placement.focusAreaId)}, which is not a listed focus area. Use an exact focusAreaId from "areas", or "other".`);
+    }
+    placed.set(placement.anchor, { focusAreaId: placement.focusAreaId, evidence: boundedText(placement.evidence, AREA_SENTENCE_MAX, `${label}.evidence`) });
+  }
+  if (!other) {
+    const missing = [...listed.keys()].filter((anchor) => !placed.has(anchor));
+    if (missing.length) throw new TypeError(`Place every request asked about; missing ${missing.join(", ")}.`);
+  }
+  const held = /* @__PURE__ */ new Set();
+  const proposals = answer.proposals.map((proposal, index) => {
+    const label = `proposals[${index}]`;
+    if (!PROPOSAL_KINDS.includes(proposal?.kind)) throw new TypeError(`${label}.kind must be one of ${PROPOSAL_KINDS.join(", ")}.`);
+    if (!other && proposal.kind === "new") throw new TypeError(`${label}: new areas are proposed from Other in their own question; here only "promote" a request that holds several separate asks.`);
+    if (proposal.sameAs != null && !areaIds.has(proposal.sameAs)) {
+      if (dismissed.has(proposal.sameAs)) throw new TypeError(`${label} is the area the owner dismissed (${proposal.sameAs}, "${dismissed.get(proposal.sameAs).name}"); never propose it again. Drop this proposal.`);
+      throw new TypeError(`${label}.sameAs names ${JSON.stringify(proposal.sameAs)}, which is not a listed area; use an exact focusAreaId from "areas" or null.`);
+    }
+    if (!Array.isArray(proposal.anchors) || !proposal.anchors.length) throw new TypeError(`${label}.anchors must list the requests it holds.`);
+    if (proposal.kind === "new" && proposal.anchors.length < 2) throw new TypeError(`${label} clusters one request; a "new" area holds two or more steps of something larger (use "promote" for one request that holds several asks).`);
+    if (proposal.kind === "promote" && proposal.anchors.length !== 1) throw new TypeError(`${label} promotes one request; list only that request's anchor.`);
+    const requests = proposal.anchors.map((anchor) => {
+      if (!listed.has(anchor)) throw new TypeError(`${label} holds ${anchor}, which ${other ? "is not a listed Other request" : "was not asked about"}.`);
+      if (held.has(anchor)) throw new TypeError(`${label} holds ${anchor}, which another proposal already holds.`);
+      held.add(anchor);
+      return { anchorConversationKey: anchor, basis: focusBasis(ledger, listed.get(anchor).groupId) };
+    });
+    return {
+      kind: proposal.kind,
+      name: boundedText(proposal.name, AREA_NAME_MAX, `${label}.name`),
+      goal: boundedText(proposal.goal, AREA_SENTENCE_MAX, `${label}.goal`),
+      about: boundedText(proposal.about, AREA_SENTENCE_MAX, `${label}.about`),
+      evidence: boundedText(proposal.evidence, AREA_SENTENCE_MAX, `${label}.evidence`),
+      sameAs: proposal.sameAs ?? null,
+      requests
+    };
+  });
+  return {
+    placements: [...placed].filter(([anchor]) => !held.has(anchor)).map(([anchor, { focusAreaId, evidence }]) => ({
+      anchorConversationKey: anchor,
+      focusAreaId,
+      basis: focusBasis(ledger, listed.get(anchor).groupId),
+      evidence
+    })),
+    proposals,
+    ...other ? { otherPassHash: otherPassHash([...listed.keys()].filter((anchor) => !held.has(anchor))) } : {}
+  };
+}
+var requireDeviceId = (localDeviceId2) => {
+  if (typeof localDeviceId2 !== "string") throw new TypeError(`My Focus needs the worker's sync device id ("" when cloud sync never started).`);
+  return localDeviceId2;
+};
+function refreshNeeds({ dir = LEDGER_DIR, database, now = Date.now(), days = 14, localDeviceId: localDeviceId2 }) {
+  requireDeviceId(localDeviceId2);
   const ledger = readLedger(dir);
   const { due, ungrouped } = pendingReviews(ledger, database, now - days * DAY_MS);
   const goals = readGoals(database);
   const generated = Date.parse(goals.generatedAt ?? "");
   const goalsStale = !Number.isFinite(generated) || now - generated > GOALS_STALE_MS;
-  const unaligned = alignmentDue(ledger, goals).length;
-  return { due: due.length, ungrouped, goalsStale, unaligned, needed: Boolean(due.length || ungrouped || goalsStale || unaligned) };
+  const focus = readFocus(database, { localDeviceId: localDeviceId2 });
+  const queued = focusDue(ledger, focus, localDeviceId2);
+  const otherHash = otherPassHash(routerOther(ledger, focus, new Set(queued)).map((groupId) => ledger.groups.groups[groupId].anchor));
+  const otherChanged = otherHash !== null && otherHash !== focus.otherPassHash;
+  return { due: due.length, ungrouped, goalsStale, unplaced: queued.length, otherChanged, needed: Boolean(due.length || ungrouped || goalsStale || queued.length || otherChanged) };
 }
 function readInput(source) {
-  return JSON.parse(readFileSync6(source === "-" ? 0 : source, "utf8"));
+  return JSON.parse(readFileSync7(source === "-" ? 0 : source, "utf8"));
 }
 function textOption(args, name) {
   const index = args.indexOf(`--${name}`);
@@ -2404,7 +2768,7 @@ function option(args, name, fallback) {
   return value;
 }
 function openDatabase() {
-  const path3 = process.env.CLAUDE_MEM_DB ?? join7(DATA_DIR2, "claude-mem.db");
+  const path3 = process.env.CLAUDE_MEM_DB ?? join8(DATA_DIR2, "claude-mem.db");
   statSync5(path3);
   const database = new Database(path3, { readonly: true, create: false });
   database.exec("PRAGMA busy_timeout = 1500");
@@ -2420,6 +2784,7 @@ function readConversationProjects(database, conversationKeys) {
   return new Map(withDerivedProjects(database, sessions).map((session) => [conversationKey(session), session.project]));
 }
 var GROUPING_BATCH = 20;
+var FOCUS_BATCH = GROUPING_BATCH;
 var CLOSED_STATES = /* @__PURE__ */ new Set(["shipped", "abandoned"]);
 function groupingInput(ledger, database, { sinceEpoch, limit = GROUPING_BATCH }) {
   const candidates = readCandidates(database, { sinceEpoch, excludedPromptIds: ledger.agentWrittenPromptIds });
@@ -2445,7 +2810,7 @@ function groupingInput(ledger, database, { sinceEpoch, limit = GROUPING_BATCH })
       recentAsks: asks.slice(0, 3).map((ask) => ask.text.slice(0, 200)),
       lastActivityEpoch: Math.max(0, ...members.map((member) => member.lastActivityEpoch ?? 0))
     };
-  }).sort((a, b) => b.lastActivityEpoch - a.lastActivityEpoch).map(({ lastActivityEpoch, ...request }) => ({ ...request, lastActivityAt: iso(lastActivityEpoch) }));
+  }).sort((a, b) => b.lastActivityEpoch - a.lastActivityEpoch).map(({ lastActivityEpoch, ...request }) => ({ ...request, lastActivityAt: iso2(lastActivityEpoch) }));
   const batchKeys = new Set(batch.map((candidate) => candidate.conversationKey));
   const proposedLinks = linkBackwards(inRoot).proposedGroups.filter((group) => group.links.length && group.conversations.some((key) => batchKeys.has(key))).flatMap((group) => group.links).map((link) => ({ ...link, groups: [...new Set(link.conversations.map((key) => ledger.groups.conversations[key]).filter(Boolean))] }));
   return {
@@ -2456,7 +2821,7 @@ function groupingInput(ledger, database, { sinceEpoch, limit = GROUPING_BATCH })
     remaining: fresh.length - batch.length
   };
 }
-function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), print = (value) => console.log(JSON.stringify(value, null, 2)) } = {}) {
+function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), print = (value) => console.log(JSON.stringify(value, null, 2)), localDeviceId: localDeviceId2, saveFocus: saveFocus2 = null } = {}) {
   const [command, ...args] = argv;
   const db = () => database ?? openDatabase();
   const since = () => now - option(args, "days", 14) * DAY_MS;
@@ -2485,7 +2850,7 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
     const missing = Object.values(next.groups).filter((group) => !group.anchorAsk).map((group) => group.anchor);
     const anchors = new Map(readCandidates(database2, { conversationKeys: missing, excludedPromptIds: readLedger(dir).agentWrittenPromptIds }).map((candidate) => [candidate.conversationKey, candidate.original]));
     for (const group of Object.values(next.groups)) if (!group.anchorAsk && anchors.has(group.anchor)) group.anchorAsk = anchors.get(group.anchor);
-    writeJsonAtomic(join7(dir, "request-groups.json"), next);
+    writeJsonAtomic(join8(dir, "request-groups.json"), next);
     return print({ groups: Object.keys(next.groups).length, conversations: Object.keys(next.conversations).length });
   }
   if (command === "pending" || command === "show") {
@@ -2506,10 +2871,10 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
         return {
           ...conversation,
           ...conversation.asks && amendSince ? { asks: conversation.asks.filter((ask) => Date.parse(ask.at) > since2) } : {},
-          observations: observations.all(platform, sessionId, since2).map((row) => ({ id: row.id, at: iso(row.created_at_epoch), type: row.type, title: row.title, subtitle: row.subtitle }))
+          observations: observations.all(platform, sessionId, since2).map((row) => ({ id: row.id, at: iso2(row.created_at_epoch), type: row.type, title: row.title, subtitle: row.subtitle }))
         };
       });
-      return print({ ...details, conversations, mode: amendSince ? "amend" : "full", amendSince, reviewBasis: { checkedThrough: iso(now), conversations: keys.sort() } });
+      return print({ ...details, conversations, mode: amendSince ? "amend" : "full", amendSince, reviewBasis: { checkedThrough: iso2(now), conversations: keys.sort() } });
     }
     const { due, ungrouped } = pendingReviews(ledger, db(), since());
     const limit = option(args, "limit", 48);
@@ -2518,11 +2883,11 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
   if (command === "record-progress") {
     const ledger = readLedger(dir);
     const reviewed = validateProgress(readInput(args[0] ?? "-"), ledger.groups.groups);
-    const checkedAt = iso(now);
+    const checkedAt = iso2(now);
     const previous = ledger.progress[reviewed.groupId];
     const unchanged = previous && JSON.stringify(storyFacts(previous)) === JSON.stringify(storyFacts(reviewed));
     const entry = { ...reviewed, checkedAt, changedAt: unchanged ? previous.changedAt ?? previous.checkedAt : checkedAt, readings: appendReading(ledger.progress[reviewed.groupId], { at: checkedAt, percent: reviewed.percent }) };
-    writeJsonAtomic(join7(dir, "progress", `${entry.groupId}.json`), entry);
+    writeJsonAtomic(join8(dir, "progress", `${entry.groupId}.json`), entry);
     return print({ recorded: entry.groupId, state: entry.state, percent: entry.percent, readings: entry.readings.length });
   }
   if (command === "story-input") {
@@ -2546,45 +2911,44 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
   if (command === "record-story") {
     const validated = validateStory(readInput(args[0] ?? "-"));
     const fromOwnerGoals = (readLedger(dir).story?.preferences ?? []).filter((preference) => preference?.source === OWNER_GOALS_LIST);
-    const story = { ...validated, preferences: [...validated.preferences, ...fromOwnerGoals], writtenAt: iso(now) };
-    writeJsonAtomic(join7(dir, "story.json"), story);
+    const story = { ...validated, preferences: [...validated.preferences, ...fromOwnerGoals], writtenAt: iso2(now) };
+    writeJsonAtomic(join8(dir, "story.json"), story);
     return print({ recorded: "story", preferences: story.preferences.length });
   }
-  if (command === "align-input") {
-    const ledger = readLedger(dir);
-    const goals = readGoals(db());
-    const due = alignmentDue(ledger, goals);
-    const groups = due.map((groupId) => alignmentRecord(ledger, groupId));
-    const previousLinks = Object.fromEntries(due.filter((id) => ledger.alignment?.links?.[id]).map((id) => [id, ledger.alignment.links[id]]));
-    return print({ goals, groups, previous: ledger.alignment ? { alignedAt: ledger.alignment.alignedAt ?? null, links: previousLinks } : null });
+  const focusQuestion = () => {
+    const ledger = readLedger(dir), focus = readFocus(db(), { localDeviceId: requireDeviceId(localDeviceId2) });
+    const other = args.includes("--other");
+    return { ledger, other, input: other ? otherInput(ledger, focus, localDeviceId2, db()) : focusInput(ledger, focus, localDeviceId2, db(), { limit: option(args, "limit", FOCUS_BATCH) }) };
+  };
+  if (command === "focus-input") return print(focusQuestion().input);
+  if (command === "record-focus") {
+    if (!saveFocus2) throw new Error("record-focus saves through the claude-mem worker, and none was given.");
+    const { ledger, other, input } = focusQuestion();
+    const file = args.filter((arg, index) => !arg.startsWith("--") && args[index - 1] !== "--limit").at(-1) ?? "-";
+    const body = validateFocusAnswer(readInput(file), input, ledger, { other });
+    return Promise.resolve(saveFocus2(body)).then((saved) => print({ placed: saved.placed, proposed: saved.focusAreaIds.length, focusAreaIds: saved.focusAreaIds }));
   }
-  if (command === "record-alignment") {
-    const ledger = readLedger(dir);
-    const goals = readGoals(db());
-    const decided = validateAlignment(readInput(args[0] ?? "-"), { groups: ledger.groups.groups, goals: goals.goals });
-    const decidedIds = /* @__PURE__ */ new Set([...Object.keys(decided.links), ...decided.unaligned]);
-    const missing = alignmentDue(ledger, goals).filter((id) => !decidedIds.has(id));
-    if (missing.length) throw new TypeError(`Every group align-input listed must appear in links or unaligned; missing ${missing.join(", ")}.`);
-    const kept = (id) => ledger.groups.groups[id] && !decidedIds.has(id);
-    const previous = ledger.alignment ?? {};
-    const alignment = {
-      links: { ...Object.fromEntries(Object.entries(previous.links ?? {}).filter(([id]) => kept(id))), ...decided.links },
-      unaligned: [...(previous.unaligned ?? []).filter(kept), ...decided.unaligned],
-      // Each decided group's basis, so a later change to the request makes it due again.
-      basis: { ...Object.fromEntries(Object.entries(previous.basis ?? {}).filter(([id]) => kept(id))), ...Object.fromEntries([...decidedIds].map((id) => [id, alignmentBasis(ledger, id)])) },
-      goals: goals.goals.map((goal) => goal.taskKey),
-      alignedAt: iso(now)
-    };
-    writeJsonAtomic(join7(dir, "alignment.json"), alignment);
-    return print({ aligned: Object.keys(decided.links).length, unaligned: decided.unaligned.length });
-  }
-  if (command === "refresh-needs") return print(refreshNeeds({ dir, database: db(), now, days: option(args, "days", 14) }));
-  throw new TypeError("Usage: request-groups.mjs candidates|apply|pending|show|record-progress|story-input|record-story|align-input|record-alignment|refresh-needs (see file header).");
+  if (command === "refresh-needs") return print(refreshNeeds({ dir, database: db(), now, days: option(args, "days", 14), localDeviceId: localDeviceId2 }));
+  throw new TypeError("Usage: request-groups.mjs candidates|apply|pending|show|record-progress|story-input|record-story|focus-input|record-focus|refresh-needs (see file header).");
 }
 
 // src/services/work-view/request-groups-cli.mjs
+async function saveFocus(body) {
+  const base = resolveHarnessWorkerUrl();
+  let response;
+  try {
+    response = await fetch(`${base}/api/work-view/focus/router`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  } catch (error) {
+    throw new Error(`claude-mem worker is not reachable at ${base} (${error.message}). Start it with: npx claude-mem start`);
+  }
+  const text2 = await response.text();
+  if (response.status === 400) throw new TypeError(`worker refused the answer: ${text2}`);
+  if (!response.ok) throw new Error(`worker refused /api/work-view/focus/router: ${response.status} ${text2}`);
+  return JSON.parse(text2);
+}
+var localDeviceId = SettingsDefaultsManager.loadFromFile(join9(resolveDataDir(), "settings.json"), true, { readOnly: true }).CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID ?? "";
 try {
-  runCli(process.argv.slice(2));
+  await runCli(process.argv.slice(2), { saveFocus, localDeviceId });
 } catch (error) {
   console.error(error.message);
   process.exitCode = 1;

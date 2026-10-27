@@ -9,6 +9,7 @@ import { buildRefreshTask } from '../../src/services/work-view/refresh-task.js';
 import { applyGroupDecisions, groupIdFor, groupingInput, linkBackwards, readCandidates, readLedger, runCli, validateGroupingAnswer } from '../../src/services/work-view/request-groups.mjs';
 import { buildHumanRequests } from '../../src/services/work-view/request-projection.mjs';
 import { NO_PROJECT, pathsIn, projectFromToolPaths, withDerivedProjects, projectRoot, upgradedGroupRoot } from '../../src/services/work-view/session-project.mjs';
+import { everyRequestInOther, focusWriter } from '../helpers/fake-focus-writer.js';
 
 const DAY = 86400000, NOW = 100 * DAY;
 const key = (session: string) => JSON.stringify(['conversation', 'claude', session]);
@@ -244,7 +245,7 @@ describe('only new opening prompts are checked', () => {
   it('the refresh sends the agent only new conversations, batch by batch, and keeps earlier decisions', async () => {
     const { db, dir } = ledgerFixture();
     try {
-      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 2, goalsStale: false, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: join(import.meta.dir, '..', '..', 'plugin'), openDatabase: () => ({ prepare: db.prepare.bind(db), close() {} }), now: () => NOW });
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 2, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: join(import.meta.dir, '..', '..', 'plugin'), openDatabase: () => ({ prepare: db.prepare.bind(db), close() {} }), now: () => NOW, saveFocus: focusWriter(db).save });
       const sent: string[][] = [];
       const ask = async (question: string) => {
         if (question.includes('Do only section 1')) {
@@ -262,6 +263,7 @@ describe('only new opening prompts are checked', () => {
           const shows = JSON.parse(readFileSync(/is in (\S+\.json)/.exec(question)![1], 'utf8'));
           return JSON.stringify({ reviews: shows.map((show: any) => ({ groupId: show.groupId, state: 'in-progress', percent: 10, summary: 'Started.', reviewBasis: show.reviewBasis })) });
         }
+        if (question.includes('Do only section 3')) return everyRequestInOther(question);
         return JSON.stringify({ narrative: 'Under way.', preferences: [] });
       };
       expect(await task.run(ask as any, 'codex')).toMatch(/^2 new conversations grouped/);

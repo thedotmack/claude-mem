@@ -22,4 +22,4 @@ export class WorkStateSource {
   close(): void;
 }
 export function reduceWorkState(entries: Array<Record<string, any>>, options?: Record<string, any>): any;
-export function readFocusAreas(database: { prepare(sql: string): { all(...params: unknown[]): any[] } }, options?: { localDeviceId?: string }): import('./my-focus.mjs').FocusArea[];
+export { readFocus, readFocusAreas } from './my-focus.mjs';

@@ -252,6 +252,89 @@ describe('My Focus routes', () => {
     });
   });
 
+  describe('focus step (record-focus)', () => {
+    const BASIS = '0123456789abcdef';
+    const route = (body: unknown, headers: Record<string, string> = {}) => fetch(`${origin}/api/work-view/focus/router`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin, ...headers }, body: JSON.stringify(body),
+    });
+    const focusRows = () => (source.prepare("SELECT fields FROM work_state_entries WHERE list_name = 'my-focus'").all() as { fields: string }[]).length;
+    const proposal = (change: Record<string, unknown> = {}) => ({ kind: 'promote', name: 'Work viewer', goal: 'Show agent work.', about: 'The viewer and its pages.', evidence: 'Several asks.', sameAs: null, requests: [{ anchorConversationKey: CONVERSATION, basis: BASIS }], ...change });
+
+    it('writes router placements and suggested areas as the system; the owner\'s move still wins', async () => {
+      let response = await route({ placements: [{ anchorConversationKey: CONVERSATION, focusAreaId: 'fa_viewer', basis: BASIS, evidence: 'A local work viewer.' }], proposals: [] });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ placed: 1, focusAreaIds: [] });
+      expect(request(await snapshot()).focusAreaId).toBe('fa_viewer');
+      await saveFocus({ action: 'move-request', requestId: REQUEST_ID, focusAreaId: 'fa_community' });
+      response = await route({ placements: [], proposals: [proposal()] });
+      const { focusAreaIds } = await response.json();
+      const view = await snapshot();
+      expect(areaById(view, focusAreaIds[0])).toMatchObject({ name: 'Work viewer', about: 'The viewer and its pages.', status: 'suggested', source: 'promotion', decidedBy: 'system' });
+      expect(request(view).focusAreaId).toBe('fa_community');
+    });
+
+    it('a proposal that is a live area places its requests there; one that is a dismissed area is refused', async () => {
+      const areas = (await snapshot()).focusAreas.length;
+      const response = await route({ placements: [], proposals: [proposal({ sameAs: 'fa_endless' })] });
+      expect(await response.json()).toEqual({ placed: 1, focusAreaIds: [] });
+      const view = await snapshot();
+      expect(view.focusAreas).toHaveLength(areas);
+      expect(request(view).focusAreaId).toBe('fa_endless');
+      await saveFocus({ action: 'dismiss', focusAreaId: 'fa_community' });
+      const before = focusRows();
+      const dismissed = await route({ placements: [], proposals: [proposal({ sameAs: 'fa_community' })] });
+      expect(dismissed.status).toBe(400);
+      expect(JSON.stringify(await dismissed.json())).toContain('the owner dismissed; it is never proposed again');
+      expect(focusRows()).toBe(before);
+    });
+
+    it('refuses an unknown or dismissed area, a malformed body and a foreign page, writing nothing', async () => {
+      await saveFocus({ action: 'dismiss', focusAreaId: 'fa_endless' });
+      const before = focusRows();
+      const unknown = await route({ placements: [{ anchorConversationKey: CONVERSATION, focusAreaId: 'fa_nope', basis: BASIS, evidence: 'x' }], proposals: [] });
+      expect(unknown.status).toBe(400);
+      expect(JSON.stringify(await unknown.json())).toContain('fa_nope, which is not a focus area');
+      const dismissed = await route({ placements: [{ anchorConversationKey: CONVERSATION, focusAreaId: 'fa_endless', basis: BASIS, evidence: 'x' }], proposals: [] });
+      expect(dismissed.status).toBe(400);
+      expect(JSON.stringify(await dismissed.json())).toContain('fa_endless, which no longer takes requests');
+      expect((await route({ placements: [{ anchorConversationKey: CONVERSATION, focusAreaId: 'fa_viewer', basis: BASIS, evidence: 'x', placedBy: 'owner' }], proposals: [] })).status).toBe(400);
+      expect((await route({ placements: [], proposals: [proposal({ status: 'kept' })] })).status).toBe(400);
+      expect((await route({ placements: [{ anchorConversationKey: CONVERSATION, focusAreaId: 'fa_viewer', basis: 'not-a-basis', evidence: 'x' }], proposals: [] })).status).toBe(400);
+      expect((await route({ placements: [], proposals: [] }, { Origin: 'https://evil.example' })).status).toBe(403);
+      expect(focusRows()).toBe(before);
+    });
+
+    it('a row too long to save is a refusal before any write (400); a failure while writing is not (503), and is never a TypeError', async () => {
+      // An anchor inside the route's bound whose placement row (task + anchor) does not fit one work-state row.
+      const long = 'x'.repeat(1500);
+      const before = focusRows();
+      const tooLong = await route({ placements: [{ anchorConversationKey: CONVERSATION, focusAreaId: 'other', basis: BASIS, evidence: 'Fits.' }, { anchorConversationKey: long, focusAreaId: 'other', basis: BASIS, evidence: 'Too long.' }], proposals: [] });
+      expect(tooLong.status).toBe(400);
+      expect(JSON.stringify(await tooLong.json())).toContain('too long to save');
+      expect(focusRows()).toBe(before);
+      expect(() => routes.recordRouterFocus({ placements: [{ anchorConversationKey: long, focusAreaId: 'other', basis: BASIS, evidence: 'x' }], proposals: [] })).toThrow(TypeError);
+      // The writer fails on the second row, as a TypeError: the error that reaches the refresh is a plain Error.
+      const append = (routes as any).appendWorkStateEntry;
+      let calls = 0;
+      (routes as any).appendWorkStateEntry = (entry: unknown) => { if (++calls === 2) throw new TypeError('database is locked'); append(entry); };
+      const body = { placements: [], proposals: [proposal()] };
+      let thrown: unknown;
+      try { routes.recordRouterFocus(body as any); } catch (error) { thrown = error; }
+      expect(thrown).toBeInstanceOf(Error);
+      expect(thrown).not.toBeInstanceOf(TypeError);
+      expect((thrown as Error).message).toBe('Saving the focus step stopped after 1 of 2 rows: database is locked');
+      calls = 0;
+      const response = await route(body);
+      expect(response.status).toBe(503);
+      expect(JSON.stringify(await response.json())).toContain('stopped after 1 of 2 rows');
+    });
+
+    it('the refresh writes in-process through the same check', () => {
+      expect(() => routes.recordRouterFocus({ placements: [{ anchorConversationKey: CONVERSATION, focusAreaId: 'fa_nope', basis: BASIS, evidence: 'x' }], proposals: [] })).toThrow(TypeError);
+      expect(routes.recordRouterFocus({ placements: [{ anchorConversationKey: CONVERSATION, focusAreaId: 'other', basis: BASIS, evidence: 'Fits no area.' }], proposals: [], otherPassHash: BASIS })).toEqual({ placed: 1, focusAreaIds: [] });
+    });
+  });
+
   it('is unavailable without a work-state writer', async () => {
     routes.close();
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
