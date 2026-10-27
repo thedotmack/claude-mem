@@ -235,7 +235,7 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
     }
   }
 
-  isolatedEnv.CLAUDE_CODE_ENTRYPOINT = 'sdk-ts';
+  isolatedEnv.CLAUDE_CODE_ENTRYPOINT = 'claude-mem';
 
   isolatedEnv.CLAUDE_MEM_INTERNAL = '1';
 
