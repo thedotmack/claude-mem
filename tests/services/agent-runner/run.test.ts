@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { spawn } from 'child_process';
-import { GEMINI_NO_MCP_SERVERS, runAgentTask, type AgentTask } from '../../../src/services/agent-runner/run.js';
+import { codexModelForLogin, GEMINI_NO_MCP_SERVERS, runAgentTask, type AgentTask } from '../../../src/services/agent-runner/run.js';
 import type { UsableAgent } from '../../../src/services/agent-runner/detect.js';
 
 class FakeStream extends EventEmitter {
@@ -185,6 +185,43 @@ describe('agent runner', () => {
       expect(schemaSeen).toEqual(schema);
       expect(existsSync(args[schemaIndex + 1])).toBe(false);
     } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  it('Codex: a model this login does not list is replaced by its listed namesake, else left to Codex (Oct 25: gpt-6-luna on a ChatGPT login)', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'agent-runner-codex-home-'));
+    try {
+      const low = [{ effort: 'low' }, { effort: 'medium' }];
+      const writeList = (models: unknown[]) => writeFileSync(join(home, 'models_cache.json'), JSON.stringify({ fetched_at: '2026-10-27T05:50:35Z', models }));
+      // The models Codex 0.154.0 listed for a ChatGPT login on Oct 27.
+      writeList([
+        { slug: 'gpt-6-astra', visibility: 'list', priority: 3, supported_reasoning_levels: low },
+        { slug: 'gpt-reserve', visibility: 'hide', priority: 4 },
+        { slug: 'gpt-5.6-sol', visibility: 'list', priority: 6, supported_reasoning_levels: low },
+        { slug: 'gpt-5.6-terra', visibility: 'list', priority: 7, supported_reasoning_levels: low },
+        { slug: 'gpt-5.6-luna', visibility: 'list', priority: 8, supported_reasoning_levels: low },
+      ]);
+      const light = LIGHT_MODELS.codex;
+      expect(codexModelForLogin(light, { CODEX_HOME: home })).toEqual({ model: 'gpt-5.6-luna', reasoningEffort: 'low' });
+      expect(codexModelForLogin(light, { HOME: join(home, 'nowhere') })).toEqual(light);
+      expect(codexModelForLogin(light, {})).toEqual(light);
+      expect(codexModelForLogin({}, { CODEX_HOME: home })).toEqual({});
+      expect(codexModelForLogin({ model: 'gpt-7-nova' }, { CODEX_HOME: home })).toEqual({});
+      expect(codexModelForLogin({ model: 'gpt-5.6-sol', reasoningEffort: 'high' }, { CODEX_HOME: home })).toEqual({ model: 'gpt-5.6-sol', reasoningEffort: 'high' });
+      writeList([{ slug: 'gpt-6-luna', visibility: 'list', priority: 1 }]);
+      expect(codexModelForLogin(light, { CODEX_HOME: home })).toEqual(light);
+
+      // The substitute reaches codex exec.
+      writeList([{ slug: 'gpt-5.6-luna', visibility: 'list', priority: 8, supported_reasoning_levels: low }]);
+      const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-codex-model-'));
+      try {
+        const calls: SpawnCall[] = [];
+        const spawnImpl = fakeSpawn(calls, call => { writeFileSync(call.args[call.args.indexOf('-o') + 1], '{"ok":true}'); call.child.emit('close', 0); });
+        const lightTask: AgentTask = { ...task(cwd), run: async ask => ask('prompt', LIGHT_MODELS) };
+        const result = await runTask(lightTask, { detect: async () => agents('codex'), query: neverQuery, spawn: spawnImpl, buildEnv: async () => ({ ...(await env()), CODEX_HOME: home }) });
+        expect(result.state).toBe('ok');
+        expect(calls[0].args.slice(-5)).toEqual(['-m', 'gpt-5.6-luna', '-c', 'model_reasoning_effort="low"', '-']);
+      } finally { rmSync(cwd, { recursive: true, force: true }); }
+    } finally { rmSync(home, { recursive: true, force: true }); }
   });
 
   it('Gemini: gemini -p in plan (read-only) mode, never --skip-trust, no extensions or MCP servers, JSON output, prompt on stdin', async () => {
