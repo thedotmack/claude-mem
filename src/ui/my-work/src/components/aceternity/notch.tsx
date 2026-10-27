@@ -26,6 +26,8 @@ export type NotchItem = {
   value?: string;
   /** Show the selected value next to the trigger label. Overrides `showSelectedValue`. */
   showValue?: boolean;
+  /** Local addition: marks the trigger as the current page (aria-current="page"). */
+  currentPage?: boolean;
   /** Fires with the selected option whenever it changes. */
   onChange?: (optionId: string, option: NotchOption) => void;
 };
@@ -247,9 +249,15 @@ export const Notch = ({
           <React.Fragment key={item.id}>
             <button
               type="button"
-              aria-haspopup="listbox"
-              aria-expanded={false}
-              onClick={() => setOpenItemId(item.id)}
+              // Local fix: a group with a single option is a direct action (one tap, no panel), so the notch can act as a nav bar.
+              aria-haspopup={item.options.length > 1 ? "listbox" : undefined}
+              aria-expanded={item.options.length > 1 ? false : undefined}
+              aria-current={item.currentPage ? "page" : undefined}
+              onClick={() =>
+                item.options.length === 1
+                  ? handleSelect(item, item.options[0])
+                  : setOpenItemId(item.id)
+              }
               className={cn(
                 "group flex items-center gap-2 rounded-full px-3 py-2 text-xs font-medium whitespace-nowrap text-neutral-300 transition-colors hover:bg-white/6 hover:text-white",
                 itemClassName,
