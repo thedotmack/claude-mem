@@ -15,7 +15,6 @@ export const StickyBanner = ({
   const { scrollY } = useScroll();
 
   useMotionValueEvent(scrollY, "change", (latest) => {
-    console.log(latest);
     if (hideOnScroll && latest > 40) {
       setOpen(false);
     } else {
@@ -51,10 +50,13 @@ export const StickyBanner = ({
         animate={{
           scale: 1,
         }}
-        className="absolute top-1/2 right-2 -translate-y-1/2 cursor-pointer"
+        // Local fix: labelled, thumb-sized, and in the text color (white was invisible on light surfaces).
+        type="button"
+        aria-label="Hide banner"
+        className="absolute top-1/2 right-1 flex size-11 -translate-y-1/2 cursor-pointer items-center justify-center text-muted-foreground hover:text-foreground md:size-8"
         onClick={() => setOpen(!open)}
       >
-        <CloseIcon className="h-5 w-5 text-white" />
+        <CloseIcon className="h-5 w-5" />
       </motion.button>
     </motion.div>
   );

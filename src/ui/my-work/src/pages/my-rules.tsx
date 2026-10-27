@@ -11,7 +11,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
-import { RefreshButton, RefreshStatus, StateBadge, useWorkspace } from '@/components/bits'
+import { ActivePill, RefreshButton, RefreshStatus, StateBadge, useWorkspace } from '@/components/bits'
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
@@ -396,12 +396,16 @@ function chainReaches(rules: OwnerRule[], rule: OwnerRule, targetId: string): bo
 
 function ScopeNav({ countsByScope, waiting }: { countsByScope: Map<string, ScopeCounts>; waiting: number }) {
   const { ruleScopes } = useWorkModel()
+  // The pill marks the place you last jumped to.
+  const [jumpedTo, setJumpedTo] = useState<string | null>(null)
+  const jump = (id: string) => { setJumpedTo(id); scrollToId(id) }
   return (
     <Req ids={['R14.5']}>
       <nav className="space-y-3 text-sm" aria-label="Scopes">
-        <button type="button" onClick={() => scrollToId('decide')} className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left hover:bg-muted">
-          <span className="font-medium">Needs your decision</span>
-          {waiting > 0 && <span className="rounded-full bg-attention px-1.5 text-[11px] font-medium text-attention-foreground">{waiting}</span>}
+        <button type="button" onClick={() => jump('decide')} className="relative flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left hover:bg-muted">
+          {jumpedTo === 'decide' && <ActivePill layoutId="scope-nav-active-pill" />}
+          <span className="relative font-medium">Needs your decision</span>
+          {waiting > 0 && <span className="relative rounded-full bg-attention px-1.5 text-[11px] font-medium text-attention-foreground">{waiting}</span>}
         </button>
         {RULE_TIERS.filter(({ tier }) => ruleScopes.some((scope) => scope.tier === tier)).map(({ tier, label }) => (
           <div key={tier} className="space-y-0.5">
@@ -409,9 +413,10 @@ function ScopeNav({ countsByScope, waiting }: { countsByScope: Map<string, Scope
             {ruleScopes.filter((scope) => scope.tier === tier).map((scope) => {
               const counts = countsByScope.get(scope.id)!
               return (
-                <button key={scope.id} type="button" onClick={() => scrollToId(`scope-${scope.id}`)} className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left hover:bg-muted">
-                  <span className="truncate">{scope.name}</span>
-                  <span className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+                <button key={scope.id} type="button" onClick={() => jump(`scope-${scope.id}`)} className="relative flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left hover:bg-muted">
+                  {jumpedTo === `scope-${scope.id}` && <ActivePill layoutId="scope-nav-active-pill" />}
+                  <span className="relative truncate">{scope.name}</span>
+                  <span className="relative flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
                     {counts.suggested > 0 && <span className="text-review-foreground">{counts.suggested} new ·</span>}
                     {counts.on} on
                   </span>
@@ -430,7 +435,8 @@ function ScopeChips({ countsByScope, waiting }: { countsByScope: Map<string, Sco
   const { ruleScopes } = useWorkModel()
   return (
     <Req ids={['R14.5', 'R11.1']} className="lg:hidden">
-      <nav aria-label="Scopes" className="sticky top-16 z-20 -mx-4 flex gap-2 overflow-x-auto border-b bg-background/95 px-4 py-2 backdrop-blur [scrollbar-width:none] lg:hidden">
+      {/* top-[76px]: just under the floating header pill (20px drop + 56px tall). */}
+      <nav aria-label="Scopes" className="sticky top-[76px] z-20 -mx-4 flex gap-2 overflow-x-auto border-b bg-background/95 px-4 py-2 backdrop-blur [scrollbar-width:none] lg:hidden">
         {waiting > 0 && <button type="button" onClick={() => scrollToId('decide')} className="h-11 shrink-0 rounded-full border border-attention-border px-4 text-sm font-medium text-attention-foreground">Decide · {waiting}</button>}
         {ruleScopes.map((scope) => (
           <button key={scope.id} type="button" onClick={() => scrollToId(`scope-${scope.id}`)} className="h-11 shrink-0 rounded-full border bg-card px-4 text-sm">

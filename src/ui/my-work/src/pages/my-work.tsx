@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { AgentIcon, ATTENTION_ORDER, GoalChip, NextMove, ProgressMeter, RefreshButton, RefreshStatus, STATE_LABEL, STATE_SURFACE, StateBadge, useWorkspace } from '@/components/bits'
+import { ActivePill, AgentIcon, ATTENTION_ORDER, GoalChip, NextMove, ProgressMeter, RefreshButton, RefreshStatus, STATE_LABEL, STATE_SURFACE, StateBadge, useWorkspace } from '@/components/bits'
 import { TextFlippingBoard } from '@/components/aceternity/text-flipping-board'
 import { PointerHighlight } from '@/components/aceternity/pointer-highlight'
 import { AgentMark } from '@/components/brand'
@@ -21,6 +21,12 @@ import { deviceById, markAgentFinished, SAMPLE_RUNS, startedTimestamp, useWorkMo
 import type { BuildStory, RequestReadError } from '@/live/work-data-source'
 
 type View = 'cards' | 'list' | 'agents' | 'team'
+const VIEWS: { value: View; label: string }[] = [
+  { value: 'cards', label: 'Cards' },
+  { value: 'list', label: 'List' },
+  { value: 'agents', label: 'By agent' },
+  { value: 'team', label: 'Team' },
+]
 type Filter = 'all' | 'needs-you' | 'shipped' | 'closed'
 type SortKey = 'attention' | 'started' | 'progress'
 const needsYou = (request: Request) => request.state === 'your-move' || request.state === 'needs-check'
@@ -54,6 +60,7 @@ function Summary({ requests, onOpen, onShowNeedsYou }: { requests: Request[]; on
   const working = requests.filter((request) => request.state === 'working').length
   const first = yourMove[0] ?? toCheck[0]
   const waiting = yourMove.length + toCheck.length
+  const reduceMotion = useReducedMotion()
   return (
     <Req ids={['R12.2', 'R12.3', 'R1.1']}>
       <div className="space-y-0.5">
@@ -62,7 +69,7 @@ function Summary({ requests, onOpen, onShowNeedsYou }: { requests: Request[]; on
             <>
               <span className="font-semibold">{waiting === 1 ? 'One thing needs you:' : `${waiting} need you. First:`}</span>
               <button type="button" onClick={() => onOpen(first)} className="inline-flex min-h-11 items-center gap-1 text-left font-semibold text-attention-foreground underline decoration-attention-border underline-offset-4 hover:decoration-current md:min-h-8">
-                <PointerHighlight rectangleClassName="rounded-sm border-attention-border" pointerClassName="text-attention-foreground">{first.next.text}</PointerHighlight><ArrowRightIcon className="size-4 shrink-0" />
+                {reduceMotion ? first.next.text : <PointerHighlight rectangleClassName="rounded-sm border-attention-border" pointerClassName="text-attention-foreground">{first.next.text}</PointerHighlight>}<ArrowRightIcon className="size-4 shrink-0" />
               </button>
             </>
           ) : <span className="font-semibold">Nothing needs you right now.</span>}
@@ -384,10 +391,12 @@ export function MyWork({ onOpen, onOpenGoal, onOpenRules }: { onOpen: (request: 
       <div className="flex flex-wrap items-center gap-2 md:gap-3">
         <Req ids={['R4.1', 'R4.2', 'R4.3', 'R9.2']}>
           <ToggleGroup type="single" variant="outline" size="sm" spacing={1} value={view} onValueChange={(next) => next && setView(next as View)} aria-label="View">
-            <ToggleGroupItem value="cards" className="h-11 px-3.5 md:h-8">Cards</ToggleGroupItem>
-            <ToggleGroupItem value="list" className="h-11 px-3.5 md:h-8">List</ToggleGroupItem>
-            <ToggleGroupItem value="agents" className="h-11 px-3.5 md:h-8">By agent</ToggleGroupItem>
-            {team && <ToggleGroupItem value="team" className="h-11 px-3.5 md:h-8">Team</ToggleGroupItem>}
+            {VIEWS.filter((entry) => entry.value !== 'team' || team).map(({ value, label }) => (
+              <ToggleGroupItem key={value} value={value} className="relative h-11 px-3.5 data-[state=on]:bg-transparent data-[state=on]:hover:bg-transparent md:h-8">
+                {view === value && <ActivePill layoutId="view-toggle-active-pill" />}
+                <span className="relative">{label}</span>
+              </ToggleGroupItem>
+            ))}
           </ToggleGroup>
         </Req>
         {/* Live mode shows the worker's automatic refresh, or the last review before its first run. No cost. */}

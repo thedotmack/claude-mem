@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
+import { motion } from 'motion/react'
 import { BotIcon, CornerLeftUpIcon, RefreshCwIcon, StarIcon, UserIcon } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -11,6 +12,15 @@ import { Req } from '@/spec/req'
 import { agentById, deviceById, isSampleHref, measuredEstimate, SAMPLE_DEVICES, useWorkModel, type Device, type LiveState, type Request, type Run, type SkillRun } from '@/data'
 import type { AutoRefresh } from '@/live/work-data-source'
 import { AgentMark } from './brand'
+
+/**
+ * The sliding highlight behind the active choice in a nav or toggle group (the `layoutId` pattern from aceternity/tabs).
+ * Render it inside the active item only; the item needs `relative` and its content `relative` to sit above it.
+ * Each group passes its own `layoutId` so pills never jump between groups.
+ */
+export function ActivePill({ layoutId, className }: { layoutId: string; className?: string }) {
+  return <motion.span layoutId={layoutId} transition={{ type: 'spring', bounce: 0.3, duration: 0.6 }} className={cn('absolute inset-0 rounded-[inherit] bg-accent', className)} />
+}
 
 export interface Workspace { mode: 'home' | 'web'; team: boolean; connected: boolean }
 export const WorkspaceContext = createContext<Workspace>({ mode: 'home', team: false, connected: false })

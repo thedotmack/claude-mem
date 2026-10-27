@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react'
 import { MotionConfig } from 'motion/react'
 import { GoalIcon, InboxIcon, ListChecksIcon, UsersIcon } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
@@ -8,7 +8,10 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { TooltipProvider } from '@/components/ui/tooltip'
-import { ClassicViewerLink, DeviceFreshness, GitHubStars, LiveIndicator, WorkspaceContext, type Workspace } from '@/components/bits'
+import { ActivePill, ClassicViewerLink, DeviceFreshness, GitHubStars, LiveIndicator, WorkspaceContext, type Workspace } from '@/components/bits'
+import { Navbar, NavBody } from '@/components/aceternity/resizable-navbar'
+import { Notch } from '@/components/aceternity/notch'
+import { StickyBanner } from '@/components/aceternity/sticky-banner'
 import { CmemMark } from '@/components/brand'
 import { RequestDetail } from '@/components/request-detail'
 import { cn } from '@/lib/utils'
@@ -47,9 +50,18 @@ function useDarkMode() {
 /** Small rounded icon tile behind each nav icon, after the fly.io sidebar: a hairline with a soft tile shadow. */
 function NavTile({ icon: Icon, active }: { icon: typeof InboxIcon; active: boolean }) {
   return (
-    <span className={cn('flex size-7 shrink-0 items-center justify-center rounded-lg border shadow-tile', active ? 'border-accent-border bg-card text-primary' : 'bg-card/60 text-muted-foreground')}>
+    <span className={cn('relative flex size-7 shrink-0 items-center justify-center rounded-lg border shadow-tile', active ? 'border-accent-border bg-card text-primary' : 'bg-card/60 text-muted-foreground')}>
       <Icon className="size-4" />
     </span>
+  )
+}
+
+/** The header bar: full width at the top of the page, a floating pill once the page scrolls (`Navbar` passes `visible`). */
+function HeaderBody({ visible, children }: { visible?: boolean; children: ReactNode }) {
+  return (
+    <NavBody visible={visible} className={cn('flex h-14 max-w-[1440px] gap-3 bg-card/95 px-4 py-0 md:px-6', visible ? 'border border-border/70' : 'rounded-none border-b border-border/70')}>
+      {children}
+    </NavBody>
   )
 }
 
@@ -150,9 +162,9 @@ function LoadedApp() {
       <WorkspaceContext.Provider value={workspace}>
         <TooltipProvider delayDuration={150}>
           <Req ids={['R10.3', 'R10.2']} className="min-h-svh">
-            <div className="min-h-svh pb-20 text-foreground md:pb-0">
+            <div className="min-h-svh pb-24 text-foreground md:pb-0">
               {/* Wireframe controls: not part of the product. */}
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border/70 bg-card/50 px-4 py-1.5 text-xs whitespace-nowrap md:px-6">
+              <StickyBanner hideOnScroll className="min-h-0 flex-wrap justify-start gap-x-3 gap-y-1 border-b border-border/70 bg-card/85 px-4 py-1.5 pr-12 text-xs whitespace-nowrap backdrop-blur-md md:px-6 md:pr-10">
                 {sample && <Badge variant="outline" className="font-normal">Wireframe · sample data</Badge>}
                 {sample && <Req ids={['R13.1']}>
                   <ToggleGroup type="single" size="sm" variant="outline" spacing={1} className="flex-nowrap" value={workspace.mode} onValueChange={(mode) => mode && setWorkspace({ ...workspace, mode: mode as Workspace['mode'], connected: mode === 'web' || workspace.connected })}>
@@ -170,38 +182,41 @@ function LoadedApp() {
                     <Label htmlFor="spec-overlay" className="text-xs">Spec IDs</Label>
                   </div>
                 </div>
-              </div>
+              </StickyBanner>
 
-              <header className="sticky top-0 z-30 border-b border-border/70 bg-card/85 backdrop-blur-md">
-                <div className="mx-auto flex h-14 max-w-[1440px] items-center gap-3 px-4 md:px-6">
-                  <Req ids={['R10.4']}>
-                    <span className="flex items-center gap-2">
-                      <CmemMark className="size-8 text-[#D86441]" />
-                      <span className="sr-only md:not-sr-only md:text-[0.95rem] md:font-semibold md:tracking-tight">claude-mem</span>
-                    </span>
-                  </Req>
-                  <h1 className="text-lg font-semibold tracking-tight md:hidden">{PAGES.find((entry) => entry.id === page)!.label}</h1>
-                  <div className="ml-auto flex items-center gap-0.5 md:gap-2">
-                    <TeamSwitch team={workspace.team} onChange={(team) => setWorkspace({ ...workspace, team })} />
-                    <DeviceFreshness />
-                    <LiveIndicator />
-                    <ClassicViewerLink />
-                    <GitHubStars />
-                  </div>
-                </div>
+              <header className="contents">
+                <Navbar className="top-0 z-30">
+                  <HeaderBody>
+                    <Req ids={['R10.4']}>
+                      <span className="flex items-center gap-2">
+                        <CmemMark className="size-8 text-[#D86441]" />
+                        <span className="sr-only md:not-sr-only md:text-[0.95rem] md:font-semibold md:tracking-tight">claude-mem</span>
+                      </span>
+                    </Req>
+                    <h1 className="text-lg font-semibold tracking-tight whitespace-nowrap md:hidden">{PAGES.find((entry) => entry.id === page)!.label}</h1>
+                    <div className="ml-auto flex items-center gap-0.5 md:gap-2">
+                      <TeamSwitch team={workspace.team} onChange={(team) => setWorkspace({ ...workspace, team })} />
+                      <DeviceFreshness />
+                      <LiveIndicator />
+                      <ClassicViewerLink />
+                      <GitHubStars />
+                    </div>
+                  </HeaderBody>
+                </Navbar>
               </header>
 
               <div className="mx-auto max-w-[1440px] gap-6 px-4 py-4 md:grid md:grid-cols-[52px_minmax(0,1fr)] md:px-6 md:py-6 lg:grid-cols-[168px_minmax(0,1fr)] lg:gap-8">
                 <Req ids={['R14.1', 'R3.1']} className="hidden md:block">
-                  <nav aria-label="Pages" className="sticky top-20 hidden space-y-5 md:block">
+                  <nav aria-label="Pages" className="sticky top-20 hidden space-y-5 self-start md:block">
                     {NAV_SECTIONS.map((section) => (
                       <div key={section} className="space-y-0.5">
                         <p className="section-label hidden px-2 pb-1 lg:block">{section}</p>
                         {PAGES.filter((entry) => entry.section === section).map(({ id, label, icon }) => (
-                          <button key={id} type="button" onClick={() => goToPage(id)} aria-current={page === id ? 'page' : undefined} title={label} className={cn('relative flex h-10 w-full items-center gap-2.5 rounded-[10px] px-1.5 text-left text-[0.9rem] transition-colors', page === id ? 'bg-accent font-medium text-accent-foreground' : 'text-foreground/85 hover:bg-card/70')}>
+                          <button key={id} type="button" onClick={() => goToPage(id)} aria-current={page === id ? 'page' : undefined} title={label} className={cn('relative flex h-10 w-full items-center gap-2.5 rounded-[10px] px-1.5 text-left text-[0.9rem] transition-colors', page === id ? 'font-medium text-accent-foreground' : 'text-foreground/85 hover:bg-card/70')}>
+                            {page === id && <ActivePill layoutId="side-nav-active-pill" />}
                             <NavTile icon={icon} active={page === id} />
-                            <span className="hidden lg:inline">{label}</span>
-                            {id === 'work' && yourMoveCount > 0 && <span className="absolute top-0.5 right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground lg:static lg:ml-auto lg:h-5 lg:min-w-5 lg:text-[11px]" aria-label={`${yourMoveCount} need you`}>{yourMoveCount}</span>}
+                            <span className="relative hidden lg:inline">{label}</span>
+                            {id === 'work' && yourMoveCount > 0 && <span className="absolute top-0.5 right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground lg:relative lg:top-auto lg:right-auto lg:ml-auto lg:h-5 lg:min-w-5 lg:text-[11px]" aria-label={`${yourMoveCount} need you`}>{yourMoveCount}</span>}
                           </button>
                         ))}
                       </div>
@@ -217,13 +232,30 @@ function LoadedApp() {
               </div>
 
               <Req ids={['R11.1', 'R14.1']} className="md:hidden">
-                <nav aria-label="Pages" className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-3 border-t border-border/70 bg-card/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-md md:hidden">
-                  {PAGES.map(({ id, label, icon }) => (
-                    <button key={id} type="button" onClick={() => goToPage(id)} aria-current={page === id ? 'page' : undefined} className={cn('relative flex h-[68px] flex-col items-center justify-center gap-1 text-[11px]', page === id ? 'font-semibold text-accent-foreground' : 'text-muted-foreground')}>
-                      <NavTile icon={icon} active={page === id} />{label}
-                      {id === 'work' && yourMoveCount > 0 && <span className="absolute top-2 left-[calc(50%+6px)] flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">{yourMoveCount}</span>}
-                    </button>
-                  ))}
+                <nav aria-label="Pages" className="relative z-30 md:hidden">
+                  <Notch
+                    reveal={false}
+                    showSelectedValue={false}
+                    showDividers={false}
+                    offset={12}
+                    className="rounded-2xl border-border/70 bg-card/95 shadow-panel ring-border/60"
+                    itemClassName="relative h-[60px] min-w-24 flex-col justify-center gap-1 rounded-xl px-3 text-[11px] text-muted-foreground hover:bg-accent/40 hover:text-foreground"
+                    items={PAGES.map(({ id, label, icon }) => ({
+                      id,
+                      currentPage: page === id,
+                      options: [{ id, label }],
+                      onChange: () => goToPage(id),
+                      label: (
+                        <>
+                          {page === id && <ActivePill layoutId="bottom-nav-active-pill" className="rounded-xl" />}
+                          <span className={cn('relative flex flex-col items-center gap-1', page === id ? 'font-semibold text-accent-foreground' : 'text-muted-foreground')}>
+                            <NavTile icon={icon} active={page === id} />{label}
+                          </span>
+                          {id === 'work' && yourMoveCount > 0 && <span className="absolute top-1.5 left-[calc(50%+6px)] flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">{yourMoveCount}</span>}
+                        </>
+                      ),
+                    }))}
+                  />
                 </nav>
               </Req>
 
