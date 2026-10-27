@@ -259,6 +259,38 @@ describe('alignment prompt', () => {
   });
 });
 
+describe('story repair', () => {
+  it('returns the rejected story to the fresh call so it can preserve evidence while shortening it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-story-repair-'));
+    const database = fixtureDatabase();
+    try {
+      const decisions = join(dir, 'decisions.json');
+      writeFileSync(decisions, JSON.stringify({ groups: [{ title: 'Release cards', conversations: [key('a')] }] }));
+      runCli(['apply', decisions], { dir, database, now: NOW, print: () => {} });
+      const task = buildRefreshTask({ needs: { due: 1, ungrouped: 0, goalsStale: false, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW });
+      const preferences = [{ preference: 'Show verified results.', kind: 'directive', supportCount: 2, quotes: [] }];
+      const rejected = JSON.stringify({ narrative: 'Keep the verified release evidence. ' + 'x'.repeat(12000), preferences });
+      let storyAttempts = 0;
+      const ask = async (prompt: string) => {
+        if (prompt.includes('Do only section 2')) {
+          const [show] = JSON.parse(readFileSync(/is in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+          return JSON.stringify({ reviews: [{ groupId: show.groupId, state: 'in-progress', percent: 40, summary: 'Release cards are being built.', reviewBasis: show.reviewBasis }] });
+        }
+        expect(prompt).toContain('Do only section 4');
+        if (storyAttempts++ === 0) return rejected;
+        expect(prompt).toContain('Your previous answer was refused:');
+        expect(prompt).toContain('12000');
+        expect(prompt).toContain(rejected);
+        return JSON.stringify({ narrative: 'Verified release evidence retained.', preferences });
+      };
+      expect(await task.run(ask, 'claude-code')).toBe('1 requests reviewed, story written.');
+      expect(storyAttempts).toBe(2);
+      expect(readLedger(dir).story.narrative).toBe('Verified release evidence retained.');
+      expect(readLedger(dir).story.preferences).toEqual(preferences);
+    } finally { database.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
 describe('review repair', () => {
   it.each(['narrative', 'summary'])('returns the rejected review so an oversized %s can be corrected without repeating accepted groups', async (field) => {
     const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-review-repair-'));
