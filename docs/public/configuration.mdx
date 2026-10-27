@@ -147,6 +147,7 @@ For `CLAUDE_MEM_PROVIDER=openai-compatible`: any endpoint that speaks `/chat/com
 | `CLAUDE_MEM_OPENAI_COMPAT_PRESET` | — | Named endpoint preset ([list](usage/openai-compatible-provider)). Empty = `custom`: set the base URL yourself |
 | `CLAUDE_MEM_OPENAI_COMPAT_BASE_URL` | — | OpenAI-compatible base URL. Overrides the preset's |
 | `CLAUDE_MEM_OPENAI_COMPAT_MODEL` | — | Model id, sent as-is. Empty = the preset's default model |
+| `CLAUDE_MEM_OPENAI_COMPAT_OBSERVATION_BATCH_SIZE` | `1` | Queued observations to combine per request (1–32). Default 1 keeps one event per request. Only consecutive events with the same prompt number, agent and working directory are combined, within the model-window character budget. Set in `settings.json` or an environment variable. See [batching trade-offs](usage/openai-compatible-provider#observation-batching). |
 | `CLAUDE_MEM_OPENAI_COMPAT_API_KEY` | — | The key this endpoint issued. Settings file or environment, or `OPENAI_COMPAT_API_KEY` in `~/.claude-mem/.env`; the viewer cannot set it. A local server needs none |
 | `CLAUDE_MEM_OPENAI_COMPAT_API_KEYS` | — | Optional: more keys to rotate through ([Multi-Key Rotation](usage/multi-key-rotation)). Settings file or environment, or `OPENAI_COMPAT_API_KEYS` in `~/.claude-mem/.env` |
 
