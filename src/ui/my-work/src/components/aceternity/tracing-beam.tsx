@@ -10,13 +10,17 @@ import { cn } from "@/lib/utils";
 export const TracingBeam = ({
   children,
   className,
+  scrollContainer,
 }: {
   children: React.ReactNode;
   className?: string;
+  /** Local addition: the element that scrolls, when it isn't the window (a sheet or drawer). */
+  scrollContainer?: React.RefObject<HTMLElement | null>;
 }) => {
   const ref = useRef<HTMLDivElement>(null);
   const { scrollYProgress } = useScroll({
     target: ref,
+    container: scrollContainer,
     offset: ["start start", "end start"],
   });
 
@@ -49,7 +53,8 @@ export const TracingBeam = ({
       ref={ref}
       className={cn("relative mx-auto h-full w-full max-w-4xl", className)}
     >
-      <div className="absolute top-3 -left-4 md:-left-20">
+      {/* Local fix: md:-left-20 put the beam outside a narrow container (a sheet); the caller pads the content instead. */}
+      <div className="absolute top-3 -left-4">
         <motion.div
           transition={{
             duration: 0.2,

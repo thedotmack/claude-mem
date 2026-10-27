@@ -5,6 +5,7 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Progress } from '@/components/ui/progress'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Timeline } from '@/components/aceternity/timeline'
 import { AgentIcon, NextMove, ProgressMeter, RefreshButton, RefreshStatus, StateBadge, useWorkspace } from '@/components/bits'
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { PRODUCT_ICON } from '@/lib/product-icons'
@@ -428,10 +429,47 @@ function NowView({ onOpen, focus }: { onOpen: (request: Request) => void; focus:
   )
 }
 
-/** Month by month: a history of what you asked for, one row per saved run (§4). Archived is not the same as done. */
+/**
+ * Month by month: a history of what you asked for, one timeline entry per saved run (§4), newest first.
+ * The beam fills as you scroll down the months. Archived is not the same as done.
+ */
 function MonthByMonth({ onOpenCurrent }: { onOpenCurrent: () => void }) {
   const { priorities, currentPeriod, pastPeriods } = useWorkModel()
   if (!currentPeriod) throw new Error('MonthByMonth needs a goals run')
+  const current = {
+    title: currentPeriod.label,
+    content: (
+      <button type="button" onClick={onOpenCurrent} className="grid w-full grid-cols-[minmax(0,1fr)_1rem] items-center gap-3 rounded-xl border bg-card p-4 text-left shadow-panel hover:bg-surface-cool">
+        <span className="flex min-w-0 flex-col gap-1">
+          <span className="text-xs font-medium text-muted-foreground">Current · {currentPeriod.promptCount} prompts · open this month</span>
+          <span className="text-sm font-medium">{priorities[0]?.title ?? 'No priorities recorded'}</span>
+        </span>
+        <ChevronRightIcon className="size-4 text-muted-foreground" />
+      </button>
+    ),
+  }
+  const past = pastPeriods.map((period) => ({
+    title: period.label,
+    content: (
+      <div className="space-y-4 rounded-xl border bg-card p-4 shadow-panel">
+        <div className="space-y-1">
+          <p className="text-xs text-muted-foreground">Archived · {period.promptCount} prompts · {period.priorities.length} priorities</p>
+          <p className="text-sm">{period.headline}</p>
+        </div>
+        <ol className="space-y-3">
+          {period.priorities.map((priority, index) => (
+            <li key={priority.title} className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
+              <span className="flex size-6 items-center justify-center rounded-md bg-muted text-xs text-muted-foreground tabular-nums">{index + 1}</span>
+              <p className="text-sm font-medium">{priority.title}</p>
+              <p className="col-start-2 text-xs text-muted-foreground">{priority.product} · {timesLabel(priority.timesAsked)}</p>
+              {priority.quote && <div className="col-start-2"><Quotes quotes={[priority.quote]} /></div>}
+            </li>
+          ))}
+        </ol>
+        <p className="text-xs text-muted-foreground">No request reviews cover this month, so it shows what you asked for, not what moved.</p>
+      </div>
+    ),
+  }))
   return (
     <Req ids={['R4.5', 'R12.1']}>
       <div className="space-y-3">
@@ -439,46 +477,7 @@ function MonthByMonth({ onOpenCurrent }: { onOpenCurrent: () => void }) {
           <h2 className="text-base font-semibold">History</h2>
           <p className="text-sm text-muted-foreground">What you asked for most, month by month, as each owner-goals run saved it. A month closing archives its asks; it doesn’t mean they were done.</p>
         </div>
-        <div className="overflow-hidden rounded-xl border bg-card shadow-panel">
-          <div className="hidden grid-cols-[12rem_minmax(0,1fr)_7rem_1rem] gap-3 border-b px-4 py-2 text-xs text-muted-foreground sm:grid">
-            <span>Month</span><span>Top priority that month</span><span className="text-right">Your prompts</span><span />
-          </div>
-          <button type="button" onClick={onOpenCurrent} className="grid min-h-16 w-full grid-cols-[minmax(0,1fr)_1rem] items-center gap-3 border-b px-4 py-3 text-left hover:bg-surface-cool sm:grid-cols-[12rem_minmax(0,1fr)_7rem_1rem]">
-            <span className="contents max-sm:flex max-sm:min-w-0 max-sm:flex-col max-sm:gap-0.5">
-              <span className="text-sm font-semibold whitespace-nowrap">{currentPeriod.label} <span className="ml-1 text-xs font-medium text-muted-foreground">Current</span></span>
-              <span className="line-clamp-2 text-sm sm:truncate">{priorities[0]?.title ?? 'No priorities recorded'}</span>
-              <span className="text-xs text-muted-foreground sm:text-right sm:text-sm">{currentPeriod.promptCount}<span className="sm:hidden"> prompts · open this month</span></span>
-            </span>
-            <ChevronRightIcon className="size-4 text-muted-foreground" />
-          </button>
-          <Accordion type="single" collapsible>
-            {pastPeriods.map((period) => (
-              <AccordionItem key={period.id} value={period.id} className="px-4">
-                <AccordionTrigger className="min-h-16 items-center gap-3 py-3 hover:no-underline">
-                  <span className="flex min-w-0 flex-1 flex-col gap-0.5 sm:grid sm:grid-cols-[12rem_minmax(0,1fr)_7rem] sm:items-center sm:gap-3">
-                    <span className="text-sm font-semibold whitespace-nowrap">{period.label} <span className="ml-1 text-xs font-normal text-muted-foreground">Archived</span></span>
-                    <span className="line-clamp-2 text-sm font-normal sm:truncate">{period.priorities[0]?.title ?? 'No priorities saved'}</span>
-                    <span className="text-xs font-normal text-muted-foreground sm:text-right sm:text-sm">{period.promptCount}<span className="sm:hidden"> prompts · {period.priorities.length} priorities</span></span>
-                  </span>
-                </AccordionTrigger>
-                <AccordionContent className="space-y-4 pb-4 sm:pl-[12.75rem] [&_p:not(:last-child)]:mb-0">
-                  <p className="text-sm">{period.headline}</p>
-                  <ol className="space-y-3">
-                    {period.priorities.map((priority, index) => (
-                      <li key={priority.title} className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
-                        <span className="flex size-6 items-center justify-center rounded-md bg-muted text-xs text-muted-foreground tabular-nums">{index + 1}</span>
-                        <p className="text-sm font-medium">{priority.title}</p>
-                        <p className="col-start-2 text-xs text-muted-foreground">{priority.product} · {timesLabel(priority.timesAsked)}</p>
-                        {priority.quote && <div className="col-start-2"><Quotes quotes={[priority.quote]} /></div>}
-                      </li>
-                    ))}
-                  </ol>
-                  <p className="text-xs text-muted-foreground">No request reviews cover this month, so it shows what you asked for, not what moved.</p>
-                </AccordionContent>
-              </AccordionItem>
-            ))}
-          </Accordion>
-        </div>
+        <Timeline data={[current, ...past]} />
       </div>
     </Req>
   )

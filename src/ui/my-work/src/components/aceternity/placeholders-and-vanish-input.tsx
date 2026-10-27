@@ -6,15 +6,26 @@ export function PlaceholdersAndVanishInput({
   placeholders,
   onChange,
   onSubmit,
+  initialValue = "",
+  inputId,
+  className,
 }: {
   placeholders: string[];
   onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onSubmit: (e: React.FormEvent<HTMLFormElement>) => void;
+  /** Local addition: text to start with (a caller re-mounts with the draft after a failed save). */
+  initialValue?: string;
+  /** Local addition: the input's id, so a <Label htmlFor> names it. */
+  inputId?: string;
+  /** Local addition: merged onto the form, so the app's surface and width replace the demo's white pill. */
+  className?: string;
 }) {
   const [currentPlaceholder, setCurrentPlaceholder] = useState(0);
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startAnimation = () => {
+    // Local fix: with fewer than two placeholders there is nothing to rotate (and % 0 is NaN).
+    if (placeholders.length < 2) return;
     intervalRef.current = setInterval(() => {
       setCurrentPlaceholder((prev) => (prev + 1) % placeholders.length);
     }, 3000);
@@ -43,7 +54,7 @@ export function PlaceholdersAndVanishInput({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const newDataRef = useRef<any[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
-  const [value, setValue] = useState("");
+  const [value, setValue] = useState(initialValue);
   const [animating, setAnimating] = useState(false);
 
   const draw = useCallback(() => {
@@ -176,7 +187,8 @@ export function PlaceholdersAndVanishInput({
     <form
       className={cn(
         "w-full relative max-w-xl mx-auto bg-white dark:bg-zinc-800 h-12 rounded-full overflow-hidden shadow-[0px_2px_3px_-1px_rgba(0,0,0,0.1),_0px_1px_0px_0px_rgba(25,28,33,0.02),_0px_0px_0px_1px_rgba(25,28,33,0.08)] transition duration-200",
-        value && "bg-gray-50"
+        value && "bg-gray-50",
+        className
       )}
       onSubmit={handleSubmit}
     >
@@ -196,6 +208,7 @@ export function PlaceholdersAndVanishInput({
         }}
         onKeyDown={handleKeyDown}
         ref={inputRef}
+        id={inputId}
         value={value}
         type="text"
         className={cn(

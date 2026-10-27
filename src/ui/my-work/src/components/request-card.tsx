@@ -4,6 +4,7 @@ import { useReducedMotion } from 'motion/react'
 import { Shimmer } from '@/components/ai-elements/shimmer'
 import { Terminal, TerminalContent } from '@/components/ai-elements/terminal'
 import { EncryptedText } from '@/components/aceternity/encrypted-text'
+import { GlowingEffect } from '@/components/aceternity/glowing-effect'
 import { SaveButton } from '@/components/save-button'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
@@ -148,8 +149,12 @@ export function RequestCard({ request, onOpen, onOpenGoal }: { request: Request;
   const reduceMotion = useReducedMotion()
   // Its recorded content changed in the update just applied (decision 5's "Just updated" dot).
   const contentJustUpdated = useFreshlyUpdated(request.id)
+  // Only a card that needs you gets the edge glow that follows the pointer, so it reads as "this one" (R10.2).
+  const waitingOnYou = request.state === 'your-move' || request.state === 'needs-check'
   return (
     <Req ids={['R1.1', 'R2.1', 'R4.1', 'R3.3', 'R10.2']}>
+      <div className="relative h-full rounded-xl">
+      {waitingOnYou && <GlowingEffect spread={40} glow proximity={64} inactiveZone={0.01} borderWidth={2} disabled={!!reduceMotion} />}
       <Card className="h-full gap-3 py-4 md:py-5">
         <CardHeader className="flex flex-row items-center justify-between gap-2 px-4 md:px-5">
           <div className="flex min-w-0 items-center gap-2">
@@ -206,6 +211,7 @@ export function RequestCard({ request, onOpen, onOpenGoal }: { request: Request;
           </div>
         </CardContent>
       </Card>
+      </div>
     </Req>
   )
 }

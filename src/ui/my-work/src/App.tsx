@@ -59,7 +59,8 @@ function NavTile({ icon: Icon, active }: { icon: typeof InboxIcon; active: boole
 /** The header bar: full width at the top of the page, a floating pill once the page scrolls (`Navbar` passes `visible`). */
 function HeaderBody({ visible, children }: { visible?: boolean; children: ReactNode }) {
   return (
-    <NavBody visible={visible} className={cn('flex h-14 max-w-[1440px] gap-3 bg-card/95 px-4 py-0 md:px-6', visible ? 'border border-border/70' : 'rounded-none border-b border-border/70')}>
+    // Phones: the pill is 2rem narrower than the bar, so it trims its padding and gaps, and the page title gives way first.
+    <NavBody visible={visible} className={cn('flex h-14 max-w-[1440px] gap-3 bg-card/95 px-4 py-0 md:px-6', visible ? 'header-pill gap-1.5 border border-border/70 px-2.5 md:gap-3 md:px-6' : 'rounded-none border-b border-border/70')}>
       {children}
     </NavBody>
   )
@@ -188,13 +189,13 @@ function LoadedApp() {
                 <Navbar className="top-0 z-30">
                   <HeaderBody>
                     <Req ids={['R10.4']}>
-                      <span className="flex items-center gap-2">
+                      <span className="flex shrink-0 items-center gap-2">
                         <CmemMark className="size-8 text-[#D86441]" />
                         <span className="sr-only md:not-sr-only md:text-[0.95rem] md:font-semibold md:tracking-tight">claude-mem</span>
                       </span>
                     </Req>
-                    <h1 className="text-lg font-semibold tracking-tight whitespace-nowrap md:hidden">{PAGES.find((entry) => entry.id === page)!.label}</h1>
-                    <div className="ml-auto flex items-center gap-0.5 md:gap-2">
+                    <h1 className="min-w-0 truncate text-lg font-semibold tracking-tight whitespace-nowrap md:hidden [.header-pill_&]:text-base">{PAGES.find((entry) => entry.id === page)!.label}</h1>
+                    <div className="ml-auto flex shrink-0 items-center gap-0.5 md:gap-2">
                       <TeamSwitch team={workspace.team} onChange={(team) => setWorkspace({ ...workspace, team })} />
                       <DeviceFreshness />
                       <LiveIndicator />

@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useMemo, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { ArrowUpIcon, CheckIcon, ChevronDownIcon, FileTextIcon, HistoryIcon, PencilIcon, PlusIcon, SparklesIcon, XIcon } from 'lucide-react'
 import { Artifact, ArtifactDescription, ArtifactHeader, ArtifactTitle } from '@/components/ai-elements/artifact'
 import { Confirmation, ConfirmationAccepted, ConfirmationAction, ConfirmationActions, ConfirmationRejected, ConfirmationRequest, ConfirmationTitle, type ConfirmationProps } from '@/components/ai-elements/confirmation'
@@ -11,6 +11,8 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { DraggableCardBody, DraggableCardContainer } from '@/components/aceternity/draggable-card'
+import { PlaceholdersAndVanishInput } from '@/components/aceternity/placeholders-and-vanish-input'
 import { ActivePill, RefreshButton, RefreshStatus, StateBadge, useWorkspace } from '@/components/bits'
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { cn } from '@/lib/utils'
@@ -307,8 +309,26 @@ function SuggestionCard({ rule, decision, onDecide, onEdit, onUndo, onShow }: { 
   )
 }
 
+// Phones are under Tailwind's sm breakpoint (640px), where SuggestionCard's buttons go full width too.
+const PHONE_QUERY = '(max-width: 639px)'
+function useIsPhone() {
+  return useSyncExternalStore(
+    (onChange) => { const query = window.matchMedia(PHONE_QUERY); query.addEventListener('change', onChange); return () => query.removeEventListener('change', onChange) },
+    () => window.matchMedia(PHONE_QUERY).matches,
+  )
+}
+
+// A quarter of a 390px phone screen: a sideways wobble while scrolling doesn't decide, one thumb flick does.
+const SWIPE_DECIDES_AT_PX = 96
+
 function DecisionQueue({ suggestions, decisions, onDecide, onEdit, onUndo, onShow }: { suggestions: OwnerRule[]; decisions: Record<string, Decision>; onDecide: (rule: OwnerRule, decision: Decision) => void; onEdit: (rule: OwnerRule) => void; onUndo: (rule: OwnerRule) => void; onShow: (rule: OwnerRule) => void }) {
   const waiting = suggestions.filter((rule) => !decisions[rule.id]).length
+  const isPhone = useIsPhone()
+  // On phones an undecided card swipes: right approves, left rejects, through the same handler as its buttons.
+  const swipeToDecide = (rule: OwnerRule) => ({ x }: { x: number }) => {
+    if (x >= SWIPE_DECIDES_AT_PX) onDecide(rule, 'approved')
+    else if (x <= -SWIPE_DECIDES_AT_PX) onDecide(rule, 'rejected')
+  }
   return (
     <Req ids={['R14.2', 'R12.3', 'R12.2']}>
       <section id="decide" className="scroll-mt-36 space-y-3 lg:scroll-mt-20">
@@ -322,9 +342,15 @@ function DecisionQueue({ suggestions, decisions, onDecide, onEdit, onUndo, onSho
             <p className="text-sm text-muted-foreground">Nothing waiting. New suggestions show up here after the next learning run.</p>
           </Req>
         ) : (
-          <div className="space-y-3">
-            {suggestions.map((rule) => <SuggestionCard key={rule.id} rule={rule} decision={decisions[rule.id]} onDecide={(decision) => onDecide(rule, decision)} onEdit={() => onEdit(rule)} onUndo={() => onUndo(rule)} onShow={() => onShow(rule)} />)}
-          </div>
+          <DraggableCardContainer className="space-y-3">
+            {isPhone && waiting > 0 && <p className="text-xs text-muted-foreground">Swipe a card right to approve it, left to reject it.</p>}
+            {suggestions.map((rule) => {
+              const card = <SuggestionCard rule={rule} decision={decisions[rule.id]} onDecide={(decision) => onDecide(rule, decision)} onEdit={() => onEdit(rule)} onUndo={() => onUndo(rule)} onShow={() => onShow(rule)} />
+              return isPhone && !decisions[rule.id]
+                ? <DraggableCardBody key={rule.id} dragAxis="x" onDragRelease={swipeToDecide(rule)} className="min-h-0 w-full rounded-xl bg-transparent p-0 shadow-none dark:bg-transparent">{card}</DraggableCardBody>
+                : <div key={rule.id}>{card}</div>
+            })}
+          </DraggableCardContainer>
         )}
       </section>
     </Req>
@@ -571,8 +597,16 @@ function draftToRule(draft: Draft, scopes: RuleScope[]): NonNullable<RuleChange[
 /** Add, edit, or edit-then-approve a rule (§14: people set rules too). */
 function RuleEditor({ draft, error, onChange, onClose, onSave }: { draft: Draft | null; error: string | null; onChange: (draft: Draft) => void; onClose: () => void; onSave: () => void }) {
   const { mode } = useWorkspace()
-  const { sourceKind, ruleScopes } = useWorkModel()
+  const { sourceKind, rules, ruleScopes } = useWorkModel()
   const newTier = draft ? NEW_SCOPE[draft.scopeId] : undefined
+  // Placeholders are the owner's own rules and scopes (R12.1), never made-up examples; none when there are none.
+  const ownRules = rules.filter((rule) => rule.status === 'on' || rule.status === 'off')
+  const ownThens = ownRules.map((rule) => rule.then)
+  const whenPlaceholder = ownRules.find((rule) => rule.when)?.when
+  const scopeNamePlaceholder = newTier && ruleScopes.find((scope) => scope.tier === newTier)?.name
+  const canSave = !!draft && !!draft.then.trim() && !(newTier && !draft.newScopeName.trim())
+  // The vanish input clears itself on Enter; when nothing was saved it re-mounts holding the draft's text again.
+  const [vanishMount, setVanishMount] = useState(0)
   return (
     <Req ids={['R14.9', 'R13.7']}>
       <Dialog open={draft !== null} onOpenChange={(open) => { if (!open) onClose() }}>
@@ -597,14 +631,22 @@ function RuleEditor({ draft, error, onChange, onClose, onSave }: { draft: Draft 
                   </SelectContent>
                 </Select>
               </div>
-              {newTier && <div className="grid gap-1.5"><Label htmlFor="rule-scope-name">{newTier === 'project' ? 'Product or project' : 'Situation'}</Label><Input id="rule-scope-name" value={draft.newScopeName} placeholder={newTier === 'project' ? 'claude-mem' : 'When I’m frustrated'} onChange={(event) => onChange({ ...draft, newScopeName: event.target.value })} /></div>}
-              <div className="grid gap-1.5"><Label htmlFor="rule-when">When <span className="font-normal text-muted-foreground">(optional)</span></Label><Input id="rule-when" value={draft.when} placeholder="you open a pull request" onChange={(event) => onChange({ ...draft, when: event.target.value })} /></div>
-              <div className="grid gap-1.5"><Label htmlFor="rule-then">Then</Label><Textarea id="rule-then" value={draft.then} placeholder="Never open it as a draft." onChange={(event) => onChange({ ...draft, then: event.target.value })} /></div>
+              {newTier && <div className="grid gap-1.5"><Label htmlFor="rule-scope-name">{newTier === 'project' ? 'Product or project' : 'Situation'}</Label><Input id="rule-scope-name" value={draft.newScopeName} placeholder={scopeNamePlaceholder} onChange={(event) => onChange({ ...draft, newScopeName: event.target.value })} /></div>}
+              <div className="grid gap-1.5"><Label htmlFor="rule-when">When <span className="font-normal text-muted-foreground">(optional)</span></Label><Input id="rule-when" value={draft.when} placeholder={whenPlaceholder} onChange={(event) => onChange({ ...draft, when: event.target.value })} /></div>
+              <div className="grid gap-1.5"><Label htmlFor="rule-then">Then</Label>
+                {draft.id === null ? (
+                  // Adding: the rule's text vanishes into the list on Enter, and the placeholder cycles through your own rules.
+                  <PlaceholdersAndVanishInput key={`${vanishMount}-${error ?? ''}`} inputId="rule-then" placeholders={ownThens} initialValue={draft.then}
+                    className="max-w-none border bg-background shadow-xs dark:bg-input/30"
+                    onChange={(event) => onChange({ ...draft, then: event.target.value })}
+                    onSubmit={() => { if (canSave) onSave(); else setVanishMount((count) => count + 1) }} />
+                ) : <Textarea id="rule-then" value={draft.then} placeholder={ownThens[0]} onChange={(event) => onChange({ ...draft, then: event.target.value })} />}
+              </div>
               {error && <p role="alert" className="text-xs text-attention-foreground">{error}</p>}
             </div>
             <DialogFooter className="items-center gap-3 sm:justify-between">
               <p className="text-xs text-muted-foreground">{sourceKind !== 'sample' ? 'Saves on this computer as a work-state record.' : mode === 'web' ? 'Saves from the web; every machine pulls it down.' : `Saves on ${HERE.name} and syncs to your other machines.`}</p>
-              <Button className="h-11 sm:h-9" onClick={onSave} disabled={!draft.then.trim() || (!!newTier && !draft.newScopeName.trim())}>{draft.approving ? 'Save and approve' : 'Save rule'}</Button>
+              <Button className="h-11 sm:h-9" onClick={onSave} disabled={!canSave}>{draft.approving ? 'Save and approve' : 'Save rule'}</Button>
             </DialogFooter>
           </DialogContent>
         )}
