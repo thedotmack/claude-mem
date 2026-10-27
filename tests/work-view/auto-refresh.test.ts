@@ -283,6 +283,9 @@ describe('parallel reviews', () => {
       };
       expect(await task.run(ask, 'claude-code')).toBe('2 requests reviewed, story written.');
       expect(reviewPrompts).toHaveLength(3);
+      expect(reviewPrompts[1]).toContain('x'.repeat(282));
+      expect(reviewPrompts[2]).toContain('y'.repeat(281));
+      expect(reviewPrompts[1]).not.toContain('Valid review.');
       expect(reviewPrompts[1]).toMatch(/summary is 282 characters; it must be 1–280\. Cut at least 2 characters/);
       expect(reviewPrompts[2]).toMatch(/summary is 281 characters; it must be 1–280\. Cut at least 1 character/);
       const progress = Object.values(readLedger(dir).progress) as Array<{ summary: string }>;

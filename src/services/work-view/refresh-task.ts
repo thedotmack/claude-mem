@@ -259,6 +259,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       const reviewBatch = async (groups: Array<{ groupId: string }>) => {
         let shows = groups.map(group => cli(['show', group.groupId]));
         let refusals: string[] = [];
+        let rejectedReviews: Array<{ groupId?: string }> = [];
         // Initial answer plus two bounded correction rounds. Valid reviews are
         // recorded immediately and removed from `shows`; feedback and evidence
         // for only malformed/missing groups go into the next round.
@@ -267,15 +268,20 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
             requestProgress, '---', readOnly,
             `Do only section 2's review for the groups whose \`show\` output is in ${writeInput('show', shows)}: decide each one from the evidence as the reviewer task describes (amend the previous review for a group in "amend" mode). Reply with only {"reviews": [<one record-progress input per group, with reviewBasis copied verbatim from its show output>]}.`,
             refusals.length ? `Your previous answer was refused for these groups:\n${refusals.join('\n')}\nFix them and answer again for those groups only.` : '',
+            rejectedReviews.length ? `Correct these rejected review records, keeping their meaning and the evidence above:\n${JSON.stringify(rejectedReviews)}` : '',
           ].join('\n\n'), STEP_MODELS.review);
           let reviews: Array<{ groupId?: string }> = [];
           try { const answer = parseAgentJson(text); reviews = Array.isArray(answer.reviews) ? answer.reviews : []; }
           catch { /* Every group in this batch is refused below as "no review was given". */ }
           refusals = [];
+          rejectedReviews = [];
           const recorded = new Set<string>();
           for (const review of reviews) {
             try { cli(['record-progress'], review); recorded.add(String(review.groupId)); reviewed++; }
-            catch (error) { refusals.push(`${review.groupId}: ${error instanceof Error ? error.message : String(error)}`); }
+            catch (error) {
+              refusals.push(`${review.groupId}: ${error instanceof Error ? error.message : String(error)}`);
+              rejectedReviews.push(review);
+            }
           }
           shows = shows.filter(show => !recorded.has(show.groupId));
           for (const show of shows) if (!refusals.some(line => line.startsWith(`${show.groupId}:`))) refusals.push(`${show.groupId}: no review was given.`);
