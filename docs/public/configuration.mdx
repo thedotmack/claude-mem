@@ -373,6 +373,9 @@ Writes still use `name`. This changes the checkout's default read scope for
 SessionStart, semantic injection, file context, and MCP queries for that project;
 it does not move or delete stored history. Ordinary worktrees and submodules with
 no explicit inheritance configuration keep their existing behavior.
+Reading a project's memory does not merge the environment's history back into
+that project. Automatic orphan adoption uses recorded folder-derived identity,
+not the environment's read scope.
 
 `inherit` must be an array of non-empty project names. Names are trimmed and
 deduplicated, and cannot contain commas (the query protocol uses commas to
