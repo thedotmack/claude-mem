@@ -62,10 +62,36 @@ export const StatefulButton = ({ className, children, ...props }: ButtonProps) =
     );
   };
 
+  const animateFailure = async () => {
+    await animate(
+      ".loader",
+      {
+        width: "0px",
+        scale: 0,
+        display: "none",
+      },
+      {
+        duration: 0.2,
+      },
+    );
+  };
+
+  // Local change: the check shows only when the save worked (R12.1: no check for a
+  // save that did not happen). onClick is typed void, but a save handler may resolve
+  // false: it failed and rendered its own error, so the spinner just stops. A throw
+  // also stops the spinner, then propagates. The action can unmount the button (the
+  // row it acts on moves away), so nothing animates once the scope is gone.
   const handleClick = async (event: React.MouseEvent<HTMLButtonElement>) => {
     await animateLoading();
-    await props.onClick?.(event);
-    await animateSuccess();
+    let succeeded = false;
+    try {
+      const result: unknown = await (
+        props.onClick as ((event: React.MouseEvent<HTMLButtonElement>) => unknown) | undefined
+      )?.(event);
+      succeeded = result !== false;
+    } finally {
+      if (scope.current) await (succeeded ? animateSuccess() : animateFailure());
+    }
   };
 
   const {
@@ -81,7 +107,6 @@ export const StatefulButton = ({ className, children, ...props }: ButtonProps) =
   return (
     <motion.button
       layout
-      layoutId="button"
       ref={scope}
       className={cn(
         "flex min-w-[120px] cursor-pointer items-center justify-center gap-2 rounded-full bg-green-500 px-4 py-2 font-medium text-white ring-offset-2 transition duration-200 hover:ring-2 hover:ring-green-500 dark:ring-offset-black",

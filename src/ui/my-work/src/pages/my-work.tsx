@@ -1,16 +1,20 @@
 import { useMemo, useState } from 'react'
+import { useReducedMotion } from 'motion/react'
 import { ArrowRightIcon, ArrowUpDownIcon, ImageIcon, InboxIcon, PlugIcon, TriangleAlertIcon } from 'lucide-react'
 import { Agent, AgentContent, AgentHeader } from '@/components/ai-elements/agent'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { AgentIcon, ATTENTION_ORDER, GoalChip, NextMove, ProgressMeter, RefreshButton, RefreshStatus, StateBadge, useWorkspace } from '@/components/bits'
+import { AgentIcon, ATTENTION_ORDER, GoalChip, NextMove, ProgressMeter, RefreshButton, RefreshStatus, STATE_LABEL, STATE_SURFACE, StateBadge, useWorkspace } from '@/components/bits'
+import { TextFlippingBoard } from '@/components/aceternity/text-flipping-board'
+import { PointerHighlight } from '@/components/aceternity/pointer-highlight'
 import { AgentMark } from '@/components/brand'
 import { RequestCard } from '@/components/request-card'
+import { SaveButton } from '@/components/save-button'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
 import { deviceById, markAgentFinished, SAMPLE_RUNS, startedTimestamp, useWorkModel, type Agent as WorkAgent, type LiveState, type Request } from '@/data'
@@ -58,7 +62,7 @@ function Summary({ requests, onOpen, onShowNeedsYou }: { requests: Request[]; on
             <>
               <span className="font-semibold">{waiting === 1 ? 'One thing needs you:' : `${waiting} need you. First:`}</span>
               <button type="button" onClick={() => onOpen(first)} className="inline-flex min-h-11 items-center gap-1 text-left font-semibold text-attention-foreground underline decoration-attention-border underline-offset-4 hover:decoration-current md:min-h-8">
-                {first.next.text}<ArrowRightIcon className="size-4 shrink-0" />
+                <PointerHighlight rectangleClassName="rounded-sm border-attention-border" pointerClassName="text-attention-foreground">{first.next.text}</PointerHighlight><ArrowRightIcon className="size-4 shrink-0" />
               </button>
             </>
           ) : <span className="font-semibold">Nothing needs you right now.</span>}
@@ -148,9 +152,27 @@ function StorySheet({ open, story, requests, onClose, onOpenRules }: { open: boo
   )
 }
 
-/** The status label flips when it changes: the flipboard nod (decision 2); a skeuomorphic flip is allowed. */
+// index.css cuts the flipboard to 17 flaps; a longer state label would lose its end, so say so at load.
+const FLIP_STATUS_FLAPS = 17
+const tooLongForFlipboard = Object.values(STATE_LABEL).filter((label) => label.length > FLIP_STATUS_FLAPS)
+if (tooLongForFlipboard.length) throw new Error(`State labels longer than the ${FLIP_STATUS_FLAPS}-flap status board: ${tooLongForFlipboard.join(', ')}`)
+
+/**
+ * The status label flips when it changes: a split-flap board (decision 2, R4.4) on the state's badge colors.
+ * `.flip-status-board` in index.css cuts the 6-row board to the one row the label is on. The key re-mounts
+ * the board so a state change flips from blank. Reduced motion: the plain badge.
+ */
 function FlipStatus({ state }: { state: LiveState }) {
-  return <span key={state} className="inline-block motion-safe:animate-in motion-safe:slide-in-from-top-2 motion-safe:fade-in motion-safe:duration-300"><StateBadge state={state} /></span>
+  const reduceMotion = useReducedMotion()
+  if (reduceMotion) return <StateBadge state={state} />
+  return (
+    <span key={state} className={cn('inline-block rounded-md border p-1', STATE_SURFACE[state])}>
+      <span className="sr-only">{STATE_LABEL[state]}</span>
+      <span aria-hidden="true" className="block">
+        <TextFlippingBoard rows={[STATE_LABEL[state]]} className="flip-status-board mx-0 w-[10.5rem] max-w-none rounded-sm bg-transparent p-0 shadow-none md:rounded-sm md:p-0 dark:bg-transparent dark:shadow-none" />
+      </span>
+    </span>
+  )
 }
 
 function ListView({ requests, sort, onSort, onOpen, onOpenGoal }: { requests: Request[]; sort: SortKey; onSort: (sort: SortKey) => void; onOpen: (request: Request) => void; onOpenGoal: (goalId: string) => void }) {
@@ -225,12 +247,19 @@ function SubagentStatus({ agent }: { agent: WorkAgent }) {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   if (!agent.status) return null
-  const mark = () => {
+  // Resolves false on failure so the button shows no check; the error line below says what went wrong.
+  const mark = async () => {
     setSaving(true)
     setError(null)
-    markAgentFinished(agent.id)
-      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)))
-      .finally(() => setSaving(false))
+    try {
+      await markAgentFinished(agent.id)
+      return true
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+      return false
+    } finally {
+      setSaving(false)
+    }
   }
   return (
     <div className="space-y-1 px-3 pb-2">
@@ -239,9 +268,9 @@ function SubagentStatus({ agent }: { agent: WorkAgent }) {
           {AGENT_STATUS_LABEL[agent.status]}{agent.status === 'finished' && agent.finishedAt ? ` · ${agent.finishedAt}` : ''}
         </span>
         {agent.canMarkFinished && (
-          <Button variant="outline" size="sm" className="h-11 shrink-0 text-xs md:h-7" disabled={saving} onClick={mark}>
-            {saving ? 'Saving…' : 'Mark finished'}
-          </Button>
+          <SaveButton className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'h-11 shrink-0 text-xs md:h-7')} disabled={saving} onClick={mark}>
+            Mark finished
+          </SaveButton>
         )}
       </div>
       {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
