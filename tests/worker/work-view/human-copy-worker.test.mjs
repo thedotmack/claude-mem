@@ -324,10 +324,14 @@ test('the chat-completions provider sends the configured model and key and parse
     url: 'https://example.test/v1/chat/completions', apiKey: 'key-1', model: 'configured-model',
     fetchImpl: async (url, init) => { sent = { url, init }; return new Response(JSON.stringify({ model: 'configured-model', choices: [{ message: { content: '{"title":"t"}' } }] })); },
   });
-  const result = await provider({ version: 1 });
+  const input = { original: { text: 'Lütfen iş kartlarımı göster.' } };
+  const result = await provider(input);
   assert.equal(sent.url, 'https://example.test/v1/chat/completions');
   assert.equal(sent.init.headers.Authorization, 'Bearer key-1');
-  assert.equal(JSON.parse(sent.init.body).model, 'configured-model');
+  const body = JSON.parse(sent.init.body);
+  assert.equal(body.model, 'configured-model');
+  assert.ok(body.messages[0].content.includes('First decide which human language the person wrote original.text in, ignoring code, file paths, URLs, repository and product names; write every value in that language. It overrides the language of these instructions and of the rest of the payload.'));
+  assert.deepEqual(JSON.parse(body.messages[1].content), input);
   assert.deepEqual(result.output, { title: 't' });
   assert.equal(result.error, null);
 });
