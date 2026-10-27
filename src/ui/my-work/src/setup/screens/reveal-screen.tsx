@@ -11,9 +11,11 @@ import { PageHeading } from './shared'
 
 const timesLabel = (times: number) => times === 1 ? 'asked once' : `asked ${times}×`
 
-/** A landed card's title decrypts from scramble into the words read from the prompts. Reduced motion: plain text. */
+/** A landed card's title decrypts from scramble into the words read from the prompts. Reduced motion: plain text.
+ *  Screen readers get only the final words (sr-only); the scrambling span is hidden from them. */
 function LandedTitle({ text }: { text: string }) {
-  return useReducedMotion() ? text : <EncryptedText text={text} />
+  if (useReducedMotion()) return text
+  return <><span className="sr-only">{text}</span><span aria-hidden="true"><EncryptedText text={text} /></span></>
 }
 
 /** One of the three sets. `null` items: still being extracted, so it shows placeholders until they land. */
