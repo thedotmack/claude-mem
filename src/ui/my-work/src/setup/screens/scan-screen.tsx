@@ -1,7 +1,9 @@
 import { CheckIcon } from 'lucide-react'
 import { AgentMark } from '@/components/brand'
+import { DottedGlowBackground } from '@/components/aceternity/dotted-glow-background'
 import { agentToolFor, type SetupScanPhase, type SetupScanView } from '../setup-data'
 import { scanAgentStatus } from '../setup-scan-status'
+import { prefersReducedMotion } from '../format'
 import { PageHeading } from './shared'
 
 /** PROTO savings.js status phrases, one per scan phase. */
@@ -29,6 +31,8 @@ export function ScanScreen({ scan, onImproveProductChange, preferenceError, onRe
     <section aria-labelledby="scan-title">
       <PageHeading id="scan-title" title="Checking your AI usage." lead={detected.map((agent) => agent.label).join(' · ') || undefined} />
       <div className="panel is-memory scan-panel">
+        {/* Texture behind the panel's content; reduced motion holds the dots still (speedScale 0). */}
+        <DottedGlowBackground className="scan-dots" gap={16} radius={1.5} color="rgba(75, 70, 200, 0.5)" glowColor="rgba(91, 87, 230, 0.9)" opacity={0.5} speedScale={prefersReducedMotion() ? 0 : 1} />
         <ul className="scan-agents" aria-label="Agents found on this computer">
           {detected.map((agent) => {
             const status = scanAgentStatus(agent)

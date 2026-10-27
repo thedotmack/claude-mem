@@ -807,10 +807,7 @@ export function MyRules() {
           </Req>
           <div className="flex flex-wrap items-center gap-2">
             <Req ids={['R14.9']}><Button className="h-11 sm:h-8" size="sm" onClick={startAdding}><PlusIcon />Add rule</Button></Req>
-            {sample ? <>
-              <RefreshButton run={SAMPLE_RUNS.rules} ids={['R14.13']} />
-              <Req ids={['R14.10', 'R11.1']}><span className="text-xs leading-tight text-muted-foreground sm:hidden">Last run {SAMPLE_RUNS.rules.lastRunAt.replace('Today, ', '')}<br />on {SAMPLE_DEVICES.find((device) => device.id === SAMPLE_RUNS.rules.deviceId)!.name}</span></Req>
-            </> : <RefreshStatus refresh={refresh} run={lastRuns.progress} ids={['R14.13']} />}
+            {sample ? <RefreshButton run={SAMPLE_RUNS.rules} ids={['R14.13', 'R11.1']} /> : <RefreshStatus refresh={refresh} run={lastRuns.progress} ids={['R14.13']} />}
           </div>
         </div>
 
