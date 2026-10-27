@@ -9,6 +9,7 @@
 import { randomBytes } from 'node:crypto';
 import { MAX_WORK_STATE_FIELDS_JSON_CHARS } from './work-state-limits.mjs';
 import { reduceWorkState } from './work-state-reduce.mjs';
+import { navWordIn } from './nav-words.mjs';
 
 export const MY_FOCUS_LIST = 'my-focus';
 /** The permanent bucket for requests that fit no area. Never an area id. */
@@ -89,13 +90,15 @@ export const newFocusAreaId = () => `fa_${randomBytes(6).toString('hex')}`;
  * Returns the rows to write and each mined area's id, in the mined order.
  */
 export function ownerGoalsAreaRows(minedAreas, savedAreas, newId = newFocusAreaId) {
-  const savedById = new Map(savedAreas.map((area) => [area.focusAreaId, area]));
+  // A withdrawn area (a seed undo) is not an area the owner has: a mined area never matches it.
+  const savedById = new Map(savedAreas.filter((area) => !isWithdrawnArea(area)).map((area) => [area.focusAreaId, area]));
   const claimed = new Set();
   const rows = [], focusAreaIds = [];
   for (const [index, mined] of minedAreas.entries()) {
     const matches = mined.matches;
     if (matches !== null && typeof matches !== 'string') throw new TypeError(`focus_areas[${index}].matches must be a saved focus area id or null.`);
     if (matches === null) {
+      refuseNavWordName(mined.name, `focus_areas[${index}]`);
       const focusAreaId = newId(index);
       if (savedById.has(focusAreaId) || focusAreaIds.includes(focusAreaId)) throw new Error(`Focus area id ${focusAreaId} is already used.`);
       rows.push(focusAreaRowFields({
@@ -223,7 +226,7 @@ export function buildFocusAreas(state) {
   const focusAreaIdByAnchor = new Map();
   /** Each anchor's latest owner and router placement: the area it names, the basis it was decided on and its device. */
   const placementsByAnchor = new Map();
-  const side = (written) => written && { focusAreaId: text(written.fields.focus_area_id), basis: text(written.fields.basis) || null, device: written.device };
+  const side = (written) => written && { focusAreaId: text(written.fields.focus_area_id), basis: text(written.fields.basis) || null, evidence: text(written.fields.evidence) || null, device: written.device };
   for (const [anchor, { owner, router }] of placements) {
     const focusAreaId = (owner && resolve(text(owner.fields.focus_area_id))) || (router && resolve(text(router.fields.focus_area_id)));
     if (focusAreaId) focusAreaIdByAnchor.set(anchor, focusAreaId);
@@ -288,10 +291,12 @@ export function routerFocusRows({ placements, proposals, otherPassHash = null },
     let focusAreaId;
     if (proposal.sameAs != null) {
       const same = byId.get(proposal.sameAs);
-      if (same?.status === 'dismissed') throw new TypeError(`${label} is ${proposal.sameAs} ("${same.name}"), which the owner dismissed; it is never proposed again.`);
+      if (same && isOwnerDismissedArea(same)) throw new TypeError(`${label} is ${proposal.sameAs} ("${same.name}"), which the owner dismissed; it is never proposed again.`);
+      if (same && isWithdrawnArea(same)) throw new TypeError(`${label}.sameAs names ${proposal.sameAs} ("${same.name}"), which was withdrawn and takes no requests; propose it as a new area (sameAs null).`);
       if (!placeable.has(proposal.sameAs)) throw new TypeError(`${label}.sameAs names ${proposal.sameAs}, which ${same ? 'no longer takes requests' : 'is not a focus area'}.`);
       focusAreaId = proposal.sameAs;
     } else {
+      refuseNavWordName(proposal.name, label);
       focusAreaId = newId(index);
       if (byId.has(focusAreaId) || focusAreaIds.includes(focusAreaId)) throw new Error(`Focus area id ${focusAreaId} is already used.`);
       rows.push(focusAreaRowFields({
@@ -307,6 +312,135 @@ export function routerFocusRows({ placements, proposals, otherPassHash = null },
   }
   if (otherPassHash != null) rows.push({ other_pass_hash: otherPassHash });
   return { rows, focusAreaIds, placed: anchors.size };
+}
+
+/** An area the owner said no to: never proposed again. An area the system withdrew (a seed undo) is not one: the
+ * owner never judged it, so the focus step may propose it again. */
+export const isOwnerDismissedArea = (area) => area.status === 'dismissed' && area.decidedBy === 'owner';
+/** An area the system withdrew (a seed undo): dismissed, but never by the owner. It holds no requests, is no match
+ * target, and is not on the never-propose-again list. */
+export const isWithdrawnArea = (area) => area.status === 'dismissed' && area.decidedBy !== 'owner';
+/** Every seed placement's evidence starts with this, so an undo can tell the seed's router rows from the focus step's. */
+export const SEED_EVIDENCE_PREFIX = 'Seed: ';
+
+/** An area name reusing a nav label would read as a nav item: one rule, shared with the UI (nav-words.mjs). */
+export { navWordIn };
+/** Refuses a new area name that reuses a nav label (the seed, a rename, and every system suggestion use this). */
+export function refuseNavWordName(name, label) {
+  const navWord = navWordIn(name);
+  if (navWord) throw new TypeError(`${label} is named "${text(name)}", which reuses the nav word "${navWord}". Name it without one.`);
+}
+
+/** A router placement row that clears the router's placement of one request (the seed undo): append-only, so the
+ * request goes back to "not sorted yet" and the next focus step places it. The owner's placement is untouched. */
+export function clearedPlacementRowFields(anchorConversationKey, evidence) {
+  const anchor = text(anchorConversationKey);
+  if (!anchor) throw new Error('A cleared placement needs the request\'s anchor conversation key.');
+  return fitsOneWrite({
+    task: placementTaskName(anchor), anchor_conversation_key: anchor,
+    focus_area_id: null, placed_by: 'router', confidence: null, basis: null, evidence: text(evidence) || null,
+  }, 'placement');
+}
+
+/**
+ * The my-focus rows for the one-time seed (scripts/seed-focus-areas.mjs), written only as the system:
+ * - each seed area with `matches: null` becomes a new `source: seed, status: suggested` area under a random id; one with
+ *   `matches: <id>` is the model's or reviewer's judgment that it already is that placeable saved area, and adds no row.
+ *   When placeable areas are saved, every seed area must state `matches` (null or an id): names are never compared.
+ * - each placement is a router placement into a seed area's key or "other", with the request's focusBasis (from
+ *   request-groups.mjs), so the focus step places the request again once it changes, and evidence starting with
+ *   SEED_EVIDENCE_PREFIX, so an undo can tell it from the focus step's placements. A request that already has a live placement (the owner's or the router's) is left as it is
+ *   and reported in `skipped`, so the seed never overrides newer routing or the owner.
+ * Refused: a second seed while a seed area is still live, an area name holding a nav word, an unknown area key, a
+ * request placed twice, a match to an area that takes no requests, or two seed areas matching one saved area.
+ * focus is readFocus's result. Every row is built before the caller writes the first one.
+ */
+export function seedFocusRows({ areas, placements }, focus, newId = newFocusAreaId) {
+  const live = focus.focusAreas.filter((area) => area.status !== 'dismissed');
+  const seeded = live.find((area) => area.source === 'seed');
+  if (seeded) throw new TypeError(`The seed was already applied (${seeded.focusAreaId}, "${seeded.name}" is a live seed area). Undo it first.`);
+  const placeable = new Map(focus.focusAreas.filter(isPlaceableArea).map((area) => [area.focusAreaId, area]));
+  const rows = [], focusAreaIds = {}, created = [], claimed = new Set();
+  for (const [index, area] of areas.entries()) {
+    const label = `areas[${index}] (${area.key})`;
+    if (!text(area.key) || area.key === OTHER_FOCUS_AREA_ID || Object.hasOwn(focusAreaIds, area.key)) throw new TypeError(`${label} needs a unique key other than "${OTHER_FOCUS_AREA_ID}".`);
+    refuseNavWordName(area.name, label);
+    if (area.matches === undefined && placeable.size) {
+      throw new TypeError(`${label} must state "matches" (a saved area id or null): focus areas are already saved (${[...placeable.values()].map((saved) => `${saved.focusAreaId} "${saved.name}"`).join(', ')}).`);
+    }
+    if (area.matches != null) {
+      if (!placeable.has(area.matches)) throw new TypeError(`${label} matches ${area.matches}, which is not a focus area that takes requests.`);
+      if (claimed.has(area.matches)) throw new TypeError(`${label} matches ${area.matches}, which another seed area already matches.`);
+      claimed.add(area.matches);
+      focusAreaIds[area.key] = area.matches;
+      continue;
+    }
+    const focusAreaId = newId(index);
+    if (focus.focusAreas.some((saved) => saved.focusAreaId === focusAreaId) || created.includes(focusAreaId)) throw new Error(`Focus area id ${focusAreaId} is already used.`);
+    rows.push(focusAreaRowFields({
+      focusAreaId, name: area.name, goal: area.goal, about: area.about, status: 'suggested', priorityRank: area.priorityRank, ownerRank: null,
+      source: 'seed', mergedInto: null, evidence: area.evidence, decidedBy: 'system',
+    }));
+    focusAreaIds[area.key] = focusAreaId;
+    created.push(focusAreaId);
+  }
+  const placed = [], skipped = [], anchors = new Set();
+  for (const [index, placement] of placements.entries()) {
+    const anchor = text(placement.anchorConversationKey);
+    if (anchors.has(anchor)) throw new TypeError(`placements[${index}] places ${anchor} a second time; a request sits in one area.`);
+    anchors.add(anchor);
+    if (!text(placement.evidence).startsWith(SEED_EVIDENCE_PREFIX)) throw new TypeError(`placements[${index}].evidence must start with "${SEED_EVIDENCE_PREFIX}".`);
+    if (!text(placement.basis)) throw new TypeError(`placements[${index}] needs the request's focus basis.`);
+    const focusAreaId = placement.area === OTHER_FOCUS_AREA_ID ? OTHER_FOCUS_AREA_ID : focusAreaIds[placement.area];
+    if (!focusAreaId) throw new TypeError(`placements[${index}] names the area key ${JSON.stringify(placement.area)}, which is not a seed area or "${OTHER_FOCUS_AREA_ID}".`);
+    const current = focus.placementsByAnchor.get(anchor);
+    const ownerArea = current?.owner && focus.resolveFocusAreaId(current.owner.focusAreaId);
+    const routerArea = current?.router && focus.resolveFocusAreaId(current.router.focusAreaId);
+    if (ownerArea || routerArea) { skipped.push({ anchorConversationKey: anchor, placedBy: ownerArea ? 'owner' : 'router', focusAreaId: ownerArea || routerArea }); continue; }
+    rows.push(placementRowFields({ anchorConversationKey: anchor, focusAreaId, placedBy: 'router', confidence: placement.confidence, basis: placement.basis, evidence: placement.evidence }));
+    placed.push({ anchorConversationKey: anchor, focusAreaId, basis: placement.basis });
+  }
+  return { rows, focusAreaIds, created, placed, skipped };
+}
+
+/**
+ * The my-focus rows that take one seed back (its note: the areas it created and the placements it wrote). Append-only:
+ * - a seed area stays live, as the owner's, when the owner decided it (kept, renamed, merged, dismissed) or uses it:
+ *   an owner placement lands in it, or the owner merged another area into it. Withdrawing it would cancel those
+ *   decisions silently. Otherwise it is withdrawn with a system `dismissed` row (not an owner dismissal, so the focus
+ *   step may propose it again).
+ * - a placement is cleared (clearedPlacementRowFields) only while the router's placement is still the seed's (the
+ *   note's area and basis, and seed evidence) and its area is withdrawn or Other: a placement in an area the owner kept
+ *   or uses stays, so undo never empties the owner's area. A placement a later focus step replaced is left, and the
+ *   owner's placements are never touched.
+ * Refused: a note naming an area that is not saved or not a seed area.
+ */
+export function seedUndoRows({ focusAreaIds, placements }, focus) {
+  const byId = new Map(focus.focusAreas.map((area) => [area.focusAreaId, area]));
+  const ownerTargets = new Set([
+    ...[...focus.placementsByAnchor.values()].map((placement) => placement.owner?.focusAreaId).filter(Boolean),
+    ...focus.focusAreas.filter((area) => area.decidedBy === 'owner' && area.mergedInto).map((area) => area.mergedInto),
+  ]);
+  const rows = [], withdrawn = [], leftByOwner = [], leftInOwnerUse = [], alreadyWithdrawn = [], cleared = [], replaced = [], leftInOwnerArea = [];
+  for (const focusAreaId of focusAreaIds) {
+    const area = byId.get(focusAreaId);
+    if (!area) throw new TypeError(`The note names ${focusAreaId}, which is not a saved focus area.`);
+    if (area.source !== 'seed') throw new TypeError(`The note names ${focusAreaId} ("${area.name}"), which the seed did not create (source ${area.source}).`);
+    if (area.decidedBy === 'owner') { leftByOwner.push(focusAreaId); continue; }
+    if (area.status === 'dismissed') { alreadyWithdrawn.push(focusAreaId); continue; }
+    if (ownerTargets.has(focusAreaId)) { leftInOwnerUse.push(focusAreaId); continue; }
+    rows.push(focusAreaRowFields({ ...area, status: 'dismissed', decidedBy: 'system' }));
+    withdrawn.push(focusAreaId);
+  }
+  const ownerAreas = new Set([...leftByOwner, ...leftInOwnerUse]);
+  for (const { anchorConversationKey, focusAreaId, basis } of placements) {
+    const router = focus.placementsByAnchor.get(anchorConversationKey)?.router;
+    if (!router || router.focusAreaId !== focusAreaId || router.basis !== (basis ?? null) || !router.evidence?.startsWith(SEED_EVIDENCE_PREFIX)) { replaced.push(anchorConversationKey); continue; }
+    if (ownerAreas.has(focusAreaId)) { leftInOwnerArea.push(anchorConversationKey); continue; }
+    rows.push(clearedPlacementRowFields(anchorConversationKey, 'Seed undone: back to not sorted yet.'));
+    cleared.push(anchorConversationKey);
+  }
+  return { rows, withdrawn, leftByOwner, leftInOwnerUse, alreadyWithdrawn, cleared, replaced, leftInOwnerArea };
 }
 
 /** The conversation a request's placement is keyed by: its group's anchor, else its own conversation. */

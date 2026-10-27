@@ -131,10 +131,10 @@ describe('My Focus routes', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('cache-control')).toBe('no-store');
     expect(areaById(await response.json(), 'fa_viewer')).toMatchObject({ status: 'kept', decidedBy: 'owner' });
-    await saveFocus({ action: 'rename', focusAreaId: 'fa_viewer', name: 'My Work viewer' });
+    await saveFocus({ action: 'rename', focusAreaId: 'fa_viewer', name: 'Live viewer' });
     response = await saveFocus({ action: 'edit-goal', focusAreaId: 'fa_viewer', goal: 'Show what agents did, sorted by area.' });
     expect(areaById(await response.json(), 'fa_viewer')).toMatchObject({
-      name: 'My Work viewer', goal: 'Show what agents did, sorted by area.', status: 'kept', source: 'seed', priorityRank: 1,
+      name: 'Live viewer', goal: 'Show what agents did, sorted by area.', status: 'kept', source: 'seed', priorityRank: 1,
     });
     const rows = ownerRows();
     expect(rows).toHaveLength(3);
@@ -167,19 +167,41 @@ describe('My Focus routes', () => {
     expect(request(view).focusAreaId).toBe('fa_community');
   });
 
-  it('reorders areas by the owner\'s rank', async () => {
+  it('refuses a rename that reuses a nav word, with the rule the seed uses', async () => {
+    const response = await saveFocus({ action: 'rename', focusAreaId: 'fa_viewer', name: 'My Work' });
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toMatch(/reuses the nav word "my work"/);
+    expect(ownerRows()).toEqual([]);
+    expect((await saveFocus({ action: 'rename', focusAreaId: 'fa_viewer', name: 'Work viewer' })).status).toBe(200);
+  });
+
+  it('reorders the kept areas by the owner\'s rank', async () => {
+    for (const id of ['fa_viewer', 'fa_endless', 'fa_community']) await saveFocus({ action: 'keep', focusAreaId: id });
     const response = await saveFocus({ action: 'reorder', focusAreaIds: ['fa_community', 'fa_viewer', 'fa_endless'] });
     const view = await response.json();
     expect(view.focusAreas.map((area: any) => area.focusAreaId)).toEqual(['fa_community', 'fa_viewer', 'fa_endless']);
     expect(view.focusAreas.map((area: any) => area.ownerRank)).toEqual([1, 2, 3]);
   });
 
-  it('refuses a partial order, and leaves dismissed and merged areas out of it', async () => {
-    expect((await saveFocus({ action: 'reorder', focusAreaIds: ['fa_endless', 'fa_viewer'] })).status).toBe(400);
-    await saveFocus({ action: 'dismiss', focusAreaId: 'fa_community' });
+  it('orders kept areas only: a suggestion is never listed, never written as the owner\'s, and still takes refresh rows', async () => {
+    await saveFocus({ action: 'keep', focusAreaId: 'fa_viewer' });
+    await saveFocus({ action: 'keep', focusAreaId: 'fa_endless' });
+    expect((await saveFocus({ action: 'reorder', focusAreaIds: ['fa_endless'] })).status).toBe(400);
     expect((await saveFocus({ action: 'reorder', focusAreaIds: ['fa_endless', 'fa_viewer', 'fa_community'] })).status).toBe(400);
+    const before = ownerRows().length;
     const view = await (await saveFocus({ action: 'reorder', focusAreaIds: ['fa_endless', 'fa_viewer'] })).json();
     expect(view.focusAreas.slice(0, 2).map((area: any) => [area.focusAreaId, area.ownerRank])).toEqual([['fa_endless', 1], ['fa_viewer', 2]]);
+    expect(ownerRows().slice(before).map((row: any) => row.fields.focus_area_id)).toEqual(['fa_endless', 'fa_viewer']);
+    expect(areaById(view, 'fa_community')).toMatchObject({ status: 'suggested', ownerRank: null, decidedBy: 'system' });
+  });
+
+  it('leaves dismissed, done and merged areas out of the order', async () => {
+    for (const id of ['fa_viewer', 'fa_endless', 'fa_community']) await saveFocus({ action: 'keep', focusAreaId: id });
+    await saveFocus({ action: 'dismiss', focusAreaId: 'fa_community' });
+    await saveFocus({ action: 'done', focusAreaId: 'fa_endless' });
+    expect((await saveFocus({ action: 'reorder', focusAreaIds: ['fa_viewer', 'fa_community'] })).status).toBe(400);
+    expect((await saveFocus({ action: 'reorder', focusAreaIds: ['fa_viewer', 'fa_endless'] })).status).toBe(400);
+    expect((await saveFocus({ action: 'reorder', focusAreaIds: ['fa_viewer'] })).status).toBe(200);
   });
 
   it('moves a request to an area or Other, keyed by its anchor conversation, and a later router row does not undo it', async () => {
@@ -393,5 +415,61 @@ describe('My Focus rows pulled through cloud sync', () => {
       database.close();
       rmSync(syncDirectory, { recursive: true, force: true });
     }
+  });
+});
+
+describe('My Focus seed route', () => {
+  const postSeed = (body: unknown, headers: Record<string, string> = {}) => fetch(`${origin}/api/work-view/focus/seed`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin, ...headers }, body: JSON.stringify(body),
+  });
+  const databasePath = () => join(directory, 'source.db');
+  const BASIS = '0123456789abcdef';
+  const apply = () => ({ action: 'apply', databasePath: databasePath(),
+    areas: [{ key: 'v', name: 'Live Viewer', goal: 'g', about: 'a', priorityRank: 1, evidence: 'Seed: viewer' }],
+    placements: [{ anchorConversationKey: CONVERSATION, area: 'v', confidence: 0.9, basis: BASIS, evidence: 'Seed: Jev routed this request to line "viewer" (p=0.9).' }] });
+  const myFocusRows = () => (source.prepare("SELECT count(*) AS n FROM work_state_entries WHERE list_name = 'my-focus'").get() as { n: number }).n;
+
+  it('refuses foreign, forwarded, malformed and wrong-database writes without writing', async () => {
+    const before = myFocusRows();
+    expect((await postSeed(apply(), { Origin: 'https://evil.example' })).status).toBe(403);
+    expect((await postSeed(apply(), { 'X-Forwarded-For': '203.0.113.9' })).status).toBe(403);
+    expect((await postSeed({ ...apply(), extra: 1 })).status).toBe(400);
+    expect((await postSeed({ ...apply(), placements: [{ ...apply().placements[0], confidence: 2 }] })).status).toBe(400);
+    expect((await postSeed({ ...apply(), placements: [{ ...apply().placements[0], basis: 'nope' }] })).status).toBe(400);
+    const { databasePath: _omitted, ...withoutPath } = apply();
+    expect((await postSeed(withoutPath)).status).toBe(400);
+    const wrong = await postSeed({ ...apply(), databasePath: join(directory, 'live.db') });
+    expect(wrong.status).toBe(409);
+    expect((await wrong.json()).error).toMatch(/This worker serves .*source\.db, not .*live\.db/);
+    // The fixture areas are live seed areas: a second seed is refused.
+    const again = await postSeed(apply());
+    expect(again.status).toBe(400);
+    expect((await again.json()).error).toMatch(/already applied/);
+    expect(myFocusRows()).toBe(before);
+  });
+
+  it('undoes the fixture seed with system rows, then applies a new seed', async () => {
+    insertRow(placementRowFields({ anchorConversationKey: CONVERSATION, focusAreaId: 'fa_viewer', placedBy: 'router', basis: BASIS, evidence: 'Seed: viewer' }));
+    expect(request(await snapshot()).focusAreaId).toBe('fa_viewer');
+    const undone = await postSeed({ action: 'undo', databasePath: databasePath(), focusAreaIds: ['fa_viewer', 'fa_endless', 'fa_community'],
+      placements: [{ anchorConversationKey: CONVERSATION, focusAreaId: 'fa_viewer', basis: BASIS }] });
+    expect(undone.status).toBe(200);
+    expect(await undone.json()).toMatchObject({ action: 'undo', rows: 4, withdrawn: ['fa_viewer', 'fa_endless', 'fa_community'], cleared: [CONVERSATION] });
+    let view = await snapshot();
+    expect([areaById(view, 'fa_viewer').status, areaById(view, 'fa_viewer').decidedBy]).toEqual(['dismissed', 'system']);
+    expect('focusAreaId' in request(view)).toBe(false);
+
+    const applied = await postSeed(apply());
+    expect(applied.status).toBe(200);
+    const result = await applied.json();
+    const created = result.created[0];
+    expect(created).toMatch(/^fa_/);
+    expect(result).toMatchObject({ action: 'apply', rows: 2, created: [created], skipped: [] });
+    expect(result.placed).toEqual([{ anchorConversationKey: CONVERSATION, focusAreaId: created, basis: BASIS }]);
+    view = await snapshot();
+    expect(areaById(view, created)).toMatchObject({ name: 'Live Viewer', status: 'suggested', source: 'seed', decidedBy: 'system' });
+    expect(request(view).focusAreaId).toBe(created);
+    // Nothing the seed route wrote is an owner row.
+    expect(ownerRows().filter(row => row.fields.decided_by === 'owner' || row.fields.placed_by === 'owner')).toEqual([]);
   });
 });

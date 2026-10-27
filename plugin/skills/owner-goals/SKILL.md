@@ -65,13 +65,15 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/save_goals.py" --print-focus-areas > "<fold
 >
 > `<folder>/focus-areas.json` lists the focus areas already saved. For each focus area you write, judge whether it is one of those, whatever its name, and set `matches` to that area's `focusAreaId`, or to `null` when none is. Two of your areas never match the same saved area. Never match by name alone.
 >
+> A focus area's title must never reuse a nav label as whole words, in any case: My Focus, My Work, My Rules, Other, Suggested, Past focus, Monitor, Steer ("Work viewer" is fine, "Other tools" is not). claude-mem refuses such a name and the save fails.
+>
 > ```json
 > {
 >   "generated_at": "<now, ISO 8601 with offset>",
 >   "window_days": <days>,
 >   "source_prompt_count": <prompts in owner-prompts.md>,
 >   "human_summary": "<section 1, plain text>",
->   "focus_areas": [{"rank": 1, "title": "<short name, never a nav word such as Work, Rules or Focus>",
+>   "focus_areas": [{"rank": 1, "title": "<short name>",
 >                    "goal": "<one sentence: what this area is for>", "matches": "<focusAreaId>" or null,
 >                    "latest_at": "YYYY-MM-DD HH:MM", "times_asked": <prompts cited>,
 >                    "evidence": [{"at": "YYYY-MM-DD HH:MM", "quote": "<exact words>"}]}],

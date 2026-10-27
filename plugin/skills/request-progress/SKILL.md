@@ -124,7 +124,7 @@ $CLI record-focus --other - <<'JSON'
 JSON
 ```
 
-Every proposal has `kind`, `name` (a short label, ≤80 chars, never a nav word: My Focus, My Work, My Rules, Other, Suggested), `goal` (one sentence, ≤300 chars: what the area is for), `about` (≤300 chars: what belongs in it), `anchors` (the requests it holds), `evidence` (≤300 chars, quoting the asks) and `sameAs`: the id of the area in `areas` or `dismissed` that this proposal already is, else `null`. A proposal that is an area in `areas` adds no area: its requests are placed in that area. One that is a dismissed area is refused for good. `record-focus` validates and saves through the claude-mem worker, so fix and retry if it rejects.
+Every proposal has `kind`, `name` (a short label, ≤80 chars, that must never reuse a nav label as whole words, in any case: My Focus, My Work, My Rules, Other, Suggested, Past focus, Monitor, Steer ("Work viewer" is fine, "Other tools" is not). claude-mem refuses such a name and the save fails), `goal` (one sentence, ≤300 chars: what the area is for), `about` (≤300 chars: what belongs in it), `anchors` (the requests it holds), `evidence` (≤300 chars, quoting the asks) and `sameAs`: the id of the area in `areas` or `dismissed` that this proposal already is, else `null`. A proposal that is an area in `areas` adds no area: its requests are placed in that area. One that is a dismissed area is refused for good. `record-focus` validates and saves through the claude-mem worker, so fix and retry if it rejects.
 
 My Work shows each request's area, Other, or "Sorting…" until this step places it. Proposed areas wait under Suggested for the owner.
 

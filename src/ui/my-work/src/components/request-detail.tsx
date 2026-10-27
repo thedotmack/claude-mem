@@ -6,13 +6,16 @@ import { Task, TaskContent, TaskItem, TaskTrigger } from '@/components/ai-elemen
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Req } from '@/spec/req'
-import { setRequestChecked, useWorkModel, type Request } from '@/data'
+import { OTHER_FOCUS_AREA_ID, setRequestChecked, useWorkModel, type Request } from '@/data'
+import { isPlaceableFocusArea, resolveFocusAreaId } from '@/live/to-focus-model'
 import { CHANGED_WHILE_READING_MESSAGE, CHECK_UNDONE_MESSAGE, CHECKED_LOCALLY_MESSAGE, type ReviewResult } from '@/live/review-response'
 import { PRODUCT_ICON } from '@/lib/product-icons'
 import { cn } from '@/lib/utils'
-import { AgentIcon, GoalChip, NextMove, ProductLink, ProgressMeter, StateBadge, useWorkspace } from './bits'
+import { AgentIcon, FocusAreaChip, NextMove, ProductLink, ProgressMeter, StateBadge, useWorkspace } from './bits'
+import { FocusChangeBar, useFocusChanges } from './focus-changes'
 import { OpenFollowUps } from './request-card'
 
 const RECENT_RECORDS = 5
@@ -113,8 +116,35 @@ function CheckAction({ request }: { request: Request }) {
   )
 }
 
+/** Move to…: puts the request in another area or Other, as the owner's placement (a refresh never overrides it). */
+function MoveTo({ request }: { request: Request }) {
+  const { focusAreas } = useWorkModel()
+  // The shared save: a second pick while one move is saving does nothing, and the move shows with Undo.
+  const changes = useFocusChanges()
+  const current = resolveFocusAreaId(request.focusAreaId, focusAreas)
+  const targets = focusAreas.filter((area) => isPlaceableFocusArea(area) && area.id !== current)
+  // Nowhere to move it, or no conversation to file the move under: the worker would refuse, so there is no control.
+  if (targets.length === 0 && current === OTHER_FOCUS_AREA_ID) return null
+  if (request.canMoveFocus === false) return null
+  const move = (focusAreaId: string) => { changes.apply({ action: 'move-request', requestId: request.id, focusAreaId }) }
+  return (
+    <Req ids={['R16.6']}>
+      <div className="space-y-1">
+        <Select value="" onValueChange={move} disabled={changes.saving}>
+          <SelectTrigger aria-label="Move to another focus area" size="sm" className="h-11 text-xs md:h-8"><SelectValue placeholder={changes.saving ? 'Moving…' : 'Move to…'} /></SelectTrigger>
+          <SelectContent>
+            {targets.map((area) => <SelectItem key={area.id} value={area.id}>{area.name}{area.status === 'suggested' ? ' · suggested' : ''}</SelectItem>)}
+            {current !== OTHER_FOCUS_AREA_ID && <SelectItem value={OTHER_FOCUS_AREA_ID}>Other</SelectItem>}
+          </SelectContent>
+        </Select>
+        <FocusChangeBar changes={changes} />
+      </div>
+    </Req>
+  )
+}
+
 /** The request page (§3): whose move and what's next first, then outcome, then the layers underneath, collapsed. */
-export function RequestDetail({ request, onClose, onOpenGoal }: { request: Request | null; onClose: () => void; onOpenGoal: (goalId: string) => void }) {
+export function RequestDetail({ request, onClose, onOpenFocus }: { request: Request | null; onClose: () => void; onOpenFocus: (focusAreaId: string) => void }) {
   if (!request) return null
   const title = request.title ?? request.resolvesTo?.title ?? 'Untitled request'
   const recent = request.granular.slice(0, RECENT_RECORDS)
@@ -138,13 +168,15 @@ export function RequestDetail({ request, onClose, onOpenGoal }: { request: Reque
           <div className="space-y-3">
             <ProgressMeter request={request} />
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-              <GoalChip goalId={request.goalId} onOpen={onOpenGoal} />
+              <FocusAreaChip focusAreaId={request.focusAreaId} onOpen={onOpenFocus} />
+              {/* Sample fixtures change in memory; live requests save as my-focus rows. */}
+              <MoveTo request={request} />
               <span>Asked by {request.askedBy} · started {request.startedAt} · {request.runningFor} · {request.stage}</span>
             </div>
           </div>
 
-          <Req ids={['R5.10']}>
-            <Section title="What came out of it">
+          <Req ids={['R5.10', 'R5.12']}>
+            <Section title="Deliverables">
               {request.workProduct.length === 0 ? <p className="text-sm text-muted-foreground">Nothing attached yet.</p> : (
                 <div className="-mx-3 flex flex-col">
                   {request.workProduct.map((product, index) => {

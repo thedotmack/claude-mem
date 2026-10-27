@@ -20,7 +20,8 @@ import { runCommand } from '../agent-runner/detect.js';
 import { writeOwnerPromptsFile, type OwnerPromptsFile } from '../prompt-import/owner-prompts-file.js';
 import { resolvePythonCommand } from './python.js';
 import { FOCUS_BATCH, readGoals, readLedger, runCli, validateGroupingAnswer, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
-import { PROPOSAL_KINDS, readFocusAreas, type FocusArea, type RouterFocusBody } from './my-focus.mjs';
+import { isWithdrawnArea, PROPOSAL_KINDS, readFocusAreas, type FocusArea, type RouterFocusBody } from './my-focus.mjs';
+import { NAV_LABELS } from './nav-words.mjs';
 
 /** claude-mem MCP tools a refresh may call: reads only. Saves go through the skills' scripts and their
  * validators (save_goals.py, the request-groups CLI), never a raw work_state_write. */
@@ -145,7 +146,9 @@ function goalsJson(saved: ReturnType<typeof readGoals>, story: { preferences?: A
 }
 
 /** What the goals step tells the model about My Focus, so it judges which saved area each mined one already is. */
-const focusAreasNote = (path: string) => `The focus areas already saved in My Focus are in ${path} (id, name, goal, status; do not run --print-focus-areas). For each focus area you write, set "matches" to the id of the saved area it already is, whatever its name, or null when none is. Never match by name alone.`;
+/** The worker refuses a new area named like a nav item (nav-words.mjs), so every prompt that names areas says so. */
+const NAV_LABEL_RULE = `A focus area's name never reuses a nav label as whole words, in any case: ${NAV_LABELS.map(label => `"${label}"`).join(', ')}. The worker refuses such a name and the whole answer fails.`;
+const focusAreasNote = (path: string) => `The focus areas already saved in My Focus are in ${path} (id, name, goal, status; do not run --print-focus-areas). For each focus area you write, set "matches" to the id of the saved area it already is, whatever its name, or null when none is. Never match by name alone. ${NAV_LABEL_RULE}`;
 
 export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { steps: StepTiming[] } {
   const { needs, reason, dataDir, ledgerDir, pluginRoot, openDatabase } = options;
@@ -163,7 +166,8 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
   let exportedAt = new Date(now()).toISOString();
   const prepareGoals = async () => {
     const database = openDatabase();
-    try { savedGoals = readGoals(database); savedAreas = readFocusAreas(database, { localDeviceId: options.localDeviceId() }); } finally { database.close(); }
+    // A withdrawn area (a seed undo) is no match target: the owner never had it, so it is left out of the saved areas.
+    try { savedGoals = readGoals(database); savedAreas = readFocusAreas(database, { localDeviceId: options.localDeviceId() }).filter(area => !isWithdrawnArea(area)); } finally { database.close(); }
     since = savedGoals.goals.length && Number.isFinite(Date.parse(savedGoals.generatedAt ?? '')) ? localMinute(Date.parse(savedGoals.generatedAt!)) : null;
     exportedAt = new Date(now()).toISOString();
     exported = await writeOwnerPrompts(goalsFolder, since);
@@ -374,7 +378,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
         const sorting = (question: string) => [
           requestProgress, '---', readOnly,
           // Inline with every anchor named, like grouping: on a file path Codex's light model linked 2 of 60 groups (Oct 23).
-          question,
+          question, NAV_LABEL_RULE,
         ].join('\n\n');
         let previousBatch = '';
         for (let input = cli(['focus-input', '--limit', String(FOCUS_BATCH)]); input.requests.length; input = cli(['focus-input', '--limit', String(FOCUS_BATCH)])) {

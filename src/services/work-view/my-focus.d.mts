@@ -21,7 +21,7 @@ export interface MinedFocusArea { name: string; goal: string; rank: number; matc
 export function ownerGoalsAreaRows(minedAreas: MinedFocusArea[], savedAreas: FocusArea[], newId?: (index: number) => string): {
   rows: Array<Record<string, string | number | null>>; focusAreaIds: string[];
 };
-export interface PlacementSide { focusAreaId: string; basis: string | null; device: string | null }
+export interface PlacementSide { focusAreaId: string; basis: string | null; evidence: string | null; device: string | null }
 export function buildFocusAreas(state: unknown): {
   focusAreas: FocusArea[]; focusAreaIdByAnchor: Map<string, string>;
   placementsByAnchor: Map<string, { owner: PlacementSide | null; router: PlacementSide | null }>;
@@ -56,3 +56,32 @@ export function anchorConversationKeyFor(request: { groupId?: string | null; con
 export function placeRequests<T extends { groupId?: string | null; conversationKey?: string | null }>(
   humanRequests: T[], focusAreaIdByAnchor: Map<string, string>, ledger: unknown,
 ): Array<T & { anchorConversationKey: string | null; focusAreaId?: string }>;
+export function isOwnerDismissedArea(area: Pick<FocusArea, 'status' | 'decidedBy'>): boolean;
+export function isWithdrawnArea(area: Pick<FocusArea, 'status' | 'decidedBy'>): boolean;
+export const SEED_EVIDENCE_PREFIX: 'Seed: ';
+/** The nav label an area name reuses as whole words, or null (nav-words.mjs). */
+export { navWordIn } from './nav-words.mjs';
+/** Throws a TypeError naming the nav word when a new area name reuses one. */
+export function refuseNavWordName(name: string, label: string): void;
+export function clearedPlacementRowFields(anchorConversationKey: string, evidence: string): Record<string, string | number | null>;
+type FocusState = Pick<ReturnType<typeof buildFocusAreas>, 'focusAreas' | 'placementsByAnchor' | 'resolveFocusAreaId'>;
+/** One seed (POST /api/work-view/focus/seed, action apply). */
+export interface SeedFocusBody {
+  areas: Array<{ key: string; name: string; goal: string; about: string; priorityRank: number; evidence: string; matches?: string | null }>;
+  placements: Array<{ anchorConversationKey: string; area: string; confidence: number; basis: string; evidence: string }>;
+}
+export function seedFocusRows(seed: SeedFocusBody, focus: FocusState, newId?: (index: number) => string): {
+  rows: Array<Record<string, string | number | null>>; focusAreaIds: Record<string, string>; created: string[];
+  placed: Array<{ anchorConversationKey: string; focusAreaId: string; basis: string }>;
+  skipped: Array<{ anchorConversationKey: string; placedBy: 'owner' | 'router'; focusAreaId: string }>;
+};
+/** What one seed wrote, from its note (POST /api/work-view/focus/seed, action undo). */
+export interface SeedUndoBody { focusAreaIds: string[]; placements: Array<{ anchorConversationKey: string; focusAreaId: string; basis: string }> }
+export function seedUndoRows(note: SeedUndoBody, focus: FocusState): {
+  rows: Array<Record<string, string | number | null>>; withdrawn: string[]; leftByOwner: string[];
+  /** Seed areas the owner never decided but uses (an owner placement lands in them, or an owner merge targets them). */
+  leftInOwnerUse: string[]; alreadyWithdrawn: string[];
+  cleared: string[]; replaced: string[];
+  /** Seed placements left in an area the owner decided or uses. */
+  leftInOwnerArea: string[];
+};

@@ -26,7 +26,7 @@ import { join } from 'node:path';
 import { conversationKey, isConversationKey, isHumanActionRequest, originalFor, requestText } from './request-projection.mjs';
 import { GOAL_KINDS, goalKindOf, OWNER_GOALS_LIST } from './owner-goals.mjs';
 import { NO_PROJECT, projectRoot, upgradedGroupRoot, withDerivedProjects } from './session-project.mjs';
-import { isPlaceableArea, OTHER_FOCUS_AREA_ID, PROPOSAL_KINDS, readFocus } from './my-focus.mjs';
+import { isOwnerDismissedArea, isPlaceableArea, OTHER_FOCUS_AREA_ID, PROPOSAL_KINDS, readFocus } from './my-focus.mjs';
 
 const DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
 export const LEDGER_DIR = join(DATA_DIR, 'work-view');
@@ -505,7 +505,7 @@ export function focusInput(ledger, focus, localDeviceId, database, { limit = FOC
   const due = focusDue(ledger, focus, localDeviceId);
   return {
     areas: focus.focusAreas.filter(isPlaceableArea).map(focusAreaRecord),
-    dismissed: focus.focusAreas.filter((area) => area.status === 'dismissed').map(focusAreaRecord),
+    dismissed: focus.focusAreas.filter(isOwnerDismissedArea).map(focusAreaRecord),
     requests: records(database, ledger, due.slice(0, limit)),
     remaining: Math.max(0, due.length - limit),
   };
@@ -518,7 +518,7 @@ export function otherInput(ledger, focus, localDeviceId, database) {
   const hash = otherPassHash(other.map((groupId) => ledger.groups.groups[groupId].anchor));
   return {
     areas: focus.focusAreas.filter(isPlaceableArea).map(focusAreaRecord),
-    dismissed: focus.focusAreas.filter((area) => area.status === 'dismissed').map(focusAreaRecord),
+    dismissed: focus.focusAreas.filter(isOwnerDismissedArea).map(focusAreaRecord),
     other: records(database, ledger, other),
     due: hash !== null && hash !== focus.otherPassHash,
   };

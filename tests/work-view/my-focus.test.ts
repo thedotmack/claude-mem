@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { reduceWorkState } from '../../src/services/work-view/data-source.mjs';
 import {
-  anchorConversationKeyFor, buildFocusAreas, focusAreaRowFields, MY_FOCUS_LIST, ownerGoalsAreaRows, placeRequests, placementRowFields,
+  anchorConversationKeyFor, buildFocusAreas, focusAreaRowFields, MY_FOCUS_LIST, navWordIn, ownerGoalsAreaRows, placeRequests, placementRowFields, routerFocusRows,
 } from '../../src/services/work-view/my-focus.mjs';
 
 const ANCHOR = JSON.stringify(['conversation', 'claude', 'session-1']);
@@ -223,5 +223,24 @@ describe('ownerGoalsAreaRows', () => {
       { fields: area('fa_old', { mergedInto: 'fa_middle', decidedBy: 'owner' }), at: 1000 },
     ]);
     expect(ownerGoalsAreaRows([mined('fa_old')], areas)).toEqual({ rows: [], focusAreaIds: ['fa_target'] });
+  });
+  it('refuses a new mined area named like a nav item, with the rule the seed and rename use', () => {
+    expect(() => ownerGoalsAreaRows([mined(null, { name: 'Other things' })], [], () => 'fa_new')).toThrow(/focus_areas\[0\] is named "Other things", which reuses the nav word "other"/);
+    expect(ownerGoalsAreaRows([mined(null, { name: 'Work viewer' })], [], () => 'fa_new').focusAreaIds).toEqual(['fa_new']);
+  });
+});
+
+describe('nav words', () => {
+  it('matches whole nav labels only, so ordinary names stay usable', () => {
+    for (const [name, label] of [['My Work', 'my work'], ['Ship the My Work viewer', 'my work'], ['other', 'other'], ['Past focus notes', 'past focus'], ['Monitor', 'monitor'], ['Steer-ing', 'steer'], ['  SUGGESTED ', 'suggested']]) {
+      expect(navWordIn(name)).toBe(label);
+    }
+    for (const name of ['Work viewer', 'Network', 'My laptop', 'Focus mode', 'Others', 'Monitoring', 'Rules engine']) expect(navWordIn(name)).toBeNull();
+  });
+
+  it('refuses a proposed area named like a nav item', () => {
+    const proposal = { kind: 'new', name: 'Suggested fixes', goal: 'g', about: 'a', evidence: 'e', sameAs: null, requests: [] };
+    expect(() => routerFocusRows({ placements: [], proposals: [proposal] }, [], () => 'fa_new')).toThrow(/proposals\[0\] is named "Suggested fixes", which reuses the nav word "suggested"/);
+    expect(routerFocusRows({ placements: [], proposals: [{ ...proposal, name: 'Fixes' }] }, [], () => 'fa_new').focusAreaIds).toEqual(['fa_new']);
   });
 });

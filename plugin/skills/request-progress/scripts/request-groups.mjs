@@ -2104,6 +2104,9 @@ function reduceWorkState(entries, { currentProject, currentProjectScope = [], ev
   };
 }
 
+// src/services/work-view/nav-words.mjs
+var NAV_LABELS = Object.freeze(["my focus", "my work", "my rules", "other", "suggested", "past focus", "monitor", "steer"]);
+
 // src/services/work-view/my-focus.mjs
 var MY_FOCUS_LIST = "my-focus";
 var OTHER_FOCUS_AREA_ID = "other";
@@ -2191,7 +2194,7 @@ function buildFocusAreas(state) {
   };
   const focusAreaIdByAnchor = /* @__PURE__ */ new Map();
   const placementsByAnchor = /* @__PURE__ */ new Map();
-  const side = (written) => written && { focusAreaId: text(written.fields.focus_area_id), basis: text(written.fields.basis) || null, device: written.device };
+  const side = (written) => written && { focusAreaId: text(written.fields.focus_area_id), basis: text(written.fields.basis) || null, evidence: text(written.fields.evidence) || null, device: written.device };
   for (const [anchor, { owner, router }] of placements) {
     const focusAreaId = owner && resolve3(text(owner.fields.focus_area_id)) || router && resolve3(text(router.fields.focus_area_id));
     if (focusAreaId) focusAreaIdByAnchor.set(anchor, focusAreaId);
@@ -2205,6 +2208,7 @@ function readFocus(database, { localDeviceId: localDeviceId2 } = {}) {
   return buildFocusAreas(reduceWorkState(rows, { localDeviceId: localDeviceId2 }));
 }
 var isPlaceableArea = (area) => (area.status === "kept" || area.status === "suggested") && !area.mergedInto;
+var isOwnerDismissedArea = (area) => area.status === "dismissed" && area.decidedBy === "owner";
 
 // src/services/work-view/request-groups.mjs
 var DATA_DIR2 = process.env.CLAUDE_MEM_DATA_DIR || join8(homedir7(), ".claude-mem");
@@ -2658,7 +2662,7 @@ function focusInput(ledger, focus, localDeviceId2, database, { limit = FOCUS_BAT
   const due = focusDue(ledger, focus, localDeviceId2);
   return {
     areas: focus.focusAreas.filter(isPlaceableArea).map(focusAreaRecord),
-    dismissed: focus.focusAreas.filter((area) => area.status === "dismissed").map(focusAreaRecord),
+    dismissed: focus.focusAreas.filter(isOwnerDismissedArea).map(focusAreaRecord),
     requests: records(database, ledger, due.slice(0, limit)),
     remaining: Math.max(0, due.length - limit)
   };
@@ -2668,7 +2672,7 @@ function otherInput(ledger, focus, localDeviceId2, database) {
   const hash = otherPassHash(other.map((groupId) => ledger.groups.groups[groupId].anchor));
   return {
     areas: focus.focusAreas.filter(isPlaceableArea).map(focusAreaRecord),
-    dismissed: focus.focusAreas.filter((area) => area.status === "dismissed").map(focusAreaRecord),
+    dismissed: focus.focusAreas.filter(isOwnerDismissedArea).map(focusAreaRecord),
     other: records(database, ledger, other),
     due: hash !== null && hash !== focus.otherPassHash
   };

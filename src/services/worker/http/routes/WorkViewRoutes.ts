@@ -1,7 +1,7 @@
 import type express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import { createHash, randomBytes } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, extname, join } from 'node:path';
 import { z } from 'zod';
@@ -17,7 +17,8 @@ import { FILE_CONTENT_TYPES } from '../../../work-view/work-product.mjs';
 import { isInsideDeliverablesDir } from '../../../../shared/deliverables.js';
 import { contentFingerprint, LocalReviewStore } from '../../../work-view/review-store.js';
 import { MY_RULES_LIST, renderRulesFile, ruleRowFields, type SavedRule } from '../../../work-view/my-rules.mjs';
-import { focusAreaRowFields, MY_FOCUS_LIST, OTHER_FOCUS_AREA_ID, ownerGoalsAreaRows, placementRowFields, PROPOSAL_KINDS, routerFocusRows, type FocusArea, type RouterFocusBody } from '../../../work-view/my-focus.mjs';
+import { focusAreaRowFields, MY_FOCUS_LIST, navWordIn, OTHER_FOCUS_AREA_ID, ownerGoalsAreaRows, placementRowFields, PROPOSAL_KINDS, readFocus, routerFocusRows, seedFocusRows, seedUndoRows, type FocusArea, type RouterFocusBody } from '../../../work-view/my-focus.mjs';
+import { MAX_WORK_STATE_FIELDS_JSON_CHARS } from '../../../work-view/work-state-limits.mjs';
 import { AGENT_LIFECYCLE_LIST, agentStopFields } from '../../../work-view/agent-lifecycle.mjs';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { chatCompletionsHumanCopyProvider, HumanCopyWorker } from '../../../work-view/human-copy-worker.mjs';
@@ -159,6 +160,35 @@ const routerFocusBody = z.object({
   }).strict()),
   otherPassHash: basisField.nullable().optional(),
 }).strict();
+
+// The one-time seed (scripts/seed-focus-areas.mjs): suggested `source: seed` areas and router placements, or the undo of
+// one seed from its note. Same name, sentence, id and anchor bounds as the other focus bodies; an area's `about` is the
+// seed line's whole description, bounded only by the one work-state row it must fit (focusAreaRowFields checks the row).
+// A confidence is the recorded probability, 0 to 1. No count caps: the seed covers every line and every routed request.
+// The database the script read and expects this worker to write (a path; 4096 is PATH_MAX on macOS and Linux). A worker
+// serving another data folder refuses, so a copy's settings pointing at the live port cannot write the live database.
+const seedDatabasePathField = z.string().min(1).max(4096);
+const seedFocusBody = z.discriminatedUnion('action', [
+  z.object({
+    action: z.literal('apply'),
+    areas: z.array(z.object({
+      key: z.string().min(1).max(80), name: z.string().trim().min(1).max(80), goal: z.string().trim().min(1).max(300),
+      about: z.string().trim().min(1).max(MAX_WORK_STATE_FIELDS_JSON_CHARS), priorityRank: z.number().int().positive(),
+      evidence: z.string().trim().min(1).max(300), matches: focusAreaIdField.nullable().optional(),
+    }).strict()),
+    placements: z.array(z.object({
+      anchorConversationKey: anchorField, area: z.string().min(1).max(80), confidence: z.number().min(0).max(1),
+      basis: basisField, evidence: z.string().trim().min(1).max(300),
+    }).strict()),
+    databasePath: seedDatabasePathField,
+  }).strict(),
+  z.object({
+    action: z.literal('undo'),
+    focusAreaIds: z.array(focusAreaIdField),
+    placements: z.array(z.object({ anchorConversationKey: anchorField, focusAreaId: focusAreaIdField, basis: basisField }).strict()),
+    databasePath: seedDatabasePathField,
+  }).strict(),
+]);
 
 const markAgentFinishedBody = z.object({
   agentGroupId: z.string().min(1).max(2000),
@@ -456,6 +486,9 @@ export class WorkViewRoutes extends BaseRouteHandler {
     // The focus step's answer (request-groups.mjs record-focus run by the request-progress skill): router placements
     // and suggested areas only, so nothing posted here can stand in for an owner decision.
     app.post('/api/work-view/focus/router', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(routerFocusBody), this.wrapHandler(this.saveRouterFocus));
+    // The one-time seed and its undo: system rows only (suggested seed areas, router placements, system withdrawals and
+    // cleared router placements), so nothing posted here can stand in for or change an owner decision.
+    app.post('/api/work-view/focus/seed', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(seedFocusBody), this.wrapHandler(this.saveSeedFocus));
     app.post('/api/work-view/agents/mark-finished', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(markAgentFinishedBody), this.wrapHandler(this.markAgentFinished));
     app.post('/api/work-view/rules/load-in-claude-code', workViewLoopbackOnly, requireWorkViewOrigin, this.wrapHandler(this.loadRulesInClaudeCode));
     app.get('/api/setup/scan', workViewLoopbackOnly, this.wrapHandler((_req, res) => {
@@ -743,10 +776,11 @@ export class WorkViewRoutes extends BaseRouteHandler {
       if (new Set(focusAreaIds).size !== focusAreaIds.length) { this.badRequest(res, 'Each focus area can appear once in the order.'); return; }
       const missing = focusAreaIds.find(id => !areaById.has(id));
       if (missing) { this.notFound(res, 'That focus area is not in your focus areas.'); return; }
-      // The whole order at once: every live area gets a rank, so no two share one.
-      const live = areas.filter(area => area.status !== 'dismissed' && !area.mergedInto).map(area => area.focusAreaId);
-      if (focusAreaIds.length !== live.length || !live.every(id => focusAreaIds.includes(id))) {
-        this.badRequest(res, 'List every focus area in your focus, each once, in the order you want.'); return;
+      // The whole order of the kept areas at once, so no two share a rank. Only kept areas: an owner row on a suggestion
+      // would freeze it against later refreshes, and done, dismissed and merged areas are not in the rail.
+      const kept = areas.filter(area => area.status === 'kept' && !area.mergedInto).map(area => area.focusAreaId);
+      if (focusAreaIds.length !== kept.length || !kept.every(id => focusAreaIds.includes(id))) {
+        this.badRequest(res, 'List every kept focus area, each once, in the order you want.'); return;
       }
       focusAreaIds.forEach((id, index) => rows.push(ownRow(areaById.get(id)!, { ownerRank: index + 1 })));
     } else if (action === 'move-request') {
@@ -769,6 +803,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
       else if (action === 'done') rows.push(ownRow(area, { status: 'done' }));
       else if (action === 'rename') {
         if (!name) { this.badRequest(res, 'Write the new name before saving it.'); return; }
+        const navWord = navWordIn(name);
+        if (navWord) { this.badRequest(res, `"${name}" reuses the nav word "${navWord}". Pick a name that means only this area.`); return; }
         rows.push(ownRow(area, { name }));
       } else if (action === 'edit-goal') {
         if (!goal) { this.badRequest(res, 'Write the goal before saving it.'); return; }
@@ -852,6 +888,34 @@ export class WorkViewRoutes extends BaseRouteHandler {
     }
     res.setHeader('Cache-Control', 'no-store');
     res.json(saved);
+  };
+
+  /** The seed's rows, checked against the saved areas and placements before the first write (a refusal writes nothing). */
+  private saveSeedFocus = (req: Request, res: Response): void => {
+    const body = req.body as z.infer<typeof seedFocusBody>;
+    if (!this.appendWorkStateEntry) { res.status(503).json({ error: 'Saving focus areas is unavailable on this worker.' }); return; }
+    if (!this.snapshot().source.connected) { res.status(503).json({ error: 'Local work is unavailable. Reconnect before seeding focus areas.' }); return; }
+    const served = existsSync(this.databasePath) ? realpathSync(this.databasePath) : this.databasePath;
+    const expected = existsSync(body.databasePath) ? realpathSync(body.databasePath) : body.databasePath;
+    if (served !== expected) { res.status(409).json({ error: `This worker serves ${served}, not ${expected}. Nothing was written.` }); return; }
+    const database = new Database(this.databasePath, { readonly: true, create: false });
+    let planned: ReturnType<typeof seedFocusRows> | ReturnType<typeof seedUndoRows>;
+    try {
+      const focus = readFocus(database, { localDeviceId: this.getLocalDeviceId() });
+      planned = body.action === 'apply' ? seedFocusRows(body, focus) : seedUndoRows(body, focus);
+    } catch (error) {
+      if (error instanceof TypeError || error instanceof RangeError) { this.badRequest(res, error.message); return; }
+      throw error;
+    } finally { database.close(); }
+    const project = this.homeProject ?? getProjectContext(homedir()).primary;
+    let written = 0;
+    try {
+      for (const fields of planned.rows) { this.appendWorkStateEntry({ project, listName: MY_FOCUS_LIST, fields }); written++; }
+    } finally { if (written) this.publish(); }
+    logger.debug('HTTP', 'Focus seed saved', { action: body.action, rows: written });
+    const { rows: _rows, ...result } = planned;
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ action: body.action, rows: written, ...result });
   };
 
   /**
