@@ -138,6 +138,7 @@ export function reviewIsNewerThanLifecycle(review: Pick<WorkViewProgress, 'check
 export function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: number): Request {
   const copy = raw.humanCopy
   const copyReady = !!copy && ['current', 'outdated'].includes(copy.state)
+  const generatedTitle = raw.titleSource === 'request-group' || raw.titleSource === 'title-cache'
   const updatedAt = raw.updatedAtEpoch ?? Math.max(0, ...raw.items.map((item) => item.lastUpdateEpoch || 0))
   const recordedReview = raw.progress ?? null
   // A memory review can be newer than the recorded items: its shipped state and its 100% both count then.
@@ -152,7 +153,7 @@ export function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], no
   const { state, stage, who } = presentStatus(status, now - updatedAt <= STALE_AFTER_MS)
   const recordedNext = (copyReady && cleanText(copy.next, 240))
     || cleanText(raw.items.find((item) => item.nextStep?.text)?.nextStep?.text, 140)
-    || (raw.items.length ? NEXT_STEP_NOT_RECORDED : NO_WORK_YET)
+    || (raw.items.length || raw.activity.length || recordedReview ? NEXT_STEP_NOT_RECORDED : NO_WORK_YET)
   const agentId = agents.some((agent) => agent.id === raw.agentIds[0]) ? raw.agentIds[0] : UNRECORDED_AGENT.id
   const started = raw.startedAtEpoch
   const reviewedAt = review ? Date.parse(review.checkedAt) : NaN
@@ -167,8 +168,9 @@ export function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], no
   return assertConsistentRequest({
     id: raw.id,
     contentFingerprint: raw.contentFingerprint,
-    title: copyReady && copy.title?.trim() ? copy.title.trim() : null,
-    summary: copyReady && copy.summary?.trim() ? copy.summary.trim() : null,
+    // Group reviews already contain display copy; their source is independent of the optional human-copy writer.
+    title: generatedTitle ? raw.title.trim() || null : copyReady && copy.title?.trim() ? copy.title.trim() : null,
+    summary: raw.groupId ? (reviewCounts ? recordedReview.summary.trim() || null : null) : copyReady && copy.summary?.trim() ? copy.summary.trim() : null,
     stageNote: copy?.stage?.trim() || undefined,
     // From the request-progress alignment: absent reads "Goal not linked yet", null reads "No goal".
     goalId: goalIdFor(raw),
