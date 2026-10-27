@@ -1,8 +1,9 @@
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 
 /**
  * Shared plumbing for the `*.browser.test.ts` files: find Chrome, compile a
@@ -11,9 +12,15 @@ import { join, resolve } from 'node:path';
  */
 
 const MAC_CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const WINDOWS_CHROME = process.platform === 'win32'
+  ? [process.env.PROGRAMFILES, process.env['PROGRAMFILES(X86)'], process.env.LOCALAPPDATA]
+    .filter((root): root is string => !!root)
+    .map(root => join(root, 'Google', 'Chrome', 'Application', 'chrome.exe'))
+    .find(path => existsSync(path))
+  : undefined;
 
 export const chromeExecutablePath: string | null = Bun.which('google-chrome') ?? Bun.which('chromium')
-  ?? (existsSync(MAC_CHROME) ? MAC_CHROME : null);
+  ?? WINDOWS_CHROME ?? (existsSync(MAC_CHROME) ? MAC_CHROME : null);
 
 export const REPOSITORY_ROOT = resolve(import.meta.dir, '../..');
 
@@ -86,7 +93,12 @@ export function launchChrome(pageUrl: string, options: {
       ]);
       clearTimeout(sigkillTimer);
       if (!exitedInTime) { child.kill('SIGKILL'); await child.exited; }
-      rmSync(profileDirectory, { recursive: true, force: true, maxRetries: 3 });
+      const profileFromTemp = relative(resolve(tmpdir()), resolve(profileDirectory));
+      if (!profileFromTemp || profileFromTemp.startsWith('..') || isAbsolute(profileFromTemp)) {
+        throw new Error('Refusing to remove a Chrome profile outside the temporary directory');
+      }
+      // Windows can release Chrome's profile locks after the parent exits.
+      await rm(profileDirectory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
