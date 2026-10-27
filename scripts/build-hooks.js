@@ -663,6 +663,7 @@ async function buildHooks() {
       outfile: `${hooksDir}/${HOOK_SERVICE.name}.cjs`,
       alias: { 'zod/v4': 'zod' },
       banner: { js: [
+        '// claude-mem hook-service library v1',
         ...DIRNAME_BANNER,
         'var __IMPORT_META_URL__ = require("node:url").pathToFileURL(__CM_FILENAME__).href;',
       ].join('\n') },

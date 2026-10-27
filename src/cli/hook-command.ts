@@ -3,6 +3,7 @@ import { getPlatformAdapter } from './adapters/index.js';
 import { AdapterRejectedInput } from './adapters/errors.js';
 import { getEventHandler } from './handlers/index.js';
 import type { HookResult } from './types.js';
+import type { Readable } from 'node:stream';
 import { HOOK_EXIT_CODES, isToolHookDisabledByEnv } from '../shared/hook-constants.js';
 import {
   installHookStderrBuffer,
@@ -29,6 +30,7 @@ import { spoolWorkStateInstruction, workStateModelText } from './work-state-tele
 export interface HookCommandOptions {
   skipExit?: boolean;
   stdinSafetyTimeoutMs?: number;
+  stdin?: Readable;
 }
 
 /**
@@ -66,7 +68,7 @@ async function executeHookPipeline(
   platform: string,
   options: HookCommandOptions
 ): Promise<number> {
-  const rawInput = await readJsonFromStdin({ safetyTimeoutMs: options.stdinSafetyTimeoutMs });
+  const rawInput = await readJsonFromStdin({ safetyTimeoutMs: options.stdinSafetyTimeoutMs, stdin: options.stdin });
   const input = adapter.normalizeInput(rawInput);
   input.platform = platform;
   const result = await handler.execute(input);

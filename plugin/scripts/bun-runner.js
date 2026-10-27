@@ -3,7 +3,8 @@ import { spawnSync, spawn } from 'child_process';
 import { existsSync, readFileSync, mkdirSync, appendFileSync, writeFileSync } from 'fs';
 import { join, dirname, resolve } from 'path';
 import { homedir, tmpdir } from 'os';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
+import { Readable } from 'stream';
 
 const IS_WINDOWS = process.platform === 'win32';
 
@@ -222,6 +223,33 @@ function collectStdin(input = process.stdin, options = {}) {
 }
 
 const stdinData = await collectStdin(process.stdin, { json: args.includes('hook') });
+
+const nodeVersion = process.versions.node.split('.').map(Number);
+const supportsHookLibrary = !process.versions.bun && (
+  (nodeVersion[0] === 20 && nodeVersion[1] >= 19) ||
+  (nodeVersion[0] === 22 && nodeVersion[1] >= 12) || nodeVersion[0] > 22
+);
+// Inspect a nonexecuting build marker before importing: older sibling bundles
+// auto-run on import. Keep their Bun path, and never retry after invocation.
+const nodeHookEvents = ['context', 'session-init', 'session-init-context', 'observation', 'summarize', 'post-compact', 'subagent-context'];
+if (supportsHookLibrary && args[1] === 'hook' && args[2] === 'codex' && nodeHookEvents.includes(args[3]) &&
+    stdinData && stdinData.length > 0 && /hook-service\.cjs$/i.test(args[0]) &&
+    readFileSync(args[0], 'utf8').slice(0, 256).includes('// claude-mem hook-service library v1')) {
+  let service;
+  try {
+    const imported = await import(pathToFileURL(args[0]).href);
+    const candidate = imported.default || imported;
+    if (typeof candidate.canRunInNode === 'function' && typeof candidate.runHookService === 'function' && candidate.canRunInNode(args[2], args[3])) service = candidate;
+  } catch {
+    // No hook has run yet; preserve the Bun path if library loading or its
+    // eligibility check cannot complete. Invocation below is never retried.
+  }
+  if (service) {
+    process.env.CLAUDE_MEM_HOOK_ORIGINAL_CWD = process.cwd();
+    await service.runHookService(args[2], args[3], { stdin: Readable.from([stdinData]) });
+    process.exit(0);
+  }
+}
 
 // Bun reads tsconfig.json from its working directory and prints any warnings
 // about it to stderr, which hosts show as hook errors (#4628). Start it in a

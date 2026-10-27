@@ -3,14 +3,15 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const os = require('os');
 const { spawn } = require('child_process');
 
 const REPO = path.resolve(__dirname, '..');
 const OUT = path.join(REPO, '.local', 'hook-profiles');
 const PORT = 37877;
 const POWERSHELL = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-const NODE = 'C:\\Program Files\\nodejs\\node.exe';
-const BUN = 'C:\\Users\\flodoll\\.bun\\bin\\bun.exe';
+const NODE = process.versions.bun ? 'node' : process.execPath;
+const BUN = process.env.BUN || path.join(os.homedir(), '.bun', 'bin', 'bun.exe');
 const MAX_CAPTURE = 2 * 1024 * 1024;
 
 const hookSpecs = [
@@ -35,6 +36,15 @@ function atomicJson(file, value) {
 }
 
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+function cpuSnapshot() {
+  return os.cpus().reduce((sum, cpu) => ({ total: sum.total + Object.values(cpu.times).reduce((a, b) => a + b, 0), idle: sum.idle + cpu.times.idle }), { total: 0, idle: 0 });
+}
+
+function cpuPercent(before, after) {
+  const total = after.total - before.total;
+  return total > 0 ? Math.round(Math.max(0, Math.min(100, 100 * (1 - (after.idle - before.idle) / total))) * 10) / 10 : null;
+}
 
 function readJsonLines(file) {
   if (!fs.existsSync(file)) return [];
@@ -99,10 +109,11 @@ async function runChild({ file, args, cwd, env, input, timeoutMs }) {
       settled = true;
       try { child.stdin.destroy(); } catch {}
       child.stdout.destroy(); child.stderr.destroy();
-      const cleanupFailed = (!closed && !spawnFailure) || cleanup?.exited === false;
+      const cleanupFailed = (!closed && !spawnFailure) || cleanup?.exited === false || !!(cleanup?.attempted && (cleanup.timedOut || cleanup.error || cleanup.taskkillCode !== 0));
       if (cleanupFailed) child.unref();
       resolve({ pid, exitCode, signal, timedOut, cleanup, cleanupFailed, overflow,
-        elapsedMs: exitElapsedMs ?? timeoutElapsedMs ?? Number(process.hrtime.bigint() - started) / 1e6,
+        elapsedMs: (timedOut ? timeoutElapsedMs : exitElapsedMs) ?? Number(process.hrtime.bigint() - started) / 1e6,
+        cleanupElapsedMs: timedOut ? Number(process.hrtime.bigint() - started) / 1e6 - timeoutElapsedMs : 0,
         stdout: stdout.toString('utf8'), stderr: stderr.toString('utf8') });
     };
     child.once('error', error => finish(null, null, { spawnError: error.message }));
@@ -258,7 +269,7 @@ async function main(argv = process.argv.slice(2)) {
     fs.copyFileSync(variant.runner.path, path.join(scripts, 'bun-runner.js'));
     fs.copyFileSync(variant.worker.path, path.join(scripts, 'worker-service.cjs'));
     if (variant.hook) fs.copyFileSync(variant.hook.path, path.join(scripts, 'hook-service.cjs'));
-    fs.writeFileSync(path.join(install, 'package.json'), '{"name":"hook-profile-snapshot","private":true}\n');
+    fs.copyFileSync(path.join(REPO, 'plugin', 'package.json'), path.join(install, 'package.json'));
     fs.symlinkSync(path.join(REPO, 'node_modules'), path.join(install, 'node_modules'), 'junction');
     variant.install = install;
     variant.hashes = Object.fromEntries(filesUnder(scripts, () => true).map(file => [path.basename(file), sha256(file)]));
@@ -302,8 +313,11 @@ async function main(argv = process.argv.slice(2)) {
           const matcher = JSON.parse(manifestBytes).hooks[spec.hook][0].matcher;
           if (spec.hook === 'PreToolUse' && matcher && matcher !== '*' && !new RegExp(matcher).test(hookPayload.tool_name)) throw new Error('synthetic tool does not match frozen PreToolUse matcher');
           const requestsBefore = readJsonLines(fixture.evidencePath).length;
+          const cpuBefore = cpuSnapshot();
           const raw = await runChild({ file: POWERSHELL, args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', commandFile], cwd: projectDir, env,
             input: JSON.stringify(hookPayload), timeoutMs: entry.deadlineMs + 3000 });
+          const observedCpuPercent = cpuPercent(cpuBefore, cpuSnapshot());
+          if (raw.cleanupFailed) throw new Error(`cleanup failed for owned child ${raw.pid}; aborting before any further callback`);
           let evidence = readJsonLines(fixture.evidencePath).slice(requestsBefore);
           const output = parseOutput(raw.stdout);
           const spoolFiles = filesUnder(path.join(dataDir, 'state', 'hook-spool'), file => file.endsWith('.json')).filter(file => {
@@ -320,17 +334,21 @@ async function main(argv = process.argv.slice(2)) {
             if (markerFiles.length === 0) violations.push('PostCompact did not create a durable pending marker');
             const proofSpec = hookSpecs.find(s => s.hook === 'PostToolUse');
             const proofEntry = entries.PostToolUse;
-            const proofCommand = path.join(sampleDir, 'PostCompact-proof.command.ps1');
-            fs.writeFileSync(proofCommand, proofEntry.commandWindows + '\r\nexit $LASTEXITCODE\r\n', 'utf8');
             const beforeProof = readJsonLines(fixture.evidencePath).length;
-            const proofRaw = await runChild({ file: POWERSHELL, args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', proofCommand], cwd: projectDir, env,
-              input: JSON.stringify(payload(proofSpec, projectDir, sampleDir, id)), timeoutMs: proofEntry.deadlineMs + 3000 });
+            // Verify the pending gate through the real handler without timing a
+            // second Windows launcher. This is functional proof, not a hook
+            // latency sample; the PostCompact timing above is unchanged.
+            const proofBudgetMs = 30_000;
+            const proofRaw = await runChild({ file: BUN, args: [path.join(variant.install, 'scripts', variant.hook ? 'hook-service.cjs' : 'worker-service.cjs'), 'hook', 'codex', 'observation'], cwd: os.tmpdir(),
+              env: { ...env, CLAUDE_MEM_HOOK_ORIGINAL_CWD: projectDir }, input: JSON.stringify(payload(proofSpec, projectDir, sampleDir, id)), timeoutMs: proofBudgetMs });
+            if (proofRaw.cleanupFailed) throw new Error(`cleanup failed for owned proof child ${proofRaw.pid}`);
             const proofEvidence = readJsonLines(fixture.evidencePath).slice(beforeProof);
             const markerAfter = filesUnder(dataDir, file => /codex-compaction-pending/i.test(file));
             const proofOutput = parseOutput(proofRaw.stdout);
             const proofViolations = validateRaw(proofRaw, proofOutput);
-            if (proofRaw.elapsedMs > proofEntry.deadlineMs) proofViolations.push('proof callback exceeded its deadline');
+            if (proofRaw.elapsedMs > proofBudgetMs) proofViolations.push('functional proof exceeded its budget');
             postCompactProof = { exitCode: proofRaw.exitCode, timedOut: proofRaw.timedOut, stdout: proofRaw.stdout,
+              method: 'direct Bun hook CLI; excluded from native-command latency', budgetMs: proofBudgetMs,
               validJson: proofOutput.validJson, elapsedMs: proofRaw.elapsedMs, violations: proofViolations,
               contextRequested: proofEvidence.some(r => r.url.startsWith('/api/context/inject')),
               timelineInjected: !!proofOutput.parsed?.hookSpecificOutput?.additionalContext?.includes('PROFILE_TIMELINE_CONTEXT'), markerConsumed: markerAfter.length === 0 };
@@ -340,29 +358,30 @@ async function main(argv = process.argv.slice(2)) {
             evidence = evidence.concat(proofEvidence);
           }
           const sample = { index, id, elapsedMs: Math.round(raw.elapsedMs * 10) / 10, exitCode: raw.exitCode, timedOut: raw.timedOut,
+            cpuPercent: observedCpuPercent, cpuWindowIncludesCleanup: raw.timedOut,
             deadlineMs: entry.deadlineMs, validJson: output.validJson, valid: violations.length === 0, violations,
             stdout: raw.stdout, stderr: raw.stderr, fixtureEvidence: evidence, spoolFiles: spoolFiles.map(f => path.relative(sampleDir, f)),
-            pendingMarkersBeforeProof: markerFiles.map(f => path.relative(sampleDir, f)), postCompactProof, cleanup: raw.cleanup };
+            pendingMarkersBeforeProof: markerFiles.map(f => path.relative(sampleDir, f)), postCompactProof, cleanup: raw.cleanup, cleanupElapsedMs: raw.cleanupElapsedMs };
           (state.samples[variantName][spec.hook] ||= []).push(sample);
           state.completedSamples++;
           atomicJson(incremental, state);
           process.stdout.write(JSON.stringify({ hook: spec.hook, variant: variantName, index, elapsedMs: sample.elapsedMs, valid: sample.valid, violations }) + '\n');
           if (raw.cleanupFailed) throw new Error(`cleanup failed for owned child ${raw.pid}; aborting to avoid overlapping samples`);
-          if (violations.length && !raw.timedOut) throw new Error(`invalid fixture sample ${id}: ${violations.join('; ')}`);
         }
       }
     }
   } finally {
     const cleanup = await killOwnedTree(fixture.child);
-    if (!cleanup.exited) throw new Error(`fixture cleanup failed for owned child ${fixture.child.pid}`);
+    if (!cleanup.exited || (cleanup.attempted && cleanup.taskkillCode !== 0)) throw new Error(`fixture cleanup failed for owned child ${fixture.child.pid}`);
   }
 
   for (const item of expected) if (sha256(item.path) !== item.sha256) throw new Error(`parent artifact changed during run: ${item.path}`);
   const provenance = { markerPath, markerSha256: sha256(markerPath), manifest: { source: sourceManifest, frozenCopy: manifestSnapshot, sha256: sha256(manifestSnapshot) },
+    machine: { platform: process.platform, release: os.release(), logicalCpus: os.cpus().length, node: process.version, cpuMeasure: 'approximate utilization from os.cpus() deltas during each sample' },
     shell: 'Windows PowerShell 5.1', callbackClaim: 'synthetic isolated invocation of exact Codex manifest commandWindows; not a native Codex callback',
     stdin: 'complete JSON written and flushed to pipe; stdin kept open until child exit', fixture: { origin: `http://127.0.0.1:${PORT}`, pid: fixture.ready.pid, nonce },
     variants: Object.fromEntries(Object.entries(variants).map(([name, v]) => [name, { install: v.install, hashes: v.hashes }])) };
-  const limitations = ['Machine was CPU-saturated by unrelated work; elapsed times are noisy.', 'Runs are synthetic Windows PowerShell 5.1 manifest-command invocations, not native Codex callbacks.', 'No live memory database, provider, credentials, or external network was used.', 'Medians are descriptive only; this report does not claim statistically significant speedup.'];
+  const limitations = ['Machine had earlier 100% CPU readings; per-sample counter estimates describe load during this run.', 'Runs are synthetic Windows PowerShell 5.1 manifest-command invocations, not native Codex callbacks.', 'No live memory database, provider, credentials, or external network was used.', 'Medians are descriptive only; this report does not claim statistically significant speedup.'];
   const docs = {};
   for (const variantName of Object.keys(variants)) {
     const hooks = hookSpecs.map(spec => aggregate(spec.hook, state.samples[variantName][spec.hook] || [], entries[spec.hook].deadlineMs));

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { spawnSync } from 'child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -13,7 +13,7 @@ const projectRoot = path.resolve(__dirname, '../..');
 // the next release rebuild, so this test stays out of the pre-build
 // "Verify committed plugin bundles" step.
 describe('Worker bundle is self-contained', () => {
-  it('captures a real observation through the hook sibling without plugin dependencies', () => {
+  it.each(['node', 'runner', 'bun'])('captures a real observation via %s without plugin dependencies', (mode) => {
     const sandbox = mkdtempSync(path.join(tmpdir(), 'cm-codex-hook-bundle-'));
     try {
       mkdirSync(path.join(sandbox, 'node_modules'));
@@ -29,7 +29,10 @@ describe('Worker bundle is self-contained', () => {
       const dataDir = path.join(sandbox, 'data');
       mkdirSync(dataDir);
       writeFileSync(path.join(dataDir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_RUNTIME: 'worker' }));
-      const hook = spawnSync('node', [path.join(scripts, 'bun-runner.js'), path.join(scripts, 'worker-service.cjs'), 'hook', 'codex', 'observation'], {
+      const alias = path.join(sandbox, 'linked-scripts');
+      if (mode === 'bun') symlinkSync(scripts, alias, 'junction');
+      const commandArgs = mode === 'runner' ? [path.join(scripts, 'bun-runner.js'), path.join(scripts, 'worker-service.cjs')] : [path.join(mode === 'bun' ? alias : scripts, 'hook-service.cjs')];
+      const hook = spawnSync(mode === 'bun' ? process.execPath : 'node', [...commandArgs, 'hook', 'codex', 'observation'], {
         cwd: sandbox,
         env: {
           ...process.env,
@@ -46,7 +49,7 @@ describe('Worker bundle is self-contained', () => {
           CLAUDE_MEM_TELEMETRY: 'false',
           DO_NOT_TRACK: '1',
         },
-        input: JSON.stringify({ session_id: 'packaged-hook-observation', cwd: sandbox, hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'Write-Output fixture' }, tool_response: { stdout: 'fixture' } }),
+        input: JSON.stringify({ session_id: 'packaged-hook-observation', cwd: sandbox, hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'Write-Output fixture' }, tool_response: { stdout: 'Grüße 🙂' } }),
         encoding: 'utf-8',
         timeout: 20_000,
       });
@@ -58,7 +61,7 @@ describe('Worker bundle is self-contained', () => {
       const records = readdirSync(spoolDir).filter(name => name.startsWith('observation-') && name.endsWith('.json'));
       expect(records).toHaveLength(1);
       expect(JSON.parse(readFileSync(path.join(spoolDir, records[0]), 'utf8'))).toMatchObject({
-        kind: 'observation', payload: { contentSessionId: 'packaged-hook-observation', toolName: 'Bash', platformSource: 'codex' },
+        kind: 'observation', payload: { contentSessionId: 'packaged-hook-observation', toolName: 'Bash', platformSource: 'codex', toolResponse: { stdout: 'Grüße 🙂' } },
       });
     } finally {
       rmSync(sandbox, { recursive: true, force: true });
