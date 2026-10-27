@@ -51,6 +51,7 @@ test('an unused OpenRouter fallback key stays idle until selected; settings reso
   });
   const provider = configuredHumanCopyProvider(settingsPath);
   assert.equal(provider.isAvailable(), false);
+  const disabledConfigKey = provider.getConfigKey();
 
   save({
     CLAUDE_MEM_PROVIDER: 'claude',
@@ -61,11 +62,55 @@ test('an unused OpenRouter fallback key stays idle until selected; settings reso
     CLAUDE_MEM_OPENROUTER_MODEL: 'observer-model',
   });
   assert.equal(provider.isAvailable(), true);
+  const selectedConfigKey = provider.getConfigKey();
+  assert.notEqual(selectedConfigKey, disabledConfigKey);
+  assert.equal(selectedConfigKey.includes('fallback-key'), false);
   const result = await provider({ request: 'presentation only' });
   assert.deepEqual(result.output, { title: 'Readable' });
   assert.equal(sent().url, 'https://openrouter.ai/api/v1/chat/completions');
   assert.equal(sent().init.headers.Authorization, 'Bearer fallback-key');
   assert.equal(JSON.parse(sent().init.body).model, 'copy-model');
+  assert.equal(Object.hasOwn(JSON.parse(sent().init.body), 'models'), false);
+
+  save({
+    CLAUDE_MEM_PROVIDER: 'claude',
+    CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: 'openrouter',
+    CLAUDE_MEM_WORK_VIEW_COPY_MODEL: 'updated-copy-model',
+    CLAUDE_MEM_OPENROUTER_API_KEY: 'fallback-key',
+    CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1',
+    CLAUDE_MEM_OPENROUTER_MODEL: 'observer-model',
+  });
+  assert.notEqual(provider.getConfigKey(), selectedConfigKey);
+  await provider({ request: 'after settings save' });
+  assert.equal(JSON.parse(sent().init.body).model, 'updated-copy-model');
+});
+
+test('OpenRouter summary uses the configured model fallback list only for the official endpoint', async t => {
+  const { settingsPath, save } = isolateSettings(t);
+  const sent = mockFetch(t);
+  save({
+    CLAUDE_MEM_PROVIDER: 'openrouter',
+    CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: 'openrouter',
+    CLAUDE_MEM_OPENROUTER_API_KEY: 'fallback-key',
+    CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1',
+    CLAUDE_MEM_OPENROUTER_MODEL: 'first-model,second-model,third-model',
+  });
+  await configuredHumanCopyProvider(settingsPath)({ request: 'presentation only' });
+  const body = JSON.parse(sent().init.body);
+  assert.deepEqual(body.models, ['first-model', 'second-model', 'third-model']);
+  assert.equal(Object.hasOwn(body, 'model'), false);
+
+  save({
+    CLAUDE_MEM_PROVIDER: 'openrouter',
+    CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: 'openrouter',
+    CLAUDE_MEM_OPENROUTER_API_KEY: 'fallback-key',
+    CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://compat.example.test/v1',
+    CLAUDE_MEM_OPENROUTER_MODEL: 'first-model,second-model',
+  });
+  await configuredHumanCopyProvider(settingsPath)({ request: 'presentation only' });
+  const compatibleBody = JSON.parse(sent().init.body);
+  assert.equal(compatibleBody.model, 'first-model');
+  assert.equal(Object.hasOwn(compatibleBody, 'models'), false);
 });
 
 test('an unset setting follows the primary OpenAI-compatible provider and its model', async t => {
@@ -95,5 +140,7 @@ test('off disables copy even when the primary provider is configured', t => {
     CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1',
     CLAUDE_MEM_OPENROUTER_MODEL: 'observer-model',
   });
-  assert.equal(configuredHumanCopyProvider(settingsPath).isAvailable(), false);
+  const provider = configuredHumanCopyProvider(settingsPath);
+  assert.equal(provider.isAvailable(), false);
+  assert.equal(provider.isOff(), true);
 });

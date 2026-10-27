@@ -24,6 +24,7 @@ import { AutoRefreshWorker } from '../../../work-view/auto-refresh-worker.mjs';
 import { buildRefreshTask } from '../../../work-view/refresh-task.js';
 import { HostedIntent } from '../../../work-view/hosted-intent.js';
 import { cmemProOrigin } from '../../../../shared/cmem-gateway.js';
+import { isOpenRouterApiUrl } from '../../../../shared/openrouter-base-url.js';
 import { runAgentTask } from '../../../agent-runner/run.js';
 import { ledgerSignature, readLedger } from '../../../work-view/request-groups.mjs';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
@@ -174,7 +175,15 @@ const setupCompleteBody = z.object({
 }).strict();
 const setupImportBody = z.object({}).strict();
 
-type HumanCopyProvider = ReturnType<typeof chatCompletionsHumanCopyProvider>;
+type HumanCopyProvider = ReturnType<typeof chatCompletionsHumanCopyProvider> & {
+  configKey?: string;
+  isOff?: () => boolean;
+  getConfigKey?: () => string | null;
+};
+
+function withHumanCopyConfigKey(provider: ReturnType<typeof chatCompletionsHumanCopyProvider>, config: unknown[]): HumanCopyProvider {
+  return Object.assign(provider, { configKey: createHash('sha256').update(JSON.stringify(config)).digest('hex') });
+}
 
 /** Resolve the explicitly selected copy endpoint, or follow today's primary-provider behavior. */
 function resolveConfiguredHumanCopyProvider(settingsPath: string): HumanCopyProvider | null {
@@ -185,12 +194,18 @@ function resolveConfiguredHumanCopyProvider(settingsPath: string): HumanCopyProv
   if (selection === 'openrouter') {
     const config = resolveOpenRouterConfig(settingsPath);
     if (!config.apiUrl || !config.apiKey || !config.model) return null;
-    return chatCompletionsHumanCopyProvider({ url: config.apiUrl, apiKey: config.apiKey, model: modelOverride || config.model });
+    const model = modelOverride || config.model;
+    const fallbackModels = !modelOverride && isOpenRouterApiUrl(config.apiUrl) ? config.fallbackModels : [];
+    return withHumanCopyConfigKey(chatCompletionsHumanCopyProvider({
+      url: config.apiUrl, apiKey: config.apiKey, model, ...(fallbackModels.length ? { fallbackModels } : {}),
+    }), ['openrouter', config.apiUrl, config.apiKey, model, fallbackModels]);
   }
   if (selection === 'openai-compatible') {
     const config = resolveOpenAICompatConfig(settingsPath);
     if (!config.apiUrl || !config.model || (config.requiresApiKey && !config.apiKey)) return null;
-    return chatCompletionsHumanCopyProvider({ url: config.apiUrl, apiKey: config.apiKey, model: modelOverride || config.model });
+    const model = modelOverride || config.model;
+    return withHumanCopyConfigKey(chatCompletionsHumanCopyProvider({ url: config.apiUrl, apiKey: config.apiKey, model }),
+      ['openai-compatible', config.apiUrl, config.apiKey, model]);
   }
   return null;
 }
@@ -207,10 +222,18 @@ export function configuredHumanCopyProvider(settingsPath = USER_SETTINGS_PATH): 
     const resolved = resolveConfiguredHumanCopyProvider(settingsPath);
     if (!resolved) throw new Error('No supported My Work summary provider is configured.');
     return resolved(input);
-  }) as HumanCopyProvider & { isAvailable: () => boolean };
+  }) as HumanCopyProvider & { isAvailable: () => boolean; isOff: () => boolean; getConfigKey: () => string | null };
   provider.isAvailable = () => {
     try { return resolveConfiguredHumanCopyProvider(settingsPath) !== null; }
     catch { return false; }
+  };
+  provider.isOff = () => {
+    try { return SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true }).CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER?.trim() === 'off'; }
+    catch { return false; }
+  };
+  provider.getConfigKey = () => {
+    try { return resolveConfiguredHumanCopyProvider(settingsPath)?.configKey ?? null; }
+    catch { return null; }
   };
   return provider;
 }
@@ -278,7 +301,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
     });
     this.reviews = new LocalReviewStore(options.reviewPath ?? join(DATA_DIR, 'work-view-reviews.db'));
     this.humanCopy = options.humanCopy === undefined
-      ? new HumanCopyWorker({ provider: configuredHumanCopyProvider(), cachePath: join(DATA_DIR, 'work-view', 'human-copy.json') })
+      ? new HumanCopyWorker({ provider: configuredHumanCopyProvider(), cachePath: join(DATA_DIR, 'work-view', 'human-copy.json'),
+        warn: message => logger.warn('WORKER', message) })
       : options.humanCopy;
     this.humanCopy?.pauseWhile(() => this.setupIsActive());
     if (this.humanCopy) void this.humanCopy.load().then(() => this.humanCopy?.start());

@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { HumanCopyWorker, chatCompletionsHumanCopyProvider, fitGeneratedCopy } from '../../../src/services/work-view/human-copy-worker.mjs';
 import { createHumanCopyInput, validateHumanCopy } from '../../../src/services/work-view/human-copy.mjs';
 
@@ -24,9 +27,13 @@ const deferred = () => {
 };
 const settle = () => new Promise(resolve => setImmediate(resolve));
 const worker = (provider, options = {}) => new HumanCopyWorker({
-  provider, cachePath: null, quietMs: 0, minIntervalMs: 0, retryMs: 1000,
+  provider, cachePath: null, quietMs: 0, minIntervalMs: 0, retryMs: 1000, warn: () => {},
   now: () => 1000, ...options,
 });
+const waitForWorker = async instance => {
+  for (let i = 0; i < 100 && instance.running.size; i++) await new Promise(resolve => setTimeout(resolve, 1));
+  assert.equal(instance.running.size, 0, 'worker request settles');
+};
 
 test('setup pause suppresses already queued and newly observed user-token calls until setup completes', async t => {
   let paused = false, now = 0, calls = 0;
@@ -150,6 +157,53 @@ test('provider failure preserves last good copy, reports it outdated, and respec
   assert.equal(instance.observe(view(changed)).humanRequests[0].humanCopy.title, 'Recovered copy');
 });
 
+test('permanent HTTP failures are logged safely and wait for provider configuration changes', async t => {
+  let now = 1000, configKey = 'first-config', calls = 0;
+  const warnings = [];
+  const directory = mkdtempSync(join(tmpdir(), 'human-copy-failure-'));
+  const provider = Object.assign(async input => {
+    calls++;
+    if (configKey === 'first-config') throw Object.assign(new Error('Bearer secret-response-detail'), { status: 404 });
+    return { output: copy(input, 'Recovered after settings change') };
+  }, { getConfigKey: () => configKey });
+  const instance = new HumanCopyWorker({ provider, cachePath: join(directory, 'human-copy.json'), quietMs: 0, minIntervalMs: 0,
+    retryMs: 100, now: () => now, warn: message => warnings.push(message) });
+  t.after(() => { instance.close(); rmSync(directory, { recursive: true, force: true }); });
+
+  instance.observe(view(request())); await waitForWorker(instance);
+  assert.equal(calls, 1);
+  assert.equal(instance.status().failures[0].reason, 'HTTP 404');
+  const logPath = join(directory, 'human-copy-usage.jsonl');
+  const failureLine = readFileSync(logPath, 'utf8').trim();
+  const failure = JSON.parse(failureLine);
+  assert.equal(failure.status, 'failed');
+  assert.equal(failure.reason, 'HTTP 404');
+  assert.doesNotMatch(failureLine, /secret-response-detail/);
+  assert.equal(warnings.length, 1);
+
+  now += 60 * 60 * 1000;
+  instance.pump(); await waitForWorker(instance);
+  assert.equal(calls, 1, 'a permanent 4xx does not retry on a timer');
+
+  configKey = 'second-config';
+  instance.observe(view(request())); await waitForWorker(instance);
+  assert.equal(calls, 2, 'a provider-settings change retries immediately');
+  assert.equal(instance.observe(view(request())).humanRequests[0].humanCopy.title, 'Recovered after settings change');
+});
+
+test('429 failures use exponential backoff', async t => {
+  let now = 0, calls = 0;
+  const instance = worker(async () => { calls++; throw Object.assign(new Error('rate limited'), { status: 429 }); },
+    { now: () => now, retryMs: 100, maxRetryMs: 1000 });
+  t.after(() => instance.close());
+  instance.observe(view(request())); await settle();
+  assert.equal(calls, 1);
+  now = 99; instance.pump(); await settle(); assert.equal(calls, 1);
+  now = 100; instance.pump(); await settle(); assert.equal(calls, 2);
+  now = 299; instance.pump(); await settle(); assert.equal(calls, 2);
+  now = 300; instance.pump(); await settle(); assert.equal(calls, 3);
+});
+
 test('invalid or invented output identities cannot publish copy or change recorded status', async t => {
   const source = request();
   const instance = worker(async input => ({ output: {
@@ -227,6 +281,30 @@ test('a provider whose settings are off is not queued or called, then resolves a
   await settle();
   assert.equal(calls, 1);
   assert.equal(instance.observe(view(source)).humanRequests[0].humanCopy.state, 'current');
+});
+
+test('explicit off hides cached wording while retaining it for later reuse', async t => {
+  let enabled = true, off = false, configKey = 'enabled', calls = 0;
+  const provider = Object.assign(async input => { calls++; return { output: copy(input, 'Stored wording') }; }, {
+    isAvailable: () => enabled, isOff: () => off, getConfigKey: () => configKey,
+  });
+  const instance = worker(provider);
+  t.after(() => instance.close());
+  const source = request();
+  instance.observe(view(source)); await settle();
+  assert.equal(instance.observe(view(source)).humanRequests[0].humanCopy.title, 'Stored wording');
+
+  enabled = false; off = true; configKey = null;
+  const disabled = instance.observe(view(source)).humanRequests[0].humanCopy;
+  assert.equal(disabled.state, 'unavailable');
+  assert.equal(disabled.title, undefined);
+  assert.equal(instance.cache.size, 1);
+
+  enabled = true; off = false; configKey = 'enabled-again';
+  const reenabled = instance.observe(view(source)).humanRequests[0].humanCopy;
+  assert.equal(reenabled.state, 'current');
+  assert.equal(reenabled.title, 'Stored wording');
+  assert.equal(calls, 1);
 });
 
 test('the chat-completions provider omits authorization for a configured keyless local endpoint', async () => {
