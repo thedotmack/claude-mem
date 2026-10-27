@@ -263,7 +263,7 @@ function OpenAsks({ highlighted, onOpen }: { highlighted: string | null; onOpen:
   const repeated = openAsks.filter((ask) => ask.timesAsked > 1).length
   return (
     <Req ids={['R3.8', 'R6.3', 'R5.8']}>
-      <section id="open-asks" className="scroll-mt-24 space-y-4 rounded-xl border bg-card p-4">
+      <section id="open-asks" className="scroll-mt-24 space-y-4 rounded-xl border bg-card p-4 shadow-panel">
         <div className="space-y-0.5">
           <h2 className="text-base font-semibold">Open asks</h2>
           <Req ids={['R12.2']}>
@@ -400,7 +400,7 @@ function NowView({ onOpen, focus }: { onOpen: (request: Request) => void; focus:
                 <h2 className="shrink-0 text-base font-semibold">Top priorities</h2>
                 <span className="hidden text-right text-xs text-muted-foreground sm:inline">ranked by how recent, how often and how strongly you asked</span>
               </div>
-              <div className="overflow-hidden rounded-xl border bg-card">
+              <div className="overflow-hidden rounded-xl border bg-card shadow-panel">
                 <Accordion type="multiple" value={focus.openGoals} onValueChange={focus.setOpenGoals}>
                   {priorities.slice(0, TOP_COUNT).map((goal) => <PriorityItem key={goal.id} goal={goal} highlighted={focus.highlighted === goal.id} onOpen={onOpen} />)}
                 </Accordion>
@@ -410,7 +410,7 @@ function NowView({ onOpen, focus }: { onOpen: (request: Request) => void; focus:
                   <ChevronDownIcon className="size-4 transition-transform group-data-[state=open]:rotate-180" />{priorities.length - TOP_COUNT} more priorities
                 </CollapsibleTrigger>
                 <CollapsibleContent>
-                  <div className="overflow-hidden rounded-xl border bg-card">
+                  <div className="overflow-hidden rounded-xl border bg-card shadow-panel">
                     <Accordion type="multiple" value={focus.openGoals} onValueChange={focus.setOpenGoals}>
                       {priorities.slice(TOP_COUNT).map((goal) => <PriorityItem key={goal.id} goal={goal} highlighted={focus.highlighted === goal.id} onOpen={onOpen} />)}
                     </Accordion>
@@ -439,7 +439,7 @@ function MonthByMonth({ onOpenCurrent }: { onOpenCurrent: () => void }) {
           <h2 className="text-base font-semibold">History</h2>
           <p className="text-sm text-muted-foreground">What you asked for most, month by month, as each owner-goals run saved it. A month closing archives its asks; it doesn’t mean they were done.</p>
         </div>
-        <div className="overflow-hidden rounded-xl border bg-card">
+        <div className="overflow-hidden rounded-xl border bg-card shadow-panel">
           <div className="hidden grid-cols-[12rem_minmax(0,1fr)_7rem_1rem] gap-3 border-b px-4 py-2 text-xs text-muted-foreground sm:grid">
             <span>Month</span><span>Top priority that month</span><span className="text-right">Your prompts</span><span />
           </div>

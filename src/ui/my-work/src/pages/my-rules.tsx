@@ -258,7 +258,7 @@ function SuggestionCard({ rule, decision, onDecide, onEdit, onUndo, onShow }: { 
   return (
     <Req ids={['R14.2', 'R14.3', 'R14.8', 'R14.9']}>
       <Confirmation id={`decide-${rule.id}`} approval={approval} state={decision ? 'approval-responded' : 'approval-requested'}
-        className={cn('scroll-mt-36 gap-3 rounded-xl bg-card p-4 lg:scroll-mt-20', !decision ? 'border-review-border' : decision === 'approved' ? 'border-shipped-border' : 'border-dashed')}>
+        className={cn('scroll-mt-36 gap-3 rounded-xl bg-card p-4 shadow-panel lg:scroll-mt-20', !decision ? 'border-review-border' : decision === 'approved' ? 'border-shipped-border' : 'border-dashed')}>
         <button type="button" onClick={() => scrollToId(`scope-${scope.id}`)} className="-my-2 inline-flex min-h-11 w-fit items-center text-xs text-muted-foreground hover:text-foreground sm:min-h-0 sm:my-0">{scopeHeading(scope)}</button>
 
         <div className={cn(decision === 'rejected' && 'line-through opacity-60')}><RuleSentence rule={rule} large /></div>
@@ -360,7 +360,7 @@ function ScopeSection({ scope, rules, counts, approvedNow, highlighted, actions 
         {yours.length > 0 && (
           <div className="space-y-2">
             <GroupLabel>Your rules · strongest first</GroupLabel>
-            <div className="divide-y rounded-xl border">
+            <div className="divide-y rounded-xl border shadow-panel">
               {yours.map((rule) => <RuleBlock key={rule.id} rule={rule} replaces={rules.filter((other) => other.status === 'replaced' && chainReaches(rules, other, rule.id))} justApproved={approvedNow.has(rule.id)} highlighted={highlighted === rule.id} actions={actions} />)}
             </div>
           </div>
@@ -796,7 +796,7 @@ export function MyRules() {
           <aside className="space-y-6 lg:sticky lg:top-20 lg:self-start">
             <div className="hidden lg:block"><ScopeNav countsByScope={countsByScope} waiting={waiting} /></div>
             <AgentFile rules={rules} changed={changedIds} open={fileOpen} onOpenChange={setFileOpen} />
-            <div className="space-y-6 rounded-xl border bg-card p-4">
+            <div className="space-y-6 rounded-xl border bg-card p-4 shadow-panel">
               <WhereEditsGo />
               <LearningRun />
             </div>
