@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { reduceWorkState } from '../../src/services/work-view/data-source.mjs';
 import {
-  anchorConversationKeyFor, buildFocusAreas, focusAreaRowFields, MY_FOCUS_LIST, placeRequests, placementRowFields,
+  anchorConversationKeyFor, buildFocusAreas, focusAreaRowFields, MY_FOCUS_LIST, ownerGoalsAreaRows, placeRequests, placementRowFields,
 } from '../../src/services/work-view/my-focus.mjs';
 
 const ANCHOR = JSON.stringify(['conversation', 'claude', 'session-1']);
@@ -195,5 +195,33 @@ describe('placeRequests', () => {
     // Not sorted yet: no focusAreaId at all.
     expect('focusAreaId' in placed[1]).toBe(false);
     expect(placed[2].anchorConversationKey).toBeNull();
+  });
+});
+
+describe('ownerGoalsAreaRows', () => {
+  const mined = (matches: string | null, change: Record<string, unknown> = {}) => ({ name: 'Viewer', goal: 'A live view of my work.', rank: 2, matches, evidence: 'From your prompts.', ...change });
+  const saved = (rows: Row[]) => focus(rows).focusAreas;
+
+  it('fills a missing goal on a matched suggestion nobody decided, and never replaces a goal or the name', () => {
+    // Hosted setup saved this area without a goal.
+    const goalless = saved([{ fields: area('fa_hosted', { name: 'Ship the viewer', source: 'owner-goals', priorityRank: 1 }), at: 1000 }]);
+    const { rows, focusAreaIds } = ownerGoalsAreaRows([mined('fa_hosted')], goalless);
+    expect(focusAreaIds).toEqual(['fa_hosted']);
+    const after = saved([{ fields: area('fa_hosted', { name: 'Ship the viewer', source: 'owner-goals', priorityRank: 1 }), at: 1000 }, ...rows.map((fields, index) => ({ fields, at: 2000 + index }))]);
+    expect(after[0]).toMatchObject({ name: 'Ship the viewer', goal: 'A live view of my work.', priorityRank: 2, decidedBy: 'system' });
+    // An existing goal stays; same rank and a goal means nothing to write.
+    expect(ownerGoalsAreaRows([mined('fa_hosted', { goal: 'Something else.' })], after).rows).toEqual([]);
+    // An area the owner decided gets no goal from a run, even when it has none.
+    const kept = saved([{ fields: area('fa_hosted', { status: 'kept', decidedBy: 'owner' }), at: 1000 }]);
+    expect(ownerGoalsAreaRows([mined('fa_hosted')], kept).rows).toEqual([]);
+  });
+
+  it('a match to an area the owner merged away answers the area it was merged into', () => {
+    const areas = saved([
+      { fields: area('fa_target', { status: 'kept', decidedBy: 'owner' }), at: 1000 },
+      { fields: area('fa_middle', { mergedInto: 'fa_target', decidedBy: 'owner' }), at: 1000 },
+      { fields: area('fa_old', { mergedInto: 'fa_middle', decidedBy: 'owner' }), at: 1000 },
+    ]);
+    expect(ownerGoalsAreaRows([mined('fa_old')], areas)).toEqual({ rows: [], focusAreaIds: ['fa_target'] });
   });
 });

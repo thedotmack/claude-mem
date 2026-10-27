@@ -17,7 +17,7 @@ import { FILE_CONTENT_TYPES } from '../../../work-view/work-product.mjs';
 import { isInsideDeliverablesDir } from '../../../../shared/deliverables.js';
 import { contentFingerprint, LocalReviewStore } from '../../../work-view/review-store.js';
 import { MY_RULES_LIST, renderRulesFile, ruleRowFields, type SavedRule } from '../../../work-view/my-rules.mjs';
-import { focusAreaRowFields, MY_FOCUS_LIST, OTHER_FOCUS_AREA_ID, placementRowFields, type FocusArea } from '../../../work-view/my-focus.mjs';
+import { focusAreaRowFields, MY_FOCUS_LIST, OTHER_FOCUS_AREA_ID, ownerGoalsAreaRows, placementRowFields, type FocusArea } from '../../../work-view/my-focus.mjs';
 import { AGENT_LIFECYCLE_LIST, agentStopFields } from '../../../work-view/agent-lifecycle.mjs';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { chatCompletionsHumanCopyProvider, HumanCopyWorker } from '../../../work-view/human-copy-worker.mjs';
@@ -126,6 +126,20 @@ const focusBody = z.object({
   requestId: z.string().min(1).max(2000).optional(),
 }).strict();
 
+// The focus areas owner-goals mined from the owner's prompts (save_goals.py). Same name and goal bounds as
+// focusBody. The evidence is one line pointing at the owner-goals item that holds the quotes; 300 characters
+// keeps the whole area inside one 2000-character work-state row. No count cap: the owner has as many areas as they have.
+const ownerGoalsFocusBody = z.object({
+  areas: z.array(z.object({
+    name: z.string().trim().min(1).max(80),
+    goal: z.string().trim().min(1).max(300),
+    rank: z.number().int().positive(),
+    /** The model's judgment: the saved area this one already is, or null for a new one. Never a name match. */
+    matches: focusAreaIdField.nullable(),
+    evidence: z.string().trim().min(1).max(300),
+  }).strict()),
+}).strict();
+
 const markAgentFinishedBody = z.object({
   agentGroupId: z.string().min(1).max(2000),
 }).strict();
@@ -214,7 +228,8 @@ export function configuredHumanCopyProvider(settingsPath = USER_SETTINGS_PATH): 
 
 /** My Work's automatic refresh on the user's own logged-in agent, unless
  * CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH is 'false' (checked on every tick). */
-export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTINGS_PATH, setupPath = setupStatePath(), setupActive = () => false): AutoRefreshWorker {
+export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTINGS_PATH, setupPath = setupStatePath(), setupActive = () => false,
+  localDeviceId: () => string = () => ''): AutoRefreshWorker {
   const openDatabase = () => {
     const database = new Database(DB_PATH, { readonly: true, create: false });
     database.exec('PRAGMA busy_timeout = 1500');
@@ -227,7 +242,7 @@ export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTIN
     enabled: () => !setupActive() && (readSetupState(setupPath).status === 'complete' || !hasActiveSetupSession(setupPath))
       && SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true }).CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH !== 'false',
     runJob: async ({ needs, reason }) => {
-      const task = buildRefreshTask({ needs, reason, dataDir: DATA_DIR, ledgerDir, pluginRoot: getPackageRoot(), openDatabase });
+      const task = buildRefreshTask({ needs, reason, dataDir: DATA_DIR, ledgerDir, pluginRoot: getPackageRoot(), openDatabase, localDeviceId });
       return { ...(await runAgentTask(task)), steps: task.steps };
     },
     log: (level, message, data) => (level === 'info' ? logger.info : logger.warn).call(logger, 'WORKER', message, data),
@@ -282,7 +297,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     // A test or demo with its own ledger never starts an agent unless it passes one in.
     this.autoRefresh = options.autoRefresh === undefined
       ? (options.ledgerDir === undefined && ledgerDir ? defaultAutoRefresh(ledgerDir, options.settingsPath, options.setupStatePath,
-        () => this.setupIsActive()) : null)
+        () => this.setupIsActive(), () => this.getLocalDeviceId()) : null)
       : options.autoRefresh;
     this.autoRefresh?.start();
     this.appendWorkStateEntry = options.appendWorkStateEntry ?? null;
@@ -305,6 +320,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
         openDatabase: () => new Database(this.databasePath, { readonly: true, create: false }),
         appendWorkStateEntry: entry => this.appendWorkStateEntry!(entry),
         homeProject: () => this.homeProject ?? getProjectContext(homedir()).primary,
+        localDeviceId: () => this.getLocalDeviceId(),
       }) : null)
       : options.hostedIntent;
     if (this.hostedIntent) this.setupScan?.setExtractor((prompts, improveProduct) => this.hostedIntent!.run(prompts, improveProduct));
@@ -413,6 +429,9 @@ export class WorkViewRoutes extends BaseRouteHandler {
     app.post('/api/work-view/review', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(reviewBody), this.wrapHandler(this.review));
     app.post('/api/work-view/rules', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(ruleBody), this.wrapHandler(this.saveRule));
     app.post('/api/work-view/focus', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(focusBody), this.wrapHandler(this.saveFocus));
+    // System-written suggestions only: every row is decided_by system, status suggested, under a new id, so
+    // nothing posted here can stand in for an owner decision or change an area the owner decided.
+    app.post('/api/work-view/focus/owner-goals', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(ownerGoalsFocusBody), this.wrapHandler(this.suggestOwnerGoalsAreas));
     app.post('/api/work-view/agents/mark-finished', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(markAgentFinishedBody), this.wrapHandler(this.markAgentFinished));
     app.post('/api/work-view/rules/load-in-claude-code', workViewLoopbackOnly, requireWorkViewOrigin, this.wrapHandler(this.loadRulesInClaudeCode));
     app.get('/api/setup/scan', workViewLoopbackOnly, this.wrapHandler((_req, res) => {
@@ -752,6 +771,23 @@ export class WorkViewRoutes extends BaseRouteHandler {
     res.setHeader('Cache-Control', 'no-store');
     res.json(updated);
     this.publish(updated);
+  };
+
+  /** Owner-goals' mined focus areas, as my-focus suggestions. Answers each mined area's id, in order. */
+  private suggestOwnerGoalsAreas = (req: Request, res: Response): void => {
+    const { areas } = req.body as z.infer<typeof ownerGoalsFocusBody>;
+    if (!this.appendWorkStateEntry) { res.status(503).json({ error: 'Saving focus areas is unavailable on this worker.' }); return; }
+    const snapshot = this.snapshot();
+    if (!snapshot.source.connected) { res.status(503).json({ error: 'Local work is unavailable. Reconnect before saving focus areas.' }); return; }
+    let planned: ReturnType<typeof ownerGoalsAreaRows>;
+    try { planned = ownerGoalsAreaRows(areas, (snapshot.focusAreas ?? []) as FocusArea[]); }
+    catch (error) { this.badRequest(res, error instanceof Error ? error.message : String(error)); return; }
+    const project = this.homeProject ?? getProjectContext(homedir()).primary;
+    for (const fields of planned.rows) this.appendWorkStateEntry({ project, listName: MY_FOCUS_LIST, fields });
+    logger.debug('HTTP', 'Owner-goals focus areas saved', { mined: areas.length, rows: planned.rows.length });
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ focusAreaIds: planned.focusAreaIds });
+    if (planned.rows.length) this.publish();
   };
 
   /**

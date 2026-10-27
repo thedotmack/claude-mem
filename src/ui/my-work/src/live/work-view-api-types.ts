@@ -74,7 +74,7 @@ export interface WorkViewProgress {
 }
 
 /** An owner goal the request-progress alignment linked to this request. */
-export interface WorkViewRequestGoal { goalId: string; goal: string; title: string; kind: 'priority' | 'open-ask'; evidence: string }
+export interface WorkViewRequestGoal { goalId: string; goal: string; title: string; kind: WorkViewGoalKind; evidence: string }
 
 /** One thing a request produced (work-product.mjs). Git kinds carry the sha or branch; `url` is absent when there is
  * nothing to open, and `available` is false for a recorded local file that no longer exists. */
@@ -144,13 +144,23 @@ export interface WorkViewSource {
   lastCheckedAt: string | null
 }
 
+/** What one owner-goals item is (owner-goals.mjs GOAL_KINDS). Rows saved as priorities or open asks are read as these. */
+export type WorkViewGoalKind = 'focus-area' | 'ask'
+
 /** One owner-goals item. The worker already parsed `evidence` into quotes; `at` is `YYYY-MM-DD HH:MM`, a bare day, or null. */
 export interface WorkViewGoalItem {
   id: string
   task: string
-  kind: 'priority' | 'open-ask'
+  kind: WorkViewGoalKind
   rank: number | null
   title: string
+  /** A focus area's one-sentence goal. */
+  goal: string | null
+  /** An ask's focus area, by the name it was mined with. */
+  focusArea: string | null
+  /** The my-focus id: an ask's area, or a focus area's own. */
+  focusAreaId: string | null
+  /** Only on items saved before the three tests (2026-10-27). */
   product: string | null
   latestAt: string | null
   timesAsked: number | null
@@ -173,8 +183,8 @@ export interface WorkViewGoalList {
   windowDays: number | null
   sourcePromptCount: number | null
   mapPath: string | null
-  priorities: WorkViewGoalItem[]
-  openAsks: WorkViewGoalItem[]
+  areas: WorkViewGoalItem[]
+  asks: WorkViewGoalItem[]
 }
 
 /** One rule: a story suggestion, laid over by its saved my-rules row, or one the owner wrote. */

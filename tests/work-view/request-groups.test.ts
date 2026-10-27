@@ -238,19 +238,29 @@ describe('overall requests and progress reviews', () => {
   saveGoals(database, '2026-10-01T10:00:00Z');
   const goals = readGoals(database);
   expect(goals.summary).toBe('Ship the cards.');
-  expect(goals.goals.map((goal) => [goal.goal, goal.kind, goal.rank])).toEqual([['Priority: Ship cards', 'priority', 1]]);
+  expect(goals.goals.map((goal) => [goal.taskKey, goal.kind, goal.rank, goal.legacy])).toEqual([['Focus area: Ship cards', 'focus-area', 1, false]]);
   expect(goals.goals[0].evidence).toEqual([{ at: '2026-10-01 10:00', quote: 'ship the cards | today' }]);
 });
 
+  it('goals saved before the three tests read as the nearest new kind, marked legacy; an unknown kind is refused', () => {
+  const database = fixtureDatabase();
+  const write = database.prepare('INSERT INTO work_state_entries (project, list_name, fields, created_at_epoch) VALUES (?, ?, ?, ?)');
+  write.run('owner', 'owner-goals', JSON.stringify({ task: 'Priority: Ship cards', status: 'todo', goal_kind: 'priority', rank: 1, title: 'Ship cards' }), 1);
+  write.run('owner', 'owner-goals', JSON.stringify({ task: 'Open ask: Docs', status: 'todo', goal_kind: 'open-ask', rank: 1, title: 'Docs' }), 2);
+  expect(readGoals(database).goals.map((goal) => [goal.taskKey, goal.kind, goal.legacy])).toEqual([['Priority: Ship cards', 'focus-area', true], ['Open ask: Docs', 'ask', true]]);
+  write.run('owner', 'owner-goals', JSON.stringify({ task: 'Rule: Tests', status: 'todo', goal_kind: 'rule', title: 'Tests' }), 3);
+  expect(() => readGoals(database)).toThrow(/unknown goal_kind: "rule"/);
+});
+
   it('alignment links only known groups to exact current goals, with evidence', () => {
-  const context = { groups: { g_000000000001: {}, g_000000000002: {} }, goals: [{ goal: 'Priority: Ship cards' }] };
-  const valid = validateAlignment({ links: [{ groupId: 'g_000000000001', goal: 'Priority: Ship cards', evidence: 'The card work is the release the owner asked for.' }], unaligned: ['g_000000000002'] }, context);
-  expect(valid.links.g_000000000001[0].goal).toBe('Priority: Ship cards');
+  const context = { groups: { g_000000000001: {}, g_000000000002: {} }, goals: [{ taskKey: 'Focus area: Ship cards' }] };
+  const valid = validateAlignment({ links: [{ groupId: 'g_000000000001', goal: 'Focus area: Ship cards', evidence: 'The card work is the release the owner asked for.' }], unaligned: ['g_000000000002'] }, context);
+  expect(valid.links.g_000000000001[0].goal).toBe('Focus area: Ship cards');
   expect(valid.unaligned).toEqual(['g_000000000002']);
-  expect(() => validateAlignment({ links: [{ groupId: 'g_000000000001', goal: 'Ship cards', evidence: 'x' }] }, context)).toThrow(/exact "goal"/);
-  expect(() => validateAlignment({ links: [{ groupId: 'g_ffffffffffff', goal: 'Priority: Ship cards', evidence: 'x' }] }, context)).toThrow(/unknown group/);
-  expect(() => validateAlignment({ links: [{ groupId: 'g_000000000001', goal: 'Priority: Ship cards', evidence: '' }] }, context)).toThrow(/evidence/);
-  expect(() => validateAlignment({ links: [{ groupId: 'g_000000000001', goal: 'Priority: Ship cards', evidence: 'x' }], unaligned: ['g_000000000001'] }, context)).toThrow(/both linked and unaligned/);
+  expect(() => validateAlignment({ links: [{ groupId: 'g_000000000001', goal: 'Ship cards', evidence: 'x' }] }, context)).toThrow(/exact "taskKey"/);
+  expect(() => validateAlignment({ links: [{ groupId: 'g_ffffffffffff', goal: 'Focus area: Ship cards', evidence: 'x' }] }, context)).toThrow(/unknown group/);
+  expect(() => validateAlignment({ links: [{ groupId: 'g_000000000001', goal: 'Focus area: Ship cards', evidence: '' }] }, context)).toThrow(/evidence/);
+  expect(() => validateAlignment({ links: [{ groupId: 'g_000000000001', goal: 'Focus area: Ship cards', evidence: 'x' }], unaligned: ['g_000000000001'] }, context)).toThrow(/both linked and unaligned/);
   expect(() => validateAlignment({ unaligned: [] }, context)).toThrow(/links array/);
 });
 
@@ -266,16 +276,16 @@ describe('overall requests and progress reviews', () => {
     run(['apply', decisions]);
     const before = ledgerSignature(dir);
     const input = run(['align-input']);
-    expect(input.goals.goals.map((goal: { goal: string }) => goal.goal)).toEqual(['Priority: Ship cards']);
+    expect(input.goals.goals.map((goal: { taskKey: string }) => goal.taskKey)).toEqual(['Focus area: Ship cards']);
     expect(input.groups.map((group: { title: string; firstAsk: string }) => [group.title, group.firstAsk])).toEqual([['Release cards', 'Build the release cards'], ['Pricing page', 'Write the pricing page']]);
     expect(input.previous).toBeNull();
     const alignment = join(dir, 'alignment-input.json');
-    writeFileSync(alignment, JSON.stringify({ links: [{ groupId: groupIdFor(key('a')), goal: 'Priority: Ship cards', evidence: 'Release cards are the cards to ship.' }], unaligned: [groupIdFor(key('c'))] }));
+    writeFileSync(alignment, JSON.stringify({ links: [{ groupId: groupIdFor(key('a')), goal: 'Focus area: Ship cards', evidence: 'Release cards are the cards to ship.' }], unaligned: [groupIdFor(key('c'))] }));
     expect(run(['record-alignment', alignment])).toEqual({ aligned: 1, unaligned: 1 });
     const stored = readLedger(dir).alignment;
-    expect(stored.links[groupIdFor(key('a'))][0].goal).toBe('Priority: Ship cards');
+    expect(stored.links[groupIdFor(key('a'))][0].goal).toBe('Focus area: Ship cards');
     expect(stored.unaligned).toEqual([groupIdFor(key('c'))]);
-    expect(stored.goals).toEqual(['Priority: Ship cards']);
+    expect(stored.goals).toEqual(['Focus area: Ship cards']);
     expect(ledgerSignature(dir)).not.toBe(before);
     expect(run(['align-input']).previous.alignedAt).toBe(new Date(NOW).toISOString());
   } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -290,7 +300,7 @@ describe('overall requests and progress reviews', () => {
     const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; } }); return output; };
     const write = (name: string, value: unknown) => { const path = join(dir, name); writeFileSync(path, JSON.stringify(value)); return path; };
     run(['apply', write('d1.json', { groups: [{ title: 'Release cards', conversations: [key('a')] }] })]);
-    run(['record-alignment', write('a1.json', { links: [{ groupId: groupIdFor(key('a')), goal: 'Priority: Ship cards', evidence: 'The cards.' }] })]);
+    run(['record-alignment', write('a1.json', { links: [{ groupId: groupIdFor(key('a')), goal: 'Focus area: Ship cards', evidence: 'The cards.' }] })]);
     run(['apply', write('d2.json', { groups: [{ title: 'Pricing page', conversations: [key('c')] }] })]);
     // Only the new group is listed; the aligned one is not sent again.
     expect(run(['align-input']).groups.map((group: { groupId: string }) => group.groupId)).toEqual([groupIdFor(key('c'))]);
@@ -314,13 +324,13 @@ describe('overall requests and progress reviews', () => {
     const write = (name: string, value: unknown) => { const path = join(dir, name); writeFileSync(path, JSON.stringify(value)); return path; };
     const group = groupIdFor(key('a'));
     run(['apply', write('d1.json', { groups: [{ title: 'Release cards', conversations: [key('a')] }, { title: 'Pricing page', conversations: [key('c')] }] })]);
-    run(['record-alignment', write('a1.json', { links: [{ groupId: group, goal: 'Priority: Ship cards', evidence: 'The cards.' }], unaligned: [groupIdFor(key('c'))] })]);
+    run(['record-alignment', write('a1.json', { links: [{ groupId: group, goal: 'Focus area: Ship cards', evidence: 'The cards.' }], unaligned: [groupIdFor(key('c'))] })]);
     expect(run(['align-input']).groups).toEqual([]);
     // A new review says what the request is now; the decision was made on the old one.
     run(['record-progress', write('r.json', { groupId: group, state: 'in-progress', percent: 40, summary: 'Now the pricing page too.', reviewBasis: run(['show', group]).reviewBasis })]);
     expect(run(['align-input']).groups.map((entry: { groupId: string }) => entry.groupId)).toEqual([group]);
     expect(refreshNeeds({ dir, database, now: NOW }).unaligned).toBe(1);
-    run(['record-alignment', write('a2.json', { links: [{ groupId: group, goal: 'Priority: Ship cards', evidence: 'Still the cards.' }] })]);
+    run(['record-alignment', write('a2.json', { links: [{ groupId: group, goal: 'Focus area: Ship cards', evidence: 'Still the cards.' }] })]);
     expect(run(['align-input']).groups).toEqual([]);
     // A merged-in conversation changes the request too.
     run(['apply', write('d2.json', { groups: [{ title: 'Release cards', conversations: [key('a'), key('b')], links: [{ kind: 'shared-work-list', conversations: [key('a'), key('b')], evidence: 'work list "release-cards" in repo/tree' }] }] })]);
@@ -397,6 +407,14 @@ describe('overall requests and progress reviews', () => {
     const input = run(['story-input']);
     expect(input.reviews.map((entry: { groupId: string }) => entry.groupId)).toEqual([groupIdFor(key('c'))]);
     expect(input.previousStory.narrative).toBe('Two requests under way.');
+    // Rules owner-goals put in the story are carried by record-story but never shown to the story model, so it
+    // cannot echo copies of them back without their source.
+    const ownerGoalsRule = { preference: 'Ship daily.', when: '', kind: 'directive', supportCount: 1, quotes: [], source: 'owner-goals' };
+    writeFileSync(join(dir, 'story.json'), JSON.stringify({ ...readLedger(dir).story, preferences: [{ preference: 'Keep the design.', quotes: [] }, ownerGoalsRule] }));
+    expect(run(['story-input']).previousStory.preferences.map((preference: { preference: string }) => preference.preference)).toEqual(['Keep the design.']);
+    run(['record-story', write('s3.json', { narrative: 'Two requests under way.', preferences: [{ preference: 'Keep the design.' }] })], NOW + 4000);
+    expect(readLedger(dir).story.preferences.map((preference: { preference: string; source?: string }) => [preference.preference, preference.source ?? null]))
+      .toEqual([['Keep the design.', null], ['Ship daily.', 'owner-goals']]);
     // The agent gets its budget up front, and an over-long story is refused with its length.
     expect(input).toMatchObject({ narrativeLimit: 12000, previousNarrativeChars: 'Two requests under way.'.length, roomChars: 12000 - 'Two requests under way.'.length });
     expect(() => run(['record-story', write('s.json', { narrative: 'x'.repeat(12001) })])).toThrow('narrative is 12001 characters; it must be 1–12000. Cut at least 1 characters.');
@@ -421,7 +439,7 @@ describe('overall requests and progress reviews', () => {
       run(['record-progress', review]);
     }
     const alignment = join(dir, 'alignment-input.json');
-    writeFileSync(alignment, JSON.stringify({ links: [{ groupId: groupIdFor(key('a')), goal: 'Priority: Ship cards', evidence: 'Release cards are the cards to ship.' }], unaligned: [groupIdFor(key('c'))] }));
+    writeFileSync(alignment, JSON.stringify({ links: [{ groupId: groupIdFor(key('a')), goal: 'Focus area: Ship cards', evidence: 'Release cards are the cards to ship.' }], unaligned: [groupIdFor(key('c'))] }));
     expect(run(['record-alignment', alignment])).toEqual({ aligned: 1, unaligned: 1 });
     expect(refreshNeeds({ dir, database, now: NOW - 2 * DAY + 1000 })).toEqual({ due: 0, ungrouped: 0, goalsStale: false, unaligned: 0, needed: false });
     expect(run(['refresh-needs'], NOW - 2 * DAY + 1000).needed).toBe(false);
@@ -430,19 +448,19 @@ describe('overall requests and progress reviews', () => {
     expect(refreshNeeds({ dir, database, now: NOW }).unaligned).toBe(0);
     // Ship cards is replaced by Pricing.
     const goalWrite = database.prepare('INSERT INTO work_state_entries (project, list_name, fields, created_at_epoch) VALUES (?, ?, ?, ?)');
-    goalWrite.run('owner', 'owner-goals', JSON.stringify({ task: 'Priority: Ship cards', status: 'dropped' }), 3);
-    goalWrite.run('owner', 'owner-goals', JSON.stringify({ task: 'Priority: Pricing', status: 'todo', goal_kind: 'priority', rank: 1, title: 'Pricing' }), 4);
+    goalWrite.run('owner', 'owner-goals', JSON.stringify({ task: 'Focus area: Ship cards', status: 'dropped' }), 3);
+    goalWrite.run('owner', 'owner-goals', JSON.stringify({ task: 'Focus area: Pricing', status: 'todo', goal_kind: 'focus-area', rank: 1, title: 'Pricing' }), 4);
     expect(run(['align-input']).groups.map((group: { groupId: string }) => group.groupId)).toEqual([groupIdFor(key('a')), groupIdFor(key('c'))]);
-    writeFileSync(alignment, JSON.stringify({ links: [{ groupId: groupIdFor(key('c')), goal: 'Priority: Pricing', evidence: 'The pricing page.' }], unaligned: [groupIdFor(key('a'))] }));
+    writeFileSync(alignment, JSON.stringify({ links: [{ groupId: groupIdFor(key('c')), goal: 'Focus area: Pricing', evidence: 'The pricing page.' }], unaligned: [groupIdFor(key('a'))] }));
     run(['record-alignment', alignment]);
     expect(refreshNeeds({ dir, database, now: NOW }).unaligned).toBe(0);
     // A new goal: any group may serve it, so every group is asked (keeping its previous links).
-    goalWrite.run('owner', 'owner-goals', JSON.stringify({ task: 'Priority: Docs', status: 'todo', goal_kind: 'priority', rank: 2, title: 'Docs' }), 5);
+    goalWrite.run('owner', 'owner-goals', JSON.stringify({ task: 'Focus area: Docs', status: 'todo', goal_kind: 'focus-area', rank: 2, title: 'Docs' }), 5);
     expect(refreshNeeds({ dir, database, now: NOW }).unaligned).toBe(2);
-    writeFileSync(alignment, JSON.stringify({ links: [{ groupId: groupIdFor(key('c')), goal: 'Priority: Pricing', evidence: 'The pricing page.' }, { groupId: groupIdFor(key('a')), goal: 'Priority: Docs', evidence: 'Card docs.' }] }));
+    writeFileSync(alignment, JSON.stringify({ links: [{ groupId: groupIdFor(key('c')), goal: 'Focus area: Pricing', evidence: 'The pricing page.' }, { groupId: groupIdFor(key('a')), goal: 'Focus area: Docs', evidence: 'Card docs.' }] }));
     run(['record-alignment', alignment]);
     // A goal that is gone: only the group linked to it is asked again.
-    goalWrite.run('owner', 'owner-goals', JSON.stringify({ task: 'Priority: Docs', status: 'dropped' }), 6);
+    goalWrite.run('owner', 'owner-goals', JSON.stringify({ task: 'Focus area: Docs', status: 'dropped' }), 6);
     expect(run(['align-input']).groups.map((group: { groupId: string }) => group.groupId)).toEqual([groupIdFor(key('a'))]);
     const before = ledgerSignature(dir);
     writeFileSync(join(dir, 'refresh.json'), JSON.stringify({ state: 'running' }));
@@ -479,11 +497,11 @@ describe('overall requests and progress reviews', () => {
 
   it('the snapshot joins alignment onto requests: linked, explicitly none, or not linked yet', () => {
   const source = new WorkStateSource({ ledgerDir: null });
-  const goal = { id: '["owner","owner-goals"]-ship', task: 'Priority: Ship cards', title: 'Ship cards', kind: 'priority' };
-  source.agentView = { ...source.agentView, goals: { generatedAt: '2026-10-01T10:00:00Z', priorities: [goal], openAsks: [] }, humanRequests: [{ id: 'r1', groupId: 'g_1' }, { id: 'r2', groupId: 'g_2' }, { id: 'r3', groupId: 'g_3' }, { id: 'r4', groupId: null }] } as any;
-  source.ledger = { alignment: { links: { g_1: [{ goal: 'Priority: Ship cards', evidence: 'The cards.' }], g_3: [{ goal: 'Priority: Gone', evidence: 'An old goal.' }] }, unaligned: ['g_2'], goals: ['Priority: Ship cards', 'Priority: Gone'], alignedAt: '2026-10-02T00:00:00Z' } } as any;
+  const goal = { id: '["owner","owner-goals"]-ship', task: 'Focus area: Ship cards', title: 'Ship cards', kind: 'focus-area' };
+  source.agentView = { ...source.agentView, goals: { generatedAt: '2026-10-01T10:00:00Z', areas: [goal], asks: [] }, humanRequests: [{ id: 'r1', groupId: 'g_1' }, { id: 'r2', groupId: 'g_2' }, { id: 'r3', groupId: 'g_3' }, { id: 'r4', groupId: null }] } as any;
+  source.ledger = { alignment: { links: { g_1: [{ goal: 'Focus area: Ship cards', evidence: 'The cards.' }], g_3: [{ goal: 'Focus area: Gone', evidence: 'An old goal.' }] }, unaligned: ['g_2'], goals: ['Focus area: Ship cards', 'Focus area: Gone'], alignedAt: '2026-10-02T00:00:00Z' } } as any;
   const { humanRequests, goals } = source.goalLinks() as any;
-  expect(humanRequests[0].goals).toEqual([{ goalId: goal.id, goal: goal.task, title: 'Ship cards', kind: 'priority', evidence: 'The cards.' }]);
+  expect(humanRequests[0].goals).toEqual([{ goalId: goal.id, goal: goal.task, title: 'Ship cards', kind: 'focus-area', evidence: 'The cards.' }]);
   expect(humanRequests[1].goals).toEqual([]);
   expect(humanRequests[2].goals).toBeUndefined();
   expect(humanRequests[3].goals).toBeUndefined();
@@ -491,7 +509,7 @@ describe('overall requests and progress reviews', () => {
   // A newer goals run with the same goals keeps "serves none"; an added goal makes it a question again.
   source.agentView = { ...source.agentView, goals: { ...source.agentView.goals, generatedAt: '2026-10-05T10:00:00Z' } } as any;
   expect((source.goalLinks() as any).humanRequests[1].goals).toEqual([]);
-  source.agentView = { ...source.agentView, goals: { ...source.agentView.goals, openAsks: [{ ...goal, id: 'new', task: 'Open ask: Docs', title: 'Docs', kind: 'open-ask' }] } } as any;
+  source.agentView = { ...source.agentView, goals: { ...source.agentView.goals, asks: [{ ...goal, id: 'new', task: 'Ask: Docs', title: 'Docs', kind: 'ask' }] } } as any;
   expect((source.goalLinks() as any).humanRequests[1].goals).toBeUndefined();
 });
 
@@ -500,8 +518,8 @@ describe('overall requests and progress reviews', () => {
 function saveGoals(database: Database, generatedAt: string) {
   const write = database.prepare('INSERT INTO work_state_entries (project, list_name, fields, created_at_epoch) VALUES (?, ?, ?, ?)');
   write.run('owner', 'owner-goals', JSON.stringify({ human_summary: 'Ship the cards.', generated_at: generatedAt }), 1);
-  write.run('owner', 'owner-goals', JSON.stringify({ task: 'Priority: Ship cards', status: 'todo', goal_kind: 'priority', rank: 1, title: 'Ship cards', evidence: '2026-10-01 10:00 | ship the cards | today' }), 2);
-  write.run('owner', 'owner-goals', JSON.stringify({ task: 'Open ask: Old thing', status: 'todo', goal_kind: 'open-ask', rank: 1, title: 'Old thing' }), 3);
-  write.run('owner', 'owner-goals', JSON.stringify({ task: 'Open ask: Old thing', status: 'dropped' }), 4);
-  write.run('owner', 'owner-goals/2026-09-01', JSON.stringify({ task: 'Priority: History', status: 'done', title: 'History' }), 5);
+  write.run('owner', 'owner-goals', JSON.stringify({ task: 'Focus area: Ship cards', status: 'todo', goal_kind: 'focus-area', rank: 1, title: 'Ship cards', evidence: '2026-10-01 10:00 | ship the cards | today' }), 2);
+  write.run('owner', 'owner-goals', JSON.stringify({ task: 'Ask: Old thing', status: 'todo', goal_kind: 'ask', rank: 1, title: 'Old thing' }), 3);
+  write.run('owner', 'owner-goals', JSON.stringify({ task: 'Ask: Old thing', status: 'dropped' }), 4);
+  write.run('owner', 'owner-goals/2026-09-01', JSON.stringify({ task: 'Focus area: History', status: 'done', title: 'History' }), 5);
 }

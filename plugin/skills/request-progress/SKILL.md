@@ -96,14 +96,14 @@ Split the due groups into batches of about 8 and give each batch to a subagent, 
 
 Run this yourself after the reviews (it needs the reviews' summaries):
 
-1. Run `$CLI align-input`. It returns the owner's current goals (each with an exact `goal` key, title, product and the owner's own quotes, from the owner-goals list), the request groups still to align (title, first ask, progress state and summary: groups this step has not seen, groups whose request changed since their decision, or every group when the goals changed) and their previous links. If it lists no groups, skip this step: every group is already aligned, or the owner-goals skill has not run and every card keeps "Goal not linked yet".
+1. Run `$CLI align-input`. It returns the owner's current goals (each with an exact `taskKey`, title, product and the owner's own quotes, from the owner-goals list), the request groups still to align (title, first ask, progress state and summary: groups this step has not seen, groups whose request changed since their decision, or every group when the goals changed) and their previous links. If it lists no groups, skip this step: every group is already aligned, or the owner-goals skill has not run and every card keeps "Goal not linked yet".
 2. For each listed group, pick the goals it directly advances: usually one, at most three. A request serves a goal when delivering it moves that goal forward. The same product area alone is not enough. Groups that serve no current goal go in `unaligned`. Keep a previous link unless the goals or the request changed.
 3. Each link needs `evidence` (≤300 chars): name what in the request advances the goal, quoting the goal's or the request's words.
 4. Record it. Every listed group must appear in `links` or `unaligned`; groups it did not list keep their earlier links. The command validates, so fix and retry if it rejects:
 
 ```bash
 $CLI record-alignment - <<'JSON'
-{"links": [{"groupId": "g_…", "goal": "<exact goal key>", "evidence": "…"}], "unaligned": ["g_…"]}
+{"links": [{"groupId": "g_…", "goal": "<exact taskKey>", "evidence": "…"}], "unaligned": ["g_…"]}
 JSON
 ```
 

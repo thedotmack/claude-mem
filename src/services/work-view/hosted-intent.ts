@@ -1,5 +1,6 @@
 /** Setup's subsidized extraction. The wire contract is claude-mem-pro's /api/pro/intent. */
 import { gzipSync } from 'node:zlib';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
@@ -7,6 +8,9 @@ import type { OwnerPrompt } from '../prompt-import/index.js';
 import { getOrCreateIntentCredentials, intentCredentialHeaders, readIntentCredentials } from '../../shared/intent-credentials.js';
 import { groupIdFor, readConversationProjects, readGoals, readLedger, writeJsonAtomic, type LedgerDatabase } from './request-groups.mjs';
 import { projectRoot } from './session-project.mjs';
+import { readFocusAreas } from './data-source.mjs';
+import { MY_FOCUS_LIST, ownerGoalsAreaRows } from './my-focus.mjs';
+import { logger } from '../../utils/logger.js';
 
 /** Owner-approved cap: the largest measured export was 262 KB, and all exports fit one 1M-context call.
  * Cloud enforces this against both compressed and uncompressed bytes, plus its offline 400k-token budget. */
@@ -50,6 +54,8 @@ export interface HostedIntentOptions {
   openDatabase: () => LedgerDatabase & { close(): void };
   appendWorkStateEntry: (entry: { project: string; listName: string; fields: Record<string, string | number | boolean | null> }) => void;
   homeProject: () => string;
+  /** This worker's sync device id, so my-focus rows replay in the same order the worker's snapshot uses. */
+  localDeviceId?: () => string;
   fetch?: typeof fetch;
   now?: () => number;
   timezoneOffsetMinutes?: () => number;
@@ -229,10 +235,34 @@ export class HostedIntent {
       source_prompt_count: goals.source_prompt_count, map_path: mapPath, status: 'open',
       source: 'hosted-intent', hosted_generated_at: goals.generated_at,
     }];
-    for (const [kind, items] of [['priority', goals.priorities], ['open-ask', goals.open_asks]] as const) {
-      for (const item of items) rows.push({
-        task: `${kind === 'priority' ? 'Priority' : 'Open ask'}: ${item.title}`, status: 'todo', goal_kind: kind,
-        rank: item.rank, title: item.title, product: item.product, latest_at: item.latest_at, times_asked: item.times_asked,
+    // Cloud's contract still answers priorities and open asks, without the three tests or area matching. Its
+    // priorities are saved as focus areas and its open asks as asks under no area, the same rows save_goals.py writes;
+    // the next local refresh sorts them again with the three tests (refresh-task re-sorts legacy and unmatched items).
+    const database = this.options.openDatabase();
+    let savedAreas: ReturnType<typeof readFocusAreas>, previousGoals: ReturnType<typeof readGoals>['goals'];
+    try { savedAreas = readFocusAreas(database, { localDeviceId: this.options.localDeviceId?.() ?? '' }); previousGoals = readGoals(database).goals; } finally { database.close(); }
+    // An area id is not derived from its name (a rename keeps it): it hashes this Cloud run and the item's place in it,
+    // so a save replayed after a cut-off rewrites the same areas instead of adding copies. 12 hex characters: the
+    // length of a random area id (newFocusAreaId, 6 bytes) and of groupIdFor's hash.
+    const areaIds = goals.priorities.map((_item, index) => `fa_${createHash('sha256').update(JSON.stringify(['hosted-intent', goals.generated_at, index])).digest('hex').slice(0, 12)}`);
+    const thisRun = new Set(areaIds);
+    // Without a model to judge which saved area a Cloud priority already is (names are never compared), areas
+    // saved before this run (synced from another computer) mean no new ones are suggested here. The items stay
+    // in owner-goals without an area id, and the next local refresh matches them.
+    const otherAreas = savedAreas.filter(area => !thisRun.has(area.focusAreaId));
+    const focusRows = otherAreas.length ? [] : ownerGoalsAreaRows(goals.priorities.map((item, index) => ({
+      name: item.title, goal: '', rank: item.rank, matches: savedAreas.some(area => area.focusAreaId === areaIds[index]) ? areaIds[index] : null,
+      evidence: `From your prompts: asked ${item.times_asked} times, latest ${item.latest_at}.`,
+    })), savedAreas, index => areaIds[index]).rows;
+    if (otherAreas.length) {
+      logger.warn('WORKER', 'Hosted setup saved its focus areas without suggesting them: My Focus already has areas to match against', { savedAreas: otherAreas.length, minedAreas: goals.priorities.length });
+    }
+    for (const [kind, items] of [['focus-area', goals.priorities], ['ask', goals.open_asks]] as const) {
+      for (const [index, item] of items.entries()) rows.push({
+        task: `${kind === 'focus-area' ? 'Focus area' : 'Ask'}: ${item.title}`, status: 'todo', goal_kind: kind,
+        rank: item.rank, title: item.title, ...(kind === 'ask' ? { focus_area: null } : {}),
+        focus_area_id: kind === 'focus-area' && !otherAreas.length ? areaIds[index] : null,
+        latest_at: item.latest_at, times_asked: item.times_asked,
         snapshot: goals.generated_at, source: 'hosted-intent', hosted_snapshot: goals.generated_at,
         // JSON preserves quotes containing newlines; the line format remains for older readers.
         evidence_json: JSON.stringify(item.evidence), evidence: item.evidence.map(quote => `${quote.at} | ${quote.quote}`).join('\n'),
@@ -240,14 +270,12 @@ export class HostedIntent {
     }
     const tasks = new Set(rows.slice(1).map(row => row.task));
     if (tasks.size !== rows.length - 1) throw new Error('Hosted extraction returned duplicate goal titles.');
-    const database = this.options.openDatabase();
-    try {
-      for (const previous of readGoals(database).goals) if (!tasks.has(previous.goal)) rows.push({ task: previous.goal, status: 'dropped' });
-    } finally { database.close(); }
+    for (const previous of previousGoals) if (!tasks.has(previous.taskKey)) rows.push({ task: previous.taskKey, status: 'dropped' });
     // Internal work-state writes preserve the entire Cloud response. The public route's 2,000-character
     // request bound is not applied here: trimming summaries or evidence would silently change the result.
     mkdirSync(join(ledgerDir, 'owner-goals'), { recursive: true });
     writeFileSync(mapPath, result.goals.map, { mode: 0o600 });
+    for (const fields of focusRows) this.options.appendWorkStateEntry({ project: this.options.homeProject(), listName: MY_FOCUS_LIST, fields });
     for (const fields of rows) this.options.appendWorkStateEntry({ project: this.options.homeProject(), listName: 'owner-goals', fields });
     writeJsonAtomic(join(ledgerDir, 'request-groups.json'), groups);
     writeJsonAtomic(join(ledgerDir, 'story.json'), {

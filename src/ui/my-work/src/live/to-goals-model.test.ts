@@ -12,18 +12,18 @@ const scrubbedGoals = readJson<{ goals: WorkViewGoalList; goalHistory: WorkViewG
 const now = Date.parse(baseSnapshot.generatedAt)
 const mapWithGoals = (goals: Partial<Pick<WorkViewSnapshot, 'goals' | 'goalHistory'>>) => toWorkModel({ ...baseSnapshot, ...goals }, now)
 
-test('current priorities and open asks keep the run order, ranks, counts and words', () => {
+test('current focus areas and asks keep the run order, ranks, counts and words', () => {
   const model = mapWithGoals(scrubbedGoals)
   assert.equal(model.goalsReadError, null)
   assert.deepEqual(model.priorities.map((goal) => goal.title), ['Ship the garden planner', 'Fix the watering reminders'])
   const [first] = model.priorities
-  assert.equal(first.id, scrubbedGoals.goals.priorities[0].id)
+  assert.equal(first.id, scrubbedGoals.goals.areas[0].id)
   assert.equal(first.kind, 'Priority')
   assert.equal(first.rank, 1)
   assert.equal(first.timesAsked, 4, 'times asked comes from the run, not a count of quotes')
   assert.equal(first.latestAt, '10-18 22:11')
   assert.deepEqual(first.quotes, [{ at: '10-18 22:11', quote: 'please ship the garden planner this week' }, { at: '10-16', quote: 'the seed list should sort by month' }])
-  assert.equal(model.priorities[1].product, 'Product not recorded')
+  assert.equal(model.priorities[1].product, 'Focus area', 'a focus area saved without a product is labeled as one')
   assert.deepEqual(model.priorities[1].quotes, [{ at: '', quote: 'reminders fire twice on rainy days' }])
   assert.deepEqual(model.openAsks.map((ask) => [ask.kind, ask.title, ask.servedBy]), [['Open ask', 'Dark mode for the planner', undefined]])
 })
@@ -60,7 +60,7 @@ test('no owner-goals run: no goals, no period, no last run, and no error', () =>
 })
 
 test('an unreadable run empties My Goals with the reason and leaves the requests alone', () => {
-  const broken = { ...scrubbedGoals.goals, priorities: [{ ...scrubbedGoals.goals.priorities[0], timesAsked: null }] }
+  const broken = { ...scrubbedGoals.goals, areas: [{ ...scrubbedGoals.goals.areas[0], timesAsked: null }] }
   const model = mapWithGoals({ goals: broken, goalHistory: scrubbedGoals.goalHistory })
   assert.match(model.goalsReadError!, /How often goal "Ship the garden planner" was asked is not recorded/)
   assert.equal(model.currentPeriod, null)

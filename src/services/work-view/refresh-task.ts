@@ -19,13 +19,17 @@ import type { UsableAgentId } from '../agent-runner/detect.js';
 import { runCommand } from '../agent-runner/detect.js';
 import { writeOwnerPromptsFile, type OwnerPromptsFile } from '../prompt-import/owner-prompts-file.js';
 import { resolvePythonCommand } from './python.js';
-import { readGoals, runCli, validateGroupingAnswer, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
+import { readGoals, readLedger, runCli, validateGroupingAnswer, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
+import { readFocusAreas } from './data-source.mjs';
+import type { FocusArea } from './my-focus.mjs';
 
 /** claude-mem MCP tools a refresh may call: reads only. Saves go through the skills' scripts and their
  * validators (save_goals.py, the request-groups CLI), never a raw work_state_write. */
 export const MEMORY_TOOLS = ['search', 'dumb_search', 'timeline', 'get_observations', 'get_tool_uses', 'work_state_read'];
 const PLUGIN_MCP_PREFIX = 'mcp__plugin_claude-mem_mcp-search__';
 const REVIEW_BATCH = 8;
+/** save_goals.py's FAILED_AFTER_WRITING_EXIT: it failed after its first write, so the goals step must not ask again. */
+const SAVE_GOALS_FAILED_AFTER_WRITING_EXIT = 3;
 
 /** The model each step runs on. Small, fast models match conversations and goals; stronger ones judge
  * progress, write the story and pick verbatim quotes. Codex's careful steps use its CLI default model.
@@ -62,6 +66,8 @@ export interface RefreshTaskOptions {
   openDatabase: () => LedgerDatabase & { close(): void };
   now?: () => number;
   spawnImpl?: typeof spawn;
+  /** This worker's sync device id, so my-focus rows replay in the same order the worker's snapshot uses. */
+  localDeviceId?: () => string;
   /** Owner-goals step 1: writes owner-prompts.md into the folder from every agent's transcripts (prompt importer). */
   writeOwnerPrompts?: (folder: string, sinceMinute: string | null) => Promise<OwnerPromptsFile>;
 }
@@ -97,13 +103,33 @@ const localDay = (epoch: number) => {
 /** The local `YYYY-MM-DD HH:MM` that owner-prompts.md headers use. */
 const localMinute = (epoch: number) => `${localDay(epoch)} ${pad(new Date(epoch).getHours())}:${pad(new Date(epoch).getMinutes())}`;
 
-/** The saved goals as the owner-goals.json the skill writes, so an update starts from them. */
-function goalsJson(saved: ReturnType<typeof readGoals>) {
-  const items = (kind: string) => saved.goals.filter(goal => goal.kind === kind).map(goal => ({
-    rank: goal.rank, title: goal.title, product: goal.product, latest_at: goal.latestAt, times_asked: goal.timesAsked, evidence: goal.evidence,
-  }));
-  return { generated_at: saved.generatedAt, window_days: 31, human_summary: saved.summary, priorities: items('priority'), open_asks: items('open-ask') };
+/** A story preference's ISO time as the local minute owner-prompts.md headers use. */
+const quoteMinute = (at: string) => {
+  const epoch = Date.parse(at);
+  if (!Number.isFinite(epoch)) throw new Error(`A saved owner-goals rule quote has no readable time: ${at}`);
+  return localMinute(epoch);
+};
+
+/** The saved goals as the owner-goals.json the skill writes, so an update starts from them: the focus areas and
+ * asks in owner-goals, and the rules owner-goals put in the build story's preferences. */
+function goalsJson(saved: ReturnType<typeof readGoals>, story: { preferences?: Array<Record<string, any>> } | null) {
+  const items = (kind: string) => saved.goals.filter(goal => goal.kind === kind);
+  return {
+    generated_at: saved.generatedAt, window_days: 31, human_summary: saved.summary,
+    focus_areas: items('focus-area').map(goal => ({ rank: goal.rank, title: goal.title, goal: goal.goal, matches: goal.focusAreaId,
+      latest_at: goal.latestAt, times_asked: goal.timesAsked, evidence: goal.evidence })),
+    asks: items('ask').map(goal => ({ rank: goal.rank, title: goal.title, focus_area: goal.focusArea,
+      latest_at: goal.latestAt, times_asked: goal.timesAsked, evidence: goal.evidence })),
+    rules: (story?.preferences ?? []).filter(preference => preference.source === 'owner-goals').map(preference => {
+      const evidence = (preference.quotes ?? []).map((quote: { quote: string; at: string }) => ({ at: quoteMinute(quote.at), quote: quote.quote }));
+      return { when: preference.when ?? '', then: preference.preference, times_asked: preference.supportCount,
+        latest_at: evidence.map((quote: { at: string }) => quote.at).sort().at(-1) ?? null, evidence };
+    }),
+  };
 }
+
+/** What the goals step tells the model about My Focus, so it judges which saved area each mined one already is. */
+const focusAreasNote = (path: string) => `The focus areas already saved in My Focus are in ${path} (id, name, goal, status; do not run --print-focus-areas). For each focus area you write, set "matches" to the id of the saved area it already is, whatever its name, or null when none is. Never match by name alone.`;
 
 export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { steps: StepTiming[] } {
   const { needs, reason, dataDir, ledgerDir, pluginRoot, openDatabase } = options;
@@ -114,12 +140,13 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
   // Owner-goals step 1 is the prompt importer's (one filter for every agent), run once as the task's prepare step:
   // with saved goals, it also writes the prompts typed since they were saved (new-owner-prompts.md).
   let savedGoals: ReturnType<typeof readGoals> | null = null;
+  let savedAreas: FocusArea[] = [];
   let since: string | null = null;
   let exported: OwnerPromptsFile | null = null;
   let exportedAt = new Date(now()).toISOString();
   const prepareGoals = async () => {
     const database = openDatabase();
-    try { savedGoals = readGoals(database); } finally { database.close(); }
+    try { savedGoals = readGoals(database); savedAreas = readFocusAreas(database, { localDeviceId: options.localDeviceId?.() ?? '' }); } finally { database.close(); }
     since = savedGoals.goals.length && Number.isFinite(Date.parse(savedGoals.generatedAt ?? '')) ? localMinute(Date.parse(savedGoals.generatedAt!)) : null;
     exportedAt = new Date(now()).toISOString();
     exported = await writeOwnerPrompts(goalsFolder, since);
@@ -156,13 +183,18 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       return output;
     };
     let python: ReturnType<typeof resolvePythonCommand> | undefined;
-    /** Resolve once per refresh. Never retry a script that may already have saved goals. */
+    /** Resolve once per refresh, and never retry the script with another interpreter. The goals step re-asks the model
+     * after a refusal, which save_goals.py gives before it writes anything (exit 1); a failure after it started writing
+     * (FAILED_AFTER_WRITING_EXIT) is never retried, since a second answer would suggest its new areas again. */
     const runScript = async (args: string[]) => {
       const spawnImpl = options.spawnImpl ?? spawn;
       const interpreter = await (python ??= resolvePythonCommand(spawnImpl));
       const result = await runCommand(spawnImpl, interpreter.command, [...interpreter.args, ...args], { cwd: dataDir, env: { ...process.env, CLAUDE_MEM_INTERNAL: '1', PYTHONUTF8: '1' } });
       if (result.spawnError) throw result.spawnError;
-      if (result.exitCode !== 0) throw new Error(`${args[0].split('/').pop()} exited ${result.exitCode}: ${`${result.stdout}\n${result.stderr}`.trim().slice(-800)}`);
+      if (result.exitCode !== 0) {
+        throw Object.assign(new Error(`${args[0].split('/').pop()} exited ${result.exitCode}: ${`${result.stdout}\n${result.stderr}`.trim().slice(-800)}`),
+          { retryable: result.exitCode !== SAVE_GOALS_FAILED_AFTER_WRITING_EXIT });
+      }
       return result.stdout;
     };
     const timed = async <T>(name: string, work: () => Promise<T>, extra: { groups?: number } = {}): Promise<T> => {
@@ -178,7 +210,11 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       for (let attempt = 0; attempt < 2; attempt++) {
         answer = await ask(refusal ? `${question}\n\nYour previous answer was refused: ${refusal}\nFix it and answer again.` : question, STEP_MODELS[name], answerSchema);
         try { return await save(parseAgentJson(answer)); }
-        catch (error) { refusal = error instanceof Error ? error.message : String(error); }
+        catch (error) {
+          // A save that failed after it started writing is not the answer's fault, and asking again would write twice.
+          if ((error as { retryable?: boolean })?.retryable === false) throw error;
+          refusal = error instanceof Error ? error.message : String(error);
+        }
       }
       const failedDir = join(ledgerDir, 'failed-answers');
       mkdirSync(failedDir, { recursive: true });
@@ -203,35 +239,44 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
         const goalsPath = join(goalsFolder, 'owner-goals.json'), promptsPath = join(goalsFolder, 'owner-prompts.md');
         const save = async (goals: Record<string, unknown>, mapPath: string | null) => {
           writeFileSync(goalsPath, JSON.stringify({ ...goals, source_prompt_count: ownerPrompts }, null, 2), { mode: 0o600 });
-          await runScript([paths.saveScript, '--goals', goalsPath, '--prompts', promptsPath, ...(mapPath ? ['--map', mapPath] : []), ...(since ? ['--carried-before', since] : [])]);
+          await runScript([paths.saveScript, '--goals', goalsPath, '--prompts', promptsPath, '--ledger-dir', ledgerDir, ...(mapPath ? ['--map', mapPath] : []), ...(since ? ['--carried-before', since] : [])]);
         };
         const previousMap = saved.mapPath && existsSync(saved.mapPath) ? saved.mapPath : null;
         if (!ownerPrompts) {
           // No evidence needs no model call. Save the validated empty snapshot so
           // the scheduler can continue grouping and will not retry every check.
-          await save({ generated_at: exportedAt, window_days: 31, human_summary: 'No owner prompts in this window.', priorities: [], open_asks: [] }, null);
+          await save({ generated_at: exportedAt, window_days: 31, human_summary: 'No owner prompts in this window.', focus_areas: [], asks: [], rules: [] }, null);
           done.push('goals empty');
         } else if (!since) {
           await step('goals', [
             inlineSkill(paths.ownerGoalsSkill), '---', readOnly,
             `Step 1 is done: the owner's prompts are in ${promptsPath}. Do step 2 yourself (no subagent). Instead of writing owner-map.md and owner-goals.json, reply with only one JSON object: {"map": "<the owner-map.md markdown>", "goals": <the owner-goals.json object>}. The worker saves it with step 3.`,
+            focusAreasNote(writeInput('focus-areas', savedAreas)),
           ].join('\n\n'), async answer => {
             if (typeof answer.map !== 'string' || !answer.goals || typeof answer.goals !== 'object') throw new Error('Answer needs "map" (markdown) and "goals" (object).');
             writeFileSync(join(goalsFolder, 'owner-map.md'), answer.map, { mode: 0o600 });
             await save({ ...answer.goals, generated_at: exportedAt }, join(goalsFolder, 'owner-map.md'));
           });
           done.push('goals mapped');
-        } else if (!newPrompts) {
-          // Nothing new typed: the saved goals still hold; re-save them as current.
-          await save({ ...goalsJson(saved), generated_at: exportedAt }, previousMap);
-          done.push('goals unchanged');
         } else {
-          const previousPath = writeInput('previous-owner-goals', goalsJson(saved));
-          await step('goals', [
-            inlineSkill(paths.ownerGoalsSkill), '---', readOnly,
-            `Do "Update the saved goals" yourself (no subagent). The saved goals are in ${previousPath}; the ${newPrompts} prompts the owner typed since they were saved are in ${join(goalsFolder, 'new-owner-prompts.md')}. Reply with only the updated owner-goals.json object. The worker saves it with step 3.`,
-          ].join('\n\n'), answer => save({ ...answer, generated_at: exportedAt }, previousMap));
-          done.push('goals updated');
+          const previous = goalsJson(saved, readLedger(ledgerDir).story);
+          // Items saved before the three tests (priorities and open asks), and focus areas hosted setup saved without a
+          // goal sentence or a My Focus area, are sorted again even with nothing new typed.
+          const needsSorting = saved.goals.some(goal => goal.legacy || (goal.kind === 'focus-area' && (!goal.goal || !goal.focusAreaId)));
+          if (!newPrompts && !needsSorting) {
+            // Nothing new typed: the saved goals still hold; re-save them as current.
+            await save({ ...previous, generated_at: exportedAt }, previousMap);
+            done.push('goals unchanged');
+          } else {
+            const previousPath = writeInput('previous-owner-goals', previous);
+            await step('goals', [
+              inlineSkill(paths.ownerGoalsSkill), '---', readOnly,
+              `Do "Update the saved goals" yourself (no subagent). The saved goals are in ${previousPath}; the ${newPrompts} prompts the owner typed since they were saved are in ${join(goalsFolder, 'new-owner-prompts.md')}. Reply with only the updated owner-goals.json object. The worker saves it with step 3.`,
+              ...(needsSorting ? ['Some saved items were not sorted with the three tests (a focus area with no "goal" or "matches", or an item with no "focus_area"). Apply the three tests to every saved item again, in order, and give each the fields its kind needs.'] : []),
+              focusAreasNote(writeInput('focus-areas', savedAreas)),
+            ].join('\n\n'), answer => save({ ...answer, generated_at: exportedAt }, previousMap));
+            done.push('goals updated');
+          }
         }
       }
 

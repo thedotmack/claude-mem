@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { AutoRefreshWorker } from '../../src/services/work-view/auto-refresh-worker.mjs';
 import { buildRefreshTask, GROUPING_ANSWER_SCHEMA, STEP_MODELS } from '../../src/services/work-view/refresh-task.js';
 import { readLedger, runCli } from '../../src/services/work-view/request-groups.mjs';
+import { scratchDir } from '../helpers/scratch-dir.js';
 
 const DAY = 86400000, NOW = 100 * DAY;
 afterEach(() => setFakeSpawn(null));
@@ -29,7 +30,15 @@ function fixtureDatabase() {
 function saveGoals(database: Database, generatedAt: string) {
   const write = database.prepare('INSERT INTO work_state_entries (project, list_name, fields, created_at_epoch) VALUES (?, ?, ?, ?)');
   write.run('owner', 'owner-goals', JSON.stringify({ human_summary: 'Ship the cards.', generated_at: generatedAt }), 1);
-  write.run('owner', 'owner-goals', JSON.stringify({ task: 'Priority: Ship cards', status: 'todo', goal_kind: 'priority', rank: 1, title: 'Ship cards' }), 2);
+  write.run('owner', 'owner-goals', JSON.stringify({ task: 'Focus area: Cards', status: 'todo', goal_kind: 'focus-area', rank: 1, title: 'Cards', goal: 'Release cards people can read.', focus_area_id: 'fa_cards0000001' }), 2);
+  write.run('owner', 'owner-goals', JSON.stringify({ task: 'Ask: Ship cards', status: 'todo', goal_kind: 'ask', rank: 1, title: 'Ship cards', focus_area: 'Cards', focus_area_id: 'fa_cards0000001' }), 3);
+}
+
+/** The Cards area as the owner-goals save suggested it in My Focus. */
+function saveFocusArea(database: Database) {
+  database.prepare('INSERT INTO work_state_entries (project, list_name, fields, created_at_epoch) VALUES (?, ?, ?, ?)').run('owner', 'my-focus', JSON.stringify({
+    task: 'Focus area: fa_cards0000001', focus_area_id: 'fa_cards0000001', name: 'Cards', goal: 'Release cards people can read.', status: 'suggested',
+    priority_rank: 1, owner_rank: null, source: 'owner-goals', merged_into: null, evidence: null, decided_by: 'system' }), 4);
 }
 
 /** A database handle the worker may close without closing the shared fixture. */
@@ -331,6 +340,10 @@ describe('incremental owner goals', () => {
     try {
       const database = fixtureDatabase();
       saveGoals(database, new Date(NOW - 2 * DAY).toISOString());
+      saveFocusArea(database);
+      // A rule the last save put in the story comes back to the model with the saved goals.
+      writeFileSync(join(dir, 'story.json'), JSON.stringify({ preferences: [{ preference: 'Ship daily.', when: '', kind: 'directive', supportCount: 2, source: 'owner-goals',
+        quotes: [{ quote: 'ship it daily', at: new Date(NOW - 3 * DAY).toISOString() }] }, { preference: 'The story\'s own.', quotes: [] }] }));
       writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
       let clock = NOW;
       const calls: Array<{ args: string[]; goals?: any }> = [], sinceMinutes: Array<string | null> = [];
@@ -342,15 +355,26 @@ describe('incremental owner goals', () => {
         // The agent takes five minutes; a prompt typed meanwhile is not in this export.
         clock += 5 * 60000;
         const previous = JSON.parse(readFileSync(/saved goals are in (\S+\.json)/.exec(prompt)![1], 'utf8'));
-        expect(previous.priorities.map((item: any) => item.title)).toEqual(['Ship cards']);
-        return JSON.stringify({ ...previous, priorities: [{ ...previous.priorities[0], rank: 2 }] });
+        expect(previous.focus_areas).toMatchObject([{ title: 'Cards', goal: 'Release cards people can read.', matches: 'fa_cards0000001' }]);
+        expect(previous.asks).toMatchObject([{ title: 'Ship cards', focus_area: 'Cards' }]);
+        expect(previous.rules).toEqual([{ when: '', then: 'Ship daily.', times_asked: 2, latest_at: new Date(NOW - 3 * DAY).toLocaleString('sv').slice(0, 16),
+          evidence: [{ at: new Date(NOW - 3 * DAY).toLocaleString('sv').slice(0, 16), quote: 'ship it daily' }] }]);
+        // The saved My Focus areas are supplied for the model's match judgment.
+        const areas = JSON.parse(readFileSync(/saved in My Focus are in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+        expect(areas.map((area: any) => [area.focusAreaId, area.name])).toEqual([['fa_cards0000001', 'Cards']]);
+        // The stubbed answer, in the new shape: a new area beside the matched one, an ask under it and a rule.
+        return JSON.stringify({ ...previous,
+          focus_areas: [{ ...previous.focus_areas[0], rank: 2 }, { rank: 1, title: 'Pricing', goal: 'A pricing page people trust.', matches: null, latest_at: '2026-10-01 10:00', times_asked: 1, evidence: [{ at: '2026-10-01 10:00', quote: 'pricing' }] }],
+          asks: [...previous.asks, { rank: 2, title: 'Pricing page', focus_area: 'Pricing', latest_at: '2026-10-01 10:00', times_asked: 1, evidence: [{ at: '2026-10-01 10:00', quote: 'pricing' }] }] });
       };
       expect(await task.run(ask, 'codex')).toBe('goals updated.');
       expect(prompts).toHaveLength(1);
       expect(prompts[0]).toContain('new-owner-prompts.md');
       expect(prompts[0]).toContain('3 prompts the owner typed since');
       expect(sinceMinutes).toEqual([new Date(NOW - 2 * DAY).toLocaleString('sv').slice(0, 16)]);
-      expect(calls[0].goals).toMatchObject({ generated_at: new Date(NOW).toISOString(), source_prompt_count: 40, priorities: [{ title: 'Ship cards', rank: 2 }] });
+      expect(calls[0].goals).toMatchObject({ generated_at: new Date(NOW).toISOString(), source_prompt_count: 40,
+        focus_areas: [{ title: 'Cards', rank: 2, matches: 'fa_cards0000001' }, { title: 'Pricing', matches: null }], asks: [{ title: 'Ship cards' }, { title: 'Pricing page', focus_area: 'Pricing' }], rules: [{ then: 'Ship daily.' }] });
+      expect(calls[0].args.slice(calls[0].args.indexOf('--ledger-dir'), calls[0].args.indexOf('--ledger-dir') + 2)).toEqual(['--ledger-dir', dir]);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
@@ -363,7 +387,7 @@ describe('incremental owner goals', () => {
       const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl: fakePython(calls), writeOwnerPrompts: async (folder, sinceMinute) => ({ ...await fakeOwnerPrompts(0, [])(folder, sinceMinute), ownerPrompts: 0 }) });
       await task.prepare!();
       expect(await task.run(async () => { throw new Error('empty input must not call a model'); }, 'codex')).toBe('goals empty.');
-      expect(calls[0].goals).toMatchObject({ generated_at: new Date(NOW).toISOString(), source_prompt_count: 0, priorities: [], open_asks: [] });
+      expect(calls[0].goals).toMatchObject({ generated_at: new Date(NOW).toISOString(), source_prompt_count: 0, focus_areas: [], asks: [], rules: [] });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
@@ -394,7 +418,7 @@ describe('incremental owner goals', () => {
       expect(scripts).toEqual(['python']);
       expect(probes).toBe(1);
       expect(calls[0].args[0]).toEndWith('save_goals.py');
-      expect(calls[0].goals).toMatchObject({ priorities: [{ title: 'Ship cards' }] });
+      expect(calls[0].goals).toMatchObject({ focus_areas: [{ title: 'Cards' }], asks: [{ title: 'Ship cards' }] });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
@@ -435,7 +459,67 @@ describe('incremental owner goals', () => {
       const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl: fakePython(calls), writeOwnerPrompts: fakeOwnerPrompts(0, sinceMinutes) });
       await task.prepare!();
       expect(await task.run(async () => { throw new Error('no agent needed'); }, 'codex')).toBe('goals unchanged.');
-      expect(calls[0].goals).toMatchObject({ generated_at: new Date(NOW).toISOString(), priorities: [{ title: 'Ship cards', rank: 1 }] });
+      expect(calls[0].goals).toMatchObject({ generated_at: new Date(NOW).toISOString(), focus_areas: [{ title: 'Cards', rank: 1, matches: 'fa_cards0000001' }], asks: [{ title: 'Ship cards', rank: 1 }] });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('re-asks the model after a save refused before writing (exit 1), never after one that failed while writing (exit 3)', async () => {
+    for (const [exits, expected] of [[[1, 0], 2], [[3], 1]] as const) {
+      const dir = scratchDir('auto-refresh-save-retry');
+      try {
+        const database = fixtureDatabase();
+        saveGoals(database, new Date(NOW - 2 * DAY).toISOString());
+        writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
+        const codes = [...exits];
+        const spawnImpl = ((_command: string, args: string[]) => {
+          const child: any = new EventEmitter();
+          child.stdout = Object.assign(new EventEmitter(), { setEncoding() {} });
+          child.stderr = Object.assign(new EventEmitter(), { setEncoding() {} });
+          const probe = args.includes('-c');
+          const code = probe ? 0 : codes.shift()!;
+          queueMicrotask(() => { if (code) child.stderr.emit('data', code === 3 ? 'failed after writing' : 'a quote is not the owner\'s words'); child.emit('close', code); });
+          return child;
+        }) as any;
+        const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl, writeOwnerPrompts: fakeOwnerPrompts(2, []) });
+        await task.prepare!();
+        let asked = 0;
+        const ask = async (prompt: string) => { asked++; return readFileSync(/saved goals are in (\S+\.json)/.exec(prompt)![1], 'utf8'); };
+        if (expected === 2) expect(await task.run(ask, 'codex')).toBe('goals updated.');
+        else await expect(task.run(ask, 'codex')).rejects.toThrow('save_goals.py exited 3: failed after writing');
+        expect(asked).toBe(expected);
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    }
+  });
+
+  it('goals saved as priorities and open asks are sorted again with the three tests, even with nothing new typed', async () => {
+    const dir = scratchDir('auto-refresh-resort');
+    try {
+      const database = fixtureDatabase();
+      const write = database.prepare('INSERT INTO work_state_entries (project, list_name, fields, created_at_epoch) VALUES (?, ?, ?, ?)');
+      write.run('owner', 'owner-goals', JSON.stringify({ human_summary: 'Ship the cards.', generated_at: new Date(NOW - 2 * DAY).toISOString() }), 1);
+      write.run('owner', 'owner-goals', JSON.stringify({ task: 'Priority: Ship cards', status: 'todo', goal_kind: 'priority', rank: 1, title: 'Ship cards', evidence: '2026-10-01 10:00 | ship the cards' }), 2);
+      write.run('owner', 'owner-goals', JSON.stringify({ task: 'Open ask: Never ask me twice', status: 'todo', goal_kind: 'open-ask', rank: 1, title: 'Never ask me twice', evidence: '2026-10-01 10:05 | never ask me twice' }), 3);
+      writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
+      const calls: Array<{ args: string[]; goals?: any }> = [];
+      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl: fakePython(calls), writeOwnerPrompts: fakeOwnerPrompts(0, []) });
+      await task.prepare!();
+      const prompts: string[] = [];
+      const ask = async (prompt: string) => {
+        prompts.push(prompt);
+        const previous = JSON.parse(readFileSync(/saved goals are in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+        expect(previous.focus_areas).toMatchObject([{ title: 'Ship cards', goal: null, matches: null }]);
+        expect(previous.asks).toMatchObject([{ title: 'Never ask me twice', focus_area: null }]);
+        // The stubbed answer: the old priority is an ask under a new Cards area, and the old open ask is a rule.
+        return JSON.stringify({ generated_at: previous.generated_at, human_summary: previous.human_summary,
+          focus_areas: [{ rank: 1, title: 'Cards', goal: 'Release cards people can read.', matches: null, latest_at: '2026-10-01 10:00', times_asked: 1, evidence: previous.focus_areas[0].evidence }],
+          asks: [{ rank: 1, title: 'Ship cards', focus_area: 'Cards', latest_at: '2026-10-01 10:00', times_asked: 1, evidence: previous.focus_areas[0].evidence }],
+          rules: [{ when: '', then: 'Do not ask the owner the same question twice.', latest_at: '2026-10-01 10:05', times_asked: 1, evidence: previous.asks[0].evidence }] });
+      };
+      expect(await task.run(ask, 'codex')).toBe('goals updated.');
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]).toContain('Apply the three tests to every saved item again');
+      expect(calls[0].goals).toMatchObject({ focus_areas: [{ title: 'Cards', matches: null }], asks: [{ title: 'Ship cards', focus_area: 'Cards' }], rules: [{ then: 'Do not ask the owner the same question twice.' }] });
+      expect(calls[0].goals).not.toHaveProperty('priorities');
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

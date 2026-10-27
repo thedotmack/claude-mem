@@ -63,7 +63,7 @@ describe('owner prompts from the prompt importer', () => {
       const heading = /## (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) · claude · [^\n]+\nsession `[^`]{1,8}`\n\nmake the scan screen show each agent/.exec(markdown);
       expect(heading).not.toBeNull();
 
-      const goals = (quote: string) => JSON.stringify({ priorities: [{ rank: 1, title: 'Scan screen', evidence: [{ at: heading![1], quote }] }], open_asks: [] });
+      const goals = (quote: string) => JSON.stringify({ asks: [{ rank: 1, title: 'Scan screen', focus_area: null, evidence: [{ at: heading![1], quote }] }] });
       const check = (quote: string) => {
         writeFileSync(join(folder, 'owner-goals.json'), goals(quote));
         return spawnSync('python3', [SAVE_GOALS, '--goals', join(folder, 'owner-goals.json'), '--prompts', written.path, '--dry-run'], { encoding: 'utf8' });

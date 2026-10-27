@@ -73,8 +73,23 @@ describe('hosted setup extraction', () => {
     const source = new WorkStateSource({ databasePath, ledgerDir });
     cleanup.push(() => source.close());
     const view = source.read().agentView;
-    expect(view.goals.priorities[0].title).toBe('Build everything');
+    expect(view.goals.areas[0]).toMatchObject({ kind: 'focus-area', title: 'Build everything' });
     expect(view.rules[0].then).toBe('Keep every quote.');
+    // Cloud's priority is also a My Focus suggestion, and the owner-goals item names its id.
+    expect(view.focusAreas).toEqual([expect.objectContaining({ name: 'Build everything', status: 'suggested', source: 'owner-goals', decidedBy: 'system', priorityRank: 1 })]);
+    expect(view.goals.areas[0].focusAreaId).toBe(view.focusAreas[0].focusAreaId);
+  });
+
+  it('suggests no focus areas when My Focus already has areas it cannot match without a model, and says so', async () => {
+    const { run, store, databasePath, dir } = fixture();
+    store.appendWorkStateEntry({ project: 'home', listName: 'my-focus', fields: { task: 'Focus area: fa_synced000001', focus_area_id: 'fa_synced000001', name: 'Viewer', goal: null, status: 'kept',
+      priority_rank: 1, owner_rank: null, source: 'seed', merged_into: null, evidence: null, decided_by: 'owner' } });
+    await run.run(prompts, true);
+    const source = new WorkStateSource({ databasePath, ledgerDir: join(dir, 'work-view') });
+    cleanup.push(() => source.close());
+    const view = source.read().agentView;
+    expect(view.focusAreas.map((area: { focusAreaId: string }) => area.focusAreaId)).toEqual(['fa_synced000001']);
+    expect(view.goals.areas[0]).toMatchObject({ title: 'Build everything', focusAreaId: null });
   });
 
   it('unchecked still uploads and saves the full result', async () => {
@@ -107,9 +122,8 @@ describe('hosted setup extraction', () => {
     cleanup.push(() => source.close());
     const view = source.read().agentView;
     expect(view.goals.summary).toBe(result.goals.goals.human_summary);
-    expect(view.goals.priorities[0].title).toBe(result.goals.goals.priorities[0].title);
-    expect(view.goals.priorities[0].product).toBe(result.goals.goals.priorities[0].product);
-    expect(view.goals.priorities[0].evidence).toEqual(result.goals.goals.priorities[0].evidence);
+    expect(view.goals.areas[0].title).toBe(result.goals.goals.priorities[0].title);
+    expect(view.goals.areas[0].evidence).toEqual(result.goals.goals.priorities[0].evidence);
     expect(view.rules[0].quotes[0].quote).toBe(result.rules[0].quotes[0].quote);
     const database = new Database(databasePath, { readonly: true });
     expect(readGoals(database).goals[0].evidence).toEqual(result.goals.goals.priorities[0].evidence);
@@ -264,6 +278,22 @@ describe('hosted setup extraction', () => {
     expect(readGoals(database).goals[0].title).toBe('Build everything');
     database.close();
     expect(Object.keys(readLedger(ledgerDir).groups.conversations)).toHaveLength(3);
+  });
+
+  it('a replayed save rewrites the same focus areas instead of adding copies', async () => {
+    const test = fixture();
+    const append = test.store.appendWorkStateEntry.bind(test.store);
+    let writes = 0;
+    // The my-focus area lands, then the worker stops before the goals rows.
+    test.store.appendWorkStateEntry = entry => { if (++writes > 1) throw new Error('Worker stopped mid-save'); return append(entry); };
+    await expect(test.run.run(prompts, true)).rejects.toThrow('Worker stopped mid-save');
+    test.store.appendWorkStateEntry = append;
+    await test.createRun().run(prompts, true);
+    const source = new WorkStateSource({ databasePath: test.databasePath, ledgerDir: join(test.dir, 'work-view') });
+    cleanup.push(() => source.close());
+    const view = source.read().agentView;
+    expect(view.focusAreas).toHaveLength(1);
+    expect(view.goals.areas[0].focusAreaId).toBe(view.focusAreas[0].focusAreaId);
   });
 
   it('fails loudly when the saved result is unreadable instead of uploading again', async () => {

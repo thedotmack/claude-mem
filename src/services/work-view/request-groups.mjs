@@ -22,7 +22,7 @@ import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSy
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { conversationKey, isConversationKey, isHumanActionRequest, originalFor, requestText } from './request-projection.mjs';
-import { OWNER_GOALS_LIST } from './owner-goals.mjs';
+import { GOAL_KINDS, goalKindOf, OWNER_GOALS_LIST } from './owner-goals.mjs';
 import { NO_PROJECT, projectRoot, upgradedGroupRoot, withDerivedProjects } from './session-project.mjs';
 
 const DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
@@ -152,7 +152,7 @@ export function linkBackwards(candidates) {
   return { proposedGroups: [...groups.values()], skippedLists };
 }
 
-/** Fold the owner-goals list (patch entries) into its open priorities and asks. */
+/** Fold the owner-goals list (patch entries) into its open focus areas and asks, areas first. */
 export function readGoals(database) {
   const rows = database.prepare('SELECT fields FROM work_state_entries WHERE list_name = ? ORDER BY id').all(OWNER_GOALS_LIST);
   const listState = {}, items = new Map();
@@ -162,24 +162,26 @@ export function readGoals(database) {
     for (const [key, value] of Object.entries(fields)) { if (value === null) delete target[key]; else target[key] = value; }
   }
   const goals = [...items.values()].filter((item) => !['done', 'dropped'].includes(String(item.status).toLowerCase())).map((item) => ({
-    goal: item.task, kind: item.goal_kind === 'open-ask' ? 'open-ask' : 'priority', rank: Number(item.rank) || null,
-    title: item.title ?? item.task, product: item.product ?? null, latestAt: item.latest_at ?? null, timesAsked: Number(item.times_asked) || null,
+    // taskKey is the item's work-state task, the key alignment links name; goal is only ever a focus area's sentence.
+    taskKey: item.task, ...goalKindOf(item), rank: Number(item.rank) || null,
+    title: item.title ?? item.task, goal: item.goal ?? null, focusArea: item.focus_area ?? null, focusAreaId: item.focus_area_id ?? null,
+    latestAt: item.latest_at ?? null, timesAsked: Number(item.times_asked) || null,
     // A later local refresh changes snapshot, so it cannot reuse an older hosted JSON evidence field.
     evidence: item.source === 'hosted-intent' && item.hosted_snapshot === item.snapshot
       ? JSON.parse(item.evidence_json)
       : String(item.evidence ?? '').split('\n').filter(Boolean).map((line) => { const [at, ...quote] = line.split(' | '); return { at, quote: quote.join(' | ') }; }),
-  })).sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'priority' ? -1 : 1) || (a.rank ?? Infinity) - (b.rank ?? Infinity));
+  })).sort((a, b) => GOAL_KINDS.indexOf(a.kind) - GOAL_KINDS.indexOf(b.kind) || (a.rank ?? Infinity) - (b.rank ?? Infinity));
   return { summary: listState.human_summary ?? null, generatedAt: listState.generated_at ?? null, mapPath: listState.map_path ?? null, goals };
 }
 
 /** Alignment links each overall request to the owner goals it serves, with evidence. */
 export function validateAlignment(input, { groups, goals }) {
-  const goalNames = new Set(goals.map((goal) => goal.goal));
+  const goalNames = new Set(goals.map((goal) => goal.taskKey));
   if (!Array.isArray(input?.links)) throw new TypeError('Alignment needs a links array.');
   const links = {};
   for (const [index, link] of input.links.entries()) {
     if (!groups[link.groupId]) throw new TypeError(`links[${index}] has unknown group ${link.groupId}.`);
-    if (!goalNames.has(link.goal)) throw new TypeError(`links[${index}].goal must be a current goal's exact "goal" value.`);
+    if (!goalNames.has(link.goal)) throw new TypeError(`links[${index}].goal must be a current goal's exact "taskKey" value.`);
     (links[link.groupId] ??= []).push({ goal: link.goal, evidence: boundedText(link.evidence, 300, `links[${index}].evidence`) });
   }
   const unaligned = [...new Set(input.unaligned ?? [])];
@@ -458,7 +460,7 @@ function alignmentBasis(ledger, groupId) {
  * no goals there is nothing to align to. Files from before bases were recorded count as current. */
 function alignmentDue(ledger, goals) {
   if (!goals.goals.length) return [];
-  const current = goals.goals.map((goal) => goal.goal);
+  const current = goals.goals.map((goal) => goal.taskKey);
   const links = ledger.alignment?.links ?? {}, unaligned = new Set(ledger.alignment?.unaligned ?? []), basis = ledger.alignment?.basis;
   if (goalsAddedSince(ledger.alignment, current).length) return Object.keys(ledger.groups.groups);
   const changed = (id) => basis != null && basis[id] !== alignmentBasis(ledger, id);
@@ -680,10 +682,16 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
     // so the room left is spelled out as well.
     const previousNarrativeChars = story?.narrative?.length ?? 0;
     return print({ groups: Object.keys(groups.groups).length, update, narrativeLimit: STORY_NARRATIVE_MAX, previousNarrativeChars, roomChars: STORY_NARRATIVE_MAX - previousNarrativeChars,
-      reviews: update ? reviews.filter((review) => Date.parse(review.changedAt ?? review.checkedAt) > writtenAt) : reviews, previousStory: story });
+      reviews: update ? reviews.filter((review) => Date.parse(review.changedAt ?? review.checkedAt) > writtenAt) : reviews,
+      // Rules owner-goals put in the story are its own (record-story carries them over): shown here, the story model
+      // would echo them back without their source and when, leaving copies a later owner-goals save cannot replace.
+      previousStory: story && { ...story, preferences: (story.preferences ?? []).filter((preference) => preference?.source !== OWNER_GOALS_LIST) } });
   }
   if (command === 'record-story') {
-    const story = { ...validateStory(readInput(args[0] ?? '-')), writtenAt: iso(now) };
+    const validated = validateStory(readInput(args[0] ?? '-'));
+    // Rules owner-goals found in the owner's prompts (save_goals.py) are its to replace, not the story's.
+    const fromOwnerGoals = (readLedger(dir).story?.preferences ?? []).filter((preference) => preference?.source === OWNER_GOALS_LIST);
+    const story = { ...validated, preferences: [...validated.preferences, ...fromOwnerGoals], writtenAt: iso(now) };
     writeJsonAtomic(join(dir, 'story.json'), story);
     return print({ recorded: 'story', preferences: story.preferences.length });
   }
@@ -710,7 +718,7 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
       unaligned: [...(previous.unaligned ?? []).filter(kept), ...decided.unaligned],
       // Each decided group's basis, so a later change to the request makes it due again.
       basis: { ...Object.fromEntries(Object.entries(previous.basis ?? {}).filter(([id]) => kept(id))), ...Object.fromEntries([...decidedIds].map((id) => [id, alignmentBasis(ledger, id)])) },
-      goals: goals.goals.map((goal) => goal.goal), alignedAt: iso(now),
+      goals: goals.goals.map((goal) => goal.taskKey), alignedAt: iso(now),
     };
     writeJsonAtomic(join(dir, 'alignment.json'), alignment);
     return print({ aligned: Object.keys(decided.links).length, unaligned: decided.unaligned.length });

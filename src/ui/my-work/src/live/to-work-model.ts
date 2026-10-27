@@ -120,11 +120,11 @@ function storySteps(progress: WorkViewProgress, now: number): Request['story'] {
     .filter((step) => step.label)
 }
 
-/** Absent goals: not linked yet. Empty: serves none. Otherwise a priority wins over an open ask. */
+/** Absent goals: not linked yet. Empty: serves none. Otherwise a focus area wins over an ask. */
 function goalIdFor(raw: WorkViewHumanRequest): string | null | undefined {
   if (!raw.goals) return undefined
   if (!raw.goals.length) return null
-  return (raw.goals.find((goal) => goal.kind === 'priority') ?? raw.goals[0]).goalId
+  return (raw.goals.find((goal) => goal.kind === 'focus-area') ?? raw.goals[0]).goalId
 }
 
 /** The worker's check route uses the same rule (WorkViewRoutes.ts reviewIsNewerThanLifecycle). */
@@ -226,7 +226,8 @@ export function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], no
 }
 
 // ---- My Goals: the owner-goals run, as recorded (plan Phase 7). Ranks and times-asked come from the run; nothing is recounted here.
-const GOAL_KIND: Record<WorkViewGoalItem['kind'], Goal['kind']> = { priority: 'Priority', 'open-ask': 'Open ask' }
+// My Goals still shows focus areas under its Priority heading and asks under Open ask until the My Focus rail replaces it.
+const GOAL_KIND: Record<WorkViewGoalItem['kind'], Goal['kind']> = { 'focus-area': 'Priority', ask: 'Open ask' }
 const OWNER_GOALS_SKILL = 'owner-goals'
 const RECORDED_PROMPT_TIME = /^\d{4}-(\d{2}-\d{2})(?: (\d{2}:\d{2}))?$/
 const RECORDED_DAY = /^(\d{4})-(\d{2})-(\d{2})$/
@@ -253,7 +254,8 @@ export function toGoalItem(item: WorkViewGoalItem): GoalItem {
     kind,
     rank: requireRecordedCount(item.rank, `The rank of goal "${item.title}"`),
     title: item.title,
-    product: item.product ?? 'Product not recorded',
+    // My Goals' product label: an ask's focus area; items saved before the three tests name a product.
+    product: item.focusArea ?? item.product ?? (item.kind === 'focus-area' ? 'Focus area' : 'Product not recorded'),
     latestAt: toGoalPromptStamp(item.latestAt, `Goal "${item.title}"`),
     timesAsked: requireRecordedCount(item.timesAsked, `How often goal "${item.title}" was asked`),
     quotes: item.evidence.map((evidence) => ({ at: toGoalPromptStamp(evidence.at, `A quote under goal "${item.title}"`), quote: evidence.quote })),
@@ -283,7 +285,7 @@ function toPastPeriod(list: WorkViewGoalList, currentYear: number): PastPeriod {
     label: periodLabel(periodStart, list.periodEnd, currentYear),
     promptCount: requireRecordedCount(list.sourcePromptCount, `The prompt count for ${list.listName}`),
     headline: list.summary ?? 'No summary recorded for this month.',
-    priorities: list.priorities.map(toGoalItem).map((goal) => ({ title: goal.title, product: goal.product, timesAsked: goal.timesAsked, quote: goal.quotes[0] ?? null })),
+    priorities: list.areas.map(toGoalItem).map((goal) => ({ title: goal.title, product: goal.product, timesAsked: goal.timesAsked, quote: goal.quotes[0] ?? null })),
   }
 }
 
@@ -316,8 +318,8 @@ export function toGoalsModel(goals: WorkViewGoalList | null | undefined, goalHis
       promptCount: requireRecordedCount(goals.sourcePromptCount, `The ${OWNER_GOALS_SKILL} prompt count`),
     }
     return {
-      priorities: goals.priorities.map(toGoalItem),
-      openAsks: goals.openAsks.map(toGoalItem),
+      priorities: goals.areas.map(toGoalItem),
+      openAsks: goals.asks.map(toGoalItem),
       currentPeriod,
       pastPeriods: (goalHistory ?? []).map((list) => toPastPeriod(list, generatedYear)),
       goalsReadError: null,

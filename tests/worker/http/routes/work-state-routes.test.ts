@@ -123,6 +123,22 @@ describe('WorkStateRoutes', () => {
     expect(store.getWorkStateEntries([project], 'my-focus')).toEqual([]);
   });
 
+  it('validates owner-goals items: a kind My Work cannot read is refused, closing rows and list state pass', async () => {
+    for (const list of ['owner-goals', 'owner-goals/2026-09-01']) {
+      for (const goal_kind of ['priority', 'open-ask', 'rule', null]) {
+        const refused = await write({ cwd: checkout, list, fields: { task: 'Priority: X', status: 'todo', goal_kind, title: 'X' } });
+        expect(refused.status).toBe(400);
+        expect(await refused.text()).toContain('goal_kind "focus-area" or "ask"');
+      }
+      expect((await write({ cwd: checkout, list, fields: { task: 'Ask: X', status: 'todo', title: 'X' } })).status).toBe(400);
+      expect(store.getWorkStateEntries([project], list)).toEqual([]);
+      expect((await write({ cwd: checkout, list, fields: { human_summary: 'Summary.', status: 'open' } })).status).toBe(200);
+      expect((await write({ cwd: checkout, list, fields: { task: 'Ask: X', status: 'todo', goal_kind: 'ask', title: 'X' } })).status).toBe(200);
+      expect((await write({ cwd: checkout, list, fields: { task: 'Focus area: Y', status: 'todo', goal_kind: 'focus-area', title: 'Y' } })).status).toBe(200);
+      expect((await write({ cwd: checkout, list, fields: { task: 'Ask: X', status: 'dropped' } })).status).toBe(200);
+    }
+  });
+
   it("saves an entry under the checkout's project and answers with what is still open in the list", async () => {
     await write({ cwd: checkout, list: 'release', fields: { version: '13.25.2', blocked_on: 'npm token' } });
     await write({ cwd: checkout, list: 'release', fields: { task: 'tag', status: 'done' } });

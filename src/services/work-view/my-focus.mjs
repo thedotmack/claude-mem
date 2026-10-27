@@ -6,6 +6,7 @@
 // A placement is keyed by the request's anchor conversation key (the input groupIdFor
 // hashes), never by the local g_ id. Area ids are never derived from names, so a
 // rename keeps the id. Rows are append-only and replay in write order.
+import { randomBytes } from 'node:crypto';
 import { MAX_WORK_STATE_FIELDS_JSON_CHARS } from './work-state-limits.mjs';
 
 export const MY_FOCUS_LIST = 'my-focus';
@@ -60,6 +61,61 @@ export function placementRowFields(placement) {
     focus_area_id: text(placement.focusAreaId), placed_by: placement.placedBy,
     confidence: rank(placement.confidence), evidence: text(placement.evidence) || null,
   }, 'placement');
+}
+
+/** A new area id: random, like an owner-written rule's id (`own_` + 6 random bytes), never derived from
+ * the name, so a rename keeps it. */
+export const newFocusAreaId = () => `fa_${randomBytes(6).toString('hex')}`;
+
+/**
+ * The my-focus rows for the focus areas owner-goals mined from the owner's prompts. Each mined area
+ * carries the model's judgment of which saved area it already is: `matches` is that area's id, or null
+ * for an area not saved yet. Names are never compared.
+ * - matches null: a new area, written by the system as `source: owner-goals, status: suggested`, with
+ *   the id `newId()` gives it.
+ * - matches a saved area: no new area. A suggestion nobody has decided gets the mined rank, and the mined
+ *   goal when it has none (hosted setup saves areas without one); its name and an existing goal are never
+ *   changed. An area the owner kept, renamed, merged, dismissed or finished is left as it is (the reducer
+ *   would ignore a system row for it anyway). A match to an area the owner merged away answers the area it
+ *   was merged into, so the owner-goals items follow the merge.
+ * A match to an id that is not saved, or two mined areas matching one saved area, is refused: the answer
+ * is wrong, and guessing which area was meant would file the owner's words under the wrong one.
+ * Returns the rows to write and each mined area's id, in the mined order.
+ */
+export function ownerGoalsAreaRows(minedAreas, savedAreas, newId = newFocusAreaId) {
+  const savedById = new Map(savedAreas.map((area) => [area.focusAreaId, area]));
+  const claimed = new Set();
+  const rows = [], focusAreaIds = [];
+  for (const [index, mined] of minedAreas.entries()) {
+    const matches = mined.matches;
+    if (matches !== null && typeof matches !== 'string') throw new TypeError(`focus_areas[${index}].matches must be a saved focus area id or null.`);
+    if (matches === null) {
+      const focusAreaId = newId(index);
+      if (savedById.has(focusAreaId) || focusAreaIds.includes(focusAreaId)) throw new Error(`Focus area id ${focusAreaId} is already used.`);
+      rows.push(focusAreaRowFields({
+        focusAreaId, name: mined.name, goal: mined.goal, status: 'suggested', priorityRank: mined.rank, ownerRank: null,
+        source: 'owner-goals', mergedInto: null, evidence: mined.evidence, decidedBy: 'system',
+      }));
+      focusAreaIds.push(focusAreaId);
+      continue;
+    }
+    const saved = savedById.get(matches);
+    if (!saved) throw new TypeError(`focus_areas[${index}] matches ${matches}, which is not a saved focus area.`);
+    if (claimed.has(matches)) throw new TypeError(`Two mined focus areas match ${matches}; one saved area is one mined area.`);
+    claimed.add(matches);
+    const fillGoal = !text(saved.goal) && text(mined.goal);
+    if (saved.decidedBy !== 'owner' && saved.status === 'suggested' && (saved.priorityRank !== mined.rank || fillGoal)) {
+      rows.push(focusAreaRowFields({ ...saved, priorityRank: mined.rank, goal: fillGoal ? mined.goal : saved.goal, decidedBy: 'system' }));
+    }
+    let target = saved;
+    const seen = new Set([target.focusAreaId]);
+    while (target.mergedInto && savedById.has(target.mergedInto) && !seen.has(target.mergedInto)) {
+      target = savedById.get(target.mergedInto);
+      seen.add(target.focusAreaId);
+    }
+    focusAreaIds.push(target.focusAreaId);
+  }
+  return { rows, focusAreaIds };
 }
 
 /** Rows are patches: a null field clears it, like reduceWorkState. */

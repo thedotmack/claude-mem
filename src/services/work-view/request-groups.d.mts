@@ -3,7 +3,18 @@ export const GOALS_STALE_MS: number;
 export const AGENT_WRITTEN_PROMPTS_FILE: string;
 export interface RefreshNeeds { due: number; ungrouped: number; goalsStale: boolean; unaligned: number; needed: boolean }
 export interface LedgerDatabase { prepare(sql: string): { all(...params: unknown[]): any[]; get(...params: unknown[]): any } }
-export interface SavedGoal { goal: string; kind: 'priority' | 'open-ask'; rank: number | null; title: string; product: string | null; latestAt: string | null; timesAsked: number | null; evidence: Array<{ at: string; quote: string }> }
+export interface SavedGoal {
+  /** The item's work-state task: the key alignment links name. */
+  taskKey: string; kind: 'focus-area' | 'ask';
+  /** Saved under an old kind (priority, open ask) before the three tests; the next refresh sorts it again. */
+  legacy: boolean;
+  rank: number | null; title: string;
+  /** A focus area's one-sentence goal (the only meaning of goal). */
+  goal: string | null;
+  /** An ask's focus area by the name it was saved with. focusAreaId is that area's my-focus id, or a focus area's own. */
+  focusArea: string | null; focusAreaId: string | null;
+  latestAt: string | null; timesAsked: number | null; evidence: Array<{ at: string; quote: string }>;
+}
 export interface SavedGoals { summary: string | null; generatedAt: string | null; mapPath: string | null; goals: SavedGoal[] }
 export function readGoals(database: LedgerDatabase): SavedGoals;
 export function readConversationProjects(database: LedgerDatabase, conversationKeys: string[]): Map<string, string>;

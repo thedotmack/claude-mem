@@ -210,6 +210,48 @@ describe('My Focus routes', () => {
     expect(request(view).focusAreaId).toBe('fa_endless');
   });
 
+  describe('owner-goals suggestions', () => {
+    const suggest = (areas: unknown, headers: Record<string, string> = {}) => fetch(`${origin}/api/work-view/focus/owner-goals`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify({ areas }),
+    });
+    const mined = (name: string, matches: string | null, rank = 1) => ({ name, goal: `What ${name} is for.`, rank, matches, evidence: 'From your prompts: asked 2 times, latest 2026-10-26 14:00.' });
+
+    it('a new area is a system suggestion under a generated id; a matched area adds nothing and is answered with its id', async () => {
+      const response = await suggest([mined('Releases', null, 1), mined('Viewer (mined)', 'fa_viewer', 2)]);
+      expect(response.status).toBe(200);
+      const { focusAreaIds } = await response.json();
+      expect(focusAreaIds[0]).toMatch(/^fa_[0-9a-f]{12}$/);
+      expect(focusAreaIds[1]).toBe('fa_viewer');
+      const view = await snapshot();
+      expect(areaById(view, focusAreaIds[0])).toMatchObject({ name: 'Releases', status: 'suggested', source: 'owner-goals', decidedBy: 'system', priorityRank: 1 });
+      // The undecided Viewer suggestion takes the mined rank; its name is never changed by a run.
+      expect(areaById(view, 'fa_viewer')).toMatchObject({ name: 'Viewer', priorityRank: 2, decidedBy: 'system' });
+      expect(view.focusAreas).toHaveLength(4);
+    });
+
+    it('never changes an area the owner decided, and never lets the body write an owner decision', async () => {
+      await saveFocus({ action: 'rename', focusAreaId: 'fa_viewer', name: 'My viewer' });
+      await saveFocus({ action: 'dismiss', focusAreaId: 'fa_endless' });
+      expect((await suggest([mined('Viewer', 'fa_viewer', 3), mined('Endless', 'fa_endless', 1)])).status).toBe(200);
+      const view = await snapshot();
+      expect(areaById(view, 'fa_viewer')).toMatchObject({ name: 'My viewer', priorityRank: 1, decidedBy: 'owner' });
+      expect(areaById(view, 'fa_endless')).toMatchObject({ status: 'dismissed', priorityRank: 2, decidedBy: 'owner' });
+      // Owner fields in the body are refused, not written.
+      expect((await suggest([{ ...mined('Viewer', null), status: 'kept' }])).status).toBe(400);
+      expect((await suggest([{ ...mined('Viewer', null), decidedBy: 'owner' }])).status).toBe(400);
+    });
+
+    it('refuses an unknown match, two areas matching one, and a browser page from another origin', async () => {
+      const unknown = await suggest([mined('Releases', 'fa_nope')]);
+      expect(unknown.status).toBe(400);
+      expect(JSON.stringify(await unknown.json())).toContain('fa_nope, which is not a saved focus area');
+      expect((await suggest([mined('Viewer', 'fa_viewer'), mined('Viewer two', 'fa_viewer')])).status).toBe(400);
+      expect((await suggest([mined('Releases', null)], { Origin: 'https://evil.example' })).status).toBe(403);
+      expect((await suggest([mined('Releases', null)], { 'X-Forwarded-For': '203.0.113.9' })).status).toBe(403);
+      expect((await snapshot()).focusAreas).toHaveLength(3);
+    });
+  });
+
   it('is unavailable without a work-state writer', async () => {
     routes.close();
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));

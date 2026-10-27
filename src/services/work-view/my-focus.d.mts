@@ -14,6 +14,11 @@ export function focusAreaRowFields(area: Omit<FocusArea, 'savedAt'>): Record<str
 export function placementRowFields(placement: {
   anchorConversationKey: string; focusAreaId: string; placedBy: 'router' | 'owner'; confidence?: number | null; evidence?: string | null;
 }): Record<string, string | number | null>;
+export function newFocusAreaId(): string;
+export interface MinedFocusArea { name: string; goal: string; rank: number; matches: string | null; evidence: string }
+export function ownerGoalsAreaRows(minedAreas: MinedFocusArea[], savedAreas: FocusArea[], newId?: (index: number) => string): {
+  rows: Array<Record<string, string | number | null>>; focusAreaIds: string[];
+};
 export function buildFocusAreas(state: unknown): { focusAreas: FocusArea[]; focusAreaIdByAnchor: Map<string, string> };
 export function anchorConversationKeyFor(request: { groupId?: string | null; conversationKey?: string | null }, ledger: unknown): string | null;
 export function placeRequests<T extends { groupId?: string | null; conversationKey?: string | null }>(

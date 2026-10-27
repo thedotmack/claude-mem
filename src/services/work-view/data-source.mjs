@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { activitySignature, buildAgentView, readAgentRecords, readEvidence } from './agent-view.mjs';
 import { goalsAddedSince, ledgerSignature, readLedger } from './request-groups.mjs';
 import { recordedFile, bucketFileAvailable } from './work-product.mjs';
+import { buildFocusAreas, MY_FOCUS_LIST } from './my-focus.mjs';
 
 const CLOSED = new Set(['done', 'dropped']);
 const normalizedKey = (value) => String(value).replace(/[A-Z]/g, (letter) => letter.toLowerCase());
@@ -117,6 +118,12 @@ export function reduceWorkState(entries, { currentProject, currentProjectScope =
     events: events.slice(-eventLimit).reverse(),
     lastUpdatedAt: events.length ? events.at(-1).at : null,
   };
+}
+
+/** The saved focus areas, read straight from the my-focus rows (for a refresh or setup save running beside the worker). */
+export function readFocusAreas(database, { localDeviceId = '' } = {}) {
+  const rows = database.prepare('SELECT * FROM work_state_entries WHERE list_name = ?').all(MY_FOCUS_LIST);
+  return buildFocusAreas(reduceWorkState(rows, { localDeviceId })).focusAreas;
 }
 
 // Expand the same inherited read keys as SessionStore.getProjectReadKeys. A
@@ -332,7 +339,7 @@ export class WorkStateSource {
     const alignment = this.ledger?.alignment;
     const goals = this.agentView.goals;
     if (!alignment || !goals) return {};
-    const byGoal = new Map([...goals.priorities, ...goals.openAsks].map((goal) => [goal.task, goal]));
+    const byGoal = new Map([...goals.areas, ...goals.asks].map((goal) => [goal.task, goal]));
     // "Serves none" holds until a goal is added; then the group is asked again.
     const unaligned = new Set(goalsAddedSince(alignment, [...byGoal.keys()]).length ? [] : alignment.unaligned ?? []);
     const humanRequests = (this.agentView.humanRequests ?? []).map((request) => {
