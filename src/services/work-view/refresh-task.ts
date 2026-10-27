@@ -26,6 +26,7 @@ import { readGoals, runCli, validateGroupingAnswer, type LedgerDatabase, type Re
 export const MEMORY_TOOLS = ['search', 'dumb_search', 'timeline', 'get_observations', 'get_tool_uses', 'work_state_read'];
 const PLUGIN_MCP_PREFIX = 'mcp__plugin_claude-mem_mcp-search__';
 const REVIEW_BATCH = 8;
+const REVIEW_CORRECTION_ATTEMPTS = 2;
 
 /** The model each step runs on. Small, fast models match conversations and goals; stronger ones judge
  * progress, write the story and pick verbatim quotes. Codex's careful steps use its CLI default model.
@@ -258,7 +259,10 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       const reviewBatch = async (groups: Array<{ groupId: string }>) => {
         let shows = groups.map(group => cli(['show', group.groupId]));
         let refusals: string[] = [];
-        for (let attempt = 0; attempt < 2 && shows.length; attempt++) {
+        // Initial answer plus two bounded correction rounds. Valid reviews are
+        // recorded immediately and removed from `shows`; feedback and evidence
+        // for only malformed/missing groups go into the next round.
+        for (let attempt = 0; attempt <= REVIEW_CORRECTION_ATTEMPTS && shows.length; attempt++) {
           const text = await ask([
             requestProgress, '---', readOnly,
             `Do only section 2's review for the groups whose \`show\` output is in ${writeInput('show', shows)}: decide each one from the evidence as the reviewer task describes (amend the previous review for a group in "amend" mode). Reply with only {"reviews": [<one record-progress input per group, with reviewBasis copied verbatim from its show output>]}.`,

@@ -59,7 +59,9 @@ function task(cwd: string, inlineCalls: string[] = [], models: Record<string, un
  /** runAgentTask with `spawn` installed as child_process.spawn for the run. */
 function runTask(agentTask: AgentTask, { spawn: fake, ...overrides }: { spawn: typeof spawn } & Parameters<typeof runAgentTask>[1]) {
   setFakeSpawn(fake);
-  return runAgentTask(agentTask, overrides);
+  // Most command-shape tests exercise the portable Codex path. Tests that
+  // cover the Windows confinement gate opt into win32 explicitly.
+  return runAgentTask(agentTask, { platform: () => 'linux', ...overrides });
 }
 afterEach(() => setFakeSpawn(null));
 
@@ -127,7 +129,7 @@ describe('agent runner', () => {
     expect((await options.canUseTool('Edit', { file_path: '/x' })).behavior).toBe('deny');
   });
 
-  it('Codex: codex exec read-only, ephemeral and without the user config (no MCP tools), prompt on stdin, answer from the -o file', async () => {
+  it('Codex: a capable Windows sandbox stays read-only, ephemeral and without user MCP tools', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-codex-'));
     try {
       const calls: SpawnCall[] = [];
@@ -136,7 +138,7 @@ describe('agent runner', () => {
         call.child.emit('close', 0);
       });
       const inlineCalls: string[] = [];
-      const result = await runTask(task(cwd, inlineCalls), { detect: async () => agents('codex', 'gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
+      const result = await runTask(task(cwd, inlineCalls), { detect: async () => agents('codex', 'gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env, platform: () => 'win32' });
       expect(result.state).toBe('ok');
       expect(result.agent).toBe('codex');
       expect(result.result).toBe('inline done: {"ok":true}');
@@ -184,6 +186,32 @@ describe('agent runner', () => {
       expect(args.slice(schemaIndex + 2)).toEqual(['-m', 'gpt-6-luna', '-c', 'model_reasoning_effort="low"', '-']);
       expect(schemaSeen).toEqual(schema);
       expect(existsSync(args[schemaIndex + 1])).toBe(false);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  it('Windows reports an actual Codex sandbox refusal and falls back without broadening access', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-windows-refusal-'));
+    try {
+    const calls: SpawnCall[] = [];
+    const spawnImpl = fakeSpawn(calls, call => {
+      if (call.command === '/bin/codex') {
+        call.child.stderr.emit('data', 'windows unelevated restricted-token sandbox cannot enforce split filesystem read restrictions directly; refusing to run unsandboxed');
+        call.child.emit('close', 1);
+        return;
+      }
+      call.child.stdout.emit('data', JSON.stringify({ response: '{"ok":"gemini"}' }));
+      call.child.emit('close', 0);
+    });
+    const result = await runTask(task(cwd), {
+      detect: async () => agents('codex', 'gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env, platform: () => 'win32',
+    });
+    expect(result).toMatchObject({ state: 'ok', agent: 'gemini' });
+    expect(result.attempts).toHaveLength(1);
+    expect(result.attempts[0]).toMatchObject({ agent: 'codex' });
+    expect(result.attempts[0].error).toMatch(/Windows unelevated sandbox cannot enforce the required read restrictions/i);
+    expect(result.attempts[0].error).toMatch(/elevated sandbox or a supported MXC/i);
+    expect(calls.map(call => call.command)).toEqual(['/bin/codex', '/bin/gemini']);
+    expect(calls[0].args).toContain('permissions.claude-mem-refresh.network.enabled=false');
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 

@@ -260,6 +260,36 @@ describe('alignment prompt', () => {
 });
 
 describe('parallel reviews', () => {
+  it('keeps valid reviews and retries an over-limit summary with validator feedback', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-review-correction-'));
+    try {
+      const database = fixtureDatabase();
+      const decisions = join(dir, 'decisions.json');
+      writeFileSync(decisions, JSON.stringify({ groups: [{ title: 'Feature A', conversations: [key('a')] }, { title: 'Feature B', conversations: [key('b')] }] }));
+      database.prepare('INSERT INTO sdk_sessions VALUES (?, ?, ?, ?, ?, ?, ?)').run(2, 'claude', 'b', 'm2', 'repo/tree', 'Build feature B', NOW - 2 * DAY);
+      database.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)').run(2, 1, 'Build feature B', NOW - 2 * DAY);
+      runCli(['apply', decisions], { dir, database, now: NOW, print: () => {} });
+      const task = buildRefreshTask({ needs: { due: 2, ungrouped: 0, goalsStale: false, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW });
+      const reviewPrompts: string[] = [];
+      let reviewCall = 0;
+      const ask = async (prompt: string) => {
+        if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'Both features are under way.', preferences: [] });
+        reviewPrompts.push(prompt);
+        const shows = JSON.parse(readFileSync(/is in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+        reviewCall++;
+        if (reviewCall === 1) return JSON.stringify({ reviews: shows.map((show: any, index: number) => ({ groupId: show.groupId, state: 'in-progress', percent: 30, summary: index ? 'x'.repeat(282) : 'Valid review.', reviewBasis: show.reviewBasis })) });
+        if (reviewCall === 2) return JSON.stringify({ reviews: [{ groupId: shows[0].groupId, state: 'in-progress', percent: 35, summary: 'y'.repeat(281), reviewBasis: shows[0].reviewBasis }] });
+        return JSON.stringify({ reviews: [{ groupId: shows[0].groupId, state: 'in-progress', percent: 35, summary: 'Corrected without dropping meaning.', reviewBasis: shows[0].reviewBasis }] });
+      };
+      expect(await task.run(ask, 'claude-code')).toBe('2 requests reviewed, story written.');
+      expect(reviewPrompts).toHaveLength(3);
+      expect(reviewPrompts[1]).toMatch(/summary is 282 characters; it must be 1–280\. Cut at least 2 characters/);
+      expect(reviewPrompts[2]).toMatch(/summary is 281 characters; it must be 1–280\. Cut at least 1 character/);
+      const progress = Object.values(readLedger(dir).progress) as Array<{ summary: string }>;
+      expect(progress.map(item => item.summary).sort()).toEqual(['Corrected without dropping meaning.', 'Valid review.']);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('review batches run at the same time, and every batch is saved', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-parallel-'));
     try {
