@@ -370,14 +370,54 @@ export const STORY_NARRATIVE_MAX = 12000;
 // answers refused at 12,108–13,614), and one update can add ~3,000 characters (7,026 → 10,030 after 12 groups were
 // re-reviewed). 8,000 leaves that much headroom; stories condensed by hand to 6,530–7,351 kept the whole history.
 export const STORY_NARRATIVE_TARGET = 8000;
+// The recap's share of the target (My Work shows it); the chapters split the rest evenly, down to a floor that
+// still holds a dated sentence or two.
+export const STORY_RECAP_BUDGET = 800;
+const STORY_CHAPTER_MIN_BUDGET = 300;
+// Characters per word in a story (11,876 characters / 1,985 words, Oct 27), for a part with no words yet.
+const STORY_CHARS_PER_WORD = 6;
+// Parts a refusal names, furthest over budget first, so the message stays short.
+const STORY_REFUSAL_PARTS = 6;
+
+/**
+ * The story's recap and `## ` chapters with their lengths and budgets, counted here so the writer never has to.
+ * Told to cut N characters from "the oldest finished chapters" only, an update cut 1,457 of the 3,876 asked
+ * (Oct 27): the recap and the chapters under review held 5,826 of 11,876 characters and were off limits.
+ * Budgets go in words as well, at the part's own characters per word: given only character budgets, a writer
+ * cut a 2,492-character chapter to 1,891 against a budget of 800. `## ` lines inside code fences are not chapters,
+ * and a story without chapters keeps the whole target as its recap budget.
+ */
+export function storyParts(narrative) {
+  const pieces = [''];
+  let fenced = false;
+  for (const line of (typeof narrative === 'string' ? narrative : '').split(/(?<=\n)/)) {
+    if (/^(```|~~~)/.test(line)) fenced = !fenced;
+    else if (!fenced && line.startsWith('## ')) pieces.push('');
+    pieces[pieces.length - 1] += line;
+  }
+  const [recap, ...chapters] = pieces;
+  const chapterBudget = Math.max(STORY_CHAPTER_MIN_BUDGET, Math.floor((STORY_NARRATIVE_TARGET - STORY_RECAP_BUDGET) / Math.max(1, chapters.length)));
+  return [
+    { part: 'recap', text: recap, budgetChars: chapters.length ? STORY_RECAP_BUDGET : STORY_NARRATIVE_TARGET },
+    ...chapters.map((chapter) => ({ part: chapter.split('\n', 1)[0].replace(/^## /, '').trim(), text: chapter, budgetChars: chapterBudget })),
+  ].map(({ part, text, budgetChars }) => {
+    const words = text.split(/\s+/).filter(Boolean).length;
+    const charsPerWord = words ? text.length / words : STORY_CHARS_PER_WORD;
+    return { part, chars: text.length, words, budgetChars, budgetWords: Math.max(1, Math.floor(budgetChars / charsPerWord)), overBudgetChars: Math.max(0, text.length - budgetChars) };
+  });
+}
 
 export function validateStory(story) {
   const preferences = story?.preferences ?? [];
   if (!Array.isArray(preferences) || preferences.length > 30) throw new TypeError('preferences must be an array of at most 30.');
-  // The refusal names the target, so the retry condenses toward it instead of landing just under the cap again.
+  // The refusal names the target and the parts furthest over budget, so the retry condenses toward the target
+  // instead of landing just under the cap again.
   const narrativeChars = typeof story?.narrative === 'string' ? story.narrative.length : 0;
   if (narrativeChars > STORY_NARRATIVE_MAX) {
-    throw new TypeError(`narrative is ${narrativeChars} characters; it must be 1–${STORY_NARRATIVE_MAX}. Condense the oldest finished chapters to about ${STORY_NARRATIVE_TARGET} characters: cut at least ${narrativeChars - STORY_NARRATIVE_TARGET}.`);
+    const over = storyParts(story.narrative).filter((part) => part.overBudgetChars > 0).sort((a, b) => b.overBudgetChars - a.overBudgetChars);
+    const named = over.slice(0, STORY_REFUSAL_PARTS).map((part) => `${part.part === 'recap' ? 'the recap' : `"${part.part.slice(0, 60)}"`} ${part.chars} → ${part.budgetChars} characters (about ${part.budgetWords} words)`);
+    const more = over.length > STORY_REFUSAL_PARTS ? `; ${over.length - STORY_REFUSAL_PARTS} more parts are over their budgets too` : '';
+    throw new TypeError(`narrative is ${narrativeChars} characters; it must be 1–${STORY_NARRATIVE_MAX}. Bring it to about ${STORY_NARRATIVE_TARGET} characters by rewriting the parts furthest over their budgets: ${named.join('; ')}${more}.`);
   }
   return {
     narrative: boundedText(story?.narrative, STORY_NARRATIVE_MAX, 'narrative'),
@@ -688,10 +728,11 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
     // With only the limit and length, an update at 11,836 of 12,000 still added ~1,300 characters and condensed nothing (Oct 24),
     // so the room left is spelled out as well.
     // With room counted up to the cap, updates still aimed at the cap and landed over it (Oct 24–26), so the room is
-    // counted up to the target, and a previous story past the target is first condensed back to it.
+    // counted up to the target, and a previous story past the target is first condensed back to it, part by part.
     const previousNarrativeChars = story?.narrative?.length ?? 0;
     return print({ groups: Object.keys(groups.groups).length, update, narrativeTarget: STORY_NARRATIVE_TARGET, narrativeLimit: STORY_NARRATIVE_MAX, previousNarrativeChars,
       roomChars: Math.max(0, STORY_NARRATIVE_TARGET - previousNarrativeChars), condenseChars: Math.max(0, previousNarrativeChars - STORY_NARRATIVE_TARGET),
+      previousParts: update ? storyParts(story.narrative) : [],
       reviews: update ? reviews.filter((review) => Date.parse(review.changedAt ?? review.checkedAt) > writtenAt) : reviews, previousStory: story });
   }
   if (command === 'record-story') {
