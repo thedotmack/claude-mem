@@ -397,9 +397,28 @@ describe('overall requests and progress reviews', () => {
     const input = run(['story-input']);
     expect(input.reviews.map((entry: { groupId: string }) => entry.groupId)).toEqual([groupIdFor(key('c'))]);
     expect(input.previousStory.narrative).toBe('Two requests under way.');
-    // The agent gets its budget up front, and an over-long story is refused with its length.
-    expect(input).toMatchObject({ narrativeLimit: 12000, previousNarrativeChars: 'Two requests under way.'.length, roomChars: 12000 - 'Two requests under way.'.length });
-    expect(() => run(['record-story', write('s.json', { narrative: 'x'.repeat(12001) })])).toThrow('narrative is 12001 characters; it must be 1–12000. Cut at least 1 characters.');
+    // The agent gets its budget up front, counted to the target, and an over-long story is refused with its length and the target.
+    expect(input).toMatchObject({ narrativeTarget: 8000, narrativeLimit: 12000, previousNarrativeChars: 'Two requests under way.'.length, roomChars: 8000 - 'Two requests under way.'.length, condenseChars: 0 });
+    expect(() => run(['record-story', write('s.json', { narrative: 'x'.repeat(12001) })])).toThrow('narrative is 12001 characters; it must be 1–12000. Condense the oldest finished chapters to about 8000 characters: cut at least 4001.');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+  it('story-input aims an update at the target and asks to condense a previous story past it', () => {
+  const dir = ledgerDir();
+  try {
+    const database = fixtureDatabase();
+    let output: any;
+    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; } }); return output; };
+    const write = (name: string, value: unknown) => { const path = join(dir, name); writeFileSync(path, JSON.stringify(value)); return path; };
+    run(['apply', write('d.json', { groups: [{ title: 'Release cards', conversations: [key('a')] }] })]);
+    const review = (percent: number, now: number) => run(['record-progress', write('r.json', { groupId: groupIdFor(key('a')), state: 'in-progress', percent, summary: 'Under way.', reviewBasis: run(['show', groupIdFor(key('a'))], now).reviewBasis })], now);
+    review(40, NOW);
+    expect(run(['story-input'])).toMatchObject({ update: false, narrativeTarget: 8000, roomChars: 8000, condenseChars: 0 });
+    // The target is an aim, not a cap: a story between it and the cap is recorded.
+    run(['record-story', write('s.json', { narrative: 'x'.repeat(10030) })], NOW + 1000);
+    review(60, NOW + 2000);
+    // Past the target, there is no room to add and the overshoot is condensed first.
+    expect(run(['story-input'])).toMatchObject({ update: true, previousNarrativeChars: 10030, roomChars: 0, condenseChars: 2030 });
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
