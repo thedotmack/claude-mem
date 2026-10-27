@@ -174,7 +174,7 @@ export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request
             <button type="button" onClick={onOpen} className={cn('-mx-1 space-y-1 rounded-md px-1 text-left focus-visible:outline-2 focus-visible:outline-ring', fresh && 'motion-safe:animate-in motion-safe:fade-in motion-safe:blur-in-sm motion-safe:duration-300')}>
               <Req ids={['R2.6', 'R10.5']}>
                 <h3 className="text-[1.06rem] leading-snug font-semibold tracking-tight">
-                  {fresh && !reduceMotion ? <EncryptedText text={text.title} revealDelayMs={DECRYPT_TITLE_IN_MS / Math.max(1, text.title.length)} /> : text.title}
+                  {fresh && !reduceMotion ? <><span className="sr-only">{text.title}</span><span aria-hidden="true"><EncryptedText text={text.title} revealDelayMs={DECRYPT_TITLE_IN_MS / Math.max(1, text.title.length)} /></span></> : text.title}
                 </h3>
               </Req>
               <p className="line-clamp-2 text-sm text-muted-foreground">{text.summary}</p>
