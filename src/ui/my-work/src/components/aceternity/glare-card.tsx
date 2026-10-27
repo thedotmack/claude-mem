@@ -54,7 +54,6 @@ export const GlareCard = ({
 
   const updateStyles = () => {
     if (refElement.current) {
-      console.log(state.current);
       const { background, rotate, glare } = state.current;
       refElement.current?.style.setProperty("--m-x", `${glare.x}%`);
       refElement.current?.style.setProperty("--m-y", `${glare.y}%`);
