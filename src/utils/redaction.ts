@@ -82,7 +82,9 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   // "the token ends here" check without that gap.
   { name: 'openai_key',      regex: /\bsk-(?!ant-)[A-Za-z0-9_-]{20,}(?!\w)/g },
   { name: 'anthropic_key',   regex: /\bsk-ant-[A-Za-z0-9_-]{20,}(?!\w)/g },
-  { name: 'slack_token',     regex: /\bxox[baprs]-[A-Za-z0-9-]{10,}(?!\w)/g },
+  // Slack bot/user/legacy tokens (`xoxb-`, `xoxp-`, …), refresh tokens from
+  // token rotation (`xoxe-`) and app-level Socket Mode tokens (`xapp-`).
+  { name: 'slack_token',     regex: /\b(?:xox[abeprs]|xapp)-[A-Za-z0-9-]{10,}(?!\w)/g },
   { name: 'jwt',             regex: /\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?!\w)/g },
   // A PGP secret key is armored as `PRIVATE KEY BLOCK`, and an encrypted
   // PKCS#8 key as `ENCRYPTED PRIVATE KEY`.
