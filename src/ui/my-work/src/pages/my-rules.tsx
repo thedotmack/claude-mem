@@ -258,7 +258,7 @@ function SuggestionCard({ rule, decision, onDecide, onEdit, onUndo, onShow }: { 
   return (
     <Req ids={['R14.2', 'R14.3', 'R14.8', 'R14.9']}>
       <Confirmation id={`decide-${rule.id}`} approval={approval} state={decision ? 'approval-responded' : 'approval-requested'}
-        className={cn('scroll-mt-36 gap-3 rounded-xl bg-card p-4 shadow-none lg:scroll-mt-20', !decision ? 'border-review-border' : decision === 'approved' ? 'border-shipped-border' : 'border-dashed')}>
+        className={cn('scroll-mt-36 gap-3 rounded-xl bg-card p-4 lg:scroll-mt-20', !decision ? 'border-review-border' : decision === 'approved' ? 'border-shipped-border' : 'border-dashed')}>
         <button type="button" onClick={() => scrollToId(`scope-${scope.id}`)} className="-my-2 inline-flex min-h-11 w-fit items-center text-xs text-muted-foreground hover:text-foreground sm:min-h-0 sm:my-0">{scopeHeading(scope)}</button>
 
         <div className={cn(decision === 'rejected' && 'line-through opacity-60')}><RuleSentence rule={rule} large /></div>
@@ -464,7 +464,7 @@ function AgentFile({ rules, changed, open, onOpenChange }: { rules: OwnerRule[];
   const load = () => { setLoadError(null); loadRulesInClaudeCode().catch((error: unknown) => setLoadError(error instanceof Error ? error.message : String(error))) }
   return (
     <Req ids={['D7']}>
-      <Artifact className="shadow-none">
+      <Artifact>
         <ArtifactHeader className="flex-col items-start gap-2 bg-card">
           <ArtifactTitle className="flex items-center gap-1.5 font-mono text-xs"><FileTextIcon className="size-3.5" />{path}</ArtifactTitle>
           <ArtifactDescription className="text-xs">{loaded} {loaded === 1 ? 'rule' : 'rules'} you set or approved. claude-mem writes this file and loads it with your user-level instructions, never a project’s files.</ArtifactDescription>

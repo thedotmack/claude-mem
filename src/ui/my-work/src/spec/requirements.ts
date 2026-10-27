@@ -38,7 +38,7 @@ export const REQUIREMENTS: Requirement[] = [
   { id: 'R4.1', section: '4', kind: 'ui', text: 'Cards view: portrait request cards.' },
   { id: 'R4.2', section: '4', kind: 'ui', text: 'List view with sorting.' },
   { id: 'R4.3', section: '4', kind: 'ui', text: 'By agent view: a card per agent with its icon and what it is working on, an outer view to the list.' },
-  { id: 'R4.4', section: '4, 15.2', kind: 'ui', text: 'Status board merged into List: a status column whose label flips when it changes.' },
+  { id: 'R4.4', section: '4, 15.2', kind: 'ui', text: 'Status board merged into List: a status column whose label flips when it changes; may be skeuomorphic (a train-board flip is welcome).' },
   { id: 'R4.5', section: '4', kind: 'ui', text: 'My Goals shows the owner-goals report, month by month.' },
   { id: 'R4.6', section: '4', kind: 'ui', text: 'My Rules page: how I like to work, as if-then blocks.' },
 
@@ -82,15 +82,15 @@ export const REQUIREMENTS: Requirement[] = [
   { id: 'R9.5', section: '9', kind: 'process', text: 'Quality bar: no "colorful mess"; real design attention.', wireframe: 'Grayscale wireframe; color decisions belong to the mockup pass.' },
 
   // 10. Look and feel
-  { id: 'R10.1', section: '10', kind: 'process', text: 'Clarity like Basecamp and Patreon; AI SDK Agents patterns as reference.', wireframe: 'Built from AI Elements, the AI SDK component set.' },
-  { id: 'R10.2', section: '10', kind: 'ui', text: 'Subtle: no drop shadows everywhere, nothing harsh.' },
+  { id: 'R10.1', section: '10', kind: 'process', text: 'Clarity like Basecamp and Patreon; AI SDK Agents patterns as reference.', wireframe: 'AI Elements and the AI SDK Agents patterns are a design reference, not a required kit; Aceternity components sit alongside them.' },
+  { id: 'R10.2', section: '10', kind: 'ui', text: 'Subtle drop shadows that give surfaces texture, not one on everything; nothing harsh.' },
   { id: 'R10.3', section: '10', kind: 'ui', text: 'React on a real UI kit, not plain HTML.' },
   { id: 'R10.4', section: '10', kind: 'ui', text: 'Agent icons on their work; the cmem brain mark is the only logo.' },
   { id: 'R10.5', section: '10', kind: 'ui', text: 'Clean, uncluttered text.' },
 
   // 11. Design state and process
   { id: 'R11.1', section: '11', kind: 'ui', text: 'Mobile designed for human eyes and thumbs.' },
-  { id: 'R11.2', section: '11', kind: 'process', text: 'Visual design goes through image mockups with the UI Redesign skill, run by Codex.', wireframe: 'This wireframe fixes structure only; visuals come from the mockup pass.' },
+  { id: 'R11.2', section: '11', kind: 'process', text: 'Visual design goes through image mockups with the UI Redesign skill, run by Codex.', wireframe: 'Superseded on Oct 26, 2026: the owner asked for Aceternity components built straight into the React app, any of them, skeuomorphic included.' },
 
   // 12. Truth rules
   { id: 'R12.1', section: '12', kind: 'ui', text: 'Real data only, never simulated; empty states instead of invented numbers.' },
@@ -125,7 +125,7 @@ export const REQUIREMENTS: Requirement[] = [
 
   // 15. Decisions
   { id: 'D1', section: '15.1', kind: 'ui', text: 'Goals show the progress meters of the requests serving them, combined; each card has a goal chip; "No goal" when it serves none.' },
-  { id: 'D5', section: '15.5', kind: 'ui', text: 'Agent-only card shows terminal lines, a corner spinner with a one-word hover, then transforms to human text; static under reduced motion.' },
+  { id: 'D5', section: '15.5', kind: 'ui', text: 'Agent-only card shows terminal lines, a corner spinner with a one-word hover, then transforms to human text (any transform effect); static under reduced motion.' },
   { id: 'D6', section: '15.6', kind: 'process', text: 'Each Refresh shows its last run cost; My Rules shows the week’s title cost.', wireframe: 'Owner dropped generation-cost display on Oct 20, 2026: the spend is tiny next to the value. Not shown in the GUI.' },
   { id: 'D7', section: '15.7', kind: 'ui', text: 'Approved rules are written to ~/.claude-mem/MY-RULES.md and loaded with user-level instructions; never project files; approved only.' },
 

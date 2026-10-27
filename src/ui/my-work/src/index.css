@@ -130,7 +130,7 @@
     --sidebar-border: #ebe2d6;
     --sidebar-ring: #fd8a3d;
 
-    /* Soft semantic surfaces keep state and ownership readable without shadows. */
+    /* Soft semantic surfaces keep state and ownership readable; subtle shadows add texture. */
     --surface: #f8f3ec;
     --surface-warm: #fff7ee;
     --surface-cool: #f5f1eb;
@@ -215,7 +215,7 @@
     --sidebar-border: #3a312a;
     --sidebar-ring: #ff8a3d;
 
-    /* Soft semantic surfaces keep state and ownership readable without shadows. */
+    /* Soft semantic surfaces keep state and ownership readable; subtle shadows add texture. */
     --surface: #29231e;
     --surface-warm: #231b15;
     --surface-cool: #1b1815;
