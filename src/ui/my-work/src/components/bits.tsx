@@ -175,7 +175,8 @@ export function LiveIndicator() {
               {live && <span className="absolute inline-flex size-full rounded-full bg-shipped-foreground/40 motion-safe:animate-ping" />}
               <span className={cn('relative inline-flex size-2 rounded-full', live ? 'bg-shipped-foreground' : connection.tone === 'warning' ? 'bg-attention-foreground' : 'bg-idle-foreground')} />
             </span>
-            {demonstration ? 'Live' : connection.label}
+            {/* Phone: the dot alone (its colour carries the state, the tooltip the words) so the page title keeps whole words. */}
+            <span className="sr-only sm:not-sr-only">{demonstration ? 'Live' : connection.label}</span>
           </span>
         </TooltipTrigger>
         <TooltipContent className="max-w-72">

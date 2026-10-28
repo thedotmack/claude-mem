@@ -386,8 +386,9 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
             <RefreshStatus refresh={refresh} run={lastRuns.progress} label="Last reviewed" ids={['R14.12']} />
           </div>
         )}
-        <div className="flex w-full items-center gap-1 md:w-auto">
-          <ToggleGroup type="single" variant="outline" size="sm" spacing={1} value={filter} onValueChange={(next) => next && setFilter(next as Filter)} aria-label="Filter" className="flex-nowrap">
+        {/* Phone: the filters wrap to a second row instead of widening the page past the screen; the sort stays beside them. */}
+        <div className="flex w-full items-start gap-1 md:w-auto md:items-center">
+          <ToggleGroup type="single" variant="outline" size="sm" spacing={1} value={filter} onValueChange={(next) => next && setFilter(next as Filter)} aria-label="Filter" className="min-w-0 flex-1 md:flex-none md:flex-nowrap">
             {FILTERS.filter((entry) => entry.value !== 'closed' || requests.some(entry.matches)).map(({ value, label, dot, matches: test }) => (
               <ToggleGroupItem key={value} value={value} className="h-11 gap-1.5 px-3 md:h-8">
                 {dot && <span className={cn('size-1.5 rounded-full', dot)} />}

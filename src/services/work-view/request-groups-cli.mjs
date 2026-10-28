@@ -23,5 +23,11 @@ async function saveFocus(body) {
 // The worker's sync device id as CloudSync persisted it ('' before cloud sync first started, when every row is local).
 const localDeviceId = SettingsDefaultsManager.loadFromFile(join(resolveDataDir(), 'settings.json'), true, { readOnly: true }).CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID ?? '';
 
-try { await runCli(process.argv.slice(2), { saveFocus, localDeviceId }); }
+// Printed through process.stdout.write and awaited: the imports above load the logger, which reads
+// process.stdout.isTTY, and after that Bun drops whatever console.log has not flushed to a pipe when the process
+// exits (focus-input at 106 KB arrived cut at 65536 bytes). Agents read this output through a pipe.
+let output = '';
+const print = (value) => { output += `${JSON.stringify(value, null, 2)}\n`; };
+try { await runCli(process.argv.slice(2), { saveFocus, localDeviceId, print }); }
 catch (error) { console.error(error.message); process.exitCode = 1; }
+if (output) await new Promise((resolve, reject) => process.stdout.write(output, (error) => error ? reject(error) : resolve()));

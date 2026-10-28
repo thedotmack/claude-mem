@@ -99,8 +99,8 @@ def worker_request(base_url, path, body=None, nothing_written_on=()):
             return response.read().decode()
     except urllib.error.HTTPError as error:
         if error.code in nothing_written_on:
-            raise NothingWritten(f"worker refused {path}: {error.code} {error.read().decode()[:500]}")
-        sys.exit(f"worker refused {path}: {error.code} {error.read().decode()[:500]}")
+            raise NothingWritten(f"worker refused {path}: {error.code} {error.read().decode()}")
+        sys.exit(f"worker refused {path}: {error.code} {error.read().decode()}")
     except urllib.error.URLError as error:
         sys.exit(f"claude-mem worker is not reachable at {base_url} ({error.reason}). Start it with: npx claude-mem start")
 

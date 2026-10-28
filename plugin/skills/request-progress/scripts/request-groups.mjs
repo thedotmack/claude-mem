@@ -2825,7 +2825,7 @@ function groupingInput(ledger, database, { sinceEpoch, limit = GROUPING_BATCH })
     remaining: fresh.length - batch.length
   };
 }
-function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), print = (value) => console.log(JSON.stringify(value, null, 2)), localDeviceId: localDeviceId2, saveFocus: saveFocus2 = null } = {}) {
+function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), print: print2 = (value) => console.log(JSON.stringify(value, null, 2)), localDeviceId: localDeviceId2, saveFocus: saveFocus2 = null } = {}) {
   const [command, ...args] = argv;
   const db = () => database ?? openDatabase();
   const since = () => now - option(args, "days", 14) * DAY_MS;
@@ -2840,9 +2840,9 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
       const currentGroup = stored.conversations[candidate.conversationKey] ?? null;
       return brief ? { conversationKey: candidate.conversationKey, project: candidate.project, startedAt: candidate.startedAt, lastActivityAt: candidate.lastActivityAt, firstAsk: candidate.firstAsk.slice(0, 200), laterAsks: candidate.asks.slice(1, 4).map((ask) => ask.text.slice(0, 120)), workLists: candidate.workLists, currentGroup } : { ...candidate, currentGroup };
     });
-    return print({ candidates: shown, proposedGroups: proposedGroups.filter((group) => group.links.length), skippedLists, projects: [...new Set(candidates.map((candidate) => projectRoot(candidate.project)))] });
+    return print2({ candidates: shown, proposedGroups: proposedGroups.filter((group) => group.links.length), skippedLists, projects: [...new Set(candidates.map((candidate) => projectRoot(candidate.project)))] });
   }
-  if (command === "grouping-input") return print(groupingInput(readLedger(dir), db(), { sinceEpoch: since(), limit: option(args, "limit", GROUPING_BATCH) }));
+  if (command === "grouping-input") return print2(groupingInput(readLedger(dir), db(), { sinceEpoch: since(), limit: option(args, "limit", GROUPING_BATCH) }));
   if (command === "apply") {
     const database2 = db();
     const stored = readLedger(dir).groups;
@@ -2855,7 +2855,7 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
     const anchors = new Map(readCandidates(database2, { conversationKeys: missing, excludedPromptIds: readLedger(dir).agentWrittenPromptIds }).map((candidate) => [candidate.conversationKey, candidate.original]));
     for (const group of Object.values(next.groups)) if (!group.anchorAsk && anchors.has(group.anchor)) group.anchorAsk = anchors.get(group.anchor);
     writeJsonAtomic(join8(dir, "request-groups.json"), next);
-    return print({ groups: Object.keys(next.groups).length, conversations: Object.keys(next.conversations).length });
+    return print2({ groups: Object.keys(next.groups).length, conversations: Object.keys(next.conversations).length });
   }
   if (command === "pending" || command === "show") {
     const ledger = readLedger(dir);
@@ -2878,11 +2878,11 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
           observations: observations.all(platform, sessionId, since2).map((row) => ({ id: row.id, at: iso2(row.created_at_epoch), type: row.type, title: row.title, subtitle: row.subtitle }))
         };
       });
-      return print({ ...details, conversations, mode: amendSince ? "amend" : "full", amendSince, reviewBasis: { checkedThrough: iso2(now), conversations: keys.sort() } });
+      return print2({ ...details, conversations, mode: amendSince ? "amend" : "full", amendSince, reviewBasis: { checkedThrough: iso2(now), conversations: keys.sort() } });
     }
     const { due, ungrouped } = pendingReviews(ledger, db(), since());
     const limit = option(args, "limit", 48);
-    return print({ due: due.length, groups: due.slice(0, limit).map((group) => ({ groupId: group.groupId, title: group.title, lastActivityAt: group.lastActivityAt, conversations: group.conversations.length })), deferred: Math.max(0, due.length - limit), ungroupedConversations: ungrouped });
+    return print2({ due: due.length, groups: due.slice(0, limit).map((group) => ({ groupId: group.groupId, title: group.title, lastActivityAt: group.lastActivityAt, conversations: group.conversations.length })), deferred: Math.max(0, due.length - limit), ungroupedConversations: ungrouped });
   }
   if (command === "record-progress") {
     const ledger = readLedger(dir);
@@ -2892,7 +2892,7 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
     const unchanged = previous && JSON.stringify(storyFacts(previous)) === JSON.stringify(storyFacts(reviewed));
     const entry = { ...reviewed, checkedAt, changedAt: unchanged ? previous.changedAt ?? previous.checkedAt : checkedAt, readings: appendReading(ledger.progress[reviewed.groupId], { at: checkedAt, percent: reviewed.percent }) };
     writeJsonAtomic(join8(dir, "progress", `${entry.groupId}.json`), entry);
-    return print({ recorded: entry.groupId, state: entry.state, percent: entry.percent, readings: entry.readings.length });
+    return print2({ recorded: entry.groupId, state: entry.state, percent: entry.percent, readings: entry.readings.length });
   }
   if (command === "story-input") {
     const { groups, progress, story } = readLedger(dir);
@@ -2900,7 +2900,7 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
     const writtenAt = Date.parse(story?.writtenAt ?? "");
     const update = Number.isFinite(writtenAt);
     const previousNarrativeChars = story?.narrative?.length ?? 0;
-    return print({
+    return print2({
       groups: Object.keys(groups.groups).length,
       update,
       narrativeLimit: STORY_NARRATIVE_MAX,
@@ -2917,22 +2917,22 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
     const fromOwnerGoals = (readLedger(dir).story?.preferences ?? []).filter((preference) => preference?.source === OWNER_GOALS_LIST);
     const story = { ...validated, preferences: [...validated.preferences, ...fromOwnerGoals], writtenAt: iso2(now) };
     writeJsonAtomic(join8(dir, "story.json"), story);
-    return print({ recorded: "story", preferences: story.preferences.length });
+    return print2({ recorded: "story", preferences: story.preferences.length });
   }
   const focusQuestion = () => {
     const ledger = readLedger(dir), focus = readFocus(db(), { localDeviceId: requireDeviceId(localDeviceId2) });
     const other = args.includes("--other");
     return { ledger, other, input: other ? otherInput(ledger, focus, localDeviceId2, db()) : focusInput(ledger, focus, localDeviceId2, db(), { limit: option(args, "limit", FOCUS_BATCH) }) };
   };
-  if (command === "focus-input") return print(focusQuestion().input);
+  if (command === "focus-input") return print2(focusQuestion().input);
   if (command === "record-focus") {
     if (!saveFocus2) throw new Error("record-focus saves through the claude-mem worker, and none was given.");
     const { ledger, other, input } = focusQuestion();
     const file = args.filter((arg, index) => !arg.startsWith("--") && args[index - 1] !== "--limit").at(-1) ?? "-";
     const body = validateFocusAnswer(readInput(file), input, ledger, { other });
-    return Promise.resolve(saveFocus2(body)).then((saved) => print({ placed: saved.placed, proposed: saved.focusAreaIds.length, focusAreaIds: saved.focusAreaIds }));
+    return Promise.resolve(saveFocus2(body)).then((saved) => print2({ placed: saved.placed, proposed: saved.focusAreaIds.length, focusAreaIds: saved.focusAreaIds }));
   }
-  if (command === "refresh-needs") return print(refreshNeeds({ dir, database: db(), now, days: option(args, "days", 14), localDeviceId: localDeviceId2 }));
+  if (command === "refresh-needs") return print2(refreshNeeds({ dir, database: db(), now, days: option(args, "days", 14), localDeviceId: localDeviceId2 }));
   throw new TypeError("Usage: request-groups.mjs candidates|apply|pending|show|record-progress|story-input|record-story|focus-input|record-focus|refresh-needs (see file header).");
 }
 
@@ -2951,9 +2951,15 @@ async function saveFocus(body) {
   return JSON.parse(text2);
 }
 var localDeviceId = SettingsDefaultsManager.loadFromFile(join9(resolveDataDir(), "settings.json"), true, { readOnly: true }).CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID ?? "";
+var output = "";
+var print = (value) => {
+  output += `${JSON.stringify(value, null, 2)}
+`;
+};
 try {
-  await runCli(process.argv.slice(2), { saveFocus, localDeviceId });
+  await runCli(process.argv.slice(2), { saveFocus, localDeviceId, print });
 } catch (error) {
   console.error(error.message);
   process.exitCode = 1;
 }
+if (output) await new Promise((resolve3, reject) => process.stdout.write(output, (error) => error ? reject(error) : resolve3()));

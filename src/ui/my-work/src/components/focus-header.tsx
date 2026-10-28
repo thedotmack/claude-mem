@@ -182,7 +182,7 @@ export function FocusHeader({ area, requests, changes }: { area: FocusArea; requ
           <AreaMenu area={area} changes={changes} onEdit={setEdit} />
         </div>
         {navWord && <p className="text-xs text-attention-foreground">“{area.name}” reuses the page name “{navWord}”. Rename it so each word means one thing.</p>}
-        <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
           <Rollup status={status} requests={requests} />
           <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
             <span className={cn('inline-flex items-center gap-1.5 font-medium', AREA_STATUS[status].text)}><span className={cn('size-1.5 rounded-full', AREA_STATUS[status].dot)} />{AREA_STATUS[status].label}</span>

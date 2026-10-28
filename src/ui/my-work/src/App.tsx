@@ -197,7 +197,7 @@ function LoadedApp() {
                       <span className="sr-only md:not-sr-only md:text-[0.95rem] md:font-semibold md:tracking-tight">claude-mem</span>
                     </span>
                   </Req>
-                  <h1 className="min-w-0 flex-1 text-lg leading-tight font-semibold tracking-tight break-words md:hidden">{heading}</h1>
+                  <h1 className="min-w-0 flex-1 text-lg leading-tight font-semibold tracking-tight break-normal hyphens-none md:hidden">{heading}</h1>
                   <div className="ml-auto flex shrink-0 items-center gap-0.5 md:gap-2">
                     <TeamSwitch team={workspace.team} onChange={(team) => setWorkspace({ ...workspace, team })} />
                     <DeviceFreshness />
