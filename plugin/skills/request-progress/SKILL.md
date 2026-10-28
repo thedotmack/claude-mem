@@ -101,7 +101,7 @@ A **focus area** is a part of the owner's work you could ask for things inside o
 1. Run `$CLI focus-input`. It returns:
    - `areas`: the owner's kept and suggested focus areas (`focusAreaId`, `name`, `goal`, `about`).
    - `dismissed`: areas the owner dismissed. They take no requests and are never proposed again, under any name.
-   - `requests`: one batch of up to 20 requests to place now (new, changed since they were placed, or whose area is gone). Each has its `anchor`, title, first ask, progress state and summary, `repo`, how many `conversations` it holds and each conversation's opening ask (`conversationAsks`).
+   - `requests`: one batch of up to 20 requests to place now (new, changed since they were placed, or whose area is gone). Each has its `anchor`, title, first ask, progress state and summary, `repo`, how many `conversations` it holds and each conversation's opening ask (`conversationAsks`). A request may also carry `judgeSuggestion` (`focusAreaId`, `confidence`, `evidence`): Jev's pick among the kept areas, which is only a suggestion; you decide the placement from the request and the areas.
    - `remaining`: requests left for later batches.
 
    If `requests` is empty, go to step 3. A request the owner moved stays where they put it and is never listed.

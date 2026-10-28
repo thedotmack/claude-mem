@@ -2517,6 +2517,7 @@ __export(request_judge_exports, {
   MAX_DECISION_BODY_BYTES: () => MAX_DECISION_BODY_BYTES,
   OPENROUTER_DECISIONS_URL: () => OPENROUTER_DECISIONS_URL,
   SUGGEST_THRESHOLD: () => SUGGEST_THRESHOLD,
+  answerOf: () => answerOf,
   bandFor: () => bandFor,
   configuredJudge: () => configuredJudge,
   contextReader: () => contextReader,

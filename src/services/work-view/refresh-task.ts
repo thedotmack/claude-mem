@@ -19,7 +19,8 @@ import type { UsableAgentId } from '../agent-runner/detect.js';
 import { runCommand } from '../agent-runner/detect.js';
 import { writeOwnerPromptsFile, type OwnerPromptsFile } from '../prompt-import/owner-prompts-file.js';
 import { resolvePythonCommand } from './python.js';
-import { FOCUS_BATCH, readGoals, readLedger, runCli, validateGroupingAnswer, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
+import { FOCUS_BATCH, readGoals, readLedger, runCli, validateFocusAnswer, validateGroupingAnswer, type FocusInput, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
+import { FOCUS_AUTO_PLACE_THRESHOLD, judgeFocusBatch, placesAlone, type FocusJudge, type FocusJudgement } from './focus-judge.mjs';
 import { isWithdrawnArea, PROPOSAL_KINDS, readFocusAreas, type FocusArea, type RouterFocusBody } from './my-focus.mjs';
 import { NAV_LABELS } from './nav-words.mjs';
 import { routeUndecided, type RequestJudge } from './request-judge.mjs';
@@ -82,6 +83,12 @@ export interface RefreshTaskOptions {
    * a CMEM Pro or OpenRouter install, request-judge.mjs). Null or absent: code links alone route, and the
    * agent decides the rest as before. */
   judge?: RequestJudge | null;
+  /** Asks Jev which kept focus area each request of a focus batch is part of, before the focus agent sees it
+   * (focus-judge.mjs; built from the same settings as `judge`). Null or absent: the agent places alone, as before. */
+  focusJudge?: FocusJudge | null;
+  /** The confidence at which a focus-judge pick is placed without the agent; FOCUS_AUTO_PLACE_THRESHOLD (null: never)
+   * unless a test injects one. */
+  focusAutoPlaceThreshold?: number | null;
   now?: () => number;
   spawnImpl?: typeof spawn;
   /** This worker's sync device id ('' when cloud sync never started), so my-focus rows replay in the same order the
@@ -396,7 +403,37 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
           question, NAV_LABEL_RULE,
         ].join('\n\n');
         let previousBatch = '';
-        for (let input = cli(['focus-input', '--limit', String(FOCUS_BATCH)]); input.requests.length; input = cli(['focus-input', '--limit', String(FOCUS_BATCH)])) {
+        // The focus judge (Jev) asks once per request per run: a request it judged stays judged when a later batch lists it again.
+        const focusJudge = options.focusJudge ?? null, threshold = options.focusAutoPlaceThreshold === undefined ? FOCUS_AUTO_PLACE_THRESHOLD : options.focusAutoPlaceThreshold;
+        const judged = new Map<string, FocusJudgement>(), placedAlone = new Set<string>();
+        for (let input: FocusInput = cli(['focus-input', '--limit', String(FOCUS_BATCH)]); input.requests.length; input = cli(['focus-input', '--limit', String(FOCUS_BATCH)])) {
+          if (focusJudge) {
+            const fresh = input.requests.filter(request => !judged.has(request.anchor));
+            if (fresh.length) await timed('focus-judge', async () => {
+              const database = openDatabase();
+              try { for (const result of await judgeFocusBatch({ judge: focusJudge, input: { ...input, requests: fresh }, database, ledger: readLedger(ledgerDir) })) judged.set(result.anchor, result); }
+              finally { database.close(); }
+            }, { groups: fresh.length });
+            // Picks at or above the threshold are router placements written now, through the same check and write as the
+            // agent's answer; the batch is then read again, so the agent's answer is checked against exactly what it saw.
+            const alone = input.requests.filter(request => placesAlone(judged.get(request.anchor)!, threshold));
+            if (alone.length) {
+              const again = alone.find(request => placedAlone.has(request.anchor));
+              if (again) throw new Error(`focus: a request the judge placed is still queued (${again.anchor}).`);
+              if (!options.saveFocus) throw new Error('The focus step has no way to save: the worker did not pass its my-focus write.');
+              const body = validateFocusAnswer({ placements: alone.map(request => ({ anchor: request.anchor, focusAreaId: judged.get(request.anchor)!.focusAreaId, evidence: judged.get(request.anchor)!.evidence })), proposals: [] },
+                { ...input, requests: alone }, readLedger(ledgerDir));
+              const saved = await options.saveFocus({ ...body, placements: body.placements.map(placement => ({ ...placement, confidence: judged.get(placement.anchorConversationKey)!.confidence })) });
+              for (const request of alone) placedAlone.add(request.anchor);
+              placed += saved.placed;
+              continue;
+            }
+            // Below the threshold a pick is only a hint on its request: the agent decides.
+            input = { ...input, requests: input.requests.map(request => {
+              const result = judged.get(request.anchor)!;
+              return result.focusAreaId === null ? request : { ...request, judgeSuggestion: { focusAreaId: result.focusAreaId, confidence: result.confidence, evidence: result.evidence } };
+            }) };
+          }
           const anchors: string[] = input.requests.map((request: { anchor: string }) => request.anchor);
           // A saved batch leaves the queue; the same batch twice means the save did not take, and asking again would loop.
           if (anchors.join('\n') === previousBatch) throw new Error(`focus: the placed requests are still queued (${anchors.length} starting ${anchors[0]}).`);
@@ -406,6 +443,11 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
             `Place each of these ${anchors.length} requests exactly once, by its "anchor": ${anchors.join(', ')}. Reply with only the JSON that \`record-focus\` takes ({"placements": [...], "proposals": [...]}).`,
           ].join('\n\n')), answer => recordFocus(['--limit', String(FOCUS_BATCH)], answer), FOCUS_ANSWER_SCHEMA);
           placed += saved.placed; proposed += saved.proposed;
+        }
+        if (judged.size) {
+          const results = [...judged.values()], picked = results.filter(result => result.focusAreaId !== null && result.focusAreaId !== 'other').length;
+          const none = results.filter(result => result.focusAreaId === 'other').length, unjudged = results.length - picked - none;
+          done.push(`${results.length} requests judged for focus (${picked} picked an area, ${none} none, ${unjudged} unjudged${placedAlone.size ? `, ${placedAlone.size} placed without the agent` : ''})`);
         }
         const other = cli(['focus-input', '--other']);
         if (other.due) {

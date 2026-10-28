@@ -39,7 +39,8 @@ export function readFocusAreas(database: FocusDatabase, options: { localDeviceId
 export function isPlaceableArea(area: Pick<FocusArea, 'status' | 'mergedInto'>): boolean;
 /** One record-focus answer as the worker writes it (POST /api/work-view/focus/router). */
 export interface RouterFocusBody {
-  placements: Array<{ anchorConversationKey: string; focusAreaId: string; basis: string; evidence: string }>;
+  /** confidence: the focus judge's probability, set on a placement it made without the agent. */
+  placements: Array<{ anchorConversationKey: string; focusAreaId: string; basis: string; evidence: string; confidence?: number | null }>;
   proposals: Array<{
     kind: 'new' | 'promote'; name: string; goal: string; about: string; evidence: string;
     /** A placeable area this proposal already is (its requests go there), or null for a new suggested area. */
