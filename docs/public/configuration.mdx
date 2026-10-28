@@ -153,6 +153,15 @@ For `CLAUDE_MEM_PROVIDER=openai-compatible`: any endpoint that speaks `/chat/com
 
 See [OpenAI-Compatible Provider](usage/openai-compatible-provider) for presets and setup.
 
+### My Work Summary Settings
+
+My Work can generate readable card wording using the configured OpenRouter or OpenAI-compatible chat-completions endpoint. By default it runs only when the primary observer provider is OpenRouter, as before; it never uses another endpoint or a quota-fallback key on its own. Select a provider explicitly to use that endpoint for summaries, including an OpenAI-compatible primary or a provider configured only as a fallback. Explicit selection can incur the endpoint's usual charges. Generated wording is presentation-only; recorded work and status remain unchanged.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER` | empty | Empty uses OpenRouter when `CLAUDE_MEM_PROVIDER` is `openrouter`; otherwise generated wording is off. For `openai-compatible`, the request follows `CLAUDE_MEM_OPENAI_COMPAT_REASONING`. Set `openrouter` or `openai-compatible` to select that endpoint explicitly, or `off` to disable it. |
+| `CLAUDE_MEM_WORK_VIEW_COPY_MODEL` | empty | Optional model id used only for My Work wording. Empty uses the selected endpoint's configured model. |
+
 ### Quota Fallback Settings
 
 | Setting | Default | Description |
