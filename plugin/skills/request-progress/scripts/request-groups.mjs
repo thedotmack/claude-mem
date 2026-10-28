@@ -30,6 +30,46 @@ var init_expand_home = __esm({
   }
 });
 
+// src/shared/hook-constants.ts
+function hookProcessOverheadMs(platform = process.platform) {
+  return platform === "win32" ? 8e3 : 5e3;
+}
+function defaultSessionInitRequestTimeoutMs(platform = process.platform) {
+  return HOOK_TIMEOUTS.SESSION_INIT_HOOK_CAP - hookProcessOverheadMs(platform);
+}
+function getTimeout(baseTimeout) {
+  return process.platform === "win32" ? Math.round(baseTimeout * HOOK_TIMEOUTS.WINDOWS_MULTIPLIER) : baseTimeout;
+}
+var SESSION_INIT_HOOK_CAP_MS, HOOK_TIMEOUTS;
+var init_hook_constants = __esm({
+  "src/shared/hook-constants.ts"() {
+    "use strict";
+    SESSION_INIT_HOOK_CAP_MS = 15e3;
+    HOOK_TIMEOUTS = {
+      HEALTH_CHECK: 3e3,
+      // Worker health check (3s — healthy worker responds in <100ms)
+      API_REQUEST: 3e4,
+      // Hook API calls should outlive health probes but stay below hook caps
+      SESSION_INIT_HOOK_CAP: SESSION_INIT_HOOK_CAP_MS,
+      SESSION_INIT_REQUEST: 1e4,
+      // POSIX default for the whole session-init round-trip (plan-17 step 3): the cap minus the hook's own overhead; never Windows-scaled up
+      SESSION_INIT_REQUEST_MAX: SESSION_INIT_HOOK_CAP_MS - 1e3,
+      // Upper bound for CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS: process-exit margin below the cap
+      HOOK_READINESS_WAIT: 1e4,
+      // Per-hook wait for an already-starting worker to finish DB/search init
+      POST_SPAWN_WAIT: 15e3,
+      // Wait for daemon to start after spawn (starts in <1s on Linux, 6-8s on macOS with Chroma)
+      READINESS_WAIT: 3e4,
+      // Wait for DB + search init after spawn (typically <5s)
+      PORT_IN_USE_WAIT: 3e3,
+      // Wait when port occupied but health failing
+      POWERSHELL_COMMAND: 1e4,
+      // PowerShell process enumeration (10s - typically completes in <1s)
+      WINDOWS_MULTIPLIER: 1.5
+    };
+  }
+});
+
 // src/shared/hook-io.ts
 function bypassWrite(chunk) {
   const writer = pinnedBypassWrite ?? process.stderr.write.bind(process.stderr);
@@ -306,46 +346,6 @@ var init_paths = __esm({
       supervisorRegistry: () => join4(DATA_DIR, "supervisor.json"),
       envFile: () => join4(DATA_DIR, ".env"),
       logsDir: () => LOGS_DIR
-    };
-  }
-});
-
-// src/shared/hook-constants.ts
-function hookProcessOverheadMs(platform = process.platform) {
-  return platform === "win32" ? 8e3 : 5e3;
-}
-function defaultSessionInitRequestTimeoutMs(platform = process.platform) {
-  return HOOK_TIMEOUTS.SESSION_INIT_HOOK_CAP - hookProcessOverheadMs(platform);
-}
-function getTimeout(baseTimeout) {
-  return process.platform === "win32" ? Math.round(baseTimeout * HOOK_TIMEOUTS.WINDOWS_MULTIPLIER) : baseTimeout;
-}
-var SESSION_INIT_HOOK_CAP_MS, HOOK_TIMEOUTS;
-var init_hook_constants = __esm({
-  "src/shared/hook-constants.ts"() {
-    "use strict";
-    SESSION_INIT_HOOK_CAP_MS = 15e3;
-    HOOK_TIMEOUTS = {
-      HEALTH_CHECK: 3e3,
-      // Worker health check (3s — healthy worker responds in <100ms)
-      API_REQUEST: 3e4,
-      // Hook API calls should outlive health probes but stay below hook caps
-      SESSION_INIT_HOOK_CAP: SESSION_INIT_HOOK_CAP_MS,
-      SESSION_INIT_REQUEST: 1e4,
-      // POSIX default for the whole session-init round-trip (plan-17 step 3): the cap minus the hook's own overhead; never Windows-scaled up
-      SESSION_INIT_REQUEST_MAX: SESSION_INIT_HOOK_CAP_MS - 1e3,
-      // Upper bound for CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS: process-exit margin below the cap
-      HOOK_READINESS_WAIT: 1e4,
-      // Per-hook wait for an already-starting worker to finish DB/search init
-      POST_SPAWN_WAIT: 15e3,
-      // Wait for daemon to start after spawn (starts in <1s on Linux, 6-8s on macOS with Chroma)
-      READINESS_WAIT: 3e4,
-      // Wait for DB + search init after spawn (typically <5s)
-      PORT_IN_USE_WAIT: 3e3,
-      // Wait when port occupied but health failing
-      POWERSHELL_COMMAND: 1e4,
-      // PowerShell process enumeration (10s - typically completes in <1s)
-      WINDOWS_MULTIPLIER: 1.5
     };
   }
 });
@@ -3630,7 +3630,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir as homedir2 } from "node:os";
 import { join as join2 } from "node:path";
 init_expand_home();
-function resolveHarnessWorkerUrl() {
+init_hook_constants();
+function harnessSetting() {
   const dataDir = expandHome(process.env.CLAUDE_MEM_DATA_DIR || join2(homedir2(), ".claude-mem"));
   let settings = {};
   try {
@@ -3639,7 +3640,10 @@ function resolveHarnessWorkerUrl() {
     settings = nested && typeof nested === "object" && !Array.isArray(nested) && Object.keys(nested).some((key) => key.startsWith("CLAUDE_MEM_")) ? nested : document ?? {};
   } catch {
   }
-  const setting = (key, fallback) => process.env[key] || (typeof settings[key] === "string" && settings[key] ? String(settings[key]) : fallback);
+  return (key, fallback) => process.env[key] || (typeof settings[key] === "string" && settings[key] ? String(settings[key]) : fallback);
+}
+function resolveHarnessWorkerUrl() {
+  const setting = harnessSetting();
   const configuredHost = setting("CLAUDE_MEM_WORKER_HOST", "127.0.0.1");
   const host = configuredHost === "localhost" ? "127.0.0.1" : configuredHost;
   const port = setting("CLAUDE_MEM_WORKER_PORT", String(37700 + (process.getuid?.() ?? 77) % 100));
