@@ -325,6 +325,20 @@ function genericMarkerForKeyedValue(key: string, value: string, config: Redactio
   return `<redacted type='${name}'/>`;
 }
 
+// The bearer_token text pattern anchors on `Authorization: Bearer …`, so a
+// header object like `{"headers": {"Authorization": "Bearer …"}}` needs the
+// key paired with the value again. As in text, only the token after `Bearer`
+// is replaced.
+const AUTHORIZATION_KEY = /^authorization$/i;
+const KEYED_BEARER_VALUE = new RegExp(`^(Bearer${BOUNDED_SPACE})${GENERIC_VALUE}$`, 'i');
+
+function bearerMarkerForKeyedValue(key: string, value: string, config: RedactionConfig): string | null {
+  if (!config.genericEnabled || config.disabledBuiltinPatterns?.includes('bearer_token')) return null;
+  if (!AUTHORIZATION_KEY.test(key)) return null;
+  const match = KEYED_BEARER_VALUE.exec(value);
+  return match ? `${match[1]}<redacted type='bearer_token'/>` : null;
+}
+
 // The aws_session_token built-in anchors on `SessionToken: …`, so a payload
 // like `{"Credentials": {"SessionToken": "…"}}` needs the key paired with the
 // value again. Same key names and value floor as the text pattern; it is a
@@ -362,6 +376,7 @@ export function redactJsonStrings<T>(value: T, config: RedactionConfig = getReda
       if (key === undefined || Object.keys(result.counts).length > 0) return result.redacted;
       return awsSessionTokenMarkerForKeyedValue(key, node, config)
         ?? awsSecretKeyMarkerForKeyedValue(key, node, config)
+        ?? bearerMarkerForKeyedValue(key, node, config)
         ?? genericMarkerForKeyedValue(key, node, config)
         ?? result.redacted;
     }
