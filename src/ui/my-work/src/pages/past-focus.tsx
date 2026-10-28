@@ -1,14 +1,17 @@
 // Past focus: areas you marked done, and what you asked for most, month by month (MonthByMonth, moved from the
 // retired goals page). A month closing archives its asks; it doesn't mean they were done.
-import { CheckIcon, ChevronRightIcon } from 'lucide-react'
+import { useState } from 'react'
+import { CheckIcon, ChevronDownIcon, ChevronRightIcon } from 'lucide-react'
 import { GlareCard } from '@/components/aceternity/glare-card'
 import { Timeline } from '@/components/aceternity/timeline'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { RefreshButton, RefreshStatus } from '@/components/bits'
 import { Quotes } from '@/components/focus-header'
+import { cn } from '@/lib/utils'
 import { plural, timesLabel } from '@/lib/words'
 import { Req } from '@/spec/req'
-import { SAMPLE_RUNS, useWorkModel } from '@/data'
+import { SAMPLE_RUNS, useWorkModel, type PastPeriod } from '@/data'
 import { resolveFocusAreaId } from '@/live/to-focus-model'
 
 /**
@@ -46,6 +49,40 @@ function DoneAreas({ onOpenFocus }: { onOpenFocus: (focusAreaId: string) => void
 }
 
 /**
+ * One archived month on the timeline. Closed, it reads like a line on the board: prompt count, the top area and the
+ * headline's first lines; opening it shows the whole headline and every area with its quote.
+ */
+function PastMonth({ period }: { period: PastPeriod }) {
+  const [open, setOpen] = useState(false)
+  const [top] = period.areas
+  return (
+    <Collapsible open={open} onOpenChange={setOpen} className="rounded-xl border bg-card shadow-panel">
+      <CollapsibleTrigger className="group grid w-full grid-cols-[minmax(0,1fr)_1rem] items-start gap-3 p-4 text-left">
+        <span className="min-w-0 space-y-1">
+          <span className="block text-xs text-muted-foreground">Archived · {period.promptCount} prompts · {plural(period.areas.length, 'area')}</span>
+          {top && <span className="block text-sm font-medium">{top.title}</span>}
+          <span className={cn('block text-sm text-foreground/85', !open && 'line-clamp-2')}>{period.headline}</span>
+        </span>
+        <ChevronDownIcon className="mt-0.5 size-4 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+      </CollapsibleTrigger>
+      <CollapsibleContent className="space-y-4 px-4 pb-4">
+        <ol className="space-y-3">
+          {period.areas.map((entry, index) => (
+            <li key={entry.title} className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
+              <span className="flex size-6 items-center justify-center rounded-md bg-muted text-xs text-muted-foreground tabular-nums">{index + 1}</span>
+              <p className="text-sm font-medium">{entry.title}</p>
+              <p className="col-start-2 text-xs text-muted-foreground">{entry.label} · {timesLabel(entry.timesAsked)}</p>
+              {entry.quote && <div className="col-start-2"><Quotes quotes={[entry.quote]} /></div>}
+            </li>
+          ))}
+        </ol>
+        <p className="text-xs text-muted-foreground">No request reviews cover this month, so it shows what you asked for, not what moved.</p>
+      </CollapsibleContent>
+    </Collapsible>
+  )
+}
+
+/**
  * Month by month: one timeline entry per saved owner-goals run (§4), newest first. The beam fills as you scroll
  * down the months. A month closing archives its asks; it doesn't mean they were done.
  */
@@ -66,28 +103,7 @@ function MonthByMonth({ onOpenFocus }: { onOpenFocus: (focusAreaId: string) => v
       </button>
     ),
   }
-  const past = pastPeriods.map((period) => ({
-    title: period.label,
-    content: (
-      <div className="space-y-4 rounded-xl border bg-card p-4 shadow-panel">
-        <div className="space-y-1">
-          <p className="text-xs text-muted-foreground">Archived · {period.promptCount} prompts · {plural(period.areas.length, 'area')}</p>
-          <p className="text-sm">{period.headline}</p>
-        </div>
-        <ol className="space-y-3">
-          {period.areas.map((entry, index) => (
-            <li key={entry.title} className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
-              <span className="flex size-6 items-center justify-center rounded-md bg-muted text-xs text-muted-foreground tabular-nums">{index + 1}</span>
-              <p className="text-sm font-medium">{entry.title}</p>
-              <p className="col-start-2 text-xs text-muted-foreground">{entry.label} · {timesLabel(entry.timesAsked)}</p>
-              {entry.quote && <div className="col-start-2"><Quotes quotes={[entry.quote]} /></div>}
-            </li>
-          ))}
-        </ol>
-        <p className="text-xs text-muted-foreground">No request reviews cover this month, so it shows what you asked for, not what moved.</p>
-      </div>
-    ),
-  }))
+  const past = pastPeriods.map((period) => ({ title: period.label, content: <PastMonth period={period} /> }))
   return (
     <div className="space-y-3">
       <div className="space-y-0.5">

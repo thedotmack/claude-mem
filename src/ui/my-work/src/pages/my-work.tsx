@@ -9,8 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { ActivePill, AgentIcon, ATTENTION_ORDER, FocusAreaChip, NextMove, ProgressMeter, RefreshButton, RefreshStatus, STATE_LABEL, STATE_SURFACE, StateBadge, useWorkspace } from '@/components/bits'
-import { TextFlippingBoard } from '@/components/aceternity/text-flipping-board'
+import { ActivePill, AgentIcon, ATTENTION_ORDER, FocusAreaChip, NextMove, ProgressMeter, RefreshButton, RefreshStatus, StateBadge, useWorkspace } from '@/components/bits'
 import { PointerHighlight } from '@/components/aceternity/pointer-highlight'
 import { TracingBeam } from '@/components/aceternity/tracing-beam'
 import { AgentMark } from '@/components/brand'
@@ -18,9 +17,10 @@ import { FocusChangeBar, useFocusChanges } from '@/components/focus-changes'
 import { FocusHeader, OtherHeader } from '@/components/focus-header'
 import { RequestCard } from '@/components/request-card'
 import { SaveButton } from '@/components/save-button'
+import { useMatchesMedia } from '@/lib/use-media'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
-import { deviceById, markAgentFinished, needsYou, OTHER_FOCUS_AREA_ID, SAMPLE_RUNS, startedTimestamp, useWorkModel, type Agent as WorkAgent, type LiveState, type Request } from '@/data'
+import { deviceById, markAgentFinished, needsYou, OTHER_FOCUS_AREA_ID, SAMPLE_RUNS, startedTimestamp, useWorkModel, type Agent as WorkAgent, type Request } from '@/data'
 import type { BuildStory, RequestReadError } from '@/live/work-data-source'
 import { resolveFocusAreaId } from '@/live/to-focus-model'
 
@@ -191,31 +191,31 @@ function useHoveredCard() {
   return { hoveredId, hoverHandler }
 }
 
-// index.css cuts the flipboard to 17 flaps; a longer state label would lose its end, so say so at load.
-const FLIP_STATUS_FLAPS = 17
-const tooLongForFlipboard = Object.values(STATE_LABEL).filter((label) => label.length > FLIP_STATUS_FLAPS)
-if (tooLongForFlipboard.length) throw new Error(`State labels longer than the ${FLIP_STATUS_FLAPS}-flap status board: ${tooLongForFlipboard.join(', ')}`)
-
-/**
- * The status label flips when it changes: a split-flap board (decision 2, R4.4) on the state's badge colors.
- * `.flip-status-board` in index.css cuts the 6-row board to the one row the label is on. The key re-mounts
- * the board so a state change flips from blank. Reduced motion: the plain badge.
+/*
+ * The List is a departures board (decision 2, R4.4): each request is one line, and the whole line flips, as one flap
+ * dropping from its top edge, when the request's status changes (the line is keyed on its state). Opening the List
+ * flips the lines in from the top down. At rest the status is the plain badge, so it always reads.
+ * Reduced motion: no flip.
  */
-function FlipStatus({ state }: { state: LiveState }) {
-  const reduceMotion = useReducedMotion()
-  if (reduceMotion) return <StateBadge state={state} />
-  return (
-    <span key={state} className={cn('inline-block rounded-md border p-1', STATE_SURFACE[state])}>
-      <span className="sr-only">{STATE_LABEL[state]}</span>
-      <span aria-hidden="true" className="block">
-        <TextFlippingBoard rows={[STATE_LABEL[state]]} className="flip-status-board mx-0 w-[10.5rem] max-w-none rounded-sm bg-transparent p-0 shadow-none md:rounded-sm md:p-0 dark:bg-transparent dark:shadow-none" />
-      </span>
-    </span>
-  )
+const FLIP_LINE_S = 0.45
+const FLIP_LINE_STAGGER_S = 0.04
+// A 1000px-tall window shows about ten lines; lines below them flip with the tenth, so the cascade never takes
+// longer than the lines you can see.
+const FLIP_LINE_STAGGERED = 10
+const flipLine = (index: number, reduceMotion: boolean | null) => reduceMotion ? {} : {
+  initial: { rotateX: -90, opacity: 0 },
+  animate: { rotateX: 0, opacity: 1 },
+  transition: { duration: FLIP_LINE_S, delay: Math.min(index, FLIP_LINE_STAGGERED) * FLIP_LINE_STAGGER_S, ease: [0.33, 1.4, 0.64, 1] as const },
+  style: { transformOrigin: 'top center' },
 }
+// The List switches from stacked lines to the table at Tailwind's md breakpoint (768px); only one of them is built.
+const TABLE_QUERY = '(min-width: 768px)'
+const MotionTableRow = motion.create(TableRow)
 
 function ListView({ requests, sort, onSort, onOpen, onOpenFocus }: { requests: Request[]; sort: SortKey; onSort: (sort: SortKey) => void; onOpen: (request: Request) => void; onOpenFocus: (focusAreaId: string) => void }) {
   const { team } = useWorkspace()
+  const reduceMotion = useReducedMotion()
+  const wide = useMatchesMedia(TABLE_QUERY)
   const sortHead = (label: string, value: SortKey) => (
     <TableHead aria-sort={sort === value ? 'descending' : undefined}>
       <Button variant="ghost" size="sm" className="-ml-3 h-8 text-[0.82rem] font-medium text-muted-foreground" onClick={() => onSort(value)}>{label}<ArrowUpDownIcon className={sort === value ? '' : 'opacity-30'} /></Button>
@@ -224,25 +224,25 @@ function ListView({ requests, sort, onSort, onOpen, onOpenFocus }: { requests: R
   return (
     <Req ids={['R4.2', 'R4.4', 'R2.1', 'R5.8', 'R11.1']}>
       {/* Phones: stacked rows, request then status then next step. */}
-      <ul className="divide-y rounded-xl border bg-card shadow-panel md:hidden">
-        {requests.map((request) => (
-          <li key={request.id}>
+      {!wide && <ul className="divide-y rounded-xl border bg-card shadow-panel [perspective:1200px]">
+        {requests.map((request, index) => (
+          <motion.li key={`${request.id}:${request.state}`} {...flipLine(index, reduceMotion)}>
             <button type="button" onClick={() => onOpen(request)} className="flex w-full flex-col gap-2 p-4 text-left focus-visible:outline-2 focus-visible:outline-ring">
               <span className="flex w-full items-start gap-2.5">
                 <AgentIcon agentId={request.agentId} />
                 <span className={cn('min-w-0 flex-1 pt-0.5 text-[0.95rem] leading-snug font-medium', !request.title && 'text-muted-foreground')}>{titleOf(request)}</span>
               </span>
               <span className="flex flex-col items-start gap-1.5 pl-[38px]">
-                <FlipStatus state={request.state} />
+                <StateBadge state={request.state} />
                 <NextMove next={request.next} />
               </span>
             </button>
-          </li>
+          </motion.li>
         ))}
-      </ul>
+      </ul>}
 
-      <div className="hidden overflow-hidden rounded-xl border bg-card shadow-panel md:block">
-        <Table>
+      {wide && <div className="overflow-hidden rounded-xl border bg-card shadow-panel">
+        <Table className="[perspective:1200px]">
           <TableHeader className="bg-surface/60">
             <TableRow>
               <TableHead className="w-10"><span className="sr-only">Agent</span></TableHead>
@@ -255,23 +255,23 @@ function ListView({ requests, sort, onSort, onOpen, onOpenFocus }: { requests: R
             </TableRow>
           </TableHeader>
           <TableBody>
-            {requests.map((request) => (
-              <TableRow key={request.id} className="cursor-pointer" onClick={() => onOpen(request)}>
+            {requests.map((request, index) => (
+              <MotionTableRow key={`${request.id}:${request.state}`} className="cursor-pointer" onClick={() => onOpen(request)} {...flipLine(index, reduceMotion)}>
                 <TableCell className="align-top"><AgentIcon agentId={request.agentId} /></TableCell>
                 <TableCell className="max-w-72 align-top whitespace-normal">
                   <button type="button" onClick={(event) => { event.stopPropagation(); onOpen(request) }} className={cn('rounded-sm text-left leading-snug font-medium hover:underline focus-visible:outline-2 focus-visible:outline-ring', !request.title && 'text-muted-foreground')}>{titleOf(request)}</button>
                   <div><FocusAreaChip focusAreaId={request.focusAreaId} onOpen={onOpenFocus} /></div>
                 </TableCell>
                 {team && <TableCell className="align-top text-sm">{request.askedBy}</TableCell>}
-                <TableCell className="align-top"><FlipStatus state={request.state} /></TableCell>
+                <TableCell className="align-top"><StateBadge state={request.state} /></TableCell>
                 <TableCell className="max-w-64 align-top whitespace-normal"><NextMove next={request.next} /></TableCell>
                 <TableCell className="w-32 align-top"><ProgressMeter request={request} compact /></TableCell>
                 <TableCell className="align-top text-xs text-muted-foreground"><time dateTime={request.startedAtIso}>{request.startedAt}</time></TableCell>
-              </TableRow>
+              </MotionTableRow>
             ))}
           </TableBody>
         </Table>
-      </div>
+      </div>}
     </Req>
   )
 }

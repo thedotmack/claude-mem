@@ -104,23 +104,45 @@ function WhyItsHere({ quotes }: { quotes: Quote[] }) {
   )
 }
 
-/** Asks owner-goals found that no request is linked to: each a "Not started" row, with how often you asked. */
+/** Asks owner-goals found that no request is linked to: one compact line each, with how often you asked and its
+ * quotes on demand. The first few show; the rest are one click away, so the area's requests stay near the top. */
+// Three asks keep the header under about a third of a 1000px window with the requests showing below it.
+const ASKS_SHOWN_FIRST = 3
 function NotStartedAsks({ asks }: { asks: FocusAsk[] }) {
+  const [showAll, setShowAll] = useState(false)
   if (asks.length === 0) return null
+  const shown = showAll ? asks : asks.slice(0, ASKS_SHOWN_FIRST)
   return (
     <Req ids={['R16.2', 'R6.3', 'R12.2']}>
       <div className="space-y-1.5">
         <h3 className="text-xs font-medium text-muted-foreground">Not started · {asks.length}</h3>
         {/* Dashed and unfilled: asked for, but nothing is working on it yet. The heading names the state once. */}
-        <ul className="space-y-2">
-          {asks.map((ask) => (
-            <li key={ask.id} className="space-y-1 rounded-lg border border-dashed px-3 py-2.5">
-              <p className="flex items-start gap-2 text-sm leading-snug font-medium"><CircleDashedIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />{ask.title}</p>
-              <p className="pl-5.5 text-xs text-muted-foreground">{timesLabel(ask.timesAsked).replace(/^a/, 'A')}, last {formatPromptDay(ask.latestAt)}</p>
-              {ask.quotes.length > 0 && <div className="pl-5.5"><WhyItsHere quotes={ask.quotes} /></div>}
+        <ul className="divide-y divide-dashed rounded-lg border border-dashed">
+          {shown.map((ask) => (
+            <li key={ask.id} className="px-3 py-2">
+              <Collapsible>
+                <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                  <p className="flex min-w-0 flex-1 basis-64 items-start gap-2 text-sm leading-snug font-medium"><CircleDashedIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />{ask.title}</p>
+                  <p className="flex items-center gap-1.5 pl-5.5 text-xs text-muted-foreground sm:pl-0">
+                    {timesLabel(ask.timesAsked).replace(/^a/, 'A')}, last {formatPromptDay(ask.latestAt)}
+                    {ask.quotes.length > 0 && <>
+                      <span aria-hidden="true">·</span>
+                      <CollapsibleTrigger className="group inline-flex min-h-11 items-center gap-0.5 hover:text-foreground sm:min-h-0">
+                        {plural(ask.quotes.length, 'quote')}<ChevronDownIcon className="size-3.5 transition-transform group-data-[state=open]:rotate-180" />
+                      </CollapsibleTrigger>
+                    </>}
+                  </p>
+                </div>
+                <CollapsibleContent className="pt-2 pb-1 pl-5.5"><Quotes quotes={ask.quotes} /></CollapsibleContent>
+              </Collapsible>
             </li>
           ))}
         </ul>
+        {asks.length > ASKS_SHOWN_FIRST && (
+          <Button variant="ghost" size="sm" className="-ml-2 h-11 text-xs text-muted-foreground sm:h-8" onClick={() => setShowAll(!showAll)}>
+            {showAll ? 'Show fewer' : `Show ${asks.length - ASKS_SHOWN_FIRST} more`}
+          </Button>
+        )}
       </div>
     </Req>
   )
