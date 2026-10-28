@@ -136,7 +136,8 @@ Run `$CLI story-input`. Without a previous story it returns every review; with o
 
 - When `condenseChars` is 0, keep the previous story's chapters and wording where they still hold, change only what the listed reviews move, and add at most `roomChars` characters. If the new facts need more room, condense the parts furthest over their budget.
 - When `condenseChars` is above 0, the previous story is past the target. Rewrite every part whose `overBudgetChars` is above 0 in at most its `budgetWords` words, the recap and the chapters the listed reviews change included. Keep each chapter's dates, ids and outcomes, fit the listed reviews' new facts into those budgets, and merge finished chapters into one where that reads better. Count the words of each rewritten part before you answer.
-- If a refusal names parts with their budgets, rewrite each of those parts within its budget, and condense any other part it says is over budget too.
+- When `mergeOldestChapters` is above 0, the story has more chapters than the budgets fit: merge that many of the oldest chapters into one chapter within its budget first, keeping their dates, ids and outcomes, then follow the rules above.
+- If a refusal names parts with their budgets, rewrite each of those parts within its budget, and condense any other part it says is over budget too. If it names the oldest chapters to merge, merge them into one first.
 
 Write:
 

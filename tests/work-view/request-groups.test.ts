@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { appendReading, applyGroupDecisions, groupIdFor, ledgerSignature, linkBackwards, MAX_READINGS, readCandidates, readGoals, readLedger, refreshNeeds, runCli, storyParts, validateProgress, validateStory } from '../../src/services/work-view/request-groups.mjs';
+import { appendReading, applyGroupDecisions, groupIdFor, ledgerSignature, linkBackwards, MAX_READINGS, readCandidates, readGoals, readLedger, refreshNeeds, runCli, storyChaptersToMerge, storyParts, validateProgress, validateStory } from '../../src/services/work-view/request-groups.mjs';
 import { readFocus, readFocusAreas } from '../../src/services/work-view/data-source.mjs';
 import { focusAreaRowFields, placementRowFields, routerFocusRows, type RouterFocusBody } from '../../src/services/work-view/my-focus.mjs';
 import { buildHumanRequests } from '../../src/services/work-view/request-projection.mjs';
@@ -533,7 +533,7 @@ describe('overall requests and progress reviews', () => {
     expect(input).toMatchObject({ narrativeTarget: 8000, narrativeLimit: 12000, previousNarrativeChars: 'Two requests under way.'.length, roomChars: 8000 - 'Two requests under way.'.length, condenseChars: 0,
       previousParts: [{ part: 'recap', chars: 'Two requests under way.'.length, budgetChars: 8000, overBudgetChars: 0 }] });
     const overCap = `${'word '.repeat(200)}\n\n## Oct 26: shipped\n${'word '.repeat(996)}\n\n## Oct 27: in progress\n${'word '.repeat(1200)}`;
-    expect(() => run(['record-story', write('s.json', { narrative: overCap })])).toThrow(`narrative is 12026 characters; it must be 1–12000. Bring it to about 8000 characters by rewriting the parts furthest over their budgets: "Oct 27: in progress" 6023 → 3600 characters (about 720 words); "Oct 26: shipped" 5001 → 3600 characters (about 719 words); the recap 1002 → 800 characters (about 159 words).`);
+    expect(() => run(['record-story', write('s.json', { narrative: overCap })])).toThrow(`narrative is 12026 characters; it must be 1–12000. Bring it to about 8000 characters: rewrite the parts furthest over their budgets: "Oct 27: in progress" 6023 → 3600 characters (about 720 words); "Oct 26: shipped" 5001 → 3600 characters (about 719 words); the recap 1002 → 800 characters (about 159 words).`);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -566,12 +566,39 @@ describe('overall requests and progress reviews', () => {
   expect(new Set(storyParts(many).slice(1).map((part) => part.budgetChars))).toEqual(new Set([300]));
 });
 
+  it('storyParts closes a code fence only on a matching fence, as CommonMark does', () => {
+  // A ```` fence holding a ``` example: the inner ``` lines neither close it nor reopen it, so its `## ` line stays inside.
+  const story = 'Recap.\n## Real\n````md\n```\n## not a chapter\n```\n````\n## Next\nText.\n';
+  expect(storyParts(story).map((part) => part.part)).toEqual(['recap', 'Real', 'Next']);
+  // An indented fence (up to 3 spaces) and a tilde fence count too, and a ``` line does not close a ~~~ fence.
+  expect(storyParts('Recap.\n## Real\n   ```\n## inside\n   ```\n~~~\n```\n## still inside\n~~~\n## Next\n').map((part) => part.part)).toEqual(['recap', 'Real', 'Next']);
+  // Four spaces is code, not a fence, so the heading after it is a chapter.
+  expect(storyParts('Recap.\n    ```\n## Chapter\n').map((part) => part.part)).toEqual(['recap', 'Chapter']);
+  expect(storyParts(story).reduce((sum, part) => sum + part.chars, 0)).toBe(story.length);
+});
+
+  it('a story with more chapters than the budgets fit is told to merge its oldest chapters', () => {
+  // 41 chapters at the 300-character floor add up to more than the target, so an over-cap story with every chapter
+  // within its budget has nothing over budget to rewrite. The refusal and story-input name the oldest chapters to merge.
+  const chapter = (index: number) => `## Day ${index}\n${'w'.repeat(290 - String(index).length)}\n`;
+  const story = `Recap.\n\n${Array.from({ length: 41 }, (_, index) => chapter(index)).join('')}`;
+  expect(story.length).toBeGreaterThan(12000);
+  expect(storyParts(story).filter((part) => part.overBudgetChars > 0)).toEqual([]);
+  expect(storyChaptersToMerge(story)).toBe(18);
+  let message = '';
+  try { validateStory({ narrative: story }); } catch (error) { message = (error as Error).message; }
+  expect(message).toBe(`narrative is ${story.length} characters; it must be 1–12000. Bring it to about 8000 characters: merge the 18 oldest chapters ("Day 0" through "Day 17") into one chapter of at most 300 characters.`);
+  // Merging them leaves 24 chapters, whose budgets fit the target again.
+  expect(storyChaptersToMerge(`Recap.\n${Array.from({ length: 24 }, (_, index) => chapter(index)).join('')}`)).toBe(0);
+  expect(storyChaptersToMerge(`Recap.\n${Array.from({ length: 25 }, (_, index) => chapter(index)).join('')}`)).toBe(2);
+});
+
   it('an over-cap story is refused with only the parts furthest over budget named', () => {
   const story = `Recap.\n\n${Array.from({ length: 10 }, (_, index) => `## Day ${index}\n${'word '.repeat(260)}\n`).join('')}`;
   expect(story.length).toBeGreaterThan(12000);
   let message = '';
   try { validateStory({ narrative: story }); } catch (error) { message = (error as Error).message; }
-  expect(message).toContain('Bring it to about 8000 characters by rewriting the parts furthest over their budgets: "Day');
+  expect(message).toContain('Bring it to about 8000 characters: rewrite the parts furthest over their budgets: "Day');
   expect(message).toContain('; 4 more parts are over their budgets too.');
   expect(message.match(/"Day \d"/g)).toHaveLength(6);
   expect(message.length).toBeLessThan(1000);
@@ -594,7 +621,7 @@ describe('overall requests and progress reviews', () => {
     review(60, NOW + 2000);
     // Past the target, there is no room to add, and every part over its budget is named, the recap and the
     // chapter still in progress included.
-    expect(run(['story-input'])).toMatchObject({ update: true, previousNarrativeChars: story.length, roomChars: 0, condenseChars: story.length - 8000,
+    expect(run(['story-input'])).toMatchObject({ update: true, previousNarrativeChars: story.length, roomChars: 0, condenseChars: story.length - 8000, mergeOldestChapters: 0,
       previousParts: [
         { part: 'recap', chars: 1201, budgetChars: 800, overBudgetChars: 401 },
         { part: 'Oct 26: shipped', chars: 4001, budgetChars: 3600, overBudgetChars: 401 },

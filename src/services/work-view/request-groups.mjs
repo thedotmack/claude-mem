@@ -382,6 +382,36 @@ const STORY_CHARS_PER_WORD = 6;
 // Parts a refusal names, furthest over budget first, so the message stays short.
 const STORY_REFUSAL_PARTS = 6;
 
+/** The story split at its `## ` chapter headings: the recap first, then each chapter with its heading. */
+function storyPieces(narrative) {
+  const pieces = [''];
+  // The open code fence, as CommonMark reads one: up to 3 spaces of indent, then 3 or more backticks or tildes.
+  // Only a fence of the same character, at least as long and with nothing after it, closes it, so a ``` example
+  // inside a ```` fence stays inside, and so does any `## ` line in it.
+  let fence = null;
+  for (const line of (typeof narrative === 'string' ? narrative : '').split(/(?<=\n)/)) {
+    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line.replace(/\r?\n$/, ''));
+    if (fence) {
+      if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = null;
+    } else if (marker && !(marker[1][0] === '`' && marker[2].includes('`'))) fence = marker[1];
+    else if (line.startsWith('## ')) pieces.push('');
+    pieces[pieces.length - 1] += line;
+  }
+  return pieces;
+}
+
+/**
+ * How many of the oldest chapters to merge into one so every chapter's budget fits the target again. Past
+ * (target - recap) / floor chapters (24), the floor makes the budgets add up to more than the target, so a story
+ * can be over the cap with no part over its budget, and condensing parts alone cannot bring it back. 0 when the
+ * budgets fit.
+ */
+export function storyChaptersToMerge(narrative) {
+  const chapters = storyPieces(narrative).length - 1;
+  const fit = Math.floor((STORY_NARRATIVE_TARGET - STORY_RECAP_BUDGET) / STORY_CHAPTER_MIN_BUDGET);
+  return chapters > fit ? chapters - fit + 1 : 0;
+}
+
 /**
  * The story's recap and `## ` chapters with their lengths and budgets, counted here so the writer never has to.
  * Told to cut N characters from "the oldest finished chapters" only, an update cut 1,457 of the 3,876 asked
@@ -391,14 +421,7 @@ const STORY_REFUSAL_PARTS = 6;
  * and a story without chapters keeps the whole target as its recap budget.
  */
 export function storyParts(narrative) {
-  const pieces = [''];
-  let fenced = false;
-  for (const line of (typeof narrative === 'string' ? narrative : '').split(/(?<=\n)/)) {
-    if (/^(```|~~~)/.test(line)) fenced = !fenced;
-    else if (!fenced && line.startsWith('## ')) pieces.push('');
-    pieces[pieces.length - 1] += line;
-  }
-  const [recap, ...chapters] = pieces;
+  const [recap, ...chapters] = storyPieces(narrative);
   const chapterBudget = Math.max(STORY_CHAPTER_MIN_BUDGET, Math.floor((STORY_NARRATIVE_TARGET - STORY_RECAP_BUDGET) / Math.max(1, chapters.length)));
   return [
     { part: 'recap', text: recap, budgetChars: chapters.length ? STORY_RECAP_BUDGET : STORY_NARRATIVE_TARGET },
@@ -420,7 +443,15 @@ export function validateStory(story) {
     const over = storyParts(story.narrative).filter((part) => part.overBudgetChars > 0).sort((a, b) => b.overBudgetChars - a.overBudgetChars);
     const named = over.slice(0, STORY_REFUSAL_PARTS).map((part) => `${part.part === 'recap' ? 'the recap' : `"${part.part.slice(0, 60)}"`} ${part.chars} → ${part.budgetChars} characters (about ${part.budgetWords} words)`);
     const more = over.length > STORY_REFUSAL_PARTS ? `; ${over.length - STORY_REFUSAL_PARTS} more parts are over their budgets too` : '';
-    throw new TypeError(`narrative is ${narrativeChars} characters; it must be 1–${STORY_NARRATIVE_MAX}. Bring it to about ${STORY_NARRATIVE_TARGET} characters by rewriting the parts furthest over their budgets: ${named.join('; ')}${more}.`);
+    // Too many chapters: their budgets add up to more than the target, so no part may be over budget at all.
+    // Then the oldest chapters are merged first, and the refusal names them.
+    const merge = storyChaptersToMerge(story.narrative);
+    const chapters = storyParts(story.narrative).slice(1, merge + 1).map((part) => `"${part.part.slice(0, 60)}"`);
+    const steps = [
+      ...(merge ? [`merge the ${merge} oldest chapters (${chapters[0]} through ${chapters[chapters.length - 1]}) into one chapter of at most ${STORY_CHAPTER_MIN_BUDGET} characters`] : []),
+      ...(named.length ? [`rewrite the parts furthest over their budgets: ${named.join('; ')}${more}`] : []),
+    ];
+    throw new TypeError(`narrative is ${narrativeChars} characters; it must be 1–${STORY_NARRATIVE_MAX}. Bring it to about ${STORY_NARRATIVE_TARGET} characters: ${steps.join(', then ') || 'condense every part'}.`);
   }
   return {
     narrative: boundedText(story?.narrative, STORY_NARRATIVE_MAX, 'narrative'),
@@ -925,7 +956,7 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
     const previousNarrativeChars = story?.narrative?.length ?? 0;
     return print({ groups: Object.keys(groups.groups).length, update, narrativeTarget: STORY_NARRATIVE_TARGET, narrativeLimit: STORY_NARRATIVE_MAX, previousNarrativeChars,
       roomChars: Math.max(0, STORY_NARRATIVE_TARGET - previousNarrativeChars), condenseChars: Math.max(0, previousNarrativeChars - STORY_NARRATIVE_TARGET),
-      previousParts: update ? storyParts(story.narrative) : [],
+      previousParts: update ? storyParts(story.narrative) : [], mergeOldestChapters: update ? storyChaptersToMerge(story.narrative) : 0,
       reviews: update ? reviews.filter((review) => Date.parse(review.changedAt ?? review.checkedAt) > writtenAt) : reviews,
       // Rules owner-goals put in the story are its own (record-story carries them over): shown here, the story model
       // would echo them back without their source and when, leaving copies a later owner-goals save cannot replace.
