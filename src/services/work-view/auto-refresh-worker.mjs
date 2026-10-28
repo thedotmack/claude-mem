@@ -1,9 +1,11 @@
 // Keeps My Work current without anyone running a skill: every ten minutes it
 // asks refreshNeeds() whether anything is due (ungrouped conversations, due
-// reviews, stale goals, unaligned groups) and, if so, runs one agent job.
+// reviews, stale goals, requests not placed in a focus area) and, if so, runs one agent job.
 // Owner rule (Oct 22): AI magic, not speed. No minimum interval, no day
 // window, no group cap, and a run is never stopped for taking long; it ends
-// when the agent finishes or fails. One run at a time.
+// when the agent finishes or fails. One run at a time. The one exception:
+// after failed runs only, the scheduled check backs off (below). A run that
+// works, and runNow, keep no minimum interval.
 // Status lives in refresh.json beside the ledger; My Work shows it live.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -13,6 +15,9 @@ const TEN_MINUTES_MS = 10 * 60000;
 // After a failed run the next scheduled one waits twice as long each time, up to four hours, and a run
 // that works resets it. Oct 25: a run that failed on the same due groups was restarted every ten minutes
 // all afternoon, each time re-asking every agent from the start.
+// Four hours: the subscription plans' usage limit resets on a 5-hour window (Oct 25: "You've hit your
+// session limit · resets 2:30pm"), so the longest wait stays inside one window and a run blocked by that
+// limit is tried again in the window after it resets, never skipping one.
 const MAX_FAILURE_BACKOFF_MS = 4 * 60 * 60000;
 
 const processIsAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -25,9 +30,12 @@ export class AutoRefreshWorker {
    * @param {(job: {needs: object, reason: string}) => Promise<{state: string, agent: string|null, result: string|null, error: string|null}>} options.runJob
    *   runs the job on the first logged-in agent; 'waiting-for-agent' when there is none yet (agent-runner/run.ts)
    * @param {() => boolean} [options.enabled]   CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH, read on every check
+   * @param {() => string} options.localDeviceId the worker's sync device id ('' when cloud sync never started), so my-focus
+   *   rows replay in its order; required
    */
-  constructor({ dir, openDatabase, runJob, enabled = () => true, checkMs = TEN_MINUTES_MS, now = Date.now, log = () => {} }) {
-    Object.assign(this, { dir, openDatabase, runJob, enabled, checkMs, now, log });
+  constructor({ dir, openDatabase, runJob, enabled = () => true, checkMs = TEN_MINUTES_MS, now = Date.now, log = () => {}, localDeviceId }) {
+    if (typeof localDeviceId !== 'function') throw new TypeError('AutoRefreshWorker needs localDeviceId, the worker\'s sync device id.');
+    Object.assign(this, { dir, openDatabase, runJob, enabled, checkMs, now, log, localDeviceId });
     this.timer = null; this.closed = false; this.busy = false;
   }
 
@@ -51,7 +59,7 @@ export class AutoRefreshWorker {
 
   readNeeds() {
     const database = this.openDatabase();
-    try { return refreshNeeds({ dir: this.dir, database, now: this.now() }); }
+    try { return refreshNeeds({ dir: this.dir, database, now: this.now(), localDeviceId: this.localDeviceId() }); }
     finally { database.close(); }
   }
 

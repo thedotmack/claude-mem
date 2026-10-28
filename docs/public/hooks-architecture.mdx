@@ -344,6 +344,7 @@ VALUES (?, ?, ?, ?, ...)
 2. Sends to Claude Agent SDK for summarization
 3. Processes response and extracts structured summary
 4. Stores in session_summaries table
+5. Copies the turn's deliverables (a deck, a report, a page the agent made for you) into `~/.claude-mem/deliverables/<project>/` and records them, so [My Work](/usage/my-work#deliverables) links them on the request's card
 
 **Configuration:**
 ```json
@@ -367,6 +368,7 @@ VALUES (?, ?, ?, ?, ...)
 - ✅ Multiple summaries per session (v4.2.0+)
 - ✅ Summaries are checkpoints, not endings
 - ✅ Uses Claude Agent SDK for AI compression
+- ✅ Deliverables are copied by the hook itself, from the transcript's final turn (files its Write/Edit calls made outside the source tree, and files a `work_state_write` attached), before the worktree or scratch folder they live in can be deleted; the worker only records the copies. `CLAUDE_MEM_DELIVERABLES_ENABLED=false` turns it off.
 
 **Summary structure:**
 ```xml

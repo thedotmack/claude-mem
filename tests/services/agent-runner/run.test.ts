@@ -224,6 +224,42 @@ describe('agent runner', () => {
     } finally { rmSync(home, { recursive: true, force: true }); }
   });
 
+  it('Codex: a model the login refuses at run time is retried once on the login default model (Oct 25: model_not_found)', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-codex-refused-'));
+    try {
+      const calls: SpawnCall[] = [];
+      const spawnImpl = fakeSpawn(calls, call => {
+        if (call.args.includes('-m')) {
+          call.child.stderr.emit('data', Buffer.from(`ERROR: {"detail":"The '${LIGHT_MODELS.codex.model}' model is not supported when using Codex with a ChatGPT account.","code":"model_not_found"}`));
+          call.child.emit('close', 1);
+          return;
+        }
+        writeFileSync(call.args[call.args.indexOf('-o') + 1], '{"ok":true}');
+        call.child.emit('close', 0);
+      });
+      // No models list in CODEX_HOME, so the step's model is sent as named and refused.
+      const lightTask: AgentTask = { ...task(cwd), run: async ask => ask('prompt', LIGHT_MODELS) };
+      const result = await runTask(lightTask, { detect: async () => agents('codex'), query: neverQuery, spawn: spawnImpl, buildEnv: async () => ({ ...(await env()), CODEX_HOME: join(cwd, 'no-codex-home') }) });
+      expect(result.state).toBe('ok');
+      expect(calls).toHaveLength(2);
+      expect(calls[0].args).toContain('-m');
+      expect(calls[1].args).not.toContain('-m');
+      expect(calls[1].args.join(' ')).not.toContain('model_reasoning_effort');
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  it('Codex: any other failure is not retried', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-codex-other-'));
+    try {
+      const calls: SpawnCall[] = [];
+      const spawnImpl = fakeSpawn(calls, call => { call.child.stderr.emit('data', Buffer.from('ERROR: stream disconnected')); call.child.emit('close', 1); });
+      const lightTask: AgentTask = { ...task(cwd), run: async ask => ask('prompt', LIGHT_MODELS) };
+      const result = await runTask(lightTask, { detect: async () => agents('codex'), query: neverQuery, spawn: spawnImpl, buildEnv: async () => ({ ...(await env()), CODEX_HOME: join(cwd, 'no-codex-home') }) });
+      expect(result.state).toBe('failed');
+      expect(calls).toHaveLength(1);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
   it('Gemini: gemini -p in plan (read-only) mode, never --skip-trust, no extensions or MCP servers, JSON output, prompt on stdin', async () => {
     const calls: SpawnCall[] = [];
     const spawnImpl = fakeSpawn(calls, call => {
