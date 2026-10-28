@@ -334,6 +334,35 @@ describe('redactSensitive generic built-in patterns', () => {
     expect(result.token).toBe("<redacted type='generic_token'/>");
   });
 
+  it('redacts the bearer token of an Authorization header object (structured events)', () => {
+    const event = { request: { headers: { Authorization: 'Bearer abc12345defghi', accept: 'application/json' } }, authorization: 'bearer ABCDEFGH123456' };
+    const result = redactJsonStrings(event, cfg) as typeof event;
+    expect(result.request.headers.Authorization).toBe("Bearer <redacted type='bearer_token'/>");
+    expect(result.request.headers.accept).toBe('application/json');
+    expect(result.authorization).toBe("bearer <redacted type='bearer_token'/>");
+  });
+
+  it.each([
+    ['trailing whitespace', 'Bearer abc12345defghi \n', "Bearer <redacted type='bearer_token'/> \n"],
+    ['leading whitespace',  '  Bearer abc12345defghi',  "  Bearer <redacted type='bearer_token'/>"],
+    ['text after the token', 'Bearer abc12345defghi, realm="api"', "Bearer <redacted type='bearer_token'/>, realm=\"api\""],
+  ])('redacts an Authorization header object value with %s', (_style, value, expected) => {
+    const result = redactJsonStrings({ headers: { Authorization: value } }, cfg) as { headers: { Authorization: string } };
+    expect(result.headers.Authorization).toBe(expected);
+    expect(redactSensitive(`Authorization: ${value}`, cfg).redacted).toBe(`Authorization: ${expected}`);
+  });
+
+  it('leaves non-secret or opted-out Authorization header values alone', () => {
+    expect(redactJsonStrings({ Authorization: 'Bearer 12345678' }, cfg)).toEqual({ Authorization: 'Bearer 12345678' });
+    expect(redactJsonStrings({ Authorization: 'Basic' }, cfg)).toEqual({ Authorization: 'Basic' });
+    expect(redactJsonStrings({ note: 'Bearer abc12345defghi' }, cfg)).toEqual({ note: 'Bearer abc12345defghi' });
+    const off = { ...cfg, disabledBuiltinPatterns: ['bearer_token'] };
+    expect(redactJsonStrings({ Authorization: 'Bearer abc12345defghi' }, off)).toEqual({ Authorization: 'Bearer abc12345defghi' });
+    expect(redactJsonStrings({ Authorization: 'Bearer abc12345defghi' }, { enabled: true })).toEqual({ Authorization: 'Bearer abc12345defghi' });
+    expect(redactJsonStrings({ Authorization: 'Bearer sk-ABCDEFGHIJ1234567890abcdef' }, cfg))
+      .toEqual({ Authorization: "Bearer <redacted type='openai_key'/>" });
+  });
+
   it('pairs the same password key spellings as the text pattern (structured events)', () => {
     const event = { env: { MYSQL_PWD: 'Hunter22Example', PGPASSWORD: 'Sup3rSecretValue' }, dbPassword: 'Hunter22Example', PWD: '/home/user/project' };
     const result = redactJsonStrings(event, cfg) as typeof event;

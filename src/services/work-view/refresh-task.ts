@@ -263,13 +263,13 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       try { return await work(); }
       finally { steps.push({ step: name, agent, startedAt, finishedAt: new Date(now()).toISOString(), ...extra }); }
     };
-    /** Ask, save, and on a refusal (unreadable JSON or a validator's) ask once more with the reason.
+    /** Ask, save, and on a refusal (unreadable JSON or a validator's) ask once more with the answer and reason.
      * A step refused twice fails with its last raw answer kept in failed-answers/ for diagnosis. */
     const step = <T>(name: Step, question: string, save: (answer: any) => T | Promise<T>, answerSchema?: AnswerSchema): Promise<T> => timed(name, async () => {
       let refusal: string | null = null;
       let answer = '';
       for (let attempt = 0; attempt < 2; attempt++) {
-        answer = await ask(refusal ? `${question}\n\nYour previous answer was refused: ${refusal}\nFix it and answer again.` : question, STEP_MODELS[name], answerSchema);
+        answer = await ask(refusal ? `${question}\n\nYour previous answer was refused: ${refusal}\nRejected answer:\n${answer}\n\nFix it and answer again.` : question, STEP_MODELS[name], answerSchema);
         try { return await save(parseAgentJson(answer)); }
         catch (error) {
           // A save that failed after it started writing is not the answer's fault, and asking again would write twice.
@@ -374,20 +374,22 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       const reviewBatch = async (groups: Array<{ groupId: string }>) => {
         let shows = groups.map(group => cli(['show', group.groupId]));
         let refusals: string[] = [];
+        let rejectedReviews: Array<{ groupId?: string }> = [];
         for (let attempt = 0; attempt < 2 && shows.length; attempt++) {
           const text = await ask([
             requestProgress, '---', readOnly,
             `Do only section 2's review for the groups whose \`show\` output is in ${writeInput('show', shows)}: decide each one from the evidence as the reviewer task describes (amend the previous review for a group in "amend" mode). Reply with only {"reviews": [<one record-progress input per group, with reviewBasis copied verbatim from its show output>]}.`,
-            refusals.length ? `Your previous answer was refused for these groups:\n${refusals.join('\n')}\nFix them and answer again for those groups only.` : '',
+            refusals.length ? `Your previous answer was refused for these groups:\n${refusals.join('\n')}\nFix them and answer again for those groups only. Here are the rejected reviews to correct, preserving their evidence and reviewBasis:\n${JSON.stringify(rejectedReviews)}` : '',
           ].join('\n\n'), STEP_MODELS.review);
           let reviews: Array<{ groupId?: string }> = [];
           try { const answer = parseAgentJson(text); reviews = Array.isArray(answer.reviews) ? answer.reviews : []; }
           catch { /* Every group in this batch is refused below as "no review was given". */ }
           refusals = [];
+          rejectedReviews = [];
           const recorded = new Set<string>();
           for (const review of reviews) {
             try { cli(['record-progress'], review); recorded.add(String(review.groupId)); reviewed++; }
-            catch (error) { refusals.push(`${review.groupId}: ${error instanceof Error ? error.message : String(error)}`); }
+            catch (error) { rejectedReviews.push(review); refusals.push(`${review.groupId}: ${error instanceof Error ? error.message : String(error)}`); }
           }
           shows = shows.filter(show => !recorded.has(show.groupId));
           for (const show of shows) if (!refusals.some(line => line.startsWith(`${show.groupId}:`))) refusals.push(`${show.groupId}: no review was given.`);
