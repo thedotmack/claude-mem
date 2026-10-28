@@ -86,6 +86,9 @@ export interface WorkViewWorkProduct {
   available?: boolean
   sha?: string
   branch?: string | null
+  /** A copy the Stop hook put in the project's deliverables bucket (~/.claude-mem/deliverables/<project>/); `url` opens it. Older workers leave it out. */
+  deliverable?: boolean
+  sourcePath?: string | null
 }
 
 /** The build story request-progress last wrote. */

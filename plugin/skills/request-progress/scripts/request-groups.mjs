@@ -876,6 +876,8 @@ var init_SettingsDefaultsManager = __esm({
         // #2736 — default empty preserves current behavior; recommended value 'workflow-subagent' to drop Dynamic Workflows fan-out noise
         CLAUDE_MEM_CAPTURE_ADVISOR_CALLS: "false",
         // #3165 — opt-in: the Stop hook scans the transcript's tail for advisor calls and stores the advice locally (worker runtime only)
+        CLAUDE_MEM_DELIVERABLES_ENABLED: "true",
+        // 'false' = the Stop hook neither copies deliverables into the bucket nor records them; files already in the bucket stay
         // Deliberate divergence from the installer prompt: the interactive
         // provider prompt defaults to 'cmem' (the hosted observer), but headless
         // installs land here — no delivered key exists headlessly, so the settings
@@ -2722,8 +2724,8 @@ function applyGroupDecisions(stored, decisions, now = Date.now(), { projectOf = 
     const unsupported = decision.conversations.filter((key) => find(key) !== find(decision.conversations[0]));
     if (unsupported.length) throw new TypeError(`${label} joins ${unsupported.join(", ")} without evidence linking it to the anchor.`);
     const id = groupIdFor(decision.conversations[0]);
-    const explicitRoot = decision.projectRoot;
-    if (explicitRoot != null && (typeof explicitRoot !== "string" || !explicitRoot.trim())) throw new TypeError(`${label}.projectRoot must be a non-empty string when given.`);
+    if (decision.projectRoot != null && (typeof decision.projectRoot !== "string" || !decision.projectRoot.trim())) throw new TypeError(`${label}.projectRoot must be a non-empty string when given.`);
+    const explicitRoot = decision.projectRoot ?? (next.groups[id]?.rootNamed ? next.groups[id].projectRoot : null);
     const allMembers = [.../* @__PURE__ */ new Set([...decision.conversations, ...Object.entries(next.conversations).filter(([key, groupId]) => groupId === id && !decision.conversations.includes(key)).map(([key]) => key)])];
     const storedRoot = upgradedGroupRoot(
       next.groups[id]?.projectRoot,
@@ -2748,7 +2750,7 @@ function applyGroupDecisions(stored, decisions, now = Date.now(), { projectOf = 
     const keptLinks = (next.groups[id]?.links ?? []).filter((link) => link.conversations.every((key) => memberSet.has(key)));
     const known = new Set(keptLinks.map((link) => JSON.stringify(link)));
     const mergedLinks = [...keptLinks, ...links.filter((link) => !known.has(JSON.stringify(link)))];
-    next.groups[id] = { title: decision.title.trim(), anchor: decision.conversations[0], projectRoot: projectRootOfGroup, links: mergedLinks, decidedAt: iso2(now), anchorAsk: stored?.groups?.[id]?.anchor === decision.conversations[0] ? stored.groups[id].anchorAsk ?? null : null };
+    next.groups[id] = { title: decision.title.trim(), anchor: decision.conversations[0], projectRoot: projectRootOfGroup, ...explicitRoot != null ? { rootNamed: true } : {}, links: mergedLinks, decidedAt: iso2(now), anchorAsk: stored?.groups?.[id]?.anchor === decision.conversations[0] ? stored.groups[id].anchorAsk ?? null : null };
   }
   next.ignored ??= {};
   for (const [index, ignored] of (decisions.ignored ?? []).entries()) {

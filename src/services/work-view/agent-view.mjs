@@ -85,7 +85,7 @@ export function readAgentRecords(database, { observationLimit = 300, summaryLimi
     FROM observations ORDER BY created_at_epoch DESC, id DESC LIMIT ?`, [observationLimit]);
   const summaries = safeRead(database, `SELECT id, project, memory_session_id, prompt_number, request, completed, next_steps, created_at_epoch
     FROM session_summaries ORDER BY created_at_epoch DESC, id DESC LIMIT ?`, [summaryLimit]);
-  const { productCalls, productObservations } = readProductRecords((sql, params) => safeRead(database, sql, params), workSinceEpoch);
+  const { productCalls, productObservations, productDeliverables } = readProductRecords((sql, params) => safeRead(database, sql, params), workSinceEpoch);
   const ids = [...new Set([...calls, ...productCalls].map((call) => call.session_db_id).filter((id) => id != null))];
   const memoryIds = [...new Set([...observations, ...summaries, ...productObservations].map((row) => row.memory_session_id).filter(Boolean))];
   const predicates = [], args = [];
@@ -126,7 +126,7 @@ export function readAgentRecords(database, { observationLimit = 300, summaryLimi
     AND content_session_id IN (${contentArgs}) ORDER BY id DESC LIMIT 2000`, contentIds) : [];
   const agentToolActivity = contentIds.length ? safeRead(database, `SELECT content_session_id, agent_id, MAX(created_at_epoch) AS last_epoch
     FROM tool_uses WHERE agent_id IS NOT NULL AND content_session_id IN (${contentArgs}) GROUP BY content_session_id, agent_id`, contentIds) : [];
-  return { calls, observations, summaries, sessions, prompts, productCalls, productObservations, agentLaunches, agentToolActivity };
+  return { calls, observations, summaries, sessions, prompts, productCalls, productObservations, productDeliverables, agentLaunches, agentToolActivity };
 }
 
 // The parent's Agent (formerly Task) calls, by [content session, agent id].
