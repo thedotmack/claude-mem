@@ -1,3 +1,5 @@
+import { formatDeepSearch } from '../shared/deep-search-format.js';
+import type { DeepSearchResult } from '../services/sqlite/tool-use-search.js';
 import { logger } from '../utils/logger.js';
 import { projectMemoryContent } from '../shared/progressive-search.js';
 import { retainTextHeadTail } from '../shared/text-truncation.js';
@@ -135,6 +137,8 @@ export function formatMcpPayload(purpose: McpTextPurpose, payload: unknown): Mcp
     case 'server-search':
     case 'server-timeline': {
       const server = purpose === 'server-search' || purpose === 'server-timeline';
+      const deepText = !server && data.deep && Array.isArray(data.toolUses)
+        ? formatDeepSearch(data as unknown as DeepSearchResult) : '';
       const results = [
         ...rows(payload, 'observations').map(value => ({ value, prefix: '' })),
         ...rows(payload, 'sessions').map(value => ({ value, prefix: server ? '' : 'S' })),
@@ -163,7 +167,7 @@ export function formatMcpPayload(purpose: McpTextPurpose, payload: unknown): Mcp
         return `- ${identity({ ...row, id, title: title ?? 'Untitled memory' })}${context ? `\n  ${context}` : ''}`;
       });
       const included: string[] = [];
-      let bytes = Buffer.byteLength(next, 'utf8') + 300;
+      let bytes = Buffer.byteLength(next + deepText, 'utf8') + 302;
       for (const entry of entries) {
         const size = Buffer.byteLength(entry + '\n', 'utf8');
         if (bytes + size > MAX_TEXT_BYTES) break;
@@ -173,6 +177,7 @@ export function formatMcpPayload(purpose: McpTextPurpose, payload: unknown): Mcp
         + included.join('\n')
         + (included.length < results.length ? `\n${results.length - included.length} results omitted to fit the response budget; narrow the query or page the search.` : '')
         + `\n${next}` : 'No matching memories found.';
+      if (deepText) text += '\n\n' + deepText;
       break;
     }
     case 'context':

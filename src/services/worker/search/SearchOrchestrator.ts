@@ -188,6 +188,7 @@ export class SearchOrchestrator {
 
     const mergedResults: SearchResults = { ...chromaResult.results };
     let supplemented = false;
+    let searchFailed = chromaResult.searchFailed;
     for (const category of refillCategories) {
       const semanticRows = chromaResult.results[category];
       // Empty categories keep the existing all-history fallback. A partial
@@ -196,6 +197,7 @@ export class SearchOrchestrator {
         && !options.ignoreDefaultRecencyWindow && this.defaultRecencyWindowMs > 0
         ? { start: Date.now() - this.defaultRecencyWindowMs } : options.dateRange;
       const sqliteResult = await this.sqliteStrategy.search({ ...options, dateRange, searchType: category });
+      searchFailed ||= sqliteResult.searchFailed;
       if (sqliteResult.results[category].length > 0) {
         if (semanticRows.length === 0) {
           copyCategory(mergedResults, sqliteResult.results, category);
@@ -217,8 +219,8 @@ export class SearchOrchestrator {
     }
 
     return supplemented
-      ? { results: mergedResults, usedChroma: true, strategy: 'hybrid' }
-      : chromaResult;
+      ? { results: mergedResults, usedChroma: true, strategy: 'hybrid', ...(searchFailed ? { searchFailed: true } : {}) }
+      : { ...chromaResult, ...(searchFailed ? { searchFailed: true } : {}) };
   }
 
   async findByFile(filePath: string, args: any): Promise<{

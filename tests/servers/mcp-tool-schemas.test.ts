@@ -20,6 +20,8 @@ async function withServer(
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => { workerRequests.push({ path: req.path, body: req.body, query: req.query }); next(); });
+  app.get('/api/search', (_req, res) => res.json({observations: [], sessions: [], prompts: [], totalResults: 0, deep: {status: 'ok', count: 1, hasMore: false}, toolUses: [{id: 41, tool_name: 'Bash', project: 'test', snippet: 'DB_CONN_1042'}]}));
+  app.post('/api/tool-uses/batch', (_req, res) => res.json([]));
   app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
   app.post('/api/work-state/entries', (_req, res) => res.json({ entries: [] }));
   app.get('/api/work-state', (_req, res) => res.json({ entries: [] }));
@@ -128,4 +130,26 @@ describe('mcp-server source guards', () => {
     expect(src).not.toMatch(/from\s+['"][^'"]*WorkerService[^'"]*['"]/);
     expect(src).not.toMatch(/import\s+\{[^}]*WorkerService[^}]*\}/);
   });
+});
+
+
+describe('raw-tool deep search MCP contract', () => {
+  it('passes deep to the worker and formats raw IDs in a JSON-shaped worker reply', async () => {
+    await withServer('worker', async (client, requests) => {
+      const result = await client.callTool({ name: 'search', arguments: { query: 'DB_CONN_1042', deep: true, format: 'json' } });
+      const request = requests.find(r => r.path === '/api/search');
+      expect(request?.query.deep).toBe('true');
+      expect(JSON.stringify(result)).toContain('#T41');
+      expect(JSON.stringify(result)).toContain('get_tool_uses');
+    });
+  }, 30_000);
+
+  it('rejects server deep search before any local or server search request', async () => {
+    await withServer('server', async (client, requests) => {
+      const result = await client.callTool({ name: 'search', arguments: { query: 'DB_CONN_1042', deep: true } });
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result)).toContain('local-only');
+      expect(requests.filter(r => /search|tool-uses/.test(r.path))).toEqual([]);
+    });
+  }, 30_000);
 });

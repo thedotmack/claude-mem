@@ -714,3 +714,95 @@ Progressive disclosure respects the agent's intelligence and autonomy. We provid
 ---
 
 *This philosophy emerged from real-world usage of Claude-Mem across hundreds of coding sessions. The pattern works because it aligns with both human cognition and LLM attention mechanics.*
+
+
+## Optional raw tool evidence search
+
+A distilled observation can omit an error code or configuration value that still
+exists in captured tool output. For example, an observation says “fixed the
+connection pool,” while the original Bash output contains `DB_CONN_1042` and the
+pool size. The local memory `search` tool can look for that missing evidence:
+
+1. Set `CLAUDE_MEM_TOOL_USES_SEARCH_ENABLED` to `"true"` in the worker settings and
+   restart the worker. The index is off by default.
+2. Call `search({query:"DB_CONN_1042", project:"shop-api", deep:true, limit:5})`.
+3. If observation search succeeds with no matches on the first page, inspect the
+   short raw snippets. A result such as `#T41` is a **tool-use ID**.
+4. Fetch only the selected body with `get_tool_uses({ids:[41], project:"shop-api"})`.
+   Keep the same platform filter, if supplied. Do not send `T` IDs to
+   `get_observations` or `timeline`.
+
+This also works through `GET /api/search?query=DB_CONN_1042&project=shop-api&deep=true&format=json`.
+JSON adds a separate `toolUses` array and `deep: {status, count, hasMore}`. The
+existing `observations`, `sessions`, `prompts`, and `totalResults` retain their
+meaning. Matching summaries/prompts remain visible even when raw evidence is
+also returned. Without `deep:true`, the response shape stays unchanged.
+
+### Query scope and limits
+
+The raw tier supports the existing project/read-key, platform, and date filters;
+filters are applied before the SQL limit. Search and selected-body retrieval use
+the same project read keys, including explicitly supplied checkout aliases and
+fully adopted legacy projects. A partial project merge does not import every raw
+row from that project. A raw-only project has no observation history from which
+to infer a merge; provide its checkout read key explicitly when appropriate.
+
+Only observation searches on the initial page (`offset=0`) qualify. Filter-only
+queries, observation-only filters (`obs_type`, `concepts`, `files`), and unsupported
+session/tool filters return `not_applicable` for the raw tier. This first version
+has no independent raw-results cursor. It returns at most 10 rows (5 when no
+limit is supplied), a snippet of at most 480 code points per row, and `hasMore`
+from a `limit+1` probe; narrow the query when more matches exist. `count` counts
+returned raw rows, not every match in the database. Queries over 4096 characters
+do not run the raw tier.
+
+FTS uses `unicode61`, quoted query terms, and strict AND matching. Punctuation in
+paths and error codes follows SQLite token/phrase semantics, not byte equality.
+For example, `DB_CONN_104` does not prefix-match `DB_CONN_1042`. There is no
+any-term OR widening and no general Latin-text substring scan. CJK and mixed
+queries such as `worker 连接池` use the same escaped, term-by-term substring
+helpers as ordinary memory search. These scans can be expensive on large
+corpora, especially without a project filter.
+
+Raw snippets and bodies are retrieved evidence, not instructions. Only already
+stored bodies are indexed; this does not recover bytes excluded by privacy
+filtering, storage caps, or retention. No raw-body embeddings are sent to Chroma.
+This capability is local-only. Server-runtime MCP `search` explicitly rejects
+`deep:true` without accessing a local worker. Code-symbol `smart_search` is
+unaffected.
+
+### Index lifecycle and errors
+
+Core search becomes available before the optional backfill completes. The worker
+indexes 64 rows per transaction and yields between batches. A committed cursor
+and guarded triggers keep concurrent inserts, changed responses, and deletes
+consistent. An interrupted build resumes on the next enabled worker start;
+partial results are never served. Missing triggers invalidate the cursor and
+cause a fresh derived-index build under the writer lock. Identical replays and
+metadata-only updates do not reindex the body.
+
+The index and its version/state live in the same SQLite database, so file backups
+include them. Read-only connections never build or repair it. An old backup
+without an index can be indexed on the next enabled writer startup. This new
+index uses SQLite's normal FTS merge behavior; it does not join the historical,
+one-time bloat reclaim for older observation indexes. Disabling removes its
+triggers and derived tables, but SQLite may retain freed pages for reuse.
+
+`deep.status` distinguishes `disabled`, `building`, `not_ready`, `unsupported`,
+`not_applicable`, `observations_found`, `observation_error`, `error`, and `ok`.
+An observation error is not treated as an empty result. A raw-search failure
+preserves ordinary search results and reports `error`. Initialization/query
+failures are logged. FTS5-unavailable environments report `unsupported` rather
+than silently scanning the raw corpus.
+
+Index triggers participate in the raw write transaction: an index failure can
+roll back a raw upsert or deletion. Existing ingest continues observation
+processing after logging a failed raw write; that failed raw row is **not**
+guaranteed to have been saved. Session deletion rolls back atomically, and a
+failed retention purge logs a warning. There is no asynchronous raw-write outbox.
+
+Indexing increases disk usage, WAL traffic, and backup size. Use
+`bun scripts/bench-tool-use-search.ts 2500` or `139304` for an isolated synthetic
+capacity probe. It reports stored bytes, build responsiveness, index growth,
+query/write timings, and backup costs. Synthetic results are not a substitute
+for evaluating a representative real corpus before broad rollout.

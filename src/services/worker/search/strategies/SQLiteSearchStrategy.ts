@@ -62,7 +62,7 @@ export class SQLiteSearchStrategy {
     } catch (error) {
       const errorObj = error instanceof Error ? error : new Error(String(error));
       logger.error('WORKER', 'SQLiteSearchStrategy: Search failed', {}, errorObj);
-      return this.emptyResult('sqlite');
+      return { ...this.emptyResult('sqlite'), searchFailed: true };
     }
   }
 

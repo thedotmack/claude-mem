@@ -1,3 +1,6 @@
+import { emptyDeepResult, type DeepSearchResult } from '../sqlite/tool-use-search.js';
+import { formatDeepSearch } from '../../shared/deep-search-format.js';
+import { AppError } from '../server/ErrorHandler.js';
 
 import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
@@ -37,6 +40,8 @@ export interface SearchTelemetryEnvelope {
   chroma_available?: boolean;
   fallback_reason?: 'none' | 'chroma_connection' | 'chroma_error' | 'chroma_not_initialized' | 'chroma_zero_results';
 }
+
+type ObservationSearchState = { status: 'not_requested' | 'success_empty' | 'success_nonempty' | 'error' };
 
 export class SearchManager {
   private orchestrator: SearchOrchestrator;
@@ -440,6 +445,44 @@ export class SearchManager {
   }
 
   async search(args: any, telemetryOut?: SearchTelemetryEnvelope): Promise<any> {
+    if (args.deep !== undefined && ![true, false, 'true', 'false'].includes(args.deep)) {
+      throw new AppError('deep must be true or false', 400, 'INVALID_SEARCH_REQUEST');
+    }
+    const state: ObservationSearchState = { status: 'not_requested' };
+    const result = await this.searchMemory(args, telemetryOut, state);
+    if (args.deep !== true && args.deep !== 'true') return result;
+    const normalized = this.normalizeParams(args);
+    const { query, type, obs_type, concepts, files, format, ...options } = normalized;
+    const { effectiveObsType } = this.resolveTypeFilters(type, obs_type);
+    // Existing search has no session/tool predicate. Do not silently discard a
+    // filter that the raw tier cannot apply with the same observation semantics.
+    const unmapped = effectiveObsType || concepts?.length || files?.length
+      || ['contentSessionId', 'sessionDbId', 'memorySessionId', 'session', 'toolName', 'agentId']
+        .some(key => normalized[key] !== undefined);
+    let raw: DeepSearchResult;
+    if (typeof query !== 'string' || !query.trim() || query.length > 4096
+      || Number(options.offset || 0) !== 0 || unmapped || state.status === 'not_requested') {
+      raw = emptyDeepResult('not_applicable');
+    } else if (state.status === 'error') raw = emptyDeepResult('observation_error');
+    else if (state.status === 'success_nonempty') raw = emptyDeepResult('observations_found');
+    else {
+      try {
+        const status = this.sessionSearch.getToolUseIndexStatus();
+        const projects = projectReadKeysFor(this.sessionStore, options.project, options.projects);
+        const rawOptions = { ...options, projects };
+        raw = status !== 'ready' ? emptyDeepResult(status)
+          : this.contextReader ? await this.contextReader.searchToolUses(query, rawOptions)
+            : this.sessionSearch.searchToolUses(query, rawOptions);
+      } catch (error) {
+        logger.error('SEARCH', 'Raw tool search failed', {}, error instanceof Error ? error : undefined);
+        raw = emptyDeepResult('error');
+      }
+    }
+    if (format === 'json') return { ...result, ...raw };
+    return { ...result, ...raw, content: [...result.content, { type: 'text', text: formatDeepSearch(raw) }] };
+  }
+
+  private async searchMemory(args: any, telemetryOut: SearchTelemetryEnvelope | undefined, state: ObservationSearchState): Promise<any> {
     const normalized = this.normalizeParams(args);
     const { query, type, obs_type, concepts, files, format, ...options } = normalized;
     // Gate P2-5: every key the requested projects are stored under, so a
@@ -455,6 +498,7 @@ export class SearchManager {
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
     let chromaFailed = false;
+    let searchFailed = false;
     let chromaSupplementStrategy: StrategySearchResult['strategy'] = 'chroma';
     let chromaFailureReason: { message: string; isConnectionError: boolean } | null = null;
 
@@ -539,6 +583,7 @@ export class SearchManager {
         );
         ({ observations, sessions, prompts } = supplemented.results);
         chromaSupplementStrategy = supplemented.strategy;
+        searchFailed = supplemented.searchFailed === true;
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
         chromaFailureReason = {
@@ -616,6 +661,8 @@ export class SearchManager {
       }
     }
 
+    state.status = !searchObservations ? 'not_requested' : chromaFailed || searchFailed ? 'error'
+      : observations.length ? 'success_nonempty' : 'success_empty';
     const totalResults = observations.length + sessions.length + prompts.length;
 
     // Telemetry envelope (search_performed): derive the strategy from the

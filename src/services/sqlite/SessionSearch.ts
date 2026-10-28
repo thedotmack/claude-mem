@@ -1,3 +1,5 @@
+import { configureToolUseIndex, configureToolUseIndexAsync, searchToolUses, emptyDeepResult, toolUseIndexStatus, type ToolUseIndexStatus, type DeepSearchResult } from './tool-use-search.js';
+import { UNSEGMENTED_SCRIPT, MAX_SUBSTRING_TERMS, buildSubstringClause, buildFTSMatchQuery } from './search-query.js';
 import { Database, type Statement } from 'bun:sqlite';
 import { TableNameRow } from '../../types/database.js';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
@@ -23,14 +25,6 @@ import {
 } from './connection.js';
 import { projectScopeSql, scopedProjects } from './project-read-keys.js';
 import { pageMatchingRows } from './stream-rows.js';
-
-/**
- * Code-point ranges of the scripts FTS5's unicode61 tokenizer cannot segment: Thai and Lao,
- * Myanmar, Khmer, Hiragana/Katakana, Bopomofo and Hangul compatibility jamo, the CJK
- * ideograph blocks, and Hangul syllables. See {@link SessionSearch.UNSEGMENTED_SCRIPT}.
- */
-const UNSEGMENTED_SCRIPT_RANGES =
-  '\\u0E00-\\u0EFF\\u1000-\\u109F\\u1780-\\u17FF\\u3040-\\u30FF\\u3100-\\u318F\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uAC00-\\uD7AF\\uF900-\\uFAFF';
 
 /**
  * The sync triggers each external-content index depends on. SQLite drops a
@@ -110,7 +104,7 @@ export class SessionSearch {
    * writer connection owns them. Temp-schema tables (the FTS5 probe and the
    * fts5vocab term-frequency tables) still work on a read-only open.
    */
-  constructor(dbPathOrDb: string | Database = DB_PATH, options: { readOnly?: boolean } = {}) {
+  constructor(dbPathOrDb: string | Database = DB_PATH, options: { readOnly?: boolean; toolUseIndexEnabled?: boolean } = {}) {
     if (dbPathOrDb instanceof Database) {
       this.db = dbPathOrDb;
     } else {
@@ -127,9 +121,42 @@ export class SessionSearch {
     this._fts5Available = this.isFts5Available();
 
     if (!options.readOnly) this.ensureFTSTables();
+    // This optional capability must be checked outside core FTS's early return.
+    if (!options.readOnly && options.toolUseIndexEnabled !== undefined) {
+      if (!this.isFts5Available()) this.rawIndexFailure = 'unsupported';
+      else {
+        try { configureToolUseIndex(this.db, options.toolUseIndexEnabled); }
+        catch (error) {
+          this.rawIndexFailure = 'error';
+          logger.error('DB', 'Raw tool search index initialization failed', {}, error instanceof Error ? error : undefined);
+        }
+      }
+    }
   }
 
   private _fts5Available: boolean;
+  private rawIndexFailure?: ToolUseIndexStatus;
+
+  async configureToolUseIndex(enabled: boolean, signal?: AbortSignal): Promise<void> {
+    this.rawIndexFailure = undefined;
+    if (!this.isFts5Available()) { this.rawIndexFailure = 'unsupported'; return; }
+    try {
+      const status = await configureToolUseIndexAsync(this.db, enabled, signal);
+      logger.info('DB', 'Raw tool search index configured', { status });
+    } catch (error) {
+      this.rawIndexFailure = 'error';
+      logger.error('DB', 'Raw tool search index initialization failed', {}, error instanceof Error ? error : undefined);
+    }
+  }
+
+  getToolUseIndexStatus(): ToolUseIndexStatus {
+    return this.rawIndexFailure ?? toolUseIndexStatus(this.db);
+  }
+
+  searchToolUses(query: string, options: SearchOptions = {}): DeepSearchResult {
+    const status = this.getToolUseIndexStatus();
+    return status === 'ready' ? searchToolUses(this.db, query, options) : emptyDeepResult(status);
+  }
 
   private ensureFTSTables(): void {
     const tables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_fts'").all() as TableNameRow[];
@@ -412,50 +439,9 @@ export class SessionSearch {
    * Thai, Lao, Myanmar and Khmer write words without spaces too, so a run of them folds
    * into one token the same way (`ภาษาไทย` inside a longer Thai run -> 0 rows).
    */
-  private static readonly UNSEGMENTED_SCRIPT = new RegExp(`[${UNSEGMENTED_SCRIPT_RANGES}]`);
-
-  /**
-   * Split the query into the runs the index cannot segment and the runs it can, so a
-   * mixed-script query is matched term by term instead of as one literal string. A
-   * substring search for the whole of `claude 队列` requires those characters to be
-   * adjacent, which is why mixed queries returned almost nothing (#3801 / #3982).
-   */
-  private static readonly UNSEGMENTED_RUN =
-    new RegExp(`[${UNSEGMENTED_SCRIPT_RANGES}]+|[^\\s${UNSEGMENTED_SCRIPT_RANGES}]+`, 'g');
-
-  /**
-   * The most distinct terms the substring predicate requires. It adds one LIKE group per
-   * term, and when SQLite plans the project filter's OR across its two indexes it chains
-   * every WHERE term into one AND expression, one level deeper per term. Past ~980 terms
-   * that fails with "Expression tree is too large (maximum depth 1000)", which a pasted
-   * wall of text (FTS never matches one, so it always lands here) used to hit. 500 leaves
-   * room for every other filter. A query with more distinct terms than this matches no
-   * record by its full AND anyway; its leading terms are kept.
-   */
-  static readonly MAX_SUBSTRING_TERMS = 500;
-
-  /**
-   * Build the substring predicate used when the index cannot represent the query. Each
-   * term must appear in at least one column, and every term must appear somewhere. The
-   * escaping matches {@link searchUserPrompts}, which has always searched by substring.
-   * A repeated term adds nothing to the AND, so terms are deduplicated before the cap.
-   */
-  private static buildSubstringClause(query: string, columns: string[]): { clause: string; params: string[] } {
-    const terms = [...new Set(query.match(SessionSearch.UNSEGMENTED_RUN) ?? [])]
-      .slice(0, SessionSearch.MAX_SUBSTRING_TERMS);
-    if (terms.length === 0) {
-      terms.push(query);
-    }
-    const params: string[] = [];
-    const groups = terms.map(term => {
-      const pattern = `%${term.replace(/[\\%_]/g, '\\$&')}%`;
-      for (let i = 0; i < columns.length; i += 1) {
-        params.push(pattern);
-      }
-      return `(${columns.map(column => `${column} LIKE ? ESCAPE '\\'`).join(' OR ')})`;
-    });
-    return { clause: `(${groups.join(' AND ')})`, params };
-  }
+  private static readonly UNSEGMENTED_SCRIPT = UNSEGMENTED_SCRIPT;
+  static readonly MAX_SUBSTRING_TERMS = MAX_SUBSTRING_TERMS;
+  private static readonly buildSubstringClause = buildSubstringClause;
 
   /** Fewest query terms before an AND query with no match is widened to any term (see buildFTSAnyTermQuery). */
   private static readonly MIN_ANY_TERM_TOKENS = 3;
@@ -468,16 +454,7 @@ export class SessionSearch {
    * nothing for them, so each would become an empty phrase that matches no row and, ANDed
    * in, would zero out the whole query.
    */
-  private static buildFTSMatchQuery(query: string): string {
-    const tokens = (query.match(/\S+/g) ?? []).filter(token => /[\p{L}\p{N}]/u.test(token));
-    if (tokens.length === 0) {
-      return `"${query.replace(/"/g, '""')}"`;
-    }
-
-    return tokens
-      .map(token => `"${token.replace(/"/g, '""')}"`)
-      .join(' AND ');
-  }
+  private static readonly buildFTSMatchQuery = buildFTSMatchQuery;
 
   /**
    * The same quoted tokens as buildFTSMatchQuery, joined with OR, for a query whose terms never all appear in one

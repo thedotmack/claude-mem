@@ -100,6 +100,7 @@ const toolUsesBatchSchema = z.object({
   }, z.array(z.union([z.number().int(), z.string()]))),
   limit: z.number().int().positive().max(200).optional(),
   project: z.string().optional(),
+  projects: stringArrayLike.optional(),
   contentSessionId: z.string().optional(),
   platformSource: z.string().optional(),
   platform_source: z.string().optional(),
@@ -370,7 +371,7 @@ export class DataRoutes extends BaseRouteHandler {
   });
 
   private handleGetToolUsesByIds = this.wrapHandler((req: Request, res: Response): void => {
-    const { ids, limit, project, contentSessionId } = req.body as z.infer<typeof toolUsesBatchSchema>;
+    const { ids, limit, project, projects, contentSessionId } = req.body as z.infer<typeof toolUsesBatchSchema>;
 
     if (ids.length === 0) {
       res.json([]);
@@ -379,7 +380,8 @@ export class DataRoutes extends BaseRouteHandler {
 
     const store = this.dbManager.getSessionStore();
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
-    res.json(store.getToolUsesByIds(ids, { limit, project, contentSessionId, platformSource }));
+    const readKeys = projectReadKeysFor(store, project, projects);
+    res.json(store.getToolUsesByIds(ids, { limit, project, ...(readKeys.length ? { projects: readKeys } : {}), contentSessionId, platformSource }));
   });
 
   private handleGetSessionById = this.wrapHandler((req: Request, res: Response): void => {
@@ -711,9 +713,11 @@ export class DataRoutes extends BaseRouteHandler {
       }
       // The raw tool I/O backup is device-local (never synced); a deleted
       // session must not leave its captured tool inputs and outputs behind.
-      deletedCounts.toolUses = store.db.prepare(
+      store.db.prepare(
         `DELETE FROM tool_uses WHERE session_db_id = ? OR (content_session_id = ? AND platform_source = ?)`
-      ).run(sessionRow.id, contentSessionId, platformSource).changes;
+      ).run(sessionRow.id, contentSessionId, platformSource);
+      // Count base rows, excluding FTS shadow writes performed by triggers.
+      deletedCounts.toolUses = (store.db.query('SELECT changes() AS n').get() as { n: number }).n;
       store.db.prepare(`DELETE FROM sdk_sessions WHERE id = ?`).run(sessionRow.id);
     })();
     emitContextInvalidation('all', 'delete-session', 'removal');

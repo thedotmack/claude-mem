@@ -1,3 +1,4 @@
+import type { DeepSearchResult } from '../sqlite/tool-use-search.js';
 import { existsSync } from 'node:fs';
 import { Worker } from 'node:worker_threads';
 import type { ContextReadMethods, ContextReadReply, ContextReadRequest, ContextReadResult, ContextRenderRequest } from './ContextReadProtocol.js';
@@ -33,6 +34,10 @@ export class ContextReadWorkerClient {
 
   async projectsForCwd(cwd: string): Promise<string[]> {
     return this.request('projectsForCwd', { cwd });
+  }
+
+  async searchToolUses(query: string, options: SearchOptions): Promise<DeepSearchResult> {
+    return this.request('searchToolUses', { query, options });
   }
 
   async searchObservations(query: string | undefined, options: SearchOptions): Promise<ObservationSearchResult[]> {

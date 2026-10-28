@@ -955,6 +955,9 @@ export class WorkerService implements WorkerRef {
       this.resolveInitialization();
       this.initPhaseTracker.setInitPhase('ready');
       logger.info('SYSTEM', 'Core initialization complete (DB + search ready)');
+      // Optional raw-tool indexing yields between committed batches. Start only
+      // after core routes are usable; shutdown preserves the committed cursor.
+      void this.dbManager.initializeToolUseSearch();
 
       // Lifecycle telemetry (person profile = anonymous install UUID). ide is
       // this install's dominant client read from session history — a bounded
