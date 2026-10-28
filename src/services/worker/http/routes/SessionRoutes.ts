@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { ingestObservation, ingestSummarize, ingestSessionEnd, type IngestContext } from '../shared.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { requireLocalhost } from '../middleware.js';
+import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { logger } from '../../../../utils/logger.js';
 import { logChromaWriteFailure } from '../../search/errors.js';
 import { stripMemoryTags, isCodexInternalPrompt, isGrokBotInternalPrompt, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
@@ -64,6 +65,18 @@ import {
 import type { TelegramWrapupFormatterInput } from '../../../integrations/TelegramWrapupNotifier.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
+
+// The session write endpoints are state-changing and sit behind the same
+// two-gate posture as the rest of the write family: requireLocalhost refuses a
+// non-loopback socket peer, and this refuses a browser page served from a
+// different local port. Origin-less callers (hooks, the CLI, curl) pass.
+function rejectForeignLoopbackBrowserWrite(req: Request, res: Response, next: () => void): void {
+  if (isForeignLoopbackBrowserWrite(req)) {
+    res.status(403).json({ error: 'Session writes from a different localhost origin are not allowed' });
+    return;
+  }
+  next();
+}
 
 export class SessionRoutes extends BaseRouteHandler {
   // #2756 round 3: ensureGeneratorRunning is called from independent HTTP
@@ -588,21 +601,29 @@ export class SessionRoutes extends BaseRouteHandler {
     });
     app.post(
       '/api/sessions/init',
+      requireLocalhost,
+      rejectForeignLoopbackBrowserWrite,
       validateBody(SessionRoutes.sessionInitByClaudeIdSchema),
       this.handleSessionInitByClaudeId.bind(this)
     );
     app.post(
       '/api/sessions/observations',
+      requireLocalhost,
+      rejectForeignLoopbackBrowserWrite,
       validateBody(SessionRoutes.observationsByClaudeIdSchema),
       this.handleObservationsByClaudeId.bind(this)
     );
     app.post(
       '/api/sessions/summarize',
+      requireLocalhost,
+      rejectForeignLoopbackBrowserWrite,
       validateBody(SessionRoutes.summarizeByClaudeIdSchema),
       this.handleSummarizeByClaudeId.bind(this)
     );
     app.post(
       '/api/sessions/session-end',
+      requireLocalhost,
+      rejectForeignLoopbackBrowserWrite,
       validateBody(SessionRoutes.sessionEndSchema),
       this.handleSessionEnd.bind(this)
     );
