@@ -7,14 +7,18 @@
 //                                                   conversations + deterministic links
 //   bun request-groups.mjs grouping-input [--days 14] [--limit 20]
 //                                                   undecided conversations of one root + its open requests
+//   bun request-groups.mjs judge [--days 14] [--apply]  route every undecided conversation with the judge
+//                                                   (code links, then Jev when the install has it); plan only without --apply
 //   bun request-groups.mjs apply <file|->            persist group decisions
 //   bun request-groups.mjs pending [--days 14] [--limit 48]   groups needing a progress review
 //   bun request-groups.mjs show <groupId>           one group's asks, work lists and dates (only new asks when amending)
 //   bun request-groups.mjs record-progress <file|-> persist one progress review
 //   bun request-groups.mjs story-input              reviews whose facts changed since the last story (all without one)
 //   bun request-groups.mjs record-story <file|->    persist the build story and preferences
-//   bun request-groups.mjs align-input              owner goals + the groups still to align
-//   bun request-groups.mjs record-alignment <file|-> persist which goals each group serves
+//   bun request-groups.mjs focus-input [--limit 20]  focus areas + one batch of requests still to place
+//   bun request-groups.mjs focus-input --other       focus areas + the requests in Other, to propose areas from
+//   bun request-groups.mjs record-focus [--limit 20 | --other] <file|->
+//                                                   place requests and propose areas (saved through the worker)
 //   bun request-groups.mjs refresh-needs [--days 14]  what the automatic refresh would do now
 import { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
@@ -22,8 +26,9 @@ import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSy
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { conversationKey, isConversationKey, isHumanActionRequest, originalFor, requestText } from './request-projection.mjs';
-import { OWNER_GOALS_LIST } from './owner-goals.mjs';
+import { GOAL_KINDS, goalKindOf, OWNER_GOALS_LIST } from './owner-goals.mjs';
 import { NO_PROJECT, projectRoot, upgradedGroupRoot, withDerivedProjects } from './session-project.mjs';
+import { isOwnerDismissedArea, isPlaceableArea, OTHER_FOCUS_AREA_ID, PROPOSAL_KINDS, readFocus } from './my-focus.mjs';
 
 const DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
 export const LEDGER_DIR = join(DATA_DIR, 'work-view');
@@ -38,7 +43,8 @@ export const PROGRESS_STATES = ['shipped', 'in-progress', 'stalled', 'abandoned'
 export const PREFERENCE_KINDS = ['directive', 'correction', 'praise', 'frustration'];
 export const USAGE_LEVELS = ['in-use', 'some-use', 'no-evidence', 'unknown'];
 export const VALUE_LEVELS = ['high', 'medium', 'low', 'unclear'];
-const LINK_KINDS = ['shared-work-list', 'shared-request-id', 'agent-judgment'];
+// `judge` links are written by code (request-judge.mjs): their evidence names the judge and its score.
+const LINK_KINDS = ['shared-work-list', 'shared-request-id', 'agent-judgment', 'judge'];
 // Each review adds one dated percent; the measured ETA reads the last two.
 export const MAX_READINGS = 20;
 
@@ -152,7 +158,7 @@ export function linkBackwards(candidates) {
   return { proposedGroups: [...groups.values()], skippedLists };
 }
 
-/** Fold the owner-goals list (patch entries) into its open priorities and asks. */
+/** Fold the owner-goals list (patch entries) into its open focus areas and asks, areas first. */
 export function readGoals(database) {
   const rows = database.prepare('SELECT fields FROM work_state_entries WHERE list_name = ? ORDER BY id').all(OWNER_GOALS_LIST);
   const listState = {}, items = new Map();
@@ -162,32 +168,16 @@ export function readGoals(database) {
     for (const [key, value] of Object.entries(fields)) { if (value === null) delete target[key]; else target[key] = value; }
   }
   const goals = [...items.values()].filter((item) => !['done', 'dropped'].includes(String(item.status).toLowerCase())).map((item) => ({
-    goal: item.task, kind: item.goal_kind === 'open-ask' ? 'open-ask' : 'priority', rank: Number(item.rank) || null,
-    title: item.title ?? item.task, product: item.product ?? null, latestAt: item.latest_at ?? null, timesAsked: Number(item.times_asked) || null,
+    // taskKey is the item's work-state task; goal is only ever a focus area's sentence.
+    taskKey: item.task, ...goalKindOf(item), rank: Number(item.rank) || null,
+    title: item.title ?? item.task, goal: item.goal ?? null, focusArea: item.focus_area ?? null, focusAreaId: item.focus_area_id ?? null,
+    latestAt: item.latest_at ?? null, timesAsked: Number(item.times_asked) || null,
     // A later local refresh changes snapshot, so it cannot reuse an older hosted JSON evidence field.
     evidence: item.source === 'hosted-intent' && item.hosted_snapshot === item.snapshot
       ? JSON.parse(item.evidence_json)
       : String(item.evidence ?? '').split('\n').filter(Boolean).map((line) => { const [at, ...quote] = line.split(' | '); return { at, quote: quote.join(' | ') }; }),
-  })).sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'priority' ? -1 : 1) || (a.rank ?? Infinity) - (b.rank ?? Infinity));
+  })).sort((a, b) => GOAL_KINDS.indexOf(a.kind) - GOAL_KINDS.indexOf(b.kind) || (a.rank ?? Infinity) - (b.rank ?? Infinity));
   return { summary: listState.human_summary ?? null, generatedAt: listState.generated_at ?? null, mapPath: listState.map_path ?? null, goals };
-}
-
-/** Alignment links each overall request to the owner goals it serves, with evidence. */
-export function validateAlignment(input, { groups, goals }) {
-  const goalNames = new Set(goals.map((goal) => goal.goal));
-  if (!Array.isArray(input?.links)) throw new TypeError('Alignment needs a links array.');
-  const links = {};
-  for (const [index, link] of input.links.entries()) {
-    if (!groups[link.groupId]) throw new TypeError(`links[${index}] has unknown group ${link.groupId}.`);
-    if (!goalNames.has(link.goal)) throw new TypeError(`links[${index}].goal must be a current goal's exact "goal" value.`);
-    (links[link.groupId] ??= []).push({ goal: link.goal, evidence: boundedText(link.evidence, 300, `links[${index}].evidence`) });
-  }
-  const unaligned = [...new Set(input.unaligned ?? [])];
-  for (const groupId of unaligned) {
-    if (!groups[groupId]) throw new TypeError(`unaligned has unknown group ${groupId}.`);
-    if (links[groupId]) throw new TypeError(`Group ${groupId} is both linked and unaligned.`);
-  }
-  return { links, unaligned };
 }
 
 function readJson(path, fallback) {
@@ -206,7 +196,8 @@ const emptyGroups = () => ({ version: 1, updatedAt: null, conversations: {}, gro
 
 /** Merge decisions into the stored ledger. Conversations listed in a decision
  * move to that group; others keep their previous group. `projectOf` maps a
- * conversation key to its project: a group holds one project root only. */
+ * conversation key to its project: a group holds one project root only, unless
+ * the decision names the request's `projectRoot` itself. */
 export function applyGroupDecisions(stored, decisions, now = Date.now(), { projectOf = new Map() } = {}) {
   if (!Array.isArray(decisions?.groups)) throw new TypeError('Decisions need a groups array.');
   const next = structuredClone(stored ?? emptyGroups());
@@ -228,7 +219,12 @@ export function applyGroupDecisions(stored, decisions, now = Date.now(), { proje
     const unsupported = decision.conversations.filter((key) => find(key) !== find(decision.conversations[0]));
     if (unsupported.length) throw new TypeError(`${label} joins ${unsupported.join(', ')} without evidence linking it to the anchor.`);
     const id = groupIdFor(decision.conversations[0]);
-    // A request stays in one project root, members it already has included.
+    // A decision may name the request's root itself: conversations from other roots may then join it, and
+    // the group records that root. Without one, a request stays in one project root, members it already
+    // has included. A group saved with a named root keeps that allowance when a later decision (a refresh
+    // answer, whose schema has no projectRoot) extends it.
+    if (decision.projectRoot != null && (typeof decision.projectRoot !== 'string' || !decision.projectRoot.trim())) throw new TypeError(`${label}.projectRoot must be a non-empty string when given.`);
+    const explicitRoot = decision.projectRoot ?? (next.groups[id]?.rootNamed ? next.groups[id].projectRoot : null);
     const allMembers = [...new Set([...decision.conversations, ...Object.entries(next.conversations).filter(([key, groupId]) => groupId === id && !decision.conversations.includes(key)).map(([key]) => key)])];
     const storedRoot = upgradedGroupRoot(next.groups[id]?.projectRoot, projectRoot(projectOf.get(next.groups[id]?.anchor)),
       allMembers.map((key) => projectRoot(projectOf.get(key))));
@@ -242,14 +238,21 @@ export function applyGroupDecisions(stored, decisions, now = Date.now(), { proje
       roots.set(root, [...(roots.get(root) ?? []), key]);
     }
     if (typeof storedRoot === 'string' && !rootWasUnknown && !roots.has(storedRoot)) roots.set(storedRoot, []);
-    if (roots.size > 1) throw new TypeError(`${label} joins conversations from different projects (${[...roots.keys()].map((root) => root || 'no project').join(', ')}); a request stays inside one project root.`);
-    const projectRootOfGroup = roots.size ? [...roots.keys()][0] : storedRoot ?? null;
+    if (explicitRoot == null && roots.size > 1) throw new TypeError(`${label} joins conversations from different projects (${[...roots.keys()].map((root) => root || 'no project').join(', ')}); a request stays inside one project root.`);
+    const projectRootOfGroup = explicitRoot != null ? explicitRoot.trim() : roots.size ? [...roots.keys()][0] : storedRoot ?? null;
     for (const key of decision.conversations) {
       next.conversations[key] = id;
       // A later decision can correct an earlier ignore; the viewer checks ignored first.
       if (next.ignored) delete next.ignored[key];
     }
-    next.groups[id] = { title: decision.title.trim(), anchor: decision.conversations[0], projectRoot: projectRootOfGroup, links, decidedAt: iso(now), anchorAsk: stored?.groups?.[id]?.anchor === decision.conversations[0] ? stored.groups[id].anchorAsk ?? null : null };
+    // A decision adds its evidence to the request's: a conversation joined one at a time (the judge, the
+    // owner's Join) names only its own link, and the links of members that stay must survive it. Links
+    // naming a conversation that left the group go with it.
+    const memberSet = new Set(allMembers);
+    const keptLinks = (next.groups[id]?.links ?? []).filter((link) => link.conversations.every((key) => memberSet.has(key)));
+    const known = new Set(keptLinks.map((link) => JSON.stringify(link)));
+    const mergedLinks = [...keptLinks, ...links.filter((link) => !known.has(JSON.stringify(link)))];
+    next.groups[id] = { title: decision.title.trim(), anchor: decision.conversations[0], projectRoot: projectRootOfGroup, ...(explicitRoot != null ? { rootNamed: true } : {}), links: mergedLinks, decidedAt: iso(now), anchorAsk: stored?.groups?.[id]?.anchor === decision.conversations[0] ? stored.groups[id].anchorAsk ?? null : null };
   }
   next.ignored ??= {};
   for (const [index, ignored] of (decisions.ignored ?? []).entries()) {
@@ -381,6 +384,19 @@ export function validateStory(story) {
   };
 }
 
+/** Suggestions still waiting for the owner: the judge's mid-band picks (request-judge.mjs) whose
+ * request still exists and whose conversation is not in it yet. */
+export function openSuggestions(ledger) {
+  const groups = ledger?.groups;
+  if (!groups) return [];
+  return Object.entries(groups.suggestions ?? {})
+    .filter(([key, suggestion]) => suggestion?.status === 'open' && groups.groups[suggestion.requestId] && groups.conversations[key] !== suggestion.requestId)
+    .map(([conversationKey, suggestion]) => ({
+      conversationKey, requestId: suggestion.requestId, requestTitle: groups.groups[suggestion.requestId].title,
+      confidence: suggestion.confidence, evidence: suggestion.evidence, judge: suggestion.judge, at: suggestion.at ?? null,
+    }));
+}
+
 /** Everything the monitor needs, read without touching the database. */
 export function readLedger(dir = LEDGER_DIR) {
   const groups = readJson(join(dir, 'request-groups.json'), emptyGroups());
@@ -393,14 +409,14 @@ export function readLedger(dir = LEDGER_DIR) {
     if (entry?.groupId && groups.groups[entry.groupId]) progress[entry.groupId] = { ...entry, title: groups.groups[entry.groupId].title };
   }
   return {
-    groups, progress, story: readJson(join(dir, 'story.json'), null), alignment: readJson(join(dir, 'alignment.json'), null), refresh: readJson(join(dir, 'refresh.json'), null),
+    groups, progress, story: readJson(join(dir, 'story.json'), null), refresh: readJson(join(dir, 'refresh.json'), null),
     agentWrittenPromptIds: new Set(readJson(join(dir, AGENT_WRITTEN_PROMPTS_FILE), { promptIds: [] }).promptIds ?? []),
   };
 }
 
 /** Cheap change detector for the monitor's one-second poll. */
 export function ledgerSignature(dir = LEDGER_DIR) {
-  return ['request-groups.json', 'progress', 'story.json', 'alignment.json', 'refresh.json'].map((name) => {
+  return ['request-groups.json', 'progress', 'story.json', 'refresh.json'].map((name) => {
     try { const stat = statSync(join(dir, name)); return `${stat.mtimeMs}:${stat.size}`; }
     catch { return 'missing'; }
   }).join('|');
@@ -433,49 +449,203 @@ function pendingReviews(ledger, database, sinceEpoch) {
   return { due, ungrouped };
 }
 
-/** Goals added since the alignment was recorded. A goals update that only
- * re-ranks or re-quotes adds none. Files from before goal keys were recorded count as current. */
-export function goalsAddedSince(alignment, goalKeys) {
-  const seen = new Set(alignment?.goals ?? goalKeys);
-  return goalKeys.filter((goal) => !seen.has(goal));
+/** An ask as the focus step reads it: the 400 characters grouping-input shows of a conversation's opening ask and an
+ * open request's anchor ask (groupingInput), so a request is placed on what it was grouped on. */
+const FOCUS_ASK_CHARS = 400;
+/** Conversations per readCandidates call: two bound parameters each, and 400 pairs (800 parameters) stays under
+ * SQLite's 999-parameter limit before 3.32, the same chunk readConversationProjects uses. */
+const CONVERSATIONS_PER_QUERY = 400;
+
+const groupConversations = (ledger, groupId) => Object.entries(ledger.groups.conversations).filter(([, id]) => id === groupId).map(([key]) => key).sort();
+
+/** Each conversation's opening ask, read from the database (the ledger keeps only the anchor's). */
+function openingAsks(database, ledger, conversationKeys) {
+  const asks = new Map();
+  for (let index = 0; index < conversationKeys.length; index += CONVERSATIONS_PER_QUERY) {
+    for (const candidate of readCandidates(database, { conversationKeys: conversationKeys.slice(index, index + CONVERSATIONS_PER_QUERY), excludedPromptIds: ledger.agentWrittenPromptIds })) {
+      asks.set(candidate.conversationKey, candidate.firstAsk);
+    }
+  }
+  return asks;
 }
 
-/** One request as the alignment step sees it (align-input's group record). */
-function alignmentRecord(ledger, groupId) {
+/** One request as the focus step sees it, keyed by its anchor conversation. Every conversation's opening ask is listed,
+ * so a request holding several separate asks (one to promote into an area) can be told from one ask. */
+function requestRecord(ledger, groupId, asks) {
   const group = ledger.groups.groups[groupId], review = ledger.progress[groupId];
-  return { groupId, title: group.title, firstAsk: group.anchorAsk?.text?.slice(0, 400) ?? null, state: review?.state ?? null, percent: review?.percent ?? null, summary: review?.summary ?? null };
+  const conversations = groupConversations(ledger, groupId);
+  return {
+    anchor: group.anchor, groupId, title: group.title, firstAsk: requestText(group.anchorAsk?.text ?? null, FOCUS_ASK_CHARS),
+    state: review?.state ?? null, summary: review?.summary ?? null,
+    // A tag only, never a grouping: the request's project root.
+    repo: group.projectRoot ?? null,
+    conversations: conversations.length,
+    conversationAsks: conversations.map((key) => requestText(asks.get(key) ?? null, FOCUS_ASK_CHARS)).filter(Boolean),
+  };
 }
 
-/** What an alignment decision was made on: the request as align-input showed it, and its conversations. */
-function alignmentBasis(ledger, groupId) {
-  const conversations = Object.entries(ledger.groups.conversations).filter(([, id]) => id === groupId).map(([key]) => key).sort();
-  return createHash('sha256').update(JSON.stringify({ ...alignmentRecord(ledger, groupId), conversations })).digest('hex').slice(0, 16);
+const records = (database, ledger, groupIds) => {
+  const asks = openingAsks(database, ledger, groupIds.flatMap((groupId) => groupConversations(ledger, groupId)));
+  return groupIds.map((groupId) => requestRecord(ledger, groupId, asks));
+};
+
+/** What decides a request's area: its title, its first ask and its conversations. Its review (state, percent, summary)
+ * is left out, so a request is not placed again every time it is reviewed. */
+export function focusBasis(ledger, groupId) {
+  const group = ledger.groups.groups[groupId];
+  return createHash('sha256').update(JSON.stringify({ title: group.title, firstAsk: group.anchorAsk?.text ?? null, conversations: groupConversations(ledger, groupId) })).digest('hex').slice(0, 16);
 }
 
-/** Groups the alignment step still has to decide: groups it has not seen,
- * groups that changed since their decision, groups linked to a goal that is
- * gone, and every group when a goal was added (any group may serve it). With
- * no goals there is nothing to align to. Files from before bases were recorded count as current. */
-function alignmentDue(ledger, goals) {
-  if (!goals.goals.length) return [];
-  const current = goals.goals.map((goal) => goal.goal);
-  const links = ledger.alignment?.links ?? {}, unaligned = new Set(ledger.alignment?.unaligned ?? []), basis = ledger.alignment?.basis;
-  if (goalsAddedSince(ledger.alignment, current).length) return Object.keys(ledger.groups.groups);
-  const changed = (id) => basis != null && basis[id] !== alignmentBasis(ledger, id);
-  return Object.keys(ledger.groups.groups).filter((id) => changed(id) || (links[id] ? links[id].some((link) => !current.includes(link.goal)) : !unaligned.has(id)));
+/** Requests the focus step still has to place: no placement, a placement whose area holds no requests any more
+ * (dismissed, or merged into a loop), or a router placement whose request changed since. An owner placement into a
+ * live area (Other and done areas included) is the owner's and never queued; once its area is dismissed it no longer
+ * binds (buildFocusAreas), and the router's placement must stand on its own. A router basis is compared only on the
+ * device that wrote it: another device decided on its own copy of the request, and comparing would re-place every
+ * request on every device in turn. Placements written without a basis (a seed) count as current. */
+function focusDue(ledger, focus, localDeviceId) {
+  return Object.keys(ledger.groups.groups).filter((groupId) => {
+    const placement = focus.placementsByAnchor.get(ledger.groups.groups[groupId].anchor);
+    if (placement?.owner && focus.resolveFocusAreaId(placement.owner.focusAreaId)) return false;
+    const router = placement?.router;
+    if (!router || !focus.resolveFocusAreaId(router.focusAreaId)) return true;
+    return router.device === localDeviceId && router.basis != null && router.basis !== focusBasis(ledger, groupId);
+  });
 }
+
+/** Requests the router put in Other, where new areas come from. A request the owner put in Other is the owner's call,
+ * not material for a proposal, and a request still to be placed is left for its placement. */
+function routerOther(ledger, focus, queued) {
+  return Object.keys(ledger.groups.groups).filter((groupId) => {
+    if (queued.has(groupId)) return false;
+    const placement = focus.placementsByAnchor.get(ledger.groups.groups[groupId].anchor);
+    if (placement?.owner && focus.resolveFocusAreaId(placement.owner.focusAreaId)) return false;
+    return !!placement?.router && focus.resolveFocusAreaId(placement.router.focusAreaId) === OTHER_FOCUS_AREA_ID;
+  });
+}
+
+/** Which Other requests a proposal pass looked at, and what each one held then (its focusBasis), so a request that
+ * gained conversations or a new ask and stayed in Other is looked at again; null when Other holds none. */
+const otherPassHash = (ledger, groupIds) => groupIds.length
+  ? createHash('sha256').update(JSON.stringify(groupIds.map((groupId) => [ledger.groups.groups[groupId].anchor, focusBasis(ledger, groupId)]).sort())).digest('hex').slice(0, 16)
+  : null;
+
+const focusAreaRecord = (area) => ({ focusAreaId: area.focusAreaId, name: area.name, goal: area.goal, about: area.about, status: area.status });
+
+/** focus-input: the areas a request may go in, the dismissed areas never to propose again, and one batch of requests to
+ * place, earliest in the ledger first. `remaining` counts the requests left for later batches. */
+export function focusInput(ledger, focus, localDeviceId, database, { limit = FOCUS_BATCH } = {}) {
+  const due = focusDue(ledger, focus, localDeviceId);
+  return {
+    areas: focus.focusAreas.filter(isPlaceableArea).map(focusAreaRecord),
+    dismissed: focus.focusAreas.filter(isOwnerDismissedArea).map(focusAreaRecord),
+    requests: records(database, ledger, due.slice(0, limit)),
+    remaining: Math.max(0, due.length - limit),
+  };
+}
+
+/** focus-input --other: the requests the router put in Other, for proposing areas. `due` is false when the last pass
+ * (on any device: the hash is a synced my-focus row) already looked at exactly these requests. */
+export function otherInput(ledger, focus, localDeviceId, database) {
+  const other = routerOther(ledger, focus, new Set(focusDue(ledger, focus, localDeviceId)));
+  const hash = otherPassHash(ledger, other);
+  return {
+    areas: focus.focusAreas.filter(isPlaceableArea).map(focusAreaRecord),
+    dismissed: focus.focusAreas.filter(isOwnerDismissedArea).map(focusAreaRecord),
+    other: records(database, ledger, other),
+    due: hash !== null && hash !== focus.otherPassHash,
+  };
+}
+
+// Same bounds as the worker's focus routes: a nav label, one sentence, and evidence or an about line of one
+// sentence each, so a whole area fits one 2000-character work-state row (MAX_WORK_STATE_FIELDS_JSON_CHARS).
+const AREA_NAME_MAX = 80, AREA_SENTENCE_MAX = 300;
+
+/**
+ * A focus answer checked against the input it was made from. Two kinds of question share the answer shape:
+ * - placing (focus-input): every listed request is placed exactly once, in a listed area by its exact id or in "other";
+ *   a request whose conversations hold several separate asks may be promoted into a proposed area.
+ * - Other (focus-input --other): nothing is placed; requests in Other that are steps of something larger cluster into
+ *   a "new" proposal (two or more: one request is a request, not a cluster), and one may be promoted.
+ * An area id that is not listed is refused, never mapped to Other: guessing would file the request wrongly. A proposal's
+ * `sameAs` is the model's judgment of which saved area it already is: a listed area takes its requests (no new area),
+ * and a dismissed one is refused, never proposed again under any name. Returns the body POST /api/work-view/focus/router
+ * takes; after an Other pass it carries the hash of the Other requests left, so the next pass waits for a change.
+ */
+export function validateFocusAnswer(answer, input, ledger, { other = false } = {}) {
+  if (!Array.isArray(answer?.placements)) throw new TypeError('The answer needs a placements array.');
+  if (!Array.isArray(answer?.proposals)) throw new TypeError('The answer needs a proposals array (empty when there is nothing to propose).');
+  const listed = new Map((other ? input.other : input.requests).map((request) => [request.anchor, request]));
+  const areaIds = new Set(input.areas.map((area) => area.focusAreaId));
+  const dismissed = new Map(input.dismissed.map((area) => [area.focusAreaId, area]));
+  const placed = new Map();
+  if (other && answer.placements.length) throw new TypeError('This question places nothing: answer "placements": [] and propose areas only.');
+  for (const [index, placement] of answer.placements.entries()) {
+    const label = `placements[${index}]`;
+    if (!listed.has(placement?.anchor)) throw new TypeError(`${label} names ${placement?.anchor}, which was not asked about.`);
+    if (placed.has(placement.anchor)) throw new TypeError(`${label} places ${placement.anchor} a second time; a request sits in one area.`);
+    if (placement.focusAreaId !== OTHER_FOCUS_AREA_ID && !areaIds.has(placement.focusAreaId)) {
+      if (dismissed.has(placement.focusAreaId)) throw new TypeError(`${label} names ${placement.focusAreaId} ("${dismissed.get(placement.focusAreaId).name}"), which the owner dismissed; it takes no requests. Use a listed area id or "other".`);
+      throw new TypeError(`${label} names ${JSON.stringify(placement.focusAreaId)}, which is not a listed focus area. Use an exact focusAreaId from "areas", or "other".`);
+    }
+    placed.set(placement.anchor, { focusAreaId: placement.focusAreaId, evidence: boundedText(placement.evidence, AREA_SENTENCE_MAX, `${label}.evidence`) });
+  }
+  if (!other) {
+    const missing = [...listed.keys()].filter((anchor) => !placed.has(anchor));
+    if (missing.length) throw new TypeError(`Place every request asked about; missing ${missing.join(', ')}.`);
+  }
+  const held = new Set();
+  const proposals = answer.proposals.map((proposal, index) => {
+    const label = `proposals[${index}]`;
+    if (!PROPOSAL_KINDS.includes(proposal?.kind)) throw new TypeError(`${label}.kind must be one of ${PROPOSAL_KINDS.join(', ')}.`);
+    if (!other && proposal.kind === 'new') throw new TypeError(`${label}: new areas are proposed from Other in their own question; here only "promote" a request that holds several separate asks.`);
+    if (proposal.sameAs != null && !areaIds.has(proposal.sameAs)) {
+      if (dismissed.has(proposal.sameAs)) throw new TypeError(`${label} is the area the owner dismissed (${proposal.sameAs}, "${dismissed.get(proposal.sameAs).name}"); never propose it again. Drop this proposal.`);
+      throw new TypeError(`${label}.sameAs names ${JSON.stringify(proposal.sameAs)}, which is not a listed area; use an exact focusAreaId from "areas" or null.`);
+    }
+    if (!Array.isArray(proposal.anchors) || !proposal.anchors.length) throw new TypeError(`${label}.anchors must list the requests it holds.`);
+    if (proposal.kind === 'new' && proposal.anchors.length < 2) throw new TypeError(`${label} clusters one request; a "new" area holds two or more steps of something larger (use "promote" for one request that holds several asks).`);
+    if (proposal.kind === 'promote' && proposal.anchors.length !== 1) throw new TypeError(`${label} promotes one request; list only that request's anchor.`);
+    const requests = proposal.anchors.map((anchor) => {
+      if (!listed.has(anchor)) throw new TypeError(`${label} holds ${anchor}, which ${other ? 'is not a listed Other request' : 'was not asked about'}.`);
+      if (held.has(anchor)) throw new TypeError(`${label} holds ${anchor}, which another proposal already holds.`);
+      held.add(anchor);
+      return { anchorConversationKey: anchor, basis: focusBasis(ledger, listed.get(anchor).groupId) };
+    });
+    return {
+      kind: proposal.kind, name: boundedText(proposal.name, AREA_NAME_MAX, `${label}.name`), goal: boundedText(proposal.goal, AREA_SENTENCE_MAX, `${label}.goal`),
+      about: boundedText(proposal.about, AREA_SENTENCE_MAX, `${label}.about`), evidence: boundedText(proposal.evidence, AREA_SENTENCE_MAX, `${label}.evidence`),
+      sameAs: proposal.sameAs ?? null, requests,
+    };
+  });
+  return {
+    placements: [...placed].filter(([anchor]) => !held.has(anchor)).map(([anchor, { focusAreaId, evidence }]) => ({
+      anchorConversationKey: anchor, focusAreaId, basis: focusBasis(ledger, listed.get(anchor).groupId), evidence,
+    })),
+    proposals,
+    ...(other ? { otherPassHash: otherPassHash(ledger, [...listed.keys()].filter((anchor) => !held.has(anchor)).map((anchor) => listed.get(anchor).groupId)) } : {}),
+  };
+}
+
+const requireDeviceId = (localDeviceId) => {
+  if (typeof localDeviceId !== 'string') throw new TypeError('My Focus needs the worker\'s sync device id ("" when cloud sync never started).');
+  return localDeviceId;
+};
 
 /** What an automatic refresh would do now; nothing to do means no agent runs.
  * The window is the request-progress skill's own default, so a finished run
- * leaves nothing due. With no goals saved there is nothing to align to. */
-export function refreshNeeds({ dir = LEDGER_DIR, database, now = Date.now(), days = 14 }) {
+ * leaves nothing due. localDeviceId is the worker's sync device id (readFocus), required. */
+export function refreshNeeds({ dir = LEDGER_DIR, database, now = Date.now(), days = 14, localDeviceId }) {
+  requireDeviceId(localDeviceId);
   const ledger = readLedger(dir);
   const { due, ungrouped } = pendingReviews(ledger, database, now - days * DAY_MS);
   const goals = readGoals(database);
   const generated = Date.parse(goals.generatedAt ?? '');
   const goalsStale = !Number.isFinite(generated) || now - generated > GOALS_STALE_MS;
-  const unaligned = alignmentDue(ledger, goals).length;
-  return { due: due.length, ungrouped, goalsStale, unaligned, needed: Boolean(due.length || ungrouped || goalsStale || unaligned) };
+  const focus = readFocus(database, { localDeviceId });
+  const queued = focusDue(ledger, focus, localDeviceId);
+  const otherHash = otherPassHash(ledger, routerOther(ledger, focus, new Set(queued)));
+  const otherChanged = otherHash !== null && otherHash !== focus.otherPassHash;
+  return { due: due.length, ungrouped, goalsStale, unplaced: queued.length, otherChanged, needed: Boolean(due.length || ungrouped || goalsStale || queued.length || otherChanged) };
 }
 
 function readInput(source) {
@@ -516,15 +686,19 @@ export function readConversationProjects(database, conversationKeys) {
 
 /** New conversations sent to the grouping agent at once. */
 export const GROUPING_BATCH = 20;
+/** Requests placed per focus answer: GROUPING_BATCH, the per-answer size the same light model (STEP_MODELS) already
+ * decides "every listed item exactly once" for in grouping. Reused, not measured for placement itself. */
+export const FOCUS_BATCH = GROUPING_BATCH;
 const CLOSED_STATES = new Set(['shipped', 'abandoned']);
 
 /** One grouping question: only conversations the ledger has not decided,
  * earliest first and all from one project root, each judged from its opening
  * ask, beside that root's open requests. Decided conversations are never sent
- * again. `remaining` counts the new conversations left for later questions. */
-export function groupingInput(ledger, database, { sinceEpoch, limit = GROUPING_BATCH }) {
+ * again, and neither are the keys in `skip` (conversations the judge could not
+ * place in this run). `remaining` counts the new conversations left for later questions. */
+export function groupingInput(ledger, database, { sinceEpoch, limit = GROUPING_BATCH, skip = null }) {
   const candidates = readCandidates(database, { sinceEpoch, excludedPromptIds: ledger.agentWrittenPromptIds });
-  const decided = (key) => Boolean(ledger.groups.conversations[key] || ledger.groups.ignored?.[key]);
+  const decided = (key) => Boolean(ledger.groups.conversations[key] || ledger.groups.ignored?.[key] || skip?.has(key));
   const fresh = candidates.filter((candidate) => !decided(candidate.conversationKey));
   if (!fresh.length) return { root: null, conversations: [], openRequests: [], proposedLinks: [], remaining: 0 };
   const root = projectRoot(fresh[0].project);
@@ -588,7 +762,31 @@ export function validateGroupingAnswer(answer, input) {
   return answer;
 }
 
-export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), print = (value) => console.log(JSON.stringify(value, null, 2)) } = {}) {
+/** `apply` without the file: the decisions merged into `stored`, with every touched conversation's
+ * project read from the database and each new group's first ask kept in the ledger (so a card's start
+ * never moves forward when the anchor conversation ages out of My Work's reads). Returns the next
+ * ledger without writing it. */
+export function applyDecisions(stored, decisions, { database, now = Date.now(), excludedPromptIds = null }) {
+  // Every conversation the decisions touch, and the members their groups already hold, by project.
+  const touched = (decisions?.groups ?? []).flatMap((group) => Array.isArray(group?.conversations) ? group.conversations : []).filter(isConversationKey);
+  const touchedGroups = new Set(touched.map((key) => groupIdFor(key)));
+  const existing = Object.entries(stored?.conversations ?? {}).filter(([, id]) => touchedGroups.has(id)).map(([key]) => key);
+  const next = applyGroupDecisions(stored, decisions, now, { projectOf: readConversationProjects(database, [...touched, ...existing]) });
+  const missing = Object.values(next.groups).filter((group) => !group.anchorAsk).map((group) => group.anchor);
+  const anchors = new Map(readCandidates(database, { conversationKeys: missing, excludedPromptIds }).map((candidate) => [candidate.conversationKey, candidate.original]));
+  for (const group of Object.values(next.groups)) if (!group.anchorAsk && anchors.has(group.anchor)) group.anchorAsk = anchors.get(group.anchor);
+  return next;
+}
+
+/**
+ * localDeviceId: the worker's sync device id ("" when cloud sync never started), required by focus-input, record-focus
+ * and refresh-needs so my-focus rows replay in the worker's order.
+ * saveFocus(body): writes a checked record-focus answer through the worker and resolves {placed, focusAreaIds};
+ * it throws a TypeError when the worker refused the answer before writing anything. record-focus returns a promise.
+ * judge: the Jev judge for the `judge` command: undefined reads it from the install's settings
+ * (request-judge.mjs configuredJudge), null routes with code links only. That command returns a promise.
+ */
+export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), print = (value) => console.log(JSON.stringify(value, null, 2)), localDeviceId, saveFocus = null, judge = undefined } = {}) {
   const [command, ...args] = argv;
   const db = () => database ?? openDatabase();
   const since = () => now - option(args, 'days', 14) * DAY_MS;
@@ -609,20 +807,15 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
     return print({ candidates: shown, proposedGroups: proposedGroups.filter((group) => group.links.length), skippedLists, projects: [...new Set(candidates.map((candidate) => projectRoot(candidate.project)))] });
   }
   if (command === 'grouping-input') return print(groupingInput(readLedger(dir), db(), { sinceEpoch: since(), limit: option(args, 'limit', GROUPING_BATCH) }));
+  if (command === 'judge') {
+    // Imported here, not at the top: the judge module builds on this one.
+    return import('./request-judge.mjs')
+      .then(({ configuredJudge, routeUndecided }) => routeUndecided({ dir, database: db(), judge: judge === undefined ? configuredJudge() : judge, now, days: option(args, 'days', 14), apply: args.includes('--apply') }))
+      .then(print);
+  }
   if (command === 'apply') {
-    const database = db();
-    const stored = readLedger(dir).groups;
-    const decisions = readInput(args[0] ?? '-');
-    // Every conversation the decisions touch, and the members their groups already hold, by project.
-    const touched = (decisions?.groups ?? []).flatMap((group) => Array.isArray(group?.conversations) ? group.conversations : []).filter(isConversationKey);
-    const touchedGroups = new Set(touched.map((key) => groupIdFor(key)));
-    const existing = Object.entries(stored.conversations).filter(([, id]) => touchedGroups.has(id)).map(([key]) => key);
-    const next = applyGroupDecisions(stored, decisions, now, { projectOf: readConversationProjects(database, [...touched, ...existing]) });
-    // Keep each group's first ask in the ledger so a card's start never moves
-    // forward when the anchor conversation ages out of My Work's reads.
-    const missing = Object.values(next.groups).filter((group) => !group.anchorAsk).map((group) => group.anchor);
-    const anchors = new Map(readCandidates(database, { conversationKeys: missing, excludedPromptIds: readLedger(dir).agentWrittenPromptIds }).map((candidate) => [candidate.conversationKey, candidate.original]));
-    for (const group of Object.values(next.groups)) if (!group.anchorAsk && anchors.has(group.anchor)) group.anchorAsk = anchors.get(group.anchor);
+    const ledger = readLedger(dir);
+    const next = applyDecisions(ledger.groups, readInput(args[0] ?? '-'), { database: db(), now, excludedPromptIds: ledger.agentWrittenPromptIds });
     writeJsonAtomic(join(dir, 'request-groups.json'), next);
     return print({ groups: Object.keys(next.groups).length, conversations: Object.keys(next.conversations).length });
   }
@@ -680,41 +873,36 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
     // so the room left is spelled out as well.
     const previousNarrativeChars = story?.narrative?.length ?? 0;
     return print({ groups: Object.keys(groups.groups).length, update, narrativeLimit: STORY_NARRATIVE_MAX, previousNarrativeChars, roomChars: STORY_NARRATIVE_MAX - previousNarrativeChars,
-      reviews: update ? reviews.filter((review) => Date.parse(review.changedAt ?? review.checkedAt) > writtenAt) : reviews, previousStory: story });
+      reviews: update ? reviews.filter((review) => Date.parse(review.changedAt ?? review.checkedAt) > writtenAt) : reviews,
+      // Rules owner-goals put in the story are its own (record-story carries them over): shown here, the story model
+      // would echo them back without their source and when, leaving copies a later owner-goals save cannot replace.
+      previousStory: story && { ...story, preferences: (story.preferences ?? []).filter((preference) => preference?.source !== OWNER_GOALS_LIST) } });
   }
   if (command === 'record-story') {
-    const story = { ...validateStory(readInput(args[0] ?? '-')), writtenAt: iso(now) };
+    const validated = validateStory(readInput(args[0] ?? '-'));
+    // Rules owner-goals found in the owner's prompts (save_goals.py) are its to replace, not the story's.
+    const fromOwnerGoals = (readLedger(dir).story?.preferences ?? []).filter((preference) => preference?.source === OWNER_GOALS_LIST);
+    const story = { ...validated, preferences: [...validated.preferences, ...fromOwnerGoals], writtenAt: iso(now) };
     writeJsonAtomic(join(dir, 'story.json'), story);
     return print({ recorded: 'story', preferences: story.preferences.length });
   }
-  if (command === 'align-input') {
-    const ledger = readLedger(dir);
-    const goals = readGoals(db());
-    const due = alignmentDue(ledger, goals);
-    const groups = due.map((groupId) => alignmentRecord(ledger, groupId));
-    const previousLinks = Object.fromEntries(due.filter((id) => ledger.alignment?.links?.[id]).map((id) => [id, ledger.alignment.links[id]]));
-    return print({ goals, groups, previous: ledger.alignment ? { alignedAt: ledger.alignment.alignedAt ?? null, links: previousLinks } : null });
+  // focus-input and record-focus take the same flags, so record-focus checks the answer against the input it answers.
+  const focusQuestion = () => {
+    const ledger = readLedger(dir), focus = readFocus(db(), { localDeviceId: requireDeviceId(localDeviceId) });
+    const other = args.includes('--other');
+    return { ledger, other, input: other ? otherInput(ledger, focus, localDeviceId, db()) : focusInput(ledger, focus, localDeviceId, db(), { limit: option(args, 'limit', FOCUS_BATCH) }) };
+  };
+  if (command === 'focus-input') return print(focusQuestion().input);
+  if (command === 'record-focus') {
+    // My Focus rows sync, so they are written by the worker, never by this read-only CLI: saveFocus posts the
+    // checked answer to the worker's system-only route (POST /api/work-view/focus/router), or calls the same
+    // write in-process when the worker's own refresh runs this command.
+    if (!saveFocus) throw new Error('record-focus saves through the claude-mem worker, and none was given.');
+    const { ledger, other, input } = focusQuestion();
+    const file = args.filter((arg, index) => !arg.startsWith('--') && args[index - 1] !== '--limit').at(-1) ?? '-';
+    const body = validateFocusAnswer(readInput(file), input, ledger, { other });
+    return Promise.resolve(saveFocus(body)).then((saved) => print({ placed: saved.placed, proposed: saved.focusAreaIds.length, focusAreaIds: saved.focusAreaIds }));
   }
-  if (command === 'record-alignment') {
-    const ledger = readLedger(dir);
-    const goals = readGoals(db());
-    const decided = validateAlignment(readInput(args[0] ?? '-'), { groups: ledger.groups.groups, goals: goals.goals });
-    const decidedIds = new Set([...Object.keys(decided.links), ...decided.unaligned]);
-    const missing = alignmentDue(ledger, goals).filter((id) => !decidedIds.has(id));
-    if (missing.length) throw new TypeError(`Every group align-input listed must appear in links or unaligned; missing ${missing.join(', ')}.`);
-    // Groups align-input did not list keep their earlier decision.
-    const kept = (id) => ledger.groups.groups[id] && !decidedIds.has(id);
-    const previous = ledger.alignment ?? {};
-    const alignment = {
-      links: { ...Object.fromEntries(Object.entries(previous.links ?? {}).filter(([id]) => kept(id))), ...decided.links },
-      unaligned: [...(previous.unaligned ?? []).filter(kept), ...decided.unaligned],
-      // Each decided group's basis, so a later change to the request makes it due again.
-      basis: { ...Object.fromEntries(Object.entries(previous.basis ?? {}).filter(([id]) => kept(id))), ...Object.fromEntries([...decidedIds].map((id) => [id, alignmentBasis(ledger, id)])) },
-      goals: goals.goals.map((goal) => goal.goal), alignedAt: iso(now),
-    };
-    writeJsonAtomic(join(dir, 'alignment.json'), alignment);
-    return print({ aligned: Object.keys(decided.links).length, unaligned: decided.unaligned.length });
-  }
-  if (command === 'refresh-needs') return print(refreshNeeds({ dir, database: db(), now, days: option(args, 'days', 14) }));
-  throw new TypeError('Usage: request-groups.mjs candidates|apply|pending|show|record-progress|story-input|record-story|align-input|record-alignment|refresh-needs (see file header).');
+  if (command === 'refresh-needs') return print(refreshNeeds({ dir, database: db(), now, days: option(args, 'days', 14), localDeviceId }));
+  throw new TypeError('Usage: request-groups.mjs candidates|grouping-input|judge|apply|pending|show|record-progress|story-input|record-story|focus-input|record-focus|refresh-needs (see file header).');
 }

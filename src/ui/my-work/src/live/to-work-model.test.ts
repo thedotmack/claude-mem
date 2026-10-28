@@ -36,7 +36,7 @@ for (const url of SNAPSHOT_FILES) {
       assert.deepEqual(request.progress.history, readings.map((reading) => reading.percent))
       assert.equal(request.progress.percent, request.state === 'shipped' ? 100 : raw.progress?.percent ?? null, 'percent only from a review, or 100 for an explicit ship')
       assert.equal(request.askedBy, raw.requestedBy ?? 'You')
-      if (!raw.goals) assert.equal(request.goalId, undefined, 'goal reads "Goal not linked yet" until request-progress links it')
+      if (!raw.focusAreaId) assert.equal(request.focusAreaId, undefined, 'a request reads "Sorting…" until the focus step places it')
     }
   })
 
@@ -204,19 +204,6 @@ test('a request with only asks maps cleanly: its asks show, no activity, and a f
   assert.equal(old.state, 'idle')
 })
 
-test('goal links: absent is not linked yet, empty is no goal, and an open ask lists the requests that serve it', () => {
-  const goalItem = (id: string, kind: 'priority' | 'open-ask') => ({ id, task: id, kind, rank: 1, title: id, product: null, latestAt: null, timesAsked: 1, status: 'todo', evidence: [] })
-  const goals = { listId: 'l', listName: 'owner-goals', history: false, project: 'p', updatedAt: '2026-10-22T00:00:00Z', periodStart: null, periodEnd: null, summary: null, generatedAt: '2026-10-22T00:00:00Z', windowDays: 30, sourcePromptCount: 10, mapPath: null, priorities: [goalItem('ship', 'priority'), goalItem('docs', 'priority')], openAsks: [goalItem('ask', 'open-ask')] }
-  const linked = { ...syntheticRequest(), id: 'r1', goals: [{ goalId: 'ask', goal: 'ask', title: 'ask', kind: 'open-ask' as const, evidence: 'x' }, { goalId: 'ship', goal: 'ship', title: 'ship', kind: 'priority' as const, evidence: 'y' }, { goalId: 'docs', goal: 'docs', title: 'docs', kind: 'priority' as const, evidence: 'z' }] }
-  const none = { ...syntheticRequest(), id: 'r2', goals: [] }
-  const notYet = { ...syntheticRequest(), id: 'r3' }
-  const model = toWorkModel(snapshotWith([linked, none, notYet], { goals }), Date.parse('2026-10-22T12:00:00Z'))
-  assert.deepEqual(model.requests.map((request) => request.goalId), ['ship', null, undefined])
-  assert.deepEqual(model.openAsks[0].servedBy, ['r1'])
-  // A request linked to two priorities counts for both, not only the one request.goalId names.
-  assert.deepEqual(model.priorities.map((goal) => goal.servedBy), [['r1'], ['r1']])
-})
-
 test('the build story recap is its first paragraph; no story hides it', () => {
   const now = Date.parse('2026-10-22T12:00:00Z')
   const model = toWorkModel(snapshotWith([], { story: { story: { narrative: '## Velocity\n\nFirst **part**.\n\nSecond part.', writtenAt: '2026-10-22T10:00:00Z' } } }), now)
@@ -270,4 +257,23 @@ test('a subagent shows Finished only on a recorded stop, and quiet otherwise; ma
   assert.equal(quiet.status, 'quiet')
   assert.equal(quiet.canMarkFinished, true)
   assert.equal(toAgent({ ...base, isSubagent: true, canMarkFinished: true, presence: { status: 'recent' } }).status, 'working')
+})
+
+test('a bucket copy keeps its deliverable mark for the front of the card; other products carry none, and a gone copy is left out', async () => {
+  const { isCardDeliverable } = await import('../lib/deliverables.ts')
+  const { request } = mapOne({ workProduct: [
+    { kind: 'page', title: 'Launch report', url: '/api/deliverables/21/report-3f9a1c2b.html', available: true, deliverable: true, sourcePath: '/w/.scratch/report.html' },
+    { kind: 'file', title: 'notes.txt', url: '/api/deliverables/22/notes-ab12cd34.txt', available: true, deliverable: true },
+    { kind: 'page', title: 'Gone', url: '/api/deliverables/23/gone-00000000.html', available: false, deliverable: true },
+    { kind: 'commit', title: 'bc8cd09 feat: progress readings', sha: 'bc8cd096b', branch: 'main' },
+    { kind: 'pull-request', title: 'Add work product', url: 'https://github.com/o/r/pull/42' },
+  ] })
+  assert.deepEqual(request.workProduct, [
+    { kind: 'Page', label: 'Launch report', href: '/api/deliverables/21/report-3f9a1c2b.html', deliverable: true },
+    { kind: 'File', label: 'notes.txt', href: '/api/deliverables/22/notes-ab12cd34.txt', deliverable: true },
+    { kind: 'Commit', label: 'bc8cd09 feat: progress readings', href: undefined },
+    { kind: 'PR', label: 'Add work product', href: 'https://github.com/o/r/pull/42' },
+  ])
+  // The card's front links deliverables and PRs; commits and branches stay in the drawer.
+  assert.deepEqual(request.workProduct.filter(isCardDeliverable).map((product) => product.label), ['Launch report', 'notes.txt', 'Add work product'])
 })

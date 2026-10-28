@@ -58,6 +58,47 @@ human request**. The live view loads a bounded recent slice; use **Memory &
 settings** for the full saved history. Search and the time filter scope the cards,
 state counts and **Your next move** together. When several projects are loaded, use the project selector to narrow that same view. **Other states** includes blocked, queued, quiet and unknown work; each card retains its recorded state label.
 
+## Deliverables
+
+Ask for a deck, a report, an HTML page, an image or any other file, and it is
+one click away on the front of the request's card under **Deliverables**, with
+the full list in the request drawer under **What came out of it**.
+
+When an agent stops, claude-mem's Stop hook copies what the turn made for you
+into the project's **deliverables bucket**, `~/.claude-mem/deliverables/<project>/`,
+and records each copy. The bucket keeps the file after the place it was made
+(a worktree, a scratch folder, a temporary directory) is deleted, so the link
+keeps working. Each copy is named by its content (`report-3f9a1c2b.md`), so the
+same file lands once and a revised file lands beside its earlier version.
+
+Two things count as a deliverable:
+
+- **Attached by the agent.** A `work_state_write` whose `work_product` (or
+  `deliverable`) field names a local file, with any extension, or any other
+  field whose value is a path to a file a person opens
+  (`output_pdf=/path/slides.pdf`). The SessionStart instructions ask agents to
+  write the thing you asked for as a file and attach it before they finish.
+- **Written outside the source tree.** A deck, document, page, image, video or
+  spreadsheet the agent wrote with its file tools into a git-ignored folder
+  such as `.scratch/` or outside any repository. Source files are never copied
+  by inference, so a `.html` component in `src/` stays where it is; an agent
+  attaches it if it is a deliverable.
+
+Markdown and text deliverables open inline; pages and images open sandboxed, the
+same way recorded files do. While a copy is in the bucket and the file it came
+from has not been written since, the copy stands in for the record of where the
+file was made; a file revised after the copy shows beside it as a newer version.
+
+A file is copied only from the checkout or the system temp folders, where the
+host's scratchpad lives; a path elsewhere, or a symlink that leads elsewhere, is
+left out and logged, because a work-state field can name any path without a
+permission prompt. A turn whose prompt is entirely `<private>` leaves no copy
+and no record, the same rule observations and summaries follow. The bucket is local to this
+computer and is not uploaded by cloud sync; when the worker runs on another
+machine (`CLAUDE_MEM_WORKER_HOST` is not this computer), nothing is copied,
+because that worker could not open the copy. `CLAUDE_MEM_DELIVERABLES_ENABLED=false`
+turns the copy off; files already in the bucket stay.
+
 ## Optional Claude.ai and ChatGPT connections
 
 The **Connect Claude.ai** and **Connect ChatGPT** actions open the existing CMEM

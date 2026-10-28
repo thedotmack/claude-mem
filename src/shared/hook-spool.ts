@@ -30,7 +30,7 @@ import type { AgentRole, InstructionState, WorkStateOutcome } from './work-state
  * each file all-or-nothing.
  */
 
-export const HOOK_SPOOL_KINDS = ['observation', 'file_edit', 'summarize', 'session_end', 'subagent_stop', 'advisor_calls', 'work_state_telemetry'] as const;
+export const HOOK_SPOOL_KINDS = ['observation', 'file_edit', 'summarize', 'session_end', 'subagent_stop', 'advisor_calls', 'deliverables', 'work_state_telemetry'] as const;
 export type HookSpoolKind = typeof HOOK_SPOOL_KINDS[number];
 
 export interface SpooledObservationPayload {
@@ -87,6 +87,46 @@ export interface SpooledAdvisorCallsPayload {
   calls: SpooledAdvisorCall[];
 }
 
+/** One file the Stop hook copied into the project's deliverables bucket (src/shared/deliverables.ts). */
+export interface SpooledDeliverable {
+  /** Where the agent made it; may be gone by the time anyone looks. */
+  sourcePath: string;
+  /** The bucket copy: ~/.claude-mem/deliverables/<project>/<stem>-<hash><ext>. */
+  bucketPath: string;
+  title: string;
+  /** work-product.mjs kind: deck, document, page, image, video, spreadsheet, or file. */
+  kind: string;
+  bytes: number;
+  sha256: string;
+  /** True when an agent attached it through a work-state field; false when the hook inferred it from a write. */
+  declared: boolean;
+  list?: string | null;
+  field?: string | null;
+  toolUseId?: string | null;
+  occurredAtEpoch: number;
+}
+
+/**
+ * Bound on `errors` in one deliverables event: the remote spool schema
+ * (hook-spool-remote.ts) admits this many, and the hook keeps to it
+ * (deliverables-capture.ts boundedErrors) so a turn with more failures than
+ * this never costs the records of the files that did copy.
+ */
+export const DELIVERABLE_ERRORS_PER_EVENT = 128;
+
+/** The Stop (or SubagentStop) hook's deliverables for one turn, already copied into the bucket. */
+export interface SpooledDeliverablesPayload {
+  contentSessionId: string;
+  platformSource: string;
+  cwd: string;
+  /** The checkout's primary project key, which names the bucket folder. */
+  project: string;
+  agentId?: string;
+  files: SpooledDeliverable[];
+  /** Files that could not be copied (missing, unreadable, over the limit): recorded in the worker log, never dropped silently. */
+  errors?: Array<{ sourcePath: string; error: string }>;
+}
+
 export interface HookSpoolPayloadByKind {
   observation: SpooledObservationPayload;
   file_edit: SpooledObservationPayload;
@@ -94,6 +134,7 @@ export interface HookSpoolPayloadByKind {
   session_end: SpooledSessionEndPayload;
   subagent_stop: SpooledSubagentStopPayload;
   advisor_calls: SpooledAdvisorCallsPayload;
+  deliverables: SpooledDeliverablesPayload;
   work_state_telemetry: {
     contentSessionId: string;
     platformSource: string;
@@ -253,6 +294,9 @@ function parseHookSpoolEntry(raw: string): HookSpoolEntry | { corruptReason: str
   }
   if (kind === 'advisor_calls' && (!Array.isArray(payload.calls) || payload.calls.length === 0)) {
     return { corruptReason: 'advisor_calls payload has no calls' };
+  }
+  if (kind === 'deliverables' && (!Array.isArray(payload.files) || payload.files.length === 0 || !isNonEmptyString(payload.project))) {
+    return { corruptReason: 'deliverables payload has no files or no project' };
   }
   if (kind === 'work_state_telemetry' && (
     !isNonEmptyString(payload.eventId)

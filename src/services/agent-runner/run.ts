@@ -224,7 +224,9 @@ function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunner
     const schemaPath = answerSchema ? join(directory, `codex-${id}.schema.json`) : null;
     if (schemaPath) writeFileSync(schemaPath, JSON.stringify(answerSchema), { mode: 0o600 });
     try {
-      const result = await runCli(agent.path!, CODEX_EXEC_ARGS(agent.path!, task.cwd, answerPath, schemaPath, models.codex), prompt, { cwd: task.cwd, env });
+      // macOS sandbox-exec must reopen the actual binary, not its PATH symlink.
+      const executable = realPath(agent.path!);
+      const result = await runCli(executable, CODEX_EXEC_ARGS(executable, task.cwd, answerPath, schemaPath, models.codex), prompt, { cwd: task.cwd, env });
       if (result.exitCode !== 0) throw failure('codex exec', result);
       return readFileSync(answerPath, 'utf8');
     } finally {

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test';
-import { mkdtempSync, readFileSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { spawnSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { antigravityCliAdapter } from '../src/cli/adapters/antigravity-cli.js';
@@ -9,6 +10,7 @@ import {
   describeAntigravityHooks,
   mergeHooksIntoConfig,
   removeClaudeMemHooks,
+  toSpaceFreePath,
 } from '../src/services/integrations/AntigravityCliHooksInstaller.js';
 
 const INSTALLER_PATH = 'src/services/integrations/AntigravityCliHooksInstaller.ts';
@@ -531,5 +533,28 @@ describe('transcript-parser - Antigravity PLANNER_RESPONSE / USER_INPUT nodes', 
       { type: 'VIEW_FILE', source: 'MODEL', content: 'file contents that must be ignored' },
     ]);
     expect(extractLastMessage(p, 'assistant')).toBe('the real answer');
+  });
+});
+
+// agy splits hook commands on spaces, so the installer writes the 8.3 short
+// form of a Windows path that has one. The lookup ran `for %~I`, which cmd
+// rejects at the command line, so it never shortened anything.
+describe.skipIf(process.platform !== 'win32')('toSpaceFreePath on Windows', () => {
+  it('returns the 8.3 short path Windows reports for a path with a space', () => {
+    const root = mkdtempSync(join(tmpdir(), 'agy-short-'));
+    try {
+      const dir = join(root, 'with space');
+      mkdirSync(dir);
+      const file = join(dir, 'bun.exe');
+      writeFileSync(file, '');
+      const expected = spawnSync('powershell.exe', ['-NoProfile', '-Command',
+        '(New-Object -ComObject Scripting.FileSystemObject).GetFile($env:P).ShortPath'],
+        { encoding: 'utf-8', env: { ...process.env, P: file } }).stdout.trim();
+      // A volume with 8.3 names disabled has no short form; the raw path comes back.
+      // Windows paths compare case-insensitively; cmd and the COM object differ in case.
+      expect(toSpaceFreePath(file).toLowerCase()).toBe((expected.includes(' ') ? file : expected).toLowerCase());
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
