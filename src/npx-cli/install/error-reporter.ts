@@ -105,10 +105,19 @@ function writeLastInstallError(
  * Remove the record of an earlier aborted run. Called when an install or repair
  * finishes: the record describes an abort, and nothing else ever removed it, so
  * doctor kept showing that old error and its advice after later runs succeeded
- * (#4858: a 14.0.1 network error still shown by 15.0.1).
+ * (#4858: a 14.0.1 network error still shown by 15.0.1). The run has already
+ * succeeded when this is called, so a record that cannot be removed (EACCES,
+ * EPERM) is reported as a warning, never turned into a failed command.
  */
 export function clearLastInstallError(dataDir: string = resolveDataDir()): void {
-  rmSync(join(dataDir, 'last-install-error.json'), { force: true });
+  const recordPath = join(dataDir, 'last-install-error.json');
+  try {
+    rmSync(recordPath, { force: true });
+  } catch (error: unknown) {
+    console.warn(
+      `Could not remove ${recordPath} (${causeMessage(error)}); \`claude-mem doctor\` may still show an earlier install error. Delete the file to clear it.`,
+    );
+  }
 }
 
 /**

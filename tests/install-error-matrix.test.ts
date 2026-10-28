@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { chmodSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -197,6 +197,23 @@ describe('installerError decision logic', () => {
     expect(existsSync(recordPath)).toBe(false);
     // Nothing to clear is not an error.
     expect(() => clearLastInstallError()).not.toThrow();
+  });
+
+  // Clearing runs after the install already finished, so a record that cannot
+  // be removed must not turn that success into a failed command; it warns.
+  it('a record that cannot be removed warns instead of failing the finished run', () => {
+    const recordPath = join(home, 'last-install-error.json');
+    // A directory at the record's path makes the non-recursive remove throw on every platform.
+    mkdirSync(join(recordPath, 'blocker'), { recursive: true });
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => { warnings.push(args.join(' ')); };
+    try {
+      expect(() => clearLastInstallError()).not.toThrow();
+    } finally {
+      console.warn = originalWarn;
+    }
+    expect(warnings.join('\n')).toContain('last-install-error.json');
   });
 
   it('install and repair clear the record only after their run finishes', () => {
