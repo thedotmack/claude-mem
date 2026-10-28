@@ -1,8 +1,9 @@
 // Every requirement in .scratch/work-state-spec/SPEC.md, numbered by spec section.
 // kind "ui" must be tagged on at least one wireframe element (npm run coverage checks).
 // kind "backend" and "process" are not screens; `wireframe` says how the wireframe reflects them, if at all.
+// kind "retired" keeps a replaced requirement's id, with a note saying what replaced it and when. Ids are never reused.
 
-export type RequirementKind = 'ui' | 'backend' | 'process'
+export type RequirementKind = 'ui' | 'backend' | 'process' | 'retired'
 
 export interface Requirement {
   id: string
@@ -26,20 +27,20 @@ export const REQUIREMENTS: Requirement[] = [
   { id: 'R2.7', section: '2', kind: 'process', text: 'Title generation cost is visible.', wireframe: 'Owner dropped generation-cost display on Oct 20, 2026: the spend is tiny next to the value. Not shown in the GUI.' },
 
   // 3. Layers and progressive disclosure
-  { id: 'R3.1', section: '3', kind: 'ui', text: 'Layer order: My Goals, then overall requests, then My Work cards, then request detail, then granular records.' },
+  { id: 'R3.1', section: '3', kind: 'retired', text: 'Retired 2026-10-27 (My Focus): the layer order is now focus areas (with Other), then requests, then request detail, then granular records. Replaced by R16.1 and R16.2.' },
   { id: 'R3.2', section: '3', kind: 'ui', text: 'Overall request: progress meter, dates, completion and the build story behind it.' },
   { id: 'R3.3', section: '3', kind: 'ui', text: 'My Work is the live inbox of request cards.' },
   { id: 'R3.4', section: '3', kind: 'ui', text: 'Request detail has sub-cards for the workstreams under one request.' },
   { id: 'R3.5', section: '3', kind: 'ui', text: 'Granular records are a small truncated list of work-state updates and observations together, secondary, rolling in live.' },
   { id: 'R3.6', section: '3', kind: 'ui', text: 'Detail pages stay simple.' },
-  { id: 'R3.7', section: '3', kind: 'ui', text: 'Goals is its own page up top, not inside My Work.' },
+  { id: 'R3.7', section: '3', kind: 'retired', text: 'Retired 2026-10-27 (My Focus): the goals page is gone; focus areas sit in the MY FOCUS rail above the pages. Replaced by R16.1.' },
 
   // 4. Views
   { id: 'R4.1', section: '4', kind: 'ui', text: 'Cards view: portrait request cards.' },
   { id: 'R4.2', section: '4', kind: 'ui', text: 'List view with sorting.' },
   { id: 'R4.3', section: '4', kind: 'ui', text: 'By agent view: a card per agent with its icon and what it is working on, an outer view to the list.' },
   { id: 'R4.4', section: '4, 15.2', kind: 'ui', text: 'Status board merged into List: a status column whose label flips when it changes.' },
-  { id: 'R4.5', section: '4', kind: 'ui', text: 'My Goals shows the owner-goals report, month by month.' },
+  { id: 'R4.5', section: '4', kind: 'retired', text: 'Retired 2026-10-27 (My Focus): the month-by-month report moved to Past focus. Replaced by R16.7.' },
   { id: 'R4.6', section: '4', kind: 'ui', text: 'My Rules page: how I like to work, as if-then blocks.' },
 
   // 5. What each request shows
@@ -108,7 +109,7 @@ export const REQUIREMENTS: Requirement[] = [
   { id: 'R13.8', section: '13.6', kind: 'ui', text: 'Freshness for each machine ("MacBook, synced 4 min ago").' },
 
   // 14. My Rules
-  { id: 'R14.1', section: '14', kind: 'ui', text: 'Top nav: My Work – My Goals – My Rules.' },
+  { id: 'R14.1', section: '14', kind: 'retired', text: 'Retired 2026-10-27 (My Focus): the nav is MY FOCUS (areas, Other, Suggested), then My Work, then My Rules. Replaced by R16.1.' },
   { id: 'R14.2', section: '14', kind: 'ui', text: 'Learned rules not yet approved sit in a Suggested group under each scope.' },
   { id: 'R14.3', section: '14', kind: 'ui', text: 'Rule block: When, Then, Why (dated quotes), Strength, Status.' },
   { id: 'R14.4', section: '14', kind: 'ui', text: 'Replaced rules stay visible, marked with the rule and date that replaced them.' },
@@ -124,14 +125,23 @@ export const REQUIREMENTS: Requirement[] = [
   { id: 'R14.14', section: '14', kind: 'ui', text: 'Strength reads in human terms: times seen, latest date, and whether the owner set it or it was learned.' },
 
   // 15. Decisions
-  { id: 'D1', section: '15.1', kind: 'ui', text: 'Goals show the progress meters of the requests serving them, combined; each card has a goal chip; "No goal" when it serves none.' },
+  { id: 'D1', section: '15.1', kind: 'retired', text: 'Retired 2026-10-27 (My Focus): the combined-progress rule (reviewed requests only) now applies to the area header, and the card chip names the area, Other, or Sorting…. Replaced by R16.2 and R16.5.' },
   { id: 'D5', section: '15.5', kind: 'ui', text: 'Agent-only card shows terminal lines, a corner spinner with a one-word hover, then transforms to human text; static under reduced motion.' },
   { id: 'D6', section: '15.6', kind: 'process', text: 'Each Refresh shows its last run cost; My Rules shows the week’s title cost.', wireframe: 'Owner dropped generation-cost display on Oct 20, 2026: the spend is tiny next to the value. Not shown in the GUI.' },
   { id: 'D7', section: '15.7', kind: 'ui', text: 'Approved rules are written to ~/.claude-mem/MY-RULES.md and loaded with user-level instructions; never project files; approved only.' },
 
   // Added with the My Goals pass (append only)
-  { id: 'R3.8', section: '3', kind: 'ui', text: 'My Goals holds top priorities and open asks mined from my own prompts, each with my dated quotes.' },
-  { id: 'R3.9', section: '3', kind: 'ui', text: 'Request progress reads as a natural extension of goals, not a separate top level.' },
+  { id: 'R3.8', section: '3', kind: 'retired', text: 'Retired 2026-10-27 (My Focus): mined focus areas become suggested areas, and asks show as Not started rows under their area, each with dated quotes. Replaced by R16.2 and R16.4.' },
+  { id: 'R3.9', section: '3', kind: 'retired', text: 'Retired 2026-10-27 (My Focus): request progress rolls up into its focus area header; goals are one sentence on an area. Replaced by R16.2.' },
+
+  // 16. My Focus (added 2026-10-27, append only): focus areas are the top level of My Work.
+  { id: 'R16.1', section: '16', kind: 'ui', text: 'The MY FOCUS rail sits above the pages: kept focus areas in priority order (the owner\'s order wins over the suggested one), each with how many requests in it need me, then Other, then "N suggested", then My Work and My Rules. Selecting an area filters My Work to it. On phones and the icon-only rail the same entries are a chip row above the cards.' },
+  { id: 'R16.2', section: '16', kind: 'ui', text: 'The area header: its goal sentence, combined progress of its reviewed requests (unreviewed ones named, not counted), what shipped, asks with no work yet as Not started rows with how often I asked and my quotes, and a menu to Rename, Edit goal, Merge into…, reorder and mark Done.' },
+  { id: 'R16.3', section: '16', kind: 'ui', text: 'Other is a permanent bucket for requests that fit no area, with its own header; it is never an area.' },
+  { id: 'R16.4', section: '16', kind: 'ui', text: 'Suggested areas wait in a decision queue with Keep, Rename, Merge and Dismiss; each decision can be undone, and a refresh never overrides it.' },
+  { id: 'R16.5', section: '16', kind: 'ui', text: 'Each request shows its area chip: the area\'s name, Other, or "Sorting…" until a refresh places it.' },
+  { id: 'R16.6', section: '16', kind: 'ui', text: 'Move to… on a request puts it in another area or Other; my move wins over any later automatic placement.' },
+  { id: 'R16.7', section: '16', kind: 'ui', text: 'Past focus, linked from the bottom of the rail, holds areas marked done and what I asked for most, month by month.' },
 ]
 
 export const REQUIREMENTS_BY_ID = new Map(REQUIREMENTS.map((requirement) => [requirement.id, requirement]))

@@ -1,7 +1,7 @@
 // The one boundary between the screens and where work comes from (plan: "The adapter decision").
 // Screens consume a WorkModel and never see API shapes. Implementations: sampleSource (fixtures) and
 // localSource (the worker at localhost:37777); cloudSource (cmem.ai) comes later.
-import type { Agent, CurrentPeriod, Device, GoalItem, PastPeriod, Request, SkillRun } from '../data.ts'
+import type { Agent, CurrentPeriod, Device, FocusArea, FocusAsk, FocusChange, PastPeriod, Request, SkillRun } from '../data.ts'
 import type { OwnerRule, RuleChange, RulesFile, RulesLearning, RuleScope } from '../data-rules.ts'
 import type { ConnectionStatus } from './connection-status.ts'
 import type { ReviewResult } from './review-response.ts'
@@ -20,19 +20,18 @@ export interface WorkModel {
   /** Who asked, for the Team board. Solo mode: only you. */
   people: string[]
   unlinkedWorkCount: number
-  /** The owner-goals run, as recorded; never re-ranked or re-counted here. */
-  priorities: GoalItem[]
-  openAsks: GoalItem[]
-  /** Null when owner-goals has not run (or could not be read: see goalsReadError). */
+  /**
+   * My Focus, in priority order (the owner's order first). Every area the my-focus list holds, merged and dismissed
+   * included, so a decision on screen keeps its card until you leave; screens choose what to show.
+   */
+  focusAreas: FocusArea[]
+  /** Owner-goals asks with no live area. They show under Other. */
+  otherAsks: FocusAsk[]
+  /** The current owner-goals run, for Past focus. Null when owner-goals has not run (or could not be read: see goalsReadError). */
   currentPeriod: CurrentPeriod | null
   pastPeriods: PastPeriod[]
-  /** Why the recorded goals could not be read. My Goals says so instead of showing anything made up. */
+  /** Why the recorded owner-goals run could not be read. Past focus says so, and areas show without their quotes and asks. */
   goalsReadError: string | null
-  /**
-   * Sample fixtures only: older requests that serve goals but are not in today's inbox. Live sources leave it
-   * empty, since every recorded request is already in `requests`.
-   */
-  goalOnlyRequests: Request[]
   /** My Rules: learned suggestions with the owner's saved decisions, and rules the owner wrote. */
   rules: OwnerRule[]
   /** Every scope a rule is in, Everywhere first. */
@@ -76,6 +75,8 @@ export interface WorkDataSource {
   setRequestChecked(requestId: string, expectedFingerprint: string, checked: boolean): Promise<ReviewResult>
   /** Saves one change to My Rules and answers with the model after it. Rejects with the reason it was not saved. */
   saveRuleChange(change: RuleChange): Promise<WorkModel>
+  /** Saves one change to My Focus and answers with the model after it. Rejects with the reason it was not saved. */
+  saveFocusChange(change: FocusChange): Promise<WorkModel>
   /** Records the owner's stop for a subagent no recorded stop covers, and answers with the model after it. */
   markAgentFinished(agentId: string): Promise<WorkModel>
   /** Adds the MY-RULES.md import to ~/.claude/CLAUDE.md (once). Rejects with the reason when it can't. */
