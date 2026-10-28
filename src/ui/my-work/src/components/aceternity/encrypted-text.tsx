@@ -36,12 +36,8 @@ function generateGibberishPreservingSpaces(
   charset: string,
 ): string {
   if (!original) return "";
-  let result = "";
-  for (let i = 0; i < original.length; i += 1) {
-    const ch = original[i];
-    result += ch === " " ? " " : generateRandomCharacter(charset);
-  }
-  return result;
+  // Local fix: walk characters, not UTF-16 code units, so an emoji is one character.
+  return Array.from(original, (ch) => (ch === " " ? " " : generateRandomCharacter(charset))).join("");
 }
 
 export const EncryptedText: React.FC<EncryptedTextProps> = ({
@@ -63,7 +59,7 @@ export const EncryptedText: React.FC<EncryptedTextProps> = ({
   const startTimeRef = useRef<number>(0);
   const lastFlipTimeRef = useRef<number>(0);
   const scrambleCharsRef = useRef<string[]>(
-    text ? generateGibberishPreservingSpaces(text, charset).split("") : [],
+    text ? Array.from(generateGibberishPreservingSpaces(text, charset)) : [],
   );
 
   useEffect(() => {
@@ -73,7 +69,8 @@ export const EncryptedText: React.FC<EncryptedTextProps> = ({
     const initial = text
       ? generateGibberishPreservingSpaces(text, charset)
       : "";
-    scrambleCharsRef.current = initial.split("");
+    scrambleCharsRef.current = Array.from(initial);
+    const chars = Array.from(text);
     startTimeRef.current = performance.now();
     lastFlipTimeRef.current = startTimeRef.current;
     setRevealCount(0);
@@ -84,7 +81,7 @@ export const EncryptedText: React.FC<EncryptedTextProps> = ({
       if (isCancelled) return;
 
       const elapsedMs = now - startTimeRef.current;
-      const totalLength = text.length;
+      const totalLength = chars.length;
       const currentRevealCount = Math.min(
         totalLength,
         Math.floor(elapsedMs / Math.max(1, revealDelayMs)),
@@ -101,7 +98,7 @@ export const EncryptedText: React.FC<EncryptedTextProps> = ({
       if (timeSinceLastFlip >= Math.max(0, flipDelayMs)) {
         for (let index = 0; index < totalLength; index += 1) {
           if (index >= currentRevealCount) {
-            if (text[index] !== " ") {
+            if (chars[index] !== " ") {
               scrambleCharsRef.current[index] =
                 generateRandomCharacter(charset);
             } else {
@@ -135,7 +132,7 @@ export const EncryptedText: React.FC<EncryptedTextProps> = ({
       aria-label={text}
       role="text"
     >
-      {text.split("").map((char, index) => {
+      {Array.from(text).map((char, index) => {
         const isRevealed = index < revealCount;
         const displayChar = isRevealed
           ? char

@@ -155,7 +155,8 @@ export function PlaceholdersAndVanishInput({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter" && !animating) {
+    // Local fix: an Enter that confirms an IME candidate is not a submit.
+    if (e.key === "Enter" && !animating && !e.nativeEvent.isComposing) {
       vanishAndSubmit();
     }
   };
@@ -164,6 +165,11 @@ export function PlaceholdersAndVanishInput({
   // field never starts the animation, since only the animation's end clears `animating`.
   const vanishAndSubmit = () => {
     const value = inputRef.current?.value || "";
+    // Local fix: reduced motion clears the field without the particle animation.
+    if (value && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setValue("");
+      return;
+    }
     if (value && inputRef.current) {
       setAnimating(true);
       draw();

@@ -169,7 +169,19 @@ export const DottedGlowBackground = ({
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     };
 
-    const ro = new ResizeObserver(resize);
+    // Local fix: with speedScale 0 the picture never changes, so draw once and again only
+    // when a resize clears the canvas or the panel scrolls back into view.
+    const still = speedScale <= 0;
+    function redrawIfStill() {
+      if (!still || stopped) return;
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(draw);
+    }
+
+    const ro = new ResizeObserver(() => {
+      resize();
+      redrawIfStill();
+    });
     ro.observe(container);
     resize();
 
@@ -205,7 +217,7 @@ export const DottedGlowBackground = ({
     const draw = (now: number) => {
       if (stopped) return;
       if (!isVisible) {
-        raf = requestAnimationFrame(draw);
+        if (!still) raf = requestAnimationFrame(draw);
         return;
       }
       const { width, height } = container.getBoundingClientRect();
@@ -261,17 +273,19 @@ export const DottedGlowBackground = ({
       }
       ctx.restore();
 
-      raf = requestAnimationFrame(draw);
+      if (!still) raf = requestAnimationFrame(draw);
     };
 
     const handleResize = () => {
       resize();
       regenThrottled();
+      redrawIfStill();
     };
 
     const observer = new IntersectionObserver(
       (entries) => {
         isVisible = entries[0]?.isIntersecting ?? true;
+        if (isVisible) redrawIfStill();
       },
       { threshold: 0.1 },
     );
