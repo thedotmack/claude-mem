@@ -787,6 +787,18 @@ describe('observation media feeds (phase 6)', () => {
     }
   });
 
+  it('a text-only turn that reuses an image-bearing row still broadcasts its stored media', async () => {
+    await ingest('toolu_first', redPng, bluePng);
+    const first = await runTurnWithBroadcasts(pending(queued[0]), directConfig(), fixtureText('observation-with-refs.xml'));
+    expect(first[0].media).toBeDefined();
+    await ingest('toolu_repeat');
+    const textOnly = fixtureText('observation-with-refs.xml').replace(/<attachments>[\s\S]*?<\/attachments>/g, '');
+    const repeated = await runTurnWithBroadcasts(pending(queued[1]), directConfig(), textOnly);
+    const reused = repeated.find(row => row.id === first[0].id);
+    expect(reused).toBeDefined();
+    expect(reused.media).toEqual(first[0].media);
+  });
+
   it('image-free observations keep exactly their previous feed shape on every route', async () => {
     await ingest('toolu_plain');
     const sse = await runTurnWithBroadcasts(pending(queued[0]), directConfig(), '<observation><type>discovery</type><title>Plain</title></observation>');

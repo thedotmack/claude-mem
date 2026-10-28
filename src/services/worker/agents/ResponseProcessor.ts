@@ -1281,10 +1281,12 @@ async function syncAndBroadcastObservations(
     dbManager.getCloudSync()?.notify();
 
     // Media refs come from the committed row, so SSE carries exactly what the
-    // paged and by-id feeds serialize. Only a turn that delivered pixels can
-    // have written a manifest (linkage runs only then), so other turns skip
-    // the read.
-    const media = context.media?.imagesDelivered
+    // paged and by-id feeds serialize. A row can hold a manifest when this
+    // turn delivered pixels (linkage runs only then) or when the turn reused
+    // an earlier stored row, which may already have images; a newly inserted
+    // row of a text-only turn cannot, so it skips the read.
+    const reusedStoredRow = result.insertedObservationIds !== undefined && !result.insertedObservationIds.includes(obsId);
+    const media = context.media?.imagesDelivered || reusedStoredRow
       ? observationMediaFromMetadata(
           (dbManager.getSessionStore().db.prepare('SELECT metadata FROM observations WHERE id = ?').get(obsId) as { metadata: unknown } | null)?.metadata,
         )
