@@ -47,6 +47,17 @@ import type { HookAPI } from "@oh-my-pi/pi-coding-agent/extensibility/hooks";
 // ---------------------------------------------------------------------------
 
 const MAX_LEN = 1000; // tool_response hard cap (OpenClaw)
+
+// The same tag set the worker strips (src/utils/tag-stripping.ts), kept local
+// because this hook file is standalone. Balanced blocks only — an unbalanced
+// tail is the user's literal text, and stripping it first is what makes the
+// length cap below safe: cutting tagged text could sever the closing tag and
+// the worker-side stripper then keeps the remainder verbatim.
+const PRIVATE_TAGS = ["private", "claude-mem-context", "system_instruction", "system-instruction", "persisted-output", "system-reminder"];
+const PRIVATE_BLOCK_RE = new RegExp(`<(${PRIVATE_TAGS.join("|")})\\b[^>]*>[\\s\\S]*?<\\/\\1>`, "gi");
+function stripPrivateBlocks(text: string): string {
+  return text.replace(PRIVATE_BLOCK_RE, "");
+}
 const CTX_CACHE_MS = 60_000; // /api/context/inject cache TTL (OpenClaw)
 // A hung worker must not hold OMP's handlers: the context handler is awaited
 // before every model call, so an unbounded fetch added up to OMP's 30 s handler
@@ -323,9 +334,10 @@ export default function claudeMemBridge(pi: HookAPI): void {
 
     const target = session ?? newSession();
     if (target.excluded) return;
-    const response = textFromContent(event?.content);
+    const response = stripPrivateBlocks(textFromContent(event?.content));
     // isError rows are valuable — never skip them. tool_input is sent raw (the
-    // worker serializes it once); tool_response is capped to MAX_LEN.
+    // worker serializes it once); tool_response is capped to MAX_LEN after the
+    // tag strip so a cap can never sever a privacy block's closing tag.
     const body: Record<string, unknown> = {
       contentSessionId: target.id,
       tool_name: toolName,

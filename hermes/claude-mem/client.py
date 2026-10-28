@@ -514,7 +514,11 @@ class ClaudeMemClient:
 
     def _finish(self, session: Session, cwd: str, last_assistant_message: str) -> None:
         self._sessions.pop(session.id, None)
-        if not session.anchored or session.excluded or self._excluded(cwd):
+        # Same gate as _record_tool: when the last prompt was wholly private the
+        # turn was never recorded, so its closing assistant message is dropped
+        # too — session.anchored is historical and does not cover the last turn.
+        if (not session.anchored or session.excluded or self._excluded(cwd)
+                or (session.prompts_sent and not session.last_prompt_recorded)):
             return
         try:
             if self.config.server:
@@ -543,7 +547,7 @@ class ClaudeMemClient:
             else:
                 self.transport.worker("POST", "/api/sessions/summarize", {
                     "contentSessionId": session.id,
-                    "last_assistant_message": last_assistant_message,
+                    "last_assistant_message": strip_tags(last_assistant_message),
                     "platformSource": PLATFORM_SOURCE,
                     "cwd": cwd,
                 })
