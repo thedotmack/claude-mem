@@ -328,15 +328,16 @@ function genericMarkerForKeyedValue(key: string, value: string, config: Redactio
 // The bearer_token text pattern anchors on `Authorization: Bearer …`, so a
 // header object like `{"headers": {"Authorization": "Bearer …"}}` needs the
 // key paired with the value again. As in text, only the token after `Bearer`
-// is replaced.
+// is replaced: the same spacing is accepted around `Bearer`, and whatever
+// follows the token (trailing whitespace included) is kept, unanchored.
 const AUTHORIZATION_KEY = /^authorization$/i;
-const KEYED_BEARER_VALUE = new RegExp(`^(Bearer${BOUNDED_SPACE})${GENERIC_VALUE}$`, 'i');
+const KEYED_BEARER_VALUE = new RegExp(`^(${BOUNDED_SPACE}Bearer${BOUNDED_SPACE})${GENERIC_VALUE}`, 'i');
 
 function bearerMarkerForKeyedValue(key: string, value: string, config: RedactionConfig): string | null {
   if (!config.genericEnabled || config.disabledBuiltinPatterns?.includes('bearer_token')) return null;
   if (!AUTHORIZATION_KEY.test(key)) return null;
   const match = KEYED_BEARER_VALUE.exec(value);
-  return match ? `${match[1]}<redacted type='bearer_token'/>` : null;
+  return match ? `${match[1]}<redacted type='bearer_token'/>${value.slice(match[0].length)}` : null;
 }
 
 // The aws_session_token built-in anchors on `SessionToken: …`, so a payload
