@@ -1,0 +1,1451 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-28",
+  "runId": "2026-10-28T01-08-33-068Z-66212",
+  "status": "complete-with-deadline-breaches",
+  "method": {
+    "machine": {
+      "platform": "win32",
+      "release": "10.0.22631",
+      "logicalCpus": 16,
+      "node": "v24.15.0",
+      "cpuMeasure": "approximate utilization from os.cpus() deltas during each sample"
+    },
+    "shell": "Windows PowerShell 5.1",
+    "callbackClaim": "synthetic isolated invocation of exact Codex manifest commandWindows; not a native Codex callback",
+    "stdin": "complete JSON written and flushed to pipe; stdin kept open until child exit"
+  },
+  "manifestSha256": "bcc109f98d27611d5bfb36c7b925de1b6bfa216eb41a86d855301f02935ce6af",
+  "artifactHashes": {
+    "baseline": {
+      "bun-runner.js": "f161b5a11829a70bb13812b4d8a6cf46269e922f5fd857fbbea7fbc1327460cf",
+      "worker-service.cjs": "4d1be154a481d423f4f4db3b9daf539204507eb04b630a6d624e568ab071dd3b"
+    },
+    "optimized": {
+      "bun-runner.js": "0c387b776672c011d345483a9941667f2c1c9b5d355de4991d96e31873a7df0d",
+      "hook-service.cjs": "50bd629c8f1c5dee25a0d259137ed38bfd4c21a05a6ccaeb3a36e7ce6d820fe4",
+      "worker-service.cjs": "4d1be154a481d423f4f4db3b9daf539204507eb04b630a6d624e568ab071dd3b"
+    }
+  },
+  "limitations": [
+    "Machine had earlier 100% CPU readings; per-sample counter estimates describe load during this run.",
+    "Runs are synthetic Windows PowerShell 5.1 manifest-command invocations, not native Codex callbacks.",
+    "No live memory database, provider, credentials, or external network was used.",
+    "Medians are descriptive only; this report does not claim statistically significant speedup."
+  ],
+  "before": {
+    "schemaVersion": 2,
+    "status": "complete-with-deadline-breaches",
+    "label": "before",
+    "generatedAt": "2026-10-28T01:16:31.730Z",
+    "samplesPerHook": 3,
+    "limitations": [
+      "Machine had earlier 100% CPU readings; per-sample counter estimates describe load during this run.",
+      "Runs are synthetic Windows PowerShell 5.1 manifest-command invocations, not native Codex callbacks.",
+      "No live memory database, provider, credentials, or external network was used.",
+      "Medians are descriptive only; this report does not claim statistically significant speedup."
+    ],
+    "hooks": [
+      {
+        "hook": "SessionStart",
+        "deadlineMs": 20000,
+        "sampleCount": 3,
+        "validCount": 3,
+        "invalids": 0,
+        "deadlineBreaches": 1,
+        "violations": [],
+        "minMs": 8957.5,
+        "medianMs": 13080.7,
+        "maxMs": 20897.7,
+        "samples": [
+          {
+            "index": 0,
+            "elapsedMs": 13080.7,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 100,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 1,
+            "elapsedMs": 20897.7,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 92.9,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 2,
+            "elapsedMs": 8957.5,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 95.5,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          }
+        ]
+      },
+      {
+        "hook": "UserPromptSubmit",
+        "deadlineMs": 20000,
+        "sampleCount": 3,
+        "validCount": 3,
+        "invalids": 0,
+        "deadlineBreaches": 0,
+        "violations": [],
+        "minMs": 8758.9,
+        "medianMs": 8949.1,
+        "maxMs": 9833.7,
+        "samples": [
+          {
+            "index": 0,
+            "elapsedMs": 8758.9,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 98.4,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 1,
+            "elapsedMs": 9833.7,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 100,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 2,
+            "elapsedMs": 8949.1,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 98.7,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          }
+        ]
+      },
+      {
+        "hook": "PreToolUse",
+        "deadlineMs": 30000,
+        "sampleCount": 3,
+        "validCount": 3,
+        "invalids": 0,
+        "deadlineBreaches": 0,
+        "violations": [],
+        "minMs": 7774.5,
+        "medianMs": 9869.9,
+        "maxMs": 12067.6,
+        "samples": [
+          {
+            "index": 0,
+            "elapsedMs": 7774.5,
+            "deadlineMs": 30000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 97.1,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 1,
+            "elapsedMs": 9869.9,
+            "deadlineMs": 30000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 92.3,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 2,
+            "elapsedMs": 12067.6,
+            "deadlineMs": 30000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 83.8,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          }
+        ]
+      },
+      {
+        "hook": "PostToolUse",
+        "deadlineMs": 20000,
+        "sampleCount": 3,
+        "validCount": 3,
+        "invalids": 0,
+        "deadlineBreaches": 0,
+        "violations": [],
+        "minMs": 6853.2,
+        "medianMs": 10477.8,
+        "maxMs": 13439.1,
+        "samples": [
+          {
+            "index": 0,
+            "elapsedMs": 13439.1,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 88.8,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 1,
+            "elapsedMs": 6853.2,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 86.3,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 2,
+            "elapsedMs": 10477.8,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 93.5,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          }
+        ]
+      },
+      {
+        "hook": "Stop",
+        "deadlineMs": 60000,
+        "sampleCount": 3,
+        "validCount": 3,
+        "invalids": 0,
+        "deadlineBreaches": 0,
+        "violations": [],
+        "minMs": 7379.3,
+        "medianMs": 7642.9,
+        "maxMs": 8276.5,
+        "samples": [
+          {
+            "index": 0,
+            "elapsedMs": 7379.3,
+            "deadlineMs": 60000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 95.7,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 1,
+            "elapsedMs": 8276.5,
+            "deadlineMs": 60000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 100,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 2,
+            "elapsedMs": 7642.9,
+            "deadlineMs": 60000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 100,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          }
+        ]
+      },
+      {
+        "hook": "PostCompact",
+        "deadlineMs": 20000,
+        "sampleCount": 3,
+        "validCount": 3,
+        "invalids": 0,
+        "deadlineBreaches": 0,
+        "violations": [],
+        "minMs": 6265.7,
+        "medianMs": 7632.1,
+        "maxMs": 10075.7,
+        "samples": [
+          {
+            "index": 0,
+            "elapsedMs": 7632.1,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 96,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 1,
+            "elapsedMs": 10075.7,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 100,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 2,
+            "elapsedMs": 6265.7,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 100,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          }
+        ]
+      },
+      {
+        "hook": "SubagentStart",
+        "deadlineMs": 20000,
+        "sampleCount": 3,
+        "validCount": 3,
+        "invalids": 0,
+        "deadlineBreaches": 0,
+        "violations": [],
+        "minMs": 6254,
+        "medianMs": 7602.2,
+        "maxMs": 8561.9,
+        "samples": [
+          {
+            "index": 0,
+            "elapsedMs": 7602.2,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 83.5,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 1,
+            "elapsedMs": 6254,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 71.5,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 2,
+            "elapsedMs": 8561.9,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 94.7,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          }
+        ]
+      },
+      {
+        "hook": "PostToolUse after compaction",
+        "deadlineMs": 20000,
+        "sampleCount": 3,
+        "validCount": 3,
+        "invalids": 0,
+        "deadlineBreaches": 0,
+        "violations": [],
+        "minMs": 9873.6281,
+        "medianMs": 11561.1408,
+        "maxMs": 11727.5116,
+        "samples": [
+          {
+            "index": 0,
+            "elapsedMs": 11727.5116,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 99.3,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 1,
+            "elapsedMs": 11561.1408,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 100,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 2,
+            "elapsedMs": 9873.6281,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 100,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          }
+        ]
+      }
+    ]
+  },
+  "after": {
+    "schemaVersion": 2,
+    "status": "complete-valid",
+    "label": "after",
+    "generatedAt": "2026-10-28T01:16:31.738Z",
+    "samplesPerHook": 3,
+    "limitations": [
+      "Machine had earlier 100% CPU readings; per-sample counter estimates describe load during this run.",
+      "Runs are synthetic Windows PowerShell 5.1 manifest-command invocations, not native Codex callbacks.",
+      "No live memory database, provider, credentials, or external network was used.",
+      "Medians are descriptive only; this report does not claim statistically significant speedup."
+    ],
+    "hooks": [
+      {
+        "hook": "SessionStart",
+        "deadlineMs": 20000,
+        "sampleCount": 3,
+        "validCount": 3,
+        "invalids": 0,
+        "deadlineBreaches": 0,
+        "violations": [],
+        "minMs": 7563.8,
+        "medianMs": 12625.3,
+        "maxMs": 17829.7,
+        "samples": [
+          {
+            "index": 0,
+            "elapsedMs": 12625.3,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 100,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 1,
+            "elapsedMs": 17829.7,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 100,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 2,
+            "elapsedMs": 7563.8,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 99.9,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          }
+        ]
+      },
+      {
+        "hook": "UserPromptSubmit",
+        "deadlineMs": 20000,
+        "sampleCount": 3,
+        "validCount": 3,
+        "invalids": 0,
+        "deadlineBreaches": 0,
+        "violations": [],
+        "minMs": 6503.3,
+        "medianMs": 7285.3,
+        "maxMs": 9880,
+        "samples": [
+          {
+            "index": 0,
+            "elapsedMs": 6503.3,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 90.8,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 1,
+            "elapsedMs": 9880,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 99.5,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 2,
+            "elapsedMs": 7285.3,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 99.5,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          }
+        ]
+      },
+      {
+        "hook": "PreToolUse",
+        "deadlineMs": 30000,
+        "sampleCount": 3,
+        "validCount": 3,
+        "invalids": 0,
+        "deadlineBreaches": 0,
+        "violations": [],
+        "minMs": 13020.6,
+        "medianMs": 14224.3,
+        "maxMs": 16328.3,
+        "samples": [
+          {
+            "index": 0,
+            "elapsedMs": 13020.6,
+            "deadlineMs": 30000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 94.7,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 1,
+            "elapsedMs": 16328.3,
+            "deadlineMs": 30000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 96.4,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 2,
+            "elapsedMs": 14224.3,
+            "deadlineMs": 30000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 98.1,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          }
+        ]
+      },
+      {
+        "hook": "PostToolUse",
+        "deadlineMs": 20000,
+        "sampleCount": 3,
+        "validCount": 3,
+        "invalids": 0,
+        "deadlineBreaches": 0,
+        "violations": [],
+        "minMs": 7204.6,
+        "medianMs": 8567.8,
+        "maxMs": 8808.8,
+        "samples": [
+          {
+            "index": 0,
+            "elapsedMs": 8567.8,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 69.4,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 1,
+            "elapsedMs": 8808.8,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 89.7,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 2,
+            "elapsedMs": 7204.6,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 67.7,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          }
+        ]
+      },
+      {
+        "hook": "Stop",
+        "deadlineMs": 60000,
+        "sampleCount": 3,
+        "validCount": 3,
+        "invalids": 0,
+        "deadlineBreaches": 0,
+        "violations": [],
+        "minMs": 6281.6,
+        "medianMs": 6775,
+        "maxMs": 7460,
+        "samples": [
+          {
+            "index": 0,
+            "elapsedMs": 6775,
+            "deadlineMs": 60000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 100,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 1,
+            "elapsedMs": 6281.6,
+            "deadlineMs": 60000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 100,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 2,
+            "elapsedMs": 7460,
+            "deadlineMs": 60000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 100,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          }
+        ]
+      },
+      {
+        "hook": "PostCompact",
+        "deadlineMs": 20000,
+        "sampleCount": 3,
+        "validCount": 3,
+        "invalids": 0,
+        "deadlineBreaches": 0,
+        "violations": [],
+        "minMs": 6338,
+        "medianMs": 6945.5,
+        "maxMs": 7786.9,
+        "samples": [
+          {
+            "index": 0,
+            "elapsedMs": 7786.9,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 96.6,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 1,
+            "elapsedMs": 6945.5,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 100,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 2,
+            "elapsedMs": 6338,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 99.6,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          }
+        ]
+      },
+      {
+        "hook": "SubagentStart",
+        "deadlineMs": 20000,
+        "sampleCount": 3,
+        "validCount": 3,
+        "invalids": 0,
+        "deadlineBreaches": 0,
+        "violations": [],
+        "minMs": 4467.2,
+        "medianMs": 6826,
+        "maxMs": 7315.8,
+        "samples": [
+          {
+            "index": 0,
+            "elapsedMs": 7315.8,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 99.6,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 1,
+            "elapsedMs": 4467.2,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 68.8,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 2,
+            "elapsedMs": 6826,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 85.4,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          }
+        ]
+      },
+      {
+        "hook": "PostToolUse after compaction",
+        "deadlineMs": 20000,
+        "sampleCount": 3,
+        "validCount": 3,
+        "invalids": 0,
+        "deadlineBreaches": 0,
+        "violations": [],
+        "minMs": 4962.1718,
+        "medianMs": 7415.5686,
+        "maxMs": 9894.4759,
+        "samples": [
+          {
+            "index": 0,
+            "elapsedMs": 7415.5686,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 100,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 1,
+            "elapsedMs": 9894.4759,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 100,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 2,
+            "elapsedMs": 4962.1718,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 74.6,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          }
+        ]
+      }
+    ]
+  },
+  "comparison": [
+    {
+      "hook": "SessionStart",
+      "before": {
+        "minMs": 8957.5,
+        "medianMs": 13080.7,
+        "maxMs": 20897.7,
+        "deadlineBreaches": 1,
+        "invalids": 0
+      },
+      "after": {
+        "minMs": 7563.8,
+        "medianMs": 12625.3,
+        "maxMs": 17829.7,
+        "deadlineBreaches": 0,
+        "invalids": 0
+      },
+      "medianDeltaMs": -455.4
+    },
+    {
+      "hook": "UserPromptSubmit",
+      "before": {
+        "minMs": 8758.9,
+        "medianMs": 8949.1,
+        "maxMs": 9833.7,
+        "deadlineBreaches": 0,
+        "invalids": 0
+      },
+      "after": {
+        "minMs": 6503.3,
+        "medianMs": 7285.3,
+        "maxMs": 9880,
+        "deadlineBreaches": 0,
+        "invalids": 0
+      },
+      "medianDeltaMs": -1663.8
+    },
+    {
+      "hook": "PreToolUse",
+      "before": {
+        "minMs": 7774.5,
+        "medianMs": 9869.9,
+        "maxMs": 12067.6,
+        "deadlineBreaches": 0,
+        "invalids": 0
+      },
+      "after": {
+        "minMs": 13020.6,
+        "medianMs": 14224.3,
+        "maxMs": 16328.3,
+        "deadlineBreaches": 0,
+        "invalids": 0
+      },
+      "medianDeltaMs": 4354.4
+    },
+    {
+      "hook": "PostToolUse",
+      "before": {
+        "minMs": 6853.2,
+        "medianMs": 10477.8,
+        "maxMs": 13439.1,
+        "deadlineBreaches": 0,
+        "invalids": 0
+      },
+      "after": {
+        "minMs": 7204.6,
+        "medianMs": 8567.8,
+        "maxMs": 8808.8,
+        "deadlineBreaches": 0,
+        "invalids": 0
+      },
+      "medianDeltaMs": -1910
+    },
+    {
+      "hook": "Stop",
+      "before": {
+        "minMs": 7379.3,
+        "medianMs": 7642.9,
+        "maxMs": 8276.5,
+        "deadlineBreaches": 0,
+        "invalids": 0
+      },
+      "after": {
+        "minMs": 6281.6,
+        "medianMs": 6775,
+        "maxMs": 7460,
+        "deadlineBreaches": 0,
+        "invalids": 0
+      },
+      "medianDeltaMs": -867.9
+    },
+    {
+      "hook": "PostCompact",
+      "before": {
+        "minMs": 6265.7,
+        "medianMs": 7632.1,
+        "maxMs": 10075.7,
+        "deadlineBreaches": 0,
+        "invalids": 0
+      },
+      "after": {
+        "minMs": 6338,
+        "medianMs": 6945.5,
+        "maxMs": 7786.9,
+        "deadlineBreaches": 0,
+        "invalids": 0
+      },
+      "medianDeltaMs": -686.6
+    },
+    {
+      "hook": "SubagentStart",
+      "before": {
+        "minMs": 6254,
+        "medianMs": 7602.2,
+        "maxMs": 8561.9,
+        "deadlineBreaches": 0,
+        "invalids": 0
+      },
+      "after": {
+        "minMs": 4467.2,
+        "medianMs": 6826,
+        "maxMs": 7315.8,
+        "deadlineBreaches": 0,
+        "invalids": 0
+      },
+      "medianDeltaMs": -776.2
+    },
+    {
+      "hook": "PostToolUse after compaction",
+      "before": {
+        "minMs": 9873.6281,
+        "medianMs": 11561.1408,
+        "maxMs": 11727.5116,
+        "deadlineBreaches": 0,
+        "invalids": 0
+      },
+      "after": {
+        "minMs": 4962.1718,
+        "medianMs": 7415.5686,
+        "maxMs": 9894.4759,
+        "deadlineBreaches": 0,
+        "invalids": 0
+      },
+      "medianDeltaMs": -4145.6
+    }
+  ],
+  "previousAbortedRun": {
+    "runId": "2026-10-28T00-55-46-503Z-17572",
+    "status": "failed",
+    "error": "cleanup failed for owned child 75564; aborting before any further callback",
+    "completedHookSamples": 34,
+    "samples": {
+      "baseline": {
+        "SessionStart": [
+          {
+            "index": 0,
+            "elapsedMs": 7217.7,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 82.7,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 1,
+            "elapsedMs": 9998.9,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 99.8,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 2,
+            "elapsedMs": 12173.5,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 99.9,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          }
+        ],
+        "UserPromptSubmit": [
+          {
+            "index": 0,
+            "elapsedMs": 12225.2,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 100,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 1,
+            "elapsedMs": 12019.1,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 100,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 2,
+            "elapsedMs": 9402.7,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 100,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          }
+        ],
+        "PreToolUse": [
+          {
+            "index": 0,
+            "elapsedMs": 13440.4,
+            "deadlineMs": 30000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 92,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 1,
+            "elapsedMs": 14968.1,
+            "deadlineMs": 30000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 100,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 2,
+            "elapsedMs": 10794.2,
+            "deadlineMs": 30000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 100,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          }
+        ],
+        "PostToolUse": [
+          {
+            "index": 0,
+            "elapsedMs": 7944,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 99.3,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 1,
+            "elapsedMs": 17890.5,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 100,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 2,
+            "elapsedMs": 6317.4,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 97.4,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          }
+        ],
+        "Stop": [
+          {
+            "index": 0,
+            "elapsedMs": 5602.7,
+            "deadlineMs": 60000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 65.3,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 1,
+            "elapsedMs": 5177.1,
+            "deadlineMs": 60000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 43.6,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 2,
+            "elapsedMs": 6911.4,
+            "deadlineMs": 60000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 68.1,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          }
+        ],
+        "PostCompact": [
+          {
+            "index": 0,
+            "elapsedMs": 7047.5,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 52.1,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0,
+            "continuation": {
+              "index": 0,
+              "elapsedMs": 5631.4224,
+              "deadlineMs": 20000,
+              "exitCode": 0,
+              "timedOut": false,
+              "cpuPercent": 66.7,
+              "valid": true,
+              "violations": [],
+              "cleanupElapsedMs": 0
+            }
+          },
+          {
+            "index": 1,
+            "elapsedMs": 23134.5,
+            "deadlineMs": 20000,
+            "exitCode": 1,
+            "timedOut": true,
+            "cpuPercent": 100,
+            "valid": false,
+            "violations": [
+              "exit code 1",
+              "profiler hard timeout",
+              "empty stdout",
+              "PostCompact did not create a durable pending marker"
+            ],
+            "cleanupElapsedMs": 3630.5456999999988,
+            "continuation": {
+              "index": 1,
+              "elapsedMs": 23100.4157,
+              "deadlineMs": 20000,
+              "exitCode": 1,
+              "timedOut": true,
+              "cpuPercent": 100,
+              "valid": false,
+              "violations": [
+                "exit code 1",
+                "profiler hard timeout",
+                "missing continuation context request",
+                "missing continuation model context"
+              ],
+              "cleanupElapsedMs": 3201.2343999999975
+            }
+          }
+        ]
+      },
+      "optimized": {
+        "SessionStart": [
+          {
+            "index": 0,
+            "elapsedMs": 7220,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 87.3,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 1,
+            "elapsedMs": 8824.9,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 93.4,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 2,
+            "elapsedMs": 16079.7,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 100,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          }
+        ],
+        "UserPromptSubmit": [
+          {
+            "index": 0,
+            "elapsedMs": 9005.2,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 98.2,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 1,
+            "elapsedMs": 11930.2,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 98.8,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 2,
+            "elapsedMs": 14458.5,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 100,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          }
+        ],
+        "PreToolUse": [
+          {
+            "index": 0,
+            "elapsedMs": 10825.1,
+            "deadlineMs": 30000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 97.1,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 1,
+            "elapsedMs": 10628.4,
+            "deadlineMs": 30000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 93.8,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 2,
+            "elapsedMs": 13028.3,
+            "deadlineMs": 30000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 100,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          }
+        ],
+        "PostToolUse": [
+          {
+            "index": 0,
+            "elapsedMs": 8566.6,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 98.6,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 1,
+            "elapsedMs": 9567.3,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 100,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 2,
+            "elapsedMs": 7072.2,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 69,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          }
+        ],
+        "Stop": [
+          {
+            "index": 0,
+            "elapsedMs": 14807,
+            "deadlineMs": 60000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 94.6,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 1,
+            "elapsedMs": 3926.1,
+            "deadlineMs": 60000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 15.4,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          },
+          {
+            "index": 2,
+            "elapsedMs": 5672,
+            "deadlineMs": 60000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 42.8,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0
+          }
+        ],
+        "PostCompact": [
+          {
+            "index": 0,
+            "elapsedMs": 8719.6,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 99.6,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0,
+            "continuation": {
+              "index": 0,
+              "elapsedMs": 12355.6852,
+              "deadlineMs": 20000,
+              "exitCode": 0,
+              "timedOut": false,
+              "cpuPercent": 91.9,
+              "valid": true,
+              "violations": [],
+              "cleanupElapsedMs": 0
+            }
+          },
+          {
+            "index": 1,
+            "elapsedMs": 19797.2,
+            "deadlineMs": 20000,
+            "exitCode": 0,
+            "timedOut": false,
+            "cpuPercent": 100,
+            "valid": true,
+            "violations": [],
+            "cleanupElapsedMs": 0,
+            "continuation": {
+              "index": 1,
+              "elapsedMs": 20982.0061,
+              "deadlineMs": 20000,
+              "exitCode": 0,
+              "timedOut": false,
+              "cpuPercent": 100,
+              "valid": true,
+              "violations": [],
+              "cleanupElapsedMs": 0
+            }
+          }
+        ]
+      }
+    }
+  },
+  "activation": {
+    "files": 14,
+    "definitionsUnchanged": true,
+    "utc": "20261028T011702Z"
+  },
+  "installedProbe": {
+    "success": true,
+    "elapsedMs": 6726,
+    "withinDeadline": true,
+    "exitCode": 0,
+    "timedOut": false,
+    "cleanupFailed": false,
+    "injected": true,
+    "bunUnused": true,
+    "stderr": "",
+    "source": "installed Codex plugin, isolated HTTP fixture"
+  },
+  "validation": {
+    "uniqueFocusedTestsPassed": 102,
+    "platformSpecificSkips": 3,
+    "rootTypecheck": "passed",
+    "viewerTypecheck": "passed"
+  }
+}
