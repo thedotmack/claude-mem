@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { spawnSync, spawn } from 'child_process';
-import { existsSync, readFileSync, mkdirSync, appendFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, mkdirSync, chmodSync, appendFileSync, writeFileSync } from 'fs';
 import { join, dirname, resolve } from 'path';
-import { homedir, tmpdir } from 'os';
+import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 
 const IS_WINDOWS = process.platform === 'win32';
@@ -156,7 +156,7 @@ if (args.length === 0) {
 }
 
 args[0] = fixBrokenScriptPath(args[0]);
-// Resolve a relative script path against the launch directory before the child starts in tmpdir() (#4628)
+// Resolve a relative script path against the launch directory before the child starts in the neutral run dir (#4628)
 args[0] = resolve(process.cwd(), args[0]);
 
 const bunPath = findBun();
@@ -197,11 +197,24 @@ const stdinData = await collectStdin();
 // about it to stderr, which hosts show as hook errors (#4628). Start it in a
 // neutral directory and hand it the launch directory; the hook entry point
 // (src/cli/hook-original-cwd.ts) moves back there before adapters run.
+// The neutral dir must be owner-controlled, not tmpdir(): Bun also auto-loads
+// bunfig.toml from cwd, and on a shared /tmp another local user could plant a
+// `preload` there.
+function neutralBunSpawnCwd() {
+  const runDir = join(process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem'), 'run');
+  try {
+    mkdirSync(runDir, { recursive: true, mode: 0o700 });
+    if (process.platform !== 'win32') chmodSync(runDir, 0o700);
+    return runDir;
+  } catch {
+    return homedir();
+  }
+}
 const spawnOptions = {
   stdio: ['pipe', 'inherit', 'inherit'],
   windowsHide: true,
   env: Object.assign({}, process.env, { CLAUDE_MEM_HOOK_ORIGINAL_CWD: process.cwd() }),
-  cwd: tmpdir()
+  cwd: neutralBunSpawnCwd()
 };
 
 let spawnCmd = bunPath;

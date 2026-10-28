@@ -23,8 +23,8 @@
  * `bun build --compile` binary (process.argv[0..1] is runtime + entry in both).
  */
 import { spawn, type SpawnOptions } from 'child_process';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs';
-import { homedir, tmpdir } from 'os';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs';
+import { homedir } from 'os';
 import { basename, dirname, join, resolve } from 'path';
 import { LAUNCHER_PROTOCOL } from './launcher-protocol.js';
 import { bunVersionHonoursBunBeBun } from './bun-be-bun-support.js';
@@ -265,6 +265,25 @@ function reportEmptyStdinAndExit(stdinData: Buffer | null, workerScriptPath: str
   process.exit(0);
 }
 
+/**
+ * Neutral working directory for the Bun child. tmpdir() would do for the
+ * tsconfig-warning dodge (#4628), but Bun also auto-loads bunfig.toml from
+ * cwd — on a shared /tmp another local user could plant a `preload` there.
+ * An owner-controlled run dir keeps both properties: no tsconfig.json, and
+ * not writable by other accounts. Falls back to the home directory, which is
+ * likewise per-user.
+ */
+function neutralBunSpawnCwd(): string {
+  const runDir = join(process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem'), 'run');
+  try {
+    mkdirSync(runDir, { recursive: true, mode: 0o700 });
+    if (process.platform !== 'win32') chmodSync(runDir, 0o700);
+    return runDir;
+  } catch {
+    return homedir();
+  }
+}
+
 async function runThroughWorker(workerServiceArguments: string[]): Promise<never> {
   if (isToolHookDisabledByEnvironment(workerServiceArguments) || isPluginDisabledInClaudeSettings()) {
     process.exit(0);
@@ -303,7 +322,7 @@ async function runThroughWorker(workerServiceArguments: string[]): Promise<never
     // it in a neutral directory and hand it the launch directory; the hook
     // entry point (src/cli/hook-original-cwd.ts) moves back there.
     env: { ...process.env, ...bunRuntime.extraEnvironment, CLAUDE_MEM_HOOK_ORIGINAL_CWD: process.cwd() },
-    cwd: tmpdir(),
+    cwd: neutralBunSpawnCwd(),
   };
   let spawnCommand = bunRuntime.bunExecutablePath;
   let spawnArguments = workerArguments;

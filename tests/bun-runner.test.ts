@@ -380,9 +380,13 @@ describe('bun-runner.js spawn: no cmd.exe for .exe targets (#3196)', () => {
       );
       // Launched with node, as the hooks do: launching the runner itself with
       // Bun from the project would read that tsconfig before the runner runs.
+      // The neutral cwd is the owner-controlled run dir, not tmpdir(): Bun
+      // loads bunfig.toml from cwd, and a shared /tmp lets another local user
+      // plant a `preload` there.
+      const dataDir = join(root, 'data');
       const res = spawnSync('node', [BUN_RUNNER_PATH, join('..', 'scripts', 'report-cwd.js')], {
         cwd: projectDir,
-        env: { ...process.env, CLAUDE_CONFIG_DIR: projectDir },
+        env: { ...process.env, CLAUDE_CONFIG_DIR: projectDir, CLAUDE_MEM_DATA_DIR: dataDir },
         input: '{"dummy": true}',
         encoding: 'utf-8',
         windowsHide: true,
@@ -390,7 +394,7 @@ describe('bun-runner.js spawn: no cmd.exe for .exe targets (#3196)', () => {
       expect(res.status).toBe(0);
       expect(res.stderr).not.toContain('moduleSuffixes');
       const reported = JSON.parse(res.stdout.trim().split('\n').pop() as string);
-      expect(realpathSync(reported.cwd)).toBe(realpathSync(tmpdir()));
+      expect(realpathSync(reported.cwd)).toBe(realpathSync(join(dataDir, 'run')));
       expect(realpathSync(reported.launch)).toBe(realpathSync(projectDir));
     } finally {
       rmSync(root, { recursive: true, force: true });
