@@ -105,7 +105,7 @@ export default function claudeMemPi(pi: PiExtensionAPI): void {
     try {
       await worker.ready();
       const query = new URLSearchParams({ cwd: session.cwd, platform_source: 'pi' });
-      session.memory = (await (await worker.request('/api/context/inject?' + query)).text()).trim();
+      session.memory = (await worker.context(query)).trim();
     } catch (error) { warn(ctx, error); }
   };
   pi.on('session_start', begin);
