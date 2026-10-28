@@ -24,7 +24,10 @@ export async function runHookService(platform: string, event: string, options: H
     process.exit(1);
   }
   try {
-    if (isPluginDisabledInClaudeSettings()) process.exit(0);
+    if (isPluginDisabledInClaudeSettings()) {
+      if (options.skipExit) return;
+      process.exit(0);
+    }
 
     const { restoreHookOriginalCwd } = await import('./hook-original-cwd.js');
     restoreHookOriginalCwd();
@@ -33,6 +36,7 @@ export async function runHookService(platform: string, event: string, options: H
   } catch (error) {
     // Match the non-daemon worker entry point; never invoke the hook twice.
     logger.error('SYSTEM', 'Fatal error in main', {}, error instanceof Error ? error : undefined);
+    if (options.skipExit) { process.exitCode = 0; return; }
     process.exit(0);
   }
 }
@@ -43,5 +47,12 @@ const isCommonJsMain = typeof require !== 'undefined' && typeof module !== 'unde
 if (isCommonJsMain || (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)) {
   const [, , command, platform, event] = process.argv;
   if (command !== 'hook') { process.stderr.write('Usage: hook-service hook <platform> <event>\n'); process.exit(1); }
-  void runHookService(platform, event);
+  const isNode = !process.versions.bun;
+  void runHookService(platform, event, { skipExit: isNode }).then(() => {
+    if (isNode) {
+      process.exitCode = 0;
+      const input = process.stdin as typeof process.stdin & { unref?: () => void };
+      input.unref?.();
+    }
+  });
 }
