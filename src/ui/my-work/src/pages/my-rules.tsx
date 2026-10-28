@@ -585,13 +585,13 @@ function RuleEditor({ draft, error, onChange, onClose, onSave }: { draft: Draft 
                       <SelectGroup key={tier}>
                         <SelectLabel>{label}</SelectLabel>
                         {ruleScopes.filter((scope) => scope.tier === tier).map((scope) => <SelectItem key={scope.id} value={scope.id}>{scope.name}</SelectItem>)}
-                        {tier !== 'everywhere' && <SelectItem value={`new:${tier}`}>{tier === 'project' ? 'A new product or project…' : 'A new situation…'}</SelectItem>}
+                        {tier !== 'everywhere' && <SelectItem value={`new:${tier}`}>{tier === 'project' ? 'A new repo…' : 'A new situation…'}</SelectItem>}
                       </SelectGroup>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
-              {newTier && <div className="grid gap-1.5"><Label htmlFor="rule-scope-name">{newTier === 'project' ? 'Product or project' : 'Situation'}</Label><Input id="rule-scope-name" value={draft.newScopeName} placeholder={newTier === 'project' ? 'claude-mem' : 'When I’m frustrated'} onChange={(event) => onChange({ ...draft, newScopeName: event.target.value })} /></div>}
+              {newTier && <div className="grid gap-1.5"><Label htmlFor="rule-scope-name">{newTier === 'project' ? 'Repo' : 'Situation'}</Label><Input id="rule-scope-name" value={draft.newScopeName} placeholder={newTier === 'project' ? 'claude-mem' : 'When I’m frustrated'} onChange={(event) => onChange({ ...draft, newScopeName: event.target.value })} /></div>}
               <div className="grid gap-1.5"><Label htmlFor="rule-when">When <span className="font-normal text-muted-foreground">(optional)</span></Label><Input id="rule-when" value={draft.when} placeholder="you open a pull request" onChange={(event) => onChange({ ...draft, when: event.target.value })} /></div>
               <div className="grid gap-1.5"><Label htmlFor="rule-then">Then</Label><Textarea id="rule-then" value={draft.then} placeholder="Never open it as a draft." onChange={(event) => onChange({ ...draft, then: event.target.value })} /></div>
               {error && <p role="alert" className="text-xs text-attention-foreground">{error}</p>}

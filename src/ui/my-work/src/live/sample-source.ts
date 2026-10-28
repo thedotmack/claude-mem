@@ -1,8 +1,10 @@
 // The wireframe fixtures as a data source, for design review (`?source=sample`). Nothing here is real.
-import { assertConsistentRequest, SAMPLE_AGENTS, SAMPLE_DEVICES, SAMPLE_PEOPLE, SAMPLE_REQUESTS, SAMPLE_RUNS, type Request } from '../data.ts'
-import { SAMPLE_CURRENT_PERIOD, SAMPLE_GOAL_ONLY_REQUESTS, SAMPLE_OPEN_ASKS, SAMPLE_PAST_PERIODS, SAMPLE_PRIORITIES } from '../data-goals.ts'
+import { assertConsistentRequest, OTHER_FOCUS_AREA_ID, SAMPLE_AGENTS, SAMPLE_DEVICES, SAMPLE_PEOPLE, SAMPLE_REQUESTS, SAMPLE_RUNS, type FocusArea, type FocusChange, type Request } from '../data.ts'
+import { SAMPLE_CURRENT_PERIOD, SAMPLE_FOCUS_AREAS, SAMPLE_OTHER_ASKS, SAMPLE_PAST_PERIODS } from '../data-goals.ts'
 import { SAMPLE_OWNER_RULES, SAMPLE_RULE_SCOPES, SAMPLE_RULES_LEARNING, type OwnerRule, type RuleChange, type RuleScope } from '../data-rules.ts'
 import { getConnectionStatus } from './connection-status.ts'
+import { byFocusPriority } from './to-focus-model.ts'
+import { navWordIn } from '../../../../services/work-view/nav-words.mjs'
 import type { WorkDataSource, WorkModel } from './work-data-source.ts'
 
 /** Each checked sample request as it was before its check, so Undo restores it exactly. In memory only. */
@@ -43,6 +45,74 @@ function applySampleRuleChange({ action, ruleId, rule }: RuleChange) {
   } else replaceAt(SAMPLE_OWNER_RULES.find((entry) => entry.id === ruleId) ?? (() => { throw new Error(`Sample rule ${ruleId} was never a suggestion`) })())
 }
 
+/** The sample areas as changed this session, in the worker's order from the start. In memory only, like the sample rules. */
+let sampleFocusAreas: FocusArea[] = [...SAMPLE_FOCUS_AREAS].sort(byFocusPriority)
+
+/** The worker's body bounds (WorkViewRoutes focusBody): a name is a nav label, a goal one sentence. */
+const MAX_AREA_NAME_CHARS = 80
+const MAX_AREA_GOAL_CHARS = 300
+
+/**
+ * The same change the worker saves, applied to the sample areas (WorkViewRoutes `saveFocus`), with the worker's
+ * refusals word for word. A body the worker's schema would refuse answers its "ValidationError".
+ */
+function applySampleFocusChange({ action, focusAreaId, name, goal, intoFocusAreaId, focusAreaIds, requestId }: FocusChange) {
+  const trimmedName = name?.trim(), trimmedGoal = goal?.trim()
+  if (trimmedName !== undefined && (!trimmedName || trimmedName.length > MAX_AREA_NAME_CHARS)) throw new Error('ValidationError')
+  if (trimmedGoal !== undefined && (!trimmedGoal || trimmedGoal.length > MAX_AREA_GOAL_CHARS)) throw new Error('ValidationError')
+  const byId = new Map(sampleFocusAreas.map((area) => [area.id, area]))
+  const replace = (id: string, change: Partial<FocusArea>) => { sampleFocusAreas = sampleFocusAreas.map((area) => area.id === id ? { ...area, ...change } : area).sort(byFocusPriority) }
+  const stillInFocus = (area: FocusArea | undefined) => !!area && area.status !== 'dismissed' && !area.mergedInto
+  if (action === 'reorder') {
+    if (!focusAreaIds) throw new Error('List the focus areas in the order you want.')
+    if (new Set(focusAreaIds).size !== focusAreaIds.length) throw new Error('Each focus area can appear once in the order.')
+    if (focusAreaIds.some((id) => !byId.has(id))) throw new Error('That focus area is not in your focus areas.')
+    // Kept areas only: an owner order on a suggestion would freeze it against later refreshes.
+    const kept = sampleFocusAreas.filter((area) => area.status === 'kept' && !area.mergedInto).map((area) => area.id)
+    if (focusAreaIds.length !== kept.length || !kept.every((id) => focusAreaIds.includes(id))) throw new Error('List every kept focus area, each once, in the order you want.')
+    focusAreaIds.forEach((id, index) => replace(id, { ownerRank: index + 1 }))
+    return
+  }
+  if (action === 'move-request') {
+    if (!requestId || !focusAreaId) throw new Error('Choose the request and the focus area to move it to.')
+    const index = SAMPLE_REQUESTS.findIndex((request) => request.id === requestId)
+    if (index < 0) throw new Error('That request is not in your work.')
+    if (focusAreaId !== OTHER_FOCUS_AREA_ID) {
+      if (!byId.has(focusAreaId)) throw new Error('That focus area is not in your focus areas.')
+      if (!stillInFocus(byId.get(focusAreaId))) throw new Error('Move it to an area that is still in your focus.')
+    }
+    SAMPLE_REQUESTS[index] = { ...SAMPLE_REQUESTS[index], focusAreaId }
+    return
+  }
+  const area = focusAreaId ? byId.get(focusAreaId) : undefined
+  if (!area) throw new Error('That focus area is not in your focus areas.')
+  if (area.mergedInto && action !== 'restore-suggestion') throw new Error('This area was merged into another. Undo the merge first.')
+  if (action === 'keep') replace(area.id, { status: 'kept' })
+  else if (action === 'dismiss') replace(area.id, { status: 'dismissed' })
+  else if (action === 'done') replace(area.id, { status: 'done' })
+  else if (action === 'rename') {
+    if (!trimmedName) throw new Error('Write the new name before saving it.')
+    const navWord = navWordIn(trimmedName)
+    if (navWord) throw new Error(`"${trimmedName}" reuses the nav word "${navWord}". Pick a name that means only this area.`)
+    replace(area.id, { name: trimmedName })
+  } else if (action === 'edit-goal') {
+    if (!trimmedGoal) throw new Error('Write the goal before saving it.')
+    replace(area.id, { goal: trimmedGoal })
+  } else if (action === 'merge') {
+    if (!intoFocusAreaId) throw new Error('Choose the area to merge it into.')
+    if (intoFocusAreaId === area.id) throw new Error('An area cannot be merged into itself.')
+    const target = byId.get(intoFocusAreaId)
+    if (!target) throw new Error('That focus area is not in your focus areas.')
+    if (!stillInFocus(target)) throw new Error('Merge it into an area that is still in your focus.')
+    replace(area.id, { mergedInto: target.id })
+  } else if (action === 'restore-suggestion') {
+    if (area.source === 'owner') throw new Error('Only a suggested area can go back to being a suggestion.')
+    replace(area.id, { status: 'suggested', mergedInto: null })
+  } else {
+    throw new Error(`Unknown focus change: ${String(action)}`)
+  }
+}
+
 const loadSampleWorkModel = async (): Promise<WorkModel> => ({
   sourceKind: 'sample',
   requests: [...SAMPLE_REQUESTS],
@@ -51,12 +121,11 @@ const loadSampleWorkModel = async (): Promise<WorkModel> => ({
   devices: SAMPLE_DEVICES,
   people: SAMPLE_PEOPLE,
   unlinkedWorkCount: 0,
-  priorities: SAMPLE_PRIORITIES,
-  openAsks: SAMPLE_OPEN_ASKS,
+  focusAreas: sampleFocusAreas,
+  otherAsks: SAMPLE_OTHER_ASKS,
   currentPeriod: SAMPLE_CURRENT_PERIOD,
   pastPeriods: SAMPLE_PAST_PERIODS,
   goalsReadError: null,
-  goalOnlyRequests: SAMPLE_GOAL_ONLY_REQUESTS,
   rules: sampleRules,
   ruleScopes: sampleRuleScopes,
   rulesLearning: SAMPLE_RULES_LEARNING,
@@ -87,6 +156,10 @@ export const sampleSource: WorkDataSource = {
     applySampleRuleChange(change)
     return loadSampleWorkModel()
   },
+  async saveFocusChange(change) {
+    applySampleFocusChange(change)
+    return loadSampleWorkModel()
+  },
   // The sample file is always loaded; there is no CLAUDE.md to change.
   loadRulesInClaudeCode: loadSampleWorkModel,
   // Sample agents are fixtures with no recorded state to change.
@@ -96,7 +169,7 @@ export const sampleSource: WorkDataSource = {
   async setRequestChecked(requestId, _expectedFingerprint, checked) {
     const index = SAMPLE_REQUESTS.findIndex((request) => request.id === requestId)
     if (index < 0) throw new Error(`No sample request ${requestId}`)
-    // Mutated in place so My Goals, which reads the same fixture objects, sees the change too.
+    // Mutated in place, so every page reading the fixture objects sees the change.
     if (checked) {
       const request = SAMPLE_REQUESTS[index]
       sampleRequestsBeforeCheck.set(requestId, request)

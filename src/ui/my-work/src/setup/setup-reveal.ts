@@ -54,7 +54,7 @@ export function revealFromSnapshot(snapshot: SnapshotWithSetup): RevealSets {
   const finished = extraction?.state === 'ok' || extraction?.state === 'failed'
 
   const goals: RevealGoal[] | null = snapshot.goals
-    ? [...snapshot.goals.priorities].sort((left, right) => (left.rank ?? Infinity) - (right.rank ?? Infinity)).slice(0, SHOWN)
+    ? [...snapshot.goals.areas].sort((left, right) => (left.rank ?? Infinity) - (right.rank ?? Infinity)).slice(0, SHOWN)
       .map((item, index) => ({ id: item.id, rank: item.rank ?? index + 1, title: item.title, timesAsked: item.timesAsked ?? item.evidence.length, latestAt: goalStamp(item.latestAt) }))
     : null
 

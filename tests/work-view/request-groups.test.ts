@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { appendReading, applyGroupDecisions, groupIdFor, ledgerSignature, linkBackwards, MAX_READINGS, readCandidates, readGoals, readLedger, refreshNeeds, runCli, validateAlignment, validateProgress } from '../../src/services/work-view/request-groups.mjs';
-import { WorkStateSource } from '../../src/services/work-view/data-source.mjs';
+import { appendReading, applyGroupDecisions, groupIdFor, ledgerSignature, linkBackwards, MAX_READINGS, readCandidates, readGoals, readLedger, refreshNeeds, runCli, validateProgress } from '../../src/services/work-view/request-groups.mjs';
+import { readFocus, readFocusAreas } from '../../src/services/work-view/data-source.mjs';
+import { focusAreaRowFields, placementRowFields, routerFocusRows, type RouterFocusBody } from '../../src/services/work-view/my-focus.mjs';
 import { buildHumanRequests } from '../../src/services/work-view/request-projection.mjs';
+import { scratchDir } from '../helpers/scratch-dir.js';
 
-const ledgerDir = () => mkdtempSync(join(tmpdir(), 'request-groups-test-'));
+const ledgerDir = () => scratchDir('request-groups-test');
 const key = (session: string) => JSON.stringify(['conversation', 'claude', session]);
 const DAY = 86400000, NOW = 100 * DAY;
 
@@ -106,7 +107,7 @@ describe('overall requests and progress reviews', () => {
   try {
     const database = fixtureDatabase();
     let output: any;
-    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; } }); return output; };
+    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; }, localDeviceId: '' }); return output; };
     const { proposedGroups } = run(['candidates', '--days', '14']);
     const decisions = join(dir, 'decisions.json');
     writeFileSync(decisions, JSON.stringify({ groups: [{ title: 'Release cards', ...proposedGroups[0] }, { title: 'Pricing page', conversations: [key('c')] }] }));
@@ -167,7 +168,7 @@ describe('overall requests and progress reviews', () => {
   try {
     const database = fixtureDatabase();
     let output: any;
-    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; } }); return output; };
+    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; }, localDeviceId: '' }); return output; };
     const decisions = join(dir, 'decisions.json');
     writeFileSync(decisions, JSON.stringify({ groups: [{ title: 'Release cards', conversations: [key('a')] }, { title: 'Spacing', conversations: [key('b')] }, { title: 'Pricing page', conversations: [key('c')] }] }));
     run(['apply', decisions]);
@@ -238,93 +239,215 @@ describe('overall requests and progress reviews', () => {
   saveGoals(database, '2026-10-01T10:00:00Z');
   const goals = readGoals(database);
   expect(goals.summary).toBe('Ship the cards.');
-  expect(goals.goals.map((goal) => [goal.goal, goal.kind, goal.rank])).toEqual([['Priority: Ship cards', 'priority', 1]]);
+  expect(goals.goals.map((goal) => [goal.taskKey, goal.kind, goal.rank, goal.legacy])).toEqual([['Focus area: Ship cards', 'focus-area', 1, false]]);
   expect(goals.goals[0].evidence).toEqual([{ at: '2026-10-01 10:00', quote: 'ship the cards | today' }]);
 });
 
-  it('alignment links only known groups to exact current goals, with evidence', () => {
-  const context = { groups: { g_000000000001: {}, g_000000000002: {} }, goals: [{ goal: 'Priority: Ship cards' }] };
-  const valid = validateAlignment({ links: [{ groupId: 'g_000000000001', goal: 'Priority: Ship cards', evidence: 'The card work is the release the owner asked for.' }], unaligned: ['g_000000000002'] }, context);
-  expect(valid.links.g_000000000001[0].goal).toBe('Priority: Ship cards');
-  expect(valid.unaligned).toEqual(['g_000000000002']);
-  expect(() => validateAlignment({ links: [{ groupId: 'g_000000000001', goal: 'Ship cards', evidence: 'x' }] }, context)).toThrow(/exact "goal"/);
-  expect(() => validateAlignment({ links: [{ groupId: 'g_ffffffffffff', goal: 'Priority: Ship cards', evidence: 'x' }] }, context)).toThrow(/unknown group/);
-  expect(() => validateAlignment({ links: [{ groupId: 'g_000000000001', goal: 'Priority: Ship cards', evidence: '' }] }, context)).toThrow(/evidence/);
-  expect(() => validateAlignment({ links: [{ groupId: 'g_000000000001', goal: 'Priority: Ship cards', evidence: 'x' }], unaligned: ['g_000000000001'] }, context)).toThrow(/both linked and unaligned/);
-  expect(() => validateAlignment({ unaligned: [] }, context)).toThrow(/links array/);
+  it('goals saved before the three tests read as the nearest new kind, marked legacy; an unknown kind is refused', () => {
+  const database = fixtureDatabase();
+  const write = database.prepare('INSERT INTO work_state_entries (project, list_name, fields, created_at_epoch) VALUES (?, ?, ?, ?)');
+  write.run('owner', 'owner-goals', JSON.stringify({ task: 'Priority: Ship cards', status: 'todo', goal_kind: 'priority', rank: 1, title: 'Ship cards' }), 1);
+  write.run('owner', 'owner-goals', JSON.stringify({ task: 'Open ask: Docs', status: 'todo', goal_kind: 'open-ask', rank: 1, title: 'Docs' }), 2);
+  expect(readGoals(database).goals.map((goal) => [goal.taskKey, goal.kind, goal.legacy])).toEqual([['Priority: Ship cards', 'focus-area', true], ['Open ask: Docs', 'ask', true]]);
+  write.run('owner', 'owner-goals', JSON.stringify({ task: 'Rule: Tests', status: 'todo', goal_kind: 'rule', title: 'Tests' }), 3);
+  expect(() => readGoals(database)).toThrow(/unknown goal_kind: "rule"/);
 });
 
-  it('CLI alignment round trip: align-input lists goals and groups, record-alignment writes alignment.json', () => {
+  it('focus round trip: focus-input lists areas and one batch of requests with every conversation\'s ask; record-focus writes router rows through the worker', async () => {
   const dir = ledgerDir();
   try {
     const database = fixtureDatabase();
-    saveGoals(database, '2026-10-01T10:00:00Z');
-    let output: any;
-    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; } }); return output; };
-    const decisions = join(dir, 'decisions.json');
-    writeFileSync(decisions, JSON.stringify({ groups: [{ title: 'Release cards', conversations: [key('a')] }, { title: 'Pricing page', conversations: [key('c')] }] }));
-    run(['apply', decisions]);
-    const before = ledgerSignature(dir);
-    const input = run(['align-input']);
-    expect(input.goals.goals.map((goal: { goal: string }) => goal.goal)).toEqual(['Priority: Ship cards']);
-    expect(input.groups.map((group: { title: string; firstAsk: string }) => [group.title, group.firstAsk])).toEqual([['Release cards', 'Build the release cards'], ['Pricing page', 'Write the pricing page']]);
-    expect(input.previous).toBeNull();
-    const alignment = join(dir, 'alignment-input.json');
-    writeFileSync(alignment, JSON.stringify({ links: [{ groupId: groupIdFor(key('a')), goal: 'Priority: Ship cards', evidence: 'Release cards are the cards to ship.' }], unaligned: [groupIdFor(key('c'))] }));
-    expect(run(['record-alignment', alignment])).toEqual({ aligned: 1, unaligned: 1 });
-    const stored = readLedger(dir).alignment;
-    expect(stored.links[groupIdFor(key('a'))][0].goal).toBe('Priority: Ship cards');
-    expect(stored.unaligned).toEqual([groupIdFor(key('c'))]);
-    expect(stored.goals).toEqual(['Priority: Ship cards']);
-    expect(ledgerSignature(dir)).not.toBe(before);
-    expect(run(['align-input']).previous.alignedAt).toBe(new Date(NOW).toISOString());
+    const focus = focusFixture(database);
+    focus.area('fa_cards', 'Cards', 'kept');
+    const { run, write } = cliRunner(dir, database, focus.save);
+    run(['apply', write('d.json', { groups: [{ title: 'Release cards', conversations: [key('a'), key('b')], links: [{ kind: 'shared-work-list', conversations: [key('a'), key('b')], evidence: 'work list "release-cards" in repo/tree' }] }, { title: 'Pricing page', conversations: [key('c')] }] })]);
+    const input = run(['focus-input']);
+    expect(input.areas).toEqual([{ focusAreaId: 'fa_cards', name: 'Cards', goal: 'Make Cards good.', about: 'Everything about Cards.', status: 'kept' }]);
+    expect(input.requests.map((request: any) => [request.anchor, request.title, request.firstAsk, request.repo, request.conversations, request.conversationAsks]))
+      .toEqual([[key('a'), 'Release cards', 'Build the release cards', 'repo', 2, ['Build the release cards', 'Fix the card spacing']], [key('c'), 'Pricing page', 'Write the pricing page', 'repo', 1, ['Write the pricing page']]]);
+    expect(input.remaining).toBe(0);
+    // Batches: --limit 1 lists the first request and counts the rest.
+    expect(run(['focus-input', '--limit', '1'])).toMatchObject({ requests: [{ anchor: key('a') }], remaining: 1 });
+    expect(refreshNeeds({ dir, database, now: NOW, localDeviceId: '' }).unplaced).toBe(2);
+    // An unknown area id is refused, never mapped to Other, and nothing is written.
+    const rowsBefore = focus.rows();
+    await expect(run(['record-focus', write('f0.json', { placements: [{ anchor: key('a'), focusAreaId: 'fa_nope', evidence: 'x' }, { anchor: key('c'), focusAreaId: 'other', evidence: 'y' }], proposals: [] })])).rejects.toThrow(/"fa_nope", which is not a listed focus area/);
+    await expect(run(['record-focus', write('f1.json', { placements: [{ anchor: key('a'), focusAreaId: 'fa_cards', evidence: 'x' }], proposals: [] })])).rejects.toThrow(/Place every request asked about; missing/);
+    expect(focus.rows()).toBe(rowsBefore);
+    // A batch answer is checked against that batch: the second request is not part of the --limit 1 question.
+    await expect(run(['record-focus', '--limit', '1', write('f1b.json', { placements: [{ anchor: key('a'), focusAreaId: 'fa_cards', evidence: 'x' }, { anchor: key('c'), focusAreaId: 'other', evidence: 'y' }], proposals: [] })])).rejects.toThrow(/was not asked about/);
+    expect(await run(['record-focus', write('f2.json', { placements: [{ anchor: key('a'), focusAreaId: 'fa_cards', evidence: 'Release cards are cards.' }, { anchor: key('c'), focusAreaId: 'other', evidence: 'Pricing fits no area.' }], proposals: [] })]))
+      .toEqual({ placed: 2, proposed: 0, focusAreaIds: [] });
+    const placed = readFocus(database, { localDeviceId: '' });
+    expect(placed.focusAreaIdByAnchor.get(key('a'))).toBe('fa_cards');
+    expect(placed.focusAreaIdByAnchor.get(key('c'))).toBe('other');
+    expect(placed.placementsByAnchor.get(key('a'))?.router?.basis).toMatch(/^[0-9a-f]{16}$/);
+    expect(run(['focus-input']).requests).toEqual([]);
+    expect(refreshNeeds({ dir, database, now: NOW, localDeviceId: '' }).unplaced).toBe(0);
+    // Without the worker's write, or without the worker's device id, the command refuses instead of guessing.
+    expect(() => runCli(['record-focus', write('f3.json', { placements: [], proposals: [] })], { dir, database, now: NOW, print: () => {}, localDeviceId: '' })).toThrow(/saves through the claude-mem worker/);
+    expect(() => runCli(['focus-input'], { dir, database, now: NOW, print: () => {} })).toThrow(/sync device id/);
+    expect(() => refreshNeeds({ dir, database, now: NOW } as any)).toThrow(/sync device id/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-  it('align-input lists only groups still to align; record-alignment keeps the other groups\' links', () => {
+  it('a request is placed again when its asks or conversations change, never for a new review; another device\'s placement is not compared', async () => {
   const dir = ledgerDir();
   try {
     const database = fixtureDatabase();
-    saveGoals(database, '2026-10-01T10:00:00Z');
-    let output: any;
-    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; } }); return output; };
-    const write = (name: string, value: unknown) => { const path = join(dir, name); writeFileSync(path, JSON.stringify(value)); return path; };
-    run(['apply', write('d1.json', { groups: [{ title: 'Release cards', conversations: [key('a')] }] })]);
-    run(['record-alignment', write('a1.json', { links: [{ groupId: groupIdFor(key('a')), goal: 'Priority: Ship cards', evidence: 'The cards.' }] })]);
-    run(['apply', write('d2.json', { groups: [{ title: 'Pricing page', conversations: [key('c')] }] })]);
-    // Only the new group is listed; the aligned one is not sent again.
-    expect(run(['align-input']).groups.map((group: { groupId: string }) => group.groupId)).toEqual([groupIdFor(key('c'))]);
-    expect(refreshNeeds({ dir, database, now: NOW }).unaligned).toBe(1);
-    expect(() => run(['record-alignment', write('a2.json', { links: [] })])).toThrow(/missing g_/);
-    expect(run(['record-alignment', write('a3.json', { links: [], unaligned: [groupIdFor(key('c'))] })])).toEqual({ aligned: 0, unaligned: 1 });
-    const stored = readLedger(dir).alignment;
-    expect(stored.links[groupIdFor(key('a'))][0].evidence).toBe('The cards.');
-    expect(stored.unaligned).toEqual([groupIdFor(key('c'))]);
-    expect(run(['align-input']).groups).toEqual([]);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
-  it('a request that changed since it was aligned is aligned again; an unchanged one is not', () => {
-  const dir = ledgerDir();
-  try {
-    const database = fixtureDatabase();
-    saveGoals(database, '2026-10-01T10:00:00Z');
-    let output: any;
-    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; } }); return output; };
-    const write = (name: string, value: unknown) => { const path = join(dir, name); writeFileSync(path, JSON.stringify(value)); return path; };
+    const focus = focusFixture(database);
+    focus.area('fa_cards', 'Cards', 'kept');
+    focus.area('fa_done', 'Launch', 'kept');
+    const { run, write } = cliRunner(dir, database, focus.save);
     const group = groupIdFor(key('a'));
     run(['apply', write('d1.json', { groups: [{ title: 'Release cards', conversations: [key('a')] }, { title: 'Pricing page', conversations: [key('c')] }] })]);
-    run(['record-alignment', write('a1.json', { links: [{ groupId: group, goal: 'Priority: Ship cards', evidence: 'The cards.' }], unaligned: [groupIdFor(key('c'))] })]);
-    expect(run(['align-input']).groups).toEqual([]);
-    // A new review says what the request is now; the decision was made on the old one.
-    run(['record-progress', write('r.json', { groupId: group, state: 'in-progress', percent: 40, summary: 'Now the pricing page too.', reviewBasis: run(['show', group]).reviewBasis })]);
-    expect(run(['align-input']).groups.map((entry: { groupId: string }) => entry.groupId)).toEqual([group]);
-    expect(refreshNeeds({ dir, database, now: NOW }).unaligned).toBe(1);
-    run(['record-alignment', write('a2.json', { links: [{ groupId: group, goal: 'Priority: Ship cards', evidence: 'Still the cards.' }] })]);
-    expect(run(['align-input']).groups).toEqual([]);
-    // A merged-in conversation changes the request too.
+    await run(['record-focus', write('f1.json', { placements: [{ anchor: key('a'), focusAreaId: 'fa_cards', evidence: 'The cards.' }, { anchor: key('c'), focusAreaId: 'fa_done', evidence: 'Pricing for the launch.' }], proposals: [] })]);
+    expect(run(['focus-input']).requests).toEqual([]);
+    // The owner finishes the Launch area; its requests stay there.
+    focus.area('fa_done', 'Launch', 'done');
+    // A new review (state, percent, summary) does not decide the area: nothing is queued, in a live or a done area.
+    for (const groupId of [group, groupIdFor(key('c'))]) {
+      run(['record-progress', write('r.json', { groupId, state: 'shipped', percent: 100, shippedAt: new Date(NOW).toISOString(), summary: 'Now something else entirely.', reviewBasis: run(['show', groupId]).reviewBasis })]);
+    }
+    expect(run(['focus-input']).requests).toEqual([]);
+    expect(refreshNeeds({ dir, database, now: NOW, localDeviceId: '' }).unplaced).toBe(0);
+    // A merged-in conversation changes the request: it is placed again.
     run(['apply', write('d2.json', { groups: [{ title: 'Release cards', conversations: [key('a'), key('b')], links: [{ kind: 'shared-work-list', conversations: [key('a'), key('b')], evidence: 'work list "release-cards" in repo/tree' }] }] })]);
-    expect(run(['align-input']).groups.map((entry: { groupId: string }) => entry.groupId)).toEqual([group]);
+    expect(run(['focus-input']).requests.map((request: any) => request.anchor)).toEqual([key('a')]);
+    // The same request placed by another computer, decided on that computer's copy: not re-placed here.
+    focus.insert(placementRowFields({ anchorConversationKey: key('a'), focusAreaId: 'fa_cards', placedBy: 'router', basis: 'ffffffffffffffff', evidence: 'Placed elsewhere.' }), 'other-device');
+    expect(run(['focus-input']).requests).toEqual([]);
+    // A seed placement written without a basis counts as current.
+    focus.insert(placementRowFields({ anchorConversationKey: key('c'), focusAreaId: 'fa_cards', placedBy: 'router', evidence: 'Seeded.' }));
+    run(['apply', write('d3.json', { groups: [{ title: 'Pricing and plans', conversations: [key('c')] }] })]);
+    expect(run(['focus-input']).requests).toEqual([]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+  it('an owner placement is never queued while its area is live; once the owner dismisses that area it no longer binds', async () => {
+  const dir = ledgerDir();
+  try {
+    const database = fixtureDatabase();
+    const focus = focusFixture(database);
+    focus.area('fa_cards', 'Cards', 'kept');
+    focus.area('fa_pricing', 'Pricing', 'suggested');
+    const { run, write } = cliRunner(dir, database, focus.save);
+    run(['apply', write('d.json', { groups: [{ title: 'Release cards', conversations: [key('a')] }, { title: 'Pricing page', conversations: [key('c')] }] })]);
+    focus.insert(placementRowFields({ anchorConversationKey: key('c'), focusAreaId: 'fa_pricing', placedBy: 'owner', evidence: 'Moved by you in My Work.' }));
+    expect(run(['focus-input']).requests.map((request: any) => request.anchor)).toEqual([key('a')]);
+    run(['apply', write('d2.json', { groups: [{ title: 'Pricing and plans', conversations: [key('c')] }] })]);
+    expect(run(['focus-input']).requests.map((request: any) => request.anchor)).toEqual([key('a')]);
+    await expect(run(['record-focus', write('f.json', { placements: [{ anchor: key('a'), focusAreaId: 'fa_cards', evidence: 'x' }, { anchor: key('c'), focusAreaId: 'other', evidence: 'y' }], proposals: [] })])).rejects.toThrow(/was not asked about/);
+    focus.area('fa_pricing', 'Pricing', 'dismissed', 'owner');
+    expect(run(['focus-input']).requests.map((request: any) => request.anchor)).toEqual([key('a'), key('c')]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+  it('placing promotes any request that holds several asks; sameAs on a listed area places there; a dismissed area is never placed in or proposed again', async () => {
+  const dir = ledgerDir();
+  try {
+    const database = fixtureDatabase();
+    const focus = focusFixture(database);
+    focus.area('fa_cards', 'Cards', 'kept');
+    focus.area('fa_old', 'Billing', 'dismissed', 'owner');
+    const { run, write } = cliRunner(dir, database, focus.save);
+    run(['apply', write('d.json', { groups: [{ title: 'Release cards', conversations: [key('a'), key('b')], links: [{ kind: 'shared-work-list', conversations: [key('a'), key('b')], evidence: 'work list "release-cards" in repo/tree' }] }, { title: 'Pricing page', conversations: [key('c')] }] })]);
+    const input = run(['focus-input']);
+    expect(input.areas.map((area: any) => area.focusAreaId)).toEqual(['fa_cards']);
+    expect(input.dismissed.map((area: any) => [area.focusAreaId, area.name])).toEqual([['fa_old', 'Billing']]);
+    const placements = [{ anchor: key('a'), focusAreaId: 'fa_cards', evidence: 'Cards.' }, { anchor: key('c'), focusAreaId: 'other', evidence: 'Pricing.' }];
+    const promote = { kind: 'promote', name: 'Release', goal: 'Releases ship.', about: 'Cards, spacing and release work.', anchors: [key('a')], sameAs: null, evidence: 'Two separate asks: build cards, fix spacing.' };
+    const refused = async (answer: unknown, pattern: RegExp, flags: string[] = []) => {
+      const before = focus.rows();
+      await expect(run(['record-focus', ...flags, write('f.json', answer)])).rejects.toThrow(pattern);
+      expect(focus.rows()).toBe(before);
+    };
+    await refused({ placements: [{ ...placements[0], focusAreaId: 'fa_old' }, placements[1]], proposals: [] }, /fa_old \("Billing"\), which the owner dismissed/);
+    await refused({ placements, proposals: [{ ...promote, sameAs: 'fa_old' }] }, /the area the owner dismissed .*never propose it again/);
+    await refused({ placements, proposals: [{ ...promote, sameAs: 'fa_nope' }] }, /not a listed area/);
+    await refused({ placements, proposals: [{ ...promote, kind: 'new', anchors: [key('a'), key('c')] }] }, /new areas are proposed from Other in their own question/);
+    await refused({ placements, proposals: [{ ...promote, anchors: [key('a'), key('c')] }] }, /promotes one request/);
+    // A request placed in a kept area can still be promoted: it holds several separate asks.
+    const saved = await run(['record-focus', write('f.json', { placements, proposals: [promote] })]);
+    expect(saved).toMatchObject({ placed: 2, proposed: 1 });
+    expect(saved.focusAreaIds[0]).toMatch(/^fa_[0-9a-f]{12}$/);
+    let after = readFocus(database, { localDeviceId: '' });
+    expect(after.focusAreas.find((area) => area.focusAreaId === saved.focusAreaIds[0])).toMatchObject({ name: 'Release', status: 'suggested', source: 'promotion', decidedBy: 'system' });
+    expect(after.focusAreaIdByAnchor.get(key('a'))).toBe(saved.focusAreaIds[0]);
+    // sameAs naming a listed area: its requests go there and no area is added.
+    run(['apply', write('d2.json', { groups: [{ title: 'Pricing and plans', conversations: [key('c')] }] })]);
+    const areasBefore = after.focusAreas.length;
+    expect(await run(['record-focus', write('f2.json', { placements: [{ anchor: key('c'), focusAreaId: 'other', evidence: 'x' }], proposals: [{ ...promote, name: 'Cards again', anchors: [key('c')], sameAs: 'fa_cards' }] })])).toMatchObject({ placed: 1, proposed: 0 });
+    after = readFocus(database, { localDeviceId: '' });
+    expect(after.focusAreas).toHaveLength(areasBefore);
+    expect(after.focusAreaIdByAnchor.get(key('c'))).toBe('fa_cards');
+    expect(after.focusAreas.find((area) => area.focusAreaId === 'fa_old')?.status).toBe('dismissed');
+    // The worker refuses a placement or a sameAs into a dismissed area on its own, whatever the CLI checked.
+    expect(() => routerFocusRows({ placements: [{ anchorConversationKey: key('a'), focusAreaId: 'fa_old', basis: '0123456789abcdef', evidence: 'x' }], proposals: [] }, readFocusAreas(database, { localDeviceId: '' }))).toThrow(/fa_old, which no longer takes requests/);
+    expect(() => routerFocusRows({ placements: [], proposals: [{ kind: 'new', name: 'Billing', goal: 'g', about: 'a', evidence: 'e', sameAs: 'fa_old', requests: [{ anchorConversationKey: key('a'), basis: '0123456789abcdef' }] }] }, readFocusAreas(database, { localDeviceId: '' }))).toThrow(/owner dismissed; it is never proposed again/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+  it('the Other pass clusters router-placed Other requests, leaves the owner\'s Other alone, and runs again only when that set changes', async () => {
+  const dir = ledgerDir();
+  try {
+    const database = fixtureDatabase();
+    database.prepare('INSERT INTO sdk_sessions VALUES (?, ?, ?, ?, ?, ?, ?)').run(4, 'claude', 'd', 'm4', 'repo/tree', 'Tidy the card copy', NOW - DAY);
+    database.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)').run(4, 1, 'Tidy the card copy', NOW - DAY);
+    const focus = focusFixture(database);
+    const { run, write } = cliRunner(dir, database, focus.save);
+    run(['apply', write('d.json', { groups: ['a', 'b', 'c', 'd'].map((session) => ({ title: `Request ${session}`, conversations: [key(session)] })) })]);
+    // The owner put d in Other themselves; the router put a, b and c there.
+    focus.insert(placementRowFields({ anchorConversationKey: key('d'), focusAreaId: 'other', placedBy: 'owner', evidence: 'Moved by you in My Work.' }));
+    await run(['record-focus', write('f.json', { placements: ['a', 'b', 'c'].map((session) => ({ anchor: key(session), focusAreaId: 'other', evidence: 'Fits no area.' })), proposals: [] })]);
+    const needs = refreshNeeds({ dir, database, now: NOW, localDeviceId: '' });
+    expect([needs.unplaced, needs.otherChanged]).toEqual([0, true]);
+    const other = run(['focus-input', '--other']);
+    expect(other.due).toBe(true);
+    expect(other.other.map((request: any) => request.anchor)).toEqual([key('a'), key('b'), key('c')]);
+    const cluster = { kind: 'new', name: 'Polish', goal: 'The release looks finished.', about: 'Spacing and copy fixes.', anchors: [key('b'), key('c')], sameAs: null, evidence: 'Both are steps of finishing the release.' };
+    await expect(run(['record-focus', '--other', write('o0.json', { placements: [{ anchor: key('a'), focusAreaId: 'other', evidence: 'x' }], proposals: [] })])).rejects.toThrow(/places nothing/);
+    await expect(run(['record-focus', '--other', write('o1.json', { placements: [], proposals: [{ ...cluster, anchors: [key('b'), key('d')] }] })])).rejects.toThrow(/not a listed Other request/);
+    await expect(run(['record-focus', '--other', write('o2.json', { placements: [], proposals: [{ ...cluster, anchors: [key('b')] }] })])).rejects.toThrow(/clusters one request/);
+    const saved = await run(['record-focus', '--other', write('o3.json', { placements: [], proposals: [cluster] })]);
+    expect(saved).toMatchObject({ placed: 2, proposed: 1 });
+    const after = readFocus(database, { localDeviceId: '' });
+    expect(after.focusAreas[0]).toMatchObject({ name: 'Polish', status: 'suggested', source: 'clustering' });
+    expect([key('b'), key('c'), key('d')].map((anchor) => after.focusAreaIdByAnchor.get(anchor))).toEqual([saved.focusAreaIds[0], saved.focusAreaIds[0], 'other']);
+    // The pass looked at what is left in Other (a): a quiet refresh does not ask again.
+    expect(run(['focus-input', '--other']).due).toBe(false);
+    expect(refreshNeeds({ dir, database, now: NOW, localDeviceId: '' }).otherChanged).toBe(false);
+    // An empty answer still records the pass.
+    focus.insert(placementRowFields({ anchorConversationKey: key('b'), focusAreaId: 'other', placedBy: 'router', basis: null as any, evidence: 'Back to Other.' }));
+    expect(run(['focus-input', '--other']).due).toBe(true);
+    await run(['record-focus', '--other', write('o4.json', { placements: [], proposals: [] })]);
+    expect(run(['focus-input', '--other']).due).toBe(false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+  it('the Other pass runs again when a request in Other changes and is placed back in Other', async () => {
+  const dir = ledgerDir();
+  try {
+    const database = fixtureDatabase();
+    const focus = focusFixture(database);
+    const { run, write } = cliRunner(dir, database, focus.save);
+    run(['apply', write('d.json', { groups: ['a', 'b'].map((session) => ({ title: `Request ${session}`, conversations: [key(session)] })) })]);
+    await run(['record-focus', write('f.json', { placements: ['a', 'b'].map((session) => ({ anchor: key(session), focusAreaId: 'other', evidence: 'Fits no area.' })), proposals: [] })]);
+    await run(['record-focus', '--other', write('o.json', { placements: [], proposals: [] })]);
+    expect(run(['focus-input', '--other']).due).toBe(false);
+    // Another computer's pass record syncs in, newer, over its own local titles: it is not this computer's pass.
+    focus.insert({ other_pass_hash: 'another-computers-basis' }, 'other-computer');
+    expect(run(['focus-input', '--other']).due).toBe(false);
+    expect(refreshNeeds({ dir, database, now: NOW, localDeviceId: '' }).otherChanged).toBe(false);
+    // Request a changes: the placing step looks at it again and leaves it in Other. The same two requests are in
+    // Other, but a holds something the last proposal pass never saw.
+    run(['apply', write('d2.json', { groups: [{ title: 'Request a, now with pricing', conversations: [key('a')] }] })]);
+    expect(run(['focus-input']).requests.map((request: any) => request.anchor)).toEqual([key('a')]);
+    await run(['record-focus', write('f2.json', { placements: [{ anchor: key('a'), focusAreaId: 'other', evidence: 'Still fits no area.' }], proposals: [] })]);
+    expect(run(['focus-input', '--other']).due).toBe(true);
+    expect(refreshNeeds({ dir, database, now: NOW, localDeviceId: '' }).otherChanged).toBe(true);
+    await run(['record-focus', '--other', write('o2.json', { placements: [], proposals: [] })]);
+    expect(run(['focus-input', '--other']).due).toBe(false);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -333,7 +456,7 @@ describe('overall requests and progress reviews', () => {
   try {
     const database = fixtureDatabase();
     let output: any;
-    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; } }); return output; };
+    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; }, localDeviceId: '' }); return output; };
     const write = (name: string, value: unknown) => { const path = join(dir, name); writeFileSync(path, JSON.stringify(value)); return path; };
     const group = groupIdFor(key('a'));
     run(['apply', write('d.json', { groups: [{ title: 'Release cards', conversations: [key('a')] }] })]);
@@ -356,7 +479,7 @@ describe('overall requests and progress reviews', () => {
   try {
     const database = fixtureDatabase();
     let output: any;
-    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; } }); return output; };
+    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; }, localDeviceId: '' }); return output; };
     const write = (name: string, value: unknown) => { const path = join(dir, name); writeFileSync(path, JSON.stringify(value)); return path; };
     const group = groupIdFor(key('a'));
     run(['apply', write('d.json', { groups: [{ title: 'Release cards', conversations: [key('a')] }] })]);
@@ -383,7 +506,7 @@ describe('overall requests and progress reviews', () => {
   try {
     const database = fixtureDatabase();
     let output: any;
-    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; } }); return output; };
+    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; }, localDeviceId: '' }); return output; };
     const write = (name: string, value: unknown) => { const path = join(dir, name); writeFileSync(path, JSON.stringify(value)); return path; };
     run(['apply', write('d.json', { groups: [{ title: 'Release cards', conversations: [key('a')] }, { title: 'Pricing page', conversations: [key('c')] }] })]);
     const review = (session: string, percent: number, now: number) => run(['record-progress', write('r.json', { groupId: groupIdFor(key(session)), state: 'in-progress', percent, summary: 'Under way.', reviewBasis: run(['show', groupIdFor(key(session))], now).reviewBasis })], now);
@@ -397,53 +520,40 @@ describe('overall requests and progress reviews', () => {
     const input = run(['story-input']);
     expect(input.reviews.map((entry: { groupId: string }) => entry.groupId)).toEqual([groupIdFor(key('c'))]);
     expect(input.previousStory.narrative).toBe('Two requests under way.');
+    // Rules owner-goals put in the story are carried by record-story but never shown to the story model, so it
+    // cannot echo copies of them back without their source.
+    const ownerGoalsRule = { preference: 'Ship daily.', when: '', kind: 'directive', supportCount: 1, quotes: [], source: 'owner-goals' };
+    writeFileSync(join(dir, 'story.json'), JSON.stringify({ ...readLedger(dir).story, preferences: [{ preference: 'Keep the design.', quotes: [] }, ownerGoalsRule] }));
+    expect(run(['story-input']).previousStory.preferences.map((preference: { preference: string }) => preference.preference)).toEqual(['Keep the design.']);
+    run(['record-story', write('s3.json', { narrative: 'Two requests under way.', preferences: [{ preference: 'Keep the design.' }] })], NOW + 4000);
+    expect(readLedger(dir).story.preferences.map((preference: { preference: string; source?: string }) => [preference.preference, preference.source ?? null]))
+      .toEqual([['Keep the design.', null], ['Ship daily.', 'owner-goals']]);
     // The agent gets its budget up front, and an over-long story is refused with its length.
     expect(input).toMatchObject({ narrativeLimit: 12000, previousNarrativeChars: 'Two requests under way.'.length, roomChars: 12000 - 'Two requests under way.'.length });
     expect(() => run(['record-story', write('s.json', { narrative: 'x'.repeat(12001) })])).toThrow('narrative is 12001 characters; it must be 1–12000. Cut at least 1 characters.');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-  it('a refresh is needed for due reviews, stale goals or unaligned groups, and not otherwise', () => {
+  it('a refresh is needed for due reviews, stale goals or unplaced requests, and not otherwise', async () => {
   const dir = ledgerDir();
   try {
     const database = fixtureDatabase();
-    let output: any;
-    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; } }); return output; };
-    expect(refreshNeeds({ dir, database, now: NOW })).toEqual({ due: 0, ungrouped: 3, goalsStale: true, unaligned: 0, needed: true });
+    const focus = focusFixture(database);
+    const { run, write } = cliRunner(dir, database, focus.save);
+    expect(refreshNeeds({ dir, database, now: NOW, localDeviceId: '' })).toEqual({ due: 0, ungrouped: 3, goalsStale: true, unplaced: 0, otherChanged: false, needed: true });
     saveGoals(database, new Date(NOW - 2 * DAY).toISOString());
-    const decisions = join(dir, 'decisions.json');
-    writeFileSync(decisions, JSON.stringify({ groups: [{ title: 'Release cards', conversations: [key('a'), key('b')], links: [{ kind: 'shared-work-list', conversations: [key('a'), key('b')], evidence: 'work list "release-cards" in repo/tree' }] }, { title: 'Pricing page', conversations: [key('c')] }] }));
-    run(['apply', decisions]);
-    expect(refreshNeeds({ dir, database, now: NOW })).toEqual({ due: 2, ungrouped: 0, goalsStale: true, unaligned: 2, needed: true });
+    run(['apply', write('decisions.json', { groups: [{ title: 'Release cards', conversations: [key('a'), key('b')], links: [{ kind: 'shared-work-list', conversations: [key('a'), key('b')], evidence: 'work list "release-cards" in repo/tree' }] }, { title: 'Pricing page', conversations: [key('c')] }] })]);
+    // With no focus areas at all, every request still needs a place (Other, or an area the step proposes).
+    expect(refreshNeeds({ dir, database, now: NOW, localDeviceId: '' })).toEqual({ due: 2, ungrouped: 0, goalsStale: true, unplaced: 2, otherChanged: false, needed: true });
     for (const groupId of [groupIdFor(key('a')), groupIdFor(key('c'))]) {
-      const review = join(dir, 'review.json');
-      writeFileSync(review, JSON.stringify({ groupId, state: 'in-progress', percent: 50, summary: 'Under way.', reviewBasis: run(['show', groupId]).reviewBasis }));
-      run(['record-progress', review]);
+      run(['record-progress', write('review.json', { groupId, state: 'in-progress', percent: 50, summary: 'Under way.', reviewBasis: run(['show', groupId]).reviewBasis })]);
     }
-    const alignment = join(dir, 'alignment-input.json');
-    writeFileSync(alignment, JSON.stringify({ links: [{ groupId: groupIdFor(key('a')), goal: 'Priority: Ship cards', evidence: 'Release cards are the cards to ship.' }], unaligned: [groupIdFor(key('c'))] }));
-    expect(run(['record-alignment', alignment])).toEqual({ aligned: 1, unaligned: 1 });
-    expect(refreshNeeds({ dir, database, now: NOW - 2 * DAY + 1000 })).toEqual({ due: 0, ungrouped: 0, goalsStale: false, unaligned: 0, needed: false });
+    await run(['record-focus', write('focus.json', { placements: [{ anchor: key('a'), focusAreaId: 'other', evidence: 'Cards.' }, { anchor: key('c'), focusAreaId: 'other', evidence: 'Pricing.' }], proposals: [] })]);
+    // Two requests newly in Other: the proposal pass is due until it has looked at them.
+    expect(refreshNeeds({ dir, database, now: NOW - 2 * DAY + 1000, localDeviceId: '' })).toMatchObject({ otherChanged: true, needed: true });
+    await run(['record-focus', '--other', write('other.json', { placements: [], proposals: [] })]);
+    expect(refreshNeeds({ dir, database, now: NOW - 2 * DAY + 1000, localDeviceId: '' })).toEqual({ due: 0, ungrouped: 0, goalsStale: false, unplaced: 0, otherChanged: false, needed: false });
     expect(run(['refresh-needs'], NOW - 2 * DAY + 1000).needed).toBe(false);
-    // A goals update that keeps the same goals (new ranks, quotes or summary) needs no new alignment.
-    saveGoals(database, new Date(NOW).toISOString());
-    expect(refreshNeeds({ dir, database, now: NOW }).unaligned).toBe(0);
-    // Ship cards is replaced by Pricing.
-    const goalWrite = database.prepare('INSERT INTO work_state_entries (project, list_name, fields, created_at_epoch) VALUES (?, ?, ?, ?)');
-    goalWrite.run('owner', 'owner-goals', JSON.stringify({ task: 'Priority: Ship cards', status: 'dropped' }), 3);
-    goalWrite.run('owner', 'owner-goals', JSON.stringify({ task: 'Priority: Pricing', status: 'todo', goal_kind: 'priority', rank: 1, title: 'Pricing' }), 4);
-    expect(run(['align-input']).groups.map((group: { groupId: string }) => group.groupId)).toEqual([groupIdFor(key('a')), groupIdFor(key('c'))]);
-    writeFileSync(alignment, JSON.stringify({ links: [{ groupId: groupIdFor(key('c')), goal: 'Priority: Pricing', evidence: 'The pricing page.' }], unaligned: [groupIdFor(key('a'))] }));
-    run(['record-alignment', alignment]);
-    expect(refreshNeeds({ dir, database, now: NOW }).unaligned).toBe(0);
-    // A new goal: any group may serve it, so every group is asked (keeping its previous links).
-    goalWrite.run('owner', 'owner-goals', JSON.stringify({ task: 'Priority: Docs', status: 'todo', goal_kind: 'priority', rank: 2, title: 'Docs' }), 5);
-    expect(refreshNeeds({ dir, database, now: NOW }).unaligned).toBe(2);
-    writeFileSync(alignment, JSON.stringify({ links: [{ groupId: groupIdFor(key('c')), goal: 'Priority: Pricing', evidence: 'The pricing page.' }, { groupId: groupIdFor(key('a')), goal: 'Priority: Docs', evidence: 'Card docs.' }] }));
-    run(['record-alignment', alignment]);
-    // A goal that is gone: only the group linked to it is asked again.
-    goalWrite.run('owner', 'owner-goals', JSON.stringify({ task: 'Priority: Docs', status: 'dropped' }), 6);
-    expect(run(['align-input']).groups.map((group: { groupId: string }) => group.groupId)).toEqual([groupIdFor(key('a'))]);
     const before = ledgerSignature(dir);
     writeFileSync(join(dir, 'refresh.json'), JSON.stringify({ state: 'running' }));
     expect(ledgerSignature(dir)).not.toBe(before);
@@ -456,7 +566,7 @@ describe('overall requests and progress reviews', () => {
   try {
     const database = fixtureDatabase();
     let output: any;
-    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; } }); return output; };
+    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; }, localDeviceId: '' }); return output; };
     const decisions = join(dir, 'decisions.json');
     writeFileSync(decisions, JSON.stringify({ groups: [{ title: 'Pricing page', conversations: [key('c')] }] }));
     run(['apply', decisions]);
@@ -477,31 +587,44 @@ describe('overall requests and progress reviews', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-  it('the snapshot joins alignment onto requests: linked, explicitly none, or not linked yet', () => {
-  const source = new WorkStateSource({ ledgerDir: null });
-  const goal = { id: '["owner","owner-goals"]-ship', task: 'Priority: Ship cards', title: 'Ship cards', kind: 'priority' };
-  source.agentView = { ...source.agentView, goals: { generatedAt: '2026-10-01T10:00:00Z', priorities: [goal], openAsks: [] }, humanRequests: [{ id: 'r1', groupId: 'g_1' }, { id: 'r2', groupId: 'g_2' }, { id: 'r3', groupId: 'g_3' }, { id: 'r4', groupId: null }] } as any;
-  source.ledger = { alignment: { links: { g_1: [{ goal: 'Priority: Ship cards', evidence: 'The cards.' }], g_3: [{ goal: 'Priority: Gone', evidence: 'An old goal.' }] }, unaligned: ['g_2'], goals: ['Priority: Ship cards', 'Priority: Gone'], alignedAt: '2026-10-02T00:00:00Z' } } as any;
-  const { humanRequests, goals } = source.goalLinks() as any;
-  expect(humanRequests[0].goals).toEqual([{ goalId: goal.id, goal: goal.task, title: 'Ship cards', kind: 'priority', evidence: 'The cards.' }]);
-  expect(humanRequests[1].goals).toEqual([]);
-  expect(humanRequests[2].goals).toBeUndefined();
-  expect(humanRequests[3].goals).toBeUndefined();
-  expect(goals.alignedAt).toBe('2026-10-02T00:00:00Z');
-  // A newer goals run with the same goals keeps "serves none"; an added goal makes it a question again.
-  source.agentView = { ...source.agentView, goals: { ...source.agentView.goals, generatedAt: '2026-10-05T10:00:00Z' } } as any;
-  expect((source.goalLinks() as any).humanRequests[1].goals).toEqual([]);
-  source.agentView = { ...source.agentView, goals: { ...source.agentView.goals, openAsks: [{ ...goal, id: 'new', task: 'Open ask: Docs', title: 'Docs', kind: 'open-ask' }] } } as any;
-  expect((source.goalLinks() as any).humanRequests[1].goals).toBeUndefined();
-});
-
 });
 
 function saveGoals(database: Database, generatedAt: string) {
   const write = database.prepare('INSERT INTO work_state_entries (project, list_name, fields, created_at_epoch) VALUES (?, ?, ?, ?)');
   write.run('owner', 'owner-goals', JSON.stringify({ human_summary: 'Ship the cards.', generated_at: generatedAt }), 1);
-  write.run('owner', 'owner-goals', JSON.stringify({ task: 'Priority: Ship cards', status: 'todo', goal_kind: 'priority', rank: 1, title: 'Ship cards', evidence: '2026-10-01 10:00 | ship the cards | today' }), 2);
-  write.run('owner', 'owner-goals', JSON.stringify({ task: 'Open ask: Old thing', status: 'todo', goal_kind: 'open-ask', rank: 1, title: 'Old thing' }), 3);
-  write.run('owner', 'owner-goals', JSON.stringify({ task: 'Open ask: Old thing', status: 'dropped' }), 4);
-  write.run('owner', 'owner-goals/2026-09-01', JSON.stringify({ task: 'Priority: History', status: 'done', title: 'History' }), 5);
+  write.run('owner', 'owner-goals', JSON.stringify({ task: 'Focus area: Ship cards', status: 'todo', goal_kind: 'focus-area', rank: 1, title: 'Ship cards', evidence: '2026-10-01 10:00 | ship the cards | today' }), 2);
+  write.run('owner', 'owner-goals', JSON.stringify({ task: 'Ask: Old thing', status: 'todo', goal_kind: 'ask', rank: 1, title: 'Old thing' }), 3);
+  write.run('owner', 'owner-goals', JSON.stringify({ task: 'Ask: Old thing', status: 'dropped' }), 4);
+  write.run('owner', 'owner-goals/2026-09-01', JSON.stringify({ task: 'Focus area: History', status: 'done', title: 'History' }), 5);
+}
+
+/** My Focus rows in the fixture database, written the way the worker writes them (routerFocusRows for the focus step). */
+function focusFixture(database: Database) {
+  database.exec('ALTER TABLE work_state_entries ADD COLUMN origin_device_id TEXT');
+  let at = 1000;
+  const insertRow = database.prepare('INSERT INTO work_state_entries (project, list_name, fields, created_at_epoch, origin_device_id) VALUES (?, ?, ?, ?, ?)');
+  const insert = (fields: Record<string, unknown>, device: string | null = null) => { insertRow.run('home', 'my-focus', JSON.stringify(fields), at++, device); };
+  return {
+    insert,
+    area(focusAreaId: string, name: string, status: 'suggested' | 'kept' | 'dismissed', decidedBy: 'owner' | 'system' = status === 'suggested' ? 'system' : 'owner') {
+      insert(focusAreaRowFields({ focusAreaId, name, goal: `Make ${name} good.`, about: `Everything about ${name}.`, status, priorityRank: 1, ownerRank: null, source: 'seed', mergedInto: null, evidence: null, decidedBy }));
+    },
+    rows: () => (database.prepare("SELECT COUNT(*) AS count FROM work_state_entries WHERE list_name = 'my-focus'").get() as { count: number }).count,
+    save(body: RouterFocusBody) {
+      const planned = routerFocusRows(body, readFocusAreas(database, { localDeviceId: '' }));
+      for (const fields of planned.rows) insert(fields);
+      return { placed: planned.placed, focusAreaIds: planned.focusAreaIds };
+    },
+  };
+}
+
+/** The CLI against the fixture; record-focus resolves its output (a refusal rejects). */
+function cliRunner(dir: string, database: Database, saveFocus: (body: RouterFocusBody) => { placed: number; focusAreaIds: string[] }) {
+  let output: any;
+  const options = (now: number) => ({ dir, database, now, print: (value: unknown) => { output = value; }, saveFocus, localDeviceId: '' });
+  const run = (argv: string[], now = NOW): any => argv[0] === 'record-focus'
+    ? Promise.resolve().then(() => runCli(argv, options(now))).then(() => output)
+    : (runCli(argv, options(now)), output);
+  const write = (name: string, value: unknown) => { const path = join(dir, name); writeFileSync(path, JSON.stringify(value)); return path; };
+  return { run, write };
 }
