@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
 import { agentById, deviceById, isSampleHref, measuredEstimate, SAMPLE_DEVICES, useWorkModel, type Device, type LiveState, type Request, type Run, type SkillRun } from '@/data'
 import type { AutoRefresh } from '@/live/work-data-source'
+import { focusAreaLabel, resolveFocusAreaId } from '@/live/to-focus-model'
 import { AgentMark } from './brand'
 
 export interface Workspace { mode: 'home' | 'web'; team: boolean; connected: boolean }
@@ -69,23 +70,23 @@ export function StateBadge({ state }: { state: LiveState }) {
 }
 
 /**
- * Links a request to the goal it serves, or says it serves none (decision 1).
- * A quiet link, not a colored pill: color is reserved for state. Opens My Goals on that goal.
+ * The focus area a request sits in: the area's name, "Other", or "Sorting…" before the next refresh places it.
+ * A quiet link, not a colored pill: color is reserved for state. Opens My Work on that area.
  */
-export function GoalChip({ goalId, onOpen }: { goalId?: string | null; onOpen?: (goalId: string) => void }) {
-  const { priorities, openAsks } = useWorkModel()
-  // Resolved through the loaded goals only: a goal id the model doesn't have reads "Goal not linked yet".
-  const goal = goalId ? [...priorities, ...openAsks].find((entry) => entry.id === goalId) ?? null : null
+export function FocusAreaChip({ focusAreaId, onOpen }: { focusAreaId?: string; onOpen?: (focusAreaId: string) => void }) {
+  const { focusAreas } = useWorkModel()
+  const placed = resolveFocusAreaId(focusAreaId, focusAreas)
+  const label = focusAreaLabel(focusAreaId, focusAreas)
   return (
-    <Req ids={['D1']}>
-      {goal ? (
-        <button type="button" onClick={(event) => { event.stopPropagation(); onOpen?.(goal.id) }} className="inline-flex min-h-11 max-w-full items-center gap-1.5 self-start text-left text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline md:min-h-6">
+    <Req ids={['R16.5']}>
+      {placed ? (
+        <button type="button" onClick={(event) => { event.stopPropagation(); onOpen?.(placed) }} className="inline-flex min-h-11 max-w-full items-center gap-1.5 self-start text-left text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline md:min-h-6">
           <CornerLeftUpIcon className="size-3.5 shrink-0" />
-          <span className="truncate">{goal.title}</span>
+          <span className="truncate">{label}</span>
         </button>
       ) : (
-        // Not linked yet is not the same claim as "serves no goal".
-        <span className="inline-flex min-h-6 items-center gap-1.5 self-start text-xs text-muted-foreground/80 italic">{goalId === null ? 'No goal' : 'Goal not linked yet'}</span>
+        // Not placed yet is not the same claim as Other: the next refresh places it.
+        <span className="inline-flex min-h-6 items-center gap-1.5 self-start text-xs text-muted-foreground/80 italic">{label}</span>
       )}
     </Req>
   )
@@ -174,7 +175,8 @@ export function LiveIndicator() {
               {live && <span className="absolute inline-flex size-full rounded-full bg-shipped-foreground/40 motion-safe:animate-ping" />}
               <span className={cn('relative inline-flex size-2 rounded-full', live ? 'bg-shipped-foreground' : connection.tone === 'warning' ? 'bg-attention-foreground' : 'bg-idle-foreground')} />
             </span>
-            {demonstration ? 'Live' : connection.label}
+            {/* Phone: the dot alone (its colour carries the state, the tooltip the words) so the page title keeps whole words. */}
+            <span className="sr-only sm:not-sr-only">{demonstration ? 'Live' : connection.label}</span>
           </span>
         </TooltipTrigger>
         <TooltipContent className="max-w-72">

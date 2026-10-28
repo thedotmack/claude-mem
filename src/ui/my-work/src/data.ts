@@ -33,8 +33,10 @@ export interface Request {
   id: string
   title: string | null
   summary: string | null
-  /** The goal this serves. `null` = serves no goal; `undefined` = not linked yet (never shown as "No goal"). */
-  goalId?: string | null
+  /** The focus area it sits in: an area id, OTHER_FOCUS_AREA_ID, or absent while it is not sorted yet ("Sorting…"). */
+  focusAreaId?: string
+  /** False when the request has no conversation to file a move under (the worker refuses it). Sample fixtures leave it out. */
+  canMoveFocus?: boolean
   askedBy: string
   agentId: string
   startedAt: string
@@ -84,33 +86,60 @@ export interface Request {
   closed?: boolean
 }
 
-export interface Goal {
+/** The permanent bucket for requests that fit no area. Never an area id (my-focus.mjs OTHER_FOCUS_AREA_ID). */
+export const OTHER_FOCUS_AREA_ID = 'other'
+
+/** One finishable ask the owner-goals run found, under the focus area it belongs to. Asks are not linked to requests. */
+export interface FocusAsk { id: string; title: string; timesAsked: number; latestAt: string; quotes: Quote[] }
+
+/** One focus area (the my-focus list): the top level of My Work. Every request sits in one area, or in Other. */
+export interface FocusArea {
   id: string
-  kind: 'Priority' | 'Open ask'
-  rank: number
-  title: string
-  product: string
-  latestAt: string
-  timesAsked: number
+  name: string
+  /** One sentence saying what the area is for; null until one is written. */
+  goal: string | null
+  status: 'suggested' | 'kept' | 'dismissed' | 'done'
+  /** The owner's order. When set it wins over priorityRank. */
+  ownerRank: number | null
+  priorityRank: number | null
+  source: 'owner-goals' | 'clustering' | 'promotion' | 'seed' | 'owner'
+  /** Set when merged: its requests show under this area. */
+  mergedInto: string | null
+  /** Why the system suggested it, when it has no quotes of the owner's own. */
+  evidence: string | null
+  /** From the owner-goals item for this area; null and [] when the area has none. */
+  timesAsked: number | null
+  latestAt: string | null
   quotes: Quote[]
+  /** Owner-goals asks in this area. None is linked to a request, so each reads "Not started". */
+  asks: FocusAsk[]
 }
 
-/** A goal plus how the owner-goals run linked it to work. Priorities link through request.goalId (decision 1). */
-export interface GoalItem extends Goal {
-  /** Open asks only: requests the run matched to this ask, since a request has one goal but can answer an ask. */
-  servedBy?: string[]
+/** One owner change to My Focus, as POST /api/work-view/focus takes it (WorkViewRoutes.ts focusBody). */
+export interface FocusChange {
+  action: 'keep' | 'rename' | 'edit-goal' | 'merge' | 'dismiss' | 'done' | 'reorder' | 'move-request' | 'restore-suggestion'
+  focusAreaId?: string
+  /** False when the request has no conversation to file a move under (the worker refuses it). Sample fixtures leave it out. */
+  canMoveFocus?: boolean
+  name?: string
+  goal?: string
+  intoFocusAreaId?: string
+  /** reorder: every live area (not dismissed, not merged), first = highest priority. */
+  focusAreaIds?: string[]
+  requestId?: string
 }
 
 /** The current owner-goals run. */
 export interface CurrentPeriod { label: string; windowDays: number; promptCount: number }
 
-/** One saved past month (owner-goals/<start>). Its asks are archived with the month. */
+/** One saved past month (owner-goals/<start>), shown in Past focus. Its asks are archived with the month. */
 export interface PastPeriod {
   id: string
   label: string
   promptCount: number
   headline: string
-  priorities: { title: string; product: string; timesAsked: number; quote: Quote | null }[]
+  /** That month's focus areas; `label` is the area (or, before 2026-10-27, the product) the run named. */
+  areas: { title: string; label: string; timesAsked: number; quote: Quote | null }[]
 }
 
 /** When and where a skill last ran. Real timestamps only; no cost (owner, Oct 20, 2026). */
@@ -144,7 +173,7 @@ export const SAMPLE_REQUESTS: Request[] = [
   {
     ...emptyRequest,
     id: 'r1', title: 'Spec and wireframe the new work viewer', summary: 'Turn your prompts into a spec, then a React wireframe that traces every element back to it.',
-    goalId: 'g1', askedBy: 'Alex', agentId: 'claude', startedAt: 'Oct 20, 1:16 pm', startedAtIso: '2026-10-20T13:16:00-07:00', runningFor: '42 min', stage: 'Building', state: 'working',
+    focusAreaId: 'fa-viewer', askedBy: 'Alex', agentId: 'claude', startedAt: 'Oct 20, 1:16 pm', startedAtIso: '2026-10-20T13:16:00-07:00', runningFor: '42 min', stage: 'Building', state: 'working',
     progress: { percent: 70, readings: 3, reviewedAt: '1:50 pm', history: [30, 55, 70], coverage: { reviewed: 2, total: 2 } }, estimate: 'at this pace, about Oct 21',
     next: { who: 'bot', text: 'Finish the My Rules screens' }, activityWord: 'Editing',
     workstreams: [
@@ -172,7 +201,7 @@ export const SAMPLE_REQUESTS: Request[] = [
   },
   {
     ...emptyRequest,
-    id: 'r2', title: null, summary: null, goalId: 'g2', askedBy: 'Alex', agentId: 'codex', startedAt: 'Oct 20, 1:58 pm', startedAtIso: '2026-10-20T13:58:00-07:00', runningFor: '3 min', stage: 'Planning', state: 'working',
+    id: 'r2', title: null, summary: null, askedBy: 'Alex', agentId: 'codex', startedAt: 'Oct 20, 1:58 pm', startedAtIso: '2026-10-20T13:58:00-07:00', runningFor: '3 min', stage: 'Planning', state: 'working',
     progress: { percent: 0, readings: 0, reviewedAt: '—', history: [] }, estimate: null, next: { who: 'bot', text: 'Read the current usage rollup' }, activityWord: 'Searching',
     resolvesTo: { title: 'Show real usage on the price forecast page', summary: 'Lead with what you spend today, then what it costs as usage grows.' },
     terminal: ['$ work_state_write list=usage-forecast', '  task: "read current usage rollup" status=doing', '$ rg "forecast" src/app/admin', '  12 matches in 4 files'],
@@ -180,7 +209,7 @@ export const SAMPLE_REQUESTS: Request[] = [
   {
     ...emptyRequest,
     id: 'r3', title: 'Move embeddings into their own table', summary: 'Stops write stalls by keeping vector indexes off the main content table.',
-    goalId: 'g2', askedBy: 'Alex', agentId: 'claude-sync', startedAt: 'Oct 17, 7:55 am', startedAtIso: '2026-10-17T07:55:00-07:00', runningFor: '3 days', stage: 'Reviewing', state: 'needs-check',
+    focusAreaId: 'fa-sync', askedBy: 'Alex', agentId: 'claude-sync', startedAt: 'Oct 17, 7:55 am', startedAtIso: '2026-10-17T07:55:00-07:00', runningFor: '3 days', stage: 'Reviewing', state: 'needs-check',
     progress: { percent: 100, readings: 4, reviewedAt: 'Oct 20, 9:10 am', history: [40, 70, 90, 100], coverage: { reviewed: 2, total: 2 } }, estimate: null,
     next: { who: 'human', text: 'Check the remap queue drained' },
     workstreams: [
@@ -193,7 +222,7 @@ export const SAMPLE_REQUESTS: Request[] = [
   {
     ...emptyRequest,
     id: 'r4', title: 'Live request monitor with cards and list', summary: 'The first live version of My Work, with sortable list.',
-    goalId: 'g1', askedBy: 'Sam', agentId: 'codex', startedAt: 'Oct 16, 9:39 am', startedAtIso: '2026-10-16T09:39:00-07:00', runningFor: '2 days', stage: 'Shipped', state: 'shipped',
+    focusAreaId: 'fa-viewer', askedBy: 'Sam', agentId: 'codex', startedAt: 'Oct 16, 9:39 am', startedAtIso: '2026-10-16T09:39:00-07:00', runningFor: '2 days', stage: 'Shipped', state: 'shipped',
     progress: { percent: 100, readings: 5, reviewedAt: 'Oct 19', completedAt: 'Oct 18', history: [20, 45, 70, 90, 100], coverage: { reviewed: 3, total: 3 } }, estimate: null,
     next: { who: 'human', text: 'Write the release notes' },
     workProduct: [{ kind: 'PR', label: '#330 live human-request monitor', href: `${PULL_REQUEST}330` }, { kind: 'Deck', label: 'Launch walkthrough', href: '#', deliverable: true }],
@@ -202,7 +231,7 @@ export const SAMPLE_REQUESTS: Request[] = [
   {
     ...emptyRequest,
     id: 'r5', title: 'Fix the admin model price page', summary: 'Show current usage first, with scaling estimates below.',
-    goalId: null, askedBy: 'Priya', agentId: 'gemini', startedAt: 'Oct 20, 12:40 pm', startedAtIso: '2026-10-20T12:40:00-07:00', runningFor: '1 hr', stage: 'Building', state: 'your-move',
+    focusAreaId: OTHER_FOCUS_AREA_ID, askedBy: 'Priya', agentId: 'gemini', startedAt: 'Oct 20, 12:40 pm', startedAtIso: '2026-10-20T12:40:00-07:00', runningFor: '1 hr', stage: 'Building', state: 'your-move',
     progress: { percent: 30, readings: 1, reviewedAt: '1:30 pm', history: [30], coverage: { reviewed: 1, total: 2 } }, estimate: null,
     next: { who: 'human', text: 'Pick which forecast to keep' },
     workstreams: [
@@ -313,7 +342,6 @@ export function updateRequest(id: string, change: (request: Request) => Request)
   if (model.sourceKind !== 'sample') throw new Error(`updateRequest edits sample data only; ${model.sourceKind} requests change through their data source`)
   const index = SAMPLE_REQUESTS.findIndex((request) => request.id === id)
   if (index < 0) throw new Error(`No request ${id}`)
-  // Mutated in place so My Goals, which reads the same fixture objects, sees the change too.
   SAMPLE_REQUESTS[index] = assertConsistentRequest(change(SAMPLE_REQUESTS[index]))
   setWorkModelLoad({ state: 'loaded', model: { ...model, requests: [...SAMPLE_REQUESTS] } })
 }
@@ -358,7 +386,15 @@ export async function setRequestChecked(requestId: string, checked: boolean): Pr
 /** Saves one change to My Rules through the active source and shows the model it answers with. Rejects with the reason. */
 export async function saveRuleChange(change: RuleChange): Promise<WorkModel> {
   if (!activeWorkDataSource) throw new Error('No data source to save the rule change to')
-  const model = await activeWorkDataSource.saveRuleChange(change)
+  const model = await showingRefusedModel(activeWorkDataSource.saveRuleChange(change))
+  applyWorkModel(model)
+  return model
+}
+
+/** Saves one change to My Focus through the active source and shows the model it answers with. Rejects with the reason. */
+export async function saveFocusChange(change: FocusChange): Promise<WorkModel> {
+  if (!activeWorkDataSource) throw new Error('No data source to save the focus change to')
+  const model = await showingRefusedModel(activeWorkDataSource.saveFocusChange(change))
   applyWorkModel(model)
   return model
 }
@@ -373,6 +409,23 @@ export async function markAgentFinished(agentId: string): Promise<void> {
 export async function loadRulesInClaudeCode(): Promise<void> {
   if (!activeWorkDataSource) throw new Error('No data source to load the rules from')
   applyWorkModel(await activeWorkDataSource.loadRulesInClaudeCode())
+}
+
+/** Waits on you: your move, or done and waiting for your check. The nav counts and the Needs you filter both use this. */
+export const needsYou = (request: Request) => request.state === 'your-move' || request.state === 'needs-check'
+
+/** A save the worker refused, with the snapshot it answered: the screen shows that state, then the reason. */
+export class SaveRefusedError extends Error {
+  readonly model: WorkModel
+  constructor(message: string, model: WorkModel) { super(message); this.name = 'SaveRefusedError'; this.model = model }
+}
+
+/** Shows the model a refusal carried (a 409 answers the current snapshot), then rethrows the reason. */
+async function showingRefusedModel(save: Promise<WorkModel>): Promise<WorkModel> {
+  try { return await save } catch (error) {
+    if (error instanceof SaveRefusedError) applyWorkModel(error.model)
+    throw error
+  }
 }
 
 /** The ship estimate only from measured pace: two or more readings, the latest moving forward (decision 3). */

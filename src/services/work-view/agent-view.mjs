@@ -1,8 +1,9 @@
 // A read-only projection of recorded work and observation activity. A captured
 // tool call establishes its author, never the assignee or live presence.
 import { buildHumanRequests } from './request-projection.mjs';
-import { OWNER_GOALS_LIST, isOwnerGoalsList } from './owner-goals.mjs';
+import { goalKindOf, OWNER_GOALS_LIST, isOwnerGoalsList } from './owner-goals.mjs';
 import { buildRules, isMyRulesList } from './my-rules.mjs';
+import { buildFocusAreas, isMyFocusList, placeRequests } from './my-focus.mjs';
 import { isWorkProductField, productsFromFields, readProductRecords } from './work-product.mjs';
 import { agentStopFor, isAgentLifecycleList, readAgentStops } from './agent-lifecycle.mjs';
 import { withDerivedProjects } from './session-project.mjs';
@@ -282,7 +283,7 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
     activity.push({ ...entry, agentGroupId: group.id });
   }
 
-  const candidates = state.lists.filter((list) => !isOwnerGoalsList(list.name) && !isMyRulesList(list.name) && !isAgentLifecycleList(list.name)).flatMap((list) => [
+  const candidates = state.lists.filter((list) => !isOwnerGoalsList(list.name) && !isMyRulesList(list.name) && !isMyFocusList(list.name) && !isAgentLifecycleList(list.name)).flatMap((list) => [
     ...list.tasks.map((task) => ({ ...task, list, recordKind: 'task' })),
     ...(Object.keys(list.fields).some((key) => key !== 'task') ? [{ id: list.id, name: list.name, fields: list.fields, status: list.status, isOpen: !CLOSED.has(list.status), updatedAtEpoch: list.stateUpdatedAtEpoch, latestEntryId: state.events.find((event) => event.listId === list.id && event.task === null)?.id ?? 0, list, recordKind: 'list' }] : []),
   ]).sort((a, b) => b.updatedAtEpoch - a.updatedAtEpoch).slice(0, workLimit);
@@ -424,11 +425,13 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
   }).sort((a, b) => String(b.presence.lastActivityAt ?? '').localeCompare(String(a.presence.lastActivityAt ?? '')));
   const recentActivity = activity.sort((a, b) => b.atEpoch - a.atEpoch).slice(0, activityLimit);
   const requestProjection = buildHumanRequests({ agents, recentActivity }, records, { titleCache, ledger });
+  const { focusAreas, focusAreaIdByAnchor } = buildFocusAreas(state);
   return {
     version: 1, generatedAt: stamp(now), currentProject: state.currentProject, currentProjectScope: state.currentProjectScope,
     agents, recentActivity, goals: buildOwnerGoals(state), goalHistory: buildOwnerGoalHistory(state),
     ...buildRules(state, ledger),
     ...requestProjection,
+    focusAreas, humanRequests: placeRequests(requestProjection.humanRequests, focusAreaIdByAnchor, ledger),
     coverage: { workRows: candidates.length, workLimit, linkedWork, ownerWork, unattributedWork, observations: observations.length, observationLimit: 300, summaries: summaries.length, livePresenceAvailable: false, summaryMethod: 'bounded-recorded-text', fullHistoryUrl: '/viewer' },
   };
 }
@@ -463,8 +466,14 @@ function goalsFromList(list, history) {
     const hostedTask = task.fields.source === 'hosted-intent' && task.fields.hosted_snapshot === task.fields.snapshot;
     const taskText = (value, max) => hostedTask ? originalText(value) : compactText(value, max);
     return {
-      id: task.id, task: task.name, kind: task.fields.goal_kind === 'open-ask' ? 'open-ask' : 'priority',
+      id: task.id, task: task.name, kind: goalKindOf(task.fields).kind,
       rank: count(task.fields.rank), title: taskText(task.fields.title ?? task.name, 240),
+      // A focus area's one-sentence goal; an ask's focus area (the name it was mined with) and that area's id.
+      // 300 and 80 are the bounds they are written with: an area's goal and name (MAX_AREA_GOAL_CHARS and
+      // MAX_AREA_NAME_CHARS in save_goals.py, the same as focusBody / ownerGoalsFocusBody in WorkViewRoutes.ts).
+      goal: taskText(task.fields.goal, 300), focusArea: taskText(task.fields.focus_area, 80),
+      focusAreaId: typeof task.fields.focus_area_id === 'string' ? task.fields.focus_area_id : null,
+      // Rows saved before the three tests (2026-10-27) name a product instead of a focus area.
       product: taskText(task.fields.product, 60), latestAt: taskText(task.fields.latest_at, 20),
       timesAsked: count(task.fields.times_asked), status: task.status,
       evidence: goalEvidence(task.fields.evidence, hostedTask ? task.fields.evidence_json ?? null : null),
@@ -478,7 +487,7 @@ function goalsFromList(list, history) {
     summary: listText(list.fields.human_summary, 1600), generatedAt: listText(list.fields.generated_at, 40),
     windowDays: count(list.fields.window_days), sourcePromptCount: count(list.fields.source_prompt_count),
     mapPath: listText(list.fields.map_path, 400),
-    priorities: items.filter((item) => item.kind === 'priority'), openAsks: items.filter((item) => item.kind === 'open-ask'),
+    areas: items.filter((item) => item.kind === 'focus-area'), asks: items.filter((item) => item.kind === 'ask'),
   };
 }
 
@@ -492,7 +501,7 @@ export function buildOwnerGoals(state) {
 export function buildOwnerGoalHistory(state) {
   return state.lists.filter((list) => list.name !== OWNER_GOALS_LIST && isOwnerGoalsList(list.name) && list.status !== 'dropped')
     .map((list) => goalsFromList(list, true))
-    .filter((goals) => goals.priorities.length || goals.openAsks.length)
+    .filter((goals) => goals.areas.length || goals.asks.length)
     .sort((a, b) => String(b.periodStart ?? b.listName).localeCompare(String(a.periodStart ?? a.listName)));
 }
 
