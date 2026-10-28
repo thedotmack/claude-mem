@@ -57,6 +57,8 @@ export const EncryptedText: React.FC<EncryptedTextProps> = ({
   const isInView = useInView(ref, { once: true });
 
   const [revealCount, setRevealCount] = useState<number>(0);
+  // Local fix: the scramble lives in a ref, so each flip bumps this to repaint it.
+  const [, setFlipCount] = useState<number>(0);
   const animationFrameRef = useRef<number | null>(null);
   const startTimeRef = useRef<number>(0);
   const lastFlipTimeRef = useRef<number>(0);
@@ -108,6 +110,7 @@ export const EncryptedText: React.FC<EncryptedTextProps> = ({
           }
         }
         lastFlipTimeRef.current = now;
+        setFlipCount((count) => count + 1);
       }
 
       animationFrameRef.current = requestAnimationFrame(update);

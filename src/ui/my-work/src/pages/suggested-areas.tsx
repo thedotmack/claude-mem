@@ -135,7 +135,7 @@ export function SuggestedAreas({ onOpenFocus }: { onOpenFocus: (focusAreaId: str
                 onShow={() => onOpenFocus(area.mergedInto ?? area.id)} />
               // On phones an undecided card swipes, through the same handlers as its buttons.
               return isPhone && !decisions[area.id]
-                ? <DraggableCardBody key={area.id} dragAxis="x" onDragRelease={swipeToDecide(() => decide(area, 'kept'), () => decide(area, 'dismissed'))} className="min-h-0 w-full rounded-xl bg-transparent p-0 shadow-none dark:bg-transparent">{card}</DraggableCardBody>
+                ? <DraggableCardBody key={area.id} dragAxis="x" disabled={changes.saving} onDragRelease={swipeToDecide(() => decide(area, 'kept'), () => decide(area, 'dismissed'))} className="min-h-0 w-full rounded-xl bg-transparent p-0 shadow-none dark:bg-transparent">{card}</DraggableCardBody>
                 : <div key={area.id}>{card}</div>
             })}
           </DraggableCardContainer>

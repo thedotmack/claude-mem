@@ -15,6 +15,7 @@ export const DraggableCardBody = ({
   children,
   dragAxis,
   onDragRelease,
+  disabled = false,
 }: {
   className?: string;
   children?: React.ReactNode;
@@ -22,6 +23,8 @@ export const DraggableCardBody = ({
   dragAxis?: "x" | "y";
   /** Local addition: called on release with how far the card moved from where the drag started; the card springs back. */
   onDragRelease?: (offset: { x: number; y: number }) => void;
+  /** Local addition: the card does not drag (a save is in flight, so a swipe would be refused). */
+  disabled?: boolean;
 }) => {
   const mouseX = useMotionValue(0);
   const mouseY = useMotionValue(0);
@@ -112,7 +115,7 @@ export const DraggableCardBody = ({
   return (
     <motion.div
       ref={cardRef}
-      drag={dragAxis ?? true}
+      drag={disabled ? false : (dragAxis ?? true)}
       dragConstraints={constraints}
       dragSnapToOrigin={onDragRelease !== undefined}
       onDragStart={() => {

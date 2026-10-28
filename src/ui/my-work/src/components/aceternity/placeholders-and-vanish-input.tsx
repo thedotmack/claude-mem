@@ -109,10 +109,6 @@ export function PlaceholdersAndVanishInput({
     }));
   }, [value]);
 
-  useEffect(() => {
-    draw();
-  }, [value, draw]);
-
   const animate = (start: number) => {
     const animateFrame = (pos: number = 0) => {
       requestAnimationFrame(() => {
@@ -164,12 +160,13 @@ export function PlaceholdersAndVanishInput({
     }
   };
 
+  // Local fix: particles are built only here, at submit, not on every keystroke; and an empty
+  // field never starts the animation, since only the animation's end clears `animating`.
   const vanishAndSubmit = () => {
-    setAnimating(true);
-    draw();
-
     const value = inputRef.current?.value || "";
     if (value && inputRef.current) {
+      setAnimating(true);
+      draw();
       const maxX = newDataRef.current.reduce(
         (prev, current) => (current.x > prev ? current.x : prev),
         0

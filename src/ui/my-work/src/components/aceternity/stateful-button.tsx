@@ -9,6 +9,8 @@ interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
 
 export const StatefulButton = ({ className, children, ...props }: ButtonProps) => {
   const [scope, animate] = useAnimate();
+  // Local fix: a second click while an action runs is ignored, so a double-click saves once.
+  const runningRef = React.useRef(false);
 
   const animateLoading = async () => {
     await animate(
@@ -82,14 +84,17 @@ export const StatefulButton = ({ className, children, ...props }: ButtonProps) =
   // also stops the spinner, then propagates. The action can unmount the button (the
   // row it acts on moves away), so nothing animates once the scope is gone.
   const handleClick = async (event: React.MouseEvent<HTMLButtonElement>) => {
-    await animateLoading();
+    if (runningRef.current) return;
+    runningRef.current = true;
     let succeeded = false;
     try {
+      await animateLoading();
       const result: unknown = await (
         props.onClick as ((event: React.MouseEvent<HTMLButtonElement>) => unknown) | undefined
       )?.(event);
       succeeded = result !== false;
     } finally {
+      runningRef.current = false;
       if (scope.current) await (succeeded ? animateSuccess() : animateFailure());
     }
   };
