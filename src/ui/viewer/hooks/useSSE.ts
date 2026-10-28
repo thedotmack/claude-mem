@@ -4,6 +4,7 @@ import { API_ENDPOINTS } from '../constants/api';
 import { TIMING } from '../constants/timing';
 import { itemDeletedTarget } from '../utils/feed-deletion';
 import { removeSessionRows, sessionDeletedTarget, sessionRefOf, type SessionRef } from '../utils/sessions';
+import { withWorkerToken } from '../utils/auth';
 
 /** A live row as the session catalog sees it. */
 export interface LiveSessionItem {
@@ -64,7 +65,7 @@ export function useSSE(handlers: StreamHandlers) {
         eventSourceRef.current.close();
       }
 
-      const eventSource = new EventSource(API_ENDPOINTS.STREAM);
+      const eventSource = new EventSource(withWorkerToken(API_ENDPOINTS.STREAM));
       eventSourceRef.current = eventSource;
 
       eventSource.onopen = () => {

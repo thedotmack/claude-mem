@@ -8,6 +8,7 @@ import { toWorkModel } from './to-work-model.ts'
 import type { MappedWorkModel, WorkDataSource, WorkModel } from './work-data-source.ts'
 import { SaveRefusedError } from '../data.ts'
 import type { WorkViewSnapshot, WorkViewSource } from './work-view-api-types.ts'
+import { authedFetch, withWorkerToken } from './auth.ts'
 
 const WORK_VIEW_URL = '/api/work-view'
 const WORK_VIEW_EVENTS_URL = '/api/work-view/events'
@@ -65,7 +66,7 @@ const isWorkViewSnapshot = (value: unknown): value is WorkViewSnapshot => {
 
 /** POSTs to an origin-guarded work-view route that answers with the snapshot after the change. Anything else throws its reason. */
 async function postForWorkModel(url: string, body: unknown, whatWasSaved: string): Promise<WorkModel> {
-  const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+  const response = await authedFetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
   let answer: unknown = null
   try { answer = await response.json() } catch { /* A body that isn't JSON leaves only the status to report. */ }
   if (!response.ok) {
@@ -91,7 +92,7 @@ export const localSource: WorkDataSource = {
   /** app.js `refresh`: when an SSE snapshot arrived while this read was in flight, the event's newer model wins. */
   async loadWorkModel() {
     const lastEventBeforeRead = connectionEvidence.lastEventAt
-    const response = await fetch(WORK_VIEW_URL, { cache: 'no-store' })
+    const response = await authedFetch(WORK_VIEW_URL, { cache: 'no-store' })
     if (!response.ok) throw new Error(`The local worker answered ${response.status} ${response.statusText}`.trim())
     const snapshot = (await response.json()) as WorkViewSnapshot
     const model = connectionEvidence.lastEventAt !== lastEventBeforeRead && latestSnapshot
@@ -107,7 +108,7 @@ export const localSource: WorkDataSource = {
    */
   async setRequestChecked(requestId, expectedFingerprint, checked): Promise<ReviewResult> {
     if (!CONTENT_FINGERPRINT_PATTERN.test(expectedFingerprint)) throw new Error(`Can't check ${requestId}: its recorded version (content fingerprint) is missing`)
-    const response = await fetch(WORK_VIEW_REVIEW_URL, {
+    const response = await authedFetch(WORK_VIEW_REVIEW_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ requestId, expectedFingerprint, checked }),
@@ -151,7 +152,7 @@ export const localSource: WorkDataSource = {
     let stream: EventSource
     let reopenTimer: ReturnType<typeof setTimeout> | undefined
     const openStream = () => {
-      stream = new EventSource(WORK_VIEW_EVENTS_URL)
+      stream = new EventSource(withWorkerToken(WORK_VIEW_EVENTS_URL))
       stream.onopen = () => {
         connectionEvidence.transportConnected = true
         connectionEvidence.reconnecting = false

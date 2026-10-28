@@ -17,6 +17,7 @@ import { captureCliEvent } from "../services/telemetry/cli-telemetry.js";
 import { checkVersionMatch, isPortInUse } from "../services/infrastructure/index.js";
 import { classifyPortOccupancy } from "../services/infrastructure/HealthMonitor.js";
 import { UNBINDABLE_PORT_REMEDIATION } from "./connection-errors.js";
+import { loadWorkerAuthToken } from "./worker-auth.js";
 // Imported from ProcessManager.js directly (not the infrastructure barrel):
 // tests mock the barrel module wholesale, and the resolver must stay real.
 // ProcessManager imports nothing from worker-utils, so no cycle.
@@ -500,9 +501,18 @@ export function workerHttpRequest(
 
   const url = buildWorkerUrl(apiPath);
   const init: RequestInit = { method };
-  if (options.headers) {
-    init.headers = options.headers;
+  const headers: Record<string, string> = { ...(options.headers ?? {}) };
+  // Owner-auth: attach the shared secret unless the caller already set one
+  // (remote spool ingest sends its own CLAUDE_MEM_WORKER_INGEST_TOKEN bearer).
+  // '' when CLAUDE_MEM_WORKER_AUTH=off or no token file exists yet.
+  const hasAuthorization = Object.keys(headers).some(name => name.toLowerCase() === 'authorization');
+  if (!hasAuthorization) {
+    const ownerToken = loadWorkerAuthToken();
+    if (ownerToken) {
+      headers.Authorization = `Bearer ${ownerToken}`;
+    }
   }
+  init.headers = headers;
   if (options.body) {
     init.body = options.body;
   }

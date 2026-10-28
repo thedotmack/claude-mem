@@ -3,6 +3,7 @@ import { Observation, Summary, UserPrompt } from '../types';
 import { UI } from '../constants/ui';
 import { API_ENDPOINTS } from '../constants/api';
 import { sessionKey, type SessionRef } from '../utils/sessions';
+import { authedFetch } from '../utils/auth';
 
 interface PaginationState {
   isLoading: boolean;
@@ -76,7 +77,7 @@ function usePaginationFor<TItem extends DataItem>(
     const isStale = () => selectionRef.current.version !== selectionVersion;
 
     try {
-      const response = await fetch(`${endpoint}?${params}`);
+      const response = await authedFetch(`${endpoint}?${params}`);
       if (isStale()) return [];
 
       if (!response.ok) {

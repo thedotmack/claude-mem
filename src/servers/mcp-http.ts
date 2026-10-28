@@ -23,7 +23,7 @@
 // silently replaced by the session or process cwd.
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -31,7 +31,8 @@ import type { Request as ExpressRequest } from 'express';
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest, RootsListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
-import { isLocalhost } from '../server/middleware/request-auth-helpers.js';
+import { isLocalhost, parseBearerToken } from '../server/middleware/request-auth-helpers.js';
+import { loadWorkerAuthToken, workerAuthDisabled } from '../shared/worker-auth.js';
 import { isOwnPageOrigin, type WorkerOriginPolicy } from '../services/worker/http/origin-policy.js';
 import { logger } from '../utils/logger.js';
 
@@ -191,6 +192,19 @@ export interface StartMcpHttpOptions extends McpHttpOptions {
   originPolicy: WorkerOriginPolicy;
   /** Defaults to MAX_SESSIONS; tests lower it. */
   maxSessions?: number;
+}
+
+// SHA-256 both sides to a fixed 32 bytes so lengths never leak and
+// timingSafeEqual never throws on a length mismatch — same idiom as
+// safeEqualSecret in the worker HTTP middleware.
+function safeEqualSecret(presented: string, expected: string): boolean {
+  const a = createHash('sha256').update(presented, 'utf8').digest();
+  const b = createHash('sha256').update(expected, 'utf8').digest();
+  try {
+    return timingSafeEqual(a, b);
+  } catch {
+    return false;
+  }
 }
 
 function sendJsonRpcError(res: ServerResponse, status: number, code: number, message: string): void {
@@ -362,6 +376,25 @@ export async function startMcpHttpServer(options: StartMcpHttpOptions): Promise<
       res.writeHead(404).end();
       return;
     }
+
+    // Owner-auth: loopback TCP origin is not proof of the owning OS user, and
+    // the tools below read files under a caller-chosen workspace root with the
+    // owner's permissions. Require the shared secret from
+    // <DATA_DIR>/worker-auth-token (mode 0600) — MCP clients send it as
+    // Authorization: Bearer <token> or ?token=<token>. Skipped entirely when
+    // CLAUDE_MEM_WORKER_AUTH=off; fails closed when the token cannot be read.
+    if (!workerAuthDisabled()) {
+      const expectedToken = loadWorkerAuthToken();
+      const presentedToken = parseBearerToken(firstHeader(req.headers.authorization) ?? '')
+        || (url.searchParams.get('token') ?? '').trim();
+      if (!expectedToken || !safeEqualSecret(presentedToken, expectedToken)) {
+        refuse(req, res, 401,
+          'Unauthorized: MCP HTTP requires the owner token (Authorization: Bearer <token>). See <data-dir>/worker-auth-token.',
+          {});
+        return;
+      }
+    }
+
 
     const cwdHeader = firstHeader(req.headers[CWD_HEADER]);
     if (cwdHeader !== undefined && normalizeCwd(cwdHeader) === null) {

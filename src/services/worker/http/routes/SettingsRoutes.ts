@@ -118,12 +118,19 @@ function withoutEnvironmentEchoes(posted: Record<string, unknown>, settingsPath:
   );
 }
 
-// Spawn-binary paths: file/env only. Even if a key is accidentally re-added to
-// the HTTP write list below, this set keeps it from being persisted via POST.
+// Spawn-binary paths and filesystem/listen redirects: file/env only. Even if
+// a key is accidentally re-added to the HTTP write list below, this set keeps
+// it from being persisted via POST. CLAUDE_MEM_DATA_DIR is where memories and
+// every secret live — an HTTP-writable redirect hands them to any caller that
+// reaches the API. CLAUDE_MEM_WORKER_HOST decides the bind interface; changing
+// it remotely could re-expose the worker on a non-loopback address without
+// the Observation TV guard's token ever being written.
 const FILE_ONLY_SETTING_KEYS = new Set([
   'CLAUDE_CODE_PATH',
   'CLAUDE_MEM_CODEX_PATH',
   'CLAUDE_MEM_CHROMA_UVX_PATH',
+  'CLAUDE_MEM_DATA_DIR',
+  'CLAUDE_MEM_WORKER_HOST',
 ]);
 
 const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
@@ -229,9 +236,10 @@ export class SettingsRoutes extends BaseRouteHandler {
       return;
     }
 
-    // Write whitelist. POST /api/settings has no authentication — the worker
-    // trusts loopback — so any page that can reach this origin could set one
-    // of these. Secrets stay off this list except the two provider keys the
+    // Write whitelist. POST /api/settings sits behind the owner-auth guard
+    // (shared/worker-auth.ts) — the worker no longer trusts loopback alone —
+    // so only a caller presenting the owner token can set one of these.
+    // Secrets stay off this list except the two provider keys the
     // viewer Settings UI must save (Gemini / OpenRouter); those are masked on
     // GET and an unchanged mask is skipped on POST. Observation TV / Chroma /
     // Telegram / CloudSync / Redis tokens remain file/env only.
@@ -245,7 +253,6 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_OBSERVATIONS',
       'CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES',
       'CLAUDE_MEM_WORKER_PORT',
-      'CLAUDE_MEM_WORKER_HOST',
       'CLAUDE_MEM_PROVIDER',
       'CLAUDE_MEM_CODEX_MODEL',
       'CLAUDE_MEM_CODEX_REASONING_EFFORT',
@@ -274,7 +281,6 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD',
       'CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER',
       'CLAUDE_MEM_WORK_VIEW_COPY_MODEL',
-      'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
       'CLAUDE_MEM_CLAUDE_CONFIG_DIR',

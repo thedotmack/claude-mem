@@ -1,5 +1,6 @@
 import type { SessionCatalogEntry, StreamEvent } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
+import { authedFetch } from './auth';
 
 /**
  * A session is identified by (platform_source, content_session_id): the same
@@ -101,7 +102,7 @@ export function describeSessionDeleteFailure(status: number): string {
  * Delete a session and everything captured in it through the worker's
  * sync-safe endpoint. Rejects with a user-facing message.
  */
-export async function deleteSession(ref: SessionRef, fetchImpl: typeof fetch = fetch): Promise<void> {
+export async function deleteSession(ref: SessionRef, fetchImpl: typeof fetch = authedFetch): Promise<void> {
   const url = `${API_ENDPOINTS.SESSIONS}/${encodeURIComponent(ref.platformSource)}/${encodeURIComponent(ref.contentSessionId)}`;
   const response = await fetchImpl(url, { method: 'DELETE' }).catch(() => {
     throw new Error('Not deleted: the claude-mem worker could not be reached.');

@@ -447,6 +447,84 @@ export function createRemoteReadOnlyGuard(options: RemoteReadOnlyOptions): Reque
   };
 }
 
+// ---------------------------------------------------------------------------
+// Owner-auth guard.
+//
+// Loopback TCP origin is not proof of the owning OS user: on a multi-user
+// host any other local account can connect to 127.0.0.1:<port> and was, until
+// this guard existed, able to read every memory, rewrite settings (including
+// CLAUDE_MEM_DATA_DIR and the provider base URLs — a credential-exfiltration
+// primitive) and call every mutation route. Loopback requests to the API now
+// present the owner token from <DATA_DIR>/worker-auth-token (mode 0600): only
+// the owning OS user can read it, so presenting it proves the caller runs as
+// that user.
+//
+// Non-loopback callers never reach this decision: the remote read-only guard
+// is mounted at position zero and has already allowed or denied them, so this
+// guard deliberately skips anything that is not a direct loopback peer.
+// ---------------------------------------------------------------------------
+
+export interface OwnerAuthOptions {
+  /**
+   * Called per request. Empty string fails closed — the guard must only be
+   * mounted when a token exists, but a mounted guard denies rather than
+   * passing everything if the token disappears.
+   */
+  getToken: () => string;
+}
+
+// Read-only liveness probes stay open: they reveal nothing a local port scan
+// does not, and health-checkers should not need the credential. The spool
+// ingest route carries its own bearer (CLAUDE_MEM_WORKER_INGEST_TOKEN) because
+// remote producers cannot read the owner's token file.
+const OWNER_AUTH_EXEMPT_PATHS: ReadonlySet<string> = new Set([
+  '/api/health',
+  '/api/readiness',
+  '/api/ready',
+  '/api/spool/ingest',
+]);
+
+export function createOwnerAuthGuard(options: OwnerAuthOptions): RequestHandler {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    // Only the API and its event stream are owner data. The static SPA, /tv
+    // markup and unknown paths fall through to their existing handlers.
+    if (!req.path.startsWith('/api/') && req.path !== '/stream') {
+      next();
+      return;
+    }
+    // /api/auth/*splat is BetterAuth's own surface; it authenticates itself.
+    if (req.path.startsWith('/api/auth/') || OWNER_AUTH_EXEMPT_PATHS.has(req.path)) {
+      next();
+      return;
+    }
+    // A forwarded-client header means the socket peer is a proxy, not the real
+    // client — same refusal as the remote read-only guard. Non-loopback peers
+    // were already decided by that guard at position zero.
+    if (!isLocalhost(req) || hasForwardedClientHeaders(req)) {
+      next();
+      return;
+    }
+
+    const presentedToken =
+      parseBearerToken(req.header('authorization') ?? '')
+      || readQueryToken(req)
+      || null;
+    const expectedToken = options.getToken();
+
+    if (!presentedToken || !expectedToken || !safeEqualSecret(presentedToken, expectedToken)) {
+      // Same write-here rule as the remote guard: no terminal error handler is
+      // mounted in the worker, and Express's default handler leaks stack paths.
+      res.status(401).json({
+        error: 'Unauthorized',
+        message: 'Worker API requires the owner token: Authorization: Bearer <token> or ?token=<token>. The token lives in <data-dir>/worker-auth-token (mode 0600). Set CLAUDE_MEM_WORKER_AUTH=off to disable this check.',
+      });
+      return;
+    }
+
+    next();
+  };
+}
+
 export function summarizeRequestBody(method: string, path: string, body: any): string {
   if (!body || Object.keys(body).length === 0) return '';
 

@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef } from 'react';
 import type { SessionCatalogEntry } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
+import { authedFetch } from '../utils/auth';
 import {
   catalogEntryRef,
   emptyCatalogJournal,
@@ -57,7 +58,7 @@ export function useSessionCatalog() {
     if (project) params.append('project', project);
     try {
       for (;;) {
-        const response = await fetch(`${API_ENDPOINTS.SESSIONS}?${params}`);
+        const response = await authedFetch(`${API_ENDPOINTS.SESSIONS}?${params}`);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json() as { sessions: SessionCatalogEntry[]; hasMore?: boolean };
         if (requestSeq !== requestSeqRef.current) return;

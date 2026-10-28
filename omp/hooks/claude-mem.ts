@@ -101,6 +101,24 @@ function worker(): string {
   return workerBase;
 }
 
+/**
+ * The owner token for claude-mem's worker API: CLAUDE_MEM_WORKER_AUTH_TOKEN,
+ * else <data-dir>/worker-auth-token (mode 0600, same resolution as
+ * settings.json above). '' when CLAUDE_MEM_WORKER_AUTH=off or unreadable —
+ * first-party callers create the file, so a hook only ever reads it.
+ */
+function loadWorkerAuthToken(): string {
+  if ((process.env.CLAUDE_MEM_WORKER_AUTH ?? "").trim().toLowerCase() === "off") return "";
+  const envToken = (process.env.CLAUDE_MEM_WORKER_AUTH_TOKEN ?? "").trim();
+  if (envToken) return envToken;
+  const dataDir = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), ".claude-mem");
+  try {
+    return readFileSync(join(dataDir, "worker-auth-token"), "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Circuit breaker (OpenClaw pattern) — 3 consecutive failures => 30s OPEN
 // ---------------------------------------------------------------------------
@@ -177,7 +195,12 @@ function lastMessageText(messages: unknown[], role: string): string {
 
 /** One bounded worker request; a timeout or an HTTP error rejects. */
 async function request(path: string, init: RequestInit = {}): Promise<Response> {
-  const r = await fetch(`${worker()}${path}`, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+  const token = loadWorkerAuthToken();
+  const r = await fetch(`${worker()}${path}`, {
+    ...init,
+    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(init.headers ?? {}) },
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
   if (!r.ok) throw new Error(`${path} ${r.status}`);
   return r;
 }

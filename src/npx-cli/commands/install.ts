@@ -11,6 +11,7 @@ import { homedir, hostname } from 'os';
 import { dirname, join } from 'path';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { resolveDbPath, USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { loadWorkerAuthToken } from '../../shared/worker-auth.js';
 import { updateSettingsDocument } from '../../shared/settings-document.js';
 import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
 import { ensureWorkerStarted, getLastWorkerBootFailure, type WorkerStartResult } from '../../services/worker-spawner.js';
@@ -3294,7 +3295,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     // can't answer yet, and the state is always visible via the cloud-sync skill.
     if (cloudSyncConfigured && workerReady) {
       try {
+        const ownerToken = loadWorkerAuthToken();
         const syncResponse = await fetch(`http://${workerUrlHost}:${actualPort}/api/sync/status`, {
+          headers: ownerToken ? { Authorization: `Bearer ${ownerToken}` } : undefined,
           signal: AbortSignal.timeout(3000),
         });
         if (syncResponse.ok) {
