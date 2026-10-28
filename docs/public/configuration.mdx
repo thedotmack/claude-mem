@@ -51,7 +51,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_CAPTURE_ADVISOR_CALLS` | `false`                    | When `true`, the Stop hook records each Claude Code `advisor` tool call (the advice text, the advisor model, and the turn's prompt) in the local database, readable at `GET /api/advisor-calls`. The advisor never fires PostToolUse, so the hook reads the end of the transcript for it. `<private>` content is removed before storage. Worker runtime only; nothing is generated, so it costs no tokens. |
 | `CLAUDE_MEM_DELIVERABLES_ENABLED` | `true`                       | When `true`, the Stop hook copies the turn's deliverables (files a `work_state_write` attached as `work_product`, and decks, documents, pages, images, video or spreadsheets written outside the source tree) into `~/.claude-mem/deliverables/<project>/`, records them, and My Work links them on the request's card. `false` turns the copy off; files already in the bucket stay. Worker runtime only, with the worker on this computer; a turn whose prompt is entirely `<private>` is never copied. |
 | `CLAUDE_MEM_REDACT_ENABLED`   | `false`                         | Opt-in auto-redaction: recognized secret patterns are replaced with `<redacted type='…'/>` markers before storage in tool input and output, prompts, summaries and server-runtime event bodies (not in server-runtime session metadata). See [Auto-Redaction](/usage/auto-redaction) for the built-in pattern list |
-| `CLAUDE_MEM_REDACT_GENERIC_ENABLED` | `false`                   | With redaction on, also redact credentials that have no vendor prefix: `password=`, `*_PWD=`, `*_TOKEN=`, `*_SECRET=`, `*_API_KEY=` values and `Authorization: Bearer …`. Lower confidence than the 11 vendor patterns, so it is a separate opt-in |
+| `CLAUDE_MEM_REDACT_GENERIC_ENABLED` | `false`                   | With redaction on, also redact credentials that have no vendor prefix: `password=`, `*_PWD=`, `*_TOKEN=`, `*_SECRET=`, `*_API_KEY=` values, bare `token=` / `secret=` / `api_key=` values in config-style positions (JSON keys, env assignments, CLI flags, yaml lines), and `Authorization: Bearer …`. Lower confidence than the 11 vendor patterns, so it is a separate opt-in |
 | `CLAUDE_MEM_REDACT_DISABLED_BUILTINS` | _(empty)_               | CSV of built-in pattern names to leave unredacted while the rest stay active, e.g. `jwt,slack_token` |
 | `CLAUDE_MEM_REDACT_CUSTOM_PATTERNS` | `[]`                      | JSON array of extra `{ "name", "regex" }` patterns, evaluated before the built-ins so they can override a token family |
 | `CLAUDE_MEM_REDACT_LOG_MATCHES` | `false`                       | Log a `pattern,count` line per redaction scan (the matched bytes are never logged) |
@@ -147,10 +147,20 @@ For `CLAUDE_MEM_PROVIDER=openai-compatible`: any endpoint that speaks `/chat/com
 | `CLAUDE_MEM_OPENAI_COMPAT_PRESET` | — | Named endpoint preset ([list](usage/openai-compatible-provider)). Empty = `custom`: set the base URL yourself |
 | `CLAUDE_MEM_OPENAI_COMPAT_BASE_URL` | — | OpenAI-compatible base URL. Overrides the preset's |
 | `CLAUDE_MEM_OPENAI_COMPAT_MODEL` | — | Model id, sent as-is. Empty = the preset's default model |
+| `CLAUDE_MEM_OPENAI_COMPAT_OBSERVATION_BATCH_SIZE` | `1` | Queued observations to combine per request (1–32). Default 1 keeps one event per request. Only consecutive events with the same prompt number, agent and working directory are combined, within the model-window character budget. Set in `settings.json` or an environment variable. See [batching trade-offs](usage/openai-compatible-provider#observation-batching). |
 | `CLAUDE_MEM_OPENAI_COMPAT_API_KEY` | — | The key this endpoint issued. Settings file or environment, or `OPENAI_COMPAT_API_KEY` in `~/.claude-mem/.env`; the viewer cannot set it. A local server needs none |
 | `CLAUDE_MEM_OPENAI_COMPAT_API_KEYS` | — | Optional: more keys to rotate through ([Multi-Key Rotation](usage/multi-key-rotation)). Settings file or environment, or `OPENAI_COMPAT_API_KEYS` in `~/.claude-mem/.env` |
 
 See [OpenAI-Compatible Provider](usage/openai-compatible-provider) for presets and setup.
+
+### My Work Summary Settings
+
+My Work can generate readable card wording using the configured OpenRouter or OpenAI-compatible chat-completions endpoint. By default it runs only when the primary observer provider is OpenRouter, as before; it never uses another endpoint or a quota-fallback key on its own. Select a provider explicitly to use that endpoint for summaries, including an OpenAI-compatible primary or a provider configured only as a fallback. Explicit selection can incur the endpoint's usual charges. Generated wording is presentation-only; recorded work and status remain unchanged.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER` | empty | Empty uses OpenRouter when `CLAUDE_MEM_PROVIDER` is `openrouter`; otherwise generated wording is off. For `openai-compatible`, the request follows `CLAUDE_MEM_OPENAI_COMPAT_REASONING`. Set `openrouter` or `openai-compatible` to select that endpoint explicitly, or `off` to disable it. |
+| `CLAUDE_MEM_WORK_VIEW_COPY_MODEL` | empty | Optional model id used only for My Work wording. Empty uses the selected endpoint's configured model. |
 
 ### Quota Fallback Settings
 

@@ -1027,6 +1027,10 @@ describe('SettingsDefaultsManager', () => {
       expect(defaults.CLAUDE_MEM_PROVIDER).toBeDefined();
       expect(defaults.CLAUDE_MEM_GEMINI_API_KEY).toBeDefined();
       expect(defaults.CLAUDE_MEM_OPENROUTER_API_KEY).toBeDefined();
+      expect(defaults.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER).toBe('');
+      expect(defaults.CLAUDE_MEM_WORK_VIEW_COPY_MODEL).toBe('');
+      expect(VIEWER_DEFAULT_SETTINGS.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER).toBe('');
+      expect(VIEWER_DEFAULT_SETTINGS.CLAUDE_MEM_WORK_VIEW_COPY_MODEL).toBe('');
 
       expect(defaults.CLAUDE_MEM_DATA_DIR).toBeDefined();
       expect(defaults.CLAUDE_MEM_LOG_LEVEL).toBeDefined();

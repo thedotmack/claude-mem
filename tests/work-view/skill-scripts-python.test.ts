@@ -85,6 +85,22 @@ describe('save_goals.py', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it('accepts a quote under 3 characters when it is a whole word of the prompt (Oct 26: "hi" failed every refresh)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'save-goals-short-'));
+    try {
+      const save = (prompt: string, quote: string) => {
+        writeFileSync(join(dir, 'owner-prompts.md'), `# Owner prompts\n\n## 2026-10-25 16:13 · codex · yiddish-ai-kit\nsession \`01a174b2\`\n\n${prompt}\n`);
+        writeFileSync(join(dir, 'goals.json'), JSON.stringify({ focus_areas: [{ rank: 1, title: 'Greeting only', goal: 'Say hello.', matches: null, evidence: [{ at: '2026-10-25 16:13', quote }] }] }));
+        return spawnPython([join(SKILLS, 'owner-goals', 'scripts', 'save_goals.py'), '--goals', join(dir, 'goals.json'), '--prompts', join(dir, 'owner-prompts.md'), '--dry-run']);
+      };
+      expect(save('hi', 'hi').exitCode).toBe(0);
+      expect(save('ok, go', 'ok').exitCode).toBe(0);
+      // Still a whole word, never part of one, and still refused when it was not typed.
+      expect(save('this works', 'hi').exitCode).not.toBe(0);
+      expect(save('hi', 'ok').exitCode).not.toBe(0);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('clears the goals when every saved quote has aged out, instead of refusing to save forever', () => {
     const dir = mkdtempSync(join(tmpdir(), 'save-goals-'));
     try {

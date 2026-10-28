@@ -173,10 +173,16 @@ def unverified_quotes(goals, prompts):
                 at, text = str(quote.get("at", "")), str(quote.get("quote", ""))
                 prompt = prompts.get(at[:16])
                 pieces = [comparable(piece).strip(" .,;:!?\"'") for piece in re.split(r"\.\.\.|…", text)]
-                pieces = [piece for piece in pieces if len(piece) >= 3]
+                long_pieces = [piece for piece in pieces if len(piece) >= 3]
+                # A whole quote under 3 characters ("hi", "ok") was always refused, so a window whose only
+                # prompt was one failed every refresh (Oct 26). It counts when it is a whole word of the prompt.
+                short_pieces = [] if long_pieces else [piece for piece in pieces if piece]
                 if prompt is None:
                     problems.append(f'{label(item)}: no owner prompt at {at!r}')
-                elif not pieces or any(piece not in prompt for piece in pieces):
+                elif short_pieces:
+                    if any(not re.search(rf"(?<!\w){re.escape(piece)}(?!\w)", prompt) for piece in short_pieces):
+                        problems.append(f'{label(item)}: quote not in the {at} prompt: "{text}"')
+                elif not long_pieces or any(piece not in prompt for piece in long_pieces):
                     problems.append(f'{label(item)}: quote not in the {at} prompt: "{text}"')
     return problems
 
