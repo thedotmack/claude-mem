@@ -16,7 +16,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
-import { parseJsonWithBom } from '../../shared/atomic-json.js';
+import { parseJsonWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.js';
 import { getBunAbsolutePath, getWorkerServiceAbsolutePath } from './install-paths.js';
 
 interface DevinHookCommand {
@@ -63,7 +63,10 @@ export function buildDevinHooks(bunPath: string, workerPath: string): DevinHooks
   };
 }
 
-const OWN_COMMAND = /worker-service\.cjs" (?:start|hook devin [a-z-]+)$/;
+// Ours only in the exact shape buildDevinHooks writes: a quoted Bun runtime,
+// the quoted plugin worker, then one of our subcommands. A command that merely
+// mentions the worker (`echo "/tmp/worker-service.cjs" start`) is the user's.
+const OWN_COMMAND = /^"(?:[^"]*[\\/])?bun(?:\.exe)?" "[^"]*[\\/]scripts[\\/]worker-service\.cjs" (?:start|hook devin (?:context|session-init|observation|summarize|session-end))$/;
 
 export function isClaudeMemDevinCommand(hook: DevinHookCommand): boolean {
   return typeof hook.command === 'string' && OWN_COMMAND.test(hook.command);
@@ -109,8 +112,10 @@ function readDevinConfig(configPath: string): DevinConfig {
   return config;
 }
 
+// config.json holds the user's other Devin settings: write a temp file and
+// rename it over the original, so an interrupted write never leaves it truncated.
 function writeDevinConfig(configPath: string, config: DevinConfig): void {
-  writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+  writeJsonFileAtomic(configPath, config);
 }
 
 function backupOnce(configPath: string): void {
@@ -161,6 +166,7 @@ export function uninstallDevinHooks(configPath: string = devinConfigPath()): num
       console.log('  No claude-mem hooks found in Devin config.json');
       return 0;
     }
+    backupOnce(configPath);
     if (Object.keys(next).length > 0) config.hooks = next;
     else delete config.hooks;
     writeDevinConfig(configPath, config);
