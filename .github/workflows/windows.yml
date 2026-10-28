@@ -50,7 +50,7 @@ jobs:
         shell: pwsh
         run: |
           $bun = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
-          & $bun test tests/services/smart-file-read/path-search.test.ts tests/services/agent-runner/detect.test.ts tests/services/integrations/spawn-contract-windows.test.ts --timeout 120000
+          & $bun test tests/services/smart-file-read/path-search.test.ts tests/services/agent-runner/detect.test.ts tests/services/integrations/spawn-contract-windows.test.ts tests/antigravity-cli-compat.test.ts --timeout 120000
 
       # These suites either skip on non-Windows or only exercise their real
       # branch under win32: file-context symlink/stat boundaries, clearing the

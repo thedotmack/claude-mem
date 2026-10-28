@@ -56,7 +56,7 @@ describe('setup state endpoints', () => {
   it('pauses local auto refresh only for active setup, preserving non-GUI installs and completed setup', async () => {
     await start();
     let scanning = false;
-    const refresh = defaultAutoRefresh(dir, settingsPath, statePath, () => scanning);
+    const refresh = defaultAutoRefresh(dir, settingsPath, statePath, () => scanning, () => '', () => ({ placed: 0, focusAreaIds: [] }));
     const enabled = () => (refresh as unknown as { enabled: () => boolean }).enabled();
     expect(enabled()).toBe(true); // Non-GUI installs do not write a funnel marker.
     scanning = true;
@@ -77,7 +77,7 @@ describe('setup state endpoints', () => {
     writeFileSync(statePath, JSON.stringify(saved));
     writeFileSync(sessionPath, JSON.stringify({ pid: 2 ** 22 + 12345 }));
     await start();
-    const refresh = defaultAutoRefresh(dir, settingsPath, statePath);
+    const refresh = defaultAutoRefresh(dir, settingsPath, statePath, () => false, () => '', () => ({ placed: 0, focusAreaIds: [] }));
     try {
       expect((refresh as unknown as { enabled: () => boolean }).enabled()).toBe(true);
       expect(JSON.parse(readFileSync(statePath, 'utf8'))).toEqual(saved);
@@ -88,7 +88,7 @@ describe('setup state endpoints', () => {
 
   it('resumes after normal session removal and surfaces a corrupt session marker', async () => {
     await start();
-    const refresh = defaultAutoRefresh(dir, settingsPath, statePath);
+    const refresh = defaultAutoRefresh(dir, settingsPath, statePath, () => false, () => '', () => ({ placed: 0, focusAreaIds: [] }));
     const enabled = () => (refresh as unknown as { enabled: () => boolean }).enabled();
     try {
       writeFileSync(sessionPath, JSON.stringify({ pid: process.pid }));

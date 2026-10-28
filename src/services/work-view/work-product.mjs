@@ -308,6 +308,45 @@ export function mergeProducts(lists, limit = 60) {
   return [...unique.values()].slice(0, limit);
 }
 
+/**
+ * A bucket copy the Stop hook made (the worker's `deliverables` table). It
+ * opens through the deliverables route for as long as the copy exists, and
+ * it supersedes the work-state or observation record of the file it was
+ * copied from (`sourcePath`), which stops opening once that file is deleted.
+ */
+export function productsFromDeliverable(row) {
+  if (!Number.isSafeInteger(row?.id) || row.id < 1 || typeof row.bucket_path !== 'string' || !row.bucket_path) return [];
+  const name = basename(row.bucket_path);
+  return [{
+    kind: short(row.kind) ?? fileKind(row.bucket_path) ?? 'file',
+    title: short(row.title) ?? name,
+    url: `/api/deliverables/${row.id}/${encodeURIComponent(name)}`,
+    bucketPath: row.bucket_path,
+    sourcePath: typeof row.source_path === 'string' ? row.source_path : null,
+    deliverable: true,
+    atEpoch: row.created_at_epoch ?? null,
+    sourceRef: { kind: 'deliverable', id: row.id },
+  }];
+}
+
+/** A bucket copy is available while it still exists as a regular file. */
+export function bucketFileAvailable(product) {
+  if (typeof product?.bucketPath !== 'string' || !product.bucketPath) return false;
+  try { return statSync(product.bucketPath).isFile(); }
+  catch { return false; }
+}
+// True when a bucket copy stands in for the record of the file it was copied
+// from: the copy is on disk, and the source is gone or has not been written
+// since the copy was made. A copy that is missing, or older than the source's
+// last write, leaves the source record in place beside it.
+export function copyCoversSource(copy, sourcePath) {
+  if (typeof copy?.atEpoch !== 'number' || !bucketFileAvailable(copy)) return false;
+  try {
+    const source = statSync(sourcePath);
+    return !source.isFile() || source.mtimeMs <= copy.atEpoch;
+  } catch { return true; }
+}
+
 /** A local file is served only while it still exists as a regular file. */
 export function servableFile(product) {
   if (!product?.path || !fileKind(product.path)) return null;
@@ -339,7 +378,10 @@ export function readProductRecords(read, sinceEpoch, limit = 2000) {
   const productCalls = [...publishingCalls, ...gitCalls];
   const productObservations = read(`SELECT id, memory_session_id, prompt_number, files_modified, created_at_epoch FROM observations
     WHERE created_at_epoch >= ? AND (${FILE_EXTENSION_PATTERN}) ORDER BY id DESC LIMIT ?`, [sinceEpoch, limit]);
-  return { productCalls, productObservations };
+  // Bucket copies the Stop hook made; a database from before the table existed has none (safeRead answers []).
+  const productDeliverables = read(`SELECT id, project, content_session_id, platform_source, title, kind, source_path, bucket_path, created_at_epoch
+    FROM deliverables WHERE created_at_epoch >= ? ORDER BY id DESC LIMIT ?`, [sinceEpoch, limit]);
+  return { productCalls, productObservations, productDeliverables };
 }
 
 /** The local file one record names at `index`, re-read from that record. */

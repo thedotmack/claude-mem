@@ -1,6 +1,6 @@
 ---
 name: request-progress
-description: Group recent conversations into overall requests, review each one's progress from memory, link each to the owner goals it serves, and write the build story, so My Work shows progress meters, shipping velocity and learned working preferences. Use when asked to "group requests", "group by overall request", "review request progress", "refresh progress", "build story", "shipping velocity", or "how do I like to work with agents".
+description: Group recent conversations into overall requests, review each one's progress from memory, sort each into one of the owner's focus areas, and write the build story, so My Work shows progress meters, shipping velocity and learned working preferences. Use when asked to "group requests", "group by overall request", "review request progress", "refresh progress", "build story", "shipping velocity", or "how do I like to work with agents".
 ---
 
 # Request Progress
@@ -13,13 +13,15 @@ My Work shows one card per **human request**, built from the human's own prompts
 CLI="bun ${CLAUDE_SKILL_DIR}/scripts/request-groups.mjs"
 ```
 
-It opens `~/.claude-mem/claude-mem.db` read-only and writes only to `~/.claude-mem/work-view/`. My Work picks up changes within a second: grouped conversations show as one card that starts at the earliest ask, with a progress meter; the request page shows the build story, how released work landed (usage, value, regressions, why each change was made) and its work product; each card shows the owner goal it serves; the build story's first paragraph is My Work's recap, and the story sheet shows shipping velocity, the narrative and preferences. A review never changes a request's recorded status.
+It opens `~/.claude-mem/claude-mem.db` read-only and writes only to `~/.claude-mem/work-view/`, except `record-focus`, which saves through the running claude-mem worker because focus areas sync between computers. My Work picks up changes within a second: grouped conversations show as one card that starts at the earliest ask, with a progress meter; the request page shows the build story, how released work landed (usage, value, regressions, why each change was made) and its work product; each card shows the focus area it sits in; the build story's first paragraph is My Work's recap, and the story sheet shows shipping velocity, the narrative and preferences. A review never changes a request's recorded status.
 
 Default window: 14 days. Use the window the user asks for.
 
 ## 1. Group conversations into overall requests
 
-A human request is the top level of My Work: every conversation's opening ask either starts a request or continues one. Grouping decides **once per conversation**, from its opening substantive ask, and decisions already in the ledger are kept. Requests stay inside one project root (the project key before its first `/`, so worktrees of one repo share requests); a conversation never joins a request from another root, and `apply` refuses one that does.
+A human request is the top level of My Work: every conversation's opening ask either starts a request or continues one. Grouping decides **once per conversation**, from its opening substantive ask, and decisions already in the ledger are kept. Requests stay inside one project root (the project key before its first `/`, so worktrees of one repo share requests): `apply` refuses a group whose conversations come from different roots unless the decision names the request's `projectRoot`, in which case every conversation it lists joins that request and the request records that root.
+
+Before any batch reaches you, the worker's judge files each new conversation on its own (`$CLI judge --days 14` shows what it would do; `--apply` writes it). A code link (the conversation wrote to the same work-state list, or recorded the same `request_id`, as one open request) joins at once. On a CMEM Pro or OpenRouter install, Jev then checks the opening ask against the root's open requests: a check score of 0.8 or more joins the request (a `judge` link whose evidence names the judge and its score, and the request records its root), 0.5 to 0.8 makes the conversation its own request with a suggestion the owner accepts or declines on its card in My Work ("Looks like part of …"), and below 0.5 it starts its own request. Only conversations the judge could not place (no code link and no Jev, or a refused or failed call) come to `grouping-input`.
 
 ```bash
 $CLI grouping-input --days 14
@@ -64,7 +66,7 @@ The command fails fast; fix the input and rerun. Its rules:
 - List `conversations` **earliest first**. The first one anchors the group id, so reviews survive later merges.
 - A group of more than one conversation needs at least one link (`shared-work-list`, `shared-request-id` or `agent-judgment`) with evidence text. Quote the human's words where you can.
 - `title` is the goal in plain words (≤120 chars), not the process.
-- Every conversation in a group comes from one project root.
+- Every conversation in a group comes from one project root, unless the group gives an explicit `projectRoot` (a root as `grouping-input` reports it), which lets conversations from other roots join and is recorded on the request.
 
 Then run `$CLI pending --days 14 --limit 48`. `ungroupedConversations` should be 0; `groups` lists the overall requests due for a review (new, or active since their last review).
 
@@ -92,22 +94,41 @@ Split the due groups into batches of about 8 and give each batch to a subagent, 
 >
 > Return the groups you recorded and any you could not, with the reason.
 
-## 3. Link each request to the goals it serves
+## 3. Sort each request into a focus area
 
-Run this yourself after the reviews (it needs the reviews' summaries):
+A **focus area** is a part of the owner's work you could ask for things inside of. Every request sits in exactly one area, or in **Other** when it fits none. Run this yourself after the reviews. Areas are only ever proposed: the owner keeps, renames, merges or dismisses them.
 
-1. Run `$CLI align-input`. It returns the owner's current goals (each with an exact `goal` key, title, product and the owner's own quotes, from the owner-goals list), the request groups still to align (title, first ask, progress state and summary: groups this step has not seen, groups whose request changed since their decision, or every group when the goals changed) and their previous links. If it lists no groups, skip this step: every group is already aligned, or the owner-goals skill has not run and every card keeps "Goal not linked yet".
-2. For each listed group, pick the goals it directly advances: usually one, at most three. A request serves a goal when delivering it moves that goal forward. The same product area alone is not enough. Groups that serve no current goal go in `unaligned`. Keep a previous link unless the goals or the request changed.
-3. Each link needs `evidence` (≤300 chars): name what in the request advances the goal, quoting the goal's or the request's words.
-4. Record it. Every listed group must appear in `links` or `unaligned`; groups it did not list keep their earlier links. The command validates, so fix and retry if it rejects:
+1. Run `$CLI focus-input`. It returns:
+   - `areas`: the owner's kept and suggested focus areas (`focusAreaId`, `name`, `goal`, `about`).
+   - `dismissed`: areas the owner dismissed. They take no requests and are never proposed again, under any name.
+   - `requests`: one batch of up to 20 requests to place now (new, changed since they were placed, or whose area is gone). Each has its `anchor`, title, first ask, progress state and summary, `repo`, how many `conversations` it holds and each conversation's opening ask (`conversationAsks`). A request may also carry `judgeSuggestion` (`focusAreaId`, `confidence`, `evidence`): Jev's pick among the kept areas, which is only a suggestion; you decide the placement from the request and the areas.
+   - `remaining`: requests left for later batches.
+
+   If `requests` is empty, go to step 3. A request the owner moved stays where they put it and is never listed.
+2. Place every listed request exactly once, by the exact `focusAreaId` of the area you could ask for it inside of (read the area's goal and about), or `"other"` when no area fits. Sharing a repo is not evidence. Never invent an id. Each placement needs `evidence` (≤300 chars) quoting the request's or the area's words. If a request's conversations hold several separate asks (read `conversationAsks`), it is really an area: you may also **promote** it with a `promote` proposal holding that one request. Record the batch, then run `focus-input` again until `requests` is empty:
 
 ```bash
-$CLI record-alignment - <<'JSON'
-{"links": [{"groupId": "g_…", "goal": "<exact goal key>", "evidence": "…"}], "unaligned": ["g_…"]}
+$CLI record-focus - <<'JSON'
+{"placements": [{"anchor": "<anchor>", "focusAreaId": "fa_…", "evidence": "…"}, {"anchor": "<anchor>", "focusAreaId": "other", "evidence": "…"}],
+ "proposals": [{"kind": "promote", "name": "…", "goal": "…", "about": "…", "anchors": ["<anchor>"], "sameAs": null, "evidence": "…"}]}
 JSON
 ```
 
-My Work shows the linked goal on each card, "No goal" for an unaligned group, and "Goal not linked yet" for a group this step has not seen.
+3. Run `$CLI focus-input --other`. It lists the requests the router put in Other (`other`, not the ones the owner put there) and `due`. If `due` is false, skip this step: these requests were already looked at. Otherwise propose areas from them, placing nothing:
+   - `new`: ask of each Other request whether it is **one step of a larger effort rather than a complete ask that stands on its own**. Two or more requests that are steps of the same larger effort become one proposed area.
+   - `promote`: one request whose conversations hold several separate asks.
+
+   Propose nothing when nothing qualifies, and still record the empty answer so the pass is not repeated:
+
+```bash
+$CLI record-focus --other - <<'JSON'
+{"placements": [], "proposals": [{"kind": "new", "name": "…", "goal": "…", "about": "…", "anchors": ["<anchor>", "<anchor>"], "sameAs": null, "evidence": "…"}]}
+JSON
+```
+
+Every proposal has `kind`, `name` (a short label, ≤80 chars, that must never reuse a nav label as whole words, in any case: My Focus, My Work, My Rules, Other, Suggested, Past focus, Monitor, Steer ("Work viewer" is fine, "Other tools" is not). claude-mem refuses such a name and the save fails), `goal` (one sentence, ≤300 chars: what the area is for), `about` (≤300 chars: what belongs in it), `anchors` (the requests it holds), `evidence` (≤300 chars, quoting the asks) and `sameAs`: the id of the area in `areas` or `dismissed` that this proposal already is, else `null`. A proposal that is an area in `areas` adds no area: its requests are placed in that area. One that is a dismissed area is refused for good. `record-focus` validates and saves through the claude-mem worker, so fix and retry if it rejects.
+
+My Work shows each request's area, Other, or "Sorting…" until this step places it. Proposed areas wait under Suggested for the owner.
 
 ## 4. Write the build story
 
@@ -122,4 +143,4 @@ $CLI record-story - <<'JSON'
 JSON
 ```
 
-Finish by telling the user how many requests were reviewed, how many were linked to goals, the shipping velocity in two sentences, and the five strongest preferences.
+Finish by telling the user how many requests were reviewed, how many were placed in focus areas and which areas were proposed, the shipping velocity in two sentences, and the five strongest preferences.

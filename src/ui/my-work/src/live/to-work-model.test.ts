@@ -36,15 +36,17 @@ for (const url of SNAPSHOT_FILES) {
       assert.deepEqual(request.progress.history, readings.map((reading) => reading.percent))
       assert.equal(request.progress.percent, request.state === 'shipped' ? 100 : raw.progress?.percent ?? null, 'percent only from a review, or 100 for an explicit ship')
       assert.equal(request.askedBy, raw.requestedBy ?? 'You')
-      if (!raw.goals) assert.equal(request.goalId, undefined, 'goal reads "Goal not linked yet" until request-progress links it')
+      if (!raw.focusAreaId) assert.equal(request.focusAreaId, undefined, 'a request reads "Sorting…" until the focus step places it')
     }
   })
 
-  test(`${name}: titles come from human copy, never from raw prompts`, () => {
+  test(`${name}: titles come from generated records or human copy, never raw prompts`, () => {
     for (const request of model.requests) {
-      const copy = rawById.get(request.id)!.humanCopy
+      const raw = rawById.get(request.id)!
+      const copy = raw.humanCopy
       const ready = !!copy && ['current', 'outdated'].includes(copy.state)
-      assert.equal(request.title, ready && copy.title?.trim() ? copy.title.trim() : null)
+      const generated = raw.titleSource === 'request-group' || raw.titleSource === 'title-cache'
+      assert.equal(request.title, generated ? raw.title.trim() || null : ready && copy.title?.trim() ? copy.title.trim() : null)
     }
   })
 
@@ -204,19 +206,6 @@ test('a request with only asks maps cleanly: its asks show, no activity, and a f
   assert.equal(old.state, 'idle')
 })
 
-test('goal links: absent is not linked yet, empty is no goal, and an open ask lists the requests that serve it', () => {
-  const goalItem = (id: string, kind: 'priority' | 'open-ask') => ({ id, task: id, kind, rank: 1, title: id, product: null, latestAt: null, timesAsked: 1, status: 'todo', evidence: [] })
-  const goals = { listId: 'l', listName: 'owner-goals', history: false, project: 'p', updatedAt: '2026-10-22T00:00:00Z', periodStart: null, periodEnd: null, summary: null, generatedAt: '2026-10-22T00:00:00Z', windowDays: 30, sourcePromptCount: 10, mapPath: null, priorities: [goalItem('ship', 'priority'), goalItem('docs', 'priority')], openAsks: [goalItem('ask', 'open-ask')] }
-  const linked = { ...syntheticRequest(), id: 'r1', goals: [{ goalId: 'ask', goal: 'ask', title: 'ask', kind: 'open-ask' as const, evidence: 'x' }, { goalId: 'ship', goal: 'ship', title: 'ship', kind: 'priority' as const, evidence: 'y' }, { goalId: 'docs', goal: 'docs', title: 'docs', kind: 'priority' as const, evidence: 'z' }] }
-  const none = { ...syntheticRequest(), id: 'r2', goals: [] }
-  const notYet = { ...syntheticRequest(), id: 'r3' }
-  const model = toWorkModel(snapshotWith([linked, none, notYet], { goals }), Date.parse('2026-10-22T12:00:00Z'))
-  assert.deepEqual(model.requests.map((request) => request.goalId), ['ship', null, undefined])
-  assert.deepEqual(model.openAsks[0].servedBy, ['r1'])
-  // A request linked to two priorities counts for both, not only the one request.goalId names.
-  assert.deepEqual(model.priorities.map((goal) => goal.servedBy), [['r1'], ['r1']])
-})
-
 test('the build story recap is its first paragraph; no story hides it', () => {
   const now = Date.parse('2026-10-22T12:00:00Z')
   const model = toWorkModel(snapshotWith([], { story: { story: { narrative: '## Velocity\n\nFirst **part**.\n\nSecond part.', writtenAt: '2026-10-22T10:00:00Z' } } }), now)
@@ -271,3 +260,117 @@ test('a subagent shows Finished only on a recorded stop, and quiet otherwise; ma
   assert.equal(quiet.canMarkFinished, true)
   assert.equal(toAgent({ ...base, isSubagent: true, canMarkFinished: true, presence: { status: 'recent' } }).status, 'working')
 })
+
+test('a bucket copy keeps its deliverable mark for the front of the card; other products carry none, and a gone copy is left out', async () => {
+  const { isCardDeliverable } = await import('../lib/deliverables.ts')
+  const { request } = mapOne({ workProduct: [
+    { kind: 'page', title: 'Launch report', url: '/api/deliverables/21/report-3f9a1c2b.html', available: true, deliverable: true, sourcePath: '/w/.scratch/report.html' },
+    { kind: 'file', title: 'notes.txt', url: '/api/deliverables/22/notes-ab12cd34.txt', available: true, deliverable: true },
+    { kind: 'page', title: 'Gone', url: '/api/deliverables/23/gone-00000000.html', available: false, deliverable: true },
+    { kind: 'commit', title: 'bc8cd09 feat: progress readings', sha: 'bc8cd096b', branch: 'main' },
+    { kind: 'pull-request', title: 'Add work product', url: 'https://github.com/o/r/pull/42' },
+  ] })
+  assert.deepEqual(request.workProduct, [
+    { kind: 'Page', label: 'Launch report', href: '/api/deliverables/21/report-3f9a1c2b.html', deliverable: true },
+    { kind: 'File', label: 'notes.txt', href: '/api/deliverables/22/notes-ab12cd34.txt', deliverable: true },
+    { kind: 'Commit', label: 'bc8cd09 feat: progress readings', href: undefined },
+    { kind: 'PR', label: 'Add work product', href: 'https://github.com/o/r/pull/42' },
+  ])
+  // The card's front links deliverables and PRs; commits and branches stay in the drawer.
+  assert.deepEqual(request.workProduct.filter(isCardDeliverable).map((product) => product.label), ['Launch report', 'notes.txt', 'Add work product'])
+})
+
+const reviewedGroup = (): WorkViewHumanRequest => ({
+  ...syntheticRequest(), groupId: 'g_000000000001', titleSource: 'request-group', humanCopy: { state: 'unavailable' },
+  progress: { state: 'in-progress', percent: 60, summary: 'Cards are built; review remains.', narrative: 'Cards built.',
+    milestones: [], checkedAt: '2026-10-21T12:00:00Z', readings: [{ at: '2026-10-21T12:00:00Z', percent: 60 }] },
+})
+
+for (const state of ['in-progress', 'stalled', 'shipped'] as const) {
+  test(`a reviewed ${state} group shows its recorded title and summary without a human-copy provider`, () => {
+    const raw = reviewedGroup()
+    raw.progress = { ...raw.progress!, state, percent: state === 'shipped' ? 100 : 60,
+      shippedAt: state === 'shipped' ? '2026-10-21T12:00:00Z' : null,
+      readings: [{ at: '2026-10-21T12:00:00Z', percent: state === 'shipped' ? 100 : 60 }] }
+    const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))
+    assert.deepEqual(model.requestReadErrors, [])
+    const request = model.requests[0]
+    assert.equal(request.title, 'Cards')
+    assert.equal(request.summary, raw.progress.summary)
+    assert.equal(request.next.text, 'Next step not recorded')
+    assert.equal(request.progress.percent, raw.progress.percent)
+    assert.equal(request.state, state === 'shipped' ? 'shipped' : 'idle')
+  })
+}
+
+test('a group uses its recorded review even when human copy exists for the original ask', () => {
+  const raw = { ...reviewedGroup(), humanCopy: { state: 'current', title: 'Old wording', summary: 'Work has not started.', next: '', workstreams: [] } }
+  const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))
+  assert.equal(model.requests[0].title, raw.title)
+  assert.equal(model.requests[0].summary, raw.progress!.summary)
+})
+
+for (const state of ['current', 'outdated']) {
+  test(`a group awaiting its first progress review preserves its ${state} human-copy summary`, () => {
+    const raw: WorkViewHumanRequest = { ...reviewedGroup(), progress: null,
+      humanCopy: { state, title: 'Cards', summary: 'The initial design is ready.', next: '', workstreams: [] } }
+    const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))
+    assert.deepEqual(model.requestReadErrors, [])
+    assert.equal(model.requests[0].summary, 'The initial design is ready.')
+    assert.equal(model.requests[0].progress.percent, null)
+  })
+}
+
+test('a cached generated title is displayed without promoting a raw prompt title', () => {
+  const requests: WorkViewHumanRequest[] = ['title-cache', 'original-human-request', 'explicit-work-state-request'].map((titleSource, i) => ({
+    ...syntheticRequest(), id: `request-${i}`, titleSource: titleSource as WorkViewHumanRequest['titleSource'], humanCopy: null,
+  }))
+  const model = toWorkModel(snapshotWith(requests), Date.parse('2026-10-22T12:00:00Z'))
+  assert.deepEqual(model.requests.map(request => request.title), ['Cards', null, null])
+})
+
+test('reopening a shipped group does not display its older completion summary', () => {
+  const raw = reviewedGroup()
+  raw.humanCopy = { state: 'current', title: 'Cards', summary: 'All shipped.', next: '', workstreams: [] }
+  raw.progress = { ...raw.progress!, state: 'shipped', percent: 100, summary: 'All shipped.', shippedAt: '2026-10-21T12:00:00Z', readings: [{ at: '2026-10-21T12:00:00Z', percent: 100 }] }
+  raw.lifecycle = { status: 'in-progress', explicit: true, atEpoch: Date.parse('2026-10-22T11:00:00Z') }
+  raw.updatedAtEpoch = raw.lifecycle.atEpoch!
+  const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))
+  assert.deepEqual(model.requestReadErrors, [])
+  assert.equal(model.requests[0].title, raw.title)
+  assert.equal(model.requests[0].summary, null)
+  assert.equal(model.requests[0].state, 'working')
+  assert.equal(model.requests[0].progress.percent, null)
+})
+
+test('recorded observations without work-state items do not claim no agent work exists', () => {
+  const raw: WorkViewHumanRequest = { ...syntheticRequest(), activity: [{ id: 'observation-42', kind: 'observation', title: 'Cards built', detail: 'Ready for review', atEpoch: Date.parse('2026-10-21T12:00:00Z'), url: '/api/work-view/evidence/observation/42' }] }
+  const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))
+  assert.equal(model.requests[0].next.text, 'Next step not recorded')
+})
+
+for (const status of ['shipped', 'blocked']) {
+  test(`a newer ${status} lifecycle hides an older partial review summary while retaining its readings`, () => {
+    const raw = reviewedGroup()
+    raw.humanCopy = { state: 'current', title: 'Cards', summary: 'Cards are built; review remains.', next: '', workstreams: [] }
+    raw.lifecycle = { status, explicit: true, atEpoch: Date.parse('2026-10-22T11:00:00Z') }
+    if (status === 'shipped') raw.completedAtEpoch = raw.lifecycle.atEpoch!
+    const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))
+    assert.deepEqual(model.requestReadErrors, [])
+    const request = model.requests[0]
+    assert.equal(request.state, status === 'shipped' ? 'shipped' : 'your-move')
+    assert.equal(request.summary, null)
+    assert.equal(request.progress.percent, status === 'shipped' ? 100 : 60)
+    assert.equal(request.progress.readings, 1)
+  })
+}
+
+for (const state of ['unavailable', 'current']) {
+  test(`a group with a cached title still displays its review summary when human copy is ${state}`, () => {
+    const raw: WorkViewHumanRequest = { ...reviewedGroup(), titleSource: 'title-cache', title: 'Cached group title',
+      humanCopy: { state, title: 'Old title', summary: 'Work has not started.', next: '', workstreams: [] } }
+    const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))
+    assert.equal(model.requests[0].title, 'Cached group title')
+    assert.equal(model.requests[0].summary, raw.progress!.summary)
+  })
+}
