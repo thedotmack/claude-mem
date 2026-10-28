@@ -119,7 +119,7 @@ export class LogsRoutes extends BaseRouteHandler {
     // may not trigger it (same rule as memory/save and the DELETE guard).
     // Origin-less clients (CLI, curl, the viewer's own origin) keep working.
     if (isForeignLoopbackBrowserWrite(req)) {
-      res.status(403).json({ error: 'Clearing logs from a different localhost origin are not allowed' });
+      res.status(403).json({ error: 'Log clears from a different localhost origin are not allowed' });
       return;
     }
     const logFilePath = this.getLogFilePath();
