@@ -32,6 +32,13 @@ import {
   type ToolUseQueryFilters,
 } from './tool-uses.js';
 import {
+  createDeliverablesSchema,
+  recordDeliverable as recordDeliverableRow,
+  getDeliverable as getDeliverableRow,
+  type DeliverableRow,
+  type RecordDeliverableInput,
+} from './deliverables.js';
+import {
   createWorkStateSchema,
   appendWorkStateEntry as appendWorkStateEntryRow,
   getWorkStateEntries as getWorkStateEntriesRows,
@@ -310,6 +317,7 @@ export class SessionStore {
     this.ensureSessionProjectKeySourceColumn();
     this.requeuePromptsDeadLetteredForSize();
     this.ensureWorkStateTable();
+    this.ensureDeliverablesTable();
     this.ensureHookSpoolConsumedTable();
     this.ensureProjectRecencyIndexes();
     this.ensureMergedIntoProjectCoveringIndexes();
@@ -2088,6 +2096,19 @@ export class SessionStore {
 
   // v61 — the agent's to-do lists and working state (./work-state.ts). Idempotent
   // DDL like v51, so fresh and migrating databases converge.
+  /** The deliverables bucket's records (deliverables.ts): CREATE IF NOT EXISTS, no version row, so an older worker sharing the database is unaffected. */
+  private ensureDeliverablesTable(): void {
+    createDeliverablesSchema(this.db);
+  }
+
+  recordDeliverable(input: RecordDeliverableInput): { id: number; inserted: boolean } {
+    return recordDeliverableRow(this.db, input);
+  }
+
+  getDeliverable(id: number): DeliverableRow | null {
+    return getDeliverableRow(this.db, id);
+  }
+
   private ensureWorkStateTable(): void {
     createWorkStateSchema(this.db);
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(61, new Date().toISOString());

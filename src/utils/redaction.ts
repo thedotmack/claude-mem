@@ -82,7 +82,9 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   // "the token ends here" check without that gap.
   { name: 'openai_key',      regex: /\bsk-(?!ant-)[A-Za-z0-9_-]{20,}(?!\w)/g },
   { name: 'anthropic_key',   regex: /\bsk-ant-[A-Za-z0-9_-]{20,}(?!\w)/g },
-  { name: 'slack_token',     regex: /\bxox[baprs]-[A-Za-z0-9-]{10,}(?!\w)/g },
+  // Slack bot/user/legacy tokens (`xoxb-`, `xoxp-`, …), refresh tokens from
+  // token rotation (`xoxe-`) and app-level Socket Mode tokens (`xapp-`).
+  { name: 'slack_token',     regex: /\b(?:xox[abeprs]|xapp)-[A-Za-z0-9-]{10,}(?!\w)/g },
   { name: 'jwt',             regex: /\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?!\w)/g },
   // A PGP secret key is armored as `PRIVATE KEY BLOCK`, and an encrypted
   // PKCS#8 key as `ENCRYPTED PRIVATE KEY`.
@@ -312,17 +314,37 @@ export function redactForLog(text: string): string {
 // A structured payload holds the key and the value apart
 // (`{client_secret: "…"}`), so the text patterns, which anchor on `key=`,
 // never see them together; this pairs them again for the generic group.
-const GENERIC_CREDENTIAL_KEY = /(?:^|_)(password|passwd|secret|token|api_key)$/i;
+// The password keys follow the generic_password text pattern: any key ending
+// in `password`/`passwd` (`dbPassword`, `PGPASSWORD`) and `pwd` only as a
+// suffix (`MYSQL_PWD`), so `{"MYSQL_PWD": "…"}` is caught like `MYSQL_PWD=…`.
+const GENERIC_PASSWORD_KEY = /(?:password|passwd)$|\w_pwd$/i;
+const GENERIC_TOKEN_KEY = /(?:^|_)(?:secret|token|api_key)$/i;
 const WHOLE_GENERIC_VALUE = new RegExp(`^${GENERIC_VALUE_CLASS}{8,}$`);
 
 function genericMarkerForKeyedValue(key: string, value: string, config: RedactionConfig): string | null {
   if (!config.genericEnabled) return null;
-  const keyMatch = GENERIC_CREDENTIAL_KEY.exec(key);
-  if (!keyMatch) return null;
-  const name = keyMatch[1].toLowerCase().startsWith('passw') ? 'generic_password' : 'generic_token';
+  const name = GENERIC_PASSWORD_KEY.test(key) ? 'generic_password'
+    : GENERIC_TOKEN_KEY.test(key) ? 'generic_token'
+    : null;
+  if (!name) return null;
   if (config.disabledBuiltinPatterns?.includes(name)) return null;
   if (!WHOLE_GENERIC_VALUE.test(value) || !/[A-Za-z]/.test(value)) return null;
   return `<redacted type='${name}'/>`;
+}
+
+// The bearer_token text pattern anchors on `Authorization: Bearer …`, so a
+// header object like `{"headers": {"Authorization": "Bearer …"}}` needs the
+// key paired with the value again. As in text, only the token after `Bearer`
+// is replaced: the same spacing is accepted around `Bearer`, and whatever
+// follows the token (trailing whitespace included) is kept, unanchored.
+const AUTHORIZATION_KEY = /^authorization$/i;
+const KEYED_BEARER_VALUE = new RegExp(`^(${BOUNDED_SPACE}Bearer${BOUNDED_SPACE})${GENERIC_VALUE}`, 'i');
+
+function bearerMarkerForKeyedValue(key: string, value: string, config: RedactionConfig): string | null {
+  if (!config.genericEnabled || config.disabledBuiltinPatterns?.includes('bearer_token')) return null;
+  if (!AUTHORIZATION_KEY.test(key)) return null;
+  const match = KEYED_BEARER_VALUE.exec(value);
+  return match ? `${match[1]}<redacted type='bearer_token'/>${value.slice(match[0].length)}` : null;
 }
 
 // The aws_session_token built-in anchors on `SessionToken: …`, so a payload
@@ -362,6 +384,7 @@ export function redactJsonStrings<T>(value: T, config: RedactionConfig = getReda
       if (key === undefined || Object.keys(result.counts).length > 0) return result.redacted;
       return awsSessionTokenMarkerForKeyedValue(key, node, config)
         ?? awsSecretKeyMarkerForKeyedValue(key, node, config)
+        ?? bearerMarkerForKeyedValue(key, node, config)
         ?? genericMarkerForKeyedValue(key, node, config)
         ?? result.redacted;
     }

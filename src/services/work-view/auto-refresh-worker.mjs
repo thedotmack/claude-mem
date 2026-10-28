@@ -1,6 +1,6 @@
 // Keeps My Work current without anyone running a skill: every ten minutes it
 // asks refreshNeeds() whether anything is due (ungrouped conversations, due
-// reviews, stale goals, unaligned groups) and, if so, runs one agent job.
+// reviews, stale goals, requests not placed in a focus area) and, if so, runs one agent job.
 // Owner rule (Oct 22): AI magic, not speed. No minimum interval, no day
 // window, no group cap, and a run is never stopped for taking long; it ends
 // when the agent finishes or fails. One run at a time.
@@ -21,9 +21,12 @@ export class AutoRefreshWorker {
    * @param {(job: {needs: object, reason: string}) => Promise<{state: string, agent: string|null, result: string|null, error: string|null}>} options.runJob
    *   runs the job on the first logged-in agent; 'waiting-for-agent' when there is none yet (agent-runner/run.ts)
    * @param {() => boolean} [options.enabled]   CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH, read on every check
+   * @param {() => string} options.localDeviceId the worker's sync device id ('' when cloud sync never started), so my-focus
+   *   rows replay in its order; required
    */
-  constructor({ dir, openDatabase, runJob, enabled = () => true, checkMs = TEN_MINUTES_MS, now = Date.now, log = () => {} }) {
-    Object.assign(this, { dir, openDatabase, runJob, enabled, checkMs, now, log });
+  constructor({ dir, openDatabase, runJob, enabled = () => true, checkMs = TEN_MINUTES_MS, now = Date.now, log = () => {}, localDeviceId }) {
+    if (typeof localDeviceId !== 'function') throw new TypeError('AutoRefreshWorker needs localDeviceId, the worker\'s sync device id.');
+    Object.assign(this, { dir, openDatabase, runJob, enabled, checkMs, now, log, localDeviceId });
     this.timer = null; this.closed = false; this.busy = false;
   }
 
@@ -47,7 +50,7 @@ export class AutoRefreshWorker {
 
   readNeeds() {
     const database = this.openDatabase();
-    try { return refreshNeeds({ dir: this.dir, database, now: this.now() }); }
+    try { return refreshNeeds({ dir: this.dir, database, now: this.now(), localDeviceId: this.localDeviceId() }); }
     finally { database.close(); }
   }
 
