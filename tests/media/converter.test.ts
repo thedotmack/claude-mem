@@ -100,7 +100,14 @@ test('application deadline includes queue/load time and holds admission until na
   await assert.rejects(first, rejects('conversion_timeout'));
   await assert.rejects(convert(png, 'image/png'), rejects('conversion_busy'));
   release(sharp);
-  await new Promise(resolve => setTimeout(resolve, 10));
+  // The converter that timed out admits work again once its native work
+  // settles; the wait is bounded so a converter stuck busy fails the test.
+  let recovered: unknown = 'conversion_busy';
+  for (let wait = 0; wait < 100 && recovered === 'conversion_busy'; wait++) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+    recovered = await convert(png, 'image/png').then(result => result.viewer.width, (error: MediaError) => error.code);
+  }
+  assert.notEqual(recovered, 'conversion_busy');
   const next = createMediaConverter({ loadDecoder: async () => sharp });
   assert.equal((await next(png, 'image/png')).viewer.width, 80);
 });

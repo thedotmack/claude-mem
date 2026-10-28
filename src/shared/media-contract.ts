@@ -139,7 +139,9 @@ export function validateMediaManifest(value: unknown): MediaManifest {
   if (record.attachments.length > MEDIA_LIMITS.maxObservationRefs) throw new MediaError('manifest_too_large');
   if (record.overflow !== undefined && typeof record.overflow !== 'boolean') throw new MediaError('invalid_manifest');
   const ids = new Set<string>();
-  const attachments = record.attachments.map(value => {
+  // Array.from visits holes too, so a sparse array fails the object check
+  // below instead of being skipped by map and serialized as null.
+  const attachments = Array.from(record.attachments as unknown[], value => {
     const ref = object(value, ['id', 'label', 'inspection'], 'invalid_manifest');
     const id = boundedString(ref.id, UUID_V4, 36, 'invalid_manifest');
     const label = boundedString(ref.label, LABEL, MEDIA_LIMITS.maxLabelChars, 'invalid_manifest');

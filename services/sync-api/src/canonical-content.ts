@@ -368,7 +368,7 @@ function validateMediaMetadataNamespace(kind: ContentKind, metadata: Record<stri
 	if (attachments.length > MEDIA_MANIFEST_MAX_REFS) fail("manifest_too_large");
 	if (manifestRecord.overflow !== undefined && typeof manifestRecord.overflow !== "boolean") fail("invalid_manifest");
 	const seenAttachmentIds = new Set<string>();
-	const normalizedAttachments = attachments.map((attachment) => {
+	const normalizedAttachments = Array.from(attachments, (attachment) => {
 		if (attachment === null || typeof attachment !== "object" || Array.isArray(attachment)) fail("invalid_manifest");
 		const ref = attachment as Record<string, unknown>;
 		if (Object.keys(ref).some((key) => !["id", "label", "inspection"].includes(key))) fail("invalid_manifest");

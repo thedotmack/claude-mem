@@ -26,6 +26,9 @@ export function runContractChecks(): number {
   assert.equal(validateMediaManifest({ version: 1, attachments: refs }).attachments.length, 32); checks++;
   assert.throws(() => validateMediaManifest({ version: 1, attachments: [...refs, { ...refs[0], id: 'ffffffff-1111-4111-8111-111111111111' }] }), (error: unknown) => error instanceof MediaError && error.code === 'manifest_too_large'); checks++;
   assert.equal(validateMediaManifest({ version: 1, attachments: [{ ...refs[0], label: 'a'.repeat(64) }] }).attachments[0].label.length, 64); checks++;
+  // A sparse attachment array (a missing slot) is rejected, never serialized as null.
+  const sparse = [refs[0]] as unknown[]; sparse[2] = refs[1];
+  assert.throws(() => validateMediaManifest({ version: 1, attachments: sparse }), (error: unknown) => error instanceof MediaError && error.code === 'invalid_manifest'); checks++;
   assert.throws(() => validateMediaManifest({ version: 1, attachments: [{ ...refs[0], label: 'a'.repeat(65) }] })); checks++;
   for (const label of ['file.png', '/source', 'data:image', 'private image', 'image\n1']) {
     assert.throws(() => validateMediaManifest({ version: 1, attachments: [{ ...refs[0], label }] })); checks++;

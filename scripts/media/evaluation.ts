@@ -103,7 +103,7 @@ export interface EvaluationReport {
   version: 1;
   execution_kind: 'dry-run' | 'mock' | 'live';
   qualification: 'not_qualified';
-  outcome: 'dry_run' | 'complete' | 'spend_limit' | 'unknown_cost' | 'retry_limit' | 'recording_failed';
+  outcome: 'dry_run' | 'complete' | 'spend_limit' | 'unknown_cost' | 'retry_limit' | 'recording_failed' | 'scoring_failed';
   fixture_count: number;
   request_count: number;
   known_spend_usd: number;
@@ -278,7 +278,16 @@ export async function runMediaEvaluation(
           cancelTimeout();
           if (settled) pendingCaller = null;
         }
-        const scored = score(fixture, result);
+        // A scorer failure must not lose a paid attempt: the attempt and its
+        // charge are recorded first, then the run stops as scoring_failed.
+        let scored: ReturnType<typeof score>;
+        let scoringFailed = false;
+        try {
+          scored = score(fixture, result);
+        } catch {
+          scored = { labelsValid: false, criticalFactsPresent: false };
+          scoringFailed = true;
+        }
         const knownCharge = (result.cost_source === 'provider' || result.cost_source === 'computed') &&
           typeof result.actual_cost_usd === 'number' && Number.isFinite(result.actual_cost_usd) && result.actual_cost_usd >= 0;
         const attempt: EvaluationAttempt = {
@@ -297,6 +306,10 @@ export async function runMediaEvaluation(
         if (dependencies.recordAttempt) {
           try { await dependencies.recordAttempt(attempt); }
           catch { report.outcome = 'recording_failed'; return report; }
+        }
+        if (scoringFailed) {
+          report.outcome = 'scoring_failed';
+          return report;
         }
         if (!knownCharge) {
           report.outcome = 'unknown_cost';

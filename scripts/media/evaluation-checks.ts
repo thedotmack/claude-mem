@@ -93,6 +93,18 @@ export async function runEvaluationChecks(): Promise<{ checks: number; images: n
   });
   assert.equal(paraphrased.outcome, 'complete'); assert.equal(paraphrased.request_count, 1); assert.equal(paraphrased.attempts[0].critical_facts_present, true); checks++;
 
+  // A scorer that throws after a paid response still records the attempt and its charge first.
+  const scoredAttempts: unknown[] = [];
+  const scoringFailed = await runMediaEvaluation(single, { ...options, maxRetries: 1 }, {
+    caller: async request => successful(request, 0.004),
+    readDerivative: derivativeReader,
+    recordAttempt: async attempt => { scoredAttempts.push(attempt); },
+    score: () => { throw new Error('scorer bug'); },
+  });
+  assert.equal(scoringFailed.outcome, 'scoring_failed'); assert.equal(scoringFailed.request_count, 1);
+  assert.equal(scoringFailed.known_spend_usd, 0.004); assert.equal(scoredAttempts.length, 1);
+  assert.equal((scoredAttempts[0] as { actual_cost_usd: number }).actual_cost_usd, 0.004); checks++;
+
   const overrun = await runMediaEvaluation(corpus, { ...options, maxSpendUsd: 0.01 }, { caller: async request => successful(request, 0.02), readDerivative: derivativeReader });
   assert.equal(overrun.outcome, 'spend_limit'); assert.equal(overrun.request_count, 1); assert.equal(overrun.known_spend_usd, 0.02); checks++;
 
