@@ -25,9 +25,9 @@
 158	recall (history.json, turns 32 and 96)	Where does history.json live, what writes to it, and how is it written safely? Answer from memory first, then check the code. Then run all tests and commit with the message "statistical tests, docs".
 163	recall (expr features)	Earlier we wrote an expression evaluator. List every feature it supports now (operators, functions, variables, exact mode) by reading the code and tests.
 174	recall (profiling, turns 74-75)	Earlier we timed primes_up_to(2000000). What was the time before and after the speed-up, and what change made it faster? Answer from memory first, then re-run the timing. Then commit with the message "linear solve".
-181	recall (work since turn 150)	List what we have built since turn 150, in order, and check the list against git log. Then commit with the message "repl fixes and help".
+181	recall (work since the CSV history export)	List what we have built since we added history export to CSV, in order, and check the list against git log. Then commit with the message "repl fixes and help".
 186	recall (git history)	Read the git log and tell me which module has changed most often. Then read that module and suggest one simplification; don't change anything.
 191	awareness (CLI vs README)	List every subcommand of main.py with a one-line description, by reading the dispatcher, and check it against README.md. Fix the README if they differ.
 194	recall (bug hunts)	Earlier in this project, which bugs did the bug hunts find? List the ones you remember and check each still has a test.
 198	awareness (config values)	Which configuration values does mathkit.toml hold now? Read the loader and list them with their defaults.
-200	recall (growth since turn 100)	Summarize in ten bullet points how this project has grown since turn 100, checking git log and the files before answering.
+200	recall (growth since polynomials)	Summarize in ten bullet points how this project has grown since we started on polynomials, checking git log and the files before answering.

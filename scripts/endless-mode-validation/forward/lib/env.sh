@@ -9,7 +9,10 @@
 #   EMV_RUN_NAME        name of this run [run-<date>]
 #   EMV_RUN_DIR         where the run lives [<repo>/.scratch/endless-mode-validation/forward/<run name>] (.scratch is gitignored)
 #   EMV_AGENT           claude | codex [claude]
-#   EMV_MODEL_PROFILE   anthropic | openrouter-deepseek-flash [anthropic]; see lib/model-profile.sh
+#   EMV_MODEL_PROFILE   openrouter-deepseek-flash | anthropic [none: required]; see lib/model-profile.sh. Full-price
+#                       models (the anthropic profile, and Codex) are refused unless EMV_ALLOW_FULL_PRICE_MODELS=1
+#   EMV_RELEASE_VERSION the published claude-mem the `release` configuration installs [npm's `latest`, resolved and
+#                       recorded at setup]
 #   EMV_CLAUDE_MODEL    Claude Code model under the anthropic profile [claude-opus-5-5]
 #   EMV_CODEX_MODEL     Codex model [gpt-6.1-sol]
 #   EMV_CLAUDE_BIN / EMV_CODEX_BIN   the real agent binaries [command -v claude / codex]. Point these past any wrapper
@@ -36,7 +39,7 @@ fi
 export EMV_RUN_NAME=${EMV_RUN_NAME:-run-$(date +%Y%m%d-%H%M%S)}
 export EMV_RUN_DIR=${EMV_RUN_DIR:-$EMV_REPO_ROOT/.scratch/endless-mode-validation/forward/$EMV_RUN_NAME}
 export EMV_AGENT=${EMV_AGENT:-claude}
-export EMV_MODEL_PROFILE=${EMV_MODEL_PROFILE:-anthropic}
+export EMV_MODEL_PROFILE=${EMV_MODEL_PROFILE:-}
 export EMV_CLAUDE_MODEL=${EMV_CLAUDE_MODEL:-claude-opus-5-5}
 export EMV_CODEX_MODEL=${EMV_CODEX_MODEL:-gpt-6.1-sol}
 export EMV_CLAUDE_BIN=${EMV_CLAUDE_BIN:-$(PATH=$EMV_REAL_PATH command -v claude)}
@@ -49,9 +52,12 @@ export EMV_BUN=${EMV_BUN:-$(PATH=$EMV_REAL_PATH command -v bun)}
 # our own runs used (free disk never went below 11 GB in our 200-turn, four-configuration run).
 export EMV_MIN_FREE_GB=${EMV_MIN_FREE_GB:-5}
 
-# The four configurations, in a fixed order (their index sets their ports).
-typeset -ga EMV_ALL_CONFIGS=(none off timeline observation)
-typeset -gA EMV_CONFIG_LABEL=(none 'claude-mem off' off 'claude-mem on, Endless off' timeline 'Endless `timeline`' observation 'Endless `observation`')
+# The configurations, in a fixed order (their index sets their ports; new ones go at the end so ports never move).
+# A run with no configurations named runs EMV_DEFAULT_CONFIGS.
+typeset -ga EMV_ALL_CONFIGS=(none off timeline observation release)
+typeset -ga EMV_DEFAULT_CONFIGS=(none off timeline observation)
+typeset -gA EMV_CONFIG_LABEL=(none 'claude-mem off' off 'claude-mem on, Endless off' timeline 'Endless `timeline`' observation 'Endless `observation`'
+  release 'claude-mem release (no gateway)')
 
 # Ports of configuration $1: worker, gateway, Anthropic-side tee, Codex-side tee.
 emv_ports() {
@@ -71,7 +77,9 @@ emv_use_stack() {
   export XDG_CONFIG_HOME=$HOME/.config XDG_DATA_HOME=$HOME/.local/share XDG_CACHE_HOME=$HOME/.cache XDG_STATE_HOME=$HOME/.local/state
   # Package caches stay shared (they are caches, not configuration) so a sandbox HOME does not re-download them.
   export npm_config_cache=$EMV_REAL_HOME/.npm BUN_INSTALL_CACHE_DIR=$EMV_REAL_HOME/.bun/install/cache
-  export PATH=$EMV_STACK/bin:$EMV_REAL_PATH
+  # The sandbox HOME's ~/.local/bin comes before your own PATH: the `release` configuration's hooks run the
+  # `claude-mem` launcher its installer put there, never the one in your real ~/.local/bin.
+  export PATH=$EMV_STACK/bin:$HOME/.local/bin:$EMV_REAL_PATH
   export DO_NOT_TRACK=1
   # Commits the agents make in the sandbox carry a neutral identity, never one derived from your account or host.
   export GIT_AUTHOR_NAME=harness GIT_AUTHOR_EMAIL=harness@example.invalid GIT_COMMITTER_NAME=harness GIT_COMMITTER_EMAIL=harness@example.invalid
@@ -81,6 +89,25 @@ emv_use_stack() {
 }
 
 emv_free_gb() { df -Pk "$EMV_RUN_DIR" 2>/dev/null | awk 'NR==2 {print int($4 / 1048576)}'; }
+
+# The installed release's plugin root in the `release` stack (the installer's plugin cache dir for the version
+# recorded at setup). Fails when it is missing.
+emv_release_plugin_root() {
+  local version_file=$EMV_STACK/release-version.txt
+  [[ -f $version_file ]] || { echo "release: $version_file missing; run setup-stack.sh release" >&2; return 2; }
+  local root=$CLAUDE_CONFIG_DIR/plugins/cache/thedotmack/claude-mem/$(<$version_file)
+  [[ -f $root/scripts/worker-service.cjs ]] || { echo "release: no worker at $root/scripts/worker-service.cjs" >&2; return 2; }
+  print -r -- $root
+}
+
+# Start this stack's worker in the background (call inside emv_use_stack, with the observer credential exported).
+# The gateway configurations run this checkout's source; `release` runs the installed release's own worker bundle.
+emv_start_worker() {
+  local script=$EMV_REPO_ROOT/src/services/worker-service.ts
+  if [[ $EMV_CONFIG == release ]]; then script=$(emv_release_plugin_root)/scripts/worker-service.cjs || return; fi
+  cd $CLAUDE_MEM_DATA_DIR && nohup $EMV_BUN $script --daemon >> $EMV_STACK/logs/worker.log 2>&1 &
+  print $! >> $EMV_STACK/pids
+}
 
 emv_gateway() { "$EMV_BUN" "$EMV_REPO_ROOT/src/services/wire-gateway/WireGatewayService.ts" "$@"; }
 

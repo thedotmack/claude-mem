@@ -1,6 +1,12 @@
 # Source me (zsh, from env.sh). The model profile picks which model the agent AND claude-mem's observer use.
 #
-# anthropic (default)
+# There is no default profile, and full-price models are refused. Owner rule, 2026-10-28: no wire gateway experiment
+# runs on Anthropic models; only discount frontier models (e.g. DeepSeek Flash through OpenRouter). So a run with no
+# EMV_MODEL_PROFILE fails, and the `anthropic` profile and Codex (EMV_AGENT=codex, a full-price OpenAI model) fail
+# too unless EMV_ALLOW_FULL_PRICE_MODELS=1, which only the owner may decide to set. The check runs before anything
+# starts (run.sh, setup-stack.sh, start-stack.sh) and again before every agent turn (agent-turn.sh).
+#
+# anthropic (refused unless EMV_ALLOW_FULL_PRICE_MODELS=1)
 #   Claude Code on the contributor's claude.ai login (EMV_CLAUDE_MODEL), observer on claude-mem's `claude` provider
 #   with the same login. Codex (EMV_AGENT=codex) uses the contributor's ChatGPT login.
 #
@@ -11,8 +17,9 @@
 #   ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY blank: OpenRouter's Claude Code guide), still through the gateway and the
 #   tee, so capture and measurement are unchanged. The observer uses claude-mem's existing `openrouter` provider with
 #   CLAUDE_MEM_OPENROUTER_MODEL set to the same model (sandbox settings only).
-#   The key: OPENROUTER_API_KEY from the environment, else CLAUDE_MEM_OPENROUTER_API_KEY in the real claude-mem
-#   settings.json. It must be an OpenRouter key (sk-or-…). A cmem.ai memory key (cm_pro_…) is refused: it works only
+#   The key: OPENROUTER_API_KEY from the environment, else (macOS) the login keychain entry whose service is
+#   EMV_OPENROUTER_KEYCHAIN_SERVICE [openrouter-endless-mode-tests] and account is you (read only), else
+#   CLAUDE_MEM_OPENROUTER_API_KEY in the real claude-mem settings.json. It must be an OpenRouter key (sk-or-…). A cmem.ai memory key (cm_pro_…) is refused: it works only
 #   at cmem.ai, and claude-mem never sends one to another host. The key goes into the agent's and worker's
 #   environment only; it is never printed or written to any file.
 #   Claude Code only (Codex is not wired for this profile).
@@ -38,6 +45,12 @@ emv_claude_model() {
 # OpenRouter key.
 emv_read_openrouter_key() {
   local key=$OPENROUTER_API_KEY source='OPENROUTER_API_KEY'
+  local service=${EMV_OPENROUTER_KEYCHAIN_SERVICE:-openrouter-endless-mode-tests}
+  if [[ -z $key && $(uname) == Darwin ]]; then
+    # The keychain path is explicit because HOME may be a sandbox.
+    key=$(security find-generic-password -s "$service" -a "$EMV_REAL_USER" -w "$EMV_REAL_HOME/Library/Keychains/login.keychain-db" 2>/dev/null)
+    source="the keychain entry $service"
+  fi
   if [[ -z $key && -f $EMV_REAL_CLAUDE_MEM_DIR/settings.json ]]; then
     key=$(jq -r '.CLAUDE_MEM_OPENROUTER_API_KEY // empty' "$EMV_REAL_CLAUDE_MEM_DIR/settings.json" 2>/dev/null)
     source="CLAUDE_MEM_OPENROUTER_API_KEY in $EMV_REAL_CLAUDE_MEM_DIR/settings.json"
@@ -54,10 +67,17 @@ emv_read_openrouter_key() {
   typeset -g EMV_OPENROUTER_KEY=$key
 }
 
-# Profile checks, run once before anything starts.
+# Profile checks: before anything starts, and before every agent turn.
 emv_check_profile() {
+  local rule='owner rule 2026-10-28: wire gateway experiments run on discount models only'
+  if [[ $EMV_AGENT == codex && $EMV_ALLOW_FULL_PRICE_MODELS != 1 ]]; then
+    echo "refused: EMV_AGENT=codex runs a full-price OpenAI model ($rule). Use EMV_AGENT=claude with EMV_MODEL_PROFILE=openrouter-deepseek-flash." >&2; return 4
+  fi
   case $EMV_MODEL_PROFILE in
-    anthropic) return 0 ;;
+    '') echo "refused: no EMV_MODEL_PROFILE set, and there is no fallback to Claude ($rule). Set EMV_MODEL_PROFILE=openrouter-deepseek-flash and OPENROUTER_API_KEY." >&2; return 4 ;;
+    anthropic)
+      [[ $EMV_ALLOW_FULL_PRICE_MODELS == 1 ]] && return 0
+      echo "refused: EMV_MODEL_PROFILE=anthropic runs Claude models ($rule). Set EMV_MODEL_PROFILE=openrouter-deepseek-flash and OPENROUTER_API_KEY." >&2; return 4 ;;
     openrouter-deepseek-flash)
       [[ $EMV_AGENT == claude ]] || { echo "openrouter-deepseek-flash supports EMV_AGENT=claude only" >&2; return 2; }
       emv_read_openrouter_key ;;

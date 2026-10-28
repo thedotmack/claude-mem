@@ -145,4 +145,15 @@ quota_pauses = 0
 for lf in glob.glob(os.path.join(S, 'data', 'logs', '*.log')):
     quota_pauses += sum(1 for l in open(lf, errors='replace') if 'paused for quota' in l)
 res['observer_quota_pauses'] = quota_pauses
+# What the stack's claude-mem stored (None for `none`, which has no database): observations and session summaries.
+db = os.path.join(S, 'data', 'claude-mem.db')
+res['observations_stored'] = res['summaries_stored'] = None
+if os.path.exists(db):
+    import sqlite3
+    con = sqlite3.connect(f'file:{db}?mode=ro', uri=True)
+    def count(table):
+        try: return con.execute(f'select count(*) from {table}').fetchone()[0]
+        except sqlite3.OperationalError: return None
+    res['observations_stored'] = count('observations'); res['summaries_stored'] = count('session_summaries')
+    con.close()
 print(json.dumps(res))

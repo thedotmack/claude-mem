@@ -11,6 +11,7 @@
 source ${0:A:h}/lib/env.sh || exit
 source $EMV_FORWARD_DIR/lib/claude-token.sh
 emv_use_stack ${EMV_CONFIG:?} || exit
+emv_check_profile || exit
 label=$1; prompt=$2; mode=$3; T=$EMV_STACK/logs/turns; mkdir -p $T
 sidfile=$EMV_STACK/logs/session.sid
 cd $EMV_STACK/proj
@@ -41,6 +42,8 @@ fi
 credentials() {
   if [[ $EMV_MODEL_PROFILE == openrouter-deepseek-flash ]]; then
     emv_read_openrouter_key || exit; export ANTHROPIC_AUTH_TOKEN=$EMV_OPENROUTER_KEY ANTHROPIC_API_KEY=''
+    # `release`: if its hooks ever have to restart its worker, that worker gets the observer key too.
+    [[ $EMV_CONFIG == release ]] && export CLAUDE_MEM_OPENROUTER_API_KEY=$EMV_OPENROUTER_KEY
   else
     emv_read_claude_token || exit; export CLAUDE_CODE_OAUTH_TOKEN=$EMV_CLAUDE_TOKEN
   fi

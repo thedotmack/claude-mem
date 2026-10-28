@@ -17,8 +17,7 @@ while [[ ! -e $stop ]]; do
     ( emv_use_stack $c
       for pid in $(lsof -nP -t -iTCP:$EMV_WORKER_PORT -sTCP:LISTEN 2>/dev/null); do kill $pid; done; sleep 3
       emv_read_claude_token && export CLAUDE_CODE_OAUTH_TOKEN=$EMV_CLAUDE_TOKEN
-      cd $CLAUDE_MEM_DATA_DIR && nohup $EMV_BUN $EMV_REPO_ROOT/src/services/worker-service.ts --daemon >> $EMV_STACK/logs/worker.log 2>&1 &
-      print $! >> $EMV_STACK/pids )
+      emv_start_worker )
   done
   echo "$(date +%T) workers restarted" >> $L
 done

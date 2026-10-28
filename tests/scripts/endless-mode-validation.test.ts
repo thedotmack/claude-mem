@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, it } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { Database } from 'bun:sqlite';
 import { join, resolve } from 'node:path';
 import { readClaudeAccessToken, startTee } from '../../scripts/endless-mode-validation/forward/tee-proxy';
 
@@ -128,9 +129,16 @@ describe('forward extract, stats and tables', () => {
   it('reduces the bodies, prices the usage per turn and prints the comparison', () => {
     const results = join(scratch, 'results'); mkdirSync(results, { recursive: true });
     const stacks: Record<string, string> = {};
-    for (const [config, blocks, read] of [['none', 0, 5000], ['timeline', 3, 20000]] as const) {
+    for (const [config, blocks, read] of [['none', 0, 5000], ['timeline', 3, 20000], ['release', 0, 6000]] as const) {
       const stack = join(scratch, 'stacks', config);
       const tee = writeStack(stack, config, blocks, read);
+      if (config === 'release') {
+        mkdirSync(join(stack, 'data'), { recursive: true });
+        const db = new Database(join(stack, 'data', 'claude-mem.db'));
+        db.run('create table observations (id integer)'); db.run('create table session_summaries (id integer)');
+        db.run('insert into observations values (1), (2), (3)'); db.run('insert into session_summaries values (1)');
+        db.close();
+      }
       stacks[config] = stack;
       const stop = join(scratch, `stop-${config}`); writeFileSync(stop, '');
       expect(python([join(HARNESS, 'forward/extract.py'), stop, tee]).code).toBe(0);
@@ -154,6 +162,14 @@ describe('forward extract, stats and tables', () => {
     expect(tables.code).toBe(0);
     expect(tables.stdout).toContain('| total_cost_usd |');
     expect(tables.stdout).toContain('Endless `timeline`');
+    // The release configuration: its own column, a crossing line against it, and what its claude-mem stored.
+    const release = JSON.parse(readFileSync(join(results, 'release.json'), 'utf8'));
+    expect(release.observations_stored).toBe(3);
+    expect(release.summaries_stored).toBe(1);
+    expect(JSON.parse(readFileSync(join(results, 'none.json'), 'utf8')).observations_stored).toBeNull();
+    expect(tables.stdout).toContain('claude-mem release (no gateway)');
+    expect(tables.stdout).toContain('Endless `timeline` vs claude-mem release (no gateway): never drops below');
+    expect(tables.stdout).toContain('observations stored 3, summaries 1');
   });
 });
 
@@ -181,5 +197,132 @@ describe('backtest validation gate', () => {
     const run = python([join(HARNESS, 'backtest/validate.py'), root, join(root, 'labels.json'), join(root, 'out')]);
     expect(run.code).toBe(1);
     expect(run.stdout).toContain('**FAIL**');
+  });
+});
+
+// Runs zsh with a clean harness environment (no EMV_* or provider variables from the caller).
+function harnessEnv(extra: Record<string, string>) {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v !== undefined && !k.startsWith('EMV_') && !/^(ANTHROPIC_|OPENROUTER_|CLAUDE_)/.test(k)) env[k] = v;
+  }
+  return { ...env, ...extra };
+}
+function zsh(script: string, env: Record<string, string>) {
+  const run = Bun.spawnSync(['zsh', '-c', script], { cwd: REPO_ROOT, env: harnessEnv(env) });
+  return { code: run.exitCode, stdout: run.stdout.toString(), stderr: run.stderr.toString() };
+}
+const ENV_SH = join(HARNESS, 'forward/lib/env.sh');
+
+describe('forward model profiles: discount models only', () => {
+  it('refuses a run with no profile, the anthropic profile and Codex, with a clear message', () => {
+    const none = zsh(`source '${ENV_SH}' && emv_check_profile`, {});
+    expect(none.code).toBe(4);
+    expect(none.stderr).toContain('refused: no EMV_MODEL_PROFILE set, and there is no fallback to Claude');
+    const anthropic = zsh(`source '${ENV_SH}' && emv_check_profile`, { EMV_MODEL_PROFILE: 'anthropic' });
+    expect(anthropic.code).toBe(4);
+    expect(anthropic.stderr).toContain('refused: EMV_MODEL_PROFILE=anthropic runs Claude models');
+    const codex = zsh(`source '${ENV_SH}' && emv_check_profile`, { EMV_MODEL_PROFILE: 'openrouter-deepseek-flash', EMV_AGENT: 'codex', OPENROUTER_API_KEY: 'sk-or-test' });
+    expect(codex.code).toBe(4);
+    expect(zsh(`source '${ENV_SH}' && emv_check_profile`, { EMV_MODEL_PROFILE: 'anthropic', EMV_ALLOW_FULL_PRICE_MODELS: '1' }).code).toBe(0);
+    expect(zsh(`source '${ENV_SH}' && emv_check_profile`, { EMV_MODEL_PROFILE: 'openrouter-deepseek-flash', OPENROUTER_API_KEY: 'sk-or-test' }).code).toBe(0);
+  });
+
+  it('refuses before an agent turn starts, so no turn can run on Claude', () => {
+    const turn = zsh(`EMV_CONFIG=none zsh '${join(HARNESS, 'forward/agent-turn.sh')}' t1 hello first`, { EMV_RUN_DIR: join(scratch, 'refused-run') });
+    expect(turn.code).toBe(4);
+    expect(turn.stderr).toContain('refused');
+  });
+});
+
+describe('forward release configuration', () => {
+  it('has its own ports after the existing four, and is not in the default set', () => {
+    const r = zsh(`source '${ENV_SH}' && emv_ports release && print $EMV_WORKER_PORT $EMV_TEE_ANTHROPIC_PORT && print -r -- "$EMV_DEFAULT_CONFIGS"`, {});
+    expect(r.stdout.split('\n')[0]).toBe('38140 38142');
+    expect(r.stdout.split('\n')[1]).toBe('none off timeline observation');
+  });
+
+  it('installs with npx into the sandbox only, keeps the installer settings, and points Claude Code at its tee', () => {
+    // Stand-ins for npm and npx that do what the real installer does to the sandbox (checked by hand against
+    // claude-mem 15.4.0's installer): plugin cache, registry, enabledPlugins, launcher, data-dir settings.
+    const bin = join(scratch, 'stub-bin'); mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, 'npm'), '#!/bin/sh\n[ "$1" = view ] && echo 9.8.7\n');
+    writeFileSync(join(bin, 'npx'), `#!/bin/sh
+echo "npx $*" >> "$CLAUDE_MEM_DATA_DIR/../logs/npx-args.log"
+root="$CLAUDE_CONFIG_DIR/plugins/cache/thedotmack/claude-mem/9.8.7"
+mkdir -p "$root/scripts" "$root/.claude-plugin" "$HOME/.local/bin"
+echo '{"version":"9.8.7"}' > "$root/.claude-plugin/plugin.json"; : > "$root/scripts/worker-service.cjs"
+printf '#!/bin/sh\\n' > "$HOME/.local/bin/claude-mem"; chmod +x "$HOME/.local/bin/claude-mem"
+echo '{"enabledPlugins":{"claude-mem@thedotmack":true}}' > "$CLAUDE_CONFIG_DIR/settings.json"
+echo '{"CLAUDE_MEM_PROVIDER":"claude","CLAUDE_MEM_CLAUDE_AUTH_METHOD":"subscription"}' > "$CLAUDE_MEM_DATA_DIR/settings.json"
+`);
+    chmodSync(join(bin, 'npm'), 0o755); chmodSync(join(bin, 'npx'), 0o755);
+    const runDir = join(scratch, 'release-run');
+    const setup = zsh(`zsh '${join(HARNESS, 'forward/setup-stack.sh')}' release`, {
+      PATH: `${bin}:${process.env.PATH}`, EMV_RUN_DIR: runDir, EMV_MODEL_PROFILE: 'openrouter-deepseek-flash', OPENROUTER_API_KEY: 'sk-or-test-key',
+    });
+    expect(setup.stderr).toBe('');
+    expect(setup.code).toBe(0);
+    const stack = join(runDir, 'stacks', 'release');
+    expect(readFileSync(join(stack, 'logs', 'npx-args.log'), 'utf8')).toContain('-y claude-mem@9.8.7 install --provider claude --no-auto-start');
+    expect(readFileSync(join(stack, 'release-version.txt'), 'utf8').trim()).toBe('9.8.7');
+    const claudeSettings = JSON.parse(readFileSync(join(stack, 'claude-config', 'settings.json'), 'utf8'));
+    expect(claudeSettings.enabledPlugins['claude-mem@thedotmack']).toBe(true);
+    expect(claudeSettings.env.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:38142');  // its tee, no gateway
+    expect(claudeSettings.env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('~deepseek/deepseek-flash-latest');
+    const memSettings = JSON.parse(readFileSync(join(stack, 'data', 'settings.json'), 'utf8'));
+    expect(memSettings.CLAUDE_MEM_CLAUDE_AUTH_METHOD).toBe('subscription');  // the installer's own setting is kept
+    expect(memSettings.CLAUDE_MEM_PROVIDER).toBe('openrouter');  // the observer matches the other claude-mem configs
+    expect(memSettings.CLAUDE_MEM_OPENROUTER_MODEL).toBe('~deepseek/deepseek-flash-latest');
+    expect(memSettings.CLAUDE_MEM_WORKER_PORT).toBe('38140');
+    expect(Object.keys(memSettings).filter(k => k.startsWith('CLAUDE_MEM_WIRE_GATEWAY'))).toEqual([]);
+    for (const file of [join(stack, 'data', 'settings.json'), join(stack, 'claude-config', 'settings.json')]) {
+      expect(readFileSync(file, 'utf8')).not.toContain('sk-or-test-key');
+    }
+    // The sandbox's launcher comes before the contributor's own ~/.local/bin.
+    const path = zsh(`source '${ENV_SH}' && emv_use_stack release && command -v claude-mem`, { PATH: `${bin}:${process.env.PATH}`, EMV_RUN_DIR: runDir });
+    expect(path.stdout.trim()).toBe(join(stack, 'home', '.local', 'bin', 'claude-mem'));
+  });
+
+  it('marks the replies that name claude-mem in the key file, never in the judges folder', () => {
+    const run = join(scratch, 'blind-run');
+    for (const [config, reply] of [['none', 'plain reply'], ['release', 'I checked claude-mem memory first']]) {
+      mkdirSync(join(run, 'artifacts', config), { recursive: true });
+      writeFileSync(join(run, 'artifacts', config, 'turns.jsonl'), JSON.stringify({ config, turn: 1, prompt: 'p', reply }) + '\n');
+    }
+    const judges = join(scratch, 'judges'), keyFile = join(scratch, 'blind-key.json');
+    const r = python([join(HARNESS, 'forward/blind-artifacts.py'), run, judges, keyFile, join(HARNESS, 'forward/probe-turns-500.txt')]);
+    expect(r.code).toBe(0);
+    const key = JSON.parse(readFileSync(keyFile, 'utf8'));
+    const releaseLetter = Object.entries(key.key).find(([, c]) => c === 'release')![0];
+    expect(key.identifying_mentions).toEqual({ [releaseLetter]: [1] });
+    for (const letter of Object.keys(key.key)) expect(readFileSync(join(judges, letter, 'turns.jsonl'), 'utf8')).not.toContain('"config"');
+  });
+});
+
+describe('scripted prompts', () => {
+  const F = join(HARNESS, 'forward');
+  it('never refer to a turn by its number, and the check catches one that does', () => {
+    expect(python([join(F, 'check-prompts.py'), join(F, 'prompts200.txt'), join(F, 'prompts500.txt')]).code).toBe(0);
+    const bad = join(scratch, 'bad-prompts.txt'); writeFileSync(bad, 'Add a test.\nList what we built since turn 150.\n');
+    const r = python([join(F, 'check-prompts.py'), bad]);
+    expect(r.code).toBe(1);
+    expect(r.stdout).toContain('bad-prompts.txt:2');
+  });
+
+  it('prompts500 continues prompts200, and every probe points at earlier turns', () => {
+    const p200 = readFileSync(join(F, 'prompts200.txt'), 'utf8').trimEnd().split('\n');
+    const p500 = readFileSync(join(F, 'prompts500.txt'), 'utf8').trimEnd().split('\n');
+    expect(p500.length).toBe(500);
+    expect(p500.slice(0, 200)).toEqual(p200);
+    const probes = readFileSync(join(F, 'probe-turns-500.txt'), 'utf8').split('\n').filter(l => l && !l.startsWith('#')).map(l => l.split('\t'));
+    expect(probes.length).toBeGreaterThanOrEqual(60);
+    for (const [turn, , refs, question] of probes) {
+      expect(p500[Number(turn) - 1]).toBe(question);
+      if (refs === '-') continue;
+      for (const part of refs.split(',')) for (const n of part.split('-')) expect(Number(n)).toBeLessThan(Number(turn));
+    }
+    // About every 10th turn after 200 is a probe.
+    expect(probes.filter(([t]) => Number(t) > 200).length).toBeGreaterThanOrEqual(30);
   });
 });

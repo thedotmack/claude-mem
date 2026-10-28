@@ -1,5 +1,5 @@
 #!/usr/bin/env zsh
-# Stop one configuration's stack and check nothing of it still listens. Usage: stop-stack.sh <none|off|timeline|observation>
+# Stop one configuration's stack and check nothing of it still listens. Usage: stop-stack.sh <none|off|timeline|observation|release>
 source ${0:A:h}/lib/env.sh || exit
 emv_use_stack $1 || exit
 [[ -f $EMV_STACK/pids ]] && for pid in $(<$EMV_STACK/pids); do kill $pid 2>/dev/null; done

@@ -2,16 +2,18 @@
 # A forward run: the same scripted session, N turns, in each configuration side by side, each in its own isolated
 # stack; then stats, tables and the judges' artifacts.
 #
-# Usage: scripts/endless-mode-validation/forward/run.sh <turns> [configs...]   (configs default: none off timeline observation)
-# Env: see lib/env.sh (EMV_RUN_NAME, EMV_AGENT, EMV_MODEL_PROFILE, EMV_CLAUDE_BIN, ...). Also:
+# Usage: scripts/endless-mode-validation/forward/run.sh <turns> [configs...]   (configs default: none off timeline observation; also: release)
+# Env: see lib/env.sh (EMV_RUN_NAME, EMV_PROMPTS [prompts200.txt; prompts500.txt for 500 turns], EMV_AGENT, EMV_MODEL_PROFILE, EMV_CLAUDE_BIN, ...). Also:
 #   EMV_FIRST_TURN  continue an existing run (same EMV_RUN_NAME) from this turn [1]
+#   EMV_BUDGET_USD  openrouter-deepseek-flash only: stop every configuration at the same turn once the key's total
+#                   OpenRouter spend reaches this many USD (budget-watch.sh) [unset: no stop]
 #   EMV_PRICES      prices file for the tables [by profile: prices/anthropic-claude-opus-5-5.json, prices/openai-gpt-6.1-sol.json,
 #                   or OpenRouter's live list for openrouter-deepseek-flash]
 # Output: $EMV_RUN_DIR/results/{<config>.json, tables.md, real-configs-before.txt, real-configs-after.txt}
 #         $EMV_RUN_DIR/artifacts/<config>/{turns.jsonl, snapshots/}  (for the blind judges; contains the agent's replies)
 source ${0:A:h}/lib/env.sh || exit
 turns=${1:?usage: run.sh <turns> [configs...]}; shift
-configs=("$@"); (( ${#configs} )) || configs=($EMV_ALL_CONFIGS)
+configs=("$@"); (( ${#configs} )) || configs=($EMV_DEFAULT_CONFIGS)
 first=${EMV_FIRST_TURN:-1}
 R=$EMV_RUN_DIR/results; mkdir -p $R $EMV_RUN_DIR/logs
 L=$EMV_RUN_DIR/logs/run.log
@@ -26,6 +28,7 @@ if [[ $EMV_AGENT == claude ]] && head -c 2 $EMV_CLAUDE_BIN | grep -q '#!'; then
   echo "warning: $EMV_CLAUDE_BIN is a script; if it rewrites HOME or CLAUDE_CONFIG_DIR the isolation fails. Set EMV_CLAUDE_BIN to the real binary." >&2
 fi
 emv_check_profile || exit
+python3 $EMV_FORWARD_DIR/check-prompts.py $EMV_PROMPTS >&2 || { echo "$EMV_PROMPTS refers to turns by number; reword those prompts by content" >&2; exit 2; }
 [[ ! -d $EMV_RUN_DIR/stacks || $first != 1 ]] || { echo "$EMV_RUN_DIR already has stacks; pick a new EMV_RUN_NAME, or set EMV_FIRST_TURN to continue" >&2; exit 2; }
 (( $(emv_free_gb) >= EMV_MIN_FREE_GB )) || { echo "under $EMV_MIN_FREE_GB GB free" >&2; exit 3; }
 
@@ -52,6 +55,7 @@ zsh $EMV_FORWARD_DIR/netwatch.sh $EMV_RUN_DIR/logs/netwatch.log $stop &
 python3 $EMV_FORWARD_DIR/extract.py $stop $tee_dirs 2>> $EMV_RUN_DIR/logs/extract.err &
 extractor=$!
 [[ $EMV_MODEL_PROFILE == anthropic && $EMV_AGENT == claude && -z $EMV_CLAUDE_OAUTH_TOKEN ]] && zsh $EMV_FORWARD_DIR/token-watch.sh $stop $configs &
+[[ $EMV_MODEL_PROFILE == openrouter-deepseek-flash && -n $EMV_BUDGET_USD ]] && zsh $EMV_FORWARD_DIR/budget-watch.sh $stop $configs &
 
 say "sessions start"
 session_pids=()

@@ -1,0 +1,66 @@
+# Recall/awareness probe turns in prompts500.txt (turns 1-200 are prompts200.txt's probes).
+# Every probe refers to earlier work by what it was, never by turn number or position.
+# referenced_turns: the turns where the work the probe asks about happened (the judges' ground truth: read those
+# turns' replies and the git history at them); "-" means the probe asks about the project's state at that turn.
+# turn<TAB>kind<TAB>referenced_turns<TAB>question
+7	recall (previous turn)	6	Before changing anything: which TODO did you resolve in the last turn, how did you resolve it, and which test covers it? Answer from memory first, then read the code and say whether you were right.
+14	recall (decisions from turns 3 and 8)	3,8	Earlier in this session we made divide raise an error when b is 0 and median raise one for an empty list. Which exception types and messages did we use? Answer from memory first, then confirm with grep.
+22	recall (first commit, turn 10)	10	Near the start we committed with the message "phase6 scripted session". What was in that commit, and what has been added since? Answer from memory first, then check git log and correct yourself.
+23	awareness (current code)	-	Find any duplicated test helper code across the test files with grep and tell me what you find; don't change anything.
+30	awareness (what the project contains)	-	Summarize, in five bullet points, what this project contains now. Use `ls` and `grep` to check before answering.
+35	recall (earlier decision: mode tie-break, turn 26)	26	Earlier we made mode return the smallest value on a tie. Check that this is still true and tested, and tell me which test covers it.
+40	recall (module order)	4,17,21,31,36	List every module we have created so far, in the order they appeared. Answer from memory first, then check with git log --stat and the files, and correct the list. Then commit anything uncommitted with the message "history and matrix".
+49	awareness (current code)	-	Which functions in the project can raise ValueError? Use grep to check, and list them with the condition that triggers each.
+61	awareness (explain earlier code)	51-60	How does expr.py tokenize its input? Read it and explain in a few sentences, without changing anything.
+70	recall (consequence of turn 69)	69	Did the TypeError change break any CLI path that passes strings? Check main.py's --stats code path and fix it if needed. Run all tests.
+78	awareness (doc vs code)	77	Read ARCHITECTURE.md and main.py and tell me any place where the document is now wrong. Fix the document, not the code.
+82	recall (earlier feature: --version, turn 27)	27,79	Earlier we added a --version flag. Is it still there after the refactor? Check, fix if needed, and add it to test_cli.py.
+90	recall (bug hunt, turns 57-58)	57,58	What did the bug hunt on the main.py subcommands find earlier in this session, and how was each problem fixed? Answer from memory first, then check the tests and the code.
+97	awareness (current code)	32,96	Which subcommands write to history.json and which do not? Check the code and tell me; make eval and sequence record history too if they do not. Run all tests.
+100	recall (growth since the first commit)	10-99	Summarize in ten bullet points how this project has grown since the first commit, checking git log and the files before answering.
+111	awareness (module dependencies)	-	Which modules depend on which? Use grep on the imports and draw the dependency list as text. Don't change anything.
+117	recall (earlier decision: TypeError, turn 69)	69	Earlier we made every stats function raise TypeError for non-numeric elements. Do the new stats_extra functions do the same? Make them consistent, with tests. Run all tests.
+125	recall (Rational design, turns 121-122)	121,122	What did we decide about the Rational class versus Python's fractions module, and how did we check they agree? Answer from memory first, then check. Then run all tests and commit with the message "rationals and exact eval".
+134	recall (TypeError rule, turn 69)	69	Which functions raise TypeError and which raise ValueError across the project now, and when in this session did we introduce the TypeError rule? Answer from memory first, then check with grep. Then commit with the message "bases".
+141	recall (expr bug hunt, turns 86-87)	86,87	What did the expr.py bug hunt find, long ago in this session, and is each of those cases still tested? Answer from memory first, then check. Then commit with the message "3d geometry".
+148	awareness (untested behaviour)	31-34,96	Read the whole history.py and its tests and tell me any behaviour that is not tested. Don't change anything.
+158	recall (history.json, turns 32 and 96)	32,96	Where does history.json live, what writes to it, and how is it written safely? Answer from memory first, then check the code. Then run all tests and commit with the message "statistical tests, docs".
+163	recall (expr features)	51-60,123	Earlier we wrote an expression evaluator. List every feature it supports now (operators, functions, variables, exact mode) by reading the code and tests.
+174	recall (profiling, turns 74-75)	74,75	Earlier we timed primes_up_to(2000000). What was the time before and after the speed-up, and what change made it faster? Answer from memory first, then re-run the timing. Then commit with the message "linear solve".
+181	recall (work since the CSV history export)	150-180	List what we have built since we added history export to CSV, in order, and check the list against git log. Then commit with the message "repl fixes and help".
+186	recall (git history)	-	Read the git log and tell me which module has changed most often. Then read that module and suggest one simplification; don't change anything.
+191	awareness (CLI vs README)	-	List every subcommand of main.py with a one-line description, by reading the dispatcher, and check it against README.md. Fix the README if they differ.
+194	recall (bug hunts)	57,86,106,126,155,178	Earlier in this project, which bugs did the bug hunts find? List the ones you remember and check each still has a test.
+198	awareness (config values)	66,184	Which configuration values does mathkit.toml hold now? Read the loader and list them with their defaults.
+200	recall (growth since polynomials)	101-199	Summarize in ten bullet points how this project has grown since we started on polynomials, checking git log and the files before answering.
+210	recall (exact mode and complex mode)	123,124,203,204	When we added exact fractions to the expression evaluator, which option name and which CLI flag did we use, and how does the new complex option sit next to it? Answer from memory first, then check the code.
+220	awareness (config file and loader)	66,67,184,199,214	Where does mathkit.toml get read, which settings does it hold now, and what happens when the file is missing? Answer from memory first, then check the loader and its tests.
+230	recall (convert.py and units.py decision)	65	When we first considered using units.py inside convert.py for km_to_miles and miles_to_km, what did we decide and why? Answer from memory first, then check the code and git log.
+240	recall (polynomial bug hunt)	106,107	Which bugs did the polynomial bug hunt find, and does each still have a test? Answer from memory first, then check the tests.
+250	recall (repl memory and repl bug hunt)	84,178,179	How does the repl remember the previous result, and which problems did the repl bug hunt find? Answer from memory first, then check the code and tests.
+260	recall (prime sieve speed-up)	74,75	How did we make primes_up_to(2000000) fast, and roughly how long did it take before and after? Answer from memory first, then re-run the timing.
+270	recall (CLI dispatch history)	79,264	Before the registry, how did main.py dispatch subcommands, and what did the refactor that created mathkit/cli/ change? Answer from memory first, then check git log.
+280	recall (TypeError vs ValueError rule)	69,117	Which functions in the project raise TypeError rather than ValueError, and what rule did we set for when TypeError is used? Answer from memory first, then check with grep.
+290	recall (CLI --json bug hunt)	126,127	What problems did the bug hunt across every subcommand with --json find, and how were they fixed? Answer from memory first, then check test_cli.py.
+300	recall (expr benchmark and optimization)	168,169,254	How has the expression evaluator's speed changed since we wrote the benchmark script and optimized the evaluator? Answer from memory first, then run bench.py and compare.
+310	recall (sqlite history store and migration)	212,213,214,215	When we added the sqlite history store, how did we keep the JSON history working, and how do you move old history into sqlite? Answer from memory first, then check the code.
+320	recall (statistics subpackage and old paths)	159,161	Why did the old statistics import paths keep working until now, and how did we warn people who still used them? Answer from memory first, then check git log.
+330	recall (base conversion and round-trip test)	131,133	How does the base conversion module handle negative numbers, and how did we test that to_base and from_base round-trip? Answer from memory first, then check the tests.
+340	recall (safe history writes)	96,212,217	When we made history writes safe, how did we do it for history.json, and is that code still used now that there is a store interface? Answer from memory first, then check the code.
+350	recall (linear solver and determinant check)	170,171,173	How does the matrix solver handle singular matrices, and how did we check determinant against Gaussian elimination? Answer from memory first, then check the tests.
+360	recall (business days and holidays)	182,184,199	What did we decide the business-day function should do with holidays, and where does it get them from? Answer from memory first, then check the code and config.
+370	recall (registry duplicate names and plugins)	267,368,369	How does the CLI registry stop two subcommands from having the same name, and does that still hold for plugins? Answer from memory first, then check the code and tests.
+380	recall (statistical tests bug hunt)	155,156	Which bugs did the bug hunt in the statistical tests module find, and how were zero variance and single-element samples handled in the end? Answer from memory first, then check the tests.
+390	recall (doctor subcommand)	341,342,343	What does the doctor subcommand check, and which exit status does it use when a check fails? Answer from memory first, then check the code.
+400	recall (growth since complex numbers)	201-399	Summarize in ten bullet points how this project has grown since we started on complex numbers, checking git log and the files before answering.
+410	recall (expression variables and the repl's previous result)	59,84	When we added variables to the expression evaluator, what did we make happen for an unknown name, and how does the repl's previous-result variable fit in? Answer from memory first, then check the code.
+420	recall (geometry error handling consistency)	18,138,140	What did we decide when we made geometry.py's error handling consistent with geometry3d.py's? Answer from memory first, then check the tests.
+430	recall (loan payments)	46,47,48	How does loan_payment handle a zero interest rate, and what did the finance subcommand print for 200000 at 5% over 30 years? Answer from memory first, then run it again.
+440	recall (config settings and the features that added them)	66,184,214,259,412	Which settings does mathkit.toml hold now, and which feature added each one? Answer from memory first, then check the loader.
+450	recall (graphs bug hunt and negative weights)	242,251,252	Which bugs did the graphs bug hunt find, and what does dijkstra do with a negative edge weight? Answer from memory first, then check the tests.
+460	recall (Miller-Rabin is_prime)	328,329	How did we make is_prime deterministic for large numbers, and how much faster was it than the old version? Answer from memory first, then re-run the comparison.
+470	recall (money allocation and money bug hunt)	428,434,435	What does Money.allocate do with the cents that do not divide evenly, and which bugs did the money bug hunt find? Answer from memory first, then check the tests.
+480	recall (evaluator modes together)	211,311,312	How do the evaluator modes (exact, complex, units, interval) work together now, and which combinations raise an error? Answer from memory first, then check the code and tests.
+490	recall (old statistics paths, from deprecation to removal)	159,161,317,318	What happened to the old statistics import paths, from when we kept them working to when we removed them, and what does MIGRATION.md say about them? Answer from memory first, then check git log and the file.
+498	recall (every bug hunt)	57,86,106,126,155,178,207,224,251,278,299,334,356,368,384,399,434,445,464	List every bug hunt we did in this project and what each found, as a table. Answer from memory first, then check the tests.
+500	recall (growth since the ASCII charts)	256-499	Summarize in ten bullet points how this project has grown since we added the ASCII charts, checking git log and the files before answering.

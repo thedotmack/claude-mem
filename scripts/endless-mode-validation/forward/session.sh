@@ -24,6 +24,10 @@ for i in {$first..$last}; do
     cp $rules $EMV_STACK/logs/MY-RULES.after-turn$i.md
     echo "$(date -u +%FT%TZ) header edited before turn $i" | tee -a $log
   fi
+  budget_marker=$EMV_RUN_DIR/logs/budget-stop-turn
+  if [[ -f $budget_marker ]] && (( i > $(<$budget_marker) )); then
+    echo "$(date -u +%FT%TZ) STOP: budget reached; stopping after turn $(<$budget_marker) like every configuration" | tee -a $log; exit 0
+  fi
   echo "$(date -u +%FT%TZ) turn $i start" | tee -a $log
   mode=$([[ $i == 1 ]] && echo first || echo resume)
   out=$(zsh $EMV_FORWARD_DIR/agent-turn.sh $1-t$i "${prompts[$i]}" $mode)

@@ -1,5 +1,5 @@
 """Markdown tables for a forward run from the stats.py JSON files in <results dir> (none.json, off.json,
-timeline.json, observation.json; whichever exist). Usage: python3 tables.py <results dir>
+timeline.json, observation.json, release.json; whichever exist). Usage: python3 tables.py <results dir>
 
 Percentages compare each configuration with the first baseline present: claude-mem off (`none`), else Endless off
 (`off`); Endless rows also show the change vs Endless off when both baselines exist. These tables contain numbers
@@ -8,7 +8,8 @@ only (no prompts, replies or file contents), so they are safe to paste.
 import json, os, sys
 
 D = sys.argv[1]
-names = [('none', 'claude-mem off'), ('off', 'claude-mem on, Endless off'), ('timeline', 'Endless `timeline`'), ('observation', 'Endless `observation`')]
+names = [('none', 'claude-mem off'), ('off', 'claude-mem on, Endless off'), ('timeline', 'Endless `timeline`'), ('observation', 'Endless `observation`'),
+         ('release', 'claude-mem release (no gateway)')]
 names = [(k, l) for k, l in names if os.path.exists(os.path.join(D, f'{k}.json'))]
 R = {k: json.load(open(os.path.join(D, f'{k}.json'))) for k, _ in names}
 base = next((k for k in ('none', 'off') if k in R), names[0][0])
@@ -54,7 +55,7 @@ for t in sorted(set(list(range(bucket * (1 if bucket == 1 else 1), turns + 1, bu
 print()
 for e in ('timeline', 'observation'):
     if e not in R: continue
-    for b in ('none', 'off'):
+    for b in ('none', 'off', 'release'):
         if b not in R: continue
         below = [t for t in range(1, turns + 1) if C[e][t] < C[b][t]]
         stays = [t for t in below if all(C[e][u] < C[b][u] for u in range(t, turns + 1))]
@@ -76,4 +77,5 @@ for k, l in names:
     print(f"- {l}: {r['turns_started']} turns started; errors {len(r['errors'])}; spoiled turns {sorted(map(int, r['spoiled_turns'])) or 'none'}; "
           f"turn retries {r['retried_turns'] or 'none'}; unextracted request bodies {r['unextracted_bodies']}; "
           f"observer wait capped on turns {r.get('observer_wait_capped_turns') or 'none'}; observer quota pauses {r.get('observer_quota_pauses', 0)}"
+          + (f"; observations stored {r['observations_stored']}, summaries {r.get('summaries_stored')}" if r.get('observations_stored') is not None else '')
           + (f"; provider-reported cost on {r['measured_cost_requests']} of {r['requests']} requests" if r.get('measured_cost_requests') else ''))
