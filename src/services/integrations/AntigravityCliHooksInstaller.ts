@@ -150,8 +150,11 @@ const ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT: Record<string, string> = {
 // hook with exit status 1). On Windows, a space inside the path can't be
 // quoted away either, so resolve the 8.3 short path to remove the space; if 8.3
 // generation is disabled we fall back to the raw path with a warning rather
-// than blocking the install.
-function toSpaceFreePath(filePath: string): string {
+// than blocking the install. `%I`, not `%~I`: this runs at the cmd command
+// line, where `%~I` is a syntax error ("%~I was unexpected at this time"),
+// so every lookup failed and paths with spaces were never shortened.
+// Exported for tests.
+export function toSpaceFreePath(filePath: string): string {
   if (!filePath.includes(' ')) return filePath;
   if (process.platform !== 'win32') {
     console.warn(
@@ -163,7 +166,7 @@ function toSpaceFreePath(filePath: string): string {
   }
   try {
     const shortPath = execSync(
-      `for %~I in ("${filePath}") do @echo %~sI`,
+      `for %I in ("${filePath}") do @echo %~sI`,
       { shell: 'cmd.exe', encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] },
     ).trim();
     if (shortPath && !shortPath.includes(' ')) return shortPath;
