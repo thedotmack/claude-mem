@@ -13,7 +13,7 @@ import { Navbar, NavBody } from '@/components/aceternity/resizable-navbar'
 import { Notch } from '@/components/aceternity/notch'
 import { StickyBanner } from '@/components/aceternity/sticky-banner'
 import { CmemMark } from '@/components/brand'
-import { FocusChipRow, FocusRail, PastFocusLink, type FocusSelection } from '@/components/focus-nav'
+import { FocusChipRow, FocusRail, PastFocusLink, SIDE_NAV_PILL, type FocusSelection } from '@/components/focus-nav'
 import { RequestDetail } from '@/components/request-detail'
 import { cn } from '@/lib/utils'
 import { PastFocus } from '@/pages/past-focus'
@@ -232,7 +232,7 @@ function LoadedApp() {
                         <p className="section-label hidden px-2 pb-1 lg:block">{section}</p>
                         {PAGES.filter((entry) => entry.section === section).map(({ id, label, icon }) => (
                           <button key={id} type="button" onClick={() => goToPage(id)} aria-current={pageActive(id) ? 'page' : undefined} title={label} className={cn('relative flex h-10 w-full items-center gap-2.5 rounded-[10px] px-1.5 text-left text-[0.9rem] transition-colors', pageActive(id) ? 'font-medium text-accent-foreground' : 'text-foreground/85 hover:bg-card/70')}>
-                            {pageActive(id) && <ActivePill layoutId="side-nav-active-pill" />}
+                            {pageActive(id) && <ActivePill layoutId={SIDE_NAV_PILL} />}
                             <NavTile icon={icon} active={pageActive(id)} />
                             <span className="relative hidden lg:inline">{label}</span>
                             {id === 'work' && yourMoveCount > 0 && <span className="absolute top-0.5 right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground lg:relative lg:top-auto lg:right-auto lg:ml-auto lg:h-5 lg:min-w-5 lg:text-[11px]">{yourMoveCount}<span className="sr-only"> need you</span></span>}

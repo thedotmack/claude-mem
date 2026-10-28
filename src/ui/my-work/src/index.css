@@ -307,6 +307,23 @@
 .flip-status-board > div > div > :last-child { display: none; } /* the decorative stripes under each flap */
 .flip-status-board .font-mono { font-size: 10px !important; }
 
+/*
+ * Done areas (pages/past-focus.tsx): the Aceternity GlareCard is a 320px dark-foil portrait. Here it is a 240px
+ * landscape card on the app's card surface, so three fit beside the timeline. Its face wrapper soft-light blends
+ * with the page and washes the text out, so the face keeps normal blending. Reduced motion: no tilt.
+ */
+.done-area-glare { width: 240px; }
+.done-area-glare > div { --radius: 18px !important; width: 100%; aspect-ratio: 240 / 150; }
+.done-area-glare > div > div { border-color: var(--shipped-border); }
+.done-area-glare .done-area-face { background: var(--card); color: var(--foreground); }
+.done-area-glare div:has(> .done-area-face) { mix-blend-mode: normal; }
+@media (prefers-reduced-motion: reduce) {
+  .done-area-glare > div > div { transform: none; }
+}
+
+/* A kept suggestion's sparkles (pages/suggested-areas.tsx): a band behind the confirmation, fading out at its edges. */
+.kept-sparkles { position: absolute; inset: -12px -16px; pointer-events: none; mask-image: radial-gradient(ellipse 60% 70% at 30% 50%, #000 30%, transparent 100%); }
+
 /* Reduced motion everywhere: spinners stop, pulses and slides are instant, the text simply swaps (decision 5). */
 @media (prefers-reduced-motion: reduce) {
   *, ::before, ::after {

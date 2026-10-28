@@ -1,12 +1,17 @@
 // MY FOCUS: the kept areas in priority order (the owner's order wins), then Other, then "N suggested", each with how
 // many requests in it need you. On the wide rail it is a nav section; on phones and the icon-only rail, a chip row.
+// The rail's highlight is App's side-nav pill: one pill slides between focus areas, pages and Past focus.
 import { HistoryIcon, SparklesIcon } from 'lucide-react'
+import { ActivePill } from '@/components/bits'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
 import { needsYou, OTHER_FOCUS_AREA_ID, useWorkModel } from '@/data'
 import { resolveFocusAreaId } from '@/live/to-focus-model'
 
 /** What the rail can select: My Work filtered to one area (or Other), the Suggested queue, or Past focus. */
+/** App's page buttons use the same layoutId, so selecting anything in the rail slides the one pill there. */
+export const SIDE_NAV_PILL = 'side-nav-active-pill'
+
 export type FocusSelection = { kind: 'area'; focusAreaId: string } | { kind: 'suggested' } | { kind: 'past-focus' } | null
 
 interface FocusNavEntry { key: string; label: string; count: number; selection: Exclude<FocusSelection, null>; muted?: boolean }
@@ -43,11 +48,12 @@ export function FocusRail({ selected, onSelect }: { selected: FocusSelection; on
         <p className="section-label px-2 pb-1">My focus</p>
         {focus.map((entry) => (
           <button key={entry.key} type="button" onClick={() => onSelect(entry.selection)} aria-current={sameSelection(selected, entry.selection) ? 'page' : undefined}
-            className={cn('flex min-h-9 w-full items-center gap-2 rounded-[10px] px-2 py-1.5 text-left text-[0.88rem] leading-snug transition-colors',
-              sameSelection(selected, entry.selection) ? 'bg-accent font-medium text-accent-foreground' : entry.muted ? 'text-muted-foreground hover:bg-card/70' : 'text-foreground/85 hover:bg-card/70')}>
-            {entry.selection.kind === 'suggested' && <SparklesIcon className="size-3.5 shrink-0" />}
-            <span className="min-w-0 flex-1 break-words">{entry.label}</span>
-            <Count count={entry.count} />
+            className={cn('relative flex min-h-9 w-full items-center gap-2 rounded-[10px] px-2 py-1.5 text-left text-[0.88rem] leading-snug transition-colors',
+              sameSelection(selected, entry.selection) ? 'font-medium text-accent-foreground' : entry.muted ? 'text-muted-foreground hover:bg-card/70' : 'text-foreground/85 hover:bg-card/70')}>
+            {sameSelection(selected, entry.selection) && <ActivePill layoutId={SIDE_NAV_PILL} />}
+            {entry.selection.kind === 'suggested' && <SparklesIcon className="relative size-3.5 shrink-0" />}
+            <span className="relative min-w-0 flex-1 break-words">{entry.label}</span>
+            <Count count={entry.count} className="relative" />
           </button>
         ))}
       </div>
@@ -62,8 +68,9 @@ export function PastFocusLink({ selected, onSelect }: { selected: FocusSelection
   return (
     <Req ids={['R16.7']}>
       <button type="button" onClick={() => onSelect(pastFocus.selection)} aria-current={active ? 'page' : undefined}
-        className={cn('flex min-h-9 w-full items-center gap-2 rounded-[10px] px-2 text-left text-xs transition-colors', active ? 'bg-accent font-medium text-accent-foreground' : 'text-muted-foreground hover:bg-card/70')}>
-        <HistoryIcon className="size-3.5" />Past focus
+        className={cn('relative flex min-h-9 w-full items-center gap-2 rounded-[10px] px-2 text-left text-xs transition-colors', active ? 'font-medium text-accent-foreground' : 'text-muted-foreground hover:bg-card/70')}>
+        {active && <ActivePill layoutId={SIDE_NAV_PILL} />}
+        <HistoryIcon className="relative size-3.5" /><span className="relative">Past focus</span>
       </button>
     </Req>
   )
@@ -80,12 +87,13 @@ export function FocusChipRow({ selected, onSelect }: { selected: FocusSelection;
           const active = sameSelection(selected, entry.selection)
           return (
             <button key={entry.key} type="button" onClick={() => onSelect(active ? null : entry.selection)} aria-pressed={active}
-              className={cn('inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full border px-3.5 text-sm whitespace-nowrap md:h-8',
-                active ? 'border-accent-border bg-accent font-medium text-accent-foreground' : entry.muted ? 'bg-card/60 text-muted-foreground' : 'bg-card')}>
-              {entry.selection.kind === 'suggested' && <SparklesIcon className="size-3.5" />}
-              {entry.selection.kind === 'past-focus' && <HistoryIcon className="size-3.5" />}
-              {entry.label}
-              <Count count={entry.count} className="h-4 min-w-4 text-[10px]" />
+              className={cn('relative inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full border px-3.5 text-sm whitespace-nowrap md:h-8',
+                active ? 'border-accent-border font-medium text-accent-foreground' : entry.muted ? 'bg-card/60 text-muted-foreground' : 'bg-card')}>
+              {active && <ActivePill layoutId="focus-chip-active-pill" />}
+              {entry.selection.kind === 'suggested' && <SparklesIcon className="relative size-3.5" />}
+              {entry.selection.kind === 'past-focus' && <HistoryIcon className="relative size-3.5" />}
+              <span className="relative">{entry.label}</span>
+              <Count count={entry.count} className="relative h-4 min-w-4 text-[10px]" />
             </button>
           )
         })}

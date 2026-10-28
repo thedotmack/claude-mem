@@ -1,4 +1,4 @@
-import { useMemo, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { ArrowUpIcon, CheckIcon, ChevronDownIcon, FileTextIcon, HistoryIcon, PencilIcon, PlusIcon, SparklesIcon, XIcon } from 'lucide-react'
 import { Artifact, ArtifactDescription, ArtifactHeader, ArtifactTitle } from '@/components/ai-elements/artifact'
 import { Confirmation, ConfirmationAccepted, ConfirmationAction, ConfirmationActions, ConfirmationRejected, ConfirmationRequest, ConfirmationTitle, type ConfirmationProps } from '@/components/ai-elements/confirmation'
@@ -15,6 +15,7 @@ import { DraggableCardBody, DraggableCardContainer } from '@/components/aceterni
 import { PlaceholdersAndVanishInput } from '@/components/aceternity/placeholders-and-vanish-input'
 import { ActivePill, RefreshButton, RefreshStatus, StateBadge, useWorkspace } from '@/components/bits'
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
+import { useIsPhone, swipeToDecide } from '@/lib/swipe-to-decide'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
 import { loadRulesInClaudeCode, SAMPLE_DEVICES, SAMPLE_RUNS, saveRuleChange, useWorkModel } from '@/data'
@@ -309,26 +310,9 @@ function SuggestionCard({ rule, decision, onDecide, onEdit, onUndo, onShow }: { 
   )
 }
 
-// Phones are under Tailwind's sm breakpoint (640px), where SuggestionCard's buttons go full width too.
-const PHONE_QUERY = '(max-width: 639px)'
-function useIsPhone() {
-  return useSyncExternalStore(
-    (onChange) => { const query = window.matchMedia(PHONE_QUERY); query.addEventListener('change', onChange); return () => query.removeEventListener('change', onChange) },
-    () => window.matchMedia(PHONE_QUERY).matches,
-  )
-}
-
-// A quarter of a 390px phone screen: a sideways wobble while scrolling doesn't decide, one thumb flick does.
-const SWIPE_DECIDES_AT_PX = 96
-
 function DecisionQueue({ suggestions, decisions, onDecide, onEdit, onUndo, onShow }: { suggestions: OwnerRule[]; decisions: Record<string, Decision>; onDecide: (rule: OwnerRule, decision: Decision) => void; onEdit: (rule: OwnerRule) => void; onUndo: (rule: OwnerRule) => void; onShow: (rule: OwnerRule) => void }) {
   const waiting = suggestions.filter((rule) => !decisions[rule.id]).length
   const isPhone = useIsPhone()
-  // On phones an undecided card swipes: right approves, left rejects, through the same handler as its buttons.
-  const swipeToDecide = (rule: OwnerRule) => ({ x }: { x: number }) => {
-    if (x >= SWIPE_DECIDES_AT_PX) onDecide(rule, 'approved')
-    else if (x <= -SWIPE_DECIDES_AT_PX) onDecide(rule, 'rejected')
-  }
   return (
     <Req ids={['R14.2', 'R12.3', 'R12.2']}>
       <section id="decide" className="scroll-mt-36 space-y-3 lg:scroll-mt-20">
@@ -347,7 +331,7 @@ function DecisionQueue({ suggestions, decisions, onDecide, onEdit, onUndo, onSho
             {suggestions.map((rule) => {
               const card = <SuggestionCard rule={rule} decision={decisions[rule.id]} onDecide={(decision) => onDecide(rule, decision)} onEdit={() => onEdit(rule)} onUndo={() => onUndo(rule)} onShow={() => onShow(rule)} />
               return isPhone && !decisions[rule.id]
-                ? <DraggableCardBody key={rule.id} dragAxis="x" onDragRelease={swipeToDecide(rule)} className="min-h-0 w-full rounded-xl bg-transparent p-0 shadow-none dark:bg-transparent">{card}</DraggableCardBody>
+                ? <DraggableCardBody key={rule.id} dragAxis="x" onDragRelease={swipeToDecide(() => onDecide(rule, 'approved'), () => onDecide(rule, 'rejected'))} className="min-h-0 w-full rounded-xl bg-transparent p-0 shadow-none dark:bg-transparent">{card}</DraggableCardBody>
                 : <div key={rule.id}>{card}</div>
             })}
           </DraggableCardContainer>
