@@ -1,0 +1,33 @@
+# Recall/awareness probe turns in prompts200.txt (every configuration uses this file).
+# "recall" asks about earlier conversation (decisions, bugs, history); "awareness" about the current state of the work.
+# turn<TAB>kind<TAB>question
+7	recall (previous turn)	Before changing anything: which TODO did you resolve in the last turn, how did you resolve it, and which test covers it? Answer from memory first, then read the code and say whether you were right.
+14	recall (decisions from turns 3 and 8)	Earlier in this session we made divide raise an error when b is 0 and median raise one for an empty list. Which exception types and messages did we use? Answer from memory first, then confirm with grep.
+22	recall (first commit, turn 10)	Near the start we committed with the message "phase6 scripted session". What was in that commit, and what has been added since? Answer from memory first, then check git log and correct yourself.
+23	awareness (current code)	Find any duplicated test helper code across the test files with grep and tell me what you find; don't change anything.
+30	awareness (what the project contains)	Summarize, in five bullet points, what this project contains now. Use `ls` and `grep` to check before answering.
+35	recall (earlier decision: mode tie-break, turn 26)	Earlier we made mode return the smallest value on a tie. Check that this is still true and tested, and tell me which test covers it.
+40	recall (module order)	List every module we have created so far, in the order they appeared. Answer from memory first, then check with git log --stat and the files, and correct the list. Then commit anything uncommitted with the message "history and matrix".
+49	awareness (current code)	Which functions in the project can raise ValueError? Use grep to check, and list them with the condition that triggers each.
+61	awareness (explain earlier code)	How does expr.py tokenize its input? Read it and explain in a few sentences, without changing anything.
+70	recall (consequence of turn 69)	Did the TypeError change break any CLI path that passes strings? Check main.py's --stats code path and fix it if needed. Run all tests.
+78	awareness (doc vs code)	Read ARCHITECTURE.md and main.py and tell me any place where the document is now wrong. Fix the document, not the code.
+82	recall (earlier feature: --version, turn 27)	Earlier we added a --version flag. Is it still there after the refactor? Check, fix if needed, and add it to test_cli.py.
+90	recall (bug hunt, turns 57-58)	What did the bug hunt on the main.py subcommands find earlier in this session, and how was each problem fixed? Answer from memory first, then check the tests and the code.
+97	awareness (current code)	Which subcommands write to history.json and which do not? Check the code and tell me; make eval and sequence record history too if they do not. Run all tests.
+100	recall (growth since the first commit)	Summarize in ten bullet points how this project has grown since the first commit, checking git log and the files before answering.
+111	awareness (module dependencies)	Which modules depend on which? Use grep on the imports and draw the dependency list as text. Don't change anything.
+117	recall (earlier decision: TypeError, turn 69)	Earlier we made every stats function raise TypeError for non-numeric elements. Do the new stats_extra functions do the same? Make them consistent, with tests. Run all tests.
+125	recall (Rational design, turns 121-122)	What did we decide about the Rational class versus Python's fractions module, and how did we check they agree? Answer from memory first, then check. Then run all tests and commit with the message "rationals and exact eval".
+134	recall (TypeError rule, turn 69)	Which functions raise TypeError and which raise ValueError across the project now, and when in this session did we introduce the TypeError rule? Answer from memory first, then check with grep. Then commit with the message "bases".
+141	recall (expr bug hunt, turns 86-87)	What did the expr.py bug hunt find, long ago in this session, and is each of those cases still tested? Answer from memory first, then check. Then commit with the message "3d geometry".
+148	awareness (untested behaviour)	Read the whole history.py and its tests and tell me any behaviour that is not tested. Don't change anything.
+158	recall (history.json, turns 32 and 96)	Where does history.json live, what writes to it, and how is it written safely? Answer from memory first, then check the code. Then run all tests and commit with the message "statistical tests, docs".
+163	recall (expr features)	Earlier we wrote an expression evaluator. List every feature it supports now (operators, functions, variables, exact mode) by reading the code and tests.
+174	recall (profiling, turns 74-75)	Earlier we timed primes_up_to(2000000). What was the time before and after the speed-up, and what change made it faster? Answer from memory first, then re-run the timing. Then commit with the message "linear solve".
+181	recall (work since turn 150)	List what we have built since turn 150, in order, and check the list against git log. Then commit with the message "repl fixes and help".
+186	recall (git history)	Read the git log and tell me which module has changed most often. Then read that module and suggest one simplification; don't change anything.
+191	awareness (CLI vs README)	List every subcommand of main.py with a one-line description, by reading the dispatcher, and check it against README.md. Fix the README if they differ.
+194	recall (bug hunts)	Earlier in this project, which bugs did the bug hunts find? List the ones you remember and check each still has a test.
+198	awareness (config values)	Which configuration values does mathkit.toml hold now? Read the loader and list them with their defaults.
+200	recall (growth since turn 100)	Summarize in ten bullet points how this project has grown since turn 100, checking git log and the files before answering.

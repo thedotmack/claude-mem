@@ -107,7 +107,7 @@
     "cursor:setup": "bun plugin/scripts/worker-service.cjs cursor setup",
     "lint:hook-io": "node scripts/check-hook-io-discipline.cjs",
     "lint:spawn-env": "node scripts/check-spawn-env-discipline.cjs",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p src/ui/viewer/tsconfig.json",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p src/ui/viewer/tsconfig.json && tsc --noEmit -p scripts/endless-mode-validation/tsconfig.json",
     "typecheck:root": "tsc --noEmit",
     "typecheck:viewer": "tsc --noEmit -p src/ui/viewer/tsconfig.json",
     "test": "bun scripts/test-lanes.ts fast",

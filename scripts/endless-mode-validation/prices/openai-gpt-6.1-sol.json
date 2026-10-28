@@ -1,0 +1,8 @@
+{
+  "model": "gpt-6.1-sol",
+  "unit": "USD per million tokens",
+  "input": 2.0,
+  "cache_read": 0.10,
+  "output": null,
+  "source": "The input prices our Codex runs used. No output price was set, so Codex cost is input cost only, as in our growing-timeline report."
+}

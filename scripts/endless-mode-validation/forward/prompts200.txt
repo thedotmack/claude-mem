@@ -1,0 +1,200 @@
+Read calc.py and test_calc.py, then run the tests with `python3 -m unittest -v`. Tell me how many tests pass.
+Add a function power(a, b) to calc.py and a test for it in test_calc.py. Run the tests.
+Make divide raise ValueError("division by zero") when b is 0, add a test for it, and run the tests.
+Create stats.py with mean, median and mode functions, and test_stats.py with tests for each. Run all tests with `python3 -m unittest discover -v`.
+Create main.py, an argparse CLI that runs one calc operation (add, sub, mul, divide, power) on two numbers. Try it with three different commands and show the outputs.
+Find every TODO comment in the project with grep and resolve each one (with a test where it makes sense). Run all tests.
+Before changing anything: which TODO did you resolve in the last turn, how did you resolve it, and which test covers it? Answer from memory first, then read the code and say whether you were right.
+Make median raise ValueError on an empty list, add a test, and run all tests.
+Write a short README.md that lists each module and its functions, then show `ls -la` and `wc -l *.py`.
+Show `git status`, then commit everything with the message "phase6 scripted session" and show `git log --oneline`.
+Add a function variance(data) to stats.py (population variance) with a test, and run all tests.
+Add stdev(data) to stats.py built on variance, with a test, and run all tests.
+Add a --stats option to main.py that takes a comma-separated list of numbers and prints mean, median, mode and stdev. Try it twice with different inputs.
+Earlier in this session we made divide raise an error when b is 0 and median raise one for an empty list. Which exception types and messages did we use? Answer from memory first, then confirm with grep.
+Add type hints to every function in calc.py and run all tests.
+Add type hints to every function in stats.py and run all tests.
+Create geometry.py with circle_area, rectangle_area and triangle_area, plus test_geometry.py. Run all tests.
+Make triangle_area raise ValueError for negative base or height, add tests, and run all tests.
+Add a geometry subcommand to main.py (circle, rectangle, triangle) and try each one once.
+Update README.md to cover geometry.py and the new CLI options, then show the README.
+Create convert.py with c_to_f, f_to_c, km_to_miles and miles_to_km, plus tests. Run all tests.
+Near the start we committed with the message "phase6 scripted session". What was in that commit, and what has been added since? Answer from memory first, then check git log and correct yourself.
+Find any duplicated test helper code across the test files with grep and tell me what you find; don't change anything.
+Add a percentile(data, p) function to stats.py with tests for p=0, 50 and 100. Run all tests.
+Show the line counts of every .py file and the total number of test methods (grep for "def test_").
+Make mode return the smallest value when there is a tie, add a test for it, and run all tests.
+Add a `python3 main.py --version` flag that prints 1.0.0, and try it.
+Commit all changes with the message "phase6 extended work" and show `git log --oneline`.
+Run the full test suite one more time and report the total test count and the time it took.
+Summarize, in five bullet points, what this project contains now. Use `ls` and `grep` to check before answering.
+Create history.py with a History class that records each calc operation (name, inputs, result) in a list, with tests. Run all tests.
+Wire History into main.py so every calc command appends to a history.json file in the project folder. Try two commands, then show history.json.
+Add a `python3 main.py history` subcommand that prints the recorded operations, newest first. Try it.
+Add a `python3 main.py history --clear` option that empties history.json, with a test that uses a temporary file. Run all tests.
+Earlier we made mode return the smallest value on a tie. Check that this is still true and tested, and tell me which test covers it.
+Create matrix.py with add, multiply and transpose for lists of lists, plus test_matrix.py. Run all tests.
+Make matrix multiply raise ValueError when the shapes do not match, add tests, and run all tests.
+Add determinant(m) for 2x2 and 3x3 matrices to matrix.py with tests. Run all tests.
+Add a matrix subcommand to main.py that reads two matrices as JSON strings and prints their product. Try it once.
+List every module we have created so far, in the order they appeared. Answer from memory first, then check with git log --stat and the files, and correct the list. Then commit anything uncommitted with the message "history and matrix".
+Refactor: move calc.py, stats.py, geometry.py, convert.py and matrix.py into a package folder mathkit/ with an __init__.py, update every import in main.py and the tests, and run all tests.
+After the move, check that `python3 main.py add 2 3` and `python3 main.py --stats 1,2,3` still work, and fix anything broken.
+Update README.md for the mathkit/ package layout and show the new README.
+Search the project for any leftover references to the old module paths with grep and fix them. Run all tests.
+Add a tests/ folder, move every test file into it, make `python3 -m unittest discover -v -s tests -t .` work, and run it.
+Create mathkit/finance.py with simple_interest, compound_interest and loan_payment (monthly payment for an amortized loan), plus tests. Run all tests.
+Make loan_payment handle a 0% interest rate correctly, add a test for it, and run all tests.
+Add a finance subcommand to main.py for loan payments (principal, annual rate in percent, years). Try it with 200000 at 5% for 30 years.
+Which functions in the project can raise ValueError? Use grep to check, and list them with the condition that triggers each.
+Add a test for every ValueError condition you just listed that does not already have one. Run all tests.
+Create mathkit/expr.py: a small expression evaluator that parses +, -, *, / and parentheses on numbers (no eval), with tests. Run all tests.
+Make expr.py respect operator precedence and left associativity (2-3-4 is -5, 2+3*4 is 14), add tests, and run all tests.
+Add unary minus support to expr.py (-3, -(2+1), 2*-3), with tests. Run all tests.
+Add an `eval` subcommand to main.py that evaluates an expression string with expr.py. Try three expressions.
+Make expr.py raise ValueError with a clear message for malformed input like "2+" or "(3", with tests. Run all tests.
+Commit everything with the message "mathkit package, finance, expr" and show `git log --oneline`.
+Bug hunt: run every main.py subcommand once with ordinary inputs and once with a bad input, and tell me any crash or wrong output you find. Don't fix anything yet.
+Fix the problems you found in the bug hunt, with a test for each, and run all tests.
+Add variables to expr.py: evaluate("x*2+y", {"x": 3, "y": 1}) returns 7; an unknown name raises ValueError. Add tests and run all tests.
+Add functions to expr.py: sqrt, abs and max with any number of arguments, e.g. "max(1, x, 3)". Add tests and run all tests.
+How does expr.py tokenize its input? Read it and explain in a few sentences, without changing anything.
+Refactor expr.py into a tokenizer function and a parser class, keeping every test passing. Run all tests.
+Create mathkit/units.py with a Quantity class holding a value and a unit (m, km, s, h) that supports adding quantities of the same dimension, with tests. Run all tests.
+Make Quantity convert km to m and h to s when adding mixed units, and raise ValueError for adding length to time. Add tests and run all tests.
+Use units.py from convert.py for km_to_miles and miles_to_km if it makes sense; otherwise explain why not. Run all tests either way.
+Add a config file mathkit.toml (read with tomllib) holding the default decimal places for printed results, and make main.py round its outputs with it. Try two commands.
+Add a test for the config loading, including a missing config file (fall back to 4 decimal places). Run all tests.
+Run all tests, then commit with the message "expr variables, units, config" and show `git log --oneline`.
+Add input validation to stats.py: every function raises TypeError if any element is not an int or float. Add tests and run all tests.
+Did the TypeError change break any CLI path that passes strings? Check main.py's --stats code path and fix it if needed. Run all tests.
+Create mathkit/sequences.py with fibonacci(n), primes_up_to(n) (sieve) and is_prime(n), plus tests. Run all tests.
+Make fibonacci fast for n up to 10000 (no recursion), add a test for fibonacci(1000) % 1000000007, and run all tests.
+Add a sequence subcommand to main.py (fib N, primes N, isprime N). Try each once.
+Profile `python3 -c "from mathkit.sequences import primes_up_to; print(len(primes_up_to(2000000)))"` with time and tell me how long it takes.
+If primes_up_to(2000000) takes more than one second, speed it up and show the new time. Run all tests.
+Show the project tree (find . -name "*.py" | sort) and the total test count, then commit with the message "validation and sequences".
+Write docs/ARCHITECTURE.md describing each mathkit module, how main.py dispatches subcommands, and where history and config live. Show it.
+Read ARCHITECTURE.md and main.py and tell me any place where the document is now wrong. Fix the document, not the code.
+Refactor main.py: move each subcommand's handler into mathkit/cli/ with one module per subcommand, keep main.py as a thin dispatcher, and run all tests.
+After the CLI refactor, run every subcommand once more and confirm the outputs match what they printed before the refactor.
+Add CLI tests in tests/test_cli.py that run main.py with subprocess for add, --stats, eval and sequence fib 10. Run all tests.
+Earlier we added a --version flag. Is it still there after the refactor? Check, fix if needed, and add it to test_cli.py.
+Add a `python3 main.py repl` subcommand: a loop reading expressions from stdin and printing results until "quit". Test it by piping three lines into it.
+Make the repl remember the last result as the variable "ans" (e.g. "2+3" then "ans*2" gives 10). Add a test with piped input and run all tests.
+Commit everything with the message "cli package and repl" and show `git log --oneline`.
+Bug hunt in expr.py: try division by zero, very long expressions, nested functions and whitespace edge cases. Report what breaks; don't fix yet.
+Fix what broke in the expr bug hunt, with a test for each, and run all tests.
+Add a percentile subcommand to main.py using stats.percentile, and check that percentile still passes its p=0, 50 and 100 tests.
+Create mathkit/vector.py with dot, cross, norm and normalize for 2D and 3D vectors, plus tests. Run all tests.
+What did the bug hunt on the main.py subcommands find earlier in this session, and how was each problem fixed? Answer from memory first, then check the tests and the code.
+Count the lines of code and of tests per module (wc -l) and tell me which module has the weakest test coverage by test count per function.
+Add tests to that weakest module until every function has at least two tests. Run all tests.
+Add a CHANGELOG.md with one section per commit so far (use git log), newest first. Show it.
+Run the full test suite, report the count and time, and commit with the message "vector, more tests, changelog".
+Add a `python3 main.py history --stats` option that prints how many operations of each kind are in history.json. Try it after running three commands.
+Make history.json writes atomic (write a temp file in the same folder, then rename), add a test that checks no partial file is left, and run all tests.
+Which subcommands write to history.json and which do not? Check the code and tell me; make eval and sequence record history too if they do not. Run all tests.
+Add a `--json` flag to main.py that prints every result as a JSON object instead of plain text. Try it with add, --stats and eval.
+Add a test in test_cli.py for the --json flag on add and eval, and run all tests.
+Summarize in ten bullet points how this project has grown since the first commit, checking git log and the files before answering.
+Create mathkit/polynomial.py with a Polynomial class (coefficients list) supporting add, multiply, evaluate and str, plus tests. Run all tests.
+Add derivative() and integral() to Polynomial with tests. Run all tests.
+Add a poly subcommand to main.py that evaluates a polynomial given as comma-separated coefficients at a point. Try it twice.
+Use expr.py to parse simple polynomials like "3x^2+2x-1" into a Polynomial, if expr.py can be extended cleanly; otherwise write a separate small parser. Add tests and run all tests.
+Run all tests and commit with the message "polynomials" and show `git log --oneline`.
+Bug hunt in polynomial.py: zero polynomial, leading zeros, negative coefficients, empty input. Report what breaks; don't fix yet.
+Fix what broke in the polynomial bug hunt, with a test for each. Run all tests.
+Create mathkit/roots.py with bisection and newton methods that take a function and return a root to a given tolerance, plus tests. Run all tests.
+Make newton use Polynomial.derivative when given a Polynomial, with a test. Run all tests.
+Add a roots subcommand to main.py that finds a root of a polynomial in an interval with bisection. Try it on x^2-2 in [0, 2].
+Which modules depend on which? Use grep on the imports and draw the dependency list as text. Don't change anything.
+Is there any import cycle in mathkit? Check and fix it if there is one. Run all tests.
+Update docs/ARCHITECTURE.md with polynomial.py, roots.py and the dependency list. Show the changed section.
+Create mathkit/stats_extra.py with correlation(x, y) and linear_regression(x, y) returning slope and intercept, plus tests. Run all tests.
+Make correlation raise ValueError for lists of different length or fewer than two points, with tests. Run all tests.
+Add a regress subcommand to main.py that reads x and y as comma-separated lists. Try it once.
+Earlier we made every stats function raise TypeError for non-numeric elements. Do the new stats_extra functions do the same? Make them consistent, with tests. Run all tests.
+Commit everything with the message "roots and regression" and show `git log --oneline`.
+Refactor: give every mathkit module an __all__ list naming its public functions and classes. Run all tests.
+Add a test that imports every module in mathkit and checks that every name in __all__ exists. Run all tests.
+Create mathkit/fractions_ext.py with a Fraction-like Rational class (add, sub, mul, div, reduce, str) without using the fractions module, plus tests. Run all tests.
+Make Rational compare equal to the standard library Fraction for 50 random pairs in a test (fixed seed). Run all tests.
+Add Rational support to expr.py behind an exact=True option so "1/3+1/6" evaluates to 1/2 exactly. Add tests and run all tests.
+Add an `--exact` flag to the eval subcommand. Try "1/3+1/6" with and without it.
+What did we decide about the Rational class versus Python's fractions module, and how did we check they agree? Answer from memory first, then check. Then run all tests and commit with the message "rationals and exact eval".
+Bug hunt across the CLI again: every subcommand with --json, and every subcommand with a bad input. Report problems; don't fix yet.
+Fix the CLI problems you found, with a test for each in test_cli.py. Run all tests.
+How long does the whole test suite take now? Find the three slowest tests (time each test module) and tell me which they are.
+Speed up the slowest test module without dropping any assertion. Run all tests and show the new time.
+Update CHANGELOG.md with every commit since it was written. Show the new sections.
+Create mathkit/bases.py with to_base(n, b) and from_base(s, b) for bases 2 to 36, plus tests including negative numbers. Run all tests.
+Add a base subcommand to main.py (to and from). Try converting 255 to base 16 and back.
+Add a property-style test that to_base and from_base round-trip for 1000 random integers (fixed seed) in every base. Run all tests.
+Which functions raise TypeError and which raise ValueError across the project now, and when in this session did we introduce the TypeError rule? Answer from memory first, then check with grep. Then commit with the message "bases".
+Which functions have no docstring now? Use grep or a small script to find them, then add one-line docstrings. Run all tests.
+Make every docstring in mathkit/expr.py include one example in doctest form, and run the doctests with `python3 -m doctest -v mathkit/expr.py`.
+Add a test module that runs the expr.py doctests as part of unittest discover. Run all tests.
+Create mathkit/geometry3d.py with sphere_volume, cylinder_volume and cone_volume plus tests, raising ValueError for negative dimensions. Run all tests.
+Add 3D shapes to the geometry subcommand of main.py and try each one once.
+Is geometry.py's error handling consistent with geometry3d.py's? Compare and make them consistent, with tests. Run all tests.
+What did the expr.py bug hunt find, long ago in this session, and is each of those cases still tested? Answer from memory first, then check. Then commit with the message "3d geometry".
+Add logging to main.py: a --verbose flag that logs which subcommand ran and its inputs to stderr. Try it with add.
+Add a test that --verbose logs to stderr and not stdout. Run all tests.
+Create mathkit/random_tools.py with seeded helpers: sample_mean(n, seed) and monte_carlo_pi(n, seed), plus tests with fixed seeds. Run all tests.
+Add a montecarlo subcommand to main.py that estimates pi with N samples and a seed. Try it with 100000 samples.
+How accurate is monte_carlo_pi at 10^3, 10^4, 10^5 and 10^6 samples with seed 1? Run it and show a small table.
+Commit with the message "logging and monte carlo".
+Read the whole history.py and its tests and tell me any behaviour that is not tested. Don't change anything.
+Add tests for the untested history behaviour you found. Run all tests.
+Add history export: `python3 main.py history --export history.csv` writes the operations as CSV. Try it and show the file.
+Add history import from that CSV format, with a round-trip test. Run all tests.
+Commit with the message "history export and import" and show `git log --oneline`.
+Create mathkit/statistics_tests.py with a two-sample t statistic and a chi-square statistic for a contingency table, plus tests against hand-computed values. Run all tests.
+Add a ttest subcommand to main.py that reads two comma-separated samples. Try it once.
+Bug hunt in statistics_tests.py: zero variance, single-element samples, empty tables. Report; don't fix yet.
+Fix what broke in the statistics_tests bug hunt, with tests. Run all tests.
+Update README.md and docs/ARCHITECTURE.md for everything added since they were last updated. Show the diff with git diff --stat.
+Where does history.json live, what writes to it, and how is it written safely? Answer from memory first, then check the code. Then run all tests and commit with the message "statistical tests, docs".
+Refactor stats.py, stats_extra.py and statistics_tests.py into a mathkit/statistics/ subpackage, keeping the old import paths working through re-exports. Run all tests.
+Check every CLI subcommand still works after the statistics refactor by running test_cli.py and two manual commands.
+Add a deprecation warning when the old import paths are used, and a test that checks the warning. Run all tests.
+Commit with the message "statistics subpackage" and show `git log --oneline`.
+Earlier we wrote an expression evaluator. List every feature it supports now (operators, functions, variables, exact mode) by reading the code and tests.
+Add exponentiation (^, right associative) to expr.py, with tests for 2^3^2 = 512. Run all tests.
+Add comparison operators (<, >, ==) to expr.py returning 1 or 0, with tests. Run all tests.
+Add a ternary function if(cond, a, b) to expr.py with tests. Run all tests.
+Commit with the message "expr operators" and show `git log --oneline`.
+Create a benchmark script bench.py that times expr.evaluate on 10000 random expressions (fixed seed) and prints the mean time. Run it.
+Optimize expr.py if bench.py shows more than 50 microseconds per expression, keeping every test passing. Show the before and after numbers.
+Create mathkit/matrix_ops.py with inverse and solve (Gaussian elimination with partial pivoting) for square matrices, plus tests. Run all tests.
+Make solve raise ValueError for singular matrices, with a test. Run all tests.
+Add a solve subcommand to main.py that reads a matrix and a vector as JSON. Try it on a 3x3 system.
+Is determinant in matrix.py consistent with the new Gaussian elimination for 3x3 matrices? Add a test that compares them for 20 random matrices. Run all tests.
+Earlier we timed primes_up_to(2000000). What was the time before and after the speed-up, and what change made it faster? Answer from memory first, then re-run the timing. Then commit with the message "linear solve".
+Which test files have grown the largest? Show line counts and suggest one split, then do it. Run all tests.
+Add a Makefile with test, lint (python3 -m py_compile on every file) and bench targets. Run make test and make lint.
+Commit with the message "makefile and test split".
+Bug hunt: run the repl with every expr feature added since the repl was written (exact mode, ^, comparisons, if). Report problems; don't fix yet.
+Fix the repl problems you found, with piped-input tests. Run all tests.
+Add tab-free help to the repl: typing "help" prints the supported operators and functions. Test it. Run all tests.
+List what we have built since turn 150, in order, and check the list against git log. Then commit with the message "repl fixes and help".
+Create mathkit/calendar_math.py with days_between(date1, date2), add_business_days(date, n) and is_leap_year(year), plus tests. Run all tests.
+Add a dates subcommand to main.py for days_between and add_business_days. Try each once.
+Make add_business_days skip a fixed list of holidays read from mathkit.toml, with a test. Run all tests.
+Commit with the message "calendar math" and show `git log --oneline`.
+Read the git log and tell me which module has changed most often. Then read that module and suggest one simplification; don't change anything.
+Apply the simplification you suggested, keeping every test passing. Run all tests.
+Update CHANGELOG.md with every commit since it was last updated. Show the new sections.
+Run the full test suite and report the count and time. Commit with the message "simplification and changelog".
+Show the project tree and the total line count of code and of tests.
+List every subcommand of main.py with a one-line description, by reading the dispatcher, and check it against README.md. Fix the README if they differ.
+Add a `python3 main.py commands` subcommand that prints that list from the dispatcher itself. Test it in test_cli.py. Run all tests.
+Commit with the message "commands listing" and show `git log --oneline`.
+Earlier in this project, which bugs did the bug hunts find? List the ones you remember and check each still has a test.
+Add a test for any of those bugs that no longer has one. Run all tests.
+Run every subcommand one last time with ordinary inputs and confirm none crashes.
+Add a test that every subcommand listed by `python3 main.py commands` accepts --help without error. Run all tests.
+Which configuration values does mathkit.toml hold now? Read the loader and list them with their defaults.
+Add validation for mathkit.toml values (decimal places 0 to 12, holidays as ISO dates) with clear errors and tests. Run all tests.
+Summarize in ten bullet points how this project has grown since turn 100, checking git log and the files before answering.
