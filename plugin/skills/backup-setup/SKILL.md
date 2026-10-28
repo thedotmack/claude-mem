@@ -37,6 +37,20 @@ npx claude-mem backup status
 - "Automatic backups are not enabled": continue to step 2 if setting up.
 - A "Last restore" line reports the outcome of the most recent restore.
 - "Worker is not running": start it with `npx claude-mem start` and retry.
+- "Unknown command: backup" or "Backup status failed: HTTP 404": this
+  claude-mem (CLI or running worker) has no backup support yet, so the
+  worker would ignore the backup settings.
+  Stop. Tell the user that backups are not available in their installed
+  version and that `npx claude-mem update` brings them once a release
+  includes them. Do not write the settings in step 2, and never say backups
+  are on.
+- Any other failure ("Backup status failed: HTTP" with another status,
+  "Backup request failed: ...", "Backup status failed: invalid JSON
+  response", "Backup status failed: unexpected response") or any output not
+  listed here: stop. Show the user the exact error line, do not write the
+  settings in step 2, and never say backups are on. Do not suggest an
+  update: this is an error in a version that has backups, not a missing
+  feature.
 
 ## 2. Enable snapshots
 
@@ -63,7 +77,8 @@ console.log('backups enabled: every ' + intervalHours + 'h, keeping ' + retainCo
 EOF
 ```
 
-Restart the worker so the schedule starts, then confirm with step 1:
+Restart the worker so the schedule starts, then confirm with step 1. Tell
+the user backups are on only when that status reports them enabled:
 
 ```bash
 npx claude-mem restart

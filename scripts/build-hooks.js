@@ -77,11 +77,6 @@ const WORKER_SERVICE = {
   source: 'src/services/worker-service.ts'
 };
 
-const HOOK_SERVICE = {
-  name: 'hook-service',
-  source: 'src/cli/hook-service.ts'
-};
-
 const SERVER_SERVICE = {
   name: 'server-service',
   source: 'src/server/runtime/ServerService.ts'
@@ -237,11 +232,17 @@ export function shellTemplateManifest(buildShellCommand, buildCodexWindowsComman
         'SessionStart.0.0': codexHookPair(['hook', 'codex', 'context']),
         'UserPromptSubmit.0.0': codexHookPair(['hook', 'codex', 'session-init']),
         'PreToolUse.0.0': codexHookPair(['hook', 'codex', 'file-context']),
-        // Keep the server attempt at 2 s and reserve startup headroom for the
-        // Windows shell/Node/Bun chain (13 s measured on 2026-10-27).
+        // Observation capture stays synchronous so a delayed event cannot cross
+        // turn boundaries. Why 5 s: the hook must fit wrapper startup, bundle
+        // load, the 2 s server attempt (SERVER_OBSERVATION_TIMEOUT_MS in
+        // src/cli/handlers/observation.ts) and the local spool write. Measured
+        // on an Apple Silicon Mac (2026-10-25, worker runtime, spool path):
+        // ~0.25-0.29 s warm, ~0.46 s on the first run. So 5 s leaves ~2.5 s of
+        // headroom after the server attempt. Windows (commandWindows) cold
+        // start was not measured. Change both values together.
         'PostToolUse.0.0': codexHookPair(
           ['hook', 'codex', 'observation'],
-          { timeout: 20 },
+          { timeout: 5 },
         ),
         'Stop.0.0': codexHookPair(['hook', 'codex', 'summarize']),
         'PostCompact.0.0': codexHookPair(['hook', 'codex', 'post-compact']),
@@ -653,31 +654,6 @@ async function buildHooks() {
 
     fs.chmodSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`, 0o755);
     const workerStats = fs.statSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`);
-
-    await build({
-      entryPoints: [HOOK_SERVICE.source],
-      bundle: true,
-      platform: 'node',
-      target: 'node20',
-      format: 'cjs',
-      outfile: `${hooksDir}/${HOOK_SERVICE.name}.cjs`,
-      alias: { 'zod/v4': 'zod' },
-      banner: { js: [
-        '// claude-mem hook-service library v1',
-        ...DIRNAME_BANNER,
-        'var __IMPORT_META_URL__ = require("node:url").pathToFileURL(__CM_FILENAME__).href;',
-      ].join('\n') },
-      define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
-        ...DIRNAME_DEFINE,
-        'import.meta.url': '__IMPORT_META_URL__',
-      },
-      external: ['bun:sqlite', ...POSTHOG_OPTIONAL_IMPORTS],
-      minify: true,
-      ...SOURCEMAP_OPTS,
-    });
-    assertBundleIntegrity(`${hooksDir}/${HOOK_SERVICE.name}.cjs`);
-    fs.chmodSync(`${hooksDir}/${HOOK_SERVICE.name}.cjs`, 0o755);
     console.log(`✓ worker-service built (${(workerStats.size / 1024).toFixed(2)} KB)`);
 
     await build({

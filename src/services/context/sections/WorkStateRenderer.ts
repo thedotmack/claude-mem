@@ -3,6 +3,7 @@ import { describeDuration } from '../../../shared/observer-health.js';
 import { relativeTimePlaceholder } from '../../../shared/context-cache.js';
 import { isOwnerGoalsList } from '../../work-view/owner-goals.mjs';
 import { isMyRulesList } from '../../work-view/my-rules.mjs';
+import { isMyFocusList } from '../../work-view/my-focus.mjs';
 
 /**
  * When "updated N ago" is measured from: an epoch, or 'placeholders' to leave
@@ -142,9 +143,9 @@ export function buildWorkStateContextSection(
   nowEpoch: WorkStateClock,
   characterLimit: number = WORK_STATE_SECTION_CHARACTER_LIMIT,
 ): string {
-  // Goals lists (owner-goals and its past months) and My Rules show in My Work; their quotes would fill this section.
+  // Goals lists (owner-goals and its past months), My Rules and My Focus show in My Work; their quotes would fill this section.
   // Approved rules reach agents through ~/.claude-mem/MY-RULES.md instead.
-  const openLines = renderWorkStateLines(entries.filter(entry => !isOwnerGoalsList(entry.list_name) && !isMyRulesList(entry.list_name)), nowEpoch);
+  const openLines = renderWorkStateLines(entries.filter(entry => !isOwnerGoalsList(entry.list_name) && !isMyRulesList(entry.list_name) && !isMyFocusList(entry.list_name)), nowEpoch);
   if (openLines.length === 0) {
     return `${WORK_STATE_RULE}\n\nNothing open yet.`;
   }

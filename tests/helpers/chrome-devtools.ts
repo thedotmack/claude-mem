@@ -1,9 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 
 /**
  * Shared plumbing for the `*.browser.test.ts` files: find Chrome, compile a
@@ -12,15 +11,9 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
  */
 
 const MAC_CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const WINDOWS_CHROME = process.platform === 'win32'
-  ? [process.env.PROGRAMFILES, process.env['PROGRAMFILES(X86)'], process.env.LOCALAPPDATA]
-    .filter((root): root is string => !!root)
-    .map(root => join(root, 'Google', 'Chrome', 'Application', 'chrome.exe'))
-    .find(path => existsSync(path))
-  : undefined;
 
 export const chromeExecutablePath: string | null = Bun.which('google-chrome') ?? Bun.which('chromium')
-  ?? WINDOWS_CHROME ?? (existsSync(MAC_CHROME) ? MAC_CHROME : null);
+  ?? (existsSync(MAC_CHROME) ? MAC_CHROME : null);
 
 export const REPOSITORY_ROOT = resolve(import.meta.dir, '../..');
 
@@ -80,19 +73,10 @@ export function launchChrome(pageUrl: string, options: {
     '--disable-background-networking', '--no-first-run', ...(options.extraFlags ?? []),
     ...(options.remoteDebugging ? ['--remote-debugging-port=0'] : []),
     `--user-data-dir=${profileDirectory}`, pageUrl], { stdout: 'ignore', stderr: 'ignore' });
-  let closed = false;
   return {
     process: child, profileDirectory,
     async close() {
-      if (closed) return;
-      closed = true;
-      if (process.platform === 'win32' && child.exitCode === null) {
-        // Terminate only this owned browser tree; killing its parent alone
-        // leaves renderer/utility processes holding the temporary profile.
-        try { execFileSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true, timeout: 5000 }); }
-        catch { /* The browser may already have exited; use the normal fallback. */ }
-      }
-      if (child.exitCode === null) child.kill();
+      child.kill();
       // SIGKILL after 5 s if Chrome ignores SIGTERM. The timer is cleared once
       // Chrome exits so it never keeps the test process alive.
       let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
@@ -102,12 +86,7 @@ export function launchChrome(pageUrl: string, options: {
       ]);
       clearTimeout(sigkillTimer);
       if (!exitedInTime) { child.kill('SIGKILL'); await child.exited; }
-      const profileFromTemp = relative(resolve(tmpdir()), resolve(profileDirectory));
-      if (!profileFromTemp || profileFromTemp.startsWith('..') || isAbsolute(profileFromTemp)) {
-        throw new Error('Refusing to remove a Chrome profile outside the temporary directory');
-      }
-      // Windows can release Chrome's profile locks after the parent exits.
-      await rm(profileDirectory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      rmSync(profileDirectory, { recursive: true, force: true, maxRetries: 3 });
     },
   };
 }

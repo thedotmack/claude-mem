@@ -187,7 +187,7 @@ export const localSetupSource: SetupSource = {
     // Goals, work and rules land in the work view snapshot as the extraction saves each one.
     const applySnapshot = (snapshot: SnapshotWithSetup) => {
       const extraction = snapshot.setup?.extraction ?? null
-      const goals = snapshot.goals ? [...snapshot.goals.priorities, ...snapshot.goals.openAsks].map((item) => item.title) : []
+      const goals = snapshot.goals ? [...snapshot.goals.areas, ...snapshot.goals.asks].map((item) => item.title) : []
       publish({
         reveal: revealFromSnapshot(snapshot),
         extraction: extraction && { state: extraction.state, step: extraction.step },

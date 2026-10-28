@@ -15,17 +15,9 @@ import { sessionEndHandler } from './session-end.js';
 import { subagentStopHandler } from './subagent-stop.js';
 import { userMessageHandler } from './user-message.js';
 import { fileEditHandler } from './file-edit.js';
+import { fileContextHandler } from './file-context.js';
 import { postCompactHandler } from './post-compact.js';
 import { subagentContextHandler } from './subagent-context.js';
-
-// The atomic file-read dedupe uses Bun SQLite. Load it only for file reads,
-// so local context/capture hooks can run in the existing Node launcher.
-const fileContextHandler: EventHandler = {
-  async execute(input) {
-    const { fileContextHandler: handler } = await import('./file-context.js');
-    return handler.execute(input);
-  },
-};
 
 export type EventType =
   | 'context'
@@ -201,6 +193,6 @@ export { sessionEndHandler } from './session-end.js';
 export { subagentStopHandler } from './subagent-stop.js';
 export { userMessageHandler } from './user-message.js';
 export { fileEditHandler } from './file-edit.js';
-export { fileContextHandler };
+export { fileContextHandler } from './file-context.js';
 export { postCompactHandler } from './post-compact.js';
 export { subagentContextHandler } from './subagent-context.js';
