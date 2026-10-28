@@ -1267,5 +1267,108 @@ describe('SyncApply', () => {
       expect(obs.facts).toBe(JSON.stringify([`key ${AWS_KEY}`]));
       expect(obs.content_hash).toBe('hash-r1');
     });
+
+    it('keeps every JSON member when a multi-quote pattern spans elements', () => {
+      useRedaction(true);
+      const facts = ['-----BEGIN RSA PRIVATE KEY-----', 'x', '-----END RSA PRIVATE KEY-----'];
+      makeApply().applyOps([op(1, 'observation', '11', obsBody({ facts: JSON.stringify(facts) }))]);
+      const obs = db.prepare(`SELECT facts FROM observations WHERE origin_local_id = '11'`).get() as any;
+      expect(JSON.parse(obs.facts)).toEqual(facts);
+    });
+
+    it('redacts a PEM inside one JSON member without dropping its siblings', () => {
+      useRedaction(true);
+      const pem = '-----BEGIN RSA PRIVATE KEY-----\nMIIabc\n-----END RSA PRIVATE KEY-----';
+      makeApply().applyOps([op(1, 'observation', '11', obsBody({ facts: JSON.stringify([pem, 'keep']) }))]);
+      const obs = db.prepare(`SELECT facts FROM observations WHERE origin_local_id = '11'`).get() as any;
+      const parsed = JSON.parse(obs.facts);
+      expect(parsed).toHaveLength(2);
+      expect(parsed[1]).toBe('keep');
+      expect(parsed[0]).toContain('private_key_pem');
+    });
+
+    it('redacts the body a quarantined op keeps for diagnosis', () => {
+      useRedaction(true);
+      makeApply().applyOps([op(1, 'observation', '11', obsBody({
+        title: 42 as unknown as string,
+        narrative: `leak ${AWS_KEY}`,
+      }))]);
+      const rows = db.prepare(`SELECT raw_body FROM sync_pull_quarantine`).all() as Array<{ raw_body: string }>;
+      expect(rows).toHaveLength(1);
+      expect(rows[0].raw_body).not.toContain(AWS_KEY);
+      expect(rows[0].raw_body).toContain(MARKER);
+    });
+
+    it('forwards redacted text to Chroma', async () => {
+      useRedaction(true);
+      const seen: string[] = [];
+      const chroma = {
+        async syncObservation(_id: number, _mem: string, _project: string, obs: any) { seen.push(obs.narrative ?? ''); },
+        async syncSummary(_id: number, _mem: string, _project: string, sum: any) { seen.push(sum.request ?? ''); },
+        async syncUserPrompt(_id: number, _mem: string, _project: string, text: string) { seen.push(text); },
+      } as unknown as ChromaSyncLike;
+      makeApply({ chromaSync: chroma }).applyOps([
+        op(1, 'observation', '11', obsBody({ narrative: `n ${AWS_KEY}` })),
+        op(2, 'summary', '21', sumBody({ request: `r ${AWS_KEY}` })),
+        op(3, 'prompt', '31', promptBody({ prompt_text: `p ${AWS_KEY}`, content_session_id: 'sess-chroma' })),
+      ]);
+      await sleep(10);
+      expect(seen).toEqual([`n ${MARKER}`, `r ${MARKER}`, `p ${MARKER}`]);
+    });
+
+    it('does not re-redact a body that already carries a marker', () => {
+      useRedaction(true);
+      makeApply().applyOps([op(1, 'observation', '11', obsBody({ title: `leaked ${MARKER}` }))]);
+      const obs = db.prepare(`SELECT title FROM observations WHERE origin_local_id = '11'`).get() as any;
+      expect(obs.title).toBe(`leaked ${MARKER}`);
+      expect((obs.title.match(/<redacted/g) ?? []).length).toBe(1);
+    });
+
+    it('redacts a higher-revision update', () => {
+      useRedaction(true);
+      const apply = makeApply();
+      apply.applyOps([op(1, 'observation', '11', obsBody({ narrative: 'clean' }))]);
+      apply.applyOps([op(2, 'observation', '11', obsBody({ narrative: `leak ${AWS_KEY}` }), { rev: 2 })]);
+      const obs = db.prepare(`SELECT narrative, sync_rev FROM observations WHERE origin_local_id = '11'`).get() as any;
+      expect(obs.narrative).toBe(`leak ${MARKER}`);
+      expect(obs.sync_rev).toBe('2');
+    });
+
+    it('covers every observation, summary, prompt and work-state field that carries text', () => {
+      useRedaction(true);
+      const secret = `x ${AWS_KEY}`;
+      makeApply().applyOps([
+        op(1, 'observation', '11', obsBody({
+          text: secret, title: secret, subtitle: secret, narrative: secret,
+          facts: JSON.stringify([secret]), concepts: JSON.stringify([secret]),
+          metadata: JSON.stringify({ note: secret }),
+        })),
+        op(2, 'summary', '21', sumBody({
+          request: secret, investigated: secret, learned: secret,
+          completed: secret, next_steps: secret, notes: secret,
+        })),
+        op(3, 'prompt', '31', promptBody({ prompt_text: secret, content_session_id: 'sess-cover' })),
+        op(4, 'work_state', '41', {
+          project: 'proj-remote', list_name: 'l',
+          fields: JSON.stringify({ note: secret }), created_at_epoch: REMOTE_EPOCH + 4,
+        }),
+      ]);
+
+      const obs = db.prepare(`SELECT * FROM observations WHERE origin_local_id = '11'`).get() as any;
+      for (const field of ['text', 'title', 'subtitle', 'narrative']) expect(obs[field]).toBe(`x ${MARKER}`);
+      for (const field of ['facts', 'concepts']) expect(JSON.parse(obs[field])[0]).toBe(`x ${MARKER}`);
+      expect(JSON.parse(obs.metadata).note).toBe(`x ${MARKER}`);
+
+      const sum = db.prepare(`SELECT * FROM session_summaries WHERE origin_local_id = '21'`).get() as any;
+      for (const field of ['request', 'investigated', 'learned', 'completed', 'next_steps', 'notes']) {
+        expect(sum[field]).toBe(`x ${MARKER}`);
+      }
+
+      const prompt = db.prepare(`SELECT prompt_text FROM user_prompts WHERE origin_local_id = '31'`).get() as any;
+      expect(prompt.prompt_text).toBe(`x ${MARKER}`);
+
+      const ws = db.prepare(`SELECT fields FROM work_state_entries WHERE origin_local_id = '41'`).get() as any;
+      expect(JSON.parse(ws.fields).note).toBe(`x ${MARKER}`);
+    });
   });
 });
