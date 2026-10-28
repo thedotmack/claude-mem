@@ -1,7 +1,7 @@
 // Human requests own the top level. Agent work and observations are evidence
 // beneath a proven native conversation, never substitutes for a human ask.
 import { bucketFileAvailable, copyCoversSource, fileUrl, mergeProducts, productsFromDeliverable, productsFromObservation, productsFromToolUse, servableFile } from './work-product.mjs';
-import { NO_PROJECT, projectRoot, upgradedGroupRoot } from './session-project.mjs';
+import { NO_PROJECT, projectRoot } from './session-project.mjs';
 
 export function requestText(value, max = 1200) {
   if (typeof value !== 'string') return null;
@@ -93,7 +93,9 @@ export function originalFor(session, prompts) {
 // ungrouped conversation with a substantive human ask, built from its prompts.
 // Recorded work, activity, work product and progress attach beneath it when
 // they exist. An explicit work-state request_id still wins because the
-// producer recorded it directly. Requests stay inside one project root.
+// producer recorded it directly. A group with a recorded project root keeps
+// every conversation the ledger assigned to it; a group whose root is unknown
+// stays inside the one its members show.
 export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger = null } = {}) {
   const sessions = new Map((records.sessions ?? []).map((session) => [session.id, session]));
   const prompts = records.prompts ?? [];
@@ -141,7 +143,8 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
       .map(([key]) => projectRoot(sessionsByKey.get(key)?.project)).filter(Boolean));
     return memberRoots.size === 1 ? [...memberRoots][0] : NO_PROJECT;
   };
-  // A group's root is stored at apply time; older groups take their anchor's.
+  // The root of a group whose stored root is unknown: a group decided before roots were recorded takes
+  // its anchor's.
   const derivedRoots = new Map();
   const groupRoot = (groupId) => {
     const group = ledger?.groups?.groups?.[groupId];
@@ -149,25 +152,19 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
       if (!derivedRoots.has(groupId)) derivedRoots.set(groupId, rootFromMembers(groupId, group));
       return derivedRoots.get(groupId);
     }
-    const anchorRoot = projectRoot(sessionsByKey.get(group?.anchor)?.project);
-    if (typeof group?.projectRoot === 'string') {
-      if (!derivedRoots.has(groupId)) {
-        const memberRoots = Object.entries(ledger.groups.conversations).filter(([, id]) => id === groupId)
-          .map(([key]) => projectRoot(sessionsByKey.get(key)?.project));
-        derivedRoots.set(groupId, upgradedGroupRoot(group.projectRoot, anchorRoot, memberRoots));
-      }
-      return derivedRoots.get(groupId);
-    }
-    return anchorRoot;
+    return projectRoot(sessionsByKey.get(group?.anchor)?.project);
   };
-  // A conversation joins its group only from the group's own project root; in a group decided before
-  // its project was known, a member that still shows no project stays too.
+  // A group with a recorded project root keeps every conversation the ledger assigned to it: `apply`
+  // decided that membership against the root, and a decision may name a root its members did not all
+  // work from. A group whose root is unknown joins a conversation only from the root the group shows
+  // now; in a group decided before its project was known, a member that still shows no project stays too.
   const groupFor = (key, session) => {
     const groupId = key ? ledger?.groups?.conversations?.[key] ?? null : null;
     if (!groupId) return null;
+    const storedRoot = ledger.groups.groups[groupId]?.projectRoot;
+    if (typeof storedRoot === 'string' && storedRoot !== NO_PROJECT) return groupId;
     const own = projectRoot(session?.project), expected = groupRoot(groupId);
-    const rootWasUnknown = ledger.groups.groups[groupId]?.projectRoot === NO_PROJECT;
-    return own == null || expected == null || own === expected || (rootWasUnknown && own === NO_PROJECT) ? groupId : null;
+    return own == null || expected == null || own === expected || (storedRoot === NO_PROJECT && own === NO_PROJECT) ? groupId : null;
   };
   const requests = new Map(), unlinkedWork = [];
   const requestFor = (id, { key, original, groupId = null, explicit = null, explicitText = null }) => {
