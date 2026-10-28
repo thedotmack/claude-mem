@@ -24,7 +24,6 @@ import { treeSitterCliUnavailableMessage } from '../services/smart-file-read/tre
 import { resolveWithinWorkspace } from '../services/smart-file-read/workspace-path.js';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
 import { marketplaceDirectoryCandidates } from '../shared/known-marketplace-location.js';
 import { dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
@@ -508,20 +507,12 @@ async function ensureWorkerConnection(): Promise<boolean> {
 // query_corpus, which appends to the corpus session) keep prompting.
 const READ_ONLY_TOOL_ANNOTATIONS = { readOnlyHint: true } as const;
 
-interface McpToolCallContext {
-  mcpToolUse?: {
-    contentSessionId: string;
-    toolUseId: string;
-    platformSource: 'antigravity-cli';
-  };
-}
-
 interface McpToolDefinition {
   name: string;
   description: string;
   inputSchema: any;
   annotations?: any;
-  handler: (args: any, context?: McpToolCallContext) => any;
+  handler: (args: any) => any;
 }
 
 const tools: McpToolDefinition[] = [
@@ -763,11 +754,8 @@ Optional Dumb search: \`dumb_search({query, project})\`. Doesn’t reason about 
       required: ['list', 'fields'],
       additionalProperties: false,
     },
-    handler: async (args: any, context?: McpToolCallContext) => callWorker('/api/work-state/entries', {
-      body: {
-        cwd: getRequestCwd(), list: args?.list, fields: args?.fields,
-        ...(context?.mcpToolUse ? { mcpToolUse: context.mcpToolUse } : {}),
-      },
+    handler: async (args: any) => callWorker('/api/work-state/entries', {
+      body: { cwd: getRequestCwd(), list: args?.list, fields: args?.fields },
       text: true,
     }),
   },
@@ -1191,7 +1179,6 @@ function teamBrainJoined(): boolean {
  * then uses the process launch directory or a verified PWD fallback from the plugin root.
  */
 function createMcpServer(getCwd?: CwdResolver): Server {
-  const mcpContentSessionId = randomUUID();
   const server = new Server(
     {
       name: 'claude-mem',
@@ -1251,11 +1238,7 @@ function createMcpServer(getCwd?: CwdResolver): Server {
     try {
       const args = request.params.arguments || {};
       const cwd = getCwd ? getCwd(extra) : await stdioCwd!.resolve();
-      const isAntigravity = normalizePlatformSource(server.getClientVersion()?.name) === 'antigravity-cli';
-      const context: McpToolCallContext = isAntigravity && tool.name === 'work_state_write'
-        ? { mcpToolUse: { contentSessionId: mcpContentSessionId, toolUseId: randomUUID(), platformSource: 'antigravity-cli' } }
-        : {};
-      const result = await runWithCwd(cwd, () => tool.handler(args, context));
+      const result = await runWithCwd(cwd, () => tool.handler(args));
       spoolWorkStateMcpResult(tool.name, result);
       return result;
     } catch (error: unknown) {

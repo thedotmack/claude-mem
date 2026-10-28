@@ -100,11 +100,6 @@ describe('CLAUDE_MEM_WORK_STATE_ENABLED over stdio (#4606)', () => {
           cwd: project,
           list: 'switch-fixture',
           fields: { task: 'Check the switch', status: 'doing' },
-          mcpToolUse: {
-            contentSessionId: expect.any(String),
-            toolUseId: expect.any(String),
-            platformSource: 'antigravity-cli',
-          },
         }]);
       }, { cwd: pluginRoot, pwd: project, clientName: 'agy' });
     } finally {
