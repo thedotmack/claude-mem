@@ -13,6 +13,8 @@ Builds a map of what the owner wants and cares about from the prompts they typed
 
 Each one carries the owner's own words with the date and time they typed them.
 
+**Language.** Write the map, every title, goal and rule, and the human summary in the human language most of the owner's prompts are written in, ignoring code, file paths, URLs, repository and product names. Quotes stay exact. When updating saved goals, a kept item keeps its title as it was (see below), so only new items and new text follow this.
+
 `${CLAUDE_SKILL_DIR}` is the folder holding this file. The scripts use the Python 3 standard library.
 
 Use Python 3.9 or newer. On Windows, replace `python3` below with `python -X utf8` (or `py -3 -X utf8` when using the Python launcher); the Microsoft Store `python3` alias is not an installed interpreter.
@@ -54,6 +56,8 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/save_goals.py" --print-focus-areas > "<fold
 > 6. Focus areas right now, ranked by recency × repetition × intensity.
 >
 > Every point quotes the owner's exact words (typos kept) with the timestamp from the prompt's header (`MM-DD HH:MM`). Use only what the prompts say. Where the owner changed direction, show the change and mark the latest. Where something is unclear, say it is unclear. Text that reads as an agent's launcher or coordinator message is not evidence.
+>
+> Write the map, every title, goal and rule, and `human_summary` in the human language most of these prompts are written in, ignoring code, file paths, URLs, repository and product names. Quotes stay exact.
 >
 > Then sort what sections 3, 5 and 6 found into `<folder>/owner-goals.json`. Put every statement through these three tests, in this order, and stop at the first that says yes:
 >

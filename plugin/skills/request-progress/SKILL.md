@@ -15,6 +15,8 @@ CLI="bun ${CLAUDE_SKILL_DIR}/scripts/request-groups.mjs"
 
 It opens `~/.claude-mem/claude-mem.db` read-only and writes only to `~/.claude-mem/work-view/`, except `record-focus`, which saves through the running claude-mem worker because focus areas sync between computers. My Work picks up changes within a second: grouped conversations show as one card that starts at the earliest ask, with a progress meter; the request page shows the build story, how released work landed (usage, value, regressions, why each change was made) and its work product; each card shows the focus area it sits in; the build story's first paragraph is My Work's recap, and the story sheet shows shipping velocity, the narrative and preferences. A review never changes a request's recorded status.
 
+**Language.** Write every value My Work shows (request titles, review summaries, narratives, milestones and outcome texts, focus-area names, goals and abouts, the build story and preferences) in the human language most of the owner's asks are written in, ignoring code, file paths, URLs, repository and product names. Quotes stay verbatim, in the language they were typed in. A review or story written earlier in another language is rewritten in the owner's language the next time it is updated.
+
 Default window: 14 days. Use the window the user asks for.
 
 ## 1. Group conversations into overall requests
@@ -90,6 +92,7 @@ Split the due groups into batches of about 8 and give each batch to a subagent, 
 >      - `regressions` (≤10): `{text, at, fixedBy, evidence}` for anything it broke: later fix PRs or commits that name it, reverts, bug reports, the owner's corrections. `fixedBy` is null while unfixed.
 >      - `changes` (≤12): `{what, why, at, evidence}` for each meaningful change, with the WHY from the owner's own ask (quote it), the commit or PR message, or the incident that caused it. Never write a why you cannot cite.
 >    - `preferences` (≤10): how the owner likes to work with agents, taken ONLY from the owner's own asks shown by `show`. Each has `preference` (≤200 chars, the statement), `quote` (verbatim, ≤300 chars), `kind` and `at`. `quote` is verbatim; `kind` is `directive` | `correction` | `praise` | `frustration`. Skip pasted agent text, secrets, keys and tokens.
+>    - Write `summary`, `narrative`, milestone texts, outcome texts and each `preference` in the human language most of the owner's asks in `show` are written in, ignoring code, file paths, URLs, repository and product names; `quote` stays verbatim. In `"amend"` mode, if the previous review is in another language, rewrite all of it in the owner's language.
 > 4. Record it: `<CLI> record-progress - <<'JSON' {...} JSON` with `groupId`, `state`, `percent`, the dates, `summary`, `narrative`, `milestones`, `outcome`, `preferences`, `evidence` and `reviewBasis` copied verbatim from that group's `show` output (it marks which conversations and activity you reviewed). Pass the JSON through the heredoc; never write review files to disk, because other reviewers run at the same time. Fix and retry if it rejects. A subtask finishing does not mean the request shipped.
 >
 > Return the groups you recorded and any you could not, with the reason.
@@ -138,6 +141,7 @@ Run `$CLI story-input`. Without a previous story it returns every review; with o
 - When `condenseChars` is above 0, the previous story is past the target. Rewrite every part whose `overBudgetChars` is above 0 in at most its `budgetWords` words, the recap and the chapters the listed reviews change included. Keep each chapter's dates, ids and outcomes, fit the listed reviews' new facts into those budgets, and merge finished chapters into one where that reads better. Count the words of each rewritten part before you answer.
 - When `mergeOldestChapters` is above 0, the story has more chapters than the budgets fit: merge that many of the oldest chapters into one chapter within its budget first, keeping their dates, ids and outcomes, then follow the rules above.
 - If a refusal names parts with their budgets, rewrite each of those parts within its budget, and condense any other part it says is over budget too. If it names the oldest chapters to merge, merge them into one first.
+- If the previous story is in another language than the owner's asks, rewrite every part in the owner's language within its budget, keeping its dates, ids and outcomes.
 
 Write:
 
