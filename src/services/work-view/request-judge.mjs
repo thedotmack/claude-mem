@@ -257,6 +257,13 @@ export async function routeUndecided({ dir = LEDGER_DIR, database, judge = null,
         skip.add(key);
         continue;
       }
+      // Applied runs re-read the ledger before each write: the owner may have answered a suggestion (or
+      // another run decided this conversation) while the judge was awaited, and that answer must survive.
+      // Between this read and persist() nothing is awaited, so no other write can land in between.
+      if (apply) {
+        working = readLedger(dir).groups;
+        if (working.conversations[key] || working.ignored?.[key]) { skip.add(key); continue; }
+      }
       const target = verdict.band === 'join' ? openRequests.find((request) => request.groupId === verdict.requestId) : null;
       const title = ownTitle(conversation.openingAsk);
       const decisions = target
@@ -292,9 +299,17 @@ export function decideSuggestion({ dir, database, conversationKey, action, now =
   let next;
   if (action === 'join') {
     if (!request) return null;
+    // A conversation that anchors a request of its own brings that request's other members with it (later
+    // conversations may have joined it meanwhile), with the links that joined them, so no group is left
+    // naming an anchor that moved away.
+    const ownId = groups.conversations[conversationKey];
+    const brought = ownId && groups.groups[ownId]?.anchor === conversationKey
+      ? Object.entries(groups.conversations).filter(([key, id]) => id === ownId && key !== conversationKey).map(([key]) => key) : [];
+    const moving = new Set([conversationKey, ...brought]);
+    const broughtLinks = brought.length ? (groups.groups[ownId].links ?? []).filter((link) => link.conversations.every((key) => moving.has(key))) : [];
     next = applyDecisions(groups, { groups: [{
-      title: request.title, conversations: [request.anchor, conversationKey],
-      links: [{ kind: 'judge', conversations: [request.anchor, conversationKey], evidence: `Owner joined on the judge's suggestion. ${suggestion.evidence}` }],
+      title: request.title, conversations: [request.anchor, conversationKey, ...brought],
+      links: [{ kind: 'judge', conversations: [request.anchor, conversationKey], evidence: `Owner joined on the judge's suggestion. ${suggestion.evidence}` }, ...broughtLinks],
       ...(typeof request.projectRoot === 'string' && request.projectRoot ? { projectRoot: request.projectRoot } : {}),
     }] }, { database, now, excludedPromptIds: ledger.agentWrittenPromptIds });
     next.suggestions[conversationKey] = { ...suggestion, status: 'joined', resolvedAt: iso(now) };

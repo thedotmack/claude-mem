@@ -142,6 +142,45 @@ describe('the request judge', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it('an owner answer saved while the judge is awaited survives the routing run', async () => {
+    const dir = ledgerDir();
+    try {
+      const database = fixtureDatabase();
+      const groupId = ledgerWithOpenRequest(dir);
+      const { client } = fakeJev((state, questions) => {
+        // The owner joins b on its suggestion while c's question is out.
+        if (questions.pick && state.conversation.asks[0] === 'Write the pricing page') decideSuggestion({ dir, database, conversationKey: key('b'), action: 'join', now: NOW + 500 });
+        return questions.pick ? choice(groupId, 0.7, ['none']) : noul(state.conversation.asks[0] === 'Write the pricing page' ? 0.2 : 0.6);
+      });
+      await routeUndecided({ dir, database, judge: jevJudge(client), now: NOW, apply: true });
+      const ledger = readLedger(dir);
+      expect(ledger.groups.conversations[key('b')]).toBe(groupId);
+      expect(ledger.groups.suggestions[key('b')]).toMatchObject({ status: 'joined' });
+      expect(ledger.groups.conversations[key('c')]).toBe(groupIdFor(key('c')));
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('Join brings the members that joined the suggested conversation\'s own request, leaving no stale anchor', async () => {
+    const dir = ledgerDir();
+    try {
+      const database = fixtureDatabase();
+      const groupId = groupIdFor(key('a'));
+      ledgerWithOpenRequest(dir);
+      // b is a mid-band pick for the cards request, so it starts its own; c then joins b's request.
+      const { client } = fakeJev((state, questions) => state.conversation.asks[0] === 'Write the pricing page'
+        ? (questions.pick ? choice(groupIdFor(key('b')), 0.9, [groupId, 'none']) : noul(0.9))
+        : (questions.pick ? choice(groupId, 0.7, ['none']) : noul(0.6)));
+      await routeUndecided({ dir, database, judge: jevJudge(client), now: NOW, apply: true });
+      expect(readLedger(dir).groups.conversations[key('c')]).toBe(groupIdFor(key('b')));
+      expect(decideSuggestion({ dir, database, conversationKey: key('b'), action: 'join', now: NOW + 1000 })).toEqual({ status: 'joined', requestId: groupId });
+      const joined = readLedger(dir).groups;
+      expect(joined.conversations[key('b')]).toBe(groupId);
+      expect(joined.conversations[key('c')]).toBe(groupId);
+      expect(joined.groups[groupIdFor(key('b'))]).toBeUndefined();
+      expect(joined.groups[groupId].links.map((link: any) => link.conversations)).toEqual([[key('a'), key('b')], [key('b'), key('c')]]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('Not this keeps the conversation as its own request and records that the owner declined', async () => {
     const dir = ledgerDir();
     try {

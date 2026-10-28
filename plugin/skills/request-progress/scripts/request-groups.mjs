@@ -2699,6 +2699,13 @@ async function routeUndecided({ dir = LEDGER_DIR, database, judge = null, now = 
         skip.add(key);
         continue;
       }
+      if (apply) {
+        working = readLedger(dir).groups;
+        if (working.conversations[key] || working.ignored?.[key]) {
+          skip.add(key);
+          continue;
+        }
+      }
       const target = verdict.band === "join" ? openRequests.find((request) => request.groupId === verdict.requestId) : null;
       const title = ownTitle(conversation.openingAsk);
       const decisions = target ? { groups: [{ title: target.title, conversations: [target.anchor, key], links: [{ kind: "judge", conversations: [target.anchor, key], evidence: verdict.evidence }], ...typeof root === "string" && root ? { projectRoot: root } : {} }] } : { groups: [{ title, conversations: [key] }] };
@@ -2734,10 +2741,14 @@ function decideSuggestion({ dir, database, conversationKey: conversationKey2, ac
   let next;
   if (action === "join") {
     if (!request) return null;
+    const ownId = groups.conversations[conversationKey2];
+    const brought = ownId && groups.groups[ownId]?.anchor === conversationKey2 ? Object.entries(groups.conversations).filter(([key, id]) => id === ownId && key !== conversationKey2).map(([key]) => key) : [];
+    const moving = /* @__PURE__ */ new Set([conversationKey2, ...brought]);
+    const broughtLinks = brought.length ? (groups.groups[ownId].links ?? []).filter((link) => link.conversations.every((key) => moving.has(key))) : [];
     next = applyDecisions(groups, { groups: [{
       title: request.title,
-      conversations: [request.anchor, conversationKey2],
-      links: [{ kind: "judge", conversations: [request.anchor, conversationKey2], evidence: `Owner joined on the judge's suggestion. ${suggestion.evidence}` }],
+      conversations: [request.anchor, conversationKey2, ...brought],
+      links: [{ kind: "judge", conversations: [request.anchor, conversationKey2], evidence: `Owner joined on the judge's suggestion. ${suggestion.evidence}` }, ...broughtLinks],
       ...typeof request.projectRoot === "string" && request.projectRoot ? { projectRoot: request.projectRoot } : {}
     }] }, { database, now, excludedPromptIds: ledger.agentWrittenPromptIds });
     next.suggestions[conversationKey2] = { ...suggestion, status: "joined", resolvedAt: iso2(now) };
