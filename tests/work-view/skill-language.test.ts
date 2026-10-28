@@ -13,16 +13,28 @@ const section = (text: string, from: string, to: string) => {
 const OWNER_LANGUAGE = /human language most of the owner's (asks|prompts) are written in/;
 
 describe('My Work skills write in the owner\'s language', () => {
-  it('request-progress states the rule, hands it to the review subagents and applies it to the story', () => {
+  it('request-progress decides the language once and hands it to the review subagents', () => {
     const text = skill('request-progress');
     expect(text).toMatch(OWNER_LANGUAGE);
-    expect(section(text, '## 2. Review', '## 3.')).toMatch(/^> .*human language most of the owner's asks in `show`/m);
-    expect(section(text, '## 4. Write the build story', '```bash')).toContain('previous story is in another language');
+    expect(text).toContain('Decide that language once');
+    const review = section(text, '## 2. Review', '## 3.');
+    expect(review).toContain('fill in the CLI path, the groups and the owner\'s language');
+    expect(review).toMatch(/^> .*in <owner's language>/m);
   });
 
-  it('owner-goals states the rule and hands it to the map subagent', () => {
+  it('request-progress keeps the wording My Rules and open requests key on', () => {
+    const text = skill('request-progress');
+    // My Rules ids hash the preference text, so a translated statement would
+    // detach the owner's decision from it.
+    expect(text).toContain('every preference statement carried over from the previous story');
+    expect(section(text, '## 4. Write the build story', '```bash'))
+      .toContain('Preference statements carried over from the previous story keep their wording');
+  });
+
+  it('owner-goals states the rule, hands it to the map subagent and keeps kept rules as written', () => {
     const text = skill('owner-goals');
     expect(text).toMatch(OWNER_LANGUAGE);
     expect(section(text, '## 2. Build the map', '## Or update')).toMatch(/^> .*human language most of these prompts are written in/m);
+    expect(section(text, '## Or update', '## 3.')).toContain('keep each kept rule\'s `when` and `then` exactly as they were');
   });
 });
