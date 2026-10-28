@@ -335,26 +335,31 @@ async function main(argv = process.argv.slice(2)) {
             const proofSpec = hookSpecs.find(s => s.hook === 'PostToolUse');
             const proofEntry = entries.PostToolUse;
             const beforeProof = readJsonLines(fixture.evidencePath).length;
-            // Verify the pending gate through the real handler without timing a
-            // second Windows launcher. This is functional proof, not a hook
-            // latency sample; the PostCompact timing above is unchanged.
-            const proofBudgetMs = 30_000;
-            const proofRaw = await runChild({ file: BUN, args: [path.join(variant.install, 'scripts', variant.hook ? 'hook-service.cjs' : 'worker-service.cjs'), 'hook', 'codex', 'observation'], cwd: os.tmpdir(),
-              env: { ...env, CLAUDE_MEM_HOOK_ORIGINAL_CWD: projectDir }, input: JSON.stringify(payload(proofSpec, projectDir, sampleDir, id)), timeoutMs: proofBudgetMs });
+            const proofCommand = path.join(sampleDir, 'PostCompact-proof.command.ps1');
+            fs.writeFileSync(proofCommand, proofEntry.commandWindows + '\r\nexit $LASTEXITCODE\r\n', 'utf8');
+            const proofCpuBefore = cpuSnapshot();
+            const proofRaw = await runChild({ file: POWERSHELL, args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', proofCommand], cwd: projectDir, env,
+              input: JSON.stringify(payload(proofSpec, projectDir, sampleDir, id)), timeoutMs: proofEntry.deadlineMs + 3000 });
+            const proofCpuPercent = cpuPercent(proofCpuBefore, cpuSnapshot());
             if (proofRaw.cleanupFailed) throw new Error(`cleanup failed for owned proof child ${proofRaw.pid}`);
             const proofEvidence = readJsonLines(fixture.evidencePath).slice(beforeProof);
             const markerAfter = filesUnder(dataDir, file => /codex-compaction-pending/i.test(file));
             const proofOutput = parseOutput(proofRaw.stdout);
             const proofViolations = validateRaw(proofRaw, proofOutput);
-            if (proofRaw.elapsedMs > proofBudgetMs) proofViolations.push('functional proof exceeded its budget');
-            postCompactProof = { exitCode: proofRaw.exitCode, timedOut: proofRaw.timedOut, stdout: proofRaw.stdout,
-              method: 'direct Bun hook CLI; excluded from native-command latency', budgetMs: proofBudgetMs,
+            postCompactProof = { index, exitCode: proofRaw.exitCode, timedOut: proofRaw.timedOut, stdout: proofRaw.stdout, stderr: proofRaw.stderr,
+              method: 'exact Windows PostToolUse command after compaction; timed separately', deadlineMs: proofEntry.deadlineMs,
+              cpuPercent: proofCpuPercent, cleanupElapsedMs: proofRaw.cleanupElapsedMs,
               validJson: proofOutput.validJson, elapsedMs: proofRaw.elapsedMs, violations: proofViolations,
               contextRequested: proofEvidence.some(r => r.url.startsWith('/api/context/inject')),
               timelineInjected: !!proofOutput.parsed?.hookSpecificOutput?.additionalContext?.includes('PROFILE_TIMELINE_CONTEXT'), markerConsumed: markerAfter.length === 0 };
-            if (proofViolations.length || !postCompactProof.contextRequested || !postCompactProof.timelineInjected || !postCompactProof.markerConsumed) {
+            if (!postCompactProof.contextRequested) proofViolations.push('missing continuation context request');
+            if (!postCompactProof.timelineInjected) proofViolations.push('missing continuation model context');
+            if (!postCompactProof.markerConsumed) proofViolations.push('pending gate was not consumed');
+            postCompactProof.valid = proofViolations.length === 0;
+            if (!postCompactProof.valid && !proofRaw.timedOut && proofRaw.elapsedMs <= proofEntry.deadlineMs) {
               violations.push('PostCompact pending gate did not affect exactly the next read-capable callback');
             }
+            process.stdout.write(JSON.stringify({ hook: 'PostToolUse after compaction', variant: variantName, index, elapsedMs: Math.round(proofRaw.elapsedMs), valid: postCompactProof.valid, violations: proofViolations }) + '\n');
             evidence = evidence.concat(proofEvidence);
           }
           const sample = { index, id, elapsedMs: Math.round(raw.elapsedMs * 10) / 10, exitCode: raw.exitCode, timedOut: raw.timedOut,
@@ -385,11 +390,13 @@ async function main(argv = process.argv.slice(2)) {
   const docs = {};
   for (const variantName of Object.keys(variants)) {
     const hooks = hookSpecs.map(spec => aggregate(spec.hook, state.samples[variantName][spec.hook] || [], entries[spec.hook].deadlineMs));
-    docs[variantName] = { schemaVersion: 2, status: hooks.some(h => h.invalids) ? 'complete-with-invalid-samples' : hooks.some(h => h.deadlineBreaches) ? 'complete-with-deadline-breaches' : 'complete-valid',
-      label: variantName === 'baseline' ? 'before' : 'after', generatedAt: new Date().toISOString(), samplesPerHook, provenance, hooks, limitations };
+    const continuation = aggregate('PostToolUse after compaction', (state.samples[variantName].PostCompact || []).map(s => s.postCompactProof).filter(Boolean), entries.PostToolUse.deadlineMs);
+    const assessed = [...hooks, continuation];
+    docs[variantName] = { schemaVersion: 2, status: assessed.some(h => h.invalids) ? 'complete-with-invalid-samples' : assessed.some(h => h.deadlineBreaches) ? 'complete-with-deadline-breaches' : 'complete-valid',
+      label: variantName === 'baseline' ? 'before' : 'after', generatedAt: new Date().toISOString(), samplesPerHook, provenance, hooks, continuation, limitations };
     atomicJson(path.join(OUT, variantName === 'baseline' ? 'before.json' : 'after.json'), docs[variantName]);
   }
-  const allHooks = [...docs.baseline.hooks, ...docs.optimized.hooks];
+  const allHooks = [...docs.baseline.hooks, docs.baseline.continuation, ...docs.optimized.hooks, docs.optimized.continuation];
   const status = allHooks.some(h => h.invalids) ? 'complete-with-invalid-samples' : allHooks.some(h => h.deadlineBreaches) ? 'complete-with-deadline-breaches' : 'complete-valid';
   const report = { schemaVersion: 2, status, generatedAt: new Date().toISOString(), runId, provenance, limitations,
     comparison: hookSpecs.map(spec => {
@@ -398,10 +405,14 @@ async function main(argv = process.argv.slice(2)) {
         after: { minMs: after.minMs, medianMs: after.medianMs, maxMs: after.maxMs, deadlineBreaches: after.deadlineBreaches, invalids: after.invalids },
         medianDeltaMs: before.medianMs !== null && after.medianMs !== null ? Math.round((after.medianMs - before.medianMs) * 10) / 10 : null };
     }) };
+  const beforeContinuation = docs.baseline.continuation, afterContinuation = docs.optimized.continuation;
+  const select = h => ({ minMs: h.minMs, medianMs: h.medianMs, maxMs: h.maxMs, deadlineBreaches: h.deadlineBreaches, invalids: h.invalids });
+  report.comparison.push({ hook: beforeContinuation.hook, before: select(beforeContinuation), after: select(afterContinuation),
+    medianDeltaMs: beforeContinuation.medianMs !== null && afterContinuation.medianMs !== null ? Math.round((afterContinuation.medianMs - beforeContinuation.medianMs) * 10) / 10 : null });
   atomicJson(path.join(OUT, 'report.json'), report);
   state.status = status; state.completedAt = new Date().toISOString(); atomicJson(incremental, state);
   process.stdout.write(JSON.stringify(report, null, 2) + '\n');
-  if ([...docs.baseline.hooks, ...docs.optimized.hooks].some(h => h.invalids || h.deadlineBreaches)) process.exitCode = 2;
+  if (allHooks.some(h => h.invalids || h.deadlineBreaches)) process.exitCode = 2;
   return report;
   } catch (error) {
     if (state && incremental) { state.status = 'failed'; state.error = error.message; atomicJson(incremental, state); }
