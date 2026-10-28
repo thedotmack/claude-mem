@@ -61,6 +61,34 @@ describe('createStdioCwdResolver', () => {
     expect(fake.listRootsCalls).toBe(2);
   });
 
+  it('refreshes roots again when the project changes during an in-flight lookup', async () => {
+    const previousProject = directory('previous-project');
+    const currentProject = directory('current-project');
+    let releaseStale!: () => void;
+    const staleGate = new Promise<void>(resolve => { releaseStale = resolve; });
+    const staleAnswer: Answer = async () => {
+      await staleGate;
+      return { roots: [{ uri: pathToFileURL(previousProject).href }] };
+    };
+    const fake = peer({ roots: true, answers: [answerWith(previousProject), staleAnswer, answerWith(currentProject)] });
+    const resolver = createStdioCwdResolver({
+      peer: fake,
+      pluginRoot: directory('plugin'),
+      processCwd: () => directory('launch'),
+      pwd: () => undefined,
+    });
+
+    expect(await resolver.resolve()).toBe(previousProject);
+    resolver.markRootsStale();
+    const pending = resolver.resolve();
+    expect(fake.listRootsCalls).toBe(2);
+
+    resolver.markRootsStale();
+    releaseStale();
+    expect(await pending).toBe(currentProject);
+    expect(fake.listRootsCalls).toBe(3);
+  });
+
   it('overlapping calls share one roots/list request instead of each using up an attempt', async () => {
     const project = directory('project');
     let release!: () => void;

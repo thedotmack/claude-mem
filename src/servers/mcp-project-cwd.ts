@@ -110,17 +110,21 @@ export function createStdioCwdResolver(options: {
   let lastRoots: McpCwdResolution | null = null;
   let rootsAttempts = 0;
   let rootsStale = false;
+  let rootsRevision = 0;
   let rootsInFlight: Promise<void> | undefined;
+  let rootsInFlightRevision: number | undefined;
   let logged: McpCwdResolution | null = null;
 
-  const refreshRoots = async (): Promise<void> => {
+  const refreshRoots = async (revision: number): Promise<void> => {
     rootsAttempts++;
     try {
       const { roots } = await peer.listRoots(undefined, { timeout: MCP_ROOTS_TIMEOUT_MS });
+      if (revision !== rootsRevision) return;
       const cwd = cwdFromRoots(roots);
       lastRoots = cwd ? { cwd, source: 'roots' } : null;
       rootsStale = false;
     } catch (error) {
+      if (revision !== rootsRevision) return;
       logger.warn('SYSTEM', lastRoots
         ? 'MCP stdio roots/list failed; keeping the last roots answer'
         : 'MCP stdio roots/list failed; using the launch directory', {
@@ -132,17 +136,30 @@ export function createStdioCwdResolver(options: {
 
   return {
     markRootsStale() {
+      rootsRevision++;
       rootsStale = true;
       rootsAttempts = 0;
     },
     async resolve() {
-      const wantsRoots = Boolean(peer.getClientCapabilities()?.roots)
-        && (lastRoots === null || rootsStale)
-        && rootsAttempts < MAX_MCP_ROOTS_ATTEMPTS;
-      if (wantsRoots) {
-        rootsInFlight ??= refreshRoots().finally(() => { rootsInFlight = undefined; });
+      const supportsRoots = Boolean(peer.getClientCapabilities()?.roots);
+      while (supportsRoots) {
+        const wantsRoots = (lastRoots === null || rootsStale)
+          && rootsAttempts < MAX_MCP_ROOTS_ATTEMPTS;
+        if (wantsRoots && !rootsInFlight) {
+          const revision = rootsRevision;
+          rootsInFlightRevision = revision;
+          rootsInFlight = refreshRoots(revision).finally(() => {
+            rootsInFlight = undefined;
+            rootsInFlightRevision = undefined;
+          });
+        }
+        if (!rootsInFlight) break;
+        const pending = rootsInFlight;
+        const pendingRevision = rootsInFlightRevision;
+        await pending;
+        if (pendingRevision !== rootsRevision && rootsAttempts < MAX_MCP_ROOTS_ATTEMPTS) continue;
+        break;
       }
-      if (rootsInFlight) await rootsInFlight;
       const resolution = lastRoots ?? resolveMcpProjectCwd({ fallbackCwd: processCwd(), pwd: pwd(), pluginRoot });
       if (!logged || logged.source !== resolution.source || logged.cwd !== resolution.cwd) {
         // Kept path-free: this records which source won, not a project path.
