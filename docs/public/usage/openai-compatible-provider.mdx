@@ -100,6 +100,7 @@ endpoint or model you pinned yourself.
 | `opper` | `https://api.opper.ai/v3/compat` | yes |
 | `atlascloud` | `https://api.atlascloud.ai/v1` | yes |
 | `runcrate` | `https://api.runcrate.ai/v1` | yes |
+| `obscurify-ai` | `https://obscurify.ai/v1` | yes |
 | `deepseek` | `https://api.deepseek.com/v1` | yes |
 | `opencode-go` | `https://opencode.ai/zen/go/v1` | yes |
 | `opencode-zen` | `https://opencode.ai/zen/v1` | yes |
@@ -359,6 +360,25 @@ behind one OpenAI-compatible API key. Model ids are vendor-prefixed, such as `de
   "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "runcrate",
   "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your Runcrate key>",
   "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek-ai/DeepSeek-V4.1-Flash"
+}
+```
+
+## Obscurify.ai
+
+[Obscurify.ai](https://obscurify.ai) is an OpenAI-compatible API for 200+
+models. Accounts are a random account number with no email, and prompts and
+responses are not stored on the server. Model ids are vendor-prefixed, such as
+`deepseek/deepseek-v4-flash` (the preset's default) or `z-ai/glm-5.3`, and are
+passed verbatim. The model list is public at `https://obscurify.ai/v1/models`,
+and the key (`sk-obs1_...`) is under "Show API Key" on
+[your account page](https://obscurify.ai/account).
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "obscurify-ai",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your Obscurify.ai key>",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek/deepseek-v4-flash"
 }
 ```
 
