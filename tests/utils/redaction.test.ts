@@ -59,6 +59,18 @@ describe('redactSensitive built-in patterns', () => {
     expect(Object.keys(result.counts)).toEqual([name]);
   });
 
+  // Slack also issues app-level tokens (`xapp-`, Socket Mode) and refresh
+  // tokens (`xoxe-`, token rotation); both grant access like a bot token.
+  it.each([
+    ['app-level', 'SLACK_APP_TOKEN=' + 'xa' + 'pp-1-A0123456789-1234567890123-abcdef0123456789abcdef0123456789'],
+    ['refresh', 'refresh_token: ' + 'xo' + 'xe-1-My0xLTEyMzQ1Njc4OTAtMTIzNDU2Nzg5MDEyMy1hYmNkZWY'],
+  ])('redacts a Slack %s token', (_kind, input) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain("<redacted type='slack_token'/>");
+    expect(result.redacted).not.toMatch(/x(?:app|oxe)-1-/);
+    expect(Object.keys(result.counts)).toEqual(['slack_token']);
+  });
+
   it('still requires a Google key to end after its 35 characters', () => {
     const result = redactSensitive('AIzaSyA-0123456789abcdefghijklmnopqrstuv', cfg);
     expect(result.counts.google_api_key).toBeUndefined();
@@ -219,10 +231,26 @@ describe('redactSensitive generic built-in patterns', () => {
     ['json style',   '{"client_secret": "GOCSPXabc12345"}',   'GOCSPXabc12345'],
     ['shell export', 'export AUTH_TOKEN=abc12345defghi',      'abc12345defghi'],
     ['yaml value',   'MY_API_KEY: uvwxyz123456',              'uvwxyz123456'],
+    // Bare key names, which redactJsonStrings already pairs as structured
+    // keys, but only in config-shaped positions (see the code lookalikes below).
+    ['bare api_key',           'api_key=uvwxyz123456',                        'uvwxyz123456'],
+    ['bare export secret',     'export secret=uvwxyz123456',                  'uvwxyz123456'],
+    ['bare query token',       'curl https://x.test/api?token=abc12345defghi', 'abc12345defghi'],
+    ['bare json secret',       '{"secret": "GOCSPXabc12345"}',                'GOCSPXabc12345'],
+    ['bare escaped json token', String.raw`{\"token\": \"abc12345defghi\"}`,  'abc12345defghi'],
+    ['bare yaml token',        'token: abc12345defghi',                       'abc12345defghi'],
+    ['bare nested yaml token', 'auth:\n  token: abc12345defghi\n  user: me',  'abc12345defghi'],
+    ['bare escaped yaml token', String.raw`auth:\n  token: abc12345defghi\n`, 'abc12345defghi'],
+    ['bare --token= flag',     'cli login --token=abc12345defghi',            'abc12345defghi'],
+    ['bare --api-key flag',    'cli login --api-key abc12345defghi',          'abc12345defghi'],
   ])('generic_token redacts a %s', (_style, input, secret) => {
-    const result = redactSensitive(input, cfg);
-    expect(result.counts.generic_token).toBe(1);
-    expect(result.redacted).not.toContain(secret);
+    // The worker scans tool output as JSON.stringify(response), so each
+    // position must also hold as the start of a stringified value.
+    for (const text of [input, JSON.stringify({ stdout: input })]) {
+      const result = redactSensitive(text, cfg);
+      expect(result.counts.generic_token).toBe(1);
+      expect(result.redacted).not.toContain(secret);
+    }
   });
 
   it.each([
@@ -239,14 +267,28 @@ describe('redactSensitive generic built-in patterns', () => {
       'password=12345678',        // purely numeric
       'password=abc',             // under the 8-char minimum
       'max_tokens=4096',          // `_TOKENS`, not `*_TOKEN`
-      'max_password_length=32',   // the key merely contains "password"
+      'tokens=abcdefghij',        // `tokens`, not `token`
+      'csrftoken=abcdefghij',     // no `_` before `token`, as for structured keys
+      'nosecret=abcdefghij',
+      // Source code that names a bare token/secret: only config-shaped
+      // positions (quoted JSON keys, env assignments, flags, yaml lines)
+      // count for the bare key names.
+      'const token = getToken();',
+      'token: TokenType;',
+      'interface Auth {\n  token: TokenType;\n  secret: SecretValue;\n}',
+      'secret = process.env.SECRET',
+      'let token = req.headers.authorization',
+      'the next token: undefined',
+      'headers = {"token": api_token_value}',
+      'if (x) token=getAuthToken()',
+      'max_password_length=32',  // the key merely contains "password"
       'Bearer 12345678',          // numeric, and not anchored to Authorization
       'AUTH_TOKEN=short',         // under the minimum
       'PWD=/Users/x/project',     // the working directory, not a password
       'OLDPWD=/tmp/a',
       'declare -x PWD="/home/someone/projects/app"',
     ];
-    for (const input of inputs) {
+    for (const input of inputs.flatMap((raw) => [raw, JSON.stringify({ stdout: raw })])) {
       const result = redactSensitive(input, cfg);
       expect(result.redacted).toBe(input);
       expect(Object.keys(result.counts)).toHaveLength(0);
@@ -320,6 +362,47 @@ describe('redactSensitive generic built-in patterns', () => {
     expect(result.client_secret).toBe("<redacted type='generic_token'/>");
     expect(result.nested[0].db_password).toBe("<redacted type='generic_password'/>");
     expect(result.token).toBe("<redacted type='generic_token'/>");
+  });
+
+  it('redacts the bearer token of an Authorization header object (structured events)', () => {
+    const event = { request: { headers: { Authorization: 'Bearer abc12345defghi', accept: 'application/json' } }, authorization: 'bearer ABCDEFGH123456' };
+    const result = redactJsonStrings(event, cfg) as typeof event;
+    expect(result.request.headers.Authorization).toBe("Bearer <redacted type='bearer_token'/>");
+    expect(result.request.headers.accept).toBe('application/json');
+    expect(result.authorization).toBe("bearer <redacted type='bearer_token'/>");
+  });
+
+  it.each([
+    ['trailing whitespace', 'Bearer abc12345defghi \n', "Bearer <redacted type='bearer_token'/> \n"],
+    ['leading whitespace',  '  Bearer abc12345defghi',  "  Bearer <redacted type='bearer_token'/>"],
+    ['text after the token', 'Bearer abc12345defghi, realm="api"', "Bearer <redacted type='bearer_token'/>, realm=\"api\""],
+  ])('redacts an Authorization header object value with %s', (_style, value, expected) => {
+    const result = redactJsonStrings({ headers: { Authorization: value } }, cfg) as { headers: { Authorization: string } };
+    expect(result.headers.Authorization).toBe(expected);
+    expect(redactSensitive(`Authorization: ${value}`, cfg).redacted).toBe(`Authorization: ${expected}`);
+  });
+
+  it('leaves non-secret or opted-out Authorization header values alone', () => {
+    expect(redactJsonStrings({ Authorization: 'Bearer 12345678' }, cfg)).toEqual({ Authorization: 'Bearer 12345678' });
+    expect(redactJsonStrings({ Authorization: 'Basic' }, cfg)).toEqual({ Authorization: 'Basic' });
+    expect(redactJsonStrings({ note: 'Bearer abc12345defghi' }, cfg)).toEqual({ note: 'Bearer abc12345defghi' });
+    const off = { ...cfg, disabledBuiltinPatterns: ['bearer_token'] };
+    expect(redactJsonStrings({ Authorization: 'Bearer abc12345defghi' }, off)).toEqual({ Authorization: 'Bearer abc12345defghi' });
+    expect(redactJsonStrings({ Authorization: 'Bearer abc12345defghi' }, { enabled: true })).toEqual({ Authorization: 'Bearer abc12345defghi' });
+    expect(redactJsonStrings({ Authorization: 'Bearer sk-ABCDEFGHIJ1234567890abcdef' }, cfg))
+      .toEqual({ Authorization: "Bearer <redacted type='openai_key'/>" });
+  });
+
+  it('pairs the same password key spellings as the text pattern (structured events)', () => {
+    const event = { env: { MYSQL_PWD: 'Hunter22Example', PGPASSWORD: 'Sup3rSecretValue' }, dbPassword: 'Hunter22Example', PWD: '/home/user/project' };
+    const result = redactJsonStrings(event, cfg) as typeof event;
+    expect(result.env.MYSQL_PWD).toBe("<redacted type='generic_password'/>");
+    expect(result.env.PGPASSWORD).toBe("<redacted type='generic_password'/>");
+    expect(result.dbPassword).toBe("<redacted type='generic_password'/>");
+    expect(result.PWD).toBe('/home/user/project');
+    for (const [key, value] of [['MYSQL_PWD', 'Hunter22Example'], ['PGPASSWORD', 'Sup3rSecretValue'], ['dbPassword', 'Hunter22Example']]) {
+      expect(redactSensitive(`${key}=${value}`, cfg).counts.generic_password).toBe(1);
+    }
   });
 
   it('leaves non-secret values under credential-named keys alone', () => {

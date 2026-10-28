@@ -71,16 +71,17 @@ describe('My Work usage telemetry', () => {
   });
 
   it('counts a switch together with the page it left', async () => {
-    expect((await report({ event: 'switched', view: 'goals', previousView: 'work' })).status).toBe(204);
+    expect((await report({ event: 'switched', view: 'past-focus', previousView: 'work' })).status).toBe(204);
     expect(captured()).toEqual([
-      expect.objectContaining({ event: 'work_view_switched', properties: expect.objectContaining({ view: 'goals', previous_view: 'work' }) }),
+      expect.objectContaining({ event: 'work_view_switched', properties: expect.objectContaining({ view: 'past-focus', previous_view: 'work' }) }),
     ]);
   });
 
   it('refuses another origin, an unknown page, a switch without the page it left, and any extra field', async () => {
     expect((await report({ event: 'opened', view: 'work' }, { 'Content-Type': 'application/json', Origin: 'https://evil.example' })).status).toBe(403);
     expect((await report({ event: 'opened', view: 'timeline' })).status).toBe(400);
-    expect((await report({ event: 'switched', view: 'goals' })).status).toBe(400);
+    expect((await report({ event: 'opened', view: 'goals' })).status).toBe(400); // My Goals was retired for focus areas (#5131)
+    expect((await report({ event: 'switched', view: 'suggested' })).status).toBe(400);
     expect((await report({ event: 'opened', view: 'work', title: 'Build the local viewer' })).status).toBe(400);
     expect(captured()).toHaveLength(0);
   });

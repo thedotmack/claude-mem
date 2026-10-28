@@ -15,6 +15,8 @@ export interface RefreshStatus {
   result?: string | null;
   error?: string | null;
   steps?: RefreshStepTiming[];
+  /** Failed runs in a row; the next scheduled check waits longer for each. Absent after a run that works. */
+  failures?: number;
 }
 
 export class AutoRefreshWorker {
@@ -26,10 +28,12 @@ export class AutoRefreshWorker {
     checkMs?: number;
     now?: () => number;
     log?: (level: 'info' | 'warn', message: string, data?: Record<string, unknown>) => void;
+    /** The worker's sync device id ('' when cloud sync never started), so my-focus rows replay in its order. */
+    localDeviceId: () => string;
   });
   status(): RefreshStatus | null;
   start(): void;
   close(): void;
-  check(): Promise<'closed' | 'disabled' | 'running' | 'idle' | RefreshJobOutcome['state']>;
+  check(): Promise<'closed' | 'disabled' | 'running' | 'backing-off' | 'idle' | RefreshJobOutcome['state']>;
   runNow(options: { reason: string }): Promise<'closed' | 'running' | 'idle' | RefreshJobOutcome['state']>;
 }

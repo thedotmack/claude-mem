@@ -212,6 +212,38 @@ const CODEX_EXEC_ARGS = (executable: string, cwd: string, answerPath: string, sc
 // no builtin tools, disable hooks/YOLO, and supply Gemini's evidence inline.
 const GEMINI_ARGS = ['-p', 'Follow the instructions above.', '--approval-mode', 'plan', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json'];
 
+/** How codex exec reports a model this login may not use (Oct 25, codex-cli 0.146.0: a 400 with model_not_found). */
+const CODEX_MODEL_REFUSED = /model_not_found|not supported when using Codex with a ChatGPT account/i;
+
+interface CodexListedModel { slug?: string; visibility?: string; priority?: number; supported_reasoning_levels?: Array<{ effort?: string }> }
+
+/**
+ * The step's Codex model, checked against the models Codex itself lists for this login
+ * ($CODEX_HOME/models_cache.json, which Codex fetches from its server). Oct 25: a ChatGPT-account
+ * login was refused `gpt-6-luna` ("not supported when using Codex with a ChatGPT account",
+ * model_not_found) and every grouping step on Codex failed. A model the login does not list is
+ * replaced by its listed namesake (`gpt-6-luna` → `gpt-5.6-luna`), else left to Codex's default.
+ * Without a readable list the step's model is used as named.
+ */
+export function codexModelForLogin(step: StepModel | undefined, env: NodeJS.ProcessEnv): StepModel | undefined {
+  if (!step?.model) return step;
+  const home = env.CODEX_HOME || (env.HOME ? join(env.HOME, '.codex') : null);
+  if (!home) return step;
+  let listed: CodexListedModel[];
+  try { listed = JSON.parse(readFileSync(join(home, 'models_cache.json'), 'utf8')).models; }
+  catch { return step; }
+  if (!Array.isArray(listed) || !listed.length || listed.some(model => model.slug === step.model)) return step;
+  const family = step.model.split('-').pop();
+  const namesake = listed
+    .filter(model => model.visibility !== 'hide' && typeof model.slug === 'string' && model.slug.split('-').pop() === family)
+    .sort((a, b) => (a.priority ?? Infinity) - (b.priority ?? Infinity))[0];
+  logger.warn('WORKER', `Codex does not list ${step.model} for this login; using ${namesake?.slug ?? 'its default model'}`);
+  if (!namesake) return {};
+  const efforts = namesake.supported_reasoning_levels?.map(level => level.effort);
+  const keepsEffort = step.reasoningEffort && (!efforts || efforts.includes(step.reasoningEffort));
+  return { model: namesake.slug, ...(keepsEffort ? { reasoningEffort: step.reasoningEffort } : {}) };
+}
+
 function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies): AskAgent {
   return async (prompt, models, answerSchema) => {
     const env = await dependencies.buildEnv();
@@ -224,7 +256,16 @@ function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunner
     const schemaPath = answerSchema ? join(directory, `codex-${id}.schema.json`) : null;
     if (schemaPath) writeFileSync(schemaPath, JSON.stringify(answerSchema), { mode: 0o600 });
     try {
-      const result = await runCli(agent.path!, CODEX_EXEC_ARGS(agent.path!, task.cwd, answerPath, schemaPath, models.codex), prompt, { cwd: task.cwd, env });
+      // macOS sandbox-exec must reopen the actual binary, not its PATH symlink.
+      const executable = realPath(agent.path!);
+      const model = codexModelForLogin(models.codex, env);
+      let result = await runCli(executable, CODEX_EXEC_ARGS(executable, task.cwd, answerPath, schemaPath, model), prompt, { cwd: task.cwd, env });
+      // The models list can be missing or stale, so a login can still refuse the step's model. Then the
+      // step runs once more on the login's default model instead of failing (Oct 25: gpt-6-luna).
+      if (result.exitCode !== 0 && model?.model && CODEX_MODEL_REFUSED.test(`${result.stderr}\n${result.stdout}`)) {
+        logger.warn('WORKER', `Codex refused ${model.model} for this login; retrying on its default model`);
+        result = await runCli(executable, CODEX_EXEC_ARGS(executable, task.cwd, answerPath, schemaPath, {}), prompt, { cwd: task.cwd, env });
+      }
       if (result.exitCode !== 0) throw failure('codex exec', result);
       return readFileSync(answerPath, 'utf8');
     } finally {

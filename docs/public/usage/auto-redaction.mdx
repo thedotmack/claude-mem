@@ -40,7 +40,7 @@ That is all you need for the 12 built-in patterns to kick in. Add `"CLAUDE_MEM_R
 | `github_pat` | `ghp_…`, `gho_…`, `ghu_…`, `ghs_…`, `ghr_…`, `github_pat_…` |
 | `openai_key` | `sk-…` (≥20 chars) |
 | `anthropic_key` | `sk-ant-…` (≥20 chars) |
-| `slack_token` | `xoxb-…`, `xoxp-…`, `xoxa-…`, `xoxr-…`, `xoxs-…` |
+| `slack_token` | `xoxb-…`, `xoxp-…`, `xoxa-…`, `xoxr-…`, `xoxs-…`, `xoxe-…` (refresh), `xapp-…` (app-level) |
 | `jwt` | `eyJ…[.]eyJ…[.]…` three-segment tokens |
 | `private_key_pem` | `-----BEGIN [RSA\|DSA\|EC\|OPENSSH\|PGP\|ENCRYPTED\|]PRIVATE KEY[ BLOCK]-----` blocks |
 | `stripe_key` | `sk_live_…`, `pk_live_…`, `rk_test_…` |
@@ -61,10 +61,10 @@ Credentials without a vendor prefix (a database password, an internal token) nee
 | Name | Catches |
 |---|---|
 | `generic_password` | values assigned to a `password` / `passwd` key or a `*_PWD` key (`DB_PASSWORD=…`, `MYSQL_PWD=…`), in shell, yaml or JSON style |
-| `generic_token` | values assigned to a `*_TOKEN` / `*_SECRET` / `*_API_KEY` key (e.g. `AUTH_TOKEN=…`, `"client_secret": "…"`) |
+| `generic_token` | values assigned to a `*_TOKEN` / `*_SECRET` / `*_API_KEY` key (e.g. `AUTH_TOKEN=…`, `"client_secret": "…"`), and to a bare `token` / `secret` / `api_key` key in config-style positions only: a quoted JSON key (`"secret": "…"`), an env or query assignment (`api_key=…`, `?token=…`), a CLI flag (`--token=…`, `--api-key …`) or a yaml line (`token: …`). Source code such as `const token = getToken();` is left alone |
 | `bearer_token` | the value after `Authorization: Bearer …` |
 
-They run **after** every vendor pattern, so a vendor-shaped value (a `sk-…` key, a JWT, …) keeps its specific marker. To keep false positives away they only fire when the value is 8+ characters, contains at least one letter, and consists solely of secret-typical characters — so `max_tokens=4096`, short PINs, purely numeric values and the `PWD` / `OLDPWD` working-directory variables are left alone. In server-runtime event bodies, a string value under a credential-named key (`client_secret`, `db_password`, `token`, …) is redacted whole. Like every built-in, each can be disabled by name.
+They run **after** every vendor pattern, so a vendor-shaped value (a `sk-…` key, a JWT, …) keeps its specific marker. To keep false positives away they only fire when the value is 8+ characters, contains at least one letter, and consists solely of secret-typical characters — so `max_tokens=4096`, short PINs, purely numeric values and the `PWD` / `OLDPWD` working-directory variables are left alone. In server-runtime event bodies, a string value under a credential-named key (`client_secret`, `db_password`, `MYSQL_PWD`, `token`, …) is redacted whole. Like every built-in, each can be disabled by name.
 
 ## Disable a single built-in
 

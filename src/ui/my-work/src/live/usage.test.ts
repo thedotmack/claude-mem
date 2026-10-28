@@ -9,7 +9,7 @@ test('the first page shown is an open, with only the page id', () => {
 })
 
 test('a later page is a switch that names the page it left', () => {
-  assert.deepEqual(usageReport('goals', 'work'), { event: 'switched', view: 'goals', previousView: 'work' })
+  assert.deepEqual(usageReport('suggested', 'work'), { event: 'switched', view: 'suggested', previousView: 'work' })
   assert.deepEqual(usageReport('work', 'setup'), { event: 'switched', view: 'work', previousView: 'setup' })
 })
 

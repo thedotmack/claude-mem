@@ -29,6 +29,7 @@ import { playBanner } from '../banner.js';
 import { normalizeRuntimeFlag } from './server-runtime-setup.js';
 import { ErrorSeverity } from '../install/error-taxonomy.js';
 import {
+  clearLastInstallError,
   createInstallSummary,
   flushSummary,
   installerError,
@@ -2717,6 +2718,7 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
   const summary = createInstallSummary();
   try {
     await runInstallCommandInner(options, summary);
+    clearLastInstallError();
   } catch (error: unknown) {
     const err = error instanceof Error ? error : new Error(String(error));
     if (err instanceof InstallAbortError) {
@@ -3481,6 +3483,7 @@ export async function runRepairCommand(): Promise<void> {
   const summary = createInstallSummary();
   try {
     await runRepairCommandInner(summary);
+    clearLastInstallError();
   } catch (error: unknown) {
     const err = error instanceof Error ? error : new Error(String(error));
     if (err instanceof InstallAbortError) {
