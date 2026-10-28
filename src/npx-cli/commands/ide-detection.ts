@@ -5,6 +5,7 @@ import { join } from 'path';
 import { IS_WINDOWS } from '../utils/paths.js';
 import { t3CodeSettingsPath } from '../../services/integrations/T3CodeInstaller.js';
 import { hermesHome } from '../../services/integrations/HermesInstaller.js';
+import { devinConfigPath } from '../../services/integrations/DevinHooksInstaller.js';
 
 export interface IDEInfo {
   id: string;
@@ -94,6 +95,12 @@ export function detectInstalledIDEs(): IDEInfo[] {
       label: 'Kimi Code',
       detected: existsSync(join(home, '.kimi-code')) || isCommandInPath('kimi'),
       hint: 'hooks + MCP integration',
+    },
+    {
+      id: 'devin',
+      label: 'Devin CLI / Desktop',
+      detected: existsSync(devinConfigPath()) || isCommandInPath('devin'),
+      hint: 'hooks integration',
     },
     {
       id: 'cursor',

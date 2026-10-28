@@ -103,6 +103,7 @@
           "openclaw-integration",
           "hermes-integration",
           "kimi-integration",
+          "devin-integration",
           "qoder-integration",
           "screenpipe-integration",
           "notion-export"

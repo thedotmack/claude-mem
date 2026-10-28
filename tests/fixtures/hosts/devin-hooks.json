@@ -1,0 +1,39 @@
+{
+  "host": "Devin CLI / Devin Desktop",
+  "source": "docs.devin.ai cli/extensibility/hooks/overview and cli/extensibility/hooks/lifecycle-hooks (event fields, tool_response shape, exec tool_input), plus the payload notes in thedotmack/claude-mem#4976",
+  "capturedAt": "2026-10-28",
+  "note": "Keys and shapes follow the cited docs; values are examples. No `cwd` or `transcript_path` is documented (DEVIN_PROJECT_DIR is set in the hook's environment instead). Only the exec tool_input shape is documented; read/edit inputs are still to be captured from a real Devin session.",
+  "payloads": {
+    "SessionStart": {
+      "hook_event_name": "SessionStart",
+      "session_id": "devin-session-1",
+      "source": "startup"
+    },
+    "UserPromptSubmit": {
+      "hook_event_name": "UserPromptSubmit",
+      "session_id": "devin-session-1",
+      "prompt_id": "prompt-1",
+      "prompt": "fix the login redirect"
+    },
+    "PostToolUse": {
+      "hook_event_name": "PostToolUse",
+      "session_id": "devin-session-1",
+      "prompt_id": "prompt-1",
+      "tool_name": "exec",
+      "tool_input": { "command": "npm test", "shell_id": "main" },
+      "tool_response": { "success": true, "output": "12 passing\n", "error": null }
+    },
+    "Stop": {
+      "hook_event_name": "Stop",
+      "session_id": "devin-session-1",
+      "prompt_id": "prompt-1",
+      "stop_hook_active": false,
+      "last_assistant_message": "The login redirect now keeps the original query string."
+    },
+    "SessionEnd": {
+      "hook_event_name": "SessionEnd",
+      "session_id": "devin-session-1",
+      "reason": "prompt_input_exit"
+    }
+  }
+}
