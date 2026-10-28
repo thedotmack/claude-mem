@@ -147,7 +147,10 @@ function applyPatch(target, fields) {
  * A row this build cannot read (unknown status, source or writer, no name, the id
  * "other") throws: My Focus never guesses what a row meant.
  */
-export function buildFocusAreas(state) {
+/** localDeviceId (readFocus passes the worker's): the Other pass record is this computer's own. Its hash covers each
+ * request's local basis (titles and conversation groups are local), so another computer's record never matches and
+ * taking it would start a paid proposal pass on every computer in turn. Null: no pass record is read. */
+export function buildFocusAreas(state, { localDeviceId = null } = {}) {
   // The reducer needs every row's own fields, not the merged task: an owner row must
   // still win after a later router row on the same task. state.events holds them only
   // when reduceWorkState kept every event (its default).
@@ -160,8 +163,8 @@ export function buildFocusAreas(state) {
   for (const event of [...state.events].reverse()) {
     if (!isMyFocusList(event.listName)) continue;
     if (event.task === null) {
-      // The list's own row: which Other requests the last proposal pass already looked at (any device's).
-      if (Object.hasOwn(event.fields, 'other_pass_hash')) otherPassHash = text(event.fields.other_pass_hash) || null;
+      // The list's own row: which Other requests this computer's last proposal pass already looked at.
+      if (localDeviceId !== null && event.sourceOrder?.[1] === localDeviceId && Object.hasOwn(event.fields, 'other_pass_hash')) otherPassHash = text(event.fields.other_pass_hash) || null;
       continue;
     }
     if (event.task.startsWith(FOCUS_AREA_TASK_PREFIX)) {
@@ -240,7 +243,7 @@ export function buildFocusAreas(state) {
 export function readFocus(database, { localDeviceId } = {}) {
   if (typeof localDeviceId !== 'string') throw new TypeError('readFocus needs the worker\'s sync device id ("" when cloud sync never started).');
   const rows = database.prepare('SELECT * FROM work_state_entries WHERE list_name = ?').all(MY_FOCUS_LIST);
-  return buildFocusAreas(reduceWorkState(rows, { localDeviceId }));
+  return buildFocusAreas(reduceWorkState(rows, { localDeviceId }), { localDeviceId });
 }
 
 /** The saved focus areas, read straight from the my-focus rows. */

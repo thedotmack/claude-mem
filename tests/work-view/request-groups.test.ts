@@ -435,6 +435,10 @@ describe('overall requests and progress reviews', () => {
     await run(['record-focus', write('f.json', { placements: ['a', 'b'].map((session) => ({ anchor: key(session), focusAreaId: 'other', evidence: 'Fits no area.' })), proposals: [] })]);
     await run(['record-focus', '--other', write('o.json', { placements: [], proposals: [] })]);
     expect(run(['focus-input', '--other']).due).toBe(false);
+    // Another computer's pass record syncs in, newer, over its own local titles: it is not this computer's pass.
+    focus.insert({ other_pass_hash: 'another-computers-basis' }, 'other-computer');
+    expect(run(['focus-input', '--other']).due).toBe(false);
+    expect(refreshNeeds({ dir, database, now: NOW, localDeviceId: '' }).otherChanged).toBe(false);
     // Request a changes: the placing step looks at it again and leaves it in Other. The same two requests are in
     // Other, but a holds something the last proposal pass never saw.
     run(['apply', write('d2.json', { groups: [{ title: 'Request a, now with pricing', conversations: [key('a')] }] })]);

@@ -22,7 +22,7 @@ export function ownerGoalsAreaRows(minedAreas: MinedFocusArea[], savedAreas: Foc
   rows: Array<Record<string, string | number | null>>; focusAreaIds: string[];
 };
 export interface PlacementSide { focusAreaId: string; basis: string | null; evidence: string | null; device: string | null }
-export function buildFocusAreas(state: unknown): {
+export function buildFocusAreas(state: unknown, options?: { localDeviceId?: string | null }): {
   focusAreas: FocusArea[]; focusAreaIdByAnchor: Map<string, string>;
   placementsByAnchor: Map<string, { owner: PlacementSide | null; router: PlacementSide | null }>;
   /** The live area an id lands in, following merges; 'other' for Other; null when it holds no requests. */

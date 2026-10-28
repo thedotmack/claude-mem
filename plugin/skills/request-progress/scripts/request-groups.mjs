@@ -2279,7 +2279,7 @@ function applyPatch(target, fields) {
     else target[key] = value;
   }
 }
-function buildFocusAreas(state) {
+function buildFocusAreas(state, { localDeviceId: localDeviceId2 = null } = {}) {
   if (typeof state.entryCount === "number" && state.events.length !== state.entryCount) {
     throw new Error("My Focus needs every work-state row; the events were cut.");
   }
@@ -2288,7 +2288,7 @@ function buildFocusAreas(state) {
   for (const event of [...state.events].reverse()) {
     if (!isMyFocusList(event.listName)) continue;
     if (event.task === null) {
-      if (Object.hasOwn(event.fields, "other_pass_hash")) otherPassHash2 = text(event.fields.other_pass_hash) || null;
+      if (localDeviceId2 !== null && event.sourceOrder?.[1] === localDeviceId2 && Object.hasOwn(event.fields, "other_pass_hash")) otherPassHash2 = text(event.fields.other_pass_hash) || null;
       continue;
     }
     if (event.task.startsWith(FOCUS_AREA_TASK_PREFIX)) {
@@ -2356,7 +2356,7 @@ function buildFocusAreas(state) {
 function readFocus(database, { localDeviceId: localDeviceId2 } = {}) {
   if (typeof localDeviceId2 !== "string") throw new TypeError(`readFocus needs the worker's sync device id ("" when cloud sync never started).`);
   const rows = database.prepare("SELECT * FROM work_state_entries WHERE list_name = ?").all(MY_FOCUS_LIST);
-  return buildFocusAreas(reduceWorkState(rows, { localDeviceId: localDeviceId2 }));
+  return buildFocusAreas(reduceWorkState(rows, { localDeviceId: localDeviceId2 }), { localDeviceId: localDeviceId2 });
 }
 var MY_FOCUS_LIST, OTHER_FOCUS_AREA_ID, FOCUS_AREA_TASK_PREFIX, PLACEMENT_TASK_PREFIX, FOCUS_AREA_STATUSES, FOCUS_AREA_SOURCES, PROPOSAL_SOURCES, PROPOSAL_KINDS, FOCUS_AREA_DECIDED_BY, PLACEMENT_PLACED_BY, isMyFocusList, text, rank, isPlaceableArea, isOwnerDismissedArea;
 var init_my_focus = __esm({
