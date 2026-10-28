@@ -231,9 +231,10 @@ export function applyGroupDecisions(stored, decisions, now = Date.now(), { proje
     const id = groupIdFor(decision.conversations[0]);
     // A decision may name the request's root itself: conversations from other roots may then join it, and
     // the group records that root. Without one, a request stays in one project root, members it already
-    // has included.
-    const explicitRoot = decision.projectRoot;
-    if (explicitRoot != null && (typeof explicitRoot !== 'string' || !explicitRoot.trim())) throw new TypeError(`${label}.projectRoot must be a non-empty string when given.`);
+    // has included. A group saved with a named root keeps that allowance when a later decision (a refresh
+    // answer, whose schema has no projectRoot) extends it.
+    if (decision.projectRoot != null && (typeof decision.projectRoot !== 'string' || !decision.projectRoot.trim())) throw new TypeError(`${label}.projectRoot must be a non-empty string when given.`);
+    const explicitRoot = decision.projectRoot ?? (next.groups[id]?.rootNamed ? next.groups[id].projectRoot : null);
     const allMembers = [...new Set([...decision.conversations, ...Object.entries(next.conversations).filter(([key, groupId]) => groupId === id && !decision.conversations.includes(key)).map(([key]) => key)])];
     const storedRoot = upgradedGroupRoot(next.groups[id]?.projectRoot, projectRoot(projectOf.get(next.groups[id]?.anchor)),
       allMembers.map((key) => projectRoot(projectOf.get(key))));
@@ -254,7 +255,7 @@ export function applyGroupDecisions(stored, decisions, now = Date.now(), { proje
       // A later decision can correct an earlier ignore; the viewer checks ignored first.
       if (next.ignored) delete next.ignored[key];
     }
-    next.groups[id] = { title: decision.title.trim(), anchor: decision.conversations[0], projectRoot: projectRootOfGroup, links, decidedAt: iso(now), anchorAsk: stored?.groups?.[id]?.anchor === decision.conversations[0] ? stored.groups[id].anchorAsk ?? null : null };
+    next.groups[id] = { title: decision.title.trim(), anchor: decision.conversations[0], projectRoot: projectRootOfGroup, ...(explicitRoot != null ? { rootNamed: true } : {}), links, decidedAt: iso(now), anchorAsk: stored?.groups?.[id]?.anchor === decision.conversations[0] ? stored.groups[id].anchorAsk ?? null : null };
   }
   next.ignored ??= {};
   for (const [index, ignored] of (decisions.ignored ?? []).entries()) {

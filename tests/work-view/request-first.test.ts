@@ -114,6 +114,11 @@ describe('requests stay inside one project root', () => {
     expect(joined.groups[groupIdFor(key('a'))].projectRoot).toBe('repo-one');
     // A later decision's root replaces the stored one; an empty or non-string root is refused.
     expect(applyGroupDecisions(joined, { groups: [{ ...decision, projectRoot: 'repo-two' }] }, NOW, { projectOf }).groups[groupIdFor(key('a'))].projectRoot).toBe('repo-two');
+    // A refresh answer cannot name a root, so a later conversation from the saved root still joins the group.
+    const grown = applyGroupDecisions(joined, { groups: [{ title: 'Cards', conversations: [key('a'), key('c')], links: link([key('a'), key('c')]) }] }, NOW, { projectOf: new Map([...projectOf, [key('c'), 'repo-one']]) });
+    expect(grown.conversations[key('c')]).toBe(groupIdFor(key('a')));
+    expect(grown.conversations[key('b')]).toBe(groupIdFor(key('a')));
+    expect(grown.groups[groupIdFor(key('a'))]).toMatchObject({ projectRoot: 'repo-one', rootNamed: true });
     expect(() => applyGroupDecisions(null, { groups: [{ ...decision, projectRoot: ' ' }] }, NOW, { projectOf })).toThrow(/projectRoot must be a non-empty string/);
     expect(() => applyGroupDecisions(null, { groups: [{ ...decision, projectRoot: 7 }] }, NOW, { projectOf })).toThrow(/projectRoot must be a non-empty string/);
     const dir = mkdtempSync(join(tmpdir(), 'request-first-'));

@@ -2153,8 +2153,8 @@ function applyGroupDecisions(stored, decisions, now = Date.now(), { projectOf = 
     const unsupported = decision.conversations.filter((key) => find(key) !== find(decision.conversations[0]));
     if (unsupported.length) throw new TypeError(`${label} joins ${unsupported.join(", ")} without evidence linking it to the anchor.`);
     const id = groupIdFor(decision.conversations[0]);
-    const explicitRoot = decision.projectRoot;
-    if (explicitRoot != null && (typeof explicitRoot !== "string" || !explicitRoot.trim())) throw new TypeError(`${label}.projectRoot must be a non-empty string when given.`);
+    if (decision.projectRoot != null && (typeof decision.projectRoot !== "string" || !decision.projectRoot.trim())) throw new TypeError(`${label}.projectRoot must be a non-empty string when given.`);
+    const explicitRoot = decision.projectRoot ?? (next.groups[id]?.rootNamed ? next.groups[id].projectRoot : null);
     const allMembers = [.../* @__PURE__ */ new Set([...decision.conversations, ...Object.entries(next.conversations).filter(([key, groupId]) => groupId === id && !decision.conversations.includes(key)).map(([key]) => key)])];
     const storedRoot = upgradedGroupRoot(
       next.groups[id]?.projectRoot,
@@ -2175,7 +2175,7 @@ function applyGroupDecisions(stored, decisions, now = Date.now(), { projectOf = 
       next.conversations[key] = id;
       if (next.ignored) delete next.ignored[key];
     }
-    next.groups[id] = { title: decision.title.trim(), anchor: decision.conversations[0], projectRoot: projectRootOfGroup, links, decidedAt: iso(now), anchorAsk: stored?.groups?.[id]?.anchor === decision.conversations[0] ? stored.groups[id].anchorAsk ?? null : null };
+    next.groups[id] = { title: decision.title.trim(), anchor: decision.conversations[0], projectRoot: projectRootOfGroup, ...explicitRoot != null ? { rootNamed: true } : {}, links, decidedAt: iso(now), anchorAsk: stored?.groups?.[id]?.anchor === decision.conversations[0] ? stored.groups[id].anchorAsk ?? null : null };
   }
   next.ignored ??= {};
   for (const [index, ignored] of (decisions.ignored ?? []).entries()) {
