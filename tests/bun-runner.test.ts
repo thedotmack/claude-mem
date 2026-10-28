@@ -58,10 +58,19 @@ describe('bun-runner.js findBun: DEP0190 regression guard (#1503)', () => {
   });
 
   it('uses a shell-free Windows where-bun lookup with hidden windows', () => {
-    const windowsCallMatch = source.match(/spawnSync\('where',\s*\['bun'\],\s*\{([^}]+)\}/);
+    const windowsCallMatch = source.match(/spawnSync\(whereExe,\s*\['bun'\],\s*\{([^}]+)\}/);
     expect(windowsCallMatch).not.toBeNull();
     expect(windowsCallMatch![1]).toContain('windowsHide: true');
     expect(windowsCallMatch![1]).not.toContain('shell');
+  });
+
+  it('runs the System32 where.exe and drops current-directory hits', () => {
+    // The binary itself must come from SystemRoot — a bare 'where' spawn can
+    // execute a planted where.exe from the project dir — and its results must
+    // exclude that same dir, or a planted bun.exe still wins.
+    expect(source).toContain("'System32'");
+    expect(source).toContain("'where.exe'");
+    expect(source).toContain('notInCwd');
   });
 
   it('uses no shell option for Unix which-bun lookup', () => {

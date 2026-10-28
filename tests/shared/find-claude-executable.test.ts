@@ -63,7 +63,9 @@ function installFakes(options: {
   }) as typeof ORIGINALS.execSync;
 
   _internals.execFileSync = ((path: string, args: string[]) => {
-    if (path === 'where.exe') {
+    // The source now invokes where.exe by its absolute System32 path, so a
+    // planted cwd copy can never be the binary that runs.
+    if (path === 'where.exe' || path.endsWith('where.exe')) {
       const name = args[0] ?? '';
       if (options.whereOutputs && name in options.whereOutputs) {
         return options.whereOutputs[name];

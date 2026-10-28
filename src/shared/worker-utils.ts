@@ -1,6 +1,6 @@
 import path from "path";
 import { randomUUID } from "crypto";
-import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync, readdirSync, statSync, unlinkSync } from "fs";
+import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync, readdirSync, realpathSync, statSync, unlinkSync } from "fs";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, defaultSessionInitRequestTimeoutMs, getTimeout, maxSessionInitRequestTimeoutMs } from "./hook-constants.js";
 import { readSseEvents } from "./sse-reader.js";
@@ -629,6 +629,25 @@ function defaultWorkerScriptSearchRoots(): WorkerScriptSearchRoots {
 }
 
 /**
+ * Trust check for the cwd worker-script candidate. A hook runs inside whatever
+ * project the user opened, so "the checkout's own plugin/scripts/worker-service.cjs
+ * plus its package.json version" is only safe when this very module lives
+ * under that checkout — i.e. the claude-mem repo itself is the cwd, not a
+ * cloned repo that happens to carry a same-named script and a version like
+ * 99.0.0 that would otherwise outrank the installed plugin.
+ */
+function isTrustedWorkerScriptCwd(cwd: string): boolean {
+  try {
+    const moduleDir = path.dirname(realpathSync(__filename));
+    const resolvedCwd = realpathSync(cwd);
+    const rel = path.relative(resolvedCwd, moduleDir);
+    return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Canonical worker-script resolver AND the single version oracle: the version
  * returned here is what hooks compare the live worker against
  * (checkVersionMatch) and what every spawner — hook lazy-spawn, MCP server,
@@ -660,10 +679,16 @@ export function resolveWorkerScript(
       scriptPath: candidateWorkerScriptPath(path.join(roots.marketplaceRoot, 'plugin')),
       version: readPackageVersion(path.join(roots.marketplaceRoot, 'package.json')),
     },
-    {
-      scriptPath: path.join(roots.cwd, 'plugin', 'scripts', 'worker-service.cjs'),
-      version: readPackageVersion(path.join(roots.cwd, 'package.json')),
-    },
+    // Untrusted-cwd guard: only when this module lives under the cwd root (the
+    // claude-mem repo is the project being worked on) may its versioned script
+    // compete. Otherwise an arbitrary checkout's plugin/scripts/worker-service.cjs
+    // could outrank the installed worker and execute under hook privileges.
+    ...(isTrustedWorkerScriptCwd(roots.cwd)
+      ? [{
+          scriptPath: path.join(roots.cwd, 'plugin', 'scripts', 'worker-service.cjs'),
+          version: readPackageVersion(path.join(roots.cwd, 'package.json')),
+        }]
+      : []),
   ];
 
   return selectWorkerScript(candidates);
