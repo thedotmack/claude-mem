@@ -583,28 +583,6 @@ export class WorkerService implements WorkerRef {
       SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_INGEST_MAX_BYTES,
     ));
 
-    this.workViewRoutes = new WorkViewRoutes({
-      getLocalDeviceId: () => this.dbManager.getCloudSync()?.status().deviceId ?? '',
-      // My Rules saves as work-state rows, so a rule change syncs like any other write.
-      appendWorkStateEntry: (entry) => {
-        this.dbManager.getSessionStore().appendWorkStateEntry(entry);
-        this.dbManager.getCloudSync()?.notify();
-      },
-      // The install funnel's Scan step stores typed prompts read from every agent's transcripts.
-      // Hook rows an agent wrote are kept out of goals, work and rules extraction.
-      setupScan: new SetupScan({
-        getStore: () => this.dbManager.getSessionStore(),
-        // Hosted setup does not probe or wait for an agent login.
-        saveAgentWrittenPromptIds: promptIds => writeJsonAtomic(path.join(DATA_DIR, 'work-view', AGENT_WRITTEN_PROMPTS_FILE), { promptIds, updatedAt: new Date().toISOString() }),
-      }),
-      // Finish Setup's history upload to CMEM Pro, with the setup token checkout saved.
-      historyImport: new HistoryImport({
-        openDatabase: () => new BunDatabase(DB_PATH, { readonly: true, create: false }),
-        origin: () => cmemProOrigin(),
-        token: () => SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_CLOUD_SYNC_TOKEN?.trim() || null,
-      }),
-    });
-    this.server.registerRoutes(this.workViewRoutes);
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
     const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this, this.completionHandler, this.codexAgent, this.openAICompatAgent);
     this.server.registerRoutes(sessionRoutes);
@@ -811,6 +789,33 @@ export class WorkerService implements WorkerRef {
 
       logger.info('WORKER', 'Initializing database manager...');
       await this.dbManager.initialize();
+      // Shutdown may have begun while initialization was pending.
+      if (this.isShuttingDown) return;
+
+      // Work View starts background refresh in its constructor. Keep every
+      // read-only handle behind successful schema checks and migrations (#5127).
+      this.workViewRoutes = new WorkViewRoutes({
+        getLocalDeviceId: () => this.dbManager.getCloudSync()?.status().deviceId ?? '',
+        // My Rules saves as work-state rows, so a rule change syncs like any other write.
+        appendWorkStateEntry: (entry) => {
+          this.dbManager.getSessionStore().appendWorkStateEntry(entry);
+          this.dbManager.getCloudSync()?.notify();
+        },
+        // The install funnel's Scan step stores typed prompts read from every agent's transcripts.
+        // Hook rows an agent wrote are kept out of goals, work and rules extraction.
+        setupScan: new SetupScan({
+          getStore: () => this.dbManager.getSessionStore(),
+          // Hosted setup does not probe or wait for an agent login.
+          saveAgentWrittenPromptIds: promptIds => writeJsonAtomic(path.join(DATA_DIR, 'work-view', AGENT_WRITTEN_PROMPTS_FILE), { promptIds, updatedAt: new Date().toISOString() }),
+        }),
+        // Finish Setup's history upload to CMEM Pro, with the setup token checkout saved.
+        historyImport: new HistoryImport({
+          openDatabase: () => new BunDatabase(DB_PATH, { readonly: true, create: false }),
+          origin: () => cmemProOrigin(),
+          token: () => SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_CLOUD_SYNC_TOKEN?.trim() || null,
+        }),
+      });
+      this.server.registerRoutes(this.workViewRoutes);
       this.initPhaseTracker.setInitPhase('db_ready');
 
       // Write hooks never wait on the worker: they spool one file per event.
@@ -1074,7 +1079,16 @@ export class WorkerService implements WorkerRef {
 
       return;
     } catch (error) {
-      logger.error('SYSTEM', 'Background initialization failed', {}, error instanceof Error ? error : undefined);
+      const err: NodeJS.ErrnoException = error instanceof Error ? error : new Error(String(error));
+      // Error payload stacks are debug-only in the logger. Keep startup
+      // diagnostics visible at the normal log level without dumping settings.
+      logger.error('SYSTEM', 'Background initialization failed', {
+        phase: this.initPhaseTracker.getInitPhase().phase,
+        databasePath: DB_PATH,
+        code: err.code,
+        errno: err.errno,
+        stack: err.stack,
+      }, err);
       // A throw after `ready` (transcript watcher, telemetry, …) leaves a worker
       // that serves requests; only a pre-ready failure is the wedged state that
       // /api/ready readers must recycle.
