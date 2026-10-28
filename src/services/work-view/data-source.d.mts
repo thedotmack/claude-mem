@@ -8,6 +8,8 @@ export interface WorkViewSnapshot extends Record<string, unknown> {
   revision: number | string;
   source: { connected: boolean; error?: string | null; [key: string]: unknown };
   humanRequests: WorkViewRequest[];
+  /** The judge's open suggestions (request-groups.mjs openSuggestions); each is also on its conversation's request as `suggestion`. */
+  suggestions?: import('./request-groups.mjs').RequestSuggestion[];
 }
 export class WorkStateSource {
   localDeviceId: string;

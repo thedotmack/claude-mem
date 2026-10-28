@@ -26,6 +26,7 @@ import { HostedIntent } from '../../../work-view/hosted-intent.js';
 import { cmemProOrigin } from '../../../../shared/cmem-gateway.js';
 import { runAgentTask } from '../../../agent-runner/run.js';
 import { ledgerSignature, readLedger } from '../../../work-view/request-groups.mjs';
+import { configuredJudge, decideSuggestion } from '../../../work-view/request-judge.mjs';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { validateBody } from '../middleware/validateBody.js';
@@ -112,6 +113,12 @@ const ruleBody = z.object({
 
 const markAgentFinishedBody = z.object({
   agentGroupId: z.string().min(1).max(2000),
+}).strict();
+
+/** The owner's answer to the judge's "Looks like part of <request>" on a card. */
+const suggestionBody = z.object({
+  conversationKey: z.string().min(1).max(2000),
+  action: z.enum(['join', 'not-this']),
 }).strict();
 
 /** A path as the owner reads it: `~/...` under the home folder, else absolute. */
@@ -211,7 +218,8 @@ export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTIN
     enabled: () => !setupActive() && (readSetupState(setupPath).status === 'complete' || !hasActiveSetupSession(setupPath))
       && SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true }).CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH !== 'false',
     runJob: async ({ needs, reason }) => {
-      const task = buildRefreshTask({ needs, reason, dataDir: DATA_DIR, ledgerDir, pluginRoot: getPackageRoot(), openDatabase });
+      // The judge is read from settings per run, so a provider change applies to the next refresh.
+      const task = buildRefreshTask({ needs, reason, dataDir: DATA_DIR, ledgerDir, pluginRoot: getPackageRoot(), openDatabase, judge: configuredJudge(settingsPath) });
       return { ...(await runAgentTask(task)), steps: task.steps };
     },
     log: (level, message, data) => (level === 'info' ? logger.info : logger.warn).call(logger, 'WORKER', message, data),
@@ -397,6 +405,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     app.post('/api/work-view/review', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(reviewBody), this.wrapHandler(this.review));
     app.post('/api/work-view/rules', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(ruleBody), this.wrapHandler(this.saveRule));
     app.post('/api/work-view/agents/mark-finished', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(markAgentFinishedBody), this.wrapHandler(this.markAgentFinished));
+    app.post('/api/work-view/suggestions', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(suggestionBody), this.wrapHandler(this.answerSuggestion));
     app.post('/api/work-view/rules/load-in-claude-code', workViewLoopbackOnly, requireWorkViewOrigin, this.wrapHandler(this.loadRulesInClaudeCode));
     app.get('/api/setup/scan', workViewLoopbackOnly, this.wrapHandler((_req, res) => {
       if (!this.setupScan) { res.status(503).json({ error: 'The prompt scan is unavailable on this worker.' }); return; }
@@ -692,6 +701,27 @@ export class WorkViewRoutes extends BaseRouteHandler {
       }),
     });
     logger.debug('HTTP', 'Agent marked finished by the owner');
+    const updated = this.snapshot();
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(updated);
+    this.publish(updated);
+  };
+
+  /**
+   * The owner's Join / Not this on a judge suggestion, written to the request ledger through the same
+   * decisions the request-progress skill's `apply` takes (request-judge.mjs decideSuggestion). The
+   * database is only read: projects and first asks for the decision.
+   */
+  private answerSuggestion = (req: Request, res: Response): void => {
+    const { conversationKey, action } = req.body as z.infer<typeof suggestionBody>;
+    if (!this.ledgerDir) { res.status(503).json({ error: 'Request suggestions are unavailable on this worker.' }); return; }
+    if (!existsSync(this.databasePath)) { res.status(503).json({ error: 'Local work is unavailable. Reconnect before answering a suggestion.' }); return; }
+    const database = new Database(this.databasePath, { readonly: true, create: false });
+    let outcome: ReturnType<typeof decideSuggestion>;
+    try { outcome = decideSuggestion({ dir: this.ledgerDir, database, conversationKey, action, now: Date.now() }); }
+    finally { database.close(); }
+    if (!outcome) { this.notFound(res, 'That suggestion is not waiting for an answer.'); return; }
+    logger.debug('HTTP', 'Request suggestion answered', { action, status: outcome.status });
     const updated = this.snapshot();
     res.setHeader('Cache-Control', 'no-store');
     res.json(updated);
