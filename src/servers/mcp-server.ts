@@ -62,7 +62,7 @@ import { ProgressiveSearchError, progressiveSearchToolError } from '../shared/pr
 import { formatMcpPayload, formatWorkerMcpResponse, mcpTextResult, workerFailureText, serverFailureText, type McpTextPurpose } from './mcp-text-format.js';
 import { getRequestCwd, runWithCwd } from './request-context.js';
 import { parseHttpArgs, startMcpHttpServer, type CwdResolver, type McpHttpOptions } from './mcp-http.js';
-import { MAX_MCP_ROOTS_ATTEMPTS, MCP_ROOTS_TIMEOUT_MS, resolveMcpProjectCwd, type McpCwdResolution } from './mcp-project-cwd.js';
+import { createStdioCwdResolver } from './mcp-project-cwd.js';
 import { buildWorkerOriginPolicy } from '../services/worker/http/origin-policy.js';
 
 /**
@@ -98,56 +98,6 @@ const mcpServerDir = (() => {
 // the fallback for installs without a marketplace copy.
 const WORKER_SCRIPT_PATH = resolveWorkerScriptPath() ?? resolve(mcpServerDir, 'worker-service.cjs');
 const MCP_PLUGIN_ROOT = resolve(mcpServerDir, '..');
-
-function createStdioCwdResolver(server: Server): () => Promise<string> {
-  let cached: McpCwdResolution | null = null;
-  let rootsAttempts = 0;
-  let rootsStale = true;
-  let loggedResolution: McpCwdResolution | null = null;
-  server.setNotificationHandler(RootsListChangedNotificationSchema, async () => {
-    rootsStale = true;
-    rootsAttempts = 0;
-  });
-
-  return async () => {
-    const supportsRoots = Boolean(server.getClientCapabilities()?.roots);
-    const shouldAskRoots = supportsRoots && rootsAttempts < MAX_MCP_ROOTS_ATTEMPTS
-      && (!cached || rootsStale || cached.source !== 'roots');
-    if (shouldAskRoots) {
-      rootsAttempts++;
-      let roots: Array<{ uri: string }> | undefined;
-      try {
-        roots = (await server.listRoots(undefined, { timeout: MCP_ROOTS_TIMEOUT_MS })).roots;
-      } catch (error) {
-        logger.warn('SYSTEM', 'MCP stdio roots/list failed; resolving the project from the available fallback', {
-          attempt: rootsAttempts,
-          maxAttempts: MAX_MCP_ROOTS_ATTEMPTS,
-        }, error instanceof Error ? error : new Error(String(error)));
-      }
-      cached = resolveMcpProjectCwd({
-        roots,
-        fallbackCwd: process.cwd(),
-        pwd: process.env.PWD,
-        pluginRoot: MCP_PLUGIN_ROOT,
-      });
-      rootsStale = false;
-    } else if (!cached || rootsStale) {
-      cached = resolveMcpProjectCwd({
-        fallbackCwd: process.cwd(),
-        pwd: process.env.PWD,
-        pluginRoot: MCP_PLUGIN_ROOT,
-      });
-      rootsStale = false;
-    }
-
-    if (cached && (!loggedResolution || loggedResolution.source !== cached.source || loggedResolution.cwd !== cached.cwd)) {
-      // Kept intentionally path-free: this records which source won, not a project path.
-      logger.info('SYSTEM', `MCP stdio working directory resolved from ${cached.source}`);
-      loggedResolution = cached;
-    }
-    return cached!.cwd;
-  };
-}
 
 function errorIfWorkerScriptMissing(): void {
   if (!mcpServerDirResolutionFailed) return;
@@ -1254,7 +1204,8 @@ function createMcpServer(getCwd?: CwdResolver): Server {
     }
   );
 
-  const resolveStdioCwd = getCwd ? null : createStdioCwdResolver(server);
+  const stdioCwd = getCwd ? null : createStdioCwdResolver({ peer: server, pluginRoot: MCP_PLUGIN_ROOT });
+  if (stdioCwd) server.setNotificationHandler(RootsListChangedNotificationSchema, async () => stdioCwd.markRootsStale());
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const advertisedTools = withoutUnjoinedTeamBrainTools(
@@ -1299,7 +1250,7 @@ function createMcpServer(getCwd?: CwdResolver): Server {
 
     try {
       const args = request.params.arguments || {};
-      const cwd = getCwd ? getCwd(extra) : await resolveStdioCwd!();
+      const cwd = getCwd ? getCwd(extra) : await stdioCwd!.resolve();
       const isAntigravity = normalizePlatformSource(server.getClientVersion()?.name) === 'antigravity-cli';
       const context: McpToolCallContext = isAntigravity && tool.name === 'work_state_write'
         ? { mcpToolUse: { contentSessionId: mcpContentSessionId, toolUseId: randomUUID(), platformSource: 'antigravity-cli' } }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import express from 'express';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -129,6 +129,24 @@ describe('CLAUDE_MEM_WORK_STATE_ENABLED over stdio (#4606)', () => {
     } finally {
       rmSync(pwdProject, { recursive: true, force: true });
       rmSync(clientProject, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it('a client without the roots capability keeps main behavior: the launch directory, and no Antigravity tool-use record', async () => {
+    const project = realpathSync(mkdtempSync(join(tmpdir(), 'stdio-launch-project-')));
+    const stalePwd = mkdtempSync(join(tmpdir(), 'stdio-stale-pwd-'));
+    try {
+      await withServer({}, async (client, _workStateHits, workStateWrites) => {
+        await client.callTool(workStateCalls[0]);
+        expect(workStateWrites()).toEqual([{
+          cwd: project,
+          list: 'switch-fixture',
+          fields: { task: 'Check the switch', status: 'doing' },
+        }]);
+      }, { cwd: project, pwd: stalePwd });
+    } finally {
+      rmSync(project, { recursive: true, force: true });
+      rmSync(stalePwd, { recursive: true, force: true });
     }
   }, 20_000);
 
