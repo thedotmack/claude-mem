@@ -19,6 +19,7 @@ import type { UsableAgentId } from '../agent-runner/detect.js';
 import { runCommand } from '../agent-runner/detect.js';
 import { writeOwnerPromptsFile, type OwnerPromptsFile } from '../prompt-import/owner-prompts-file.js';
 import { resolvePythonCommand } from './python.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { FOCUS_BATCH, readGoals, readLedger, runCli, validateFocusAnswer, validateGroupingAnswer, type FocusInput, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
 import { FOCUS_AUTO_PLACE_THRESHOLD, judgeFocusBatch, placesAlone, type FocusJudge, type FocusJudgement } from './focus-judge.mjs';
 import { isWithdrawnArea, PROPOSAL_KINDS, readFocusAreas, type FocusArea, type RouterFocusBody } from './my-focus.mjs';
@@ -32,6 +33,19 @@ const PLUGIN_MCP_PREFIX = 'mcp__plugin_claude-mem_mcp-search__';
 const REVIEW_BATCH = 8;
 /** save_goals.py's FAILED_AFTER_WRITING_EXIT: it failed after its first write, so the goals step must not ask again. */
 const SAVE_GOALS_FAILED_AFTER_WRITING_EXIT = 3;
+/**
+ * Review batches running at the same time. Each batch is one agent process, so this follows the
+ * owner's cap on concurrent agent subprocesses, CLAUDE_MEM_MAX_CONCURRENT_AGENTS (default 2), rather
+ * than a number of its own. Read on every run, so raising the setting takes effect without a restart.
+ */
+export function reviewConcurrency(dataDir: string): number {
+  // A 0, negative or non-numeric value would start no review lanes and skip every review without a failure,
+  // so each source is used only when it is a positive count: settings file, then environment, then built-in default.
+  const positive = (value: string | undefined) => { const count = parseInt(value ?? '', 10); return Number.isFinite(count) && count >= 1 ? count : null; };
+  return positive(SettingsDefaultsManager.loadFromFile(join(dataDir, 'settings.json'), true, { readOnly: true }).CLAUDE_MEM_MAX_CONCURRENT_AGENTS)
+    ?? positive(SettingsDefaultsManager.get('CLAUDE_MEM_MAX_CONCURRENT_AGENTS'))
+    ?? parseInt(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_MAX_CONCURRENT_AGENTS, 10);
+}
 
 /** The model each step runs on. Small, fast models match conversations and goals; stronger ones judge
  * progress, write the story and pick verbatim quotes. Codex's careful steps use its CLI default model.
@@ -386,10 +400,21 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
         }
         if (shows.length) throw new Error(`reviews: ${refusals.join('; ').slice(0, 500)}`);
       };
-      // Batches are independent, so they run at once; every batch finishes (and saves) before a failure is reported.
+      // Batches are independent, so a few run at once; every batch finishes (and saves) before a failure is reported.
+      // Not all at once: each batch is its own agent process, and a large backlog (Oct 25: ~1,100 due groups,
+      // 138 batches) started every one of them in the same millisecond.
       const batches: Array<Array<{ groupId: string }>> = [];
       for (let index = 0; index < due.length; index += REVIEW_BATCH) batches.push(due.slice(index, index + REVIEW_BATCH));
-      const failed = (await Promise.allSettled(batches.map(batch => timed('review', () => reviewBatch(batch), { groups: batch.length })))).filter(outcome => outcome.status === 'rejected');
+      const outcomes: PromiseSettledResult<void>[] = [];
+      let next = 0;
+      const lane = async () => {
+        while (next < batches.length) {
+          const batch = batches[next++];
+          outcomes.push(...await Promise.allSettled([timed('review', () => reviewBatch(batch), { groups: batch.length })]));
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(reviewConcurrency(dataDir), batches.length) }, lane));
+      const failed = outcomes.filter(outcome => outcome.status === 'rejected');
       if (failed.length) throw (failed[0] as PromiseRejectedResult).reason;
       if (reviewed) done.push(`${reviewed} requests reviewed`);
 

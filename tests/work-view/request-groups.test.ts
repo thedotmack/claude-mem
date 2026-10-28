@@ -102,6 +102,17 @@ describe('overall requests and progress reviews', () => {
   expect(() => validateProgress({ ...base, outcome: { changes: [{ what: 'x' }] } }, groups)).toThrow(/why/);
 });
 
+  it('a review citing one piece of evidence as a plain string is kept, not thrown (Oct 25)', () => {
+  const groups = { g_000000000001: { title: 'Cards' } };
+  const base = { groupId: 'g_000000000001', state: 'in-progress', percent: 40, summary: 'Cards under way.', reviewBasis: { checkedThrough: '2026-10-04T00:00:00Z', conversations: [key('a')] } };
+  const recorded = validateProgress({ ...base, evidence: 'obs 101', milestones: [{ at: null, text: 'First card', evidence: 'PR #4845' }], outcome: { usage: { level: 'in-use', text: 'Opened daily.', evidence: 'obs 120' } } }, groups);
+  expect(recorded.evidence).toEqual(['obs 101']);
+  expect(recorded.milestones[0].evidence).toEqual(['PR #4845']);
+  expect(recorded.outcome.usage.evidence).toEqual(['obs 120']);
+  expect(validateProgress({ ...base, evidence: '  ' }, groups).evidence).toEqual([]);
+  expect(validateProgress(base, groups).evidence).toEqual([]);
+});
+
   it('CLI round trip: apply groups, see them due, record a review, then nothing is due', () => {
   const dir = ledgerDir();
   try {

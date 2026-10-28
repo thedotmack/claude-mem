@@ -275,7 +275,9 @@ function boundedText(value, max, label, optional = false) {
   return value.trim();
 }
 
-const evidenceList = (value) => (Array.isArray(value) ? value : []).map(String).slice(0, 8);
+// Models sometimes answer one citation as a plain string instead of a list (Oct 25: a review's
+// `evidence: "obs 101"` threw `.map is not a function` and failed the whole refresh run).
+const evidenceList = (value, limit = 8) => (Array.isArray(value) ? value : typeof value === 'string' && value.trim() ? [value] : []).map(String).slice(0, limit);
 
 // How released work landed: where it shipped, whether anyone uses it, whether
 // it was worth it, what it broke, and why each change was made. Every judgment
@@ -330,7 +332,7 @@ export function validateProgress(entry, knownGroups) {
     narrative: boundedText(entry.narrative, 1200, 'narrative', true),
     milestones: milestones.map((milestone, index) => {
       if (!isIsoOrNull(milestone.at ?? null)) throw new TypeError(`milestones[${index}].at must be an ISO date or null.`);
-      return { at: milestone.at ?? null, text: boundedText(milestone.text, 200, `milestones[${index}].text`), evidence: (milestone.evidence ?? []).map(String).slice(0, 6) };
+      return { at: milestone.at ?? null, text: boundedText(milestone.text, 200, `milestones[${index}].text`), evidence: evidenceList(milestone.evidence, 6) };
     }),
     preferences: preferences.map((preference, index) => {
       if (!PREFERENCE_KINDS.includes(preference.kind)) throw new TypeError(`preferences[${index}].kind must be one of ${PREFERENCE_KINDS.join(', ')}.`);
@@ -338,7 +340,7 @@ export function validateProgress(entry, knownGroups) {
       return { kind: preference.kind, preference: boundedText(preference.preference, 200, `preferences[${index}].preference`), quote: boundedText(preference.quote, 300, `preferences[${index}].quote`), at: preference.at ?? null };
     }),
     outcome: validateOutcome(entry.outcome),
-    evidence: (entry.evidence ?? []).map(String).slice(0, 20),
+    evidence: evidenceList(entry.evidence, 20),
     // What the reviewer actually saw: later activity or membership changes make it due again.
     reviewedThrough: new Date(Date.parse(basis.checkedThrough)).toISOString(),
     reviewedConversations: [...new Set(basis.conversations)].sort(),
