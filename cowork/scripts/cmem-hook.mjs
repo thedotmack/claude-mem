@@ -552,7 +552,7 @@ function stripRemainingImageBlocks(root) {
     for (const key of Object.keys(node)) {
       const value = node[key];
       if (typeof value === 'string') {
-        if (value.includes('data:image')) node[key] = value.replace(DATA_URL_ANYWHERE_RE, MEDIA_STRIPPED);
+        node[key] = scrubDataUrls(value);
         continue;
       }
       const block = recognizeImageBlock(value);
@@ -562,16 +562,20 @@ function stripRemainingImageBlocks(root) {
   }
 }
 
+function scrubDataUrls(text) {
+  return text.includes('data:image') ? text.replace(DATA_URL_ANYWHERE_RE, MEDIA_STRIPPED) : text;
+}
+
 function extractImages(raw) {
   const images = [];
+  if (typeof raw === 'string') return { response: scrubDataUrls(raw), images };
   if (!raw || typeof raw !== 'object') return { response: raw, images };
   let response;
   try { response = structuredClone(raw); } catch { return { response: scrubImageBytes(raw), images }; }
   let visitedNodes = 0;
-  let walkLimitReached = false;
   const visit = (node, pathSegments) => {
     if (!node || typeof node !== 'object') return node;
-    if (++visitedNodes > MEDIA_WALK_MAX_NODES || pathSegments.length > MEDIA_WALK_MAX_DEPTH) { walkLimitReached = true; return node; }
+    if (++visitedNodes > MEDIA_WALK_MAX_NODES || pathSegments.length > MEDIA_WALK_MAX_DEPTH) return node;
     const block = recognizeImageBlock(node);
     if (block) {
       const pointer = '/' + pathSegments.join('/');
@@ -593,10 +597,11 @@ function extractImages(raw) {
   };
   // Same pointer root as the local worker's ingress scanner (src/shared/media-ingress.ts).
   response = visit(response, ['tool_response']);
-  // Past the bounds the unvisited remainder may still hold image bytes: strip
-  // every remaining recognized block (the images found so far already have
-  // descriptors), with an iterative linear pass that has no depth limit.
-  if (walkLimitReached) stripRemainingImageBlocks(response);
+  // Data URLs in string fields are never visited as blocks, and past the
+  // bounds the unvisited remainder may still hold image blocks: strip every
+  // remaining one (the images found so far already have descriptors) with an
+  // iterative linear pass that has no depth limit.
+  stripRemainingImageBlocks(response);
   return { response, images };
 }
 
@@ -724,6 +729,22 @@ async function uploadImage(image, toolUseId, deadline) {
 }
 
 /**
+ * Labels of extracted images whose descriptor sits inside a privacy-tagged
+ * region, judged on the same serialized text clean() strips (STRIP_TAGS_RE).
+ */
+function labelsInsidePrivateRegions(response, images) {
+  const hidden = new Set();
+  if (!images.length) return hidden;
+  const serialized = typeof response === 'string' ? response : JSON.stringify(response);
+  const stripped = serialized.replace(STRIP_TAGS_RE, '');
+  for (const image of images) {
+    const labelPattern = new RegExp(`"${image.label}"`, 'g');
+    if ((stripped.match(labelPattern)?.length ?? 0) < (serialized.match(labelPattern)?.length ?? 0)) hidden.add(image.label);
+  }
+  return hidden;
+}
+
+/**
  * Upload each recognized image BEFORE the first ingest staging. A failed image
  * keeps a byte-free `upload_failed` descriptor; the envelope is still staged
  * exactly once, text-only for that image. Pro's ingest dedupe ignores any later
@@ -736,9 +757,13 @@ async function captureToolResponseMedia(input, rawResponse) {
   // Without a platform event id there is no stable identity: text-only, but
   // the recognized bytes are still removed.
   const hasEventIdentity = typeof toolUseId === 'string' && EVENT_ID_RE.test(toolUseId);
+  const privateLabels = labelsInsidePrivateRegions(response, images);
   const deadline = Date.now() + MEDIA_UPLOAD_BUDGET_MS;
   for (const image of images) {
-    if (!hasEventIdentity) image.descriptor.cmem_media = 'unsupported';
+    // clean() drops this image's descriptor with its private region; its
+    // pixels are never uploaded either.
+    if (privateLabels.has(image.label)) image.descriptor.cmem_media = 'unsupported';
+    else if (!hasEventIdentity) image.descriptor.cmem_media = 'unsupported';
     else if (!(await uploadImage(image, toolUseId, deadline))) image.descriptor.cmem_media = 'upload_failed';
     image.bytes = null;
   }
