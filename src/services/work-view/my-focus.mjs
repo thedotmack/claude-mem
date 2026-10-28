@@ -83,8 +83,10 @@ export const newFocusAreaId = () => `fa_${randomBytes(6).toString('hex')}`;
  * - matches a saved area: no new area. A suggestion nobody has decided gets the mined rank, and the mined
  *   goal when it has none (hosted setup saves areas without one); its name and an existing goal are never
  *   changed. An area the owner kept, renamed, merged, dismissed or finished is left as it is (the reducer
- *   would ignore a system row for it anyway). A match to an area the owner merged away answers the area it
- *   was merged into, so the owner-goals items follow the merge.
+ *   would ignore a system row for it anyway). A match to an area the owner merged away answers that area's
+ *   own id, not the area it was merged into: readers follow the merge (the viewer's resolveFocusAreaId), and
+ *   the next save, which passes each item's saved id back as `matches`, still has one mined area per saved
+ *   area. Answering the merge target would give two items the same id and refuse that next save.
  * A match to an id that is not saved, or two mined areas matching one saved area, is refused: the answer
  * is wrong, and guessing which area was meant would file the owner's words under the wrong one.
  * Returns the rows to write and each mined area's id, in the mined order.
@@ -116,13 +118,7 @@ export function ownerGoalsAreaRows(minedAreas, savedAreas, newId = newFocusAreaI
     if (saved.decidedBy !== 'owner' && saved.status === 'suggested' && (saved.priorityRank !== mined.rank || fillGoal)) {
       rows.push(focusAreaRowFields({ ...saved, priorityRank: mined.rank, goal: fillGoal ? mined.goal : saved.goal, decidedBy: 'system' }));
     }
-    let target = saved;
-    const seen = new Set([target.focusAreaId]);
-    while (target.mergedInto && savedById.has(target.mergedInto) && !seen.has(target.mergedInto)) {
-      target = savedById.get(target.mergedInto);
-      seen.add(target.focusAreaId);
-    }
-    focusAreaIds.push(target.focusAreaId);
+    focusAreaIds.push(saved.focusAreaId);
   }
   return { rows, focusAreaIds };
 }

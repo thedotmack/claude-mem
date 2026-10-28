@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
-import { focusAreaLabel, resolveFocusAreaId } from './to-focus-model.ts'
+import { focusAreaLabel, resolveFocusAreaId, suggestionEditDecision } from './to-focus-model.ts'
 import { toWorkModel } from './to-work-model.ts'
 import type { WorkViewFocusArea, WorkViewGoalItem, WorkViewGoalList, WorkViewHumanRequest, WorkViewSnapshot } from './work-view-api-types.ts'
 
@@ -109,4 +109,10 @@ test('an older worker with no focusAreas: no areas, and every request reads "Sor
   const model = toWorkModel({ ...baseSnapshot, humanRequests: [placed('r1', 'fa_viewer')] }, now)
   assert.deepEqual(model.focusAreas, [])
   assert.equal(model.requests[0].focusAreaId, undefined)
+})
+
+test('a Suggested card owns the Undo for a merge only; a rename or a new goal goes to the change bar, with Undo', () => {
+  assert.equal(suggestionEditDecision({ action: 'merge', focusAreaId: 'fa_old', intoFocusAreaId: 'fa_ship' }), 'merged')
+  assert.equal(suggestionEditDecision({ action: 'rename', focusAreaId: 'fa_old', name: 'Shipping' }), null)
+  assert.equal(suggestionEditDecision({ action: 'edit-goal', focusAreaId: 'fa_old', goal: 'Ship weekly.' }), null)
 })

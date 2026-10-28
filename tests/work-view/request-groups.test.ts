@@ -425,6 +425,28 @@ describe('overall requests and progress reviews', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+  it('the Other pass runs again when a request in Other changes and is placed back in Other', async () => {
+  const dir = ledgerDir();
+  try {
+    const database = fixtureDatabase();
+    const focus = focusFixture(database);
+    const { run, write } = cliRunner(dir, database, focus.save);
+    run(['apply', write('d.json', { groups: ['a', 'b'].map((session) => ({ title: `Request ${session}`, conversations: [key(session)] })) })]);
+    await run(['record-focus', write('f.json', { placements: ['a', 'b'].map((session) => ({ anchor: key(session), focusAreaId: 'other', evidence: 'Fits no area.' })), proposals: [] })]);
+    await run(['record-focus', '--other', write('o.json', { placements: [], proposals: [] })]);
+    expect(run(['focus-input', '--other']).due).toBe(false);
+    // Request a changes: the placing step looks at it again and leaves it in Other. The same two requests are in
+    // Other, but a holds something the last proposal pass never saw.
+    run(['apply', write('d2.json', { groups: [{ title: 'Request a, now with pricing', conversations: [key('a')] }] })]);
+    expect(run(['focus-input']).requests.map((request: any) => request.anchor)).toEqual([key('a')]);
+    await run(['record-focus', write('f2.json', { placements: [{ anchor: key('a'), focusAreaId: 'other', evidence: 'Still fits no area.' }], proposals: [] })]);
+    expect(run(['focus-input', '--other']).due).toBe(true);
+    expect(refreshNeeds({ dir, database, now: NOW, localDeviceId: '' }).otherChanged).toBe(true);
+    await run(['record-focus', '--other', write('o2.json', { placements: [], proposals: [] })]);
+    expect(run(['focus-input', '--other']).due).toBe(false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
   it('a re-review that adds an owner preference, a ship date fix or a regression reaches the story, at the same state and percent', () => {
   const dir = ledgerDir();
   try {

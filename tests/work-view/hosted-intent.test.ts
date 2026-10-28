@@ -92,6 +92,26 @@ describe('hosted setup extraction', () => {
     expect(view.goals.areas[0]).toMatchObject({ title: 'Build everything', focusAreaId: null });
   });
 
+  it('saves a priority whose title reuses a nav word, defers only its focus area, and records why on the item', async () => {
+    const result = answer();
+    const [first] = result.goals.goals.priorities;
+    result.goals.goals.priorities = [{ ...first, rank: 1, title: 'Ship the My Work viewer' }, { ...first, rank: 2 }];
+    const { run, databasePath, dir } = fixture((async () => Response.json(result)) as typeof fetch);
+    await run.run(prompts, true);
+    expect(run.state()).toMatchObject({ state: 'ok', error: null });
+    const source = new WorkStateSource({ databasePath, ledgerDir: join(dir, 'work-view') });
+    cleanup.push(() => source.close());
+    const view = source.read().agentView;
+    expect(view.focusAreas.map((area: { name: string }) => area.name)).toEqual(['Build everything']);
+    expect(view.goals.areas.map((item: { title: string; focusAreaId: string | null }) => [item.title, item.focusAreaId]))
+      .toEqual([['Ship the My Work viewer', null], ['Build everything', view.focusAreas[0].focusAreaId]]);
+    const db = new Database(databasePath, { readonly: true });
+    const fieldsOf = (task: string) => JSON.parse((db.prepare('SELECT fields FROM work_state_entries WHERE list_name = ? AND fields LIKE ? ORDER BY id DESC').get('owner-goals', `%"task":"${task}"%`) as { fields: string }).fields);
+    expect(fieldsOf('Focus area: Ship the My Work viewer').focus_area_deferred).toBe('Not suggested in My Focus: "Ship the My Work viewer" reuses the nav word "my work". The next local refresh names this area.');
+    expect(fieldsOf('Focus area: Build everything').focus_area_deferred).toBeNull();
+    db.close();
+  });
+
   it('unchecked still uploads and saves the full result', async () => {
     let flag: boolean | undefined;
     const { run } = fixture((async (_url, init) => {

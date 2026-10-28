@@ -523,8 +523,11 @@ function routerOther(ledger, focus, queued) {
   });
 }
 
-/** Which Other requests a proposal pass looked at; null when Other holds none. */
-const otherPassHash = (anchors) => anchors.length ? createHash('sha256').update(JSON.stringify([...anchors].sort())).digest('hex').slice(0, 16) : null;
+/** Which Other requests a proposal pass looked at, and what each one held then (its focusBasis), so a request that
+ * gained conversations or a new ask and stayed in Other is looked at again; null when Other holds none. */
+const otherPassHash = (ledger, groupIds) => groupIds.length
+  ? createHash('sha256').update(JSON.stringify(groupIds.map((groupId) => [ledger.groups.groups[groupId].anchor, focusBasis(ledger, groupId)]).sort())).digest('hex').slice(0, 16)
+  : null;
 
 const focusAreaRecord = (area) => ({ focusAreaId: area.focusAreaId, name: area.name, goal: area.goal, about: area.about, status: area.status });
 
@@ -544,7 +547,7 @@ export function focusInput(ledger, focus, localDeviceId, database, { limit = FOC
  * (on any device: the hash is a synced my-focus row) already looked at exactly these requests. */
 export function otherInput(ledger, focus, localDeviceId, database) {
   const other = routerOther(ledger, focus, new Set(focusDue(ledger, focus, localDeviceId)));
-  const hash = otherPassHash(other.map((groupId) => ledger.groups.groups[groupId].anchor));
+  const hash = otherPassHash(ledger, other);
   return {
     areas: focus.focusAreas.filter(isPlaceableArea).map(focusAreaRecord),
     dismissed: focus.focusAreas.filter(isOwnerDismissedArea).map(focusAreaRecord),
@@ -619,7 +622,7 @@ export function validateFocusAnswer(answer, input, ledger, { other = false } = {
       anchorConversationKey: anchor, focusAreaId, basis: focusBasis(ledger, listed.get(anchor).groupId), evidence,
     })),
     proposals,
-    ...(other ? { otherPassHash: otherPassHash([...listed.keys()].filter((anchor) => !held.has(anchor))) } : {}),
+    ...(other ? { otherPassHash: otherPassHash(ledger, [...listed.keys()].filter((anchor) => !held.has(anchor)).map((anchor) => listed.get(anchor).groupId)) } : {}),
   };
 }
 
@@ -640,7 +643,7 @@ export function refreshNeeds({ dir = LEDGER_DIR, database, now = Date.now(), day
   const goalsStale = !Number.isFinite(generated) || now - generated > GOALS_STALE_MS;
   const focus = readFocus(database, { localDeviceId });
   const queued = focusDue(ledger, focus, localDeviceId);
-  const otherHash = otherPassHash(routerOther(ledger, focus, new Set(queued)).map((groupId) => ledger.groups.groups[groupId].anchor));
+  const otherHash = otherPassHash(ledger, routerOther(ledger, focus, new Set(queued)));
   const otherChanged = otherHash !== null && otherHash !== focus.otherPassHash;
   return { due: due.length, ungrouped, goalsStale, unplaced: queued.length, otherChanged, needed: Boolean(due.length || ungrouped || goalsStale || queued.length || otherChanged) };
 }

@@ -216,13 +216,17 @@ describe('ownerGoalsAreaRows', () => {
     expect(ownerGoalsAreaRows([mined('fa_hosted')], kept).rows).toEqual([]);
   });
 
-  it('a match to an area the owner merged away answers the area it was merged into', () => {
+  it('a match to an area the owner merged away answers that area\'s own id, so the next unchanged save is still accepted', () => {
     const areas = saved([
       { fields: area('fa_target', { status: 'kept', decidedBy: 'owner' }), at: 1000 },
       { fields: area('fa_middle', { mergedInto: 'fa_target', decidedBy: 'owner' }), at: 1000 },
       { fields: area('fa_old', { mergedInto: 'fa_middle', decidedBy: 'owner' }), at: 1000 },
     ]);
-    expect(ownerGoalsAreaRows([mined('fa_old')], areas)).toEqual({ rows: [], focusAreaIds: ['fa_target'] });
+    // The owner merged fa_old into fa_target (through fa_middle). Two mined items, one per saved area.
+    const first = ownerGoalsAreaRows([mined('fa_old'), mined('fa_target', { name: 'Target' })], areas);
+    expect(first).toEqual({ rows: [], focusAreaIds: ['fa_old', 'fa_target'] });
+    // The next save passes each item's saved id back as `matches` (refresh-task goalsJson): still one per saved area.
+    expect(ownerGoalsAreaRows(first.focusAreaIds.map((matches) => mined(matches)), areas).focusAreaIds).toEqual(['fa_old', 'fa_target']);
   });
   it('refuses a new mined area named like a nav item, with the rule the seed and rename use', () => {
     expect(() => ownerGoalsAreaRows([mined(null, { name: 'Other things' })], [], () => 'fa_new')).toThrow(/focus_areas\[0\] is named "Other things", which reuses the nav word "other"/);

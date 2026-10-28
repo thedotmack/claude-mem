@@ -1,18 +1,19 @@
 // Suggested focus areas: the decision queue from My Rules (DecisionQueue / SuggestionCard), with Keep, Rename, Merge
-// and Dismiss. A decided card stays (with Undo, through restore-suggestion) until you leave the page.
+// and Dismiss. A decided card stays (with Undo, through restore-suggestion) until you leave the page; a rename leaves
+// the card undecided and shows in the change bar, with Undo back to the old name.
 import { useMemo, useState } from 'react'
 import { CheckIcon, ChevronDownIcon, MergeIcon, PencilIcon, XIcon } from 'lucide-react'
 import { Confirmation, ConfirmationAccepted, ConfirmationAction, ConfirmationActions, ConfirmationRejected, ConfirmationRequest, ConfirmationTitle, type ConfirmationProps } from '@/components/ai-elements/confirmation'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { StateBadge } from '@/components/bits'
-import { AreaEditDialog, useFocusChanges, type AreaEdit } from '@/components/focus-changes'
+import { AreaEditDialog, FocusChangeBar, useFocusChanges, type AreaEdit } from '@/components/focus-changes'
 import { Quotes } from '@/components/focus-header'
 import { cn } from '@/lib/utils'
 import { plural } from '@/lib/words'
 import { Req } from '@/spec/req'
 import { useWorkModel, type FocusArea, type Request } from '@/data'
-import { resolveFocusAreaId } from '@/live/to-focus-model'
+import { resolveFocusAreaId, suggestionEditDecision } from '@/live/to-focus-model'
 
 type Decision = 'kept' | 'merged' | 'dismissed'
 /** Why the system suggested an area, when it recorded no evidence of its own. */
@@ -111,7 +112,7 @@ export function SuggestedAreas({ onOpenFocus }: { onOpenFocus: (focusAreaId: str
           </div>
           <p className="text-sm text-muted-foreground">claude-mem suggests areas from your prompts and your requests. Keep the ones you’d ask for things inside of. A refresh never changes an area you decided.</p>
         </div>
-        {changes.error && <p role="alert" className="border-l-2 border-attention-border py-1 pl-3 text-xs text-attention-foreground">{changes.error}</p>}
+        <FocusChangeBar changes={changes} />
         {suggestions.length === 0 ? (
           <Req ids={['R12.1']}>
             <p className="text-sm text-muted-foreground">Nothing waiting. New suggestions show up here after the next refresh.</p>
@@ -125,7 +126,8 @@ export function SuggestedAreas({ onOpenFocus }: { onOpenFocus: (focusAreaId: str
             ))}
           </div>
         )}
-        <AreaEditDialog edit={edit} changes={changes} onClose={() => setEdit(null)} onSaved={(change) => { if (change.action === 'merge' && change.focusAreaId) setDecisions((previous) => ({ ...previous, [change.focusAreaId!]: 'merged' })) }} />
+        <AreaEditDialog edit={edit} changes={changes} onClose={() => setEdit(null)} ownUndo={(change) => suggestionEditDecision(change) !== null}
+          onSaved={(change) => { const decision = suggestionEditDecision(change); if (decision && change.focusAreaId) setDecisions((previous) => ({ ...previous, [change.focusAreaId!]: decision })) }} />
       </section>
     </Req>
   )

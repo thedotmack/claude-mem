@@ -1,7 +1,7 @@
 // My Focus from the snapshot: the my-focus areas (focusAreas), each request's placement (humanRequests[].focusAreaId),
 // and the owner-goals words behind each area and ask. Pure, so `node --test` can load it; nothing is re-ranked by
 // guesswork: the owner's order wins, then the suggested priority, the same order the worker sorts by (my-focus.mjs).
-import { OTHER_FOCUS_AREA_ID, type FocusArea, type FocusAsk, type Quote } from '../data.ts'
+import { OTHER_FOCUS_AREA_ID, type FocusArea, type FocusAsk, type FocusChange, type Quote } from '../data.ts'
 import type { WorkViewFocusArea } from './work-view-api-types.ts'
 
 /** One owner-goals item (an area or an ask), already read by to-work-model's toGoalItem. */
@@ -42,6 +42,11 @@ export function resolveFocusAreaId(focusAreaId: string | null | undefined, areas
   }
   return area && !area.mergedInto && area.status !== 'dismissed' ? area.id : null
 }
+
+/** What a Suggested card shows for an edit saved from its Rename / Merge dialog. A merge decides the suggestion: the card
+ * says "Merged" and has its own Undo. A rename or a new goal leaves it undecided, so the shared change bar shows it,
+ * with Undo back to the old name or goal. */
+export const suggestionEditDecision = (change: FocusChange): 'merged' | null => change.action === 'merge' ? 'merged' : null
 
 /** What an area chip reads: the area's name, "Other", or "Sorting…" when the request has no placement yet. */
 export function focusAreaLabel(focusAreaId: string | undefined, areas: readonly FocusArea[]): string {

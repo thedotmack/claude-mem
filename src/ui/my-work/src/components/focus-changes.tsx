@@ -121,8 +121,11 @@ export function FocusChangeBar({ changes }: { changes: FocusChanges }) {
 
 export type AreaEdit = { kind: 'rename' | 'edit-goal' | 'merge'; area: FocusArea }
 
-/** Rename, edit the goal, or choose the area to merge into. One dialog; the worker refuses what it cannot save. */
-export function AreaEditDialog({ edit, changes, onClose, onSaved }: { edit: AreaEdit | null; changes: FocusChanges; onClose: () => void; onSaved?: (change: FocusChange) => void }) {
+/** Rename, edit the goal, or choose the area to merge into. One dialog; the worker refuses what it cannot save.
+ * `ownUndo` says which changes the screen shows its own Undo for; every other change goes to the shared change bar. */
+export function AreaEditDialog({ edit, changes, onClose, onSaved, ownUndo }: {
+  edit: AreaEdit | null; changes: FocusChanges; onClose: () => void; onSaved?: (change: FocusChange) => void; ownUndo?: (change: FocusChange) => boolean
+}) {
   const { focusAreas } = useWorkModel()
   const [text, setText] = useState('')
   const [into, setInto] = useState('')
@@ -137,7 +140,7 @@ export function AreaEditDialog({ edit, changes, onClose, onSaved }: { edit: Area
   const navWord = edit.kind === 'rename' ? navWordIn(text) : null
   const change: FocusChange = edit.kind === 'merge' ? { action: 'merge', focusAreaId: edit.area.id, intoFocusAreaId: into }
     : edit.kind === 'rename' ? { action: 'rename', focusAreaId: edit.area.id, name: text } : { action: 'edit-goal', focusAreaId: edit.area.id, goal: text }
-  const submit = async () => { if (await changes.apply(change, { record: !onSaved })) { onSaved?.(change); onClose() } }
+  const submit = async () => { if (await changes.apply(change, { record: !ownUndo?.(change) })) { onSaved?.(change); onClose() } }
   const title = edit.kind === 'rename' ? `Rename “${edit.area.name}”` : edit.kind === 'edit-goal' ? `Goal for “${edit.area.name}”` : `Merge “${edit.area.name}” into…`
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>

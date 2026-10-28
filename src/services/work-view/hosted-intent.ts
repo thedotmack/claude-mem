@@ -9,7 +9,7 @@ import { getOrCreateIntentCredentials, intentCredentialHeaders, readIntentCreden
 import { groupIdFor, readConversationProjects, readGoals, readLedger, writeJsonAtomic, type LedgerDatabase } from './request-groups.mjs';
 import { projectRoot } from './session-project.mjs';
 import { readFocusAreas } from './data-source.mjs';
-import { MY_FOCUS_LIST, ownerGoalsAreaRows } from './my-focus.mjs';
+import { MY_FOCUS_LIST, navWordIn, ownerGoalsAreaRows } from './my-focus.mjs';
 import { logger } from '../../utils/logger.js';
 
 /** Owner-approved cap: the largest measured export was 262 KB, and all exports fit one 1M-context call.
@@ -250,18 +250,30 @@ export class HostedIntent {
     // saved before this run (synced from another computer) mean no new ones are suggested here. The items stay
     // in owner-goals without an area id, and the next local refresh matches them.
     const otherAreas = savedAreas.filter(area => !thisRun.has(area.focusAreaId));
-    const focusRows = otherAreas.length ? [] : ownerGoalsAreaRows(goals.priorities.map((item, index) => ({
-      name: item.title, goal: '', rank: item.rank, matches: savedAreas.some(area => area.focusAreaId === areaIds[index]) ? areaIds[index] : null,
-      evidence: `From your prompts: asked ${item.times_asked} times, latest ${item.latest_at}.`,
-    })), savedAreas, index => areaIds[index]).rows;
+    // Cloud's contract allows a priority title that reuses a nav label ("Ship the My Work viewer"), which no focus area
+    // may be named (refuseNavWordName). Its item is still saved, with no area id and the reason in focus_area_deferred,
+    // and the next local refresh sorts it again (refresh-task re-sorts a focus area without one) under a name of its own.
+    const deferred = new Map(goals.priorities.flatMap((item, index) => {
+      const navWord = navWordIn(item.title);
+      return navWord ? [[index, `Not suggested in My Focus: "${item.title}" reuses the nav word "${navWord}". The next local refresh names this area.`] as const] : [];
+    }));
+    const minedIndexes = goals.priorities.flatMap((_item, index) => deferred.has(index) ? [] : [index]);
+    const focusRows = otherAreas.length ? [] : ownerGoalsAreaRows(minedIndexes.map(index => {
+      const item = goals.priorities[index];
+      return { name: item.title, goal: '', rank: item.rank, matches: savedAreas.some(area => area.focusAreaId === areaIds[index]) ? areaIds[index] : null,
+        evidence: `From your prompts: asked ${item.times_asked} times, latest ${item.latest_at}.` };
+    }), savedAreas, at => areaIds[minedIndexes[at]]).rows;
     if (otherAreas.length) {
       logger.warn('WORKER', 'Hosted setup saved its focus areas without suggesting them: My Focus already has areas to match against', { savedAreas: otherAreas.length, minedAreas: goals.priorities.length });
+    } else if (deferred.size) {
+      logger.warn('WORKER', 'Hosted setup saved priorities without suggesting them as focus areas: their titles reuse a nav word (see focus_area_deferred on each owner-goals item)', { titles: [...deferred.keys()].map(index => goals.priorities[index].title) });
     }
     for (const [kind, items] of [['focus-area', goals.priorities], ['ask', goals.open_asks]] as const) {
       for (const [index, item] of items.entries()) rows.push({
         task: `${kind === 'focus-area' ? 'Focus area' : 'Ask'}: ${item.title}`, status: 'todo', goal_kind: kind,
         rank: item.rank, title: item.title, ...(kind === 'ask' ? { focus_area: null } : {}),
-        focus_area_id: kind === 'focus-area' && !otherAreas.length ? areaIds[index] : null,
+        focus_area_id: kind === 'focus-area' && !otherAreas.length && !deferred.has(index) ? areaIds[index] : null,
+        ...(kind === 'focus-area' ? { focus_area_deferred: otherAreas.length ? null : deferred.get(index) ?? null } : {}),
         latest_at: item.latest_at, times_asked: item.times_asked,
         snapshot: goals.generated_at, source: 'hosted-intent', hosted_snapshot: goals.generated_at,
         // JSON preserves quotes containing newlines; the line format remains for older readers.

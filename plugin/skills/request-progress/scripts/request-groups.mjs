@@ -3313,7 +3313,7 @@ function focusInput(ledger, focus, localDeviceId2, database, { limit = FOCUS_BAT
 }
 function otherInput(ledger, focus, localDeviceId2, database) {
   const other = routerOther(ledger, focus, new Set(focusDue(ledger, focus, localDeviceId2)));
-  const hash = otherPassHash(other.map((groupId) => ledger.groups.groups[groupId].anchor));
+  const hash = otherPassHash(ledger, other);
   return {
     areas: focus.focusAreas.filter(isPlaceableArea).map(focusAreaRecord),
     dismissed: focus.focusAreas.filter(isOwnerDismissedArea).map(focusAreaRecord),
@@ -3379,7 +3379,7 @@ function validateFocusAnswer(answer, input, ledger, { other = false } = {}) {
       evidence
     })),
     proposals,
-    ...other ? { otherPassHash: otherPassHash([...listed.keys()].filter((anchor) => !held.has(anchor))) } : {}
+    ...other ? { otherPassHash: otherPassHash(ledger, [...listed.keys()].filter((anchor) => !held.has(anchor)).map((anchor) => listed.get(anchor).groupId)) } : {}
   };
 }
 function refreshNeeds({ dir = LEDGER_DIR, database, now = Date.now(), days = 14, localDeviceId: localDeviceId2 }) {
@@ -3391,7 +3391,7 @@ function refreshNeeds({ dir = LEDGER_DIR, database, now = Date.now(), days = 14,
   const goalsStale = !Number.isFinite(generated) || now - generated > GOALS_STALE_MS;
   const focus = readFocus(database, { localDeviceId: localDeviceId2 });
   const queued = focusDue(ledger, focus, localDeviceId2);
-  const otherHash = otherPassHash(routerOther(ledger, focus, new Set(queued)).map((groupId) => ledger.groups.groups[groupId].anchor));
+  const otherHash = otherPassHash(ledger, routerOther(ledger, focus, new Set(queued)));
   const otherChanged = otherHash !== null && otherHash !== focus.otherPassHash;
   return { due: due.length, ungrouped, goalsStale, unplaced: queued.length, otherChanged, needed: Boolean(due.length || ungrouped || goalsStale || queued.length || otherChanged) };
 }
@@ -3608,7 +3608,7 @@ var init_request_groups = __esm({
       const asks = openingAsks(database, ledger, groupIds.flatMap((groupId) => groupConversations(ledger, groupId)));
       return groupIds.map((groupId) => requestRecord(ledger, groupId, asks));
     };
-    otherPassHash = (anchors) => anchors.length ? createHash("sha256").update(JSON.stringify([...anchors].sort())).digest("hex").slice(0, 16) : null;
+    otherPassHash = (ledger, groupIds) => groupIds.length ? createHash("sha256").update(JSON.stringify(groupIds.map((groupId) => [ledger.groups.groups[groupId].anchor, focusBasis(ledger, groupId)]).sort())).digest("hex").slice(0, 16) : null;
     focusAreaRecord = (area) => ({ focusAreaId: area.focusAreaId, name: area.name, goal: area.goal, about: area.about, status: area.status });
     AREA_NAME_MAX = 80;
     AREA_SENTENCE_MAX = 300;
