@@ -38,6 +38,7 @@ import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { validateBody } from '../middleware/validateBody.js';
 import type { SetupScan, SetupScanState } from '../../../prompt-import/setup-scan.js';
 import { readHistoryCounts, type HistoryImport } from '../../../setup/history-import.js';
+import type { InitPhase, InitPhaseSource } from '../../../server/init-phase.js';
 import { hasActiveSetupSession, hasProConfiguration, readSetupState, setupStatePath, writeSetupState, type SetupStateFile, type SetupStateView } from '../../../../shared/setup-state.js';
 
 // A request is ready for a human check once its explicit lifecycle reports it complete, shipped, or waiting for review.
@@ -244,7 +245,15 @@ interface WorkViewOptions {
   historyImport?: HistoryImport | null;
   /** Setup extraction only. Ongoing automatic refresh continues to use the local agent runner. */
   hostedIntent?: Pick<HostedIntent, 'run' | 'state'> | null;
+  /** The worker's boot progress: every read of claude-mem.db and the automatic refresh wait for `db_ready`.
+   * Omitted: the database is already open (tests, demos). */
+  initPhase?: InitPhaseSource | null;
 }
+
+/** Phases the worker's read-write connection is open in; a read-only handle before then keeps the WAL
+ * from being reset on Windows and the first read-write statement fails with SQLITE_IOERR_TRUNCATE (#5127). */
+const DATABASE_OPEN_PHASES: readonly InitPhase[] = ['db_ready', 'routes_ready', 'ready'];
+const DATABASE_STARTING_ERROR = 'Local work-state database is starting.';
 
 /** One overall request on the Reveal, read from the request-group ledger so new installs (prompts only) have work too. */
 export interface SetupWorkItem { groupId: string; title: string; platform: string | null; lastActiveAt: string | null; progressPercent: number | null }
@@ -392,9 +401,13 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private historyImport: HistoryImport | null;
   private unsubscribeHistoryImport: (() => void) | null = null;
   private hostedIntent: Pick<HostedIntent, 'run' | 'state'> | null;
+  private databaseReady: boolean;
+  private unsubscribeInitPhase: (() => void) | null = null;
 
   constructor(options: WorkViewOptions = {}) {
     super();
+    const initPhase = options.initPhase ?? null;
+    this.databaseReady = !initPhase || DATABASE_OPEN_PHASES.includes(initPhase.getInitPhase().phase);
     this.pollIntervalMs = options.pollIntervalMs ?? 1000;
     this.getLocalDeviceId = options.getLocalDeviceId ?? (() => '');
     const ledgerDir = options.ledgerDir === undefined ? join(DATA_DIR, 'work-view') : options.ledgerDir;
@@ -417,7 +430,12 @@ export class WorkViewRoutes extends BaseRouteHandler {
       ? (options.ledgerDir === undefined && ledgerDir ? defaultAutoRefresh(ledgerDir, options.settingsPath, options.setupStatePath,
         () => this.setupIsActive(), () => this.getLocalDeviceId(), body => this.recordRouterFocus(body)) : null)
       : options.autoRefresh;
-    this.autoRefresh?.start();
+    if (this.databaseReady) this.autoRefresh?.start();
+    else if (initPhase) {
+      this.unsubscribeInitPhase = initPhase.subscribeInitPhase(state => {
+        if (DATABASE_OPEN_PHASES.includes(state.phase)) this.onDatabaseReady();
+      });
+    }
     this.appendWorkStateEntry = options.appendWorkStateEntry ?? null;
     this.homeProject = options.homeProject;
     this.rulesFilePath = options.rulesFilePath ?? join(DATA_DIR, 'MY-RULES.md');
@@ -457,6 +475,23 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private stopRulesSync: () => void;
   private rulesRebuildScheduled = false;
 
+  /** The worker's read-write connection is open: reads may start and stream clients get the real snapshot. */
+  private onDatabaseReady(): void {
+    this.unsubscribeInitPhase?.();
+    this.unsubscribeInitPhase = null;
+    if (this.databaseReady || this.closed) return;
+    this.databaseReady = true;
+    this.autoRefresh?.start();
+    if (this.clients.size) this.publish();
+  }
+
+  /** 503 while the worker's database is still initializing, so no handler opens a read-only handle before it. */
+  private holdUntilDatabaseReady(res: Response): boolean {
+    if (this.databaseReady) return false;
+    res.status(503).json({ error: DATABASE_STARTING_ERROR });
+    return true;
+  }
+
   private setupIsActive(): boolean {
     const statePath = this.setupStatePath ?? setupStatePath();
     const scanPhase = this.setupScan?.state().phase ?? 'idle';
@@ -477,6 +512,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   /** Rewrites MY-RULES.md when the saved rules render differently. Never from an unreadable source, which reads as no rules. */
   rebuildRulesFileFromSavedRules(): boolean {
+    if (!this.databaseReady) return false;
     const view = this.source.read().agentView;
     if (!view.source.connected) return false;
     const markdown = renderRulesFile((view.rules ?? []) as SavedRule[]).markdown;
@@ -495,6 +531,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     }));
     app.get('/api/work-view/events', workViewLoopbackOnly, this.wrapHandler(this.events));
     app.get('/api/work-view/evidence/:kind/:id', workViewLoopbackOnly, this.wrapHandler((req, res) => {
+      if (this.holdUntilDatabaseReady(res)) return;
       const id = this.parseIntParam(req, res, 'id');
       if (id === null) return;
       const evidence = this.source.evidence(this.toStringParam(req.params.kind), id);
@@ -511,6 +548,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
         res.status(403).json({ error: 'Recorded files open only from the local work viewer.' });
         return;
       }
+      if (this.holdUntilDatabaseReady(res)) return;
       const id = this.parseIntParam(req, res, 'id');
       if (id === null) return;
       const index = this.parseIntParam(req, res, 'index');
@@ -531,6 +569,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
         res.status(403).json({ error: 'Deliverables open only from the local work viewer.' });
         return;
       }
+      if (this.holdUntilDatabaseReady(res)) return;
       const id = this.parseIntParam(req, res, 'id');
       if (id === null) return;
       const deliverable = this.source.deliverable(id);
@@ -566,6 +605,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     }));
     app.post('/api/setup/scan', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupScanBody), this.wrapHandler((req, res) => {
       if (!this.setupScan) { res.status(503).json({ error: 'The prompt scan is unavailable on this worker.' }); return; }
+      if (this.holdUntilDatabaseReady(res)) return;
       res.setHeader('Cache-Control', 'no-store');
       res.status(202).json(this.setupScan.start(req.body.improveProduct));
     }));
@@ -604,6 +644,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   /** This machine's own observations, for the import offer. A missing database is a new install: nothing to import. */
   private historyCounts(): { projects: number; sessions: number; observations: number } | null {
+    if (!this.databaseReady) return null;
     if (!existsSync(this.databasePath)) return { projects: 0, sessions: 0, observations: 0 };
     const database = new Database(this.databasePath, { readonly: true, create: false });
     try { return readHistoryCounts(database); }
@@ -613,6 +654,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
   /** Finish Setup's "Import full history" (On The Go only, after checkout). */
   private startHistoryImport = (_req: Request, res: Response): void => {
     if (!this.historyImport) { res.status(503).json({ error: 'Bringing your memory is unavailable on this worker.' }); return; }
+    if (this.holdUntilDatabaseReady(res)) return;
     const state = readSetupState(this.setupStatePath);
     if (state.choice?.branch !== 'go') { res.status(409).json({ error: 'Bringing your memory to CMEM is part of On The Go.' }); return; }
     try {
@@ -690,7 +732,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   private snapshot(): WorkViewSnapshot {
     this.source.localDeviceId = this.getLocalDeviceId();
-    const snapshot = this.source.read().agentView;
+    const snapshot = this.databaseReady ? this.source.read().agentView : this.startingSnapshot();
     for (const request of snapshot.humanRequests) {
       request.contentFingerprint = contentFingerprint(request);
       request.review = this.reviews.read(request.id, request.contentFingerprint);
@@ -699,6 +741,12 @@ export class WorkViewRoutes extends BaseRouteHandler {
     // Generated wording is display only: it never changes what was reviewed.
     const view = this.humanCopy ? this.humanCopy.observe(snapshot) as WorkViewSnapshot : snapshot;
     return { ...view, rulesFile: this.rulesFileStatus(snapshot), setup: this.setupView(view), revision: `${snapshot.revision}:${reviewRevision}:${this.humanCopy?.revision ?? 0}` };
+  }
+
+  /** What a reader sees before the worker's database is open: no rows yet and why, with no read-only handle taken. */
+  private startingSnapshot(): WorkViewSnapshot {
+    const view = this.source.snapshot().agentView;
+    return { ...view, source: { ...view.source, connected: false, error: DATABASE_STARTING_ERROR } };
   }
 
   /**
@@ -727,7 +775,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
    * Re-read only when the ledger changes.
    */
   private setupWork(): SetupWorkItem[] | null {
-    if (!this.ledgerDir) return null;
+    if (!this.ledgerDir || !this.databaseReady) return null;
     const signature = ledgerSignature(this.ledgerDir);
     if (this.setupWorkCache?.signature === signature) return this.setupWorkCache.work;
     const ledger = readLedger(this.ledgerDir);
@@ -1025,6 +1073,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private answerSuggestion = (req: Request, res: Response): void => {
     const { conversationKey, action } = req.body as z.infer<typeof suggestionBody>;
     if (!this.ledgerDir) { res.status(503).json({ error: 'Request suggestions are unavailable on this worker.' }); return; }
+    if (this.holdUntilDatabaseReady(res)) return;
     if (!existsSync(this.databasePath)) { res.status(503).json({ error: 'Local work is unavailable. Reconnect before answering a suggestion.' }); return; }
     const database = new Database(this.databasePath, { readonly: true, create: false });
     let outcome: ReturnType<typeof decideSuggestion>;
@@ -1142,6 +1191,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   close(): void {
     this.closed = true;
+    this.unsubscribeInitPhase?.();
     this.unsubscribeSetupScan?.();
     this.unsubscribeHistoryImport?.();
     this.stopRulesSync();

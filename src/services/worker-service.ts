@@ -584,6 +584,8 @@ export class WorkerService implements WorkerRef {
     ));
 
     this.workViewRoutes = new WorkViewRoutes({
+      // Built before dbManager.initialize(): its read-only handles on claude-mem.db wait for db_ready (#5127).
+      initPhase: this.initPhaseTracker,
       getLocalDeviceId: () => this.dbManager.getCloudSync()?.status().deviceId ?? '',
       // My Rules saves as work-state rows, so a rule change syncs like any other write.
       appendWorkStateEntry: (entry) => {
@@ -1074,7 +1076,12 @@ export class WorkerService implements WorkerRef {
 
       return;
     } catch (error) {
-      logger.error('SYSTEM', 'Background initialization failed', {}, error instanceof Error ? error : undefined);
+      // The SQLite code and the stack name the failing statement; the message alone ("disk I/O error") does not.
+      const code = (error as { code?: unknown } | null)?.code;
+      logger.error('SYSTEM', 'Background initialization failed', {
+        ...(code !== undefined ? { code } : {}),
+        ...(error instanceof Error && error.stack ? { stack: error.stack } : {}),
+      }, error instanceof Error ? error : undefined);
       // A throw after `ready` (transcript watcher, telemetry, …) leaves a worker
       // that serves requests; only a pre-ready failure is the wedged state that
       // /api/ready readers must recycle.
