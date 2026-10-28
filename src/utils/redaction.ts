@@ -104,7 +104,9 @@ export const GENERIC_REDACTION_PATTERNS: RedactionPattern[] = [
   // `pwd` only as a suffix (`DB_PWD`, `MYSQL_PWD`): the bare `PWD` and
   // `OLDPWD` environment variables hold a working directory, not a secret.
   { name: 'generic_password', regex: genericBuiltinRegex(keyedLookbehind(String.raw`\b(?:\w*_?(?:password|passwd)|\w+_pwd)`)) },
-  { name: 'generic_token',    regex: genericBuiltinRegex(keyedLookbehind(String.raw`\b\w*_(?:token|secret|api_key)`)) },
+  // The bare key (`api_key=`, `"secret":`) or any `*_` prefix, the same key
+  // names GENERIC_CREDENTIAL_KEY pairs in structured payloads.
+  { name: 'generic_token',    regex: genericBuiltinRegex(keyedLookbehind(String.raw`\b(?:\w*_)?(?:token|secret|api_key)`)) },
   { name: 'bearer_token',     regex: genericBuiltinRegex(`(?<=\\bAuthorization${OPTIONAL_QUOTE}${BOUNDED_SPACE}:${BOUNDED_SPACE}${OPTIONAL_QUOTE}Bearer${BOUNDED_SPACE})`) },
 ];
 

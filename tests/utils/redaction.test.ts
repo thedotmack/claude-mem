@@ -219,6 +219,10 @@ describe('redactSensitive generic built-in patterns', () => {
     ['json style',   '{"client_secret": "GOCSPXabc12345"}',   'GOCSPXabc12345'],
     ['shell export', 'export AUTH_TOKEN=abc12345defghi',      'abc12345defghi'],
     ['yaml value',   'MY_API_KEY: uvwxyz123456',              'uvwxyz123456'],
+    // Bare key names, which redactJsonStrings already pairs as structured keys.
+    ['bare api_key',     'api_key=uvwxyz123456',               'uvwxyz123456'],
+    ['bare json secret', '{"secret": "GOCSPXabc12345"}',      'GOCSPXabc12345'],
+    ['bare yaml token',  'token: abc12345defghi',             'abc12345defghi'],
   ])('generic_token redacts a %s', (_style, input, secret) => {
     const result = redactSensitive(input, cfg);
     expect(result.counts.generic_token).toBe(1);
@@ -239,6 +243,9 @@ describe('redactSensitive generic built-in patterns', () => {
       'password=12345678',        // purely numeric
       'password=abc',             // under the 8-char minimum
       'max_tokens=4096',          // `_TOKENS`, not `*_TOKEN`
+      'tokens=abcdefghij',        // `tokens`, not `token`
+      'csrftoken=abcdefghij',     // no `_` before `token`, as for structured keys
+      'nosecret=abcdefghij',
       'max_password_length=32',   // the key merely contains "password"
       'Bearer 12345678',          // numeric, and not anchored to Authorization
       'AUTH_TOKEN=short',         // under the minimum

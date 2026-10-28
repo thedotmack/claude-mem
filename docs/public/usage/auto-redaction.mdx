@@ -61,7 +61,7 @@ Credentials without a vendor prefix (a database password, an internal token) nee
 | Name | Catches |
 |---|---|
 | `generic_password` | values assigned to a `password` / `passwd` key or a `*_PWD` key (`DB_PASSWORD=…`, `MYSQL_PWD=…`), in shell, yaml or JSON style |
-| `generic_token` | values assigned to a `*_TOKEN` / `*_SECRET` / `*_API_KEY` key (e.g. `AUTH_TOKEN=…`, `"client_secret": "…"`) |
+| `generic_token` | values assigned to a `token` / `secret` / `api_key` key or a `*_TOKEN` / `*_SECRET` / `*_API_KEY` key (e.g. `AUTH_TOKEN=…`, `api_key=…`, `"client_secret": "…"`) |
 | `bearer_token` | the value after `Authorization: Bearer …` |
 
 They run **after** every vendor pattern, so a vendor-shaped value (a `sk-…` key, a JWT, …) keeps its specific marker. To keep false positives away they only fire when the value is 8+ characters, contains at least one letter, and consists solely of secret-typical characters — so `max_tokens=4096`, short PINs, purely numeric values and the `PWD` / `OLDPWD` working-directory variables are left alone. In server-runtime event bodies, a string value under a credential-named key (`client_secret`, `db_password`, `token`, …) is redacted whole. Like every built-in, each can be disabled by name.
