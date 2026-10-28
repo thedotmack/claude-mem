@@ -186,9 +186,44 @@ import {
   incrementCanonicalDecimal,
 } from './CanonicalContent.js';
 import { parseStringListField } from './string-list-field.js';
+import { getRedactionConfig, redactSensitive } from '../../utils/redaction.js';
 
 /** sync_state key: replaySetAsideWorkState has run on this database. */
 const WORK_STATE_REPLAY_MARKER = 'work_state_set_aside_replayed';
+
+/** The text fields of an inbound body that capture-time redaction covers on the origin. */
+const OBSERVATION_TEXT_FIELDS = ['text', 'title', 'subtitle', 'narrative', 'facts', 'concepts'] as const;
+const SUMMARY_TEXT_FIELDS = ['request', 'investigated', 'learned', 'completed', 'next_steps', 'notes'] as const;
+const PROMPT_TEXT_FIELDS = ['prompt_text'] as const;
+
+/**
+ * Apply this device's redaction policy to a body pulled from a peer.
+ *
+ * Capture redaction runs only where the content is captured: the origin
+ * writes `stripMemoryTags(JSON.stringify(...))`, whose `stripTags` finishes
+ * with `redactSensitive`. A peer running with `CLAUDE_MEM_REDACT_ENABLED` off
+ * — the default — therefore ships raw values, and applying them here would
+ * store them raw even though this device opted in. `content_hash` is left as
+ * the origin sent it: it is the dedup identity of that content, not a checksum
+ * of the stored text.
+ */
+function redactInboundTextFields(
+  body: Record<string, unknown>,
+  fields: readonly string[]
+): Record<string, unknown> {
+  const config = getRedactionConfig();
+  if (!config.enabled) return body;
+  let redacted: Record<string, unknown> | null = null;
+  for (const field of fields) {
+    const value = body[field];
+    if (typeof value !== 'string' || value.length === 0) continue;
+    const next = redactSensitive(value, config).redacted;
+    if (next === value) continue;
+    redacted ??= { ...body };
+    redacted[field] = next;
+  }
+  return redacted ?? body;
+}
 
 /**
  * A hub change this client could not decode. It keeps its seq so the page
@@ -1102,6 +1137,7 @@ export class SyncApply {
   }
 
   private applyObservation(op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[]): 'applied' | 'stale' {
+    body = redactInboundTextFields(body, OBSERVATION_TEXT_FIELDS);
     const memorySessionId = fieldString(op, body, 'memory_session_id');
     const project = fieldString(op, body, 'project');
     const type = fieldString(op, body, 'type');
@@ -1234,6 +1270,7 @@ export class SyncApply {
   }
 
   private applySummary(op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[]): 'applied' | 'stale' {
+    body = redactInboundTextFields(body, SUMMARY_TEXT_FIELDS);
     const memorySessionId = fieldString(op, body, 'memory_session_id');
     const project = fieldString(op, body, 'project');
     const createdAtEpoch = fieldNumber(op, body, 'created_at_epoch');
@@ -1354,6 +1391,7 @@ export class SyncApply {
   }
 
   private applyPrompt(op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[]): 'applied' | 'stale' {
+    body = redactInboundTextFields(body, PROMPT_TEXT_FIELDS);
     const contentSessionId = fieldString(op, body, 'content_session_id');
     const promptNumber = fieldNumber(op, body, 'prompt_number');
     const promptText = fieldString(op, body, 'prompt_text');

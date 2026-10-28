@@ -3,7 +3,7 @@
 // SessionStore over an in-memory database, real CloudSync with an injected
 // fetch mock for the echo-guard drain assertions.
 
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
@@ -12,6 +12,8 @@ import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { SessionSearch } from '../../../src/services/sqlite/SessionSearch.js';
 import { CloudSync, type CloudSyncSettingKeys } from '../../../src/services/sync/CloudSync.js';
 import { SyncApply, type SyncOp, type ChromaSyncLike } from '../../../src/services/sync/SyncApply.js';
+import { SettingsDefaultsManager } from '../../../src/shared/SettingsDefaultsManager.js';
+import { _resetRedactionConfigCache } from '../../../src/utils/redaction.js';
 
 const ISO = '2026-07-09T00:00:00.000Z';
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -1191,6 +1193,79 @@ describe('SyncApply', () => {
 
       const native = db.prepare(`SELECT synced_at FROM observations WHERE title = 'native-row'`).get() as any;
       expect(native.synced_at).toBe(111); // adoption is not a rebuild
+    });
+
+    });
+
+  // ---------------------------------------------------------------------------
+  // Inbound redaction
+  // ---------------------------------------------------------------------------
+
+  describe('inbound redaction', () => {
+    const AWS_KEY = 'AKIA' + 'ABCDEFGHIJKLMNOP';
+    const MARKER = "<redacted type='aws_access_key'/>";
+    let loadSpy: ReturnType<typeof spyOn> | undefined;
+
+    function useRedaction(enabled: boolean): void {
+      loadSpy?.mockRestore();
+      loadSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
+        ...SettingsDefaultsManager.getAllDefaults(),
+        CLAUDE_MEM_REDACT_ENABLED: enabled ? 'true' : 'false',
+      }));
+      _resetRedactionConfigCache();
+    }
+
+    afterEach(() => {
+      loadSpy?.mockRestore();
+      loadSpy = undefined;
+      _resetRedactionConfigCache();
+    });
+
+    it('redacts observation text fields and keeps JSON-valued fields parseable', () => {
+      useRedaction(true);
+      makeApply().applyOps([op(1, 'observation', '11', obsBody({
+        title: `leaked ${AWS_KEY}`,
+        narrative: `used ${AWS_KEY}`,
+        facts: JSON.stringify([`key ${AWS_KEY}`]),
+        concepts: JSON.stringify(['concept-r']),
+      }))]);
+
+      const obs = db.prepare(`SELECT * FROM observations WHERE origin_device_id = ? AND origin_local_id = '11'`).get(REMOTE) as any;
+      expect(obs.title).toBe(`leaked ${MARKER}`);
+      expect(obs.narrative).toBe(`used ${MARKER}`);
+      expect(obs.content_hash).toBe('hash-r1');
+      expect(JSON.parse(obs.facts)).toEqual([`key ${MARKER}`]);
+      expect(JSON.parse(obs.concepts)).toEqual(['concept-r']);
+    });
+
+    it('redacts a summary and a prompt', () => {
+      useRedaction(true);
+      makeApply().applyOps([
+        op(1, 'summary', '21', sumBody({ request: `ask ${AWS_KEY}`, notes: `note ${AWS_KEY}` })),
+        op(2, 'prompt', '31', promptBody({ prompt_text: `run ${AWS_KEY}`, content_session_id: 'sess-remote-redact' })),
+      ]);
+
+      const sum = db.prepare(`SELECT * FROM session_summaries WHERE origin_local_id = '21'`).get() as any;
+      expect(sum.request).toBe(`ask ${MARKER}`);
+      expect(sum.notes).toBe(`note ${MARKER}`);
+      const prompt = db.prepare(`SELECT * FROM user_prompts WHERE origin_local_id = '31'`).get() as any;
+      expect(prompt.prompt_text).toBe(`run ${MARKER}`);
+    });
+
+    it('stores the peer body unchanged when this device has redaction off', () => {
+      useRedaction(false);
+      const body = obsBody({
+        title: `leaked ${AWS_KEY}`,
+        narrative: `used ${AWS_KEY}`,
+        facts: JSON.stringify([`key ${AWS_KEY}`]),
+      });
+      makeApply().applyOps([op(1, 'observation', '11', body)]);
+
+      const obs = db.prepare(`SELECT * FROM observations WHERE origin_local_id = '11'`).get() as any;
+      expect(obs.title).toBe(`leaked ${AWS_KEY}`);
+      expect(obs.narrative).toBe(`used ${AWS_KEY}`);
+      expect(obs.facts).toBe(JSON.stringify([`key ${AWS_KEY}`]));
+      expect(obs.content_hash).toBe('hash-r1');
     });
   });
 });
