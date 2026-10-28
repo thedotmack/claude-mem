@@ -34,6 +34,7 @@ import { ledgerSignature, readLedger } from '../../../work-view/request-groups.m
 import { configuredJudge, decideSuggestion } from '../../../work-view/request-judge.mjs';
 import { configuredFocusJudge } from '../../../work-view/focus-judge.mjs';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
+import { captureEvent } from '../../../telemetry/telemetry.js';
 import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { validateBody } from '../middleware/validateBody.js';
 import type { SetupScan, SetupScanState } from '../../../prompt-import/setup-scan.js';
@@ -204,6 +205,14 @@ const suggestionBody = z.object({
   conversationKey: z.string().min(1).max(2000),
   action: z.enum(['join', 'not-this']),
 }).strict();
+
+// The viewer's page ids (src/ui/my-work/src/live/usage.ts `UsageView`: setup plus App.tsx `View`): a closed list, so a
+// usage report can carry nothing else. A focus area is My Work filtered to that area, so it counts as `work`, never by name.
+const WORK_VIEW_PAGES = ['setup', 'work', 'rules', 'suggested', 'past-focus'] as const;
+const usageBody = z.discriminatedUnion('event', [
+  z.object({ event: z.literal('opened'), view: z.enum(WORK_VIEW_PAGES) }).strict(),
+  z.object({ event: z.literal('switched'), view: z.enum(WORK_VIEW_PAGES), previousView: z.enum(WORK_VIEW_PAGES) }).strict(),
+]);
 
 /** A path as the owner reads it: `~/...` under the home folder, else absolute. */
 const homeRelative = (path: string) => path === homedir() || path.startsWith(`${homedir()}/`) ? `~${path.slice(homedir().length)}` : path;
@@ -559,6 +568,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     app.post('/api/work-view/agents/mark-finished', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(markAgentFinishedBody), this.wrapHandler(this.markAgentFinished));
     app.post('/api/work-view/suggestions', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(suggestionBody), this.wrapHandler(this.answerSuggestion));
     app.post('/api/work-view/rules/load-in-claude-code', workViewLoopbackOnly, requireWorkViewOrigin, this.wrapHandler(this.loadRulesInClaudeCode));
+    app.post('/api/work-view/usage', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(usageBody), this.wrapHandler(this.recordUsage));
     app.get('/api/setup/scan', workViewLoopbackOnly, this.wrapHandler((_req, res) => {
       if (!this.setupScan) { res.status(503).json({ error: 'The prompt scan is unavailable on this worker.' }); return; }
       res.setHeader('Cache-Control', 'no-store');
@@ -991,6 +1001,15 @@ export class WorkViewRoutes extends BaseRouteHandler {
    * finished before the SubagentStop hook existed). Saved like a hook stop, with
    * its own source, so a later tool call from the agent still reopens it.
    */
+  /** Counts the viewer opening on a page, or switching page, through the worker's own consent-gated, whitelist-scrubbed
+   * telemetry (telemetry.ts), so the page loads no analytics SDK. The report names the page only — never what it showed. */
+  private recordUsage = (req: Request, res: Response): void => {
+    const report = req.body as z.infer<typeof usageBody>;
+    if (report.event === 'opened') captureEvent('work_view_opened', { view: report.view });
+    else captureEvent('work_view_switched', { view: report.view, previous_view: report.previousView });
+    res.status(204).end();
+  };
+
   private markAgentFinished = (req: Request, res: Response): void => {
     const { agentGroupId } = req.body as z.infer<typeof markAgentFinishedBody>;
     if (!this.appendWorkStateEntry) { res.status(503).json({ error: 'Saving agent state is unavailable on this worker.' }); return; }

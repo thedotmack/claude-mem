@@ -230,6 +230,11 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
     `${source}_${operation}_count`,
     ...['ok', 'error', 'excluded', 'disabled', 'unknown'].map(outcome => `${source}_${operation}_${outcome}_count`),
   ])),
+  // work_view_opened / work_view_switched — which My Work viewer page is on
+  // screen, as the viewer's own closed page ids (setup | work | rules | suggested | past-focus).
+  // Never a request title, prompt, observation, file path, or search text.
+  'view',
+  'previous_view',
 ]);
 
 const MAX_STRING_LENGTH = 200;
