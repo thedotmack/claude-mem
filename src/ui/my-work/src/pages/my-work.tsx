@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState, type ReactNode } from 'react'
-import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
+import { useReducedMotion } from 'motion/react'
 import { ArrowRightIcon, ArrowUpDownIcon, ImageIcon, InboxIcon, PlugIcon, TriangleAlertIcon } from 'lucide-react'
 import { Agent, AgentContent, AgentHeader } from '@/components/ai-elements/agent'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -9,18 +9,19 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { ActivePill, AgentIcon, ATTENTION_ORDER, FocusAreaChip, NextMove, ProgressMeter, RefreshButton, RefreshStatus, StateBadge, useWorkspace } from '@/components/bits'
+import { ActivePill, AgentIcon, ATTENTION_ORDER, FocusAreaChip, NextMove, ProgressMeter, RefreshButton, RefreshStatus, STATE_LABEL, STATE_SURFACE, StateBadge, useWorkspace } from '@/components/bits'
 import { PointerHighlight } from '@/components/aceternity/pointer-highlight'
 import { TracingBeam } from '@/components/aceternity/tracing-beam'
 import { AgentMark } from '@/components/brand'
 import { FocusChangeBar, useFocusChanges } from '@/components/focus-changes'
 import { FocusHeader, OtherHeader } from '@/components/focus-header'
 import { RequestCard } from '@/components/request-card'
+import { SplitFlapText } from '@/components/split-flap'
 import { SaveButton } from '@/components/save-button'
 import { useMatchesMedia } from '@/lib/use-media'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
-import { deviceById, markAgentFinished, needsYou, OTHER_FOCUS_AREA_ID, SAMPLE_RUNS, startedTimestamp, useWorkModel, type Agent as WorkAgent, type Request } from '@/data'
+import { deviceById, markAgentFinished, needsYou, OTHER_FOCUS_AREA_ID, SAMPLE_RUNS, startedTimestamp, useWorkModel, type Agent as WorkAgent, type LiveState, type Request } from '@/data'
 import type { BuildStory, RequestReadError } from '@/live/work-data-source'
 import { resolveFocusAreaId } from '@/live/to-focus-model'
 
@@ -166,55 +167,29 @@ function StorySheet({ open, story, requests, onClose, onOpenRules }: { open: boo
   )
 }
 
-/**
- * card-hover-effect: one soft panel slides behind whichever card the pointer is on (a shared layoutId).
- * Each grid passes its own layoutId so two grids never trade the highlight. Reduced motion: it fades, no slide.
- */
-function HoverCell({ active, layoutId, onHover, children }: { active: boolean; layoutId: string; onHover: (hovered: boolean) => void; children: ReactNode }) {
+/** card-hover-effect, in place: a soft panel fades in behind the card the pointer is on. It never slides between cards. */
+function HoverCell({ children }: { children: ReactNode }) {
   return (
-    <div className="relative min-w-0" onMouseEnter={() => onHover(true)} onMouseLeave={() => onHover(false)}>
-      <AnimatePresence>
-        {active && (
-          <motion.span layoutId={layoutId} aria-hidden="true" className="pointer-events-none absolute -inset-2 block rounded-2xl bg-accent/70"
-            initial={{ opacity: 0 }} animate={{ opacity: 1, transition: { duration: 0.15 } }} exit={{ opacity: 0, transition: { duration: 0.15, delay: 0.2 } }} />
-        )}
-      </AnimatePresence>
+    <div className="group/hover-cell relative min-w-0">
+      <span aria-hidden="true" className="pointer-events-none absolute -inset-2 block rounded-2xl bg-accent/70 opacity-0 transition-opacity duration-150 group-hover/hover-cell:opacity-100" />
       <div className="relative h-full">{children}</div>
     </div>
   )
 }
 
-/** Which card in a grid the pointer is on, and the hover handler each HoverCell gets. */
-function useHoveredCard() {
-  const [hoveredId, setHoveredId] = useState<string | null>(null)
-  const hoverHandler = (id: string) => (hovered: boolean) => setHoveredId((current) => hovered ? id : current === id ? null : current)
-  return { hoveredId, hoverHandler }
+/**
+ * The List is a departures board (decision 2, R4.4): each status is a line of split-flap tiles exactly as wide as its
+ * label, colored by its state. It riffles in when the List opens and again when the status changes, then stops.
+ */
+function FlipStatus({ state }: { state: LiveState }) {
+  return <SplitFlapText text={STATE_LABEL[state]} tileClassName={STATE_SURFACE[state]} />
 }
 
-/*
- * The List is a departures board (decision 2, R4.4): each request is one line, and the whole line flips, as one flap
- * dropping from its top edge, when the request's status changes (the line is keyed on its state). Opening the List
- * flips the lines in from the top down. At rest the status is the plain badge, so it always reads.
- * Reduced motion: no flip.
- */
-const FLIP_LINE_S = 0.45
-const FLIP_LINE_STAGGER_S = 0.04
-// A 1000px-tall window shows about ten lines; lines below them flip with the tenth, so the cascade never takes
-// longer than the lines you can see.
-const FLIP_LINE_STAGGERED = 10
-const flipLine = (index: number, reduceMotion: boolean | null) => reduceMotion ? {} : {
-  initial: { rotateX: -90, opacity: 0 },
-  animate: { rotateX: 0, opacity: 1 },
-  transition: { duration: FLIP_LINE_S, delay: Math.min(index, FLIP_LINE_STAGGERED) * FLIP_LINE_STAGGER_S, ease: [0.33, 1.4, 0.64, 1] as const },
-  style: { transformOrigin: 'top center' },
-}
 // The List switches from stacked lines to the table at Tailwind's md breakpoint (768px); only one of them is built.
 const TABLE_QUERY = '(min-width: 768px)'
-const MotionTableRow = motion.create(TableRow)
 
 function ListView({ requests, sort, onSort, onOpen, onOpenFocus }: { requests: Request[]; sort: SortKey; onSort: (sort: SortKey) => void; onOpen: (request: Request) => void; onOpenFocus: (focusAreaId: string) => void }) {
   const { team } = useWorkspace()
-  const reduceMotion = useReducedMotion()
   const wide = useMatchesMedia(TABLE_QUERY)
   const sortHead = (label: string, value: SortKey) => (
     <TableHead aria-sort={sort === value ? 'descending' : undefined}>
@@ -224,25 +199,25 @@ function ListView({ requests, sort, onSort, onOpen, onOpenFocus }: { requests: R
   return (
     <Req ids={['R4.2', 'R4.4', 'R2.1', 'R5.8', 'R11.1']}>
       {/* Phones: stacked rows, request then status then next step. */}
-      {!wide && <ul className="divide-y rounded-xl border bg-card shadow-panel [perspective:1200px]">
-        {requests.map((request, index) => (
-          <motion.li key={`${request.id}:${request.state}`} {...flipLine(index, reduceMotion)}>
+      {!wide && <ul className="divide-y rounded-xl border bg-card shadow-panel">
+        {requests.map((request) => (
+          <li key={request.id}>
             <button type="button" onClick={() => onOpen(request)} className="flex w-full flex-col gap-2 p-4 text-left focus-visible:outline-2 focus-visible:outline-ring">
               <span className="flex w-full items-start gap-2.5">
                 <AgentIcon agentId={request.agentId} />
                 <span className={cn('min-w-0 flex-1 pt-0.5 text-[0.95rem] leading-snug font-medium', !request.title && 'text-muted-foreground')}>{titleOf(request)}</span>
               </span>
               <span className="flex flex-col items-start gap-1.5 pl-[38px]">
-                <StateBadge state={request.state} />
+                <FlipStatus state={request.state} />
                 <NextMove next={request.next} />
               </span>
             </button>
-          </motion.li>
+          </li>
         ))}
       </ul>}
 
       {wide && <div className="overflow-hidden rounded-xl border bg-card shadow-panel">
-        <Table className="[perspective:1200px]">
+        <Table>
           <TableHeader className="bg-surface/60">
             <TableRow>
               <TableHead className="w-10"><span className="sr-only">Agent</span></TableHead>
@@ -255,19 +230,19 @@ function ListView({ requests, sort, onSort, onOpen, onOpenFocus }: { requests: R
             </TableRow>
           </TableHeader>
           <TableBody>
-            {requests.map((request, index) => (
-              <MotionTableRow key={`${request.id}:${request.state}`} className="cursor-pointer" onClick={() => onOpen(request)} {...flipLine(index, reduceMotion)}>
+            {requests.map((request) => (
+              <TableRow key={request.id} className="cursor-pointer" onClick={() => onOpen(request)}>
                 <TableCell className="align-top"><AgentIcon agentId={request.agentId} /></TableCell>
                 <TableCell className="max-w-72 align-top whitespace-normal">
                   <button type="button" onClick={(event) => { event.stopPropagation(); onOpen(request) }} className={cn('rounded-sm text-left leading-snug font-medium hover:underline focus-visible:outline-2 focus-visible:outline-ring', !request.title && 'text-muted-foreground')}>{titleOf(request)}</button>
                   <div><FocusAreaChip focusAreaId={request.focusAreaId} onOpen={onOpenFocus} /></div>
                 </TableCell>
                 {team && <TableCell className="align-top text-sm">{request.askedBy}</TableCell>}
-                <TableCell className="align-top"><StateBadge state={request.state} /></TableCell>
+                <TableCell className="align-top"><FlipStatus state={request.state} /></TableCell>
                 <TableCell className="max-w-64 align-top whitespace-normal"><NextMove next={request.next} /></TableCell>
                 <TableCell className="w-32 align-top"><ProgressMeter request={request} compact /></TableCell>
                 <TableCell className="align-top text-xs text-muted-foreground"><time dateTime={request.startedAtIso}>{request.startedAt}</time></TableCell>
-              </MotionTableRow>
+              </TableRow>
             ))}
           </TableBody>
         </Table>
@@ -320,7 +295,6 @@ function SubagentStatus({ agent }: { agent: WorkAgent }) {
 /** One card per running agent: its mark, its role and machine, so two agents of one tool are told apart (§4, §13.2). */
 function ByAgentView({ requests, onOpen }: { requests: Request[]; onOpen: (request: Request) => void }) {
   const { agents } = useWorkModel()
-  const { hoveredId, hoverHandler } = useHoveredCard()
   return (
     <Req ids={['R4.3', 'R13.2', 'R13.4']}>
       <div className="grid min-w-0 items-start gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -328,7 +302,7 @@ function ByAgentView({ requests, onOpen }: { requests: Request[]; onOpen: (reque
           const device = deviceById(agent.deviceId)
           const theirs = requests.filter((request) => request.agentId === agent.id)
           return (
-            <HoverCell key={agent.id} active={hoveredId === agent.id} layoutId="agent-card-hover" onHover={hoverHandler(agent.id)}>
+            <HoverCell key={agent.id}>
             <Agent className="min-w-0">
               <AgentHeader name={agent.name} role={agent.role} icon={<AgentMark tool={agent.tool} className="size-5" />}
                 model={`${device.name} · ${device.syncedMinutesAgo === 0 ? 'this machine' : `synced ${device.syncedMinutesAgo} min ago`}`} />
@@ -418,7 +392,6 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
   const [filter, setFilter] = useState<Filter>('all')
   const [sort, setSort] = useState<SortKey>('attention')
   const [storyOpen, setStoryOpen] = useState(false)
-  const { hoveredId, hoverHandler } = useHoveredCard()
   const matches = FILTERS.find((entry) => entry.value === filter)!.matches
   const visible = useMemo(() => sortRequests(requests.filter(matches), sort), [requests, matches, sort])
 
@@ -501,7 +474,7 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
       ) : view === 'cards' ? (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {visible.map((request) => (
-            <HoverCell key={request.id} active={hoveredId === request.id} layoutId="request-card-hover" onHover={hoverHandler(request.id)}>
+            <HoverCell key={request.id}>
               <RequestCard request={request} onOpen={() => onOpen(request)} onOpenFocus={onOpenFocus} />
             </HoverCell>
           ))}
