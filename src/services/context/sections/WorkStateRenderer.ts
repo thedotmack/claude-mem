@@ -23,6 +23,7 @@ export const WORK_STATE_RULE = [
   '- To-do item: fields {"task": "<name>", "status": "todo" | "doing" | "done" | "dropped", ...any details}',
   '- State: fields {"<key>": <value>} (the latest value of each key wins; null clears a key; "status": "done" closes the list)',
   '- Made something a person can open (PR, deck, page, image, report)? Attach it to that item: fields {"work_product": "https://…" or "/absolute/file"}; several, with titles, as one JSON string: "[{\\"title\\": \\"<name>\\", \\"url\\": \\"https://…\\"}]"',
+  '- Deliverables: write a deck, report, page or other file the person asked for as a file and attach it as work_product before you finish. When you stop, claude-mem copies each attached file (and any deck, document, page, image or spreadsheet you wrote outside the source tree) into this project\'s deliverables bucket, ~/.claude-mem/deliverables/<project>/, and links it on the request\'s card in My Work.',
   '- Read every list, closed items included: work_state_read with includeClosed=true',
 ].join('\n');
 

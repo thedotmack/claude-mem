@@ -780,6 +780,8 @@ var SettingsDefaultsManager = class {
     // #2736 — default empty preserves current behavior; recommended value 'workflow-subagent' to drop Dynamic Workflows fan-out noise
     CLAUDE_MEM_CAPTURE_ADVISOR_CALLS: "false",
     // #3165 — opt-in: the Stop hook scans the transcript's tail for advisor calls and stores the advice locally (worker runtime only)
+    CLAUDE_MEM_DELIVERABLES_ENABLED: "true",
+    // 'false' = the Stop hook neither copies deliverables into the bucket nor records them; files already in the bucket stay
     // Deliberate divergence from the installer prompt: the interactive
     // provider prompt defaults to 'cmem' (the hosted observer), but headless
     // installs land here — no delivered key exists headlessly, so the settings

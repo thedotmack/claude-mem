@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { activitySignature, buildAgentView, readAgentRecords, readEvidence } from './agent-view.mjs';
 import { goalsAddedSince, ledgerSignature, readLedger } from './request-groups.mjs';
-import { recordedFile } from './work-product.mjs';
+import { recordedFile, bucketFileAvailable } from './work-product.mjs';
 
 const CLOSED = new Set(['done', 'dropped']);
 const normalizedKey = (value) => String(value).replace(/[A-Z]/g, (letter) => letter.toLowerCase());
@@ -356,6 +356,15 @@ export class WorkStateSource {
   file(kind, id, index) {
     try { return recordedFile((sql, params) => this.openDatabase().prepare(sql).all(...params), kind, id, index); }
     catch { return null; }
+  }
+
+  /** The bucket copy a deliverables row names, while it still exists; null when the row is unknown, the copy is gone, or the table does not exist yet. */
+  deliverable(id) {
+    if (!Number.isSafeInteger(id) || id < 1) return null;
+    try {
+      const row = this.openDatabase().prepare('SELECT id, title, kind, bucket_path FROM deliverables WHERE id = ?').all(id)[0];
+      return row && bucketFileAvailable({ bucketPath: row.bucket_path }) ? { id: row.id, title: row.title, kind: row.kind, path: row.bucket_path } : null;
+    } catch { return null; }
   }
 
   close() {

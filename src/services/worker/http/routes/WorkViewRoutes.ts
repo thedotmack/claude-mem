@@ -3,7 +3,7 @@ import type { Request, Response, NextFunction } from 'express';
 import { createHash, randomBytes } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, extname, join } from 'node:path';
+import { basename, dirname, extname, join } from 'node:path';
 import { z } from 'zod';
 import { Database } from 'bun:sqlite';
 import { CLAUDE_CONFIG_DIR, DATA_DIR, DB_PATH, getPackageRoot, USER_SETTINGS_PATH } from '../../../../shared/paths.js';
@@ -14,6 +14,7 @@ import { logger } from '../../../../utils/logger.js';
 import { hasForwardedClientHeaders, hasLoopbackHostHeader, isLocalhost } from '../../../../server/middleware/request-auth-helpers.js';
 import { WorkStateSource, type WorkViewSnapshot } from '../../../work-view/data-source.mjs';
 import { FILE_CONTENT_TYPES } from '../../../work-view/work-product.mjs';
+import { isInsideDeliverablesDir } from '../../../../shared/deliverables.js';
 import { contentFingerprint, LocalReviewStore } from '../../../work-view/review-store.js';
 import { MY_RULES_LIST, renderRulesFile, ruleRowFields, type SavedRule } from '../../../work-view/my-rules.mjs';
 import { AGENT_LIFECYCLE_LIST, agentStopFields } from '../../../work-view/agent-lifecycle.mjs';
@@ -62,6 +63,13 @@ export function isReportedReadyForCheck(request: { lifecycle?: RecordedLifecycle
   const status = String(lifecycle.status ?? '').trim().toLowerCase().replace(/[_ ]/g, '-');
   return lifecycle.complete === true || READY_FOR_CHECK_LIFECYCLE_STATUSES.includes(status);
 }
+
+/** Recorded files plus the text kinds an agent attaches as a deliverable, served so a browser shows them rather than downloads them. */
+const DELIVERABLE_CONTENT_TYPES: Readonly<Record<string, string>> = {
+  ...FILE_CONTENT_TYPES,
+  '.md': 'text/plain; charset=utf-8', '.markdown': 'text/plain; charset=utf-8', '.txt': 'text/plain; charset=utf-8',
+  '.rst': 'text/plain; charset=utf-8', '.json': 'text/plain; charset=utf-8',
+};
 
 const reviewBody = z.object({
   requestId: z.string().min(1).max(2000),
@@ -364,6 +372,27 @@ export class WorkViewRoutes extends BaseRouteHandler {
       res.setHeader('Content-Security-Policy', 'sandbox allow-scripts');
       res.type(FILE_CONTENT_TYPES[extname(path).toLowerCase()] ?? 'application/octet-stream');
       res.sendFile(path, { dotfiles: 'allow' });
+    }));
+    // A deliverable the Stop hook copied into the project bucket (~/.claude-mem/deliverables/<project>/), found
+    // through its record; the filename in the URL must be the copy's own, so a link never names another file.
+    // Same sandbox and same-origin rules as a recorded file. Text and markdown open inline as plain text.
+    app.get('/api/deliverables/:id/:filename', workViewLoopbackOnly, this.wrapHandler((req, res) => {
+      if (req.get('sec-fetch-site') === 'cross-site' || isForeignLoopbackBrowserWrite(req)) {
+        res.status(403).json({ error: 'Deliverables open only from the local work viewer.' });
+        return;
+      }
+      const id = this.parseIntParam(req, res, 'id');
+      if (id === null) return;
+      const deliverable = this.source.deliverable(id);
+      if (!deliverable || basename(deliverable.path) !== this.toStringParam(req.params.filename) || !isInsideDeliverablesDir(deliverable.path)) {
+        this.notFound(res, 'Deliverable not found.');
+        return;
+      }
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Content-Security-Policy', 'sandbox allow-scripts');
+      res.type(DELIVERABLE_CONTENT_TYPES[extname(deliverable.path).toLowerCase()] ?? 'application/octet-stream');
+      res.sendFile(deliverable.path, { dotfiles: 'allow' });
     }));
     app.post('/api/work-view/review', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(reviewBody), this.wrapHandler(this.review));
     app.post('/api/work-view/rules', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(ruleBody), this.wrapHandler(this.saveRule));

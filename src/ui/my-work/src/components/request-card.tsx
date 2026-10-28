@@ -6,9 +6,11 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
+import { isCardDeliverable } from '@/lib/deliverables'
+import { PRODUCT_ICON } from '@/lib/product-icons'
 import { Req } from '@/spec/req'
 import { requestById, updateRequest, useFreshlyUpdated, type Request } from '@/data'
-import { AgentIcon, GoalChip, NextMove, ProgressMeter, StateBadge, useWorkspace } from './bits'
+import { AgentIcon, GoalChip, NextMove, ProductLink, ProgressMeter, StateBadge, useWorkspace } from './bits'
 
 /**
  * Decision 5: while a request has only agent data, the card shows the agent's own lines as a terminal,
@@ -92,6 +94,47 @@ export function OpenFollowUps({ request, limit }: { request: Request; limit?: nu
   )
 }
 
+/** The card is a portrait tile: three chips fill one row at phone width, so any more open the drawer's full list. */
+const CARD_DELIVERABLES = 3
+
+/**
+ * What came out of the request, on the front of the card (R5.12): a deck, a
+ * report, a page, a PR, each one click away. Bucket copies claude-mem kept are
+ * marked as deliverables by the mapper; the drawer keeps the full list with
+ * commits and branches.
+ */
+export function Deliverables({ request, onOpen }: { request: Request; onOpen: () => void }) {
+  const products = request.workProduct.filter(isCardDeliverable)
+  if (products.length === 0) return null
+  const shown = products.slice(0, CARD_DELIVERABLES)
+  const hidden = products.length - shown.length
+  return (
+    <Req ids={['R5.12', 'R5.10']}>
+      <div className="space-y-1">
+        <p className="section-label">Deliverables · {products.length}</p>
+        <ul className="flex flex-wrap gap-1.5">
+          {shown.map((product, index) => {
+            const Icon = PRODUCT_ICON[product.kind]
+            return (
+              <li key={`${index}-${product.label}`} className="min-w-0 max-w-full">
+                <ProductLink href={product.href} className="inline-flex min-h-8 max-w-full items-center gap-1.5 rounded-md border bg-card px-2 py-1 text-xs hover:bg-surface">
+                  <Icon className="size-3.5 shrink-0 text-muted-foreground" />
+                  <span className="truncate">{product.label}</span>
+                </ProductLink>
+              </li>
+            )
+          })}
+          {hidden > 0 && (
+            <li>
+              <Button variant="ghost" size="sm" className="h-8 px-2 text-xs" onClick={onOpen} aria-label={`Open the request to see ${hidden} more deliverables`}>+{hidden} more</Button>
+            </li>
+          )}
+        </ul>
+      </div>
+    </Req>
+  )
+}
+
 export function RequestCard({ request, onOpen, onOpenGoal }: { request: Request; onOpen: () => void; onOpenGoal: (goalId: string) => void }) {
   const { team } = useWorkspace()
   const { phase, text, word } = useAgentViewTransform(request)
@@ -134,6 +177,8 @@ export function RequestCard({ request, onOpen, onOpenGoal }: { request: Request;
               </button>
             </Req>
           )}
+
+          <Deliverables request={request} onOpen={onOpen} />
 
           {/* Shipped work's next moves are its open follow-ups, so the card lists those instead of repeating one. */}
           {!(request.state === 'shipped' && request.followUps.some((followUp) => !followUp.done)) && <NextMove next={request.next} />}
