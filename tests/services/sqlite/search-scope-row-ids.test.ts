@@ -162,4 +162,23 @@ describe('SessionStore.getSearchScopeRowIds', () => {
 
     expect(store.getSearchScopeRowIds(OBSERVATIONS, { project: 'nobody' }, 10)).toEqual([]);
   });
+
+  it('finalizes every statement it prepares, including when the row cap stops it early', () => {
+    for (let i = 0; i < 3; i++) seedObservation('p');
+    const prepare = store.db.prepare.bind(store.db);
+    const finalized: boolean[] = [];
+    (store.db as any).prepare = (sql: string) => {
+      const statement = prepare(sql);
+      const index = finalized.push(false) - 1;
+      const finalize = statement.finalize.bind(statement);
+      statement.finalize = () => { finalized[index] = true; finalize(); };
+      return statement;
+    };
+
+    expect(store.getSearchScopeRowIds(ALL, { project: 'p' }, 10)).not.toBeNull();
+    expect(store.getSearchScopeRowIds(OBSERVATIONS, { project: 'p' }, 2)).toBeNull();
+
+    expect(finalized.length).toBe(4);
+    expect(finalized.every(Boolean)).toBe(true);
+  });
 });

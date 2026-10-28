@@ -4407,7 +4407,13 @@ export class SessionStore {
         params.push(platformSource);
       }
       const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-      const rows = this.db.prepare(`${source.from} ${where} LIMIT ?`).all(...params, maxIds + 1) as Array<{ id: number }>;
+      const statement = this.db.prepare(`${source.from} ${where} LIMIT ?`);
+      let rows: Array<{ id: number }>;
+      try {
+        rows = statement.all(...params, maxIds + 1) as Array<{ id: number }>;
+      } finally {
+        statement.finalize();
+      }
       for (const row of rows) ids.add(row.id);
       if (ids.size > maxIds) return null;
     }

@@ -24,4 +24,13 @@ describe('scopeRowIdsFor (#5091)', () => {
     expect(rowIds(5000)).toBeNull();
     expect(getSearchScopeRowIds).toHaveBeenCalledTimes(1);
   });
+
+  it('reports a failed listing once, then answers null without retrying it', () => {
+    const getSearchScopeRowIds = mock(() => { throw new Error('database is locked'); });
+    const rowIds = scopeRowIdsFor({ getSearchScopeRowIds } as any, categories, {});
+
+    expect(() => rowIds(5000)).toThrow('database is locked');
+    expect(rowIds(5000)).toBeNull();
+    expect(getSearchScopeRowIds).toHaveBeenCalledTimes(1);
+  });
 });

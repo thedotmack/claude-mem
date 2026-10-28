@@ -14,7 +14,13 @@ export function scopeRowIdsFor(
   let listed: { maxIds: number; ids: number[] | null } | undefined;
   return maxIds => {
     if (listed?.maxIds !== maxIds) {
-      listed = { maxIds, ids: store.getSearchScopeRowIds(categories, scope, maxIds) };
+      try {
+        listed = { maxIds, ids: store.getSearchScopeRowIds(categories, scope, maxIds) };
+      } catch (error) {
+        // It would fail again: later windows send the plain filter without retrying.
+        listed = { maxIds, ids: null };
+        throw error;
+      }
     }
     return listed.ids;
   };
