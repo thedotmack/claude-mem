@@ -7,6 +7,8 @@
 //                                                   conversations + deterministic links
 //   bun request-groups.mjs grouping-input [--days 14] [--limit 20]
 //                                                   undecided conversations of one root + its open requests
+//   bun request-groups.mjs judge [--days 14] [--apply]  route every undecided conversation with the judge
+//                                                   (code links, then Jev when the install has it); plan only without --apply
 //   bun request-groups.mjs apply <file|->            persist group decisions
 //   bun request-groups.mjs pending [--days 14] [--limit 48]   groups needing a progress review
 //   bun request-groups.mjs show <groupId>           one group's asks, work lists and dates (only new asks when amending)
@@ -41,7 +43,8 @@ export const PROGRESS_STATES = ['shipped', 'in-progress', 'stalled', 'abandoned'
 export const PREFERENCE_KINDS = ['directive', 'correction', 'praise', 'frustration'];
 export const USAGE_LEVELS = ['in-use', 'some-use', 'no-evidence', 'unknown'];
 export const VALUE_LEVELS = ['high', 'medium', 'low', 'unclear'];
-const LINK_KINDS = ['shared-work-list', 'shared-request-id', 'agent-judgment'];
+// `judge` links are written by code (request-judge.mjs): their evidence names the judge and its score.
+const LINK_KINDS = ['shared-work-list', 'shared-request-id', 'agent-judgment', 'judge'];
 // Each review adds one dated percent; the measured ETA reads the last two.
 export const MAX_READINGS = 20;
 
@@ -193,7 +196,8 @@ const emptyGroups = () => ({ version: 1, updatedAt: null, conversations: {}, gro
 
 /** Merge decisions into the stored ledger. Conversations listed in a decision
  * move to that group; others keep their previous group. `projectOf` maps a
- * conversation key to its project: a group holds one project root only. */
+ * conversation key to its project: a group holds one project root only, unless
+ * the decision names the request's `projectRoot` itself. */
 export function applyGroupDecisions(stored, decisions, now = Date.now(), { projectOf = new Map() } = {}) {
   if (!Array.isArray(decisions?.groups)) throw new TypeError('Decisions need a groups array.');
   const next = structuredClone(stored ?? emptyGroups());
@@ -215,7 +219,12 @@ export function applyGroupDecisions(stored, decisions, now = Date.now(), { proje
     const unsupported = decision.conversations.filter((key) => find(key) !== find(decision.conversations[0]));
     if (unsupported.length) throw new TypeError(`${label} joins ${unsupported.join(', ')} without evidence linking it to the anchor.`);
     const id = groupIdFor(decision.conversations[0]);
-    // A request stays in one project root, members it already has included.
+    // A decision may name the request's root itself: conversations from other roots may then join it, and
+    // the group records that root. Without one, a request stays in one project root, members it already
+    // has included. A group saved with a named root keeps that allowance when a later decision (a refresh
+    // answer, whose schema has no projectRoot) extends it.
+    if (decision.projectRoot != null && (typeof decision.projectRoot !== 'string' || !decision.projectRoot.trim())) throw new TypeError(`${label}.projectRoot must be a non-empty string when given.`);
+    const explicitRoot = decision.projectRoot ?? (next.groups[id]?.rootNamed ? next.groups[id].projectRoot : null);
     const allMembers = [...new Set([...decision.conversations, ...Object.entries(next.conversations).filter(([key, groupId]) => groupId === id && !decision.conversations.includes(key)).map(([key]) => key)])];
     const storedRoot = upgradedGroupRoot(next.groups[id]?.projectRoot, projectRoot(projectOf.get(next.groups[id]?.anchor)),
       allMembers.map((key) => projectRoot(projectOf.get(key))));
@@ -229,14 +238,21 @@ export function applyGroupDecisions(stored, decisions, now = Date.now(), { proje
       roots.set(root, [...(roots.get(root) ?? []), key]);
     }
     if (typeof storedRoot === 'string' && !rootWasUnknown && !roots.has(storedRoot)) roots.set(storedRoot, []);
-    if (roots.size > 1) throw new TypeError(`${label} joins conversations from different projects (${[...roots.keys()].map((root) => root || 'no project').join(', ')}); a request stays inside one project root.`);
-    const projectRootOfGroup = roots.size ? [...roots.keys()][0] : storedRoot ?? null;
+    if (explicitRoot == null && roots.size > 1) throw new TypeError(`${label} joins conversations from different projects (${[...roots.keys()].map((root) => root || 'no project').join(', ')}); a request stays inside one project root.`);
+    const projectRootOfGroup = explicitRoot != null ? explicitRoot.trim() : roots.size ? [...roots.keys()][0] : storedRoot ?? null;
     for (const key of decision.conversations) {
       next.conversations[key] = id;
       // A later decision can correct an earlier ignore; the viewer checks ignored first.
       if (next.ignored) delete next.ignored[key];
     }
-    next.groups[id] = { title: decision.title.trim(), anchor: decision.conversations[0], projectRoot: projectRootOfGroup, links, decidedAt: iso(now), anchorAsk: stored?.groups?.[id]?.anchor === decision.conversations[0] ? stored.groups[id].anchorAsk ?? null : null };
+    // A decision adds its evidence to the request's: a conversation joined one at a time (the judge, the
+    // owner's Join) names only its own link, and the links of members that stay must survive it. Links
+    // naming a conversation that left the group go with it.
+    const memberSet = new Set(allMembers);
+    const keptLinks = (next.groups[id]?.links ?? []).filter((link) => link.conversations.every((key) => memberSet.has(key)));
+    const known = new Set(keptLinks.map((link) => JSON.stringify(link)));
+    const mergedLinks = [...keptLinks, ...links.filter((link) => !known.has(JSON.stringify(link)))];
+    next.groups[id] = { title: decision.title.trim(), anchor: decision.conversations[0], projectRoot: projectRootOfGroup, ...(explicitRoot != null ? { rootNamed: true } : {}), links: mergedLinks, decidedAt: iso(now), anchorAsk: stored?.groups?.[id]?.anchor === decision.conversations[0] ? stored.groups[id].anchorAsk ?? null : null };
   }
   next.ignored ??= {};
   for (const [index, ignored] of (decisions.ignored ?? []).entries()) {
@@ -366,6 +382,19 @@ export function validateStory(story) {
       quotes: (preference.quotes ?? []).slice(0, 3).map((quote, quoteIndex) => ({ quote: boundedText(quote.quote, 300, `preferences[${index}].quotes[${quoteIndex}]`), at: isIsoOrNull(quote.at ?? null) ? quote.at ?? null : null })),
     })),
   };
+}
+
+/** Suggestions still waiting for the owner: the judge's mid-band picks (request-judge.mjs) whose
+ * request still exists and whose conversation is not in it yet. */
+export function openSuggestions(ledger) {
+  const groups = ledger?.groups;
+  if (!groups) return [];
+  return Object.entries(groups.suggestions ?? {})
+    .filter(([key, suggestion]) => suggestion?.status === 'open' && groups.groups[suggestion.requestId] && groups.conversations[key] !== suggestion.requestId)
+    .map(([conversationKey, suggestion]) => ({
+      conversationKey, requestId: suggestion.requestId, requestTitle: groups.groups[suggestion.requestId].title,
+      confidence: suggestion.confidence, evidence: suggestion.evidence, judge: suggestion.judge, at: suggestion.at ?? null,
+    }));
 }
 
 /** Everything the monitor needs, read without touching the database. */
@@ -662,10 +691,11 @@ const CLOSED_STATES = new Set(['shipped', 'abandoned']);
 /** One grouping question: only conversations the ledger has not decided,
  * earliest first and all from one project root, each judged from its opening
  * ask, beside that root's open requests. Decided conversations are never sent
- * again. `remaining` counts the new conversations left for later questions. */
-export function groupingInput(ledger, database, { sinceEpoch, limit = GROUPING_BATCH }) {
+ * again, and neither are the keys in `skip` (conversations the judge could not
+ * place in this run). `remaining` counts the new conversations left for later questions. */
+export function groupingInput(ledger, database, { sinceEpoch, limit = GROUPING_BATCH, skip = null }) {
   const candidates = readCandidates(database, { sinceEpoch, excludedPromptIds: ledger.agentWrittenPromptIds });
-  const decided = (key) => Boolean(ledger.groups.conversations[key] || ledger.groups.ignored?.[key]);
+  const decided = (key) => Boolean(ledger.groups.conversations[key] || ledger.groups.ignored?.[key] || skip?.has(key));
   const fresh = candidates.filter((candidate) => !decided(candidate.conversationKey));
   if (!fresh.length) return { root: null, conversations: [], openRequests: [], proposedLinks: [], remaining: 0 };
   const root = projectRoot(fresh[0].project);
@@ -729,13 +759,31 @@ export function validateGroupingAnswer(answer, input) {
   return answer;
 }
 
+/** `apply` without the file: the decisions merged into `stored`, with every touched conversation's
+ * project read from the database and each new group's first ask kept in the ledger (so a card's start
+ * never moves forward when the anchor conversation ages out of My Work's reads). Returns the next
+ * ledger without writing it. */
+export function applyDecisions(stored, decisions, { database, now = Date.now(), excludedPromptIds = null }) {
+  // Every conversation the decisions touch, and the members their groups already hold, by project.
+  const touched = (decisions?.groups ?? []).flatMap((group) => Array.isArray(group?.conversations) ? group.conversations : []).filter(isConversationKey);
+  const touchedGroups = new Set(touched.map((key) => groupIdFor(key)));
+  const existing = Object.entries(stored?.conversations ?? {}).filter(([, id]) => touchedGroups.has(id)).map(([key]) => key);
+  const next = applyGroupDecisions(stored, decisions, now, { projectOf: readConversationProjects(database, [...touched, ...existing]) });
+  const missing = Object.values(next.groups).filter((group) => !group.anchorAsk).map((group) => group.anchor);
+  const anchors = new Map(readCandidates(database, { conversationKeys: missing, excludedPromptIds }).map((candidate) => [candidate.conversationKey, candidate.original]));
+  for (const group of Object.values(next.groups)) if (!group.anchorAsk && anchors.has(group.anchor)) group.anchorAsk = anchors.get(group.anchor);
+  return next;
+}
+
 /**
  * localDeviceId: the worker's sync device id ("" when cloud sync never started), required by focus-input, record-focus
  * and refresh-needs so my-focus rows replay in the worker's order.
  * saveFocus(body): writes a checked record-focus answer through the worker and resolves {placed, focusAreaIds};
  * it throws a TypeError when the worker refused the answer before writing anything. record-focus returns a promise.
+ * judge: the Jev judge for the `judge` command: undefined reads it from the install's settings
+ * (request-judge.mjs configuredJudge), null routes with code links only. That command returns a promise.
  */
-export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), print = (value) => console.log(JSON.stringify(value, null, 2)), localDeviceId, saveFocus = null } = {}) {
+export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), print = (value) => console.log(JSON.stringify(value, null, 2)), localDeviceId, saveFocus = null, judge = undefined } = {}) {
   const [command, ...args] = argv;
   const db = () => database ?? openDatabase();
   const since = () => now - option(args, 'days', 14) * DAY_MS;
@@ -756,20 +804,15 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
     return print({ candidates: shown, proposedGroups: proposedGroups.filter((group) => group.links.length), skippedLists, projects: [...new Set(candidates.map((candidate) => projectRoot(candidate.project)))] });
   }
   if (command === 'grouping-input') return print(groupingInput(readLedger(dir), db(), { sinceEpoch: since(), limit: option(args, 'limit', GROUPING_BATCH) }));
+  if (command === 'judge') {
+    // Imported here, not at the top: the judge module builds on this one.
+    return import('./request-judge.mjs')
+      .then(({ configuredJudge, routeUndecided }) => routeUndecided({ dir, database: db(), judge: judge === undefined ? configuredJudge() : judge, now, days: option(args, 'days', 14), apply: args.includes('--apply') }))
+      .then(print);
+  }
   if (command === 'apply') {
-    const database = db();
-    const stored = readLedger(dir).groups;
-    const decisions = readInput(args[0] ?? '-');
-    // Every conversation the decisions touch, and the members their groups already hold, by project.
-    const touched = (decisions?.groups ?? []).flatMap((group) => Array.isArray(group?.conversations) ? group.conversations : []).filter(isConversationKey);
-    const touchedGroups = new Set(touched.map((key) => groupIdFor(key)));
-    const existing = Object.entries(stored.conversations).filter(([, id]) => touchedGroups.has(id)).map(([key]) => key);
-    const next = applyGroupDecisions(stored, decisions, now, { projectOf: readConversationProjects(database, [...touched, ...existing]) });
-    // Keep each group's first ask in the ledger so a card's start never moves
-    // forward when the anchor conversation ages out of My Work's reads.
-    const missing = Object.values(next.groups).filter((group) => !group.anchorAsk).map((group) => group.anchor);
-    const anchors = new Map(readCandidates(database, { conversationKeys: missing, excludedPromptIds: readLedger(dir).agentWrittenPromptIds }).map((candidate) => [candidate.conversationKey, candidate.original]));
-    for (const group of Object.values(next.groups)) if (!group.anchorAsk && anchors.has(group.anchor)) group.anchorAsk = anchors.get(group.anchor);
+    const ledger = readLedger(dir);
+    const next = applyDecisions(ledger.groups, readInput(args[0] ?? '-'), { database: db(), now, excludedPromptIds: ledger.agentWrittenPromptIds });
     writeJsonAtomic(join(dir, 'request-groups.json'), next);
     return print({ groups: Object.keys(next.groups).length, conversations: Object.keys(next.conversations).length });
   }
@@ -858,5 +901,5 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
     return Promise.resolve(saveFocus(body)).then((saved) => print({ placed: saved.placed, proposed: saved.focusAreaIds.length, focusAreaIds: saved.focusAreaIds }));
   }
   if (command === 'refresh-needs') return print(refreshNeeds({ dir, database: db(), now, days: option(args, 'days', 14), localDeviceId }));
-  throw new TypeError('Usage: request-groups.mjs candidates|apply|pending|show|record-progress|story-input|record-story|focus-input|record-focus|refresh-needs (see file header).');
+  throw new TypeError('Usage: request-groups.mjs candidates|grouping-input|judge|apply|pending|show|record-progress|story-input|record-story|focus-input|record-focus|refresh-needs (see file header).');
 }

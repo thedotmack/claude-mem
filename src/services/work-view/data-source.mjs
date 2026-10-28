@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { reduceWorkState } from './work-state-reduce.mjs';
 import { activitySignature, buildAgentView, readAgentRecords, readEvidence } from './agent-view.mjs';
-import { ledgerSignature, readLedger } from './request-groups.mjs';
+import { ledgerSignature, openSuggestions, readLedger } from './request-groups.mjs';
 import { recordedFile, bucketFileAvailable } from './work-product.mjs';
 
 // reduceWorkState lives in work-state-reduce.mjs so my-focus.mjs can replay rows without importing this module.
@@ -202,8 +202,16 @@ export class WorkStateSource {
 
   agentsSnapshot() {
     const now = Date.now();
+    // The judge's suggestions ("Looks like part of <request>"), each on the card of the conversation it is about.
+    const suggestions = openSuggestions(this.ledger);
+    const humanRequests = (this.agentView.humanRequests ?? []).map((request) => {
+      const suggestion = suggestions.find((entry) => entry.requestId !== request.groupId && (request.conversationKeys ?? []).includes(entry.conversationKey));
+      return suggestion ? { ...request, suggestion } : request;
+    });
     return {
       ...this.agentView,
+      humanRequests,
+      suggestions,
       teamMode: process.env.WORK_STATE_TEAM_MODE === '1',
       // Progress reviews and the build story come from the request-progress
       // skill; they are assessments, separate from recorded lifecycle.

@@ -91,6 +91,20 @@ export interface WorkViewWorkProduct {
 /** The build story request-progress last wrote. */
 export interface WorkViewBuildStory { narrative: string; writtenAt: string | null }
 
+/** The judge's "Looks like part of <request>" for one conversation (request-judge.mjs), waiting for the owner's
+ * Join / Not this (POST /api/work-view/suggestions `{ conversationKey, action: 'join' | 'not-this' }`). */
+export interface WorkViewRequestSuggestion {
+  conversationKey: string
+  /** The suggested request's group id and title. */
+  requestId: string
+  requestTitle: string
+  /** The judge's check score, between the suggest and join thresholds. */
+  confidence: number
+  evidence: string
+  judge: string
+  at: string | null
+}
+
 export interface WorkViewHumanRequest {
   id: string
   contentFingerprint: string
@@ -117,6 +131,8 @@ export interface WorkViewHumanRequest {
   anchorConversationKey?: string | null
   /** A focus area id, 'other', or absent while it is not sorted yet. Older workers leave it out. */
   focusAreaId?: string
+  /** The judge thinks this conversation is part of another request; absent when there is nothing to ask. Older workers leave it out. */
+  suggestion?: WorkViewRequestSuggestion
 }
 
 export interface WorkViewAgent {
@@ -257,6 +273,8 @@ export interface WorkViewSnapshot {
   story?: { story: WorkViewBuildStory | null } | null
   /** The worker's automatic refresh of goals and progress (refresh.json); null before its first check. Older workers leave it out. */
   refresh?: WorkViewRefresh | null
+  /** Every open judge suggestion; each is also on its conversation's request as `suggestion`. Older workers leave it out. */
+  suggestions?: WorkViewRequestSuggestion[]
 }
 
 /** refresh.json, written by the worker's automatic refresh (auto-refresh-worker.mjs). */

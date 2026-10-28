@@ -24,12 +24,20 @@ export function writeJsonAtomic(path: string, value: unknown): void;
 export function readLedger(dir?: string): Record<string, any>;
 export function readCandidates(database: LedgerDatabase, options: { sinceEpoch?: number; conversationKeys?: string[] | null; fullAsks?: boolean; excludedPromptIds?: Set<number> | null }): any[];
 export function ledgerSignature(dir?: string): string;
+/** The decisions `apply` takes, merged into `stored` with projects and first asks read from the database; not written. */
+export function applyDecisions(stored: Record<string, any> | null, decisions: unknown, options: { database: LedgerDatabase; now?: number; excludedPromptIds?: Set<number> | null }): Record<string, any>;
+/** A judge's mid-band pick waiting for the owner's Join / Not this (request-judge.mjs). */
+export interface RequestSuggestion { conversationKey: string; requestId: string; requestTitle: string; confidence: number; evidence: string; judge: string; at: string | null }
+export function openSuggestions(ledger: Record<string, any> | null | undefined): RequestSuggestion[];
+export function groupingInput(ledger: Record<string, any>, database: LedgerDatabase, options: { sinceEpoch: number; limit?: number; skip?: Set<string> | null }): GroupingInput;
 export function runCli(argv: string[], options?: {
   dir?: string; database?: LedgerDatabase | null; now?: number; print?: (value: any) => void;
   /** The worker's sync device id ('' when cloud sync never started); required by focus-input, record-focus and refresh-needs. */
   localDeviceId?: string;
   /** record-focus: writes the checked answer through the worker; throws a TypeError when refused before writing. */
   saveFocus?: ((body: import('./my-focus.mjs').RouterFocusBody) => { placed: number; focusAreaIds: string[] } | Promise<{ placed: number; focusAreaIds: string[] }>) | null;
+  /** `judge`: the Jev judge for the `judge` command (undefined: from the install's settings; null: code links only). That command answers with a promise. */
+  judge?: import('./request-judge.mjs').RequestJudge | null;
 }): void | Promise<void>;
 export interface FocusRequestRecord {
   anchor: string; groupId: string; title: string; firstAsk: string | null; state: string | null; summary: string | null; repo: string | null;
