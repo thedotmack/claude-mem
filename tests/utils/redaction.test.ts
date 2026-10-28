@@ -71,6 +71,28 @@ describe('redactSensitive built-in patterns', () => {
     expect(Object.keys(result.counts)).toEqual(['slack_token']);
   });
 
+  // Access tokens of the registries a coding agent talks to; fixtures are
+  // split so push protection doesn't flag them.
+  it.each([
+    ['gitlab_token', 'GITLAB_TOKEN=' + 'glp' + 'at-aBcDeFgHiJkLmNoPqRsT tail'],
+    ['gitlab_token', 'token ' + 'glp' + 'at-aBcDeFgHiJkLmNoPqRsT_-9.01.0abcdefgh1 tail'],
+    ['huggingface_token', 'HF_TOKEN=' + 'h' + 'f_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789 tail'],
+    ['npm_token', '//registry.npmjs.org/:_authToken=' + 'np' + 'm_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789 tail'],
+  ])('redacts a %s', (name, input) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain(`<redacted type='${name}'/>`);
+    expect(result.redacted).toMatch(/^.*'\/> tail$/);
+    expect(result.redacted).not.toMatch(/glpat-|hf_a|npm_a/);
+    expect(Object.keys(result.counts)).toEqual([name]);
+  });
+
+  it.each(['glpat-short', 'hf_short', 'npm_short', 'the hf_transformers module', 'npm_config_cache=/tmp/x'])(
+    'leaves %s alone',
+    (input) => {
+      expect(redactSensitive(input, cfg).redacted).toBe(input);
+    },
+  );
+
   it('still requires a Google key to end after its 35 characters', () => {
     const result = redactSensitive('AIzaSyA-0123456789abcdefghijklmnopqrstuv', cfg);
     expect(result.counts.google_api_key).toBeUndefined();
