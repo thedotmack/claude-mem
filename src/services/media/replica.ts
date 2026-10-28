@@ -45,18 +45,24 @@ export function syncReplicaMediaLinks(db: Database, observationId: number, metad
   const previousIds = (db.prepare('SELECT attachment_id FROM observation_media_links WHERE observation_id=?')
     .all(observationId) as Array<{ attachment_id: string }>).map(row => row.attachment_id);
 
+  // A newer accepted revision can re-add a replica an earlier one dropped. Its
+  // pending local cleanup is cancelled and the row returns to an unresolved
+  // placeholder: any stale cached directory is replaced by publishReplica on
+  // the next lazy download, which removes an existing target first.
+  const cancelPendingCleanup = db.prepare(`DELETE FROM media_cleanup_jobs WHERE attachment_id=$id
+    AND EXISTS (SELECT 1 FROM media_attachments a WHERE a.id=$id AND a.origin='replica' AND a.state='deleted')`);
   const ensurePlaceholder = db.prepare(`
     INSERT INTO media_attachments
       (id, replay_key, provenance, recipe, state, failure_code, upload_state, origin, created_at)
     VALUES ($id, 'replica:' || $id, '{"origin":"replica"}', 'screenshot-v1', 'failed', NULL, 'cancelled', 'replica', $now)
     ON CONFLICT(id) DO UPDATE SET state='failed', failure_code=NULL, variants=NULL, encoder_version=NULL
-      WHERE media_attachments.origin='replica' AND media_attachments.state='deleted'
-        AND NOT EXISTS (SELECT 1 FROM media_cleanup_jobs j WHERE j.attachment_id=media_attachments.id)`);
+      WHERE media_attachments.origin='replica' AND media_attachments.state='deleted'`);
   const upsertLink = db.prepare(`
     INSERT INTO observation_media_links (observation_id, attachment_id, event_key, label, inspection)
     VALUES (?, ?, '${REPLICA_EVENT_KEY}', ?, ?)
     ON CONFLICT(observation_id, attachment_id) DO UPDATE SET label=excluded.label, inspection=excluded.inspection`);
   for (const ref of manifestRefs) {
+    cancelPendingCleanup.run({ $id: ref.id });
     ensurePlaceholder.run({ $id: ref.id, $now: nowMs });
     upsertLink.run(observationId, ref.id, ref.label, ref.inspection);
   }

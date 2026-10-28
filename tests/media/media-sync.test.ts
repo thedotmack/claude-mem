@@ -454,6 +454,24 @@ describe('replica refs follow accepted revisions only', () => {
     expect(links(device)).toEqual([]);
     expect(attachment(device, ID_ONE)).toEqual({ state: 'deleted', origin: 'replica', upload_state: 'cancelled' });
   });
+
+  it('an image re-added by a newer revision before its cleanup ran is restored, not left deleted', async () => {
+    const device = makeDevice('b');
+    const ops = [revision(1, '2', manifest(ID_ONE))];
+    await apply(device, ops);
+    ops.push(revision(2, '3', manifest(ID_TWO)));
+    await apply(device, ops);
+    expect(attachment(device, ID_ONE)).toMatchObject({ state: 'deleted' });
+    expect(device.db.prepare('SELECT COUNT(*) AS n FROM media_cleanup_jobs WHERE attachment_id=?').get(ID_ONE)).toEqual({ n: 1 });
+
+    ops.push(revision(3, '4', manifest(ID_ONE)));
+    await apply(device, ops);
+    expect(links(device)).toEqual([{ attachment_id: ID_ONE }]);
+    expect(device.media.getMetadata(ID_ONE).state).toBe('unresolved_replica');
+    expect(device.db.prepare('SELECT COUNT(*) AS n FROM media_cleanup_jobs WHERE attachment_id=?').get(ID_ONE)).toEqual({ n: 0 });
+    device.media.reconcile(Date.now() + 1);
+    expect(device.media.getMetadata(ID_ONE).state).toBe('unresolved_replica');
+  });
 });
 
 describe('media upload state is independent of text sync', () => {
@@ -679,6 +697,23 @@ describe('deletion wins over uploads', () => {
     expect(pro.objects.has(uploaded.ref.id)).toBe(false);
     expect(pro.tombstones.has(lost.ref.id)).toBe(true);
     expect(device.db.prepare('SELECT COUNT(*) AS n FROM media_cloud_deletions').get()).toEqual({ n: 0 });
+  });
+
+  it('a deletion response that returns after stop() never touches the closed database', async () => {
+    const device = makeDevice('a');
+    device.db.prepare('INSERT INTO media_cloud_deletions(attachment_id, queued_at) VALUES(?, 0)').run(VALID_ID);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let requested!: () => void;
+    const inFlight = new Promise<void>(resolve => { requested = resolve; });
+    const client = { deleteAttachment: async () => { requested(); await gate; return { kind: 'ok' as const, value: null }; } } as unknown as MediaCloudClient;
+    const sync = new MediaCloudSync(device.db, device.media, client, { uploadsEnabled: true, now: () => clock });
+    const draining = sync.drain();
+    await inFlight;
+    sync.stop();
+    device.db.close();
+    release();
+    await expect(draining).resolves.toMatchObject({ deleted: 0 });
   });
 
   it('a deletion that lands while an upload is in flight removes the late cloud copy', async () => {

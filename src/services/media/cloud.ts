@@ -285,6 +285,8 @@ export class MediaCloudSync {
   private readonly drainIntervalMs: number;
   private timer: ReturnType<typeof setInterval> | null = null;
   private draining: Promise<MediaCloudDrainResult> | null = null;
+  /** Set by stop(): a request still in flight never touches the (closing) database afterwards. */
+  private stopped = false;
 
   constructor(
     private readonly db: Database,
@@ -298,13 +300,21 @@ export class MediaCloudSync {
 
   start(): void {
     if (this.timer) return;
+    this.stopped = false;
     const tick = () => { void this.drain().catch(error => logger.warn('CLOUD_SYNC', 'Media cloud drain failed', { code: error instanceof MediaError ? error.code : 'storage_unavailable' })); };
     tick();
     this.timer = setInterval(tick, this.drainIntervalMs);
     this.timer.unref?.();
   }
 
+  /**
+   * Clears the timer and makes an in-flight drain return before its next
+   * database touch. A cloud call that completed meanwhile keeps its queue row
+   * and is repeated after restart; both calls are idempotent (a deletion
+   * treats 404 as gone, an upload reuses the attachment ID).
+   */
   stop(): void {
+    this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
   }
@@ -317,8 +327,9 @@ export class MediaCloudSync {
 
   private async drainOnce(): Promise<MediaCloudDrainResult> {
     const result: MediaCloudDrainResult = { uploaded: 0, uploadRetries: 0, uploadFailures: 0, deleted: 0, deleteRetries: 0 };
+    if (this.stopped) return result;
     await this.drainDeletions(result);
-    if (this.options.uploadsEnabled) await this.drainUploads(result);
+    if (this.options.uploadsEnabled && !this.stopped) await this.drainUploads(result);
     return result;
   }
 
@@ -327,6 +338,7 @@ export class MediaCloudSync {
       WHERE retry_at<=? ORDER BY queued_at LIMIT ${DELETE_BATCH}`).all(this.now()) as Array<{ attachment_id: string; attempts: number }>;
     for (const job of jobs) {
       const outcome = await this.client.deleteAttachment(job.attachment_id);
+      if (this.stopped) return;
       if (outcome.kind === 'ok') {
         this.db.prepare('DELETE FROM media_cloud_deletions WHERE attachment_id=?').run(job.attachment_id);
         result.deleted++;
@@ -346,7 +358,10 @@ export class MediaCloudSync {
     const candidates = this.db.prepare(`SELECT id, provenance, encoder_version, variants, upload_attempts FROM media_attachments
       WHERE origin='native' AND state='ready' AND upload_state='pending' AND upload_retry_at<=?
       ORDER BY created_at LIMIT ${UPLOAD_BATCH}`).all(this.now()) as UploadCandidate[];
-    for (const candidate of candidates) await this.uploadOne(candidate, result);
+    for (const candidate of candidates) {
+      if (this.stopped) return;
+      await this.uploadOne(candidate, result);
+    }
   }
 
   private buildManifest(candidate: UploadCandidate): CloudUploadManifest {
@@ -377,13 +392,16 @@ export class MediaCloudSync {
       manifest = this.buildManifest(candidate);
       canonicalBytes = await this.store.readVariant(candidate.id, 'viewer');
     } catch (error) {
+      if (this.stopped) return;
       const code = error instanceof MediaError ? error.code : 'invalid_manifest';
       // A deletion that won during the read is not an upload failure.
       if (code === 'media_not_found') return;
       this.recordUploadFailure(attempted, { kind: code === 'storage_unavailable' ? 'retry' : 'final', code }, result);
       return;
     }
+    if (this.stopped) return;
     const outcome = await this.client.upload(manifest, canonicalBytes);
+    if (this.stopped) return;
     if (outcome.kind !== 'ok') {
       this.recordUploadFailure(attempted, outcome, result);
       return;
