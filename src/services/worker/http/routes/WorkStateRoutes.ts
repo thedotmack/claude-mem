@@ -10,14 +10,16 @@ import { getProjectContext } from '../../../../utils/project-name.js';
 import { logger } from '../../../../utils/logger.js';
 import type { WorkStateFields } from '../../../sqlite/work-state.js';
 import { isMyRulesList } from '../../../work-view/my-rules.mjs';
+import { isMyFocusList } from '../../../work-view/my-focus.mjs';
+import { GOAL_KINDS, isOwnerGoalsList } from '../../../work-view/owner-goals.mjs';
+import { MAX_WORK_STATE_FIELDS_JSON_CHARS } from '../../../work-view/work-state-limits.mjs';
 import {
   fitWorkStateLines,
   renderWorkStateLines,
   WORK_STATE_SECTION_CHARACTER_LIMIT,
 } from '../../../context/sections/WorkStateRenderer.js';
 
-/** One write is a few short fields; anything bigger would crowd the SessionStart section. */
-export const MAX_WORK_STATE_FIELDS_JSON_CHARS = 2_000;
+export { MAX_WORK_STATE_FIELDS_JSON_CHARS };
 
 // z.record intentionally drops __proto__; here every field is a primitive,
 // so validate own entries and copy with spread to keep literal data keys safely.
@@ -42,6 +44,18 @@ const workStateWriteSchema = z.object({
       `fields must be at most ${MAX_WORK_STATE_FIELDS_JSON_CHARS} characters as JSON`,
     ),
 });
+
+const CLOSING_STATUSES = ['dropped', 'done'];
+/** Why an owner-goals row cannot be saved, or null. List state rows and a row that only closes an item need no kind. */
+export function ownerGoalsRowRefusal(fields: WorkStateFields): string | null {
+  if (fields.task == null || fields.task === '') return null;
+  const onlyCloses = Object.keys(fields).every(key => key === 'task' || key === 'status') && CLOSING_STATUSES.includes(String(fields.status));
+  if (onlyCloses && !('goal_kind' in fields)) return null;
+  if (!(GOAL_KINDS as unknown[]).includes(fields.goal_kind)) {
+    return `an owner-goals item needs goal_kind ${GOAL_KINDS.map(kind => `"${kind}"`).join(' or ')}; got ${JSON.stringify(fields.goal_kind ?? null)}.`;
+  }
+  return null;
+}
 
 /**
  * Surface for `work_state_entries`, the agent's canonical to-do lists and
@@ -76,6 +90,18 @@ export class WorkStateRoutes extends BaseRouteHandler {
     if (isMyRulesList(list)) {
       res.status(403).send(`Not saved: "${list}" is written only from My Rules in the claude-mem viewer.`);
       return;
+    }
+    // My Focus rows are the owner's areas and placements; only the origin-checked /api/work-view/focus handler writes them.
+    if (isMyFocusList(list)) {
+      res.status(403).send(`Not saved: "${list}" is written only from My Focus in the claude-mem viewer.`);
+      return;
+    }
+
+    // Goals rows are validated, not blocked: save_goals.py writes them here. An item of a kind My Work cannot read
+    // would stop the whole view (the reader throws rather than guess), so it is refused at the door.
+    if (isOwnerGoalsList(list)) {
+      const refusal = ownerGoalsRowRefusal(fields);
+      if (refusal) { res.status(400).send(`Not saved: ${refusal}`); return; }
     }
 
     const checkout = getProjectContext(cwd);

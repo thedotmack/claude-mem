@@ -210,6 +210,16 @@ export function captureProcessStartToken(pid: number): string | null {
  */
 export function captureProcessName(pid: number): string | null {
   if (!Number.isInteger(pid) || pid <= 0) return null;
+  // Linux reads /proc/<pid>/comm, the field `ps -o comm=` prints: BusyBox
+  // `ps` has no `-p`, so the `ps` read always returned null there (#5098).
+  if (process.platform === 'linux') {
+    try {
+      const name = normalizeProcessName(readFileSync(`/proc/${pid}/comm`, 'utf-8').trim());
+      return name.length > 0 ? name : null;
+    } catch {
+      return null;
+    }
+  }
   try {
     const result = process.platform === 'win32'
       ? spawnSync(
