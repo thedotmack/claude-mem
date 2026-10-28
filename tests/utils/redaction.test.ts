@@ -231,10 +231,26 @@ describe('redactSensitive generic built-in patterns', () => {
     ['json style',   '{"client_secret": "GOCSPXabc12345"}',   'GOCSPXabc12345'],
     ['shell export', 'export AUTH_TOKEN=abc12345defghi',      'abc12345defghi'],
     ['yaml value',   'MY_API_KEY: uvwxyz123456',              'uvwxyz123456'],
+    // Bare key names, which redactJsonStrings already pairs as structured
+    // keys, but only in config-shaped positions (see the code lookalikes below).
+    ['bare api_key',           'api_key=uvwxyz123456',                        'uvwxyz123456'],
+    ['bare export secret',     'export secret=uvwxyz123456',                  'uvwxyz123456'],
+    ['bare query token',       'curl https://x.test/api?token=abc12345defghi', 'abc12345defghi'],
+    ['bare json secret',       '{"secret": "GOCSPXabc12345"}',                'GOCSPXabc12345'],
+    ['bare escaped json token', String.raw`{\"token\": \"abc12345defghi\"}`,  'abc12345defghi'],
+    ['bare yaml token',        'token: abc12345defghi',                       'abc12345defghi'],
+    ['bare nested yaml token', 'auth:\n  token: abc12345defghi\n  user: me',  'abc12345defghi'],
+    ['bare escaped yaml token', String.raw`auth:\n  token: abc12345defghi\n`, 'abc12345defghi'],
+    ['bare --token= flag',     'cli login --token=abc12345defghi',            'abc12345defghi'],
+    ['bare --api-key flag',    'cli login --api-key abc12345defghi',          'abc12345defghi'],
   ])('generic_token redacts a %s', (_style, input, secret) => {
-    const result = redactSensitive(input, cfg);
-    expect(result.counts.generic_token).toBe(1);
-    expect(result.redacted).not.toContain(secret);
+    // The worker scans tool output as JSON.stringify(response), so each
+    // position must also hold as the start of a stringified value.
+    for (const text of [input, JSON.stringify({ stdout: input })]) {
+      const result = redactSensitive(text, cfg);
+      expect(result.counts.generic_token).toBe(1);
+      expect(result.redacted).not.toContain(secret);
+    }
   });
 
   it.each([
@@ -251,14 +267,28 @@ describe('redactSensitive generic built-in patterns', () => {
       'password=12345678',        // purely numeric
       'password=abc',             // under the 8-char minimum
       'max_tokens=4096',          // `_TOKENS`, not `*_TOKEN`
-      'max_password_length=32',   // the key merely contains "password"
+      'tokens=abcdefghij',        // `tokens`, not `token`
+      'csrftoken=abcdefghij',     // no `_` before `token`, as for structured keys
+      'nosecret=abcdefghij',
+      // Source code that names a bare token/secret: only config-shaped
+      // positions (quoted JSON keys, env assignments, flags, yaml lines)
+      // count for the bare key names.
+      'const token = getToken();',
+      'token: TokenType;',
+      'interface Auth {\n  token: TokenType;\n  secret: SecretValue;\n}',
+      'secret = process.env.SECRET',
+      'let token = req.headers.authorization',
+      'the next token: undefined',
+      'headers = {"token": api_token_value}',
+      'if (x) token=getAuthToken()',
+      'max_password_length=32',  // the key merely contains "password"
       'Bearer 12345678',          // numeric, and not anchored to Authorization
       'AUTH_TOKEN=short',         // under the minimum
       'PWD=/Users/x/project',     // the working directory, not a password
       'OLDPWD=/tmp/a',
       'declare -x PWD="/home/someone/projects/app"',
     ];
-    for (const input of inputs) {
+    for (const input of inputs.flatMap((raw) => [raw, JSON.stringify({ stdout: raw })])) {
       const result = redactSensitive(input, cfg);
       expect(result.redacted).toBe(input);
       expect(Object.keys(result.counts)).toHaveLength(0);
