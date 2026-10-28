@@ -218,6 +218,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: string;
   CLAUDE_MEM_OPENAI_COMPAT_MODEL: string;
   CLAUDE_MEM_OPENAI_COMPAT_REASONING: string;
+  CLAUDE_MEM_OPENAI_COMPAT_OBSERVATION_BATCH_SIZE: string;
   // Quota fallback. Both empty (the default) = off: dispatch is unchanged.
   CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: string;
   CLAUDE_MEM_QUOTA_FALLBACK_MODEL: string;
@@ -496,6 +497,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: '',  // OpenAI-compatible base URL, e.g. https://integrate.api.nvidia.com/v1. Overrides the preset's base URL when set.
     CLAUDE_MEM_OPENAI_COMPAT_MODEL: '',  // Model id passed verbatim. Empty = the preset's default model.
     CLAUDE_MEM_OPENAI_COMPAT_REASONING: '',  // off | on. Empty = off: every openai-compatible request sends reasoning:{enabled:false}. "on" leaves reasoning to the endpoint.
+    CLAUDE_MEM_OPENAI_COMPAT_OBSERVATION_BATCH_SIZE: '1', // Queued same-context events per observer prompt (1-32); opt-in.
     CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: 'claude',  // 'claude' (the Anthropic plan; '' means this too) | 'gemini' | 'openrouter' | 'openai-compatible' | 'off': where observer work goes while the selected provider cannot serve (spent allowance, rate limit or over capacity past its retries, outage, repeated unusable replies). Claude is used only when a Claude login or key exists
     CLAUDE_MEM_QUOTA_FALLBACK_MODEL: '',     // Claude model for a Claude fallback run; '' = CLAUDE_MEM_MODEL and tier routing. Ignored for other fallbacks (only ClaudeProvider reads modelOverride)
     CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD: '', // '' (off) | 'subscription' | 'api-key': the Claude credential to run on while the primary one is held for quota. 'subscription': the Claude Code login, for a spent ANTHROPIC_API_KEY. 'api-key': ANTHROPIC_FALLBACK_API_KEY from .env, for a login that is spent or paused by the quota guard. Tried before CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER

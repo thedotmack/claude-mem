@@ -32,7 +32,11 @@ import { describeNetworkFailure, isConnectionRefused, networkFailureSuffix } fro
 import { resolveOpenAICompatPreset, type OpenAICompatPreset } from '../../shared/openai-compat-presets.js';
 import { buildKeyPool, resolvePoolKeys, retryPolicyForPool, withKeyPool } from '../../shared/api-key-pool.js';
 import { logger } from '../../utils/logger.js';
-import type { ActiveSession, ConversationMessage } from '../worker-types.js';
+import type { ActiveSession, ConversationMessage, PendingMessageWithId } from '../worker-types.js';
+import { buildObservationPrompt, renderObservationPrompt, type ObservationPromptParts } from '../../sdk/prompts.js';
+import { observationFieldMaxChars } from './context-window.js';
+import { boundedInteger } from './CodexAppServerPool.js';
+import { sameObservationContext } from './codex-observation-batch.js';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { randomUUID } from 'crypto';
@@ -474,6 +478,7 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
   // Match OpenRouter: forward the empty batch so the parser/recovery path sees
   // it, rather than dropping it the way Gemini does.
   protected readonly forwardEmptyMessageResponse = true;
+  protected override readonly rejectAbortedObservation = true;
 
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
     super(dbManager, sessionManager);
@@ -481,6 +486,38 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
 
   protected getConfig(): OpenAICompatConfig {
     return resolveOpenAICompatConfig(paths.settings());
+  }
+
+  /** Extend this turn with already-queued events; normal confirm/reset covers every claim. */
+  protected override observationTurnPrompt(session: ActiveSession, first: PendingMessageWithId, prompt: ObservationPromptParts): string {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const count = boundedInteger(settings.CLAUDE_MEM_OPENAI_COMPAT_OBSERVATION_BATCH_SIZE, 1, 32);
+    const fieldMaxChars = observationFieldMaxChars(session.observerContextWindowTokens);
+    // Like the Claude observer, add events only within two window-aware field
+    // caps. The first event keeps its normal condensation/rendering path.
+    const maxChars = 2 * fieldMaxChars;
+    let combined = renderObservationPrompt(prompt);
+    for (let size = 1; size < count; size++) {
+      let addition = '';
+      const next = this.sessionManager.claimNextObservation(session.sessionDbId, candidate => {
+        if (!sameObservationContext(first, candidate)) return false;
+        // Oversized fields need their own asynchronous condensation pass.
+        if ([candidate.tool_input, candidate.tool_response].some(field =>
+          (JSON.stringify(field, null, 2) ?? '').length > fieldMaxChars)) return false;
+        addition = buildObservationPrompt({
+          id: candidate._persistentId,
+          tool_name: candidate.tool_name!,
+          tool_input: JSON.stringify(candidate.tool_input),
+          tool_output: JSON.stringify(candidate.tool_response),
+          created_at_epoch: candidate._originalTimestamp,
+          cwd: candidate.cwd,
+        }, fieldMaxChars);
+        return combined.length + 2 + addition.length <= maxChars;
+      });
+      if (!next) break;
+      combined += '\n\n' + addition;
+    }
+    return combined;
   }
 
   protected missingApiKeyError(): Error {
