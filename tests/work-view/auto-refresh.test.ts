@@ -519,6 +519,30 @@ describe('parallel reviews', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it('an invalid CLAUDE_MEM_MAX_CONCURRENT_AGENTS never leaves zero review lanes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-lanes-'));
+    const saved = process.env.CLAUDE_MEM_MAX_CONCURRENT_AGENTS;
+    try {
+      const lanesWith = (file: string | null, environment: string | undefined) => {
+        if (file === null) rmSync(join(dir, 'settings.json'), { force: true });
+        else writeFileSync(join(dir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_MAX_CONCURRENT_AGENTS: file }));
+        if (environment === undefined) delete process.env.CLAUDE_MEM_MAX_CONCURRENT_AGENTS;
+        else process.env.CLAUDE_MEM_MAX_CONCURRENT_AGENTS = environment;
+        return reviewConcurrency(dir);
+      };
+      for (const invalid of ['0', '-1', 'many']) {
+        expect(lanesWith(invalid, invalid)).toBe(2);
+        expect(lanesWith(null, invalid)).toBe(2);
+        expect(lanesWith(invalid, '4')).toBe(4);
+      }
+      expect(lanesWith('3', undefined)).toBe(3);
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_MEM_MAX_CONCURRENT_AGENTS;
+      else process.env.CLAUDE_MEM_MAX_CONCURRENT_AGENTS = saved;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('a large backlog runs at most CLAUDE_MEM_MAX_CONCURRENT_AGENTS batches at once, and every batch is saved', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-parallel-'));
     try {

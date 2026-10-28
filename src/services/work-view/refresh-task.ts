@@ -39,8 +39,12 @@ const SAVE_GOALS_FAILED_AFTER_WRITING_EXIT = 3;
  * than a number of its own. Read on every run, so raising the setting takes effect without a restart.
  */
 export function reviewConcurrency(dataDir: string): number {
-  const configured = parseInt(SettingsDefaultsManager.loadFromFile(join(dataDir, 'settings.json'), true, { readOnly: true }).CLAUDE_MEM_MAX_CONCURRENT_AGENTS, 10);
-  return Number.isFinite(configured) && configured >= 1 ? configured : parseInt(SettingsDefaultsManager.get('CLAUDE_MEM_MAX_CONCURRENT_AGENTS'), 10);
+  // A 0, negative or non-numeric value would start no review lanes and skip every review without a failure,
+  // so each source is used only when it is a positive count: settings file, then environment, then built-in default.
+  const positive = (value: string | undefined) => { const count = parseInt(value ?? '', 10); return Number.isFinite(count) && count >= 1 ? count : null; };
+  return positive(SettingsDefaultsManager.loadFromFile(join(dataDir, 'settings.json'), true, { readOnly: true }).CLAUDE_MEM_MAX_CONCURRENT_AGENTS)
+    ?? positive(SettingsDefaultsManager.get('CLAUDE_MEM_MAX_CONCURRENT_AGENTS'))
+    ?? parseInt(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_MAX_CONCURRENT_AGENTS, 10);
 }
 
 /** The model each step runs on. Small, fast models match conversations and goals; stronger ones judge
