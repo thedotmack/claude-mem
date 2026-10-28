@@ -68,14 +68,19 @@ function keyedLookbehind(key: string): string {
 // - a CLI flag (`--token=…`, `--api-key …`);
 // - a yaml line (`token: …` at a line start, raw or JSON-escaped `\n`) whose
 //   value runs to the end of the line, which a typed field (`token: T;`) doesn't.
+// The worker scans tool output as `JSON.stringify(response)`, so a JSON
+// string's own quotes count as the start and end of its text, and escaped
+// whitespace (`\n`, `\t`) as whitespace.
 const BARE_TOKEN_KEY = String.raw`(?:token|secret|api_key)`;
 const ESCAPED_QUOTE = String.raw`\\{0,3}["']`;
-const LINE_START = String.raw`(?:^|\n|\\n)[ \t]{0,8}(?:-[ \t]{1,8})?`;
-const LINE_END = String.raw`(?:${ESCAPED_QUOTE})?[ \t]{0,8}(?:$|\r?\n|\\[rn]|#)`;
+const STRING_EDGE = String.raw`(?<!\\)"`;
+const ASSIGNMENT_START = String.raw`(?:^|[\s?&]|\\[nrt]|${STRING_EDGE})`;
+const LINE_START = String.raw`(?:^|\n|\\n|${STRING_EDGE})[ \t]{0,8}(?:-[ \t]{1,8})?`;
+const LINE_END = String.raw`(?:${ESCAPED_QUOTE})?[ \t]{0,8}(?:$|\r?\n|\\{1,3}[rn]|#|${STRING_EDGE})`;
 const GENERIC_TOKEN_REGEX = new RegExp([
   `${keyedLookbehind(String.raw`\b\w*_${BARE_TOKEN_KEY}`)}${GENERIC_VALUE}`,
   `(?<=${ESCAPED_QUOTE}${BARE_TOKEN_KEY}${ESCAPED_QUOTE}${BOUNDED_SPACE}:${BOUNDED_SPACE}${ESCAPED_QUOTE})${GENERIC_VALUE}`,
-  `(?<=(?:^|[\\s?&])${BARE_TOKEN_KEY}=${OPTIONAL_QUOTE})${GENERIC_VALUE}(?!\\(|${GENERIC_VALUE_CLASS})`,
+  `(?<=${ASSIGNMENT_START}${BARE_TOKEN_KEY}=${OPTIONAL_QUOTE})${GENERIC_VALUE}(?!\\(|${GENERIC_VALUE_CLASS})`,
   String.raw`(?<=--(?:token|secret|api[-_]key)(?:=|[ \t]{1,8})${OPTIONAL_QUOTE})${GENERIC_VALUE}`,
   `(?<=${LINE_START}${BARE_TOKEN_KEY}:[ \\t]{1,8}${OPTIONAL_QUOTE})${GENERIC_VALUE}(?=${LINE_END})`,
 ].join('|'), 'gi');

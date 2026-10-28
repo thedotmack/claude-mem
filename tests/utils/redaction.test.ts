@@ -244,9 +244,13 @@ describe('redactSensitive generic built-in patterns', () => {
     ['bare --token= flag',     'cli login --token=abc12345defghi',            'abc12345defghi'],
     ['bare --api-key flag',    'cli login --api-key abc12345defghi',          'abc12345defghi'],
   ])('generic_token redacts a %s', (_style, input, secret) => {
-    const result = redactSensitive(input, cfg);
-    expect(result.counts.generic_token).toBe(1);
-    expect(result.redacted).not.toContain(secret);
+    // The worker scans tool output as JSON.stringify(response), so each
+    // position must also hold as the start of a stringified value.
+    for (const text of [input, JSON.stringify({ stdout: input })]) {
+      const result = redactSensitive(text, cfg);
+      expect(result.counts.generic_token).toBe(1);
+      expect(result.redacted).not.toContain(secret);
+    }
   });
 
   it.each([
@@ -284,7 +288,7 @@ describe('redactSensitive generic built-in patterns', () => {
       'OLDPWD=/tmp/a',
       'declare -x PWD="/home/someone/projects/app"',
     ];
-    for (const input of inputs) {
+    for (const input of inputs.flatMap((raw) => [raw, JSON.stringify({ stdout: raw })])) {
       const result = redactSensitive(input, cfg);
       expect(result.redacted).toBe(input);
       expect(Object.keys(result.counts)).toHaveLength(0);
