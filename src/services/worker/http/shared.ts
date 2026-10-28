@@ -22,6 +22,9 @@ import type { TranscriptCheckpointGate } from '../../transcripts/types.js';
 import { committedMediaEventResult } from '../../media/linkage.js';
 import { captureObservationMedia } from '../../media/capture.js';
 import type { MediaEventIdentity } from '../../../shared/media-contract.js';
+import type { SpooledDeliverablesPayload } from '../../../shared/hook-spool.js';
+import { isInsideDeliverablesDir, resolveDeliverablesDir } from '../../../shared/deliverables.js';
+import { statSync } from 'fs';
 
 export interface IngestContext {
   sessionManager: SessionManager;
@@ -509,6 +512,94 @@ export interface SessionEndPayload {
   contentSessionId: string;
   /** Already normalized (normalizePlatformSource). */
   platformSource: string;
+}
+
+export interface DeliverablesIngestResult {
+  status: 'accepted' | 'skipped';
+  reason?: 'project_excluded' | 'private';
+  stored: number;
+  duplicates: number;
+  /** Copies this worker cannot open (not a file on its disk inside the deliverables directory): logged, not recorded. */
+  unavailable: number;
+}
+
+function isRegularFile(path: string): boolean {
+  try { return statSync(path).isFile(); } catch { return false; }
+}
+
+/**
+ * Records the bucket copies a Stop (or SubagentStop) hook made
+ * (src/cli/deliverables-capture.ts). The files are already in the bucket; this
+ * only writes the rows My Work links, and only for copies on this worker's own
+ * disk: a hook on another host names paths this worker cannot open, and a row
+ * for one would be a link that never works. A turn whose prompt was entirely
+ * <private> records nothing, the rule observations and summaries follow; the
+ * hook checks that before copying, this guards every other caller. A copy the
+ * hook could not make is logged here too, so a missing deliverable is explained
+ * in the worker log.
+ */
+export function ingestDeliverables(
+  payload: SpooledDeliverablesPayload & { enqueuedAtEpochMs?: number },
+  dbManager: DatabaseManager = requireIngestContext().dbManager,
+  handoff: IngestHandoff = {},
+): DeliverablesIngestResult {
+  const { contentSessionId, cwd, project, agentId, files, errors } = payload;
+  const platformSource = normalizePlatformSource(payload.platformSource);
+  const nothing = { stored: 0, duplicates: 0, unavailable: 0 };
+
+  const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+  if (cwd && isProjectExcluded(cwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
+    return { status: 'skipped', reason: 'project_excluded', ...nothing };
+  }
+  for (const failure of errors ?? []) {
+    logger.warn('HOOK', 'A deliverable was not copied into the project bucket', { project, sourcePath: failure.sourcePath, error: failure.error });
+  }
+
+  const store = dbManager.getSessionStore();
+  const sessionDbId = store.findSessionDbIdByContentSessionId(contentSessionId, platformSource);
+  if (sessionDbId !== null) {
+    const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId, payload.enqueuedAtEpochMs);
+    const privacy = PrivacyCheckValidator.checkUserPromptPrivacy(store, contentSessionId, promptNumber, 'deliverables', sessionDbId);
+    if (!privacy.allow) {
+      return { status: 'skipped', reason: 'private', ...nothing };
+    }
+  }
+
+  const deliverablesDir = resolveDeliverablesDir();
+  let stored = 0;
+  let duplicates = 0;
+  let unavailable = 0;
+  for (const file of files) {
+    if (!isInsideDeliverablesDir(file.bucketPath, deliverablesDir) || !isRegularFile(file.bucketPath)) {
+      unavailable++;
+      logger.warn('HOOK', 'A deliverable names a bucket copy this worker cannot open; not recorded', { project, bucketPath: file.bucketPath, sourcePath: file.sourcePath, deliverablesDir });
+      continue;
+    }
+    const result = store.recordDeliverable({
+      project,
+      contentSessionId,
+      platformSource,
+      agentId: agentId ?? null,
+      title: file.title,
+      kind: file.kind,
+      sourcePath: file.sourcePath,
+      bucketPath: file.bucketPath,
+      bytes: file.bytes,
+      sha256: file.sha256,
+      declared: file.declared,
+      listName: file.list ?? null,
+      field: file.field ?? null,
+      toolUseId: file.toolUseId ?? null,
+      occurredAtEpoch: file.occurredAtEpoch,
+      createdAtEpoch: payload.enqueuedAtEpochMs,
+    });
+    if (result.inserted) stored++;
+    else duplicates++;
+  }
+  // Every row is written: the hand-off point.
+  handoff.markHandedOff?.();
+  logger.info('HOOK', 'Deliverables recorded', { project, stored, duplicates, unavailable });
+  return { status: 'accepted', stored, duplicates, unavailable };
 }
 
 export async function ingestSessionEnd(

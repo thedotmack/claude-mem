@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { setFakeSpawn } from '../../helpers/fake-spawn.js';
 import { EventEmitter } from 'events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import type { spawn } from 'child_process';
-import { GEMINI_NO_MCP_SERVERS, runAgentTask, type AgentTask } from '../../../src/services/agent-runner/run.js';
+import { codexModelForLogin, GEMINI_NO_MCP_SERVERS, runAgentTask, type AgentTask } from '../../../src/services/agent-runner/run.js';
 import type { UsableAgent } from '../../../src/services/agent-runner/detect.js';
 
 class FakeStream extends EventEmitter {
@@ -33,8 +33,10 @@ function fakeSpawn(calls: SpawnCall[], answer: (call: SpawnCall) => void): typeo
   }) as unknown as typeof spawn;
 }
 
+const CODEX_PATH = join(realpathSync(tmpdir()), 'agent-runner-tools', 'codex');
+
 const agents = (...ids: Array<UsableAgent['id']>): UsableAgent[] =>
-  (['claude-code', 'codex', 'gemini'] as const).map(id => ({ id, path: ids.includes(id) ? `/bin/${id}` : null, authenticated: ids.includes(id), reason: 'test' }));
+  (['claude-code', 'codex', 'gemini'] as const).map(id => ({ id, path: ids.includes(id) ? (id === 'codex' ? CODEX_PATH : `/bin/${id}`) : null, authenticated: ids.includes(id), reason: 'test' }));
 
 const LIGHT_MODELS = { 'claude-code': { model: 'haiku' }, codex: { model: 'gpt-6-luna', reasoningEffort: 'low' }, gemini: { model: 'flash-lite' } };
 
@@ -142,7 +144,7 @@ describe('agent runner', () => {
       expect(result.result).toBe('inline done: {"ok":true}');
       expect(calls).toHaveLength(1);
       const { command, args, options, child } = calls[0];
-      expect(command).toBe('/bin/codex');
+      expect(command).toBe(CODEX_PATH);
       expect(args[0]).toBe('exec');
       expect(args).toContain('--strict-config');
       expect(args).not.toContain('-s'); // legacy sandbox flags would override the scoped profile
@@ -150,7 +152,7 @@ describe('agent runner', () => {
       const policy = args.find(arg => arg.startsWith('permissions.claude-mem-refresh.filesystem='))!;
       expect(policy).toContain('":root"="deny"');
       expect(policy).toContain('":workspace_roots"={"."="read"}');
-      expect(policy).toContain('"/bin"="read"');
+      expect(policy).toContain(`${JSON.stringify(dirname(CODEX_PATH))}="read"`);
       expect(args).toContain('permissions.claude-mem-refresh.network.enabled=false');
       expect(args).toContain('--ephemeral');
       expect(args).toContain('--ignore-user-config');
@@ -161,6 +163,29 @@ describe('agent runner', () => {
       expect(child.stdinText).toBe('inline prompt for codex');
       expect(options.cwd).toBe(cwd);
       expect((options.env as Record<string, string>).CLAUDE_MEM_INTERNAL).toBe('1');
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  it('Codex launches the real executable behind a symlink without weakening the sandbox', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-codex-link-'));
+    try {
+      const binary = join(cwd, 'codex-native');
+      const launcher = join(cwd, 'codex-link');
+      writeFileSync(binary, 'fixture');
+      symlinkSync(binary, launcher);
+      const calls: SpawnCall[] = [];
+      const spawnImpl = fakeSpawn(calls, call => {
+        writeFileSync(call.args[call.args.indexOf('-o') + 1], 'ok');
+        call.child.emit('close', 0);
+      });
+      const result = await runTask(task(cwd), {
+        detect: async () => [{ id: 'codex', path: launcher, authenticated: true, reason: 'fixture' }],
+        query: neverQuery, spawn: spawnImpl, buildEnv: env,
+      });
+      expect(result.state).toBe('ok');
+      expect(calls[0].command).toBe(realpathSync(binary));
+      expect(calls[0].args).toContain('permissions.claude-mem-refresh.network.enabled=false');
+      expect(calls[0].args.find(arg => arg.startsWith('permissions.claude-mem-refresh.filesystem='))).toContain('\":root\"=\"deny\"');
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 
@@ -184,6 +209,79 @@ describe('agent runner', () => {
       expect(args.slice(schemaIndex + 2)).toEqual(['-m', 'gpt-6-luna', '-c', 'model_reasoning_effort="low"', '-']);
       expect(schemaSeen).toEqual(schema);
       expect(existsSync(args[schemaIndex + 1])).toBe(false);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  it('Codex: a model this login does not list is replaced by its listed namesake, else left to Codex (Oct 25: gpt-6-luna on a ChatGPT login)', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'agent-runner-codex-home-'));
+    try {
+      const low = [{ effort: 'low' }, { effort: 'medium' }];
+      const writeList = (models: unknown[]) => writeFileSync(join(home, 'models_cache.json'), JSON.stringify({ fetched_at: '2026-10-27T05:50:35Z', models }));
+      // The models Codex 0.154.0 listed for a ChatGPT login on Oct 27.
+      writeList([
+        { slug: 'gpt-6-astra', visibility: 'list', priority: 3, supported_reasoning_levels: low },
+        { slug: 'gpt-reserve', visibility: 'hide', priority: 4 },
+        { slug: 'gpt-5.6-sol', visibility: 'list', priority: 6, supported_reasoning_levels: low },
+        { slug: 'gpt-5.6-terra', visibility: 'list', priority: 7, supported_reasoning_levels: low },
+        { slug: 'gpt-5.6-luna', visibility: 'list', priority: 8, supported_reasoning_levels: low },
+      ]);
+      const light = LIGHT_MODELS.codex;
+      expect(codexModelForLogin(light, { CODEX_HOME: home })).toEqual({ model: 'gpt-5.6-luna', reasoningEffort: 'low' });
+      expect(codexModelForLogin(light, { HOME: join(home, 'nowhere') })).toEqual(light);
+      expect(codexModelForLogin(light, {})).toEqual(light);
+      expect(codexModelForLogin({}, { CODEX_HOME: home })).toEqual({});
+      expect(codexModelForLogin({ model: 'gpt-7-nova' }, { CODEX_HOME: home })).toEqual({});
+      expect(codexModelForLogin({ model: 'gpt-5.6-sol', reasoningEffort: 'high' }, { CODEX_HOME: home })).toEqual({ model: 'gpt-5.6-sol', reasoningEffort: 'high' });
+      writeList([{ slug: 'gpt-6-luna', visibility: 'list', priority: 1 }]);
+      expect(codexModelForLogin(light, { CODEX_HOME: home })).toEqual(light);
+
+      // The substitute reaches codex exec.
+      writeList([{ slug: 'gpt-5.6-luna', visibility: 'list', priority: 8, supported_reasoning_levels: low }]);
+      const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-codex-model-'));
+      try {
+        const calls: SpawnCall[] = [];
+        const spawnImpl = fakeSpawn(calls, call => { writeFileSync(call.args[call.args.indexOf('-o') + 1], '{"ok":true}'); call.child.emit('close', 0); });
+        const lightTask: AgentTask = { ...task(cwd), run: async ask => ask('prompt', LIGHT_MODELS) };
+        const result = await runTask(lightTask, { detect: async () => agents('codex'), query: neverQuery, spawn: spawnImpl, buildEnv: async () => ({ ...(await env()), CODEX_HOME: home }) });
+        expect(result.state).toBe('ok');
+        expect(calls[0].args.slice(-5)).toEqual(['-m', 'gpt-5.6-luna', '-c', 'model_reasoning_effort="low"', '-']);
+      } finally { rmSync(cwd, { recursive: true, force: true }); }
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  it('Codex: a model the login refuses at run time is retried once on the login default model (Oct 25: model_not_found)', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-codex-refused-'));
+    try {
+      const calls: SpawnCall[] = [];
+      const spawnImpl = fakeSpawn(calls, call => {
+        if (call.args.includes('-m')) {
+          call.child.stderr.emit('data', Buffer.from(`ERROR: {"detail":"The '${LIGHT_MODELS.codex.model}' model is not supported when using Codex with a ChatGPT account.","code":"model_not_found"}`));
+          call.child.emit('close', 1);
+          return;
+        }
+        writeFileSync(call.args[call.args.indexOf('-o') + 1], '{"ok":true}');
+        call.child.emit('close', 0);
+      });
+      // No models list in CODEX_HOME, so the step's model is sent as named and refused.
+      const lightTask: AgentTask = { ...task(cwd), run: async ask => ask('prompt', LIGHT_MODELS) };
+      const result = await runTask(lightTask, { detect: async () => agents('codex'), query: neverQuery, spawn: spawnImpl, buildEnv: async () => ({ ...(await env()), CODEX_HOME: join(cwd, 'no-codex-home') }) });
+      expect(result.state).toBe('ok');
+      expect(calls).toHaveLength(2);
+      expect(calls[0].args).toContain('-m');
+      expect(calls[1].args).not.toContain('-m');
+      expect(calls[1].args.join(' ')).not.toContain('model_reasoning_effort');
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  it('Codex: any other failure is not retried', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-codex-other-'));
+    try {
+      const calls: SpawnCall[] = [];
+      const spawnImpl = fakeSpawn(calls, call => { call.child.stderr.emit('data', Buffer.from('ERROR: stream disconnected')); call.child.emit('close', 1); });
+      const lightTask: AgentTask = { ...task(cwd), run: async ask => ask('prompt', LIGHT_MODELS) };
+      const result = await runTask(lightTask, { detect: async () => agents('codex'), query: neverQuery, spawn: spawnImpl, buildEnv: async () => ({ ...(await env()), CODEX_HOME: join(cwd, 'no-codex-home') }) });
+      expect(result.state).toBe('failed');
+      expect(calls).toHaveLength(1);
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 
@@ -211,7 +309,7 @@ describe('agent runner', () => {
     const query = (() => (async function* () { yield { type: 'result', subtype: 'error_during_execution', is_error: true, result: 'quota' }; })()) as never;
     const calls: SpawnCall[] = [];
     const spawnImpl = fakeSpawn(calls, call => {
-      if (call.command === '/bin/codex') { call.child.stderr.emit('data', 'not signed in'); call.child.emit('close', 1); return; }
+      if (call.command === CODEX_PATH) { call.child.stderr.emit('data', 'not signed in'); call.child.emit('close', 1); return; }
       call.child.stdout.emit('data', JSON.stringify({ response: 'fine' }));
       call.child.emit('close', 0);
     });
@@ -229,7 +327,7 @@ describe('agent runner', () => {
   it('when every agent fails, the error names each one\'s failure in the order tried', async () => {
     const query = (() => (async function* () { yield { type: 'result', subtype: 'error_during_execution', is_error: true, result: 'narrative is 22000 characters' }; })()) as never;
     const spawnImpl = fakeSpawn([], call => {
-      if (call.command === '/bin/codex') { call.child.stderr.emit('data', 'story refused'); call.child.emit('close', 1); return; }
+      if (call.command === CODEX_PATH) { call.child.stderr.emit('data', 'story refused'); call.child.emit('close', 1); return; }
       call.child.stderr.emit('data', 'not running in a trusted directory'); call.child.emit('close', 55);
     });
     const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-all-fail-'));
@@ -249,7 +347,7 @@ describe('agent runner', () => {
     try {
       const calls: SpawnCall[] = [];
       const spawnImpl = fakeSpawn(calls, call => {
-        if (call.command === '/bin/codex') { writeFileSync(call.args[call.args.indexOf('-o') + 1], 'ok'); call.child.emit('close', 0); return; }
+        if (call.command === CODEX_PATH) { writeFileSync(call.args[call.args.indexOf('-o') + 1], 'ok'); call.child.emit('close', 0); return; }
         call.child.stdout.emit('data', JSON.stringify({ response: 'ok' }));
         call.child.emit('close', 0);
       });

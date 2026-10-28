@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { MotionConfig } from 'motion/react'
-import { GoalIcon, InboxIcon, ListChecksIcon, UsersIcon } from 'lucide-react'
+import { InboxIcon, ListChecksIcon, UsersIcon } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card'
@@ -10,27 +10,32 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { ClassicViewerLink, DeviceFreshness, GitHubStars, LiveIndicator, WorkspaceContext, type Workspace } from '@/components/bits'
 import { CmemMark } from '@/components/brand'
+import { FocusChipRow, FocusRail, PastFocusLink, type FocusSelection } from '@/components/focus-nav'
 import { RequestDetail } from '@/components/request-detail'
 import { cn } from '@/lib/utils'
-import { MyGoals } from '@/pages/my-goals'
+import { PastFocus } from '@/pages/past-focus'
 import { MyRules } from '@/pages/my-rules'
 import { MyWork } from '@/pages/my-work'
+import { SuggestedAreas } from '@/pages/suggested-areas'
 import { Req, SpecOverlayContext } from '@/spec/req'
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { Spinner } from '@/components/ui/spinner'
-import { playDemoUpdates, receiveConnectionStatus, receiveLiveWorkModel, requestById, setActiveWorkDataSource, settleInitialWorkModelLoad, useWorkModel, useWorkModelLoad, type Request } from '@/data'
+import { needsYou, OTHER_FOCUS_AREA_ID, playDemoUpdates, receiveConnectionStatus, receiveLiveWorkModel, requestById, setActiveWorkDataSource, settleInitialWorkModelLoad, useWorkModel, useWorkModelLoad, type Request } from '@/data'
 import { localSource } from '@/live/local-source'
+import { resolveFocusAreaId } from '@/live/to-focus-model'
 import { sampleSource } from '@/live/sample-source'
 import type { WorkDataSource } from '@/live/work-data-source'
 
 /** `setup` is the install funnel (`?setup=1`): a full page outside the nav that becomes My Work when it completes. */
-type Page = 'setup' | 'work' | 'goals' | 'rules'
+type Page = 'setup' | 'work' | 'rules'
 type NavPage = Exclude<Page, 'setup'>
+/** MY FOCUS sits above these: its areas, Other and Suggested (focus-nav.tsx). Past focus is at the bottom of the rail. */
 const PAGES: { id: NavPage; label: string; icon: typeof InboxIcon; section: string }[] = [
   { id: 'work', label: 'My Work', icon: InboxIcon, section: 'Monitor' },
-  { id: 'goals', label: 'My Goals', icon: GoalIcon, section: 'Steer' },
   { id: 'rules', label: 'My Rules', icon: ListChecksIcon, section: 'Steer' },
 ]
+/** What the main column shows: a page, or one of the focus views the rail opens. */
+type View = NavPage | 'suggested' | 'past-focus'
 const NAV_SECTIONS = [...new Set(PAGES.map((entry) => entry.section))]
 
 
@@ -122,7 +127,9 @@ function WorkApp() {
 function LoadedApp() {
   const { sourceKind } = useWorkModel()
   const sample = sourceKind === 'sample'
-  const [page, setPage] = useState<NavPage>('work')
+  const [view, setView] = useState<View>('work')
+  // The area My Work is filtered to (an area id or Other); null shows every request. Session state only.
+  const [focusChoice, setFocusChoice] = useState<string | null>(null)
   const [workspaceChoice, setWorkspace] = useState<Workspace>({ mode: 'home', team: false, connected: false })
   // Outside sample mode the place comes from the source: the local worker is at home, cmem.ai is on the go.
   const workspace: Workspace = sample ? workspaceChoice : { ...workspaceChoice, mode: sourceKind === 'cloud' ? 'web' : 'home' }
@@ -131,9 +138,10 @@ function LoadedApp() {
   // Whether the opened request was in today's live feed, so the drawer can tell "left the feed" from "never in it".
   const [openRequest, setOpenRequestState] = useState<{ request: Request; fromLiveFeed: boolean } | null>(null)
   const setOpenRequest = (request: Request | null) => setOpenRequestState(request ? { request, fromLiveFeed: requestById(request.id) !== null } : null)
-  const [focusGoalId, setFocusGoalId] = useState<string | undefined>()
-  const { requests } = useWorkModel()
-  const yourMoveCount = requests.filter((request) => request.state === 'your-move' || request.state === 'needs-check').length
+  const { requests, focusAreas } = useWorkModel()
+  // An area merged away shows its target; a dismissed one falls back to every request.
+  const focusAreaId = focusChoice === OTHER_FOCUS_AREA_ID ? focusChoice : resolveFocusAreaId(focusChoice, focusAreas)
+  const yourMoveCount = requests.filter(needsYou).length
   // The drawer always shows the current state of today's requests; older goal-only requests come as passed.
   // A request that leaves the live feed closes the drawer: its agent and device may have left the model with it.
   const liveOpenRequest = openRequest ? requestById(openRequest.request.id) ?? (openRequest.fromLiveFeed ? null : openRequest.request) : null
@@ -141,8 +149,17 @@ function LoadedApp() {
   useEffect(() => { if (openRequest && liveOpenRequest === null) setOpenRequestState(null) }, [openRequest, liveOpenRequest])
   // The demo flip is sample data; it never runs against real requests.
   useEffect(() => (sample ? playDemoUpdates() : undefined), [sample])
-  const goToPage = (next: NavPage) => { setFocusGoalId(undefined); setPage(next) }
-  const goToGoal = (goalId: string) => { setOpenRequest(null); setFocusGoalId(goalId); setPage('goals') }
+  const goToPage = (next: NavPage) => { setFocusChoice(null); setView(next) }
+  const goToFocus = (id: string) => { setOpenRequest(null); setFocusChoice(id); setView('work') }
+  const selected: FocusSelection = view === 'suggested' || view === 'past-focus' ? { kind: view } : view === 'work' && focusAreaId ? { kind: 'area', focusAreaId } : null
+  const selectFocus = (selection: FocusSelection) => {
+    if (!selection) goToPage('work')
+    else if (selection.kind === 'area') goToFocus(selection.focusAreaId)
+    else { setFocusChoice(null); setView(selection.kind) }
+  }
+  const pageActive = (id: NavPage) => view === id && !(id === 'work' && focusAreaId)
+  const focusTitle = focusAreaId === OTHER_FOCUS_AREA_ID ? 'Other' : focusAreas.find((area) => area.id === focusAreaId)?.name
+  const heading = view === 'suggested' ? 'Suggested' : view === 'past-focus' ? 'Past focus' : view === 'work' && focusTitle ? focusTitle : PAGES.find((entry) => entry.id === view)!.label
 
   return (
     <MotionConfig reducedMotion="user">
@@ -150,7 +167,7 @@ function LoadedApp() {
       <WorkspaceContext.Provider value={workspace}>
         <TooltipProvider delayDuration={150}>
           <Req ids={['R10.3', 'R10.2']} className="min-h-svh">
-            <div className="min-h-svh pb-20 text-foreground md:pb-0">
+            <div className="min-h-svh pb-[calc(6rem+env(safe-area-inset-bottom))] text-foreground md:pb-0">
               {/* Wireframe controls: not part of the product. */}
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border/70 bg-card/50 px-4 py-1.5 text-xs whitespace-nowrap md:px-6">
                 {sample && <Badge variant="outline" className="font-normal">Wireframe · sample data</Badge>}
@@ -173,15 +190,15 @@ function LoadedApp() {
               </div>
 
               <header className="sticky top-0 z-30 border-b border-border/70 bg-card/85 backdrop-blur-md">
-                <div className="mx-auto flex h-14 max-w-[1440px] items-center gap-3 px-4 md:px-6">
+                <div className="mx-auto flex min-h-14 max-w-[1440px] items-center gap-3 px-4 py-1.5 md:px-6">
                   <Req ids={['R10.4']}>
                     <span className="flex items-center gap-2">
                       <CmemMark className="size-8 text-[#D86441]" />
                       <span className="sr-only md:not-sr-only md:text-[0.95rem] md:font-semibold md:tracking-tight">claude-mem</span>
                     </span>
                   </Req>
-                  <h1 className="text-lg font-semibold tracking-tight md:hidden">{PAGES.find((entry) => entry.id === page)!.label}</h1>
-                  <div className="ml-auto flex items-center gap-0.5 md:gap-2">
+                  <h1 className="min-w-0 flex-1 text-lg leading-tight font-semibold tracking-tight break-normal hyphens-none md:hidden">{heading}</h1>
+                  <div className="ml-auto flex shrink-0 items-center gap-0.5 md:gap-2">
                     <TeamSwitch team={workspace.team} onChange={(team) => setWorkspace({ ...workspace, team })} />
                     <DeviceFreshness />
                     <LiveIndicator />
@@ -191,43 +208,47 @@ function LoadedApp() {
                 </div>
               </header>
 
-              <div className="mx-auto max-w-[1440px] gap-6 px-4 py-4 md:grid md:grid-cols-[52px_minmax(0,1fr)] md:px-6 md:py-6 lg:grid-cols-[168px_minmax(0,1fr)] lg:gap-8">
-                <Req ids={['R14.1', 'R3.1']} className="hidden md:block">
-                  <nav aria-label="Pages" className="sticky top-20 hidden space-y-5 md:block">
+              <div className="mx-auto max-w-[1440px] gap-6 px-4 py-4 md:grid md:grid-cols-[52px_minmax(0,1fr)] md:px-6 md:py-6 lg:grid-cols-[184px_minmax(0,1fr)] lg:gap-8">
+                <Req ids={['R16.1']} className="hidden md:block">
+                  <nav aria-label="Pages" className="sticky top-20 hidden max-h-[calc(100svh-6rem)] space-y-5 overflow-y-auto md:block">
+                    <div className="hidden lg:block"><FocusRail selected={selected} onSelect={selectFocus} /></div>
                     {NAV_SECTIONS.map((section) => (
                       <div key={section} className="space-y-0.5">
                         <p className="section-label hidden px-2 pb-1 lg:block">{section}</p>
                         {PAGES.filter((entry) => entry.section === section).map(({ id, label, icon }) => (
-                          <button key={id} type="button" onClick={() => goToPage(id)} aria-current={page === id ? 'page' : undefined} title={label} className={cn('relative flex h-10 w-full items-center gap-2.5 rounded-[10px] px-1.5 text-left text-[0.9rem] transition-colors', page === id ? 'bg-accent font-medium text-accent-foreground' : 'text-foreground/85 hover:bg-card/70')}>
-                            <NavTile icon={icon} active={page === id} />
+                          <button key={id} type="button" onClick={() => goToPage(id)} aria-current={pageActive(id) ? 'page' : undefined} title={label} className={cn('relative flex h-10 w-full items-center gap-2.5 rounded-[10px] px-1.5 text-left text-[0.9rem] transition-colors', pageActive(id) ? 'bg-accent font-medium text-accent-foreground' : 'text-foreground/85 hover:bg-card/70')}>
+                            <NavTile icon={icon} active={pageActive(id)} />
                             <span className="hidden lg:inline">{label}</span>
-                            {id === 'work' && yourMoveCount > 0 && <span className="absolute top-0.5 right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground lg:static lg:ml-auto lg:h-5 lg:min-w-5 lg:text-[11px]" aria-label={`${yourMoveCount} need you`}>{yourMoveCount}</span>}
+                            {id === 'work' && yourMoveCount > 0 && <span className="absolute top-0.5 right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground lg:static lg:ml-auto lg:h-5 lg:min-w-5 lg:text-[11px]">{yourMoveCount}<span className="sr-only"> need you</span></span>}
                           </button>
                         ))}
                       </div>
                     ))}
+                    <div className="hidden border-t border-border/70 pt-3 lg:block"><PastFocusLink selected={selected} onSelect={selectFocus} /></div>
                   </nav>
                 </Req>
 
-                <main className="min-w-0">
-                  {page === 'work' && <MyWork onOpen={setOpenRequest} onOpenGoal={goToGoal} onOpenRules={() => goToPage('rules')} />}
-                  {page === 'goals' && <MyGoals onOpen={setOpenRequest} focusGoalId={focusGoalId} />}
-                  {page === 'rules' && <MyRules />}
+                <main className="min-w-0 space-y-4 md:space-y-5">
+                  <FocusChipRow selected={selected} onSelect={selectFocus} />
+                  {view === 'work' && <MyWork focusAreaId={focusAreaId} onOpen={setOpenRequest} onOpenFocus={goToFocus} onOpenRules={() => goToPage('rules')} />}
+                  {view === 'suggested' && <SuggestedAreas onOpenFocus={goToFocus} />}
+                  {view === 'past-focus' && <PastFocus onOpenFocus={goToFocus} />}
+                  {view === 'rules' && <MyRules />}
                 </main>
               </div>
 
-              <Req ids={['R11.1', 'R14.1']} className="md:hidden">
-                <nav aria-label="Pages" className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-3 border-t border-border/70 bg-card/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-md md:hidden">
+              <Req ids={['R11.1']} className="md:hidden">
+                <nav aria-label="Pages" className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-2 border-t border-border/70 bg-card/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-md md:hidden">
                   {PAGES.map(({ id, label, icon }) => (
-                    <button key={id} type="button" onClick={() => goToPage(id)} aria-current={page === id ? 'page' : undefined} className={cn('relative flex h-[68px] flex-col items-center justify-center gap-1 text-[11px]', page === id ? 'font-semibold text-accent-foreground' : 'text-muted-foreground')}>
-                      <NavTile icon={icon} active={page === id} />{label}
-                      {id === 'work' && yourMoveCount > 0 && <span className="absolute top-2 left-[calc(50%+6px)] flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">{yourMoveCount}</span>}
+                    <button key={id} type="button" onClick={() => goToPage(id)} aria-current={pageActive(id) ? 'page' : undefined} className={cn('relative flex h-[68px] flex-col items-center justify-center gap-1 text-[11px]', pageActive(id) ? 'font-semibold text-accent-foreground' : 'text-muted-foreground')}>
+                      <NavTile icon={icon} active={pageActive(id)} />{label}
+                      {id === 'work' && yourMoveCount > 0 && <span className="absolute top-2 left-[calc(50%+6px)] flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">{yourMoveCount}<span className="sr-only"> need you</span></span>}
                     </button>
                   ))}
                 </nav>
               </Req>
 
-              <RequestDetail request={liveOpenRequest} onClose={() => setOpenRequest(null)} onOpenGoal={goToGoal} />
+              <RequestDetail request={liveOpenRequest} onClose={() => setOpenRequest(null)} onOpenFocus={goToFocus} />
             </div>
           </Req>
         </TooltipProvider>

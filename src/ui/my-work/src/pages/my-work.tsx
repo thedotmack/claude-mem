@@ -8,18 +8,20 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { AgentIcon, ATTENTION_ORDER, GoalChip, NextMove, ProgressMeter, RefreshButton, RefreshStatus, StateBadge, useWorkspace } from '@/components/bits'
+import { AgentIcon, ATTENTION_ORDER, FocusAreaChip, NextMove, ProgressMeter, RefreshButton, RefreshStatus, StateBadge, useWorkspace } from '@/components/bits'
 import { AgentMark } from '@/components/brand'
+import { FocusChangeBar, useFocusChanges } from '@/components/focus-changes'
+import { FocusHeader, OtherHeader } from '@/components/focus-header'
 import { RequestCard } from '@/components/request-card'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
-import { deviceById, markAgentFinished, SAMPLE_RUNS, startedTimestamp, useWorkModel, type Agent as WorkAgent, type LiveState, type Request } from '@/data'
+import { deviceById, markAgentFinished, needsYou, OTHER_FOCUS_AREA_ID, SAMPLE_RUNS, startedTimestamp, useWorkModel, type Agent as WorkAgent, type LiveState, type Request } from '@/data'
 import type { BuildStory, RequestReadError } from '@/live/work-data-source'
+import { resolveFocusAreaId } from '@/live/to-focus-model'
 
 type View = 'cards' | 'list' | 'agents' | 'team'
 type Filter = 'all' | 'needs-you' | 'shipped' | 'closed'
 type SortKey = 'attention' | 'started' | 'progress'
-const needsYou = (request: Request) => request.state === 'your-move' || request.state === 'needs-check'
 // Closed requests (every item dropped) show only under Closed, and that filter appears only when there are some.
 const FILTERS: { value: Filter; label: string; matches: (request: Request) => boolean; dot?: string }[] = [
   { value: 'all', label: 'All', matches: (request) => !request.closed },
@@ -153,7 +155,7 @@ function FlipStatus({ state }: { state: LiveState }) {
   return <span key={state} className="inline-block motion-safe:animate-in motion-safe:slide-in-from-top-2 motion-safe:fade-in motion-safe:duration-300"><StateBadge state={state} /></span>
 }
 
-function ListView({ requests, sort, onSort, onOpen, onOpenGoal }: { requests: Request[]; sort: SortKey; onSort: (sort: SortKey) => void; onOpen: (request: Request) => void; onOpenGoal: (goalId: string) => void }) {
+function ListView({ requests, sort, onSort, onOpen, onOpenFocus }: { requests: Request[]; sort: SortKey; onSort: (sort: SortKey) => void; onOpen: (request: Request) => void; onOpenFocus: (focusAreaId: string) => void }) {
   const { team } = useWorkspace()
   const sortHead = (label: string, value: SortKey) => (
     <TableHead aria-sort={sort === value ? 'descending' : undefined}>
@@ -199,7 +201,7 @@ function ListView({ requests, sort, onSort, onOpen, onOpenGoal }: { requests: Re
                 <TableCell className="align-top"><AgentIcon agentId={request.agentId} /></TableCell>
                 <TableCell className="max-w-72 align-top whitespace-normal">
                   <button type="button" onClick={(event) => { event.stopPropagation(); onOpen(request) }} className={cn('rounded-sm text-left leading-snug font-medium hover:underline focus-visible:outline-2 focus-visible:outline-ring', !request.title && 'text-muted-foreground')}>{titleOf(request)}</button>
-                  <div><GoalChip goalId={request.goalId} onOpen={onOpenGoal} /></div>
+                  <div><FocusAreaChip focusAreaId={request.focusAreaId} onOpen={onOpenFocus} /></div>
                 </TableCell>
                 {team && <TableCell className="align-top text-sm">{request.askedBy}</TableCell>}
                 <TableCell className="align-top"><FlipStatus state={request.state} /></TableCell>
@@ -330,9 +332,18 @@ function RequestReadErrorCard({ readError }: { readError: RequestReadError }) {
   )
 }
 
-export function MyWork({ onOpen, onOpenGoal, onOpenRules }: { onOpen: (request: Request) => void; onOpenGoal: (goalId: string) => void; onOpenRules: () => void }) {
+/**
+ * My Work: the live inbox. With a focus area (or Other) selected, its header comes first and only the requests in it
+ * show; requests not sorted yet ("Sorting…") show only under every request.
+ */
+export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focusAreaId: string | null; onOpen: (request: Request) => void; onOpenFocus: (focusAreaId: string) => void; onOpenRules: () => void }) {
   const { team } = useWorkspace()
-  const { sourceKind, requests, requestReadErrors, unlinkedWorkCount, sourceHealth, buildStory, lastRuns, refresh } = useWorkModel()
+  const { sourceKind, requests: allRequests, requestReadErrors: allReadErrors, unlinkedWorkCount, sourceHealth, buildStory, lastRuns, refresh, focusAreas } = useWorkModel()
+  const area = focusAreaId && focusAreaId !== OTHER_FOCUS_AREA_ID ? focusAreas.find((entry) => entry.id === focusAreaId) ?? null : null
+  const requests = useMemo(() => focusAreaId ? allRequests.filter((request) => resolveFocusAreaId(request.focusAreaId, focusAreas) === focusAreaId) : allRequests, [allRequests, focusAreas, focusAreaId])
+  // A request that could not be read has no placement to file it under, so its card shows only under every request.
+  const requestReadErrors = focusAreaId ? [] : allReadErrors
+  const focusChanges = useFocusChanges()
   const sample = sourceKind === 'sample'
   const [view, setView] = useState<View>('cards')
   const [filter, setFilter] = useState<Filter>('all')
@@ -350,6 +361,10 @@ export function MyWork({ onOpen, onOpenGoal, onOpenRules }: { onOpen: (request: 
           {sourceHealth.error && <AlertDescription className="text-attention-foreground">{sourceHealth.error}</AlertDescription>}
         </Alert>
       )}
+      <FocusChangeBar changes={focusChanges} />
+      {/* Every request in the area, closed ones too: the combined progress counts each reviewed request (D1's rule). */}
+      {area ? <FocusHeader key={area.id} area={area} requests={requests} changes={focusChanges} />
+        : focusAreaId === OTHER_FOCUS_AREA_ID && <OtherHeader requests={requests} />}
       <Summary requests={requests.filter((request) => !request.closed)} onOpen={onOpen} onShowNeedsYou={() => setFilter('needs-you')} />
 
       <div className="flex flex-wrap items-center gap-2 md:gap-3">
@@ -371,8 +386,9 @@ export function MyWork({ onOpen, onOpenGoal, onOpenRules }: { onOpen: (request: 
             <RefreshStatus refresh={refresh} run={lastRuns.progress} label="Last reviewed" ids={['R14.12']} />
           </div>
         )}
-        <div className="flex w-full items-center gap-1 md:w-auto">
-          <ToggleGroup type="single" variant="outline" size="sm" spacing={1} value={filter} onValueChange={(next) => next && setFilter(next as Filter)} aria-label="Filter" className="flex-nowrap">
+        {/* Phone: the filters wrap to a second row instead of widening the page past the screen; the sort stays beside them. */}
+        <div className="flex w-full items-start gap-1 md:w-auto md:items-center">
+          <ToggleGroup type="single" variant="outline" size="sm" spacing={1} value={filter} onValueChange={(next) => next && setFilter(next as Filter)} aria-label="Filter" className="min-w-0 flex-1 md:flex-none md:flex-nowrap">
             {FILTERS.filter((entry) => entry.value !== 'closed' || requests.some(entry.matches)).map(({ value, label, dot, matches: test }) => (
               <ToggleGroupItem key={value} value={value} className="h-11 gap-1.5 px-3 md:h-8">
                 {dot && <span className={cn('size-1.5 rounded-full', dot)} />}
@@ -395,8 +411,8 @@ export function MyWork({ onOpen, onOpenGoal, onOpenRules }: { onOpen: (request: 
           <Empty className="border bg-card/60">
             <EmptyHeader>
               <EmptyMedia variant="icon"><InboxIcon /></EmptyMedia>
-              <EmptyTitle>No requests recorded yet.</EmptyTitle>
-              <EmptyDescription>Ask an agent for something and it appears here.</EmptyDescription>
+              <EmptyTitle>{focusAreaId ? 'No requests in this area yet.' : 'No requests recorded yet.'}</EmptyTitle>
+              <EmptyDescription>{focusAreaId ? 'A refresh places new requests here, or move one here from its page.' : 'Ask an agent for something and it appears here.'}</EmptyDescription>
             </EmptyHeader>
           </Empty>
         </Req>
@@ -412,10 +428,10 @@ export function MyWork({ onOpen, onOpenGoal, onOpenRules }: { onOpen: (request: 
         </Req>
       ) : view === 'cards' ? (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          {visible.map((request) => <RequestCard key={request.id} request={request} onOpen={() => onOpen(request)} onOpenGoal={onOpenGoal} />)}
+          {visible.map((request) => <RequestCard key={request.id} request={request} onOpen={() => onOpen(request)} onOpenFocus={onOpenFocus} />)}
           {requestReadErrors.map((readError) => <RequestReadErrorCard key={readError.requestId} readError={readError} />)}
         </div>
-      ) : view === 'list' ? <ListView requests={visible} sort={sort} onSort={setSort} onOpen={onOpen} onOpenGoal={onOpenGoal} />
+      ) : view === 'list' ? <ListView requests={visible} sort={sort} onSort={setSort} onOpen={onOpen} onOpenFocus={onOpenFocus} />
         : view === 'agents' ? <ByAgentView requests={visible} onOpen={onOpen} />
           : <TeamBoard requests={visible} onOpen={onOpen} />}
       {view !== 'cards' && requestReadErrors.length > 0 && (
