@@ -3,6 +3,7 @@ import type { ActiveSession } from '../../src/services/worker-types.js';
 import { getQuotaCooldown, resetQuotaCooldownsForTesting } from '../../src/shared/quota-cooldown.js';
 import { resetDependencyStatusesForTesting } from '../../src/shared/dependency-health.js';
 import { globalRateLimitStore } from '../../src/services/worker/RateLimitStore.js';
+import { ClassifiedProviderError } from '../../src/services/worker/provider-errors.js';
 import * as observerHealth from '../../src/shared/observer-health.js';
 
 const { SessionRoutes } = await import('../../src/services/worker/http/routes/SessionRoutes.js');
@@ -177,6 +178,7 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
     await nextTick();
 
     expect(starts).toBe(1);
+    expect(getQuotaCooldown('claude')?.reason).toEqual({ kind: 'unknown' });
   });
 
   // The guard aborts with 'quota:<window>:<kind>' (ClaudeProvider); the exit
@@ -203,6 +205,12 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
       expect(observerHealth.renderObserverHealthWarning(health)).toContain('paused to preserve your Claude allowance');
       expect(getQuotaCooldown('claude')?.message).toBe(health.lastErrorMessage);
       expect(getQuotaCooldown('claude')?.window).toBe('seven_day');
+      expect(getQuotaCooldown('claude')?.reason).toEqual({
+        kind: 'limit_guard',
+        window: 'seven_day',
+        usagePercent: 95,
+        thresholdPercent: 93,
+      });
       expect(session.abortReason).toBeNull();
       expect(stats().finalizeCalls).toBe(0);
       expect(stats().removed).toBe(0);
@@ -231,6 +239,7 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
       const health = observerHealth.readObserverHealth()!;
       expect(health.lastErrorKind).toBe('quota_exhausted');
       expect(health.lastErrorMessage).not.toBe(observerHealth.AMBIGUOUS_QUOTA_MESSAGE);
+      expect(getQuotaCooldown('claude')?.reason).toEqual({ kind: 'used_up', window: 'seven_day' });
     } finally {
       globalRateLimitStore.restoreForTesting('seven_day', savedSevenDay);
       observerHealth.recordObserverSuccess();
@@ -250,6 +259,33 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
       lastSuccessAt: null,
       lastErrorAt: Date.now(),
     } as never)).toContain('used up');
+  });
+
+  it.each([
+    ['api-key', null, 'api_key_limit'],
+    ['subscription', null, 'used_up'],
+    ['api-key', 'subscription', 'used_up'],
+    ['subscription', 'api-key', 'api_key_limit'],
+  ] as const)('records the billed Claude credential for %s with stand-in %s', async (auth, override, expectedReason) => {
+    for (const throwsRefusal of [false, true]) {
+      resetQuotaCooldownsForTesting();
+      const session = makeSession();
+      const { routes } = buildRoutes(session, async () => {
+        session.observerAuth = auth;
+        session.claudeAuthOverride = override;
+        session.abortController.abort();
+        if (throwsRefusal) {
+          throw new ClassifiedProviderError('Usage limit reached', { kind: 'quota_exhausted', cause: null });
+        }
+        session.abortReason = 'quota:observer_text';
+      });
+
+      await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+      await session.generatorPromise;
+      expect(getQuotaCooldown('claude')?.reason).toEqual({ kind: expectedReason });
+      expect(getQuotaCooldown('claude')?.auth).toBe(override ? undefined : auth);
+      observerHealth.recordObserverSuccess();
+    }
   });
 
   it('does not resume on an auth pause', async () => {

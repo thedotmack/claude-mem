@@ -40,6 +40,7 @@
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
+import type { ObserverQuotaReason } from '../../shared/observer-health.js';
 
 export type RateLimitWindow =
   | 'five_hour'
@@ -425,6 +426,7 @@ const RESET_GRACE_UTILIZATION_FLOOR = 0.85;
 export interface QuotaPause {
   kind: 'quota_guard' | 'quota_exhausted';
   message: string;
+  reason: ObserverQuotaReason;
 }
 
 export type QuotaDecision =
@@ -514,6 +516,7 @@ function providerRejection(window: RateLimitWindow, entry: RateLimitEntry): Quot
     entry.status === 'rejected' ||
     (window === 'overage' && entry.overageStatus === 'rejected');
   if (!isRejected) return undefined;
+  const resetsAt = normalizeResetTimeMs(entry.resetsAt);
   return {
     abort: true,
     window,
@@ -521,6 +524,11 @@ function providerRejection(window: RateLimitWindow, entry: RateLimitEntry): Quot
     pause: {
       kind: 'quota_exhausted',
       message: `Claude rejected the request because its ${WINDOW_LABELS[window]} usage allowance is exhausted.`,
+      reason: {
+        kind: 'used_up',
+        window,
+        ...(resetsAt !== undefined ? { resetsAt } : {}),
+      },
     },
   };
 }
@@ -536,6 +544,7 @@ function localGuard(
   now: number,
 ): QuotaDecision | undefined {
   const util = entry.utilization;
+  const resetsAtMs = normalizeResetTimeMs(entry.resetsAt);
   // An explicit false means the provider is not charging the overage bucket,
   // so its utilization does not represent active quota consumption.
   const appliesUtilizationThreshold =
@@ -549,6 +558,13 @@ function localGuard(
       pause: {
         kind: 'quota_guard',
         message: `Memory capture paused: ${WINDOW_LABELS[window]} Claude usage is ${(util * 100).toFixed(1)}%, at or above the ${(threshold * 100).toFixed(0)}% pause threshold. This reserves allowance for interactive work.`,
+        reason: {
+          kind: 'limit_guard',
+          window,
+          usagePercent: Number((util * 100).toFixed(1)),
+          thresholdPercent: Number((threshold * 100).toFixed(1)),
+          ...(resetsAtMs !== undefined ? { resetsAt: resetsAtMs } : {}),
+        },
       },
     };
   }
@@ -556,7 +572,6 @@ function localGuard(
   // Reset-grace buffer: only meaningful for the rolling 5h window where
   // a fresh bucket is imminent. Skip when utilization is low — no point
   // bailing on a window that just reset to ~0%.
-  const resetsAtMs = normalizeResetTimeMs(entry.resetsAt);
   if (
     window === 'five_hour' &&
     resetsAtMs !== undefined &&
@@ -573,6 +588,12 @@ function localGuard(
         pause: {
           kind: 'quota_guard',
           message: `Memory capture paused: five-hour Claude usage is ${(util * 100).toFixed(1)}% and resets in ${minutes} minutes, within the ${RESET_GRACE_MS / 60000}-minute reserve buffer.`,
+          reason: {
+            kind: 'reset_buffer_guard',
+            window,
+            usagePercent: Number((util * 100).toFixed(1)),
+            resetsAt: resetsAtMs,
+          },
         },
       };
     }

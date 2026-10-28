@@ -591,13 +591,12 @@ describe('quota fallback annotation on the mirrored cooldown', () => {
     expect(mirrored.servingProvider).toBeUndefined();
   });
 
-  it('still mirrors the cooldown when the resolver throws', () => {
+  it('does not invent a paused notice when the resolver throws', () => {
     restore = setQuotaFallbackResolver(() => {
       throw new Error('settings unreadable');
     });
     recordQuotaExhausted('gemini', 'Daily limit reached');
-    const mirrored = readObserverHealth(healthPath())!.quotaCooldown!;
-    expect(mirrored.provider).toBe('gemini');
-    expect(mirrored.servingProvider).toBeUndefined();
+    expect(getQuotaCooldown('gemini')).not.toBeNull();
+    expect(readObserverHealth(healthPath())?.quotaCooldown ?? null).toBeNull();
   });
 });
