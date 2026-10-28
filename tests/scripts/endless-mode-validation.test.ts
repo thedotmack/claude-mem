@@ -117,10 +117,14 @@ describe('forward extract, stats and tables', () => {
       };
       writeFileSync(join(tee, `${r.n}-req.body`), JSON.stringify(body));
       writeFileSync(join(tee, `${r.n}-req.json`), JSON.stringify({ time: r.time, method: 'POST', path: '/v1/messages', headerNames: [], bodyBytes: 1 }));
-      writeFileSync(join(tee, `${r.n}-resp.raw`), [
+      // `release` gets OpenRouter's stream shape: nulls in message_start, the real numbers and a cost in message_delta.
+      writeFileSync(join(tee, `${r.n}-resp.raw`), (config === 'release' ? [
+        `data: ${JSON.stringify({ type: 'message_start', message: { usage: { input_tokens: 0, cache_read_input_tokens: null, cache_creation_input_tokens: null, cache_creation: null } } })}`,
+        `data: ${JSON.stringify({ type: 'message_delta', usage: { input_tokens: 10, output_tokens: 100, cache_read_input_tokens: r.read, cache_creation_input_tokens: null, cost: 0.001 } })}`, '',
+      ] : [
         `data: ${JSON.stringify({ type: 'message_start', message: { usage: { input_tokens: 10, cache_read_input_tokens: r.read, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 1000 } } } })}`,
         `data: ${JSON.stringify({ type: 'message_delta', usage: { output_tokens: 100 } })}`, '',
-      ].join('\n'));
+      ]).join('\n'));
     }
     writeFileSync(join(tee, 'index.tsv'), requests.map(r => `${r.n}\tPOST\t/v1/messages\t200\ttext/event-stream`).join('\n') + '\n');
     return tee;
@@ -166,6 +170,10 @@ describe('forward extract, stats and tables', () => {
     const release = JSON.parse(readFileSync(join(results, 'release.json'), 'utf8'));
     expect(release.observations_stored).toBe(3);
     expect(release.summaries_stored).toBe(1);
+    expect(release.measured_cost_usd).toBeCloseTo(0.002, 6);
+    expect(release.per_turn['2'].measured).toBeCloseTo(0.001, 6);
+    expect(release.cache_read).toBe(6000);
+    expect(tables.stdout).toContain('Provider-reported cost per 1-turn bucket');
     expect(JSON.parse(readFileSync(join(results, 'none.json'), 'utf8')).observations_stored).toBeNull();
     expect(tables.stdout).toContain('claude-mem release (no gateway)');
     expect(tables.stdout).toContain('Endless `timeline` vs claude-mem release (no gateway): never drops below');

@@ -42,6 +42,14 @@ for start in range(1, turns + 1, bucket):
     cells = [f"{sum(R[k]['per_turn'].get(str(t), {}).get('cost', 0) for t in span):.3f}" for k, _ in names]
     print(f"| {start if bucket == 1 else f'{start}-{start + bucket - 1}'} | " + ' | '.join(cells) + ' |')
 
+if any(R[k].get('measured_cost_requests') for k, _ in names):
+    print(f'\n### Provider-reported cost per {bucket}-turn bucket (USD, the `cost` on each response)\n')
+    print('| turns | ' + ' | '.join(l for _, l in names) + ' |'); print('|---' * (len(names) + 1) + '|')
+    for start in range(1, turns + 1, bucket):
+        span = range(start, start + bucket)
+        cells = [f"{sum(R[k]['per_turn'].get(str(t), {}).get('measured', 0) for t in span):.4f}" for k, _ in names]
+        print(f"| {start if bucket == 1 else f'{start}-{start + bucket - 1}'} | " + ' | '.join(cells) + ' |')
+
 def cumulative(key):
     pt = R[key]['per_turn']; out = {}; c = 0
     for t in range(0, turns + 1): c += pt.get(str(t), {}).get('cost', 0); out[t] = c

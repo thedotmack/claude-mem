@@ -82,15 +82,18 @@ for r in recs:
     if err: errors.append(dict(n=r['n'], turn=turn, error=err)); continue
     if r['proto'] == 'anthropic':
         cc = u.get('cache_creation') or {}
-        w5 = cc.get('ephemeral_5m_input_tokens', 0); w1 = cc.get('ephemeral_1h_input_tokens', 0)
+        w5 = cc.get('ephemeral_5m_input_tokens') or 0; w1 = cc.get('ephemeral_1h_input_tokens') or 0
         if not cc and u.get('cache_creation_input_tokens'): w5 = u['cache_creation_input_tokens']
-        inp = u.get('input_tokens', 0); rd = u.get('cache_read_input_tokens', 0)
+        # OpenRouter's Anthropic-compatible stream sends null for fields it does not fill (e.g. cache reads in
+        # message_start); null counts as 0.
+        inp = u.get('input_tokens') or 0; rd = u.get('cache_read_input_tokens') or 0; w5 = w5 or 0; w1 = w1 or 0
     else:
         total_in = u.get('input_tokens', 0); rd = (u.get('input_tokens_details') or {}).get('cached_tokens', 0)
         inp = total_in - rd; w5 = w1 = 0
     cost = (inp * price('input') + w5 * price('cache_write_5m') + w1 * price('cache_write_1h') + rd * price('cache_read') + out * price('output')) / 1e6
     if cost_reported is not None: measured['usd'] += cost_reported; measured['requests'] += 1
-    reqs.append(dict(n=r['n'], turn=turn, inp=inp, read=rd, w5=w5, w1=w1, out=out, size=inp + rd + w5 + w1, cost=cost, kind=r['kind'],
+    out = out or 0
+    reqs.append(dict(n=r['n'], turn=turn, inp=inp, read=rd, w5=w5, w1=w1, out=out, size=inp + rd + w5 + w1, cost=cost, measured=cost_reported, kind=r['kind'],
                      timeline_blocks=r['timeline_blocks'], timeline_chars=r['timeline_chars']))
 
 cum = 0
@@ -105,8 +108,8 @@ for i, r in enumerate(reqs):
                                 prompt_after=a and a['size'], cost_after=a and round(a['cost'], 4)))
 per_turn = {}
 for r in reqs:
-    t = per_turn.setdefault(r['turn'], dict(requests=0, cost=0.0, prompt=0))
-    t['requests'] += 1; t['cost'] += r['cost']; t['prompt'] = r['size']
+    t = per_turn.setdefault(r['turn'], dict(requests=0, cost=0.0, prompt=0, measured=0.0))
+    t['requests'] += 1; t['cost'] += r['cost']; t['prompt'] = r['size']; t['measured'] += r['measured'] or 0
 
 # Spoiled turns: an unanswered/failed request, or a failed probe of this provider inside the turn.
 probe_key = 'chatgpt=' if any(r['proto'] == 'responses' for r in recs) else ('openrouter=' if 'openrouter' in (P.get('source') or '') else 'anthropic=')
@@ -135,7 +138,7 @@ res['measured_cost_requests'] = measured['requests']
 res['prices'] = dict(file=os.path.basename(prices_file), source=P.get('source'))
 last = reqs[-1] if reqs else None
 res['timeline_end'] = dict(blocks=last['timeline_blocks'], chars=last['timeline_chars'], est_tokens=last['timeline_chars'] // 4) if last else None
-res['per_turn'] = {k: dict(requests=v['requests'], cost=round(v['cost'], 5), prompt=v['prompt']) for k, v in sorted(per_turn.items())}
+res['per_turn'] = {k: dict(requests=v['requests'], cost=round(v['cost'], 5), prompt=v['prompt'], measured=round(v['measured'], 6)) for k, v in sorted(per_turn.items())}
 res['compactions'] = compactions; res['errors'] = errors; res['spoiled_turns'] = spoiled; res['retried_turns'] = retried_turns
 res['unextracted_bodies'] = unextracted
 # Observer health: turns whose observer wait hit session.sh's cap, and quota pauses in the worker's log. Either one
