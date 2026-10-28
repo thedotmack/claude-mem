@@ -43,7 +43,7 @@ const fixture = String.raw`
       }
     }
     const aliases = await new SearchManager(new SessionSearch(store.db), store, null, new FormattingService(), new TimelineService()).search({ project: 'categories', type: ['discovery', 'bugfix'], format: 'json' });
-    console.log(JSON.stringify({ results, calls, aliases }));
+    console.log(JSON.stringify({ results, calls, aliases, scopeIds: [...new Set([obs, summary])] }));
   } finally { store.close(); }
 `;
 
@@ -67,6 +67,13 @@ describe('search category arrays', () => {
       const filteredCalls = result.calls.filter((call: { where?: unknown }) => call.where);
       expect(filteredCalls.length).toBeGreaterThan(0);
       for (const call of filteredCalls) {
+        if ('sqlite_id' in call.where) {
+          // A fallback narrowed to the rows in scope (#5091) lists the requested
+          // categories' ids; the results above show the categories applied.
+          const ascending = (ids: number[]) => [...ids].sort((a, b) => a - b);
+          expect(ascending(call.where.sqlite_id.$in)).toEqual(ascending(result.scopeIds));
+          continue;
+        }
         const where = JSON.stringify(call.where);
         expect(where).toContain('observation');
         expect(where).toContain('session_summary');
