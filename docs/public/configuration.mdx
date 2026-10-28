@@ -147,10 +147,20 @@ For `CLAUDE_MEM_PROVIDER=openai-compatible`: any endpoint that speaks `/chat/com
 | `CLAUDE_MEM_OPENAI_COMPAT_PRESET` | — | Named endpoint preset ([list](usage/openai-compatible-provider)). Empty = `custom`: set the base URL yourself |
 | `CLAUDE_MEM_OPENAI_COMPAT_BASE_URL` | — | OpenAI-compatible base URL. Overrides the preset's |
 | `CLAUDE_MEM_OPENAI_COMPAT_MODEL` | — | Model id, sent as-is. Empty = the preset's default model |
+| `CLAUDE_MEM_OPENAI_COMPAT_OBSERVATION_BATCH_SIZE` | `1` | Queued observations to combine per request (1–32). Default 1 keeps one event per request. Only consecutive events with the same prompt number, agent and working directory are combined, within the model-window character budget. Set in `settings.json` or an environment variable. See [batching trade-offs](usage/openai-compatible-provider#observation-batching). |
 | `CLAUDE_MEM_OPENAI_COMPAT_API_KEY` | — | The key this endpoint issued. Settings file or environment, or `OPENAI_COMPAT_API_KEY` in `~/.claude-mem/.env`; the viewer cannot set it. A local server needs none |
 | `CLAUDE_MEM_OPENAI_COMPAT_API_KEYS` | — | Optional: more keys to rotate through ([Multi-Key Rotation](usage/multi-key-rotation)). Settings file or environment, or `OPENAI_COMPAT_API_KEYS` in `~/.claude-mem/.env` |
 
 See [OpenAI-Compatible Provider](usage/openai-compatible-provider) for presets and setup.
+
+### My Work Summary Settings
+
+My Work can generate readable card wording using the configured OpenRouter or OpenAI-compatible chat-completions endpoint. By default it runs only when the primary observer provider is OpenRouter, as before; it never uses another endpoint or a quota-fallback key on its own. Select a provider explicitly to use that endpoint for summaries, including an OpenAI-compatible primary or a provider configured only as a fallback. Explicit selection can incur the endpoint's usual charges. Generated wording is presentation-only; recorded work and status remain unchanged.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER` | empty | Empty uses OpenRouter when `CLAUDE_MEM_PROVIDER` is `openrouter`; otherwise generated wording is off. For `openai-compatible`, the request follows `CLAUDE_MEM_OPENAI_COMPAT_REASONING`. Set `openrouter` or `openai-compatible` to select that endpoint explicitly, or `off` to disable it. |
+| `CLAUDE_MEM_WORK_VIEW_COPY_MODEL` | empty | Optional model id used only for My Work wording. Empty uses the selected endpoint's configured model. |
 
 ### Quota Fallback Settings
 

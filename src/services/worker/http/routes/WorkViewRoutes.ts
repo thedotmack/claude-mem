@@ -9,7 +9,6 @@ import { Database } from 'bun:sqlite';
 import { CLAUDE_CONFIG_DIR, DATA_DIR, DB_PATH, getPackageRoot, USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { onContextInvalidation } from '../../../../shared/context-invalidation.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
-import { resolveOpenRouterChatCompletionsUrl } from '../../../../shared/openrouter-base-url.js';
 import { logger } from '../../../../utils/logger.js';
 import { hasForwardedClientHeaders, hasLoopbackHostHeader, isLocalhost } from '../../../../server/middleware/request-auth-helpers.js';
 import { WorkStateSource, type WorkViewSnapshot } from '../../../work-view/data-source.mjs';
@@ -22,15 +21,20 @@ import { MAX_WORK_STATE_FIELDS_JSON_CHARS } from '../../../work-view/work-state-
 import { AGENT_LIFECYCLE_LIST, agentStopFields } from '../../../work-view/agent-lifecycle.mjs';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { chatCompletionsHumanCopyProvider, HumanCopyWorker } from '../../../work-view/human-copy-worker.mjs';
+import { resolveOpenRouterConfig } from '../../OpenRouterProvider.js';
+import { resolveOpenAICompatConfig } from '../../OpenAICompatProvider.js';
+import { resolveOpenAICompatReasoning } from '../../reasoning-budget.js';
 import { AutoRefreshWorker } from '../../../work-view/auto-refresh-worker.mjs';
 import { buildRefreshTask } from '../../../work-view/refresh-task.js';
 import { HostedIntent } from '../../../work-view/hosted-intent.js';
 import { cmemProOrigin } from '../../../../shared/cmem-gateway.js';
+import { isOpenRouterApiUrl } from '../../../../shared/openrouter-base-url.js';
 import { runAgentTask } from '../../../agent-runner/run.js';
 import { ledgerSignature, readLedger } from '../../../work-view/request-groups.mjs';
 import { configuredJudge, decideSuggestion } from '../../../work-view/request-judge.mjs';
 import { configuredFocusJudge } from '../../../work-view/focus-judge.mjs';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
+import { captureEvent } from '../../../telemetry/telemetry.js';
 import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { validateBody } from '../middleware/validateBody.js';
 import type { SetupScan, SetupScanState } from '../../../prompt-import/setup-scan.js';
@@ -202,6 +206,14 @@ const suggestionBody = z.object({
   action: z.enum(['join', 'not-this']),
 }).strict();
 
+// The viewer's page ids (src/ui/my-work/src/live/usage.ts `UsageView`: setup plus App.tsx `View`): a closed list, so a
+// usage report can carry nothing else. A focus area is My Work filtered to that area, so it counts as `work`, never by name.
+const WORK_VIEW_PAGES = ['setup', 'work', 'rules', 'suggested', 'past-focus'] as const;
+const usageBody = z.discriminatedUnion('event', [
+  z.object({ event: z.literal('opened'), view: z.enum(WORK_VIEW_PAGES) }).strict(),
+  z.object({ event: z.literal('switched'), view: z.enum(WORK_VIEW_PAGES), previousView: z.enum(WORK_VIEW_PAGES) }).strict(),
+]);
+
 /** A path as the owner reads it: `~/...` under the home folder, else absolute. */
 const homeRelative = (path: string) => path === homedir() || path.startsWith(`${homedir()}/`) ? `~${path.slice(homedir().length)}` : path;
 
@@ -269,19 +281,72 @@ const setupCompleteBody = z.object({
 }).strict();
 const setupImportBody = z.object({}).strict();
 
-type HumanCopyProvider = ReturnType<typeof chatCompletionsHumanCopyProvider>;
+type HumanCopyProvider = ReturnType<typeof chatCompletionsHumanCopyProvider> & {
+  configKey?: string;
+  isOff?: () => boolean;
+  getConfigKey?: () => string | null;
+};
 
-/** Readable request summaries use the observer endpoint the user already
- * configured. Other providers keep the recorded wording. */
-export function configuredHumanCopyProvider(settingsPath = USER_SETTINGS_PATH): HumanCopyProvider | null {
+function withHumanCopyConfigKey(provider: ReturnType<typeof chatCompletionsHumanCopyProvider>, config: unknown[]): HumanCopyProvider {
+  return Object.assign(provider, { configKey: createHash('sha256').update(JSON.stringify(config)).digest('hex') });
+}
+
+/** Resolve the explicitly selected copy endpoint, or follow today's primary-provider behavior. */
+function resolveConfiguredHumanCopyProvider(settingsPath: string): HumanCopyProvider | null {
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true });
-  const apiKey = settings.CLAUDE_MEM_OPENROUTER_API_KEY?.trim();
-  if (settings.CLAUDE_MEM_PROVIDER !== 'openrouter' || !apiKey) return null;
-  return chatCompletionsHumanCopyProvider({
-    url: resolveOpenRouterChatCompletionsUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL),
-    apiKey,
-    model: settings.CLAUDE_MEM_OPENROUTER_MODEL,
-  });
+  // Unset keeps today's behaviour: only an OpenRouter primary writes card wording. Any other endpoint, an
+  // OpenAI-compatible primary included, spends tokens on it only once selected here.
+  const selection = settings.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER?.trim() || (settings.CLAUDE_MEM_PROVIDER === 'openrouter' ? 'openrouter' : '');
+  const modelOverride = settings.CLAUDE_MEM_WORK_VIEW_COPY_MODEL?.trim();
+
+  if (selection === 'openrouter') {
+    const config = resolveOpenRouterConfig(settingsPath);
+    const model = modelOverride || config.model;
+    if (!config.apiUrl || !config.apiKey || !model) return null;
+    const fallbackModels = !modelOverride && isOpenRouterApiUrl(config.apiUrl) ? config.fallbackModels : [];
+    return withHumanCopyConfigKey(chatCompletionsHumanCopyProvider({
+      url: config.apiUrl, apiKey: config.apiKey, model, ...(fallbackModels.length ? { fallbackModels } : {}),
+    }), ['openrouter', config.apiUrl, config.apiKey, model, fallbackModels]);
+  }
+  if (selection === 'openai-compatible') {
+    const config = resolveOpenAICompatConfig(settingsPath);
+    const model = modelOverride || config.model;
+    if (!config.apiUrl || !model || (config.requiresApiKey && !config.apiKey)) return null;
+    // The observer's reasoning setting for this endpoint applies to card wording too, and a strict server that
+    // rejects the field gets one resend without it (the observer's own rule, OpenAICompatProvider).
+    const sendReasoningOff = resolveOpenAICompatReasoning(settings.CLAUDE_MEM_OPENAI_COMPAT_REASONING) !== 'on';
+    return withHumanCopyConfigKey(chatCompletionsHumanCopyProvider({ url: config.apiUrl, apiKey: config.apiKey, model, sendReasoningOff }),
+      ['openai-compatible', config.apiUrl, config.apiKey, model, sendReasoningOff]);
+  }
+  return null;
+}
+
+/**
+ * My Work summaries follow an OpenRouter primary provider by default, as before.
+ * Any other configured endpoint is used only when selected here;
+ * the observer's quota-fallback key is never activated merely because it exists.
+ * Settings and credentials are resolved for each availability check/request so
+ * saves take effect without rebuilding the routes.
+ */
+export function configuredHumanCopyProvider(settingsPath = USER_SETTINGS_PATH): HumanCopyProvider {
+  const provider = (async (input: unknown) => {
+    const resolved = resolveConfiguredHumanCopyProvider(settingsPath);
+    if (!resolved) throw new Error('No supported My Work summary provider is configured.');
+    return resolved(input);
+  }) as HumanCopyProvider & { isAvailable: () => boolean; isOff: () => boolean; getConfigKey: () => string | null };
+  provider.isAvailable = () => {
+    try { return resolveConfiguredHumanCopyProvider(settingsPath) !== null; }
+    catch { return false; }
+  };
+  provider.isOff = () => {
+    try { return SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true }).CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER?.trim() === 'off'; }
+    catch { return false; }
+  };
+  provider.getConfigKey = () => {
+    try { return resolveConfiguredHumanCopyProvider(settingsPath)?.configKey ?? null; }
+    catch { return null; }
+  };
+  return provider;
 }
 
 /** My Work's automatic refresh on the user's own logged-in agent, unless
@@ -351,7 +416,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
     });
     this.reviews = new LocalReviewStore(options.reviewPath ?? join(DATA_DIR, 'work-view-reviews.db'));
     this.humanCopy = options.humanCopy === undefined
-      ? new HumanCopyWorker({ provider: configuredHumanCopyProvider(), cachePath: join(DATA_DIR, 'work-view', 'human-copy.json') })
+      ? new HumanCopyWorker({ provider: configuredHumanCopyProvider(), cachePath: join(DATA_DIR, 'work-view', 'human-copy.json'),
+        warn: message => logger.warn('WORKER', message) })
       : options.humanCopy;
     this.humanCopy?.pauseWhile(() => this.setupIsActive());
     if (this.humanCopy) void this.humanCopy.load().then(() => this.humanCopy?.start());
@@ -502,6 +568,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     app.post('/api/work-view/agents/mark-finished', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(markAgentFinishedBody), this.wrapHandler(this.markAgentFinished));
     app.post('/api/work-view/suggestions', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(suggestionBody), this.wrapHandler(this.answerSuggestion));
     app.post('/api/work-view/rules/load-in-claude-code', workViewLoopbackOnly, requireWorkViewOrigin, this.wrapHandler(this.loadRulesInClaudeCode));
+    app.post('/api/work-view/usage', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(usageBody), this.wrapHandler(this.recordUsage));
     app.get('/api/setup/scan', workViewLoopbackOnly, this.wrapHandler((_req, res) => {
       if (!this.setupScan) { res.status(503).json({ error: 'The prompt scan is unavailable on this worker.' }); return; }
       res.setHeader('Cache-Control', 'no-store');
@@ -934,6 +1001,15 @@ export class WorkViewRoutes extends BaseRouteHandler {
    * finished before the SubagentStop hook existed). Saved like a hook stop, with
    * its own source, so a later tool call from the agent still reopens it.
    */
+  /** Counts the viewer opening on a page, or switching page, through the worker's own consent-gated, whitelist-scrubbed
+   * telemetry (telemetry.ts), so the page loads no analytics SDK. The report names the page only — never what it showed. */
+  private recordUsage = (req: Request, res: Response): void => {
+    const report = req.body as z.infer<typeof usageBody>;
+    if (report.event === 'opened') captureEvent('work_view_opened', { view: report.view });
+    else captureEvent('work_view_switched', { view: report.view, previous_view: report.previousView });
+    res.status(204).end();
+  };
+
   private markAgentFinished = (req: Request, res: Response): void => {
     const { agentGroupId } = req.body as z.infer<typeof markAgentFinishedBody>;
     if (!this.appendWorkStateEntry) { res.status(503).json({ error: 'Saving agent state is unavailable on this worker.' }); return; }
