@@ -432,6 +432,12 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
     expect(decision.pause?.kind).toBe('quota_guard');
     expect(decision.pause?.message).toContain('10 minutes');
     expect(decision.pause?.message).not.toContain('exhausted');
+    expect(decision.pause?.reason).toEqual({
+      kind: 'reset_buffer_guard',
+      window: 'five_hour',
+      usagePercent: 90,
+      resetsAt: FIXED_NOW + 600_000,
+    });
   });
 
   it('reports a threshold stop as a precautionary pause that names the window and the threshold', () => {
@@ -441,6 +447,34 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
     expect(decision.pause?.message).toContain('five-hour Claude usage is 96.0%');
     expect(decision.pause?.message).toContain('95% pause threshold');
     expect(decision.pause?.message).not.toContain('exhausted');
+    expect(decision.pause?.reason).toEqual({
+      kind: 'limit_guard',
+      window: 'five_hour',
+      usagePercent: 96,
+      thresholdPercent: 95,
+    });
+  });
+
+  it('carries the original usage, threshold and normalized reset time without parsing the message', () => {
+    const resetsAt = FIXED_NOW + 3_600_000;
+    store.set({ rateLimitType: 'seven_day', utilization: 0.991, resetsAt: resetsAt / 1000 });
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW).pause?.reason).toEqual({
+      kind: 'limit_guard',
+      window: 'seven_day',
+      usagePercent: 99.1,
+      thresholdPercent: 93,
+      resetsAt,
+    });
+  });
+
+  it('identifies a refused Fable limit and retains its normalized reset', () => {
+    const resetsAt = FIXED_NOW + 3_600_000;
+    store.set({ rateLimitType: 'seven_day_overage_included', status: 'rejected', resetsAt: resetsAt / 1000 });
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW).pause?.reason).toEqual({
+      kind: 'used_up',
+      window: 'seven_day_overage_included',
+      resetsAt,
+    });
   });
 });
 

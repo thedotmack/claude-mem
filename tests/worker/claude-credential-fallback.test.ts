@@ -334,8 +334,11 @@ describe('Claude credential fallback: order and booking', () => {
   });
 
   it.each([
-    ['subscription', 'api-key', () => signIn(), 'memory is running on your Claude Code subscription login'],
-    ['api-key', 'subscription', () => setFallbackKey(), 'memory is running on your fallback API key (ANTHROPIC_FALLBACK_API_KEY)'],
+    ['subscription', 'api-key', () => {
+      signIn();
+      writeFileSync(join(tempDir, '.env'), 'ANTHROPIC_API_KEY=sk-ant-primary\n', { mode: 0o600 });
+    }, 'claude-mem is using your Claude Code login to save memories'],
+    ['api-key', 'subscription', () => setFallbackKey(), 'claude-mem is using your backup API key (ANTHROPIC_FALLBACK_API_KEY) to save memories'],
   ] as const)('tells the session start which credential memory runs on (%s), until both are spent', (target, held, arrange, notice) => {
     process.env.CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD = target;
     arrange();

@@ -41,7 +41,7 @@ To turn the fallback off:
 
 Settings files from earlier versions hold `""` for this setting; that now means the default, so those installs get the Anthropic-plan fallback too. Only `off` opts out.
 
-The fallback needs its own credentials: a Gemini, OpenRouter or OpenAI-compatible API key, or a Claude Code login (or Anthropic key) for Claude. A fallback without them, or any fallback that is itself held (a quota cooldown, or a refused key), is skipped, and work waits as it does without a fallback. For Claude, claude-mem checks that a login or key exists; a login that has expired fails its first fallback run and is then skipped until you log in again. When the cmem.ai gateway turns your account away (a lapsed plan, a spent allowance), it is skipped as a fallback for 15 minutes and then re-tried by a single request; the next session start tells you once, in the gateway's own words. Unattended retries on the gateway are capped the same way whether it is your provider or your fallback.
+The fallback needs its own credentials: a Gemini, OpenRouter or OpenAI-compatible API key, or a Claude Code login (or Anthropic key) for Claude. A fallback without them, or any fallback that is itself on hold or has a refused key, is skipped, and work waits as it does without a fallback. For Claude, claude-mem checks that a login or key exists; a login that has expired fails its first fallback run and is then skipped until you log in again. When the cmem.ai gateway turns your account away (a lapsed plan, a spent allowance), it is skipped as a fallback for 15 minutes and then re-tried by a single request; the next session start tells you once, in the gateway's own words. Unattended retries on the gateway are capped the same way whether it is your provider or your fallback.
 
 ## What switches, and what does not
 
@@ -50,7 +50,7 @@ The fallback needs its own credentials: a Gemini, OpenRouter or OpenAI-compatibl
 - **Does not switch:** authentication errors on other providers — an invalid, expired or revoked key (401/403). Those pause capture exactly as before, because a different provider would not fix the key.
 - **A fallback with a bad key is skipped once it is refused.** Only a *missing* key is detected ahead of time; an invalid or revoked fallback key fails its first run, and its auth cooldown then takes it out of rotation. Fix or clear the fallback key.
 - **Paused work resumes on its own.** A generator that stops on a quota error keeps its queued observations. The worker's periodic resume (once a minute) restarts them on whichever provider can take the work — the fallback, or the original provider again if it has recovered by then — and the session's next tool call does the same sooner. If neither can, it waits as before.
-- **Both exhausted:** if the fallback is also in a quota cooldown, nothing changes: work waits until one of them clears.
+- **Both exhausted:** if the backup is also on hold, work waits until one of them can serve again. The session-start notice names both reasons and the earliest retry time.
 
 ## Claude credential fallback
 
@@ -87,6 +87,14 @@ ANTHROPIC_FALLBACK_API_KEY=sk-ant-...
 - **It spends the fallback's allowance.** With Claude as the fallback, observation runs count against your Claude plan. Setting `CLAUDE_MEM_QUOTA_FALLBACK_MODEL` to a Haiku model keeps that cheap.
 - **Claude runs are capped by `CLAUDE_MEM_MAX_CONCURRENT_AGENTS`** (default 2). With three or more busy sessions on a Claude fallback, the extra sessions wait for a slot.
 - **Telegram wrap-ups** are not governed by `CLAUDE_MEM_QUOTA_FALLBACK_MODEL`: they use the model the session last ran on, or the summary tier model.
-- **Session-start notice.** While another provider is serving, the notice says capture continues there (for Claude: that memory is running on your Anthropic plan) instead of saying memory is paused. It is refreshed whenever a cooldown starts or ends, so right after a settings change it can be one step behind.
+- **Session-start notice.** A plain ℹ️ notice says which backup or Claude credential is saving memories, why, and when claude-mem will try the main provider again. A red ⚠️ notice appears only when saving is paused. Retry times use the worker machine's local clock and round up to the next minute. When the main provider is saving and only the backup is on hold, no notice appears. The notice is refreshed whenever a hold starts or ends, so right after a settings change it can be one step behind.
+
+For example, when cmem.ai is unavailable and the default Claude backup is saving:
+
+> ℹ️ claude-mem is using your Claude plan to save memories because cmem.ai isn't available. It switches back on its own and tries cmem.ai again at 8:17 PM. Nothing to do. (To stop using your Claude plan as a backup, set CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER=off.)
+
+When the Claude usage guard pauses saving and no backup can serve:
+
+> ⚠️ claude-mem has paused saving memories because you've used 95% of your 5-hour Claude limit (it stops at 95% to leave the rest for you). New activity is queued and saved when it resumes; it tries Claude again at 8:47 PM. You don't need to do anything, and restarting won't change it. (To keep saving through limits, pick a backup in CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER.)
 
 In the worker log, the switch shows as `Primary cannot serve right now; memory runs on the Anthropic plan (Claude) until it recovers` (or `Primary in quota cooldown; dispatching to fallback` for another fallback), followed later by `Primary quota cooldown elapsed; probing primary` and `Primary recovered from quota cooldown`. If nothing can take the work, the log says so once: `Primary and fallback both in quota cooldown; …` or `Primary in quota cooldown and the quota fallback cannot serve; …`.

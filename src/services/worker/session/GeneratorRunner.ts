@@ -25,7 +25,7 @@ import {
 } from './response-pacer.js';
 import { telemetryBuffer } from '../../telemetry/buffer.js';
 import { observerUsageLogFields } from '../observer-usage.js';
-import { AMBIGUOUS_QUOTA_MESSAGE, recordObserverFailure } from '../../../shared/observer-health.js';
+import { AMBIGUOUS_QUOTA_MESSAGE, recordObserverFailure, type ObserverQuotaReason } from '../../../shared/observer-health.js';
 import { explainQuotaAbort, globalRateLimitStore } from '../RateLimitStore.js';
 import {
   CODEX_CLI_SETUP_REMEDIATION,
@@ -117,7 +117,7 @@ export function quotaPauseForExit(
   provider: string,
   reason: string | null | undefined,
   profile?: string,
-): { kind: 'quota_guard' | 'quota_exhausted'; message: string } {
+): { kind: 'quota_guard' | 'quota_exhausted'; message: string; reason?: ObserverQuotaReason } {
   if (reason === 'quota:observer_text') {
     return { kind: 'quota_exhausted', message: OBSERVER_TEXT_QUOTA_MESSAGE };
   }
@@ -126,8 +126,8 @@ export function quotaPauseForExit(
     const explained = explainQuotaAbort(reason, globalRateLimitStore, Date.now(), profile);
     if (explained?.kind === kind) return explained;
     return kind === 'quota_guard'
-      ? { kind, message: 'Memory capture paused by the Claude usage reserve guard.' }
-      : { kind, message: 'Claude rejected the request because a usage allowance is exhausted.' };
+      ? { kind, message: 'Memory capture paused by the Claude usage reserve guard.', reason: { kind: 'unknown' } }
+      : { kind, message: 'Claude rejected the request because a usage allowance is exhausted.', reason: { kind: 'used_up', window: (reason ?? '').split(':')[1] } };
   }
   return { kind: 'quota_exhausted', message: AMBIGUOUS_QUOTA_MESSAGE };
 }
@@ -426,7 +426,10 @@ export async function startGeneratorWithProvider(
         // SessionStart banner must not call a 95% reserve pause a spent
         // allowance, nor a provider's own refusal a precaution.
         const pause = quotaPauseForExit(provider, reason, session.observerProfile);
-        recordQuotaExhausted(provider, pause.message, reason?.split(':')[1], undefined, session.observerProfile, primaryCredentialOf(session, provider));
+        const quotaReason = pause.reason ?? (pause.kind === 'quota_exhausted' && pause.message !== AMBIGUOUS_QUOTA_MESSAGE
+          ? providerQuotaRefusalReason(provider, session)
+          : { kind: 'unknown' as const });
+        recordQuotaExhausted(provider, pause.message, reason?.split(':')[1], undefined, session.observerProfile, primaryCredentialOf(session, provider), quotaReason);
         // Quota returned as assistant prose never throws, so it never reaches
         // the .catch above and never armed the health ledger. Without this the
         // session-start warning is structurally blind to an entire outage
@@ -600,6 +603,13 @@ function primaryCredentialOf(session: ActiveSession, provider: SelectableProvide
   return provider === 'claude' && !session.claudeAuthOverride ? session.observerAuth : undefined;
 }
 
+function providerQuotaRefusalReason(provider: SelectableProvider, session: ActiveSession): ObserverQuotaReason {
+  if (provider !== 'claude') return { kind: 'out_of_quota' };
+  const credential = session.claudeAuthOverride ?? session.observerAuth;
+  if (credential === 'api-key') return { kind: 'api_key_limit' };
+  return { kind: credential === 'subscription' ? 'used_up' : 'unknown' };
+}
+
 /**
  * Book a classified provider failure once, with the provider's own detail
  * (code, message, action, link, request id), so the session-start warning
@@ -617,7 +627,7 @@ function bookClassifiedFailure(
     case 'quota_exhausted':
       // A spent allowance: withhold requests for a cooldown, then let one
       // through to re-probe, instead of one doomed request per event (#3634).
-      recordQuotaExhausted(provider, error.message, undefined, undefined, session.observerProfile, primaryCredentialOf(session, provider));
+      recordQuotaExhausted(provider, error.message, undefined, undefined, session.observerProfile, primaryCredentialOf(session, provider), providerQuotaRefusalReason(provider, session));
       break;
     case 'auth_invalid':
       // A refused credential fails every request until the user acts; the
@@ -653,7 +663,7 @@ function bookClassifiedFailure(
           source: 'rate-limit',
         };
       } else {
-        recordQuotaExhausted(provider, error.message, 'rate_limit', undefined, session.observerProfile);
+        recordQuotaExhausted(provider, error.message, 'rate_limit', undefined, session.observerProfile, undefined, { kind: 'busy' });
       }
       break;
     }
