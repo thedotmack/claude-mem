@@ -145,6 +145,38 @@ describe('capture at the common ingest boundary', () => {
     expect(existsSync(media.root)).toBe(false);
   });
 
+  it('an image inside a <private> region spanning content blocks is never captured', async () => {
+    const observation = await ingest({ content: [
+      { type: 'text', text: 'before <private>secret screenshot follows' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: pngB64 } },
+      { type: 'text', text: 'end of secret</private> after' },
+    ] });
+    expect(observation.mediaRefs).toBeUndefined();
+    noBytes(observation.tool_response);
+    expect(observation.tool_response).not.toContain('secret');
+    expect(count('SELECT COUNT(*) n FROM media_attachments')).toBe(0);
+    expect(count('SELECT COUNT(*) n FROM media_event_refs')).toBe(0);
+    // A public image in the same event is still captured.
+    const mixed = await ingest({ content: [
+      { type: 'text', text: '<private>hidden</private>' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: pngB64 } },
+    ] }, { toolUseId: 'toolu_media_public' });
+    expect(mixed.mediaRefs).toHaveLength(1);
+  });
+
+  for (const enabled of ['true', 'false']) {
+    it(`image bytes past the scanner walk limit never reach storage (capture ${enabled})`, async () => {
+      process.env[FLAG] = enabled;
+      const filler = Array.from({ length: 4100 }, (_, index) => ({ type: 'text', text: `line ${index}` }));
+      const observation = await ingest({ content: [...filler, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: pngB64 } }] });
+      noBytes(observation.tool_response);
+      expect(observation.tool_response).toContain('line 4099');
+      expect(observation.tool_response).toContain('image data withheld from the observer');
+      const row = db.prepare('SELECT tool_response FROM tool_uses WHERE tool_use_id=?').get('toolu_media_1') as any;
+      noBytes(row.tool_response);
+    });
+  }
+
   it('privacy-gated events are skipped before any pixel is read or stored', async () => {
     privatePrompt = true;
     const result = await ingestObservation({ contentSessionId: 'media-session', toolName: 'x', toolInput: {}, toolResponse: anthropic(), cwd: join(dir, 'project'), platformSource: 'claude', toolUseId: 't' });
@@ -208,6 +240,38 @@ describe('trusted Read file locators', () => {
       expect(['unsupported_source', 'source_too_large']).toContain(observation.mediaFailures[0].code);
     }
     expect(count('SELECT COUNT(*) n FROM media_attachments')).toBe(0);
+  });
+
+  it('a captured Read keeps its file locator only on the attachment, not in the stored response', async () => {
+    const source = join(dir, 'project', 'locator.png');
+    writeFileSync(source, png);
+    const observation = await readEvent(source);
+    expect(observation.mediaRefs).toHaveLength(1);
+    expect(JSON.parse(observation.tool_response).file.path).toBeUndefined();
+    const row = db.prepare('SELECT tool_response FROM tool_uses WHERE tool_use_id=?').get('toolu_media_1') as any;
+    expect(row.tool_response).not.toContain('locator.png');
+  });
+
+  it('a Read replay after the file changed at the same path is rejected, not served stale', async () => {
+    const source = join(dir, 'project', 'replayed.png');
+    writeFileSync(source, png);
+    const first = (await readEvent(source)).mediaRefs[0];
+    writeFileSync(source, Buffer.from(otherB64, 'base64'));
+    const replay = await readEvent(source);
+    expect(replay.mediaRefs).toBeUndefined();
+    expect(replay.mediaFailures[0]).toMatchObject({ code: 'checksum_mismatch' });
+    expect(media.getMetadata(first.id).state).toBe('ready');
+  });
+
+  it('an unchanged Read replay through a symlinked project root keeps its attachment', async () => {
+    writeFileSync(join(dir, 'project', 'linked.png'), png);
+    const linkedRoot = join(dir, 'project-link');
+    symlinkSync(join(dir, 'project'), linkedRoot);
+    const relativeRead = () => ingest({ type: 'image', file: { path: 'linked.png' } }, { toolName: 'Read', toolInput: { file_path: 'linked.png' }, cwd: linkedRoot });
+    const first = (await relativeRead()).mediaRefs[0];
+    expect(first).toBeDefined();
+    const replay = await relativeRead();
+    expect(replay.mediaRefs).toEqual([first]);
   });
 });
 

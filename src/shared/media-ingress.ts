@@ -39,9 +39,9 @@ export interface MediaScanResult {
   candidates: MediaCandidate[];
   failures: MediaFailureDescriptor[];
   /**
-   * The walk stopped descending somewhere. Values past the bound are returned
-   * unchanged (never rewritten), the same passthrough as the observer prompt
-   * stripper past its depth bound (sdk/prompts.ts stripImagePayloads).
+   * The walk stopped descending somewhere. A value past the bound that may
+   * hold an image is replaced whole by a byte-free descriptor; any other value
+   * is returned unchanged.
    */
   walkLimitReached: boolean;
 }
@@ -52,6 +52,12 @@ const DATA_IMAGE_URL_PATTERN = /^data:(image\/[^;,]+);base64,(.*)$/is;
 const IMAGE_MARKER_IN_JSON_TEXT = /image(?:"|\\|_url)|data:image\//i;
 const ELIDED_IMAGE_NOTE = 'image data withheld from the observer';
 const MAX_WALKED_NODES = 4096;
+/**
+ * Base64 image bodies are unbroken runs. 32 characters encode 24 bytes, fewer
+ * than the smallest valid file of each supported format (WebP 26 B, PNG 67 B,
+ * JPEG about 125 B), so no real image body is shorter.
+ */
+const ENCODED_BYTES_RUN = /[A-Za-z0-9+/]{32,}/;
 const MAX_WALK_DEPTH = 20;
 
 interface RecognizedImageBlock {
@@ -218,13 +224,20 @@ export function scanMediaFields(toolInput: unknown, toolResponse: unknown, stage
       });
     }
 
-    // A typed file locator carries no bytes: the path stays as tool text.
+    // A typed file locator carries no bytes. Dispatch keeps the path so the
+    // worker can authorize it; a captured image keeps its locator only on the
+    // attachment, so the stored response drops it. A rejected or disabled one
+    // stays as tool text (the same path is in the Read input anyway).
     if (image.trustedFilePath !== undefined) {
       if (!rejectionCode && stage === 'dispatch') return walkRecordEntries(block, pointer, depth);
-      const mediaStatus = rejectionCode
-        ? recordFailure(rejectionCode, label)
-        : { version: 1, state: 'captured', inspection: 'uninspected', label };
-      return { ...walkRecordEntries(block, pointer, depth), media_status: mediaStatus };
+      if (rejectionCode) return { ...walkRecordEntries(block, pointer, depth), media_status: recordFailure(rejectionCode, label) };
+      const container = block[image.byteContainerKey!] as UnknownRecord;
+      const containerPointer = `${pointer}/${image.byteContainerKey}`;
+      return {
+        ...walkRecordEntries(block, pointer, depth, image.byteContainerKey!),
+        [image.byteContainerKey!]: walkRecordEntries(withoutKey(container, 'path'), containerPointer, depth + 1),
+        media_status: { version: 1, state: 'captured', inspection: 'uninspected', label },
+      };
     }
 
     // Dispatch keeps accepted bytes for the worker; everything around them is
@@ -279,11 +292,25 @@ export function scanMediaFields(toolInput: unknown, toolResponse: unknown, stage
     return walked === parsed ? value : JSON.stringify(walked);
   };
 
+  /**
+   * Past the walk bound a value is not descended, so it fails closed: one
+   * that may hold an image (the same marker the JSON-string parse uses, or a
+   * data URL, plus a run of encoded bytes) is replaced whole by a byte-free
+   * descriptor; anything else is returned unchanged. One serialization per
+   * unwalked value keeps it linear.
+   */
+  const boundedRemainder = (value: unknown): unknown => {
+    if (value === null || (typeof value !== 'string' && typeof value !== 'object')) return value;
+    const serialized = typeof value === 'string' ? value : JSON.stringify(value);
+    if (typeof serialized !== 'string' || !IMAGE_MARKER_IN_JSON_TEXT.test(serialized) || !ENCODED_BYTES_RUN.test(serialized)) return value;
+    return { elided: ELIDED_IMAGE_NOTE, bytes: serialized.length, media_status: recordFailure('source_too_large') };
+  };
+
   const walk = (value: unknown, pointer: string, depth: number): unknown => {
     walkedNodeCount += 1;
     if (walkedNodeCount > MAX_WALKED_NODES || depth > MAX_WALK_DEPTH) {
       walkLimitReached = true;
-      return value;
+      return boundedRemainder(value);
     }
     if (typeof value === 'string') return walkString(value, pointer, depth);
     if (Array.isArray(value)) {

@@ -12,6 +12,7 @@ import {
 } from '../../shared/media-contract.js';
 import { scanMediaFields, type MediaCandidate } from '../../shared/media-ingress.js';
 import { logger } from '../../utils/logger.js';
+import { stripMemoryTags } from '../../utils/tag-stripping.js';
 import { readContainedFile } from './files.js';
 import { MediaStore, mediaEventKey } from './store.js';
 
@@ -158,20 +159,44 @@ function resolveEventIdentity(input: CaptureInput, platform: MediaProvenance['pl
   }
 }
 
-/** A replayed event must carry the same source it did the first time. */
+/**
+ * A replayed event must carry the same source it did the first time: the same
+ * file locator (resolved against the physical project root, as at capture) and
+ * the same bytes, so a file changed at the same path is never served stale.
+ */
 function assertReplayMatchesPriorSource(candidate: MediaCandidate, input: CaptureInput, priorProvenance: MediaProvenance): void {
-  if (candidate.encoded) {
-    const replayedSourceSha256 = createHash('sha256').update(candidateBytes(candidate, input)).digest('hex');
-    if (replayedSourceSha256 !== priorProvenance.source_sha256) throw new MediaError('checksum_mismatch');
-    return;
-  }
   if (candidate.filePath) {
     const originalPath = priorProvenance.source_locator?.path;
     const toolInputFilePath = (input.toolInput as { file_path?: unknown } | null)?.file_path;
-    if (input.toolName !== 'Read' || originalPath !== resolve(input.cwd, candidate.filePath) || toolInputFilePath !== candidate.filePath) {
+    if (input.toolName !== 'Read' || !input.cwd || toolInputFilePath !== candidate.filePath
+      || originalPath !== resolve(realpathSync(input.cwd), candidate.filePath)) {
       throw new MediaError('unsupported_source');
     }
   }
+  const replayedSourceSha256 = createHash('sha256').update(candidateBytes(candidate, input)).digest('hex');
+  if (replayedSourceSha256 !== priorProvenance.source_sha256) throw new MediaError('checksum_mismatch');
+}
+
+/**
+ * Labels of candidates that sit inside a memory-tag region (<private> and the
+ * rest). The stored text is stripMemoryTags(JSON.stringify(...)) of each field,
+ * and every candidate's descriptor carries its label, so a label that the strip
+ * removes marks an image the user kept out of memory. Its pixels are never
+ * read, stored, uploaded or sent to the observer.
+ */
+function labelsInsideMemoryTags(scanned: { toolInput: unknown; toolResponse: unknown }, candidates: readonly MediaCandidate[]): Set<string> {
+  const hidden = new Set<string>();
+  if (candidates.length === 0) return hidden;
+  const fields = [scanned.toolInput, scanned.toolResponse]
+    .filter(value => value !== undefined)
+    .map(value => JSON.stringify(value));
+  const strippedFields = fields.map(stripMemoryTags);
+  for (const candidate of candidates) {
+    const labelPattern = new RegExp(`${candidate.label}(?!\\d)`, 'g');
+    const occurrences = (texts: string[]) => texts.reduce((total, text) => total + (text.match(labelPattern)?.length ?? 0), 0);
+    if (occurrences(strippedFields) < occurrences(fields)) hidden.add(candidate.label);
+  }
+  return hidden;
 }
 
 export async function captureObservationMedia(input: CaptureInput, store?: MediaStore): Promise<CaptureResult> {
@@ -182,8 +207,10 @@ export async function captureObservationMedia(input: CaptureInput, store?: Media
   const platform = provenancePlatformOf(input.platformSource);
   const identity = resolveEventIdentity(input, platform);
   let eventKey: string | undefined;
+  const privateLabels = labelsInsideMemoryTags(scanned, scanned.candidates);
 
   for (const candidate of scanned.candidates) {
+    if (privateLabels.has(candidate.label)) continue;
     try {
       if (!platform || !identity || !store) throw new MediaError('unsupported_source');
       const candidateEventKey = mediaEventKey(platform, identity);
