@@ -534,9 +534,12 @@ export async function runServerApiKeyCli(argv: string[]): Promise<void> {
 
   const { getSharedPostgresPool } = await import('../../storage/postgres/index.js');
   const { PostgresAuthRepository } = await import('../../storage/postgres/auth.js');
-  const { createHash, randomBytes } = await import('crypto');
+  const { ensureApiKeySchema } = await import('../../storage/postgres/schema.js');
+  const { hashApiKey, apiKeyPrefix } = await import('../auth/api-key-hash.js');
+  const { randomBytes } = await import('crypto');
   const pool = getSharedPostgresPool({ requireDatabaseUrl: true });
   const repo = new PostgresAuthRepository(pool);
+  await ensureApiKeySchema(pool);
 
   try {
     if (sub === 'create') {
@@ -558,9 +561,10 @@ export async function runServerApiKeyCli(argv: string[]): Promise<void> {
         projectId = result.projectId;
       }
       const rawKey = `cmem_${randomBytes(24).toString('hex')}`;
-      const keyHash = createHash('sha256').update(rawKey).digest('hex');
+      const keyHash = hashApiKey(rawKey);
       const created = await repo.createApiKey({
         keyHash,
+        keyPrefix: apiKeyPrefix(rawKey),
         teamId,
         projectId,
         scopes,

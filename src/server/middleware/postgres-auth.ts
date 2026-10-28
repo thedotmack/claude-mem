@@ -1,10 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import { createHash } from 'crypto';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import type { PostgresPool } from '../../storage/postgres/pool.js';
 import type { PostgresApiKey } from '../../storage/postgres/auth.js';
+import { PostgresAuthRepository } from '../../storage/postgres/auth.js';
 import type { AuthContext } from './auth.js';
+import {
+  apiKeyPrefix,
+  hashApiKeyLegacySha256,
+  hashApiKeyAsync,
+  isSaltedHash,
+  verifyRawKeyAgainstStoredHashAsync,
+} from '../auth/api-key-hash.js';
 import {
   hasForwardedClientHeaders,
   hasLoopbackHostHeader,
@@ -21,6 +28,13 @@ import { logger } from '../../utils/logger.js';
 //
 // teamId / projectId on req.authContext come straight from the Postgres
 // api_keys row. Routes use those to scope every read and write.
+//
+// #2541 — key verification is a dual verifier: new keys are stored as salted
+// scrypt hashes (`scrypt$N$salt$derived`, non-deterministic per raw key), so
+// candidates are narrowed by the raw key's non-secret prefix and each is
+// verified in constant time. Legacy rows still hold unsalted SHA-256 digests,
+// which are looked up deterministically and transparently re-hashed to the
+// salted scheme on their first successful verify.
 
 export interface PostgresRequireAuthOptions {
   requiredScopes?: string[];
@@ -126,43 +140,66 @@ export async function verifyPostgresApiKey(
   rawKey: string,
   requiredScopes: string[],
 ): Promise<VerifiedPostgresApiKey | null> {
-  const keyHash = createHash('sha256').update(rawKey).digest('hex');
-  const result = await pool.query(
-    `
-      SELECT id, team_id, project_id, scopes, revoked_at, expires_at
-      FROM api_keys
-      WHERE key_hash = $1
-    `,
-    [keyHash],
-  );
-  const row = result.rows[0] as Pick<
-    PostgresApiKey,
-    'id' | 'teamId' | 'projectId'
-  > & {
-    id: string;
-    team_id: string | null;
-    project_id: string | null;
-    scopes: unknown;
-    revoked_at: Date | null;
-    expires_at: Date | null;
-  } | undefined;
-  if (!row) {
+  const repo = new PostgresAuthRepository(pool);
+  const prefix = apiKeyPrefix(rawKey);
+
+  // Salted scrypt hashes are not deterministic per raw key, so narrow by the
+  // (non-secret) prefix and verify each candidate in constant time. The query
+  // returns only active rows and is LIMITed, so a caller who knows a prefix
+  // can force at most that many async derivations per request — never one for
+  // a revoked or expired row, and never an unbounded scan.
+  const attempted = new Set<string>();
+  const matchSalted = async (rows: PostgresApiKey[]): Promise<PostgresApiKey | null> => {
+    for (const candidate of rows) {
+      if (attempted.has(candidate.id)) continue;
+      attempted.add(candidate.id);
+      if (isSaltedHash(candidate.keyHash) && await verifyRawKeyAgainstStoredHashAsync(rawKey, candidate.keyHash)) {
+        return candidate;
+      }
+    }
+    return null;
+  };
+
+  let matched = await matchSalted(await repo.listApiKeysByPrefix(prefix));
+
+  if (!matched) {
+    // Legacy unsalted SHA-256 rows: deterministic lookup, constant-time
+    // compare, then a transparent upgrade to the salted scheme now that the
+    // plaintext is in hand (same path the SQLite backend takes, #2541).
+    const legacy = await repo.getApiKeyByHash(hashApiKeyLegacySha256(rawKey));
+    if (legacy && await verifyRawKeyAgainstStoredHashAsync(rawKey, legacy.keyHash)) {
+      matched = legacy;
+    } else if (!legacy) {
+      // A concurrent request may have presented this same legacy key first and
+      // re-hashed the row between our prefix lookup and the legacy lookup, at
+      // which point both lookups miss and a valid key would be refused. One
+      // recheck closes that window; already-attempted rows are skipped so a
+      // wrong key never derives the same candidate twice.
+      matched = await matchSalted(await repo.listApiKeysByPrefix(prefix));
+    }
+  }
+
+  if (!matched) {
     return null;
   }
-  if (row.revoked_at) {
+  if (matched.revokedAtEpoch !== null) {
     return null;
   }
-  if (row.expires_at && row.expires_at.getTime() <= Date.now()) {
+  if (matched.expiresAtEpoch !== null && matched.expiresAtEpoch <= Date.now()) {
     return null;
   }
-  const scopes = normalizeScopes(row.scopes);
+  const scopes = normalizeScopes(matched.scopes);
   if (!hasRequiredScopes(scopes, requiredScopes)) {
     return null;
   }
+  // Only after every check passes: upgrade a legacy row on first use.
+  if (!isSaltedHash(matched.keyHash)) {
+    await repo.updateApiKeyHash(matched.id, await hashApiKeyAsync(rawKey), prefix);
+  }
   return {
-    apiKeyId: row.id,
-    teamId: row.team_id,
-    projectId: row.project_id,
+    apiKeyId: matched.id,
+    teamId: matched.teamId,
+    projectId: matched.projectId,
     scopes,
   };
 }
