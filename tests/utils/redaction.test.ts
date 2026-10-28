@@ -334,6 +334,18 @@ describe('redactSensitive generic built-in patterns', () => {
     expect(result.token).toBe("<redacted type='generic_token'/>");
   });
 
+  it('pairs the same password key spellings as the text pattern (structured events)', () => {
+    const event = { env: { MYSQL_PWD: 'Hunter22Example', PGPASSWORD: 'Sup3rSecretValue' }, dbPassword: 'Hunter22Example', PWD: '/home/user/project' };
+    const result = redactJsonStrings(event, cfg) as typeof event;
+    expect(result.env.MYSQL_PWD).toBe("<redacted type='generic_password'/>");
+    expect(result.env.PGPASSWORD).toBe("<redacted type='generic_password'/>");
+    expect(result.dbPassword).toBe("<redacted type='generic_password'/>");
+    expect(result.PWD).toBe('/home/user/project');
+    for (const [key, value] of [['MYSQL_PWD', 'Hunter22Example'], ['PGPASSWORD', 'Sup3rSecretValue'], ['dbPassword', 'Hunter22Example']]) {
+      expect(redactSensitive(`${key}=${value}`, cfg).counts.generic_password).toBe(1);
+    }
+  });
+
   it('leaves non-secret values under credential-named keys alone', () => {
     const event = { max_tokens: 'abcdefghij', password: '12345678', session_token: 'short', api_key: 'sk-ABCDEFGHIJ1234567890abcdef' };
     const result = redactJsonStrings(event, cfg) as typeof event;
