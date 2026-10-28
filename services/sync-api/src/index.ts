@@ -3,7 +3,7 @@
  * Routes and shapes match workers/sync-hub. Storage is Postgres.
  */
 import postgres from "postgres";
-import { authenticateRequest, errorResponse, json } from "./auth";
+import { authenticateRequest, cacheTtlSeconds, errorResponse, json } from "./auth";
 import type { SyncApiEnv } from "./env";
 import { formatHostForUrl, loadEnv } from "./env";
 import { startForwardProxy } from "./forward";
@@ -145,6 +145,7 @@ export interface SyncApiApp {
 interface SocketData {
 	userId: string;
 	deviceId: string;
+	authExpiresAt: number;
 	registered: RegisteredSocket | null;
 }
 
@@ -475,7 +476,15 @@ export async function startSyncApi(
 					return retryableStoreUnavailable("websocket upgrade", error);
 				}
 				const upgraded = server.upgrade(request, {
-					data: { userId: auth.userId, deviceId: auth.deviceId, registered: null },
+					// The upgrade is the only authentication this socket gets:
+					// bound its lifetime by the same window a revoked token could
+					// linger in the verdict cache. fanOutCommitted enforces it.
+					data: {
+						userId: auth.userId,
+						deviceId: auth.deviceId,
+						authExpiresAt: Date.now() + cacheTtlSeconds(env) * 1000,
+						registered: null,
+					},
 				});
 				if (!upgraded) return errorResponse(426, "expected Upgrade: websocket");
 				return undefined as unknown as Response;
@@ -499,6 +508,7 @@ export async function startSyncApi(
 				const registered: RegisteredSocket = {
 					userId: ws.data.userId,
 					deviceId: ws.data.deviceId,
+					authExpiresAt: ws.data.authExpiresAt,
 					send: (data) => { ws.send(data); },
 					close: (code, reason) => { ws.close(code, reason); },
 				};

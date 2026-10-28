@@ -55,12 +55,20 @@ import { runWatchdog } from "./watchdog";
 // The DO class must be exported from the Worker entrypoint.
 export { SyncHub };
 
-/** Cloudflare KV's minimum expirationTtl. */
-export const AUTH_CACHE_TTL_MIN_SECONDS = 60;
-/** Upper clamp — revocation / rotation can linger this long on a warm cache. */
-export const AUTH_CACHE_TTL_MAX_SECONDS = 3_600;
-/** Default positive-verdict TTL. Cuts KV rewrites vs the old 60s bound. */
-export const AUTH_CACHE_TTL_DEFAULT_SECONDS = 900;
+// Definitions moved to ./auth-ttl.js so the SyncHub Durable Object can bound
+// WebSocket authorization by the same window — importing this entrypoint from
+// the DO module would be circular.
+export {
+	AUTH_CACHE_TTL_MIN_SECONDS,
+	AUTH_CACHE_TTL_MAX_SECONDS,
+	AUTH_CACHE_TTL_DEFAULT_SECONDS,
+} from "./auth-ttl.js";
+import {
+	AUTH_CACHE_TTL_MIN_SECONDS,
+	AUTH_CACHE_TTL_MAX_SECONDS,
+	AUTH_CACHE_TTL_DEFAULT_SECONDS,
+	cacheTtlSeconds,
+} from "./auth-ttl.js";
 
 const MIN_CACHE_TTL_SECONDS = AUTH_CACHE_TTL_MIN_SECONDS;
 const MAX_CACHE_TTL_SECONDS = AUTH_CACHE_TTL_MAX_SECONDS;
@@ -281,15 +289,6 @@ async function canonicalUserId(res: Response): Promise<string | null> {
 	if (typeof id !== "string") return null;
 	const trimmed = id.trim();
 	return trimmed.length > 0 ? trimmed : null;
-}
-
-function cacheTtlSeconds(env: Env): number {
-	const parsed = parseBoundedPositiveInteger(env.AUTH_CACHE_TTL_SECONDS ?? "", MAX_CACHE_TTL_SECONDS);
-	if (parsed === null) return DEFAULT_CACHE_TTL_SECONDS;
-	return Math.min(
-		MAX_CACHE_TTL_SECONDS,
-		Math.max(MIN_CACHE_TTL_SECONDS, parsed),
-	);
 }
 
 /** Parse only deliberately small control-plane integers, never uint64 data. */

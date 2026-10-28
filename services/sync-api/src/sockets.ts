@@ -5,6 +5,8 @@
 export interface RegisteredSocket {
 	userId: string;
 	deviceId: string;
+	/** Epoch ms after which the upgrade-time token can no longer be trusted. */
+	authExpiresAt: number;
 	send: (data: string) => void;
 	close: (code?: number, reason?: string) => void;
 }

@@ -261,7 +261,7 @@ export function captureDeliverables(input: NormalizedHookInput, options: Capture
   if (resolveRuntimeContext().runtime === 'server') return null;
   // A worker on another host could not open a copy made on this disk, and My Work would hide its record: the bucket is for a worker that shares the disk.
   const workerHost = getWorkerHost();
-  if (usesRemoteHookSpool(workerHost)) {
+  if (usesRemoteHookSpool(workerHost, 'auto', loadFromFileOnce().CLAUDE_MEM_WORKER_URL)) {
     logger.debug('HOOK', 'Deliverables are not captured for a worker on another host', { workerHost });
     return null;
   }
