@@ -5,7 +5,7 @@
 # Usage: scripts/endless-mode-validation/forward/run.sh <turns> [configs...]   (configs default: none off timeline observation; also: release)
 # Env: see lib/env.sh (EMV_RUN_NAME, EMV_PROMPTS [prompts200.txt; prompts500.txt for 500 turns], EMV_AGENT, EMV_MODEL_PROFILE, EMV_CLAUDE_BIN, ...). Also:
 #   EMV_FIRST_TURN  continue an existing run (same EMV_RUN_NAME) from this turn [1]
-#   EMV_BUDGET_USD  openrouter-deepseek-flash only: stop every configuration at the same turn once the key's total
+#   EMV_BUDGET_USD  openrouter-deepseek-flash only: stop every configuration after the slowest one's current turn once the key's total
 #                   OpenRouter spend reaches this many USD (budget-watch.sh) [unset: no stop]
 #   EMV_PRICES      prices file for the tables [by profile: prices/anthropic-claude-opus-5-5.json, prices/openai-gpt-6.1-sol.json,
 #                   or OpenRouter's live list for openrouter-deepseek-flash]
