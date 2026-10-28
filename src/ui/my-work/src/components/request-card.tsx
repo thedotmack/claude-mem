@@ -10,7 +10,7 @@ import { isCardDeliverable } from '@/lib/deliverables'
 import { PRODUCT_ICON } from '@/lib/product-icons'
 import { Req } from '@/spec/req'
 import { requestById, updateRequest, useFreshlyUpdated, type Request } from '@/data'
-import { AgentIcon, GoalChip, NextMove, ProductLink, ProgressMeter, StateBadge, useWorkspace } from './bits'
+import { AgentIcon, FocusAreaChip, NextMove, ProductLink, ProgressMeter, StateBadge, useWorkspace } from './bits'
 
 /**
  * Decision 5: while a request has only agent data, the card shows the agent's own lines as a terminal,
@@ -98,7 +98,7 @@ export function OpenFollowUps({ request, limit }: { request: Request; limit?: nu
 const CARD_DELIVERABLES = 3
 
 /**
- * What came out of the request, on the front of the card (R5.12): a deck, a
+ * Deliverables, on the front of the card (R5.12): a deck, a
  * report, a page, a PR, each one click away. Bucket copies claude-mem kept are
  * marked as deliverables by the mapper; the drawer keeps the full list with
  * commits and branches.
@@ -135,7 +135,7 @@ export function Deliverables({ request, onOpen }: { request: Request; onOpen: ()
   )
 }
 
-export function RequestCard({ request, onOpen, onOpenGoal }: { request: Request; onOpen: () => void; onOpenGoal: (goalId: string) => void }) {
+export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request; onOpen: () => void; onOpenFocus: (focusAreaId: string) => void }) {
   const { team } = useWorkspace()
   const { phase, text, word } = useAgentViewTransform(request)
   const fresh = phase === 'fresh'
@@ -185,7 +185,7 @@ export function RequestCard({ request, onOpen, onOpenGoal }: { request: Request;
           <OpenFollowUps request={request} limit={3} />
 
           <div className="mt-auto space-y-3 border-t border-border/70 pt-3">
-            <GoalChip goalId={request.goalId} onOpen={onOpenGoal} />
+            <FocusAreaChip focusAreaId={request.focusAreaId} onOpen={onOpenFocus} />
             <Req ids={['R5.3', 'R5.4', 'R5.5']}>
               <dl className="grid grid-cols-3 gap-2 text-xs">
                 <div><dt className="text-muted-foreground">Stage</dt><dd className="mt-0.5 font-medium" title={request.stageNote}>{request.stage}</dd></div>

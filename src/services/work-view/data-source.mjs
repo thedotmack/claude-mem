@@ -4,120 +4,17 @@ import { readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { reduceWorkState } from './work-state-reduce.mjs';
 import { activitySignature, buildAgentView, readAgentRecords, readEvidence } from './agent-view.mjs';
-import { goalsAddedSince, ledgerSignature, readLedger } from './request-groups.mjs';
+import { ledgerSignature, openSuggestions, readLedger } from './request-groups.mjs';
 import { recordedFile, bucketFileAvailable } from './work-product.mjs';
 
-const CLOSED = new Set(['done', 'dropped']);
-const normalizedKey = (value) => String(value).replace(/[A-Z]/g, (letter) => letter.toLowerCase());
-const iso = (epoch) => epoch == null ? null : new Date(epoch).toISOString();
-const isClosed = (status) => status != null && CLOSED.has(String(status).toLowerCase());
-const effectiveStatus = (status) => status == null || status === '' ? 'unknown' : String(status).toLowerCase();
-const listId = (project, name) => JSON.stringify([normalizedKey(project), name]);
-const taskId = (parentId, name) => JSON.stringify([parentId, name]);
+// reduceWorkState lives in work-state-reduce.mjs so my-focus.mjs can replay rows without importing this module.
+export { reduceWorkState } from './work-state-reduce.mjs';
+// Kept here for the callers that already import it from the data source.
+export { readFocus, readFocusAreas } from './my-focus.mjs';
 
-// Entries are patches, not full records. This is the same append/merge behavior
-// as claude-mem's WorkStateRenderer: state and named tasks are separate maps.
-export function reduceWorkState(entries, { currentProject, currentProjectScope = [], eventLimit = Infinity, localDeviceId = '' } = {}) {
-  const scope = new Set(currentProjectScope.map(normalizedKey));
-  const listsById = new Map();
-  const events = [];
-  let revision = 0;
-  // Match sqlite/work-state.ts:getWorkStateEntries. Imported rows replay at
-  // their original write time, not the later local rowid assigned on arrival.
-  const device = row => row.origin_device_id ?? localDeviceId;
-  for (const row of [...entries].sort((a, b) => {
-    const timeAndDevice = a.created_at_epoch - b.created_at_epoch
-      || (device(a) < device(b) ? -1 : device(a) > device(b) ? 1 : 0);
-    if (timeAndDevice) return timeAndDevice;
-    const left = BigInt(a.origin_local_id ?? a.id), right = BigInt(b.origin_local_id ?? b.id);
-    return left < right ? -1 : left > right ? 1 : 0;
-  })) {
-    revision = Math.max(revision, row.id);
-    const fields = typeof row.fields === 'string' ? JSON.parse(row.fields) : row.fields;
-    if (!fields || typeof fields !== 'object' || Array.isArray(fields)) throw new Error('Invalid work-state entry');
-    const id = listId(row.scope_project ?? row.project, row.list_name);
-    let list = listsById.get(id);
-    if (!list) {
-      list = { id, project: row.scope_project ?? row.project, name: row.list_name, fields: {}, tasksByName: new Map(), updatedAtEpoch: 0, stateUpdatedAtEpoch: null, latestEntryId: 0 };
-      listsById.set(id, list);
-    }
-    const taskName = fields.task == null || fields.task === '' ? null : String(fields.task);
-    let target = list;
-    if (taskName !== null) {
-      target = list.tasksByName.get(taskName);
-      if (!target) {
-        target = { id: taskId(id, taskName), name: taskName, fields: {}, updatedAtEpoch: 0, latestEntryId: 0 };
-        list.tasksByName.set(taskName, target);
-      }
-    } else {
-      list.stateUpdatedAtEpoch = row.created_at_epoch;
-    }
-    const changes = [];
-    for (const [key, value] of Object.entries(fields)) {
-      const hadPrevious = Object.hasOwn(target.fields, key);
-      const previous = target.fields[key];
-      if (key !== 'task' && ((value === null && hadPrevious) || (value !== null && (!hadPrevious || previous !== value)))) {
-        changes.push({ field: key, ...(hadPrevious ? { previous } : {}), value, hadPrevious });
-      }
-      if (value === null) delete target.fields[key];
-      else target.fields[key] = value;
-    }
-    target.updatedAtEpoch = row.created_at_epoch;
-    target.latestEntryId = row.id;
-    list.updatedAtEpoch = row.created_at_epoch;
-    list.latestEntryId = row.id;
-    events.push({
-      id: row.id, project: list.project, originProject: row.project, listName: row.list_name, listId: id,
-      task: taskName, taskId: taskName === null ? null : target.id,
-      type: taskName === null ? 'state' : 'task', fields, changes,
-      status: taskName === null ? (target.fields.status == null ? 'open' : String(target.fields.status).toLowerCase()) : effectiveStatus(target.fields.status),
-      at: iso(row.created_at_epoch), atEpoch: row.created_at_epoch,
-      sourceOrder: [row.created_at_epoch, device(row), String(row.origin_local_id ?? row.id)],
-      inCurrentScope: scope.has(normalizedKey(row.project)),
-    });
-  }
-  const lists = [...listsById.values()].sort((a, b) => b.latestEntryId - a.latestEntryId).map((list) => {
-    const tasks = [...list.tasksByName.values()].map((task) => ({
-      ...task, status: effectiveStatus(task.fields.status), isOpen: !isClosed(task.fields.status), updatedAt: iso(task.updatedAtEpoch),
-    }));
-    const stateIsOpen = Object.keys(list.fields).some((key) => key !== 'task') && !isClosed(list.fields.status);
-    const { tasksByName, ...record } = list;
-    return {
-      ...record, status: isClosed(list.fields.status) ? String(list.fields.status).toLowerCase() : 'open',
-      isOpen: stateIsOpen || tasks.some((task) => task.isOpen),
-      inCurrentScope: scope.has(normalizedKey(list.project)),
-      updatedAt: iso(list.updatedAtEpoch), stateUpdatedAt: iso(list.stateUpdatedAtEpoch), tasks,
-    };
-  });
-  const projectsById = new Map();
-  for (const list of lists) {
-    const key = normalizedKey(list.project);
-    const project = projectsById.get(key) ?? { id: list.project, name: list.project, lists: 0, openLists: 0, tasks: 0, doing: 0, inCurrentScope: list.inCurrentScope, lastUpdatedAt: list.updatedAt };
-    project.lists++;
-    project.openLists += Number(list.isOpen);
-    project.tasks += list.tasks.length;
-    project.doing += list.tasks.filter((task) => task.isOpen && task.status === 'doing').length;
-    projectsById.set(key, project);
-  }
-  const projects = [...projectsById.values()];
-  const tasks = lists.flatMap((list) => list.tasks);
-  const summary = {
-    projects: projects.length, lists: lists.length, openLists: lists.filter((list) => list.isOpen).length,
-    tasks: tasks.length, openTasks: tasks.filter((task) => task.isOpen).length,
-    todo: tasks.filter((task) => task.status === 'todo').length,
-    doing: tasks.filter((task) => task.status === 'doing').length,
-    done: tasks.filter((task) => task.status === 'done').length,
-    dropped: tasks.filter((task) => task.status === 'dropped').length,
-    unknown: tasks.filter((task) => task.status === 'unknown').length,
-  };
-  return {
-    schemaVersion: 1, revision,
-    entryCount: entries.length, currentProject, currentProjectScope, summary, projects, lists,
-    events: events.slice(-eventLimit).reverse(),
-    lastUpdatedAt: events.length ? events.at(-1).at : null,
-  };
-}
+const normalizedKey = (value) => String(value).replace(/[A-Z]/g, (letter) => letter.toLowerCase());
 
 // Expand the same inherited read keys as SessionStore.getProjectReadKeys. A
 // worktree's older lists may be stored under a previously merged project key.
@@ -305,9 +202,16 @@ export class WorkStateSource {
 
   agentsSnapshot() {
     const now = Date.now();
+    // The judge's suggestions ("Looks like part of <request>"), each on the card of the conversation it is about.
+    const suggestions = openSuggestions(this.ledger);
+    const humanRequests = (this.agentView.humanRequests ?? []).map((request) => {
+      const suggestion = suggestions.find((entry) => entry.requestId !== request.groupId && (request.conversationKeys ?? []).includes(entry.conversationKey));
+      return suggestion ? { ...request, suggestion } : request;
+    });
     return {
       ...this.agentView,
-      ...this.goalLinks(),
+      humanRequests,
+      suggestions,
       teamMode: process.env.WORK_STATE_TEAM_MODE === '1',
       // Progress reviews and the build story come from the request-progress
       // skill; they are assessments, separate from recorded lifecycle.
@@ -323,28 +227,6 @@ export class WorkStateSource {
       } })),
       source: { ...this.source, kind: 'claude-mem-recorded-agent-activity', lastUpdatedAt: this.agentView.agents[0]?.presence.lastActivityAt ?? null, stale: !this.source.connected && this.agentView.agents.length > 0 },
     };
-  }
-
-  /** Join the request-progress alignment onto requests and goals, the way the
-   * prototype's goalsSnapshot() does. A request's `goals` is absent until it is
-   * aligned (Goal not linked yet), [] when it serves none, else its goals. */
-  goalLinks() {
-    const alignment = this.ledger?.alignment;
-    const goals = this.agentView.goals;
-    if (!alignment || !goals) return {};
-    const byGoal = new Map([...goals.priorities, ...goals.openAsks].map((goal) => [goal.task, goal]));
-    // "Serves none" holds until a goal is added; then the group is asked again.
-    const unaligned = new Set(goalsAddedSince(alignment, [...byGoal.keys()]).length ? [] : alignment.unaligned ?? []);
-    const humanRequests = (this.agentView.humanRequests ?? []).map((request) => {
-      if (!request.groupId) return request;
-      const links = (alignment.links?.[request.groupId] ?? []).filter((link) => byGoal.has(link.goal)).map((link) => {
-        const goal = byGoal.get(link.goal);
-        return { goalId: goal.id, goal: link.goal, title: goal.title, kind: goal.kind, evidence: link.evidence };
-      });
-      if (links.length) return { ...request, goals: links };
-      return unaligned.has(request.groupId) ? { ...request, goals: [] } : request;
-    });
-    return { humanRequests, goals: { ...goals, alignedAt: alignment.alignedAt ?? null } };
   }
 
   evidence(kind, id) {

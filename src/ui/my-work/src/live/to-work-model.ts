@@ -1,7 +1,8 @@
 // The one pure mapper from a WorkViewSnapshot (local worker today, cmem.ai later) to the WorkModel the screens use.
 // It follows the plan's mapping table. Where the snapshot has no value, the field takes the table's "missing" value;
 // nothing is estimated or made up (spec §12). Relative imports with .ts extensions so `node --test` can load it.
-import { assertConsistentRequest, type WorkProductKind, type Agent, type AgentTool, type CurrentPeriod, type Device, type Goal, type GoalItem, type PastPeriod, type Request, type SkillRun } from '../data.ts'
+import { assertConsistentRequest, type WorkProductKind, type Agent, type AgentTool, type CurrentPeriod, type Device, type FocusArea, type PastPeriod, type Request, type SkillRun } from '../data.ts'
+import { resolveFocusAreaId, toFocusModel, type MinedGoalItem } from './to-focus-model.ts'
 import { normalizeRequestStatus, presentStatus, STALE_AFTER_MS, type NormalizedStatus } from './status-normalization.ts'
 import type { MappedWorkModel, RequestReadError } from './work-data-source.ts'
 import type { OwnerRule, RuleQuote, RuleRecord } from '../data-rules.ts'
@@ -27,7 +28,7 @@ const WORK_PRODUCT_KIND: Record<string, WorkProductKind> = {
 }
 
 /** Recorded work product the drawer can show. A local file that is gone is left out; a bucket copy keeps its deliverable mark for the card's front. */
-export function mapWorkProduct(products: WorkViewWorkProduct[] | undefined): Request['workProduct'] {
+function mapWorkProduct(products: WorkViewWorkProduct[] | undefined): Request['workProduct'] {
   return (products ?? []).filter((product) => product.available !== false).map((product) => ({
     kind: WORK_PRODUCT_KIND[product.kind] ?? 'Link',
     label: cleanText(product.title, 140) || product.kind,
@@ -40,7 +41,7 @@ const EVIDENCE_KIND_LABEL: Record<string, string> = { 'work-state': 'Work state'
 // cleanText is copied from claude-mem v15.0.1 plugin/ui/work-view/view-model.js:6-20: it drops injected
 // instructions, code fences, markup and markdown from recorded text, then shortens at a word boundary.
 const meaningful = (value: unknown): value is string => typeof value === 'string' && !!value.trim() && !/^(true|false|null|undefined|\d+)$/i.test(value.trim())
-export function cleanText(value: unknown, max = 150): string {
+function cleanText(value: unknown, max = 150): string {
   if (!meaningful(value)) return ''
   const text = value
     .replace(/<(environment_context|instructions|system-reminder|INSTRUCTIONS|AGENTS)[\s\S]*?<\/\1>/gi, ' ')
@@ -120,22 +121,16 @@ function storySteps(progress: WorkViewProgress, now: number): Request['story'] {
     .filter((step) => step.label)
 }
 
-/** Absent goals: not linked yet. Empty: serves none. Otherwise a priority wins over an open ask. */
-function goalIdFor(raw: WorkViewHumanRequest): string | null | undefined {
-  if (!raw.goals) return undefined
-  if (!raw.goals.length) return null
-  return (raw.goals.find((goal) => goal.kind === 'priority') ?? raw.goals[0]).goalId
-}
-
 /** The worker's check route uses the same rule (WorkViewRoutes.ts reviewIsNewerThanLifecycle). */
-export function reviewIsNewerThanLifecycle(review: Pick<WorkViewProgress, 'checkedAt'>, lifecycle: WorkViewHumanRequest['lifecycle']): boolean {
+function reviewIsNewerThanLifecycle(review: Pick<WorkViewProgress, 'checkedAt'>, lifecycle: WorkViewHumanRequest['lifecycle']): boolean {
   if (!lifecycle?.explicit || !lifecycle.atEpoch) return true
   const reviewedAt = Date.parse(review.checkedAt)
   return Number.isFinite(reviewedAt) && reviewedAt >= lifecycle.atEpoch
 }
 
-/** One human request → one Request. Throws when the result breaks the lifecycle rules; the caller turns that into a read-error card. */
-export function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: number): Request {
+/** One human request → one Request. Its area follows merges; a placement in no live area reads "Sorting…" (absent).
+ * Throws when the result breaks the lifecycle rules; the caller turns that into a read-error card. */
+function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: number, focusAreas: readonly FocusArea[] = []): Request {
   const copy = raw.humanCopy
   const copyReady = !!copy && ['current', 'outdated'].includes(copy.state)
   const updatedAt = raw.updatedAtEpoch ?? Math.max(0, ...raw.items.map((item) => item.lastUpdateEpoch || 0))
@@ -163,6 +158,7 @@ export function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], no
     ...(raw.original.url ? [{ title: `${EVIDENCE_KIND_LABEL.prompt}: ${cleanText(raw.original.text, 80)}`, href: raw.original.url }] : []),
     ...raw.items.map((item) => ({ title: `${EVIDENCE_KIND_LABEL[item.url.split('/')[4]] ?? 'Record'}: ${cleanText(item.title, 80)}`, href: item.url })),
   ].filter((source, index, all) => EVIDENCE_URL.test(source.href) && all.findIndex((other) => other.href === source.href) === index)
+  const focusAreaId = resolveFocusAreaId(raw.focusAreaId, focusAreas)
 
   return assertConsistentRequest({
     id: raw.id,
@@ -170,8 +166,8 @@ export function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], no
     title: copyReady && copy.title?.trim() ? copy.title.trim() : null,
     summary: copyReady && copy.summary?.trim() ? copy.summary.trim() : null,
     stageNote: copy?.stage?.trim() || undefined,
-    // From the request-progress alignment: absent reads "Goal not linked yet", null reads "No goal".
-    goalId: goalIdFor(raw),
+    ...(focusAreaId ? { focusAreaId } : {}),
+    canMoveFocus: !!raw.anchorConversationKey,
     askedBy: raw.requestedBy ?? SOLO_REQUESTER,
     agentId,
     startedAt: started ? formatDateTime(started) : 'Start not recorded',
@@ -225,8 +221,9 @@ export function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], no
   })
 }
 
-// ---- My Goals: the owner-goals run, as recorded (plan Phase 7). Ranks and times-asked come from the run; nothing is recounted here.
-const GOAL_KIND: Record<WorkViewGoalItem['kind'], Goal['kind']> = { priority: 'Priority', 'open-ask': 'Open ask' }
+// ---- The owner-goals run, as recorded: the words behind each focus area and ask, and Past focus. Ranks and
+// times-asked come from the run; nothing is recounted here.
+const GOAL_KINDS: WorkViewGoalItem['kind'][] = ['focus-area', 'ask']
 const OWNER_GOALS_SKILL = 'owner-goals'
 const RECORDED_PROMPT_TIME = /^\d{4}-(\d{2}-\d{2})(?: (\d{2}:\d{2}))?$/
 const RECORDED_DAY = /^(\d{4})-(\d{2})-(\d{2})$/
@@ -245,28 +242,30 @@ function requireRecordedCount(value: number | null | undefined, whatIsCounted: s
   return value
 }
 
-export function toGoalItem(item: WorkViewGoalItem): GoalItem {
-  const kind = GOAL_KIND[item.kind]
-  if (!kind) throw new Error(`Goal "${item.title}" has an unknown kind: ${item.kind}`)
+/** One owner-goals item, as the area header and Past focus read it. `label` is the area it names (or, on items saved
+ * before 2026-10-27, the product). */
+function toGoalItem(item: WorkViewGoalItem): MinedGoalItem & { label: string } {
+  if (!GOAL_KINDS.includes(item.kind)) throw new Error(`Owner-goals item "${item.title}" has an unknown kind: ${item.kind}`)
+  const what = `${item.kind === 'ask' ? 'ask' : 'focus area'} "${item.title}"`
+  requireRecordedCount(item.rank, `The rank of the ${what}`)
   return {
     id: item.id,
-    kind,
-    rank: requireRecordedCount(item.rank, `The rank of goal "${item.title}"`),
     title: item.title,
-    product: item.product ?? 'Product not recorded',
-    latestAt: toGoalPromptStamp(item.latestAt, `Goal "${item.title}"`),
-    timesAsked: requireRecordedCount(item.timesAsked, `How often goal "${item.title}" was asked`),
-    quotes: item.evidence.map((evidence) => ({ at: toGoalPromptStamp(evidence.at, `A quote under goal "${item.title}"`), quote: evidence.quote })),
+    focusAreaId: item.focusAreaId,
+    label: item.focusArea ?? item.product ?? (item.kind === 'focus-area' ? 'Focus area' : 'Area not recorded'),
+    latestAt: toGoalPromptStamp(item.latestAt, `The ${what}`),
+    timesAsked: requireRecordedCount(item.timesAsked, `How often the ${what} was asked`),
+    quotes: item.evidence.map((evidence) => ({ at: toGoalPromptStamp(evidence.at, `A quote under the ${what}`), quote: evidence.quote })),
   }
 }
 
 /** "Aug 18 – Sep 17" from an exclusive end day; the year is added when the month is not in `currentYear`. */
 function periodLabel(periodStart: string, periodEndExclusive: string | null, currentYear: number): string {
   const start = RECORDED_DAY.exec(periodStart)
-  if (!start) throw new Error(`A saved goals month has an unreadable start day: ${periodStart}`)
+  if (!start) throw new Error(`A saved owner-goals month has an unreadable start day: ${periodStart}`)
   const startText = `${MONTH_LABELS[Number(start[2]) - 1]} ${Number(start[3])}`
   if (!periodEndExclusive) return Number(start[1]) === currentYear ? `From ${startText}` : `From ${startText}, ${start[1]}`
-  if (!RECORDED_DAY.test(periodEndExclusive)) throw new Error(`A saved goals month has an unreadable end day: ${periodEndExclusive}`)
+  if (!RECORDED_DAY.test(periodEndExclusive)) throw new Error(`A saved owner-goals month has an unreadable end day: ${periodEndExclusive}`)
   const lastDay = new Date(`${periodEndExclusive}T12:00:00Z`)
   lastDay.setUTCDate(lastDay.getUTCDate() - 1)
   const endText = `${MONTH_LABELS[lastDay.getUTCMonth()]} ${lastDay.getUTCDate()}`
@@ -283,7 +282,7 @@ function toPastPeriod(list: WorkViewGoalList, currentYear: number): PastPeriod {
     label: periodLabel(periodStart, list.periodEnd, currentYear),
     promptCount: requireRecordedCount(list.sourcePromptCount, `The prompt count for ${list.listName}`),
     headline: list.summary ?? 'No summary recorded for this month.',
-    priorities: list.priorities.map(toGoalItem).map((goal) => ({ title: goal.title, product: goal.product, timesAsked: goal.timesAsked, quote: goal.quotes[0] ?? null })),
+    areas: list.areas.map(toGoalItem).map((goal) => ({ title: goal.title, label: goal.label, timesAsked: goal.timesAsked, quote: goal.quotes[0] ?? null })),
   }
 }
 
@@ -300,11 +299,12 @@ function generatedAtEpoch(list: WorkViewGoalList): number {
   return epoch
 }
 
-type MappedGoals = Pick<MappedWorkModel, 'priorities' | 'openAsks' | 'currentPeriod' | 'pastPeriods' | 'goalsReadError'> & { goalsRun: SkillRun | null }
-const NO_GOALS: MappedGoals = { priorities: [], openAsks: [], currentPeriod: null, pastPeriods: [], goalsReadError: null, goalsRun: null }
+type MappedGoals = Pick<MappedWorkModel, 'currentPeriod' | 'pastPeriods' | 'goalsReadError'> & { minedAreas: MinedGoalItem[]; minedAsks: MinedGoalItem[]; goalsRun: SkillRun | null }
+const NO_GOALS: MappedGoals = { minedAreas: [], minedAsks: [], currentPeriod: null, pastPeriods: [], goalsReadError: null, goalsRun: null }
 
-/** The owner-goals run → My Goals. A run that can't be read leaves My Goals empty with the reason, and My Work unaffected. */
-export function toGoalsModel(goals: WorkViewGoalList | null | undefined, goalHistory: WorkViewGoalList[] | undefined): MappedGoals {
+/** The owner-goals run → the words behind areas and asks, and Past focus. A run that can't be read leaves them empty
+ * with the reason; the areas and My Work are unaffected. */
+function toGoalsModel(goals: WorkViewGoalList | null | undefined, goalHistory: WorkViewGoalList[] | undefined): MappedGoals {
   if (!goals) return NO_GOALS
   try {
     const generatedAt = generatedAtEpoch(goals)
@@ -316,8 +316,8 @@ export function toGoalsModel(goals: WorkViewGoalList | null | undefined, goalHis
       promptCount: requireRecordedCount(goals.sourcePromptCount, `The ${OWNER_GOALS_SKILL} prompt count`),
     }
     return {
-      priorities: goals.priorities.map(toGoalItem),
-      openAsks: goals.openAsks.map(toGoalItem),
+      minedAreas: goals.areas.map(toGoalItem),
+      minedAsks: goals.asks.map(toGoalItem),
       currentPeriod,
       pastPeriods: (goalHistory ?? []).map((list) => toPastPeriod(list, generatedYear)),
       goalsReadError: null,
@@ -335,7 +335,7 @@ const QUOTE_KINDS: RuleQuote['kind'][] = ['directive', 'correction', 'praise', '
 const DAY_MS = 86_400_000
 
 /** One saved or suggested rule → the OwnerRule My Rules shows. Throws on a value it can't read honestly. */
-export function toOwnerRule(rule: WorkViewRule, now: number): OwnerRule {
+function toOwnerRule(rule: WorkViewRule, now: number): OwnerRule {
   const source = RULE_SOURCES[rule.source]
   if (!source) throw new Error(`Rule "${rule.then}" has an unknown source: ${rule.source}`)
   const latest = Date.parse(rule.latestAt ?? '')
@@ -371,7 +371,7 @@ export function toOwnerRule(rule: WorkViewRule, now: number): OwnerRule {
 type MappedRules = Pick<MappedWorkModel, 'rules' | 'ruleScopes' | 'rulesLearning' | 'rulesFile' | 'rulesReadError'> & { progressRun: SkillRun | null }
 
 /** The saved rules and the build story's suggestions → My Rules. Unreadable rules empty My Rules with the reason. */
-export function toRulesModel(snapshot: Pick<WorkViewSnapshot, 'rules' | 'ruleScopes' | 'rulesLearning' | 'rulesFile'>, now: number): MappedRules {
+function toRulesModel(snapshot: Pick<WorkViewSnapshot, 'rules' | 'ruleScopes' | 'rulesLearning' | 'rulesFile'>, now: number): MappedRules {
   const learning = snapshot.rulesLearning ?? null
   const writtenAt = Date.parse(learning?.writtenAt ?? '')
   const progressRun = Number.isFinite(writtenAt) ? { label: REQUEST_PROGRESS_SKILL, lastRunAt: formatDateTime(writtenAt), deviceName: THIS_COMPUTER.name.toLowerCase() } : null
@@ -399,7 +399,7 @@ function toAutoRefresh(raw: WorkViewRefresh | null): AutoRefresh | null {
 }
 
 /** The build story request-progress wrote: its first paragraph is My Work's recap. No story, no recap. */
-export function toBuildStory(story: WorkViewBuildStory | null, now: number): BuildStory | null {
+function toBuildStory(story: WorkViewBuildStory | null, now: number): BuildStory | null {
   const blocks = (story?.narrative ?? '').split(/\n\s*\n/).map((block) => block.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/`([^`]+)`/g, '$1').replace(/\s+/g, ' ').trim()).filter(Boolean)
   // Chapter headings stay in the story as plain lines; the recap is the first real paragraph.
   const recap = blocks.find((block) => !block.startsWith('#'))
@@ -415,9 +415,11 @@ export function toWorkModel(snapshot: WorkViewSnapshot, now: number): MappedWork
   }
   const requests: Request[] = []
   const requestReadErrors: RequestReadError[] = []
+  const { goalsRun, minedAreas, minedAsks, ...goalsModel } = toGoalsModel(snapshot.goals, snapshot.goalHistory)
+  const { focusAreas, otherAsks } = toFocusModel(snapshot.focusAreas, minedAreas, minedAsks)
   for (const raw of snapshot.humanRequests) {
     try {
-      requests.push(toRequest(raw, snapshot.agents, now))
+      requests.push(toRequest(raw, snapshot.agents, now, focusAreas))
     } catch (error) {
       requestReadErrors.push({
         requestId: raw.id,
@@ -427,13 +429,6 @@ export function toWorkModel(snapshot: WorkViewSnapshot, now: number): MappedWork
       })
     }
   }
-  const { goalsRun, ...goalsModel } = toGoalsModel(snapshot.goals, snapshot.goalHistory)
-  // Each goal lists every request the alignment linked to it. A request can serve up to three goals,
-  // while request.goalId names only one, so priorities need the list too.
-  const aligned = snapshot.humanRequests.some((raw) => raw.goals)
-  const withServedBy = <T extends { id: string }>(goal: T) => ({ ...goal, servedBy: snapshot.humanRequests.filter((raw) => raw.goals?.some((link) => link.goalId === goal.id)).map((raw) => raw.id) })
-  const priorities = aligned ? goalsModel.priorities.map(withServedBy) : goalsModel.priorities
-  const openAsks = aligned ? goalsModel.openAsks.map(withServedBy) : goalsModel.openAsks
   const { progressRun, ...rulesModel } = toRulesModel(snapshot, now)
   const agents = snapshot.agents.map(toAgent)
   if (requests.some((request) => request.agentId === UNRECORDED_AGENT.id)) agents.push(UNRECORDED_AGENT)
@@ -447,12 +442,11 @@ export function toWorkModel(snapshot: WorkViewSnapshot, now: number): MappedWork
     unlinkedWorkCount: Array.isArray(snapshot.unlinkedWork) ? snapshot.unlinkedWork.length : 0,
     sourceHealth: { connected: snapshot.source.connected, error: snapshot.source.error },
     ...goalsModel,
-    priorities,
-    openAsks,
+    focusAreas,
+    otherAsks,
     ...rulesModel,
     buildStory: toBuildStory(snapshot.story?.story ?? null, now),
     lastRuns: { goals: goalsRun, progress: progressRun },
     refresh: toAutoRefresh(snapshot.refresh ?? null),
-    goalOnlyRequests: [],
   }
 }

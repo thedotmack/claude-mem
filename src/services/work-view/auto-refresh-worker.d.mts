@@ -26,6 +26,8 @@ export class AutoRefreshWorker {
     checkMs?: number;
     now?: () => number;
     log?: (level: 'info' | 'warn', message: string, data?: Record<string, unknown>) => void;
+    /** The worker's sync device id ('' when cloud sync never started), so my-focus rows replay in its order. */
+    localDeviceId: () => string;
   });
   status(): RefreshStatus | null;
   start(): void;

@@ -9,14 +9,14 @@ const base = (changes: Partial<SnapshotWithSetup> = {}): SnapshotWithSetup => ({
   humanRequests: [], unlinkedWork: [], revision: '1', source: { kind: 'local', connected: true, error: null, lastCheckedAt: null },
   goals: null, rules: [], story: null, setup: { extraction: extraction('running') }, ...changes,
 })
-const goalItem = (id: string, rank: number) => ({ id, task: `Priority: ${id}`, kind: 'priority' as const, rank, title: id, product: null, latestAt: '2026-10-21 17:42', timesAsked: 3, status: 'todo', evidence: [{ at: '2026-10-21 17:42', quote: 'ship it' }] })
+const goalItem = (id: string, rank: number) => ({ id, task: `Focus area: ${id}`, kind: 'focus-area' as const, rank, title: id, goal: null, focusArea: null, focusAreaId: null, product: null, latestAt: '2026-10-21 17:42', timesAsked: 3, status: 'todo', evidence: [{ at: '2026-10-21 17:42', quote: 'ship it' }] })
 
 describe('the Reveal from the live snapshot', () => {
   it('nothing landed yet: every set is still extracting', () => {
     assert.deepEqual(revealFromSnapshot(base()), { goals: null, work: null, rules: null })
   })
   it('goals land first, in rank order, with the typed minute', () => {
-    const goals = { listId: 'l', listName: 'owner-goals', history: false, project: 'p', updatedAt: '', periodStart: null, periodEnd: null, summary: null, generatedAt: '2026-10-22T00:00:00Z', windowDays: 30, sourcePromptCount: 9, mapPath: null, priorities: [goalItem('second', 2), goalItem('first', 1)], openAsks: [] }
+    const goals = { listId: 'l', listName: 'owner-goals', history: false, project: 'p', updatedAt: '', periodStart: null, periodEnd: null, summary: null, generatedAt: '2026-10-22T00:00:00Z', windowDays: 30, sourcePromptCount: 9, mapPath: null, areas: [goalItem('second', 2), goalItem('first', 1)], asks: [] }
     const reveal = revealFromSnapshot(base({ goals }))
     assert.deepEqual(reveal.goals, [{ id: 'first', rank: 1, title: 'first', timesAsked: 3, latestAt: '10-21 17:42' }, { id: 'second', rank: 2, title: 'second', timesAsked: 3, latestAt: '10-21 17:42' }])
     assert.equal(reveal.work, null)
