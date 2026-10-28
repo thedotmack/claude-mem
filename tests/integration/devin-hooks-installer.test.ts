@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import path from 'path';
 import {
@@ -152,7 +152,21 @@ describe('installDevinHooks', () => {
     expect(JSON.stringify(JSON.parse(readFileSync(path.join(path.dirname(configPath), backups[0]), 'utf-8')))).toContain('hook devin observation');
   });
 
-  test('writes through a symlinked config.json and leaves no temp file behind', () => {
+  // Windows refuses symlinkSync without Developer Mode or admin (EPERM).
+  // Probe once instead of assuming the platform.
+  const canCreateSymlinks = (() => {
+    const probeDir = mkdtempSync(path.join(tmpdir(), 'devin-symlink-probe-'));
+    try {
+      symlinkSync(path.join(probeDir, 'missing.json'), path.join(probeDir, 'link.json'));
+      return true;
+    } catch {
+      return false;
+    } finally {
+      rmSync(probeDir, { recursive: true, force: true });
+    }
+  })();
+
+  test.skipIf(!canCreateSymlinks)('writes through a symlinked config.json and leaves no temp file behind', () => {
     const configPath = scratchConfigPath();
     const target = path.join(path.dirname(path.dirname(configPath)), 'dotfiles-devin.json');
     mkdirSync(path.dirname(configPath), { recursive: true });
