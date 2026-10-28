@@ -53,7 +53,7 @@ describe('openai-compatible settings surface', () => {
     for (const key of ['CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER', 'CLAUDE_MEM_WORK_VIEW_COPY_MODEL']) {
       expect(source).toContain(`updateSetting('${key}'`);
     }
-    expect(source).toContain('a fallback key is not used unless you select its provider here.');
+    expect(source).toContain('Empty uses OpenRouter only when it is the primary observer provider; any other endpoint, or a fallback key, is not used unless you select its provider here.');
     const routeSource = readFileSync('src/services/worker/http/routes/SettingsRoutes.ts', 'utf-8');
     const writeList = routeSource.slice(routeSource.indexOf('const settingKeys = ['), routeSource.indexOf('];', routeSource.indexOf('const settingKeys = [')));
     expect(writeList).toContain("'CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER'");

@@ -725,13 +725,13 @@ export function ContextSettingsModal({
 
               <FormField
                 label="My Work summary provider"
-                tooltip="Generated card wording uses this endpoint. Empty follows the primary observer provider; a fallback key is not used unless you select its provider here. Explicit provider selection may incur that provider's usual charges."
+                tooltip="Generated card wording uses this endpoint. Empty uses OpenRouter only when it is the primary observer provider; any other endpoint, or a fallback key, is not used unless you select its provider here. Explicit provider selection may incur that provider's usual charges."
               >
                 <select
                   value={formState.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER || ''}
                   onChange={(e) => updateSetting('CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER', e.target.value)}
                 >
-                  <option value="">Follow primary provider</option>
+                  <option value="">OpenRouter when it is the primary provider</option>
                   <option value="openrouter">OpenRouter</option>
                   <option value="openai-compatible">OpenAI-compatible endpoint</option>
                   <option value="off">Off (recorded wording only)</option>

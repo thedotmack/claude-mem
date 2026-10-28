@@ -23,6 +23,7 @@ import { getProjectContext } from '../../../../utils/project-name.js';
 import { chatCompletionsHumanCopyProvider, HumanCopyWorker } from '../../../work-view/human-copy-worker.mjs';
 import { resolveOpenRouterConfig } from '../../OpenRouterProvider.js';
 import { resolveOpenAICompatConfig } from '../../OpenAICompatProvider.js';
+import { resolveOpenAICompatReasoning } from '../../reasoning-budget.js';
 import { AutoRefreshWorker } from '../../../work-view/auto-refresh-worker.mjs';
 import { buildRefreshTask } from '../../../work-view/refresh-task.js';
 import { HostedIntent } from '../../../work-view/hosted-intent.js';
@@ -284,13 +285,15 @@ function withHumanCopyConfigKey(provider: ReturnType<typeof chatCompletionsHuman
 /** Resolve the explicitly selected copy endpoint, or follow today's primary-provider behavior. */
 function resolveConfiguredHumanCopyProvider(settingsPath: string): HumanCopyProvider | null {
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true });
-  const selection = settings.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER?.trim() || settings.CLAUDE_MEM_PROVIDER;
+  // Unset keeps today's behaviour: only an OpenRouter primary writes card wording. Any other endpoint, an
+  // OpenAI-compatible primary included, spends tokens on it only once selected here.
+  const selection = settings.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER?.trim() || (settings.CLAUDE_MEM_PROVIDER === 'openrouter' ? 'openrouter' : '');
   const modelOverride = settings.CLAUDE_MEM_WORK_VIEW_COPY_MODEL?.trim();
 
   if (selection === 'openrouter') {
     const config = resolveOpenRouterConfig(settingsPath);
-    if (!config.apiUrl || !config.apiKey || !config.model) return null;
     const model = modelOverride || config.model;
+    if (!config.apiUrl || !config.apiKey || !model) return null;
     const fallbackModels = !modelOverride && isOpenRouterApiUrl(config.apiUrl) ? config.fallbackModels : [];
     return withHumanCopyConfigKey(chatCompletionsHumanCopyProvider({
       url: config.apiUrl, apiKey: config.apiKey, model, ...(fallbackModels.length ? { fallbackModels } : {}),
@@ -298,17 +301,20 @@ function resolveConfiguredHumanCopyProvider(settingsPath: string): HumanCopyProv
   }
   if (selection === 'openai-compatible') {
     const config = resolveOpenAICompatConfig(settingsPath);
-    if (!config.apiUrl || !config.model || (config.requiresApiKey && !config.apiKey)) return null;
     const model = modelOverride || config.model;
-    return withHumanCopyConfigKey(chatCompletionsHumanCopyProvider({ url: config.apiUrl, apiKey: config.apiKey, model }),
-      ['openai-compatible', config.apiUrl, config.apiKey, model]);
+    if (!config.apiUrl || !model || (config.requiresApiKey && !config.apiKey)) return null;
+    // The observer's reasoning setting for this endpoint applies to card wording too, and a strict server that
+    // rejects the field gets one resend without it (the observer's own rule, OpenAICompatProvider).
+    const sendReasoningOff = resolveOpenAICompatReasoning(settings.CLAUDE_MEM_OPENAI_COMPAT_REASONING) !== 'on';
+    return withHumanCopyConfigKey(chatCompletionsHumanCopyProvider({ url: config.apiUrl, apiKey: config.apiKey, model, sendReasoningOff }),
+      ['openai-compatible', config.apiUrl, config.apiKey, model, sendReasoningOff]);
   }
   return null;
 }
 
 /**
- * My Work summaries follow the primary OpenRouter/OpenAI-compatible provider by
- * default. A different configured endpoint is used only when selected here;
+ * My Work summaries follow an OpenRouter primary provider by default, as before.
+ * Any other configured endpoint is used only when selected here;
  * the observer's quota-fallback key is never activated merely because it exists.
  * Settings and credentials are resolved for each availability check/request so
  * saves take effect without rebuilding the routes.

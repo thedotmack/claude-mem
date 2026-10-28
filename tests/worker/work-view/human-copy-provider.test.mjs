@@ -10,7 +10,7 @@ const ENV_KEYS = [
   'CLAUDE_MEM_OPENROUTER_API_KEY', 'CLAUDE_MEM_OPENROUTER_BASE_URL', 'CLAUDE_MEM_OPENROUTER_MODEL',
   'OPENROUTER_API_KEY', 'OPENROUTER_BASE_URL', 'CLAUDE_MEM_OPENAI_COMPAT_API_KEY',
   'CLAUDE_MEM_OPENAI_COMPAT_BASE_URL', 'CLAUDE_MEM_OPENAI_COMPAT_MODEL', 'CLAUDE_MEM_OPENAI_COMPAT_PRESET',
-  'OPENAI_COMPAT_API_KEY',
+  'OPENAI_COMPAT_API_KEY', 'CLAUDE_MEM_OPENAI_COMPAT_REASONING',
 ];
 
 function isolateSettings(t) {
@@ -113,22 +113,51 @@ test('OpenRouter summary uses the configured model fallback list only for the of
   assert.equal(Object.hasOwn(compatibleBody, 'models'), false);
 });
 
-test('an unset setting follows the primary OpenAI-compatible provider and its model', async t => {
+test('an unset setting keeps today\'s behaviour: an OpenAI-compatible primary writes no wording until selected', async t => {
   const { settingsPath, save } = isolateSettings(t);
   const sent = mockFetch(t);
-  save({
+  const compat = {
     CLAUDE_MEM_PROVIDER: 'openai-compatible',
-    CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: '',
     CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: 'https://compat.example.test/v1',
     CLAUDE_MEM_OPENAI_COMPAT_API_KEY: 'compat-key',
     CLAUDE_MEM_OPENAI_COMPAT_MODEL: 'compat-model',
-  });
+  };
+  save({ ...compat, CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: '' });
   const provider = configuredHumanCopyProvider(settingsPath);
+  assert.equal(provider.isAvailable(), false);
+  assert.equal(sent(), undefined);
+
+  save({ ...compat, CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: 'openai-compatible' });
   assert.equal(provider.isAvailable(), true);
   await provider({ request: 'presentation only' });
   assert.equal(sent().url, 'https://compat.example.test/v1/chat/completions');
   assert.equal(sent().init.headers.Authorization, 'Bearer compat-key');
-  assert.equal(JSON.parse(sent().init.body).model, 'compat-model');
+  const body = JSON.parse(sent().init.body);
+  assert.equal(body.model, 'compat-model');
+  // CLAUDE_MEM_OPENAI_COMPAT_REASONING defaults to off, so the field that turns reasoning off is sent.
+  assert.deepEqual(body.reasoning, { enabled: false });
+
+  // With reasoning on for this endpoint, card wording leaves the field out too.
+  save({ ...compat, CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: 'openai-compatible', CLAUDE_MEM_OPENAI_COMPAT_REASONING: 'on' });
+  await provider({ request: 'presentation only' });
+  assert.equal(Object.hasOwn(JSON.parse(sent().init.body), 'reasoning'), false);
+});
+
+test('a copy-model override works for an endpoint with no observer model', async t => {
+  const { settingsPath, save } = isolateSettings(t);
+  const sent = mockFetch(t);
+  save({
+    CLAUDE_MEM_PROVIDER: 'claude',
+    CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: 'openai-compatible',
+    CLAUDE_MEM_WORK_VIEW_COPY_MODEL: 'copy-only-model',
+    CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: 'https://compat.example.test/v1',
+    CLAUDE_MEM_OPENAI_COMPAT_API_KEY: 'compat-key',
+    CLAUDE_MEM_OPENAI_COMPAT_MODEL: '',
+  });
+  const provider = configuredHumanCopyProvider(settingsPath);
+  assert.equal(provider.isAvailable(), true);
+  await provider({ request: 'presentation only' });
+  assert.equal(JSON.parse(sent().init.body).model, 'copy-only-model');
 });
 
 test('off disables copy even when the primary provider is configured', t => {

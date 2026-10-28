@@ -307,6 +307,47 @@ test('explicit off hides cached wording while retaining it for later reuse', asy
   assert.equal(calls, 1);
 });
 
+test('a strict server that rejects the reasoning field gets one resend without it, and is remembered', async () => {
+  const bodies = [];
+  const provider = chatCompletionsHumanCopyProvider({
+    url: 'http://127.0.0.1:8000/v1/strict-reasoning/chat/completions', apiKey: '', model: 'vllm-model',
+    fetchImpl: async (_url, init) => {
+      const body = JSON.parse(init.body); bodies.push(body);
+      if (Object.hasOwn(body, 'reasoning')) return new Response(JSON.stringify({ object: 'error', message: "[{'type': 'extra_forbidden', 'loc': ('body', 'reasoning'), 'msg': 'Extra inputs are not permitted'}]" }), { status: 400 });
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{"title":"t"}' } }] }));
+    },
+  });
+  assert.deepEqual((await provider({ version: 1 })).output, { title: 't' });
+  assert.deepEqual(bodies.map(body => Object.hasOwn(body, 'reasoning')), [true, false]);
+  // The next request to that URL leaves the field out from the start.
+  await provider({ version: 2 });
+  assert.deepEqual(bodies.map(body => Object.hasOwn(body, 'reasoning')), [true, false, false]);
+});
+
+test('any other 400 is not resent', async () => {
+  let calls = 0;
+  const provider = chatCompletionsHumanCopyProvider({
+    url: 'http://127.0.0.1:8000/v1/other-400/chat/completions', apiKey: '', model: 'm',
+    fetchImpl: async () => { calls++; return new Response(JSON.stringify({ error: { message: 'model is required' } }), { status: 400 }); },
+  });
+  await assert.rejects(provider({ version: 1 }), error => error.status === 400);
+  assert.equal(calls, 1);
+});
+
+test('402 (out of credits) retries on the capped backoff instead of waiting for a settings change', async t => {
+  let now = 0, calls = 0;
+  const instance = worker(async () => { calls++; throw Object.assign(new Error('insufficient credits'), { status: 402 }); },
+    { now: () => now, retryMs: 100, maxRetryMs: 150 });
+  t.after(() => instance.close());
+  instance.observe(view(request())); await settle();
+  assert.equal(calls, 1);
+  now = 99; instance.pump(); await settle(); assert.equal(calls, 1);
+  now = 100; instance.pump(); await settle(); assert.equal(calls, 2);
+  // Capped at maxRetryMs: the next wait is 150, not 200.
+  now = 249; instance.pump(); await settle(); assert.equal(calls, 2);
+  now = 250; instance.pump(); await settle(); assert.equal(calls, 3);
+});
+
 test('the chat-completions provider omits authorization for a configured keyless local endpoint', async () => {
   let sent;
   const provider = chatCompletionsHumanCopyProvider({

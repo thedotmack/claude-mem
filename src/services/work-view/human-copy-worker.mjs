@@ -1,6 +1,7 @@
 import { readFile, writeFile, mkdir, rename, appendFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { createHumanCopyInput, humanCopyFingerprint, validateHumanCopy, HUMAN_COPY_INSTRUCTIONS } from './human-copy.mjs';
+import { endpointRejectsReasoningField, isUnknownReasoningParameter, rememberEndpointRejectsReasoningField } from '../worker/reasoning-budget.js';
 
 function fitText(value, limit) {
   if (typeof value !== 'string') return value;
@@ -49,30 +50,31 @@ function httpStatus(error) {
   return Number.isInteger(status) && status >= 100 && status <= 599 ? status : null;
 }
 
+// Worth retrying on a timer: a timeout, too early, rate limited, or 402, OpenRouter's "insufficient credits",
+// which clears when the account is topped up without any settings or card change.
+const RETRYABLE_CLIENT_STATUSES = [402, 408, 425, 429];
+
 function isPermanentClientError(status) {
-  return status >= 400 && status < 500 && ![408, 425, 429].includes(status);
+  return status >= 400 && status < 500 && !RETRYABLE_CLIENT_STATUSES.includes(status);
 }
 
 /** OpenAI-compatible chat completions with the user's configured observer
  * endpoint, key and model. The caller decides whether one is configured. */
-export function chatCompletionsHumanCopyProvider({ url, apiKey, model, fallbackModels = [], fetchImpl = fetch }) {
+export function chatCompletionsHumanCopyProvider({ url, apiKey, model, fallbackModels = [], sendReasoningOff = true, fetchImpl = fetch }) {
   return async input => {
     const headers = { 'Content-Type': 'application/json' };
     if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-    const response = await fetchImpl(url, {
-      method: 'POST', signal: AbortSignal.timeout(90000),
-      headers,
-      body: JSON.stringify({
-        ...(fallbackModels.length ? { models: [model, ...fallbackModels] } : { model }),
-        stream: false, temperature: 0.15, max_tokens: 5000,
-        reasoning: { enabled: false },
-        response_format: { type: 'json_object' },
-        messages: [
-          { role: 'system', content: `${HUMAN_COPY_INSTRUCTIONS}\n${SUMMARY_STYLE}` },
-          { role: 'user', content: JSON.stringify(input) },
-        ],
-      }),
-    });
+    const withReasoning = sendReasoningOff && !endpointRejectsReasoningField(url);
+    let response = await send(withReasoning);
+    // Strict schemas (vLLM) 400 on the unknown `reasoning` field: remember the URL and resend once without it,
+    // as the observer does (OpenAICompatProvider). Any other refusal stands.
+    if (withReasoning && (response.status === 400 || response.status === 422)) {
+      const text = await response.clone().text().catch(() => '');
+      if (isUnknownReasoningParameter(text)) {
+        rememberEndpointRejectsReasoningField(url);
+        response = await send(false);
+      }
+    }
     if (!response.ok) {
       const error = new Error(`Summary request returned ${response.status}.`);
       error.status = response.status;
@@ -85,12 +87,34 @@ export function chatCompletionsHumanCopyProvider({ url, apiKey, model, fallbackM
     try { if (content.trim()) output = JSON.parse(content); } catch { /* Retain usage even for unusable output. */ }
     return { output, usage: data.usage ?? null, model: data.model ?? model, responseId: data.id ?? null,
       error: !content.trim() ? `No answer text (finish: ${data.choices?.[0]?.finish_reason || 'unknown'}).` : output === null ? 'Invalid summary JSON.' : null };
+
+    function send(includeReasoning) {
+      return fetchImpl(url, {
+        method: 'POST', signal: AbortSignal.timeout(90000),
+        headers,
+        body: JSON.stringify({
+          ...(fallbackModels.length ? { models: [model, ...fallbackModels] } : { model }),
+          stream: false, temperature: 0.15, max_tokens: 5000,
+          ...(includeReasoning ? { reasoning: { enabled: false } } : {}),
+          response_format: { type: 'json_object' },
+          messages: [
+            { role: 'system', content: `${HUMAN_COPY_INSTRUCTIONS}\n${SUMMARY_STYLE}` },
+            { role: 'user', content: JSON.stringify(input) },
+          ],
+        }),
+      });
+    }
   };
 }
 
+// The longest wait between retries of a rate-limited or out-of-credit request. One hour keeps several retries
+// inside My Work's 6-hour staleness threshold (STALE_AFTER_MS, status-normalization.ts), so wording recovers after a
+// top-up or a rate window passes, before the card would read as stale.
+const MAX_RETRY_MS = 60 * 60 * 1000;
+
 export class HumanCopyWorker {
   constructor({ provider, cachePath = null,
-    concurrency = 2, quietMs = 6000, maxWaitMs = 20000, minIntervalMs = 60000, retryMs = 60000, maxRetryMs = 60 * 60 * 1000,
+    concurrency = 2, quietMs = 6000, maxWaitMs = 20000, minIntervalMs = 60000, retryMs = 60000, maxRetryMs = MAX_RETRY_MS,
     now = Date.now, warn = message => console.warn(message) } = {}) {
     Object.assign(this, { provider, cachePath, concurrency, quietMs, maxWaitMs, minIntervalMs, retryMs, maxRetryMs, now, warn });
     this.cache = new Map(); this.pending = new Map(); this.running = new Set(); this.failures = new Map(); this.lastAttempt = new Map();
@@ -239,7 +263,7 @@ export class HumanCopyWorker {
       const previous = this.failures.get(job.id);
       const attempt = previous?.fingerprint === job.fingerprint ? previous.attempt + 1 : 1;
       const waitForChange = status !== null && isPermanentClientError(status);
-      const retryAfterMs = status === 408 || status === 425 || status === 429
+      const retryAfterMs = RETRYABLE_CLIENT_STATUSES.includes(status)
         ? Math.min(this.retryMs * 2 ** Math.min(attempt - 1, 20), this.maxRetryMs)
         : this.retryMs;
       const failure = { fingerprint: job.fingerprint, at, reason, attempt, waitForChange, retryAfterMs };
