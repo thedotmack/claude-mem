@@ -11,6 +11,7 @@ import {
   mediaDisplayStateFrom,
   nextFocusIndex,
   shouldPollMediaState,
+  withImageLoadError,
   type MediaDisplayState,
 } from '../../src/ui/viewer/utils/media';
 import type { MediaMetadataResponse, Observation, ObservationMedia } from '../../src/ui/viewer/types';
@@ -202,6 +203,23 @@ describe('lightbox dialog', () => {
       states={{ [uuid(1)]: { kind: 'pending', stalled: true }, [uuid(2)]: { kind: 'pending' } }} />);
     expect(strip).toContain('Still processing');
     expect(strip.match(/>Retry</g)).toHaveLength(1);
+  });
+
+  it('a failed thumbnail does not hide the separately readable full-size image', () => {
+    const ready: MediaDisplayState = { kind: 'ready', metadata: readyMetadata(uuid(1)) };
+    const thumbFailed = withImageLoadError(ready, 'llm');
+    const strip = render(<ObservationMediaStripView observationId={1} media={mediaWith(1)} onOpen={noop} onRetry={noop} onImageError={noop}
+      states={{ [uuid(1)]: thumbFailed }} />);
+    expect(strip).not.toContain('<img');
+    expect(strip).toContain('>Retry<');
+    const gallery = dialog(thumbFailed);
+    expect(gallery).toContain('src="/api/media/00000001-0000-4000-8000-000000000000/viewer"');
+    // The full-size image failing too leaves a retryable error in the gallery.
+    const bothFailed = dialog(withImageLoadError(thumbFailed, 'viewer'));
+    expect(bothFailed).not.toContain('<img');
+    expect(bothFailed).toContain('>Retry<');
+    // A non-ready state that fails to load is a plain read error.
+    expect(withImageLoadError({ kind: 'loading' }, 'llm')).toEqual({ kind: 'error', code: 'image_load_failed' });
   });
 
   it('renders loading, pending and error states without an image, with retry on error', () => {

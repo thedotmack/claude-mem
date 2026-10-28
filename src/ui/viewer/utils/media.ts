@@ -6,14 +6,17 @@ export const MAX_CARD_THUMBNAILS = 4;
 export const MEDIA_PENDING_POLL_MS = 4000;
 export const MEDIA_PENDING_MAX_POLLS = 30;
 
+export type MediaVariantName = 'viewer' | 'llm';
+
 export const mediaMetadataUrl = (id: string) => `/api/media/${encodeURIComponent(id)}`;
-export const mediaVariantUrl = (id: string, variant: 'viewer' | 'llm') => `/api/media/${encodeURIComponent(id)}/${variant}`;
+export const mediaVariantUrl = (id: string, variant: MediaVariantName) => `/api/media/${encodeURIComponent(id)}/${variant}`;
 export const mediaOwnerDetailsUrl = (id: string) => `/api/media/${encodeURIComponent(id)}/details`;
 
 /** What the viewer shows for one attachment. Readiness always comes from /api/media/:id. */
 export type MediaDisplayState =
   | { kind: 'loading' }
-  | { kind: 'ready'; metadata: MediaMetadataResponse }
+  /** `failedVariants`: an <img> for that variant failed although metadata said ready. */
+  | { kind: 'ready'; metadata: MediaMetadataResponse; failedVariants?: readonly MediaVariantName[] }
   /** Still converting locally (or the route reported not-ready). `stalled`: polling gave up; offer Retry. */
   | { kind: 'pending'; stalled?: boolean }
   /** Second-device replica whose bytes are being fetched: never shown as a failure. */
@@ -57,9 +60,29 @@ export function mediaDisplayStateFrom(status: number, body: unknown): MediaDispl
 
 export const shouldPollMediaState = (state: MediaDisplayState) => state.kind === 'pending' || state.kind === 'downloading';
 
-/** Read errors and pending states whose bounded polling ended can be retried by hand. */
+/** Status for one variant's frame: a ready attachment whose image failed to load reads as a load error. */
+export const mediaVariantStatusText = (state: MediaDisplayState, variant: MediaVariantName) =>
+  mediaVariantFailed(state, variant) ? 'Couldn’t load' : mediaStatusText(state);
+
+/** True when this variant's image failed to load although the attachment is ready. */
+export const mediaVariantFailed = (state: MediaDisplayState, variant: MediaVariantName) =>
+  state.kind === 'ready' && !!state.failedVariants?.includes(variant);
+
+/**
+ * An <img> load failure. A ready attachment records only the failed variant,
+ * so a broken thumbnail never hides a readable full-size image (and the
+ * reverse); any other state becomes a retryable read error.
+ */
+export function withImageLoadError(state: MediaDisplayState, variant: MediaVariantName): MediaDisplayState {
+  if (state.kind !== 'ready') return { kind: 'error', code: 'image_load_failed' };
+  if (state.failedVariants?.includes(variant)) return state;
+  return { ...state, failedVariants: [...(state.failedVariants ?? []), variant] };
+}
+
+/** Read errors, failed image loads and pending states whose bounded polling ended can be retried by hand. */
 export const canRetryMediaState = (state: MediaDisplayState) =>
-  state.kind === 'error' || ((state.kind === 'pending' || state.kind === 'downloading') && state.stalled === true);
+  state.kind === 'error' || (state.kind === 'ready' && !!state.failedVariants?.length)
+  || ((state.kind === 'pending' || state.kind === 'downloading') && state.stalled === true);
 
 /** Human status for a non-ready tile; ready tiles render the image instead. */
 export function mediaStatusText(state: MediaDisplayState): string {

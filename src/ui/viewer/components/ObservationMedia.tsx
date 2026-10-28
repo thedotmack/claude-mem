@@ -12,10 +12,13 @@ import {
   mediaAltText,
   mediaOwnerDetailsUrl,
   mediaStatusText,
+  mediaVariantFailed,
+  mediaVariantStatusText,
   mediaVariantUrl,
   nextFocusIndex,
   sourceAvailabilityText,
   type MediaDisplayState,
+  type MediaVariantName,
 } from '../utils/media';
 
 const LOADING: MediaDisplayState = { kind: 'loading' };
@@ -26,7 +29,7 @@ interface StripViewProps {
   states: Record<string, MediaDisplayState>;
   onOpen: (index: number, opener: HTMLElement) => void;
   onRetry: (id: string) => void;
-  onImageError: (id: string) => void;
+  onImageError: (id: string, variant: MediaVariantName) => void;
 }
 
 /**
@@ -51,7 +54,7 @@ export function ObservationMediaStripView({ observationId, media, states, onOpen
               aria-label={`Open ${alt}${isLastWithMore ? ` and ${hiddenCount} more` : ''}`}
               onClick={event => onOpen(index, event.currentTarget)}
             >
-              {state.kind === 'ready' ? (
+              {state.kind === 'ready' && !mediaVariantFailed(state, 'llm') ? (
                 <img
                   src={mediaVariantUrl(ref.id, 'llm')}
                   alt={alt}
@@ -59,10 +62,10 @@ export function ObservationMediaStripView({ observationId, media, states, onOpen
                   decoding="async"
                   width={state.metadata.llm?.width}
                   height={state.metadata.llm?.height}
-                  onError={() => onImageError(ref.id)}
+                  onError={() => onImageError(ref.id, 'llm')}
                 />
               ) : (
-                <span className="media-thumb-status">{mediaStatusText(state)}</span>
+                <span className="media-thumb-status">{mediaVariantStatusText(state, 'llm')}</span>
               )}
               {ref.inspection === 'uninspected' && <span className="media-thumb-badge">not inspected</span>}
               {isLastWithMore && <span className="media-thumb-more">+{hiddenCount}</span>}
@@ -90,7 +93,7 @@ interface DialogViewProps {
   onClose: () => void;
   onShow: (index: number) => void;
   onRetry: (id: string) => void;
-  onImageError: (id: string) => void;
+  onImageError: (id: string, variant: MediaVariantName) => void;
   onRequestOwnerDetails: () => void;
 }
 
@@ -116,17 +119,17 @@ export function MediaLightboxDialog({ observationId, refs, index, state, ownerDe
       <div className="media-lightbox-stage">
         <button type="button" className="media-lightbox-nav" aria-label="Previous image" disabled={index === 0} onClick={() => onShow(index - 1)}>‹</button>
         <div className="media-lightbox-frame" aria-live="polite">
-          {metadata ? (
+          {metadata && !mediaVariantFailed(state, 'viewer') ? (
             <img
               src={mediaVariantUrl(ref.id, 'viewer')}
               alt={alt}
               width={metadata.viewer?.width}
               height={metadata.viewer?.height}
-              onError={() => onImageError(ref.id)}
+              onError={() => onImageError(ref.id, 'viewer')}
             />
           ) : (
             <div className={`media-lightbox-status media-thumb--${state.kind}`}>
-              <span>{mediaStatusText(state)}</span>
+              <span>{mediaVariantStatusText(state, 'viewer')}</span>
               {canRetryMediaState(state) && <button type="button" className="media-thumb-retry" onClick={() => onRetry(ref.id)}>Retry</button>}
             </div>
           )}
@@ -184,7 +187,7 @@ interface LightboxProps {
   opener: HTMLElement | null;
   onClose: () => void;
   onRetry: (id: string) => void;
-  onImageError: (id: string) => void;
+  onImageError: (id: string, variant: MediaVariantName) => void;
 }
 
 /** Modal gallery: focus moves in on open, is trapped while open, and returns to the opener. */

@@ -5,7 +5,9 @@ import {
   mediaDisplayStateFrom,
   mediaMetadataUrl,
   shouldPollMediaState,
+  withImageLoadError,
   type MediaDisplayState,
+  type MediaVariantName,
 } from '../utils/media';
 
 /**
@@ -68,9 +70,9 @@ export function useMediaStates(ids: readonly string[]) {
     void load(id);
   }, [load]);
 
-  /** An <img> that failed after metadata said ready: show it as a read error. */
-  const markImageError = useCallback((id: string) => {
-    setStates(previous => ({ ...previous, [id]: { kind: 'error', code: 'image_load_failed' } }));
+  /** An <img> that failed after metadata said ready: only that variant is marked failed. */
+  const markImageError = useCallback((id: string, variant: MediaVariantName) => {
+    setStates(previous => ({ ...previous, [id]: withImageLoadError(previous[id] ?? { kind: 'loading' }, variant) }));
   }, []);
 
   return { states, retry, markImageError };
