@@ -12,6 +12,7 @@
 // own. State is never trimmed to fit a limit: a question that would be too large is refused and
 // the conversation falls back to the grouping agent.
 import { join } from 'node:path';
+import { buildKeyPool } from '../../shared/api-key-pool.js';
 import { getCredential } from '../../shared/EnvManager.js';
 import { isCmemGatewayUrl, isKeyAllowedForEndpoint } from '../../shared/cmem-gateway.js';
 import { isOpenRouterApiUrl, resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
@@ -175,15 +176,18 @@ export function jevClient({ url, apiKey, model = null, fetchImpl = fetch }) {
 export function jevClientFromSettings(settings, { credential = (name) => getCredential(name), fetchImpl } = {}) {
   if (settings?.CLAUDE_MEM_PROVIDER !== 'openrouter') return null;
   const apiKey = String(settings.CLAUDE_MEM_OPENROUTER_API_KEY ?? '').trim() || credential('OPENROUTER_API_KEY') || '';
-  if (!apiKey) return null;
   const base = String(settings.CLAUDE_MEM_OPENROUTER_BASE_URL ?? '').trim();
   if (isCmemGatewayUrl(base)) {
+    // The gateway key is account-delivered: never a pool key, as the provider's own config holds.
     const url = `${base.replace(/\/+$/, '')}/decisions`;
-    return isKeyAllowedForEndpoint(url, apiKey) ? jevClient({ url, apiKey, fetchImpl }) : null;
+    return apiKey && isKeyAllowedForEndpoint(url, apiKey) ? jevClient({ url, apiKey, fetchImpl }) : null;
   }
   // Blank means openrouter.ai. Another OpenAI-compatible endpoint (DeepSeek, LM Studio) has no Decisions API.
   if (!isOpenRouterApiUrl(resolveOpenRouterChatCompletionsUrl(base))) return null;
-  return isKeyAllowedForEndpoint(OPENROUTER_DECISIONS_URL, apiKey) ? jevClient({ url: OPENROUTER_DECISIONS_URL, apiKey, model: JEV_MODEL, fetchImpl }) : null;
+  // The primary key, else the first key of the pool the provider rotates through (a pool-only install).
+  const pool = buildKeyPool(apiKey, settings.CLAUDE_MEM_OPENROUTER_API_KEYS || credential('OPENROUTER_API_KEYS') || '');
+  const key = pool.find((candidate) => isKeyAllowedForEndpoint(OPENROUTER_DECISIONS_URL, candidate));
+  return key ? jevClient({ url: OPENROUTER_DECISIONS_URL, apiKey: key, model: JEV_MODEL, fetchImpl }) : null;
 }
 
 export function configuredJudge(settingsPath = USER_SETTINGS_PATH) {
@@ -264,13 +268,26 @@ export async function routeUndecided({ dir = LEDGER_DIR, database, judge = null,
         working = readLedger(dir).groups;
         if (working.conversations[key] || working.ignored?.[key]) { skip.add(key); continue; }
       }
-      const target = verdict.band === 'join' ? openRequests.find((request) => request.groupId === verdict.requestId) : null;
+      // The request picked, as the ledger holds it now: an owner Join meanwhile may have moved it into another
+      // request, so its anchor (and title) is whichever request now holds the anchor it was offered with.
+      const live = (request) => {
+        const id = request && working.conversations[request.anchor];
+        const group = id && working.groups[id];
+        return group ? { ...request, groupId: id, anchor: group.anchor, title: group.title } : null;
+      };
+      const picked = verdict.requestId ? openRequests.find((request) => request.groupId === verdict.requestId) : null;
+      const target = verdict.band === 'join' ? live(picked) : null;
+      if (verdict.band === 'join' && !target) {
+        unplaced.push({ conversationKey: key, root, openingAsk: conversation.openingAsk, reason: `the picked request ${verdict.requestId} left the ledger while the judge was asked` });
+        skip.add(key);
+        continue;
+      }
       const title = ownTitle(conversation.openingAsk);
       const decisions = target
         ? { groups: [{ title: target.title, conversations: [target.anchor, key], links: [{ kind: 'judge', conversations: [target.anchor, key], evidence: verdict.evidence }], ...(typeof root === 'string' && root ? { projectRoot: root } : {}) }] }
         : { groups: [{ title, conversations: [key] }] };
       working = applyDecisions(working, decisions, { database, now, excludedPromptIds: ledger.agentWrittenPromptIds });
-      const suggested = verdict.band === 'suggest' ? openRequests.find((request) => request.groupId === verdict.requestId) : null;
+      const suggested = verdict.band === 'suggest' ? live(picked) : null;
       if (suggested) working.suggestions = { ...(working.suggestions ?? {}), [key]: { requestId: suggested.groupId, confidence: verdict.confidence, evidence: verdict.evidence, judge: verdict.judge, at: iso(now), status: 'open' } };
       persist();
       // A request started here is the newest, so later conversations of the root may join it.
@@ -313,6 +330,10 @@ export function decideSuggestion({ dir, database, conversationKey, action, now =
       ...(typeof request.projectRoot === 'string' && request.projectRoot ? { projectRoot: request.projectRoot } : {}),
     }] }, { database, now, excludedPromptIds: ledger.agentWrittenPromptIds });
     next.suggestions[conversationKey] = { ...suggestion, status: 'joined', resolvedAt: iso(now) };
+    // Open suggestions aimed at the request this Join absorbed now point at the request that holds it.
+    if (ownId && !next.groups[ownId]) for (const [other, entry] of Object.entries(next.suggestions)) {
+      if (entry.status === 'open' && entry.requestId === ownId) next.suggestions[other] = { ...entry, requestId: suggestion.requestId };
+    }
   } else {
     if (groups.conversations[conversationKey]) next = structuredClone(groups);
     else {

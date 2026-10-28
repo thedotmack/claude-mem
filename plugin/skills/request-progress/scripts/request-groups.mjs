@@ -2383,6 +2383,54 @@ var init_my_focus = __esm({
   }
 });
 
+// src/shared/gemini-error-details.ts
+var init_gemini_error_details = __esm({
+  "src/shared/gemini-error-details.ts"() {
+    "use strict";
+  }
+});
+
+// src/shared/api-key-pool.ts
+function parseApiKeyList(raw) {
+  const parts = Array.isArray(raw) ? raw.flatMap((entry) => typeof entry === "string" ? splitKeyString(entry) : []) : typeof raw === "string" ? splitKeyString(raw) : [];
+  const seen = /* @__PURE__ */ new Set();
+  const keys = [];
+  for (const part of parts) {
+    if (seen.has(part)) continue;
+    seen.add(part);
+    keys.push(part);
+    if (keys.length >= MAX_POOL_KEYS) break;
+  }
+  return keys;
+}
+function splitKeyString(raw) {
+  return raw.split(/[\s,;]+/).map((part) => part.trim()).filter((part) => part.length > 0);
+}
+function buildKeyPool(primary, listRaw) {
+  const listed = parseApiKeyList(listRaw);
+  const primaryTrimmed = primary.trim();
+  if (!primaryTrimmed) return listed;
+  return parseApiKeyList([primaryTrimmed, ...listed]);
+}
+var MAX_POOL_KEYS, KEY_COOLDOWN_MS, RATE_LIMIT_COOLDOWN_MAX_MS, ROTATE_KINDS, KEY_ROTATE_KINDS;
+var init_api_key_pool = __esm({
+  "src/shared/api-key-pool.ts"() {
+    "use strict";
+    init_paths();
+    init_logger();
+    init_gemini_error_details();
+    MAX_POOL_KEYS = 32;
+    KEY_COOLDOWN_MS = {
+      rate_limit: 6e4,
+      quota_exhausted: 30 * 6e4,
+      auth_invalid: 6 * 60 * 6e4
+    };
+    RATE_LIMIT_COOLDOWN_MAX_MS = 15 * 6e4;
+    ROTATE_KINDS = /* @__PURE__ */ new Set(["rate_limit", "quota_exhausted", "auth_invalid"]);
+    KEY_ROTATE_KINDS = [...ROTATE_KINDS];
+  }
+});
+
 // src/shared/oauth-token.ts
 import { execFile } from "child_process";
 import { promisify } from "util";
@@ -2623,14 +2671,15 @@ function jevClient({ url, apiKey, model = null, fetchImpl = fetch }) {
 function jevClientFromSettings(settings, { credential = (name) => getCredential(name), fetchImpl } = {}) {
   if (settings?.CLAUDE_MEM_PROVIDER !== "openrouter") return null;
   const apiKey = String(settings.CLAUDE_MEM_OPENROUTER_API_KEY ?? "").trim() || credential("OPENROUTER_API_KEY") || "";
-  if (!apiKey) return null;
   const base = String(settings.CLAUDE_MEM_OPENROUTER_BASE_URL ?? "").trim();
   if (isCmemGatewayUrl(base)) {
     const url = `${base.replace(/\/+$/, "")}/decisions`;
-    return isKeyAllowedForEndpoint(url, apiKey) ? jevClient({ url, apiKey, fetchImpl }) : null;
+    return apiKey && isKeyAllowedForEndpoint(url, apiKey) ? jevClient({ url, apiKey, fetchImpl }) : null;
   }
   if (!isOpenRouterApiUrl(resolveOpenRouterChatCompletionsUrl(base))) return null;
-  return isKeyAllowedForEndpoint(OPENROUTER_DECISIONS_URL, apiKey) ? jevClient({ url: OPENROUTER_DECISIONS_URL, apiKey, model: JEV_MODEL, fetchImpl }) : null;
+  const pool = buildKeyPool(apiKey, settings.CLAUDE_MEM_OPENROUTER_API_KEYS || credential("OPENROUTER_API_KEYS") || "");
+  const key = pool.find((candidate) => isKeyAllowedForEndpoint(OPENROUTER_DECISIONS_URL, candidate));
+  return key ? jevClient({ url: OPENROUTER_DECISIONS_URL, apiKey: key, model: JEV_MODEL, fetchImpl }) : null;
 }
 function configuredJudge(settingsPath = USER_SETTINGS_PATH) {
   const client = jevClientFromSettings(SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true }));
@@ -2706,11 +2755,22 @@ async function routeUndecided({ dir = LEDGER_DIR, database, judge = null, now = 
           continue;
         }
       }
-      const target = verdict.band === "join" ? openRequests.find((request) => request.groupId === verdict.requestId) : null;
+      const live = (request) => {
+        const id = request && working.conversations[request.anchor];
+        const group = id && working.groups[id];
+        return group ? { ...request, groupId: id, anchor: group.anchor, title: group.title } : null;
+      };
+      const picked = verdict.requestId ? openRequests.find((request) => request.groupId === verdict.requestId) : null;
+      const target = verdict.band === "join" ? live(picked) : null;
+      if (verdict.band === "join" && !target) {
+        unplaced.push({ conversationKey: key, root, openingAsk: conversation.openingAsk, reason: `the picked request ${verdict.requestId} left the ledger while the judge was asked` });
+        skip.add(key);
+        continue;
+      }
       const title = ownTitle(conversation.openingAsk);
       const decisions = target ? { groups: [{ title: target.title, conversations: [target.anchor, key], links: [{ kind: "judge", conversations: [target.anchor, key], evidence: verdict.evidence }], ...typeof root === "string" && root ? { projectRoot: root } : {} }] } : { groups: [{ title, conversations: [key] }] };
       working = applyDecisions(working, decisions, { database, now, excludedPromptIds: ledger.agentWrittenPromptIds });
-      const suggested = verdict.band === "suggest" ? openRequests.find((request) => request.groupId === verdict.requestId) : null;
+      const suggested = verdict.band === "suggest" ? live(picked) : null;
       if (suggested) working.suggestions = { ...working.suggestions ?? {}, [key]: { requestId: suggested.groupId, confidence: verdict.confidence, evidence: verdict.evidence, judge: verdict.judge, at: iso2(now), status: "open" } };
       persist();
       if (!target) openRequests = [{ groupId: groupIdFor(key), title, anchor: key, context: { title, ...judged.context } }, ...openRequests];
@@ -2752,6 +2812,9 @@ function decideSuggestion({ dir, database, conversationKey: conversationKey2, ac
       ...typeof request.projectRoot === "string" && request.projectRoot ? { projectRoot: request.projectRoot } : {}
     }] }, { database, now, excludedPromptIds: ledger.agentWrittenPromptIds });
     next.suggestions[conversationKey2] = { ...suggestion, status: "joined", resolvedAt: iso2(now) };
+    if (ownId && !next.groups[ownId]) for (const [other, entry] of Object.entries(next.suggestions)) {
+      if (entry.status === "open" && entry.requestId === ownId) next.suggestions[other] = { ...entry, requestId: suggestion.requestId };
+    }
   } else {
     if (groups.conversations[conversationKey2]) next = structuredClone(groups);
     else {
@@ -2768,6 +2831,7 @@ var DAY_MS, iso2, JOIN_THRESHOLD, SUGGEST_THRESHOLD, MAX_CANDIDATE_REQUESTS, MAX
 var init_request_judge = __esm({
   "src/services/work-view/request-judge.mjs"() {
     "use strict";
+    init_api_key_pool();
     init_EnvManager();
     init_cmem_gateway();
     init_openrouter_base_url();

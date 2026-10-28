@@ -181,6 +181,44 @@ describe('the request judge', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it('a join picked against a request the owner merged meanwhile goes to the request that holds it now', async () => {
+    const dir = ledgerDir();
+    try {
+      const database = fixtureDatabase();
+      const groupId = ledgerWithOpenRequest(dir);
+      const bId = groupIdFor(key('b'));
+      // b is a mid-band pick for the cards; c is picked for b's request, and the owner joins b while c is asked.
+      const { client } = fakeJev((state, questions) => {
+        if (state.conversation.asks[0] !== 'Write the pricing page') return questions.pick ? choice(groupId, 0.7, ['none']) : noul(0.6);
+        if (questions.pick) { decideSuggestion({ dir, database, conversationKey: key('b'), action: 'join', now: NOW + 500 }); return choice(bId, 0.9, [groupId, 'none']); }
+        return noul(0.9);
+      });
+      await routeUndecided({ dir, database, judge: jevJudge(client), now: NOW, apply: true });
+      const ledger = readLedger(dir).groups;
+      expect(ledger.conversations[key('b')]).toBe(groupId);
+      expect(ledger.conversations[key('c')]).toBe(groupId);
+      expect(ledger.groups[bId]).toBeUndefined();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a Join that absorbs a request points the suggestions aimed at it at the request that absorbed it', async () => {
+    const dir = ledgerDir();
+    try {
+      const database = fixtureDatabase();
+      const groupId = ledgerWithOpenRequest(dir);
+      const bId = groupIdFor(key('b'));
+      const { client } = fakeJev((state, questions) => state.conversation.asks[0] === 'Write the pricing page'
+        ? (questions.pick ? choice(bId, 0.7, [groupId, 'none']) : noul(0.6))
+        : (questions.pick ? choice(groupId, 0.7, ['none']) : noul(0.6)));
+      await routeUndecided({ dir, database, judge: jevJudge(client), now: NOW, apply: true });
+      expect(readLedger(dir).groups.suggestions[key('c')]).toMatchObject({ requestId: bId, status: 'open' });
+      decideSuggestion({ dir, database, conversationKey: key('b'), action: 'join', now: NOW + 1000 });
+      const ledger = readLedger(dir);
+      expect(ledger.groups.suggestions[key('c')]).toMatchObject({ requestId: groupId, status: 'open' });
+      expect(openSuggestions(ledger).map(entry => [entry.conversationKey, entry.requestId])).toEqual([[key('c'), groupId]]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('Not this keeps the conversation as its own request and records that the owner declined', async () => {
     const dir = ledgerDir();
     try {
@@ -271,6 +309,9 @@ describe('the request judge', () => {
     expect(jevClientFromSettings({ CLAUDE_MEM_PROVIDER: 'openrouter', CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://cmem.ai/api/inference/v1', CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-or-1' }, { credential: none })).toBeNull();
     expect(jevClientFromSettings({ CLAUDE_MEM_PROVIDER: 'openrouter', CLAUDE_MEM_OPENROUTER_BASE_URL: '', CLAUDE_MEM_OPENROUTER_API_KEY: `cm_pro_${'b'.repeat(24)}` }, { credential: none })).toBeNull();
     expect(jevClientFromSettings({ CLAUDE_MEM_PROVIDER: 'openrouter' }, { credential: none })).toBeNull();
+    // A pool-only install (no primary key) uses the first pool key off the gateway; never on it.
+    expect((jevClientFromSettings({ CLAUDE_MEM_PROVIDER: 'openrouter', CLAUDE_MEM_OPENROUTER_API_KEYS: 'sk-or-pool-1, sk-or-pool-2' }, { credential: none, fetchImpl: undefined }) as any)?.url).toBe(OPENROUTER_DECISIONS_URL);
+    expect(jevClientFromSettings({ CLAUDE_MEM_PROVIDER: 'openrouter', CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://cmem.ai/api/inference/v1', CLAUDE_MEM_OPENROUTER_API_KEYS: 'sk-or-pool-1' }, { credential: none })).toBeNull();
   });
 
   it('the refresh runs the judge before any agent batch: a placed conversation never reaches the grouping prompt', async () => {
