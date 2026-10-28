@@ -179,7 +179,7 @@ function readIdentitySettings(): SettingsDefaults {
   return settings;
 }
 
-function useGitRemoteProjectNames(): boolean {
+export function useGitRemoteProjectNames(): boolean {
   const source = process.env[PROJECT_NAME_SOURCE_SETTING] ?? readIdentitySettings().CLAUDE_MEM_PROJECT_NAME_SOURCE;
   return String(source ?? 'path').trim().toLowerCase() === 'git-remote';
 }

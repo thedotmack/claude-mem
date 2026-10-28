@@ -4,6 +4,146 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [15.4.0] - 2026-10-28
+
+## My Work: focus areas, and requests that file themselves
+
+### Focus areas are the top level of My Work (#5131)
+- **MY FOCUS rail.** Your focus areas are listed in priority order, with a needs-you count on each. Every request sits in exactly one area, or in **Other**. On phones the areas appear as a chip row.
+- **Area header.** Each area page shows its goal sentence, combined progress, your own quotes, the asks you haven't started yet, and a link to Past focus. The My Goals page is retired; its content now lives here.
+- **Suggested.** New areas appear here by themselves. You can Keep, Rename, Merge or Dismiss each one, with Undo. Your decisions sync across computers and a refresh never overrides them.
+- **Owner-goals sorts what it mines.** It applies three tests in order, so each statement becomes exactly one focus area, ask or rule. Priorities and open asks no longer duplicate each other.
+- **The Focus step replaces Align in the automatic refresh.** It places every request, and it proposes new areas from Other or from a request that holds several separate asks.
+- **Request cards.** Every card shows its area, and request detail has **Move to…**. "What came out of it" is now called **Deliverables**.
+
+### The judge files new conversations under their request (#5110)
+- **Before any grouping agent runs,** each new conversation is filed: a code link (the same work-state list or `request_id`) joins at once. On CMEM Pro, or with your own OpenRouter key, Jev also checks whether the conversation continues one of your open requests. At a check score of 0.8 or more it joins. Between 0.5 and 0.8 you get a **Join / Not this** suggestion on the card. Otherwise it starts its own request.
+- **Focus areas too.** On the same installs, Jev suggests a focus area for each request before the Focus step runs. The pick is only a hint to the Focus agent for now: automatic placement waits until enough of your own moves exist to calibrate a cutoff.
+- **Without Jev,** everything works as before.
+
+### A request keeps its conversations across project roots (#5106)
+- A request whose decision names its project root keeps conversations from other roots, and later refreshes can still add to it.
+
+### Fixes
+- The sync-api query-plan test applies its own schema, so it no longer fails depending on test order.
+
+**CMEM Pro:** the Jev decisions gateway (`/api/inference/v1/decisions`) is live for Pro subscribers.
+
+## [15.3.0] - 2026-10-26
+
+## What changed
+
+### Deliverables on the My Work card (#5109)
+
+Ask an agent for a deck, a report, an HTML page or any other file, and it is one click away on the front of the request's card in My Work, under **Deliverables**.
+
+- **The Stop hook copies what the turn made for you** into `~/.claude-mem/deliverables/<project>/`, content-addressed (`report-3f9a1c2b.md`), so the copy outlives the worktree, scratch folder or temp directory it was made in. Files an agent attaches through `work_state_write` (`work_product`, `deliverable`, or any field naming a file a person opens) count, as do decks, documents, pages, images, video and spreadsheets written outside the source tree. Source files are never copied by inference. SubagentStop captures what a subagent made from its own transcript.
+- **The worker records and serves each copy** at `GET /api/deliverables/:id/:filename`, with the same loopback, same-origin and sandbox rules as recorded files; markdown and text open inline. While a copy is on disk and the file has not been written since, it stands in for the record of where the file was made.
+- **Privacy and limits are explicit.** A turn whose prompt is entirely `<private>` leaves no copy and no record. Nothing is copied for a worker on another host, which could not open the copy. 50 files per Stop and 512 MiB per file, reported when hit, never silent. `CLAUDE_MEM_DELIVERABLES_ENABLED=false` turns the copy off.
+- The SessionStart work-state rule now asks agents to write the thing you asked for as a file and attach it as `work_product` before they finish.
+
+### Also new
+
+- **Automatic local database snapshots** with crash-safe restore: `npx claude-mem backup [run|status|list]` and `npx claude-mem restore`. Off by default; `CLAUDE_MEM_BACKUP_ENABLED=true` with `CLAUDE_MEM_BACKUP_INTERVAL_HOURS` and `CLAUDE_MEM_BACKUP_RETAIN_COUNT`. (#3751)
+- **Notion export.** Each new observation is upserted into a Notion database as soon as it is stored. Opt-in through `CLAUDE_MEM_NOTION_ENABLED`, a token and a database id; never blocks capture. (#4799)
+- **Codex subagents start with the memory timeline.** A new `SubagentStart` hook gives a fresh subagent the same context SessionStart gives a session; forks, which inherit their parent's history, are skipped. Codex asks once to trust the new hook. (#4760)
+- **Runcrate preset** for the openai-compatible provider. (#5067)
+
+### Fixes
+
+- **Antigravity CLI:** claude-mem no longer registers `PreToolUse`, which auto-approved every agy tool call and queued each call twice (#5085). agy prompts are now recorded once per turn, so agy work shows up in My Work, and files read in agy get their observation history (#5092).
+- **Redaction:** temporary AWS credentials are redacted in full: ASIA access key IDs, session tokens, and the SecretAccessKey in `aws sts` JSON output (#5066, #5073, #5080).
+- **Transcripts:** watcher checkpoints are held until buffered work is stored (#5072); the transcript-watch config path follows `CLAUDE_MEM_DATA_DIR` (#5070).
+- **Observer parser:** reads the type the model settled on, never markup around it (#5077).
+- **Windows:** the launcher compiles through the 8.3 short path when `bun.exe` is on a non-ASCII path (#5089).
+- **SessionStart** terminal preview leaves room for its footer (#5084); install help says which providers need a cmem.ai sign-in (#5086).
+- **Release tooling:** every shipped plugin manifest carries the same version, synced by the build and checked in CI (#5083, #5082, #5075).
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v15.2.1...v15.3.0
+
+## [15.2.1] - 2026-10-25
+
+## What changed
+
+- **npm publishing now uses trusted publishing (OIDC).** The "Publish to npm" GitHub Actions workflow authenticates to npm with a short-lived OIDC token issued for this repository's workflow instead of the long-lived `NPM_TOKEN` secret, which had been failing on every tag since v13.26.1. Trusted publishes also carry an npm provenance attestation linking the package to the commit and workflow that built it. (#5063)
+
+No runtime behavior changes in the plugin or worker; this release exists to ship through the new publishing path.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v15.2.0...v15.2.1
+
+## [15.2.0] - 2026-10-25
+
+## Highlights
+
+### Install funnel in the browser (#5031)
+Fresh installs now open a browser setup flow that finds your recent work and turns it into Work, Goals and Rules before setup finishes. Existing installations keep opening My Work as before.
+
+1. **Install** — `npx claude-mem install` installs the detected hooks, starts the worker and opens the browser.
+2. **Scan** — reads the last 30 days of supported local agent history. Configured excluded projects and agent-authored prompts are left out, stored prompts are deduplicated, and private-tag cleanup and configured redaction run before anything is shown or extracted.
+3. **Reveal** — uploads the filtered owner prompts (gzip) to CMEM Cloud for hosted intent extraction. Anonymous installs get a private, persistent installation credential that retries and sign-in reuse. Returned goals, rules and request groups fill the local My Work snapshots. Upload and extraction errors are shown and can be retried. The pre-checked product-improvement box only changes `improveProduct`.
+4. **Storage choice** — At Home or On The Go. On The Go uses the existing pairing, login and checkout flow; delivered memory credentials are activated before checkout is marked paid, and sync-only accounts keep their provider.
+5. **Finish Setup** — installs any other selected local tools and can import existing memory. Extraction or import in progress is kept when a settings change restarts the worker.
+6. **What's next** — search saved memory and prompts, keep a result as a note, then hand off to My Work. The terminal exits successfully.
+
+Ongoing goals and progress refresh uses an installed, logged-in agent: Claude Code gets bounded file tools and memory recall only; Codex runs with a strict read-only workspace/runtime profile (no writes, no network), with native and npm runtime layouts supported; Gemini gets prepared evidence inline with no builtin tools, hooks or YOLO mode. Every saved answer passes the worker's validators.
+
+### Setup no longer fails when Cloud leaves conversations ungrouped (#5060)
+On real 30-day scans the hosted model sometimes leaves conversations out of every group. The worker used to throw `Hosted extraction omitted conversation …` and fail setup after a successful hosted run. Now the groups Cloud returned are saved and conversations it did not place stay undecided: they show in My Work as their own request, and the local refresh can group them later. Unknown or repeated conversation ids still fail loudly.
+
+## Requirements
+- Node `^20.19.0 || >=22.12.0`.
+- Uses CMEM Cloud hosted history import and intent extraction (claude-mem-pro #353, #355, #358).
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v15.1.0...v15.2.0
+
+## [15.1.0] - 2026-10-25
+
+## claude-mem 15.1.0
+
+### Highlights
+
+- **New My Work viewer (React, live data).** The localhost viewer at `http://localhost:37777` is replaced by the React My Work viewer on live worker data: one card per human request, progress meters, owner goals, goal alignment, shipping velocity and the build story (#5010).
+- **My Work is always live.** Updates appear as they arrive; the "Show updates" button is gone. The header now reads "claude-mem", links to the Classic viewer at `/viewer`, and shows a GitHub stars button. An open request drawer no longer reopens by itself when its request returns to the feed (#5056).
+- **Request grouping and progress review.** The build story stays under its cap and the story update is told how much room it has (#5053, #5054); every agent's refresh failure is shown; finished subagents show as finished, and a subagent can be marked finished from its agent card; Claude Code subagent stops are recorded.
+
+### Server
+
+- Per-prompt semantic injection in server mode (#5004).
+- The configured embedding model is baked into the Docker image (#5003).
+
+### MCP
+
+- Opt-in loopback HTTP transport with per-session workspaces (#5028).
+
+### Fixes
+
+- Observer: reasoning gets its own budget and cut-off replies are reported (#5033).
+- Search: unfiltered timelines are scoped to their anchor project (#5013).
+- Worker: cross-origin loopback writes to `/api/import` are rejected (#5025); Edit payloads carrying new scalar flags keep being trimmed (#5027).
+- Redaction: AWS secret keys under lowercase key names, PGP private key blocks and encrypted PKCS#8 keys (#5014, #5017).
+- Security: private prompt text stays out of Goals.
+- Smart-read: tree-sitter probe output read when Bun returns a Buffer (#5024), Go type aliases (#5020), Swift extension methods (#5016), symbols ending at column 0 (#5015).
+- Hooks: `last_assistant_message` mapped in the raw adapter (#5011).
+- Agent runner: npm-installed codex and gemini are found and started.
+
+### Tests
+
+- Suite split into fast and integration lanes; slow, failing and source-grep tests cut (#5032).
+
+## [15.0.2] - 2026-10-23
+
+# Stop observer reasoning from consuming the output budget
+
+Observer requests to OpenRouter, the cmem.ai gateway, and OpenAI-compatible endpoints now disable reasoning by default, so reasoning tokens no longer fill the output budget and leave a session with zero observations.
+
+- An empty reply with finish_reason=length is logged and retried once with reasoning forced off. That retry counts against the existing paid-send budget and is bounded by the per-attempt timeout.
+- Billed usage keeps the retry's prompt size and adds completion tokens and cost from both attempts.
+- Health status names the active OpenRouter credential, including a custom OPENROUTER_BASE_URL.
+- OpenAI "Unsupported parameter" responses drop the reasoning field and remember the endpoint. Mandatory-reasoning and invalid-effort refusals are left in place.
+- Empty replies that finish with stop stay accepted.
+
+Ships the observer repair from #5029.
+
 ## [15.0.1] - 2026-10-20
 
 # Keep Smart recall consistent across merged projects

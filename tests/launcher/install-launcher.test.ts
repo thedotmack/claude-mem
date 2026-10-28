@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import {
   appendDirectoryToWindowsPathValue,
   buildLauncherCompileArguments,
+  createAdhocCodesigner,
   ensureDirectoryOnWindowsUserPath,
   ensureLauncherOnPath,
   ensureLocalBinOnShellPath,
@@ -20,6 +21,7 @@ import {
   type LauncherInstallLogger,
   type PowerShellRunner,
   WINDOWS_USER_PATH_APPEND_SCRIPT,
+  resolveCompileBunPath,
 } from '../../src/launcher/install-launcher.js';
 import { LAUNCHER_PROTOCOL } from '../../src/launcher/launcher-protocol.js';
 import { bunCommonPaths } from '../../src/npx-cli/install/tool-path.js';
@@ -97,12 +99,114 @@ const codesignMustNotRun: LauncherCodesignRunner = () => {
 /** Signing is a no-op for fake compiles, so no test reaches the real `codesign`. */
 const codesignNoop: LauncherCodesignRunner = () => ({ status: 0, stderr: '' });
 
+/** The thrown error's message, so a test can assert on more than one fragment of it. */
+function thrownMessage(action: () => unknown): string {
+  try {
+    action();
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  throw new Error('expected the action to throw');
+}
+
+/**
+ * Zeroes the signature blob of a 64-bit Mach-O, so `codesign --force --sign -`
+ * refuses it with "invalid or unsupported format for signature" — the way it
+ * refuses Bun 1.3.12's `--compile` output (#4947). Corrupting the blob rather
+ * than trusting the installed Bun to emit a malformed signature keeps the
+ * regression test meaningful if a later Bun signs its output correctly.
+ */
+function zeroMachOCodeSignature(binaryPath: string): void {
+  const binary = readFileSync(binaryPath);
+  if (binary.readUInt32LE(0) !== 0xfeedfacf) {
+    throw new Error(`${binaryPath} is not a 64-bit Mach-O`);
+  }
+  const loadCommandCount = binary.readUInt32LE(16);
+  let loadCommandOffset = 32;
+  for (let loadCommandIndex = 0; loadCommandIndex < loadCommandCount; loadCommandIndex++) {
+    // LC_CODE_SIGNATURE, the load command that points at the embedded blob.
+    if (binary.readUInt32LE(loadCommandOffset) === 0x1d) {
+      const signatureOffset = binary.readUInt32LE(loadCommandOffset + 8);
+      const signatureSize = binary.readUInt32LE(loadCommandOffset + 12);
+      writeFileSync(binaryPath, binary.fill(0, signatureOffset, signatureOffset + signatureSize));
+      return;
+    }
+    loadCommandOffset += binary.readUInt32LE(loadCommandOffset + 4);
+  }
+  throw new Error(`${binaryPath} has no LC_CODE_SIGNATURE load command to corrupt`);
+}
+
 beforeAll(() => {
   mkdirSync(scratchParentDirectory, { recursive: true });
 });
 
 afterAll(() => {
   rmSync(scratchParentDirectory, { recursive: true, force: true });
+});
+
+// bun build --compile on Windows cannot open its own bun.exe when that path has
+// non-ASCII characters (#5038), so the compile goes through the 8.3 short path.
+describe('resolveCompileBunPath (#5038)', () => {
+  const cyrillicBun = 'C:\\Users\\Пользователь\\.bun\\bin\\bun.exe';
+  const shortBun = String.raw`C:\Users\5F1B~1\BUN~1\bin\bun.exe`;
+  const asciiBun = String.raw`C:\Users\alex\.bun\bin\bun.exe`;
+  const powerShellReturning = (
+    stdout: string,
+    status: number | null = 0,
+    stderr = '',
+    spawnErrorMessage: string | null = null,
+  ) => {
+    const calls: Array<{ script: string; extraEnvironment: Record<string, string> }> = [];
+    const runner = (script: string, extraEnvironment: Record<string, string>) => {
+      calls.push({ script, extraEnvironment });
+      return { status, stdout, stderr, spawnErrorMessage };
+    };
+    return Object.assign(runner, { calls });
+  };
+
+  it('compiles through the 8.3 short path when the Windows bun path is not ASCII', () => {
+    const runPowerShell = powerShellReturning(`${shortBun}\r\n`);
+    expect(resolveCompileBunPath(cyrillicBun, 'win32', runPowerShell)).toBe(shortBun);
+    // The path goes in by env var, never interpolated into the script.
+    expect(runPowerShell.calls).toHaveLength(1);
+    expect(runPowerShell.calls[0].extraEnvironment).toEqual({ CLAUDE_MEM_BUN_PATH: cyrillicBun });
+    expect(runPowerShell.calls[0].script).not.toContain(cyrillicBun);
+  });
+
+  it('keeps an ASCII path, and every POSIX path, without asking PowerShell', () => {
+    const runPowerShell = powerShellReturning('unused');
+    expect(resolveCompileBunPath(asciiBun, 'win32', runPowerShell)).toBe(asciiBun);
+    expect(resolveCompileBunPath('/home/Пользователь/.bun/bin/bun', 'linux', runPowerShell)).toBe('/home/Пользователь/.bun/bin/bun');
+    expect(runPowerShell.calls).toHaveLength(0);
+  });
+
+  it('fails loudly, naming the fix, when Windows has no ASCII short name', () => {
+    // With 8.3 names disabled, ShortPath returns the long path unchanged.
+    const message = thrownMessage(() => resolveCompileBunPath(cyrillicBun, 'win32', powerShellReturning(cyrillicBun)));
+    expect(message).toContain(cyrillicBun);
+    expect(message).toContain('non-ASCII');
+    expect(message).toContain('npx claude-mem install');
+    expect(message).toContain('no 8.3 short name');
+  });
+
+  it('reports a failed short-path lookup with its cause, not as a missing short name', () => {
+    const exitMessage = thrownMessage(() => resolveCompileBunPath(cyrillicBun, 'win32', powerShellReturning('', 1)));
+    expect(exitMessage).toContain('Could not look up the 8.3 short path');
+    expect(exitMessage).toContain(cyrillicBun);
+    expect(exitMessage).toContain('exit 1');
+    expect(exitMessage).not.toContain('no 8.3 short name');
+
+    const stderrMessage = thrownMessage(() => resolveCompileBunPath(cyrillicBun, 'win32', powerShellReturning('', 1, 'Exception calling GetFile\r\n')));
+    expect(stderrMessage).toContain('Exception calling GetFile');
+
+    const spawnFailureMessage = thrownMessage(() => resolveCompileBunPath(
+      cyrillicBun,
+      'win32',
+      powerShellReturning('', null, '', 'spawn powershell.exe ENOENT'),
+    ));
+    expect(spawnFailureMessage).toContain('spawn powershell.exe ENOENT');
+    expect(spawnFailureMessage).not.toContain('no 8.3 short name');
+  });
 });
 
 describe('launcher bin dir and compile arguments per platform', () => {
@@ -395,6 +499,122 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
     expect(readdirSync(binDirectory)).toEqual(['claude-mem']);
   });
 
+  it('clears the old signature before re-signing, and reports only the sign step (#4947)', () => {
+    const invocations: string[][] = [];
+    const signer = createAdhocCodesigner((codesignArguments) => {
+      invocations.push([...codesignArguments]);
+      // The clear fails and the sign succeeds: clearing is best effort, so the
+      // clear's failure must neither stop the sign nor be reported.
+      return codesignArguments[0] === '--remove-signature'
+        ? { status: 1, stderr: 'code object is not signed at all\n' }
+        : { status: 0, stderr: '' };
+    });
+
+    expect(signer('/tmp/claude-mem')).toEqual({ status: 0, stderr: '' });
+    expect(invocations).toEqual([
+      ['--remove-signature', '/tmp/claude-mem'],
+      ['--force', '--sign', '-', '/tmp/claude-mem'],
+    ]);
+  });
+
+  it('reports the signing failure, not the successful clear, when only signing fails', () => {
+    const signer = createAdhocCodesigner((codesignArguments) =>
+      codesignArguments[0] === '--remove-signature'
+        ? { status: 0, stderr: 'replacing existing signature\n' }
+        : { status: 3, stderr: 'sign step failed\n' });
+
+    // Returning the clear's result would hide the failure that matters.
+    expect(signer('/tmp/claude-mem')).toEqual({ status: 3, stderr: 'sign step failed\n' });
+  });
+
+  it('reports the signing failure when both steps fail', () => {
+    const signer = createAdhocCodesigner((codesignArguments) =>
+      codesignArguments[0] === '--remove-signature'
+        ? { status: 1, stderr: 'clear step failed\n' }
+        : { status: 2, stderr: 'sign step failed\n' });
+
+    expect(signer('/tmp/claude-mem')).toEqual({ status: 2, stderr: 'sign step failed\n' });
+  });
+
+  it.skipIf(process.platform !== 'darwin')('installs a real build whose signature codesign --force cannot replace (Bun 1.3.12, #4947)', () => {
+    const scratchHome = makeScratchHome();
+    const host = posixHost(scratchHome);
+    const logger = recordingLogger();
+    // Compile the real launcher bundle, then reproduce Bun 1.3.12's malformed
+    // signature. No runCodesign: the real `codesign` runs the repair.
+    const compileThenCorruptSignature: LauncherCompileRunner = (bunPath, compileArguments, workingDirectory) => {
+      const compileResult = spawnSync(bunPath, compileArguments, { cwd: workingDirectory, encoding: 'utf-8' });
+      zeroMachOCodeSignature(compileArguments[compileArguments.indexOf('--outfile') + 1]);
+      return { status: compileResult.status, stderr: compileResult.stderr };
+    };
+
+    const ensureResult = ensureLauncherOnPath({
+      pluginRoot, resolveBunPath: () => process.execPath, logger, host,
+      runCompile: compileThenCorruptSignature, invocationContext: 'npx-installer',
+    });
+
+    expect(ensureResult.status).toBe('installed');
+    expect(logger.lines.filter((line) => line.includes('codesign'))).toEqual([]);
+    const placedBinaryPath = resolveLauncherBinaryPath(host);
+    expect(spawnSync(placedBinaryPath, ['--version'], { encoding: 'utf-8' }).stdout.trim())
+      .toBe(String(LAUNCHER_PROTOCOL));
+    // The cleared signature is replaced by an ad-hoc one, not left absent.
+    expect(spawnSync('codesign', ['-dv', placedBinaryPath], { encoding: 'utf-8' }).stderr)
+      .toContain('flags=0x2(adhoc)');
+  }, 60_000);
+
+  it('quotes the signing failure when the probe cannot run the binary', () => {
+    const scratchHome = makeScratchHome();
+    // What macOS does to an invalidly-signed launcher: the exec fails before
+    // the protocol can be printed.
+    const compileCrashingLauncher: LauncherCompileRunner = (_bunPath, compileArguments) => {
+      const outfilePath = compileArguments[compileArguments.indexOf('--outfile') + 1];
+      writeFileSync(outfilePath, '#!/bin/sh\necho "killed on exec" >&2\nexit 137\n');
+      chmodSync(outfilePath, 0o755);
+      return { status: 0, stderr: '' };
+    };
+    const failingCodesign: LauncherCodesignRunner = () => ({
+      status: 1,
+      stderr: 'warning: first line\n.claude-mem-1.tmp: invalid or unsupported format for signature\n',
+    });
+
+    const message = thrownMessage(() => ensureLauncherOnPath({
+      pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host: posixHost(scratchHome),
+      runCompile: compileCrashingLauncher, runCodesign: failingCodesign, invocationContext: 'npx-installer',
+    }));
+
+    // The protocol message still says what the probe saw ...
+    expect(message).toContain(`compiled launcher printed protocol null, expected ${LAUNCHER_PROTOCOL}`);
+    // ... and the actionable half names the signing failure, last stderr line only.
+    expect(message).toContain('codesign --force --sign - failed (exit 1): .claude-mem-1.tmp: invalid or unsupported format for signature');
+    expect(message).not.toContain('warning: first line');
+  });
+
+  it('does not blame signing when signing succeeded but the probe still failed', () => {
+    const scratchHome = makeScratchHome();
+    const message = thrownMessage(() => ensureLauncherOnPath({
+      pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host: posixHost(scratchHome),
+      runCompile: fakeCompile('garbage'), runCodesign: codesignNoop, invocationContext: 'npx-installer',
+    }));
+
+    expect(message).toContain(`compiled launcher printed protocol null, expected ${LAUNCHER_PROTOCOL}`);
+    expect(message).not.toContain('codesign');
+  });
+
+  it('does not mention signing on a host where codesign never runs', () => {
+    const scratchHome = makeScratchHome();
+    const linuxHost: LauncherHostEnvironment = {
+      homeDirectory: scratchHome, platform: 'linux', environmentVariables: { PATH: '/usr/bin', SHELL: '/bin/bash' },
+    };
+    const message = thrownMessage(() => ensureLauncherOnPath({
+      pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host: linuxHost,
+      runCompile: fakeCompile('garbage'), runCodesign: codesignMustNotRun, invocationContext: 'npx-installer',
+    }));
+
+    expect(message).toContain(`compiled launcher printed protocol null, expected ${LAUNCHER_PROTOCOL}`);
+    expect(message).not.toContain('codesign');
+  });
+
   it('warns and still installs when ad-hoc signing fails (codesign missing or broken)', () => {
     const scratchHome = makeScratchHome();
     const host = posixHost(scratchHome);
@@ -597,7 +817,7 @@ describe('ensureDirectoryOnWindowsUserPath', () => {
     expect(script).toBe(WINDOWS_USER_PATH_APPEND_SCRIPT);
     expect(script).toContain("GetValue('Path', '', 'DoNotExpandEnvironmentNames')");
     expect(script).toContain("SetValue('Path', $updatedUserPath, $pathValueKind)");
-    expect(script).toContain("SetEnvironmentVariable('CLAUDE_MEM_PATH_BROADCAST', $null, 'User')");
+    expect(script).toContain("DeleteValue('CLAUDE_MEM_PATH_BROADCAST', $false)");
     expect(script).not.toContain(launcherDirectory);
     expect(script).not.toContain('setx');
     expect(extraEnvironment).toEqual({ CLAUDE_MEM_LAUNCHER_DIRECTORY: launcherDirectory });
@@ -625,6 +845,69 @@ describe('ensureDirectoryOnWindowsUserPath', () => {
       expect(logger.lines[0]).toStartWith('warn: Could not update the user Path: ');
       expect(host.environmentVariables.PATH).toBe('C:\\Windows');
     }
+  });
+});
+
+describe('WINDOWS_USER_PATH_APPEND_SCRIPT #5044 guards', () => {
+  // Regression: https://github.com/thedotmack/claude-mem/issues/5044 — one run
+  // of this script left HKCU\Environment\Path as an empty string and the
+  // broadcast variable behind as an empty REG_SZ (PowerShell 5.1 passes $null
+  // to string parameters as ""). The script is a published constant, so each
+  // guard is pinned by asserting on its line and its position relative to the
+  // write it must precede.
+  const lines = WINDOWS_USER_PATH_APPEND_SCRIPT.split('\n');
+  const indexOfLine = (fragment: string): number => lines.findIndex((line) => line.includes(fragment));
+  const setValuePathIndex = indexOfLine("SetValue('Path'");
+
+  it('refuses to write Path when the launcher directory env var is missing or empty (#5044)', () => {
+    const guardIndex = indexOfLine("{ 'missing-launcher-directory'; exit 1 }");
+    expect(guardIndex).toBeGreaterThan(-1);
+    expect(guardIndex).toBeGreaterThan(indexOfLine(`$launcherDirectory = $env:`));
+    // Before the present-check reads it too: ExpandEnvironmentVariables(null) would abort mid-script.
+    expect(guardIndex).toBeLessThan(indexOfLine('& $normalizePathEntry $launcherDirectory'));
+    expect(guardIndex).toBeLessThan(setValuePathIndex);
+  });
+
+  it('refuses to write a Path value shorter than the existing one (#5044)', () => {
+    // An append can only ever grow the value; a shorter update is corruption.
+    const guardIndex = indexOfLine("{ 'shortened-user-path'; exit 1 }");
+    expect(guardIndex).toBeGreaterThan(-1);
+    expect(guardIndex).toBeGreaterThan(indexOfLine('$updatedUserPath ='));
+    expect(guardIndex).toBeLessThan(setValuePathIndex);
+  });
+
+  it('backs the existing value up to %LOCALAPPDATA%\\claude-mem\\user-path.bak before writing (#5044)', () => {
+    const backupFileIndex = indexOfLine('user-path.bak');
+    const writeBackupIndex = indexOfLine('[System.IO.File]::WriteAllText($backupFile, $existingUserPath)');
+    expect(backupFileIndex).toBeGreaterThan(-1);
+    expect(writeBackupIndex).toBeGreaterThan(backupFileIndex);
+    expect(writeBackupIndex).toBeGreaterThan(indexOfLine('$existingUserPath ='));
+    expect(writeBackupIndex).toBeLessThan(setValuePathIndex);
+  });
+
+  it('writes the backup only when the existing value is non-empty, so a later run never overwrites the last good copy (#5044)', () => {
+    const nonEmptyGuardIndex = lines.findIndex((line) => line.trim() === 'if ($existingUserPath) {');
+    const writeBackupIndex = indexOfLine('[System.IO.File]::WriteAllText($backupFile, $existingUserPath)');
+    const closingBraceIndex = lines.findIndex((line, index) => index > writeBackupIndex && line.trim() === '}');
+    expect(nonEmptyGuardIndex).toBeGreaterThan(-1);
+    expect(nonEmptyGuardIndex).toBeLessThan(writeBackupIndex);
+    expect(closingBraceIndex).toBeGreaterThan(writeBackupIndex);
+    expect(closingBraceIndex).toBeLessThan(setValuePathIndex);
+  });
+
+  it('reports a failed backup on stderr without terminating the append (#5044)', () => {
+    const catchLine = lines.find((line) => line.includes('catch {')) ?? '';
+    expect(catchLine).toContain('[Console]::Error.WriteLine(');
+    expect(catchLine).toContain('user-path-backup-failed');
+    // Write-Error is terminating under $ErrorActionPreference = 'Stop'.
+    expect(WINDOWS_USER_PATH_APPEND_SCRIPT).not.toContain('Write-Error');
+    expect(WINDOWS_USER_PATH_APPEND_SCRIPT).not.toMatch(/catch \{\s*\}/);
+  });
+
+  it('deletes the broadcast variable through the registry API, leaving no empty value behind (#5044)', () => {
+    expect(WINDOWS_USER_PATH_APPEND_SCRIPT).toContain("DeleteValue('CLAUDE_MEM_PATH_BROADCAST', $false)");
+    // SetEnvironmentVariable(..., $null) keeps the value as "" on Windows PowerShell 5.1.
+    expect(WINDOWS_USER_PATH_APPEND_SCRIPT).not.toContain("SetEnvironmentVariable('CLAUDE_MEM_PATH_BROADCAST', $null");
   });
 });
 

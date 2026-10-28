@@ -155,7 +155,8 @@ test('generated shell-form hooks contain no backslash pairs', () => {
   for (const entries of Object.values(hooks) as Array<Array<{ hooks: Array<{ command: string }> }>>) {
     for (const entry of entries) commands.push(...entry.hooks.map(hook => hook.command));
   }
-  expect(commands.length).toBe(7);
+  // Setup plus the seven Codex hooks.
+  expect(commands.length).toBe(8);
   for (const command of commands) {
     expect(command.startsWith("/bin/sh -c '")).toBe(true);
     expect(command).not.toContain('\\\\');

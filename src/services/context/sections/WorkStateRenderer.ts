@@ -1,6 +1,9 @@
 import type { WorkStateEntry, WorkStateFields, WorkStateValue } from '../../sqlite/work-state.js';
 import { describeDuration } from '../../../shared/observer-health.js';
 import { relativeTimePlaceholder } from '../../../shared/context-cache.js';
+import { isOwnerGoalsList } from '../../work-view/owner-goals.mjs';
+import { isMyRulesList } from '../../work-view/my-rules.mjs';
+import { isMyFocusList } from '../../work-view/my-focus.mjs';
 
 /**
  * When "updated N ago" is measured from: an epoch, or 'placeholders' to leave
@@ -20,6 +23,8 @@ export const WORK_STATE_RULE = [
   '- One list per to-do list or tracked thing: work_state_write with list="<name>" and the fields to set',
   '- To-do item: fields {"task": "<name>", "status": "todo" | "doing" | "done" | "dropped", ...any details}',
   '- State: fields {"<key>": <value>} (the latest value of each key wins; null clears a key; "status": "done" closes the list)',
+  '- Made something a person can open (PR, deck, page, image, report)? Attach it to that item: fields {"work_product": "https://…" or "/absolute/file"}; several, with titles, as one JSON string: "[{\\"title\\": \\"<name>\\", \\"url\\": \\"https://…\\"}]"',
+  '- Deliverables: write a deck, report, page or other file the person asked for as a file and attach it as work_product before you finish. When you stop, claude-mem copies each attached file (and any deck, document, page, image or spreadsheet you wrote outside the source tree) into this project\'s deliverables bucket, ~/.claude-mem/deliverables/<project>/, and links it on the request\'s card in My Work.',
   '- Read every list, closed items included: work_state_read with includeClosed=true',
 ].join('\n');
 
@@ -138,7 +143,9 @@ export function buildWorkStateContextSection(
   nowEpoch: WorkStateClock,
   characterLimit: number = WORK_STATE_SECTION_CHARACTER_LIMIT,
 ): string {
-  const openLines = renderWorkStateLines(entries, nowEpoch);
+  // Goals lists (owner-goals and its past months), My Rules and My Focus show in My Work; their quotes would fill this section.
+  // Approved rules reach agents through ~/.claude-mem/MY-RULES.md instead.
+  const openLines = renderWorkStateLines(entries.filter(entry => !isOwnerGoalsList(entry.list_name) && !isMyRulesList(entry.list_name) && !isMyFocusList(entry.list_name)), nowEpoch);
   if (openLines.length === 0) {
     return `${WORK_STATE_RULE}\n\nNothing open yet.`;
   }

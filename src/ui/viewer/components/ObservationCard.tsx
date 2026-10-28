@@ -63,6 +63,7 @@ export function ObservationCard({ observation, onDeleted }: ObservationCardProps
           {hasFactsContent && (
             <button
               className={`view-mode-toggle ${showFacts ? 'active' : ''}`}
+              aria-pressed={showFacts}
               onClick={() => {
                 setShowFacts(!showFacts);
                 if (!showFacts) setShowNarrative(false); 
@@ -78,6 +79,7 @@ export function ObservationCard({ observation, onDeleted }: ObservationCardProps
           {observation.narrative && (
             <button
               className={`view-mode-toggle ${showNarrative ? 'active' : ''}`}
+              aria-pressed={showNarrative}
               onClick={() => {
                 setShowNarrative(!showNarrative);
                 if (!showNarrative) setShowFacts(false); 
@@ -97,7 +99,7 @@ export function ObservationCard({ observation, onDeleted }: ObservationCardProps
       </div>
 
       {/* Title */}
-      <div className="card-title">{observation.title || 'Untitled'}</div>
+      <h3 className="card-title">{observation.title || 'Untitled'}</h3>
 
       {/* Content based on toggle state */}
       <div className="view-mode-content">

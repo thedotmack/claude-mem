@@ -110,9 +110,12 @@ export interface Settings {
   CLAUDE_MEM_OPENAI_COMPAT_API_KEYS?: string;
   CLAUDE_MEM_OPENAI_COMPAT_BASE_URL?: string;
   CLAUDE_MEM_OPENAI_COMPAT_MODEL?: string;
+  CLAUDE_MEM_OPENAI_COMPAT_REASONING?: string;
   CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER?: string;
   CLAUDE_MEM_QUOTA_FALLBACK_MODEL?: string;
   CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD?: string;
+  CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER?: string;
+  CLAUDE_MEM_WORK_VIEW_COPY_MODEL?: string;
 
   CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS?: string;
   CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS?: string;
@@ -131,4 +134,8 @@ export interface Settings {
   CLAUDE_CODE_PATH?: string;
   /** Written by `npx claude-mem teambrain join`; read-only here. Set once this install is in a team. */
   CLAUDE_MEM_TEAMBRAIN_URL?: string;
+
+  CLAUDE_MEM_BACKUP_ENABLED?: string;
+  CLAUDE_MEM_BACKUP_INTERVAL_HOURS?: string;
+  CLAUDE_MEM_BACKUP_RETAIN_COUNT?: string;
 }

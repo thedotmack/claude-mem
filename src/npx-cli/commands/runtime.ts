@@ -3,8 +3,9 @@ import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { styleText } from 'node:util';
-import { getBunPath } from '../install/setup-runtime.js';
+import { ensureServerEmbedder, getBunPath, hasServerEmbedder } from '../install/setup-runtime.js';
 import { npmPackageRootDirectory } from '../utils/paths.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { resolvePluginRoot, buildWorkerUrl } from '../../shared/worker-utils.js';
 import { isConnectionRefusedError } from '../../shared/connection-errors.js';
 
@@ -105,8 +106,42 @@ function spawnBunServerCommand(command: string, extraArgs: string[] = []): void 
   spawnPlugin(bunPath, [serverScript, command, ...extraArgs], pluginRoot);
 }
 
+/**
+ * Whether the server may search by meaning: CLAUDE_MEM_SERVER_VECTOR_SEARCH is
+ * anything but 'false', read as the server reads it (vectorSearchMode).
+ */
+export function serverVectorSearchAllowed(): boolean {
+  return SettingsDefaultsManager.get('CLAUDE_MEM_SERVER_VECTOR_SEARCH').toLowerCase() !== 'false';
+}
+
+/**
+ * Start a server process, first installing the embedder the plugin install
+ * leaves out (installPluginDependencies). Without it the server still runs,
+ * searching by keyword only.
+ */
+async function spawnBunServerWithEmbedder(command: string, extraArgs: string[] = []): Promise<void> {
+  const pluginRoot = pluginRootOrExit();
+  const bunPath = resolveBunOrExit();
+  // With search by meaning off, the server never loads the embedder, so the
+  // install is skipped; the spawned server reads the same environment.
+  if (!serverVectorSearchAllowed()) {
+    spawnBunServerCommand(command, extraArgs);
+    return;
+  }
+  try {
+    if (!hasServerEmbedder(pluginRoot)) {
+      console.error('Installing the embedder for search by meaning (about 300 MB, once)...');
+    }
+    await ensureServerEmbedder(pluginRoot, bunPath);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(styleText('yellow', `Could not install the embedder; the server will search by keyword only.\n${message}`));
+  }
+  spawnBunServerCommand(command, extraArgs);
+}
+
 export function runServerStartCommand(): void {
-  spawnBunServerCommand('start');
+  void spawnBunServerWithEmbedder('start');
 }
 
 export function runServerStopCommand(): void {
@@ -114,7 +149,7 @@ export function runServerStopCommand(): void {
 }
 
 export function runServerRestartCommand(): void {
-  spawnBunServerCommand('restart');
+  void spawnBunServerWithEmbedder('restart');
 }
 
 export function runServerStatusCommand(): void {
@@ -125,7 +160,7 @@ export function runServerStatusCommand(): void {
 // Compose to scale generation horizontally while a single (or multiple)
 // HTTP-only server replicas serve writes/reads.
 export function runServerWorkerStartCommand(): void {
-  spawnBunServerCommand('worker', ['start']);
+  void spawnBunServerWithEmbedder('worker', ['start']);
 }
 
 export function runStartCommand(): void {

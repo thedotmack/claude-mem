@@ -56,13 +56,53 @@ function keyedLookbehind(key: string): string {
   return `(?<=${key}${OPTIONAL_QUOTE}${BOUNDED_SPACE}[=:]${BOUNDED_SPACE}${OPTIONAL_QUOTE})`;
 }
 
+// generic_token takes any `*_TOKEN` / `*_SECRET` / `*_API_KEY` key in every
+// keyed style. The bare names (`token`, `secret`, `api_key`), the same keys
+// GENERIC_TOKEN_KEY pairs in structured payloads, are also ordinary
+// identifiers in source code (`const token = getToken();`, `token: TokenType;`),
+// so in text they count only in config-shaped positions:
+// - a quoted key with a quoted value (`"secret": "…"`, JSON-escaped too);
+// - an env/shell or query assignment with no spaces around `=`, at the start
+//   or after whitespace, `?` or `&` (`api_key=…`, `export secret=…`,
+//   `?token=…`), whose value is not a call (`token=getAuthToken()`);
+// - a CLI flag (`--token=…`, `--api-key …`);
+// - a yaml line (`token: …` at a line start, raw or JSON-escaped `\n`) whose
+//   value runs to the end of the line, which a typed field (`token: T;`) doesn't.
+// The worker scans tool output as `JSON.stringify(response)`, so a JSON
+// string's own quotes count as the start and end of its text, and escaped
+// whitespace (`\n`, `\t`) as whitespace.
+const BARE_TOKEN_KEY = String.raw`(?:token|secret|api_key)`;
+const ESCAPED_QUOTE = String.raw`\\{0,3}["']`;
+const STRING_EDGE = String.raw`(?<!\\)"`;
+const ASSIGNMENT_START = String.raw`(?:^|[\s?&]|\\[nrt]|${STRING_EDGE})`;
+const LINE_START = String.raw`(?:^|\n|\\n|${STRING_EDGE})[ \t]{0,8}(?:-[ \t]{1,8})?`;
+const LINE_END = String.raw`(?:${ESCAPED_QUOTE})?[ \t]{0,8}(?:$|\r?\n|\\{1,3}[rn]|#|${STRING_EDGE})`;
+const GENERIC_TOKEN_REGEX = new RegExp([
+  `${keyedLookbehind(String.raw`\b\w*_${BARE_TOKEN_KEY}`)}${GENERIC_VALUE}`,
+  `(?<=${ESCAPED_QUOTE}${BARE_TOKEN_KEY}${ESCAPED_QUOTE}${BOUNDED_SPACE}:${BOUNDED_SPACE}${ESCAPED_QUOTE})${GENERIC_VALUE}`,
+  `(?<=${ASSIGNMENT_START}${BARE_TOKEN_KEY}=${OPTIONAL_QUOTE})${GENERIC_VALUE}(?!\\(|${GENERIC_VALUE_CLASS})`,
+  String.raw`(?<=--(?:token|secret|api[-_]key)(?:=|[ \t]{1,8})${OPTIONAL_QUOTE})${GENERIC_VALUE}`,
+  `(?<=${LINE_START}${BARE_TOKEN_KEY}:[ \\t]{1,8}${OPTIONAL_QUOTE})${GENERIC_VALUE}(?=${LINE_END})`,
+].join('|'), 'gi');
+
 export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
-  { name: 'aws_access_key',  regex: /AKIA[0-9A-Z]{16}/g },
-  // Known limitation: only matches shell-style (`KEY=val`, `KEY='val'`) and
-  // yaml-style (`KEY: val`); JSON-style `"KEY": "val"` is not anchored
-  // because the lookbehind expects `=`/`:` directly after the key name.
-  // Whitespace is bounded for the same reason as BOUNDED_SPACE.
-  { name: 'aws_secret_key',  regex: /(?<=AWS_SECRET_ACCESS_KEY\s{0,8}[=:]\s{0,8}['"]?)[A-Za-z0-9/+=]{40}/g },
+  // `AKIA` is a long-term access key ID; `ASIA` is the temporary one that STS,
+  // SSO and instance roles hand out (`aws sts assume-role`, `aws configure
+  // export-credentials`), printed next to its secret and session token.
+  { name: 'aws_access_key',  regex: /(?:AKIA|ASIA)[0-9A-Z]{16}/g },
+  // Anchored to its key names: `AWS_SECRET_ACCESS_KEY=…` in env output,
+  // `aws_secret_access_key = …` in ~/.aws/credentials and SDK arguments (any
+  // letter case), and `"SecretAccessKey": "…"` in `aws sts` / `aws configure
+  // export-credentials` JSON, which prints it beside the ASIA key ID and the
+  // session token. keyedLookbehind also takes JSON-style `"KEY": "val"`.
+  { name: 'aws_secret_key',  regex: new RegExp(`${keyedLookbehind(String.raw`(?:aws_secret_access_key|\bSecretAccessKey)`)}[A-Za-z0-9/+=]{40}`, 'gi') },
+  // The session token of temporary credentials (STS, SSO, `aws configure
+  // export-credentials`) grants access together with the key pair, so it is
+  // anchored to its key names the same way: `AWS_SESSION_TOKEN=…` in env
+  // output, `aws_session_token = …` in ~/.aws/credentials and
+  // `"SessionToken": "…"` in `aws sts` JSON. Real tokens run to hundreds of
+  // base64 characters; the 100-char floor keeps short placeholders out.
+  { name: 'aws_session_token', regex: new RegExp(`${keyedLookbehind(String.raw`\b(?:aws_session_token|SessionToken)`)}[A-Za-z0-9/+=]{100,}`, 'gi') },
   { name: 'github_pat',      regex: /\bgh[oprsu]_[A-Za-z0-9]{36}\b|\bgithub_pat_[A-Za-z0-9_]{82}\b/g },
   // openai_key, anthropic_key, slack_token, jwt and google_api_key end in a
   // class that includes `-`. A closing `\b` after a `-` needs a word character
@@ -71,9 +111,13 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   // "the token ends here" check without that gap.
   { name: 'openai_key',      regex: /\bsk-(?!ant-)[A-Za-z0-9_-]{20,}(?!\w)/g },
   { name: 'anthropic_key',   regex: /\bsk-ant-[A-Za-z0-9_-]{20,}(?!\w)/g },
-  { name: 'slack_token',     regex: /\bxox[baprs]-[A-Za-z0-9-]{10,}(?!\w)/g },
+  // Slack bot/user/legacy tokens (`xoxb-`, `xoxp-`, …), refresh tokens from
+  // token rotation (`xoxe-`) and app-level Socket Mode tokens (`xapp-`).
+  { name: 'slack_token',     regex: /\b(?:xox[abeprs]|xapp)-[A-Za-z0-9-]{10,}(?!\w)/g },
   { name: 'jwt',             regex: /\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?!\w)/g },
-  { name: 'private_key_pem', regex: /-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----/g },
+  // A PGP secret key is armored as `PRIVATE KEY BLOCK`, and an encrypted
+  // PKCS#8 key as `ENCRYPTED PRIVATE KEY`.
+  { name: 'private_key_pem', regex: /-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END (?:RSA |DSA |EC |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----/g },
   { name: 'stripe_key',      regex: /\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{24,}\b/g },
   { name: 'google_api_key',  regex: /\bAIza[0-9A-Za-z_-]{35}(?!\w)/g },
   // claude-mem's own credentials: server API keys (`cmem_` + 43 base64url
@@ -91,7 +135,7 @@ export const GENERIC_REDACTION_PATTERNS: RedactionPattern[] = [
   // `pwd` only as a suffix (`DB_PWD`, `MYSQL_PWD`): the bare `PWD` and
   // `OLDPWD` environment variables hold a working directory, not a secret.
   { name: 'generic_password', regex: genericBuiltinRegex(keyedLookbehind(String.raw`\b(?:\w*_?(?:password|passwd)|\w+_pwd)`)) },
-  { name: 'generic_token',    regex: genericBuiltinRegex(keyedLookbehind(String.raw`\b\w*_(?:token|secret|api_key)`)) },
+  { name: 'generic_token',    regex: GENERIC_TOKEN_REGEX },
   { name: 'bearer_token',     regex: genericBuiltinRegex(`(?<=\\bAuthorization${OPTIONAL_QUOTE}${BOUNDED_SPACE}:${BOUNDED_SPACE}${OPTIONAL_QUOTE}Bearer${BOUNDED_SPACE})`) },
 ];
 
@@ -299,17 +343,60 @@ export function redactForLog(text: string): string {
 // A structured payload holds the key and the value apart
 // (`{client_secret: "…"}`), so the text patterns, which anchor on `key=`,
 // never see them together; this pairs them again for the generic group.
-const GENERIC_CREDENTIAL_KEY = /(?:^|_)(password|passwd|secret|token|api_key)$/i;
+// The password keys follow the generic_password text pattern: any key ending
+// in `password`/`passwd` (`dbPassword`, `PGPASSWORD`) and `pwd` only as a
+// suffix (`MYSQL_PWD`), so `{"MYSQL_PWD": "…"}` is caught like `MYSQL_PWD=…`.
+const GENERIC_PASSWORD_KEY = /(?:password|passwd)$|\w_pwd$/i;
+const GENERIC_TOKEN_KEY = /(?:^|_)(?:secret|token|api_key)$/i;
 const WHOLE_GENERIC_VALUE = new RegExp(`^${GENERIC_VALUE_CLASS}{8,}$`);
 
 function genericMarkerForKeyedValue(key: string, value: string, config: RedactionConfig): string | null {
   if (!config.genericEnabled) return null;
-  const keyMatch = GENERIC_CREDENTIAL_KEY.exec(key);
-  if (!keyMatch) return null;
-  const name = keyMatch[1].toLowerCase().startsWith('passw') ? 'generic_password' : 'generic_token';
+  const name = GENERIC_PASSWORD_KEY.test(key) ? 'generic_password'
+    : GENERIC_TOKEN_KEY.test(key) ? 'generic_token'
+    : null;
+  if (!name) return null;
   if (config.disabledBuiltinPatterns?.includes(name)) return null;
   if (!WHOLE_GENERIC_VALUE.test(value) || !/[A-Za-z]/.test(value)) return null;
   return `<redacted type='${name}'/>`;
+}
+
+// The bearer_token text pattern anchors on `Authorization: Bearer …`, so a
+// header object like `{"headers": {"Authorization": "Bearer …"}}` needs the
+// key paired with the value again. As in text, only the token after `Bearer`
+// is replaced: the same spacing is accepted around `Bearer`, and whatever
+// follows the token (trailing whitespace included) is kept, unanchored.
+const AUTHORIZATION_KEY = /^authorization$/i;
+const KEYED_BEARER_VALUE = new RegExp(`^(${BOUNDED_SPACE}Bearer${BOUNDED_SPACE})${GENERIC_VALUE}`, 'i');
+
+function bearerMarkerForKeyedValue(key: string, value: string, config: RedactionConfig): string | null {
+  if (!config.genericEnabled || config.disabledBuiltinPatterns?.includes('bearer_token')) return null;
+  if (!AUTHORIZATION_KEY.test(key)) return null;
+  const match = KEYED_BEARER_VALUE.exec(value);
+  return match ? `${match[1]}<redacted type='bearer_token'/>${value.slice(match[0].length)}` : null;
+}
+
+// The aws_session_token built-in anchors on `SessionToken: …`, so a payload
+// like `{"Credentials": {"SessionToken": "…"}}` needs the key paired with the
+// value again. Same key names and value floor as the text pattern; it is a
+// built-in, so it applies whether or not the generic group is on.
+const AWS_SESSION_TOKEN_KEY = /^(?:aws_session_token|SessionToken)$/i;
+const WHOLE_AWS_SESSION_TOKEN_VALUE = /^[A-Za-z0-9/+=]{100,}$/;
+
+function awsSessionTokenMarkerForKeyedValue(key: string, value: string, config: RedactionConfig): string | null {
+  if (config.disabledBuiltinPatterns?.includes('aws_session_token')) return null;
+  if (!AWS_SESSION_TOKEN_KEY.test(key) || !WHOLE_AWS_SESSION_TOKEN_VALUE.test(value)) return null;
+  return "<redacted type='aws_session_token'/>";
+}
+
+// The same pairing for the secret key of `{"Credentials": {"SecretAccessKey": "…"}}`.
+const AWS_SECRET_KEY_KEY = /^(?:aws_secret_access_key|SecretAccessKey)$/i;
+const WHOLE_AWS_SECRET_KEY_VALUE = /^[A-Za-z0-9/+=]{40}$/;
+
+function awsSecretKeyMarkerForKeyedValue(key: string, value: string, config: RedactionConfig): string | null {
+  if (config.disabledBuiltinPatterns?.includes('aws_secret_key')) return null;
+  if (!AWS_SECRET_KEY_KEY.test(key) || !WHOLE_AWS_SECRET_KEY_VALUE.test(value)) return null;
+  return "<redacted type='aws_secret_key'/>";
 }
 
 /**
@@ -324,7 +411,11 @@ export function redactJsonStrings<T>(value: T, config: RedactionConfig = getReda
     if (typeof node === 'string') {
       const result = redactSensitive(node, config);
       if (key === undefined || Object.keys(result.counts).length > 0) return result.redacted;
-      return genericMarkerForKeyedValue(key, node, config) ?? result.redacted;
+      return awsSessionTokenMarkerForKeyedValue(key, node, config)
+        ?? awsSecretKeyMarkerForKeyedValue(key, node, config)
+        ?? bearerMarkerForKeyedValue(key, node, config)
+        ?? genericMarkerForKeyedValue(key, node, config)
+        ?? result.redacted;
     }
     if (Array.isArray(node)) return node.map((child) => walk(child));
     if (node !== null && typeof node === 'object') {

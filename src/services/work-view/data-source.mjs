@@ -4,118 +4,17 @@ import { readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { reduceWorkState } from './work-state-reduce.mjs';
 import { activitySignature, buildAgentView, readAgentRecords, readEvidence } from './agent-view.mjs';
+import { ledgerSignature, openSuggestions, readLedger } from './request-groups.mjs';
+import { recordedFile, bucketFileAvailable } from './work-product.mjs';
 
-const CLOSED = new Set(['done', 'dropped']);
+// reduceWorkState lives in work-state-reduce.mjs so my-focus.mjs can replay rows without importing this module.
+export { reduceWorkState } from './work-state-reduce.mjs';
+// Kept here for the callers that already import it from the data source.
+export { readFocus, readFocusAreas } from './my-focus.mjs';
+
 const normalizedKey = (value) => String(value).replace(/[A-Z]/g, (letter) => letter.toLowerCase());
-const iso = (epoch) => epoch == null ? null : new Date(epoch).toISOString();
-const isClosed = (status) => status != null && CLOSED.has(String(status).toLowerCase());
-const effectiveStatus = (status) => status == null || status === '' ? 'unknown' : String(status).toLowerCase();
-const listId = (project, name) => JSON.stringify([normalizedKey(project), name]);
-const taskId = (parentId, name) => JSON.stringify([parentId, name]);
-
-// Entries are patches, not full records. This is the same append/merge behavior
-// as claude-mem's WorkStateRenderer: state and named tasks are separate maps.
-export function reduceWorkState(entries, { currentProject, currentProjectScope = [], eventLimit = Infinity, localDeviceId = '' } = {}) {
-  const scope = new Set(currentProjectScope.map(normalizedKey));
-  const listsById = new Map();
-  const events = [];
-  let revision = 0;
-  // Match sqlite/work-state.ts:getWorkStateEntries. Imported rows replay at
-  // their original write time, not the later local rowid assigned on arrival.
-  const device = row => row.origin_device_id ?? localDeviceId;
-  for (const row of [...entries].sort((a, b) => {
-    const timeAndDevice = a.created_at_epoch - b.created_at_epoch
-      || (device(a) < device(b) ? -1 : device(a) > device(b) ? 1 : 0);
-    if (timeAndDevice) return timeAndDevice;
-    const left = BigInt(a.origin_local_id ?? a.id), right = BigInt(b.origin_local_id ?? b.id);
-    return left < right ? -1 : left > right ? 1 : 0;
-  })) {
-    revision = Math.max(revision, row.id);
-    const fields = typeof row.fields === 'string' ? JSON.parse(row.fields) : row.fields;
-    if (!fields || typeof fields !== 'object' || Array.isArray(fields)) throw new Error('Invalid work-state entry');
-    const id = listId(row.scope_project ?? row.project, row.list_name);
-    let list = listsById.get(id);
-    if (!list) {
-      list = { id, project: row.scope_project ?? row.project, name: row.list_name, fields: {}, tasksByName: new Map(), updatedAtEpoch: 0, stateUpdatedAtEpoch: null, latestEntryId: 0 };
-      listsById.set(id, list);
-    }
-    const taskName = fields.task == null || fields.task === '' ? null : String(fields.task);
-    let target = list;
-    if (taskName !== null) {
-      target = list.tasksByName.get(taskName);
-      if (!target) {
-        target = { id: taskId(id, taskName), name: taskName, fields: {}, updatedAtEpoch: 0, latestEntryId: 0 };
-        list.tasksByName.set(taskName, target);
-      }
-    } else {
-      list.stateUpdatedAtEpoch = row.created_at_epoch;
-    }
-    const changes = [];
-    for (const [key, value] of Object.entries(fields)) {
-      const hadPrevious = Object.hasOwn(target.fields, key);
-      const previous = target.fields[key];
-      if (key !== 'task' && ((value === null && hadPrevious) || (value !== null && (!hadPrevious || previous !== value)))) {
-        changes.push({ field: key, ...(hadPrevious ? { previous } : {}), value, hadPrevious });
-      }
-      if (value === null) delete target.fields[key];
-      else target.fields[key] = value;
-    }
-    target.updatedAtEpoch = row.created_at_epoch;
-    target.latestEntryId = row.id;
-    list.updatedAtEpoch = row.created_at_epoch;
-    list.latestEntryId = row.id;
-    events.push({
-      id: row.id, project: list.project, originProject: row.project, listName: row.list_name, listId: id,
-      task: taskName, taskId: taskName === null ? null : target.id,
-      type: taskName === null ? 'state' : 'task', fields, changes,
-      status: taskName === null ? (target.fields.status == null ? 'open' : String(target.fields.status).toLowerCase()) : effectiveStatus(target.fields.status),
-      at: iso(row.created_at_epoch), atEpoch: row.created_at_epoch,
-      sourceOrder: [row.created_at_epoch, device(row), String(row.origin_local_id ?? row.id)],
-      inCurrentScope: scope.has(normalizedKey(row.project)),
-    });
-  }
-  const lists = [...listsById.values()].sort((a, b) => b.latestEntryId - a.latestEntryId).map((list) => {
-    const tasks = [...list.tasksByName.values()].map((task) => ({
-      ...task, status: effectiveStatus(task.fields.status), isOpen: !isClosed(task.fields.status), updatedAt: iso(task.updatedAtEpoch),
-    }));
-    const stateIsOpen = Object.keys(list.fields).some((key) => key !== 'task') && !isClosed(list.fields.status);
-    const { tasksByName, ...record } = list;
-    return {
-      ...record, status: isClosed(list.fields.status) ? String(list.fields.status).toLowerCase() : 'open',
-      isOpen: stateIsOpen || tasks.some((task) => task.isOpen),
-      inCurrentScope: scope.has(normalizedKey(list.project)),
-      updatedAt: iso(list.updatedAtEpoch), stateUpdatedAt: iso(list.stateUpdatedAtEpoch), tasks,
-    };
-  });
-  const projectsById = new Map();
-  for (const list of lists) {
-    const key = normalizedKey(list.project);
-    const project = projectsById.get(key) ?? { id: list.project, name: list.project, lists: 0, openLists: 0, tasks: 0, doing: 0, inCurrentScope: list.inCurrentScope, lastUpdatedAt: list.updatedAt };
-    project.lists++;
-    project.openLists += Number(list.isOpen);
-    project.tasks += list.tasks.length;
-    project.doing += list.tasks.filter((task) => task.isOpen && task.status === 'doing').length;
-    projectsById.set(key, project);
-  }
-  const projects = [...projectsById.values()];
-  const tasks = lists.flatMap((list) => list.tasks);
-  const summary = {
-    projects: projects.length, lists: lists.length, openLists: lists.filter((list) => list.isOpen).length,
-    tasks: tasks.length, openTasks: tasks.filter((task) => task.isOpen).length,
-    todo: tasks.filter((task) => task.status === 'todo').length,
-    doing: tasks.filter((task) => task.status === 'doing').length,
-    done: tasks.filter((task) => task.status === 'done').length,
-    dropped: tasks.filter((task) => task.status === 'dropped').length,
-    unknown: tasks.filter((task) => task.status === 'unknown').length,
-  };
-  return {
-    schemaVersion: 1, revision,
-    entryCount: entries.length, currentProject, currentProjectScope, summary, projects, lists,
-    events: events.slice(-eventLimit).reverse(),
-    lastUpdatedAt: events.length ? events.at(-1).at : null,
-  };
-}
 
 // Expand the same inherited read keys as SessionStore.getProjectReadKeys. A
 // worktree's older lists may be stored under a previously merged project key.
@@ -149,6 +48,7 @@ export class WorkStateSource {
     currentProject = '',
     parentProject = currentProject,
     titleCachePath = null,
+    ledgerDir = null,
     pollIntervalMs = 1000,
     localDeviceId = '',
   } = {}) {
@@ -160,6 +60,9 @@ export class WorkStateSource {
     this.titleCachePath = titleCachePath;
     this.titleCache = {};
     this.titleCacheSignature = null;
+    this.ledgerDir = ledgerDir;
+    this.ledger = null;
+    this.ledgerSignature = null;
     this.database = null;
     this.databaseIdentity = null;
     this.cachedState = reduceWorkState([], { currentProject, currentProjectScope: [parentProject, currentProject] });
@@ -197,7 +100,8 @@ export class WorkStateSource {
       const revision = database.prepare(`SELECT COUNT(*) AS count, MAX(id) AS id${this.columns.has('sync_rev') ? ', SUM(CAST(sync_rev AS INTEGER)) AS synced_revision' : ''} FROM work_state_entries`).get();
       const signature = `${revision.count}:${revision.id ?? 0}:${revision.synced_revision ?? 0}:${this.localDeviceId}`;
       this.readTitleCache();
-      const activity = `${activitySignature(database)}|titles:${this.titleCacheSignature}`;
+      this.readLedger();
+      const activity = `${activitySignature(database)}|titles:${this.titleCacheSignature}|ledger:${this.ledgerSignature}`;
       if (signature !== this.signature || activity !== this.activitySignature || !this.source.connected) {
         database.exec('BEGIN');
         try {
@@ -211,7 +115,7 @@ export class WorkStateSource {
             this.cachedState = reduceWorkState(scopedEntries, { currentProject: this.currentProject, currentProjectScope, localDeviceId: this.localDeviceId });
           }
           this.agentRevision++;
-          this.agentView = { ...buildAgentView(this.cachedState, readAgentRecords(database, { workState: this.cachedState }), { titleCache: this.titleCache }), revision: this.agentRevision };
+          this.agentView = { ...buildAgentView(this.cachedState, readAgentRecords(database, { workState: this.cachedState, ledger: this.ledger }), { titleCache: this.titleCache, ledger: this.ledger }), revision: this.agentRevision };
           // Hash full linked evidence without sending its potentially large raw
           // text in every snapshot. A review covers the source disclosure too.
           const evidenceHashes = new Map();
@@ -288,16 +192,38 @@ export class WorkStateSource {
     this.titleCacheSignature = signature;
   }
 
+  readLedger() {
+    const signature = this.ledgerDir ? ledgerSignature(this.ledgerDir) : 'disabled';
+    if (signature === this.ledgerSignature) return;
+    try { this.ledger = this.ledgerDir ? readLedger(this.ledgerDir) : null; }
+    catch { this.ledger = null; }
+    this.ledgerSignature = signature;
+  }
+
   agentsSnapshot() {
     const now = Date.now();
+    // The judge's suggestions ("Looks like part of <request>"), each on the card of the conversation it is about.
+    const suggestions = openSuggestions(this.ledger);
+    const humanRequests = (this.agentView.humanRequests ?? []).map((request) => {
+      const suggestion = suggestions.find((entry) => entry.requestId !== request.groupId && (request.conversationKeys ?? []).includes(entry.conversationKey));
+      return suggestion ? { ...request, suggestion } : request;
+    });
     return {
       ...this.agentView,
+      humanRequests,
+      suggestions,
       teamMode: process.env.WORK_STATE_TEAM_MODE === '1',
+      // Progress reviews and the build story come from the request-progress
+      // skill; they are assessments, separate from recorded lifecycle.
+      story: this.ledger ? { reviews: Object.values(this.ledger.progress), story: this.ledger.story, groups: Object.keys(this.ledger.groups.groups).length } : null,
+      // The automatic refresh's last run (refresh.json): running, ok, failed or waiting-for-agent.
+      refresh: this.ledger?.refresh ?? null,
       // Age labels change with the clock without declaring a task or session
       // live. Stored session status remains separate from recent activity.
       agents: this.agentView.agents.map((agent) => ({ ...agent, presence: {
         ...agent.presence,
-        status: !agent.presence.lastActivityAt ? 'unknown' : now - Date.parse(agent.presence.lastActivityAt) <= 15 * 60 * 1000 ? 'recent' : 'quiet',
+        // A recorded finish is evidence, not an age label: the clock never changes it.
+        status: agent.presence.status === 'finished' ? 'finished' : !agent.presence.lastActivityAt ? 'unknown' : now - Date.parse(agent.presence.lastActivityAt) <= 15 * 60 * 1000 ? 'recent' : 'quiet',
       } })),
       source: { ...this.source, kind: 'claude-mem-recorded-agent-activity', lastUpdatedAt: this.agentView.agents[0]?.presence.lastActivityAt ?? null, stale: !this.source.connected && this.agentView.agents.length > 0 },
     };
@@ -306,6 +232,21 @@ export class WorkStateSource {
   evidence(kind, id) {
     try { return readEvidence(this.openDatabase(), kind, id); }
     catch { return null; }
+  }
+
+  /** The local file a recorded work product names, or null. */
+  file(kind, id, index) {
+    try { return recordedFile((sql, params) => this.openDatabase().prepare(sql).all(...params), kind, id, index); }
+    catch { return null; }
+  }
+
+  /** The bucket copy a deliverables row names, while it still exists; null when the row is unknown, the copy is gone, or the table does not exist yet. */
+  deliverable(id) {
+    if (!Number.isSafeInteger(id) || id < 1) return null;
+    try {
+      const row = this.openDatabase().prepare('SELECT id, title, kind, bucket_path FROM deliverables WHERE id = ?').all(id)[0];
+      return row && bucketFileAvailable({ bucketPath: row.bucket_path }) ? { id: row.id, title: row.title, kind: row.kind, path: row.bucket_path } : null;
+    } catch { return null; }
   }
 
   close() {

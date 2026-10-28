@@ -46,6 +46,23 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $bun test tests/infrastructure/plugin-distribution.test.ts --test-name-pattern 'Codex Windows payload dependency check'
 
+      - name: Path and executable assertions
+        shell: pwsh
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
+          & $bun test tests/services/smart-file-read/path-search.test.ts tests/services/agent-runner/detect.test.ts tests/services/integrations/spawn-contract-windows.test.ts tests/antigravity-cli-compat.test.ts --timeout 120000
+
+      # These suites either skip on non-Windows or only exercise their real
+      # branch under win32: file-context symlink/stat boundaries, clearing the
+      # inherited listen-socket handle, npm tree termination, and HOME vs
+      # USERPROFILE resolution. Linux CI cannot cover those paths, and none of
+      # these files ran in this workflow before.
+      - name: Windows-only host behavior
+        shell: pwsh
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
+          & $bun test tests/hooks/file-context.test.ts tests/shared/windows-listen-socket.test.ts tests/npm-install-windows-timeout.test.ts tests/scripts/resolve-data-dir-parity.test.ts --timeout 60000
+
       - name: Context reader responsiveness and packaging
         shell: pwsh
         run: |
@@ -60,6 +77,18 @@ jobs:
         run: |
           $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
           & $bun test tests/bun-runner.test.ts tests/scripts/mirror-dir.test.ts tests/scripts/worker-logs.test.ts
+
+      # The installer's refusal boundaries: non-TTY and TTY cases that require
+      # exit 1, require --runtime worker, untouched settings (mode included) and
+      # zero bootstrap/HTTP/task calls. They only ran on Linux (the test-lanes
+      # check gate) until the 0o600 mode assertion and fixture caps were fixed
+      # for Windows; run them here so installer regressions ship unseen on no
+      # lane. The Pi+DSH detection describe stays skipped (needs real installs).
+      - name: Combined-installer boundary suites
+        shell: pwsh
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
+          & $bun test tests/npx-cli/combined-installer-non-tty-boundaries.test.ts tests/npx-cli/combined-installer-boundaries.test.ts --timeout 30000
 
       # The step that used to be impossible on Windows: sync-marketplace shelled
       # out to rsync. Runs the real script against a scratch USERPROFILE (Node's

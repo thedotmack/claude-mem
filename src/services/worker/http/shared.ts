@@ -17,6 +17,11 @@ import { classifySkillId, skillNameFromToolInput } from '../../telemetry/skill-i
 import { isRecursiveMemoryTool, isExplicitMemoryWrite } from '../../../shared/memory-retrieval-tools.js';
 import { workStateTool } from '../../../shared/work-state-telemetry.js';
 import { recordWorkStateTool, isPublicWorkStateTurn } from '../../telemetry/work-state.js';
+import { AGENT_LIFECYCLE_LIST, agentStopFields } from '../../work-view/agent-lifecycle.mjs';
+import type { TranscriptCheckpointGate } from '../../transcripts/types.js';
+import type { SpooledDeliverablesPayload } from '../../../shared/hook-spool.js';
+import { isInsideDeliverablesDir, resolveDeliverablesDir } from '../../../shared/deliverables.js';
+import { statSync } from 'fs';
 
 export interface IngestContext {
   sessionManager: SessionManager;
@@ -98,6 +103,26 @@ export function requireIngestContext(): IngestContext {
   }
   return ctx;
 }
+
+/**
+ * The in-process transcript watcher's view of the observation buffer. The
+ * buffer lives in RAM, so a watcher checkpoint may only move past lines whose
+ * buffered work is stored; otherwise a restart resumes past work it lost.
+ */
+export const transcriptCheckpointGate: TranscriptCheckpointGate = {
+  sequence: () => requireIngestContext().sessionManager.getLastBufferedMessageId(),
+  drainedThrough: (sessions, sequence) => {
+    const { sessionManager, dbManager } = requireIngestContext();
+    const store = dbManager.getSessionStore();
+    for (const [contentSessionId, platformSource] of sessions) {
+      const sessionDbId = store.findSessionDbIdByContentSessionId(contentSessionId, normalizePlatformSource(platformSource));
+      if (sessionDbId === null) continue;
+      const oldest = sessionManager.getOldestPendingMessageId(sessionDbId);
+      if (oldest !== null && oldest <= sequence) return false;
+    }
+    return true;
+  },
+};
 
 /**
  * Durable callers (the hook spool drain) pass `markHandedOff`: ingest calls it
@@ -322,9 +347,16 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
     tool_response: cleanedToolResponse,
     prompt_number: promptNumber,
     cwd: cwd || (() => {
-      logger.error('INGEST', 'Missing cwd when ingesting observation', {
+      // A host with no checkout (ODS, other HTTP hosts) names its project at
+      // session init and never sends a cwd; that is expected. Without a
+      // project from init, a missing cwd is a capture fault.
+      const sessionProject = store.getSessionById(sessionDbId)?.project;
+      const hostHasNoCheckout = !!sessionProject && sessionProject !== 'unknown';
+      const log = hostHasNoCheckout ? logger.debug : logger.error;
+      log.call(logger, 'INGEST', 'Missing cwd when ingesting observation', {
         sessionId: sessionDbId,
         toolName: payload.toolName,
+        project: sessionProject,
       });
       return '';
     })(),
@@ -443,6 +475,94 @@ export interface SessionEndPayload {
   platformSource: string;
 }
 
+export interface DeliverablesIngestResult {
+  status: 'accepted' | 'skipped';
+  reason?: 'project_excluded' | 'private';
+  stored: number;
+  duplicates: number;
+  /** Copies this worker cannot open (not a file on its disk inside the deliverables directory): logged, not recorded. */
+  unavailable: number;
+}
+
+function isRegularFile(path: string): boolean {
+  try { return statSync(path).isFile(); } catch { return false; }
+}
+
+/**
+ * Records the bucket copies a Stop (or SubagentStop) hook made
+ * (src/cli/deliverables-capture.ts). The files are already in the bucket; this
+ * only writes the rows My Work links, and only for copies on this worker's own
+ * disk: a hook on another host names paths this worker cannot open, and a row
+ * for one would be a link that never works. A turn whose prompt was entirely
+ * <private> records nothing, the rule observations and summaries follow; the
+ * hook checks that before copying, this guards every other caller. A copy the
+ * hook could not make is logged here too, so a missing deliverable is explained
+ * in the worker log.
+ */
+export function ingestDeliverables(
+  payload: SpooledDeliverablesPayload & { enqueuedAtEpochMs?: number },
+  dbManager: DatabaseManager = requireIngestContext().dbManager,
+  handoff: IngestHandoff = {},
+): DeliverablesIngestResult {
+  const { contentSessionId, cwd, project, agentId, files, errors } = payload;
+  const platformSource = normalizePlatformSource(payload.platformSource);
+  const nothing = { stored: 0, duplicates: 0, unavailable: 0 };
+
+  const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+  if (cwd && isProjectExcluded(cwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
+    return { status: 'skipped', reason: 'project_excluded', ...nothing };
+  }
+  for (const failure of errors ?? []) {
+    logger.warn('HOOK', 'A deliverable was not copied into the project bucket', { project, sourcePath: failure.sourcePath, error: failure.error });
+  }
+
+  const store = dbManager.getSessionStore();
+  const sessionDbId = store.findSessionDbIdByContentSessionId(contentSessionId, platformSource);
+  if (sessionDbId !== null) {
+    const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId, payload.enqueuedAtEpochMs);
+    const privacy = PrivacyCheckValidator.checkUserPromptPrivacy(store, contentSessionId, promptNumber, 'deliverables', sessionDbId);
+    if (!privacy.allow) {
+      return { status: 'skipped', reason: 'private', ...nothing };
+    }
+  }
+
+  const deliverablesDir = resolveDeliverablesDir();
+  let stored = 0;
+  let duplicates = 0;
+  let unavailable = 0;
+  for (const file of files) {
+    if (!isInsideDeliverablesDir(file.bucketPath, deliverablesDir) || !isRegularFile(file.bucketPath)) {
+      unavailable++;
+      logger.warn('HOOK', 'A deliverable names a bucket copy this worker cannot open; not recorded', { project, bucketPath: file.bucketPath, sourcePath: file.sourcePath, deliverablesDir });
+      continue;
+    }
+    const result = store.recordDeliverable({
+      project,
+      contentSessionId,
+      platformSource,
+      agentId: agentId ?? null,
+      title: file.title,
+      kind: file.kind,
+      sourcePath: file.sourcePath,
+      bucketPath: file.bucketPath,
+      bytes: file.bytes,
+      sha256: file.sha256,
+      declared: file.declared,
+      listName: file.list ?? null,
+      field: file.field ?? null,
+      toolUseId: file.toolUseId ?? null,
+      occurredAtEpoch: file.occurredAtEpoch,
+      createdAtEpoch: payload.enqueuedAtEpochMs,
+    });
+    if (result.inserted) stored++;
+    else duplicates++;
+  }
+  // Every row is written: the hand-off point.
+  handoff.markHandedOff?.();
+  logger.info('HOOK', 'Deliverables recorded', { project, stored, duplicates, unavailable });
+  return { status: 'accepted', stored, duplicates, unavailable };
+}
+
 export async function ingestSessionEnd(
   payload: SessionEndPayload,
   deps: Pick<IngestContext, 'sessionManager' | 'dbManager'> = requireIngestContext(),
@@ -537,4 +657,44 @@ export function ingestAdvisorCalls(
   handoff.markHandedOff?.();
   logger.debug('WORKER', 'Advisor calls ingested', { contentSessionId, stored, duplicates, privateOnly });
   return { status: 'stored', stored, duplicates, privateOnly };
+}
+
+export interface SubagentStopPayload {
+  contentSessionId: string;
+  platformSource: string;
+  agentId: string;
+  agentType?: string;
+  cwd?: string;
+  stoppedAtEpoch: number;
+}
+
+/**
+ * Claude Code's SubagentStop: save one closed "agent-lifecycle" work-state row
+ * saying this subagent stopped at the hook's time. My Work reads it as the
+ * subagent's finish; a later tool call or observation from the same agent
+ * means it resumed.
+ */
+export function ingestSubagentStop(
+  payload: SubagentStopPayload,
+  handoff: IngestHandoff = {},
+  dbManager: DatabaseManager = requireIngestContext().dbManager,
+): { status: 'stored'; entryId: number } | { status: 'skipped'; reason: string } {
+  const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+  if (payload.cwd && isProjectExcluded(payload.cwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
+    return { status: 'skipped', reason: 'project_excluded' };
+  }
+  const project = typeof payload.cwd === 'string' && payload.cwd.trim() ? getProjectContext(payload.cwd).primary : 'unknown';
+  const fields = agentStopFields({
+    platformSource: normalizePlatformSource(payload.platformSource),
+    contentSessionId: payload.contentSessionId,
+    agentId: payload.agentId,
+    agentType: payload.agentType ?? null,
+    stoppedAtEpoch: payload.stoppedAtEpoch,
+    stopSource: 'subagent-stop-hook',
+  });
+  const entryId = dbManager.getSessionStore().appendWorkStateEntry({
+    project, listName: AGENT_LIFECYCLE_LIST, fields, createdAtEpoch: payload.stoppedAtEpoch,
+  });
+  handoff.markHandedOff?.();
+  return { status: 'stored', entryId };
 }

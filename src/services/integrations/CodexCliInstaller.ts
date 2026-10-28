@@ -679,7 +679,7 @@ Plugin source:     ${marketplaceRoot}
 
 Next steps:
   1. Open Codex CLI in your project
-  2. Review and trust the six claude-mem hooks when Codex prompts you
+  2. Review and trust the seven claude-mem hooks when Codex prompts you
   3. Restart sessions opened before trusting the hooks
 
 For a fresh setup, the supported entry point is:

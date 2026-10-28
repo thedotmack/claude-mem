@@ -1,7 +1,9 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useId } from 'react';
+import { useDialogFocus } from '../hooks/useDialogFocus';
 import type { Settings } from '../types';
 import { TerminalPreview } from './TerminalPreview';
 import { useContextPreview } from '../hooks/useContextPreview';
+import { useBackupStatus } from '../hooks/useBackupStatus';
 import { DEFAULT_SETTINGS } from '../constants/settings';
 import { isClaudeMemObserverBaseUrl } from '../utils/observer-endpoint';
 import { claudeProviderOptionLabel } from '../utils/claude-auth-method';
@@ -37,6 +39,7 @@ function CollapsibleSection({
   defaultOpen?: boolean;
 }) {
   const [isOpen, setIsOpen] = useState(defaultOpen);
+  const contentId = useId();
 
   return (
     <div className={`settings-section-collapsible ${isOpen ? 'open' : ''}`}>
@@ -44,6 +47,8 @@ function CollapsibleSection({
         className="section-header-btn"
         onClick={() => setIsOpen(!isOpen)}
         type="button"
+        aria-expanded={isOpen}
+        aria-controls={contentId}
       >
         <div className="section-header-content">
           <span className="section-title">{title}</span>
@@ -61,7 +66,7 @@ function CollapsibleSection({
           <polyline points="6 9 12 15 18 9" />
         </svg>
       </button>
-      {isOpen && <div className="section-content">{children}</div>}
+      {isOpen && <div className="section-content" id={contentId}>{children}</div>}
     </div>
   );
 }
@@ -75,9 +80,15 @@ function FormField({
   tooltip?: string;
   children: React.ReactNode;
 }) {
+  const fieldId = useId();
+  const control = React.Children.map(children, child => {
+    if (!React.isValidElement<{ id?: string; 'aria-describedby'?: string }>(child)
+      || typeof child.type !== 'string' || !['input', 'select', 'textarea'].includes(child.type)) return child;
+    return React.cloneElement(child, { id: fieldId, 'aria-describedby': tooltip ? `${fieldId}-hint` : undefined });
+  });
   return (
     <div className="form-field">
-      <label className="form-field-label">
+      <label className="form-field-label" htmlFor={fieldId}>
         {label}
         {tooltip && (
           <span className="tooltip-trigger" title={tooltip}>
@@ -89,7 +100,8 @@ function FormField({
           </span>
         )}
       </label>
-      {children}
+      {control}
+      {tooltip && <span className="visually-hidden" id={`${fieldId}-hint`}>{tooltip}</span>}
     </div>
   );
 }
@@ -130,6 +142,56 @@ function ToggleSwitch({
   );
 }
 
+function formatEpochMs(epochMs: number | null | undefined): string {
+  if (typeof epochMs !== 'number' || !Number.isFinite(epochMs)) return 'never';
+  return new Date(epochMs).toLocaleString();
+}
+
+/** One label/value line in the backup status readout (toggle-row styling). */
+function BackupStatusRow({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="toggle-row">
+      <div className="toggle-info">
+        <span className="toggle-label">{label}</span>
+      </div>
+      <span className="toggle-description">{value}</span>
+    </div>
+  );
+}
+
+/**
+ * Live backup status readout (GET /api/backup/status). Rendered inside the
+ * Backups CollapsibleSection's content, so it mounts — and fetches — only
+ * while the section is open.
+ */
+function BackupStatusPanel() {
+  const { status, isLoading, error } = useBackupStatus();
+
+  if (isLoading) {
+    return <span className="toggle-description">Loading backup status...</span>;
+  }
+  if (error) {
+    return <span className="toggle-description">{error}</span>;
+  }
+  if (!status) return null;
+
+  if (!status.configured) {
+    return (
+      <span className="toggle-description">
+        Backups are not running. Turn on automatic snapshots, save, and restart the worker.
+      </span>
+    );
+  }
+
+  return (
+    <div className="toggle-group">
+      <BackupStatusRow label="Last snapshot" value={formatEpochMs(status.lastSnapshotAt)} />
+      <BackupStatusRow label="Snapshots on disk" value={String(status.snapshotCount ?? 0)} />
+      {status.lastError && <BackupStatusRow label="Last error" value={status.lastError} />}
+    </div>
+  );
+}
+
 export function ContextSettingsModal({
   isOpen,
   onClose,
@@ -141,6 +203,7 @@ export function ContextSettingsModal({
   isSaving,
   saveStatus
 }: ContextSettingsModalProps) {
+  const dialogRef = useDialogFocus(isOpen);
   const [formState, setFormState] = useState<Settings>(settings);
   // From the saved settings, not the form: the field stays editable while a
   // user types any other URL, and read-only for the observer's own endpoint.
@@ -191,10 +254,10 @@ export function ContextSettingsModal({
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="context-settings-modal" onClick={(e) => e.stopPropagation()}>
+      <div ref={dialogRef} tabIndex={-1} className="context-settings-modal" role="dialog" aria-modal="true" aria-labelledby="memory-settings-title" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="modal-header">
-          <h2>Settings</h2>
+          <div className="settings-heading"><h2 id="memory-settings-title">Settings</h2><p>Choose the context your next session receives.</p></div>
           <div className="header-controls">
             <label className="preview-selector">
               Source:
@@ -225,6 +288,7 @@ export function ContextSettingsModal({
               onClick={onClose}
               className="modal-close-btn"
               title="Close (Esc)"
+              aria-label="Close settings"
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <line x1="18" y1="6" x2="6" y2="18" />
@@ -238,6 +302,7 @@ export function ContextSettingsModal({
         <div className="modal-body">
           {/* Left column - Terminal Preview */}
           <div className="preview-column">
+            <div className="settings-preview-heading"><h3>Saved context preview</h3><p>Preview the saved configuration for the selected source and project.</p></div>
             <div className="preview-content">
               {error ? (
                 <div style={{ color: 'var(--color-accent-error)' }}>
@@ -349,6 +414,61 @@ export function ContextSettingsModal({
                     onChange={() => toggleBoolean('CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT')}
                   />
                 </div>
+              </div>
+            </CollapsibleSection>
+
+            {/* Section 3: Backups */}
+            <CollapsibleSection
+              title="Backups"
+              description="Automatic snapshots of your memory database"
+              defaultOpen={false}
+            >
+              <div className="toggle-group">
+                <ToggleSwitch
+                  id="backup-enabled"
+                  label="Automatic snapshots"
+                  description="Snapshot the database on a schedule (restart the worker to apply)"
+                  checked={formState.CLAUDE_MEM_BACKUP_ENABLED === 'true'}
+                  onChange={() => toggleBoolean('CLAUDE_MEM_BACKUP_ENABLED')}
+                />
+              </div>
+
+              <div style={{ marginTop: '12px' }}>
+                <FormField
+                  label="Interval (hours)"
+                  tooltip="Hours between automatic snapshots (1-168)"
+                >
+                  <input
+                    type="number"
+                    min="1"
+                    max="168"
+                    value={formState.CLAUDE_MEM_BACKUP_INTERVAL_HOURS || '24'}
+                    onChange={(e) => updateSetting('CLAUDE_MEM_BACKUP_INTERVAL_HOURS', e.target.value)}
+                  />
+                </FormField>
+                <FormField
+                  label="Snapshots to keep"
+                  tooltip="How many local snapshots to retain before old ones are deleted (1-100)"
+                >
+                  <input
+                    type="number"
+                    min="1"
+                    max="100"
+                    value={formState.CLAUDE_MEM_BACKUP_RETAIN_COUNT || '7'}
+                    onChange={(e) => updateSetting('CLAUDE_MEM_BACKUP_RETAIN_COUNT', e.target.value)}
+                  />
+                </FormField>
+              </div>
+
+              <div className="display-subsection" style={{ marginTop: '12px' }}>
+                <span className="subsection-label">Status</span>
+                <BackupStatusPanel />
+              </div>
+
+              <div style={{ marginTop: '12px' }}>
+                <span className="toggle-description">
+                  Restore from a snapshot: <code>npx claude-mem restore &lt;file&gt;</code>
+                </span>
               </div>
             </CollapsibleSection>
 
@@ -501,13 +621,13 @@ export function ContextSettingsModal({
                   {!observerManagesBaseUrl && (
                     <FormField
                       label="Reasoning effort"
-                      tooltip="openrouter.ai models only. None turns reasoning off, for models that spend the output budget thinking. Default sends nothing."
+                      tooltip="openrouter.ai only. Empty (the default) sends reasoning off. Set an effort to opt back in. A custom gateway does not get this field until an empty length-truncated reply retries once."
                     >
                       <select
                         value={formState.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT || ''}
                         onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_REASONING_EFFORT', e.target.value)}
                       >
-                        <option value="">Model default</option>
+                        <option value="">Off (default)</option>
                         <option value="none">None (reasoning off)</option>
                         <option value="minimal">Minimal</option>
                         <option value="low">Low</option>
@@ -583,6 +703,18 @@ export function ContextSettingsModal({
                       placeholder={openAICompatPresetOption(formState.CLAUDE_MEM_OPENAI_COMPAT_PRESET).defaultModel || 'model id'}
                     />
                   </FormField>
+                  <FormField
+                    label="Reasoning"
+                    tooltip="Off (default) sends reasoning disabled so a reasoning model cannot spend the output cap thinking. On leaves it to the endpoint. A server that rejects the field is retried once without it."
+                  >
+                    <select
+                      value={formState.CLAUDE_MEM_OPENAI_COMPAT_REASONING || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENAI_COMPAT_REASONING', e.target.value)}
+                    >
+                      <option value="">Off (default)</option>
+                      <option value="on">On (endpoint decides)</option>
+                    </select>
+                  </FormField>
                   <span className="toggle-description">
                     The API key is set outside the viewer: <code>CLAUDE_MEM_OPENAI_COMPAT_API_KEY</code> in{' '}
                     <code>~/.claude-mem/settings.json</code>, or <code>OPENAI_COMPAT_API_KEY</code> in{' '}
@@ -590,6 +722,33 @@ export function ContextSettingsModal({
                   </span>
                 </>
               )}
+
+              <FormField
+                label="My Work summary provider"
+                tooltip="Generated card wording uses this endpoint. Empty uses OpenRouter only when it is the primary observer provider; any other endpoint, or a fallback key, is not used unless you select its provider here. Explicit provider selection may incur that provider's usual charges."
+              >
+                <select
+                  value={formState.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER || ''}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER', e.target.value)}
+                >
+                  <option value="">OpenRouter when it is the primary provider</option>
+                  <option value="openrouter">OpenRouter</option>
+                  <option value="openai-compatible">OpenAI-compatible endpoint</option>
+                  <option value="off">Off (recorded wording only)</option>
+                </select>
+              </FormField>
+              <FormField
+                label="My Work summary model override"
+                tooltip="Optional model id for generated card wording. Empty uses the selected provider's configured model."
+              >
+                <input
+                  type="text"
+                  maxLength={200}
+                  value={formState.CLAUDE_MEM_WORK_VIEW_COPY_MODEL || ''}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_WORK_VIEW_COPY_MODEL', e.target.value)}
+                  placeholder="Use the provider's configured model"
+                />
+              </FormField>
 
               <FormField
                 label="Quota Fallback"
@@ -709,7 +868,7 @@ export function ContextSettingsModal({
 
         {/* Footer with Save button */}
         <div className="modal-footer">
-          <div className="save-status">
+          <div className="save-status" role="status" aria-live="polite">
             {loadError ? (
               <span className="error" role="alert">
                 {loadError}{' '}
@@ -726,7 +885,7 @@ export function ContextSettingsModal({
             onClick={handleSave}
             disabled={isSaving || !isLoaded}
           >
-            {isSaving ? 'Saving...' : 'Save'}
+            {isSaving ? 'Saving...' : 'Save settings'}
           </button>
         </div>
       </div>

@@ -20,8 +20,13 @@ export function getObservationsByFilePath(
   // candidate path forms and match observations whose files_read/files_modified
   // contain ANY of them, so context injection keyed on path is consistent
   // across the two events. De-duplicate to keep the IN() clause minimal.
+  // A Windows tool input is stored as written (`C:\proj\src\a.ts`) while
+  // callers send forward-slashed forms, so each candidate also matches its
+  // backslashed spelling, as folder lookups already do.
   const candidatePaths = Array.from(
-    new Set((Array.isArray(filePath) ? filePath : [filePath]).filter(p => typeof p === 'string' && p.length > 0))
+    new Set((Array.isArray(filePath) ? filePath : [filePath])
+      .filter(p => typeof p === 'string' && p.length > 0)
+      .flatMap(p => [p, p.replaceAll('/', '\\')]))
   );
   if (candidatePaths.length === 0) {
     logger.debug('DB', 'Skipping observation file lookup with no candidate paths');
@@ -29,8 +34,8 @@ export function getObservationsByFilePath(
   }
 
   const pathPlaceholders = candidatePaths.map(() => '?').join(',');
-  // Params order mirrors the two json_each subqueries (files_read, then files_modified).
-  const params: (string | number)[] = [...candidatePaths, ...candidatePaths];
+  // The path is bound once: observation_files indexes both files_read and files_modified.
+  const params: (string | number)[] = [...candidatePaths];
 
   let projectClause = '';
   if (options?.projects?.length) {
@@ -47,23 +52,18 @@ export function getObservationsByFilePath(
 
   params.push(limit);
 
-  // An array can start with '[' or one of JSON's four whitespace characters.
-  // This inexpensive prefix filter skips other shapes before JSON parsing;
-  // validity and array-type checks still reject padded non-arrays below.
-  const arrayJson = (column: string): string =>
-    `CASE WHEN ${column} GLOB '[' || char(32, 9, 10, 13) || '[]*' THEN CASE WHEN json_valid(${column}) THEN CASE WHEN json_type(${column}) = 'array' THEN ${column} ELSE '[]' END ELSE '[]' END ELSE '[]' END`;
-
+  // observation_files holds one row per path an observation reads or modifies,
+  // so this is an index seek on the primary key instead of json_each over every
+  // observation. The LEFT JOIN to sdk_sessions stays only for the platform filter.
   const stmt = db.prepare(`
-    SELECT o.*
-    FROM observations o
+    SELECT DISTINCT o.*
+    FROM observation_files f
+    JOIN observations o ON o.id = f.observation_id
     LEFT JOIN sdk_sessions s ON s.memory_session_id = o.memory_session_id
-    WHERE (
-      EXISTS (SELECT 1 FROM json_each(${arrayJson('o.files_read')}) WHERE value IN (${pathPlaceholders}))
-      OR EXISTS (SELECT 1 FROM json_each(${arrayJson('o.files_modified')}) WHERE value IN (${pathPlaceholders}))
-    )
+    WHERE f.path IN (${pathPlaceholders})
     ${projectClause}
     ${platformClause}
-    ORDER BY created_at_epoch DESC
+    ORDER BY o.created_at_epoch DESC
     LIMIT ?
   `);
 

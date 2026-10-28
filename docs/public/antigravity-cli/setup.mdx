@@ -124,18 +124,18 @@ On session start, you'll see claude-mem context injected with your recent observ
 
 ## What gets captured
 
-Claude-mem registers the five lifecycle hooks Antigravity CLI (`agy` 1.2.1) actually fires:
+Claude-mem registers five of the lifecycle hooks Antigravity CLI (`agy` 1.2.1) fires:
 
 | Hook | Internal event | Purpose |
 |------|-----------------|---------|
 | **SessionStart** | `context` | Injects memory context (via `injectSteps`) once when a session starts, so the prompt prefix stays cacheable |
-| **PreToolUse** | `observation` | Records tool intent, returns `{"decision":"allow"}` so the call proceeds |
+| **PreInvocation** | `session-init` | Fires before every model call. Records your prompt once, on the first call of a turn (agy has no prompt-submit hook). On a later call in the same turn, if the last tool step read files that have history, injects that history once per file (via `injectSteps`) |
 | **PostToolUse** | `observation` | Captures tool results after execution |
 | **PostInvocation** | `observation` | Records the agent's response (from the transcript's `PLANNER_RESPONSE` node) |
 | **Stop** | `summarize` | Captures the session summary at turn/session end |
 
 <Note>
-These are the event names `agy` reads from `hooks.json`. Earlier releases mistakenly registered Gemini CLI names (`BeforeAgent`, `AfterAgent`, `BeforeTool`, `AfterTool`) into `~/.gemini/settings.json`, where `agy` never reads them, so hooks never fired and no observations were recorded (issue [#4057](https://github.com/thedotmack/claude-mem/issues/4057)). Installs before [#4911](https://github.com/thedotmack/claude-mem/issues/4911) injected context on `PreInvocation`, before every model call, which broke prompt caching; re-run `claude-mem install --ide antigravity` to move it to `SessionStart`.
+These are the event names `agy` reads from `hooks.json`. Earlier releases mistakenly registered Gemini CLI names (`BeforeAgent`, `AfterAgent`, `BeforeTool`, `AfterTool`) into `~/.gemini/settings.json`, where `agy` never reads them, so hooks never fired and no observations were recorded (issue [#4057](https://github.com/thedotmack/claude-mem/issues/4057)). Installs before [#4911](https://github.com/thedotmack/claude-mem/issues/4911) injected context on `PreInvocation`, before every model call, which broke prompt caching; re-run `claude-mem install --ide antigravity` to move it to `SessionStart`. `PreInvocation` is back as `session-init`: it records the prompt and injects file history only after a file read, not on every call. Installs before [#5078](https://github.com/thedotmack/claude-mem/issues/5078) also registered `PreToolUse`, whose `allow` answer skipped agy's permission prompt for every tool; re-running the installer removes it.
 </Note>
 
 ## MCP registration
@@ -160,14 +160,14 @@ Antigravity CLI ships a first-class plugin-marketplace subcommand system: `agy p
    cat ~/.gemini/config/hooks.json
    ```
    Each top-level key is a **hook name**. claude-mem writes a single
-   `"claude-mem"` key wrapping the event keys, with `PreToolUse`/`PostToolUse`
+   `"claude-mem"` key wrapping the event keys, with `PostToolUse`
    using the grouped `{ "matcher", "hooks" }` shape and
-   `SessionStart`/`PostInvocation`/`Stop` using a flat array of handlers:
+   `SessionStart`/`PreInvocation`/`PostInvocation`/`Stop` using a flat array of handlers:
    ```json
    {
      "claude-mem": {
        "SessionStart": [ { "type": "command", "command": "...", "timeout": 30 } ],
-       "PreToolUse": [ { "matcher": "*", "hooks": [ { "type": "command", "command": "...", "timeout": 30 } ] } ],
+       "PreInvocation": [ { "type": "command", "command": "...", "timeout": 30 } ],
        "PostToolUse": [ { "matcher": "*", "hooks": [ { "type": "command", "command": "...", "timeout": 30 } ] } ],
        "PostInvocation": [ { "type": "command", "command": "...", "timeout": 30 } ],
        "Stop": [ { "type": "command", "command": "...", "timeout": 30 } ]

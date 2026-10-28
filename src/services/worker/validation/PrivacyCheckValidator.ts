@@ -7,7 +7,7 @@ export type PromptPrivacyDecision =
 
 export class PrivacyCheckValidator {
   /**
-   * Decide whether an observation/summary may be generated for a given prompt.
+   * Decide whether an observation, summary or deliverables record may be made for a given prompt.
    *
    * Distinguishes two cases the old boolean check conflated (#2794):
    *  - The `user_prompts` row is ABSENT (getUserPrompt → null): session-init
@@ -22,7 +22,7 @@ export class PrivacyCheckValidator {
     store: SessionStore,
     contentSessionId: string,
     promptNumber: number,
-    operationType: 'observation' | 'summarize',
+    operationType: 'observation' | 'summarize' | 'deliverables',
     sessionDbId: number,
     additionalContext?: Record<string, any>
   ): PromptPrivacyDecision {

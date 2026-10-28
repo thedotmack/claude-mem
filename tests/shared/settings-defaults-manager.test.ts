@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync, statSync, chmodSync, symlinkSync } from 'fs';
 import { join } from 'path';
-import { tmpdir } from 'os';
+import { homedir, tmpdir } from 'os';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 import { readFlatSettings } from '../../src/npx-cli/utils/settings.js';
 import { DEFAULT_SETTINGS as VIEWER_DEFAULT_SETTINGS } from '../../src/ui/viewer/constants/settings.js';
@@ -1027,6 +1027,10 @@ describe('SettingsDefaultsManager', () => {
       expect(defaults.CLAUDE_MEM_PROVIDER).toBeDefined();
       expect(defaults.CLAUDE_MEM_GEMINI_API_KEY).toBeDefined();
       expect(defaults.CLAUDE_MEM_OPENROUTER_API_KEY).toBeDefined();
+      expect(defaults.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER).toBe('');
+      expect(defaults.CLAUDE_MEM_WORK_VIEW_COPY_MODEL).toBe('');
+      expect(VIEWER_DEFAULT_SETTINGS.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER).toBe('');
+      expect(VIEWER_DEFAULT_SETTINGS.CLAUDE_MEM_WORK_VIEW_COPY_MODEL).toBe('');
 
       expect(defaults.CLAUDE_MEM_DATA_DIR).toBeDefined();
       expect(defaults.CLAUDE_MEM_LOG_LEVEL).toBeDefined();
@@ -1315,5 +1319,80 @@ describe('SettingsDefaultsManager', () => {
 describe('Chroma embedding function default', () => {
   it('keeps chroma-mcp\'s own default so existing installs are unchanged', () => {
     expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION).toBe('default');
+  });
+});
+
+describe('server search by meaning default', () => {
+  it('decides the server\'s search by meaning by whether the database is new', () => {
+    expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_SERVER_VECTOR_SEARCH).toBe('auto');
+  });
+
+  it('caps a backfill at half the CPU threads unless set', () => {
+    expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_EMBEDDING_BACKFILL_THREADS).toBe('');
+  });
+});
+
+describe('embedding model default', () => {
+  it('keeps all-MiniLM-L6-v2, the model Chroma embeds with', () => {
+    expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_EMBEDDING_MODEL).toBe('all-MiniLM-L6-v2');
+  });
+});
+
+describe('transcript-watch config path follows the data dir', () => {
+  const keys = ['CLAUDE_MEM_DATA_DIR', 'CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH'] as const;
+  let saved: Record<string, string | undefined>;
+  let tempDir: string;
+  let settingsPath: string;
+  const legacyDefault = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH;
+
+  beforeEach(() => {
+    saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    for (const key of keys) delete process.env[key];
+    tempDir = join(tmpdir(), `transcripts-path-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(tempDir, { recursive: true });
+    settingsPath = join(tempDir, 'settings.json');
+  });
+
+  afterEach(() => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('resolves under CLAUDE_MEM_DATA_DIR from the environment', () => {
+    process.env.CLAUDE_MEM_DATA_DIR = join(tempDir, 'env-data');
+    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+    expect(settings.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH).toBe(join(tempDir, 'env-data', 'transcript-watch.json'));
+  });
+
+  it('resolves under CLAUDE_MEM_DATA_DIR from settings.json, also when the file persisted the old default', () => {
+    const dataDir = join(tempDir, 'file-data');
+    writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_DATA_DIR: dataDir, CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: legacyDefault }));
+    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+    expect(settings.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH).toBe(join(dataDir, 'transcript-watch.json'));
+  });
+
+  it('expands a ~ data dir from the environment to an absolute path under home', () => {
+    process.env.CLAUDE_MEM_DATA_DIR = '~/x';
+    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+    expect(settings.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH).toBe(join(homedir(), 'x', 'transcript-watch.json'));
+  });
+
+  it('expands a ~ data dir from settings.json to an absolute path under home', () => {
+    writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_DATA_DIR: '~/x', CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: legacyDefault }));
+    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+    expect(settings.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH).toBe(join(homedir(), 'x', 'transcript-watch.json'));
+  });
+
+  it('keeps an explicitly configured path', () => {
+    const custom = join(tempDir, 'custom', 'watch.json');
+    writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_DATA_DIR: join(tempDir, 'file-data'), CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: custom }));
+    expect(SettingsDefaultsManager.loadFromFile(settingsPath).CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH).toBe(custom);
+  });
+
+  it('is unchanged for the default data dir', () => {
+    expect(SettingsDefaultsManager.loadFromFile(settingsPath).CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH).toBe(legacyDefault);
   });
 });

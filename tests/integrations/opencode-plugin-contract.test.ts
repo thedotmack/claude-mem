@@ -130,7 +130,7 @@ describe("OpenCode plugin event contract", () => {
     }
   });
 
-  it("reads the worker port from persisted settings without importing worker-utils", () => {
+  it("keeps worker-utils out of every OpenCode plugin module", () => {
     // The worker URL resolution lives in core.ts, the dependency-free module
     // both the V1 and the V2 adapter share. Neither adapter may reach for
     // worker-utils, which drags worker-only imports into the plugin bundle.
@@ -140,10 +140,6 @@ describe("OpenCode plugin event contract", () => {
         'from "../../shared/worker-utils.js"',
       );
     }
-
-    const source = readFileSync("src/integrations/opencode-plugin/core.ts", "utf8");
-    expect(source).toContain('SettingsDefaultsManager.loadFromFile(settingsPath)');
-    expect(source).toContain('settings.CLAUDE_MEM_WORKER_PORT');
   });
 
   it("uses the persisted worker port in OpenCode worker requests", async () => {

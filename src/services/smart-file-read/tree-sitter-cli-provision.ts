@@ -44,27 +44,51 @@ export interface TreeSitterCliVersionProbe {
   reason?: string;
 }
 
-async function answersTreeSitterVersion(executablePath: string): Promise<TreeSitterCliVersionProbe> {
+/** How the probe runs the executable; tests pass a stub to control the callback. */
+export type TreeSitterProbeExec = (
+  file: string,
+  args: readonly string[],
+  options: { encoding: "utf-8"; timeout: number; windowsHide: boolean },
+  callback: (error: NodeJS.ErrnoException | null, stdout: string | Buffer, stderr: string | Buffer) => void,
+) => { stdin?: { end(): void } | null } | undefined;
+
+/**
+ * Bun can pass the callback a Buffer even with `encoding: "utf-8"` set
+ * (#5019), and a Buffer has no `.trim`. Read either shape as text.
+ */
+function probeText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value == null) return "";
+  if (Buffer.isBuffer(value)) return value.toString("utf8");
+  return String(value);
+}
+
+/** Answers `--version` for `executablePath`; exported for its output-shape test. */
+export async function answersTreeSitterVersion(
+  executablePath: string,
+  execFileImpl: TreeSitterProbeExec = execFile as unknown as TreeSitterProbeExec,
+): Promise<TreeSitterCliVersionProbe> {
   return await new Promise<TreeSitterCliVersionProbe>((resolve) => {
     // Bun can throw synchronously when the OS refuses the file outright (a
     // truncated Mach-O is EBADMACHO on macOS); that is "not usable", the same
     // as a spawn failure reported through the callback.
     try {
-      const child = execFile(executablePath, ["--version"], {
+      const child = execFileImpl(executablePath, ["--version"], {
         encoding: "utf-8",
         timeout: TREE_SITTER_VERSION_TIMEOUT_MS,
         windowsHide: true,
       }, (error, stdout, stderr) => {
-        if (!error && TREE_SITTER_VERSION_OUTPUT.test((stdout ?? "").trim())) {
+        const stdoutText = probeText(stdout);
+        if (!error && TREE_SITTER_VERSION_OUTPUT.test(stdoutText.trim())) {
           resolve({ usable: true });
           return;
         }
-        const detail = (stderr ?? "").trim().split("\n")[0]
+        const detail = probeText(stderr).trim().split("\n")[0]
           || (error?.message ?? "").split("\n")[0]
           || undefined;
         resolve({ usable: false, reason: detail });
       });
-      child.stdin?.end();
+      child?.stdin?.end();
     } catch (spawnError) {
       const message = spawnError instanceof Error ? spawnError.message : String(spawnError);
       resolve({ usable: false, reason: message.split("\n")[0] || undefined });

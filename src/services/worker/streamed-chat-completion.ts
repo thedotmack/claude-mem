@@ -88,6 +88,11 @@ export function resetStreamingEndpointMemoryForTests(): void {
   endpointsWarnedForMissingStreamUsage.clear();
 }
 
+/** Test hook: the next request to this URL is the non-streamed path. */
+export function markEndpointRefusesStreamingForTests(url: string): void {
+  endpointsThatRefuseStreaming.add(url);
+}
+
 /**
  * Whether requests to this endpoint are streamed. The cmem gateway calls its
  * upstream with stream:false and answers with one JSON body after the whole
@@ -370,7 +375,18 @@ async function assembleStream(opened: OpenedExchange, request: ChatCompletionReq
       try {
         chunk = JSON.parse(event.data) as StreamChunk;
       } catch (parseError: unknown) {
-        throw outputFailure(`${request.label} stream chunk could not be read: ${asError(parseError).message}`, parseError, STREAM_INTERRUPTED_CODE);
+        // Same rule as a stream that broke off: before any output the send is
+        // ambiguous and may be resent once; after output started it was billed.
+        const error = asError(parseError);
+        if (outputStarted) {
+          throw outputFailure(`${request.label} stream chunk could not be read: ${error.message}`, error, STREAM_INTERRUPTED_CODE);
+        }
+        throw new ClassifiedProviderError(`${request.label} stream chunk could not be read: ${error.message}`, {
+          kind: 'transient',
+          failedBeforeOutput: true,
+          code: STREAM_INTERRUPTED_CODE,
+          cause: error,
+        });
       }
       if (chunk === null || typeof chunk !== 'object') continue;
 

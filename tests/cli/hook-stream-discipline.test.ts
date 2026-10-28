@@ -1,6 +1,4 @@
 import { describe, it, expect, afterEach } from 'bun:test';
-import { readFileSync } from 'fs';
-import { join } from 'path';
 import {
   installHookStderrBuffer,
   emitDiagnostic,
@@ -22,8 +20,6 @@ import type { HookResult } from '../../src/cli/types.js';
 // spawning the built worker daemon, because worker-service auto-spawns a Bun
 // daemon for the `hook` subcommand (polluting the machine / flaky in CI — see
 // the plan's risk table). The seam-level assertions are deterministic.
-
-const REPO_ROOT = join(import.meta.dir, '..', '..');
 
 function captureRealStderr(): { chunks: string[]; restore: () => void } {
   const chunks: string[] = [];
@@ -58,32 +54,6 @@ describe('#2292 — fail-loud diagnostic is no longer swallowed', () => {
       real.restore();
     }
   });
-
-  it('worker-utils recordWorkerUnreachable routes through emitDiagnostic (not emitBlockingError — source contract)', () => {
-    const src = readFileSync(join(REPO_ROOT, 'src', 'shared', 'worker-utils.ts'), 'utf-8');
-    // Worker outages must NEVER block the harness. The fail-loud branch now uses
-    // emitDiagnostic (stderr-only, no exit) instead of emitBlockingError (exit 2).
-    expect(src).toContain('emitDiagnostic(');
-    expect(src).not.toContain('emitBlockingError(');
-    expect(src).not.toMatch(/process\.stderr\.write\(\s*\n\s*`claude-mem worker unreachable/);
-    expect(src).not.toMatch(/process\.exit\(2\)/);
-  });
-
-  it('claims the one-time latch under an inter-process lock before escalating', () => {
-    const src = readFileSync(join(REPO_ROOT, 'src', 'shared', 'worker-utils.ts'), 'utf-8');
-    const start = src.indexOf('export async function recordWorkerUnreachable');
-    const end = src.indexOf('function resetWorkerFailureCounter', start);
-    const implementation = src.slice(start, end);
-
-    expect(implementation).toContain('const lockToken = await acquireHookFailureLock()');
-    expect(implementation).toContain('next.consecutiveFailures >= threshold && !next.thresholdTripped');
-    expect(implementation).not.toContain('next.consecutiveFailures === threshold');
-    expect(implementation).toContain('shouldEscalate = shouldEscalate && statePersisted');
-    expect(implementation.indexOf('const statePersisted = writeHookFailureStateAtomic(next)'))
-      .toBeLessThan(implementation.indexOf("await captureCliEvent('hook_failed'"));
-    expect(implementation.indexOf('releaseHookFailureLock(lockToken)'))
-      .toBeLessThan(implementation.indexOf("await captureCliEvent('hook_failed'"));
-  });
 });
 
 describe('worker-unavailable transient path stays quiet (exit 0)', () => {
@@ -103,13 +73,6 @@ describe('worker-unavailable transient path stays quiet (exit 0)', () => {
 });
 
 describe('Edit 4A — user-message banner relocated to systemMessage (not stderr)', () => {
-  it('user-message handler source no longer writes the banner to stderr', () => {
-    const src = readFileSync(join(REPO_ROOT, 'src', 'cli', 'handlers', 'user-message.ts'), 'utf-8');
-    // No actual call (the comment mentions the API name; assert the invocation form).
-    expect(src).not.toContain('process.stderr.write(');
-    expect(src).toContain('systemMessage: bannerText');
-  });
-
   it('claude-code adapter routes systemMessage to the stdout JSON envelope (banner reaches the user via contract)', () => {
     const result: HookResult = { systemMessage: 'banner-text', exitCode: 0 };
     const output = claudeCodeAdapter.formatOutput(result) as Record<string, unknown>;

@@ -1,23 +1,18 @@
 import { expect, it } from 'bun:test';
-import { execFileSync } from 'node:child_process';
-import { createRequire } from 'node:module';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { UI } from '../../../src/ui/viewer/constants/ui';
+import {
+  REPOSITORY_ROOT, chromeExecutablePath, compileBrowserFixture, failOnCiWithoutChrome, htmlResponse, launchChrome,
+  readViewerTemplateHtml, scriptResponse, withTimeout, type OwnedChrome,
+} from '../../helpers/chrome-devtools';
 
-const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
-  ?? (existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
-    ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : null);
-if (process.env.CI && !chrome) throw new Error('CI requires Chrome or Chromium for committed feed regressions.');
+failOnCiWithoutChrome('CI requires Chrome or Chromium for committed feed regressions.');
 
 for (const consumer of ['hook', 'app']) {
   for (const outcome of ['success', 'failure']) {
-    (chrome ? it : it.skip)(`keeps committed A ${consumer} pagination after an abandoned B render and ${outcome}`, async () => {
-      const root = resolve(import.meta.dir, '../../..');
-      const esbuildBinary = createRequire(import.meta.url).resolve(
-        `@esbuild/${process.platform}-${process.arch}/${process.platform === 'win32' ? 'esbuild.exe' : 'bin/esbuild'}`,
-      );
+    (chromeExecutablePath ? it : it.skip)(`keeps committed A ${consumer} pagination after an abandoned B render and ${outcome}`, async () => {
+      const root = REPOSITORY_ROOT;
       const ownedSource = mkdtempSync(join(import.meta.dir, '.commit-scope-'));
       let bundle: string;
       try {
@@ -38,10 +33,7 @@ for (const consumer of ['hook', 'app']) {
           .replace(/from '(\.[^']+)'/g, (_, path: string) => 'from ' + JSON.stringify(resolve(root, 'src/ui/viewer', path)));
         const appPath = join(ownedSource, 'App.tsx');
         writeFileSync(appPath, app);
-        bundle = execFileSync(esbuildBinary, [
-          '--bundle', '--loader=tsx', '--platform=browser', '--format=iife',
-          '--define:process.env.NODE_ENV="production"', '--log-level=error',
-        ], { cwd: root, encoding: 'utf8', timeout: 20000, maxBuffer: 8 * 1024 * 1024, input: `
+        bundle = compileBrowserFixture(`
           import React, { Suspense, startTransition, useEffect, useState } from 'react';
           import { createRoot } from 'react-dom/client';
           import { App } from ${JSON.stringify(appPath)};
@@ -130,10 +122,10 @@ for (const consumer of ['hook', 'app']) {
               }) });
             } catch (error) { await originalFetch('/result', { method: 'POST', body: JSON.stringify({ failure: String(error) }) }); }
           })();
-        ` });
+        `);
       } finally { rmSync(ownedSource, { recursive: true, force: true }); }
-      const html = readFileSync(join(root, 'src/ui/viewer-template.html'), 'utf8')
-        .replace('src="viewer-bundle.js"', 'src="/fixture.js"');
+      // The real viewer page, which loads the fixture as its own bundle.
+      const html = readViewerTemplateHtml();
       let releasePending!: () => void;
       const pendingGate = new Promise<void>(resolve => { releasePending = resolve; });
       let pendingStarted!: () => void;
@@ -147,8 +139,8 @@ for (const consumer of ['hook', 'app']) {
       let page2Attempts = 0;
       const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
         const url = new URL(request.url);
-        if (url.pathname === '/') return new Response(html, { headers: { 'Content-Type': 'text/html' } });
-        if (url.pathname === '/fixture.js') return new Response(bundle, { headers: { 'Content-Type': 'application/javascript' } });
+        if (url.pathname === '/') return htmlResponse(html);
+        if (url.pathname === '/viewer-bundle.js') return scriptResponse(bundle);
         if (url.pathname === '/ready') { markReady(); return new Response('ready'); }
         if (url.pathname === '/await-pending') { await pendingReady; return new Response('pending'); }
         if (url.pathname === '/release-pending') { releasePending(); return new Response('released'); }
@@ -179,23 +171,17 @@ for (const consumer of ['hook', 'app']) {
         if (url.pathname === '/result') { report(await request.json()); return new Response('received'); }
         return Response.json({});
       } });
-      const profile = mkdtempSync(join(tmpdir(), 'claude-mem-committed-feed-'));
-      const child = Bun.spawn([chrome!, '--headless', '--no-sandbox', '--disable-gpu', '--disable-background-networking', '--no-first-run', '--window-size=800,600', `--user-data-dir=${profile}`, server.url.href], { stdout: 'ignore', stderr: 'ignore' });
-      let timeout: ReturnType<typeof setTimeout> | undefined;
-      async function deadline<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
-        try { return await Promise.race([promise, new Promise<T>((_, reject) => { timeout = setTimeout(() => reject(new Error('Owned browser deadline exceeded')), milliseconds); })]); }
-        finally { clearTimeout(timeout); }
-      }
+      let chrome: OwnedChrome | undefined;
       try {
-        await deadline(ready, 30000);
-        expect(await deadline(result, 20000)).toEqual({ keptA: true, alert: outcome === 'failure', loading: false, page2: true, page3: true, fallback: false });
+        chrome = launchChrome(server.url.href, { profilePrefix: 'claude-mem-committed-feed-', extraFlags: ['--window-size=800,600'] });
+        await withTimeout(ready, 30000, 'Owned browser deadline exceeded');
+        expect(await withTimeout(result, 20000, 'Owned browser deadline exceeded')).toEqual({ keptA: true, alert: outcome === 'failure', loading: false, page2: true, page3: true, fallback: false });
         expect(offsets).toEqual(outcome === 'failure'
           ? [0, UI.PAGINATION_PAGE_SIZE, UI.PAGINATION_PAGE_SIZE, UI.PAGINATION_PAGE_SIZE * 2]
           : [0, UI.PAGINATION_PAGE_SIZE, UI.PAGINATION_PAGE_SIZE * 2]);
         expect(bRequests).toBe(0);
       } finally {
-        clearTimeout(timeout); releasePending(); child.kill(); await child.exited; server.stop(true);
-        rmSync(profile, { recursive: true, force: true });
+        releasePending(); await chrome?.close(); server.stop(true);
       }
     }, 75000);
   }

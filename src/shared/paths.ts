@@ -139,6 +139,14 @@ export const paths = {
   serverRuntime: () => join(DATA_DIR, '.server-beta.runtime.json'),
   settings: () => join(DATA_DIR, 'settings.json'),
   database: () => join(DATA_DIR, DB_FILENAME),
+  // Automatic snapshot target (BackupManager). Nested under backups/auto so
+  // the manager's retention sweep never touches the legacy one-off backups
+  // that live directly in backups/.
+  backups: () => join(DATA_DIR, 'backups', 'auto'),
+  // A restore staged by `npx claude-mem restore`, applied by the next worker
+  // boot before it opens the database, and the outcome of the last one.
+  pendingRestore: () => join(DATA_DIR, 'backups', 'restore-pending.json'),
+  lastRestore: () => join(DATA_DIR, 'backups', 'last-restore.json'),
   chroma: () => join(DATA_DIR, 'chroma'),
   combinedCerts: () => join(DATA_DIR, 'combined_certs.pem'),
   transcriptsConfig: () => join(DATA_DIR, 'transcript-watch.json'),

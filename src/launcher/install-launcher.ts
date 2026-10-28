@@ -362,6 +362,38 @@ const runPowerShellHidden: PowerShellRunner = (script, extraEnvironment) => {
   };
 };
 
+// The bun path goes in by env var, never interpolated; only the ASCII 8.3 form comes out.
+const WINDOWS_SHORT_PATH_SCRIPT = '(New-Object -ComObject Scripting.FileSystemObject).GetFile($env:CLAUDE_MEM_BUN_PATH).ShortPath';
+
+function isAsciiPath(filePath: string): boolean {
+  return /^[\x20-\x7e]+$/.test(filePath);
+}
+
+/**
+ * The bun executable to compile with. On Windows `bun build --compile` copies
+ * the running bun.exe into the output, and Bun cannot open its own executable
+ * when that path has non-ASCII characters, e.g. under a Cyrillic user profile:
+ * "failed to copy bun executable into temporary file: ENOENT" (#5038). The 8.3
+ * short form of the same path is ASCII, so the compile runs bun through it.
+ * Throws when Windows has no short name for it (8.3 names disabled).
+ */
+export function resolveCompileBunPath(
+  bunPath: string,
+  platform: NodeJS.Platform,
+  runPowerShell: PowerShellRunner,
+): string {
+  if (platform !== 'win32' || isAsciiPath(bunPath)) return bunPath;
+  const shortPathResult = runPowerShell(WINDOWS_SHORT_PATH_SCRIPT, { CLAUDE_MEM_BUN_PATH: bunPath });
+  if (shortPathResult.spawnErrorMessage !== null || shortPathResult.status !== 0) {
+    const lookupFailureDetail = shortPathResult.spawnErrorMessage
+      ?? (shortPathResult.stderr.trim() || `exit ${shortPathResult.status}`);
+    throw new Error(`Could not look up the 8.3 short path for Bun at ${bunPath} (needed because bun build --compile cannot read a non-ASCII path on Windows, #5038): ${lookupFailureDetail}`);
+  }
+  const shortPath = shortPathResult.stdout.trim();
+  if (isAsciiPath(shortPath)) return shortPath;
+  throw new Error(`Bun at ${bunPath} is on a path with non-ASCII characters, which bun build --compile cannot read on Windows, and Windows has no 8.3 short name for it; install Bun in a folder whose path is ASCII only (for example C:\\bun), then run \`npx claude-mem install\``);
+}
+
 /**
  * Read-check-append-write of the USER Path in one PowerShell process; the Path
  * value never round-trips through Node. Only the directory goes in (by env
@@ -374,6 +406,19 @@ const runPowerShellHidden: PowerShellRunner = (script, extraEnvironment) => {
  * - Raw registry writes do not notify Explorer; setting and clearing a dummy
  *   variable through `SetEnvironmentVariable(..., 'User')` broadcasts
  *   WM_SETTINGCHANGE so new terminals pick up the change.
+ * - Guards (#5044): the script refuses to write `Path` when the launcher
+ *   directory env var is missing or empty, or when the new value would be
+ *   shorter than the existing one (an append can only grow the value), and it
+ *   backs the old value up to `%LOCALAPPDATA%\claude-mem\user-path.bak` first
+ *   — one bad run must never be able to blank the user Path. The backup is
+ *   written only when the existing value is non-empty, so a run after a
+ *   blanking never overwrites the last good copy; a failed backup is reported
+ *   on stderr (not `Write-Error`, which `Stop` would make terminating) and the
+ *   append continues.
+ * - The broadcast variable is removed with `DeleteValue`, not
+ *   `SetEnvironmentVariable(..., $null)`: PowerShell 5.1 passes `$null` to
+ *   .NET string parameters as `""`, which leaves the value behind as an empty
+ *   REG_SZ instead of deleting it.
  * - `setx` is never used: it truncates at 1024 characters.
  */
 export const WINDOWS_USER_PATH_APPEND_SCRIPT = [
@@ -382,12 +427,19 @@ export const WINDOWS_USER_PATH_APPEND_SCRIPT = [
   "$existingUserPath = [string]$environmentKey.GetValue('Path', '', 'DoNotExpandEnvironmentNames')",
   "$pathValueKind = if ($environmentKey.GetValueNames() -contains 'Path') { $environmentKey.GetValueKind('Path') } else { 'ExpandString' }",
   `$launcherDirectory = $env:${LAUNCHER_DIRECTORY_ENVIRONMENT_VARIABLE}`,
+  "if (-not $launcherDirectory) { 'missing-launcher-directory'; exit 1 }",
   "$normalizePathEntry = { param($pathEntry) [Environment]::ExpandEnvironmentVariables($pathEntry).Trim().Trim('\"').TrimEnd('\\') }",
   "if ($existingUserPath -split ';' | Where-Object { $_ -and ((& $normalizePathEntry $_) -ieq (& $normalizePathEntry $launcherDirectory)) }) { 'present'; exit 0 }",
   "$updatedUserPath = if ($existingUserPath -eq '') { $launcherDirectory } elseif ($existingUserPath.EndsWith(';')) { $existingUserPath + $launcherDirectory } else { \"$existingUserPath;$launcherDirectory\" }",
+  "if ($updatedUserPath.Length -lt $existingUserPath.Length) { 'shortened-user-path'; exit 1 }",
+  "$backupFile = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'claude-mem\\user-path.bak'",
+  "if ($existingUserPath) {",
+  "  try { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $backupFile) | Out-Null; [System.IO.File]::WriteAllText($backupFile, $existingUserPath) }",
+  "  catch { [Console]::Error.WriteLine(\"user-path-backup-failed: $($_.Exception.Message)\") }",
+  "}",
   "$environmentKey.SetValue('Path', $updatedUserPath, $pathValueKind)",
   "[Environment]::SetEnvironmentVariable('CLAUDE_MEM_PATH_BROADCAST', '1', 'User')",
-  "[Environment]::SetEnvironmentVariable('CLAUDE_MEM_PATH_BROADCAST', $null, 'User')",
+  "$environmentKey.DeleteValue('CLAUDE_MEM_PATH_BROADCAST', $false)",
   "'added'",
 ].join('\n');
 
@@ -473,15 +525,9 @@ export type LauncherCodesignRunner = (binaryPath: string) => {
   stderr: string;
 };
 
-/**
- * Ad-hoc re-signs the freshly compiled launcher (`codesign --force --sign -`).
- * Bun's `--compile` output carries an invalid code signature, and macOS 27
- * enforces signatures: the kernel SIGKILLs the binary on exec, before it can
- * print the protocol for the check that follows (#4778). Ad-hoc signing makes
- * the signature valid without any developer identity.
- */
-const runAdhocCodesign: LauncherCodesignRunner = (binaryPath) => {
-  const invocation = buildSpawnSyncInvocation('codesign', ['--force', '--sign', '-', binaryPath], {
+/** Runs one `codesign` invocation with its stderr captured for the caller's report. */
+const runCodesignCommand = (codesignArguments: readonly string[]): ReturnType<LauncherCodesignRunner> => {
+  const invocation = buildSpawnSyncInvocation('codesign', codesignArguments, {
     encoding: 'utf-8',
     // stdout is piped, never inherited: in a SessionStart hook it would be
     // injected into Claude's context.
@@ -494,6 +540,47 @@ const runAdhocCodesign: LauncherCodesignRunner = (binaryPath) => {
     stderr: codesignResult.stderr || (codesignResult.error ? codesignResult.error.message : ''),
   };
 };
+
+/** The `codesign` argv lists that ad-hoc sign `binaryPath`, in the order they must run. */
+const adhocCodesignArguments = (binaryPath: string): [clearSignature: string[], sign: string[]] => [
+  ['--remove-signature', binaryPath],
+  ['--force', '--sign', '-', binaryPath],
+];
+
+/**
+ * Ad-hoc re-signs the freshly compiled launcher.
+ *
+ * Bun's `--compile` output carries an invalid code signature, and macOS 27
+ * enforces signatures: the kernel SIGKILLs the binary on exec, before it can
+ * print the protocol for the check that follows (#4778). Ad-hoc signing makes
+ * the signature valid without any developer identity.
+ *
+ * The existing signature is removed first. `--force` replaces a signature
+ * codesign can parse, but refuses a malformed one — Bun 1.3.12's output fails
+ * with "invalid or unsupported format for signature", and the binary is then
+ * left unsigned (#4947). Removing first makes the re-sign succeed on that
+ * output and is harmless on a cleanly signed binary.
+ *
+ * Clearing is best effort: its result is ignored, so a missing signature, a
+ * missing `codesign`, or any other clear failure cannot stop the signing step.
+ * Bailing on a failed clear would skip signing entirely and leave the launcher
+ * unexecutable on macOS 27.
+ *
+ * `runCommand` is a seam for tests; production passes the real `codesign`
+ * spawn. The factory keeps the two-step order under test without spawning a
+ * process, so the order cannot drift from what the installer runs.
+ */
+export function createAdhocCodesigner(
+  runCommand: (codesignArguments: readonly string[]) => ReturnType<LauncherCodesignRunner>,
+): LauncherCodesignRunner {
+  return (binaryPath) => {
+    const [clearSignature, sign] = adhocCodesignArguments(binaryPath);
+    runCommand(clearSignature);
+    return runCommand(sign);
+  };
+}
+
+const runAdhocCodesign = createAdhocCodesigner(runCodesignCommand);
 
 /**
  * Who runs the ensure flow. The SessionStart self-heal never downgrades (an
@@ -617,8 +704,8 @@ function moveCompiledLauncherIntoPlace(
  * LauncherEnsureInvocationContext) nothing is compiled, but the cheap PATH
  * step still runs. `resolveBunPath` runs only when a compile is needed.
  * A foreign `claude-mem` at the launcher path is never replaced.
- * Throws on a missing bundle, a Bun older than 1.2.16 (#4933), a failed
- * compile or an unusable result.
+ * Throws on a missing bundle, a Bun older than 1.2.16 (#4933), a Windows Bun
+ * path with no ASCII form (#5038), a failed compile or an unusable result.
  */
 export function ensureLauncherOnPath(options: {
   pluginRoot: string;
@@ -675,6 +762,8 @@ export function ensureLauncherOnPath(options: {
     throw new Error(`Bun ${bunVersion} at ${bunPath} is older than ${MINIMUM_BUN_VERSION_FOR_BUN_BE_BUN}, which the claude-mem launcher needs; run \`bun upgrade\` (or update Bun with your version manager), then \`npx claude-mem install\``);
   }
 
+  const compileBunPath = resolveCompileBunPath(bunPath, host.platform, options.runPowerShell ?? runPowerShellHidden);
+
   mkdirSync(binDirectory, { recursive: true });
   removeStalePlacementLeftovers(binDirectory, platformPath);
   // Compile beside the target, then rename over it, so two concurrent
@@ -685,7 +774,7 @@ export function ensureLauncherOnPath(options: {
   const runCodesign = options.runCodesign ?? runAdhocCodesign;
   try {
     const compileResult = runCompile(
-      bunPath,
+      compileBunPath,
       buildLauncherCompileArguments(launcherBundlePath, temporaryOutfilePath),
       binDirectory,
     );
@@ -696,10 +785,12 @@ export function ensureLauncherOnPath(options: {
     // Best effort: when signing is unavailable or fails (no codesign on the
     // machine, odd filesystem), probe anyway and report through the existing
     // errors — the probe, not the signing, decides whether the binary runs.
+    let codesignFailure: string | null = null;
     if (host.platform === 'darwin') {
       const codesignResult = runCodesign(temporaryOutfilePath);
       if (codesignResult.status !== 0) {
-        logger.warn(`codesign --force --sign - failed (exit ${codesignResult.status}): ${codesignResult.stderr.trim().split('\n').pop() ?? ''}; the launcher may not start on macOS versions that enforce valid code signatures`);
+        codesignFailure = `codesign --force --sign - failed (exit ${codesignResult.status}): ${codesignResult.stderr.trim().split('\n').pop() ?? ''}`;
+        logger.warn(`${codesignFailure}; the launcher may not start on macOS versions that enforce valid code signatures`);
       }
     }
     // Verified before the move: after it, a concurrent session may already
@@ -707,7 +798,11 @@ export function ensureLauncherOnPath(options: {
     const compiledProbe = probeCompiledLauncher(temporaryOutfilePath, host.platform);
     if (compiledProbe.protocol !== LAUNCHER_PROTOCOL) {
       const probeFailure = compiledProbe.failure ? ` (--version ${compiledProbe.failure})` : '';
-      throw new Error(`compiled launcher printed protocol ${compiledProbe.protocol}, expected ${LAUNCHER_PROTOCOL}${probeFailure}`);
+      // An unusable signature is the usual reason the probe cannot run the
+      // binary (macOS SIGKILLs it on exec), and its stderr is the actionable
+      // half: the protocol message alone reads like a broken build.
+      const signFailure = codesignFailure ? `; ${codesignFailure}` : '';
+      throw new Error(`compiled launcher printed protocol ${compiledProbe.protocol}, expected ${LAUNCHER_PROTOCOL}${probeFailure}${signFailure}`);
     }
     moveCompiledLauncherIntoPlace(temporaryOutfilePath, binaryPath, binDirectory, host.platform);
   } finally {

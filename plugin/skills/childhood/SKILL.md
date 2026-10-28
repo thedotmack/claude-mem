@@ -26,7 +26,7 @@ Choose the checks relevant to its delivery surfaces; independent checks can run 
 
 For a claude-mem search release, exercise Smart search as three separate calls: search for an index, timeline for context, and get_observations for only the selected records. Exercise optional dumb_search explicitly where available, and readable invalid-input guidance through fresh local and hosted MCP connections when those surfaces shipped. Verify that Smart is the default, no auto or guided mode or continuation cursor is exposed, and tool results are concise text without pure JSON or duplicated structured metadata. Keep probes read-only unless writes are part of the explicit test scope. Never print credentials or private result bodies.
 
-Publication can lag behind a successful command. An exact-version 404 or stale distribution tag remains pending until the registry agrees; use bounded retries and investigate the actual publish target/status before republishing. A warning alone is not a regression: verify the final artifact. Likewise, a failed automated publish job may be superseded by a verified authorized manual publish; retain the workflow failure as a separate finding.
+Publication can lag behind a successful command. An exact-version 404 or stale distribution tag remains pending until the registry agrees; use bounded retries and investigate the actual publish target/status before republishing. A warning alone is not a regression: verify the final artifact. When the repository publishes through CI, a failed publish job is a finding to fix through the normal release path, not to cover with a manual publish; for claude-mem, also confirm the published version carries a provenance attestation.
 
 ## Observe and repair
 
