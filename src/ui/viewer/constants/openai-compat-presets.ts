@@ -22,6 +22,7 @@ export const OPENAI_COMPAT_PRESET_OPTIONS: readonly OpenAICompatPresetOption[] =
   { id: 'opper', label: 'Opper (opper.ai)', baseUrl: 'https://api.opper.ai/v3/compat', defaultModel: 'gpt-5.4-mini' },
   { id: 'atlascloud', label: 'Atlas Cloud (atlascloud.ai)', baseUrl: 'https://api.atlascloud.ai/v1', defaultModel: 'deepseek-ai/deepseek-v4-flash' },
   { id: 'runcrate', label: 'Runcrate (runcrate.ai)', baseUrl: 'https://api.runcrate.ai/v1', defaultModel: 'deepseek-ai/DeepSeek-V4.1-Flash' },
+  { id: 'cheapaimodel', label: 'cheapaimodel (cheapaimodel.ai)', baseUrl: 'https://api.cheapaimodel.ai/v1', defaultModel: 'deepseek-v4-1-flash' },
   { id: 'deepseek', label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', defaultModel: 'deepseek-chat' },
   { id: 'opencode-go', label: 'OpenCode Go (opencode.ai)', baseUrl: 'https://opencode.ai/zen/go/v1', defaultModel: 'kimi-k3' },
   { id: 'opencode-zen', label: 'OpenCode Zen (opencode.ai)', baseUrl: 'https://opencode.ai/zen/v1', defaultModel: '' },
