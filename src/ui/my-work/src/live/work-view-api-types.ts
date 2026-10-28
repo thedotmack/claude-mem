@@ -109,6 +109,8 @@ export interface WorkViewHumanRequest {
   id: string
   contentFingerprint: string
   title: string
+  groupId?: string | null
+  titleSource?: 'request-group' | 'title-cache' | 'explicit-work-state-request' | 'original-human-request'
   original: WorkViewPrompt
   scopeUpdates: WorkViewPrompt[]
   humanCopy: WorkViewHumanCopy | null

@@ -19,6 +19,7 @@ import type { UsableAgentId } from '../agent-runner/detect.js';
 import { runCommand } from '../agent-runner/detect.js';
 import { writeOwnerPromptsFile, type OwnerPromptsFile } from '../prompt-import/owner-prompts-file.js';
 import { resolvePythonCommand } from './python.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { FOCUS_BATCH, readGoals, readLedger, runCli, validateFocusAnswer, validateGroupingAnswer, type FocusInput, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
 import { FOCUS_AUTO_PLACE_THRESHOLD, judgeFocusBatch, placesAlone, type FocusJudge, type FocusJudgement } from './focus-judge.mjs';
 import { isWithdrawnArea, PROPOSAL_KINDS, readFocusAreas, type FocusArea, type RouterFocusBody } from './my-focus.mjs';
@@ -32,6 +33,19 @@ const PLUGIN_MCP_PREFIX = 'mcp__plugin_claude-mem_mcp-search__';
 const REVIEW_BATCH = 8;
 /** save_goals.py's FAILED_AFTER_WRITING_EXIT: it failed after its first write, so the goals step must not ask again. */
 const SAVE_GOALS_FAILED_AFTER_WRITING_EXIT = 3;
+/**
+ * Review batches running at the same time. Each batch is one agent process, so this follows the
+ * owner's cap on concurrent agent subprocesses, CLAUDE_MEM_MAX_CONCURRENT_AGENTS (default 2), rather
+ * than a number of its own. Read on every run, so raising the setting takes effect without a restart.
+ */
+export function reviewConcurrency(dataDir: string): number {
+  // A 0, negative or non-numeric value would start no review lanes and skip every review without a failure,
+  // so each source is used only when it is a positive count: settings file, then environment, then built-in default.
+  const positive = (value: string | undefined) => { const count = parseInt(value ?? '', 10); return Number.isFinite(count) && count >= 1 ? count : null; };
+  return positive(SettingsDefaultsManager.loadFromFile(join(dataDir, 'settings.json'), true, { readOnly: true }).CLAUDE_MEM_MAX_CONCURRENT_AGENTS)
+    ?? positive(SettingsDefaultsManager.get('CLAUDE_MEM_MAX_CONCURRENT_AGENTS'))
+    ?? parseInt(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_MAX_CONCURRENT_AGENTS, 10);
+}
 
 /** The model each step runs on. Small, fast models match conversations and goals; stronger ones judge
  * progress, write the story and pick verbatim quotes. Codex's careful steps use its CLI default model.
@@ -253,13 +267,13 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       try { return await work(); }
       finally { steps.push({ step: name, agent, startedAt, finishedAt: new Date(now()).toISOString(), ...extra }); }
     };
-    /** Ask, save, and on a refusal (unreadable JSON or a validator's) ask once more with the reason.
+    /** Ask, save, and on a refusal (unreadable JSON or a validator's) ask once more with the answer and reason.
      * A step refused twice fails with its last raw answer kept in failed-answers/ for diagnosis. */
     const step = <T>(name: Step, question: string, save: (answer: any) => T | Promise<T>, answerSchema?: AnswerSchema): Promise<T> => timed(name, async () => {
       let refusal: string | null = null;
       let answer = '';
       for (let attempt = 0; attempt < 2; attempt++) {
-        answer = await ask(refusal ? `${question}\n\nYour previous answer was refused: ${refusal}\nFix it and answer again.` : question, STEP_MODELS[name], answerSchema);
+        answer = await ask(refusal ? `${question}\n\nYour previous answer was refused: ${refusal}\nRejected answer:\n${answer}\n\nFix it and answer again.` : question, STEP_MODELS[name], answerSchema);
         try { return await save(parseAgentJson(answer)); }
         catch (error) {
           // A save that failed after it started writing is not the answer's fault, and asking again would write twice.
@@ -364,30 +378,43 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       const reviewBatch = async (groups: Array<{ groupId: string }>) => {
         let shows = groups.map(group => cli(['show', group.groupId]));
         let refusals: string[] = [];
+        let rejectedReviews: Array<{ groupId?: string }> = [];
         for (let attempt = 0; attempt < 2 && shows.length; attempt++) {
           const text = await ask([
             requestProgress, '---', readOnly,
             `Do only section 2's review for the groups whose \`show\` output is in ${writeInput('show', shows)}: decide each one from the evidence as the reviewer task describes (amend the previous review for a group in "amend" mode). Reply with only {"reviews": [<one record-progress input per group, with reviewBasis copied verbatim from its show output>]}.`,
-            refusals.length ? `Your previous answer was refused for these groups:\n${refusals.join('\n')}\nFix them and answer again for those groups only.` : '',
+            refusals.length ? `Your previous answer was refused for these groups:\n${refusals.join('\n')}\nFix them and answer again for those groups only. Here are the rejected reviews to correct, preserving their evidence and reviewBasis:\n${JSON.stringify(rejectedReviews)}` : '',
           ].join('\n\n'), STEP_MODELS.review);
           let reviews: Array<{ groupId?: string }> = [];
           try { const answer = parseAgentJson(text); reviews = Array.isArray(answer.reviews) ? answer.reviews : []; }
           catch { /* Every group in this batch is refused below as "no review was given". */ }
           refusals = [];
+          rejectedReviews = [];
           const recorded = new Set<string>();
           for (const review of reviews) {
             try { cli(['record-progress'], review); recorded.add(String(review.groupId)); reviewed++; }
-            catch (error) { refusals.push(`${review.groupId}: ${error instanceof Error ? error.message : String(error)}`); }
+            catch (error) { rejectedReviews.push(review); refusals.push(`${review.groupId}: ${error instanceof Error ? error.message : String(error)}`); }
           }
           shows = shows.filter(show => !recorded.has(show.groupId));
           for (const show of shows) if (!refusals.some(line => line.startsWith(`${show.groupId}:`))) refusals.push(`${show.groupId}: no review was given.`);
         }
         if (shows.length) throw new Error(`reviews: ${refusals.join('; ').slice(0, 500)}`);
       };
-      // Batches are independent, so they run at once; every batch finishes (and saves) before a failure is reported.
+      // Batches are independent, so a few run at once; every batch finishes (and saves) before a failure is reported.
+      // Not all at once: each batch is its own agent process, and a large backlog (Oct 25: ~1,100 due groups,
+      // 138 batches) started every one of them in the same millisecond.
       const batches: Array<Array<{ groupId: string }>> = [];
       for (let index = 0; index < due.length; index += REVIEW_BATCH) batches.push(due.slice(index, index + REVIEW_BATCH));
-      const failed = (await Promise.allSettled(batches.map(batch => timed('review', () => reviewBatch(batch), { groups: batch.length })))).filter(outcome => outcome.status === 'rejected');
+      const outcomes: PromiseSettledResult<void>[] = [];
+      let next = 0;
+      const lane = async () => {
+        while (next < batches.length) {
+          const batch = batches[next++];
+          outcomes.push(...await Promise.allSettled([timed('review', () => reviewBatch(batch), { groups: batch.length })]));
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(reviewConcurrency(dataDir), batches.length) }, lane));
+      const failed = outcomes.filter(outcome => outcome.status === 'rejected');
       if (failed.length) throw (failed[0] as PromiseRejectedResult).reason;
       if (reviewed) done.push(`${reviewed} requests reviewed`);
 

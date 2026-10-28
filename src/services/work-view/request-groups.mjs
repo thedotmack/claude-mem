@@ -275,7 +275,9 @@ function boundedText(value, max, label, optional = false) {
   return value.trim();
 }
 
-const evidenceList = (value) => (Array.isArray(value) ? value : []).map(String).slice(0, 8);
+// Models sometimes answer one citation as a plain string instead of a list (Oct 25: a review's
+// `evidence: "obs 101"` threw `.map is not a function` and failed the whole refresh run).
+const evidenceList = (value, limit = 8) => (Array.isArray(value) ? value : typeof value === 'string' && value.trim() ? [value] : []).map(String).slice(0, limit);
 
 // How released work landed: where it shipped, whether anyone uses it, whether
 // it was worth it, what it broke, and why each change was made. Every judgment
@@ -330,7 +332,7 @@ export function validateProgress(entry, knownGroups) {
     narrative: boundedText(entry.narrative, 1200, 'narrative', true),
     milestones: milestones.map((milestone, index) => {
       if (!isIsoOrNull(milestone.at ?? null)) throw new TypeError(`milestones[${index}].at must be an ISO date or null.`);
-      return { at: milestone.at ?? null, text: boundedText(milestone.text, 200, `milestones[${index}].text`), evidence: (milestone.evidence ?? []).map(String).slice(0, 6) };
+      return { at: milestone.at ?? null, text: boundedText(milestone.text, 200, `milestones[${index}].text`), evidence: evidenceList(milestone.evidence, 6) };
     }),
     preferences: preferences.map((preference, index) => {
       if (!PREFERENCE_KINDS.includes(preference.kind)) throw new TypeError(`preferences[${index}].kind must be one of ${PREFERENCE_KINDS.join(', ')}.`);
@@ -338,7 +340,7 @@ export function validateProgress(entry, knownGroups) {
       return { kind: preference.kind, preference: boundedText(preference.preference, 200, `preferences[${index}].preference`), quote: boundedText(preference.quote, 300, `preferences[${index}].quote`), at: preference.at ?? null };
     }),
     outcome: validateOutcome(entry.outcome),
-    evidence: (entry.evidence ?? []).map(String).slice(0, 20),
+    evidence: evidenceList(entry.evidence, 20),
     // What the reviewer actually saw: later activity or membership changes make it due again.
     reviewedThrough: new Date(Date.parse(basis.checkedThrough)).toISOString(),
     reviewedConversations: [...new Set(basis.conversations)].sort(),
@@ -369,10 +371,90 @@ export function reviewIsCurrent(review, conversationKeys, lastActivityEpoch) {
 }
 
 export const STORY_NARRATIVE_MAX = 12000;
+// What a story aims for, well under the cap. Aimed at the cap, updates kept landing just over it (Oct 24–26: nine
+// answers refused at 12,108–13,614), and one update can add ~3,000 characters (7,026 → 10,030 after 12 groups were
+// re-reviewed). 8,000 leaves that much headroom; stories condensed by hand to 6,530–7,351 kept the whole history.
+export const STORY_NARRATIVE_TARGET = 8000;
+// The recap's share of the target (My Work shows it); the chapters split the rest evenly, down to a floor that
+// still holds a dated sentence or two.
+export const STORY_RECAP_BUDGET = 800;
+const STORY_CHAPTER_MIN_BUDGET = 300;
+// Characters per word in a story (11,876 characters / 1,985 words, Oct 27), for a part with no words yet.
+const STORY_CHARS_PER_WORD = 6;
+// Parts a refusal names, furthest over budget first, so the message stays short.
+const STORY_REFUSAL_PARTS = 6;
+
+/** The story split at its `## ` chapter headings: the recap first, then each chapter with its heading. */
+function storyPieces(narrative) {
+  const pieces = [''];
+  // The open code fence, as CommonMark reads one: up to 3 spaces of indent, then 3 or more backticks or tildes.
+  // Only a fence of the same character, at least as long and with nothing after it, closes it, so a ``` example
+  // inside a ```` fence stays inside, and so does any `## ` line in it.
+  let fence = null;
+  for (const line of (typeof narrative === 'string' ? narrative : '').split(/(?<=\n)/)) {
+    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line.replace(/\r?\n$/, ''));
+    if (fence) {
+      if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = null;
+    } else if (marker && !(marker[1][0] === '`' && marker[2].includes('`'))) fence = marker[1];
+    else if (line.startsWith('## ')) pieces.push('');
+    pieces[pieces.length - 1] += line;
+  }
+  return pieces;
+}
+
+/**
+ * How many of the oldest chapters to merge into one so every chapter's budget fits the target again. Past
+ * (target - recap) / floor chapters (24), the floor makes the budgets add up to more than the target, so a story
+ * can be over the cap with no part over its budget, and condensing parts alone cannot bring it back. 0 when the
+ * budgets fit.
+ */
+export function storyChaptersToMerge(narrative) {
+  const chapters = storyPieces(narrative).length - 1;
+  const fit = Math.floor((STORY_NARRATIVE_TARGET - STORY_RECAP_BUDGET) / STORY_CHAPTER_MIN_BUDGET);
+  return chapters > fit ? chapters - fit + 1 : 0;
+}
+
+/**
+ * The story's recap and `## ` chapters with their lengths and budgets, counted here so the writer never has to.
+ * Told to cut N characters from "the oldest finished chapters" only, an update cut 1,457 of the 3,876 asked
+ * (Oct 27): the recap and the chapters under review held 5,826 of 11,876 characters and were off limits.
+ * Budgets go in words as well, at the part's own characters per word: given only character budgets, a writer
+ * cut a 2,492-character chapter to 1,891 against a budget of 800. `## ` lines inside code fences are not chapters,
+ * and a story without chapters keeps the whole target as its recap budget.
+ */
+export function storyParts(narrative) {
+  const [recap, ...chapters] = storyPieces(narrative);
+  const chapterBudget = Math.max(STORY_CHAPTER_MIN_BUDGET, Math.floor((STORY_NARRATIVE_TARGET - STORY_RECAP_BUDGET) / Math.max(1, chapters.length)));
+  return [
+    { part: 'recap', text: recap, budgetChars: chapters.length ? STORY_RECAP_BUDGET : STORY_NARRATIVE_TARGET },
+    ...chapters.map((chapter) => ({ part: chapter.split('\n', 1)[0].replace(/^## /, '').trim(), text: chapter, budgetChars: chapterBudget })),
+  ].map(({ part, text, budgetChars }) => {
+    const words = text.split(/\s+/).filter(Boolean).length;
+    const charsPerWord = words ? text.length / words : STORY_CHARS_PER_WORD;
+    return { part, chars: text.length, words, budgetChars, budgetWords: Math.max(1, Math.floor(budgetChars / charsPerWord)), overBudgetChars: Math.max(0, text.length - budgetChars) };
+  });
+}
 
 export function validateStory(story) {
   const preferences = story?.preferences ?? [];
   if (!Array.isArray(preferences) || preferences.length > 30) throw new TypeError('preferences must be an array of at most 30.');
+  // The refusal names the target and the parts furthest over budget, so the retry condenses toward the target
+  // instead of landing just under the cap again.
+  const narrativeChars = typeof story?.narrative === 'string' ? story.narrative.length : 0;
+  if (narrativeChars > STORY_NARRATIVE_MAX) {
+    const over = storyParts(story.narrative).filter((part) => part.overBudgetChars > 0).sort((a, b) => b.overBudgetChars - a.overBudgetChars);
+    const named = over.slice(0, STORY_REFUSAL_PARTS).map((part) => `${part.part === 'recap' ? 'the recap' : `"${part.part.slice(0, 60)}"`} ${part.chars} → ${part.budgetChars} characters (about ${part.budgetWords} words)`);
+    const more = over.length > STORY_REFUSAL_PARTS ? `; ${over.length - STORY_REFUSAL_PARTS} more parts are over their budgets too` : '';
+    // Too many chapters: their budgets add up to more than the target, so no part may be over budget at all.
+    // Then the oldest chapters are merged first, and the refusal names them.
+    const merge = storyChaptersToMerge(story.narrative);
+    const chapters = storyParts(story.narrative).slice(1, merge + 1).map((part) => `"${part.part.slice(0, 60)}"`);
+    const steps = [
+      ...(merge ? [`merge the ${merge} oldest chapters (${chapters[0]} through ${chapters[chapters.length - 1]}) into one chapter of at most ${STORY_CHAPTER_MIN_BUDGET} characters`] : []),
+      ...(named.length ? [`rewrite the parts furthest over their budgets: ${named.join('; ')}${more}`] : []),
+    ];
+    throw new TypeError(`narrative is ${narrativeChars} characters; it must be 1–${STORY_NARRATIVE_MAX}. Bring it to about ${STORY_NARRATIVE_TARGET} characters: ${steps.join(', then ') || 'condense every part'}.`);
+  }
   return {
     narrative: boundedText(story?.narrative, STORY_NARRATIVE_MAX, 'narrative'),
     preferences: preferences.map((preference, index) => ({
@@ -871,8 +953,12 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
     // so the agent is told the budget and the previous story's length up front.
     // With only the limit and length, an update at 11,836 of 12,000 still added ~1,300 characters and condensed nothing (Oct 24),
     // so the room left is spelled out as well.
+    // With room counted up to the cap, updates still aimed at the cap and landed over it (Oct 24–26), so the room is
+    // counted up to the target, and a previous story past the target is first condensed back to it, part by part.
     const previousNarrativeChars = story?.narrative?.length ?? 0;
-    return print({ groups: Object.keys(groups.groups).length, update, narrativeLimit: STORY_NARRATIVE_MAX, previousNarrativeChars, roomChars: STORY_NARRATIVE_MAX - previousNarrativeChars,
+    return print({ groups: Object.keys(groups.groups).length, update, narrativeTarget: STORY_NARRATIVE_TARGET, narrativeLimit: STORY_NARRATIVE_MAX, previousNarrativeChars,
+      roomChars: Math.max(0, STORY_NARRATIVE_TARGET - previousNarrativeChars), condenseChars: Math.max(0, previousNarrativeChars - STORY_NARRATIVE_TARGET),
+      previousParts: update ? storyParts(story.narrative) : [], mergeOldestChapters: update ? storyChaptersToMerge(story.narrative) : 0,
       reviews: update ? reviews.filter((review) => Date.parse(review.changedAt ?? review.checkedAt) > writtenAt) : reviews,
       // Rules owner-goals put in the story are its own (record-story carries them over): shown here, the story model
       // would echo them back without their source and when, leaving copies a later owner-goals save cannot replace.

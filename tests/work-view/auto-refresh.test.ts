@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AutoRefreshWorker } from '../../src/services/work-view/auto-refresh-worker.mjs';
-import { buildRefreshTask, FOCUS_ANSWER_SCHEMA, GROUPING_ANSWER_SCHEMA, STEP_MODELS } from '../../src/services/work-view/refresh-task.js';
+import { buildRefreshTask, FOCUS_ANSWER_SCHEMA, GROUPING_ANSWER_SCHEMA, reviewConcurrency, STEP_MODELS } from '../../src/services/work-view/refresh-task.js';
 import { readLedger, runCli } from '../../src/services/work-view/request-groups.mjs';
 import { scratchDir } from '../helpers/scratch-dir.js';
 import { everyRequestInOther, focusInputFrom, focusWriter, isOtherPass } from '../helpers/fake-focus-writer.js';
@@ -130,6 +130,38 @@ describe('automatic refresh scheduler', () => {
       writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: {} }));
       expect(await worker.runNow({ reason: 'manual' })).toBe('failed');
       expect(worker.status()).toMatchObject({ state: 'failed', agent: 'gemini', error: 'gemini exited 1' });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('after failed runs the next scheduled one waits twice as long each time, up to four hours; a run that works resets it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
+    try {
+      const MINUTE = 60000;
+      let now = NOW, works = false, runs = 0;
+      const worker = new AutoRefreshWorker({ localDeviceId: () => '', dir, openDatabase: handle(fixtureDatabase()), now: () => now, runJob: async () => {
+        runs++;
+        return works ? { state: 'ok', agent: 'claude-code', result: 'done', error: null } : { state: 'failed', agent: 'claude-code', result: null, error: 'reviews: g_1: no review was given.' };
+      } });
+      expect(await worker.check()).toBe('failed');
+      expect(worker.status()).toMatchObject({ failures: 1, nextAt: new Date(now + 10 * MINUTE).toISOString() });
+      now += 10 * MINUTE;
+      expect(await worker.check()).toBe('failed');
+      expect(worker.status()).toMatchObject({ failures: 2, nextAt: new Date(now + 20 * MINUTE).toISOString() });
+      now += 10 * MINUTE;
+      expect(await worker.check()).toBe('backing-off');
+      expect(runs).toBe(2);
+      now += 10 * MINUTE;
+      expect(await worker.check()).toBe('failed');
+      expect(worker.status()).toMatchObject({ failures: 3, nextAt: new Date(now + 40 * MINUTE).toISOString() });
+      // The wait stops growing at four hours.
+      writeFileSync(join(dir, 'refresh.json'), JSON.stringify({ ...worker.status(), failures: 20, nextAt: new Date(now).toISOString() }));
+      expect(await worker.check()).toBe('failed');
+      expect(worker.status()).toMatchObject({ failures: 21, nextAt: new Date(now + 240 * MINUTE).toISOString() });
+      // An explicit run is not held back, and one that works goes back to the ten-minute check.
+      works = true;
+      expect(await worker.runNow({ reason: 'manual' })).toBe('ok');
+      expect(worker.status().failures).toBeUndefined();
+      expect(worker.status().nextAt).toBe(new Date(now + 10 * MINUTE).toISOString());
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
@@ -377,6 +409,78 @@ describe('focus step', () => {
   });
 });
 
+describe('story repair', () => {
+  it('returns the rejected story to the fresh call so it can preserve evidence while shortening it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-story-repair-'));
+    const database = fixtureDatabase();
+    try {
+      const decisions = join(dir, 'decisions.json');
+      writeFileSync(decisions, JSON.stringify({ groups: [{ title: 'Release cards', conversations: [key('a')] }] }));
+      runCli(['apply', decisions], { dir, database, now: NOW, print: () => {} });
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 1, ungrouped: 0, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
+      const preferences = [{ preference: 'Show verified results.', kind: 'directive', supportCount: 2, quotes: [] }];
+      const rejected = JSON.stringify({ narrative: 'Keep the verified release evidence. ' + 'x'.repeat(12000), preferences });
+      let storyAttempts = 0;
+      const ask = async (prompt: string) => {
+        if (prompt.includes('Do only section 2')) {
+          const [show] = JSON.parse(readFileSync(/is in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+          return JSON.stringify({ reviews: [{ groupId: show.groupId, state: 'in-progress', percent: 40, summary: 'Release cards are being built.', reviewBasis: show.reviewBasis }] });
+        }
+        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+        expect(prompt).toContain('Do only section 4');
+        if (storyAttempts++ === 0) return rejected;
+        expect(prompt).toContain('Your previous answer was refused:');
+        expect(prompt).toContain('12000');
+        expect(prompt).toContain(rejected);
+        return JSON.stringify({ narrative: 'Verified release evidence retained.', preferences });
+      };
+      expect(await task.run(ask, 'claude-code')).toBe('1 requests reviewed, 1 requests placed, story written.');
+      expect(storyAttempts).toBe(2);
+      expect(readLedger(dir).story.narrative).toBe('Verified release evidence retained.');
+      expect(readLedger(dir).story.preferences).toEqual(preferences);
+    } finally { database.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('review repair', () => {
+  it.each(['narrative', 'summary'])('returns the rejected review so an oversized %s can be corrected without repeating accepted groups', async (field) => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-review-repair-'));
+    const database = fixtureDatabase();
+    try {
+      database.prepare('INSERT INTO sdk_sessions VALUES (?, ?, ?, ?, ?, ?, ?)').run(2, 'claude', 'b', 'm2', 'repo/tree', 'Build another feature', NOW - 2 * DAY);
+      database.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)').run(2, 1, 'Build another feature', NOW - 2 * DAY);
+      const decisions = join(dir, 'decisions.json');
+      writeFileSync(decisions, JSON.stringify({ groups: ['a', 'b'].map(session => ({ title: `Feature ${session}`, conversations: [key(session)] })) }));
+      runCli(['apply', decisions], { dir, database, now: NOW, print: () => {} });
+      const refresh = buildRefreshTask({ localDeviceId: () => '', needs: { due: 2, ungrouped: 0, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
+      const oversized = 'Retain the evidence while shortening this review. ' + 'x'.repeat(1257);
+      let attempts = 0, rejectedReview: any, acceptedId = '';
+      const ask = async (prompt: string) => {
+        if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'Work continues.' });
+        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+        const shows = JSON.parse(readFileSync(/is in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+        attempts++;
+        if (attempts === 1) {
+          expect(shows).toHaveLength(2);
+          acceptedId = shows[0].groupId;
+          rejectedReview = { groupId: shows[1].groupId, state: 'in-progress', percent: 30, summary: 'Under way.', [field]: oversized, evidence: ['observation 42'], reviewBasis: shows[1].reviewBasis };
+          return JSON.stringify({ reviews: [{ groupId: acceptedId, state: 'in-progress', percent: 10, summary: 'Already accepted review.', reviewBasis: shows[0].reviewBasis }, rejectedReview] });
+        }
+        expect(shows.map((show: any) => show.groupId)).toEqual([rejectedReview.groupId]);
+        expect(prompt).toContain(JSON.stringify(rejectedReview));
+        expect(prompt).not.toContain('Already accepted review.');
+        return JSON.stringify({ reviews: [{ ...rejectedReview, [field]: 'Evidence preserved in a shorter review.' }] });
+      };
+      expect(await refresh.run(ask, 'claude-code')).toBe('2 requests reviewed, 2 requests placed, story written.');
+      expect(attempts).toBe(2);
+      const progress = readLedger(dir).progress;
+      expect(progress[rejectedReview.groupId][field]).toBe('Evidence preserved in a shorter review.');
+      expect(progress[rejectedReview.groupId].evidence).toEqual(['observation 42']);
+      expect(progress[acceptedId].readings).toHaveLength(1);
+    } finally { database.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
 describe('parallel reviews', () => {
   it('review batches run at the same time, and every batch is saved', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-parallel-'));
@@ -412,6 +516,66 @@ describe('parallel reviews', () => {
       expect(task.steps.map(timing => [timing.step, timing.agent, timing.groups])).toEqual([['review', 'claude-code', 8], ['review', 'claude-code', 2], ['focus', 'claude-code', undefined], ['focus', 'claude-code', undefined], ['story', 'claude-code', undefined]]);
       expect(task.steps.every(timing => timing.startedAt === new Date(NOW).toISOString() && timing.finishedAt === timing.startedAt)).toBe(true);
       expect(Object.keys(readLedger(dir).progress)).toHaveLength(10);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('an invalid CLAUDE_MEM_MAX_CONCURRENT_AGENTS never leaves zero review lanes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-lanes-'));
+    const saved = process.env.CLAUDE_MEM_MAX_CONCURRENT_AGENTS;
+    try {
+      const lanesWith = (file: string | null, environment: string | undefined) => {
+        if (file === null) rmSync(join(dir, 'settings.json'), { force: true });
+        else writeFileSync(join(dir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_MAX_CONCURRENT_AGENTS: file }));
+        if (environment === undefined) delete process.env.CLAUDE_MEM_MAX_CONCURRENT_AGENTS;
+        else process.env.CLAUDE_MEM_MAX_CONCURRENT_AGENTS = environment;
+        return reviewConcurrency(dir);
+      };
+      for (const invalid of ['0', '-1', 'many']) {
+        expect(lanesWith(invalid, invalid)).toBe(2);
+        expect(lanesWith(null, invalid)).toBe(2);
+        expect(lanesWith(invalid, '4')).toBe(4);
+      }
+      expect(lanesWith('3', undefined)).toBe(3);
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_MEM_MAX_CONCURRENT_AGENTS;
+      else process.env.CLAUDE_MEM_MAX_CONCURRENT_AGENTS = saved;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a large backlog runs at most CLAUDE_MEM_MAX_CONCURRENT_AGENTS batches at once, and every batch is saved', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-parallel-'));
+    try {
+      const database = fixtureDatabase();
+      const sessions = Array.from({ length: 39 }, (_, index) => `s${index}`);
+      sessions.forEach((session, index) => {
+        database.prepare('INSERT INTO sdk_sessions VALUES (?, ?, ?, ?, ?, ?, ?)').run(index + 2, 'claude', session, `m${index + 2}`, 'repo/tree', `Build feature ${session}`, NOW - 2 * DAY);
+        database.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)').run(index + 2, 1, `Build feature ${session}`, NOW - 2 * DAY);
+      });
+      const decisions = join(dir, 'decisions.json');
+      writeFileSync(decisions, JSON.stringify({ groups: ['a', ...sessions].map(session => ({ title: `Feature ${session}`, conversations: [key(session)] })) }));
+      runCli(['apply', decisions], { dir, database, now: NOW, print: () => {} });
+      // The owner's agent-subprocess cap sets the lanes; 3 here so the bound differs from the default of 2.
+      writeFileSync(join(dir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_MAX_CONCURRENT_AGENTS: '3' }));
+      const lanes = reviewConcurrency(dir);
+      expect(lanes).toBe(3);
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 40, ungrouped: 0, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
+      let inFlight = 0, most = 0;
+      const lanesFull = deferred<void>();
+      const ask = async (prompt: string) => {
+        if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'Forty features under way.' });
+        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+        const shows = JSON.parse(readFileSync(/is in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+        most = Math.max(most, ++inFlight);
+        if (inFlight === lanes) lanesFull.resolve();
+        await lanesFull.promise;
+        inFlight--;
+        return JSON.stringify({ reviews: shows.map((show: any) => ({ groupId: show.groupId, state: 'in-progress', percent: 30, summary: 'Under way.', reviewBasis: show.reviewBasis })) });
+      };
+      expect(await task.run(ask, 'claude-code')).toBe('40 requests reviewed, 40 requests placed, story written.');
+      expect(most).toBe(lanes);
+      expect(task.steps.filter(timing => timing.step === 'review')).toHaveLength(5);
+      expect(Object.keys(readLedger(dir).progress)).toHaveLength(40);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

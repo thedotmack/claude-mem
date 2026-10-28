@@ -145,6 +145,7 @@ work.
 | `CLAUDE_MEM_OPENAI_COMPAT_PRESET` | `''` (= `custom`) | Named endpoint preset from the table above |
 | `CLAUDE_MEM_OPENAI_COMPAT_BASE_URL` | preset's | OpenAI-compatible base URL. `/chat/completions` is appended if absent |
 | `CLAUDE_MEM_OPENAI_COMPAT_MODEL` | preset's | Model id, passed verbatim |
+| `CLAUDE_MEM_OPENAI_COMPAT_OBSERVATION_BATCH_SIZE` | `1` | Queued tool events per observer request (1–32); see [Observation batching](#observation-batching) |
 | `CLAUDE_MEM_OPENAI_COMPAT_REASONING` | `''` (= off) | `off` sends `reasoning: { enabled: false }` on every request. `on` leaves reasoning to the endpoint |
 | `CLAUDE_MEM_OPENAI_COMPAT_API_KEY` | `''` | API key. Also read from `OPENAI_COMPAT_API_KEY` in `~/.claude-mem/.env` |
 | `CLAUDE_MEM_OPENAI_COMPAT_API_KEYS` | `''` | Extra keys for rotation — see [multi-key rotation](/usage/multi-key-rotation) |
@@ -155,6 +156,40 @@ are read during status polling and a typo should not crash a poll.
 The viewer's **Settings → Advanced** panel edits the provider, preset, base URL
 and model. The API key is set in `~/.claude-mem/settings.json` or
 `~/.claude-mem/.env` only, never through the viewer.
+
+## Observation batching
+
+If tool events arrive faster than a local observer can process them, opt into
+batching in `~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_OBSERVATION_BATCH_SIZE": "4"
+}
+```
+
+Keep your existing endpoint and model settings. An environment variable with the
+same name overrides the file. The default is `1`; values outside the integer
+range 1–32 use that default. This setting applies only to `openai-compatible`.
+Claude and Codex retain their own batch settings, and Gemini/OpenRouter are
+unchanged.
+
+The observer takes up to that many events already waiting in the session's queue,
+without waiting to fill a batch. A different prompt number, agent ID/type, working
+directory, or a summary request ends the batch. Appended events must fit within
+twice the model's per-field character cap (32,000 characters at most, lower for
+small context windows). A large event that needs condensation waits for its own
+turn. The first event still uses the normal field-condensation path; the batching
+budget does not further truncate it or bound the entire conversation history.
+
+For example, eight small queued events in the same context can use two requests
+with a batch size of four instead of eight requests. The model may combine
+related findings, so batching does not guarantee identical summaries. As with
+Claude/Codex batching, returned observations share the batch's file evidence and
+attribution. The existing invalid-output policy applies to the whole batch: one
+retry, then discard if the reply is still invalid. Transport/quota failures and
+cancellation do not confirm the claimed events as processed.
 
 ## MiniMax
 
