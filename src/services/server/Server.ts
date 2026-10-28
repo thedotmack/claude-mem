@@ -9,9 +9,11 @@ import {
   createCorsMiddleware,
   createForeignPageDeleteGuard,
   createMiddleware,
+  createOwnerAuthGuard,
   createRemoteReadOnlyGuard,
   createWorkerHostGuard,
   requireLocalhost,
+  type OwnerAuthOptions,
   type RemoteReadOnlyOptions,
   type WorkerOriginPolicy,
 } from '../worker/http/middleware.js';
@@ -150,6 +152,15 @@ export interface ServerOptions {
    */
   remoteReadOnly?: RemoteReadOnlyOptions;
   /**
+   * Worker only: require the owner token (see shared/worker-auth.ts) on
+   * /api/* and /stream for direct loopback callers. Loopback TCP origin is
+   * not proof of the owning OS user, so this is what keeps other local
+   * accounts out of memory reads and settings writes. Absent (the server
+   * runtime, which authenticates with API keys, and tests that build the
+   * Server directly) ⇒ nothing is mounted and behavior is unchanged.
+   */
+  ownerAuth?: OwnerAuthOptions;
+  /**
    * Worker only: trusted browser origins and Host names (plan-23 step 4). When
    * present, a DNS-rebinding Host check runs before CORS, and CORS also admits
    * same-host and explicitly allowlisted origins. The server runtime leaves it
@@ -217,6 +228,7 @@ export class Server {
     this.setupRemoteReadOnlyGuard();
     this.setupSecurityHeaders();
     this.setupCors();
+    this.setupOwnerAuthGuard();
     this.setupPreBodyParserRoutes();
     this.setupMiddleware();
     this.setupCoreRoutes();
@@ -356,6 +368,16 @@ export class Server {
       applySecurityHeaders(res);
       next();
     });
+  }
+
+  private setupOwnerAuthGuard(): void {
+    if (!this.options.ownerAuth) {
+      return;
+    }
+    // After CORS so preflights still answer and denials carry CORS headers;
+    // before every route, including ones registered later, because Express
+    // runs middleware in mount order.
+    this.app.use(createOwnerAuthGuard(this.options.ownerAuth));
   }
 
   private setupCors(): void {

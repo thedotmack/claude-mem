@@ -14,6 +14,7 @@ import { getBunVersion, getUvVersion, isInstallCurrent } from '../install/setup-
 import { treeSitterCliBinaryPath } from '../../services/smart-file-read/tree-sitter-cli-provision.js';
 import { checkTreeSitterCliLoadable, resolveTreeSitterBinPathFor, TREE_SITTER_CLI_PATH_WORKAROUND } from '../../services/smart-file-read/tree-sitter-bin-path.js';
 import { resolveDataDir } from '../../shared/paths.js';
+import { loadWorkerAuthToken } from '../../shared/worker-auth.js';
 import { paths } from '../../shared/paths.js';
 import { findOrphanedChromaRoots, readProcessTablePosix } from '../../supervisor/orphan-chroma-sweep.js';
 import { isPidAlive } from '../../supervisor/process-registry.js';
@@ -129,7 +130,9 @@ function describeChromaExit(lastExit: NonNullable<ChromaCrashState['lastExit']>)
  */
 export async function probeChromaDiagnostics(workerUrl: string): Promise<CheckResult[]> {
   try {
+    const ownerToken = loadWorkerAuthToken();
     const response = await fetch(`${workerUrl}/api/admin/doctor`, {
+      headers: ownerToken ? { Authorization: `Bearer ${ownerToken}` } : undefined,
       signal: AbortSignal.timeout(3000),
     });
     if (!response.ok) {

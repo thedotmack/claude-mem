@@ -10,6 +10,7 @@ import { formatHostForUrl, getWorkerPort, getWorkerHost, fetchWithTimeout, resol
 import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js';
 import { runShutdownSequence, WORKER_GRACEFUL_SHUTDOWN_DEADLINE_BASE_MS, type WorkerShutdownReason } from './worker-shutdown.js';
 import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensureDir, paths } from '../shared/paths.js';
+import { loadWorkerAuthToken, workerAuthDisabled } from '../shared/worker-auth.js';
 import { HookSpool, migrateLegacySessionEndReplay } from '../shared/hook-spool.js';
 import { HookSpoolDrainer, hookSpoolConsumedMarkers } from './worker/hook-spool-drain.js';
 import { HookSpoolRoutes } from './worker/http/routes/HookSpoolRoutes.js';
@@ -375,6 +376,17 @@ export class WorkerService implements WorkerRef {
     const tvToken = (workerSettings.CLAUDE_MEM_TV_TOKEN ?? '').trim();
     this.tvToken = tvToken;
 
+    // Owner-auth guard for the whole API: loopback TCP origin is not proof of
+    // the owning OS user, so /api/* and /stream require the shared secret in
+    // <DATA_DIR>/worker-auth-token (mode 0600). CLAUDE_MEM_WORKER_AUTH=off is
+    // the documented escape hatch for single-user machines and test suites —
+    // file/env only, never HTTP-writable. When the guard is mounted and the
+    // token cannot be resolved, getToken returns '' and every protected route
+    // fails closed.
+    const ownerAuth = workerAuthDisabled()
+      ? undefined
+      : { getToken: (): string => loadWorkerAuthToken() };
+
     this.server = new Server({
       getInitializationComplete: () => this.initializationCompleteFlag,
       initPhaseSource: this.initPhaseTracker,
@@ -404,6 +416,7 @@ export class WorkerService implements WorkerRef {
         new BetterAuthRoutes(() => this.dbManager.getConnection()),
       ],
       ...(tvToken ? { remoteReadOnly: { getToken: () => tvToken } } : {}),
+      ...(ownerAuth ? { ownerAuth } : {}),
       // Browser access: same-host and CLAUDE_MEM_ALLOWED_ORIGINS for CORS, plus
       // the DNS-rebinding Host check. Read once at boot; restart to change it.
       originPolicy: buildWorkerOriginPolicy(workerSettings),

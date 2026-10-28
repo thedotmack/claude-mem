@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { authedFetch } from '../utils/auth';
 
 type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
 type LogComponent = 'HOOK' | 'WORKER' | 'SDK' | 'PARSER' | 'DB' | 'SYSTEM' | 'HTTP' | 'SESSION' | 'CHROMA' | 'OTHER';
@@ -140,7 +141,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
     setIsLoading(true);
     setError(null);
     try {
-      const response = await fetch('/api/logs');
+      const response = await authedFetch('/api/logs');
       if (!response.ok) {
         throw new Error(`Failed to fetch logs: ${response.statusText}`);
       }
@@ -168,7 +169,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
     setIsLoading(true);
     setError(null);
     try {
-      const response = await fetch('/api/logs/clear', { method: 'POST', signal: controller.signal });
+      const response = await authedFetch('/api/logs/clear', { method: 'POST', signal: controller.signal });
       if (!response.ok) {
         throw new Error(`Failed to clear logs: ${response.statusText}`);
       }
@@ -181,7 +182,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
         const reconciliation = new AbortController();
         const reconciliationTimeout = setTimeout(() => reconciliation.abort(), 5000);
         try {
-          const response = await fetch('/api/logs', { signal: reconciliation.signal });
+          const response = await authedFetch('/api/logs', { signal: reconciliation.signal });
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           const data = await response.json();
           if (request === requestSeqRef.current) {

@@ -21,6 +21,18 @@ if (!process.env.CLAUDE_MEM_DATA_DIR) {
 }
 
 /**
+ * Owner-auth default for the suite: the worker API otherwise requires the
+ * shared secret from <DATA_DIR>/worker-auth-token (src/shared/worker-auth.ts),
+ * and ~70 test files drive live fetches that never learned to send it. Tests
+ * that exercise the guard itself set CLAUDE_MEM_WORKER_AUTH to anything but
+ * 'off' (or construct the middleware directly) — this only fills the default,
+ * like the DATA_DIR pin above.
+ */
+if (!process.env.CLAUDE_MEM_WORKER_AUTH) {
+  process.env.CLAUDE_MEM_WORKER_AUTH = 'off';
+}
+
+/**
  * Global posthog-node mock, registered via bunfig.toml [test].preload BEFORE
  * any test file or src module loads. It must be global, not per-file:
  *

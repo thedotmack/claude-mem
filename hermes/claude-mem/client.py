@@ -93,6 +93,27 @@ def data_dir(environ: Optional[Dict[str, str]] = None) -> str:
     return os.path.join(os.path.expanduser("~"), ".claude-mem")
 
 
+def _worker_auth_headers(environ: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Owner-token headers for the local worker API. The token lives in
+    <data_dir>/worker-auth-token (mode 0600); CLAUDE_MEM_WORKER_AUTH=off
+    disables the check server-side, and an unreadable file just sends nothing."""
+    env = os.environ if environ is None else environ
+    for name in _names("CLAUDE_MEM_WORKER_AUTH"):
+        if env.get(name, "").strip().lower() == "off":
+            return {}
+    for name in _names("CLAUDE_MEM_WORKER_AUTH_TOKEN"):
+        token = env.get(name, "").strip()
+        if token:
+            return {"authorization": "Bearer " + token}
+    try:
+        with open(os.path.join(data_dir(env), "worker-auth-token"),
+                  "r", encoding="utf-8") as handle:
+            token = handle.read().strip()
+    except OSError:
+        return {}
+    return {"authorization": "Bearer " + token} if token else {}
+
+
 def load_settings(environ: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """settings.json as claude-mem reads it: keys under ``env`` when that block
     holds claude-mem keys, else at the root. Empty on any error."""
@@ -285,7 +306,8 @@ class Transport:
 
     def worker(self, method: str, path: str, body: Any = None,
                timeout: float = WRITE_TIMEOUT_S) -> bytes:
-        return self._send(method, self.config.worker_base + path, body, timeout, {})
+        return self._send(method, self.config.worker_base + path, body, timeout,
+                          _worker_auth_headers())
 
     def server(self, method: str, path: str, body: Any = None,
                timeout: float = WRITE_TIMEOUT_S) -> bytes:

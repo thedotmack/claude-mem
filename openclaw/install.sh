@@ -1028,9 +1028,13 @@ write_settings() {
         if (existing.env && typeof existing.env === 'object') {
           existing = existing.env;
         }
-        // Existing settings take priority, except for provider settings we just set
+        // Existing settings take priority, except for provider settings we
+        // just set. Preserve EVERY existing key — not only ones the installer
+        // happens to know — so a reinstall can never silently drop a secret
+        // (e.g. CLAUDE_MEM_TV_TOKEN) while keeping the non-loopback bind that
+        // secret was protecting (CLAUDE_MEM_WORKER_HOST is a known default).
         for (const key of Object.keys(existing)) {
-          if (!(key in overrides) && key in defaults) {
+          if (!(key in overrides)) {
             settings[key] = existing[key];
           }
         }

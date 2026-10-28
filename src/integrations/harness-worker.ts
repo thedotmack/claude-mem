@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { isConnectionRefusedError } from '../shared/connection-errors.js';
 import { expandHome } from '../shared/expand-home.js';
 import { HOOK_TIMEOUTS, getTimeout } from '../shared/hook-constants.js';
+import { loadWorkerAuthToken } from '../shared/worker-auth.js';
 
 const TIMEOUT_MS = 5_000;
 const CONTEXT_TIMEOUT_BOUNDS = { min: 500, max: 300_000 } as const;
@@ -81,8 +82,11 @@ export function createHarnessWorkerClient() {
       }
     },
     async request(route: string, init: RequestInit = {}, timeoutMs = TIMEOUT_MS): Promise<Response> {
+      const ownerToken = loadWorkerAuthToken();
       const response = await fetch(baseUrl + route, {
-        ...init, signal: init.signal
+        ...init,
+        headers: { ...(ownerToken ? { Authorization: `Bearer ${ownerToken}` } : {}), ...(init.headers ?? {}) },
+        signal: init.signal
           ? AbortSignal.any([init.signal, AbortSignal.timeout(timeoutMs)])
           : AbortSignal.timeout(timeoutMs),
       });

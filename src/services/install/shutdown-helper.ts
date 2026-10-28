@@ -1,5 +1,6 @@
 import { createConnection } from 'node:net';
 import { isConnectionRefusedError } from '../../shared/connection-errors.js';
+import { loadWorkerAuthToken } from '../../shared/worker-auth.js';
 import { readOwnedWorkerPidInfo, verifyWorkerPidFileOwnership, type PidInfo } from '../../supervisor/process-registry.js';
 
 /**
@@ -119,8 +120,10 @@ export async function shutdownWorkerAndWait(
 
   let shutdownAccepted = false;
   try {
+    const ownerToken = loadWorkerAuthToken();
     const response = await fetch(`http://127.0.0.1:${portNumber}/api/admin/shutdown`, {
       method: 'POST',
+      headers: ownerToken ? { Authorization: `Bearer ${ownerToken}` } : undefined,
       signal: AbortSignal.timeout(SHUTDOWN_REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) {

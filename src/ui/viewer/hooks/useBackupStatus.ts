@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { API_ENDPOINTS } from '../constants/api';
+import { authedFetch } from '../utils/auth';
 
 /**
  * GET /api/backup/status response (worker BackupRoutes). The route is
@@ -34,7 +35,7 @@ export function useBackupStatus(): UseBackupStatusResult {
   useEffect(() => {
     let cancelled = false;
 
-    fetch(API_ENDPOINTS.BACKUP_STATUS)
+    authedFetch(API_ENDPOINTS.BACKUP_STATUS)
       .then(async res => {
         if (!res.ok) {
           throw new Error(`Failed to load backup status (${res.status})`);

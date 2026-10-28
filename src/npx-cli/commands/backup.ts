@@ -6,6 +6,7 @@
 
 import { styleText } from 'node:util';
 import { formatHostForUrl, getWorkerHost, getWorkerPort } from '../../shared/worker-utils.js';
+import { loadWorkerAuthToken } from '../../shared/worker-auth.js';
 
 function printBackupUsage(): void {
   console.error(`Usage: npx claude-mem backup [run|status|list]`);
@@ -23,7 +24,12 @@ function workerBaseUrl(): string {
  */
 export async function fetchWorkerBackupApi(pathname: string, init?: RequestInit): Promise<Response> {
   try {
-    return await fetch(`${workerBaseUrl()}${pathname}`, init);
+    const ownerToken = loadWorkerAuthToken();
+    const headers: Record<string, string> = { ...(init?.headers as Record<string, string> | undefined) };
+    if (ownerToken && !Object.keys(headers).some(name => name.toLowerCase() === 'authorization')) {
+      headers.Authorization = `Bearer ${ownerToken}`;
+    }
+    return await fetch(`${workerBaseUrl()}${pathname}`, { ...init, headers });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     const cause = error instanceof Error ? (error as any).cause : undefined;

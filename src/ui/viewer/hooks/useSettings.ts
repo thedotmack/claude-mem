@@ -4,6 +4,7 @@ import { DEFAULT_SETTINGS } from '../constants/settings';
 import { API_ENDPOINTS } from '../constants/api';
 import { TIMING } from '../constants/timing';
 import { describeSaveFailure } from '../utils/save-error';
+import { authedFetch } from '../utils/auth';
 
 export interface SubmitSettingsDependencies {
   fetchImpl: typeof fetch;
@@ -88,7 +89,7 @@ export function useSettings() {
 
   useEffect(() => {
     let active = true;
-    fetch(API_ENDPOINTS.SETTINGS)
+    authedFetch(API_ENDPOINTS.SETTINGS)
       .then(async res => {
         if (!res.ok) {
           throw new Error(`HTTP ${res.status}`);
@@ -120,7 +121,7 @@ export function useSettings() {
     loadError,
     reload,
     saveSettings: (newSettings: Settings) => saveSettings(newSettings, {
-      fetchImpl: fetch.bind(globalThis) as typeof fetch,
+      fetchImpl: authedFetch,
       setSettings,
       setSaveStatus,
       setIsSaving,

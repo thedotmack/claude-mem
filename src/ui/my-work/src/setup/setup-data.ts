@@ -28,6 +28,7 @@ export interface SetupExtraction { state: 'idle' | 'running' | 'ok' | 'failed' |
 
 export type { RevealGoal, RevealRule, RevealSets, RevealWork } from './setup-reveal'
 import type { RevealSets } from './setup-reveal'
+import { authedFetch, withWorkerToken } from '../live/auth.ts'
 import type { InstallerStage } from './setup-flow'
 
 export type { Persona, SetupScanUsage, SetupUsage, UsageCoverage } from './setup-usage'
@@ -118,7 +119,7 @@ const toHistoryImport = (run: WorkerHistoryImport | null | undefined): HistoryIm
   !run || run.state === 'idle' ? null : { percent: run.percent, done: run.state === 'done', imported: run.imported, error: run.state === 'failed' ? run.error : null }
 
 async function workerJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, { cache: 'no-store', ...init })
+  const response = await authedFetch(url, { cache: 'no-store', ...init })
   let answer: unknown = null
   try { answer = await response.json() } catch { /* A body that isn't JSON leaves only the status to report. */ }
   if (!response.ok) {
@@ -131,7 +132,7 @@ const postJson = <T>(url: string, body: unknown) => workerJson<T>(url, { method:
 
 /** Whether this machine still has the funnel to go through. A worker without the endpoint (older) has nothing to show. */
 export async function setupPending(): Promise<boolean> {
-  const response = await fetch('/api/setup/state', { cache: 'no-store' })
+  const response = await authedFetch('/api/setup/state', { cache: 'no-store' })
   if (!response.ok) return false
   return ((await response.json()) as WorkerSetupState).status === 'pending'
 }
@@ -196,7 +197,7 @@ export const localSetupSource: SetupSource = {
       })
     }
     onData(data)
-    const stream = new EventSource('/api/work-view/events')
+    const stream = new EventSource(withWorkerToken('/api/work-view/events'))
     stream.addEventListener('setup-scan', (event) => applyScan(JSON.parse((event as MessageEvent<string>).data) as WorkerScanState))
     stream.addEventListener('setup-state', (event) => applyState(JSON.parse((event as MessageEvent<string>).data) as WorkerSetupState))
     stream.addEventListener('setup-import', (event) => publish({ historyImport: toHistoryImport(JSON.parse((event as MessageEvent<string>).data) as WorkerHistoryImport) }))

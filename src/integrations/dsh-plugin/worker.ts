@@ -6,6 +6,7 @@
  */
 
 import { MemError } from './types.js'
+import { loadWorkerAuthToken } from '../../shared/worker-auth.js'
 import type {
   MemContextRequest,
   MemGetObservationsRequest,
@@ -31,6 +32,13 @@ export interface WorkerLimits {
 }
 
 const MEM_TIMEOUT = 'MEM_TIMEOUT'
+
+// Owner-auth headers for the local worker API; empty when the shared secret
+// is disabled (CLAUDE_MEM_WORKER_AUTH=off) or not yet created.
+function ownerAuthHeaders(): Record<string, string> {
+  const token = loadWorkerAuthToken()
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
 
 /** A deadline signal plus its timer cleanup; safe to dispose once. */
 interface Deadline {
@@ -165,9 +173,9 @@ export class WorkerClient {
     if (signal?.aborted) throw new MemError('memory request aborted', 'MEM_ABORTED')
     using d = deadline(signal, this.limits.timeoutMs, MEM_TIMEOUT)
     const url = this.urlFor(path, options.query)
-    const init: RequestInit = { method: options.method, signal: d.signal }
+    const init: RequestInit = { method: options.method, signal: d.signal, headers: ownerAuthHeaders() }
     if (options.body !== undefined) {
-      init.headers = { 'content-type': 'application/json' }
+      init.headers = { ...init.headers, 'content-type': 'application/json' }
       init.body = JSON.stringify(options.body)
     }
     let response: Response
@@ -191,7 +199,7 @@ export class WorkerClient {
     const url = this.urlFor(path, query)
     let response: Response
     try {
-      response = await fetch(url, { method: 'GET', signal: d.signal })
+      response = await fetch(url, { method: 'GET', signal: d.signal, headers: ownerAuthHeaders() })
     } catch (error: unknown) {
       const reason = timeoutOf(d.signal, MEM_TIMEOUT)
       if (reason !== undefined) throw new MemError(`memory request timed out after ${reason.timeoutMs}ms`, 'MEM_TIMEOUT')

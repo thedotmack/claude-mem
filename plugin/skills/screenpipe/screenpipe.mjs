@@ -35,6 +35,21 @@ export function defaultWorkerUrl(env = process.env) {
   return `http://${bracketed}:${port}`;
 }
 
+// The worker's owner token, resolved the way claude-mem does:
+// CLAUDE_MEM_WORKER_AUTH_TOKEN, else <data-dir>/worker-auth-token (mode 0600).
+// '' when CLAUDE_MEM_WORKER_AUTH=off or the file is unreadable — the worker
+// creates it, so a CLI caller only ever reads.
+function loadWorkerAuthToken(env = process.env) {
+  if ((env.CLAUDE_MEM_WORKER_AUTH || '').trim().toLowerCase() === 'off') return '';
+  if ((env.CLAUDE_MEM_WORKER_AUTH_TOKEN || '').trim()) return env.CLAUDE_MEM_WORKER_AUTH_TOKEN.trim();
+  const dataDir = env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
+  try {
+    return readFileSync(join(dataDir, 'worker-auth-token'), 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+
 async function readNote(file, stdin = process.stdin) {
   if (file !== '-') return readFile(file, 'utf8');
   const chunks = [];
@@ -91,8 +106,9 @@ export async function run(args, env = process.env) {
     const url = localEndpoint(values['worker-url'] || defaultWorkerUrl(env), '/api/memory/save');
     const text = (await readNote(values.file)).trim();
     if (!text || Buffer.byteLength(text) > 64 * 1024) throw new Error('The reviewed note must contain 1..65536 bytes.');
+    const ownerToken = loadWorkerAuthToken(env);
     const saved = await request(url, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...(ownerToken ? { Authorization: `Bearer ${ownerToken}` } : {}) },
       body: JSON.stringify({ text, title: values.title, project: values.project.trim(), metadata: { source: 'screenpipe' } }),
     }, 'claude-mem');
     if (saved.success !== true || !Number.isSafeInteger(saved.id)) {

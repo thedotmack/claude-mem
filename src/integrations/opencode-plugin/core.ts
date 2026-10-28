@@ -17,6 +17,7 @@ import { parseSearchResponse } from "./contract.js";
 import { normalizePlatformSource } from "../../shared/platform-source.js";
 import { isConnectionRefusedError } from "../../shared/connection-errors.js";
 import { formatHostForUrl } from "../../shared/worker-url.js";
+import { loadWorkerAuthToken } from "../../shared/worker-auth.js";
 import { retryWhileRefused } from "./worker-retry.js";
 
 export interface OpenCodeClient {
@@ -92,6 +93,14 @@ const CAPTURE_TOOL_NAMES = new Map([
 
 const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json" };
 
+// Owner-auth: the worker API requires the shared secret from
+// <DATA_DIR>/worker-auth-token (see shared/worker-auth.ts). '' when
+// CLAUDE_MEM_WORKER_AUTH=off, so single-user setups keep working unchanged.
+function workerHeaders(): Record<string, string> {
+  const token = loadWorkerAuthToken();
+  return token ? { ...JSON_HEADERS, Authorization: `Bearer ${token}` } : JSON_HEADERS;
+}
+
 // Every worker request is bounded, so a hung worker can neither hold a hook
 // open nor pile up pending requests inside OpenCode's process (plan-23 step 2).
 const WORKER_REQUEST_TIMEOUT_MS = 5_000;
@@ -105,7 +114,7 @@ async function postToWorker(fetchImpl: typeof fetch, path: string, payload: stri
   try {
     const response = await fetchImpl(`${WORKER_BASE_URL}${path}`, {
       method: "POST",
-      headers: JSON_HEADERS,
+      headers: workerHeaders(),
       body: payload,
       signal: AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS),
     });
@@ -137,7 +146,7 @@ async function workerPost(path: string, body: Record<string, unknown>): Promise<
 async function workerGetText(path: string): Promise<string | null> {
   try {
     const response = await fetch(`${WORKER_BASE_URL}${path}`, {
-      headers: JSON_HEADERS,
+      headers: workerHeaders(),
       signal: AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) {
@@ -424,7 +433,7 @@ export function createCore(ctx: CoreContext): ClaudeMemCore {
       if (!ids.length) return 'Select observation IDs from the search index and timeline first.';
       try {
         const response = await fetch(`${WORKER_BASE_URL}/api/observations/batch`, {
-          method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ ids }),
+          method: 'POST', headers: workerHeaders(), body: JSON.stringify({ ids }),
           signal: AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS),
         });
         if (!response.ok) return 'The worker could not fetch the selected observations.';

@@ -4,6 +4,7 @@ import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { isConnectionRefusedError, isUnbindablePortError } from '../../shared/connection-errors.js';
+import { loadWorkerAuthToken } from '../../shared/worker-auth.js';
 
 function getWorkerHost(): string {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_HOST;
@@ -29,8 +30,10 @@ async function httpRequestToWorker(
   method: string = 'GET',
   timeoutMs: number = HEALTH_PROBE_TIMEOUT_MS,
 ): Promise<{ ok: boolean; statusCode: number; body: string }> {
+  const ownerToken = loadWorkerAuthToken();
   const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}${endpointPath}`, {
     method,
+    headers: ownerToken ? { Authorization: `Bearer ${ownerToken}` } : undefined,
     signal: AbortSignal.timeout(Math.max(1, timeoutMs)),
   });
   let body = '';
