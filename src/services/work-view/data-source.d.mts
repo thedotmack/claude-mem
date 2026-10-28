@@ -16,7 +16,7 @@ export interface WorkViewSnapshot extends Record<string, unknown> {
 export class WorkStateSource {
   localDeviceId: string;
   constructor(options?: { databasePath?: string; currentProject?: string; parentProject?: string; titleCachePath?: string | null; ledgerDir?: string | null; pollIntervalMs?: number; localDeviceId?: string });
-  read(): { agentView: WorkViewSnapshot; [key: string]: unknown };
+  read(options?: { maxActivityAgeMs?: number }): { agentView: WorkViewSnapshot; [key: string]: unknown };
   evidence(kind: string, id: number): Record<string, unknown> | null;
   file(kind: string, id: number, index: number): string | null;
   /** The bucket copy a deliverables row names, while it exists: its path, title and kind; null otherwise. */

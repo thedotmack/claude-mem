@@ -631,9 +631,9 @@ export class WorkViewRoutes extends BaseRouteHandler {
     for (const client of this.clients) this.send(client, event, value);
   }
 
-  private snapshot(): WorkViewSnapshot {
+  private snapshot(maxActivityAgeMs = 0): WorkViewSnapshot {
     this.source.localDeviceId = this.getLocalDeviceId();
-    const snapshot = this.source.read().agentView;
+    const snapshot = this.source.read({ maxActivityAgeMs }).agentView;
     for (const request of snapshot.humanRequests) {
       request.contentFingerprint = contentFingerprint(request);
       request.review = this.reviews.read(request.id, request.contentFingerprint);
@@ -1051,9 +1051,12 @@ export class WorkViewRoutes extends BaseRouteHandler {
     } catch (error) {
       logger.error('HTTP', 'Setup state could not be read for a new event stream', {}, error as Error);
     }
-    if (!this.poll) this.poll = setInterval(() => this.publish(), this.pollIntervalMs);
+    // Activity can change on every observer write. Coalesce these rebuilds;
+    // work-state, title-cache and ledger changes still appear on the next tick.
+    const maxActivityAgeMs = 120_000;
+    if (!this.poll) this.poll = setInterval(() => this.publish(this.snapshot(maxActivityAgeMs)), this.pollIntervalMs);
     if (!this.heartbeat) this.heartbeat = setInterval(() => {
-      const snapshot = this.snapshot();
+      const snapshot = this.snapshot(maxActivityAgeMs);
       for (const client of this.clients) this.send(client, 'heartbeat', { at: new Date().toISOString(), source: snapshot.source });
     }, 15000);
     this.poll?.unref(); this.heartbeat?.unref();
