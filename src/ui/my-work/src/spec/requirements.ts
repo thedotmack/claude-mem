@@ -39,7 +39,7 @@ export const REQUIREMENTS: Requirement[] = [
   { id: 'R4.1', section: '4', kind: 'ui', text: 'Cards view: portrait request cards.' },
   { id: 'R4.2', section: '4', kind: 'ui', text: 'List view with sorting.' },
   { id: 'R4.3', section: '4', kind: 'ui', text: 'By agent view: a card per agent with its icon and what it is working on, an outer view to the list.' },
-  { id: 'R4.4', section: '4, 15.2', kind: 'ui', text: 'Status board merged into List: each status is a line of split-flap tiles, as wide as its label, that flips when the status changes, like a train departures board.' },
+  { id: 'R4.4', section: '4, 15.2', kind: 'ui', text: 'Status board merged into List: one split-flap departures board above the List with the count in each state, flipping when a count changes; each line carries a status badge.' },
   { id: 'R4.5', section: '4', kind: 'retired', text: 'Retired 2026-10-27 (My Focus): the month-by-month report moved to Past focus. Replaced by R16.7.' },
   { id: 'R4.6', section: '4', kind: 'ui', text: 'My Rules page: how I like to work, as if-then blocks.' },
 

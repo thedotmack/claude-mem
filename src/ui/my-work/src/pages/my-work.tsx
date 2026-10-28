@@ -9,14 +9,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { ActivePill, AgentIcon, ATTENTION_ORDER, FocusAreaChip, NextMove, ProgressMeter, RefreshButton, RefreshStatus, STATE_LABEL, STATE_SURFACE, StateBadge, useWorkspace } from '@/components/bits'
+import { ActivePill, AgentIcon, ATTENTION_ORDER, FocusAreaChip, NextMove, ProgressMeter, RefreshButton, RefreshStatus, STATE_LABEL, StateBadge, useWorkspace } from '@/components/bits'
 import { PointerHighlight } from '@/components/aceternity/pointer-highlight'
 import { TracingBeam } from '@/components/aceternity/tracing-beam'
 import { AgentMark } from '@/components/brand'
 import { FocusChangeBar, useFocusChanges } from '@/components/focus-changes'
 import { FocusHeader, OtherHeader } from '@/components/focus-header'
 import { RequestCard } from '@/components/request-card'
-import { SplitFlapText } from '@/components/split-flap'
+import { TextFlippingBoard } from '@/components/aceternity/text-flipping-board'
 import { SaveButton } from '@/components/save-button'
 import { useMatchesMedia } from '@/lib/use-media'
 import { cn } from '@/lib/utils'
@@ -177,12 +177,42 @@ function HoverCell({ children }: { children: ReactNode }) {
   )
 }
 
-/**
- * The List is a departures board (decision 2, R4.4): each status is a line of split-flap tiles exactly as wide as its
- * label, colored by its state. It riffles in when the List opens and again when the status changes, then stops.
+/*
+ * The status board (decision 2, R4.4): one Aceternity split-flap board above the List, used as it is built to be, a
+ * single 6-line departures board. Line one is the total; then one line per state with its color flap and count.
+ * When a count changes, only the flaps that differ flip. Reduced motion: the board's lines as plain text.
  */
-function FlipStatus({ state }: { state: LiveState }) {
-  return <SplitFlapText text={STATE_LABEL[state]} tileClassName={STATE_SURFACE[state]} />
+const BOARD_COLUMNS = 22
+// Board words, shorter than STATE_LABEL so a color flap, the word and a count of up to nine digits fit one line.
+const BOARD_STATES: { state: LiveState; word: string; flap: string }[] = [
+  { state: 'your-move', word: 'YOUR MOVE', flap: '{R}' },
+  { state: 'needs-check', word: 'NOT CHECKED', flap: '{Y}' },
+  { state: 'working', word: 'WORKING', flap: '{B}' },
+  { state: 'idle', word: 'IDLE', flap: '{W}' },
+  { state: 'shipped', word: 'SHIPPED', flap: '{G}' },
+]
+/** A board line: `left` then `count` right-aligned in the 22 columns (a color code takes one column). */
+function boardLine(left: string, count: number, leftColumns: number) {
+  return left + String(count).padStart(BOARD_COLUMNS - leftColumns)
+}
+
+function StatusBoard({ requests }: { requests: Request[] }) {
+  const reduceMotion = useReducedMotion()
+  const count = (state: LiveState) => requests.filter((request) => request.state === state).length
+  const lines = [
+    boardLine('REQUESTS', requests.length, 'REQUESTS'.length),
+    ...BOARD_STATES.map(({ state, word, flap }) => boardLine(`${flap} ${word}`, count(state), 2 + word.length)),
+  ]
+  const spoken = [`${requests.length} requests`, ...BOARD_STATES.map(({ state }) => `${count(state)} ${STATE_LABEL[state].toLowerCase()}`)].join(', ')
+  return (
+    <Req ids={['R4.4']}>
+      <div role="img" aria-label={`Status board: ${spoken}`} className="max-w-md">
+        {reduceMotion
+          ? <pre className="rounded-xl border bg-card p-3 font-mono text-sm">{lines.map((line) => line.replace(/\{.\}/, '■')).join('\n')}</pre>
+          : <TextFlippingBoard rows={lines} className="status-board mx-0 max-w-md shadow-panel" />}
+      </div>
+    </Req>
+  )
 }
 
 // The List switches from stacked lines to the table at Tailwind's md breakpoint (768px); only one of them is built.
@@ -198,6 +228,7 @@ function ListView({ requests, sort, onSort, onOpen, onOpenFocus }: { requests: R
   )
   return (
     <Req ids={['R4.2', 'R4.4', 'R2.1', 'R5.8', 'R11.1']}>
+      <StatusBoard requests={requests} />
       {/* Phones: stacked rows, request then status then next step. */}
       {!wide && <ul className="divide-y rounded-xl border bg-card shadow-panel">
         {requests.map((request) => (
@@ -208,7 +239,7 @@ function ListView({ requests, sort, onSort, onOpen, onOpenFocus }: { requests: R
                 <span className={cn('min-w-0 flex-1 pt-0.5 text-[0.95rem] leading-snug font-medium', !request.title && 'text-muted-foreground')}>{titleOf(request)}</span>
               </span>
               <span className="flex flex-col items-start gap-1.5 pl-[38px]">
-                <FlipStatus state={request.state} />
+                <StateBadge state={request.state} />
                 <NextMove next={request.next} />
               </span>
             </button>
@@ -238,7 +269,7 @@ function ListView({ requests, sort, onSort, onOpen, onOpenFocus }: { requests: R
                   <div><FocusAreaChip focusAreaId={request.focusAreaId} onOpen={onOpenFocus} /></div>
                 </TableCell>
                 {team && <TableCell className="align-top text-sm">{request.askedBy}</TableCell>}
-                <TableCell className="align-top"><FlipStatus state={request.state} /></TableCell>
+                <TableCell className="align-top"><StateBadge state={request.state} /></TableCell>
                 <TableCell className="max-w-64 align-top whitespace-normal"><NextMove next={request.next} /></TableCell>
                 <TableCell className="w-32 align-top"><ProgressMeter request={request} compact /></TableCell>
                 <TableCell className="align-top text-xs text-muted-foreground"><time dateTime={request.startedAtIso}>{request.startedAt}</time></TableCell>

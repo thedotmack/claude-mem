@@ -313,23 +313,9 @@
 /* A kept suggestion's sparkles (pages/suggested-areas.tsx): a band behind the confirmation, fading out at its edges. */
 .kept-sparkles { position: absolute; inset: -12px -16px; pointer-events: none; mask-image: radial-gradient(ellipse 60% 70% at 30% 50%, #000 30%, transparent 100%); }
 
-/*
- * SplitFlapText (components/split-flap.tsx): one tile per character, a hairline across its middle where the flap
- * splits; the fold on each flap is a Web Animation in the component. Colors come from the tile's state classes.
- */
-.split-flap-tile {
-  position: relative; display: inline-flex; align-items: center; justify-content: center;
-  min-width: 1.05em; height: 1.7em; padding: 0 0.14em; border-radius: 3px; border: 1px solid currentColor;
-  border-color: color-mix(in oklab, currentColor 22%, transparent);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; font-weight: 600; line-height: 1;
-  perspective: 120px; overflow: hidden;
-}
-.split-flap-tile::after {
-  content: ''; position: absolute; inset-inline: 0; top: 50%; height: 1px;
-  background: color-mix(in oklab, currentColor 18%, transparent);
-}
-.split-flap-gap { min-width: 0.4em; border-color: transparent; background: transparent !important; }
-.split-flap-gap::after { display: none; }
+/* StatusBoard (pages/my-work.tsx): the Aceternity board without the decorative stripes under each flap, so its six
+ * lines sit in about 240px above the List. */
+.status-board > div > div > :last-child { display: none; }
 
 /* Reduced motion everywhere: spinners stop, pulses and slides are instant, the text simply swaps (decision 5). */
 @media (prefers-reduced-motion: reduce) {
