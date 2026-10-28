@@ -385,7 +385,7 @@ describe('story repair', () => {
       const decisions = join(dir, 'decisions.json');
       writeFileSync(decisions, JSON.stringify({ groups: [{ title: 'Release cards', conversations: [key('a')] }] }));
       runCli(['apply', decisions], { dir, database, now: NOW, print: () => {} });
-      const task = buildRefreshTask({ needs: { due: 1, ungrouped: 0, goalsStale: false, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW });
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 1, ungrouped: 0, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
       const preferences = [{ preference: 'Show verified results.', kind: 'directive', supportCount: 2, quotes: [] }];
       const rejected = JSON.stringify({ narrative: 'Keep the verified release evidence. ' + 'x'.repeat(12000), preferences });
       let storyAttempts = 0;
@@ -394,6 +394,7 @@ describe('story repair', () => {
           const [show] = JSON.parse(readFileSync(/is in (\S+\.json)/.exec(prompt)![1], 'utf8'));
           return JSON.stringify({ reviews: [{ groupId: show.groupId, state: 'in-progress', percent: 40, summary: 'Release cards are being built.', reviewBasis: show.reviewBasis }] });
         }
+        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
         expect(prompt).toContain('Do only section 4');
         if (storyAttempts++ === 0) return rejected;
         expect(prompt).toContain('Your previous answer was refused:');
@@ -401,7 +402,7 @@ describe('story repair', () => {
         expect(prompt).toContain(rejected);
         return JSON.stringify({ narrative: 'Verified release evidence retained.', preferences });
       };
-      expect(await task.run(ask, 'claude-code')).toBe('1 requests reviewed, story written.');
+      expect(await task.run(ask, 'claude-code')).toBe('1 requests reviewed, 1 requests placed, story written.');
       expect(storyAttempts).toBe(2);
       expect(readLedger(dir).story.narrative).toBe('Verified release evidence retained.');
       expect(readLedger(dir).story.preferences).toEqual(preferences);
@@ -419,11 +420,12 @@ describe('review repair', () => {
       const decisions = join(dir, 'decisions.json');
       writeFileSync(decisions, JSON.stringify({ groups: ['a', 'b'].map(session => ({ title: `Feature ${session}`, conversations: [key(session)] })) }));
       runCli(['apply', decisions], { dir, database, now: NOW, print: () => {} });
-      const refresh = buildRefreshTask({ needs: { due: 2, ungrouped: 0, goalsStale: false, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW });
+      const refresh = buildRefreshTask({ localDeviceId: () => '', needs: { due: 2, ungrouped: 0, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
       const oversized = 'Retain the evidence while shortening this review. ' + 'x'.repeat(1257);
       let attempts = 0, rejectedReview: any, acceptedId = '';
       const ask = async (prompt: string) => {
         if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'Work continues.' });
+        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
         const shows = JSON.parse(readFileSync(/is in (\S+\.json)/.exec(prompt)![1], 'utf8'));
         attempts++;
         if (attempts === 1) {
@@ -437,7 +439,7 @@ describe('review repair', () => {
         expect(prompt).not.toContain('Already accepted review.');
         return JSON.stringify({ reviews: [{ ...rejectedReview, [field]: 'Evidence preserved in a shorter review.' }] });
       };
-      expect(await refresh.run(ask, 'claude-code')).toBe('2 requests reviewed, story written.');
+      expect(await refresh.run(ask, 'claude-code')).toBe('2 requests reviewed, 2 requests placed, story written.');
       expect(attempts).toBe(2);
       const progress = readLedger(dir).progress;
       expect(progress[rejectedReview.groupId][field]).toBe('Evidence preserved in a shorter review.');
