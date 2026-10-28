@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { everyRequestInOther, focusWriter } from '../helpers/fake-focus-writer.js';
 import { Database } from 'bun:sqlite';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -318,16 +319,17 @@ describe('the request judge', () => {
     try {
       const database = fixtureDatabase();
       const groupId = ledgerWithOpenRequest(dir);
-      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 3, goalsStale: false, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), judge: alwaysPlaces, now: () => NOW });
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 3, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), judge: alwaysPlaces, now: () => NOW, saveFocus: focusWriter(database).save });
       const ask = async (prompt: string) => {
         if (prompt.includes('Do only section 1')) throw new Error('the judge placed every conversation; no grouping batch may be asked');
+        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
         if (prompt.includes('Do only section 2')) {
           const shows = JSON.parse((await import('node:fs')).readFileSync(/is in (\S+\.json)/.exec(prompt)![1], 'utf8'));
           return JSON.stringify({ reviews: shows.map((show: any) => ({ groupId: show.groupId, state: 'in-progress', percent: 30, summary: 'Under way.', reviewBasis: show.reviewBasis })) });
         }
         return JSON.stringify({ narrative: 'Two requests under way.', preferences: [] });
       };
-      expect(await task.run(ask, 'codex')).toBe('3 new conversations judged (2 joined, 0 suggested, 1 new), 2 requests reviewed, story written.');
+      expect(await task.run(ask, 'codex')).toBe('3 new conversations judged (2 joined, 0 suggested, 1 new), 2 requests reviewed, 2 requests placed, story written.');
       expect(task.steps[0]).toMatchObject({ step: 'judge', agent: 'codex', groups: 3 });
       const ledger = readLedger(dir);
       expect(ledger.groups.conversations).toEqual({ [key('a')]: groupId, [key('b')]: groupId, [key('c')]: groupId, [key('d')]: groupIdFor(key('d')) });

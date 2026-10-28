@@ -104,7 +104,8 @@ export const rulesJudge = {
   },
 };
 
-function answerOf(result, id, type) {
+/** The answer Jev gave to question `id`, checked to be of the asked type. */
+export function answerOf(result, id, type) {
   const answer = result?.answers?.[id];
   if (!answer || answer.type !== type) throw new Error(`Jev answered without a ${type} answer for "${id}".`);
   return answer;

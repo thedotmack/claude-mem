@@ -3,6 +3,8 @@ export interface WorkViewRequest extends Record<string, unknown> {
   lifecycle?: { explicit?: boolean; complete?: boolean; status?: string } | null;
   contentFingerprint?: string;
   review?: { checked: boolean; checkedAtEpoch: number | null; actor: 'local-user' | null; available: boolean };
+  /** The conversation its my-focus placement is keyed by (my-focus.mjs placeRequests). */
+  anchorConversationKey?: string | null;
 }
 export interface WorkViewSnapshot extends Record<string, unknown> {
   revision: number | string;
@@ -22,3 +24,4 @@ export class WorkStateSource {
   close(): void;
 }
 export function reduceWorkState(entries: Array<Record<string, any>>, options?: Record<string, any>): any;
+export { readFocus, readFocusAreas } from './my-focus.mjs';

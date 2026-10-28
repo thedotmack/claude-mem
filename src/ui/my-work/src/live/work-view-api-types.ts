@@ -73,9 +73,6 @@ export interface WorkViewProgress {
   readings: { at: string; percent: number }[]
 }
 
-/** An owner goal the request-progress alignment linked to this request. */
-export interface WorkViewRequestGoal { goalId: string; goal: string; title: string; kind: 'priority' | 'open-ask'; evidence: string }
-
 /** One thing a request produced (work-product.mjs). Git kinds carry the sha or branch; `url` is absent when there is
  * nothing to open, and `available` is false for a recorded local file that no longer exists. */
 export interface WorkViewWorkProduct {
@@ -128,10 +125,12 @@ export interface WorkViewHumanRequest {
   review: WorkViewReview | null
   /** The last memory review; null when its group has none. Older workers leave it out. */
   progress?: WorkViewProgress | null
-  /** Absent: not aligned yet ("Goal not linked yet"). Empty: aligned to no goal ("No goal"). */
-  goals?: WorkViewRequestGoal[]
   /** Newest first. Older workers leave it out. */
   workProduct?: WorkViewWorkProduct[]
+  /** The conversation its my-focus placement is keyed by: its group's anchor, else its own. Older workers leave it out. */
+  anchorConversationKey?: string | null
+  /** A focus area id, 'other', or absent while it is not sorted yet. Older workers leave it out. */
+  focusAreaId?: string
   /** The judge thinks this conversation is part of another request; absent when there is nothing to ask. Older workers leave it out. */
   suggestion?: WorkViewRequestSuggestion
 }
@@ -156,13 +155,23 @@ export interface WorkViewSource {
   lastCheckedAt: string | null
 }
 
+/** What one owner-goals item is (owner-goals.mjs GOAL_KINDS). Rows saved as priorities or open asks are read as these. */
+export type WorkViewGoalKind = 'focus-area' | 'ask'
+
 /** One owner-goals item. The worker already parsed `evidence` into quotes; `at` is `YYYY-MM-DD HH:MM`, a bare day, or null. */
 export interface WorkViewGoalItem {
   id: string
   task: string
-  kind: 'priority' | 'open-ask'
+  kind: WorkViewGoalKind
   rank: number | null
   title: string
+  /** A focus area's one-sentence goal. */
+  goal: string | null
+  /** An ask's focus area, by the name it was mined with. */
+  focusArea: string | null
+  /** The my-focus id: an ask's area, or a focus area's own. */
+  focusAreaId: string | null
+  /** Only on items saved before the three tests (2026-10-27). */
   product: string | null
   latestAt: string | null
   timesAsked: number | null
@@ -185,8 +194,8 @@ export interface WorkViewGoalList {
   windowDays: number | null
   sourcePromptCount: number | null
   mapPath: string | null
-  priorities: WorkViewGoalItem[]
-  openAsks: WorkViewGoalItem[]
+  areas: WorkViewGoalItem[]
+  asks: WorkViewGoalItem[]
 }
 
 /** One rule: a story suggestion, laid over by its saved my-rules row, or one the owner wrote. */
@@ -209,6 +218,27 @@ export interface WorkViewRule {
   quotes: { at: string | null; quote: string; kind: string }[]
   replacedBy: string | null
   replacedAt: string | null
+  savedAt: string | null
+}
+
+/** One focus area from the my-focus list. Merged and dismissed areas are included; the viewer decides what to show. */
+export interface WorkViewFocusArea {
+  focusAreaId: string
+  name: string
+  /** One sentence saying what the area is for. */
+  goal: string | null
+  /** What belongs in the area, beyond its goal. Older workers leave it out. */
+  about?: string | null
+  status: 'suggested' | 'kept' | 'dismissed' | 'done'
+  priorityRank: number | null
+  /** The owner's order; when set it wins over priorityRank. */
+  ownerRank: number | null
+  source: 'owner-goals' | 'clustering' | 'promotion' | 'seed' | 'owner'
+  /** Set when merged: its requests show under this area. */
+  mergedInto: string | null
+  evidence: string | null
+  /** 'owner-restore': the owner handed it back to suggestions, so refreshes may update it again. */
+  decidedBy: 'owner' | 'system' | 'owner-restore'
   savedAt: string | null
 }
 
@@ -237,6 +267,8 @@ export interface WorkViewSnapshot {
   ruleScopes?: WorkViewRuleScope[]
   rulesLearning?: WorkViewRulesLearning | null
   rulesFile?: WorkViewRulesFile
+  /** My Focus, in priority order. Older workers leave it out. */
+  focusAreas?: WorkViewFocusArea[]
   /** request-progress reviews and the build story; null when the ledger is empty. Older workers leave it out. */
   story?: { story: WorkViewBuildStory | null } | null
   /** The worker's automatic refresh of goals and progress (refresh.json); null before its first check. Older workers leave it out. */

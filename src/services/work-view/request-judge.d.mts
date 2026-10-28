@@ -25,6 +25,7 @@ export interface RequestJudge { name: string; judge(conversation: JudgedConversa
 export interface JevAnswer { answers: Record<string, any>; model?: string; usage?: unknown }
 export interface JevClient { name: 'jev'; url: string; model: string; decide(state: unknown, questions: Record<string, unknown>): Promise<JevAnswer> }
 
+export function answerOf(result: JevAnswer, id: string, type: string): any;
 export const rulesJudge: RequestJudge;
 export function jevJudge(client: JevClient): RequestJudge;
 export function jevClient(options: { url: string; apiKey: string; model?: string | null; fetchImpl?: typeof fetch }): JevClient;

@@ -176,7 +176,7 @@ describe('setup extraction', () => {
       const view = await snapshot();
       expect(view.setup.scan).toMatchObject({ phase: 'done', done: true });
       expect(view.setup.extraction.state).toBe('ok');
-      expect(view.goals.priorities[0].title).toBe('Ship the plan');
+      expect(view.goals.areas[0].title).toBe('Ship the plan');
       expect(view.rules[0].then).toBe('Test the change.');
       expect(view.setup.work.length).toBeGreaterThan(0);
       expect(view.setup.work[0].title).toStartWith('Request ');

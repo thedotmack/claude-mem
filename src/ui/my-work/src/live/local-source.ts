@@ -6,12 +6,14 @@ import { getConnectionStatus, type ConnectionStatus } from './connection-status.
 import { conflictReason, readReviewResponse, type ReviewResult } from './review-response.ts'
 import { toWorkModel } from './to-work-model.ts'
 import type { MappedWorkModel, WorkDataSource, WorkModel } from './work-data-source.ts'
+import { SaveRefusedError } from '../data.ts'
 import type { WorkViewSnapshot, WorkViewSource } from './work-view-api-types.ts'
 
 const WORK_VIEW_URL = '/api/work-view'
 const WORK_VIEW_EVENTS_URL = '/api/work-view/events'
 const WORK_VIEW_REVIEW_URL = '/api/work-view/review'
 const WORK_VIEW_RULES_URL = '/api/work-view/rules'
+const WORK_VIEW_FOCUS_URL = '/api/work-view/focus'
 const WORK_VIEW_LOAD_RULES_URL = '/api/work-view/rules/load-in-claude-code'
 const WORK_VIEW_MARK_AGENT_FINISHED_URL = '/api/work-view/agents/mark-finished'
 const CONTENT_FINGERPRINT_PATTERN = /^[a-f0-9]{64}$/
@@ -33,7 +35,7 @@ const connectionEvidence = {
 let latestSnapshot: WorkViewSnapshot | null = null
 /** The content of the last model handed to the screens, so an unchanged snapshot or a quiet minute is not sent again. */
 let lastDeliveredSignature: string | null = null
-const modelSignature = (model: MappedWorkModel) => JSON.stringify([model.agents, model.requests, model.requestReadErrors, model.unlinkedWorkCount, model.sourceHealth, model.priorities, model.openAsks, model.currentPeriod, model.pastPeriods, model.goalsReadError, model.lastRuns, model.refresh, model.rules, model.ruleScopes, model.rulesLearning, model.rulesFile, model.rulesReadError])
+const modelSignature = (model: MappedWorkModel) => JSON.stringify([model.agents, model.requests, model.requestReadErrors, model.unlinkedWorkCount, model.sourceHealth, model.focusAreas, model.otherAsks, model.currentPeriod, model.pastPeriods, model.goalsReadError, model.lastRuns, model.refresh, model.rules, model.ruleScopes, model.rulesLearning, model.rulesFile, model.rulesReadError])
 
 const currentConnectionStatus = (): ConnectionStatus =>
   getConnectionStatus({ ...connectionEvidence, now: performance.now(), wallNow: Date.now() })
@@ -67,8 +69,15 @@ async function postForWorkModel(url: string, body: unknown, whatWasSaved: string
   let answer: unknown = null
   try { answer = await response.json() } catch { /* A body that isn't JSON leaves only the status to report. */ }
   if (!response.ok) {
-    const reason = (answer as { error?: unknown } | null)?.error
-    throw new Error(`${whatWasSaved} was not saved: ${typeof reason === 'string' ? reason : `the worker answered ${response.status}`}`)
+    const { error: reason, snapshot } = (answer ?? {}) as { error?: unknown; snapshot?: unknown }
+    const message = `${whatWasSaved} was not saved: ${typeof reason === 'string' ? reason : `the worker answered ${response.status}`}`
+    // A 409 answers the snapshot the worker refused against, so the screen can show what changed.
+    if (isWorkViewSnapshot(snapshot)) {
+      const model = acceptSnapshot(snapshot, false)
+      lastDeliveredSignature = modelSignature(model)
+      throw new SaveRefusedError(message, model)
+    }
+    throw new Error(message)
   }
   if (!isWorkViewSnapshot(answer)) throw new Error(`${whatWasSaved} was saved, but the worker sent back something that is not a work snapshot. Reload to see it.`)
   const model = acceptSnapshot(answer, false)
@@ -121,6 +130,7 @@ export const localSource: WorkDataSource = {
   },
 
   saveRuleChange: (change) => postForWorkModel(WORK_VIEW_RULES_URL, change, 'The rule change'),
+  saveFocusChange: (change) => postForWorkModel(WORK_VIEW_FOCUS_URL, change, 'The focus change'),
   loadRulesInClaudeCode: () => postForWorkModel(WORK_VIEW_LOAD_RULES_URL, {}, 'Loading your rules into Claude Code'),
   markAgentFinished: (agentId) => postForWorkModel(WORK_VIEW_MARK_AGENT_FINISHED_URL, { agentGroupId: agentId }, 'Marking the agent finished'),
 
