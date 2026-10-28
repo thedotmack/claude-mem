@@ -59,6 +59,18 @@ describe('redactSensitive built-in patterns', () => {
     expect(Object.keys(result.counts)).toEqual([name]);
   });
 
+  // Slack also issues app-level tokens (`xapp-`, Socket Mode) and refresh
+  // tokens (`xoxe-`, token rotation); both grant access like a bot token.
+  it.each([
+    ['app-level', 'SLACK_APP_TOKEN=' + 'xa' + 'pp-1-A0123456789-1234567890123-abcdef0123456789abcdef0123456789'],
+    ['refresh', 'refresh_token: ' + 'xo' + 'xe-1-My0xLTEyMzQ1Njc4OTAtMTIzNDU2Nzg5MDEyMy1hYmNkZWY'],
+  ])('redacts a Slack %s token', (_kind, input) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain("<redacted type='slack_token'/>");
+    expect(result.redacted).not.toMatch(/x(?:app|oxe)-1-/);
+    expect(Object.keys(result.counts)).toEqual(['slack_token']);
+  });
+
   it('still requires a Google key to end after its 35 characters', () => {
     const result = redactSensitive('AIzaSyA-0123456789abcdefghijklmnopqrstuv', cfg);
     expect(result.counts.google_api_key).toBeUndefined();
