@@ -12,6 +12,7 @@ import { runShutdownSequence, WORKER_GRACEFUL_SHUTDOWN_DEADLINE_BASE_MS, type Wo
 import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensureDir, paths } from '../shared/paths.js';
 import { HookSpool, migrateLegacySessionEndReplay } from '../shared/hook-spool.js';
 import { HookSpoolDrainer, hookSpoolConsumedMarkers } from './worker/hook-spool-drain.js';
+import { pruneOldLogs, resolveLogRetentionDays } from './worker/log-retention.js';
 import { HookSpoolRoutes } from './worker/http/routes/HookSpoolRoutes.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { getUptimeSeconds } from '../shared/uptime.js';
@@ -287,6 +288,7 @@ export class WorkerService implements WorkerRef {
   private isShuttingDown: boolean = false;
   private bootWatchdog: ReturnType<typeof setTimeout> | null = null;
   private pendingSessionResumeTimer: ReturnType<typeof setInterval> | null = null;
+  private logRetentionTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly hookSpool = new HookSpool();
   private readonly hookSpoolDrainer = new HookSpoolDrainer(this.hookSpool);
 
@@ -524,6 +526,45 @@ export class WorkerService implements WorkerRef {
     if (this.pendingSessionResumeTimer !== null) {
       clearInterval(this.pendingSessionResumeTimer);
       this.pendingSessionResumeTimer = null;
+    }
+  }
+
+  /**
+   * Daily log retention (CLAUDE_MEM_LOG_RETENTION_DAYS). The first sweep waits
+   * 5 minutes, like BackupManager's first snapshot, so deleting a backlog of
+   * old logs never competes with boot; then it runs once a day, because the
+   * daemon can stay up for weeks and a start-only prune would never run for
+   * it. Only the worker prunes; hooks and the MCP server never pay for it.
+   * Settings are re-read each sweep, and a failing sweep never reaches the
+   * worker: retention is housekeeping.
+   */
+  private startLogRetention(): void {
+    if (this.logRetentionTimer !== null || this.isShuttingDown) return;
+    const sweep = (): void => {
+      if (this.isShuttingDown) return;
+      try {
+        const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+        pruneOldLogs(paths.logsDir(), resolveLogRetentionDays(settings.CLAUDE_MEM_LOG_RETENTION_DAYS));
+      } catch (error) {
+        logger.warn('SYSTEM', 'Log retention sweep failed; logs are kept until the next sweep', {},
+          error instanceof Error ? error : new Error(String(error)));
+      }
+    };
+    this.logRetentionTimer = setTimeout(() => {
+      sweep();
+      if (this.isShuttingDown) return;
+      this.logRetentionTimer = setInterval(sweep, 24 * 60 * 60 * 1000);
+      this.logRetentionTimer.unref?.();
+    }, 5 * 60_000);
+    this.logRetentionTimer.unref?.();
+  }
+
+  private stopLogRetention(): void {
+    if (this.logRetentionTimer !== null) {
+      // clearTimeout and clearInterval share one id space in Node and Bun.
+      clearTimeout(this.logRetentionTimer);
+      clearInterval(this.logRetentionTimer);
+      this.logRetentionTimer = null;
     }
   }
 
@@ -1056,6 +1097,7 @@ export class WorkerService implements WorkerRef {
       // null when disabled — DatabaseManager gates construction). First run
       // lands ~5 minutes after start, then every backup interval.
       this.dbManager.getBackupManager()?.start();
+      this.startLogRetention();
 
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
       this.mcpReady = existsSync(mcpServerPath);
@@ -1219,6 +1261,7 @@ export class WorkerService implements WorkerRef {
         this.workViewRoutes?.close();
         this.workViewRoutes = null;
         this.stopPendingSessionResume();
+        this.stopLogRetention();
         this.hookSpoolDrainer.stop();
         // Stop the idle monitor before the drain: its own trigger has
         // already disarmed it, and a route- or signal-initiated drain must
