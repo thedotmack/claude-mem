@@ -55,14 +55,52 @@ CREATE TABLE IF NOT EXISTS turns (
   started_at TEXT, ended_at TEXT, started_epoch REAL, ended_epoch REAL, elapsed_s REAL,
   claude_exit INTEGER, is_error INTEGER, retried INTEGER, cc_num_turns INTEGER, cc_cost_usd REAL,
   session_id TEXT, tests_passed INTEGER, tests_failed INTEGER, tests_total INTEGER, passed INTEGER,
-  rule_kept INTEGER, result_text TEXT,
+  rule_kept INTEGER, result_text TEXT, session_no INTEGER, compactions INTEGER,
   PRIMARY KEY (run_id, turn_no)
 );
 CREATE TABLE IF NOT EXISTS runs (
   run_id TEXT PRIMARY KEY, arm TEXT, model TEXT, tries INTEGER, exercises TEXT, started_at TEXT, ended_at TEXT,
-  arm_dir TEXT, claude_version TEXT, notes TEXT
+  arm_dir TEXT, claude_version TEXT, notes TEXT, sessions INTEGER, compact_window INTEGER, compact_pct INTEGER
 );
 """
+# Columns added after the first results files were written; old files get them on open.
+ADDED_COLUMNS = {'turns': ['session_no INTEGER', 'compactions INTEGER'],
+                 'runs': ['sessions INTEGER', 'compact_window INTEGER', 'compact_pct INTEGER']}
+
+
+def open_db(path):
+    db = sqlite3.connect(path, timeout=60)
+    db.executescript(SCHEMA)
+    for table, columns in ADDED_COLUMNS.items():
+        have = {row[1] for row in db.execute(f'PRAGMA table_info({table})')}
+        for column in columns:
+            if column.split()[0] not in have:
+                db.execute(f'ALTER TABLE {table} ADD COLUMN {column}')
+    return db
+
+
+def split_sessions(exercises, sessions):
+    """Exercises in order, cut into `sessions` consecutive groups as even as possible (the first groups get any extra)."""
+    size, extra = divmod(len(exercises), sessions)
+    groups, start = [], 0
+    for k in range(sessions):
+        end = start + size + (1 if k < extra else 0)
+        groups.append(exercises[start:end])
+        start = end
+    return [g for g in groups if g]
+
+
+def compactions_in(arm_dir, session_id):
+    """How many times Claude Code compacted this session so far: the compact boundaries in its own transcript."""
+    if not session_id:
+        return 0
+    found = list((arm_dir / 'claude-config' / 'projects').glob(f'*/{session_id}.jsonl'))
+    count = 0
+    for path in found:
+        for line in path.read_text(errors='replace').splitlines():
+            if '"compact_boundary"' in line:
+                count += 1
+    return count
 
 
 def now_iso():
@@ -163,7 +201,7 @@ def claude_login():
     return out.stdout.strip() or None
 
 
-def claude_env(arm_dir):
+def claude_env(arm_dir, compact_window=0, compact_pct=0):
     """The agent's environment: its own sandbox HOME and config dir, plus your credential.
 
     An API key in ANTHROPIC_API_KEY is passed on as is; otherwise your Claude Code login goes in as
@@ -172,6 +210,12 @@ def claude_env(arm_dir):
     keep = ['PATH', 'HTTPS_PROXY', 'NO_PROXY', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'NODE_OPTIONS', 'LANG']
     env = {k: os.environ[k] for k in keep if k in os.environ}
     env.update(HOME=str(arm_dir / 'home'), CLAUDE_CONFIG_DIR=str(arm_dir / 'claude-config'), DO_NOT_TRACK='1')
+    if compact_window:
+        # The window Claude Code compacts within (it refuses one under 100K tokens).
+        env['CLAUDE_CODE_AUTO_COMPACT_WINDOW'] = str(compact_window)
+    if compact_pct:
+        # Compact once the conversation fills this percent of that window, so a short benchmark reaches a compaction.
+        env['CLAUDE_AUTOCOMPACT_PCT_OVERRIDE'] = str(compact_pct)
     if os.environ.get('ANTHROPIC_API_KEY'):
         env['ANTHROPIC_API_KEY'] = os.environ['ANTHROPIC_API_KEY']
     elif token := claude_login():
@@ -185,8 +229,8 @@ def run_claude(args, arm_dir, prompt, session_id, log_base):
         cmd += ['--resume', session_id]
     with open(f'{log_base}.json', 'w') as out, open(f'{log_base}.err', 'w') as err:
         try:
-            code = subprocess.run(cmd, cwd=arm_dir / 'proj', env=claude_env(arm_dir), stdin=subprocess.DEVNULL,
-                                  stdout=out, stderr=err, timeout=args.turn_timeout).returncode
+            code = subprocess.run(cmd, cwd=arm_dir / 'proj', env=claude_env(arm_dir, args.compact_window, args.compact_pct),
+                                  stdin=subprocess.DEVNULL, stdout=out, stderr=err, timeout=args.turn_timeout).returncode
         except subprocess.TimeoutExpired:
             code = -9
     try:
@@ -210,9 +254,23 @@ def main():
     p.add_argument('--exercises', default='')
     p.add_argument('--limit', type=int, default=0)
     p.add_argument('--turn-timeout', type=int, default=1500)
+    p.add_argument('--sessions', type=int, default=1,
+                   help='split the exercises across this many sessions; only the first is told the standing rule')
+    p.add_argument('--compact-window', type=int, default=0,
+                   help="Claude Code's auto-compact window in tokens, 100000 to 1000000 "
+                        "(CLAUDE_CODE_AUTO_COMPACT_WINDOW); 0 = its own")
+    p.add_argument('--compact-pct', type=int, default=0,
+                   help='compact at this percent of the window (CLAUDE_AUTOCOMPACT_PCT_OVERRIDE); 0 = its own')
     p.add_argument('--claude', default=shutil.which('claude'))
     args = p.parse_args()
     args.arm_dir = args.arm_dir.resolve()
+    if args.compact_window and not 100_000 <= args.compact_window <= 1_000_000:
+        # Claude Code ignores a window outside this range, which would leave the run without the compaction asked for.
+        sys.exit('--compact-window must be 100000 to 1000000 tokens; lower the threshold with --compact-pct')
+    if not 0 <= args.compact_pct <= 100:
+        sys.exit('--compact-pct must be 0 to 100')
+    if args.sessions < 1:
+        sys.exit('--sessions must be 1 or more')
     if subprocess.run([sys.executable, '-c', 'import pytest'], capture_output=True).returncode:
         sys.exit(f'{sys.executable} has no pytest; the benchmark grades with pytest (pip install pytest)')
 
@@ -222,8 +280,7 @@ def main():
     proj = args.arm_dir / 'proj'
     logs = args.arm_dir / 'logs' / 'turns'
     logs.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(args.db, timeout=60)
-    db.executescript(SCHEMA)
+    db = open_db(args.db)
     # One run, one directory, one run id: a rerun into either would mix old turns and requests into the new run.
     if db.execute('SELECT 1 FROM runs WHERE run_id=?', (args.run_id,)).fetchone():
         sys.exit(f'run {args.run_id} is already in {args.db}; use a new run id or a new results file')
@@ -232,12 +289,14 @@ def main():
     prepare_project(proj, args.bench, exercises)
     version = subprocess.run([args.claude, '--version'], capture_output=True, text=True).stdout.strip()
     label = args.arm_label or args.arm
-    db.execute('INSERT OR REPLACE INTO runs VALUES (?,?,?,?,?,?,?,?,?,?)',
+    db.execute('INSERT INTO runs (run_id, arm, model, tries, exercises, started_at, ended_at, arm_dir, claude_version, '
+               'notes, sessions, compact_window, compact_pct) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
                (args.run_id, label, args.model, args.tries, ','.join(exercises), now_iso(), None,
-                str(args.arm_dir), version, None))
+                str(args.arm_dir), version, None, args.sessions, args.compact_window, args.compact_pct))
     db.commit()
 
     session_id = None
+    session_no = 1
     turn_no = 0
 
     def turn(kind, ex, attempt, prompt):
@@ -259,7 +318,8 @@ def main():
                    claude_exit=code, is_error=int(bool(data.get('is_error')) or not data), retried=retried,
                    cc_num_turns=data.get('num_turns'), cc_cost_usd=data.get('total_cost_usd'), session_id=session_id,
                    tests_passed=None, tests_failed=None, tests_total=None, passed=None, rule_kept=None,
-                   result_text=(data.get('result') or '')[:2000])
+                   result_text=(data.get('result') or '')[:2000], session_no=session_no,
+                   compactions=compactions_in(args.arm_dir, session_id))
         output = ''
         if ex:
             passed, failed, output = grade(proj, args.bench, ex)
@@ -279,22 +339,29 @@ def main():
         db.execute('UPDATE runs SET notes=? WHERE run_id=?', ('invalid: the opening turn failed', args.run_id))
         db.commit()
         sys.exit(f'{args.run_id}: the opening turn failed; run marked invalid')
-    first_session = opening['session_id']
-    for ex in exercises:
-        solution, _ = exercise_files(args.bench / ex)
-        files = ', '.join(f'`{ex}/{name}`' for name in solution)
-        row, output = turn('task', ex, 1, FIRST_TRY.format(ex=ex, files=files))
-        for attempt in range(2, args.tries + 1):
-            if row['passed']:
-                break
-            tail = '\n'.join(output.strip().splitlines()[-TEST_OUTPUT_LINES:])
-            row, output = turn('task', ex, attempt, SECOND_TRY.format(ex=ex, output=tail, files=files))
+    for k, group in enumerate(split_sessions(exercises, args.sessions), start=1):
+        if k > 1:
+            # A new session, the way a person starts one the next day: no --resume, and no reminder of the rule.
+            session_id, session_no = None, k
+        for ex in group:
+            solution, _ = exercise_files(args.bench / ex)
+            files = ', '.join(f'`{ex}/{name}`' for name in solution)
+            row, output = turn('task', ex, 1, FIRST_TRY.format(ex=ex, files=files))
+            for attempt in range(2, args.tries + 1):
+                if row['passed']:
+                    break
+                tail = '\n'.join(output.strip().splitlines()[-TEST_OUTPUT_LINES:])
+                row, output = turn('task', ex, attempt, SECOND_TRY.format(ex=ex, output=tail, files=files))
 
-    # Every turn must have continued the opening turn's session; a turn that started a new one broke the long session.
-    other = db.execute('SELECT min(turn_no) FROM turns WHERE run_id=? AND session_id != ?',
-                       (args.run_id, first_session)).fetchone()[0]
-    if other:
-        db.execute('UPDATE runs SET notes=? WHERE run_id=?', (f'invalid: a new session started at turn {other}', args.run_id))
+    # Each session must be one Claude Code session from its first turn to its last: a turn that started another broke it.
+    broken = db.execute('SELECT session_no, count(DISTINCT session_id) FROM turns WHERE run_id=? '
+                        'GROUP BY session_no HAVING count(DISTINCT session_id) > 1 ORDER BY session_no',
+                        (args.run_id,)).fetchone()
+    if broken:
+        first = db.execute('SELECT min(turn_no) FROM turns t WHERE run_id=? AND session_no=? AND session_id != '
+                           '(SELECT session_id FROM turns WHERE run_id=? AND session_no=? ORDER BY turn_no LIMIT 1)',
+                           (args.run_id, broken[0], args.run_id, broken[0])).fetchone()[0]
+        db.execute('UPDATE runs SET notes=? WHERE run_id=?', (f'invalid: a new session started at turn {first}', args.run_id))
     db.execute('UPDATE runs SET ended_at=? WHERE run_id=?', (now_iso(), args.run_id))
     db.commit()
 

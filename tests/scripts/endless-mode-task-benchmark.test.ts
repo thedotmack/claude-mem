@@ -114,4 +114,29 @@ describe('task benchmark run_session.py', () => {
     writeFileSync(join(proj, 'adder', 'adder.py'), '# Benchmark session solution\ndef add(a, b):\n    return a + b\n');
     for (const runner of runners) expect(gradeWith(runner)).toEqual([2, 0, 1]);
   });
+
+  it('splits the exercises across sessions in order, the first sessions taking any extra', () => {
+    const out = python("import json, run_session as r; print(json.dumps([r.split_sessions(list('abcde'), n) for n in (1, 2, 3, 9)]))");
+    expect(out.code).toBe(0);
+    expect(JSON.parse(out.stdout)).toEqual([
+      [['a', 'b', 'c', 'd', 'e']],
+      [['a', 'b', 'c'], ['d', 'e']],
+      [['a', 'b'], ['c', 'd'], ['e']],
+      [['a'], ['b'], ['c'], ['d'], ['e']],
+    ]);
+  });
+
+  it("counts compactions from the session's own transcript", () => {
+    const arm = join(scratch, 'arm-compact');
+    const dir = join(arm, 'claude-config', 'projects', '-some-proj');
+    mkdirSync(dir, { recursive: true });
+    // The line Claude Code 2.1 writes when it compacts, trimmed to the fields that matter.
+    const boundary = JSON.stringify({ type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted', compactMetadata: { trigger: 'auto', preTokens: 29718, postTokens: 9513 } });
+    const turn = JSON.stringify({ type: 'user', message: { role: 'user', content: 'next exercise' } });
+    writeFileSync(join(dir, 'sess-1.jsonl'), [turn, boundary, turn, boundary, turn].join('\n'));
+    writeFileSync(join(dir, 'sess-2.jsonl'), [turn, boundary].join('\n'));
+    const out = python(`import json, run_session as r\nfrom pathlib import Path\na = Path(${JSON.stringify(arm)})\nprint(json.dumps([r.compactions_in(a, s) for s in ('sess-1', 'sess-2', 'sess-none', None)]))`);
+    expect(out.code).toBe(0);
+    expect(JSON.parse(out.stdout)).toEqual([2, 1, 0, 0]);
+  });
 });

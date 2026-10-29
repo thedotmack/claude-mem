@@ -54,6 +54,21 @@ def run_metrics(db, run_id):
     columns = [row[1] for row in db.execute('PRAGMA table_info(requests)')]
     m['incomplete_requests'] = db.execute('SELECT count(*) FROM requests WHERE run_id=? AND complete=0',
                                           (run_id,)).fetchone()[0] if 'complete' in columns else 0
+    cols = {row[1] for row in db.execute('PRAGMA table_info(turns)')}
+    measured = 'compactions' in cols and db.execute(
+        'SELECT 1 FROM turns WHERE run_id=? AND compactions IS NOT NULL LIMIT 1', (run_id,)).fetchone()
+    if measured:
+        # Per session, the highest count its turns saw; summed over the run's sessions.
+        m['compactions'] = db.execute('SELECT coalesce(sum(c),0) FROM (SELECT max(coalesce(compactions,0)) c FROM turns '
+                                      'WHERE run_id=? GROUP BY session_no)', (run_id,)).fetchone()[0]
+        # The standing rule is told in session 1 only; how many exercises of the later sessions still followed it.
+        later = [r for r in db.execute("SELECT exercise, rule_kept FROM turns WHERE run_id=? AND kind='task' "
+                                       "AND session_no > 1 ORDER BY turn_no", (run_id,))]
+        m['later_exercises'] = len({ex for ex, _ in later})
+        m['rule_kept_later'] = sum(1 for ex, rule in dict(later).items() if rule)
+    else:
+        # Runs from before the harness counted compactions: not measured, so the report leaves the row out.
+        m['compactions'] = m['later_exercises'] = m['rule_kept_later'] = None
     m['total_cost'] = m['agent_cost'] + m['observer_cost']
     m['total_cost_opus'] = m['agent_cost_opus'] + m['observer_cost']  # the observer stays on its own model
     # Prompt size of the last agent request of each exercise's first try, in exercise order (per request, not summed).
@@ -73,7 +88,7 @@ def fmt(values, kind):
     return f'{f(mean)} ({f(lo)} to {f(hi)})' if len(values) > 1 else f(mean)
 
 
-def rows(n_exercises, tries, model):
+def rows(n_exercises, tries, model, sessions=1, compact_window=0, compact_pct=0):
     long_over = PRICES[next(k for k in PRICES if model.startswith(k))].get('long_over')
     long_row = (f'Agent requests with a prompt over {long_over // 1000}K tokens (priced at the long-prompt rate)'
                 if long_over else f'Agent requests at a long-prompt rate ({model} has none)')
@@ -85,6 +100,8 @@ def rows(n_exercises, tries, model):
     ('Hidden tests passed, all exercises, final code', 'tests_passed', 'n1'),
     ('Hidden tests run, all exercises, final code', 'tests_total', 'n1'),
     (f'Standing rule from turn 1 still followed, exercises of {n_exercises}', 'rule_kept', 'n1'),
+    *([(f'Standing rule followed in sessions 2 to {sessions} (told in session 1 only), exercises', 'rule_kept_later', 'n1'),
+       ('Exercises in sessions 2 and later', 'later_exercises', 'n1')] if sessions > 1 else []),
     ('Time', None, None),
     ('Whole session wall time (sum of turns)', 'elapsed_min', 'min'),
     ('Median time per exercise turn', 'median_turn_s', 's'),
@@ -102,6 +119,10 @@ def rows(n_exercises, tries, model):
     ('Context size, per request', None, None),
     ('Largest single agent prompt', 'agent_max_prompt', 'k'),
     (long_row, 'agent_long_requests', 'n1'),
+    ('Compaction', None, None),
+    (f'Times Claude Code compacted its conversation (auto-compact window: '
+     f'{f"{compact_window:,} tokens" if compact_window else "its default"}'
+     f'{f", compacting at {compact_pct}% of it" if compact_pct else ""})', 'compactions', 'n1'),
     ('Reliability', None, None),
     ('Turns Claude Code ended in an error (before the one retry)', 'retried_turns', 'n1'),
     ('Turns still in error after the retry', 'error_turns', 'n1'),
@@ -118,26 +139,40 @@ def main():
     db = sqlite3.connect(args.db)
     runs = {}
     settings = {}
-    for run_id, arm, model, tries, exercises, ended_at, notes in db.execute(
-            'SELECT run_id, arm, model, tries, exercises, ended_at, notes FROM runs ORDER BY run_id'):
+    run_cols = {row[1] for row in db.execute('PRAGMA table_info(runs)')}
+    extra = 'coalesce(sessions,1), coalesce(compact_window,0)' if 'sessions' in run_cols else '1, 0'
+    extra += ', coalesce(compact_pct,0)' if 'compact_pct' in run_cols else ', 0'
+    for run_id, arm, model, tries, exercises, ended_at, notes, sessions, compact_window, compact_pct in db.execute(
+            f'SELECT run_id, arm, model, tries, exercises, ended_at, notes, {extra} FROM runs ORDER BY run_id'):
         if not ended_at or (notes or '').startswith('invalid'):
             print(f'left out: {run_id} ({notes or "not finished"})', file=sys.stderr)
             continue
-        settings.setdefault((model, tries, exercises), []).append(run_id)
+        settings.setdefault((model, tries, exercises, sessions, compact_window, compact_pct), []).append(run_id)
         runs.setdefault(arm, []).append(run_metrics(db, run_id))
     if len(settings) != 1:
-        sys.exit('runs with different settings (model, tries or exercises) cannot share one table: '
-                 + '; '.join(f'{k[0]}, {k[1]} tries, {len(k[2].split(","))} exercises: {", ".join(v)}' for k, v in settings.items()))
-    (model, tries, exercises), = settings
+        sys.exit('runs with different settings (model, tries, exercises, sessions or compaction) cannot share one '
+                 'table: ' + '; '.join(f'{k[0]}, {k[1]} tries, {len(k[2].split(","))} exercises, {k[3]} sessions, '
+                                       f'window {k[4]} at {k[5]}%: {", ".join(v)}' for k, v in settings.items()))
+    (model, tries, exercises, sessions, compact_window, compact_pct), = settings
     price_of(model)  # refuses a model with no price
     arms = [a for a in ('plain', 'endless') if a in runs] + sorted(a for a in runs if a not in ('plain', 'endless'))
-    names = {'plain': 'Plain Claude Code', 'endless': 'Endless Mode, note-taker on its default (Haiku 4.5)',
-             'endless-observer-haiku55': 'Endless Mode, note-taker on Haiku 5.5'}
-    label = {a: f'{names.get(a, a)} ({len(runs[a])} runs)' for a in arms}
+    def name(arm):
+        if arm == 'plain':
+            return 'Plain Claude Code'
+        # The note-taker model the API reported answering, so the label can't drift from what ran.
+        used = sorted({m for (m,) in db.execute(
+            "SELECT DISTINCT r.model FROM requests r JOIN runs u ON u.run_id = r.run_id "
+            "WHERE u.arm = ? AND r.source = 'observer' AND r.model IS NOT NULL", (arm,))})
+        return f'Endless Mode, note-taker on {", ".join(used)}' if used else arm
+    label = {a: f'{name(a)} ({len(runs[a])} runs)' for a in arms}
     lines = ['| Measure | ' + ' | '.join(label[a] for a in arms) + ' |', '|---|' + '---|' * len(arms)]
-    for title, key, kind in rows(len(exercises.split(',')), tries, model):
+    for title, key, kind in rows(len(exercises.split(',')), tries, model, sessions, compact_window, compact_pct):
         if key is None:
             lines.append(f'| **{title}** |' + ' |' * len(arms))
+            continue
+        if any(m[key] is None for a in arms for m in runs[a]):
+            if lines[-1].startswith('| **'):
+                lines.pop()  # a section with nothing measured goes too
             continue
         lines.append(f'| {title} | ' + ' | '.join(fmt([m[key] for m in runs[a]], kind) for a in arms) + ' |')
     lines += ['', 'Agent prompt size at the end of each exercise\'s first try (per request, mean over runs, K tokens):', '']

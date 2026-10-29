@@ -47,6 +47,18 @@ python3 scripts/endless-mode-validation/tasks/report.py --db .scratch/endless-mo
 config dir and claude-mem data dir, ports from 39100 and 39200 up), runs them side by side, then extracts usage.
 `--exercises a,b,c` or `--limit N` runs fewer exercises.
 
+Long sessions and compaction:
+
+- `--sessions N` splits the exercises across N sessions in order. Only the first is told the standing rule; each later
+  one starts fresh (no `--resume`), the way you pick work up the next day, so the rule check shows whether it carried
+  over through memory.
+- `--compact-window T --compact-pct P` makes Claude Code compact sooner, so a short benchmark reaches a compaction.
+  Claude Code refuses a window under 100,000 tokens, so set the window to 100000 and lower the percent instead
+  (`--compact-window 100000 --compact-pct 35` compacts near 35K tokens). The report counts each session's compactions,
+  read from Claude Code's own transcript.
+- Compaction requests go through the same recording proxy, so their cost is in the agent's cost. Endless Mode stops
+  folding once the agent compacts (a compaction rewrites the history it had folded).
+
 An output dir, run directory or run id is never reused: a rerun into one would mix old turns and requests into the new
 run. Every stack is stopped when `run_all.sh` ends, fails or is interrupted. Before extraction it waits until each
 observer has finished what the session sent it, and the report counts any response that was cut off.
@@ -64,7 +76,8 @@ on a machine you would let the agent work on.
 
 `results.sqlite` has three tables:
 
-- `runs`: one row per session (arm, model, exercises, Claude Code version).
-- `turns`: one row per turn (time, Claude Code's own error flag and reported cost, tests passed and run, rule kept).
+- `runs`: one row per run (arm, model, exercises, Claude Code version, sessions, compaction settings).
+- `turns`: one row per turn (time, Claude Code's own error flag and reported cost, tests passed and run, rule kept,
+  which session, compactions so far).
 - `requests`: one row per API request (source `agent` or `observer`, turn, model, input, cache write, cache read and
   output tokens, prompt size, cost at list prices, cost at Opus 5.5's flat prices).
