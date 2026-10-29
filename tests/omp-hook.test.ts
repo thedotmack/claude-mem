@@ -275,6 +275,33 @@ describe('OMP Claude Mem hook', () => {
     });
   });
 
+  it('strips nested and cap-straddling private blocks from tool results before the cap', async () => {
+    const requests: CapturedRequest[] = [];
+    installFetchCapture(requests);
+    const handlers = registerHook();
+    const cwd = { cwd: '/tmp/omp-private-strip' };
+
+    await handlers.session_start?.();
+    // Nested same-name blocks: a lazy regex pairs the outer opener with the
+    // inner closer and leaves `SECRET</private>` behind.
+    await handlers.tool_result?.(
+      { toolName: 'read', content: 'before <private>outer<private>inner</private>SECRET</private> after' },
+      cwd,
+    );
+    // A block whose closer sits past the 1,000-char cap: capping first would
+    // sever `</private>` and ship the private prefix unbalanced.
+    await handlers.tool_result?.(
+      { toolName: 'read', content: `${'a'.repeat(990)}<private>${'TOKEN'.repeat(10)}</private>tail` },
+      cwd,
+    );
+    await drainMicrotasks();
+
+    const responses = requests
+      .filter(request => request.path === '/api/sessions/observations')
+      .map(request => String(request.body.tool_response));
+    expect(responses).toEqual(['before  after', `${'a'.repeat(990)}tail`]);
+  });
+
   it('bounds every worker request with a timeout that counts as a breaker failure (R5-7)', async () => {
     // Every request's timeout has already elapsed: fetch rejects with the
     // signal's reason, as it does for a hung worker. A request with no signal
