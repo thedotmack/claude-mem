@@ -525,6 +525,7 @@ received = [];
 await run('context', { session_id: 'd15', cwd: '/home/user', source: 'startup' }, DUET);
 await run('session-end', { session_id: 'd15', cwd: '/home/user', reason: 'exit' }, DUET);
 check('a session that never learns a channel registers at its end', ingested().map(e => e.event).join() === 'session-start,session-end', JSON.stringify(ingested().map(e => e.event)));
+check('…in one request, so the short SessionEnd budget holds', received.filter(r => r.url.startsWith('/api/hooks/ingest')).length === 1, String(received.filter(r => r.url.startsWith('/api/hooks/ingest')).length));
 
 // a cloud that never answers can't hold the prompt past the hook's timeout
 mode = 'slow';

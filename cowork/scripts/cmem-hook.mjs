@@ -420,6 +420,17 @@ async function flushSpool() {
   }
 }
 
+// Several events in one request, spooled together if it fails.
+async function ingestBatch(envs) {
+  if (!CFG.apiKey) return;
+  try {
+    const res = await http('POST', `${CFG.apiBase}/api/hooks/ingest`, { v: 1, batch: envs }, HTTP_TIMEOUT_MS.normal);
+    if (!res.ok && res.status !== 404) envs.forEach(spool);
+  } catch {
+    envs.forEach(spool);
+  }
+}
+
 async function ingest(event, payload) {
   const env = envelope(event, payload);
   if (!CFG.apiKey) return;                      // unpaired — inert by design
@@ -732,9 +743,15 @@ async function onSummarize(input) {
 async function onSessionEnd(input) {
   // cwd matters: the envelope's project is resolved from it. Without it a
   // spool replay or out-of-tree hook run would misfile the session summary.
+  // A session that never learned its channel registers here, in the same
+  // request as its end, so SessionEnd's short budget holds one round trip.
   if (SESSION.state.deferredStart) {
-    await ingest('session-start', { session_id: input.session_id, cwd: input.cwd, source: SESSION.state.deferredStart }).catch(() => {});
     updateSession(SESSION.id, { deferredStart: null });
+    await ingestBatch([
+      envelope('session-start', { session_id: input.session_id, cwd: input.cwd, source: SESSION.state.deferredStart }),
+      envelope('session-end', { session_id: input.session_id, cwd: input.cwd, reason: input.reason })
+    ]);
+    return;
   }
   await ingest('session-end', { session_id: input.session_id, cwd: input.cwd, reason: input.reason });
 }
