@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { motion } from 'motion/react'
 import { BotIcon, CornerLeftUpIcon, RefreshCwIcon, StarIcon, UserIcon } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
@@ -9,7 +9,8 @@ import { Spinner } from '@/components/ui/spinner'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
-import { agentById, deviceById, isSampleHref, measuredEstimate, SAMPLE_DEVICES, useWorkModel, type Device, type LiveState, type Request, type Run, type SkillRun } from '@/data'
+import { isSampleHref, measuredEstimate, SAMPLE_DEVICES, type Device, type LiveState, type Request, type Run, type SkillRun } from '@/data'
+import { agentById, deviceById, useConnection, useWorkModel, useWorkspace } from '@/store'
 import type { AutoRefresh } from '@/live/work-data-source'
 import { focusAreaLabel, resolveFocusAreaId } from '@/live/to-focus-model'
 import { AgentMark } from './brand'
@@ -23,9 +24,6 @@ export function ActivePill({ layoutId, className }: { layoutId: string; classNam
   return <motion.span layoutId={layoutId} transition={{ type: 'spring', bounce: 0.3, duration: 0.6 }} className={cn('absolute inset-0 rounded-[inherit] bg-accent', className)} />
 }
 
-export interface Workspace { mode: 'home' | 'web'; team: boolean; connected: boolean }
-export const WorkspaceContext = createContext<Workspace>({ mode: 'home', team: false, connected: false })
-export const useWorkspace = () => useContext(WorkspaceContext)
 
 /** Agent mark, plus the machine it ran on (§13: remote agents are already synced, say where the work happened). */
 export function AgentIcon({ agentId, withDevice = false }: { agentId: string; withDevice?: boolean }) {
@@ -176,7 +174,8 @@ export function ProductLink({ href, children, className }: { href?: string; chil
  */
 export function LiveIndicator() {
   const { mode } = useWorkspace()
-  const { sourceKind, connection } = useWorkModel()
+  const { sourceKind } = useWorkModel()
+  const connection = useConnection()
   const demonstration = sourceKind === 'sample'
   const live = demonstration || connection.isLive
   return (
@@ -204,7 +203,8 @@ export function LiveIndicator() {
 
 /** Which machines are reporting and how fresh each one is (§13.6). This computer's freshness is the live feed's. */
 export function DeviceFreshness() {
-  const { sourceKind, devices, connection } = useWorkModel()
+  const { sourceKind, devices } = useWorkModel()
+  const connection = useConnection()
   const reportingNow = (device: Device) => sourceKind === 'sample' || device.syncedMinutesAgo !== 0 ? device.online : connection.isLive
   return (
     <Req ids={['R13.8', 'R13.2']}>

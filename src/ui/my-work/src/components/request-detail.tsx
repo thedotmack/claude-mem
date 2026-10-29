@@ -10,12 +10,13 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Req } from '@/spec/req'
-import { OTHER_FOCUS_AREA_ID, setRequestChecked, useWorkModel, type Request } from '@/data'
+import { OTHER_FOCUS_AREA_ID, type Request } from '@/data'
+import { useStore, useWorkModel, useWorkspace } from '@/store'
 import { isPlaceableFocusArea, resolveFocusAreaId } from '@/live/to-focus-model'
 import { CHANGED_WHILE_READING_MESSAGE, CHECK_UNDONE_MESSAGE, CHECKED_LOCALLY_MESSAGE, type ReviewResult } from '@/live/review-response'
 import { PRODUCT_ICON } from '@/lib/product-icons'
 import { cn } from '@/lib/utils'
-import { AgentIcon, FocusAreaChip, NextMove, ProductLink, ProgressMeter, StateBadge, useWorkspace } from './bits'
+import { AgentIcon, FocusAreaChip, NextMove, ProductLink, ProgressMeter, StateBadge } from './bits'
 import { FocusChangeBar, useFocusChanges } from './focus-changes'
 import { OpenFollowUps } from './request-card'
 
@@ -85,7 +86,8 @@ function CheckAction({ request }: { request: Request }) {
     setSaving(true)
     let next: CheckNotice
     try {
-      next = noticeFor(await setRequestChecked(request.id, checked), checked)
+      // The version on screen is the one checked; the worker refuses any other.
+      next = noticeFor(await useStore.getState().setRequestChecked(request.id, checked, request.contentFingerprint), checked)
     } catch (error) {
       next = { tone: 'problem', message: error instanceof Error ? error.message : String(error) }
     } finally {

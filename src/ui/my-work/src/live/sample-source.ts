@@ -154,7 +154,7 @@ export const sampleSource: WorkDataSource = {
 
   async saveRuleChange(change) {
     applySampleRuleChange(change)
-    return loadSampleWorkModel()
+    return { model: await loadSampleWorkModel(), savedRuleId: null }
   },
   async saveFocusChange(change) {
     applySampleFocusChange(change)

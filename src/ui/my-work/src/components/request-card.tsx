@@ -13,8 +13,9 @@ import { cn } from '@/lib/utils'
 import { isCardDeliverable } from '@/lib/deliverables'
 import { PRODUCT_ICON } from '@/lib/product-icons'
 import { Req } from '@/spec/req'
-import { requestById, updateRequest, useFreshlyUpdated, type Request } from '@/data'
-import { AgentIcon, FocusAreaChip, NextMove, ProductLink, ProgressMeter, StateBadge, useWorkspace } from './bits'
+import type { Request } from '@/data'
+import { requestById, useFreshlyUpdated, useStore, useWorkspace } from '@/store'
+import { AgentIcon, FocusAreaChip, NextMove, ProductLink, ProgressMeter, StateBadge } from './bits'
 
 /**
  * Decision 5: while a request has only agent data, the card shows the agent's own lines as a terminal,
@@ -78,7 +79,7 @@ export function OpenFollowUps({ request, limit }: { request: Request; limit?: nu
   if (request.state !== 'shipped' || open.length === 0) return null
   const inStore = requestById(request.id) !== null
   // Finishing a follow-up moves the next step on to the next open one, so the card never names finished work.
-  const finish = (text: string) => updateRequest(request.id, (current) => {
+  const finish = (text: string) => useStore.getState().updateSampleRequest(request.id, (current) => {
     const followUps = current.followUps.map((followUp) => followUp.text === text ? { ...followUp, done: true } : followUp)
     const stillOpen = followUps.find((followUp) => !followUp.done)
     return { ...current, followUps, next: stillOpen ? { who: 'human', text: stillOpen.text } : { who: 'bot', text: 'Nothing left after ship' } }
