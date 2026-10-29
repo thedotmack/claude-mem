@@ -24,7 +24,7 @@ Claude-mem has a single instrumentation path (`instrument()` in `src/services/te
 
 So a single source of truth produces both the rich local log and the minimal, privacy-preserving telemetry — they never drift, and the scrubbing only ever happens on the telemetry branch.
 
-**Note on session replay:** PostHog session replay is **not applicable** to claude-mem. Replay records a browser DOM session; claude-mem is a Node background worker with no browser surface, so there is nothing to replay and it is never enabled.
+**Note on session replay:** PostHog session replay is **not applicable** to claude-mem. Replay records a browser DOM session; claude-mem's only browser surface, the local My Work viewer, loads no PostHog browser SDK — it reports two usage counts (`work_view_opened`, `work_view_switched`) to the worker, which sends them through the same client and whitelist as everything else — so there is nothing to replay and it is never enabled.
 
 ## What is collected
 
@@ -128,6 +128,8 @@ Every event property passes through a strict whitelist scrubber — any key not 
 | `skill_id` | `mem-search` | Which bundled skill was invoked — a closed enum of `plugin/skills/` directory names, or `other`. Third-party skill names are never sent. |
 | `skill_source` | `first_party` | `first_party` (a shipped `plugin/skills/` skill) or `third_party` (collapsed to `skill_id: other`) |
 | `skill_trigger` | `tool` | How the skill was invoked: `tool` (host Skill tool) or `prompt` (typed `/skill` at session-init). Never the prompt body. |
+| `view` | `suggested` | Which My Work viewer page is on screen — the viewer's own closed page ids: setup / work / rules / suggested / past-focus. A focus area counts as `work`, never by its name. Never a request title, prompt, observation, file path, or search text |
+| `previous_view` | `work` | On `work_view_switched`, the page the viewer switched away from (same closed list) |
 
 One value is derived server-side rather than sent by the client: PostHog resolves the request's sender IP to a **coarse location** (country / region / city) at ingestion, before the IP itself is discarded. The client never attaches an IP to any event, and the raw IP is never stored — see [What is NEVER collected](#what-is-never-collected).
 
@@ -154,6 +156,8 @@ One value is derived server-side rather than sent by the client: PostHog resolve
 | `work_state_usage_rollup` | A 5-minute rollup of captured work-state activity and instruction returns; also flushed at worker shutdown | `platform`, `agent_role`, `instruction_state`, the counters described below, `window_start_ts` |
 | `search_performed` | A memory search runs (never the query text) | `endpoint`, `outcome`, `duration_ms`, `result_count`, `search_strategy`, `chroma_available`, `fallback_reason` |
 | `skill_invoked` | A bundled skill is invoked — the host Skill tool loads its instructions, or the user types a first-party `/skill` at session-init. **Not** work completion; no `duration_ms` / outcome. Worker path only. Unknown `/foo` emits nothing. | `skill_id` (closed enum + `other`), `skill_source` (`first_party` / `third_party`), `skill_trigger` (`tool` / `prompt`), `ide` |
+| `work_view_opened` | The local My Work viewer (`http://localhost:37777`) is opened in a browser. The page reports it over `POST /api/work-view/usage` (loopback and same-origin only) and the worker sends it; the page loads no PostHog SDK | `view` (setup / work / rules / suggested / past-focus) |
+| `work_view_switched` | The viewer switches between its pages — My Work, My Rules, Suggested, Past focus, or setup finishing into My Work | `view`, `previous_view` |
 | `worker_stopped` | The background worker shuts down gracefully | `uptime_seconds`, `shutdown_reason` (stop / restart / signal / idle) |
 | `supervisor_registry_degraded` | The worker could not write its process registry (`supervisor.json`, e.g. an unwritable data directory) and kept it in memory instead. Sent once per degraded episode, not once per failed write | `error_category` (the filesystem error code, e.g. `EACCES` / `EROFS` / `ENOSPC`, or `unknown`) |
 | `worker_start_failed` | A worker this launcher started died before it became ready. Sent by the launcher that started it, never by one that only waited for another launcher's worker | `outcome` (`dead`), `error_category` (`boot_crash` when the crash could be reproduced, `port_unbindable` when the worker port cannot be bound, `launch_failed` when the daemon process could not be launched at all, such as no Bun runtime or `Start-Process` refused, else `unreachable_after_boot`); never the crash text, which stays in the local log |
