@@ -730,7 +730,11 @@ export class DataRoutes extends BaseRouteHandler {
     // #2756 — additive: sessions currently parked in waitForSlot, never a
     // breaking change to existing isProcessing/queueDepth consumers.
     const parkedSessions = getParkedSlotWaiterCount();
-    res.json({ isProcessing, queueDepth, parkedSessions });
+    // #4737 follow-up — additive: which sessions hold parked batches (spent
+    // PaidSendBudget, never resent automatically), so an operator can pick a
+    // sessionDbId for POST /api/sessions/resend-parked without grepping logs.
+    const parkedBatches = this.sessionManager.getMessageBuffer().getParkedBatchSummaries();
+    res.json({ isProcessing, queueDepth, parkedSessions, parkedBatches });
   });
 
   private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string; platformSource?: string; contentSessionId?: string } {

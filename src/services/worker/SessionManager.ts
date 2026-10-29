@@ -100,6 +100,29 @@ export class SessionManager {
     return parkedMessageIds;
   }
 
+  /**
+   * Operator-consented recovery for parked batches (#4737): hand a parked
+   * batch's messages back to the pending pool and start a generator. The
+   * automatic paths never unpark ("never pay twice" — the earlier send may
+   * already have been billed), so this one exists for when an operator decides
+   * the work is worth a possible second bill. Parking cleared the batch's
+   * PaidSendBudget, so the re-claimed head gets a fresh one by the usual
+   * keyed-by-head rule. Returns the ids returned to the pending pool.
+   */
+  resendParkedBatch(sessionDbId: number): number[] {
+    const session = this.sessions.get(sessionDbId);
+    if (!session || this.deletingSessions.has(sessionDbId)) return [];
+    const unparkedMessageIds = this.buffer.unpark(sessionDbId);
+    if (unparkedMessageIds.length === 0) return [];
+    logger.warn('SESSION', 'Parked batch returned to the queue by operator request; it will be sent with a fresh paid-send budget', {
+      sessionId: sessionDbId,
+      unparkedMessageIds,
+      pendingCount: this.buffer.getPendingCount(sessionDbId),
+    });
+    this.generatorStarter?.(sessionDbId, 'resend-parked');
+    return unparkedMessageIds;
+  }
+
   /** Resume preserved transport work without requiring another hook from the IDE. */
   scheduleTransportResume(sessionDbId: number): void {
     const session = this.sessions.get(sessionDbId);
