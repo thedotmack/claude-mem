@@ -2,8 +2,8 @@
  * Shared focus pages: one focus area of My Work, shared by link at cmem.ai/focus/<token>, that people and agents
  * comment on. The wire contract is claude-mem-pro's /api/focus-share (src/lib/focus-share/http.ts there).
  *
- * The viewer builds each page from the model it shows (src/ui/my-work/src/live/to-shared-focus.ts) and sends it
- * here; this worker signs the calls with the cloud sync credential, so the credential never reaches the page.
+ * The worker builds each page from its own snapshot (focus-share-publisher.ts) and keeps it current whether or not
+ * My Work is open; it signs the calls with the cloud sync credential, so the credential never reaches a browser.
  * Which areas are shared, and their links, live in focus-shares.json next to settings.json. A page that has not
  * changed since the last publish is not sent again.
  */

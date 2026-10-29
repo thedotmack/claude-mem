@@ -28,6 +28,7 @@ import { AutoRefreshWorker } from '../../../work-view/auto-refresh-worker.mjs';
 import { buildRefreshTask } from '../../../work-view/refresh-task.js';
 import { HostedIntent } from '../../../work-view/hosted-intent.js';
 import { FocusShareError, FocusShares } from '../../../work-view/focus-share.js';
+import { FocusSharePublisher } from '../../../work-view/focus-share-publisher.js';
 import { cmemProOrigin } from '../../../../shared/cmem-gateway.js';
 import { isOpenRouterApiUrl } from '../../../../shared/openrouter-base-url.js';
 import { runAgentTask } from '../../../agent-runner/run.js';
@@ -202,7 +203,6 @@ const markAgentFinishedBody = z.object({
 }).strict();
 
 // Shared focus pages. cmem.ai checks the page's shape (src/lib/focus-share/snapshot.ts there); here it only has to be an object.
-const focusSharePublishBody = z.object({ focusAreaId: focusAreaIdField, page: z.record(z.string(), z.unknown()) }).strict();
 const focusShareAreaBody = z.object({ focusAreaId: focusAreaIdField }).strict();
 const focusShareCommentBody = z.object({ focusAreaId: focusAreaIdField, body: z.string().trim().min(1).max(4000) }).strict();
 
@@ -261,6 +261,8 @@ interface WorkViewOptions {
   hostedIntent?: Pick<HostedIntent, 'run' | 'state'> | null;
   /** Shared focus pages on cmem.ai. Defaults to the cloud sync credential and focus-shares.json beside settings.json. */
   focusShares?: Pick<FocusShares, 'connected' | 'list' | 'publish' | 'stop' | 'comments' | 'comment'> | null;
+  /** How often shared focus pages are republished from this worker; 0 stops the timer (tests). */
+  focusSharePublishEveryMs?: number;
 }
 
 /** One overall request on the Reveal, read from the request-group ledger so new installs (prompts only) have work too. */
@@ -410,6 +412,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private unsubscribeHistoryImport: (() => void) | null = null;
   private hostedIntent: Pick<HostedIntent, 'run' | 'state'> | null;
   private focusShares: NonNullable<WorkViewOptions['focusShares']> | null;
+  private focusSharePublisher: FocusSharePublisher | null;
 
   constructor(options: WorkViewOptions = {}) {
     super();
@@ -469,6 +472,11 @@ export class WorkViewRoutes extends BaseRouteHandler {
         },
       })
       : options.focusShares;
+    // Shared pages keep updating with My Work closed (R17.3): the worker publishes them on its own timer.
+    this.focusSharePublisher = this.focusShares
+      ? new FocusSharePublisher({ shares: this.focusShares, snapshot: () => this.snapshot(), everyMs: options.focusSharePublishEveryMs })
+      : null;
+    this.focusSharePublisher?.start();
     if (this.hostedIntent) this.setupScan?.setExtractor((prompts, improveProduct) => this.hostedIntent!.run(prompts, improveProduct));
     this.unsubscribeHistoryImport = this.historyImport?.subscribe(state => this.broadcast('setup-import', state)) ?? null;
     // Hosted extraction is awaited inside the scan, so failures stay in the scan screen's error slot.
@@ -590,7 +598,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     app.post('/api/work-view/usage', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(usageBody), this.wrapHandler(this.recordUsage));
     // Shared focus pages: this worker signs the cmem.ai calls, so the sync credential never reaches the page.
     app.get('/api/work-view/focus/shares', workViewLoopbackOnly, this.wrapHandler(this.listFocusShares));
-    app.post('/api/work-view/focus/share', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(focusSharePublishBody), this.wrapHandler(this.publishFocusShare));
+    app.post('/api/work-view/focus/share', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(focusShareAreaBody), this.wrapHandler(this.publishFocusShare));
     app.post('/api/work-view/focus/share/stop', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(focusShareAreaBody), this.wrapHandler(this.stopFocusShare));
     app.get('/api/work-view/focus/share/comments', workViewLoopbackOnly, this.wrapHandler(this.focusShareComments));
     app.post('/api/work-view/focus/share/comments', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(focusShareCommentBody), this.wrapHandler(this.commentOnFocusShare));
@@ -1040,7 +1048,9 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private listFocusShares = (_req: Request, res: Response): void => {
     const shares = this.focusShares;
     if (!shares) { res.json({ connected: false, shares: {} }); return; }
-    const listed = Object.fromEntries(Object.entries(shares.list()).map(([id, entry]) => [id, { url: entry.url, sharedAt: entry.sharedAt, publishedAt: entry.publishedAt }]));
+    const listed = Object.fromEntries(Object.entries(shares.list()).map(([id, entry]) => [id, {
+      url: entry.url, sharedAt: entry.sharedAt, publishedAt: entry.publishedAt, publishError: this.focusSharePublisher?.errorFor(id) ?? null,
+    }]));
     res.json({ connected: shares.connected(), shares: listed });
   };
 
@@ -1049,12 +1059,12 @@ export class WorkViewRoutes extends BaseRouteHandler {
     throw error;
   }
 
-  /** Shares an area (first call) or publishes its page to the link it has. The viewer sends the page it shows. */
+  /** Shares an area (first call) or publishes its page now. The worker builds the page from its own work view. */
   private publishFocusShare = async (req: Request, res: Response): Promise<void> => {
-    const { focusAreaId, page } = req.body as z.infer<typeof focusSharePublishBody>;
-    if (!this.focusShares) { res.status(503).json({ error: 'Sharing is unavailable on this worker.' }); return; }
+    const { focusAreaId } = req.body as z.infer<typeof focusShareAreaBody>;
+    if (!this.focusSharePublisher) { res.status(503).json({ error: 'Sharing is unavailable on this worker.' }); return; }
     try {
-      const { entry, sent } = await this.focusShares.publish(focusAreaId, page);
+      const { entry, sent } = await this.focusSharePublisher.publishArea(focusAreaId);
       res.json({ url: entry.url, sharedAt: entry.sharedAt, publishedAt: entry.publishedAt, sent });
     } catch (error) { this.focusShareRefusal(res, error); }
   };
@@ -1242,6 +1252,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     this.unsubscribeHistoryImport?.();
     this.stopRulesSync();
     this.stopTimers();
+    this.focusSharePublisher?.close();
     for (const client of this.clients) client.end();
     this.clients.clear();
     this.source.close();

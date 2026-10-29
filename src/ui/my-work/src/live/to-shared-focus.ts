@@ -1,5 +1,7 @@
 // One focus area as a shared page (cmem.ai/focus/<token>): what the owner sees in its header and cards, cut to what
-// can leave this computer. The shape is claude-mem-pro's src/lib/focus-share/snapshot.ts; keep the two in step.
+// can leave this computer. The worker runs it on its own work view (src/services/work-view/focus-share-publisher.ts),
+// so it stays pure and imports with .ts extensions. The shape is claude-mem-pro's src/lib/focus-share/snapshot.ts;
+// keep the two in step.
 //
 // What it shows stays relevant to the people it is shared with (R17.3): only requests placed in this area, so a new
 // request shows up when it lands here and nothing from other areas or Other ever does. Moving a request out of the

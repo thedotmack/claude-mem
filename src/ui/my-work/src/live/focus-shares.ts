@@ -1,15 +1,16 @@
-// Shared focus pages from the viewer (R17): which areas are shared, sharing and stopping, the comments, and keeping
-// each shared page current. The local worker signs every cmem.ai call (WorkViewRoutes /api/work-view/focus/share*),
-// so the cloud sync credential never reaches this page.
-//
-// Publishing runs while My Work is open on one of the owner's machines: each model the screen gets is turned into
-// the shared page for every shared area and sent, at most every few seconds. The worker skips pages that have not
-// changed.
-import { useEffect, useRef, useSyncExternalStore } from 'react'
-import { toSharedFocusPage } from './to-shared-focus.ts'
-import type { WorkModel } from './work-data-source.ts'
+// Shared focus pages from the viewer (R17): which areas are shared, sharing and stopping, and the comments. The local
+// worker builds and publishes each page and signs every cmem.ai call (WorkViewRoutes /api/work-view/focus/share*,
+// src/services/work-view/focus-share-publisher.ts), so the pages keep updating with My Work closed and the cloud sync
+// credential never reaches this page.
+import { useEffect, useSyncExternalStore } from 'react'
 
-export interface FocusShare { url: string; sharedAt: string; publishedAt: string | null }
+export interface FocusShare {
+  url: string
+  sharedAt: string
+  publishedAt: string | null
+  /** Why the worker's last update of the page didn't go through, if it didn't. */
+  publishError: string | null
+}
 export interface FocusShareComment {
   id: string
   authorKind: 'person' | 'agent'
@@ -25,11 +26,9 @@ interface State {
   loaded: boolean
   connected: boolean
   shares: Record<string, FocusShare>
-  /** Why the last publish of an area failed, by area id. */
-  publishErrors: Record<string, string>
 }
 
-let state: State = { loaded: false, connected: false, shares: {}, publishErrors: {} }
+let state: State = { loaded: false, connected: false, shares: {} }
 const listeners = new Set<() => void>()
 const set = (next: Partial<State>) => { state = { ...state, ...next }; listeners.forEach((listener) => listener()) }
 const subscribe = (listener: () => void) => { listeners.add(listener); return () => listeners.delete(listener) }
@@ -67,24 +66,13 @@ function forget(focusAreaId: string) {
   set({ shares })
 }
 
-async function publish(model: WorkModel, focusAreaId: string): Promise<FocusShare> {
-  const page = toSharedFocusPage(model, focusAreaId, Date.now())
-  if (!page) throw new Error('This area can’t be shared: share a kept or done focus area.')
-  try {
-    const answer = await call<FocusShare & { sent: boolean }>('/api/work-view/focus/share', { method: 'POST', body: { focusAreaId, page } })
-    const share = { url: answer.url, sharedAt: answer.sharedAt, publishedAt: answer.publishedAt }
-    const { [focusAreaId]: _cleared, ...publishErrors } = state.publishErrors
-    set({ shares: { ...state.shares, [focusAreaId]: share }, publishErrors })
-    return share
-  } catch (error) {
-    if ((error as { status?: number }).status === 410) forget(focusAreaId)
-    else set({ publishErrors: { ...state.publishErrors, [focusAreaId]: (error as Error).message } })
-    throw error
-  }
+/** Shares the area: the worker builds the page, cmem.ai answers with its link, and the page goes up at once. */
+export async function shareFocusArea(focusAreaId: string): Promise<FocusShare> {
+  const answer = await call<Omit<FocusShare, 'publishError'> & { sent: boolean }>('/api/work-view/focus/share', { method: 'POST', body: { focusAreaId } })
+  const share = { url: answer.url, sharedAt: answer.sharedAt, publishedAt: answer.publishedAt, publishError: null }
+  set({ shares: { ...state.shares, [focusAreaId]: share } })
+  return share
 }
-
-/** Shares the area: cmem.ai answers with its link, and the page goes up at once. */
-export const shareFocusArea = (model: WorkModel, focusAreaId: string) => publish(model, focusAreaId)
 
 export async function stopSharingFocusArea(focusAreaId: string): Promise<void> {
   await call('/api/work-view/focus/share/stop', { method: 'POST', body: { focusAreaId } })
@@ -106,30 +94,8 @@ export async function postFocusShareComment(focusAreaId: string, body: string): 
   return answer.comment
 }
 
-/** At most one publish round this often: a busy feed still updates the page, and a quiet one sends right away. */
-export const PUBLISH_EVERY_MS = 5000
-
-/**
- * Keeps every shared area's page current from the live model. Only on the local worker: the sample has nothing
- * real to share. A failed publish is shown in the share dialog and tried again with the next change.
- */
-export function useFocusSharePublisher(model: WorkModel): void {
-  const { loaded, shares } = useFocusShares()
-  const live = model.sourceKind === 'local'
+/** Reads which areas are shared once My Work shows live work, for the Shared mark beside each area's name. */
+export function useFocusSharesLoader(live: boolean): void {
+  const { loaded } = useFocusShares()
   useEffect(() => { if (live && !loaded) void loadFocusShares() }, [live, loaded])
-  const latest = useRef(model)
-  useEffect(() => { latest.current = model }, [model])
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const lastRound = useRef(0)
-  const sharedIds = Object.keys(shares).sort().join('\n')
-  useEffect(() => {
-    if (!live || !sharedIds || timer.current) return
-    // Trailing: the round reads the newest model when it runs, so changes that arrive while it waits are included.
-    timer.current = setTimeout(() => {
-      timer.current = null
-      lastRound.current = Date.now()
-      for (const focusAreaId of sharedIds.split('\n')) void publish(latest.current, focusAreaId).catch(() => { /* shown in the dialog */ })
-    }, Math.max(0, lastRound.current + PUBLISH_EVERY_MS - Date.now()))
-  }, [live, model, sharedIds])
-  useEffect(() => () => { if (timer.current) clearTimeout(timer.current) }, [])
 }

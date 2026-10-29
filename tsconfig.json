@@ -16,7 +16,9 @@
     "declarationMap": true,
     "sourceMap": true,
     "types": ["node", "bun"],
-    "allowSyntheticDefaultImports": true
+    "allowSyntheticDefaultImports": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true
   },
   "include": [
     "src/**/*"

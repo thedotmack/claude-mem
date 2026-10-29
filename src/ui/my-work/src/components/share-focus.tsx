@@ -9,9 +9,9 @@ import { Textarea } from '@/components/ui/textarea'
 import { Req } from '@/spec/req'
 import type { FocusArea } from '@/data'
 import { useWorkModel } from '@/store'
-import { postFocusShareComment, readFocusShareComments, shareFocusArea, stopSharingFocusArea, useFocusShares, type FocusShareComment } from '@/live/focus-shares'
+import { loadFocusShares, postFocusShareComment, readFocusShareComments, shareFocusArea, stopSharingFocusArea, useFocusShares, type FocusShareComment } from '@/live/focus-shares'
 
-/** How often an open dialog re-reads the comments. */
+/** How often an open dialog re-reads the comments and when the page last updated. */
 const COMMENTS_REFRESH_MS = 20_000
 const COMMENT_MAX_CHARS = 4000
 
@@ -124,13 +124,21 @@ function Comments({ focusAreaId }: { focusAreaId: string }) {
 /** Share… from the area menu: share by link, copy it, read and answer comments, stop sharing. */
 export function ShareFocusDialog({ area, open, onOpenChange }: { area: FocusArea; open: boolean; onOpenChange: (open: boolean) => void }) {
   const model = useWorkModel()
-  const { loaded, connected, shares, publishErrors } = useFocusShares()
+  const { loaded, connected, shares } = useFocusShares()
   const share = shares[area.id]
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [confirmStop, setConfirmStop] = useState(false)
   const live = model.sourceKind === 'local'
+
+  // While the dialog is open, "Updated … ago" and any failed update come from the worker, which keeps publishing.
+  useEffect(() => {
+    if (!open || !live) return
+    const first = setTimeout(() => void loadFocusShares(), 0)
+    const timer = setInterval(() => void loadFocusShares(), COMMENTS_REFRESH_MS)
+    return () => { clearTimeout(first); clearInterval(timer) }
+  }, [open, live])
 
   function openChange(next: boolean) {
     if (!next) { setError(null); setConfirmStop(false); setCopied(false) }
@@ -169,10 +177,10 @@ export function ShareFocusDialog({ area, open, onOpenChange }: { area: FocusArea
               <ul className="list-disc space-y-1.5 pl-5 text-sm">
                 <li>Anyone with the link can read it. To comment, people sign in at cmem.ai, and agents use the cmem.ai MCP server.</li>
                 <li>It shows only this area: its requests, where each stands, and what is next. Nothing from your other areas or Other.</li>
-                <li>It keeps up: a request you place in this area shows up, and one you move out leaves. It updates while My Work is open.</li>
+                <li>It keeps up: a request you place in this area shows up, and one you move out leaves. It keeps updating while claude-mem runs on this computer, even with My Work closed.</li>
                 <li>Your own words, prompts, transcripts, files and machine names stay here.</li>
               </ul>
-              <Button className="h-11 w-full sm:h-9" disabled={busy} onClick={() => void run(() => shareFocusArea(model, area.id))}>
+              <Button className="h-11 w-full sm:h-9" disabled={busy} onClick={() => void run(() => shareFocusArea(area.id))}>
                 <Link2Icon />{busy ? 'Sharing…' : 'Share this area'}
               </Button>
             </div>
@@ -189,7 +197,7 @@ export function ShareFocusDialog({ area, open, onOpenChange }: { area: FocusArea
                   </Button>
                 </div>
                 <p className="text-xs text-muted-foreground">Updated <Ago at={share.publishedAt} />. Only this area’s requests are on it.</p>
-                {publishErrors[area.id] && <p className="text-xs text-destructive" role="alert">Last update didn’t go through: {publishErrors[area.id]}</p>}
+                {share.publishError && <p className="text-xs text-destructive" role="alert">Last update didn’t go through: {share.publishError}</p>}
               </div>
             </Req>
             <Comments focusAreaId={area.id} />
