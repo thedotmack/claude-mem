@@ -541,7 +541,7 @@ export class WorkerService implements WorkerRef {
    * worker: retention is housekeeping.
    */
   private startLogRetention(): void {
-    if (this.logRetentionTimer !== null || this.isShuttingDown) return;
+    if (this.logRetentionTimer != null || this.isShuttingDown) return;
     // The sweep is async (fs/promises) so a large backlog never blocks the
     // event loop that serves health checks and hook requests.
     const sweep = async (): Promise<void> => {
@@ -564,7 +564,9 @@ export class WorkerService implements WorkerRef {
   }
 
   private stopLogRetention(): void {
-    if (this.logRetentionTimer !== null) {
+    // `!= null`: lifecycle tests build the worker with Object.create, where the
+    // field initializer never ran and the timer is undefined, not null.
+    if (this.logRetentionTimer != null) {
       // clearTimeout and clearInterval share one id space in Node and Bun.
       clearTimeout(this.logRetentionTimer);
       clearInterval(this.logRetentionTimer);
