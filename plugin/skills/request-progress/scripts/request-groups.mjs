@@ -30,6 +30,46 @@ var init_expand_home = __esm({
   }
 });
 
+// src/shared/hook-constants.ts
+function hookProcessOverheadMs(platform = process.platform) {
+  return platform === "win32" ? 8e3 : 5e3;
+}
+function defaultSessionInitRequestTimeoutMs(platform = process.platform) {
+  return HOOK_TIMEOUTS.SESSION_INIT_HOOK_CAP - hookProcessOverheadMs(platform);
+}
+function getTimeout(baseTimeout) {
+  return process.platform === "win32" ? Math.round(baseTimeout * HOOK_TIMEOUTS.WINDOWS_MULTIPLIER) : baseTimeout;
+}
+var SESSION_INIT_HOOK_CAP_MS, HOOK_TIMEOUTS;
+var init_hook_constants = __esm({
+  "src/shared/hook-constants.ts"() {
+    "use strict";
+    SESSION_INIT_HOOK_CAP_MS = 15e3;
+    HOOK_TIMEOUTS = {
+      HEALTH_CHECK: 3e3,
+      // Worker health check (3s — healthy worker responds in <100ms)
+      API_REQUEST: 3e4,
+      // Hook API calls should outlive health probes but stay below hook caps
+      SESSION_INIT_HOOK_CAP: SESSION_INIT_HOOK_CAP_MS,
+      SESSION_INIT_REQUEST: 1e4,
+      // POSIX default for the whole session-init round-trip (plan-17 step 3): the cap minus the hook's own overhead; never Windows-scaled up
+      SESSION_INIT_REQUEST_MAX: SESSION_INIT_HOOK_CAP_MS - 1e3,
+      // Upper bound for CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS: process-exit margin below the cap
+      HOOK_READINESS_WAIT: 1e4,
+      // Per-hook wait for an already-starting worker to finish DB/search init
+      POST_SPAWN_WAIT: 15e3,
+      // Wait for daemon to start after spawn (starts in <1s on Linux, 6-8s on macOS with Chroma)
+      READINESS_WAIT: 3e4,
+      // Wait for DB + search init after spawn (typically <5s)
+      PORT_IN_USE_WAIT: 3e3,
+      // Wait when port occupied but health failing
+      POWERSHELL_COMMAND: 1e4,
+      // PowerShell process enumeration (10s - typically completes in <1s)
+      WINDOWS_MULTIPLIER: 1.5
+    };
+  }
+});
+
 // src/shared/hook-io.ts
 function bypassWrite(chunk) {
   const writer = pinnedBypassWrite ?? process.stderr.write.bind(process.stderr);
@@ -306,46 +346,6 @@ var init_paths = __esm({
       supervisorRegistry: () => join4(DATA_DIR, "supervisor.json"),
       envFile: () => join4(DATA_DIR, ".env"),
       logsDir: () => LOGS_DIR
-    };
-  }
-});
-
-// src/shared/hook-constants.ts
-function hookProcessOverheadMs(platform = process.platform) {
-  return platform === "win32" ? 8e3 : 5e3;
-}
-function defaultSessionInitRequestTimeoutMs(platform = process.platform) {
-  return HOOK_TIMEOUTS.SESSION_INIT_HOOK_CAP - hookProcessOverheadMs(platform);
-}
-function getTimeout(baseTimeout) {
-  return process.platform === "win32" ? Math.round(baseTimeout * HOOK_TIMEOUTS.WINDOWS_MULTIPLIER) : baseTimeout;
-}
-var SESSION_INIT_HOOK_CAP_MS, HOOK_TIMEOUTS;
-var init_hook_constants = __esm({
-  "src/shared/hook-constants.ts"() {
-    "use strict";
-    SESSION_INIT_HOOK_CAP_MS = 15e3;
-    HOOK_TIMEOUTS = {
-      HEALTH_CHECK: 3e3,
-      // Worker health check (3s — healthy worker responds in <100ms)
-      API_REQUEST: 3e4,
-      // Hook API calls should outlive health probes but stay below hook caps
-      SESSION_INIT_HOOK_CAP: SESSION_INIT_HOOK_CAP_MS,
-      SESSION_INIT_REQUEST: 1e4,
-      // POSIX default for the whole session-init round-trip (plan-17 step 3): the cap minus the hook's own overhead; never Windows-scaled up
-      SESSION_INIT_REQUEST_MAX: SESSION_INIT_HOOK_CAP_MS - 1e3,
-      // Upper bound for CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS: process-exit margin below the cap
-      HOOK_READINESS_WAIT: 1e4,
-      // Per-hook wait for an already-starting worker to finish DB/search init
-      POST_SPAWN_WAIT: 15e3,
-      // Wait for daemon to start after spawn (starts in <1s on Linux, 6-8s on macOS with Chroma)
-      READINESS_WAIT: 3e4,
-      // Wait for DB + search init after spawn (typically <5s)
-      PORT_IN_USE_WAIT: 3e3,
-      // Wait when port occupied but health failing
-      POWERSHELL_COMMAND: 1e4,
-      // PowerShell process enumeration (10s - typically completes in <1s)
-      WINDOWS_MULTIPLIER: 1.5
     };
   }
 });
@@ -909,6 +909,8 @@ var init_SettingsDefaultsManager = __esm({
         // Model id passed verbatim. Empty = the preset's default model.
         CLAUDE_MEM_OPENAI_COMPAT_REASONING: "",
         // off | on. Empty = off: every openai-compatible request sends reasoning:{enabled:false}. "on" leaves reasoning to the endpoint.
+        CLAUDE_MEM_OPENAI_COMPAT_OBSERVATION_BATCH_SIZE: "1",
+        // Queued same-context events per observer prompt (1-32); opt-in.
         CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: "claude",
         // 'claude' (the Anthropic plan; '' means this too) | 'gemini' | 'openrouter' | 'openai-compatible' | 'off': where observer work goes while the selected provider cannot serve (spent allowance, rate limit or over capacity past its retries, outage, repeated unusable replies). Claude is used only when a Claude login or key exists
         CLAUDE_MEM_QUOTA_FALLBACK_MODEL: "",
@@ -1118,6 +1120,10 @@ var init_SettingsDefaultsManager = __esm({
         // Backend-supplied model paired with CLAUDE_MEM_PRO_MEMORY_KEY
         CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH: "true",
         // 'false' = My Work never runs owner-goals / request-progress on its own (refresh.json in ~/.claude-mem/work-view)
+        CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: "",
+        // '' uses OpenRouter only when it is the primary provider; openrouter/openai-compatible explicitly select that provider; off disables generated My Work copy
+        CLAUDE_MEM_WORK_VIEW_COPY_MODEL: "",
+        // Optional model override for generated My Work copy; empty uses the selected provider's configured model
         // Automatic local DB snapshots (BackupManager). Off by default; opt-in.
         CLAUDE_MEM_BACKUP_ENABLED: "false",
         CLAUDE_MEM_BACKUP_INTERVAL_HOURS: "24",
@@ -3162,7 +3168,7 @@ function validateProgress(entry, knownGroups) {
     narrative: boundedText(entry.narrative, 1200, "narrative", true),
     milestones: milestones.map((milestone, index) => {
       if (!isIsoOrNull(milestone.at ?? null)) throw new TypeError(`milestones[${index}].at must be an ISO date or null.`);
-      return { at: milestone.at ?? null, text: boundedText(milestone.text, 200, `milestones[${index}].text`), evidence: (milestone.evidence ?? []).map(String).slice(0, 6) };
+      return { at: milestone.at ?? null, text: boundedText(milestone.text, 200, `milestones[${index}].text`), evidence: evidenceList(milestone.evidence, 6) };
     }),
     preferences: preferences.map((preference, index) => {
       if (!PREFERENCE_KINDS.includes(preference.kind)) throw new TypeError(`preferences[${index}].kind must be one of ${PREFERENCE_KINDS.join(", ")}.`);
@@ -3170,7 +3176,7 @@ function validateProgress(entry, knownGroups) {
       return { kind: preference.kind, preference: boundedText(preference.preference, 200, `preferences[${index}].preference`), quote: boundedText(preference.quote, 300, `preferences[${index}].quote`), at: preference.at ?? null };
     }),
     outcome: validateOutcome(entry.outcome),
-    evidence: (entry.evidence ?? []).map(String).slice(0, 20),
+    evidence: evidenceList(entry.evidence, 20),
     // What the reviewer actually saw: later activity or membership changes make it due again.
     reviewedThrough: new Date(Date.parse(basis.checkedThrough)).toISOString(),
     reviewedConversations: [...new Set(basis.conversations)].sort()
@@ -3198,9 +3204,52 @@ function reviewIsCurrent(review, conversationKeys, lastActivityEpoch) {
   if (current.length !== review.reviewedConversations.length || current.some((key, index) => key !== review.reviewedConversations[index])) return false;
   return Date.parse(review.reviewedThrough) >= lastActivityEpoch;
 }
+function storyPieces(narrative) {
+  const pieces = [""];
+  let fence = null;
+  for (const line of (typeof narrative === "string" ? narrative : "").split(/(?<=\n)/)) {
+    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line.replace(/\r?\n$/, ""));
+    if (fence) {
+      if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = null;
+    } else if (marker && !(marker[1][0] === "`" && marker[2].includes("`"))) fence = marker[1];
+    else if (line.startsWith("## ")) pieces.push("");
+    pieces[pieces.length - 1] += line;
+  }
+  return pieces;
+}
+function storyChaptersToMerge(narrative) {
+  const chapters = storyPieces(narrative).length - 1;
+  const fit = Math.floor((STORY_NARRATIVE_TARGET - STORY_RECAP_BUDGET) / STORY_CHAPTER_MIN_BUDGET);
+  return chapters > fit ? chapters - fit + 1 : 0;
+}
+function storyParts(narrative) {
+  const [recap, ...chapters] = storyPieces(narrative);
+  const chapterBudget = Math.max(STORY_CHAPTER_MIN_BUDGET, Math.floor((STORY_NARRATIVE_TARGET - STORY_RECAP_BUDGET) / Math.max(1, chapters.length)));
+  return [
+    { part: "recap", text: recap, budgetChars: chapters.length ? STORY_RECAP_BUDGET : STORY_NARRATIVE_TARGET },
+    ...chapters.map((chapter) => ({ part: chapter.split("\n", 1)[0].replace(/^## /, "").trim(), text: chapter, budgetChars: chapterBudget }))
+  ].map(({ part, text: text2, budgetChars }) => {
+    const words = text2.split(/\s+/).filter(Boolean).length;
+    const charsPerWord = words ? text2.length / words : STORY_CHARS_PER_WORD;
+    return { part, chars: text2.length, words, budgetChars, budgetWords: Math.max(1, Math.floor(budgetChars / charsPerWord)), overBudgetChars: Math.max(0, text2.length - budgetChars) };
+  });
+}
 function validateStory(story) {
   const preferences = story?.preferences ?? [];
   if (!Array.isArray(preferences) || preferences.length > 30) throw new TypeError("preferences must be an array of at most 30.");
+  const narrativeChars = typeof story?.narrative === "string" ? story.narrative.length : 0;
+  if (narrativeChars > STORY_NARRATIVE_MAX) {
+    const over = storyParts(story.narrative).filter((part) => part.overBudgetChars > 0).sort((a, b) => b.overBudgetChars - a.overBudgetChars);
+    const named = over.slice(0, STORY_REFUSAL_PARTS).map((part) => `${part.part === "recap" ? "the recap" : `"${part.part.slice(0, 60)}"`} ${part.chars} \u2192 ${part.budgetChars} characters (about ${part.budgetWords} words)`);
+    const more = over.length > STORY_REFUSAL_PARTS ? `; ${over.length - STORY_REFUSAL_PARTS} more parts are over their budgets too` : "";
+    const merge = storyChaptersToMerge(story.narrative);
+    const chapters = storyParts(story.narrative).slice(1, merge + 1).map((part) => `"${part.part.slice(0, 60)}"`);
+    const steps = [
+      ...merge ? [`merge the ${merge} oldest chapters (${chapters[0]} through ${chapters[chapters.length - 1]}) into one chapter of at most ${STORY_CHAPTER_MIN_BUDGET} characters`] : [],
+      ...named.length ? [`rewrite the parts furthest over their budgets: ${named.join("; ")}${more}`] : []
+    ];
+    throw new TypeError(`narrative is ${narrativeChars} characters; it must be 1\u2013${STORY_NARRATIVE_MAX}. Bring it to about ${STORY_NARRATIVE_TARGET} characters: ${steps.join(", then ") || "condense every part"}.`);
+  }
   return {
     narrative: boundedText(story?.narrative, STORY_NARRATIVE_MAX, "narrative"),
     preferences: preferences.map((preference, index) => ({
@@ -3543,9 +3592,13 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
     return print2({
       groups: Object.keys(groups.groups).length,
       update,
+      narrativeTarget: STORY_NARRATIVE_TARGET,
       narrativeLimit: STORY_NARRATIVE_MAX,
       previousNarrativeChars,
-      roomChars: STORY_NARRATIVE_MAX - previousNarrativeChars,
+      roomChars: Math.max(0, STORY_NARRATIVE_TARGET - previousNarrativeChars),
+      condenseChars: Math.max(0, previousNarrativeChars - STORY_NARRATIVE_TARGET),
+      previousParts: update ? storyParts(story.narrative) : [],
+      mergeOldestChapters: update ? storyChaptersToMerge(story.narrative) : 0,
       reviews: update ? reviews.filter((review) => Date.parse(review.changedAt ?? review.checkedAt) > writtenAt) : reviews,
       // Rules owner-goals put in the story are its own (record-story carries them over): shown here, the story model
       // would echo them back without their source and when, leaving copies a later owner-goals save cannot replace.
@@ -3575,7 +3628,7 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
   if (command === "refresh-needs") return print2(refreshNeeds({ dir, database: db(), now, days: option(args, "days", 14), localDeviceId: localDeviceId2 }));
   throw new TypeError("Usage: request-groups.mjs candidates|grouping-input|judge|apply|pending|show|record-progress|story-input|record-story|focus-input|record-focus|refresh-needs (see file header).");
 }
-var DATA_DIR2, LEDGER_DIR, AGENT_WRITTEN_PROMPTS_FILE, DAY_MS2, GOALS_STALE_MS, MAX_CONVERSATIONS_PER_LINKING_LIST, PROGRESS_STATES, PREFERENCE_KINDS, USAGE_LEVELS, VALUE_LEVELS, LINK_KINDS, MAX_READINGS, iso3, groupIdFor, emptyGroups, isIsoOrNull, evidenceList, STORY_NARRATIVE_MAX, FOCUS_ASK_CHARS, CONVERSATIONS_PER_QUERY, groupConversations, records, otherPassHash, focusAreaRecord, AREA_NAME_MAX, AREA_SENTENCE_MAX, requireDeviceId, GROUPING_BATCH, FOCUS_BATCH, CLOSED_STATES;
+var DATA_DIR2, LEDGER_DIR, AGENT_WRITTEN_PROMPTS_FILE, DAY_MS2, GOALS_STALE_MS, MAX_CONVERSATIONS_PER_LINKING_LIST, PROGRESS_STATES, PREFERENCE_KINDS, USAGE_LEVELS, VALUE_LEVELS, LINK_KINDS, MAX_READINGS, iso3, groupIdFor, emptyGroups, isIsoOrNull, evidenceList, STORY_NARRATIVE_MAX, STORY_NARRATIVE_TARGET, STORY_RECAP_BUDGET, STORY_CHAPTER_MIN_BUDGET, STORY_CHARS_PER_WORD, STORY_REFUSAL_PARTS, FOCUS_ASK_CHARS, CONVERSATIONS_PER_QUERY, groupConversations, records, otherPassHash, focusAreaRecord, AREA_NAME_MAX, AREA_SENTENCE_MAX, requireDeviceId, GROUPING_BATCH, FOCUS_BATCH, CLOSED_STATES;
 var init_request_groups = __esm({
   "src/services/work-view/request-groups.mjs"() {
     "use strict";
@@ -3599,8 +3652,13 @@ var init_request_groups = __esm({
     groupIdFor = (anchorConversationKey) => `g_${createHash("sha256").update(anchorConversationKey).digest("hex").slice(0, 12)}`;
     emptyGroups = () => ({ version: 1, updatedAt: null, conversations: {}, groups: {}, ignored: {} });
     isIsoOrNull = (value) => value === null || typeof value === "string" && Number.isFinite(Date.parse(value));
-    evidenceList = (value) => (Array.isArray(value) ? value : []).map(String).slice(0, 8);
+    evidenceList = (value, limit = 8) => (Array.isArray(value) ? value : typeof value === "string" && value.trim() ? [value] : []).map(String).slice(0, limit);
     STORY_NARRATIVE_MAX = 12e3;
+    STORY_NARRATIVE_TARGET = 8e3;
+    STORY_RECAP_BUDGET = 800;
+    STORY_CHAPTER_MIN_BUDGET = 300;
+    STORY_CHARS_PER_WORD = 6;
+    STORY_REFUSAL_PARTS = 6;
     FOCUS_ASK_CHARS = 400;
     CONVERSATIONS_PER_QUERY = 400;
     groupConversations = (ledger, groupId) => Object.entries(ledger.groups.conversations).filter(([, id]) => id === groupId).map(([key]) => key).sort();
@@ -3630,7 +3688,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir as homedir2 } from "node:os";
 import { join as join2 } from "node:path";
 init_expand_home();
-function resolveHarnessWorkerUrl() {
+init_hook_constants();
+function harnessSetting() {
   const dataDir = expandHome(process.env.CLAUDE_MEM_DATA_DIR || join2(homedir2(), ".claude-mem"));
   let settings = {};
   try {
@@ -3639,7 +3698,10 @@ function resolveHarnessWorkerUrl() {
     settings = nested && typeof nested === "object" && !Array.isArray(nested) && Object.keys(nested).some((key) => key.startsWith("CLAUDE_MEM_")) ? nested : document ?? {};
   } catch {
   }
-  const setting = (key, fallback) => process.env[key] || (typeof settings[key] === "string" && settings[key] ? String(settings[key]) : fallback);
+  return (key, fallback) => process.env[key] || (typeof settings[key] === "string" && settings[key] ? String(settings[key]) : fallback);
+}
+function resolveHarnessWorkerUrl() {
+  const setting = harnessSetting();
   const configuredHost = setting("CLAUDE_MEM_WORKER_HOST", "127.0.0.1");
   const host = configuredHost === "localhost" ? "127.0.0.1" : configuredHost;
   const port = setting("CLAUDE_MEM_WORKER_PORT", String(37700 + (process.getuid?.() ?? 77) % 100));

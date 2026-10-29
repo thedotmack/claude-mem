@@ -2,7 +2,7 @@
 // the last change shown with Undo (copied from My Rules' saved note), and the Rename / Edit goal / Merge dialog.
 // Undo writes the change that puts things back, where the worker allows one: restore-suggestion for an area that was a
 // suggestion (and the only way to undo a merge), keep / done / dismiss for a decided area, the old name or goal.
-import { useRef, useState } from 'react'
+import { useState } from 'react'
 import { CheckIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -10,15 +10,14 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Req } from '@/spec/req'
-import { saveFocusChange, useWorkModel, type FocusArea, type FocusChange, type Request } from '@/data'
+import type { FocusArea, FocusChange, Request } from '@/data'
+import { useStore, useWorkModel, type FocusChangeRecord } from '@/store'
 import { focusAreaLabel, isPlaceableFocusArea, resolveFocusAreaId } from '@/live/to-focus-model'
 import { navWordIn } from '../../../../services/work-view/nav-words.mjs'
 
 /** The worker's body bounds (WorkViewRoutes focusBody). */
 const MAX_AREA_NAME_CHARS = 80
 const MAX_AREA_GOAL_CHARS = 300
-
-interface FocusChangeRecord { text: string; undo: FocusChange[] | null }
 
 /** The changes that return an area to the status it had, or null when the worker allows none. */
 function backTo(area: FocusArea): FocusChange[] | null {
@@ -58,42 +57,14 @@ function describeFocusChange(change: FocusChange, areas: FocusArea[], requests: 
 
 export type FocusChanges = ReturnType<typeof useFocusChanges>
 
-/** Saves My Focus changes one at a time and keeps the last one for Undo. Each save resolves true when it was saved. */
+/** My Focus saves from the store, with each change described for the saved note while the screen still shows it. */
 export function useFocusChanges() {
   const { focusAreas, requests } = useWorkModel()
-  const [history, setHistory] = useState<FocusChangeRecord[]>([])
-  const [error, setError] = useState<string | null>(null)
-  const [saving, setSaving] = useState(false)
-  const busy = useRef(false)
-  const guarded = async (work: () => Promise<void>) => {
-    if (busy.current) return false
-    busy.current = true
-    setSaving(true)
-    setError(null)
-    try {
-      await work()
-      return true
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
-      return false
-    } finally {
-      busy.current = false
-      setSaving(false)
-    }
-  }
-  /** `record: false` when the screen shows its own Undo for it (a decided suggestion card). */
-  const apply = (change: FocusChange, { record = true } = {}) => guarded(async () => {
-    const described = describeFocusChange(change, focusAreas, requests)
-    await saveFocusChange(change)
-    if (record) setHistory((previous) => [...previous, described])
-  })
-  const last = history.at(-1) ?? null
-  const undoLast = () => guarded(async () => {
-    if (!last?.undo) return
-    for (const step of last.undo) await saveFocusChange(step)
-    setHistory((previous) => previous.slice(0, -1))
-  })
-  return { last, apply, undoLast, error, saving }
+  const { history, saving, error } = useStore.use.focus()
+  const { applyFocusChange, undoLastFocusChange } = useStore.getState()
+  /** `record: false` when the screen shows its own Undo for it (a decided suggestion card). Resolves true when saved. */
+  const apply = (change: FocusChange, { record = true } = {}) => applyFocusChange(change, record ? describeFocusChange(change, focusAreas, requests) : null)
+  return { last: history.at(-1) ?? null, apply, undoLast: undoLastFocusChange, error, saving }
 }
 
 /** The last change, where it was saved, and Undo; or why a change was not saved. */

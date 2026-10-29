@@ -1,5 +1,6 @@
 import { ArrowRightIcon, CheckIcon } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
+import { CardSpotlight } from '@/components/aceternity/card-spotlight'
 import type { MemoryBranch } from '../setup-flow'
 import atHome from '../assets/at-home-modern-computer.webp'
 import onTheGo from '../assets/on-the-go-iphone-feed.webp'
@@ -14,6 +15,9 @@ import dot from '../assets/agents/dot.webp'
 import { PageHeading } from './shared'
 
 /** D4: big agent logos around the phone, left column then right column, top to bottom. */
+/** The spotlight that follows the pointer over each card: a soft violet tint (setup.css lays it over the card art). */
+const SPOTLIGHT = { className: 'memory-spotlight', radius: 260, color: 'rgba(115, 120, 239, 0.2)' }
+
 const ORBIT = [['ChatGPT', chatgpt], ['Claude', claude], ['Gemini', gemini], ['OpenClaw', openclaw], ['Hermes', hermes], ['Grok Bot', grok], ['Muse', muse], ['Dot', dot]] as const
 
 /** Step 3: At Home / On The Go (PROTO #route-choice). People already on Pro arrive with On The Go selected. */
@@ -26,23 +30,27 @@ export function ChoiceScreen({ branch, onChoose }: { branch: MemoryBranch; onCho
       <form onSubmit={submit}>
         <fieldset className="memory-cards">
           <legend className="sr-only">Choose where to store and access your memory</legend>
-          <label className="memory-card">
-            <input className="memory-radio sr-only" type="radio" name="memory-option" value="home" aria-label="At Home, Free" checked={selected === 'home'} onChange={() => setSelected('home')} />
-            <span className="selection-check" aria-hidden="true"><CheckIcon strokeWidth={3} /></span>
-            <span className="memory-art memory-art-home"><img className="memory-artwork" src={atHome} alt="A modern silver desktop computer displaying the CMEM brain mark" width={840} height={840} /></span>
-            <span className="card-copy"><span className="card-title">At Home</span><span className="card-price">Free</span></span>
-          </label>
-          <label className="memory-card is-go">
-            <input className="memory-radio sr-only" type="radio" name="memory-option" value="go" aria-label="On The Go, 30 day free trial" checked={selected === 'go'} onChange={() => setSelected('go')} />
-            <span className="selection-check" aria-hidden="true"><CheckIcon strokeWidth={3} /></span>
-            <span className="memory-art memory-art-go">
-              <img className="memory-artwork" src={onTheGo} alt="An iPhone displaying a memory feed with project context, decisions, and preferences" width={840} height={840} />
-              <ul className="agent-orbit" aria-label="AI tools and agents">
-                {ORBIT.map(([name, mark]) => <li key={name} className="agent"><img src={mark} alt="" width={62} height={62} /><span>{name}</span></li>)}
-              </ul>
-            </span>
-            <span className="card-copy"><span className="card-title">On The Go</span><span className="card-price">30 day free trial</span></span>
-          </label>
+          <CardSpotlight {...SPOTLIGHT}>
+            <label className="memory-card">
+              <input className="memory-radio sr-only" type="radio" name="memory-option" value="home" aria-label="At Home, Free" checked={selected === 'home'} onChange={() => setSelected('home')} />
+              <span className="selection-check" aria-hidden="true"><CheckIcon strokeWidth={3} /></span>
+              <span className="memory-art memory-art-home"><img className="memory-artwork" src={atHome} alt="A modern silver desktop computer displaying the CMEM brain mark" width={840} height={840} /></span>
+              <span className="card-copy"><span className="card-title">At Home</span><span className="card-price">Free</span></span>
+            </label>
+          </CardSpotlight>
+          <CardSpotlight {...SPOTLIGHT}>
+            <label className="memory-card is-go">
+              <input className="memory-radio sr-only" type="radio" name="memory-option" value="go" aria-label="On The Go, 30 day free trial" checked={selected === 'go'} onChange={() => setSelected('go')} />
+              <span className="selection-check" aria-hidden="true"><CheckIcon strokeWidth={3} /></span>
+              <span className="memory-art memory-art-go">
+                <img className="memory-artwork" src={onTheGo} alt="An iPhone displaying a memory feed with project context, decisions, and preferences" width={840} height={840} />
+                <ul className="agent-orbit" aria-label="AI tools and agents">
+                  {ORBIT.map(([name, mark]) => <li key={name} className="agent"><img src={mark} alt="" width={62} height={62} /><span>{name}</span></li>)}
+                </ul>
+              </span>
+              <span className="card-copy"><span className="card-title">On The Go</span><span className="card-price">30 day free trial</span></span>
+            </label>
+          </CardSpotlight>
         </fieldset>
         <div className="actions is-centered"><button className="primary" type="submit">Continue <ArrowRightIcon aria-hidden="true" /></button></div>
       </form>

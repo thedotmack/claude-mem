@@ -9,7 +9,7 @@ import { agentStopFor, isAgentLifecycleList, readAgentStops } from './agent-life
 import { withDerivedProjects } from './session-project.mjs';
 const PROJECT_KEY = (value) => String(value ?? '').replace(/[A-Z]/g, (c) => c.toLowerCase());
 const CLOSED = new Set(['done', 'dropped', 'completed', 'failed']);
-const PLATFORMS = { codex: 'Codex', claude: 'Claude Code', 'gemini-cli': 'Gemini CLI', kimi: 'Kimi', 'hermes-cli': 'Hermes', 'pi-agent': 'Pi' };
+const PLATFORMS = { codex: 'Codex', claude: 'Claude Code', 'gemini-cli': 'Gemini CLI', 'antigravity-cli': 'Antigravity CLI', kimi: 'Kimi', 'hermes-cli': 'Hermes', 'pi-agent': 'Pi' };
 const stamp = (value) => Number.isFinite(Number(value)) && Number(value) > 0 ? new Date(Number(value)).toISOString() : null;
 const fingerprint = (value) => JSON.stringify(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)));
 const callKey = (project, list, fields) => JSON.stringify([PROJECT_KEY(project), list, fingerprint(fields)]);
