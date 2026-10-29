@@ -20,9 +20,9 @@ describe('My Work skills write in the owner\'s language', () => {
     const review = section(text, '## 2. Review', '## 3.');
     expect(review).toContain('fill in the CLI path, the groups and the owner\'s language');
     expect(review).toMatch(/^> .*in <owner's language>/m);
-    // The automatic refresh asks for one section at a time and fills nothing in.
+    // The automatic refresh names the language in each question (refresh-task.ts); a step told nothing decides it alone.
     expect(review).toContain('if this task names none');
-    expect(text).toContain('as the automatic refresh asks for one section at a time');
+    expect(text).toContain('decides it once per run and names it in each question');
   });
 
   it('request-progress keeps the wording My Rules and open requests key on', () => {
