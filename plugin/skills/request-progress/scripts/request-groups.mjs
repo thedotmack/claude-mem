@@ -993,7 +993,7 @@ var init_SettingsDefaultsManager = __esm({
         CLAUDE_MEM_EXCLUDED_PROJECTS: "",
         // Comma-separated glob patterns for excluded project paths
         CLAUDE_MEM_PROJECT_ENVIRONMENTS: "[]",
-        // JSON array of {"name","patterns"}: directories matching an environment's globs share one project named after it
+        // JSON array of {"name","patterns","inherit"?}: directories matching an environment's globs share one project named after it; an explicit inherit list replaces the derived read keys ([] reads only the environment)
         CLAUDE_MEM_FOLDER_MD_EXCLUDE: "[]",
         // JSON array of folder paths to exclude from CLAUDE.md generation
         CLAUDE_MEM_FOLDER_MD_SKELETON_DENYLIST: "[]",
@@ -1226,6 +1226,9 @@ var init_SettingsDefaultsManager = __esm({
         const value = process.env[key] ?? this.DEFAULTS[key];
         if (key === "CLAUDE_MEM_WORKER_HOST") {
           return this.normalizeWorkerHost(value);
+        }
+        if (key === "CLAUDE_MEM_DATA_DIR") {
+          return expandHome(value);
         }
         return value;
       }
@@ -1587,7 +1590,15 @@ function parseProjectEnvironments(raw) {
       logger.warn("PROJECT_NAME", "Ignoring a project environment without a name or patterns", { name });
       continue;
     }
-    environments.push({ name, patterns });
+    if ("inherit" in entry) {
+      const inherit = entry.inherit;
+      if (!Array.isArray(inherit) || inherit.some((key) => typeof key !== "string" || !key.trim() || key.includes(","))) {
+        throw new Error(`CLAUDE_MEM_PROJECT_ENVIRONMENTS: inherit for "${name}" must be an array of non-empty project names without commas`);
+      }
+      environments.push({ name, patterns, inherit: [...new Set(inherit.map((key) => key.trim()))] });
+    } else {
+      environments.push({ name, patterns });
+    }
   }
   return environments;
 }
@@ -1603,7 +1614,7 @@ function matchProjectEnvironment(dir, environments) {
   const candidates = [.../* @__PURE__ */ new Set([dir, realpathOrSelf(dir)])].flatMap((candidate) => [candidate, `${candidate.replace(/[\\/]+$/, "")}/`]);
   for (const environment of environments) {
     if (candidates.some((candidate) => matchesAnyGlob(candidate, environment.patterns))) {
-      return environment.name;
+      return environment;
     }
   }
   return null;
@@ -1768,7 +1779,7 @@ function getProjectName(cwd, platform = process.platform) {
   const expanded = expandHome(cwd, platform);
   const environment = matchProjectEnvironment(expanded, loadProjectEnvironments());
   if (environment) {
-    return environment;
+    return environment.name;
   }
   const repoRoot = findGitRepoRoot(expanded);
   const slug = repoRoot ? gitRemoteProjectSlug(repoRoot) : null;
@@ -1798,15 +1809,15 @@ function getProjectContext(cwd, platform = process.platform) {
   const slug = repoRoot ? gitRemoteProjectSlug(repoRoot) : null;
   const derivedContext = slug ? withPrimaryKey(pathContext, slug, "git-remote") : pathContext;
   const environment = matchProjectEnvironment(expandedCwd, loadProjectEnvironments());
-  return environment ? withPrimaryKey(derivedContext, environment, "environment") : derivedContext;
+  return environment ? withPrimaryKey(derivedContext, environment.name, "environment", environment.inherit) : derivedContext;
 }
-function withPrimaryKey(context, primary, keySource) {
+function withPrimaryKey(context, primary, keySource, readKeys = context.allProjects) {
   return {
     primary,
     parent: null,
     isWorktree: context.isWorktree,
     isSubmodule: context.isSubmodule,
-    allProjects: [...context.allProjects.filter((key) => key !== primary), primary],
+    allProjects: [...new Set(readKeys.filter((key) => key !== primary)), primary],
     keySource
   };
 }
