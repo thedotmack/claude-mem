@@ -5,6 +5,7 @@ import { describe, expect, it } from 'bun:test';
 import { MEDIA_LIMITS } from '../../src/shared/media-contract.js';
 import { LOCAL_EVENT_MAX_BYTES, boundObservationDispatch, scanMediaFields } from '../../src/shared/media-ingress.js';
 import { summarizeRequestBody } from '../../src/services/worker/http/middleware.js';
+import { stripMemoryTags } from '../../src/utils/tag-stripping.js';
 
 const PNG_HEAD = 'iVBORw0KGgo';
 const b64 = (chars: number) => PNG_HEAD + 'A'.repeat(chars - PNG_HEAD.length - 1) + '=';
@@ -118,6 +119,35 @@ describe('pre-dispatch inline bounds', () => {
     expect(wire).toContain('HEAD-MARKER');
     expect(wire).toContain('TAIL-MARKER');
     expect(wire).not.toContain(PNG_HEAD);
+  });
+
+  // The worker stores stripMemoryTags(JSON.stringify(field)); a clip that cuts
+  // away one side of a <private> pair must not leave the text between exposed.
+  const workerStoredText = (value: unknown) => stripMemoryTags(JSON.stringify(value));
+
+  it('a clip whose elided middle holds the <private> opener never exposes the private text', () => {
+    const stdout = 'public head ' + 'x'.repeat(1024 * 1024) + '<private>' + 'y'.repeat(5 * 1024 * 1024)
+      + ' SECRET-TAIL-TOKEN </private> public tail';
+    const body = { tool_name: 'Bash', tool_input: { command: 'cat log' }, tool_response: { stdout } };
+    expect(workerStoredText(body.tool_response)).not.toContain('SECRET-TAIL-TOKEN');
+    const bounded = boundObservationDispatch(body);
+    expect(Buffer.byteLength(JSON.stringify(bounded))).toBeLessThan(LOCAL_EVENT_MAX_BYTES);
+    expect(workerStoredText(bounded.tool_response)).not.toContain('SECRET-TAIL-TOKEN');
+    expect(workerStoredText(bounded.tool_response)).toContain('public head');
+  });
+
+  it('a clip that drops the closing tag of a <private> region spanning entries never exposes the private text', () => {
+    const filler = 'z'.repeat(30 * 1024);
+    const lines = Array.from({ length: 200 }, () => filler);
+    lines[0] = 'public first line';
+    lines[1] = '<private>SECRET-ARRAY-TOKEN';
+    lines[199] = 'end of secret</private>';
+    const body = { tool_name: 'Bash', tool_input: { command: 'cat lines' }, tool_response: { lines } };
+    expect(workerStoredText(body.tool_response)).not.toContain('SECRET-ARRAY-TOKEN');
+    const bounded = boundObservationDispatch(body);
+    expect(Buffer.byteLength(JSON.stringify(bounded))).toBeLessThan(LOCAL_EVENT_MAX_BYTES);
+    expect(workerStoredText(bounded.tool_response)).not.toContain('SECRET-ARRAY-TOKEN');
+    expect(workerStoredText(bounded.tool_response)).toContain('public first line');
   });
 
   it('request log summaries carry no image body', () => {

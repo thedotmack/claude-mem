@@ -14,6 +14,7 @@ import {
   openAiImageUrlOf,
   type UnknownRecord,
 } from './native-image-shapes.js';
+import { stripTags } from '../utils/tag-stripping.js';
 
 export interface MediaCandidate {
   pointer: string;
@@ -367,6 +368,22 @@ function clipSerializedField(value: unknown): string {
 }
 
 /**
+ * The field as the worker will store it, taken before any clip. The worker
+ * keeps stripMemoryTags(JSON.stringify(field)), which removes a <private> (or
+ * other memory-tag) pair even when it spans strings. A head/tail or entry clip
+ * can cut away one side of a pair and leave the text between it exposed, so a
+ * field that holds any pair is replaced by its stripped serialization first;
+ * clipping that text can only drop content the worker would have kept. A
+ * field with no pair has nothing to expose and keeps its structure.
+ */
+function stripMemoryTagsBeforeClip(value: unknown): unknown {
+  const serialized = JSON.stringify(value);
+  if (typeof serialized !== 'string') return value;
+  const { stripped, counts } = stripTags(serialized);
+  return Object.values(counts).some(count => count > 0) ? stripped : value;
+}
+
+/**
  * Pre-dispatch bound: keep useful text when image bodies would push the event
  * past the unchanged 5mb JSON cap. Image-free events under the cap are
  * returned with identical content.
@@ -380,11 +397,12 @@ export function boundObservationDispatch<T extends { tool_input?: unknown; tool_
   let boundedBody = { ...body, tool_input: rejectScan.toolInput, tool_response: rejectScan.toolResponse };
   if (serializedByteLength(boundedBody) < LOCAL_EVENT_MAX_BYTES) return boundedBody;
 
-  // Only an event still oversized after image removal takes this path.
+  // Only an event still oversized after image removal takes this path. Memory
+  // tags are stripped before any clip, so a cut cannot split a private pair.
   boundedBody = {
     ...boundedBody,
-    tool_input: clipOversizedValue(boundedBody.tool_input),
-    tool_response: clipOversizedValue(boundedBody.tool_response),
+    tool_input: clipOversizedValue(stripMemoryTagsBeforeClip(boundedBody.tool_input)),
+    tool_response: clipOversizedValue(stripMemoryTagsBeforeClip(boundedBody.tool_response)),
   };
   if (serializedByteLength(boundedBody) < LOCAL_EVENT_MAX_BYTES) return boundedBody;
   return {
