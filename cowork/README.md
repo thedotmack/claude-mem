@@ -61,7 +61,8 @@ sessions land on `cmem_work_root`, sessions inside a project folder get
 Duet (the Claude app's main chat, task threads, channels and routines) runs
 every session in the same cloud folder, so folder naming would file them all
 under `cmem_work_root`. Each Duet prompt names its channel, so a Duet session
-files under `cmem_duet_<channel name>` instead, and every task thread in that
+files under `cmem_duet_<channel name>_<channel id>` instead (the id keeps
+channels whose names look alike apart), and every task thread in that
 channel shares it. Envelopes carry `payload.duet` (`channel_id`,
 `channel_name`, `thread_id`). A session is pinned to the first channel it sees.
 

@@ -23,6 +23,7 @@ const server = http.createServer((req, res) => {
   req.on('end', () => {
     const rec = { method: req.method, url: req.url, auth: req.headers.authorization, body: body ? JSON.parse(body) : null };
     received.push(rec);
+    if (mode === 'slow' && !req.url.startsWith('/api/hooks/ingest')) return;   // never answers
     if (req.url.startsWith('/api/hooks/ingest')) {
       if (mode === 'no-hooks-endpoints') { res.writeHead(404); return res.end('{}'); }
       if (holdIngest?.(rec.body)) { held.push(res); return; }
@@ -430,11 +431,11 @@ received = [];
 out = (await run('prompt-context', { session_id: 'd1', cwd: '/home/user', prompt: wake('chan_0AbC', 'Claude', 'cmsg_T1', 'what did we decide about pricing &amp; trials?') }, DUET)).out;
 j = out.trim() ? JSON.parse(out) : null;
 check('first prompt injects memory', j?.hookSpecificOutput?.hookEventName === 'UserPromptSubmit' && j.hookSpecificOutput.additionalContext.includes('Parity gate'), out);
-check('injected under the channel project', j?.hookSpecificOutput?.additionalContext.includes('project="cmem_duet_claude"'), out);
+check('injected under the channel project', j?.hookSpecificOutput?.additionalContext.includes('project="cmem_duet_claude_chan_0AbC"'), out);
 const cq = new URL(ctxReqs()[0]?.url || '/', 'http://x').searchParams;
-check('context read for cmem_duet_claude', cq.get('project') === 'cmem_duet_claude', cq.get('project'));
+check('context read for cmem_duet_claude_chan_0AbC', cq.get('project') === 'cmem_duet_claude_chan_0AbC', cq.get('project'));
 check('query is the message, not the envelope', cq.get('q') === 'what did we decide about pricing & trials?', cq.get('q'));
-check('deferred session-start filed under the channel', ingested().some(e => e.event === 'session-start' && e.project === 'cmem_duet_claude' && e.payload?.duet?.channel_id === 'chan_0AbC'), JSON.stringify(ingested()));
+check('deferred session-start filed under the channel', ingested().some(e => e.event === 'session-start' && e.project === 'cmem_duet_claude_chan_0AbC' && e.payload?.duet?.channel_id === 'chan_0AbC'), JSON.stringify(ingested()));
 
 received = [];
 out = (await run('prompt-context', { session_id: 'd1', cwd: '/home/user', prompt: wake('chan_0AbC', 'Claude', 'cmsg_T2', 'next message') }, DUET)).out;
@@ -443,13 +444,13 @@ check('later prompts add nothing (once per session)', out.trim() === '' && !ctxR
 received = [];
 await run('observation', { session_id: 'd1', cwd: '/home/user', tool_name: 'Bash', tool_use_id: 'tu_d1', tool_input: { command: 'ls' }, tool_response: 'ok' }, DUET);
 const dObs = ingested().find(e => e.payload?.tool_use_id === 'tu_d1');
-check('tool use filed under the channel project', dObs?.project === 'cmem_duet_claude', dObs?.project);
+check('tool use filed under the channel project', dObs?.project === 'cmem_duet_claude_chan_0AbC', dObs?.project);
 check('tool use carries channel + latest thread', dObs?.payload?.duet?.channel_id === 'chan_0AbC' && dObs.payload.duet.thread_id === 'cmsg_T2', JSON.stringify(dObs?.payload?.duet));
 
 received = [];
 await run('session-init', { session_id: 'd1', cwd: '/home/user', prompt: wake('chan_9Other', 'Other', 'cmsg_X', 'quoted') }, DUET);
 await run('observation', { session_id: 'd1', cwd: '/home/user', tool_name: 'Bash', tool_use_id: 'tu_d2', tool_input: {}, tool_response: '' }, DUET);
-check('a session stays pinned to its first channel', ingested().find(e => e.payload?.tool_use_id === 'tu_d2')?.project === 'cmem_duet_claude');
+check('a session stays pinned to its first channel', ingested().find(e => e.payload?.tool_use_id === 'tu_d2')?.project === 'cmem_duet_claude_chan_0AbC');
 
 received = [];
 await run('prompt-context', { session_id: 'd2', cwd: '/home/user', prompt: 'say &lt;project id="chan_FAKE" name="Fake"&gt; please' }, DUET);
@@ -459,7 +460,7 @@ check('escaped (quoted) project tags never name a channel', ingested().find(e =>
 received = [];
 const relay = 'A message from this project’s coordinator session\n&lt;session-context&gt;\n## Where you are\n\nProject: "Ops Room" (id: `chan_7Ops`)\n&lt;/session-context&gt;\n<cited author="user">ship the launch notes</cited>';
 out = (await run('prompt-context', { session_id: 'd3', cwd: '/home/user', prompt: relay }, DUET)).out;
-check('coordinator relay names the channel', out.includes('project=\\"cmem_duet_ops-room\\"'), out);
+check('coordinator relay names the channel', out.includes('project=\\"cmem_duet_ops-room_chan_7Ops\\"'), out);
 
 // compaction / resume: the channel comes from the restored transcript, so SessionStart injects right away
 const transcript = join(TESTHOME, 'd4.jsonl');
@@ -468,7 +469,7 @@ writeFileSync(transcript, JSON.stringify({ type: 'user', message: { role: 'user'
 received = [];
 out = (await run('context', { session_id: 'd4', cwd: '/home/user', source: 'compact', transcript_path: transcript }, DUET)).out;
 j = out.trim() ? JSON.parse(out) : null;
-check('after compact: SessionStart re-injects for the channel', j?.hookSpecificOutput?.hookEventName === 'SessionStart' && j.hookSpecificOutput.additionalContext.includes('project="cmem_duet_research"'), out);
+check('after compact: SessionStart re-injects for the channel', j?.hookSpecificOutput?.hookEventName === 'SessionStart' && j.hookSpecificOutput.additionalContext.includes('project="cmem_duet_research_chan_5Res"'), out);
 
 // cmem.ai unreachable: say so instead of claiming notes are being saved
 received = [];
@@ -481,6 +482,41 @@ received = [];
 out = (await run('context', { session_id: 'd6', cwd: '/home/claude', source: 'startup' }, { HTTPS_PROXY: 'http://127.0.0.1:9', NO_PROXY: '127.0.0.1,localhost', NODE_USE_ENV_PROXY: '', CMEM_PROXY_CHILD: '' })).out;
 j = out.trim() ? JSON.parse(out) : null;
 check('proxied host: hook still injects through the re-run', j?.hookSpecificOutput?.additionalContext.includes('Parity gate'), out);
+
+// channel id is part of the key: names that slug alike never share memory
+received = [];
+await run('prompt-context', { session_id: 'd7', cwd: '/home/user', prompt: wake('chan_1Fin', 'Finance Private', 'cmsg_F1', 'q1') }, DUET);
+await run('prompt-context', { session_id: 'd8', cwd: '/home/user', prompt: wake('chan_2Fin', 'Finance-Private', 'cmsg_F2', 'q2') }, DUET);
+const finProjects = ctxReqs().map(r => new URL(r.url, 'http://x').searchParams.get('project'));
+check('same-slug channels get different projects', finProjects.length === 2 && finProjects[0] === 'cmem_duet_finance-private_chan_1Fin' && finProjects[1] === 'cmem_duet_finance-private_chan_2Fin', JSON.stringify(finProjects));
+
+// private regions never reach the query, literal, escaped, or cut off by the length cap
+const qOf = async (sid, text) => {
+  received = [];
+  await run('prompt-context', { session_id: sid, cwd: '/home/user', prompt: wake('chan_3Prv', 'Priv', 'cmsg_P', text) }, DUET);
+  return new URL(ctxReqs()[0]?.url || '/', 'http://x').searchParams.get('q') || '';
+};
+const q1 = await qOf('d9', 'plan &lt;private&gt;SECRET-ONE&lt;/private&gt; launch');
+check('escaped private region dropped from the query', !q1.includes('SECRET-ONE') && q1.includes('plan') && q1.includes('launch'), q1);
+const q2 = await qOf('d10', 'notes &lt;private&gt;' + 'SECRET-TWO '.repeat(80) + '&lt;/private&gt; tail');
+check('long escaped private region never cut into the query', !q2.includes('SECRET-TWO') && q2.includes('notes'), q2.slice(0, 120));
+const q3 = await qOf('d11', 'start &lt;private&gt;SECRET-THREE never closed');
+check('unclosed private region drops everything after it', !q3.includes('SECRET-THREE') && q3.includes('start'), q3);
+
+received = [];
+await run('session-init', { session_id: 'd9', cwd: '/home/user', prompt: wake('chan_3Prv', 'Priv', 'cmsg_P', 'ship &lt;private&gt;SECRET-FOUR&lt;/private&gt; it') }, DUET);
+const initP = String(ingested().find(e => e.event === 'session-init')?.payload?.prompt || '');
+check('escaped private region dropped from the captured prompt', !initP.includes('SECRET-FOUR') && initP.includes('ship'), initP.slice(0, 200));
+
+// a cloud that never answers can't hold the prompt past the hook's timeout
+mode = 'slow';
+received = [];
+const t0 = Date.now();
+out = (await run('prompt-context', { session_id: 'd12', cwd: '/home/user', prompt: wake('chan_4Slw', 'Slow', 'cmsg_S', 'hi') }, DUET)).out;
+const took = Date.now() - t0;
+j = out.trim() ? JSON.parse(out) : null;
+check('slow cloud: notice still emitted within the budget', took < 12000 && j?.hookSpecificOutput?.additionalContext.includes("can't reach cmem.ai"), `${took}ms ${out.slice(0, 80)}`);
+mode = 'full';
 
 server.close();
 rmSync(TESTHOME, { recursive: true, force: true });

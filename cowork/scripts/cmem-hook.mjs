@@ -89,7 +89,7 @@ function resolveProject(cwd) {
 // cmem_work_root. Each Duet prompt is a <wake> envelope naming its channel
 // (<project id="chan_…" name="…">) and thread; a coordinator relay's session
 // context names it as Project: "…" (id: `chan_…`). The channel is the project
-// (cmem_duet_<channel name>) and its task threads share it. Still automatic,
+// (cmem_duet_<channel name>_<channel id>) and its task threads share it. Still automatic,
 // never a setting. A session is pinned to the first channel it sees, so a
 // message that quotes another channel can't move it.
 const SESSION_DIR = join(SPOOL_DIR, 'cowork-sessions');
@@ -126,9 +126,11 @@ function duetFromText(text) {
   return { channelId, channelName, threadId: thread?.[1] || '', wakeReason: wake?.[1] || '' };
 }
 
+// The name keeps the project readable; the channel id keeps two channels whose
+// names slug alike (or a renamed and a new channel) from sharing memory.
 function duetProject(d) {
   const slug = String(d.channelName || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
-  return 'cmem_duet_' + (slug || d.channelId.toLowerCase());
+  return 'cmem_duet_' + (slug ? slug + '_' : '') + d.channelId;
 }
 
 // The transcript is restored with the session when a container is rebuilt, so
@@ -151,12 +153,26 @@ function loadSession(sessionId) {
   try { return JSON.parse(readFileSync(sessionFile(sessionId), 'utf8')) || {}; } catch { return {}; }
 }
 
-function saveSession(sessionId, state) {
-  if (!sessionId) return;
+// Two UserPromptSubmit hooks run side by side, so each write merges its own
+// fields into the newest state and lands whole (temp file + rename): a reader
+// never sees a half-written file, and a channel once pinned is never dropped.
+// null removes a field.
+function updateSession(sessionId, patch) {
+  if (!sessionId) return {};
+  const state = { ...loadSession(sessionId) };
+  const pinned = !!state.channelId;
+  for (const [k, v] of Object.entries(patch)) {
+    if (pinned && ['channelId', 'channelName', 'project'].includes(k)) continue;
+    if (v === null) delete state[k]; else state[k] = v;
+  }
   try {
     mkdirSync(SESSION_DIR, { recursive: true });
-    writeFileSync(sessionFile(sessionId), JSON.stringify(state), { mode: 0o600 });
+    const file = sessionFile(sessionId);
+    const tmp = `${file}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 });
+    renameSync(tmp, file);
   } catch { /* best effort */ }
+  return state;
 }
 
 // A Duet host: the session's channel only shows up with the first prompt, so
@@ -170,14 +186,12 @@ let SESSION = { id: null, state: {} };
 
 function resolveSession(input, { scanTranscript = false } = {}) {
   const id = input?.session_id || null;
-  const state = loadSession(id);
+  let state = loadSession(id);
   const found = duetFromText(input?.prompt) || (!state.channelId && scanTranscript ? duetFromTranscript(input?.transcript_path) : null);
   if (found && !state.channelId) {
-    Object.assign(state, found, { project: duetProject(found) });
-    saveSession(id, state);
+    state = updateSession(id, { ...found, project: duetProject(found) });
   } else if (found && found.channelId === state.channelId && found.threadId && found.threadId !== state.threadId) {
-    state.threadId = found.threadId;   // the main chat moves between threads
-    saveSession(id, state);
+    state = updateSession(id, { threadId: found.threadId });   // the main chat moves between threads
   }
   SESSION = { id, state };
 }
@@ -274,7 +288,10 @@ const STRIP_TAGS_RE = /<(private|claude-mem-context|system_instruction|system-in
 // non-null values so every pass sees the whole payload.
 function clean(v, cap) {
   if (v == null) return v;
-  const s = (typeof v === 'string' ? v : JSON.stringify(v)).replace(STRIP_TAGS_RE, '');
+  // Duet escapes < and > in what people write, so their <private> arrives as
+  // &lt;private&gt;…&lt;/private&gt; and is stripped in that form too
+  const s = (typeof v === 'string' ? v : JSON.stringify(v)).replace(STRIP_TAGS_RE, '')
+    .replace(/&lt;private\b[\s\S]*?&lt;\/private&gt;/gi, '');
   const t = truncate(s, cap);
   return redactSecrets(typeof t === 'string' ? t : JSON.stringify(t));
 }
@@ -283,9 +300,20 @@ function clean(v, cap) {
 // refused every attempt, so the notice must not claim notes are being saved
 let CLOUD_REACHED = null;
 
+// A hook that holds the session (SessionStart, the first prompt) gets one
+// budget for all its requests, so retrieval, its fallback and registration can
+// never outlast the hook's own timeout and lose the output.
+let DEADLINE = Infinity;
+const SYNC_BUDGET_MS = 9000;
+
 async function http(method, url, body, timeoutMs, headers = {}) {
+  const left = DEADLINE - Date.now();
+  if (left < 250) {
+    if (CLOUD_REACHED !== true) CLOUD_REACHED = false;
+    throw new Error('claude-mem: hook time budget spent');
+  }
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  const t = setTimeout(() => ctrl.abort(), Math.min(timeoutMs, left));
   try {
     let res;
     try {
@@ -567,6 +595,15 @@ function emptyNotice(project) {
   ].join('\n');
 }
 
+// Emit the block first, then record it: a marker saved before output that
+// never reached the session would skip injection for the rest of it.
+function emitContext(hookEventName, text, cwd, project) {
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: { hookEventName, additionalContext: contextBlock(text || emptyNotice(project), cwd) }
+  }));
+  updateSession(SESSION.id, { injectedFor: project });
+}
+
 async function onSessionStart(input) {
   const source = input.source || input.matcher || 'startup';
   // A fresh Duet session doesn't know its channel until the first prompt:
@@ -574,26 +611,31 @@ async function onSessionStart(input) {
   // shared folder project. Resume and compact find the channel in the
   // transcript and go ahead now.
   if (isDuetHost() && !SESSION.state.channelId) {
-    saveSession(SESSION.id, { ...SESSION.state, deferredStart: source });
+    updateSession(SESSION.id, { deferredStart: source });
     return;
   }
-  // register the session (fire-and-forget) …
+  // register the session (fire-and-forget; bounded by the hook's budget) …
   const registered = ingest('session-start', {
     session_id: input.session_id, cwd: input.cwd, source
   }).catch(() => {});
   // …and inject context
-  if (!CFG.inject.sessionStart) return;
-  if (!CFG.apiKey) return;
-  const project = currentProject(input.cwd);
-  const text = await fetchContext('session-start', null, input.cwd);
-  saveSession(SESSION.id, { ...loadSession(SESSION.id), injectedFor: project });
+  if (CFG.inject.sessionStart && CFG.apiKey) {
+    const project = currentProject(input.cwd);
+    const text = await fetchContext('session-start', null, input.cwd);
+    emitContext('SessionStart', text, input.cwd, project);
+  }
   await registered;
-  process.stdout.write(JSON.stringify({
-    hookSpecificOutput: {
-      hookEventName: 'SessionStart',
-      additionalContext: contextBlock(text || emptyNotice(project), input.cwd)
-    }
-  }));
+}
+
+// <private> regions never leave the machine, in literal or escaped form (the
+// app escapes < and > in what people write). Runs on the whole prompt before
+// anything is cut, and again after decoding; an opening tag with no close
+// drops everything after it.
+function stripPrivate(s) {
+  return s
+    .replace(/<private\b[^>]*>[\s\S]*?<\/private>/gi, ' ')
+    .replace(/&lt;private\b[\s\S]*?&lt;\/private&gt;/gi, ' ')
+    .replace(/(?:<|&lt;)private\b[\s\S]*$/i, ' ');
 }
 
 // What the person asked, without the envelope around it: the triggering
@@ -601,14 +643,14 @@ async function onSessionStart(input) {
 // prompt with every tag stripped. Used as the relevance query for injection.
 function promptQuery(prompt) {
   if (typeof prompt !== 'string' || !prompt) return '';
-  const body = prompt.replace(/<(system-note|system-reminder|project-instructions|claude-mem-context)\b[^>]*>[\s\S]*?<\/\1>/g, ' ');
+  const body = stripPrivate(prompt).replace(/<(system-note|system-reminder|project-instructions|claude-mem-context)\b[^>]*>[\s\S]*?<\/\1>/g, ' ');
   const parts = [];
   for (const m of body.matchAll(/<(message|cited|note)\b([^>]*)>([\s\S]*?)<\/\1>/g)) {
     if (m[1] === 'message' && !/trigger="true"/.test(m[2])) continue;
     parts.push(m[3]);
   }
-  const text = (parts.length ? parts.join(' ') : body).replace(/<[^>]+>/g, ' ');
-  return decodeEntities(text).replace(/\s+/g, ' ').trim().slice(0, 500);
+  const text = stripPrivate(decodeEntities(parts.length ? parts.join(' ') : body)).replace(/<[^>]+>/g, ' ');
+  return text.replace(/\s+/g, ' ').trim().slice(0, 500);
 }
 
 // UserPromptSubmit, synchronous: the first prompt of a session (or the first
@@ -618,22 +660,16 @@ function promptQuery(prompt) {
 async function onPromptContext(input) {
   const state = loadSession(SESSION.id);
   const project = currentProject(input.cwd);
-  const jobs = [];
+  let registered = Promise.resolve();
   if (state.deferredStart) {
-    jobs.push(ingest('session-start', { session_id: input.session_id, cwd: input.cwd, source: state.deferredStart }).catch(() => {}));
-    delete state.deferredStart;
-    saveSession(SESSION.id, state);
+    registered = ingest('session-start', { session_id: input.session_id, cwd: input.cwd, source: state.deferredStart }).catch(() => {});
+    updateSession(SESSION.id, { deferredStart: null });
   }
-  if (!CFG.inject.sessionStart || !CFG.apiKey || state.injectedFor === project) { await Promise.all(jobs); return; }
-  const text = await fetchContext('session-start', promptQuery(input.prompt), input.cwd);
-  saveSession(SESSION.id, { ...loadSession(SESSION.id), injectedFor: project });
-  await Promise.all(jobs);
-  process.stdout.write(JSON.stringify({
-    hookSpecificOutput: {
-      hookEventName: 'UserPromptSubmit',
-      additionalContext: contextBlock(text || emptyNotice(project), input.cwd)
-    }
-  }));
+  if (CFG.inject.sessionStart && CFG.apiKey && state.injectedFor !== project) {
+    const text = await fetchContext('session-start', promptQuery(input.prompt), input.cwd);
+    emitContext('UserPromptSubmit', text, input.cwd, project);
+  }
+  await registered;
 }
 
 async function onSessionInit(input) {
@@ -773,6 +809,7 @@ const HANDLERS = {
     if (event === 'search') return await cliSearch(process.argv.slice(3));
     if (event === 'status') return await cliStatus();
     if (localClaudeMemInstalled()) return process.exit(0); // local-first: the local plugin owns memory here
+    if (SYNC_EVENTS.has(event)) DEADLINE = Date.now() + SYNC_BUDGET_MS;
     const input = parseInput(stdinRaw);
     resolveSession(input, { scanTranscript: event === 'context' || event === 'prompt-context' });
     await handler(input);
