@@ -11,8 +11,11 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
-import { RefreshButton, RefreshStatus, StateBadge, useWorkspace } from '@/components/bits'
+import { DraggableCardBody, DraggableCardContainer } from '@/components/aceternity/draggable-card'
+import { PlaceholdersAndVanishInput } from '@/components/aceternity/placeholders-and-vanish-input'
+import { ActivePill, RefreshButton, RefreshStatus, StateBadge, useWorkspace } from '@/components/bits'
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
+import { useIsPhone, swipeToDecide } from '@/lib/swipe-to-decide'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
 import { loadRulesInClaudeCode, SAMPLE_DEVICES, SAMPLE_RUNS, saveRuleChange, useWorkModel } from '@/data'
@@ -258,7 +261,7 @@ function SuggestionCard({ rule, decision, onDecide, onEdit, onUndo, onShow }: { 
   return (
     <Req ids={['R14.2', 'R14.3', 'R14.8', 'R14.9']}>
       <Confirmation id={`decide-${rule.id}`} approval={approval} state={decision ? 'approval-responded' : 'approval-requested'}
-        className={cn('scroll-mt-36 gap-3 rounded-xl bg-card p-4 shadow-none lg:scroll-mt-20', !decision ? 'border-review-border' : decision === 'approved' ? 'border-shipped-border' : 'border-dashed')}>
+        className={cn('scroll-mt-36 gap-3 rounded-xl bg-card p-4 shadow-panel lg:scroll-mt-20', !decision ? 'border-review-border' : decision === 'approved' ? 'border-shipped-border' : 'border-dashed')}>
         <button type="button" onClick={() => scrollToId(`scope-${scope.id}`)} className="-my-2 inline-flex min-h-11 w-fit items-center text-xs text-muted-foreground hover:text-foreground sm:min-h-0 sm:my-0">{scopeHeading(scope)}</button>
 
         <div className={cn(decision === 'rejected' && 'line-through opacity-60')}><RuleSentence rule={rule} large /></div>
@@ -309,6 +312,7 @@ function SuggestionCard({ rule, decision, onDecide, onEdit, onUndo, onShow }: { 
 
 function DecisionQueue({ suggestions, decisions, onDecide, onEdit, onUndo, onShow }: { suggestions: OwnerRule[]; decisions: Record<string, Decision>; onDecide: (rule: OwnerRule, decision: Decision) => void; onEdit: (rule: OwnerRule) => void; onUndo: (rule: OwnerRule) => void; onShow: (rule: OwnerRule) => void }) {
   const waiting = suggestions.filter((rule) => !decisions[rule.id]).length
+  const isPhone = useIsPhone()
   return (
     <Req ids={['R14.2', 'R12.3', 'R12.2']}>
       <section id="decide" className="scroll-mt-36 space-y-3 lg:scroll-mt-20">
@@ -322,9 +326,15 @@ function DecisionQueue({ suggestions, decisions, onDecide, onEdit, onUndo, onSho
             <p className="text-sm text-muted-foreground">Nothing waiting. New suggestions show up here after the next learning run.</p>
           </Req>
         ) : (
-          <div className="space-y-3">
-            {suggestions.map((rule) => <SuggestionCard key={rule.id} rule={rule} decision={decisions[rule.id]} onDecide={(decision) => onDecide(rule, decision)} onEdit={() => onEdit(rule)} onUndo={() => onUndo(rule)} onShow={() => onShow(rule)} />)}
-          </div>
+          <DraggableCardContainer className="space-y-3">
+            {isPhone && waiting > 0 && <p className="text-xs text-muted-foreground">Swipe a card right to approve it, left to reject it.</p>}
+            {suggestions.map((rule) => {
+              const card = <SuggestionCard rule={rule} decision={decisions[rule.id]} onDecide={(decision) => onDecide(rule, decision)} onEdit={() => onEdit(rule)} onUndo={() => onUndo(rule)} onShow={() => onShow(rule)} />
+              return isPhone && !decisions[rule.id]
+                ? <DraggableCardBody key={rule.id} dragAxis="x" onDragRelease={swipeToDecide(() => onDecide(rule, 'approved'), () => onDecide(rule, 'rejected'))} className="min-h-0 w-full rounded-xl bg-transparent p-0 shadow-none dark:bg-transparent">{card}</DraggableCardBody>
+                : <div key={rule.id}>{card}</div>
+            })}
+          </DraggableCardContainer>
         )}
       </section>
     </Req>
@@ -360,7 +370,7 @@ function ScopeSection({ scope, rules, counts, approvedNow, highlighted, actions 
         {yours.length > 0 && (
           <div className="space-y-2">
             <GroupLabel>Your rules · strongest first</GroupLabel>
-            <div className="divide-y rounded-xl border">
+            <div className="divide-y rounded-xl border shadow-panel">
               {yours.map((rule) => <RuleBlock key={rule.id} rule={rule} replaces={rules.filter((other) => other.status === 'replaced' && chainReaches(rules, other, rule.id))} justApproved={approvedNow.has(rule.id)} highlighted={highlighted === rule.id} actions={actions} />)}
             </div>
           </div>
@@ -396,12 +406,16 @@ function chainReaches(rules: OwnerRule[], rule: OwnerRule, targetId: string): bo
 
 function ScopeNav({ countsByScope, waiting }: { countsByScope: Map<string, ScopeCounts>; waiting: number }) {
   const { ruleScopes } = useWorkModel()
+  // The pill marks the place you last jumped to.
+  const [jumpedTo, setJumpedTo] = useState<string | null>(null)
+  const jump = (id: string) => { setJumpedTo(id); scrollToId(id) }
   return (
     <Req ids={['R14.5']}>
       <nav className="space-y-3 text-sm" aria-label="Scopes">
-        <button type="button" onClick={() => scrollToId('decide')} className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left hover:bg-muted">
-          <span className="font-medium">Needs your decision</span>
-          {waiting > 0 && <span className="rounded-full bg-attention px-1.5 text-[11px] font-medium text-attention-foreground">{waiting}</span>}
+        <button type="button" onClick={() => jump('decide')} className="relative flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left hover:bg-muted">
+          {jumpedTo === 'decide' && <ActivePill layoutId="scope-nav-active-pill" />}
+          <span className="relative font-medium">Needs your decision</span>
+          {waiting > 0 && <span className="relative rounded-full bg-attention px-1.5 text-[11px] font-medium text-attention-foreground">{waiting}</span>}
         </button>
         {RULE_TIERS.filter(({ tier }) => ruleScopes.some((scope) => scope.tier === tier)).map(({ tier, label }) => (
           <div key={tier} className="space-y-0.5">
@@ -409,9 +423,10 @@ function ScopeNav({ countsByScope, waiting }: { countsByScope: Map<string, Scope
             {ruleScopes.filter((scope) => scope.tier === tier).map((scope) => {
               const counts = countsByScope.get(scope.id)!
               return (
-                <button key={scope.id} type="button" onClick={() => scrollToId(`scope-${scope.id}`)} className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left hover:bg-muted">
-                  <span className="truncate">{scope.name}</span>
-                  <span className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+                <button key={scope.id} type="button" onClick={() => jump(`scope-${scope.id}`)} className="relative flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left hover:bg-muted">
+                  {jumpedTo === `scope-${scope.id}` && <ActivePill layoutId="scope-nav-active-pill" />}
+                  <span className="relative truncate">{scope.name}</span>
+                  <span className="relative flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
                     {counts.suggested > 0 && <span className="text-review-foreground">{counts.suggested} new ·</span>}
                     {counts.on} on
                   </span>
@@ -430,7 +445,8 @@ function ScopeChips({ countsByScope, waiting }: { countsByScope: Map<string, Sco
   const { ruleScopes } = useWorkModel()
   return (
     <Req ids={['R14.5', 'R11.1']} className="lg:hidden">
-      <nav aria-label="Scopes" className="sticky top-16 z-20 -mx-4 flex gap-2 overflow-x-auto border-b bg-background/95 px-4 py-2 backdrop-blur [scrollbar-width:none] lg:hidden">
+      {/* top-[76px]: just under the floating header pill (20px drop + 56px tall). */}
+      <nav aria-label="Scopes" className="sticky top-[76px] z-20 -mx-4 flex gap-2 overflow-x-auto border-b bg-background/95 px-4 py-2 backdrop-blur [scrollbar-width:none] lg:hidden">
         {waiting > 0 && <button type="button" onClick={() => scrollToId('decide')} className="h-11 shrink-0 rounded-full border border-attention-border px-4 text-sm font-medium text-attention-foreground">Decide · {waiting}</button>}
         {ruleScopes.map((scope) => (
           <button key={scope.id} type="button" onClick={() => scrollToId(`scope-${scope.id}`)} className="h-11 shrink-0 rounded-full border bg-card px-4 text-sm">
@@ -464,7 +480,7 @@ function AgentFile({ rules, changed, open, onOpenChange }: { rules: OwnerRule[];
   const load = () => { setLoadError(null); loadRulesInClaudeCode().catch((error: unknown) => setLoadError(error instanceof Error ? error.message : String(error))) }
   return (
     <Req ids={['D7']}>
-      <Artifact className="shadow-none">
+      <Artifact>
         <ArtifactHeader className="flex-col items-start gap-2 bg-card">
           <ArtifactTitle className="flex items-center gap-1.5 font-mono text-xs"><FileTextIcon className="size-3.5" />{path}</ArtifactTitle>
           <ArtifactDescription className="text-xs">{loaded} {loaded === 1 ? 'rule' : 'rules'} you set or approved. claude-mem writes this file and loads it with your user-level instructions, never a project’s files.</ArtifactDescription>
@@ -565,8 +581,16 @@ function draftToRule(draft: Draft, scopes: RuleScope[]): NonNullable<RuleChange[
 /** Add, edit, or edit-then-approve a rule (§14: people set rules too). */
 function RuleEditor({ draft, error, onChange, onClose, onSave }: { draft: Draft | null; error: string | null; onChange: (draft: Draft) => void; onClose: () => void; onSave: () => void }) {
   const { mode } = useWorkspace()
-  const { sourceKind, ruleScopes } = useWorkModel()
+  const { sourceKind, rules, ruleScopes } = useWorkModel()
   const newTier = draft ? NEW_SCOPE[draft.scopeId] : undefined
+  // Placeholders are the owner's own rules and scopes (R12.1), never made-up examples; none when there are none.
+  const ownRules = rules.filter((rule) => rule.status === 'on' || rule.status === 'off')
+  const ownThens = ownRules.map((rule) => rule.then)
+  const whenPlaceholder = ownRules.find((rule) => rule.when)?.when
+  const scopeNamePlaceholder = newTier && ruleScopes.find((scope) => scope.tier === newTier)?.name
+  const canSave = !!draft && !!draft.then.trim() && !(newTier && !draft.newScopeName.trim())
+  // The vanish input clears itself on Enter; when nothing was saved it re-mounts holding the draft's text again.
+  const [vanishMount, setVanishMount] = useState(0)
   return (
     <Req ids={['R14.9', 'R13.7']}>
       <Dialog open={draft !== null} onOpenChange={(open) => { if (!open) onClose() }}>
@@ -591,14 +615,22 @@ function RuleEditor({ draft, error, onChange, onClose, onSave }: { draft: Draft 
                   </SelectContent>
                 </Select>
               </div>
-              {newTier && <div className="grid gap-1.5"><Label htmlFor="rule-scope-name">{newTier === 'project' ? 'Repo' : 'Situation'}</Label><Input id="rule-scope-name" value={draft.newScopeName} placeholder={newTier === 'project' ? 'claude-mem' : 'When I’m frustrated'} onChange={(event) => onChange({ ...draft, newScopeName: event.target.value })} /></div>}
-              <div className="grid gap-1.5"><Label htmlFor="rule-when">When <span className="font-normal text-muted-foreground">(optional)</span></Label><Input id="rule-when" value={draft.when} placeholder="you open a pull request" onChange={(event) => onChange({ ...draft, when: event.target.value })} /></div>
-              <div className="grid gap-1.5"><Label htmlFor="rule-then">Then</Label><Textarea id="rule-then" value={draft.then} placeholder="Never open it as a draft." onChange={(event) => onChange({ ...draft, then: event.target.value })} /></div>
+              {newTier && <div className="grid gap-1.5"><Label htmlFor="rule-scope-name">{newTier === 'project' ? 'Repo' : 'Situation'}</Label><Input id="rule-scope-name" value={draft.newScopeName} placeholder={scopeNamePlaceholder} onChange={(event) => onChange({ ...draft, newScopeName: event.target.value })} /></div>}
+              <div className="grid gap-1.5"><Label htmlFor="rule-when">When <span className="font-normal text-muted-foreground">(optional)</span></Label><Input id="rule-when" value={draft.when} placeholder={whenPlaceholder} onChange={(event) => onChange({ ...draft, when: event.target.value })} /></div>
+              <div className="grid gap-1.5"><Label htmlFor="rule-then">Then</Label>
+                {draft.id === null ? (
+                  // Adding: the rule's text vanishes into the list on Enter, and the placeholder cycles through your own rules.
+                  <PlaceholdersAndVanishInput key={`${vanishMount}-${error ?? ''}`} inputId="rule-then" placeholders={ownThens} initialValue={draft.then}
+                    className="max-w-none border bg-background shadow-xs dark:bg-input/30"
+                    onChange={(event) => onChange({ ...draft, then: event.target.value })}
+                    onSubmit={() => { if (canSave) onSave(); else setVanishMount((count) => count + 1) }} />
+                ) : <Textarea id="rule-then" value={draft.then} placeholder={ownThens[0]} onChange={(event) => onChange({ ...draft, then: event.target.value })} />}
+              </div>
               {error && <p role="alert" className="text-xs text-attention-foreground">{error}</p>}
             </div>
             <DialogFooter className="items-center gap-3 sm:justify-between">
               <p className="text-xs text-muted-foreground">{sourceKind !== 'sample' ? 'Saves on this computer as a work-state record.' : mode === 'web' ? 'Saves from the web; every machine pulls it down.' : `Saves on ${HERE.name} and syncs to your other machines.`}</p>
-              <Button className="h-11 sm:h-9" onClick={onSave} disabled={!draft.then.trim() || (!!newTier && !draft.newScopeName.trim())}>{draft.approving ? 'Save and approve' : 'Save rule'}</Button>
+              <Button className="h-11 sm:h-9" onClick={onSave} disabled={!canSave}>{draft.approving ? 'Save and approve' : 'Save rule'}</Button>
             </DialogFooter>
           </DialogContent>
         )}
@@ -759,10 +791,7 @@ export function MyRules() {
           </Req>
           <div className="flex flex-wrap items-center gap-2">
             <Req ids={['R14.9']}><Button className="h-11 sm:h-8" size="sm" onClick={startAdding}><PlusIcon />Add rule</Button></Req>
-            {sample ? <>
-              <RefreshButton run={SAMPLE_RUNS.rules} ids={['R14.13']} />
-              <Req ids={['R14.10', 'R11.1']}><span className="text-xs leading-tight text-muted-foreground sm:hidden">Last run {SAMPLE_RUNS.rules.lastRunAt.replace('Today, ', '')}<br />on {SAMPLE_DEVICES.find((device) => device.id === SAMPLE_RUNS.rules.deviceId)!.name}</span></Req>
-            </> : <RefreshStatus refresh={refresh} run={lastRuns.progress} ids={['R14.13']} />}
+            {sample ? <RefreshButton run={SAMPLE_RUNS.rules} ids={['R14.13', 'R11.1']} /> : <RefreshStatus refresh={refresh} run={lastRuns.progress} ids={['R14.13']} />}
           </div>
         </div>
 
@@ -796,7 +825,7 @@ export function MyRules() {
           <aside className="space-y-6 lg:sticky lg:top-20 lg:self-start">
             <div className="hidden lg:block"><ScopeNav countsByScope={countsByScope} waiting={waiting} /></div>
             <AgentFile rules={rules} changed={changedIds} open={fileOpen} onOpenChange={setFileOpen} />
-            <div className="space-y-6 rounded-xl border bg-card p-4">
+            <div className="space-y-6 rounded-xl border bg-card p-4 shadow-panel">
               <WhereEditsGo />
               <LearningRun />
             </div>
