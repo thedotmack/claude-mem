@@ -27,6 +27,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+// Keep in step with cowork/.claude-plugin/plugin.json "version"; every request sends it.
+const PLUGIN_HEADER = 'claude-mem-cowork/0.1.5';
 // per-user, 0600 — never a shared world-readable temp dir (payloads may hold tool output)
 const SPOOL_DIR = join(homedir(), '.claude-mem');
 const SPOOL = join(SPOOL_DIR, 'cowork-spool.jsonl');
@@ -352,7 +354,7 @@ async function http(method, url, body, timeoutMs, headers = {}) {
           'Authorization': `Bearer ${CFG.apiKey}`,
           'Content-Type': 'application/json',
           'X-CMEM-Platform': 'cowork',
-          'X-CMEM-Plugin': 'claude-mem-cowork/0.1.5',
+          'X-CMEM-Plugin': PLUGIN_HEADER,
           ...(CFG.userId ? { 'X-CMEM-User-Id': CFG.userId } : {}),
           ...headers
         },
@@ -963,7 +965,7 @@ async function uploadImage(image, toolUseId, deadline) {
       headers: {
         'Authorization': `Bearer ${CFG.apiKey}`,
         'X-CMEM-Platform': 'cowork',
-        'X-CMEM-Plugin': 'claude-mem-cowork/0.1.3',
+        'X-CMEM-Plugin': PLUGIN_HEADER,
         ...(CFG.userId ? { 'X-CMEM-User-Id': CFG.userId } : {})
       },
       body: mediaUploadForm(image, toolUseId)
