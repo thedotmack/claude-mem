@@ -144,7 +144,7 @@ interface OmpSession {
 }
 
 let session: OmpSession | undefined;
-let ctxCache: { at: number; cwd: string; md: string } | null = null;
+let ctxCache: { at: number; cwd: string; allSources: boolean; md: string } | null = null;
 let lastAssistant = ""; // captured on agent_end, sent at summarize
 
 function newSession(): OmpSession {
@@ -358,21 +358,21 @@ export default function claudeMemBridge(pi: ExtensionAPI): void {
     if (!cwd) return;
     const now = Date.now();
 
-    if (!ctxCache || ctxCache.cwd !== cwd || now - ctxCache.at > CTX_CACHE_MS) {
+    const includeAllSources = process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES
+      ?? readClaudeMemSettings().CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES
+      ?? "false";
+    const allSources = includeAllSources === true || includeAllSources === "true";
+
+    if (!ctxCache || ctxCache.cwd !== cwd || ctxCache.allSources !== allSources || now - ctxCache.at > CTX_CACHE_MS) {
       try {
         const params = new URLSearchParams({ cwd });
-        const includeAllSources = process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES
-          ?? readClaudeMemSettings().CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES
-          ?? "false";
-        if (String(includeAllSources) !== "true") {
-          params.set("platformSource", "omp");
-        }
+        if (!allSources) params.set("platformSource", "omp");
         const r = await request(`/api/context/inject?${params}`);
         const md = (await r.text()) ?? "";
         onOk();
         // Only cache non-empty — an empty result means "no memory yet", caching it
         // would delay newly-arriving memory by CTX_CACHE_MS.
-        if (md.trim()) ctxCache = { at: now, cwd, md };
+        if (md.trim()) ctxCache = { at: now, cwd, allSources, md };
         else ctxCache = null;
       } catch {
         onFail();

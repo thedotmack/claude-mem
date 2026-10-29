@@ -519,6 +519,51 @@ describe('OMP Claude Mem hook', () => {
     });
   }
 
+  for (const initialAllSources of [true, false]) {
+    it(`refreshes same-cwd recall immediately when all-sources changes from ${initialAllSources}`, async () => {
+      const settingsPath = join(dataDir, 'settings.json');
+      writeFileSync(settingsPath, JSON.stringify({
+        CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: initialAllSources,
+      }));
+      const requests: URL[] = [];
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        const url = new URL(String(input));
+        requests.push(url);
+        return new Response(url.searchParams.get('platformSource') === 'omp'
+          ? 'OWNHOST-RECALL' : 'OTHERHOST-RECALL', { status: 200 });
+      }) as typeof fetch;
+      const handlers = registerHook();
+      const cwd = '/tmp/omp-same-project-policy';
+      const original = Object.freeze([Object.freeze({ role: 'user', content: 'current request' })]);
+      const nowSpy = spyOn(Date, 'now').mockReturnValue(Date.now());
+
+      try {
+        await handlers.session_start?.();
+        const before = await handlers.context?.({ messages: original }, { cwd }) as {
+          messages: Array<{ content: string }>;
+        };
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: !initialAllSources,
+        }));
+        const after = await handlers.context?.({ messages: original }, { cwd }) as typeof before;
+
+        expect(before.messages.at(-1)?.content).toContain(initialAllSources ? 'OTHERHOST-RECALL' : 'OWNHOST-RECALL');
+        expect(after.messages.at(-1)?.content).toContain(initialAllSources ? 'OWNHOST-RECALL' : 'OTHERHOST-RECALL');
+        expect(after.messages.at(-1)?.content).not.toContain(initialAllSources ? 'OTHERHOST-RECALL' : 'OWNHOST-RECALL');
+        expect(requests.map(url => url.searchParams.get('platformSource'))).toEqual(
+          initialAllSources ? [null, 'omp'] : ['omp', null],
+        );
+        expect(requests.every(url => url.searchParams.get('cwd') === cwd)).toBe(true);
+        expect(before.messages[0]).toBe(original[0]);
+        expect(after.messages[0]).toBe(original[0]);
+        expect(original).toHaveLength(1);
+      } finally {
+        nowSpy.mockRestore();
+        await handlers.session_shutdown?.();
+      }
+    });
+  }
+
   it('does not reuse another cwd memory when the next project has none', async () => {
     process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES = 'true';
     const requests: URL[] = [];

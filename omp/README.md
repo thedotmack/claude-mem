@@ -57,8 +57,10 @@ Behavioral notes (matching the OpenClaw adapter's conventions):
   by default; when `CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES` is `"true"`
   (or boolean `true` in settings), they omit that source filter so the worker
   can apply the central cross-host policy. A defined environment value, even
-  empty, takes precedence over `settings.json`. This does not broaden the
-  worker's project scope or change capture's `platformSource`.
+  empty, takes precedence over `settings.json`. The context cache includes this
+  effective policy, so source-policy changes take effect on the next context
+  callback without waiting for its 60s TTL. This does not broaden the worker's
+  project scope or change capture's `platformSource`.
 
 ## Install
 
