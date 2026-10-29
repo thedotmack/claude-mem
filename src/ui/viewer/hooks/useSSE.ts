@@ -70,6 +70,8 @@ export function useSSE(handlers: StreamHandlers) {
       const controller = new AbortController();
       statusRequest = controller;
       const version = processingVersion;
+      // 10 s bounds a hung request below the 15 s reconcile interval, so one
+      // stuck fetch cannot hold the single in-flight slot past the next tick.
       const timeout = setTimeout(() => controller.abort(), 10000);
       try {
         const response = await fetch('/api/processing-status', { cache: 'no-store', signal: controller.signal });
@@ -180,6 +182,9 @@ export function useSSE(handlers: StreamHandlers) {
 
     connect();
     void refreshProcessingStatus();
+    // 15 s matches the heartbeat cadence of the worker's other event stream
+    // (WorkViewRoutes sends one every 15 s): one cheap status read per beat
+    // while visible; hidden tabs skip it (see refreshProcessingStatus).
     const statusInterval = setInterval(refreshProcessingStatus, 15000);
     window.addEventListener('focus', refreshProcessingStatus);
     document.addEventListener('visibilitychange', refreshProcessingStatus);
