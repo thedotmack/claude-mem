@@ -117,8 +117,12 @@ function duetFromText(text) {
     const a = tagAttrs(tag[1] || '');
     if (/^chan_[A-Za-z0-9]+$/.test(a.id || '')) { channelId = a.id; channelName = decodeEntities(a.name || ''); break; }
   }
+  // A thread's harness session context names its channel too, but only inside
+  // the real (unescaped) <session-context> block: the same line typed in a
+  // message is plain text there.
   if (!channelId) {
-    const ctx = text.match(/Project: "([^"\n]{0,200})" \(id: `?(chan_[A-Za-z0-9]+)`?\)/);
+    const block = text.match(/<session-context\b[^>]*>([\s\S]*?)(?:<\/session-context>|$)/);
+    const ctx = block?.[1].match(/^Project: "([^"\n]{0,200})" \(id: `?(chan_[A-Za-z0-9]+)`?\)/m);
     if (ctx) { channelId = ctx[2]; channelName = decodeEntities(ctx[1]); }
   }
   if (!channelId) return null;
@@ -136,13 +140,26 @@ function duetProject(d) {
 
 // The transcript is restored with the session when a container is rebuilt, so
 // a resumed or compacted session finds its channel there before any prompt.
+// Only what the host itself sent counts: user-role text (the wake envelopes and
+// harness context), never tool results, assistant turns or compaction
+// summaries, which can quote tags they read.
 function duetFromTranscript(path) {
   if (typeof path !== 'string' || !path) return null;
   try {
-    const buf = readFileSync(path);
-    const text = buf.subarray(0, TRANSCRIPT_SCAN_BYTES).toString('utf8').replace(/\\"/g, '"');
-    return duetFromText(text);
-  } catch { return null; }
+    const text = readFileSync(path).subarray(0, TRANSCRIPT_SCAN_BYTES).toString('utf8');
+    for (const line of text.split('\n')) {
+      let e;
+      try { e = JSON.parse(line); } catch { continue; }
+      if (e?.type !== 'user' || e.isCompactSummary || e.toolUseResult || e.message?.role !== 'user') continue;
+      const c = e.message.content;
+      const parts = typeof c === 'string' ? [c] : Array.isArray(c) ? c.filter(b => b?.type === 'text').map(b => b.text) : [];
+      for (const part of parts) {
+        const found = duetFromText(part);
+        if (found) return found;
+      }
+    }
+  } catch {}
+  return null;
 }
 
 function sessionFile(sessionId) {
@@ -684,7 +701,10 @@ async function onPromptContext(input) {
     registered = ingest('session-start', { session_id: input.session_id, cwd: input.cwd, source: state.deferredStart }).catch(() => {});
     updateSession(SESSION.id, { deferredStart: null });
   }
-  if (CFG.inject.sessionStart && CFG.apiKey && state.injectedFor !== project) {
+  // On Duet, memory waits for the channel: the folder project is shared by
+  // every channel, so it is never injected there.
+  const waiting = isDuetHost() && !state.channelId;
+  if (CFG.inject.sessionStart && CFG.apiKey && !waiting && state.injectedFor !== project) {
     const text = await fetchContext('session-start', promptQuery(input.prompt), input.cwd);
     emitContext('UserPromptSubmit', text, input.cwd, project);
   }

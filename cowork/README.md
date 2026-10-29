@@ -65,9 +65,15 @@ files under `cmem_duet_<channel name>_<channel id>` instead (the id keeps
 channels whose names look alike apart), and every task thread in that
 channel shares it. Envelopes carry `payload.duet` (`channel_id`,
 `channel_name`, `thread_id`). A session is pinned to the first channel it sees.
+The channel is read only from what the host sends: the unescaped `<project>`
+tag of a wake envelope, or the `Project:` line inside a real
+`<session-context>` block. Text people type, tool output, assistant turns and
+compaction summaries never name a channel.
 
 - Fresh session: SessionStart can't know the channel yet, so registration and
-  injection wait for the first prompt, which also serves as the relevance query.
+  injection wait for the first prompt that names it, which also serves as the
+  relevance query. Until then nothing is injected: the folder project is shared
+  by every channel.
 - Compact and resume: the channel is read from the restored transcript and
   SessionStart re-injects immediately.
 - When cmem.ai can't be reached, the injected notice says so plainly instead of
