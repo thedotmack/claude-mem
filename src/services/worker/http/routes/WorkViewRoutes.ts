@@ -698,9 +698,9 @@ export class WorkViewRoutes extends BaseRouteHandler {
     for (const client of this.clients) this.send(client, event, value);
   }
 
-  private snapshot(): WorkViewSnapshot {
+  private snapshot(maxActivityAgeMs = 0): WorkViewSnapshot {
     this.source.localDeviceId = this.getLocalDeviceId();
-    const snapshot = this.source.read().agentView;
+    const snapshot = this.source.read({ maxActivityAgeMs }).agentView;
     for (const request of snapshot.humanRequests) {
       request.contentFingerprint = contentFingerprint(request);
       request.review = this.reviews.read(request.id, request.contentFingerprint);
@@ -1129,9 +1129,17 @@ export class WorkViewRoutes extends BaseRouteHandler {
     } catch (error) {
       logger.error('HTTP', 'Setup state could not be read for a new event stream', {}, error as Error);
     }
-    if (!this.poll) this.poll = setInterval(() => this.publish(), this.pollIntervalMs);
+    // Activity can change on every observer write. Coalesce these rebuilds;
+    // work-state, title-cache and ledger changes still appear on the next tick.
+    // 120 s is the window measured in #5124: on a 2.85 GB database with 4 live
+    // sessions, recomputing activity at most every 120 s kept /api/health at a
+    // 7 ms median (85 probes, none above 0.2 s) with an event stream open,
+    // versus 30 s stalls when it ran every 1 s tick. The owner asked for this
+    // window plus that health-probe measurement as the regression check.
+    const maxActivityAgeMs = 120_000;
+    if (!this.poll) this.poll = setInterval(() => this.publish(this.snapshot(maxActivityAgeMs)), this.pollIntervalMs);
     if (!this.heartbeat) this.heartbeat = setInterval(() => {
-      const snapshot = this.snapshot();
+      const snapshot = this.snapshot(maxActivityAgeMs);
       for (const client of this.clients) this.send(client, 'heartbeat', { at: new Date().toISOString(), source: snapshot.source });
     }, 15000);
     this.poll?.unref(); this.heartbeat?.unref();
