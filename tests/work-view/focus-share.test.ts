@@ -116,3 +116,31 @@ describe('FocusShares', () => {
     await expect(refused.shares.publish('area-1', page())).rejects.toThrow('cloud sync key was refused');
   });
 });
+
+describe('FocusShares, one area at a time', () => {
+  it('does not bring a stopped link back when an update answers after the stop', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'focus-share-'));
+    dirs.push(dir);
+    let releasePut!: () => void;
+    const putHeld = new Promise<void>(resolve => { releasePut = resolve; });
+    const methods: string[] = [];
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      methods.push(init.method ?? 'GET');
+      if (init.method === 'POST') return new Response(JSON.stringify({ token: TOKEN, url: `${ORIGIN}/focus/${TOKEN}` }), { status: 201 });
+      if (init.method === 'PUT') { await putHeld; return new Response(JSON.stringify({ publishedAt: '2026-10-29T20:05:00.000Z' }), { status: 200 }); }
+      return new Response(JSON.stringify({ stopped: true }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const shares = new FocusShares({ origin: () => ORIGIN, credentials: () => ({ token: 't', userId: 'u' }), registryPath: join(dir, 'focus-shares.json'), fetch: fetchImpl });
+    await shares.publish('area-1', page());
+    const update = shares.publish('area-1', page(70), { create: false });
+    const stopped = shares.stop('area-1');
+    releasePut();
+    await update;
+    await stopped;
+    expect(methods).toEqual(['POST', 'PUT', 'DELETE']);
+    expect(shares.list()).toEqual({});
+    // A timed update after the stop is refused instead of making a new link.
+    await expect(shares.publish('area-1', page(80), { create: false })).rejects.toThrow('no longer shared');
+    expect(methods).toEqual(['POST', 'PUT', 'DELETE']);
+  });
+});

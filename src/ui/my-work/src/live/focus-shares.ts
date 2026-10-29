@@ -50,13 +50,16 @@ async function call<T>(url: string, init?: { method: 'POST'; body: unknown }): P
   return answer as T
 }
 
-/** Reads which areas this install shares. Quiet when the worker is older and has no sharing routes. */
+/**
+ * Reads which areas this install shares. Quiet when the worker is older and has no sharing routes; a failed read
+ * keeps what was read before, and the next read tries again.
+ */
 export async function loadFocusShares(): Promise<void> {
   try {
     const answer = await call<{ connected: boolean; shares: Record<string, FocusShare> }>('/api/work-view/focus/shares')
     set({ loaded: true, connected: answer.connected, shares: answer.shares ?? {} })
   } catch {
-    set({ loaded: true, connected: false, shares: {} })
+    set({ loaded: true })
   }
 }
 
@@ -94,8 +97,15 @@ export async function postFocusShareComment(focusAreaId: string, body: string): 
   return answer.comment
 }
 
-/** Reads which areas are shared once My Work shows live work, for the Shared mark beside each area's name. */
+/** How often My Work re-reads which areas are shared: a failed read, or cloud sync connected from Setup, catches up. */
+export const SHARES_REFRESH_MS = 60_000
+
+/** Reads which areas are shared while My Work shows live work, for the Shared mark beside each area's name. */
 export function useFocusSharesLoader(live: boolean): void {
-  const { loaded } = useFocusShares()
-  useEffect(() => { if (live && !loaded) void loadFocusShares() }, [live, loaded])
+  useEffect(() => {
+    if (!live) return
+    const first = setTimeout(() => void loadFocusShares(), 0)
+    const timer = setInterval(() => void loadFocusShares(), SHARES_REFRESH_MS)
+    return () => { clearTimeout(first); clearInterval(timer) }
+  }, [live])
 }

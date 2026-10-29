@@ -2,7 +2,8 @@
  * Keeps every shared focus page current from this worker, whether or not My Work is open (R17.3). Each round reads
  * the work view once, maps it the way the viewer does (src/ui/my-work/src/live/to-work-model.ts), turns each shared
  * area into its page (to-shared-focus.ts) and publishes it. FocusShares skips pages that have not changed, so a
- * quiet area sends nothing.
+ * quiet area sends nothing. An area that is merged away, dismissed or handed back to suggestions has no page and no
+ * place in My Work to stop it from, so its link is stopped.
  */
 import { toSharedFocusPage, type SharedFocusPage } from '../../ui/my-work/src/live/to-shared-focus.ts';
 import { toWorkModel } from '../../ui/my-work/src/live/to-work-model.ts';
@@ -22,7 +23,7 @@ export function sharedFocusPageFrom(snapshot: WorkViewSnapshot, focusAreaId: str
 }
 
 export interface FocusSharePublisherOptions {
-  shares: Pick<FocusShares, 'connected' | 'list' | 'publish'>;
+  shares: Pick<FocusShares, 'connected' | 'list' | 'publish' | 'stop'>;
   /** The work view as My Work would read it. */
   snapshot: () => WorkViewSnapshot;
   everyMs?: number;
@@ -95,11 +96,21 @@ export class FocusSharePublisher {
       for (const id of ids) this.errors.set(id, LOCAL_WORK_UNAVAILABLE);
       return;
     }
+    const areas = Array.isArray(snapshot.focusAreas) ? snapshot.focusAreas as Array<{ focusAreaId?: unknown }> : [];
     for (const id of ids) {
       const page = toSharedFocusPage(model, id, now);
-      if (!page) { this.errors.set(id, `${NOT_SHAREABLE} The page shows what it had before.`); continue; }
+      if (!page) {
+        // Still listed but no longer an area the owner keeps: stop its link. Not listed at all may be a partial read.
+        if (areas.some(area => area.focusAreaId === id)) {
+          try { await shares.stop(id); this.errors.delete(id); } catch (error) { this.remember(id, error); }
+        } else {
+          this.errors.set(id, `${NOT_SHAREABLE} The page shows what it had before.`);
+        }
+        continue;
+      }
       try {
-        await shares.publish(id, page);
+        // Update only: a share stopped while this round ran stays stopped.
+        await shares.publish(id, page, { create: false });
         this.errors.delete(id);
       } catch (error) {
         this.remember(id, error);

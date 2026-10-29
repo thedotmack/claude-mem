@@ -20,13 +20,16 @@ const [first, second, third] = fixture.humanRequests.map((request: { id: string 
 
 /** A FocusShares stand-in: records each page it is handed and answers like the real one. */
 function shares(shared: string[], publish?: (id: string, page: any) => Promise<{ entry: FocusShareEntry; sent: boolean }>) {
-  const sent: Array<{ id: string; page: any }> = [];
+  const sent: Array<{ id: string; page: any; create?: boolean }> = [];
+  const stopped: string[] = [];
   const entry = (id: string): FocusShareEntry => ({ token: 'a'.repeat(32), url: `https://cmem.ai/focus/${id}`, sharedAt: 'x', publishedAt: null, pageHash: null });
   return {
     sent,
+    stopped,
     connected: () => true,
-    list: () => Object.fromEntries(shared.map(id => [id, entry(id)])),
-    publish: async (id: string, page: unknown) => { sent.push({ id, page }); return publish ? publish(id, page) : { entry: entry(id), sent: true }; },
+    list: () => Object.fromEntries(shared.filter(id => !stopped.includes(id)).map(id => [id, entry(id)])),
+    publish: async (id: string, page: unknown, options?: { create?: boolean }) => { sent.push({ id, page, create: options?.create }); return publish ? publish(id, page) : { entry: entry(id), sent: true }; },
+    stop: async (id: string) => { stopped.push(id); },
   };
 }
 
@@ -38,6 +41,7 @@ describe('FocusSharePublisher', () => {
     await publisher.publishAll();
     expect(fake.sent).toHaveLength(1);
     expect(fake.sent[0].id).toBe('launch');
+    expect(fake.sent[0].create).toBe(false);
     expect(fake.sent[0].page.requests.map((request: { id: string }) => request.id)).toEqual([first]);
 
     // A request placed in the area later is on the next round, with no viewer open; one moved out is gone.
@@ -46,13 +50,24 @@ describe('FocusSharePublisher', () => {
     expect(fake.sent[1].page.requests.map((request: { id: string }) => request.id).sort()).toEqual([second, third].sort());
   });
 
-  it('keeps the last page and says why when an area can no longer be shared', async () => {
-    const fake = shares(['idea']);
+  it('stops the link of an area merged away, dismissed or handed back to suggestions', async () => {
+    const fake = shares(['idea', 'docs']);
+    const merged = snapshot({});
+    (merged.focusAreas as any[])[1] = { ...area('docs'), mergedInto: 'launch' };
+    const publisher = new FocusSharePublisher({ shares: fake, snapshot: () => merged, now: () => NOW, everyMs: 0 });
+    await publisher.publishAll();
+    expect(fake.sent).toHaveLength(0);
+    expect(fake.stopped.sort()).toEqual(['docs', 'idea']);
+    await expect(publisher.publishArea('idea')).rejects.toThrow(NOT_SHAREABLE);
+  });
+
+  it('keeps the last page and says why when a shared area is missing from the read', async () => {
+    const fake = shares(['gone']);
     const publisher = new FocusSharePublisher({ shares: fake, snapshot: () => snapshot({}), now: () => NOW, everyMs: 0 });
     await publisher.publishAll();
     expect(fake.sent).toHaveLength(0);
-    expect(publisher.errorFor('idea')).toContain(NOT_SHAREABLE);
-    await expect(publisher.publishArea('idea')).rejects.toThrow(NOT_SHAREABLE);
+    expect(fake.stopped).toEqual([]);
+    expect(publisher.errorFor('gone')).toContain(NOT_SHAREABLE);
   });
 
   it('remembers a failed update until one goes through, and forgets a link stopped elsewhere', async () => {

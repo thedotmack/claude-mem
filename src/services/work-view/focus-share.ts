@@ -50,6 +50,8 @@ const FOCUS_AREA_ID = /^.{1,200}$/s;
 export class FocusShares {
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
+  /** Publishes and stops for one area run one at a time, so a late answer never brings back a stopped link. */
+  private readonly queues = new Map<string, Promise<unknown>>();
 
   constructor(private readonly options: FocusShareOptions) {
     this.fetchImpl = options.fetch ?? fetch;
@@ -69,13 +71,19 @@ export class FocusShares {
 
   /**
    * Shares the area, or publishes its page to the link it already has. Starting a share always reaches cmem.ai;
-   * a publish of the same page as last time does not.
+   * a publish of the same page as last time does not. With `create: false` (the timed updates) an area that is not
+   * shared, or was stopped meanwhile, is refused with 410 instead of getting a new link.
    */
-  async publish(focusAreaId: string, page: unknown): Promise<{ entry: FocusShareEntry; sent: boolean }> {
-    if (!FOCUS_AREA_ID.test(focusAreaId)) throw new FocusShareError('That focus area id is not valid.', 400);
+  publish(focusAreaId: string, page: unknown, { create = true }: { create?: boolean } = {}): Promise<{ entry: FocusShareEntry; sent: boolean }> {
+    if (!FOCUS_AREA_ID.test(focusAreaId)) return Promise.reject(new FocusShareError('That focus area id is not valid.', 400));
+    return this.serial(focusAreaId, () => this.publishNow(focusAreaId, page, create));
+  }
+
+  private async publishNow(focusAreaId: string, page: unknown, create: boolean): Promise<{ entry: FocusShareEntry; sent: boolean }> {
     const pageHash = hashOf(page);
     const existing = this.read()[focusAreaId];
     if (existing && existing.pageHash === pageHash) return { entry: existing, sent: false };
+    if (!existing && !create) throw new FocusShareError('This area is no longer shared.', 410);
 
     if (existing) {
       const answer = await this.call('PUT', `/api/focus-share/${existing.token}`, { snapshot: page });
@@ -86,6 +94,8 @@ export class FocusShares {
       }
       const body = this.expect(answer, 'publish the page');
       const entry = { ...existing, publishedAt: stringOr(body.publishedAt, existing.publishedAt), pageHash };
+      // Another process may have stopped or replaced this share while the page was on its way.
+      if (this.read()[focusAreaId]?.token !== existing.token) throw new FocusShareError('This area is no longer shared.', 410);
       this.write({ ...this.read(), [focusAreaId]: entry });
       return { entry, sent: true };
     }
@@ -103,7 +113,11 @@ export class FocusShares {
   }
 
   /** Stops sharing the area. The link stops working for everyone; sharing again makes a new one. */
-  async stop(focusAreaId: string): Promise<void> {
+  stop(focusAreaId: string): Promise<void> {
+    return this.serial(focusAreaId, () => this.stopNow(focusAreaId));
+  }
+
+  private async stopNow(focusAreaId: string): Promise<void> {
     const existing = this.read()[focusAreaId];
     if (!existing) return;
     const answer = await this.call('DELETE', `/api/focus-share/${existing.token}`);
@@ -133,6 +147,16 @@ export class FocusShares {
       throw new FocusShareError('This area is no longer shared.', 410);
     }
     return this.expect(answer, 'post the comment').comment as FocusShareComment;
+  }
+
+  /** Runs `work` after every earlier publish or stop of the same area has settled. */
+  private serial<T>(focusAreaId: string, work: () => Promise<T>): Promise<T> {
+    const before = this.queues.get(focusAreaId) ?? Promise.resolve();
+    const run = before.then(work, work);
+    const settled = run.catch(() => undefined);
+    this.queues.set(focusAreaId, settled);
+    void settled.then(() => { if (this.queues.get(focusAreaId) === settled) this.queues.delete(focusAreaId); });
+    return run;
   }
 
   private requireShared(focusAreaId: string): FocusShareEntry {

@@ -109,6 +109,16 @@ export function requireWorkViewOrigin(req: Request, res: Response, next: NextFun
   next();
 }
 
+// Reads that return share links or comments: the viewer's own page only. Worker CORS lets other local pages read
+// responses, and a cross-origin fetch carries its Origin.
+function requireWorkViewReadOrigin(req: Request, res: Response, next: NextFunction): void {
+  if (req.get('sec-fetch-site') === 'cross-site' || isForeignLoopbackBrowserWrite(req)) {
+    res.status(403).json({ error: 'Sharing is available only from the local work viewer.' });
+    return;
+  }
+  next();
+}
+
 const ruleBody = z.object({
   action: z.enum(['approve', 'edit', 'turn-off', 'turn-on', 'dismiss', 'add', 'replace', 'restore-suggestion']),
   ruleId: z.string().min(1).max(80).optional(),
@@ -597,10 +607,10 @@ export class WorkViewRoutes extends BaseRouteHandler {
     app.post('/api/work-view/rules/load-in-claude-code', workViewLoopbackOnly, requireWorkViewOrigin, this.wrapHandler(this.loadRulesInClaudeCode));
     app.post('/api/work-view/usage', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(usageBody), this.wrapHandler(this.recordUsage));
     // Shared focus pages: this worker signs the cmem.ai calls, so the sync credential never reaches the page.
-    app.get('/api/work-view/focus/shares', workViewLoopbackOnly, this.wrapHandler(this.listFocusShares));
+    app.get('/api/work-view/focus/shares', workViewLoopbackOnly, requireWorkViewReadOrigin, this.wrapHandler(this.listFocusShares));
     app.post('/api/work-view/focus/share', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(focusShareAreaBody), this.wrapHandler(this.publishFocusShare));
     app.post('/api/work-view/focus/share/stop', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(focusShareAreaBody), this.wrapHandler(this.stopFocusShare));
-    app.get('/api/work-view/focus/share/comments', workViewLoopbackOnly, this.wrapHandler(this.focusShareComments));
+    app.get('/api/work-view/focus/share/comments', workViewLoopbackOnly, requireWorkViewReadOrigin, this.wrapHandler(this.focusShareComments));
     app.post('/api/work-view/focus/share/comments', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(focusShareCommentBody), this.wrapHandler(this.commentOnFocusShare));
     app.get('/api/setup/scan', workViewLoopbackOnly, this.wrapHandler((_req, res) => {
       if (!this.setupScan) { res.status(503).json({ error: 'The prompt scan is unavailable on this worker.' }); return; }
