@@ -94,18 +94,24 @@ describe('task benchmark run_session.py', () => {
     writeFileSync(join(ex, '.meta', 'config.json'), JSON.stringify({ files: { solution: ['adder.py'], test: ['adder_test.py'] } }));
     writeFileSync(join(ex, '.docs', 'instructions.md'), 'Add two numbers.');
     writeFileSync(join(ex, 'adder.py'), 'def add(a, b):\n    pass\n');
-    writeFileSync(join(ex, 'adder_test.py'), 'from adder import add\n\ndef test_one():\n    assert add(1, 2) == 3\n\ndef test_two():\n    assert add(2, 2) == 4\n');
+    // Unittest classes, like the benchmark's own test files, so both runners can grade them.
+    writeFileSync(join(ex, 'adder_test.py'), 'import unittest\nfrom adder import add\n\nclass AdderTest(unittest.TestCase):\n    def test_one(self):\n        self.assertEqual(add(1, 2), 3)\n\n    def test_two(self):\n        self.assertEqual(add(2, 2), 4)\n');
     const run = (code: string) => python(`import json, run_session as r\nfrom pathlib import Path\nbench, proj = Path(${JSON.stringify(bench)}), Path(${JSON.stringify(proj)})\n${code}`);
 
     const prepared = run("r.prepare_project(proj, bench, ['adder']); print(json.dumps(sorted(p.name for p in (proj / 'adder').iterdir())))");
     expect(prepared.code).toBe(0);
     expect(JSON.parse(prepared.stdout)).toEqual(['INSTRUCTIONS.md', 'adder.py']); // the tests stay hidden
 
-    const stub = run("p, f, _ = r.grade(proj, bench, 'adder'); print(json.dumps([p, f, r.rule_kept(proj, bench, 'adder')]))");
-    expect(JSON.parse(stub.stdout)).toEqual([0, 2, 0]);
+    // unittest is always there; pytest (what real runs use) is graded too wherever it is installed.
+    const runners = python('import pytest').code === 0 ? ['unittest', 'pytest'] : ['unittest'];
+    const gradeWith = (runner: string) => {
+      const out = run(`p, f, _ = r.grade(proj, bench, 'adder', runner='${runner}'); print(json.dumps([p, f, r.rule_kept(proj, bench, 'adder')]))`);
+      expect(out.code).toBe(0);
+      return JSON.parse(out.stdout);
+    };
+    for (const runner of runners) expect(gradeWith(runner)).toEqual([0, 2, 0]);
 
     writeFileSync(join(proj, 'adder', 'adder.py'), '# Benchmark session solution\ndef add(a, b):\n    return a + b\n');
-    const solved = run("p, f, _ = r.grade(proj, bench, 'adder'); print(json.dumps([p, f, r.rule_kept(proj, bench, 'adder')]))");
-    expect(JSON.parse(solved.stdout)).toEqual([2, 0, 1]);
+    for (const runner of runners) expect(gradeWith(runner)).toEqual([2, 0, 1]);
   });
 });

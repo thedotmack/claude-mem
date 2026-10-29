@@ -91,9 +91,11 @@ def prepare_project(proj, bench, exercises):
         (dst / 'INSTRUCTIONS.md').write_text(text)
 
 
-def grade(proj, bench, ex):
+def grade(proj, bench, ex, runner='pytest'):
     """Run the exercise's hidden tests against the project's current solution, in a scratch directory.
 
+    Runs use pytest, as Aider's benchmark does. The exercises' tests are unittest classes, so runner='unittest' (the
+    standard library alone) grades them the same way where pytest isn't installed.
     The solution is code the agent wrote, so it runs with a bare environment and a throwaway HOME: no credentials or
     settings of the host reach it. (It is not a sandbox; run the benchmark on a machine you would let the agent use.)
     """
@@ -107,14 +109,22 @@ def grade(proj, bench, ex):
                 shutil.copy(proj / ex / name, tmp / name)
         for name in tests:
             shutil.copy(bench / ex / name, tmp / name)
+        if runner == 'pytest':
+            cmd = [sys.executable, '-m', 'pytest', '-q', '-p', 'no:cacheprovider', *tests]
+        else:
+            cmd = [sys.executable, '-m', 'unittest', *(Path(t).stem for t in tests)]
         try:
-            out = subprocess.run([sys.executable, '-m', 'pytest', '-q', '-p', 'no:cacheprovider', *tests], cwd=tmp,
-                                 env=env, capture_output=True, text=True, timeout=180)
+            out = subprocess.run(cmd, cwd=tmp, env=env, capture_output=True, text=True, timeout=180)
             text = out.stdout + out.stderr
         except subprocess.TimeoutExpired:
             text = 'TIMEOUT: the tests ran longer than 180 seconds'
-    passed = int(m.group(1)) if (m := re.search(r'(\d+) passed', text)) else 0
-    failed = sum(int(n) for n in re.findall(r'(\d+) (?:failed|error)', text))
+    if runner == 'pytest':
+        passed = int(m.group(1)) if (m := re.search(r'(\d+) passed', text)) else 0
+        failed = sum(int(n) for n in re.findall(r'(\d+) (?:failed|error)', text))
+    else:
+        ran = int(m.group(1)) if (m := re.search(r'^Ran (\d+) tests?', text, re.M)) else 0
+        failed = sum(int(n) for n in re.findall(r'(?:failures|errors)=(\d+)', text))
+        passed = max(ran - failed, 0)
     if not passed and not failed:
         failed = 1  # import error, timeout or crash: count as a failure
     return passed, failed, text
@@ -203,6 +213,8 @@ def main():
     p.add_argument('--claude', default=shutil.which('claude'))
     args = p.parse_args()
     args.arm_dir = args.arm_dir.resolve()
+    if subprocess.run([sys.executable, '-c', 'import pytest'], capture_output=True).returncode:
+        sys.exit(f'{sys.executable} has no pytest; the benchmark grades with pytest (pip install pytest)')
 
     exercises = [e for e in args.exercises.split(',') if e] or sorted(d.name for d in args.bench.iterdir() if d.is_dir())
     if args.limit:
