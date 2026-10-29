@@ -142,6 +142,13 @@ export const REQUIREMENTS: Requirement[] = [
   { id: 'R16.5', section: '16', kind: 'ui', text: 'Each request shows its area chip: the area\'s name, Other, or "Sorting…" until a refresh places it.' },
   { id: 'R16.6', section: '16', kind: 'ui', text: 'Move to… on a request puts it in another area or Other; my move wins over any later automatic placement.' },
   { id: 'R16.7', section: '16', kind: 'ui', text: 'Past focus, linked from the bottom of the rail, holds areas marked done and what I asked for most, month by month.' },
+
+  // 17. Shared focus page (added 2026-10-29, append only): share a focus area as a page people and agents comment on.
+  { id: 'R17.1', section: '17', kind: 'ui', text: 'Share a focus area as a page by link (cmem.ai/focus/…), from the area menu; the area shows that it is shared.' },
+  { id: 'R17.2', section: '17', kind: 'ui', text: 'People and agents can comment on the shared page; the owner reads and answers the comments from My Work.' },
+  { id: 'R17.3', section: '17', kind: 'ui', text: 'When shared, it keeps updating and adding what belongs to the area, but nothing new and unrelated that the people it is shared with would not want to see (situational awareness): only requests placed in that area, never other areas or Other.' },
+  { id: 'R17.4', section: '17', kind: 'ui', text: 'Stop sharing at any time; the link stops working for everyone, and sharing again makes a new link.' },
+  { id: 'R17.5', section: '17', kind: 'backend', text: 'The shared page carries display text only: no prompts, quotes, transcripts, evidence links, files or machine names.', wireframe: 'to-shared-focus.ts builds the page; cmem.ai keeps only the shared shape (claude-mem-pro src/lib/focus-share/snapshot.ts).' },
 ]
 
 export const REQUIREMENTS_BY_ID = new Map(REQUIREMENTS.map((requirement) => [requirement.id, requirement]))

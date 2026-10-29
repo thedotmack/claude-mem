@@ -1227,6 +1227,9 @@ var init_SettingsDefaultsManager = __esm({
         if (key === "CLAUDE_MEM_WORKER_HOST") {
           return this.normalizeWorkerHost(value);
         }
+        if (key === "CLAUDE_MEM_DATA_DIR") {
+          return expandHome(value);
+        }
         return value;
       }
       // 'localhost' resolves IPv6-first on modern Windows resolvers while
