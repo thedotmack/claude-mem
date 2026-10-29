@@ -54,10 +54,11 @@ Behavioral notes (matching the OpenClaw adapter's conventions):
   `custom` messages to developer content; framing the retrieved history as
   reference data is not a prompt-injection sandbox.
 - Context requests always retain the current `cwd`. They filter to source `omp`
-  by default; when `CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES` is `"true"`,
-  they omit that source filter so the worker can apply the central cross-host
-  policy. The environment takes precedence over `settings.json`. This does not
-  broaden the worker's project scope or change capture's `platformSource`.
+  by default; when `CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES` is `"true"`
+  (or boolean `true` in settings), they omit that source filter so the worker
+  can apply the central cross-host policy. A defined environment value, even
+  empty, takes precedence over `settings.json`. This does not broaden the
+  worker's project scope or change capture's `platformSource`.
 
 ## Install
 

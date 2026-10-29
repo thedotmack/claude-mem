@@ -361,7 +361,10 @@ export default function claudeMemBridge(pi: ExtensionAPI): void {
     if (!ctxCache || ctxCache.cwd !== cwd || now - ctxCache.at > CTX_CACHE_MS) {
       try {
         const params = new URLSearchParams({ cwd });
-        if (setting(readClaudeMemSettings(), "CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES", "false") !== "true") {
+        const includeAllSources = process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES
+          ?? readClaudeMemSettings().CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES
+          ?? "false";
+        if (String(includeAllSources) !== "true") {
           params.set("platformSource", "omp");
         }
         const r = await request(`/api/context/inject?${params}`);
