@@ -508,6 +508,24 @@ await run('session-init', { session_id: 'd9', cwd: '/home/user', prompt: wake('c
 const initP = String(ingested().find(e => e.event === 'session-init')?.payload?.prompt || '');
 check('escaped private region dropped from the captured prompt', !initP.includes('SECRET-FOUR') && initP.includes('ship'), initP.slice(0, 200));
 
+// other tags named project-… (project-instructions) can come before the wake's own
+received = [];
+await run('prompt-context', { session_id: 'd13', cwd: '/home/user', prompt: '<project-instructions>be brief</project-instructions>\n' + wake('chan_6Ins', 'Ins', 'cmsg_I', 'hi') }, DUET);
+await run('observation', { session_id: 'd13', cwd: '/home/user', tool_name: 'Bash', tool_use_id: 'tu_d13', tool_input: {}, tool_response: '' }, DUET);
+check('project-instructions before the wake still pins the channel', ingested().find(e => e.payload?.tool_use_id === 'tu_d13')?.project === 'cmem_duet_ins_chan_6Ins', ingested().find(e => e.payload?.tool_use_id === 'tu_d13')?.project);
+
+// registration waits for the channel, and a session that never learns one registers at its end
+received = [];
+await run('context', { session_id: 'd14', cwd: '/home/user', source: 'startup' }, DUET);
+await run('prompt-context', { session_id: 'd14', cwd: '/home/user', prompt: 'plain prompt, no envelope' }, DUET);
+check('no channel yet: session-start still waits', !ingested().some(e => e.event === 'session-start'), JSON.stringify(ingested().map(e => e.event)));
+await run('prompt-context', { session_id: 'd14', cwd: '/home/user', prompt: wake('chan_8Lat', 'Late', 'cmsg_L', 'hi') }, DUET);
+check('session-start filed once the channel is known', ingested().filter(e => e.event === 'session-start').map(e => e.project).join() === 'cmem_duet_late_chan_8Lat', JSON.stringify(ingested().map(e => [e.event, e.project])));
+received = [];
+await run('context', { session_id: 'd15', cwd: '/home/user', source: 'startup' }, DUET);
+await run('session-end', { session_id: 'd15', cwd: '/home/user', reason: 'exit' }, DUET);
+check('a session that never learns a channel registers at its end', ingested().map(e => e.event).join() === 'session-start,session-end', JSON.stringify(ingested().map(e => e.event)));
+
 // a cloud that never answers can't hold the prompt past the hook's timeout
 mode = 'slow';
 received = [];

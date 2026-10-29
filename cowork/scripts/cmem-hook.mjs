@@ -111,10 +111,11 @@ function tagAttrs(attrs) {
 function duetFromText(text) {
   if (typeof text !== 'string' || !text) return null;
   let channelId = '', channelName = '';
-  const tag = text.match(/<project\b([^>]*)>/);
-  if (tag) {
-    const a = tagAttrs(tag[1]);
-    if (/^chan_[A-Za-z0-9]+$/.test(a.id || '')) { channelId = a.id; channelName = decodeEntities(a.name || ''); }
+  // Every <project …> tag, not just the first: other tags such as
+  // <project-instructions> can come before the wake's own.
+  for (const tag of text.matchAll(/<project(\s[^>]*)?>/g)) {
+    const a = tagAttrs(tag[1] || '');
+    if (/^chan_[A-Za-z0-9]+$/.test(a.id || '')) { channelId = a.id; channelName = decodeEntities(a.name || ''); break; }
   }
   if (!channelId) {
     const ctx = text.match(/Project: "([^"\n]{0,200})" \(id: `?(chan_[A-Za-z0-9]+)`?\)/);
@@ -661,7 +662,9 @@ async function onPromptContext(input) {
   const state = loadSession(SESSION.id);
   const project = currentProject(input.cwd);
   let registered = Promise.resolve();
-  if (state.deferredStart) {
+  // Register once the channel is known, so the session isn't filed on the
+  // folder project; a session that never learns one registers at its end.
+  if (state.deferredStart && (state.channelId || !isDuetHost())) {
     registered = ingest('session-start', { session_id: input.session_id, cwd: input.cwd, source: state.deferredStart }).catch(() => {});
     updateSession(SESSION.id, { deferredStart: null });
   }
@@ -729,6 +732,10 @@ async function onSummarize(input) {
 async function onSessionEnd(input) {
   // cwd matters: the envelope's project is resolved from it. Without it a
   // spool replay or out-of-tree hook run would misfile the session summary.
+  if (SESSION.state.deferredStart) {
+    await ingest('session-start', { session_id: input.session_id, cwd: input.cwd, source: SESSION.state.deferredStart }).catch(() => {});
+    updateSession(SESSION.id, { deferredStart: null });
+  }
   await ingest('session-end', { session_id: input.session_id, cwd: input.cwd, reason: input.reason });
 }
 
