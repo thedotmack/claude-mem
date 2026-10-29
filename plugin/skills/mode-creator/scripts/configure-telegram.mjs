@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
@@ -133,10 +134,18 @@ function chatsFromUpdates(updates) {
 
 function atomicWriteJson(filePath, value) {
   mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
-  const tempPath = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.tmp`);
-  writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  // Random name + exclusive create: a predictable pid-suffixed temp can be
+  // pre-planted as a symlink, and this write carries the full settings file —
+  // including the bot token.
+  const tempPath = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${randomUUID()}.tmp`);
+  writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
   chmodSync(tempPath, 0o600);
-  renameSync(tempPath, filePath);
+  try {
+    renameSync(tempPath, filePath);
+  } catch (error) {
+    try { unlinkSync(tempPath); } catch { /* best effort */ }
+    throw error;
+  }
 }
 
 const args = parseArgs(process.argv.slice(2));
