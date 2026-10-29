@@ -40,11 +40,13 @@ for (const url of SNAPSHOT_FILES) {
     }
   })
 
-  test(`${name}: titles come from human copy, never from raw prompts`, () => {
+  test(`${name}: titles come from generated records or human copy, never raw prompts`, () => {
     for (const request of model.requests) {
-      const copy = rawById.get(request.id)!.humanCopy
+      const raw = rawById.get(request.id)!
+      const copy = raw.humanCopy
       const ready = !!copy && ['current', 'outdated'].includes(copy.state)
-      assert.equal(request.title, ready && copy.title?.trim() ? copy.title.trim() : null)
+      const generated = raw.titleSource === 'request-group' || raw.titleSource === 'title-cache'
+      assert.equal(request.title, generated ? raw.title.trim() || null : ready && copy.title?.trim() ? copy.title.trim() : null)
     }
   })
 
@@ -277,3 +279,98 @@ test('a bucket copy keeps its deliverable mark for the front of the card; other 
   // The card's front links deliverables and PRs; commits and branches stay in the drawer.
   assert.deepEqual(request.workProduct.filter(isCardDeliverable).map((product) => product.label), ['Launch report', 'notes.txt', 'Add work product'])
 })
+
+const reviewedGroup = (): WorkViewHumanRequest => ({
+  ...syntheticRequest(), groupId: 'g_000000000001', titleSource: 'request-group', humanCopy: { state: 'unavailable' },
+  progress: { state: 'in-progress', percent: 60, summary: 'Cards are built; review remains.', narrative: 'Cards built.',
+    milestones: [], checkedAt: '2026-10-21T12:00:00Z', readings: [{ at: '2026-10-21T12:00:00Z', percent: 60 }] },
+})
+
+for (const state of ['in-progress', 'stalled', 'shipped'] as const) {
+  test(`a reviewed ${state} group shows its recorded title and summary without a human-copy provider`, () => {
+    const raw = reviewedGroup()
+    raw.progress = { ...raw.progress!, state, percent: state === 'shipped' ? 100 : 60,
+      shippedAt: state === 'shipped' ? '2026-10-21T12:00:00Z' : null,
+      readings: [{ at: '2026-10-21T12:00:00Z', percent: state === 'shipped' ? 100 : 60 }] }
+    const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))
+    assert.deepEqual(model.requestReadErrors, [])
+    const request = model.requests[0]
+    assert.equal(request.title, 'Cards')
+    assert.equal(request.summary, raw.progress.summary)
+    assert.equal(request.next.text, 'Next step not recorded')
+    assert.equal(request.progress.percent, raw.progress.percent)
+    assert.equal(request.state, state === 'shipped' ? 'shipped' : 'idle')
+  })
+}
+
+test('a group uses its recorded review even when human copy exists for the original ask', () => {
+  const raw = { ...reviewedGroup(), humanCopy: { state: 'current', title: 'Old wording', summary: 'Work has not started.', next: '', workstreams: [] } }
+  const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))
+  assert.equal(model.requests[0].title, raw.title)
+  assert.equal(model.requests[0].summary, raw.progress!.summary)
+})
+
+for (const state of ['current', 'outdated']) {
+  test(`a group awaiting its first progress review preserves its ${state} human-copy summary`, () => {
+    const raw: WorkViewHumanRequest = { ...reviewedGroup(), progress: null,
+      humanCopy: { state, title: 'Cards', summary: 'The initial design is ready.', next: '', workstreams: [] } }
+    const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))
+    assert.deepEqual(model.requestReadErrors, [])
+    assert.equal(model.requests[0].summary, 'The initial design is ready.')
+    assert.equal(model.requests[0].progress.percent, null)
+  })
+}
+
+test('a cached generated title is displayed without promoting a raw prompt title', () => {
+  const requests: WorkViewHumanRequest[] = ['title-cache', 'original-human-request', 'explicit-work-state-request'].map((titleSource, i) => ({
+    ...syntheticRequest(), id: `request-${i}`, titleSource: titleSource as WorkViewHumanRequest['titleSource'], humanCopy: null,
+  }))
+  const model = toWorkModel(snapshotWith(requests), Date.parse('2026-10-22T12:00:00Z'))
+  assert.deepEqual(model.requests.map(request => request.title), ['Cards', null, null])
+})
+
+test('reopening a shipped group does not display its older completion summary', () => {
+  const raw = reviewedGroup()
+  raw.humanCopy = { state: 'current', title: 'Cards', summary: 'All shipped.', next: '', workstreams: [] }
+  raw.progress = { ...raw.progress!, state: 'shipped', percent: 100, summary: 'All shipped.', shippedAt: '2026-10-21T12:00:00Z', readings: [{ at: '2026-10-21T12:00:00Z', percent: 100 }] }
+  raw.lifecycle = { status: 'in-progress', explicit: true, atEpoch: Date.parse('2026-10-22T11:00:00Z') }
+  raw.updatedAtEpoch = raw.lifecycle.atEpoch!
+  const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))
+  assert.deepEqual(model.requestReadErrors, [])
+  assert.equal(model.requests[0].title, raw.title)
+  assert.equal(model.requests[0].summary, null)
+  assert.equal(model.requests[0].state, 'working')
+  assert.equal(model.requests[0].progress.percent, null)
+})
+
+test('recorded observations without work-state items do not claim no agent work exists', () => {
+  const raw: WorkViewHumanRequest = { ...syntheticRequest(), activity: [{ id: 'observation-42', kind: 'observation', title: 'Cards built', detail: 'Ready for review', atEpoch: Date.parse('2026-10-21T12:00:00Z'), url: '/api/work-view/evidence/observation/42' }] }
+  const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))
+  assert.equal(model.requests[0].next.text, 'Next step not recorded')
+})
+
+for (const status of ['shipped', 'blocked']) {
+  test(`a newer ${status} lifecycle hides an older partial review summary while retaining its readings`, () => {
+    const raw = reviewedGroup()
+    raw.humanCopy = { state: 'current', title: 'Cards', summary: 'Cards are built; review remains.', next: '', workstreams: [] }
+    raw.lifecycle = { status, explicit: true, atEpoch: Date.parse('2026-10-22T11:00:00Z') }
+    if (status === 'shipped') raw.completedAtEpoch = raw.lifecycle.atEpoch!
+    const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))
+    assert.deepEqual(model.requestReadErrors, [])
+    const request = model.requests[0]
+    assert.equal(request.state, status === 'shipped' ? 'shipped' : 'your-move')
+    assert.equal(request.summary, null)
+    assert.equal(request.progress.percent, status === 'shipped' ? 100 : 60)
+    assert.equal(request.progress.readings, 1)
+  })
+}
+
+for (const state of ['unavailable', 'current']) {
+  test(`a group with a cached title still displays its review summary when human copy is ${state}`, () => {
+    const raw: WorkViewHumanRequest = { ...reviewedGroup(), titleSource: 'title-cache', title: 'Cached group title',
+      humanCopy: { state, title: 'Old title', summary: 'Work has not started.', next: '', workstreams: [] } }
+    const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))
+    assert.equal(model.requests[0].title, 'Cached group title')
+    assert.equal(model.requests[0].summary, raw.progress!.summary)
+  })
+}

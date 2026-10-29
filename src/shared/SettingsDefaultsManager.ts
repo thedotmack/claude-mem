@@ -218,6 +218,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: string;
   CLAUDE_MEM_OPENAI_COMPAT_MODEL: string;
   CLAUDE_MEM_OPENAI_COMPAT_REASONING: string;
+  CLAUDE_MEM_OPENAI_COMPAT_OBSERVATION_BATCH_SIZE: string;
   // Quota fallback. Both empty (the default) = off: dispatch is unchanged.
   CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: string;
   CLAUDE_MEM_QUOTA_FALLBACK_MODEL: string;
@@ -352,6 +353,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_PRO_MEMORY_BASE_URL: string;
   CLAUDE_MEM_PRO_MEMORY_MODEL: string;
   CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH: string;
+  CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: string;
+  CLAUDE_MEM_WORK_VIEW_COPY_MODEL: string;
   // Automatic local DB snapshots (BackupManager). Opt-in via ENABLED.
   CLAUDE_MEM_BACKUP_ENABLED: string;
   CLAUDE_MEM_BACKUP_INTERVAL_HOURS: string;
@@ -496,6 +499,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: '',  // OpenAI-compatible base URL, e.g. https://integrate.api.nvidia.com/v1. Overrides the preset's base URL when set.
     CLAUDE_MEM_OPENAI_COMPAT_MODEL: '',  // Model id passed verbatim. Empty = the preset's default model.
     CLAUDE_MEM_OPENAI_COMPAT_REASONING: '',  // off | on. Empty = off: every openai-compatible request sends reasoning:{enabled:false}. "on" leaves reasoning to the endpoint.
+    CLAUDE_MEM_OPENAI_COMPAT_OBSERVATION_BATCH_SIZE: '1', // Queued same-context events per observer prompt (1-32); opt-in.
     CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: 'claude',  // 'claude' (the Anthropic plan; '' means this too) | 'gemini' | 'openrouter' | 'openai-compatible' | 'off': where observer work goes while the selected provider cannot serve (spent allowance, rate limit or over capacity past its retries, outage, repeated unusable replies). Claude is used only when a Claude login or key exists
     CLAUDE_MEM_QUOTA_FALLBACK_MODEL: '',     // Claude model for a Claude fallback run; '' = CLAUDE_MEM_MODEL and tier routing. Ignored for other fallbacks (only ClaudeProvider reads modelOverride)
     CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD: '', // '' (off) | 'subscription' | 'api-key': the Claude credential to run on while the primary one is held for quota. 'subscription': the Claude Code login, for a spent ANTHROPIC_API_KEY. 'api-key': ANTHROPIC_FALLBACK_API_KEY from .env, for a login that is spent or paused by the quota guard. Tried before CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER
@@ -550,7 +554,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_REDACT_LOG_MATCHES: 'false',               // Log pattern,count per invocation (no payload)
     CLAUDE_MEM_REDACT_GENERIC_ENABLED: 'false',           // #4745 — opt-in: also redact un-prefixed credentials (password=, *_TOKEN=, *_SECRET=, *_API_KEY=, Authorization: Bearer)
     CLAUDE_MEM_EXCLUDED_PROJECTS: '',  // Comma-separated glob patterns for excluded project paths
-    CLAUDE_MEM_PROJECT_ENVIRONMENTS: '[]',  // JSON array of {"name","patterns"}: directories matching an environment's globs share one project named after it
+    CLAUDE_MEM_PROJECT_ENVIRONMENTS: '[]',  // JSON array of {"name","patterns","inherit"?}: directories matching an environment's globs share one project named after it; an explicit inherit list replaces the derived read keys ([] reads only the environment)
     CLAUDE_MEM_FOLDER_MD_EXCLUDE: '[]',  // JSON array of folder paths to exclude from CLAUDE.md generation
     CLAUDE_MEM_FOLDER_MD_SKELETON_DENYLIST: '[]',  // #2400 — JSON array of glob patterns; when a folder matches AND its generated CLAUDE.md would be empty/skeleton, skip injection (avoids polluting non-content dirs with empty skeletons). Default [] preserves existing behavior.
     CLAUDE_MEM_SEMANTIC_INJECT: 'false',             // Inject relevant past observations on every UserPromptSubmit (experimental, disabled by default)
@@ -636,6 +640,8 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_PRO_MEMORY_BASE_URL: '',  // Backend-supplied endpoint paired with CLAUDE_MEM_PRO_MEMORY_KEY
     CLAUDE_MEM_PRO_MEMORY_MODEL: '',     // Backend-supplied model paired with CLAUDE_MEM_PRO_MEMORY_KEY
     CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH: 'true', // 'false' = My Work never runs owner-goals / request-progress on its own (refresh.json in ~/.claude-mem/work-view)
+    CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: '', // '' uses OpenRouter only when it is the primary provider; openrouter/openai-compatible explicitly select that provider; off disables generated My Work copy
+    CLAUDE_MEM_WORK_VIEW_COPY_MODEL: '', // Optional model override for generated My Work copy; empty uses the selected provider's configured model
     // Automatic local DB snapshots (BackupManager). Off by default; opt-in.
     CLAUDE_MEM_BACKUP_ENABLED: 'false',
     CLAUDE_MEM_BACKUP_INTERVAL_HOURS: '24',   // Snapshot cadence in hours
@@ -719,6 +725,13 @@ export class SettingsDefaultsManager {
     const value = process.env[key] ?? this.DEFAULTS[key];
     if (key === 'CLAUDE_MEM_WORKER_HOST') {
       return this.normalizeWorkerHost(value);
+    }
+    // Callers join the data dir into file paths, and fs reads a leading `~` as
+    // a directory name, so expand it the way paths.ts resolves the data dir
+    // (#3350). Otherwise an env value like `~/.claude-mem-work` sends the worker
+    // settings to `<cwd>/~/.claude-mem-work/settings.json`.
+    if (key === 'CLAUDE_MEM_DATA_DIR') {
+      return expandHome(value);
     }
     return value;
   }

@@ -51,7 +51,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_CAPTURE_ADVISOR_CALLS` | `false`                    | When `true`, the Stop hook records each Claude Code `advisor` tool call (the advice text, the advisor model, and the turn's prompt) in the local database, readable at `GET /api/advisor-calls`. The advisor never fires PostToolUse, so the hook reads the end of the transcript for it. `<private>` content is removed before storage. Worker runtime only; nothing is generated, so it costs no tokens. |
 | `CLAUDE_MEM_DELIVERABLES_ENABLED` | `true`                       | When `true`, the Stop hook copies the turn's deliverables (files a `work_state_write` attached as `work_product`, and decks, documents, pages, images, video or spreadsheets written outside the source tree) into `~/.claude-mem/deliverables/<project>/`, records them, and My Work links them on the request's card. `false` turns the copy off; files already in the bucket stay. Worker runtime only, with the worker on this computer; a turn whose prompt is entirely `<private>` is never copied. |
 | `CLAUDE_MEM_REDACT_ENABLED`   | `false`                         | Opt-in auto-redaction: recognized secret patterns are replaced with `<redacted type='…'/>` markers before storage in tool input and output, prompts, summaries and server-runtime event bodies (not in server-runtime session metadata). See [Auto-Redaction](/usage/auto-redaction) for the built-in pattern list |
-| `CLAUDE_MEM_REDACT_GENERIC_ENABLED` | `false`                   | With redaction on, also redact credentials that have no vendor prefix: `password=`, `*_PWD=`, `*_TOKEN=`, `*_SECRET=`, `*_API_KEY=` values and `Authorization: Bearer …`. Lower confidence than the 11 vendor patterns, so it is a separate opt-in |
+| `CLAUDE_MEM_REDACT_GENERIC_ENABLED` | `false`                   | With redaction on, also redact credentials that have no vendor prefix: `password=`, `*_PWD=`, `*_TOKEN=`, `*_SECRET=`, `*_API_KEY=` values, bare `token=` / `secret=` / `api_key=` values in config-style positions (JSON keys, env assignments, CLI flags, yaml lines), and `Authorization: Bearer …`. Lower confidence than the 11 vendor patterns, so it is a separate opt-in |
 | `CLAUDE_MEM_REDACT_DISABLED_BUILTINS` | _(empty)_               | CSV of built-in pattern names to leave unredacted while the rest stay active, e.g. `jwt,slack_token` |
 | `CLAUDE_MEM_REDACT_CUSTOM_PATTERNS` | `[]`                      | JSON array of extra `{ "name", "regex" }` patterns, evaluated before the built-ins so they can override a token family |
 | `CLAUDE_MEM_REDACT_LOG_MATCHES` | `false`                       | Log a `pattern,count` line per redaction scan (the matched bytes are never logged) |
@@ -147,10 +147,20 @@ For `CLAUDE_MEM_PROVIDER=openai-compatible`: any endpoint that speaks `/chat/com
 | `CLAUDE_MEM_OPENAI_COMPAT_PRESET` | — | Named endpoint preset ([list](usage/openai-compatible-provider)). Empty = `custom`: set the base URL yourself |
 | `CLAUDE_MEM_OPENAI_COMPAT_BASE_URL` | — | OpenAI-compatible base URL. Overrides the preset's |
 | `CLAUDE_MEM_OPENAI_COMPAT_MODEL` | — | Model id, sent as-is. Empty = the preset's default model |
+| `CLAUDE_MEM_OPENAI_COMPAT_OBSERVATION_BATCH_SIZE` | `1` | Queued observations to combine per request (1–32). Default 1 keeps one event per request. Only consecutive events with the same prompt number, agent and working directory are combined, within the model-window character budget. Set in `settings.json` or an environment variable. See [batching trade-offs](usage/openai-compatible-provider#observation-batching). |
 | `CLAUDE_MEM_OPENAI_COMPAT_API_KEY` | — | The key this endpoint issued. Settings file or environment, or `OPENAI_COMPAT_API_KEY` in `~/.claude-mem/.env`; the viewer cannot set it. A local server needs none |
 | `CLAUDE_MEM_OPENAI_COMPAT_API_KEYS` | — | Optional: more keys to rotate through ([Multi-Key Rotation](usage/multi-key-rotation)). Settings file or environment, or `OPENAI_COMPAT_API_KEYS` in `~/.claude-mem/.env` |
 
 See [OpenAI-Compatible Provider](usage/openai-compatible-provider) for presets and setup.
+
+### My Work Summary Settings
+
+My Work can generate readable card wording using the configured OpenRouter or OpenAI-compatible chat-completions endpoint. By default it runs only when the primary observer provider is OpenRouter, as before; it never uses another endpoint or a quota-fallback key on its own. Select a provider explicitly to use that endpoint for summaries, including an OpenAI-compatible primary or a provider configured only as a fallback. Explicit selection can incur the endpoint's usual charges. Generated wording is presentation-only; recorded work and status remain unchanged.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER` | empty | Empty uses OpenRouter when `CLAUDE_MEM_PROVIDER` is `openrouter`; otherwise generated wording is off. For `openai-compatible`, the request follows `CLAUDE_MEM_OPENAI_COMPAT_REASONING`. Set `openrouter` or `openai-compatible` to select that endpoint explicitly, or `off` to disable it. |
+| `CLAUDE_MEM_WORK_VIEW_COPY_MODEL` | empty | Optional model id used only for My Work wording. Empty uses the selected endpoint's configured model. |
 
 ### Quota Fallback Settings
 
@@ -224,7 +234,7 @@ If an Anthropic-compatible gateway rejects the `thinking` parameter with a 400, 
 | `CLAUDE_MEM_CHROMA_UVX_PATH`  | _(empty — search uv's install folders, then PATH)_ | The `uvx` that launches chroma-mcp, as the full path to the binary (on Windows, e.g. `C:\Users\you\AppData\Local\Programs\Python\Python313\Scripts\uvx.exe`) or its folder. Set it when `pip install uv` put `uvx` outside uv's usual folders, or when another tool's `uvx` comes first on PATH. An environment variable of the same name overrides `settings.json`. File/env only — not writable via the viewer HTTP API. Restart the worker after changing it. |
 | `CLAUDE_CODE_PATH`            | _(auto-detect)_                 | Path to Claude Code CLI (for Windows). File/env only — not writable via the viewer HTTP API. |
 | `CLAUDE_MEM_PROJECT_NAME_SOURCE` | `path`                       | How a git repository's project name is derived: `path` (the repository folder's name) or `git-remote` (a stable `org/repo` slug from the `origin` remote, which survives renaming the folder and tells same-named repositories apart; every worktree of the repository shares it). Opt-in. Memory stored under the folder name before you switch stays readable. See [Project Names](#project-names). |
-| `CLAUDE_MEM_PROJECT_ENVIRONMENTS` | `[]`                       | Named environments: a JSON array of `{"name", "patterns"}`. Folders matching an environment's glob patterns (the same rules as `CLAUDE_MEM_EXCLUDED_PROJECTS`) share one project named after it. See [Project Names](#project-names). |
+| `CLAUDE_MEM_PROJECT_ENVIRONMENTS` | `[]`                       | Named environments: a JSON array of `{"name", "patterns", "inherit?"}`. Optional `inherit` selects which additional project keys remain readable; `[]` isolates the environment from derived keys. Folders matching an environment's glob patterns (the same rules as `CLAUDE_MEM_EXCLUDED_PROJECTS`) share one project named after it. See [Project Names](#project-names). |
 | `CLAUDE_MEM_CLAUDE_CONFIG_DIR`| _(unset — falls through to `CLAUDE_CONFIG_DIR`/`~/.claude`)_ | Override which `CLAUDE_CONFIG_DIR` profile's OAuth keychain entry to read, and which `CLAUDE_CONFIG_DIR` the spawned SDK subprocess sees. For running multiple named Claude Code profiles (e.g. `~/.claude-profiles/<name>`, each logged in separately) side by side on one machine. macOS only for the keychain lookup; Windows/Linux credential stores are not profile-aware yet. |
 | `CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR` | _(unset — transcripts follow the credential profile dir)_ | Transcript-only `CLAUDE_CONFIG_DIR` for claude-mem's internal SDK sessions (observer, knowledge corpus). By default they persist under `~/.claude/projects/`, where importers like Codex pick them up as user chats; set this to a dedicated directory (e.g. `~/.claude-mem/observer-claude`) to keep them out. Credentials are unaffected — the worker keeps reading your default login and injects a fresh OAuth token at each spawn, so the directory itself never needs to be logged in. Only honored while `CLAUDE_MEM_CLAUDE_CONFIG_DIR` is unset (an explicit profile keeps its transcripts beside its credentials by design). Two things to know: a token-injected subprocess cannot refresh the token itself — capture pauses with the usual re-login notice if your Claude Code login expires — and sessions recorded before you set this cannot be resumed — a corpus primed before enabling this misses its resume once, and its next query recovers automatically through the existing reprime path into a fresh session here. To carry the old session over instead of starting fresh, move the store first: `mkdir -p <dir>/projects && mv ~/.claude/projects/-<munged-home>-claude-mem-observer-sessions <dir>/projects/`. |
 
@@ -361,6 +371,42 @@ claude-mem files every observation under a project name, and SessionStart inject
 - **With `CLAUDE_MEM_PROJECT_NAME_SOURCE=git-remote`** a repository that has an `origin` remote is named by its `org/repo` slug instead (e.g. `thedotmack/claude-mem`), so renaming or re-cloning the folder keeps its memory, two repositories with the same folder name stay apart, and every worktree of the repository shares the slug (a submodule, being a repository of its own, is named by its own `origin`). Memory stored under the folder-based names stays readable, and a deleted worktree's memory from before the switch is still folded into the repository. Repositories without a usable `origin` (or with a local one) keep the folder-based name.
 - **Outside git** the name is the current folder's name. To give a non-git project one name across all of its subfolders, put an empty `.claude-mem-project` file (or a `.claude-mem.json`) in its root folder: every folder below it then uses the root folder's name. Memory stored under a subfolder's own name before you added the file stays readable from that subfolder. Marker files in your home directory, the system temp directory or Claude's config directory are ignored, so they can never fold unrelated folders together.
 - **Named environments** (`CLAUDE_MEM_PROJECT_ENVIRONMENTS`) group several folders, git or not, into one project and win over every rule above. For example, `[{"name": "acme", "patterns": ["~/work/acme/**"]}]` files everything under `~/work/acme` as `acme`, and SessionStart labels it as an environment. Memory those folders stored under their own names stays readable from them; to fold it into the environment for good, run `npx claude-mem project merge <old-name> acme` (it runs inside claude-mem's worker whenever the worker is running). The merge rewrites nothing (rows are marked as merged, the way a worktree folds into its repository) and brings along memory already folded into the old name, such as a merged worktree's. It reaches your other devices through cloud sync and updates semantic search; if that last step fails, the command says so, and running it again retries it.
+
+### Choosing an environment's memory scope
+
+By default, naming an environment retains the folder and git-remote keys it
+previously read. To keep a business or package inside a larger repository from
+reading the parent's entire history, set `inherit` explicitly:
+
+```json
+{
+  "CLAUDE_MEM_PROJECT_ENVIRONMENTS": [
+    { "name": "business-a", "patterns": ["~/Workspace/business-a/**"], "inherit": [] },
+    { "name": "business-b", "patterns": ["~/Workspace/business-b/**"], "inherit": ["shared"] }
+  ]
+}
+```
+
+- **Omitted `inherit`** keeps existing behavior: derived keys and the environment key are readable.
+- **`inherit: []`** reads only the environment key and memory explicitly merged or adopted into it.
+- **`inherit: ["shared"]`** reads the environment and the listed project keys, including their existing merged history, without automatically adding parent, folder, or remote-derived keys. Entries are project names, not environment names to resolve recursively or path patterns.
+
+Writes still use `name`. This changes the checkout's default read scope for
+SessionStart, semantic injection, file context, and MCP queries for that project;
+it does not move or delete stored history. Ordinary worktrees and submodules with
+no explicit inheritance configuration keep their existing behavior.
+Reading a project's memory does not merge the environment's history back into
+that project. Automatic orphan adoption uses recorded folder-derived identity,
+not the environment's read scope.
+
+`inherit` must be an array of non-empty project names. Names are trimmed and
+deduplicated, and cannot contain commas (the query protocol uses commas to
+separate projects). An invalid explicit value raises a configuration error rather
+than reverting to the broader derived scope; correct it before using those hooks.
+
+This setting selects default context, not access permissions. Explicit queries
+for other projects and `CLAUDE_MEM_CONTEXT_PROJECTS=all` can still read a broader
+scope. Previously performed whole-project merges also remain in effect.
 
 Environment patterns and `CLAUDE_MEM_EXCLUDED_PROJECTS` use the same glob rules. A complete `**/` segment matches zero or more directories: `~/work/**/private` matches both `~/work/private` and `~/work/team/private`. Add a trailing `/**` to match their descendants too.
 

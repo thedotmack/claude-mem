@@ -56,7 +56,45 @@ function keyedLookbehind(key: string): string {
   return `(?<=${key}${OPTIONAL_QUOTE}${BOUNDED_SPACE}[=:]${BOUNDED_SPACE}${OPTIONAL_QUOTE})`;
 }
 
+// generic_token takes any `*_TOKEN` / `*_SECRET` / `*_API_KEY` key in every
+// keyed style. The bare names (`token`, `secret`, `api_key`), the same keys
+// GENERIC_TOKEN_KEY pairs in structured payloads, are also ordinary
+// identifiers in source code (`const token = getToken();`, `token: TokenType;`),
+// so in text they count only in config-shaped positions:
+// - a quoted key with a quoted value (`"secret": "…"`, JSON-escaped too);
+// - an env/shell or query assignment with no spaces around `=`, at the start
+//   or after whitespace, `?` or `&` (`api_key=…`, `export secret=…`,
+//   `?token=…`), whose value is not a call (`token=getAuthToken()`);
+// - a CLI flag (`--token=…`, `--api-key …`);
+// - a yaml line (`token: …` at a line start, raw or JSON-escaped `\n`) whose
+//   value runs to the end of the line, which a typed field (`token: T;`) doesn't.
+// The worker scans tool output as `JSON.stringify(response)`, so a JSON
+// string's own quotes count as the start and end of its text, and escaped
+// whitespace (`\n`, `\t`) as whitespace.
+const BARE_TOKEN_KEY = String.raw`(?:token|secret|api_key)`;
+const ESCAPED_QUOTE = String.raw`\\{0,3}["']`;
+const STRING_EDGE = String.raw`(?<!\\)"`;
+const ASSIGNMENT_START = String.raw`(?:^|[\s?&]|\\[nrt]|${STRING_EDGE})`;
+const LINE_START = String.raw`(?:^|\n|\\n|${STRING_EDGE})[ \t]{0,8}(?:-[ \t]{1,8})?`;
+const LINE_END = String.raw`(?:${ESCAPED_QUOTE})?[ \t]{0,8}(?:$|\r?\n|\\{1,3}[rn]|#|${STRING_EDGE})`;
+const GENERIC_TOKEN_REGEX = new RegExp([
+  `${keyedLookbehind(String.raw`\b\w*_${BARE_TOKEN_KEY}`)}${GENERIC_VALUE}`,
+  `(?<=${ESCAPED_QUOTE}${BARE_TOKEN_KEY}${ESCAPED_QUOTE}${BOUNDED_SPACE}:${BOUNDED_SPACE}${ESCAPED_QUOTE})${GENERIC_VALUE}`,
+  `(?<=${ASSIGNMENT_START}${BARE_TOKEN_KEY}=${OPTIONAL_QUOTE})${GENERIC_VALUE}(?!\\(|${GENERIC_VALUE_CLASS})`,
+  String.raw`(?<=--(?:token|secret|api[-_]key)(?:=|[ \t]{1,8})${OPTIONAL_QUOTE})${GENERIC_VALUE}`,
+  `(?<=${LINE_START}${BARE_TOKEN_KEY}:[ \\t]{1,8}${OPTIONAL_QUOTE})${GENERIC_VALUE}(?=${LINE_END})`,
+].join('|'), 'gi');
+
 export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
+  // The password in a URL's userinfo: `postgres://app:hunter2@db/prod`,
+  // `redis://:hunter2@cache:6379/0`, `https://user:pass@host/repo.git` (what
+  // `git remote -v` and a DATABASE_URL print). Only the password is replaced,
+  // so the scheme, user and host stay readable. The value stops at `/`, `@`,
+  // whitespace and quotes; a `<` start keeps an earlier marker and a `$`/`{`
+  // start keeps a `${DB_PASS}` placeholder from being taken for a secret.
+  // First in the list, so the whole password goes before a vendor pattern can
+  // split it with its marker and leave the rest of it behind.
+  { name: 'url_credentials', regex: /(?<=\b[a-z][a-z0-9+.-]*:\/\/[^\s:\/@'"<>]*:)(?![${<])[^\s\/@'"<>]+(?=@)/gi },
   // `AKIA` is a long-term access key ID; `ASIA` is the temporary one that STS,
   // SSO and instance roles hand out (`aws sts assume-role`, `aws configure
   // export-credentials`), printed next to its secret and session token.
@@ -106,7 +144,7 @@ export const GENERIC_REDACTION_PATTERNS: RedactionPattern[] = [
   // `pwd` only as a suffix (`DB_PWD`, `MYSQL_PWD`): the bare `PWD` and
   // `OLDPWD` environment variables hold a working directory, not a secret.
   { name: 'generic_password', regex: genericBuiltinRegex(keyedLookbehind(String.raw`\b(?:\w*_?(?:password|passwd)|\w+_pwd)`)) },
-  { name: 'generic_token',    regex: genericBuiltinRegex(keyedLookbehind(String.raw`\b\w*_(?:token|secret|api_key)`)) },
+  { name: 'generic_token',    regex: GENERIC_TOKEN_REGEX },
   { name: 'bearer_token',     regex: genericBuiltinRegex(`(?<=\\bAuthorization${OPTIONAL_QUOTE}${BOUNDED_SPACE}:${BOUNDED_SPACE}${OPTIONAL_QUOTE}Bearer${BOUNDED_SPACE})`) },
 ];
 

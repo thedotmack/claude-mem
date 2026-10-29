@@ -4,6 +4,68 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [15.6.0] - 2026-10-29
+
+## My Work: one store for the viewer's state (#5187)
+
+My Work used to keep its state in three places: a hand-rolled module store, component state in `App`, and React contexts. It now runs on one Zustand store split into four slices: work, view, rules and focus.
+
+**What you'll notice**
+- **Reload and Back/Forward work.** The page, focus area and open request drawer are in the URL (`?view=`, `?focus=`, `?request=`).
+- **Your list view, filter and sort are remembered** between visits. The theme still follows your system or `?theme=`. If browser storage is blocked, preferences last for the current visit only.
+- **Live updates are steadier.** A stopped source can't publish. An older read never overwrites a newer live model. When a live update overtakes a save, you see the current model and your save is kept. Heartbeats re-render only the status indicators.
+- **The drawer follows its request** by id and closes when the request leaves the feed. If the first read fails, you get a Retry button. A selected Closed filter stays visible even when nothing matches.
+- **My Rules:** one save at a time, with controls disabled while a save runs. Each Approve/Reject receipt is tied to the version the worker saved, and Undo is refused once the rule has changed since.
+- **My Focus:** all screens share one save history.
+
+**Worker**
+- Rule saves return `savedRuleId`.
+- "Load in Claude Code" publishes the change to other open tabs.
+- The feed signature includes `rulesFile`.
+
+**Full changelog:** https://github.com/thedotmack/claude-mem/compare/v15.5.0...v15.6.0
+
+## [15.5.0] - 2026-10-29
+
+## Features
+
+- **My Work / My Focus:** Aceternity components across My Work and My Focus (#5136)
+- **Observer:** opt-in OpenAI-compatible batching (#5117)
+- **Work view:** summary provider selection is now explicit (#5104)
+- **Telemetry:** count My Work viewer opens and page switches in PostHog (#5107)
+
+## Fixes
+
+### Work view / My Work
+- Keep the build story under its cap with part budgets (#5128)
+- Stop failing refreshes from flooding agents and retrying forever (#5108)
+- Preserve rejected answers in refresh corrections (#5113)
+- Render recorded group titles and review summaries (#5114)
+
+### Redaction
+- Redact values under bare `token`, `secret` and `api_key` keys (#5130)
+- Redact the bearer token of an Authorization header object (#5129)
+- Pair `MYSQL_PWD` and `dbPassword` keys in structured payloads (#5111)
+- Redact Slack app-level (`xapp-`) and refresh (`xoxe-`) tokens (#5119)
+
+### Antigravity / MCP
+- Record agy MCP calls under their real tool name and a stable id (#5170)
+- Resolve Antigravity project context (#5105)
+- Use `%I`, not `%~I`, in the Windows 8.3 short-path lookup (#5099)
+
+### Worker, install and agents
+- Guard `POST /api/logs/clear` against foreign localhost origins (#5123)
+- Port reclaim reads the port owner, command line and name from `/proc` on Linux (#5101)
+- Clear `last-install-error.json` when an install or repair finishes (#5102)
+- `backup-setup` stops when the installed claude-mem has no backups (#5103)
+- Launch Codex through its resolved executable (#5112)
+- Pi: give the session-start context request the hooks' API budget (#5118)
+
+### Tests
+- Syntax-check the committed plugin bundles, not the built ones (#5137)
+
+**Full changelog:** https://github.com/thedotmack/claude-mem/compare/v15.4.0...v15.5.0
+
 ## [15.4.0] - 2026-10-28
 
 ## My Work: focus areas, and requests that file themselves

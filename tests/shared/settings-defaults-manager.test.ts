@@ -1027,6 +1027,10 @@ describe('SettingsDefaultsManager', () => {
       expect(defaults.CLAUDE_MEM_PROVIDER).toBeDefined();
       expect(defaults.CLAUDE_MEM_GEMINI_API_KEY).toBeDefined();
       expect(defaults.CLAUDE_MEM_OPENROUTER_API_KEY).toBeDefined();
+      expect(defaults.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER).toBe('');
+      expect(defaults.CLAUDE_MEM_WORK_VIEW_COPY_MODEL).toBe('');
+      expect(VIEWER_DEFAULT_SETTINGS.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER).toBe('');
+      expect(VIEWER_DEFAULT_SETTINGS.CLAUDE_MEM_WORK_VIEW_COPY_MODEL).toBe('');
 
       expect(defaults.CLAUDE_MEM_DATA_DIR).toBeDefined();
       expect(defaults.CLAUDE_MEM_LOG_LEVEL).toBeDefined();
@@ -1055,6 +1059,11 @@ describe('SettingsDefaultsManager', () => {
       expect(SettingsDefaultsManager.get('CLAUDE_MEM_MODEL')).toBe('claude-haiku-4-5-20251001');
       const expectedPort = String(37700 + ((process.getuid?.() ?? 77) % 100));
       expect(SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT')).toBe(expectedPort);
+    });
+
+    it('expands a leading ~ in CLAUDE_MEM_DATA_DIR from the environment', () => {
+      process.env.CLAUDE_MEM_DATA_DIR = '~/x';
+      expect(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR')).toBe(join(homedir(), 'x'));
     });
   });
 

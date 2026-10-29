@@ -59,6 +59,28 @@ function normalizeAgyToolInput(toolName: string | undefined, toolInput: unknown,
   return input;
 }
 
+// agy reports every MCP call as one built-in tool, `call_mcp_tool`, with args
+// { ServerName, ToolName, Arguments } (captured from agy 1.4.9, #5093). Name it
+// the way Claude Code and Codex name MCP tools, mcp__<server>__<tool>, with the
+// tool's own arguments, so the work-state, memory-retrieval and save_memory
+// handling all see the tool that really ran. Any other shape is kept as sent.
+function unwrapAgyMcpCall(toolName: string | undefined, toolInput: unknown): { toolName: string; toolInput: unknown } | null {
+  if (toolName !== 'call_mcp_tool' || !toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)) return null;
+  const { ServerName: server, ToolName: tool, Arguments: args } = toolInput as Record<string, unknown>;
+  if (typeof server !== 'string' || !server.trim() || typeof tool !== 'string' || !tool.trim()) return null;
+  return { toolName: `mcp__${server.trim()}__${tool.trim()}`, toolInput: args ?? {} };
+}
+
+// agy sends no tool-call id. Its stepIdx is shared by a step's PreToolUse and
+// PostToolUse and keeps counting across the turns of a conversation, so
+// conversation + step names one tool call: a replayed hook updates the same
+// tool_uses row instead of being skipped for lack of an id.
+function agyToolUseId(conversationId: unknown, stepIdx: unknown): string | undefined {
+  if (typeof conversationId !== 'string' || !conversationId) return undefined;
+  if (typeof stepIdx !== 'number' || !Number.isInteger(stepIdx) || stepIdx < 0) return undefined;
+  return `${conversationId}-step-${stepIdx}`;
+}
+
 // Files named by the tool calls of an agy transcript PLANNER_RESPONSE that
 // read them (read_file / view_file, and read commands in run_command).
 function filePathsReadByToolCalls(toolCalls: unknown, cwd: string, homeDirectory: string): string[] {
@@ -182,8 +204,12 @@ export const antigravityCliAdapter: PlatformAdapter = {
     const isInvocationEvent = 'invocationNum' in r && !hasToolCall;
 
     let toolName: string | undefined = r.toolCall?.name ?? r.tool_name;
-    let toolInput: unknown = normalizeAgyToolInput(toolName, r.toolCall?.args ?? r.tool_input, cwd);
+    let toolInput: unknown = r.toolCall?.args ?? r.tool_input;
+    const mcpCall = unwrapAgyMcpCall(toolName, toolInput);
+    if (mcpCall) ({ toolName, toolInput } = mcpCall);
+    toolInput = normalizeAgyToolInput(toolName, toolInput, cwd);
     let toolResponse: unknown = r.tool_response;
+    const toolUseId = hasToolCall ? agyToolUseId(r.conversationId, r.stepIdx) : undefined;
 
     // Antigravity puts the user's prompt in the transcript's USER_INPUT node
     // (and may also include `lastUserInput` on stdin). Pull it (unwrapped) for
@@ -224,6 +250,7 @@ export const antigravityCliAdapter: PlatformAdapter = {
       toolName,
       toolInput,
       toolResponse,
+      toolUseId,
       transcriptPath,
     };
   },
