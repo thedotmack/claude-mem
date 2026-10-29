@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# Start one arm's isolated stack for the task benchmark (bash only; no zsh, keychain or launchd needed).
+# Usage: stack.sh start|stop <plain|endless> <arm dir> <port base>
+#   plain    Claude Code -> agent tee -> api.anthropic.com (claude-mem fully off)
+#   endless  Claude Code -> wire gateway (memory injection, durable header, Endless Mode on) -> agent tee -> upstream,
+#            plus a claude-mem worker whose observer is sent through its own tee (observer-tee), so its tokens count
+#            in Endless Mode's cost.
+# Ports: base = agent tee, base+1 = worker, base+2 = gateway, base+3 = observer tee.
+# Everything lives under <arm dir>; nothing touches the real ~/.claude or ~/.claude-mem.
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd); repo=$(cd "$here/../../.." && pwd)
+action=$1 arm=$2 dir=$3 base=${4:-0}
+BUN=${EMV_BUN:-$(command -v bun)}
+UPSTREAM=${EMV_UPSTREAM:-https://api.anthropic.com}
+tee_port=$base worker_port=$((base + 1)) gateway_port=$((base + 2)) obs_port=$((base + 3))
+pids=$dir/pids
+
+if [[ $action == stop ]]; then
+  [[ -f $pids ]] && while read -r p; do kill "$p" 2>/dev/null || true; done < "$pids"
+  rm -f "$pids"; exit 0
+fi
+
+mkdir -p "$dir"/{data,home/.claude-mem,claude-config,proj,logs,tee,observer-tee}
+export HOME=$dir/home CLAUDE_CONFIG_DIR=$dir/claude-config CLAUDE_MEM_DATA_DIR=$dir/data DO_NOT_TRACK=1
+unset ANTHROPIC_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDECODE
+for v in $(compgen -e | grep -E '^CLAUDE_CODE_' || true); do unset "$v"; done
+: > "$pids"
+
+"$BUN" "$repo/scripts/endless-mode-validation/forward/tee-proxy.ts" $tee_port "$UPSTREAM" "$dir/tee" > "$dir/logs/tee.log" 2>&1 &
+echo $! >> "$pids"
+agent_base=http://127.0.0.1:$tee_port
+
+if [[ $arm == endless ]]; then
+  row_format=${EMV_ROW_FORMAT:-timeline}
+  # The observer's model: claude-mem's default unless EMV_OBSERVER_MODEL is set.
+  obs_model=${EMV_OBSERVER_MODEL:-$(grep -o "CLAUDE_MEM_MODEL: '[^']*'" "$repo/src/shared/SettingsDefaultsManager.ts" | head -1 | cut -d"'" -f2)}
+  jq -n --arg wp $worker_port --arg gp $gateway_port --arg fmt "$row_format" --arg obs_model "$obs_model" '{
+    CLAUDE_MEM_WORKER_PORT: $wp, CLAUDE_MEM_WORKER_HOST: "127.0.0.1",
+    CLAUDE_MEM_WIRE_GATEWAY_PORT: $gp, CLAUDE_MEM_WIRE_GATEWAY_HOST: "127.0.0.1",
+    CLAUDE_MEM_WIRE_GATEWAY_AUTOSTART: "false",
+    CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS: "true",
+    CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE: "true",
+    CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_ROW_FORMAT: $fmt,
+    CLAUDE_MEM_WIRE_GATEWAY_MEMORY_INJECTION: "true",
+    CLAUDE_MEM_WIRE_GATEWAY_DURABLE_HEADER: "true",
+    CLAUDE_MEM_PROVIDER: "claude",
+    CLAUDE_MEM_MODEL: $obs_model,
+    CLAUDE_MEM_LOG_LEVEL: "DEBUG",
+    CLAUDE_MEM_CHROMA_ENABLED: "false",
+    CLAUDE_MEM_TRANSCRIPTS_ENABLED: "false",
+    CLAUDE_MEM_TELEGRAM_ENABLED: "false",
+    CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED: "false",
+    CLAUDE_MEM_GROK_BOT_INJECT_ENABLED: "false",
+    CLAUDE_MEM_CLOUD_SYNC_WS: "false",
+    CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH: "false"
+  }' > "$CLAUDE_MEM_DATA_DIR/settings.json"
+  cp "$CLAUDE_MEM_DATA_DIR/settings.json" "$HOME/.claude-mem/settings.json"
+  # The observer's API base: claude-mem re-injects ANTHROPIC_BASE_URL from its .env into the observer's spawn.
+  for d in "$CLAUDE_MEM_DATA_DIR" "$HOME/.claude-mem"; do echo "ANTHROPIC_BASE_URL=http://127.0.0.1:$obs_port" > "$d/.env"; done
+  "$BUN" "$repo/scripts/endless-mode-validation/forward/tee-proxy.ts" $obs_port "$UPSTREAM" "$dir/observer-tee" > "$dir/logs/observer-tee.log" 2>&1 &
+  echo $! >> "$pids"
+  (cd "$CLAUDE_MEM_DATA_DIR" && exec "$BUN" "$repo/src/services/worker-service.ts" --daemon > "$dir/logs/worker.log" 2>&1) &
+  echo $! >> "$pids"
+  "$BUN" "$repo/src/services/wire-gateway/WireGatewayService.ts" start --foreground > "$dir/logs/gateway.log" 2>&1 &
+  echo $! >> "$pids"
+  agent_base=http://127.0.0.1:$gateway_port/r/claude-code
+fi
+
+want=($tee_port); [[ $arm == endless ]] && want+=($worker_port $gateway_port $obs_port)
+for i in $(seq 1 120); do
+  up=0; for p in "${want[@]}"; do (exec 3<>/dev/tcp/127.0.0.1/$p) 2>/dev/null && up=$((up + 1)); done
+  [[ $up == ${#want[@]} ]] && break; sleep 0.5
+done
+[[ $up == ${#want[@]} ]] || { echo "stack $arm did not start ($up/${#want[@]} ports); logs in $dir/logs" >&2; exit 1; }
+
+if [[ $arm == endless ]]; then
+  gw() { "$BUN" "$repo/src/services/wire-gateway/WireGatewayService.ts" "$@"; }
+  gw routes remove claude-code > /dev/null 2>&1 || true
+  gw routes add claude-code --agent claude-code --upstream http://127.0.0.1:$tee_port --capture wire >> "$dir/logs/routes.log" 2>&1
+  gw routes endless claude-code on >> "$dir/logs/routes.log" 2>&1
+fi
+
+# Claude Code's sandbox settings: base URL, no plugins, and a narrow allowlist (file tools plus running Python in the
+# scratch project). Anything else is refused, since `claude -p` cannot ask.
+jq -n --arg b "$agent_base" '{env: {ANTHROPIC_BASE_URL: $b, DISABLE_AUTOUPDATER: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"},
+  permissions: {defaultMode: "acceptEdits", allow: ["Read", "Edit", "Write", "Glob", "Grep",
+    "Bash(python3:*)", "Bash(python:*)", "Bash(pytest:*)", "Bash(ls:*)", "Bash(cat:*)"],
+    deny: ["WebFetch", "WebSearch", "Bash(curl:*)", "Bash(wget:*)", "Bash(git push:*)"]}}' > "$CLAUDE_CONFIG_DIR/settings.json"
+echo "$agent_base" > "$dir/agent-base-url"
+echo "stack $arm up: ${want[*]} -> $agent_base"

@@ -1,0 +1,60 @@
+# Task benchmark: Endless Mode vs plain Claude Code on real coding exercises
+
+The forward and backtest tools next door measure cost. This one adds the other three measures: whether the work gets
+done, whether it is right, and how long it takes, all from one run.
+
+## What a run does
+
+- **Tasks:** the Python set of [Aider's polyglot benchmark](https://github.com/Aider-AI/polyglot-benchmark) (34 of
+  Exercism's hardest Python exercises), graded by each exercise's own hidden tests.
+- **One long session per run:** an opening turn sets a standing rule, then every exercise is one more turn of the same
+  Claude Code session (`claude -p --resume`). The conversation grows the way a real long session does.
+- **Aider's protocol:** the agent sees the instructions and the stub, never the tests. If the hidden tests fail, the
+  next turn shows the last 50 lines of the failing output and asks for a fix (two tries in all).
+- **Two arms, side by side, same model, same exercises in the same order:**
+  - `plain`: Claude Code straight to the API (through a recording proxy only).
+  - `endless`: Claude Code through this checkout's wire gateway with memory injection, the durable header and Endless
+    Mode on, and a claude-mem worker whose observer writes the observations Endless Mode folds in.
+- **Standing rule check:** the opening turn asks for a fixed first line in every solution file. Each graded exercise
+  records whether its files still follow it. This is not part of Aider's benchmark; it checks that an early instruction
+  survives the session.
+
+## What it measures
+
+Everything comes from the run itself:
+
+- **Completion:** exercises whose hidden tests all pass after up to two tries, and after the first try.
+- **Quality:** hidden tests passed, and the standing rule kept.
+- **Time:** wall time of each turn (includes any wait the gateway adds).
+- **Cost:** every request's usage as the API returned it, captured by a recording proxy (`forward/tee-proxy.ts`),
+  priced at list prices (`extract.py`). The observer's requests have their own proxy, so its cost is counted in the
+  Endless arm. Whole-session cost is the sum over the session (cumulative). Context size is reported per request.
+
+The per-request cost sum matches the `total_cost_usd` Claude Code itself reports for the session.
+
+## Run it
+
+Needs Linux or macOS, `bash`, `bun` (`bun install` once), `python3` with `pytest`, `jq`, and Claude Code logged in.
+
+```sh
+git clone --depth 1 https://github.com/Aider-AI/polyglot-benchmark /tmp/polyglot-benchmark
+EMV_BENCH=/tmp/polyglot-benchmark/python/exercises/practice \
+  scripts/endless-mode-validation/tasks/run_all.sh .scratch/endless-mode-validation/tasks/run1 3 --model claude-haiku-5-5
+python3 scripts/endless-mode-validation/tasks/report.py --db .scratch/endless-mode-validation/tasks/run1/results.sqlite
+```
+
+`run_all.sh <out> <runs per arm> [run_session.py options]` starts each run in its own sandbox (its own HOME, Claude
+config dir and claude-mem data dir, ports from 39100 and 39200 up), runs them side by side, then extracts usage.
+`--exercises a,b,c` or `--limit N` runs fewer exercises.
+
+The agent runs with a narrow tool allowlist (file tools, `python`, `pytest`, `ls`, `cat`), not with permissions
+bypassed.
+
+## Results file
+
+`results.sqlite` has three tables:
+
+- `runs`: one row per session (arm, model, exercises, Claude Code version).
+- `turns`: one row per turn (time, Claude Code's own error flag and reported cost, tests passed and run, rule kept).
+- `requests`: one row per API request (source `agent` or `observer`, turn, model, input, cache write, cache read and
+  output tokens, prompt size, cost at list prices, cost at Opus 5.5's flat prices).
