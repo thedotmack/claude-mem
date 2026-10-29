@@ -1,14 +1,19 @@
 // Suggested focus areas: the decision queue from My Rules (DecisionQueue / SuggestionCard), with Keep, Rename, Merge
 // and Dismiss. A decided card stays (with Undo, through restore-suggestion) until you leave the page; a rename leaves
-// the card undecided and shows in the change bar, with Undo back to the old name.
+// the card undecided and shows in the change bar, with Undo back to the old name. On phones an undecided card
+// swipes like My Rules' queue: right keeps, left dismisses.
 import { useMemo, useState } from 'react'
+import { useReducedMotion } from 'motion/react'
 import { CheckIcon, ChevronDownIcon, MergeIcon, PencilIcon, XIcon } from 'lucide-react'
 import { Confirmation, ConfirmationAccepted, ConfirmationAction, ConfirmationActions, ConfirmationRejected, ConfirmationRequest, ConfirmationTitle, type ConfirmationProps } from '@/components/ai-elements/confirmation'
+import { DraggableCardBody, DraggableCardContainer } from '@/components/aceternity/draggable-card'
+import { SparklesCore } from '@/components/aceternity/sparkles'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { StateBadge } from '@/components/bits'
 import { AreaEditDialog, FocusChangeBar, useFocusChanges, type AreaEdit } from '@/components/focus-changes'
 import { Quotes } from '@/components/focus-header'
+import { useIsPhone, swipeToDecide } from '@/lib/swipe-to-decide'
 import { cn } from '@/lib/utils'
 import { plural } from '@/lib/words'
 import { Req } from '@/spec/req'
@@ -28,6 +33,7 @@ function SuggestionCard({ area, requests, decision, saving, onKeep, onDismiss, o
   onKeep: () => void; onDismiss: () => void; onEdit: (edit: AreaEdit) => void; onUndo: () => void; onShow: () => void
 }) {
   const { focusAreas } = useWorkModel()
+  const reduceMotion = useReducedMotion()
   const approval = (decision ? { id: area.id, approved: decision !== 'dismissed' } : { id: area.id }) as ConfirmationProps['approval']
   const [first, ...more] = area.quotes
   const mergedInto = area.mergedInto ? focusAreas.find((entry) => entry.id === area.mergedInto)?.name : null
@@ -52,9 +58,11 @@ function SuggestionCard({ area, requests, decision, saving, onKeep, onDismiss, o
           </Req>
         </ConfirmationRequest>
         <ConfirmationAccepted>
-          <div className="flex flex-wrap items-center justify-between gap-x-3">
-            <ConfirmationTitle className="text-sm text-shipped-foreground">{decision === 'merged' ? `Merged into ${mergedInto ?? 'another area'}. Its requests show there now.` : 'Kept. It’s in My focus now.'}</ConfirmationTitle>
-            <div className="flex">
+          <div className="relative flex flex-wrap items-center justify-between gap-x-3">
+            {/* Keeping an area is a choice of focus, so it gets the launch screen's sparkles; a merge or dismissal doesn't. */}
+            {decision === 'kept' && !reduceMotion && <SparklesCore className="kept-sparkles" background="transparent" particleColor="#D86441" minSize={0.4} maxSize={1.2} particleDensity={60} speed={2} />}
+            <ConfirmationTitle className="relative text-sm text-shipped-foreground">{decision === 'merged' ? `Merged into ${mergedInto ?? 'another area'}. Its requests show there now.` : 'Kept. It’s in My focus now.'}</ConfirmationTitle>
+            <div className="relative flex">
               <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" onClick={onShow}>Show it</Button>
               <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" disabled={saving} onClick={onUndo}>Undo</Button>
             </div>
@@ -89,6 +97,7 @@ function SuggestionCard({ area, requests, decision, saving, onKeep, onDismiss, o
 export function SuggestedAreas({ onOpenFocus }: { onOpenFocus: (focusAreaId: string) => void }) {
   const { focusAreas, requests } = useWorkModel()
   const changes = useFocusChanges()
+  const isPhone = useIsPhone()
   // Decisions made on this page stay in the queue (with Undo) until you leave; the saved rows are the truth.
   const [decisions, setDecisions] = useState<Record<string, Decision>>({})
   const [edit, setEdit] = useState<AreaEdit | null>(null)
@@ -118,13 +127,18 @@ export function SuggestedAreas({ onOpenFocus }: { onOpenFocus: (focusAreaId: str
             <p className="text-sm text-muted-foreground">Nothing waiting. New suggestions show up here after the next refresh.</p>
           </Req>
         ) : (
-          <div className="space-y-3">
-            {suggestions.map((area) => (
-              <SuggestionCard key={area.id} area={area} requests={inArea(area)} decision={decisions[area.id]} saving={changes.saving}
+          <DraggableCardContainer className="space-y-3">
+            {isPhone && waiting > 0 && <p className="text-xs text-muted-foreground">Swipe a card right to keep it, left to dismiss it.</p>}
+            {suggestions.map((area) => {
+              const card = <SuggestionCard area={area} requests={inArea(area)} decision={decisions[area.id]} saving={changes.saving}
                 onKeep={() => decide(area, 'kept')} onDismiss={() => decide(area, 'dismissed')} onEdit={setEdit} onUndo={() => undo(area)}
                 onShow={() => onOpenFocus(area.mergedInto ?? area.id)} />
-            ))}
-          </div>
+              // On phones an undecided card swipes, through the same handlers as its buttons.
+              return isPhone && !decisions[area.id]
+                ? <DraggableCardBody key={area.id} dragAxis="x" disabled={changes.saving} onDragRelease={swipeToDecide(() => decide(area, 'kept'), () => decide(area, 'dismissed'))} className="min-h-0 w-full rounded-xl bg-transparent p-0 shadow-none dark:bg-transparent">{card}</DraggableCardBody>
+                : <div key={area.id}>{card}</div>
+            })}
+          </DraggableCardContainer>
         )}
         <AreaEditDialog edit={edit} changes={changes} onClose={() => setEdit(null)} ownUndo={(change) => suggestionEditDecision(change) !== null}
           onSaved={(change) => { const decision = suggestionEditDecision(change); if (decision && change.focusAreaId) setDecisions((previous) => ({ ...previous, [change.focusAreaId!]: decision })) }} />

@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
+import { motion } from 'motion/react'
 import { BotIcon, CornerLeftUpIcon, RefreshCwIcon, StarIcon, UserIcon } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -12,6 +13,15 @@ import { agentById, deviceById, isSampleHref, measuredEstimate, SAMPLE_DEVICES, 
 import type { AutoRefresh } from '@/live/work-data-source'
 import { focusAreaLabel, resolveFocusAreaId } from '@/live/to-focus-model'
 import { AgentMark } from './brand'
+
+/**
+ * The sliding highlight behind the active choice in a nav or toggle group (the `layoutId` pattern from aceternity/tabs).
+ * Render it inside the active item only; the item needs `relative` and its content `relative` to sit above it.
+ * Each group passes its own `layoutId` so pills never jump between groups.
+ */
+export function ActivePill({ layoutId, className }: { layoutId: string; className?: string }) {
+  return <motion.span layoutId={layoutId} transition={{ type: 'spring', bounce: 0.3, duration: 0.6 }} className={cn('absolute inset-0 rounded-[inherit] bg-accent', className)} />
+}
 
 export interface Workspace { mode: 'home' | 'web'; team: boolean; connected: boolean }
 export const WorkspaceContext = createContext<Workspace>({ mode: 'home', team: false, connected: false })
@@ -45,17 +55,20 @@ export const STATE_LABEL: Record<LiveState, string> = {
 /** Attention first: what waits on you, then what to check, then what is moving, then the rest. */
 export const ATTENTION_ORDER: LiveState[] = ['your-move', 'needs-check', 'working', 'idle', 'shipped']
 
+/** Each state's colors, shared by the badge and the List view's flipboard so both read as the same state. */
+export const STATE_SURFACE: Record<LiveState, string> = {
+  working: 'border-working-border bg-working text-working-foreground',
+  'needs-check': 'border-review-border bg-review text-review-foreground',
+  'your-move': 'border-attention-border bg-attention font-medium text-attention-foreground',
+  idle: 'border-idle-border bg-idle text-idle-foreground',
+  shipped: 'border-shipped-border bg-shipped text-shipped-foreground',
+}
+
 /** One glance tells working, done-but-unchecked, waiting on you and shipped apart (§6). State is the only thing colored. */
 export function StateBadge({ state }: { state: LiveState }) {
   return (
     <Req ids={['R6.2']}>
-      <Badge variant="outline" className={cn('shrink-0 gap-1.5 font-normal', {
-        'border-working-border bg-working text-working-foreground': state === 'working',
-        'border-review-border bg-review text-review-foreground': state === 'needs-check',
-        'border-attention-border bg-attention font-medium text-attention-foreground': state === 'your-move',
-        'border-idle-border bg-idle text-idle-foreground': state === 'idle',
-        'border-shipped-border bg-shipped text-shipped-foreground': state === 'shipped',
-      })}>
+      <Badge variant="outline" className={cn('shrink-0 gap-1.5 font-normal', STATE_SURFACE[state])}>
         <span className={cn('size-1.5 rounded-full', {
           'bg-working-foreground motion-safe:animate-pulse': state === 'working',
           'bg-review-foreground': state === 'needs-check',

@@ -1,18 +1,24 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState, type ReactNode } from 'react'
+import { useReducedMotion } from 'motion/react'
 import { ArrowRightIcon, ArrowUpDownIcon, ImageIcon, InboxIcon, PlugIcon, TriangleAlertIcon } from 'lucide-react'
 import { Agent, AgentContent, AgentHeader } from '@/components/ai-elements/agent'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { AgentIcon, ATTENTION_ORDER, FocusAreaChip, NextMove, ProgressMeter, RefreshButton, RefreshStatus, StateBadge, useWorkspace } from '@/components/bits'
+import { ActivePill, AgentIcon, ATTENTION_ORDER, FocusAreaChip, NextMove, ProgressMeter, RefreshButton, RefreshStatus, STATE_LABEL, STATE_SURFACE, StateBadge, useWorkspace } from '@/components/bits'
+import { PointerHighlight } from '@/components/aceternity/pointer-highlight'
+import { TracingBeam } from '@/components/aceternity/tracing-beam'
 import { AgentMark } from '@/components/brand'
 import { FocusChangeBar, useFocusChanges } from '@/components/focus-changes'
 import { FocusHeader, OtherHeader } from '@/components/focus-header'
 import { RequestCard } from '@/components/request-card'
+import { SplitFlapText } from '@/components/split-flap'
+import { SaveButton } from '@/components/save-button'
+import { useMatchesMedia } from '@/lib/use-media'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
 import { deviceById, markAgentFinished, needsYou, OTHER_FOCUS_AREA_ID, SAMPLE_RUNS, startedTimestamp, useWorkModel, type Agent as WorkAgent, type LiveState, type Request } from '@/data'
@@ -20,6 +26,12 @@ import type { BuildStory, RequestReadError } from '@/live/work-data-source'
 import { resolveFocusAreaId } from '@/live/to-focus-model'
 
 type View = 'cards' | 'list' | 'agents' | 'team'
+const VIEWS: { value: View; label: string }[] = [
+  { value: 'cards', label: 'Cards' },
+  { value: 'list', label: 'List' },
+  { value: 'agents', label: 'By agent' },
+  { value: 'team', label: 'Team' },
+]
 type Filter = 'all' | 'needs-you' | 'shipped' | 'closed'
 type SortKey = 'attention' | 'started' | 'progress'
 // Closed requests (every item dropped) show only under Closed, and that filter appears only when there are some.
@@ -52,6 +64,7 @@ function Summary({ requests, onOpen, onShowNeedsYou }: { requests: Request[]; on
   const working = requests.filter((request) => request.state === 'working').length
   const first = yourMove[0] ?? toCheck[0]
   const waiting = yourMove.length + toCheck.length
+  const reduceMotion = useReducedMotion()
   return (
     <Req ids={['R12.2', 'R12.3', 'R1.1']}>
       <div className="space-y-0.5">
@@ -60,7 +73,7 @@ function Summary({ requests, onOpen, onShowNeedsYou }: { requests: Request[]; on
             <>
               <span className="font-semibold">{waiting === 1 ? 'One thing needs you:' : `${waiting} need you. First:`}</span>
               <button type="button" onClick={() => onOpen(first)} className="inline-flex min-h-11 items-center gap-1 text-left font-semibold text-attention-foreground underline decoration-attention-border underline-offset-4 hover:decoration-current md:min-h-8">
-                {first.next.text}<ArrowRightIcon className="size-4 shrink-0" />
+                {reduceMotion ? first.next.text : <PointerHighlight rectangleClassName="rounded-sm border-attention-border" pointerClassName="text-attention-foreground">{first.next.text}</PointerHighlight>}<ArrowRightIcon className="size-4 shrink-0" />
               </button>
             </>
           ) : <span className="font-semibold">Nothing needs you right now.</span>}
@@ -80,7 +93,7 @@ function TodayPanel({ story, onOpenStory }: { story: BuildStory; onOpenStory: ()
   // The daily recap image is not generated from real records yet, so live mode leaves its slot out.
   const sample = useWorkModel().sourceKind === 'sample'
   return (
-    <div className={cn('grid gap-4 rounded-xl border bg-card/70 p-4 md:p-5', sample && 'sm:grid-cols-[132px_1fr]')}>
+    <div className={cn('grid gap-4 rounded-xl border bg-card/70 p-4 shadow-panel md:p-5', sample && 'sm:grid-cols-[132px_1fr]')}>
       {sample && (
         <Req ids={['R7.4']}>
           <div className="flex aspect-[3/1] items-center justify-center rounded-lg border border-dashed bg-surface text-muted-foreground sm:aspect-square"><ImageIcon className="size-5" /><span className="sr-only">Today's hero image (not generated in the wireframe)</span></div>
@@ -115,14 +128,17 @@ function StorySheet({ open, story, requests, onClose, onOpenRules }: { open: boo
   const waiting = requests.filter(needsYou).length
   const { rules } = useWorkModel()
   const learned = rules.filter((rule) => rule.source === 'request-progress' && (rule.status === 'on' || rule.status === 'suggested')).slice(0, 4)
+  // The sheet scrolls, not the window, so the tracing beam follows the sheet's scroll.
+  const scrollRef = useRef<HTMLDivElement>(null)
   return (
     <Sheet open={open} onOpenChange={(next) => { if (!next) onClose() }}>
-      <SheetContent className="overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-lg">
+      <SheetContent ref={scrollRef} className="overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-lg">
         <SheetHeader>
           <SheetTitle>Build story</SheetTitle>
           <SheetDescription>From request-progress, reviewed from memory{story.writtenAt ? `, written ${story.writtenAt}` : ''}.</SheetDescription>
         </SheetHeader>
-        <div className="space-y-6 px-4 pb-6">
+        <TracingBeam scrollContainer={scrollRef} className="pr-4 pb-6 pl-10">
+        <div className="space-y-6">
           <Req ids={['R7.1']}>
             <p className="text-sm">{shipped} request{shipped === 1 ? '' : 's'} shipped and {waiting} waiting on you.</p>
           </Req>
@@ -145,18 +161,36 @@ function StorySheet({ open, story, requests, onClose, onOpenRules }: { open: boo
             </div>
           </Req>
         </div>
+        </TracingBeam>
       </SheetContent>
     </Sheet>
   )
 }
 
-/** The status label flips when it changes: the flipboard, without the skeuomorphism (decision 2). */
-function FlipStatus({ state }: { state: LiveState }) {
-  return <span key={state} className="inline-block motion-safe:animate-in motion-safe:slide-in-from-top-2 motion-safe:fade-in motion-safe:duration-300"><StateBadge state={state} /></span>
+/** card-hover-effect, in place: a soft panel fades in behind the card the pointer is on. It never slides between cards. */
+function HoverCell({ children }: { children: ReactNode }) {
+  return (
+    <div className="group/hover-cell relative min-w-0">
+      <span aria-hidden="true" className="pointer-events-none absolute -inset-2 block rounded-2xl bg-accent/70 opacity-0 transition-opacity duration-150 group-hover/hover-cell:opacity-100" />
+      <div className="relative h-full">{children}</div>
+    </div>
+  )
 }
+
+/**
+ * The List is a departures board (decision 2, R4.4): each status is a line of split-flap tiles exactly as wide as its
+ * label, colored by its state. It riffles in when the List opens and again when the status changes, then stops.
+ */
+function FlipStatus({ state }: { state: LiveState }) {
+  return <SplitFlapText text={STATE_LABEL[state]} tileClassName={STATE_SURFACE[state]} />
+}
+
+// The List switches from stacked lines to the table at Tailwind's md breakpoint (768px); only one of them is built.
+const TABLE_QUERY = '(min-width: 768px)'
 
 function ListView({ requests, sort, onSort, onOpen, onOpenFocus }: { requests: Request[]; sort: SortKey; onSort: (sort: SortKey) => void; onOpen: (request: Request) => void; onOpenFocus: (focusAreaId: string) => void }) {
   const { team } = useWorkspace()
+  const wide = useMatchesMedia(TABLE_QUERY)
   const sortHead = (label: string, value: SortKey) => (
     <TableHead aria-sort={sort === value ? 'descending' : undefined}>
       <Button variant="ghost" size="sm" className="-ml-3 h-8 text-[0.82rem] font-medium text-muted-foreground" onClick={() => onSort(value)}>{label}<ArrowUpDownIcon className={sort === value ? '' : 'opacity-30'} /></Button>
@@ -165,7 +199,7 @@ function ListView({ requests, sort, onSort, onOpen, onOpenFocus }: { requests: R
   return (
     <Req ids={['R4.2', 'R4.4', 'R2.1', 'R5.8', 'R11.1']}>
       {/* Phones: stacked rows, request then status then next step. */}
-      <ul className="divide-y rounded-xl border bg-card md:hidden">
+      {!wide && <ul className="divide-y rounded-xl border bg-card shadow-panel">
         {requests.map((request) => (
           <li key={request.id}>
             <button type="button" onClick={() => onOpen(request)} className="flex w-full flex-col gap-2 p-4 text-left focus-visible:outline-2 focus-visible:outline-ring">
@@ -180,9 +214,9 @@ function ListView({ requests, sort, onSort, onOpen, onOpenFocus }: { requests: R
             </button>
           </li>
         ))}
-      </ul>
+      </ul>}
 
-      <div className="hidden overflow-hidden rounded-xl border bg-card md:block">
+      {wide && <div className="overflow-hidden rounded-xl border bg-card shadow-panel">
         <Table>
           <TableHeader className="bg-surface/60">
             <TableRow>
@@ -212,7 +246,7 @@ function ListView({ requests, sort, onSort, onOpen, onOpenFocus }: { requests: R
             ))}
           </TableBody>
         </Table>
-      </div>
+      </div>}
     </Req>
   )
 }
@@ -227,12 +261,19 @@ function SubagentStatus({ agent }: { agent: WorkAgent }) {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   if (!agent.status) return null
-  const mark = () => {
+  // Resolves false on failure so the button shows no check; the error line below says what went wrong.
+  const mark = async () => {
     setSaving(true)
     setError(null)
-    markAgentFinished(agent.id)
-      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)))
-      .finally(() => setSaving(false))
+    try {
+      await markAgentFinished(agent.id)
+      return true
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+      return false
+    } finally {
+      setSaving(false)
+    }
   }
   return (
     <div className="space-y-1 px-3 pb-2">
@@ -241,9 +282,9 @@ function SubagentStatus({ agent }: { agent: WorkAgent }) {
           {AGENT_STATUS_LABEL[agent.status]}{agent.status === 'finished' && agent.finishedAt ? ` · ${agent.finishedAt}` : ''}
         </span>
         {agent.canMarkFinished && (
-          <Button variant="outline" size="sm" className="h-11 shrink-0 text-xs md:h-7" disabled={saving} onClick={mark}>
-            {saving ? 'Saving…' : 'Mark finished'}
-          </Button>
+          <SaveButton className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'h-11 shrink-0 text-xs md:h-7')} disabled={saving} onClick={mark}>
+            Mark finished
+          </SaveButton>
         )}
       </div>
       {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
@@ -261,7 +302,8 @@ function ByAgentView({ requests, onOpen }: { requests: Request[]; onOpen: (reque
           const device = deviceById(agent.deviceId)
           const theirs = requests.filter((request) => request.agentId === agent.id)
           return (
-            <Agent key={agent.id} className="min-w-0">
+            <HoverCell key={agent.id}>
+            <Agent className="min-w-0">
               <AgentHeader name={agent.name} role={agent.role} icon={<AgentMark tool={agent.tool} className="size-5" />}
                 model={`${device.name} · ${device.syncedMinutesAgo === 0 ? 'this machine' : `synced ${device.syncedMinutesAgo} min ago`}`} />
               <AgentContent className="space-y-0 px-2 pb-2">
@@ -278,6 +320,7 @@ function ByAgentView({ requests, onOpen }: { requests: Request[]; onOpen: (reque
                 ))}
               </AgentContent>
             </Agent>
+            </HoverCell>
           )
         })}
       </div>
@@ -300,7 +343,7 @@ function TeamBoard({ requests, onOpen }: { requests: Request[]; onOpen: (request
         )}
         <div className="grid gap-4 md:grid-cols-3">
           {people.map((person) => (
-            <div key={person} className="space-y-2.5 rounded-xl border bg-card/60 p-4">
+            <div key={person} className="space-y-2.5 rounded-xl border bg-card/60 p-4 shadow-panel">
               <p className="section-label">{person}</p>
               {requests.filter((request) => request.askedBy === person).map((request) => (
                 <button key={request.id} type="button" onClick={() => onOpen(request)} className="w-full space-y-2 rounded-lg border bg-card p-3 text-left hover:bg-surface">
@@ -370,10 +413,12 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
       <div className="flex flex-wrap items-center gap-2 md:gap-3">
         <Req ids={['R4.1', 'R4.2', 'R4.3', 'R9.2']}>
           <ToggleGroup type="single" variant="outline" size="sm" spacing={1} value={view} onValueChange={(next) => next && setView(next as View)} aria-label="View">
-            <ToggleGroupItem value="cards" className="h-11 px-3.5 md:h-8">Cards</ToggleGroupItem>
-            <ToggleGroupItem value="list" className="h-11 px-3.5 md:h-8">List</ToggleGroupItem>
-            <ToggleGroupItem value="agents" className="h-11 px-3.5 md:h-8">By agent</ToggleGroupItem>
-            {team && <ToggleGroupItem value="team" className="h-11 px-3.5 md:h-8">Team</ToggleGroupItem>}
+            {VIEWS.filter((entry) => entry.value !== 'team' || team).map(({ value, label }) => (
+              <ToggleGroupItem key={value} value={value} className="relative h-11 px-3.5 data-[state=on]:bg-transparent data-[state=on]:hover:bg-transparent md:h-8">
+                {view === value && <ActivePill layoutId="view-toggle-active-pill" />}
+                <span className="relative">{label}</span>
+              </ToggleGroupItem>
+            ))}
           </ToggleGroup>
         </Req>
         {/* Live mode shows the worker's automatic refresh, or the last review before its first run. No cost. */}
@@ -428,7 +473,11 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
         </Req>
       ) : view === 'cards' ? (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          {visible.map((request) => <RequestCard key={request.id} request={request} onOpen={() => onOpen(request)} onOpenFocus={onOpenFocus} />)}
+          {visible.map((request) => (
+            <HoverCell key={request.id}>
+              <RequestCard request={request} onOpen={() => onOpen(request)} onOpenFocus={onOpenFocus} />
+            </HoverCell>
+          ))}
           {requestReadErrors.map((readError) => <RequestReadErrorCard key={readError.requestId} readError={readError} />)}
         </div>
       ) : view === 'list' ? <ListView requests={visible} sort={sort} onSort={setSort} onOpen={onOpen} onOpenFocus={onOpenFocus} />

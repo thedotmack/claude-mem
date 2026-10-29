@@ -4,6 +4,47 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [15.5.0] - 2026-10-29
+
+## Features
+
+- **My Work / My Focus:** Aceternity components across My Work and My Focus (#5136)
+- **Observer:** opt-in OpenAI-compatible batching (#5117)
+- **Work view:** summary provider selection is now explicit (#5104)
+- **Telemetry:** count My Work viewer opens and page switches in PostHog (#5107)
+
+## Fixes
+
+### Work view / My Work
+- Keep the build story under its cap with part budgets (#5128)
+- Stop failing refreshes from flooding agents and retrying forever (#5108)
+- Preserve rejected answers in refresh corrections (#5113)
+- Render recorded group titles and review summaries (#5114)
+
+### Redaction
+- Redact values under bare `token`, `secret` and `api_key` keys (#5130)
+- Redact the bearer token of an Authorization header object (#5129)
+- Pair `MYSQL_PWD` and `dbPassword` keys in structured payloads (#5111)
+- Redact Slack app-level (`xapp-`) and refresh (`xoxe-`) tokens (#5119)
+
+### Antigravity / MCP
+- Record agy MCP calls under their real tool name and a stable id (#5170)
+- Resolve Antigravity project context (#5105)
+- Use `%I`, not `%~I`, in the Windows 8.3 short-path lookup (#5099)
+
+### Worker, install and agents
+- Guard `POST /api/logs/clear` against foreign localhost origins (#5123)
+- Port reclaim reads the port owner, command line and name from `/proc` on Linux (#5101)
+- Clear `last-install-error.json` when an install or repair finishes (#5102)
+- `backup-setup` stops when the installed claude-mem has no backups (#5103)
+- Launch Codex through its resolved executable (#5112)
+- Pi: give the session-start context request the hooks' API budget (#5118)
+
+### Tests
+- Syntax-check the committed plugin bundles, not the built ones (#5137)
+
+**Full changelog:** https://github.com/thedotmack/claude-mem/compare/v15.4.0...v15.5.0
+
 ## [15.4.0] - 2026-10-28
 
 ## My Work: focus areas, and requests that file themselves
