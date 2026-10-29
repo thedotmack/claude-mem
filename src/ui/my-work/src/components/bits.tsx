@@ -1,4 +1,5 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
+import { motion } from 'motion/react'
 import { BotIcon, CornerLeftUpIcon, RefreshCwIcon, StarIcon, UserIcon } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -8,14 +9,21 @@ import { Spinner } from '@/components/ui/spinner'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
-import { agentById, deviceById, isSampleHref, measuredEstimate, SAMPLE_DEVICES, useWorkModel, type Device, type LiveState, type Request, type Run, type SkillRun } from '@/data'
+import { isSampleHref, measuredEstimate, SAMPLE_DEVICES, type Device, type LiveState, type Request, type Run, type SkillRun } from '@/data'
+import { agentById, deviceById, useConnection, useWorkModel, useWorkspace } from '@/store'
 import type { AutoRefresh } from '@/live/work-data-source'
 import { focusAreaLabel, resolveFocusAreaId } from '@/live/to-focus-model'
 import { AgentMark } from './brand'
 
-export interface Workspace { mode: 'home' | 'web'; team: boolean; connected: boolean }
-export const WorkspaceContext = createContext<Workspace>({ mode: 'home', team: false, connected: false })
-export const useWorkspace = () => useContext(WorkspaceContext)
+/**
+ * The sliding highlight behind the active choice in a nav or toggle group (the `layoutId` pattern from aceternity/tabs).
+ * Render it inside the active item only; the item needs `relative` and its content `relative` to sit above it.
+ * Each group passes its own `layoutId` so pills never jump between groups.
+ */
+export function ActivePill({ layoutId, className }: { layoutId: string; className?: string }) {
+  return <motion.span layoutId={layoutId} transition={{ type: 'spring', bounce: 0.3, duration: 0.6 }} className={cn('absolute inset-0 rounded-[inherit] bg-accent', className)} />
+}
+
 
 /** Agent mark, plus the machine it ran on (§13: remote agents are already synced, say where the work happened). */
 export function AgentIcon({ agentId, withDevice = false }: { agentId: string; withDevice?: boolean }) {
@@ -45,17 +53,20 @@ export const STATE_LABEL: Record<LiveState, string> = {
 /** Attention first: what waits on you, then what to check, then what is moving, then the rest. */
 export const ATTENTION_ORDER: LiveState[] = ['your-move', 'needs-check', 'working', 'idle', 'shipped']
 
+/** Each state's colors, shared by the badge and the List view's flipboard so both read as the same state. */
+export const STATE_SURFACE: Record<LiveState, string> = {
+  working: 'border-working-border bg-working text-working-foreground',
+  'needs-check': 'border-review-border bg-review text-review-foreground',
+  'your-move': 'border-attention-border bg-attention font-medium text-attention-foreground',
+  idle: 'border-idle-border bg-idle text-idle-foreground',
+  shipped: 'border-shipped-border bg-shipped text-shipped-foreground',
+}
+
 /** One glance tells working, done-but-unchecked, waiting on you and shipped apart (§6). State is the only thing colored. */
 export function StateBadge({ state }: { state: LiveState }) {
   return (
     <Req ids={['R6.2']}>
-      <Badge variant="outline" className={cn('shrink-0 gap-1.5 font-normal', {
-        'border-working-border bg-working text-working-foreground': state === 'working',
-        'border-review-border bg-review text-review-foreground': state === 'needs-check',
-        'border-attention-border bg-attention font-medium text-attention-foreground': state === 'your-move',
-        'border-idle-border bg-idle text-idle-foreground': state === 'idle',
-        'border-shipped-border bg-shipped text-shipped-foreground': state === 'shipped',
-      })}>
+      <Badge variant="outline" className={cn('shrink-0 gap-1.5 font-normal', STATE_SURFACE[state])}>
         <span className={cn('size-1.5 rounded-full', {
           'bg-working-foreground motion-safe:animate-pulse': state === 'working',
           'bg-review-foreground': state === 'needs-check',
@@ -163,7 +174,8 @@ export function ProductLink({ href, children, className }: { href?: string; chil
  */
 export function LiveIndicator() {
   const { mode } = useWorkspace()
-  const { sourceKind, connection } = useWorkModel()
+  const { sourceKind } = useWorkModel()
+  const connection = useConnection()
   const demonstration = sourceKind === 'sample'
   const live = demonstration || connection.isLive
   return (
@@ -191,7 +203,8 @@ export function LiveIndicator() {
 
 /** Which machines are reporting and how fresh each one is (§13.6). This computer's freshness is the live feed's. */
 export function DeviceFreshness() {
-  const { sourceKind, devices, connection } = useWorkModel()
+  const { sourceKind, devices } = useWorkModel()
+  const connection = useConnection()
   const reportingNow = (device: Device) => sourceKind === 'sample' || device.syncedMinutesAgo !== 0 ? device.online : connection.isLive
   return (
     <Req ids={['R13.8', 'R13.2']}>

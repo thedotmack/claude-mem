@@ -5,7 +5,7 @@
 import { getConnectionStatus, type ConnectionStatus } from './connection-status.ts'
 import { conflictReason, readReviewResponse, type ReviewResult } from './review-response.ts'
 import { toWorkModel } from './to-work-model.ts'
-import type { MappedWorkModel, WorkDataSource, WorkModel } from './work-data-source.ts'
+import type { MappedWorkModel, RuleSaveResult, WorkDataSource, WorkModel } from './work-data-source.ts'
 import { SaveRefusedError } from '../data.ts'
 import type { WorkViewSnapshot, WorkViewSource } from './work-view-api-types.ts'
 
@@ -64,7 +64,7 @@ const isWorkViewSnapshot = (value: unknown): value is WorkViewSnapshot => {
 }
 
 /** POSTs to an origin-guarded work-view route that answers with the snapshot after the change. Anything else throws its reason. */
-async function postForWorkModel(url: string, body: unknown, whatWasSaved: string): Promise<WorkModel> {
+async function postForWorkModel(url: string, body: unknown, whatWasSaved: string): Promise<RuleSaveResult> {
   const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
   let answer: unknown = null
   try { answer = await response.json() } catch { /* A body that isn't JSON leaves only the status to report. */ }
@@ -82,7 +82,8 @@ async function postForWorkModel(url: string, body: unknown, whatWasSaved: string
   if (!isWorkViewSnapshot(answer)) throw new Error(`${whatWasSaved} was saved, but the worker sent back something that is not a work snapshot. Reload to see it.`)
   const model = acceptSnapshot(answer, false)
   lastDeliveredSignature = modelSignature(model)
-  return model
+  const { savedRuleId } = answer as { savedRuleId?: unknown }
+  return { model, savedRuleId: typeof savedRuleId === 'string' ? savedRuleId : null }
 }
 
 export const localSource: WorkDataSource = {
@@ -130,9 +131,9 @@ export const localSource: WorkDataSource = {
   },
 
   saveRuleChange: (change) => postForWorkModel(WORK_VIEW_RULES_URL, change, 'The rule change'),
-  saveFocusChange: (change) => postForWorkModel(WORK_VIEW_FOCUS_URL, change, 'The focus change'),
-  loadRulesInClaudeCode: () => postForWorkModel(WORK_VIEW_LOAD_RULES_URL, {}, 'Loading your rules into Claude Code'),
-  markAgentFinished: (agentId) => postForWorkModel(WORK_VIEW_MARK_AGENT_FINISHED_URL, { agentGroupId: agentId }, 'Marking the agent finished'),
+  saveFocusChange: async (change) => (await postForWorkModel(WORK_VIEW_FOCUS_URL, change, 'The focus change')).model,
+  loadRulesInClaudeCode: async () => (await postForWorkModel(WORK_VIEW_LOAD_RULES_URL, {}, 'Loading your rules into Claude Code')).model,
+  markAgentFinished: async (agentId) => (await postForWorkModel(WORK_VIEW_MARK_AGENT_FINISHED_URL, { agentGroupId: agentId }, 'Marking the agent finished')).model,
 
   subscribeToLiveUpdates(onWorkModel, onConnectionChange) {
     const reportConnection = () => onConnectionChange(currentConnectionStatus())

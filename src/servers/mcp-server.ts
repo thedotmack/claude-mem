@@ -14,6 +14,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+  RootsListChangedNotificationSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { getWorkerPort, workerHttpRequest, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { ensureWorkerStarted } from '../services/worker-spawner.js';
@@ -60,6 +61,7 @@ import { ProgressiveSearchError, progressiveSearchToolError } from '../shared/pr
 import { formatMcpPayload, formatWorkerMcpResponse, mcpTextResult, workerFailureText, serverFailureText, type McpTextPurpose } from './mcp-text-format.js';
 import { getRequestCwd, runWithCwd } from './request-context.js';
 import { parseHttpArgs, startMcpHttpServer, type CwdResolver, type McpHttpOptions } from './mcp-http.js';
+import { createStdioCwdResolver } from './mcp-project-cwd.js';
 import { buildWorkerOriginPolicy } from '../services/worker/http/origin-policy.js';
 
 /**
@@ -94,6 +96,7 @@ const mcpServerDir = (() => {
 // would otherwise auto-spawn a stale worker. The own-dir resolution stays as
 // the fallback for installs without a marketplace copy.
 const WORKER_SCRIPT_PATH = resolveWorkerScriptPath() ?? resolve(mcpServerDir, 'worker-service.cjs');
+const MCP_PLUGIN_ROOT = resolve(mcpServerDir, '..');
 
 function errorIfWorkerScriptMissing(): void {
   if (!mcpServerDirResolutionFailed) return;
@@ -504,7 +507,15 @@ async function ensureWorkerConnection(): Promise<boolean> {
 // query_corpus, which appends to the corpus session) keep prompting.
 const READ_ONLY_TOOL_ANNOTATIONS = { readOnlyHint: true } as const;
 
-const tools = [
+interface McpToolDefinition {
+  name: string;
+  description: string;
+  inputSchema: any;
+  annotations?: any;
+  handler: (args: any) => any;
+}
+
+const tools: McpToolDefinition[] = [
   {
     name: 'dumb_search',
     description: 'Dumb search (optional): Doesn’t reason about the results. Fast, but shallow. Use Smart for reliable recall. This one-call lookup picks records by title word overlap, adds nearby context, and returns up to maxDetails records. Smart search is the default mem-search workflow: search → timeline → selected get_observations.',
@@ -1164,9 +1175,8 @@ function teamBrainJoined(): boolean {
 
 /**
  * One MCP Server. Over stdio there is exactly one; over HTTP every session gets its own.
- * `getCwd` returns the project directory of the request carrying a tool call, resolved
- * for every call, so the project-scoped tools see the caller's project. Without it they
- * use process.cwd().
+ * `getCwd` returns the HTTP request's project directory. Stdio asks the client roots/list,
+ * then uses the process launch directory or a verified PWD fallback from the plugin root.
  */
 function createMcpServer(getCwd?: CwdResolver): Server {
   const server = new Server(
@@ -1180,6 +1190,9 @@ function createMcpServer(getCwd?: CwdResolver): Server {
       },
     }
   );
+
+  const stdioCwd = getCwd ? null : createStdioCwdResolver({ peer: server, pluginRoot: MCP_PLUGIN_ROOT });
+  if (stdioCwd) server.setNotificationHandler(RootsListChangedNotificationSchema, async () => stdioCwd.markRootsStale());
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const advertisedTools = withoutUnjoinedTeamBrainTools(
@@ -1224,7 +1237,8 @@ function createMcpServer(getCwd?: CwdResolver): Server {
 
     try {
       const args = request.params.arguments || {};
-      const result = await (getCwd ? runWithCwd(getCwd(extra), () => tool.handler(args)) : tool.handler(args));
+      const cwd = getCwd ? getCwd(extra) : await stdioCwd!.resolve();
+      const result = await runWithCwd(cwd, () => tool.handler(args));
       spoolWorkStateMcpResult(tool.name, result);
       return result;
     } catch (error: unknown) {
@@ -1376,6 +1390,7 @@ async function main() {
 async function mainHttp(options: McpHttpOptions) {
   const handle = await startMcpHttpServer({
     ...options,
+    pluginRoot: options.pluginRoot ?? MCP_PLUGIN_ROOT,
     originPolicy: buildWorkerOriginPolicy(loadFromFileOnce()),
     createServer: createMcpServer,
   });
