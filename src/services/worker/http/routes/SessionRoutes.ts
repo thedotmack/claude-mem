@@ -823,7 +823,10 @@ export class SessionRoutes extends BaseRouteHandler {
       });
     }
 
-    let prompt = rawPrompt || MEDIA_PROMPT_PLACEHOLDER;
+    // Strip tagged private sections before any length cap: cutting first
+    // could sever a </private> closer and leave the rest of the block visible
+    // to storage (the stripper keeps unbalanced tags verbatim by design).
+    let prompt = stripMemoryTags(rawPrompt || MEDIA_PROMPT_PLACEHOLDER);
 
     const promptByteLength = Buffer.byteLength(prompt, 'utf8');
     if (promptByteLength > MAX_USER_PROMPT_BYTES) {
