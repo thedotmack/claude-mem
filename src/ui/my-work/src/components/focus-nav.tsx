@@ -5,7 +5,8 @@ import { HistoryIcon, SparklesIcon } from 'lucide-react'
 import { ActivePill } from '@/components/bits'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
-import { needsYou, OTHER_FOCUS_AREA_ID, useWorkModel } from '@/data'
+import { needsYou, OTHER_FOCUS_AREA_ID } from '@/data'
+import { useWorkModel } from '@/store'
 import { resolveFocusAreaId } from '@/live/to-focus-model'
 
 /** What the rail can select: My Work filtered to one area (or Other), the Suggested queue, or Past focus. */
