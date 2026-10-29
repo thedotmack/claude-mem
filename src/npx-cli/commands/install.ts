@@ -1451,14 +1451,19 @@ async function promptClaudeModel(options: InstallOptions, interactive: boolean =
   }
 
   const initialValue = allowed.has(initialModel) ? initialModel : 'haiku';
+  const choices = [
+    { value: 'haiku', label: 'Haiku, newest version (recommended — fast, cheap, great for compression)' },
+    { value: 'claude-sonnet-5', label: 'Sonnet 5 (balanced quality and cost)' },
+    { value: 'claude-opus-4-8', label: 'Opus 4.8 (highest quality, slowest)' },
+  ];
+  // A pinned id saved by an older install stays selectable, so rerunning the installer can keep it.
+  if (!choices.some((o) => o.value === initialValue)) {
+    choices.push({ value: initialValue, label: `${initialValue} (your saved pin; never updates)` });
+  }
 
   const result = await p.select<string>({
     message: 'Which Claude model should claude-mem use to compress observations?\nThis runs whenever you and Claude touch a file — keep it cheap and fast.',
-    options: [
-      { value: 'haiku', label: 'Haiku, newest version (recommended — fast, cheap, great for compression)' },
-      { value: 'claude-sonnet-5', label: 'Sonnet 5 (balanced quality and cost)' },
-      { value: 'claude-opus-4-8', label: 'Opus 4.8 (highest quality, slowest)' },
-    ],
+    options: choices,
     initialValue,
   });
 
