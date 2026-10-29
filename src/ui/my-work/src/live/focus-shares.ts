@@ -29,6 +29,8 @@ interface State {
 }
 
 let state: State = { loaded: false, connected: false, shares: {} }
+/** Bumped by every share, stop or forget, so a list read that started earlier never overwrites what they did. */
+let changes = 0
 const listeners = new Set<() => void>()
 const set = (next: Partial<State>) => { state = { ...state, ...next }; listeners.forEach((listener) => listener()) }
 const subscribe = (listener: () => void) => { listeners.add(listener); return () => listeners.delete(listener) }
@@ -55,8 +57,10 @@ async function call<T>(url: string, init?: { method: 'POST'; body: unknown }): P
  * keeps what was read before, and the next read tries again.
  */
 export async function loadFocusShares(): Promise<void> {
+  const startedAt = changes
   try {
     const answer = await call<{ connected: boolean; shares: Record<string, FocusShare> }>('/api/work-view/focus/shares')
+    if (startedAt !== changes) return
     set({ loaded: true, connected: answer.connected, shares: answer.shares ?? {} })
   } catch {
     set({ loaded: true })
@@ -65,6 +69,7 @@ export async function loadFocusShares(): Promise<void> {
 
 /** A link that stopped working elsewhere (another machine, or on cmem.ai) is forgotten here too. */
 function forget(focusAreaId: string) {
+  changes++
   const { [focusAreaId]: _gone, ...shares } = state.shares
   set({ shares })
 }
@@ -73,6 +78,7 @@ function forget(focusAreaId: string) {
 export async function shareFocusArea(focusAreaId: string): Promise<FocusShare> {
   const answer = await call<Omit<FocusShare, 'publishError'> & { sent: boolean }>('/api/work-view/focus/share', { method: 'POST', body: { focusAreaId } })
   const share = { url: answer.url, sharedAt: answer.sharedAt, publishedAt: answer.publishedAt, publishError: null }
+  changes++
   set({ shares: { ...state.shares, [focusAreaId]: share } })
   return share
 }

@@ -144,3 +144,28 @@ describe('FocusShares, one area at a time', () => {
     expect(methods).toEqual(['POST', 'PUT', 'DELETE']);
   });
 });
+
+describe('FocusShares, late answers about an old link', () => {
+  it('a comment read that finds the old link gone does not forget the new one', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'focus-share-'));
+    dirs.push(dir);
+    const NEW = 'b'.repeat(32);
+    let releaseRead!: () => void;
+    const readHeld = new Promise<void>(resolve => { releaseRead = resolve; });
+    let posts = 0;
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      const method = init.method ?? 'GET';
+      if (method === 'POST') { const token = posts++ === 0 ? TOKEN : NEW; return new Response(JSON.stringify({ token, url: `${ORIGIN}/focus/${token}` }), { status: 201 }); }
+      if (method === 'GET') { await readHeld; return new Response(JSON.stringify({ error: 'not_shared' }), { status: 404 }); }
+      return new Response(JSON.stringify({ stopped: true }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const shares = new FocusShares({ origin: () => ORIGIN, credentials: () => ({ token: 't', userId: 'u' }), registryPath: join(dir, 'focus-shares.json'), fetch: fetchImpl });
+    await shares.publish('area-1', page());
+    const oldRead = shares.comments('area-1').catch((error: unknown) => error);
+    await shares.stop('area-1');
+    await shares.publish('area-1', page());
+    releaseRead();
+    expect(await oldRead).toBeInstanceOf(FocusShareError);
+    expect(shares.list()['area-1']?.token).toBe(NEW);
+  });
+});

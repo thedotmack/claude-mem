@@ -89,7 +89,7 @@ export class FocusShares {
       const answer = await this.call('PUT', `/api/focus-share/${existing.token}`, { snapshot: page });
       if (answer.status === 404) {
         // Stopped somewhere else (another machine, or the page's owner on cmem.ai): this link is dead for good.
-        this.remove(focusAreaId);
+        this.remove(focusAreaId, existing.token);
         throw new FocusShareError('This area is no longer shared. Share it again for a new link.', 410);
       }
       const body = this.expect(answer, 'publish the page');
@@ -123,7 +123,7 @@ export class FocusShares {
     const answer = await this.call('DELETE', `/api/focus-share/${existing.token}`);
     // 404 too: there is nothing left to stop.
     if (answer.status !== 404) this.expect(answer, 'stop sharing');
-    this.remove(focusAreaId);
+    this.remove(focusAreaId, existing.token);
   }
 
   /** The shared page's comments, oldest first, with when its page was last published. */
@@ -131,7 +131,7 @@ export class FocusShares {
     const existing = this.requireShared(focusAreaId);
     const answer = await this.call('GET', `/api/focus-share/${existing.token}`);
     if (answer.status === 404) {
-      this.remove(focusAreaId);
+      this.remove(focusAreaId, existing.token);
       throw new FocusShareError('This area is no longer shared.', 410);
     }
     const body = this.expect(answer, 'read the comments');
@@ -143,7 +143,7 @@ export class FocusShares {
     const existing = this.requireShared(focusAreaId);
     const answer = await this.call('POST', `/api/focus-share/${existing.token}/comments`, { body: text });
     if (answer.status === 404) {
-      this.remove(focusAreaId);
+      this.remove(focusAreaId, existing.token);
       throw new FocusShareError('This area is no longer shared.', 410);
     }
     return this.expect(answer, 'post the comment').comment as FocusShareComment;
@@ -221,8 +221,10 @@ export class FocusShares {
     renameSync(temp, this.options.registryPath);
   }
 
-  private remove(focusAreaId: string): void {
+  /** Forgets the area's share, but only the share `token` names: a late answer about an old link never drops a newer one. */
+  private remove(focusAreaId: string, token: string): void {
     const registry = this.read();
+    if (registry[focusAreaId]?.token !== token) return;
     delete registry[focusAreaId];
     this.write(registry);
   }
