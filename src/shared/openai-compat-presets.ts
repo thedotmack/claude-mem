@@ -114,6 +114,16 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     hint: 'rc_live_ key from runcrate.ai; vendor-prefixed open model ids such as deepseek-ai/DeepSeek-V4.1-Flash or zai-org/GLM-5.3.',
   },
   {
+    id: 'obscurify-ai',
+    label: 'Obscurify.ai (obscurify.ai)',
+    baseUrl: 'https://obscurify.ai/v1',
+    // A cheap, fast model for the same reason as NVIDIA's default: extraction
+    // is high volume. Ids are vendor-prefixed and passed verbatim.
+    defaultModel: 'deepseek/deepseek-v4-flash',
+    requiresApiKey: true,
+    hint: 'sk-obs1_ key from obscurify.ai/account; vendor-prefixed model ids such as deepseek/deepseek-v4-flash or z-ai/glm-5.3. Prompts and responses are not stored.',
+  },
+  {
     id: 'deepseek',
     label: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com/v1',
