@@ -58,6 +58,7 @@ type Step = keyof typeof STEP_MODELS;
 /** The owner's asks the language step reads: the newest of the skill's default 14-day window. */
 const LANGUAGE_WINDOW_MS = 14 * 86400000;
 const LANGUAGE_SAMPLE = 40;
+const LANGUAGE_ASK_CHARS = 280;
 /** A language name the step may answer: letters, spaces, hyphens and parentheses, such as "Turkish" or "Chinese (Simplified)". */
 const LANGUAGE_NAME = /^\p{L}[\p{L} ()'-]{0,39}$/u;
 
@@ -280,19 +281,25 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
      * The owner's language, decided once per run from the owner's own asks and named in every grouping, review, focus
      * and story question. Those run as separate agents that each see only their own input (a review batch in "amend"
      * mode sees only its later asks), so left to the skill's rule they could each pick a different language. The goals
-     * step reads every owner prompt in one question, so it keeps the skill's own rule. Null (no asks, or no usable
-     * answer) leaves the skills' rule in place.
+     * step reads every owner prompt in one question, so it keeps the skill's own rule. Null (no asks, no usable
+     * answer, or a failed read) leaves the skills' rule in place: the language is a hint, never a reason to fail a run.
      */
     let language: Promise<string | null> | undefined;
     const ownerLanguage = () => language ??= (async () => {
-      const database = openDatabase();
       let asks: string[];
       try {
-        asks = readCandidates(database, { sinceEpoch: now() - LANGUAGE_WINDOW_MS, excludedPromptIds: readLedger(ledgerDir).agentWrittenPromptIds })
-          .flatMap(candidate => candidate.asks as Array<{ at: string | null; text: string }>)
-          .sort((a, b) => (Date.parse(b.at ?? '') || 0) - (Date.parse(a.at ?? '') || 0))
-          .slice(0, LANGUAGE_SAMPLE).map(ask => ask.text);
-      } finally { database.close(); }
+        const database = openDatabase();
+        try {
+          // Every ask, not each conversation's first ten: a long conversation's recent asks are the ones in the window.
+          const since = now() - LANGUAGE_WINDOW_MS;
+          asks = readCandidates(database, { sinceEpoch: since, fullAsks: true, excludedPromptIds: readLedger(ledgerDir).agentWrittenPromptIds })
+            .flatMap(candidate => candidate.asks as Array<{ at: string | null; text: string }>)
+            .map(ask => ({ at: Date.parse(ask.at ?? ''), text: ask.text }))
+            .filter(ask => ask.at >= since)
+            .sort((a, b) => b.at - a.at)
+            .slice(0, LANGUAGE_SAMPLE).map(ask => ask.text.slice(0, LANGUAGE_ASK_CHARS));
+        } finally { database.close(); }
+      } catch { return null; }
       if (!asks.length) return null;
       return timed('language', async () => {
         try {

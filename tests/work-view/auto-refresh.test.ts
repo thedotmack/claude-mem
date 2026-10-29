@@ -493,6 +493,64 @@ describe('review repair', () => {
   });
 });
 
+describe('owner language', () => {
+  /** Two one-conversation requests: the fixture's a, and b, a long conversation whose first twelve asks are older than
+   * the window and whose last three are recent. */
+  function longConversation(database: Database, dir: string) {
+    database.prepare('INSERT INTO sdk_sessions VALUES (?, ?, ?, ?, ?, ?, ?)').run(2, 'claude', 'b', 'm2', 'repo/tree', 'Build old feature 1', NOW - 20 * DAY);
+    const prompt = database.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)');
+    for (let index = 1; index <= 12; index++) prompt.run(2, index, `Build old feature ${index}`, NOW - 20 * DAY + index * 60000);
+    for (let index = 1; index <= 3; index++) prompt.run(2, 12 + index, `Kartları Türkçe göster ${index}`, NOW - DAY + index * 60000);
+    const decisions = join(dir, 'decisions.json');
+    writeFileSync(decisions, JSON.stringify({ groups: ['a', 'b'].map(session => ({ title: `Request ${session}`, conversations: [key(session)] })) }));
+    runCli(['apply', decisions], { dir, database, now: NOW, print: () => {} });
+  }
+  const answer = (languagePrompts: string[]) => async (prompt: string) => {
+    if (prompt.includes('Which human language')) { languagePrompts.push(prompt); return '{"language": "Turkish"}'; }
+    if (prompt.includes('Do only section 2')) {
+      const shows = JSON.parse(readFileSync(/is in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+      return JSON.stringify({ reviews: shows.map((show: any) => ({ groupId: show.groupId, state: 'in-progress', percent: 10, summary: 'Started.', reviewBasis: show.reviewBasis })) });
+    }
+    if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+    return JSON.stringify({ narrative: 'Started.', preferences: [] });
+  };
+
+  it('samples the asks typed in the window, newest first, not each conversation\'s first ten', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-language-window-'));
+    try {
+      const database = fixtureDatabase();
+      longConversation(database, dir);
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 2, ungrouped: 0, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
+      const languagePrompts: string[] = [];
+      expect(await task.run(answer(languagePrompts), 'codex')).toBe('2 requests reviewed, 2 requests placed, story written.');
+      expect(languagePrompts).toHaveLength(1);
+      const sample: string[] = JSON.parse(/```json\n([\s\S]*?)\n```/.exec(languagePrompts[0])![1]);
+      expect(sample).toEqual(['Kartları Türkçe göster 3', 'Kartları Türkçe göster 2', 'Kartları Türkçe göster 1', 'Build the release cards']);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a failed read of the asks leaves the skill\'s rule and never fails the run', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-language-locked-'));
+    try {
+      const database = fixtureDatabase();
+      longConversation(database, dir);
+      // The first full read of the asks is the language sample; the reviews' own reads afterwards work.
+      let locked = true;
+      const flaky = () => ({ prepare: (sql: string) => {
+        if (locked && /SELECT id, session_db_id, prompt_number, prompt_text, created_at_epoch/.test(sql)) { locked = false; throw new Error('database is locked'); }
+        return database.prepare(sql);
+      }, close() {} });
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 2, ungrouped: 0, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: flaky, now: () => NOW, saveFocus: focusWriter(database).save });
+      const languagePrompts: string[] = [], prompts: string[] = [];
+      const ask = answer(languagePrompts);
+      expect(await task.run(async prompt => { prompts.push(prompt); return ask(prompt); }, 'codex')).toBe('2 requests reviewed, 2 requests placed, story written.');
+      expect(locked).toBe(false);
+      expect(languagePrompts).toHaveLength(0);
+      expect(prompts.some(prompt => prompt.includes("The owner's language for this run"))).toBe(false);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
 describe('parallel reviews', () => {
   it('review batches run at the same time, and every batch is saved', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-parallel-'));
