@@ -475,6 +475,23 @@ describe('findClaudeExecutable on Windows', () => {
 
     expect(findClaudeExecutable('SDK')).toBe('C:\\install\\claude.exe');
   });
+
+  it('never probes a where hit in the current directory, even at a higher version', () => {
+    // where.exe lists the current directory first, and hooks run in the
+    // user's project: a planted claude.exe there must not be a candidate.
+    const plantedClaude = join(process.cwd(), 'claude.exe');
+    installFakes({
+      platform: 'win32',
+      whereOutputs: {
+        claude: `${plantedClaude}\r\nC:\\install\\claude.exe\r\n`,
+      },
+    });
+    fakeClis.set(plantedClaude, { version: '9.9.9', supportsDontAsk: true });
+    fakeClis.set('C:\\install\\claude.exe', { version: '2.1.176', supportsDontAsk: true });
+
+    expect(findClaudeExecutable('SDK')).toBe('C:\\install\\claude.exe');
+    expect(probeCalls.some((call) => call.path === plantedClaude)).toBe(false);
+  });
 });
 
 describe('findClaudeExecutable code-page-garbled where output (#4694)', () => {

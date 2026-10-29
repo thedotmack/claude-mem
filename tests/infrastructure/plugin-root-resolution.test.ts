@@ -131,6 +131,30 @@ describe('resolvePluginRoot (shared worker-script oracle)', () => {
     const result = resolvePluginRoot({ ...roots, cwd: repoRoot });
     expect(result).toMatchObject({ root: join(repoRoot, 'plugin'), version: repoVersion });
   });
+
+  it('does not trust a project that merely contains claude-mem in node_modules', () => {
+    // claude-mem running from <project>/node_modules/claude-mem sits "under"
+    // the project, but the project is not its checkout: the project's own
+    // higher-version plugin/scripts/worker-service.cjs must not win.
+    const installed = writePluginRoot(cacheVersionDir('13.14.0'));
+    writePluginRoot(join(roots.cwd, 'plugin'));
+    writeFileSync(join(roots.cwd, 'package.json'), JSON.stringify({ version: '99.0.0' }));
+    const vendoredScripts = join(roots.cwd, 'node_modules', 'claude-mem', 'plugin', 'scripts');
+    mkdirSync(vendoredScripts, { recursive: true });
+    writeFileSync(join(vendoredScripts, 'mcp-server.cjs'), '// vendored claude-mem\n');
+    expect(resolvePluginRoot({ ...roots, runningModuleFile: join(vendoredScripts, 'mcp-server.cjs') })?.root).toBe(installed);
+  });
+
+  it('trusts the cwd when the running module is that checkout\'s own built plugin', () => {
+    // A dev checkout runs its own plugin/scripts bundles from the repo root.
+    writePluginRoot(join(roots.cwd, 'plugin'));
+    writeFileSync(join(roots.cwd, 'package.json'), JSON.stringify({ version: '99.0.0' }));
+    const ownBundle = join(roots.cwd, 'plugin', 'scripts', 'worker-service.cjs');
+    expect(resolvePluginRoot({ ...roots, runningModuleFile: ownBundle })).toMatchObject({
+      root: join(roots.cwd, 'plugin'),
+      version: '99.0.0',
+    });
+  });
 });
 
 describe('findMissingPluginDependencies', () => {
