@@ -89,3 +89,18 @@ describe('local feed status', () => {
     assert.equal(getConnectionStatus({ ...live, staleAfterMs: -1 }).staleAfterMs, 35_000)
   })
 })
+
+describe('cloud viewer feed status', () => {
+  it('names the cloud feed and your synced computers, never this computer', () => {
+    assert.equal(getConnectionStatus({ now: 0, where: 'cloud' }).label, 'Connecting to cloud feed')
+    const status = getConnectionStatus({ ...live, where: 'cloud' })
+    assert.equal(status.state, 'live')
+    assert.equal(status.label, 'Live updates')
+    assert.ok(status.detail.includes('as your computers sync'))
+    assert.ok(status.tooltip.includes(`Last successful cloud check: ${check}`))
+    const stale = getConnectionStatus({ ...live, where: 'cloud', transportConnected: false, reconnecting: true, now: 99_000 + LOCAL_FEED_STALE_AFTER_MS + 1 })
+    assert.equal(stale.label, 'Cloud feed stale')
+    assert.ok(!stale.detail.includes('this computer'))
+  })
+})
+

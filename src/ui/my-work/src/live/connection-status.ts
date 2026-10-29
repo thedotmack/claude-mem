@@ -16,6 +16,8 @@ export interface ConnectionStatusInput {
   lastSuccessfulCheckReceivedAt?: number | null
   wallNow?: number | null
   staleAfterMs?: number
+  /** Where the page is served: the worker on this computer, or the cloud viewer that pulls your synced devices. */
+  where?: 'local' | 'cloud'
 }
 
 export interface ConnectionStatus {
@@ -61,7 +63,11 @@ export function getConnectionStatus({
   lastSuccessfulCheckReceivedAt = null,
   wallNow = null,
   staleAfterMs = LOCAL_FEED_STALE_AFTER_MS,
+  where = 'local',
 }: ConnectionStatusInput): ConnectionStatus {
+  const cloud = where === 'cloud'
+  const feed = cloud ? 'cloud feed' : 'local feed'
+  const Feed = cloud ? 'Cloud feed' : 'Local feed'
   const threshold = Number.isFinite(staleAfterMs) && staleAfterMs > 0 ? staleAfterMs : LOCAL_FEED_STALE_AFTER_MS
   const eventAgeMs = age(now, lastEventAt)
   const sourceAgeMs = age(now, lastSuccessfulCheckReceivedAt)
@@ -69,37 +75,39 @@ export function getConnectionStatus({
   const clockSkew = successfulCheckAt !== null && wallNow !== null && Number.isFinite(wallNow) && sourceAgeMs !== null
     && Math.abs(wallNow - Date.parse(successfulCheckAt) - sourceAgeMs) > 60_000
   let state: ConnectionState = 'connecting'
-  let label = 'Connecting to local feed'
-  let detail = 'Waiting for updates from this computer.'
+  let label = `Connecting to ${feed}`
+  let detail = cloud ? 'Waiting for updates synced from your computers.' : 'Waiting for updates from this computer.'
   let tone: ConnectionTone = 'neutral'
 
   if (!transportConnected) {
     if (reconnecting && eventAgeMs !== null && eventAgeMs > threshold) {
-      state = 'stale'; label = 'Local feed stale'; tone = 'warning'
-      detail = 'Reconnecting to this computer. No fresh update has arrived; showing the last received work.'
+      state = 'stale'; label = `${Feed} stale`; tone = 'warning'
+      detail = `Reconnecting to ${cloud ? 'your cloud viewer' : 'this computer'}. No fresh update has arrived; showing the last received work.`
     } else if (reconnecting) {
-      state = 'reconnecting'; label = 'Reconnecting to local feed'; tone = 'warning'
-      detail = 'Connection interrupted. Showing the last received work while the local feed reconnects.'
+      state = 'reconnecting'; label = `Reconnecting to ${feed}`; tone = 'warning'
+      detail = `Connection interrupted. Showing the last received work while the ${feed} reconnects.`
     }
   } else if (eventAgeMs === null || eventAgeMs > threshold) {
     if (lastEventAt !== null) {
-      state = 'stale'; label = 'Local feed stale'; tone = 'warning'
-      detail = 'Local updates have stopped arriving. Showing the last received work.'
+      state = 'stale'; label = `${Feed} stale`; tone = 'warning'
+      detail = `${cloud ? 'Cloud' : 'Local'} updates have stopped arriving. Showing the last received work.`
     }
   } else if (sourceConnected === false) {
-    state = 'unavailable'; label = 'Local source unavailable'; tone = 'warning'
+    state = 'unavailable'; label = `${cloud ? 'Cloud' : 'Local'} source unavailable`; tone = 'warning'
     detail = 'Connected, but saved work cannot be read right now. Showing the last received work.'
   } else if (sourceConnected === true && successfulCheckAt !== null && sourceAgeMs !== null) {
     if (sourceAgeMs > threshold) {
-      state = 'stale'; label = 'Local feed stale'; tone = 'warning'
+      state = 'stale'; label = `${Feed} stale`; tone = 'warning'
       detail = 'Connected, but the saved work has not been refreshed. Showing the last received work.'
     } else {
       state = 'live'; label = 'Live updates'; tone = 'positive'
-      detail = 'Updates are arriving from this computer. Each card shows when its work was last updated.'
+      detail = cloud
+        ? 'Updates are arriving as your computers sync. Each card shows when its work was last updated.'
+        : 'Updates are arriving from this computer. Each card shows when its work was last updated.'
     }
   }
 
-  const tooltip = `Last successful local check: ${successfulCheckAt ?? 'not yet confirmed'}. `
+  const tooltip = `Last successful ${cloud ? 'cloud' : 'local'} check: ${successfulCheckAt ?? 'not yet confirmed'}. `
     + (clockSkew ? 'Source and browser clocks differ; freshness uses received heartbeats. ' : '')
     + 'Connection status does not indicate an agent is running.'
   return { state, label, detail, tone, isLive: state === 'live', eventAgeMs, sourceAgeMs,
