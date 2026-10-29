@@ -79,6 +79,18 @@ describe('readLastLines (#1203 OOM fix)', () => {
     expect(resultLines[2]).toStartWith('19:');
   });
 
+  it('returns complete newline-terminated lines crossing the initial chunk boundary', () => {
+    const lastLine = 'last:' + 'X'.repeat(70000);
+    writeFileSync(testFile, 'first\n' + lastLine + '\n', 'utf-8');
+    expect(readLastLines(testFile, 1).lines).toBe(lastLine);
+  });
+
+  it('returns complete unterminated lines crossing the initial chunk boundary', () => {
+    const lastLine = 'last:' + 'X'.repeat(70000);
+    writeFileSync(testFile, 'first\n' + lastLine, 'utf-8');
+    expect(readLastLines(testFile, 1).lines).toBe(lastLine);
+  });
+
   it('should provide accurate totalEstimate when entire file is read', () => {
     const lines = Array.from({ length: 5 }, (_, i) => `line${i}`);
     writeFileSync(testFile, lines.join('\n') + '\n', 'utf-8');
