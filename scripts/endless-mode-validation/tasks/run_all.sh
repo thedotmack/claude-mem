@@ -2,7 +2,7 @@
 # Run REPS sessions per arm side by side (each in its own stack), then extract usage. Results: <out>/results.sqlite.
 # Usage: run_all.sh <out dir> <reps> [extra run_session.py args...]
 # EMV_ARMS picks the arms [plain endless]; EMV_ARM_SUFFIX names a variant (e.g. -obs55 with EMV_OBSERVER_MODEL set).
-# Every stack is stopped on exit, on an error and on an interrupt.
+# Every session and stack is stopped on exit, on an error and on an interrupt.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 out=$1 reps=$2; shift 2
@@ -16,15 +16,16 @@ for r in $(seq 1 "$reps"); do
   done
 done
 
-started=()
+started=() pids=()
 cleanup() {
-  local d
+  local d p
+  # Sessions first (each with its claude process), so none keeps spending once its stack is gone.
+  for p in ${pids[@]+"${pids[@]}"}; do pkill -TERM -P "$p" 2>/dev/null || true; kill -TERM "$p" 2>/dev/null || true; done
   for d in ${started[@]+"${started[@]}"}; do "$here/stack.sh" stop "${d%%:*}" "${d#*:}" || true; done
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
-pids=()
 for r in $(seq 1 "$reps"); do
   for arm in "${arms[@]}"; do
     if [[ $arm == plain ]]; then base=39100; else base=39200; fi
