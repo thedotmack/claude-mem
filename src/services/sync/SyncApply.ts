@@ -174,6 +174,7 @@
 //     'completed' even if a live local session later adopts them.
 
 import { emitContextInvalidation } from '../../shared/context-invalidation.js';
+import { syncReplicaMediaLinks } from '../media/replica.js';
 import type { Database } from 'bun:sqlite';
 import type { CurrentRow, StoredObservation, StoredSummary, StoredUserPrompt } from './ChromaSync.js';
 import { logger } from '../../utils/logger.js';
@@ -1250,6 +1251,7 @@ export class SyncApply {
       // replaced too — otherwise the previous revision's paths stay
       // searchable and the new ones never resolve. Inside the batch tx.
       replaceObservationFileIndex(this.db, existing.id, fieldString(op, body, 'files_read'), fieldString(op, body, 'files_modified'));
+      syncReplicaMediaLinks(this.db, existing.id, fieldString(op, body, 'metadata'), this.now());
       this.forwardObservation(existing.id, op, body, chromaJobs, true);
       return 'applied';
     }
@@ -1284,6 +1286,7 @@ export class SyncApply {
       });
       return 'stale';
     }
+    syncReplicaMediaLinks(this.db, inserted.id, fieldString(op, body, 'metadata'), this.now());
 
     // Pulled observations bypass storeObservations, so their paths are
     // indexed here; inside the batch tx, atomic with the row itself.

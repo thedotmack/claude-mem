@@ -1,0 +1,68 @@
+name: Media native runtime
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'tests/media/**'
+      - 'tests/fixtures/media-v1/**'
+      - 'scripts/**'
+      - 'plugin/**'
+      - 'package.json'
+      - '.github/workflows/media-runtime.yml'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  installed-runtime:
+    name: Installed decoder · ${{ matrix.runner }}
+    # Standard native runners and architecture labels:
+    # https://docs.github.com/en/actions/reference/runners/github-hosted-runners
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
+          - macos-15
+          - macos-15-intel
+          # Matches windows.yml's VS2022/node-gyp compatibility requirement.
+          - windows-2022
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    env:
+      CLAUDE_MEM_MEDIA_CAPTURE_ENABLED: 'false'
+      CLAUDE_MEM_MEDIA_INFERENCE_ENABLED: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - name: Install build dependencies
+        run: npm install --no-audit --no-fund
+      - name: Check converter types and real decoder fixtures
+        run: |
+          npm run typecheck
+          npm run test:media-converter
+          bun test tests/media/contract.test.ts tests/media/evaluation.test.ts
+          bun scripts/media/evaluate.ts
+      - name: Build shipped worker and validate runtime dependency policy
+        run: |
+          npm run build
+          npm run check:postinstall-allowlist
+      - name: Convert through fresh plugin and installed npm tarball
+        # The script installs in fresh temp directories and invokes media-smoke
+        # from the shipped worker. It also boots with Sharp removed and flags off.
+        run: npm run smoke:clean-room
+      - name: Build and execute shipped Windows binary with native sidecar
+        if: runner.os == 'Windows'
+        run: |
+          npm run build:binaries
+          npm run smoke:media-binary

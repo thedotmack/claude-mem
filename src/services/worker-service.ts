@@ -43,8 +43,10 @@ import { isWorkerAutostartDisabled } from '../shared/worker-autostart.js';
 export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 import { resolveRuntimeContext } from './hooks/runtime-selector.js';
+import { MediaError } from '../shared/media-contract.js';
 
 declare const __DEFAULT_PACKAGE_VERSION__: string;
+declare const __CMEM_MEDIA_STANDALONE__: boolean;
 const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
 
 // Exit code for "started but could not serve": the worker booted but never
@@ -153,6 +155,7 @@ import { Database as BunDatabase } from 'bun:sqlite';
 import { WorkViewRoutes } from './worker/http/routes/WorkViewRoutes.js';
 import { SessionRoutes } from './worker/http/routes/SessionRoutes.js';
 import { DataRoutes } from './worker/http/routes/DataRoutes.js';
+import { MediaRoutes } from './worker/http/routes/MediaRoutes.js';
 import { AdvisorRoutes } from './worker/http/routes/AdvisorRoutes.js';
 import { WorkStateRoutes } from './worker/http/routes/WorkStateRoutes.js';
 import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
@@ -638,6 +641,10 @@ export class WorkerService implements WorkerRef {
       sessionRoutes.ensureGeneratorRunning(sessionDbId, source),
     );
     this.server.registerRoutes(new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime));
+    this.server.registerRoutes(new MediaRoutes(
+      () => this.dbManager.getMediaStore(),
+      id => this.dbManager.getMediaReplicaResolver().resolve(id),
+    ));
     this.server.registerRoutes(new AdvisorRoutes(this.dbManager));
     this.server.registerRoutes(new WorkStateRoutes(this.dbManager));
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
@@ -1593,6 +1600,21 @@ function runServerApiKeyCli(args: string[]): never {
 
 async function main() {
   const { command, args: commandArgs } = parseWorkerServiceCommand(process.argv.slice(2));
+  // Load the bundle without binding a port or depending on a running worker.
+  if (command === '--version') {
+    console.log(packageVersion);
+    return;
+  }
+  if (command === 'media-smoke') {
+    try {
+      const { runMediaRuntimeSmoke } = await import('./media/smoke.js');
+      await runMediaRuntimeSmoke();
+    } catch (error) {
+      console.error(JSON.stringify({ mediaRuntime: 'failed', code: error instanceof MediaError ? error.code : 'decoder_unavailable' }));
+      process.exitCode = 1;
+    }
+    return;
+  }
 
   const hookInitiatedCommands = ['start', 'hook', 'restart', '--daemon'];
   if ((command === undefined || hookInitiatedCommands.includes(command)) && isPluginDisabledInClaudeSettings()) {
@@ -2223,7 +2245,9 @@ const isMainModule = typeof require !== 'undefined' && typeof module !== 'undefi
     || process.argv[1]?.endsWith('worker-service.cjs')
     || process.argv[1]?.replaceAll('\\', '/') === __filename?.replaceAll('\\', '/');
 
-if (isMainModule) {
+// Bun's compiled CJS entry can have a module parent. The binary build defines
+// this flag explicitly; source/library imports retain their normal semantics.
+if (isMainModule || (typeof __CMEM_MEDIA_STANDALONE__ !== 'undefined' && __CMEM_MEDIA_STANDALONE__)) {
   main().catch((error) => {
     if (isHookStdoutClosed(error)) {
       // The session closed before the hook wrote its output. Nothing to fix.

@@ -483,6 +483,9 @@ async function buildHooks() {
       description: 'Runtime dependencies for claude-mem bundled hooks',
       type: 'module',
       dependencies: {
+        // Native decoder must remain external and be installed for each host.
+        // https://sharp.pixelplumbing.com/install/#bundlers
+        'sharp': packageJson.dependencies.sharp,
         'zod': '^4.4.3',
         // Exact, not a range: the worker only installs a tree-sitter executable
         // whose SHA-256 is pinned for this version
@@ -524,12 +527,12 @@ async function buildHooks() {
       // from the bundles below — so a server needs them in the plugin's own
       // runtime closure or the lazy path dies with "Cannot find module
       // 'onnxruntime-node'".
-      // sharp is deliberately NOT declared here: it is a hard dependency of
-      // @huggingface/transformers, so it installs and hoists into
-      // plugin/node_modules with it — and declaring it directly would trip
-      // scripts/check-postinstall-allowlist.js (sharp carries an `install`
-      // script), which prepublishOnly enforces. It is still marked external in
-      // the bundles below so the trio resolves at runtime, never at build time.
+      // sharp is declared above as a direct dependency (the media decoder);
+      // @huggingface/transformers depends on it too and shares the hoisted copy
+      // in plugin/node_modules when their ranges overlap. sharp 0.35
+      // ships no install/preinstall/postinstall script, so it passes
+      // scripts/check-postinstall-allowlist.js. It is still marked external in
+      // the bundles below so it resolves at runtime, never at build time.
       optionalDependencies: {
         '@huggingface/transformers': '^4.2.0',
       },
@@ -604,6 +607,7 @@ async function buildHooks() {
       ...SOURCEMAP_OPTS,
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
       external: [
+        'sharp',
         'bun:sqlite',
         // bun:ffi backs Windows listen-socket HANDLE_FLAG_INHERIT clearing (#3300).
         'bun:ffi',
@@ -929,7 +933,9 @@ async function buildHooks() {
       // plugin/node_modules instead of being inlined (keeps the bundle slim). The
       // worker and MCP server inline zod because a Codex or Claude Desktop copy of
       // the plugin may have no node_modules.
-      external: ['bun:sqlite', 'zod', ...POSTHOG_OPTIONAL_IMPORTS],
+      // processor.ts reaches ingestObservation's lazy media converter; keep
+      // the native decoder external exactly as the worker bundle does.
+      external: ['sharp', 'bun:sqlite', 'zod', ...POSTHOG_OPTIONAL_IMPORTS],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
         ...DIRNAME_DEFINE

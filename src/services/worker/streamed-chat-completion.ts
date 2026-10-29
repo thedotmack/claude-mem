@@ -147,6 +147,11 @@ export interface ChatCompletionRequest {
   liveness: StreamLiveness | null;
   /** Names the provider in error messages. */
   label: string;
+  /**
+   * False: no `max_completion_tokens` resend (#4003). An image request is
+   * never resent that way; its refusal reaches `classify` instead.
+   */
+  allowMaxCompletionTokensRetry?: boolean;
   /** The provider's classifier, for HTTP errors, network errors and in-stream error objects. */
   classify: (input: ChatCompletionClassifyInput) => ClassifiedProviderError;
 }
@@ -289,7 +294,9 @@ export async function sendChatCompletion(request: ChatCompletionRequest): Promis
   const { max_tokens: _ignoredCap, ...bodyWithoutCap } = request.body;
   const bodies = [
     { ...bodyWithoutCap, max_tokens: request.maxOutputTokens },
-    { ...bodyWithoutCap, max_completion_tokens: request.maxOutputTokens },
+    ...(request.allowMaxCompletionTokensRetry === false
+      ? []
+      : [{ ...bodyWithoutCap, max_completion_tokens: request.maxOutputTokens }]),
   ];
   // Re-read per send: another query may have learned the endpoint refuses streaming.
   let streamThisSend = request.liveness !== null && streamsChatCompletion(request.url);

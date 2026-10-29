@@ -1,0 +1,39 @@
+<observation>
+  <type>discovery</type>
+  <title>Settings page shows the sync toggle disabled</title>
+  <subtitle>Screenshot of the dashboard settings panel</subtitle>
+  <facts>
+    <fact>The Cloud sync toggle is rendered in the off position</fact>
+  </facts>
+  <narrative>The first screenshot shows the settings panel with cloud sync disabled.</narrative>
+  <concepts>
+    <concept>how-it-works</concept>
+  </concepts>
+  <files_read>
+  </files_read>
+  <files_modified>
+  </files_modified>
+  <attachments>
+    <attachment>event1_image1</attachment>
+  </attachments>
+</observation>
+<observation>
+  <type>discovery</type>
+  <title>Error banner reports an expired token</title>
+  <subtitle>Second screenshot shows an authentication banner</subtitle>
+  <facts>
+    <fact>The banner text reads "Token expired"</fact>
+  </facts>
+  <narrative>The second screenshot shows an authentication error banner.</narrative>
+  <concepts>
+    <concept>problem-solution</concept>
+  </concepts>
+  <files_read>
+  </files_read>
+  <files_modified>
+  </files_modified>
+  <attachments>
+    <attachment>event1_image2</attachment>
+    <attachment>event1_image1</attachment>
+  </attachments>
+</observation>
