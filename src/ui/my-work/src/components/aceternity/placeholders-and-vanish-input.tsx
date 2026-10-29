@@ -154,13 +154,6 @@ export function PlaceholdersAndVanishInput({
     animateFrame(start);
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    // Local fix: an Enter that confirms an IME candidate is not a submit.
-    if (e.key === "Enter" && !animating && !e.nativeEvent.isComposing) {
-      vanishAndSubmit();
-    }
-  };
-
   // Local fix: particles are built only here, at submit, not on every keystroke; and an empty
   // field never starts the animation, since only the animation's end clears `animating`.
   const vanishAndSubmit = () => {
@@ -181,8 +174,11 @@ export function PlaceholdersAndVanishInput({
     }
   };
 
+  // Local fix: Enter submits through the form only (the browser skips an IME-confirming Enter),
+  // so the value is still there when onSubmit runs; a submit mid-animation is ignored.
   const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    if (animating) return;
     vanishAndSubmit();
     onSubmit && onSubmit(e);
   };
@@ -209,7 +205,6 @@ export function PlaceholdersAndVanishInput({
             onChange && onChange(e);
           }
         }}
-        onKeyDown={handleKeyDown}
         ref={inputRef}
         id={inputId}
         value={value}
