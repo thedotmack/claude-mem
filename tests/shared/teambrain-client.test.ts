@@ -242,8 +242,9 @@ describe('teamBrainUrlProblem', () => {
 });
 
 describe('teamBriefReserveChars', () => {
-  it('reserves nothing without a team, else the brief and the memory instructions after it', () => {
-    expect(teamBriefReserveChars({})).toBe(0);
+  it('reserves the memory instructions whenever they are on, plus the brief with a team', () => {
+    expect(teamBriefReserveChars({})).toBe(MEMORY_PLUGIN_INSTRUCTIONS.length + 2);
+    expect(teamBriefReserveChars({ CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: 'false' })).toBe(0);
     expect(teamBriefReserveChars({ CLAUDE_MEM_TEAMBRAIN_URL: 'https://cmem.ai' })).toBe(TEAM_BRIEF_RESERVE_CHARS + MEMORY_PLUGIN_INSTRUCTIONS.length + 2);
     expect(teamBriefReserveChars({ CLAUDE_MEM_TEAMBRAIN_URL: 'https://cmem.ai', CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: 'false' })).toBe(TEAM_BRIEF_RESERVE_CHARS);
   });
