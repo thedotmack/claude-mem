@@ -17,7 +17,7 @@
  * exactly the "small project got crowded out" case -- we must fall back to the
  * real filtered query, which is cheap precisely because that filter is selective.
  */
-import { afterAll, describe, it, expect, beforeEach, mock } from 'bun:test';
+import { afterAll, afterEach, describe, it, expect, beforeEach, mock } from 'bun:test';
 // Capture the current exports before mock.module mutates the live namespace, and
 // re-register them in afterAll so these mocks do not leak into later files
 // (bun's mock.module is process-global; mock.restore() does NOT undo it).
@@ -32,6 +32,7 @@ let calls: Call[] = [];
 
 interface CorpusDoc {
   id: string;
+  sqlite_id?: number;
   project: string;
   merged_into_project?: string;
   doc_type: string;
@@ -46,6 +47,7 @@ for (let i = 0; i < 1000; i++) {
   const project = i % 50 === 0 ? 'tiny' : i % 7 === 0 ? 'big-old' : 'big';
   CORPUS.push({
     id: `obs_${i}_fact_0`,
+    sqlite_id: i,
     project,
     // addDocuments strips empty metadata, so unmerged docs have no such key.
     ...(project === 'big-old' ? { merged_into_project: 'big' } : {}),
@@ -96,7 +98,7 @@ mock.module('../../../src/utils/logger.js', () => ({
   logger: { info: () => {}, debug: () => {}, warn: () => {}, error: () => {}, failure: () => {} },
 }));
 
-import { ChromaSync } from '../../../src/services/sync/ChromaSync.js';
+import { ChromaSync, type ChromaQueryProgress } from '../../../src/services/sync/ChromaSync.js';
 
 afterAll(() => {
   mock.module('../../../src/services/sync/ChromaMcpManager.js', () => realChromaMcpManagerSnapshot);
@@ -385,5 +387,124 @@ describe('ChromaSync.queryChroma selectivity memo', () => {
 
     expect(memoOf(sync).size).toBe(1);
     expect(memoOf(sync).has(JSON.stringify({ project: 'absent-256' }))).toBe(true);
+  });
+});
+
+/**
+ * The filtered fallback narrowed to the caller's SQLite rows (#5091). Chroma
+ * pays for every document a `where` member matches, and the `doc_type` clause
+ * every search sends matches most of the collection, so a small project's
+ * fallback cost 13-20s. `sqlite_id: {$in}` matches only those rows' fragments.
+ */
+describe('ChromaSync.queryChroma narrowed filtered fallback (#5091)', () => {
+  // SQLite ids are per table, so a summary and a prompt from `big` share each
+  // `tiny` observation's id, and they rank above it.
+  const TINY_IDS = CORPUS.filter(d => d.project === 'tiny').map(d => d.sqlite_id as number);
+  const SHARED_ID_DOCS: CorpusDoc[] = TINY_IDS.flatMap(id => [
+    { id: `summary_${id}_request`, sqlite_id: id, project: 'big', doc_type: 'session_summary', platform_source: 'claude' },
+    { id: `prompt_${id}`, sqlite_id: id, project: 'big', doc_type: 'user_prompt', platform_source: 'claude' },
+  ]);
+  const tinyObservations = { $and: [{ doc_type: 'observation' }, dualProject('tiny')] };
+  const narrowed = { sqlite_id: { $in: TINY_IDS } };
+  const exactIds = (where: any, limit: number) =>
+    CORPUS.filter(d => matches(where, d)).slice(0, limit).map(d => Number(d.id.split('_')[1]));
+
+  beforeEach(() => {
+    calls = [];
+    sync = new ChromaSync('claude-mem');
+    CORPUS.unshift(...SHARED_ID_DOCS);
+  });
+
+  afterEach(() => {
+    CORPUS.splice(0, SHARED_ID_DOCS.length);
+  });
+
+  it('sends a small project\'s fallback as sqlite_id $in, without the doc_type and project clauses', async () => {
+    const rowIds = mock((_maxIds: number) => TINY_IDS);
+    const out = await sync.queryChroma('anything', 100, tinyObservations, undefined, rowIds);
+
+    const qs = queryCalls();
+    expect(qs.length).toBe(2);
+    expect(qs[0].args.where).toBeUndefined();
+    expect(qs[1].args.where).toEqual(narrowed);
+    expect(qs[1].args.include).toEqual(['metadatas', 'distances']);
+    expect(rowIds).toHaveBeenCalledTimes(1);
+    // The same rows the plain filter returns; the summaries and prompts that
+    // share the ids are dropped client-side.
+    expect(out.ids).toEqual(exactIds(tinyObservations, 100));
+    expect(out.metadatas.every((m: any) => m.doc_type === 'observation' && m.project === 'tiny')).toBe(true);
+  });
+
+  it('narrows directly once the filter is known to be selective', async () => {
+    await sync.queryChroma('anything', 100, tinyObservations, undefined, () => TINY_IDS);
+    calls = [];
+    await sync.queryChroma('anything', 100, tinyObservations, undefined, () => TINY_IDS);
+
+    const qs = queryCalls();
+    expect(qs.length).toBe(1);
+    expect(qs[0].args.where).toEqual(narrowed);
+  });
+
+  it('reports exhaustion only when the window held every candidate and the matches ran out', async () => {
+    // 20 matches among 60 candidates: the window is short, nothing more exists.
+    const all: ChromaQueryProgress = {};
+    await sync.queryChroma('anything', 100, tinyObservations, all, () => TINY_IDS);
+    expect(all.exhausted).toBe(true);
+
+    // 5 of the 20 matches fill the limit, so a wider window could still add rows.
+    const some: ChromaQueryProgress = {};
+    const out = await sync.queryChroma('anything', 5, tinyObservations, some, () => TINY_IDS);
+    expect(out.ids).toEqual(exactIds(tinyObservations, 5));
+    expect(some.exhausted).toBe(false);
+  });
+
+  it('sends the plain where when the window is too thin to prove the top matches', async () => {
+    // Limit 2 asks for 40 candidates, and the 40 shared-id documents rank first.
+    const out = await sync.queryChroma('anything', 2, tinyObservations, undefined, () => TINY_IDS);
+
+    expect(queryCalls().map(q => q.args.where)).toEqual([undefined, narrowed, tinyObservations]);
+    expect(out.ids).toEqual(exactIds(tinyObservations, 2));
+  });
+
+  it('sends the plain where when the scope has too many rows to list', async () => {
+    const rowIds = mock((_maxIds: number) => null);
+    await sync.queryChroma('anything', 100, tinyObservations, undefined, rowIds);
+
+    expect(rowIds).toHaveBeenCalledTimes(1);
+    expect(rowIds.mock.calls[0][0]).toBeGreaterThan(0);
+    expect(queryCalls().map(q => q.args.where)).toEqual([undefined, tinyObservations]);
+  });
+
+  it('sends the plain where when listing the rows fails', async () => {
+    await sync.queryChroma('anything', 100, tinyObservations, undefined, () => {
+      throw new Error('database is closed');
+    });
+
+    expect(queryCalls().map(q => q.args.where)).toEqual([undefined, tinyObservations]);
+  });
+
+  it('answers an empty scope without a second chroma query', async () => {
+    const progress: ChromaQueryProgress = {};
+    const out = await sync.queryChroma('anything', 100, tinyObservations, progress, () => []);
+
+    expect(queryCalls().length).toBe(1);
+    expect(out.ids).toEqual([]);
+    expect(progress.exhausted).toBe(true);
+  });
+
+  it('does not list rows when the over-fetch fills the limit', async () => {
+    const rowIds = mock((_maxIds: number) => TINY_IDS);
+    await sync.queryChroma('anything', 10, { project: 'big' }, undefined, rowIds);
+
+    expect(rowIds).not.toHaveBeenCalled();
+  });
+
+  it('does not narrow a filter it cannot evaluate client-side', async () => {
+    const rowIds = mock((_maxIds: number) => TINY_IDS);
+    const where = { project: { $ne: 'big' } };
+    await sync.queryChroma('anything', 10, where, undefined, rowIds);
+
+    expect(rowIds).not.toHaveBeenCalled();
+    expect(queryCalls().map(q => q.args.where)).toEqual([where]);
   });
 });

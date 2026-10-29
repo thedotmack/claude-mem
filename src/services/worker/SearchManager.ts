@@ -2,7 +2,7 @@
 import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import type { ContextReadWorkerClient } from '../context/ContextReadWorkerClient.js';
-import { ChromaSync, type ChromaQueryProgress } from '../sync/ChromaSync.js';
+import { ChromaSync, type ChromaFallbackRowIds, type ChromaQueryProgress } from '../sync/ChromaSync.js';
 import { FormattingService } from './FormattingService.js';
 import { TimelineService } from './TimelineService.js';
 import type { TimelineItem } from './TimelineService.js';
@@ -24,6 +24,7 @@ import { isCategoryRequested } from './search/types.js';
 import { ResultFormatter } from './search/ResultFormatter.js';
 import { ChromaUnavailableError } from './search/errors.js';
 import { buildProjectWhereFilter, projectReadKeysFor } from './search/project-where-filter.js';
+import { scopeRowIdsFor } from './search/scope-row-ids.js';
 
 /**
  * Telemetry envelope for search_performed (see docs/public/telemetry.mdx).
@@ -79,15 +80,14 @@ export class SearchManager {
   private async queryChroma(
     query: string,
     limit: number,
-    whereFilter?: Record<string, any>,
-    progress?: ChromaQueryProgress
+    whereFilter: Record<string, any> | undefined,
+    progress: ChromaQueryProgress | undefined,
+    fallbackRowIds: ChromaFallbackRowIds
   ): Promise<{ ids: number[]; distances: number[]; metadatas: any[] }> {
     if (!this.chromaSync) {
       return { ids: [], distances: [], metadatas: [] };
     }
-    return progress
-      ? await this.chromaSync.queryChroma(query, limit, whereFilter, progress)
-      : await this.chromaSync.queryChroma(query, limit, whereFilter);
+    return await this.chromaSync.queryChroma(query, limit, whereFilter, progress, fallbackRowIds);
   }
 
   /**
@@ -126,6 +126,11 @@ export class SearchManager {
   ): Promise<T[]> {
     const readKeys = projectReadKeysFor(this.sessionStore, project, projects);
     const whereFilter = this.buildDocTypeWhereFilter(docType, readKeys, platformSource);
+    const fallbackRowIds = scopeRowIdsFor(this.sessionStore, {
+      observations: docType === 'observation',
+      sessions: docType === 'session_summary',
+      prompts: docType === 'user_prompt',
+    }, { project, projects: readKeys, platformSource });
     const startEpoch = dateRange
       ? dateRange.start != null ? resolveDateBound(dateRange.start, 'start') : undefined
       : this.searchRecencyWindowMs > 0 ? Date.now() - this.searchRecencyWindowMs : undefined;
@@ -140,7 +145,7 @@ export class SearchManager {
 
     while (true) {
       const progress: ChromaQueryProgress = {};
-      const chromaResults = await this.queryChroma(query, candidateLimit, whereFilter, requiredResults ? progress : undefined);
+      const chromaResults = await this.queryChroma(query, candidateLimit, whereFilter, requiredResults ? progress : undefined, fallbackRowIds);
       const recentIds = chromaResults.ids.filter((_id, idx) => {
         const meta = chromaResults.metadatas[idx];
         return meta && meta.created_at_epoch != null
