@@ -135,6 +135,7 @@ describe('SyncClient', () => {
     expect(state.requests[0].headers['X-User-Id']).toBe('user-42');
     expect(state.requests[0].headers['X-Device-Id']).toBe(SELF);
     expect(state.requests[0].headers['X-Device-Name']).toBe('test laptop');
+    expect(state.requests[0].headers['X-Sync-Capabilities']).toBe('quarantine-unknown-kinds');
   });
 
   it('loops while more=true, presenting the advanced cursor each page', async () => {
@@ -456,6 +457,26 @@ describe('SyncClient', () => {
       expect(state.requests.length).toBeGreaterThan(suspendedAt);
       await sleep(100); // resumed 10ms cadence is ticking again
       expect(state.requests.length).toBeGreaterThan(suspendedAt + 1);
+    });
+
+    it('never suspends when suspendAfterMs is infinite (CLAUDE_MEM_CLOUD_SYNC_KEEP_PULLING)', async () => {
+      const { state, impl } = makeHub({ epoch: '1', ops: [] });
+      let now = 1_000_000;
+      const client = makeClient(impl, {
+        activePollMs: 10,
+        idlePollMs: 10,
+        suspendAfterMs: Number.POSITIVE_INFINITY,
+        isSessionActive: () => false,
+        now: () => now,
+      });
+      client.start();
+      await sleep(50);
+      now += 10 * 86_400_000; // days with no sessions
+      await sleep(50);
+      const later = state.requests.length;
+      await sleep(100);
+      expect(state.requests.length).toBeGreaterThan(later); // still polling
+      client.stop();
     });
 
     it('onHeadSeq also resumes a suspended loop', async () => {

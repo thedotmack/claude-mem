@@ -1,0 +1,13 @@
+{
+	"name": "cmem-viewer-host",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"start": "bun run src/index.ts",
+		"test": "bun test test"
+	},
+	"devDependencies": {
+		"@types/bun": "^1.3.13"
+	}
+}

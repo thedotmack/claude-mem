@@ -78,7 +78,7 @@ export function FocusChangeBar({ changes }: { changes: FocusChanges }) {
         <Req ids={['R16.2', 'R13.7']}>
           <div role="status" className="space-y-1 border-l-2 border-shipped-border py-1 pl-3 text-xs">
             <p className="flex items-start gap-1.5 font-medium text-shipped-foreground"><CheckIcon className="mt-px size-3.5 shrink-0" />{last.text}.</p>
-            <p className="text-muted-foreground">{sourceKind === 'sample' ? 'Wireframe: kept on this page only, not actually written.' : 'Saved on this computer; it syncs to your other machines. A refresh never overrides it.'}</p>
+            <p className="text-muted-foreground">{sourceKind === 'sample' ? 'Wireframe: kept on this page only, not actually written.' : sourceKind === 'cloud' ? 'Saved in your cloud viewer; it syncs to your computers. A refresh never overrides it.' : 'Saved on this computer; it syncs to your other machines. A refresh never overrides it.'}</p>
             <div className="-ml-2 flex flex-wrap items-center gap-x-2">
               <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" onClick={undoLast} disabled={!last.undo || saving}>Undo</Button>
               {!last.undo && <span className="text-muted-foreground">This one can’t be undone from here.</span>}

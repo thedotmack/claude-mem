@@ -1,8 +1,12 @@
 // The claude-mem worker on this computer (localhost:37777). In Vite dev the /api proxy reaches it; served by the
 // worker, /api is the same origin. One HTTP read when the page opens, then the worker's SSE feed. No polling.
+// The cloud viewer (claude-mem services/viewer-host) serves this same page from a worker that pulls the owner's
+// synced devices, behind a sign-in gate: same API, same origin. Off loopback the source says 'cloud', so the
+// page names where its work comes from and where a change is saved.
 // The live wiring copies claude-mem v15.0.1 plugin/ui/work-view/app.js:180-261 (`accept`, `refresh`, the
 // EventSource handlers, the 1s connection timer and the 60s aging timer). The check copies app.js:125-138 (`saveReview`).
 import { getConnectionStatus, type ConnectionStatus } from './connection-status.ts'
+import { isServedFromCloud } from './served-from.ts'
 import { conflictReason, readReviewResponse, type ReviewResult } from './review-response.ts'
 import { toWorkModel } from './to-work-model.ts'
 import type { MappedWorkModel, RuleSaveResult, WorkDataSource, WorkModel } from './work-data-source.ts'
@@ -18,6 +22,7 @@ const WORK_VIEW_LOAD_RULES_URL = '/api/work-view/rules/load-in-claude-code'
 const WORK_VIEW_MARK_AGENT_FINISHED_URL = '/api/work-view/agents/mark-finished'
 const CONTENT_FINGERPRINT_PATTERN = /^[a-f0-9]{64}$/
 const CONNECTION_TICK_MS = 1000
+const SOURCE_KIND = isServedFromCloud(window.location.hostname) ? 'cloud' : 'local'
 const AGING_TICK_MS = 60_000
 /** The worker's SSE `retry: 1000`. */
 const STREAM_REOPEN_AFTER_MS = 1000
@@ -38,9 +43,9 @@ let lastDeliveredSignature: string | null = null
 const modelSignature = (model: MappedWorkModel) => JSON.stringify([model.agents, model.requests, model.requestReadErrors, model.unlinkedWorkCount, model.sourceHealth, model.focusAreas, model.otherAsks, model.currentPeriod, model.pastPeriods, model.goalsReadError, model.lastRuns, model.refresh, model.rules, model.ruleScopes, model.rulesLearning, model.rulesFile, model.rulesReadError])
 
 const currentConnectionStatus = (): ConnectionStatus =>
-  getConnectionStatus({ ...connectionEvidence, now: performance.now(), wallNow: Date.now() })
+  getConnectionStatus({ ...connectionEvidence, now: performance.now(), wallNow: Date.now(), where: SOURCE_KIND })
 
-const withConnection = (mapped: MappedWorkModel): WorkModel => ({ ...mapped, connection: currentConnectionStatus() })
+const withConnection = (mapped: MappedWorkModel): WorkModel => ({ ...mapped, sourceKind: SOURCE_KIND, connection: currentConnectionStatus() })
 
 /** app.js `health`: only a payload whose source read succeeded counts as a successful check. */
 function recordSourceHealth(source: WorkViewSource | undefined) {
@@ -87,7 +92,7 @@ async function postForWorkModel(url: string, body: unknown, whatWasSaved: string
 }
 
 export const localSource: WorkDataSource = {
-  sourceKind: 'local',
+  sourceKind: SOURCE_KIND,
 
   /** app.js `refresh`: when an SSE snapshot arrived while this read was in flight, the event's newer model wins. */
   async loadWorkModel() {
