@@ -91,6 +91,8 @@ export interface AgentRunnerDependencies {
    * Built fresh for every step: a run can outlive the OAuth access token it started with (Oct 22: the Mac slept
    * 11 hours mid-run, and the token injected at the start was revoked by the time the next step asked). */
   buildEnv: () => Promise<NodeJS.ProcessEnv>;
+  /** Runtime platform, injectable so the Windows confinement gate is regression-testable. */
+  platform: () => NodeJS.Platform;
 }
 
 async function defaultEnv(): Promise<NodeJS.ProcessEnv> {
@@ -103,6 +105,7 @@ const defaultDependencies: AgentRunnerDependencies = {
   detect: () => detectUsableAgents(),
   query,
   buildEnv: defaultEnv,
+  platform: () => process.platform,
 };
 
 const describeError = (error: unknown) => (error instanceof Error ? error.message : String(error)).trim() || 'unknown error';
@@ -266,7 +269,15 @@ function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunner
         logger.warn('WORKER', `Codex refused ${model.model} for this login; retrying on its default model`);
         result = await runCli(executable, CODEX_EXEC_ARGS(executable, task.cwd, answerPath, schemaPath, {}), prompt, { cwd: task.cwd, env });
       }
-      if (result.exitCode !== 0) throw failure('codex exec', result);
+      if (result.exitCode !== 0) {
+        // Recognize the actual capability refusal rather than disabling Codex
+        // on every Windows machine: elevated/MXC installations may support it.
+        if (dependencies.platform() === 'win32'
+          && /unelevated restricted-token sandbox cannot enforce split filesystem read restrictions/i.test(`${result.stderr}\n${result.stdout}`)) {
+          throw new Error('Codex refused this refresh because its Windows unelevated sandbox cannot enforce the required read restrictions. Use an administrator-provisioned elevated sandbox or a supported MXC sandbox. The existing provider fallback remains available; filesystem restrictions were preserved.');
+        }
+        throw failure('codex exec', result);
+      }
       return readFileSync(answerPath, 'utf8');
     } finally {
       rmSync(answerPath, { force: true });
