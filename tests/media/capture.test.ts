@@ -263,6 +263,20 @@ describe('trusted Read file locators', () => {
     expect(media.getMetadata(first.id).state).toBe('ready');
   });
 
+  it('a replay of a committed Read event whose file is gone is not sent to the observer again', async () => {
+    const source = join(dir, 'project', 'committed.png');
+    writeFileSync(source, png);
+    const event = { contentSessionId: 'media-session', toolName: 'Read', toolInput: { file_path: source }, toolResponse: { type: 'image', file: { path: source } }, cwd: join(dir, 'project'), platformSource: 'claude', toolUseId: 'toolu_committed_read' };
+    expect((await ingestObservation(event as any)).ok).toBe(true);
+    expect(queued).toHaveLength(1);
+    // The observer stored this event's result (what linkage commits after a stored turn).
+    db.prepare(`UPDATE media_events SET result_state = 'stored'`).run();
+    rmSync(source);
+    const replay = await ingestObservation(event as any);
+    expect(replay).toEqual({ ok: true, status: 'skipped', reason: 'already_processed' });
+    expect(queued).toHaveLength(1);
+  });
+
   it('an unchanged Read replay through a symlinked project root keeps its attachment', async () => {
     writeFileSync(join(dir, 'project', 'linked.png'), png);
     const linkedRoot = join(dir, 'project-link');

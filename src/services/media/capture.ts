@@ -216,10 +216,13 @@ export async function captureObservationMedia(input: CaptureInput, store?: Media
       const candidateEventKey = mediaEventKey(platform, identity);
       const prior = store.findEventSource(candidateEventKey, candidate.pointer);
       if (prior) {
+        // Known event: keep its key even if replay validation below throws,
+        // so ingest still finds its committed result and never re-queues it
+        // (a second paid observer call).
+        eventKey = candidateEventKey;
         assertReplayMatchesPriorSource(candidate, input, prior.provenance);
         if (prior.state === 'ready' || prior.state === 'converting') {
           refs.push(prior.ref);
-          eventKey = candidateEventKey;
           finalStatusesByLabel.set(candidate.label, {
             version: 1,
             state: prior.state === 'ready' ? 'retained' : 'pending',
