@@ -29,6 +29,7 @@ import { basename, dirname, join, resolve } from 'path';
 import { LAUNCHER_PROTOCOL } from './launcher-protocol.js';
 import { bunVersionHonoursBunBeBun } from './bun-be-bun-support.js';
 import { findBun } from './bun-runtime.js';
+import { expandHome } from '../shared/expand-home.js';
 
 const IS_WINDOWS = process.platform === 'win32';
 const STDIN_COLLECTION_TIMEOUT_MS = 5000;
@@ -274,12 +275,18 @@ function reportEmptyStdinAndExit(stdinData: Buffer | null, workerScriptPath: str
  * likewise per-user.
  */
 function neutralBunSpawnCwd(): string {
-  const runDir = join(process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem'), 'run');
+  // expandHome: a `~/x` data dir must land under home, not as a literal `~`
+  // directory inside the user's project (the launch directory).
+  const dataDir = process.env.CLAUDE_MEM_DATA_DIR
+    ? expandHome(process.env.CLAUDE_MEM_DATA_DIR)
+    : join(homedir(), '.claude-mem');
+  const runDir = join(dataDir, 'run');
   try {
     mkdirSync(runDir, { recursive: true, mode: 0o700 });
     if (process.platform !== 'win32') chmodSync(runDir, 0o700);
     return runDir;
-  } catch {
+  } catch (error) {
+    process.stderr.write(`[claude-mem-launcher] could not prepare ${runDir} (${error instanceof Error ? error.message : String(error)}); starting Bun from the home directory\n`);
     return homedir();
   }
 }

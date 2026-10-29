@@ -200,13 +200,27 @@ const stdinData = await collectStdin();
 // The neutral dir must be owner-controlled, not tmpdir(): Bun also auto-loads
 // bunfig.toml from cwd, and on a shared /tmp another local user could plant a
 // `preload` there.
+// Same rules as src/shared/expand-home.ts (this file cannot import): a
+// `~/x` CLAUDE_MEM_DATA_DIR must land under home, not as a literal `~`
+// directory inside the user's project.
+function expandHome(filePath) {
+  if (filePath === '~') return homedir();
+  if (filePath.startsWith('~/') || (IS_WINDOWS && filePath.startsWith('~\\'))) {
+    return join(homedir(), filePath.slice(2));
+  }
+  return filePath;
+}
 function neutralBunSpawnCwd() {
-  const runDir = join(process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem'), 'run');
+  const dataDir = process.env.CLAUDE_MEM_DATA_DIR
+    ? expandHome(process.env.CLAUDE_MEM_DATA_DIR)
+    : join(homedir(), '.claude-mem');
+  const runDir = join(dataDir, 'run');
   try {
     mkdirSync(runDir, { recursive: true, mode: 0o700 });
-    if (process.platform !== 'win32') chmodSync(runDir, 0o700);
+    if (!IS_WINDOWS) chmodSync(runDir, 0o700);
     return runDir;
-  } catch {
+  } catch (error) {
+    console.error(`[bun-runner] could not prepare ${runDir} (${error && error.message ? error.message : error}); starting Bun from the home directory`);
     return homedir();
   }
 }
