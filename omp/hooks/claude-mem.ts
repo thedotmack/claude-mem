@@ -47,6 +47,76 @@ import type { HookAPI } from "@oh-my-pi/pi-coding-agent/extensibility/hooks";
 // ---------------------------------------------------------------------------
 
 const MAX_LEN = 1000; // tool_response hard cap (OpenClaw)
+
+// The same tag set the worker strips (src/utils/tag-stripping.ts), kept local
+// because this hook file is standalone. Balanced blocks only — an unbalanced
+// tail is the user's literal text, and stripping it first is what makes the
+// length cap below safe: cutting tagged text could sever the closing tag and
+// the worker-side stripper then keeps the remainder verbatim.
+const PRIVATE_TAGS = new Set(["private", "claude-mem-context", "system_instruction", "system-instruction", "persisted-output", "system-reminder"]);
+const OPEN_TAG_NAME_RE = /<([A-Za-z_][A-Za-z0-9_-]*)/y;
+const CLOSE_TAG_RE = /<\/([A-Za-z_][A-Za-z0-9_-]*)\s*>/y;
+
+/**
+ * Port of the worker's stripBalancedMemoryTags (src/utils/tag-stripping.ts):
+ * one linear scan; a close tag pairs with the EARLIEST still-open tag of that
+ * name, so nested same-name blocks drop whole (a lazy regex would pair the
+ * outer opener with the inner closer and leak the tail). A close inside an
+ * opener's own `<name ...>` span is attribute text, not a close. Keep the two
+ * in step.
+ */
+function stripPrivateBlocks(input: string): string {
+  if (!input.includes("<")) return input;
+  const len = input.length;
+  // nextGt[j]: first `>` at or after j (len when none), so each opener's span
+  // lookup is O(1) and the scan stays linear.
+  const nextGt = new Int32Array(len + 1);
+  nextGt[len] = len;
+  for (let j = len - 1; j >= 0; j--) nextGt[j] = input.charCodeAt(j) === 0x3e ? j : nextGt[j + 1];
+
+  const opens = new Map<string, { items: Array<{ start: number; attrEnd: number }>; head: number }>();
+  const removed: Array<[number, number]> = [];
+  let i = 0;
+  while (i < len) {
+    if (input.charCodeAt(i) !== 0x3c) {
+      i += 1;
+      continue;
+    }
+    CLOSE_TAG_RE.lastIndex = i;
+    const close = CLOSE_TAG_RE.exec(input);
+    if (close) {
+      const entry = opens.get(close[1]);
+      const open = entry && entry.head < entry.items.length ? entry.items[entry.head] : undefined;
+      if (entry && open && i >= open.attrEnd) {
+        entry.head += 1;
+        removed.push([open.start, i + close[0].length]);
+      }
+      i += close[0].length;
+      continue;
+    }
+    OPEN_TAG_NAME_RE.lastIndex = i;
+    const open = OPEN_TAG_NAME_RE.exec(input);
+    if (open && PRIVATE_TAGS.has(open[1])) {
+      const nameEnd = i + open[0].length;
+      const item = { start: i, attrEnd: nextGt[nameEnd] };
+      const entry = opens.get(open[1]);
+      if (entry) entry.items.push(item);
+      else opens.set(open[1], { items: [item], head: 0 });
+      i = nameEnd;
+      continue;
+    }
+    i += 1;
+  }
+
+  removed.sort((a, b) => a[0] - b[0]);
+  let out = "";
+  let cursor = 0;
+  for (const [start, end] of removed) {
+    if (start > cursor) out += input.slice(cursor, start);
+    if (end > cursor) cursor = end;
+  }
+  return out + input.slice(cursor);
+}
 const CTX_CACHE_MS = 60_000; // /api/context/inject cache TTL (OpenClaw)
 // A hung worker must not hold OMP's handlers: the context handler is awaited
 // before every model call, so an unbounded fetch added up to OMP's 30 s handler
@@ -323,9 +393,10 @@ export default function claudeMemBridge(pi: HookAPI): void {
 
     const target = session ?? newSession();
     if (target.excluded) return;
-    const response = textFromContent(event?.content);
+    const response = stripPrivateBlocks(textFromContent(event?.content));
     // isError rows are valuable — never skip them. tool_input is sent raw (the
-    // worker serializes it once); tool_response is capped to MAX_LEN.
+    // worker serializes it once); tool_response is capped to MAX_LEN after the
+    // tag strip so a cap can never sever a privacy block's closing tag.
     const body: Record<string, unknown> = {
       contentSessionId: target.id,
       tool_name: toolName,

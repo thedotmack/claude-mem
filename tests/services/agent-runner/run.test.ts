@@ -61,7 +61,7 @@ function task(cwd: string, inlineCalls: string[] = [], models: Record<string, un
  /** runAgentTask with `spawn` installed as child_process.spawn for the run. */
 function runTask(agentTask: AgentTask, { spawn: fake, ...overrides }: { spawn: typeof spawn } & Parameters<typeof runAgentTask>[1]) {
   setFakeSpawn(fake);
-  return runAgentTask(agentTask, overrides);
+  return runAgentTask(agentTask, { platform: () => 'linux', ...overrides });
 }
 afterEach(() => setFakeSpawn(null));
 
@@ -76,7 +76,12 @@ describe('agent runner', () => {
       mkdirSync(ledger);
       writeFileSync(join(dataDir, '.env'), 'ANTHROPIC_API_KEY=secret');
       writeFileSync(join(ledger, 'show.json'), '{}');
-      symlinkSync(join(dataDir, '.env'), join(ledger, 'env-link'));
+      // A directory junction exercises the same escape without requiring
+      // Windows' optional file-symlink privilege.
+      const linkedSecret = process.platform === 'win32'
+        ? join(ledger, 'private-data', '.env') : join(ledger, 'env-link');
+      if (process.platform === 'win32') symlinkSync(dataDir, dirname(linkedSecret), 'junction');
+      else symlinkSync(join(dataDir, '.env'), linkedSecret);
       const seen: any[] = [];
       const query = ((input: any) => { seen.push(input); return (async function* () { yield { type: 'result', subtype: 'success', is_error: false, result: 'ok' }; })(); }) as never;
       const readTask: AgentTask = { ...task(ledger), claudeCode: { plugins: [], tools: ['Read', 'Grep', 'Glob'], allowedTools: [], readableFolders: [ledger] } };
@@ -87,7 +92,7 @@ describe('agent runner', () => {
       expect(await decide('Read', { file_path: 'show.json' })).toBe('allow');
       expect(await decide('Read', { file_path: join(dataDir, '.env') })).toBe('deny');
       expect(await decide('Read', { file_path: join(ledger, '..', '.env') })).toBe('deny');
-      expect(await decide('Read', { file_path: join(ledger, 'env-link') })).toBe('deny');
+      expect(await decide('Read', { file_path: linkedSecret })).toBe('deny');
       expect(await decide('Grep', { pattern: 'KEY' })).toBe('allow');
       expect(await decide('Grep', { pattern: 'KEY', path: dataDir })).toBe('deny');
       expect(await decide('Glob', { pattern: '*.json' })).toBe('allow');
@@ -169,10 +174,13 @@ describe('agent runner', () => {
   it('Codex launches the real executable behind a symlink without weakening the sandbox', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-codex-link-'));
     try {
-      const binary = join(cwd, 'codex-native');
-      const launcher = join(cwd, 'codex-link');
+      const binary = join(cwd, 'native', 'codex-native');
+      const launcher = process.platform === 'win32'
+        ? join(cwd, 'linked-native', 'codex-native') : join(cwd, 'codex-link');
+      mkdirSync(dirname(binary));
       writeFileSync(binary, 'fixture');
-      symlinkSync(binary, launcher);
+      if (process.platform === 'win32') symlinkSync(dirname(binary), dirname(launcher), 'junction');
+      else symlinkSync(binary, launcher);
       const calls: SpawnCall[] = [];
       const spawnImpl = fakeSpawn(calls, call => {
         writeFileSync(call.args[call.args.indexOf('-o') + 1], 'ok');
@@ -282,6 +290,33 @@ describe('agent runner', () => {
       const result = await runTask(lightTask, { detect: async () => agents('codex'), query: neverQuery, spawn: spawnImpl, buildEnv: async () => ({ ...(await env()), CODEX_HOME: join(cwd, 'no-codex-home') }) });
       expect(result.state).toBe('failed');
       expect(calls).toHaveLength(1);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  it('Windows reports an actual Codex sandbox refusal and falls back without broadening access', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-windows-refusal-'));
+    try {
+      const calls: SpawnCall[] = [];
+      const spawnImpl = fakeSpawn(calls, call => {
+        if (call.command === CODEX_PATH) {
+          call.child.stderr.emit('data', 'windows unelevated restricted-token sandbox cannot enforce split filesystem read restrictions directly; refusing to run unsandboxed');
+          call.child.emit('close', 1);
+          return;
+        }
+        call.child.stdout.emit('data', JSON.stringify({ response: '{"ok":"gemini"}' }));
+        call.child.emit('close', 0);
+      });
+      const result = await runTask(task(cwd), {
+        detect: async () => agents('codex', 'gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env, platform: () => 'win32',
+      });
+      expect(result).toMatchObject({ state: 'ok', agent: 'gemini' });
+      expect(result.attempts).toHaveLength(1);
+      expect(result.attempts[0]).toMatchObject({ agent: 'codex' });
+      expect(result.attempts[0].error).toMatch(/Windows unelevated sandbox cannot enforce the required read restrictions/i);
+      expect(result.attempts[0].error).toMatch(/elevated sandbox or a supported MXC/i);
+      expect(calls.map(call => call.command)).toEqual([CODEX_PATH, '/bin/gemini']);
+      expect(calls[0].args).toContain('permissions.claude-mem-refresh.network.enabled=false');
+      expect(calls[0].args.find(arg => arg.startsWith('permissions.claude-mem-refresh.filesystem='))).toContain('":root"="deny"');
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 

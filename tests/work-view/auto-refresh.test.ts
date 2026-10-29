@@ -200,7 +200,7 @@ describe('refresh task', () => {
         expect(prompt).toMatch(/You have no memory tools/);
         expect(prompt).not.toMatch(/with its MCP tools/);
         expect(prompt).not.toContain('${CLAUDE_SKILL_DIR}');
-        const file = /is in (\S+\.json)/.exec(prompt)?.[1];
+        const file = /is in (.+?\.json)/.exec(prompt)?.[1];
         if (prompt.includes('Do only section 1')) return '```json\n{"groups": [{"title": "Release cards", "conversations": [' + JSON.stringify(key('a')) + ']}]}\n```';
         if (prompt.includes("Do only section 2")) {
           const supplied = prompt.split(`--- ${file} ---\n`)[1];
@@ -243,7 +243,7 @@ describe('Codex grouping answers', () => {
         schemas.push(schema);
         if (prompt.includes('Do only section 1')) return readFileSync(join(FIXTURES, 'grouping-answer-schema.txt'), 'utf8');
         if (prompt.includes('Do only section 2')) {
-          const [show] = JSON.parse(readFileSync(/is in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+          const [show] = JSON.parse(readFileSync(/is in (.+?\.json)/.exec(prompt)![1], 'utf8'));
           return JSON.stringify({ reviews: [{ groupId: show.groupId, state: 'in-progress', percent: 10, summary: 'Started.', reviewBasis: show.reviewBasis }] });
         }
         if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
@@ -292,7 +292,7 @@ describe('focus step', () => {
     runCli(['apply', decisions], { dir, database, now: NOW, print: () => {} });
   }
   const reviewAll = (prompt: string) => {
-    const shows = JSON.parse(readFileSync(/is in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+    const shows = JSON.parse(readFileSync(/is in (.+?\.json)/.exec(prompt)![1], 'utf8'));
     return JSON.stringify({ reviews: shows.map((show: any) => ({ groupId: show.groupId, state: 'in-progress', percent: 10, summary: 'Started.', reviewBasis: show.reviewBasis })) });
   };
 
@@ -317,7 +317,7 @@ describe('focus step', () => {
         }
         if (prompt.includes('Do only section 3')) {
           const input = focusInputFrom(prompt);
-          expect(JSON.parse(readFileSync(/also saved in (\S+\.json)/.exec(prompt)![1], 'utf8'))).toEqual(input);
+          expect(JSON.parse(readFileSync(/also saved in (.+?\.json)/.exec(prompt)![1], 'utf8'))).toEqual(input);
           expect(input.areas.map((area: any) => area.focusAreaId)).toEqual(['fa_cards0000001']);
           expect(input.requests[0]).toMatchObject({ conversations: 1, conversationAsks: ['Build the release cards'] });
           expect(prompt).toContain(`Place each of these 3 requests exactly once, by its "anchor": ${[key('a'), key('b'), key('c')].join(', ')}.`);
@@ -459,7 +459,7 @@ describe('story repair', () => {
       let storyAttempts = 0;
       const ask = async (prompt: string) => {
         if (prompt.includes('Do only section 2')) {
-          const [show] = JSON.parse(readFileSync(/is in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+          const [show] = JSON.parse(readFileSync(/is in (.+?\.json)/.exec(prompt)![1], 'utf8'));
           return JSON.stringify({ reviews: [{ groupId: show.groupId, state: 'in-progress', percent: 40, summary: 'Release cards are being built.', reviewBasis: show.reviewBasis }] });
         }
         if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
@@ -494,7 +494,7 @@ describe('review repair', () => {
       const ask = async (prompt: string) => {
         if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'Work continues.' });
         if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
-        const shows = JSON.parse(readFileSync(/is in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+        const shows = JSON.parse(readFileSync(/is in (.+?\.json)/.exec(prompt)![1], 'utf8'));
         attempts++;
         if (attempts === 1) {
           expect(shows).toHaveLength(2);
@@ -538,7 +538,7 @@ describe('parallel reviews', () => {
         lastPrompt = prompt;
         if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'Ten features under way.' });
         if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
-        const shows = JSON.parse(readFileSync(/is in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+        const shows = JSON.parse(readFileSync(/is in (.+?\.json)/.exec(prompt)![1], 'utf8'));
         most = Math.max(most, ++inFlight);
         if (most === 2) bothAsked.resolve();
         await bothAsked.promise;
@@ -601,7 +601,7 @@ describe('parallel reviews', () => {
       const ask = async (prompt: string) => {
         if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'Forty features under way.' });
         if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
-        const shows = JSON.parse(readFileSync(/is in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+        const shows = JSON.parse(readFileSync(/is in (.+?\.json)/.exec(prompt)![1], 'utf8'));
         most = Math.max(most, ++inFlight);
         if (inFlight === lanes) lanesFull.resolve();
         await lanesFull.promise;
@@ -664,13 +664,13 @@ describe('incremental owner goals', () => {
         prompts.push(prompt);
         // The agent takes five minutes; a prompt typed meanwhile is not in this export.
         clock += 5 * 60000;
-        const previous = JSON.parse(readFileSync(/saved goals are in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+        const previous = JSON.parse(readFileSync(/saved goals are in (.+?\.json)/.exec(prompt)![1], 'utf8'));
         expect(previous.focus_areas).toMatchObject([{ title: 'Cards', goal: 'Release cards people can read.', matches: 'fa_cards0000001' }]);
         expect(previous.asks).toMatchObject([{ title: 'Ship cards', focus_area: 'Cards' }]);
         expect(previous.rules).toEqual([{ when: '', then: 'Ship daily.', times_asked: 2, latest_at: new Date(NOW - 3 * DAY).toLocaleString('sv').slice(0, 16),
           evidence: [{ at: new Date(NOW - 3 * DAY).toLocaleString('sv').slice(0, 16), quote: 'ship it daily' }] }]);
         // The saved My Focus areas are supplied for the model's match judgment.
-        const areas = JSON.parse(readFileSync(/saved in My Focus are in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+        const areas = JSON.parse(readFileSync(/saved in My Focus are in (.+?\.json)/.exec(prompt)![1], 'utf8'));
         expect(areas.map((area: any) => [area.focusAreaId, area.name])).toEqual([['fa_cards0000001', 'Cards']]);
         // The stubbed answer, in the new shape: a new area beside the matched one, an ask under it and a rule.
         return JSON.stringify({ ...previous,
@@ -793,7 +793,7 @@ describe('incremental owner goals', () => {
         const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 0, goalsStale: true, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl, writeOwnerPrompts: fakeOwnerPrompts(2, []) });
         await task.prepare!();
         let asked = 0;
-        const ask = async (prompt: string) => { asked++; return readFileSync(/saved goals are in (\S+\.json)/.exec(prompt)![1], 'utf8'); };
+        const ask = async (prompt: string) => { asked++; return readFileSync(/saved goals are in (.+?\.json)/.exec(prompt)![1], 'utf8'); };
         if (expected === 2) expect(await task.run(ask, 'codex')).toBe('goals updated.');
         else await expect(task.run(ask, 'codex')).rejects.toThrow('save_goals.py exited 3: failed after writing');
         expect(asked).toBe(expected);
@@ -816,7 +816,7 @@ describe('incremental owner goals', () => {
       const prompts: string[] = [];
       const ask = async (prompt: string) => {
         prompts.push(prompt);
-        const previous = JSON.parse(readFileSync(/saved goals are in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+        const previous = JSON.parse(readFileSync(/saved goals are in (.+?\.json)/.exec(prompt)![1], 'utf8'));
         expect(previous.focus_areas).toMatchObject([{ title: 'Ship cards', goal: null, matches: null }]);
         expect(previous.asks).toMatchObject([{ title: 'Never ask me twice', focus_area: null }]);
         // The stubbed answer: the old priority is an ask under a new Cards area, and the old open ask is a rule.
