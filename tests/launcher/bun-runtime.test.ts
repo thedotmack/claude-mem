@@ -112,6 +112,29 @@ describe("findBun Windows discovery", () => {
     expect(lookupStarted).toBe(true);
   });
 
+  it("drops a where.exe hit in the current directory (a planted bun.exe)", async () => {
+    // where.exe lists the current directory first; hooks run in the user's
+    // project, so a bun.exe planted there must never be returned.
+    const child = pendingChildProcess();
+    const plantedBun = "C:\\work\\project\\bun.exe";
+    const realBun = "C:\\tools\\bun.exe";
+    const resultPromise = findBun({
+      platform: "win32",
+      env: { SystemRoot: "C:\\Windows" },
+      homeDirectory: "C:\\Users\\test",
+      cwd: "C:\\work\\project",
+      exists: (candidate) => candidate === plantedBun || candidate === realBun,
+      spawnProcess: (() => child) as never,
+      timeoutMs: 100,
+    });
+    setTimeout(() => {
+      child.stdout.emit("data", `${plantedBun}\r\n${realBun}\r\n`);
+      child.emit("close", 0, null);
+    }, 1);
+
+    expect(await resultPromise).toBe(realBun);
+  });
+
   it("returns at the deadline even when killing where.exe emits no close event", async () => {
     const child = pendingChildProcess(false);
     let deadline: ReturnType<typeof setTimeout> | undefined;

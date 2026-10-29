@@ -59,8 +59,21 @@ function findBun() {
     }
   }
 
+  // `where` must be the System32 binary — a bare spawn can run a planted
+  // where.exe from the current directory — and where.exe's own results include
+  // that directory, which hooks run inside as the user's project: a planted
+  // bun.exe there must never win.
+  const whereExe = join(
+    process.env.SystemRoot || process.env.SYSTEMROOT || process.env.windir || process.env.WINDIR || 'C:\\Windows',
+    'System32',
+    'where.exe'
+  );
+  const normalizeForCwdCompare = p => p.replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase();
+  const cwdNorm = normalizeForCwdCompare(process.cwd());
+  const notInCwd = line => normalizeForCwdCompare(dirname(line)) !== cwdNorm;
+
   const pathCheck = IS_WINDOWS
-    ? spawnSync('where', ['bun'], {
+    ? spawnSync(whereExe, ['bun'], {
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true
@@ -80,6 +93,7 @@ function findBun() {
       // below — re-reading the raw stdout would hand the garbled path back
       // even after the list was filtered.
       const bunPaths = pathCheck.stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+        .filter(notInCwd)
         .filter(line => existsSync(line));
       const firstBunPath = bunPaths.find(line => {
         const lowerPath = line.toLowerCase();

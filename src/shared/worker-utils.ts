@@ -1,6 +1,7 @@
 import path from "path";
 import { randomUUID } from "crypto";
-import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync, readdirSync, statSync, unlinkSync } from "fs";
+import { fileURLToPath } from "url";
+import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync, readdirSync, realpathSync, statSync, unlinkSync } from "fs";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, defaultSessionInitRequestTimeoutMs, getTimeout, maxSessionInitRequestTimeoutMs } from "./hook-constants.js";
 import { readSseEvents } from "./sse-reader.js";
@@ -618,6 +619,8 @@ export interface WorkerScriptSearchRoots {
   cacheRoot: string;
   marketplaceRoot: string;
   cwd: string;
+  /** The file treated as the running code for the cwd trust check; defaults to this module. */
+  runningModuleFile?: string;
 }
 
 function defaultWorkerScriptSearchRoots(): WorkerScriptSearchRoots {
@@ -626,6 +629,50 @@ function defaultWorkerScriptSearchRoots(): WorkerScriptSearchRoots {
     marketplaceRoot: MARKETPLACE_ROOT,
     cwd: process.cwd(),
   };
+}
+
+/**
+ * The file this code is running from. `__filename` exists in the CJS bundles
+ * and under Bun; the npx-cli bundle is ESM, where only import.meta.url does.
+ */
+function runningModuleFile(): string {
+  return typeof __filename !== 'undefined' ? __filename : fileURLToPath(import.meta.url);
+}
+
+/** The checkout's own code directories: the built plugin, the sources, the CLI build. */
+const DEV_CHECKOUT_CODE_DIRS = ['plugin', 'src', 'dist'] as const;
+
+/**
+ * Trust check for the cwd worker-script candidate. A hook runs inside whatever
+ * project the user opened, so "the checkout's own plugin/scripts/worker-service.cjs
+ * plus its package.json version" is only safe when the running code is that
+ * checkout's own: this module must sit under <cwd>/plugin, <cwd>/src or
+ * <cwd>/dist. "Anywhere under cwd" is not enough — claude-mem installed in a
+ * project's node_modules would then trust the surrounding project, which can
+ * ship its own worker-service.cjs with a version like 99.0.0.
+ */
+function isTrustedWorkerScriptCwd(cwd: string, moduleFile: string = runningModuleFile()): boolean {
+  let moduleDir: string;
+  let resolvedCwd: string;
+  try {
+    moduleDir = path.dirname(realpathSync(moduleFile));
+    resolvedCwd = realpathSync(cwd);
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'Ignoring the cwd worker script: could not resolve the running module or cwd', {
+      cwd, moduleFile, code: (error as NodeJS.ErrnoException).code,
+    });
+    return false;
+  }
+  const trusted = DEV_CHECKOUT_CODE_DIRS.some((codeDir) => {
+    const rel = path.relative(path.join(resolvedCwd, codeDir), moduleDir);
+    return !rel.startsWith('..') && !path.isAbsolute(rel);
+  });
+  if (!trusted) {
+    logger.debug('SYSTEM', 'Ignoring the cwd worker script: the running module is not this checkout\'s own code', {
+      cwd: resolvedCwd, moduleDir,
+    });
+  }
+  return trusted;
 }
 
 /**
@@ -660,10 +707,16 @@ export function resolveWorkerScript(
       scriptPath: candidateWorkerScriptPath(path.join(roots.marketplaceRoot, 'plugin')),
       version: readPackageVersion(path.join(roots.marketplaceRoot, 'package.json')),
     },
-    {
-      scriptPath: path.join(roots.cwd, 'plugin', 'scripts', 'worker-service.cjs'),
-      version: readPackageVersion(path.join(roots.cwd, 'package.json')),
-    },
+    // Untrusted-cwd guard: only when this module lives under the cwd root (the
+    // claude-mem repo is the project being worked on) may its versioned script
+    // compete. Otherwise an arbitrary checkout's plugin/scripts/worker-service.cjs
+    // could outrank the installed worker and execute under hook privileges.
+    ...(isTrustedWorkerScriptCwd(roots.cwd, roots.runningModuleFile)
+      ? [{
+          scriptPath: path.join(roots.cwd, 'plugin', 'scripts', 'worker-service.cjs'),
+          version: readPackageVersion(path.join(roots.cwd, 'package.json')),
+        }]
+      : []),
   ];
 
   return selectWorkerScript(candidates);
