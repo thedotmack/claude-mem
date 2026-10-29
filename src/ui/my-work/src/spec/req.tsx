@@ -1,16 +1,16 @@
-import { createContext, useContext, type ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
+import { useStore } from '@/store'
 import { REQUIREMENTS_BY_ID } from './requirements'
 
-export const SpecOverlayContext = createContext(false)
 
 /**
  * Tags a wireframe element with the spec requirements it satisfies.
  * `npm run coverage` reads these ids from the source; the Spec overlay shows them on screen.
  */
 export function Req({ ids, children, className }: { ids: string[]; children: ReactNode; className?: string }) {
-  const showSpec = useContext(SpecOverlayContext)
+  const showSpec = useStore((state) => state.view.showSpec)
   for (const id of ids) if (!REQUIREMENTS_BY_ID.has(id)) throw new Error(`Unknown requirement id ${id}`)
   // A wrapper element would break parent spacing (space-y, grid), so tags are invisible until the overlay is on.
   if (!showSpec) return <>{children}</>

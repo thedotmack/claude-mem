@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { ActivePill, AgentIcon, ATTENTION_ORDER, FocusAreaChip, NextMove, ProgressMeter, RefreshButton, RefreshStatus, STATE_LABEL, STATE_SURFACE, StateBadge, useWorkspace } from '@/components/bits'
+import { ActivePill, AgentIcon, ATTENTION_ORDER, FocusAreaChip, NextMove, ProgressMeter, RefreshButton, RefreshStatus, STATE_LABEL, STATE_SURFACE, StateBadge } from '@/components/bits'
 import { PointerHighlight } from '@/components/aceternity/pointer-highlight'
 import { TracingBeam } from '@/components/aceternity/tracing-beam'
 import { AgentMark } from '@/components/brand'
@@ -21,20 +21,22 @@ import { SaveButton } from '@/components/save-button'
 import { useMatchesMedia } from '@/lib/use-media'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
-import { deviceById, markAgentFinished, needsYou, OTHER_FOCUS_AREA_ID, SAMPLE_RUNS, startedTimestamp, useWorkModel, type Agent as WorkAgent, type LiveState, type Request } from '@/data'
+import { needsYou, OTHER_FOCUS_AREA_ID, SAMPLE_RUNS, startedTimestamp, type Agent as WorkAgent, type LiveState, type Request } from '@/data'
+import { type WorkFilter, type WorkListView, type WorkSort, deviceById, useStore, useWorkModel, useWorkspace } from '@/store'
+import { useShallow } from 'zustand/react/shallow'
 import type { BuildStory, RequestReadError } from '@/live/work-data-source'
 import { resolveFocusAreaId } from '@/live/to-focus-model'
 
-type View = 'cards' | 'list' | 'agents' | 'team'
+type View = WorkListView
 const VIEWS: { value: View; label: string }[] = [
   { value: 'cards', label: 'Cards' },
   { value: 'list', label: 'List' },
   { value: 'agents', label: 'By agent' },
   { value: 'team', label: 'Team' },
 ]
-type Filter = 'all' | 'needs-you' | 'shipped' | 'closed'
-type SortKey = 'attention' | 'started' | 'progress'
-// Closed requests (every item dropped) show only under Closed, and that filter appears only when there are some.
+type Filter = WorkFilter
+type SortKey = WorkSort
+// Closed requests (every item dropped) show only under Closed, and that filter appears only when there are some (or it is selected).
 const FILTERS: { value: Filter; label: string; matches: (request: Request) => boolean; dot?: string }[] = [
   { value: 'all', label: 'All', matches: (request) => !request.closed },
   { value: 'needs-you', label: 'Needs you', matches: (request) => !request.closed && needsYou(request), dot: 'bg-attention-foreground' },
@@ -266,7 +268,7 @@ function SubagentStatus({ agent }: { agent: WorkAgent }) {
     setSaving(true)
     setError(null)
     try {
-      await markAgentFinished(agent.id)
+      await useStore.getState().markAgentFinished(agent.id)
       return true
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
@@ -388,9 +390,9 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
   const requestReadErrors = focusAreaId ? [] : allReadErrors
   const focusChanges = useFocusChanges()
   const sample = sourceKind === 'sample'
-  const [view, setView] = useState<View>('cards')
-  const [filter, setFilter] = useState<Filter>('all')
-  const [sort, setSort] = useState<SortKey>('attention')
+  // How the person likes to see My Work is saved across visits (store/create-store.ts).
+  const { listView: view, filter, sort } = useStore(useShallow((state) => ({ listView: state.view.listView, filter: state.view.filter, sort: state.view.sort })))
+  const { setListView: setView, setFilter, setSort } = useStore.getState()
   const [storyOpen, setStoryOpen] = useState(false)
   const matches = FILTERS.find((entry) => entry.value === filter)!.matches
   const visible = useMemo(() => sortRequests(requests.filter(matches), sort), [requests, matches, sort])
@@ -434,7 +436,7 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
         {/* Phone: the filters wrap to a second row instead of widening the page past the screen; the sort stays beside them. */}
         <div className="flex w-full items-start gap-1 md:w-auto md:items-center">
           <ToggleGroup type="single" variant="outline" size="sm" spacing={1} value={filter} onValueChange={(next) => next && setFilter(next as Filter)} aria-label="Filter" className="min-w-0 flex-1 md:flex-none md:flex-nowrap">
-            {FILTERS.filter((entry) => entry.value !== 'closed' || requests.some(entry.matches)).map(({ value, label, dot, matches: test }) => (
+            {FILTERS.filter((entry) => entry.value !== 'closed' || filter === 'closed' || requests.some(entry.matches)).map(({ value, label, dot, matches: test }) => (
               <ToggleGroupItem key={value} value={value} className="h-11 gap-1.5 px-3 md:h-8">
                 {dot && <span className={cn('size-1.5 rounded-full', dot)} />}
                 {label}

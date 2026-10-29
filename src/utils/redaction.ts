@@ -86,6 +86,15 @@ const GENERIC_TOKEN_REGEX = new RegExp([
 ].join('|'), 'gi');
 
 export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
+  // The password in a URL's userinfo: `postgres://app:hunter2@db/prod`,
+  // `redis://:hunter2@cache:6379/0`, `https://user:pass@host/repo.git` (what
+  // `git remote -v` and a DATABASE_URL print). Only the password is replaced,
+  // so the scheme, user and host stay readable. The value stops at `/`, `@`,
+  // whitespace and quotes; a `<` start keeps an earlier marker and a `$`/`{`
+  // start keeps a `${DB_PASS}` placeholder from being taken for a secret.
+  // First in the list, so the whole password goes before a vendor pattern can
+  // split it with its marker and leave the rest of it behind.
+  { name: 'url_credentials', regex: /(?<=\b[a-z][a-z0-9+.-]*:\/\/[^\s:\/@'"<>]*:)(?![${<])[^\s\/@'"<>]+(?=@)/gi },
   // `AKIA` is a long-term access key ID; `ASIA` is the temporary one that STS,
   // SSO and instance roles hand out (`aws sts assume-role`, `aws configure
   // export-credentials`), printed next to its secret and session token.

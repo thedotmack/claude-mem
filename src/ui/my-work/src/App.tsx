@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react'
+import { lazy, Suspense, useEffect, type ReactNode } from 'react'
 import { MotionConfig } from 'motion/react'
 import { InboxIcon, ListChecksIcon, UsersIcon } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
@@ -8,49 +8,37 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { TooltipProvider } from '@/components/ui/tooltip'
-import { ActivePill, ClassicViewerLink, DeviceFreshness, GitHubStars, LiveIndicator, WorkspaceContext, type Workspace } from '@/components/bits'
+import { ActivePill, ClassicViewerLink, DeviceFreshness, GitHubStars, LiveIndicator } from '@/components/bits'
 import { Navbar, NavBody } from '@/components/aceternity/resizable-navbar'
 import { Notch } from '@/components/aceternity/notch'
 import { StickyBanner } from '@/components/aceternity/sticky-banner'
 import { CmemMark } from '@/components/brand'
-import { FocusChipRow, FocusRail, PastFocusLink, SIDE_NAV_PILL, type FocusSelection } from '@/components/focus-nav'
+import { FocusChipRow, FocusRail, PastFocusLink, SIDE_NAV_PILL } from '@/components/focus-nav'
 import { RequestDetail } from '@/components/request-detail'
 import { cn } from '@/lib/utils'
 import { PastFocus } from '@/pages/past-focus'
 import { MyRules } from '@/pages/my-rules'
 import { MyWork } from '@/pages/my-work'
 import { SuggestedAreas } from '@/pages/suggested-areas'
-import { Req, SpecOverlayContext } from '@/spec/req'
+import { Req } from '@/spec/req'
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { Spinner } from '@/components/ui/spinner'
-import { needsYou, OTHER_FOCUS_AREA_ID, playDemoUpdates, receiveConnectionStatus, receiveLiveWorkModel, requestById, setActiveWorkDataSource, settleInitialWorkModelLoad, useWorkModel, useWorkModelLoad, type Request } from '@/data'
-import { localSource } from '@/live/local-source'
-import { resolveFocusAreaId } from '@/live/to-focus-model'
-import { sampleSource } from '@/live/sample-source'
-import { sendUsageReport, usageReport } from '@/live/usage'
-import type { WorkDataSource } from '@/live/work-data-source'
-
-/** `setup` is the install funnel (`?setup=1`): a full page outside the nav that becomes My Work when it completes. */
-type Page = 'setup' | 'work' | 'rules'
-type NavPage = Exclude<Page, 'setup'>
+import { needsYou, OTHER_FOCUS_AREA_ID } from '@/data'
+import { ACTIVE_SOURCE, useStore, useWorkModel, useWorkspace, type FocusSelection, type NavPage } from '@/store'
+import { shownFocusAreaId } from '@/store/slices/view-slice'
 /** MY FOCUS sits above these: its areas, Other and Suggested (focus-nav.tsx). Past focus is at the bottom of the rail. */
 const PAGES: { id: NavPage; label: string; icon: typeof InboxIcon; section: string }[] = [
   { id: 'work', label: 'My Work', icon: InboxIcon, section: 'Monitor' },
   { id: 'rules', label: 'My Rules', icon: ListChecksIcon, section: 'Steer' },
 ]
-/** What the main column shows: a page, or one of the focus views the rail opens. */
-type View = NavPage | 'suggested' | 'past-focus'
 const NAV_SECTIONS = [...new Set(PAGES.map((entry) => entry.section))]
 
 
 /** Wireframe-only theme switch: starts from ?theme=dark|light, else the system preference. */
 function useDarkMode() {
-  const [dark, setDark] = useState(() => {
-    const requested = new URLSearchParams(window.location.search).get('theme')
-    return requested ? requested === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches
-  })
+  const dark = useStore((state) => state.view.dark)
   useEffect(() => { document.documentElement.classList.toggle('dark', dark) }, [dark])
-  return [dark, setDark] as const
+  return dark
 }
 
 /** Small rounded icon tile behind each nav icon, after the fly.io sidebar: a hairline with a soft tile shadow. */
@@ -90,47 +78,24 @@ function TeamSwitch({ team, onChange }: { team: boolean; onChange: (team: boolea
   )
 }
 
-/** `?source=sample` shows the fixtures; otherwise the local worker (through the dev proxy, or same origin when the worker serves this page). Never falls back to sample data. */
-const ACTIVE_SOURCE: WorkDataSource = new URLSearchParams(window.location.search).get('source') === 'sample' ? sampleSource : localSource
-setActiveWorkDataSource(ACTIVE_SOURCE)
-/** Usage counts (the page opened on, the page switched to) describe real local work only; the sample fixtures are not usage. */
-const REPORTS_USAGE = ACTIVE_SOURCE === localSource
-let openReported = false
-
 const SetupPage = lazy(() => import('@/setup/setup-page'))
 export default function App() {
   // Only the explicit installer handoff opens setup. Missing state on an
   // existing installation must never lock My Work behind checkout.
-  const [page, setPage] = useState<Page>(() => new URLSearchParams(window.location.search).get('setup') === '1' ? 'setup' : 'work')
-  // One count for the page the viewer opened on. StrictMode runs effects twice in development; the flag keeps it to one.
-  useEffect(() => {
-    if (!REPORTS_USAGE || openReported) return
-    openReported = true
-    sendUsageReport(usageReport(page, null))
-  }, [page])
+  const page = useStore((state) => state.view.page)
+  const finishSetup = useStore.use.finishSetup()
+  const reportOpen = useStore.use.reportOpen()
+  useEffect(reportOpen, [reportOpen])
   if (page !== 'setup') return <WorkApp />
-  const finishSetup = () => {
-    const url = new URL(window.location.href)
-    url.searchParams.delete('setup')
-    window.history.replaceState(null, '', url)
-    window.scrollTo(0, 0)
-    if (REPORTS_USAGE) sendUsageReport(usageReport('work', 'setup'))
-    setPage('work')
-  }
   return <MotionConfig reducedMotion="user"><Suspense fallback={null}><SetupPage onComplete={finishSetup} /></Suspense></MotionConfig>
 }
 
-/** Reads the active source once and subscribes to its live feed, then renders the app. A failed load says so plainly instead of showing anything made up. */
+/** Reads the active source once and follows its live feed, then renders the app. A failed load says so plainly instead of showing anything made up. */
 function WorkApp() {
-  const load = useWorkModelLoad()
-  useEffect(() => {
-    const unsubscribe = ACTIVE_SOURCE.subscribeToLiveUpdates(receiveLiveWorkModel, receiveConnectionStatus)
-    ACTIVE_SOURCE.loadWorkModel().then(
-      (model) => settleInitialWorkModelLoad({ model }),
-      (error: unknown) => settleInitialWorkModelLoad({ error: error instanceof Error ? error.message : String(error) }),
-    )
-    return unsubscribe
-  }, [])
+  const load = useStore((state) => state.work.load)
+  const startWorkSource = useStore.use.startWorkSource()
+  const retryWorkRead = useStore.use.retryWorkRead()
+  useEffect(() => startWorkSource(ACTIVE_SOURCE), [startWorkSource])
   if (load.state === 'loaded') return <LoadedApp />
   return (
     <div className="flex min-h-svh items-center justify-center p-4 text-foreground">
@@ -140,6 +105,7 @@ function WorkApp() {
             <>
               <EmptyTitle>Can't read local work right now</EmptyTitle>
               <EmptyDescription>{load.error}</EmptyDescription>
+              <Button size="sm" variant="outline" className="mt-2 self-center" onClick={() => void retryWorkRead()}>Retry</Button>
             </>
           )}
         </EmptyHeader>
@@ -149,48 +115,28 @@ function WorkApp() {
 }
 
 function LoadedApp() {
-  const { sourceKind } = useWorkModel()
+  const { sourceKind, requests, focusAreas } = useWorkModel()
   const sample = sourceKind === 'sample'
-  const [view, setView] = useState<View>('work')
-  // The area My Work is filtered to (an area id or Other); null shows every request. Session state only.
-  const [focusChoice, setFocusChoice] = useState<string | null>(null)
-  const [workspaceChoice, setWorkspace] = useState<Workspace>({ mode: 'home', team: false, connected: false })
-  // Outside sample mode the place comes from the source: the local worker is at home, cmem.ai is on the go.
-  const workspace: Workspace = sample ? workspaceChoice : { ...workspaceChoice, mode: sourceKind === 'cloud' ? 'web' : 'home' }
-  const [showSpec, setShowSpec] = useState(false)
-  const [dark, setDark] = useDarkMode()
-  // Whether the opened request was in today's live feed, so the drawer can tell "left the feed" from "never in it".
-  const [openRequest, setOpenRequestState] = useState<{ request: Request; fromLiveFeed: boolean } | null>(null)
-  const setOpenRequest = (request: Request | null) => setOpenRequestState(request ? { request, fromLiveFeed: requestById(request.id) !== null } : null)
-  const { requests, focusAreas } = useWorkModel()
-  // An area merged away shows its target; a dismissed one falls back to every request.
-  const focusAreaId = focusChoice === OTHER_FOCUS_AREA_ID ? focusChoice : resolveFocusAreaId(focusChoice, focusAreas)
+  const view = useStore((state) => state.view.section)
+  const focusChoice = useStore((state) => state.view.focusChoice)
+  const openRequest = useStore((state) => state.view.openRequest)
+  const showSpec = useStore((state) => state.view.showSpec)
+  const workspace = useWorkspace()
+  const dark = useDarkMode()
+  const { goToPage, goToFocus, selectFocus, openRequestDrawer, closeRequestDrawer, setWorkspace, setShowSpec, setDark, playSampleDemo } = useStore.getState()
+  const focusAreaId = shownFocusAreaId({ section: 'work', focusChoice }, focusAreas)
   const yourMoveCount = requests.filter(needsYou).length
-  // The drawer always shows the current state of today's requests; older goal-only requests come as passed.
-  // A request that leaves the live feed closes the drawer: its agent and device may have left the model with it.
-  const liveOpenRequest = openRequest ? requestById(openRequest.request.id) ?? (openRequest.fromLiveFeed ? null : openRequest.request) : null
-  // Forget the closed selection, so the drawer never reopens by itself if that request later returns to the feed.
-  useEffect(() => { if (openRequest && liveOpenRequest === null) setOpenRequestState(null) }, [openRequest, liveOpenRequest])
+  // The drawer always shows the current record of today's requests; an older goal-only request shows as it was passed.
+  const liveOpenRequest = openRequest ? requests.find((request) => request.id === openRequest.id) ?? (openRequest.fromLiveFeed === false ? openRequest.fallback : null) : null
   // The demo flip is sample data; it never runs against real requests.
-  useEffect(() => (sample ? playDemoUpdates() : undefined), [sample])
-  // Showing another view is counted with the view it left; the same view again (including another focus area on My Work) is not a switch.
-  const showView = (next: View) => { if (REPORTS_USAGE) sendUsageReport(usageReport(next, view)); setView(next) }
-  const goToPage = (next: NavPage) => { setFocusChoice(null); showView(next) }
-  const goToFocus = (id: string) => { setOpenRequest(null); setFocusChoice(id); showView('work') }
+  useEffect(() => (sample ? playSampleDemo() : undefined), [sample, playSampleDemo])
   const selected: FocusSelection = view === 'suggested' || view === 'past-focus' ? { kind: view } : view === 'work' && focusAreaId ? { kind: 'area', focusAreaId } : null
-  const selectFocus = (selection: FocusSelection) => {
-    if (!selection) goToPage('work')
-    else if (selection.kind === 'area') goToFocus(selection.focusAreaId)
-    else { setFocusChoice(null); showView(selection.kind) }
-  }
   const pageActive = (id: NavPage) => view === id && !(id === 'work' && focusAreaId)
   const focusTitle = focusAreaId === OTHER_FOCUS_AREA_ID ? 'Other' : focusAreas.find((area) => area.id === focusAreaId)?.name
   const heading = view === 'suggested' ? 'Suggested' : view === 'past-focus' ? 'Past focus' : view === 'work' && focusTitle ? focusTitle : PAGES.find((entry) => entry.id === view)!.label
 
   return (
     <MotionConfig reducedMotion="user">
-    <SpecOverlayContext.Provider value={showSpec}>
-      <WorkspaceContext.Provider value={workspace}>
         <TooltipProvider delayDuration={150}>
           <Req ids={['R10.3', 'R10.2']} className="min-h-svh">
             <div className="min-h-svh pb-[calc(6rem+env(safe-area-inset-bottom))] text-foreground md:pb-0">
@@ -198,7 +144,7 @@ function LoadedApp() {
               <StickyBanner hideOnScroll className="min-h-0 flex-wrap justify-start gap-x-3 gap-y-1 border-b border-border/70 bg-card/85 px-4 py-1.5 pr-12 text-xs whitespace-nowrap backdrop-blur-md md:px-6 md:pr-10">
                 {sample && <Badge variant="outline" className="font-normal">Wireframe · sample data</Badge>}
                 {sample && <Req ids={['R13.1']}>
-                  <ToggleGroup type="single" size="sm" variant="outline" spacing={1} className="flex-nowrap" value={workspace.mode} onValueChange={(mode) => mode && setWorkspace({ ...workspace, mode: mode as Workspace['mode'], connected: mode === 'web' || workspace.connected })}>
+                  <ToggleGroup type="single" size="sm" variant="outline" spacing={1} className="flex-nowrap" value={workspace.mode} onValueChange={(mode) => mode && setWorkspace({ mode: mode as 'home' | 'web', connected: mode === 'web' || workspace.connected })}>
                     <ToggleGroupItem value="home" className="h-7 text-xs">At home<span className="hidden md:inline">· localhost:37777</span></ToggleGroupItem>
                     <ToggleGroupItem value="web" className="h-7 text-xs">On the go<span className="hidden md:inline">· cmem.ai</span></ToggleGroupItem>
                   </ToggleGroup>
@@ -226,7 +172,7 @@ function LoadedApp() {
                     </Req>
                     <h1 className="min-w-0 truncate text-lg font-semibold tracking-tight whitespace-nowrap md:hidden [.header-pill_&]:text-base">{heading}</h1>
                     <div className="ml-auto flex shrink-0 items-center gap-0.5 md:gap-2">
-                      <TeamSwitch team={workspace.team} onChange={(team) => setWorkspace({ ...workspace, team })} />
+                      <TeamSwitch team={workspace.team} onChange={(team) => setWorkspace({ team })} />
                       <DeviceFreshness />
                       <LiveIndicator />
                       <ClassicViewerLink />
@@ -259,7 +205,7 @@ function LoadedApp() {
 
                 <main className="min-w-0 space-y-4 md:space-y-5">
                   <FocusChipRow selected={selected} onSelect={selectFocus} />
-                  {view === 'work' && <MyWork focusAreaId={focusAreaId} onOpen={setOpenRequest} onOpenFocus={goToFocus} onOpenRules={() => goToPage('rules')} />}
+                  {view === 'work' && <MyWork focusAreaId={focusAreaId} onOpen={openRequestDrawer} onOpenFocus={goToFocus} onOpenRules={() => goToPage('rules')} />}
                   {view === 'suggested' && <SuggestedAreas onOpenFocus={goToFocus} />}
                   {view === 'past-focus' && <PastFocus onOpenFocus={goToFocus} />}
                   {view === 'rules' && <MyRules />}
@@ -294,12 +240,10 @@ function LoadedApp() {
                 </nav>
               </Req>
 
-              <RequestDetail request={liveOpenRequest} onClose={() => setOpenRequest(null)} onOpenFocus={goToFocus} />
+              <RequestDetail request={liveOpenRequest} onClose={closeRequestDrawer} onOpenFocus={goToFocus} />
             </div>
           </Req>
         </TooltipProvider>
-      </WorkspaceContext.Provider>
-    </SpecOverlayContext.Provider>
     </MotionConfig>
   )
 }

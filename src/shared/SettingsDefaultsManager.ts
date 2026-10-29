@@ -728,6 +728,13 @@ export class SettingsDefaultsManager {
     if (key === 'CLAUDE_MEM_WORKER_HOST') {
       return this.normalizeWorkerHost(value);
     }
+    // Callers join the data dir into file paths, and fs reads a leading `~` as
+    // a directory name, so expand it the way paths.ts resolves the data dir
+    // (#3350). Otherwise an env value like `~/.claude-mem-work` sends the worker
+    // settings to `<cwd>/~/.claude-mem-work/settings.json`.
+    if (key === 'CLAUDE_MEM_DATA_DIR') {
+      return expandHome(value);
+    }
     return value;
   }
 
