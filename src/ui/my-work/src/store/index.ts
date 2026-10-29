@@ -9,14 +9,30 @@ import { sendUsageReport } from '@/live/usage'
 import type { WorkDataSource, WorkModel } from '@/live/work-data-source'
 import { createBoundStore } from './create-store'
 import { createSelectors } from './create-selectors'
-import type { Workspace } from './store-types'
+import type { StoreEnvironment, Workspace } from './store-types'
 
 /** `?source=sample` shows the fixtures; otherwise the local worker (through the dev proxy, or same origin when the worker serves this page). Never falls back to sample data. */
 export const ACTIVE_SOURCE: WorkDataSource = new URLSearchParams(window.location.search).get('source') === 'sample' ? sampleSource : localSource
 
-/** localStorage can throw (blocked site data); preferences then last only for this visit. */
-function browserStorage(): Storage | null {
-  try { return window.localStorage } catch { return null }
+/**
+ * Where the display preferences are saved. persist writes on every state change, live models included, so a value
+ * that is already saved is not written again. localStorage can throw (blocked site data); preferences then last only
+ * for this visit.
+ */
+function browserStorage(): StoreEnvironment['storage'] {
+  let storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
+  try {
+    storage = window.localStorage
+    storage.getItem('claude-mem:my-work:preferences')
+  } catch {
+    const visit = new Map<string, string>()
+    storage = { getItem: (key) => visit.get(key) ?? null, setItem: (key, value) => { visit.set(key, value) }, removeItem: (key) => { visit.delete(key) } }
+  }
+  return {
+    getItem: (key) => storage.getItem(key),
+    setItem: (key, value) => { if (storage.getItem(key) !== value) storage.setItem(key, value) },
+    removeItem: (key) => storage.removeItem(key),
+  }
 }
 
 const useStoreBase = createBoundStore({
