@@ -60,6 +60,9 @@ export interface AutoRefresh { state: 'idle' | 'running' | 'ok' | 'failed' | 'wa
 /** The last build story request-progress wrote. `writtenAt` is display text; null when not recorded. */
 export interface BuildStory { recap: string; paragraphs: string[]; writtenAt: string | null }
 
+/** A saved rule change: the model right after it, and the rule it saved (null from workers that don't say). */
+export interface RuleSaveResult { model: WorkModel; savedRuleId: string | null }
+
 /** What the pure mapper produces; the source adds the connection it measured. */
 export type MappedWorkModel = Omit<WorkModel, 'connection'>
 
@@ -74,7 +77,7 @@ export interface WorkDataSource {
    */
   setRequestChecked(requestId: string, expectedFingerprint: string, checked: boolean): Promise<ReviewResult>
   /** Saves one change to My Rules and answers with the model after it. Rejects with the reason it was not saved. */
-  saveRuleChange(change: RuleChange): Promise<WorkModel>
+  saveRuleChange(change: RuleChange): Promise<RuleSaveResult>
   /** Saves one change to My Focus and answers with the model after it. Rejects with the reason it was not saved. */
   saveFocusChange(change: FocusChange): Promise<WorkModel>
   /** Records the owner's stop for a subagent no recorded stop covers, and answers with the model after it. */

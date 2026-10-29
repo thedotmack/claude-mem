@@ -93,6 +93,33 @@ describe('redactSensitive built-in patterns', () => {
     },
   );
 
+  // A password in a URL's userinfo is what `git remote -v` and a DATABASE_URL
+  // print; only the password is replaced.
+  it.each([
+    ['postgres://app:hunter2pass@db.internal:5432/prod', "postgres://app:<redacted type='url_credentials'/>@db.internal:5432/prod"],
+    ['origin https://alice:s3cr3t%21x@git.example.com/org/repo.git (fetch)', "origin https://alice:<redacted type='url_credentials'/>@git.example.com/org/repo.git (fetch)"],
+    ['redis://:hunter2pass@localhost:6379/0', "redis://:<redacted type='url_credentials'/>@localhost:6379/0"],
+    // A vendor-shaped start must not split the password and leave the rest visible.
+    ['https://app:' + 'cm_' + 'pro_abcdefgh!suffix@host/repo', "https://app:<redacted type='url_credentials'/>@host/repo"],
+    ['{"url":"mongodb+srv://u:p4ss.w0rd@c0.example.net/db"}', `{"url":"mongodb+srv://u:<redacted type='url_credentials'/>@c0.example.net/db"}`],
+  ])('redacts only the password of %s', (input, expected) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toBe(expected);
+    expect(Object.keys(result.counts)).toEqual(['url_credentials']);
+  });
+
+  it.each([
+    'https://example.com:8080/path',
+    'https://user@example.com/repo.git',
+    'http://localhost:3000/@scope/pkg',
+    'postgres://app:${DB_PASS}@db/prod',
+    'postgres://app:<password>@db/prod',
+  ])('leaves %s alone', (input) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toBe(input);
+    expect(result.counts.url_credentials).toBeUndefined();
+  });
+
   it('still requires a Google key to end after its 35 characters', () => {
     const result = redactSensitive('AIzaSyA-0123456789abcdefghijklmnopqrstuv', cfg);
     expect(result.counts.google_api_key).toBeUndefined();

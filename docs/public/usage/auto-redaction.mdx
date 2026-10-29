@@ -28,7 +28,7 @@ Add to `~/.claude-mem/settings.json`:
 }
 ```
 
-That is all you need for the 15 built-in patterns to kick in. Add `"CLAUDE_MEM_REDACT_GENERIC_ENABLED": "true"` to also turn on the 3 [generic patterns](#generic-patterns).
+That is all you need for the 16 built-in patterns to kick in. Add `"CLAUDE_MEM_REDACT_GENERIC_ENABLED": "true"` to also turn on the 3 [generic patterns](#generic-patterns).
 
 ## Built-in patterns
 
@@ -49,6 +49,7 @@ That is all you need for the 15 built-in patterns to kick in. Add `"CLAUDE_MEM_R
 | `huggingface_token` | `hf_…` Hugging Face access tokens |
 | `npm_token` | `npm_…` npm access tokens (36 trailing alphanumerics) |
 | `claude_mem_key` | claude-mem's own server API keys (`cmem_…`) and cmem.ai Pro memory keys (`cm_pro_…`) |
+| `url_credentials` | the password in `scheme://user:password@host` URLs (database URLs, `git remote -v`); the scheme, user and host are kept |
 
 ## Generic patterns
 
