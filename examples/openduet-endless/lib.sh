@@ -20,6 +20,12 @@ MEMORY_FOLDER=${OPENDUET_ENDLESS_MEMORY_FOLDER:-$OD_HOME/memory}
 
 WORKER_PORT=${OPENDUET_ENDLESS_WORKER_PORT:-37877}
 GATEWAY_PORT=${OPENDUET_ENDLESS_GATEWAY_PORT:-37878}
+
+# OpenDuet's chats. "local" keeps them in one file on this computer (local-chats/), with no CopilotKit sign-in;
+# "cloud" keeps them in CopilotKit Intelligence, OpenDuet's default, which needs a CopilotKit sign-in.
+CHATS=${OPENDUET_ENDLESS_CHATS:-local}
+CHATS_PORT=${OPENDUET_ENDLESS_CHATS_PORT:-37879}
+CHATS_DB=${OPENDUET_ENDLESS_CHATS_DB:-$OD_HOME/chats/chats.db}
 ROUTE=openduet
 UPSTREAM=${OPENDUET_ENDLESS_UPSTREAM:-https://openrouter.ai/api/v1}
 # DeepSeek's newest model on OpenRouter when this was written (Oct 29, 2026). Used by OpenDuet and by claude-mem's
@@ -37,14 +43,17 @@ upsert_env() {
   cat "$tmp" > "$file" && rm -f "$tmp"
 }
 
-# The OpenRouter key from OpenDuet's .env (OPENAI_API_KEY). Never printed.
-read_openrouter_key() {
+# One value from OpenDuet's .env, quotes removed. Never printed by these scripts.
+read_od_env() {
   local line
-  line=$(grep -E '^OPENAI_API_KEY=' "$OD_REPO/.env" 2>/dev/null | tail -n 1)
-  line=${line#OPENAI_API_KEY=}
+  line=$(grep -E "^$1=" "$OD_REPO/.env" 2>/dev/null | tail -n 1)
+  line=${line#"$1="}
   line=${line%\"}; line=${line#\"}; line=${line%\'}; line=${line#\'}
   printf '%s' "$line"
 }
+
+# The OpenRouter key (OPENAI_API_KEY).
+read_openrouter_key() { read_od_env OPENAI_API_KEY; }
 
 port_in_use() { lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
 
