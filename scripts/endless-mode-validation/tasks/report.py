@@ -138,6 +138,7 @@ def main():
     args = p.parse_args()
     db = sqlite3.connect(args.db)
     runs = {}
+    included = {}
     settings = {}
     run_cols = {row[1] for row in db.execute('PRAGMA table_info(runs)')}
     extra = 'coalesce(sessions,1), coalesce(compact_window,0)' if 'sessions' in run_cols else '1, 0'
@@ -149,6 +150,7 @@ def main():
             continue
         settings.setdefault((model, tries, exercises, sessions, compact_window, compact_pct), []).append(run_id)
         runs.setdefault(arm, []).append(run_metrics(db, run_id))
+        included.setdefault(arm, []).append(run_id)
     if len(settings) != 1:
         sys.exit('runs with different settings (model, tries, exercises, sessions or compaction) cannot share one '
                  'table: ' + '; '.join(f'{k[0]}, {k[1]} tries, {len(k[2].split(","))} exercises, {k[3]} sessions, '
@@ -159,10 +161,12 @@ def main():
     def name(arm):
         if arm == 'plain':
             return 'Plain Claude Code'
-        # The note-taker model the API reported answering, so the label can't drift from what ran.
+        # The note-taker model the API reported answering in the runs this column counts, so the label can't drift
+        # from what ran.
+        ids = included[arm]
         used = sorted({m for (m,) in db.execute(
-            "SELECT DISTINCT r.model FROM requests r JOIN runs u ON u.run_id = r.run_id "
-            "WHERE u.arm = ? AND r.source = 'observer' AND r.model IS NOT NULL", (arm,))})
+            f"SELECT DISTINCT model FROM requests WHERE run_id IN ({','.join('?' * len(ids))}) "
+            "AND source = 'observer' AND model IS NOT NULL", ids)})
         return f'Endless Mode, note-taker on {", ".join(used)}' if used else arm
     label = {a: f'{name(a)} ({len(runs[a])} runs)' for a in arms}
     lines = ['| Measure | ' + ' | '.join(label[a] for a in arms) + ' |', '|---|' + '---|' * len(arms)]
