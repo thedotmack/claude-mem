@@ -239,6 +239,7 @@ describe('SyncClient Supabase Realtime live updates', () => {
         'X-User-Id': USER_ID,
         'X-Device-Id': SELF,
         'X-Device-Name': 'test laptop',
+        'X-Sync-Capabilities': 'quarantine-unknown-kinds',
       },
     });
     const upgrade = new URL(realtime.state.upgradeUrls[0]);

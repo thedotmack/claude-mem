@@ -135,6 +135,7 @@ describe('SyncClient', () => {
     expect(state.requests[0].headers['X-User-Id']).toBe('user-42');
     expect(state.requests[0].headers['X-Device-Id']).toBe(SELF);
     expect(state.requests[0].headers['X-Device-Name']).toBe('test laptop');
+    expect(state.requests[0].headers['X-Sync-Capabilities']).toBe('quarantine-unknown-kinds');
   });
 
   it('loops while more=true, presenting the advanced cursor each page', async () => {
