@@ -22,6 +22,13 @@ export class DatabaseManager {
   private cloudSync: CloudSync | null = null;
   private backupManager: BackupManager | null = null;
 
+  private rawSearchEnabled = false;
+  private readonly rawSearchAbort = new AbortController();
+
+  async initializeToolUseSearch(): Promise<void> {
+    await this.sessionSearch?.configureToolUseIndex(this.rawSearchEnabled, this.rawSearchAbort.signal);
+  }
+
   async initialize(): Promise<void> {
     // Guard before pragmas: journal_mode = WAL persistently rewrites the file,
     // so a database whose schema is newer than this binary's chain must be
@@ -29,6 +36,7 @@ export class DatabaseManager {
     this.db = openGuardedSqliteDatabase(DB_PATH);
 
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    this.rawSearchEnabled = settings.CLAUDE_MEM_TOOL_USES_SEARCH_ENABLED === 'true';
 
     // Cloud sync is active iff token, user id, and Hub URL are all non-empty
     // (CloudSync.isConfigured's exact predicate). Evaluated once here and
@@ -79,6 +87,7 @@ export class DatabaseManager {
   }
 
   async close(): Promise<void> {
+    this.rawSearchAbort.abort();
     this.chromaSync = null;
 
     this.cloudSync?.stop();

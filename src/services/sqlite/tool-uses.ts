@@ -1,3 +1,4 @@
+import { projectScopeSql, scopedProjects } from './project-read-keys.js';
 // Durable raw tool-use rows (schema v51).
 //
 // `pending_messages` is the GENERATION QUEUE: rows are claimed, fed to the
@@ -314,7 +315,7 @@ function mapPlatformFilter(platformSource: string | undefined): { clause: string
 export function getToolUsesByIds(
   db: Database,
   ids: Array<number | string>,
-  options: { limit?: number; project?: string; platformSource?: string; contentSessionId?: string } = {}
+  options: { limit?: number; project?: string; projects?: string[]; platformSource?: string; contentSessionId?: string } = {}
 ): ToolUseRow[] {
   const numericIds: number[] = [];
   const stringIds: string[] = [];
@@ -347,9 +348,10 @@ export function getToolUsesByIds(
 
   const conditions = [`(${idClauses.join(' OR ')})`];
 
-  if (options.project) {
-    conditions.push('project COLLATE NOCASE = ?');
-    params.push(options.project);
+  const projects = scopedProjects(options);
+  if (projects.length) {
+    const scope = projectScopeSql('tool_uses', projects, { includeMerged: false });
+    conditions.push(scope.sql); params.push(...scope.params);
   }
   if (options.contentSessionId) {
     conditions.push('content_session_id = ?');
@@ -526,7 +528,7 @@ export function purgeLinkedToolUses(db: Database, retentionDays: number, nowEpoc
   try {
     if (!toolUsesTableExists(db)) return 0;
     const cutoffEpoch = nowEpoch - retentionDays * 24 * 60 * 60 * 1000;
-    const { changes } = db
+    db
       .prepare(
         `DELETE FROM tool_uses
           WHERE observation_id IS NOT NULL
@@ -534,6 +536,8 @@ export function purgeLinkedToolUses(db: Database, retentionDays: number, nowEpoc
             AND EXISTS (SELECT 1 FROM observations WHERE observations.id = tool_uses.observation_id)`
       )
       .run(cutoffEpoch);
+    // Bun's run().changes includes FTS shadow-table writes from triggers.
+    const { changes } = db.query('SELECT changes() AS changes').get() as { changes: number };
     if (changes > 0) {
       logger.info('DB', 'Purged tool_uses rows past retention that are already linked to an observation', {
         rows: changes,
@@ -542,7 +546,7 @@ export function purgeLinkedToolUses(db: Database, retentionDays: number, nowEpoc
     }
     return changes;
   } catch (error) {
-    logger.debug('DB', 'tool_uses retention purge skipped', {},
+    logger.warn('DB', 'tool_uses retention purge failed', {},
       error instanceof Error ? error : new Error(String(error)));
     return 0;
   }

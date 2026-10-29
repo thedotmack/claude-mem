@@ -67,6 +67,8 @@ async function execute(request: ContextReadRequest): Promise<unknown> {
       return readDatabase(db => countObservationsByProjects({ db }, request.input.projects, request.input.platformSource) > 0);
     case 'projectsForCwd':
       return getProjectContext(request.input.cwd).allProjects;
+    case 'searchToolUses':
+      return keywordSearchReader().searchToolUses(request.input.query, request.input.options);
     case 'searchObservations':
       return keywordSearchReader().searchObservations(request.input.query, request.input.options);
     case 'searchSessions':

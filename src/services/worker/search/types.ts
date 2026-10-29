@@ -108,6 +108,8 @@ export interface StrategySearchOptions extends ExtendedSearchOptions {
 }
 
 export interface StrategySearchResult {
+  /** A failed leg is not evidence that a deeper tier should run. */
+  searchFailed?: boolean;
   results: SearchResults;
   usedChroma: boolean;
   strategy: SearchStrategyHint;

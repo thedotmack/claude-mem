@@ -1,3 +1,4 @@
+import type { DeepSearchResult } from '../sqlite/tool-use-search.js';
 import type { ContextConfig, ContextInput } from './types.js';
 import type { ContextInjectStats } from './ContextBuilder.js';
 import type { WorkStateEntry } from '../sqlite/work-state.js';
@@ -36,6 +37,7 @@ export interface ContextReadMethods {
   workState: { input: { projects: string[]; localDeviceId: string }; result: WorkStateEntry[] };
   hasObservations: { input: { projects: string[]; platformSource?: string }; result: boolean };
   projectsForCwd: { input: { cwd: string }; result: string[] };
+  searchToolUses: { input: { query: string; options: SearchOptions }; result: DeepSearchResult };
   searchObservations: { input: { query: string | undefined; options: SearchOptions }; result: ObservationSearchResult[] };
   searchSessions: { input: { query: string | undefined; options: SearchOptions }; result: SessionSummarySearchResult[] };
   searchUserPrompts: { input: { query: string | undefined; options: SearchOptions }; result: UserPromptSearchResult[] };

@@ -1212,6 +1212,7 @@ var init_SettingsDefaultsManager = __esm({
         // per-insert candidate-scan cap (logged when exceeded)
         CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS: "50000",
         // dedup-scan skips a project with more rows than this (memory safety)
+        CLAUDE_MEM_TOOL_USES_SEARCH_ENABLED: "false",
         CLAUDE_MEM_TOOL_USES_RETENTION_DAYS: "0",
         // 0 = keep forever (default); N = purge linked tool_uses older than N days at worker start
         CLAUDE_MEM_WORKER_AUTOSTART: "true",
