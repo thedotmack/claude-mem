@@ -178,6 +178,17 @@ You translate README files while preserving Markdown formatting and technical ac
 Always output only the translated content without any surrounding explanation.`,
       permissionMode: "bypassPermissions",
       allowDangerouslySkipPermissions: true,
+      // The README is interpolated into the prompt verbatim — with
+      // bypassPermissions a hostile document could drive arbitrary tool use.
+      // Translation needs no tools. `tools: []` is the true disable
+      // (`allowedTools` only auto-approves; see src/sdk/hardened-options.ts),
+      // with the deny-list as suspenders.
+      tools: [],
+      allowedTools: [],
+      disallowedTools: [
+        "Bash", "Read", "Write", "Edit", "Grep", "Glob", "WebFetch", "WebSearch",
+        "Task", "NotebookEdit", "AskUserQuestion", "TodoWrite", "SendMessage", "ListAgents",
+      ],
       includePartialMessages: true, // Enable streaming events
     },
   });

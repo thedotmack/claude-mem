@@ -15,7 +15,8 @@ import { MediaError } from '../../shared/media-contract.js';
 import { logger } from '../../utils/logger.js';
 import { clearSyncHealth, defaultSyncHealthFilePath } from '../../shared/sync-health.js';
 import { purgeUndrainableSyncOutbox } from '../sync/outbox-purge.js';
-import { purgeLinkedToolUses, resolveToolUsesRetentionDays } from '../sqlite/tool-uses.js';
+import { purgeLinkedToolUses } from '../sqlite/tool-uses.js';
+import { parseRetentionDays } from '../../shared/retention-days.js';
 import type { DBSession } from '../worker-types.js';
 
 export class DatabaseManager {
@@ -100,7 +101,7 @@ export class DatabaseManager {
     // other devices and cmem.ai use), under the id CloudSync resolved.
     this.sessionStore.setLocalSyncDeviceId(this.cloudSync?.status().deviceId ?? settings.CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID);
 
-    purgeLinkedToolUses(this.db, resolveToolUsesRetentionDays(settings.CLAUDE_MEM_TOOL_USES_RETENTION_DAYS));
+    purgeLinkedToolUses(this.db, parseRetentionDays(settings.CLAUDE_MEM_TOOL_USES_RETENTION_DAYS));
 
     // Automatic local snapshots are opt-in. Disabled installs get null so the
     // lifecycle `getBackupManager()?.start()` call is a free no-op.

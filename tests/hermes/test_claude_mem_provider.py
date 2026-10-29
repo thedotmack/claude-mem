@@ -156,6 +156,16 @@ class ProviderTest(unittest.TestCase):
         self.assertEqual(summary["last_assistant_message"], "All green")
         self.assertEqual(summary["contentSessionId"], "sess-1")
 
+    def test_a_private_last_turn_sends_no_summary_after_a_public_turn(self):
+        self.provider.on_turn_start(1, "Fix the failing login test")
+        self.provider.on_turn_start(2, "<private>rotate the prod key sk-live-123</private>")
+        self.provider.on_session_end([{"role": "assistant", "content": "Rotated sk-live-123"}])
+        self.drain()
+        # The public first turn is recorded; the private last turn's reply never
+        # leaves Hermes, so no summarize request carries it.
+        self.assertEqual(self.fake.paths(), ["/api/sessions/init"])
+        self.assertNotIn("sk-live-123", json.dumps([r["body"] for r in self.fake.requests]))
+
     def test_a_long_tool_result_is_capped(self):
         self.provider.on_turn_start(1, "read the log")
         self.provider.record_tool_call("read_file", {"path": "a.log"}, "x" * 5000, "sess-1")
@@ -594,6 +604,25 @@ class ServerModeTest(unittest.TestCase):
         self.assertNotIn("hunter2", query)
         self.assertIn("deploy or application", query)
         provider.shutdown()
+
+    def test_a_private_last_turn_still_ends_the_server_session(self):
+        fake = FakeClaudeMem()
+        self.addCleanup(fake.close)
+        fake.replies["/v1/sessions/start"] = (200, {"session": {"id": "srv-2"}})
+        config = client_module.Config("http://127.0.0.1:1", fake.base, "key-1", "proj-1")
+        client = client_module.ClaudeMemClient(config)
+        provider = claude_mem.ClaudeMemMemoryProvider(client=client)
+        self.addCleanup(provider.shutdown)
+        provider.initialize("sess-p", cwd="/work/app")
+        provider.on_turn_start(1, "deploy the app")
+        provider.on_turn_start(2, "<private>use password hunter2</private>")
+        provider.on_session_end([{"role": "assistant", "content": "Logged in with hunter2"}])
+        self.assertTrue(client.flush(5.0))
+        # The private turn's assistant message is dropped, but the session the
+        # public turn opened is still ended on the server.
+        self.assertEqual(fake.paths(), ["/v1/sessions/start", "/v1/events",
+                                        "/v1/sessions/start", "/v1/sessions/srv-2/end"])
+        self.assertNotIn("hunter2", json.dumps([r["body"] for r in fake.requests]))
 
 
 if __name__ == "__main__":
