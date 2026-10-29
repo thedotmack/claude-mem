@@ -86,6 +86,15 @@ const GENERIC_TOKEN_REGEX = new RegExp([
 ].join('|'), 'gi');
 
 export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
+  // The password in a URL's userinfo: `postgres://app:hunter2@db/prod`,
+  // `redis://:hunter2@cache:6379/0`, `https://user:pass@host/repo.git` (what
+  // `git remote -v` and a DATABASE_URL print). Only the password is replaced,
+  // so the scheme, user and host stay readable. The value stops at `/`, `@`,
+  // whitespace and quotes; a `<` start keeps an earlier marker and a `$`/`{`
+  // start keeps a `${DB_PASS}` placeholder from being taken for a secret.
+  // First in the list, so the whole password goes before a vendor pattern can
+  // split it with its marker and leave the rest of it behind.
+  { name: 'url_credentials', regex: /(?<=\b[a-z][a-z0-9+.-]*:\/\/[^\s:\/@'"<>]*:)(?![${<])[^\s\/@'"<>]+(?=@)/gi },
   // `AKIA` is a long-term access key ID; `ASIA` is the temporary one that STS,
   // SSO and instance roles hand out (`aws sts assume-role`, `aws configure
   // export-credentials`), printed next to its secret and session token.
@@ -120,6 +129,14 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   { name: 'private_key_pem', regex: /-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END (?:RSA |DSA |EC |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----/g },
   { name: 'stripe_key',      regex: /\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{24,}\b/g },
   { name: 'google_api_key',  regex: /\bAIza[0-9A-Za-z_-]{35}(?!\w)/g },
+  // GitLab personal/project/group access tokens (`glpat-` + 20 chars; newer
+  // routable tokens add dot-separated segments), Hugging Face user access
+  // tokens (`hf_` + 34 chars) and npm access tokens (`npm_` + 36 chars): the
+  // credentials `glab`, `huggingface-cli` and `npm` print in config and
+  // `.npmrc`/`.env` dumps.
+  { name: 'gitlab_token',    regex: /\bglpat-[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)*(?!\w)/g },
+  { name: 'huggingface_token', regex: /\bhf_[A-Za-z0-9]{30,}\b/g },
+  { name: 'npm_token',       regex: /\bnpm_[A-Za-z0-9]{36}\b/g },
   // claude-mem's own credentials: server API keys (`cmem_` + 43 base64url
   // chars, server-bootstrap.ts createRawApiKey) and cmem.ai Pro memory keys.
   { name: 'claude_mem_key',  regex: /\bcmem_[A-Za-z0-9_-]{32,}|\bcm_pro_[A-Za-z0-9_-]{8,}/g },

@@ -28,6 +28,7 @@ mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
 
 import { adoptMergedWorktrees, adoptMergedWorktreesForAllKnownRepos } from '../../../src/services/infrastructure/WorktreeAdoption.js';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
+import { getProjectContext } from '../../../src/utils/project-name.js';
 
 let tempRoot: string | undefined;
 
@@ -94,7 +95,7 @@ function seedSessionWithCheckout(
   project: string,
   memoryId: string,
   checkout: string,
-  keySource: 'path' | 'git-remote' | 'environment' = 'path'
+  keySource: 'path' | 'git-remote' | 'environment' | null = 'path'
 ): void {
   const sessionDbId = store.createSDKSession(contentId, project, 'prompt');
   store.ensureMemorySessionIdRegistered(sessionDbId, memoryId);
@@ -145,6 +146,95 @@ describe('orphaned worktree adoption (#2864)', () => {
     expect(result.adoptedObservations).toBe(1);
     expect(mergedInto(dbPath, obsId)).toBe('parent-repo');
   }, 30_000);
+
+  for (const [location, keySource] of [
+    ['outside', 'environment'],
+    ['inside', 'environment'],
+    ['outside', 'path'],
+  ] as const) {
+    it(`does not adopt ${location} ${keySource} history merely because it inherits the repository (#5022)`, async () => {
+      tempRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-5022-inheritance-'));
+      const mainRepo = path.join(tempRoot, 'workspace');
+      const checkout = path.join(location === 'inside' ? mainRepo : tempRoot, 'business-a');
+      const dataDirectory = path.join(tempRoot, 'data');
+      initRepo(mainRepo);
+      if (location === 'outside') initRepo(checkout);
+      else mkdirSync(checkout);
+      mkdirSync(dataDirectory);
+      const saved = process.env.CLAUDE_MEM_PROJECT_ENVIRONMENTS;
+      process.env.CLAUDE_MEM_PROJECT_ENVIRONMENTS = JSON.stringify([
+        { name: 'workspace/business-a', patterns: [`${checkout}/**`], inherit: ['workspace'] },
+      ]);
+      try {
+        expect(getProjectContext(checkout).allProjects).toEqual(['workspace', 'workspace/business-a']);
+        const dbPath = path.join(dataDirectory, 'claude-mem.db');
+        const store = new SessionStore(dbPath);
+        seedSessionWithCheckout(store, 'parent-content', 'workspace', 'parent-memory', mainRepo);
+        seedSessionWithCheckout(store, 'child-content', 'workspace/business-a', 'child-memory', checkout, keySource);
+        const id = seedObservation(store, 'child-memory', 'workspace/business-a');
+        const summary = store.importSessionSummary({
+          memory_session_id: 'child-memory', project: 'workspace/business-a',
+          request: 'environment work', investigated: null, learned: null, completed: null,
+          next_steps: null, files_read: null, files_edited: null, notes: null,
+          prompt_number: 1, discovery_tokens: 0,
+          created_at: new Date(1_700_000_000_000).toISOString(), created_at_epoch: 1_700_000_000_000,
+        });
+        store.close();
+
+        const results = await adoptMergedWorktreesForAllKnownRepos({ dataDirectory });
+        expect(results.length).toBeGreaterThan(0);
+        expect(results.flatMap(result => result.errors)).toEqual([]);
+        expect(mergedInto(dbPath, id)).toBeNull();
+        const verify = new SessionStore(dbPath);
+        try {
+          expect(verify.db.prepare('SELECT merged_into_project FROM session_summaries WHERE id = ?').get(summary.id))
+            .toEqual({ merged_into_project: null });
+        } finally {
+          verify.close();
+        }
+        expect(remappedProjects(dbPath)).toEqual([]);
+        expect(results.flatMap(result => result.orphanedWorktrees)).toEqual([]);
+      } finally {
+        if (saved === undefined) delete process.env.CLAUDE_MEM_PROJECT_ENVIRONMENTS;
+        else process.env.CLAUDE_MEM_PROJECT_ENVIRONMENTS = saved;
+      }
+    }, 30_000);
+  }
+
+  for (const keySource of ['path', null] as const) {
+    it(`still adopts historical ${keySource ?? 'legacy'} worktree keys when current read scope excludes the repository (#5022)`, async () => {
+      tempRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-5022-history-'));
+      const mainRepo = path.join(tempRoot, 'workspace');
+      const worktree = path.join(tempRoot, 'checkouts', 'workspace');
+      const dataDirectory = path.join(tempRoot, 'data');
+      initRepo(mainRepo);
+      mkdirSync(path.dirname(worktree));
+      mkdirSync(dataDirectory);
+      git(mainRepo, 'worktree', 'add', '-b', 'business-a', worktree);
+      const saved = process.env.CLAUDE_MEM_PROJECT_ENVIRONMENTS;
+      process.env.CLAUDE_MEM_PROJECT_ENVIRONMENTS = JSON.stringify([
+        { name: 'business-a', patterns: [`${worktree}/**`], inherit: [] },
+      ]);
+      try {
+        expect(getProjectContext(worktree).allProjects).toEqual(['business-a']);
+        const dbPath = path.join(dataDirectory, 'claude-mem.db');
+        const store = new SessionStore(dbPath);
+        // Before #3641 a repo-named worktree wrote to the doubled folder key.
+        seedSessionWithCheckout(store, 'old-content', 'workspace/workspace', 'old-memory', worktree, keySource);
+        const id = seedObservation(store, 'old-memory', 'workspace/workspace');
+        store.close();
+
+        const result = await adoptMergedWorktrees({ repoPath: mainRepo, dataDirectory });
+        expect(result.errors).toEqual([]);
+        expect(result.orphanedWorktrees).toEqual(['workspace/workspace']);
+        expect(mergedInto(dbPath, id)).toBe('workspace');
+        expect(remappedProjects(dbPath)).toEqual(['workspace/workspace']);
+      } finally {
+        if (saved === undefined) delete process.env.CLAUDE_MEM_PROJECT_ENVIRONMENTS;
+        else process.env.CLAUDE_MEM_PROJECT_ENVIRONMENTS = saved;
+      }
+    }, 30_000);
+  }
 
   it('reports which orphans it adopted rather than folding them silently', async () => {
     tempRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-2864-orphan-'));
@@ -359,6 +449,34 @@ describe('orphaned worktree adoption (#2864)', () => {
     } finally {
       if (savedNameSource === undefined) delete process.env.CLAUDE_MEM_PROJECT_NAME_SOURCE;
       else process.env.CLAUDE_MEM_PROJECT_NAME_SOURCE = savedNameSource;
+    }
+  }, 30_000);
+
+  it('does not adopt an isolated child environment whose name resembles a worktree key (#4782)', async () => {
+    tempRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-4782-adoption-'));
+    const mainRepo = path.join(tempRoot, 'workspace');
+    const child = path.join(mainRepo, 'business-a');
+    const dataDirectory = path.join(tempRoot, 'data');
+    initRepo(mainRepo);
+    mkdirSync(child);
+    mkdirSync(dataDirectory);
+    const saved = process.env.CLAUDE_MEM_PROJECT_ENVIRONMENTS;
+    process.env.CLAUDE_MEM_PROJECT_ENVIRONMENTS = JSON.stringify([
+      { name: 'workspace/business-a', patterns: [`${child}/**`], inherit: [] },
+    ]);
+    try {
+      const dbPath = path.join(dataDirectory, 'claude-mem.db');
+      const store = new SessionStore(dbPath);
+      seedSessionWithCheckout(store, 'isolated-content', 'workspace/business-a', 'isolated-memory', child, 'environment');
+      const id = seedObservation(store, 'isolated-memory', 'workspace/business-a');
+      store.close();
+      const result = await adoptMergedWorktrees({ repoPath: mainRepo, dataDirectory });
+      expect(result.errors).toEqual([]);
+      expect(result.orphanedWorktrees).toEqual([]);
+      expect(mergedInto(dbPath, id)).toBeNull();
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_MEM_PROJECT_ENVIRONMENTS;
+      else process.env.CLAUDE_MEM_PROJECT_ENVIRONMENTS = saved;
     }
   }, 30_000);
 

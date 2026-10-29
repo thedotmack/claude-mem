@@ -1,5 +1,6 @@
 
-import { existsSync, readFileSync, writeFileSync, renameSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync } from 'fs';
+import { randomUUID } from 'crypto';
 import path from 'path';
 import { logger } from './logger.js';
 import { ensureDirectoryExists, resolveSymlinkWriteTarget } from '../shared/atomic-json.js';
@@ -100,9 +101,17 @@ export function writeClaudeMdToFolder(folderPath: string, newContent: string, ta
   // symlink loop or an unwritable target throws, as any write failure does.
   const writeTarget = resolveSymlinkWriteTarget(claudeMdPath);
   ensureDirectoryExists(path.dirname(writeTarget));
-  const tempFile = `${writeTarget}.tmp`;
-  writeFileSync(tempFile, finalContent);
-  renameSync(tempFile, writeTarget);
+  // Random name + exclusive create: a predictable `.tmp` sibling can be
+  // shipped inside a checkout as a symlink, and a following write would then
+  // clobber whatever it points at (the rename only replaces the link itself).
+  const tempFile = `${writeTarget}.${randomUUID()}.tmp`;
+  writeFileSync(tempFile, finalContent, { flag: 'wx' });
+  try {
+    renameSync(tempFile, writeTarget);
+  } catch (error) {
+    try { unlinkSync(tempFile); } catch { /* best effort */ }
+    throw error;
+  }
 }
 
 interface ParsedObservation {
