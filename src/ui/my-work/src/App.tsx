@@ -8,7 +8,7 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { TooltipProvider } from '@/components/ui/tooltip'
-import { ActivePill, ClassicViewerLink, DeviceFreshness, GitHubStars, LiveIndicator } from '@/components/bits'
+import { ActivePill, ClassicViewerLink, DeviceFreshness, FeedbackLink, GitHubStars, LiveIndicator } from '@/components/bits'
 import { Navbar, NavBody } from '@/components/aceternity/resizable-navbar'
 import { Notch } from '@/components/aceternity/notch'
 import { StickyBanner } from '@/components/aceternity/sticky-banner'
@@ -176,6 +176,7 @@ function LoadedApp() {
                       <DeviceFreshness />
                       <LiveIndicator />
                       <ClassicViewerLink />
+                      <FeedbackLink />
                       <GitHubStars />
                     </div>
                   </HeaderBody>

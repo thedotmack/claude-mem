@@ -6,7 +6,10 @@
  * Owner rules (Oct 22): no permission-bypass or "dangerous" flags, read-only
  * tools only, and no time limits. A run ends when the agent finishes or exits
  * with an error, never because it is slow. The next agent is tried only when
- * a run actually fails.
+ * a run actually fails. An agent that ran and answered, but whose answer
+ * claude-mem's own checks refused, is not a failed agent: the run ends there
+ * and the next scheduled run tries the same agent again (#5189: a too-long
+ * Claude review sent ~230 hidden runs to the owner's Codex account).
  *
  *   - Claude Code: one Agent SDK `query` per step with the claude-mem plugin
  *     loaded for its memory-search MCP tools, only the task's allowed tools,
@@ -75,6 +78,9 @@ export interface AgentTask {
 }
 
 export interface AgentAttempt { agent: UsableAgentId; error: string }
+
+/** A task throws an error carrying `answerRefused: true` when claude-mem's own checks refused the agent's answer. */
+const isAnswerRefusal = (error: unknown) => (error as { answerRefused?: boolean } | null)?.answerRefused === true;
 
 export interface AgentRunResult {
   state: 'ok' | 'failed' | 'waiting-for-agent';
@@ -305,7 +311,7 @@ function geminiAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunne
 
 /**
  * Run the task on the first usable agent, falling through to the next only
- * when a run fails. Never throws. With no logged-in agent it returns
+ * when a run fails, not when the agent's answer was refused. Never throws. With no logged-in agent it returns
  * `waiting-for-agent` and runs nothing.
  */
 const agentNames: Record<UsableAgentId, string> = { 'claude-code': 'Claude Code', codex: 'Codex', gemini: 'Gemini' };
@@ -336,6 +342,10 @@ export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunn
       const message = describeError(error).slice(0, 500);
       logger.warn('WORKER', `Agent run (${task.reason}) failed on ${agent.id}`, { error: message });
       attempts.push({ agent: agent.id, error: message });
+      if (isAnswerRefusal(error)) {
+        logger.info('WORKER', `Agent run (${task.reason}) not handed to another agent: ${agent.id} answered, and its answer was refused`);
+        break;
+      }
     }
   }
   const last = attempts[attempts.length - 1];

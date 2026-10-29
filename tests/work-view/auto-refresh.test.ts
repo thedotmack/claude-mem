@@ -270,6 +270,8 @@ describe('Codex grouping answers', () => {
       const error = await groupingTask(dir, fixtureDatabase()).run(ask, 'codex').then(() => null, failure => failure as Error);
       expect(error?.message).toMatch(/^grouping \(raw answer: .+failed-answers.+-grouping-codex\.txt\): JSON Parse error/);
       expect(readFileSync(/\(raw answer: (.+?\.txt)\)/.exec(error!.message)![1], 'utf8')).toBe(malformed);
+      // A refused answer must not send the run on to another agent (#5189).
+      expect((error as { answerRefused?: boolean }).answerRefused).toBe(true);
       // Asked once more with the reason before failing; nothing was grouped.
       expect(prompts).toHaveLength(2);
       expect(prompts[1]).toMatch(/Your previous answer was refused: JSON Parse error/);
@@ -370,6 +372,7 @@ describe('focus step', () => {
       const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: FOCUS_BATCH + 1, ungrouped: 0, goalsStale: false, unplaced: FOCUS_BATCH + 1, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: writer.save });
       const error = await task.run(ask, 'codex').then(() => null, failure => failure as Error);
       expect(error?.message).toMatch(/^focus \(raw answer: .+\): Place every request asked about; missing/);
+      expect((error as { answerRefused?: boolean }).answerRefused).toBe(true);
       expect(batches).toEqual([FOCUS_BATCH, 1, 1]);
       // The first batch was saved; the story was written anyway.
       expect(readFocus(database, { localDeviceId: '' }).focusAreaIdByAnchor.size).toBe(FOCUS_BATCH);

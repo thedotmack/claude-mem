@@ -286,7 +286,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       const answerPath = join(failedDir, `${new Date(now()).toISOString().replaceAll(':', '-')}-${name}-${agent}.txt`);
       writeFileSync(answerPath, answer, { mode: 0o600 });
       // The path goes first: the runner keeps only the first 500 characters of an error.
-      throw new Error(`${name} (raw answer: ${answerPath}): ${refusal}`);
+      throw Object.assign(new Error(`${name} (raw answer: ${answerPath}): ${refusal}`), { answerRefused: true });
     });
     const readOnly = [
       'You are running in a read-only sandbox for claude-mem\'s automatic refresh: you cannot run commands that write or save. Nobody is watching, so never ask a question.',
@@ -398,7 +398,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
           shows = shows.filter(show => !recorded.has(show.groupId));
           for (const show of shows) if (!refusals.some(line => line.startsWith(`${show.groupId}:`))) refusals.push(`${show.groupId}: no review was given.`);
         }
-        if (shows.length) throw new Error(`reviews: ${refusals.join('; ').slice(0, 500)}`);
+        if (shows.length) throw Object.assign(new Error(`reviews: ${refusals.join('; ').slice(0, 500)}`), { answerRefused: true });
       };
       // Batches are independent, so a few run at once; every batch finishes (and saves) before a failure is reported.
       // Not all at once: each batch is its own agent process, and a large backlog (Oct 25: ~1,100 due groups,
