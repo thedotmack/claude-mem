@@ -36,9 +36,7 @@ BREAKER_OPEN_S = 30.0
 # (<memory-context>), and agent-internal blocks. Matches the worker's own list.
 _TAGS = ("private", "memory-context", "claude-mem-context", "system_instruction",
          "system-instruction", "persisted-output", "system-reminder")
-# The [^>] tail is bounded: without a limit, a text of many unfinished
-# "<private"-style starts costs a scan to end-of-string per position (O(n^2)).
-_TAG = re.compile(r"<(/?)(%s)\b[^>]{0,512}>" % "|".join(re.escape(t) for t in _TAGS), re.IGNORECASE)
+_TAG = re.compile(r"<(/?)(%s)\b[^>]*>" % "|".join(re.escape(t) for t in _TAGS), re.IGNORECASE)
 
 
 def _strip_text(text: str) -> str:

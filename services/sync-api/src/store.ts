@@ -345,15 +345,8 @@ export class HubStore {
 					frame = JSON.stringify({ type: "advance", epoch, head_seq: head });
 				}
 			}
-			const now = Date.now();
 			for (const socket of sockets) {
 				if (socket.deviceId === originDeviceId) continue;
-				// Past the authorization deadline: close instead of sending op
-				// bodies. Reconnecting clients re-authenticate at upgrade.
-				if (socket.authExpiresAt <= now) {
-					try { socket.close(4401, "reauthenticate"); } catch { /* drop */ }
-					continue;
-				}
 				try { socket.send(frame); } catch { /* drop */ }
 			}
 		} catch (error) {

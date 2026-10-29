@@ -478,18 +478,6 @@ function boundedByBudget(stepTimeoutMs: number, deadlineAt: number | null): numb
 export { formatHostForUrl } from "./worker-url.js";
 
 export function buildWorkerUrl(apiPath: string): string {
-  // A full-URL override wins over host:port so remote spool ingest can run
-  // through an https tunnel/proxy — the ingest bearer would otherwise always
-  // leave the machine in cleartext. Only http(s) schemes are usable.
-  const override = (process.env.CLAUDE_MEM_WORKER_URL ?? getWorkerSettings({ readOnly: true }).CLAUDE_MEM_WORKER_URL)?.trim();
-  if (override) {
-    try {
-      const url = new URL(override);
-      if (url.protocol === 'http:' || url.protocol === 'https:') {
-        return `${url.origin}${url.pathname.replace(/\/+$/, '')}${apiPath}`;
-      }
-    } catch { /* fall through to host:port */ }
-  }
   return `http://${formatHostForUrl(getWorkerHost())}:${getWorkerPort()}${apiPath}`;
 }
 

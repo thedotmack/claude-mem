@@ -20,7 +20,6 @@ import {
 	PROJECTION_PAGE_MAX_OPS,
 	projectionRequestBytes,
 } from "../projection-protocol";
-import { cacheTtlSeconds } from "../auth-ttl";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_PAGE = 500;
@@ -303,13 +302,7 @@ export class SyncHub extends DurableObject<Env> {
 		}
 		const [client, server] = Object.values(new WebSocketPair());
 		this.ctx.acceptWebSocket(server);
-		// The upgrade is the only authentication this socket ever gets: stamp
-		// its deadline into the attachment so fan-out stops feeding it once the
-		// token could have been revoked (same bound as the verdict cache).
-		server.serializeAttachment({
-			device_id: deviceId,
-			auth_deadline_ms: Date.now() + cacheTtlSeconds(this.env) * 1000,
-		});
+		server.serializeAttachment({ device_id: deviceId });
 		return new Response(null, { status: 101, webSocket: client });
 	}
 
@@ -354,23 +347,13 @@ export class SyncHub extends DurableObject<Env> {
 					frame = JSON.stringify({ type: "advance", epoch, head_seq: head });
 				}
 			}
-			const now = Date.now();
 			for (const ws of sockets) {
 				let attachedDevice: string | null = null;
-				let authDeadlineMs = 0;
 				try {
-					const attachment = ws.deserializeAttachment() as { device_id?: unknown; auth_deadline_ms?: unknown } | null;
+					const attachment = ws.deserializeAttachment() as { device_id?: unknown } | null;
 					attachedDevice = typeof attachment?.device_id === "string" ? attachment.device_id : null;
-					authDeadlineMs = typeof attachment?.auth_deadline_ms === "number" ? attachment.auth_deadline_ms : 0;
 				} catch {}
 				if (attachedDevice === originDeviceId) continue;
-				// Past the authorization deadline (or attached before the field
-				// existed): close instead of sending op bodies. Reconnecting
-				// clients re-authenticate through the Worker.
-				if (authDeadlineMs <= now) {
-					try { ws.close(4401, "reauthenticate"); } catch {}
-					continue;
-				}
 				try { ws.send(frame); } catch {}
 			}
 		} catch (error) {

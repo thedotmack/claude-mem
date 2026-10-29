@@ -102,17 +102,10 @@ export function remoteHookSpoolToken(value: unknown): string {
   return token.length <= 1024 && /^[\x20-\x7e]+$/.test(token) ? token : '';
 }
 
-export function usesRemoteHookSpool(host: string | undefined, transport: string = 'auto', workerUrl: string = ''): boolean {
+export function usesRemoteHookSpool(host: string | undefined, transport: string = 'auto'): boolean {
   transport = transport.trim().toLowerCase();
   if (transport === 'http') return true;
   if (transport === 'filesystem') return false;
-  // A full-URL override (e.g. an https tunnel) is the remote signal by itself:
-  // with it configured, spool entries go to that URL even when WORKER_HOST
-  // still names a loopback listener.
-  const urlHost = workerUrl.trim();
-  if (urlHost) {
-    try { host = new URL(urlHost).hostname; } catch { /* fall through to host */ }
-  }
   if (!host) return false;
   let normalized = host.toLowerCase().replace(/^\[|\]$/g, '');
   try { normalized = new URL(`http://${formatHostForUrl(host)}`).hostname.replace(/^\[|\]$/g, ''); } catch {}

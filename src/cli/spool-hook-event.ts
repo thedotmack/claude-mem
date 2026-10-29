@@ -154,7 +154,7 @@ function startRemoteHookSpoolUpload(): void {
  */
 export function nudgeWorkerToDrainHookSpool(): Promise<void> {
   const settings = loadFromFileOnce();
-  if (usesRemoteHookSpool(getWorkerHost(), settings.CLAUDE_MEM_HOOK_SPOOL_TRANSPORT, settings.CLAUDE_MEM_WORKER_URL)) {
+  if (usesRemoteHookSpool(getWorkerHost(), settings.CLAUDE_MEM_HOOK_SPOOL_TRANSPORT)) {
     remoteUploadRequested = true;
     return scheduleRemoteHookSpoolUpload();
   }
@@ -182,7 +182,7 @@ export function nudgeWorkerToDrainHookSpool(): Promise<void> {
 export async function settleHookSpoolNudges(): Promise<void> {
   if (!pendingNudge && !remoteUploadRequested && selectRuntime() === 'worker') {
     const settings = loadFromFileOnce();
-    if (usesRemoteHookSpool(getWorkerHost(), settings.CLAUDE_MEM_HOOK_SPOOL_TRANSPORT, settings.CLAUDE_MEM_WORKER_URL)
+    if (usesRemoteHookSpool(getWorkerHost(), settings.CLAUDE_MEM_HOOK_SPOOL_TRANSPORT)
       && new HookSpool().hasEntries()) {
       void nudgeWorkerToDrainHookSpool();
     }
