@@ -1,9 +1,10 @@
 // The four session write endpoints (init/observations/summarize/session-end)
-// create sessions, store prompts and kick off provider-bound generation, so
-// they get the same localhost-only posture as their sibling /api/processing
-// (which already mounts requireLocalhost "like the other admin routes").
-// Origin-less loopback callers (hooks, the viewer) keep working: only a
-// non-loopback socket peer is refused.
+// create sessions, store prompts and kick off provider-bound generation, so a
+// browser page served from a different localhost port must not reach them.
+// Origin-less callers (hooks, the CLI, curl) keep working, including from a
+// non-loopback peer: remote capture (docs/remote-worker-capture.md), Docker
+// bridge clients and the OpenCode/Pi/DSH integrations post here over the
+// network.
 import { describe, expect, it, mock } from 'bun:test';
 import type { Request, Response } from 'express';
 import { SessionRoutes } from '../../../../src/services/worker/http/routes/SessionRoutes.js';
@@ -59,29 +60,29 @@ function runChain(
   next();
 }
 
-describe('POST /api/sessions/* write endpoints localhost guard', () => {
-  it('refuses every session write endpoint from a non-loopback peer', () => {
+describe('POST /api/sessions/* write endpoints origin guard', () => {
+  it('refuses every session write endpoint from a different localhost origin, before body validation', () => {
     const chains = capturePostChains(createRoutes());
 
     for (const path of WRITE_PATHS) {
       const chain = chains.get(path);
       expect(chain, `route ${path} must be registered`).toBeDefined();
-      // The guard must run before body validation.
       const { res, statusSpy, jsonSpy } = createMockRes();
       runChain(chain!, {
-        ip: '10.0.0.5',
+        ip: '127.0.0.1',
         body: {},
-        headers: {},
+        headers: { origin: 'http://localhost:3000', host: '127.0.0.1:37777' },
       } as unknown as Request, res as Response);
 
       expect(statusSpy, path).toHaveBeenCalledWith(403);
+      expect(statusSpy, path).not.toHaveBeenCalledWith(400);
       expect(jsonSpy, path).toHaveBeenCalledWith(expect.objectContaining({
-        message: expect.stringContaining('localhost'),
+        error: expect.stringContaining('origin'),
       }));
     }
   });
 
-  it('lets a loopback peer past the guard (it fails later on validation, not the guard)', () => {
+  it('lets an Origin-less loopback caller past the guard (it fails later on validation)', () => {
     const chains = capturePostChains(createRoutes());
 
     for (const path of WRITE_PATHS) {
@@ -93,28 +94,24 @@ describe('POST /api/sessions/* write endpoints localhost guard', () => {
       } as unknown as Request, res as Response);
 
       expect(statusSpy, path).not.toHaveBeenCalledWith(403);
-      // Reached validateBody, which answers 400 for the empty body.
       expect(statusSpy, path).toHaveBeenCalledWith(400);
     }
   });
 
-  it('rejects a same-origin-but-other-port browser page on every session write endpoint', () => {
+  it('lets an Origin-less non-loopback peer past the guard (remote capture keeps working)', () => {
     const chains = capturePostChains(createRoutes());
 
     for (const path of WRITE_PATHS) {
-      const chain = chains.get(path);
-      expect(chain, `route ${path} must be registered`).toBeDefined();
-      const { res, statusSpy, jsonSpy } = createMockRes();
-      runChain(chain!, {
-        ip: '127.0.0.1',
+      const { res, statusSpy } = createMockRes();
+      runChain(chains.get(path)!, {
+        ip: '10.0.0.5',
         body: {},
-        headers: { origin: 'http://localhost:5173', host: '127.0.0.1:37777' },
+        headers: {},
       } as unknown as Request, res as Response);
 
-      expect(statusSpy, path).toHaveBeenCalledWith(403);
-      expect(jsonSpy, path).toHaveBeenCalledWith(expect.objectContaining({
-        error: expect.stringContaining('origin'),
-      }));
+      expect(statusSpy, path).not.toHaveBeenCalledWith(403);
+      // Reached validateBody, which answers 400 for the empty body.
+      expect(statusSpy, path).toHaveBeenCalledWith(400);
     }
   });
 });

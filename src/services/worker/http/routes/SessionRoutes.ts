@@ -66,10 +66,12 @@ import type { TelegramWrapupFormatterInput } from '../../../integrations/Telegra
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
 
-// The session write endpoints are state-changing and sit behind the same
-// two-gate posture as the rest of the write family: requireLocalhost refuses a
-// non-loopback socket peer, and this refuses a browser page served from a
-// different local port. Origin-less callers (hooks, the CLI, curl) pass.
+// The session write endpoints are state-changing, so a browser page served
+// from a different local port may not call them. Origin-less callers (hooks,
+// the CLI, curl) pass. There is deliberately no requireLocalhost here: remote
+// capture (docs/remote-worker-capture.md), Docker bridge clients and the
+// OpenCode/Pi/DSH integrations call these routes from non-loopback peers, and
+// non-loopback writes are governed by the remote read-only guard instead.
 function rejectForeignLoopbackBrowserWrite(req: Request, res: Response, next: () => void): void {
   if (isForeignLoopbackBrowserWrite(req)) {
     res.status(403).json({ error: 'Session writes from a different localhost origin are not allowed' });
@@ -601,28 +603,24 @@ export class SessionRoutes extends BaseRouteHandler {
     });
     app.post(
       '/api/sessions/init',
-      requireLocalhost,
       rejectForeignLoopbackBrowserWrite,
       validateBody(SessionRoutes.sessionInitByClaudeIdSchema),
       this.handleSessionInitByClaudeId.bind(this)
     );
     app.post(
       '/api/sessions/observations',
-      requireLocalhost,
       rejectForeignLoopbackBrowserWrite,
       validateBody(SessionRoutes.observationsByClaudeIdSchema),
       this.handleObservationsByClaudeId.bind(this)
     );
     app.post(
       '/api/sessions/summarize',
-      requireLocalhost,
       rejectForeignLoopbackBrowserWrite,
       validateBody(SessionRoutes.summarizeByClaudeIdSchema),
       this.handleSummarizeByClaudeId.bind(this)
     );
     app.post(
       '/api/sessions/session-end',
-      requireLocalhost,
       rejectForeignLoopbackBrowserWrite,
       validateBody(SessionRoutes.sessionEndSchema),
       this.handleSessionEnd.bind(this)
