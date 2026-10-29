@@ -43,6 +43,8 @@ const workerEnv: Record<string, string> = {
   CLAUDE_MEM_CLOUD_SYNC_USER_ID: process.env.CLAUDE_MEM_CLOUD_SYNC_USER_ID || ownerUserId,
   CLAUDE_MEM_CLOUD_SYNC_HUB_URL: process.env.CLAUDE_MEM_CLOUD_SYNC_HUB_URL || 'https://sync.cmem.ai',
   CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: process.env.CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME || 'cmem.ai viewer',
+  // No hooks run here, so no session ever wakes the pull loop: keep it pulling.
+  CLAUDE_MEM_CLOUD_SYNC_KEEP_PULLING: process.env.CLAUDE_MEM_CLOUD_SYNC_KEEP_PULLING || 'true',
   // Nothing here captures sessions or searches by meaning: no hooks run on this machine.
   CLAUDE_MEM_CHROMA_ENABLED: process.env.CLAUDE_MEM_CHROMA_ENABLED || 'false',
   // The owner's own computer runs goals and progress refreshes and writes request copy; this

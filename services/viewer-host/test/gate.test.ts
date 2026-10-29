@@ -85,6 +85,14 @@ describe('policy', () => {
     expect(isAllowed('POST', '/api/settings')).toBe(false);
     expect(isAllowed('POST', '/api/admin/shutdown')).toBe(false);
     expect(isAllowed('DELETE', '/api/observation/1')).toBe(false);
+    // The worker's router ignores case and decodes escapes; the policy reads the path the same way.
+    expect(isAllowed('GET', '/API/SETTINGS')).toBe(false);
+    expect(isAllowed('GET', '/Api/Logs')).toBe(false);
+    expect(isAllowed('GET', '/api/%73ettings')).toBe(false);
+    expect(isAllowed('GET', '/api/%zz')).toBe(false);
+    expect(isAllowed('GET', '//127.0.0.1:37777/api/settings')).toBe(false);
+    expect(isAllowed('GET', '/api/work-view/%2e%2e/settings')).toBe(false);
+    expect(isAllowed('POST', '/API/WORK-VIEW/REVIEW')).toBe(true);
   });
 });
 
@@ -115,6 +123,22 @@ describe('gate', () => {
     expect((await gate()(new Request(`${PUBLIC_ORIGIN}/auth?t=${stranger}`))).status).toBe(403);
     // A session token cannot be used as a link.
     expect((await gate()(new Request(`${PUBLIC_ORIGIN}/auth?t=${session}`))).status).toBe(403);
+  });
+
+  it('opens one session per link', async () => {
+    const g = gate();
+    const link = signToken(SECRET, { sub: OWNER, aud: 'link', exp: now() + 120 });
+    expect((await g(new Request(`${PUBLIC_ORIGIN}/auth?t=${link}`))).status).toBe(303);
+    expect((await g(new Request(`${PUBLIC_ORIGIN}/auth?t=${link}`))).status).toBe(403);
+  });
+
+  it('never lets the path pick another host', async () => {
+    seen = [];
+    const response = await gate()(new Request(`${PUBLIC_ORIGIN}//127.0.0.1:${upstream.port}/api/settings`, { headers: { Cookie: sessionCookie() } }));
+    expect(response.status).toBe(403);
+    const upper = await gate()(new Request(`${PUBLIC_ORIGIN}/API/SETTINGS`, { headers: { Cookie: sessionCookie() } }));
+    expect(upper.status).toBe(403);
+    expect(seen).toHaveLength(0);
   });
 
   it("refuses another user's session", async () => {

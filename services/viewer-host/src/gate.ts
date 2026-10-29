@@ -7,7 +7,7 @@
  * unreachable from outside except through here:
  *
  *   - cmem.ai signs its signed-in owner a one-use link (/auth?t=…), traded
- *     here for an HttpOnly session cookie. Only VIEWER_OWNER_USER_ID gets in.
+ *     here once for an HttpOnly session cookie. Only VIEWER_OWNER_USER_ID gets in.
  *   - Reads pass, except the routes that expose settings, logs, backups or
  *     setup on the machine. Writes pass only for the My Work actions that save
  *     work state (review, rules, focus, suggestions, agent finished, usage);
@@ -81,12 +81,32 @@ function json(status: number, data: unknown): Response {
 
 const wantsHtml = (request: Request) => request.method === 'GET' && (request.headers.get('accept') ?? '').includes('text/html');
 
+/**
+ * The path as the worker's router may read it: Express matches routes without
+ * regard to case and decodes escapes, so the policy is checked on the lowercased,
+ * decoded path. Null for a path that can't be checked (bad escapes, empty or dot
+ * segments), which is refused rather than forwarded.
+ */
+export function policyPath(pathname: string): string | null {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return null;
+  }
+  if (!decoded.startsWith('/') || decoded.includes('//') || decoded.includes('\\')) return null;
+  if (decoded.split('/').some(segment => segment === '.' || segment === '..')) return null;
+  return decoded.toLowerCase();
+}
+
 /** Whether the policy lets this method and path through to the worker. */
 export function isAllowed(method: string, pathname: string): boolean {
+  const path = policyPath(pathname);
+  if (path === null) return false;
   if (method === 'GET' || method === 'HEAD') {
-    return !BLOCKED_READ_PREFIXES.some(prefix => pathname === prefix || pathname.startsWith(`${prefix}/`) || pathname.startsWith(`${prefix}?`));
+    return !BLOCKED_READ_PREFIXES.some(prefix => path === prefix || path.startsWith(`${prefix}/`));
   }
-  return method === 'POST' && ALLOWED_WRITES.has(pathname);
+  return method === 'POST' && ALLOWED_WRITES.has(path);
 }
 
 export function createGate(options: GateOptions): (request: Request) => Promise<Response> {
@@ -95,6 +115,8 @@ export function createGate(options: GateOptions): (request: Request) => Promise<
   const upstream = new URL(options.upstreamOrigin);
   const publicOrigin = new URL(options.publicOrigin).origin;
   const secure = publicOrigin.startsWith('https:');
+  // Links already traded for a session, until they expire: a link opens one session.
+  const usedLinks = new Map<string, number>();
 
   const sessionOwner = (request: Request): boolean => {
     const token = readCookie(request, SESSION_COOKIE);
@@ -115,10 +137,13 @@ export function createGate(options: GateOptions): (request: Request) => Promise<
     }
 
     if (url.pathname === '/auth') {
-      const claims = verifyToken(options.secret, url.searchParams.get('t') ?? '', 'link', nowSeconds());
-      if (claims?.sub !== options.ownerUserId) {
+      const link = url.searchParams.get('t') ?? '';
+      const claims = verifyToken(options.secret, link, 'link', nowSeconds());
+      for (const [used, exp] of usedLinks) if (exp < nowSeconds()) usedLinks.delete(used);
+      if (claims?.sub !== options.ownerUserId || usedLinks.has(link)) {
         return page(403, 'This link has expired', `<p>Open your viewer again from cmem.ai.</p><a href="${options.signInUrl}">Go to cmem.ai</a>`);
       }
+      usedLinks.set(link, claims.exp);
       const session = signToken(options.secret, { sub: claims.sub, aud: 'session', exp: nowSeconds() + SESSION_SECONDS });
       const cookie = `${SESSION_COOKIE}=${session}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_SECONDS}${secure ? '; Secure' : ''}`;
       return new Response(null, { status: 303, headers: { Location: '/', 'Set-Cookie': cookie, 'Cache-Control': 'no-store' } });
@@ -156,7 +181,11 @@ export function createGate(options: GateOptions): (request: Request) => Promise<
 
     let response: Response;
     try {
-      response = await fetchImpl(new URL(`${url.pathname}${url.search}`, upstream), {
+      // Path and query only: the request can never pick the host.
+      const target = new URL(upstream.href);
+      target.pathname = url.pathname;
+      target.search = url.search;
+      response = await fetchImpl(target, {
         method: request.method,
         headers,
         body: request.method === 'GET' || request.method === 'HEAD' ? undefined : await request.arrayBuffer(),
