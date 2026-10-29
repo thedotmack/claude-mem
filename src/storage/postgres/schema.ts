@@ -74,6 +74,34 @@ async function isNewOrVectorDatabase(client: PostgresQueryable): Promise<boolean
   return result.rows[0]?.create === true;
 }
 
+// #2541 — the api_keys upgrade DDL, shared by the full phase-1 bootstrap and
+// the standalone ensureApiKeySchema() below. Both statements are idempotent:
+// fresh installs get key_prefix from CREATE TABLE, existing databases add it
+// here, and the index keeps the prefix lookup from scanning every hosted
+// team's keys.
+export const API_KEY_SCHEMA_SQL = `
+ALTER TABLE IF EXISTS api_keys ADD COLUMN IF NOT EXISTS key_prefix TEXT;
+CREATE INDEX IF NOT EXISTS idx_api_keys_key_prefix ON api_keys(key_prefix);
+`;
+
+/**
+ * #2541 — apply the api_keys upgrade without running the full server
+ * bootstrap. The standalone key commands (`server api-key create`,
+ * `server keys rotate`, `keys rotate` in the npx CLI) may run against an
+ * existing database before any new server process has started, and they
+ * query/write `key_prefix`. Called at each of those entry points so the
+ * column and its index exist first. A no-op on a database where api_keys
+ * has not been created yet — a fresh database gets the full schema from
+ * the server's normal bootstrap.
+ */
+export async function ensureApiKeySchema(client: PostgresQueryable): Promise<void> {
+  const table = await client.query<{ present: boolean }>(
+    `SELECT to_regclass('api_keys') IS NOT NULL AS present`,
+  );
+  if (table.rows[0]?.present !== true) return;
+  await client.query(API_KEY_SCHEMA_SQL);
+}
+
 async function applyPhase1Migration(client: PostgresQueryable): Promise<void> {
   await client.query(PHASE_1_SCHEMA_SQL);
   await client.query(
@@ -258,6 +286,10 @@ CREATE TABLE IF NOT EXISTS team_members (
 CREATE TABLE IF NOT EXISTS api_keys (
   id TEXT PRIMARY KEY,
   key_hash TEXT NOT NULL UNIQUE,
+  -- Non-secret first-N-chars of the raw key. Salted scrypt hashes are not
+  -- deterministic per raw key, so verification narrows candidates by this
+  -- prefix (mirrors the SQLite backend's prefix column, #2541).
+  key_prefix TEXT,
   team_id TEXT REFERENCES teams(id) ON DELETE CASCADE,
   project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
   actor_id TEXT NOT NULL,
@@ -407,6 +439,11 @@ CREATE TABLE IF NOT EXISTS observation_generation_job_events (
 CREATE INDEX IF NOT EXISTS idx_agent_events_project_session ON agent_events(project_id, server_session_id, occurred_at);
 ALTER TABLE server_sessions ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
 ALTER TABLE server_sessions DROP CONSTRAINT IF EXISTS server_sessions_project_id_external_session_id_key;
+-- #2541 — non-secret key prefix for salted-hash candidate narrowing (the
+-- CREATE TABLE above carries it for fresh installs; existing DBs upgrade here),
+-- plus the lookup index so auth does not scan the table.
+ALTER TABLE IF EXISTS api_keys ADD COLUMN IF NOT EXISTS key_prefix TEXT;
+CREATE INDEX IF NOT EXISTS idx_api_keys_key_prefix ON api_keys(key_prefix);
 -- #2560 — platform_source on agent_events (consistent with server_sessions and
 -- the plan-09 scoping): which platform produced the event (claude-code,
 -- opencode, cursor, ...). Idempotent so an existing DB upgrades in place.

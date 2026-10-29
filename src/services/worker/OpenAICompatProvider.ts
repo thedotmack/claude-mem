@@ -226,14 +226,58 @@ function structuredErrorMarkers(envelope: ErrorEnvelope | null): string[] {
  * The status to classify by. An error envelope inside a 2xx response often
  * carries the real HTTP status as a numeric `error.code` (a 429 or a 503
  * relayed by a gateway), and that is the one that says whether to retry.
+ * Some gateways use a textual code ("bad_gateway") and name the status only in
+ * the message, as "(HTTP 503)" (#5185). When the code is not numeric, that is
+ * read from the message or from the textual code itself.
  */
 function effectiveStatus(status: number | undefined, envelope: ErrorEnvelope | null): number | undefined {
   const code = envelope?.code;
-  const numeric = typeof code === 'number' ? code : typeof code === 'string' && /^\d{3}$/.test(code) ? Number(code) : NaN;
+  const numeric = typeof code === 'number' ? code
+    : typeof code === 'string' && /^\d{3}$/.test(code) ? Number(code)
+    : textualEnvelopeStatus(envelope);
   if (status !== undefined && status >= 200 && status < 300 && numeric >= 400 && numeric < 600) {
     return numeric;
   }
   return status;
+}
+
+/** Textual codes and types that name a server-side failure, as the HTTP status they stand for. */
+const SERVER_FAILURE_ERROR_CODES: ReadonlyMap<string, number> = new Map([
+  ['bad_gateway', 502],
+  ['service_unavailable', 503],
+  ['gateway_timeout', 504],
+  ['server_error', 500],
+  ['internal_server_error', 500],
+]);
+
+/**
+ * The status an envelope with a non-numeric code reports, or NaN.
+ *
+ * Only a 429 or a 5xx counts, because those are the ones worth retrying. A
+ * combo gateway's message lists every upstream's failure
+ * ("a: auth (HTTP 401); b: ... (HTTP 503)"), and an upstream's 401 or 413 is not
+ * this request's failure, so every marker is scanned for the first retryable one.
+ * Only when the message names no status at all does a textual code or type that names a server failure
+ * ("bad_gateway", type "server_error") stand for its status.
+ *
+ * A litellm output failure keeps its own classification: the model ran and was
+ * billed, so promoting it to a 5xx would resend it and pay twice.
+ */
+function textualEnvelopeStatus(envelope: ErrorEnvelope | null): number {
+  const message = typeof envelope?.message === 'string' ? envelope.message : '';
+  const lowerMessage = message.toLowerCase();
+  if (UPSTREAM_OUTPUT_FAILURE_MARKERS.some(marker => lowerMessage.includes(marker))) return NaN;
+  const markers = [...message.matchAll(/\(HTTP (\d{3})\)/g)].map(match => Number(match[1]));
+  const retryable = markers.find(fromMessage => fromMessage === 429 || (fromMessage >= 500 && fromMessage < 600));
+  if (retryable !== undefined) return retryable;
+  // The message named statuses and none is retryable (every upstream refused
+  // the key, say): that is the answer, whatever the gateway's own code says.
+  if (markers.length > 0) return NaN;
+  for (const marker of structuredErrorMarkers(envelope)) {
+    const mapped = SERVER_FAILURE_ERROR_CODES.get(marker);
+    if (mapped !== undefined) return mapped;
+  }
+  return NaN;
 }
 
 /**
