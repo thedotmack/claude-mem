@@ -2,6 +2,9 @@ import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:te
 import type { Request, Response } from 'express';
 import { logger } from '../../../../src/utils/logger.js';
 import { DataRoutes } from '../../../../src/services/worker/http/routes/DataRoutes.js';
+import { SessionManager, type TransportResumeClock } from '../../../../src/services/worker/SessionManager.js';
+import { PaidSendBudget } from '../../../../src/services/worker/paid-send-budget.js';
+import type { ActiveSession } from '../../../../src/services/worker-types.js';
 import { getProcessRegistry, waitForSlot } from '../../../../src/supervisor/process-registry.js';
 import { guardSharedProcessRegistrySingleton } from '../../../supervisor/process-registry-singleton-guard.js';
 
@@ -20,6 +23,11 @@ import { guardSharedProcessRegistrySingleton } from '../../../supervisor/process
  */
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
+
+const clock: TransportResumeClock = {
+  setTimeout: () => 0 as unknown as ReturnType<typeof setTimeout>,
+  clearTimeout: () => {},
+};
 
 /**
  * BaseRouteHandler.wrapHandler returns a fire-and-forget `(req, res): void`
@@ -76,6 +84,7 @@ describe('DataRoutes GET /api/processing-status — parkedSessions (#2756)', () 
     const mockSessionManager = {
       isAnySessionProcessing: mock(() => Promise.resolve(false)),
       getTotalActiveWork: mock(() => Promise.resolve(0)),
+      getMessageBuffer: mock(() => ({ getParkedBatchSummaries: mock(() => []) })),
     };
 
     const routes = new DataRoutes(
@@ -90,7 +99,7 @@ describe('DataRoutes GET /api/processing-status — parkedSessions (#2756)', () 
     const { req, res, waitForJson } = createMockReqRes();
     (routes as any).handleGetProcessingStatus(req as Request, res as Response);
 
-    expect(await waitForJson()).toEqual({ isProcessing: false, queueDepth: 0, parkedSessions: 0 });
+    expect(await waitForJson()).toEqual({ isProcessing: false, queueDepth: 0, parkedSessions: 0, parkedBatches: [] });
   });
 
   it('reports a positive parkedSessions count while a session is parked in waitForSlot, without touching isProcessing/queueDepth', async () => {
@@ -109,6 +118,7 @@ describe('DataRoutes GET /api/processing-status — parkedSessions (#2756)', () 
       const mockSessionManager = {
         isAnySessionProcessing: mock(() => Promise.resolve(true)),
         getTotalActiveWork: mock(() => Promise.resolve(5)),
+        getMessageBuffer: mock(() => ({ getParkedBatchSummaries: mock(() => []) })),
       };
 
       const routes = new DataRoutes(
@@ -123,7 +133,7 @@ describe('DataRoutes GET /api/processing-status — parkedSessions (#2756)', () 
       const { req, res, waitForJson } = createMockReqRes();
       (routes as any).handleGetProcessingStatus(req as Request, res as Response);
 
-      expect(await waitForJson()).toEqual({ isProcessing: true, queueDepth: 5, parkedSessions: 1 });
+      expect(await waitForJson()).toEqual({ isProcessing: true, queueDepth: 5, parkedSessions: 1, parkedBatches: [] });
     } finally {
       // Free the slot so parkedPromise settles, then clean up the occupant —
       // never leak a parked waiter or a fake 'sdk' entry into later test files.
@@ -139,5 +149,71 @@ describe('DataRoutes GET /api/processing-status — parkedSessions (#2756)', () 
       const reservation = await parkedPromise;
       reservation.release();
     }
+  });
+
+  it('lists sessions holding parked batches so an operator can pick a sessionDbId for resend-parked (#4737)', async () => {
+    // Real buffer + real park path (same fixture shape as
+    // tests/worker/http/routes/session-routes-resend-parked.test.ts), so the
+    // summary reflects what a parked batch actually looks like.
+    const sessionManager = new SessionManager({} as never, clock);
+    const sessionDbId = 4769;
+    const session = {
+      sessionDbId,
+      contentSessionId: 'processing-status-parked-batch',
+      memorySessionId: 'processing-status-parked-batch',
+      project: 'test',
+      platformSource: 'claude',
+      userPrompt: '',
+      abortController: new AbortController(),
+      generatorPromise: null,
+      lastPromptNumber: 1,
+      startTime: Date.now(),
+      cumulativeInputTokens: 0,
+      cumulativeOutputTokens: 0,
+      earliestPendingTimestamp: null,
+      claimedMessageIds: [],
+      conversationHistory: [],
+      currentProvider: null,
+      consecutiveRestarts: 0,
+      consecutiveInvalidOutputs: 0,
+      consecutiveContextOverflows: 0,
+      lastGeneratorActivity: Date.now(),
+    } as unknown as ActiveSession;
+    (sessionManager as unknown as { sessions: Map<number, ActiveSession> }).sessions.set(sessionDbId, session);
+    const buffer = sessionManager.getMessageBuffer();
+    const messageId = buffer.enqueue(sessionDbId, {
+      type: 'observation', tool_name: 'Read', tool_input: '{}', tool_response: 'content', prompt_number: 1,
+    });
+    const budget = new PaidSendBudget(messageId, 1);
+    budget.recordPaidSend(); // spent: an ambiguous failure charged the one send
+    session.claimedMessageIds = [messageId];
+    session.paidSendBudget = budget;
+    budget.batchMessageIds.add(messageId);
+    expect(sessionManager.parkBatchOnSpentPaidSendBudget(session)).toEqual([messageId]);
+
+    const mockSessionManager = {
+      isAnySessionProcessing: mock(() => Promise.resolve(false)),
+      getTotalActiveWork: mock(() => Promise.resolve(0)),
+      getMessageBuffer: mock(() => buffer),
+    };
+
+    const routes = new DataRoutes(
+      {} as any,
+      {} as any,
+      mockSessionManager as any,
+      {} as any,
+      {} as any,
+      Date.now(),
+    );
+
+    const { req, res, waitForJson } = createMockReqRes();
+    (routes as any).handleGetProcessingStatus(req as Request, res as Response);
+
+    expect(await waitForJson()).toEqual({
+      isProcessing: false,
+      queueDepth: 0,
+      parkedSessions: 0,
+      parkedBatches: [{ sessionDbId, parkedMessageIds: [messageId], clientAttemptIds: [budget.clientAttemptId] }],
+    });
   });
 });

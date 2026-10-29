@@ -136,6 +136,26 @@ export class SessionMessageBuffer {
   }
 
   /**
+   * Every session that currently holds parked messages, so an operator can
+   * discover which sessionDbIds a resend-parked call would target without
+   * grepping worker logs (#4737 follow-up). clientAttemptIds dedupes the
+   * batch attempt ids traced to the parked messages.
+   */
+  getParkedBatchSummaries(): Array<{ sessionDbId: number; parkedMessageIds: number[]; clientAttemptIds: string[] }> {
+    const summaries: Array<{ sessionDbId: number; parkedMessageIds: number[]; clientAttemptIds: string[] }> = [];
+    for (const [sessionDbId, list] of this.buffers) {
+      const parked = list.filter(m => m.parked);
+      if (parked.length === 0) continue;
+      summaries.push({
+        sessionDbId,
+        parkedMessageIds: parked.map(m => m.id),
+        clientAttemptIds: [...new Set(parked.map(m => m.parkedClientAttemptId).filter((id): id is string => id !== undefined))],
+      });
+    }
+    return summaries;
+  }
+
+  /**
    * Operator-consented recovery for parked batches (#4737): return parked
    * messages to the pending pool so the next generator can claim and send them
    * again. This is the one path that unparks; the automatic ones never do. The
