@@ -429,7 +429,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: 'true',
     // Explicit JSON [{path, project, platformSource?}]. Empty means no files imported.
     CLAUDE_MEM_MEMORY_WATCH_ROOTS: '',
-    CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001',
+    CLAUDE_MEM_MODEL: 'haiku',  // Claude Code's alias for its newest Haiku, so the note-taker follows new releases
     CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
     CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: 'false',
     CLAUDE_MEM_CONTEXT_PROJECTS: 'current', // 'current' = this checkout only; 'all' = SessionStart context spans every project
