@@ -306,6 +306,10 @@ let CLOUD_REACHED = null;
 // never outlast the hook's own timeout and lose the output.
 let DEADLINE = Infinity;
 const SYNC_BUDGET_MS = 9000;
+// SessionEnd's hook timeout is 5 s: its requests (the end, any deferred start,
+// the queue replay) share 3.5 s, so a slow one fails and is re-queued instead
+// of the hook being killed with the queue claimed mid-replay.
+const END_BUDGET_MS = 3500;
 
 async function http(method, url, body, timeoutMs, headers = {}) {
   const left = DEADLINE - Date.now();
@@ -807,7 +811,7 @@ function reexecWithProxy(event, stdinRaw) {
     env: { ...process.env, NODE_USE_ENV_PROXY: '1', CMEM_PROXY_CHILD: '1', NODE_NO_WARNINGS: '1' },
     stdio: ['pipe', 'inherit', 'inherit'],
     // under each hook's own timeout (hooks.json), so the parent always exits 0
-    timeout: SYNC_EVENTS.has(event) ? 13000 : 27000
+    timeout: SYNC_EVENTS.has(event) ? 13000 : event === 'session-end' ? 4500 : 27000
   });
   return !r.error;
 }
@@ -835,6 +839,7 @@ const HANDLERS = {
     if (event === 'status') return await cliStatus();
     if (localClaudeMemInstalled()) return process.exit(0); // local-first: the local plugin owns memory here
     if (SYNC_EVENTS.has(event)) DEADLINE = Date.now() + SYNC_BUDGET_MS;
+    else if (event === 'session-end') DEADLINE = Date.now() + END_BUDGET_MS;
     const input = parseInput(stdinRaw);
     resolveSession(input, { scanTranscript: event === 'context' || event === 'prompt-context' });
     await handler(input);

@@ -24,6 +24,7 @@ const server = http.createServer((req, res) => {
     const rec = { method: req.method, url: req.url, auth: req.headers.authorization, body: body ? JSON.parse(body) : null };
     received.push(rec);
     if (mode === 'slow' && !req.url.startsWith('/api/hooks/ingest')) return;   // never answers
+    if (mode === 'dead') return;                                                // never answers anything
     if (req.url.startsWith('/api/hooks/ingest')) {
       if (mode === 'no-hooks-endpoints') { res.writeHead(404); return res.end('{}'); }
       if (holdIngest?.(rec.body)) { held.push(res); return; }
@@ -530,6 +531,19 @@ check('queued notes are sent with that last request', received.some(r => r.body?
 received = received.filter(r => !r.body?.batch?.some(e => e.payload?.tool_use_id === 'tu_d15'));
 check('a session that never learns a channel registers at its end', ingested().map(e => e.event).join() === 'session-start,session-end', JSON.stringify(ingested().map(e => e.event)));
 check('…in one request, so the short SessionEnd budget holds', received.filter(r => r.url.startsWith('/api/hooks/ingest')).length === 1, String(received.filter(r => r.url.startsWith('/api/hooks/ingest')).length));
+
+// SessionEnd (5 s timeout) against a cloud that never answers: done in budget, nothing lost
+mode = 'dead';
+rmSync(SPOOL, { force: true });
+await run('context', { session_id: 'd16', cwd: '/home/user', source: 'startup' }, DUET);
+const tEnd = Date.now();
+await run('session-end', { session_id: 'd16', cwd: '/home/user', reason: 'exit' }, DUET);
+const endTook = Date.now() - tEnd;
+const spooled = existsSync(SPOOL) ? readFileSync(SPOOL, 'utf8') : '';
+check('dead cloud: SessionEnd finishes inside its 5 s timeout', endTook < 4800, `${endTook}ms`);
+check('dead cloud: start and end are queued for later, not lost', spooled.includes('"session-start"') && spooled.includes('"session-end"'), spooled.slice(0, 200));
+rmSync(SPOOL, { force: true });
+mode = 'full';
 
 // a cloud that never answers can't hold the prompt past the hook's timeout
 mode = 'slow';
