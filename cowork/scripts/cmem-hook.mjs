@@ -426,6 +426,7 @@ async function ingestBatch(envs) {
   try {
     const res = await http('POST', `${CFG.apiBase}/api/hooks/ingest`, { v: 1, batch: envs }, HTTP_TIMEOUT_MS.normal);
     if (!res.ok && res.status !== 404) envs.forEach(spool);
+    else if (res.ok) await flushSpool();
   } catch {
     envs.forEach(spool);
   }

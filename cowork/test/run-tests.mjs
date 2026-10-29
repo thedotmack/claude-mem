@@ -521,9 +521,13 @@ await run('prompt-context', { session_id: 'd14', cwd: '/home/user', prompt: 'pla
 check('no channel yet: session-start still waits', !ingested().some(e => e.event === 'session-start'), JSON.stringify(ingested().map(e => e.event)));
 await run('prompt-context', { session_id: 'd14', cwd: '/home/user', prompt: wake('chan_8Lat', 'Late', 'cmsg_L', 'hi') }, DUET);
 check('session-start filed once the channel is known', ingested().filter(e => e.event === 'session-start').map(e => e.project).join() === 'cmem_duet_late_chan_8Lat', JSON.stringify(ingested().map(e => [e.event, e.project])));
-received = [];
+rmSync(SPOOL, { force: true });
 await run('context', { session_id: 'd15', cwd: '/home/user', source: 'startup' }, DUET);
+await run('observation', { session_id: 'd15', cwd: '/home/user', tool_name: 'Bash', tool_use_id: 'tu_d15', tool_input: {}, tool_response: '' }, { ...DUET, CMEM_API_BASE: 'http://127.0.0.1:1' });
+received = [];
 await run('session-end', { session_id: 'd15', cwd: '/home/user', reason: 'exit' }, DUET);
+check('queued notes are sent with that last request', received.some(r => r.body?.batch?.some(e => e.payload?.tool_use_id === 'tu_d15')) && (!existsSync(SPOOL) || !readFileSync(SPOOL, 'utf8').trim()));
+received = received.filter(r => !r.body?.batch?.some(e => e.payload?.tool_use_id === 'tu_d15'));
 check('a session that never learns a channel registers at its end', ingested().map(e => e.event).join() === 'session-start,session-end', JSON.stringify(ingested().map(e => e.event)));
 check('…in one request, so the short SessionEnd budget holds', received.filter(r => r.url.startsWith('/api/hooks/ingest')).length === 1, String(received.filter(r => r.url.startsWith('/api/hooks/ingest')).length));
 
