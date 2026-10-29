@@ -324,6 +324,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_LLM_TIMEOUT_MS: string;
   CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: string;
   CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS: string;
+  CLAUDE_MEM_MAX_PAID_SENDS: string;
   CLAUDE_MEM_WORKER_HEARTBEAT_STALE_MS: string;
   // Observation TV remote broadcast. EMPTY = OFF: the read-only guard is not
   // mounted and the worker behaves exactly as before. Set (with a non-loopback
@@ -617,6 +618,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_TEAMBRAIN_TEAM_ID: '',  // The team this install joined (teambrain share/leave default to it)
     CLAUDE_MEM_LLM_TIMEOUT_MS: String(DEFAULT_LLM_TIMEOUT_MS),  // Per-attempt deadline for non-streamed observer requests (retry.ts); streamed OpenRouter/OpenAI-compatible requests use a 90s idle timeout + 300s cap (streamed-chat-completion.ts)
     CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: String(DEFAULT_LLM_TIMEOUT_MS),  // Oversized-field condensation deadline (field-optimizer.ts); a request to the same backend, so the same deadline
+    CLAUDE_MEM_MAX_PAID_SENDS: '2',  // Sends one batch may make before it is parked (paid-send-budget.ts, 1..20). Literal because shared cannot import from the worker; a drift test pins it to DEFAULT_MAX_PAID_SENDS_PER_BATCH
     CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS: '90000',  // Streamed request idle window (streamed-chat-completion.ts): silence that ends a stream. Self-hosted backends queue behind a load balancer, and the queue wait reads as idle (#4737) — raise it there. Literal because shared cannot import from the worker; a drift test pins it to the shipped constant
     CLAUDE_MEM_WORKER_HEARTBEAT_STALE_MS: '120000', // A silent worker whose liveness heartbeat is younger than this is slow, not dead (10000-3600000).
     // Observation TV remote broadcast. EMPTY = OFF: the read-only guard is not

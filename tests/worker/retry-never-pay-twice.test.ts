@@ -293,6 +293,33 @@ describe('PaidSendBudget: one allowance per claimed batch, shared by withRetry a
     expect(isClassified(refusal) && refusal.code).toBe(PAID_SEND_BUDGET_EXHAUSTED_CODE);
   });
 
+  // #4737: CLAUDE_MEM_MAX_PAID_SENDS raised for a self-hosted endpoint keeps
+  // a batch out of the parked state through more resumes.
+  it('a raised cap schedules another resume where the default would park', async () => {
+    const { sessionManager, session, sessionDbId, messageId, timers } = makeSessionManager();
+    const fetch = scriptFetch([() => new Response('upstream hiccup', { status: 503 })]);
+
+    session.claimedMessageIds = [messageId];
+    const budget = paidSendBudgetForClaimedBatch(session, 3)!;
+    await provider().runQuery(budget).catch(() => undefined);
+    await provider().runQuery(budget).catch(() => undefined);
+    expect(fetch.sends()).toBe(2);
+
+    await sessionManager.resetProcessingToPending(sessionDbId);
+    sessionManager.scheduleTransportResume(sessionDbId);
+    expect(timers).toHaveLength(1);
+    expect(sessionManager.getMessageBuffer().getParkedMessages(sessionDbId)).toHaveLength(0);
+
+    session.claimedMessageIds = [messageId];
+    expect(paidSendBudgetForClaimedBatch(session)).toBe(budget);
+    await provider().runQuery(budget).catch(() => undefined);
+    expect(fetch.sends()).toBe(3);
+
+    await sessionManager.resetProcessingToPending(sessionDbId);
+    sessionManager.scheduleTransportResume(sessionDbId);
+    expect(sessionManager.getMessageBuffer().getParkedMessages(sessionDbId)).toHaveLength(1);
+  });
+
   // #4604 end to end: an endpoint that refuses connections spends nothing,
   // so the batch pauses unparked and goes out when the endpoint returns.
   it('a refused connection spends nothing: the batch pauses unparked and is sent when the endpoint returns', async () => {
