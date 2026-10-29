@@ -105,7 +105,8 @@ describe('ChromaSearchStrategy', () => {
         'test query',
         100, // CHROMA_BATCH_SIZE
         undefined,
-        expect.any(Object)
+        expect.any(Object),
+        expect.any(Function)
       );
     });
 
@@ -206,7 +207,8 @@ describe('ChromaSearchStrategy', () => {
         'test query',
         100,
         { doc_type: 'observation' },
-        expect.any(Object)
+        expect.any(Object),
+        expect.any(Function)
       );
     });
 
@@ -222,7 +224,8 @@ describe('ChromaSearchStrategy', () => {
         'test query',
         100,
         { doc_type: 'session_summary' },
-        expect.any(Object)
+        expect.any(Object),
+        expect.any(Function)
       );
     });
 
@@ -238,7 +241,8 @@ describe('ChromaSearchStrategy', () => {
         'test query',
         100,
         { doc_type: 'user_prompt' },
-        expect.any(Object)
+        expect.any(Object),
+        expect.any(Function)
       );
     });
 
@@ -254,7 +258,8 @@ describe('ChromaSearchStrategy', () => {
         'test query',
         100,
         { $or: [{ project: 'my-project' }, { merged_into_project: 'my-project' }] },
-        expect.any(Object)
+        expect.any(Object),
+        expect.any(Function)
       );
     });
 
@@ -273,7 +278,8 @@ describe('ChromaSearchStrategy', () => {
         'test query',
         100,
         { $or: [{ project: { $in: readKeys } }, { merged_into_project: { $in: readKeys } }] },
-        expect.any(Object)
+        expect.any(Object),
+        expect.any(Function)
       );
       expect(mockSessionStore.getObservationsByIds).toHaveBeenCalledWith([1], expect.objectContaining({ projects: readKeys }));
     });
@@ -291,7 +297,8 @@ describe('ChromaSearchStrategy', () => {
         'test query',
         100,
         { $and: [{ doc_type: 'observation' }, { $or: [{ project: 'my-project' }, { merged_into_project: 'my-project' }] }] },
-        expect.any(Object)
+        expect.any(Object),
+        expect.any(Function)
       );
     });
 
@@ -307,7 +314,8 @@ describe('ChromaSearchStrategy', () => {
         'test query',
         100,
         { platform_source: 'cursor' },
-        expect.any(Object)
+        expect.any(Object),
+        expect.any(Function)
       );
     });
 
@@ -325,7 +333,31 @@ describe('ChromaSearchStrategy', () => {
         'test query',
         100,
         { $and: [{ doc_type: 'observation' }, { $or: [{ project: 'my-project' }, { merged_into_project: 'my-project' }] }, { platform_source: 'cursor' }] },
-        expect.any(Object)
+        expect.any(Object),
+        expect.any(Function)
+      );
+    });
+
+    it('lists the scope rows for a filtered fallback once per search, across widened windows (#5091)', async () => {
+      mockSessionStore.getSearchScopeRowIds = mock(() => [1, 4]);
+      const listed: Array<number[] | null> = [];
+      mockChromaSync.queryChroma = mock((_query: string, _limit: number, _where: unknown, progress: { exhausted?: boolean },
+        rowIds: (maxIds: number) => number[] | null) => {
+        // Every window falls back, so every window asks for the rows.
+        listed.push(rowIds(5000));
+        progress.exhausted = false;
+        return Promise.resolve({ ids: [], distances: [], metadatas: [] });
+      });
+
+      await strategy.search({ query: 'test query', searchType: 'observations', project: 'my-project', platformSource: 'cursor' });
+
+      expect(mockChromaSync.queryChroma.mock.calls.length).toBeGreaterThan(1);
+      expect(listed.every(ids => ids?.join() === '1,4')).toBe(true);
+      expect(mockSessionStore.getSearchScopeRowIds).toHaveBeenCalledTimes(1);
+      expect(mockSessionStore.getSearchScopeRowIds).toHaveBeenCalledWith(
+        { observations: true, sessions: false, prompts: false },
+        expect.objectContaining({ project: 'my-project', projects: ['my-project'], platformSource: 'cursor' }),
+        5000
       );
     });
 
@@ -341,7 +373,8 @@ describe('ChromaSearchStrategy', () => {
         'test query',
         100,
         { doc_type: 'observation' },
-        expect.any(Object)
+        expect.any(Object),
+        expect.any(Function)
       );
     });
 
