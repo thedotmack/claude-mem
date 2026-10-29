@@ -31,7 +31,7 @@ jobs:
 
       - name: Install Bun (worker runtime)
         run: |
-          irm bun.sh/install.ps1 | iex
+          irm https://bun.sh/install.ps1 | iex
         shell: pwsh
 
       - run: npm install --no-audit --no-fund
@@ -169,7 +169,7 @@ jobs:
 
       - name: Install Bun (worker runtime + test runner)
         run: |
-          irm bun.sh/install.ps1 | iex
+          irm https://bun.sh/install.ps1 | iex
         shell: pwsh
 
       # Caching uv's downloads AND its managed Python keeps a cold chromadb

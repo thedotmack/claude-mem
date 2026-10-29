@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { spawnSync, spawn } from 'child_process';
-import { existsSync, readFileSync, mkdirSync, appendFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, mkdirSync, chmodSync, appendFileSync, writeFileSync } from 'fs';
 import { join, dirname, resolve } from 'path';
-import { homedir, tmpdir } from 'os';
+import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 
 const IS_WINDOWS = process.platform === 'win32';
@@ -156,7 +156,7 @@ if (args.length === 0) {
 }
 
 args[0] = fixBrokenScriptPath(args[0]);
-// Resolve a relative script path against the launch directory before the child starts in tmpdir() (#4628)
+// Resolve a relative script path against the launch directory before the child starts in the neutral run dir (#4628)
 args[0] = resolve(process.cwd(), args[0]);
 
 const bunPath = findBun();
@@ -214,11 +214,38 @@ const stdinData = await collectStdin(process.stdin, { json: args[1] === 'hook' }
 // about it to stderr, which hosts show as hook errors (#4628). Start it in a
 // neutral directory and hand it the launch directory; the hook entry point
 // (src/cli/hook-original-cwd.ts) moves back there before adapters run.
+// The neutral dir must be owner-controlled, not tmpdir(): Bun also auto-loads
+// bunfig.toml from cwd, and on a shared /tmp another local user could plant a
+// `preload` there.
+// Same rules as src/shared/expand-home.ts (this file cannot import): a
+// `~/x` CLAUDE_MEM_DATA_DIR must land under home, not as a literal `~`
+// directory inside the user's project.
+function expandHome(filePath) {
+  if (filePath === '~') return homedir();
+  if (filePath.startsWith('~/') || (IS_WINDOWS && filePath.startsWith('~\\'))) {
+    return join(homedir(), filePath.slice(2));
+  }
+  return filePath;
+}
+function neutralBunSpawnCwd() {
+  const dataDir = process.env.CLAUDE_MEM_DATA_DIR
+    ? expandHome(process.env.CLAUDE_MEM_DATA_DIR)
+    : join(homedir(), '.claude-mem');
+  const runDir = join(dataDir, 'run');
+  try {
+    mkdirSync(runDir, { recursive: true, mode: 0o700 });
+    if (!IS_WINDOWS) chmodSync(runDir, 0o700);
+    return runDir;
+  } catch (error) {
+    console.error(`[bun-runner] could not prepare ${runDir} (${error && error.message ? error.message : error}); starting Bun from the home directory`);
+    return homedir();
+  }
+}
 const spawnOptions = {
   stdio: ['pipe', 'inherit', 'inherit'],
   windowsHide: true,
   env: Object.assign({}, process.env, { CLAUDE_MEM_HOOK_ORIGINAL_CWD: process.cwd() }),
-  cwd: tmpdir()
+  cwd: neutralBunSpawnCwd()
 };
 
 let spawnCmd = bunPath;
