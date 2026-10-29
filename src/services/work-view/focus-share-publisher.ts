@@ -101,7 +101,10 @@ export class FocusSharePublisher {
       const page = toSharedFocusPage(model, id, now);
       if (!page) {
         // Still listed but no longer an area the owner keeps: stop its link. Not listed at all may be a partial read.
+        // Earlier areas' updates may have taken a while, so the owner could have undone a merge meanwhile: decide
+        // again on a fresh read before ending the link for everyone.
         if (areas.some(area => area.focusAreaId === id)) {
+          if (!this.stillUnshareable(id)) continue;
           try { await shares.stop(id); this.errors.delete(id); } catch (error) { this.remember(id, error); }
         } else {
           this.errors.set(id, `${NOT_SHAREABLE} The page shows what it had before.`);
@@ -115,6 +118,17 @@ export class FocusSharePublisher {
       } catch (error) {
         this.remember(id, error);
       }
+    }
+  }
+
+  /** True only when a fresh read still lists the area and it still cannot be shared. */
+  private stillUnshareable(focusAreaId: string): boolean {
+    try {
+      const snapshot = this.readSnapshot();
+      const listed = Array.isArray(snapshot.focusAreas) && (snapshot.focusAreas as Array<{ focusAreaId?: unknown }>).some(area => area.focusAreaId === focusAreaId);
+      return listed && sharedFocusPageFrom(snapshot, focusAreaId, this.now()) === null;
+    } catch {
+      return false;
     }
   }
 

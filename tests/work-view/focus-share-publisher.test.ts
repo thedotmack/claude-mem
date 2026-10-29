@@ -61,6 +61,22 @@ describe('FocusSharePublisher', () => {
     await expect(publisher.publishArea('idea')).rejects.toThrow(NOT_SHAREABLE);
   });
 
+  it('keeps the link when the owner undoes the merge while the round is still running', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const fake = shares(['launch', 'docs'], async (id) => { await gate; return { entry: { token: 'a'.repeat(32), url: `https://cmem.ai/focus/${id}`, sharedAt: 'x', publishedAt: 'y', pageHash: null }, sent: true }; });
+    const merged = snapshot({ [first]: 'launch' });
+    (merged.focusAreas as any[])[1] = { ...area('docs'), mergedInto: 'launch' };
+    let view = merged;
+    const publisher = new FocusSharePublisher({ shares: fake, snapshot: () => view, now: () => NOW, everyMs: 0 });
+    const round = publisher.publishAll();
+    await Promise.resolve();
+    view = snapshot({ [first]: 'launch' }); // merge undone while launch's update waits on cmem.ai
+    release();
+    await round;
+    expect(fake.stopped).toEqual([]);
+  });
+
   it('keeps the last page and says why when a shared area is missing from the read', async () => {
     const fake = shares(['gone']);
     const publisher = new FocusSharePublisher({ shares: fake, snapshot: () => snapshot({}), now: () => NOW, everyMs: 0 });
