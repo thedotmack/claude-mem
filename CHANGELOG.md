@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [15.6.0] - 2026-10-29
+
+## My Work: one store for the viewer's state (#5187)
+
+My Work used to keep its state in three places: a hand-rolled module store, component state in `App`, and React contexts. It now runs on one Zustand store split into four slices: work, view, rules and focus.
+
+**What you'll notice**
+- **Reload and Back/Forward work.** The page, focus area and open request drawer are in the URL (`?view=`, `?focus=`, `?request=`).
+- **Your list view, filter and sort are remembered** between visits. The theme still follows your system or `?theme=`. If browser storage is blocked, preferences last for the current visit only.
+- **Live updates are steadier.** A stopped source can't publish. An older read never overwrites a newer live model. When a live update overtakes a save, you see the current model and your save is kept. Heartbeats re-render only the status indicators.
+- **The drawer follows its request** by id and closes when the request leaves the feed. If the first read fails, you get a Retry button. A selected Closed filter stays visible even when nothing matches.
+- **My Rules:** one save at a time, with controls disabled while a save runs. Each Approve/Reject receipt is tied to the version the worker saved, and Undo is refused once the rule has changed since.
+- **My Focus:** all screens share one save history.
+
+**Worker**
+- Rule saves return `savedRuleId`.
+- "Load in Claude Code" publishes the change to other open tabs.
+- The feed signature includes `rulesFile`.
+
+**Full changelog:** https://github.com/thedotmack/claude-mem/compare/v15.5.0...v15.6.0
+
 ## [15.5.0] - 2026-10-29
 
 ## Features
