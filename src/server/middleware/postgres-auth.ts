@@ -10,6 +10,7 @@ import {
   hashApiKeyLegacySha256,
   hashApiKeyAsync,
   isSaltedHash,
+  ScryptQueueFullError,
   verifyRawKeyAgainstStoredHashAsync,
 } from '../auth/api-key-hash.js';
 import {
@@ -109,7 +110,18 @@ async function authenticatePostgresRequest(
     return;
   }
 
-  const verified = await verifyPostgresApiKey(pool, rawKey, options.requiredScopes ?? []);
+  let verified: VerifiedPostgresApiKey | null;
+  try {
+    verified = await verifyPostgresApiKey(pool, rawKey, options.requiredScopes ?? []);
+  } catch (error) {
+    if (error instanceof ScryptQueueFullError) {
+      logger.warn('HTTP', 'API key verification queue full; refusing request', { path: req.path });
+      res.setHeader('Retry-After', '1');
+      res.status(503).json({ error: 'Service Unavailable', message: error.message });
+      return;
+    }
+    throw error;
+  }
   if (!verified) {
     res.status(403).json({ error: 'Forbidden', message: 'Invalid API key or insufficient scope' });
     return;
@@ -135,12 +147,117 @@ interface VerifiedPostgresApiKey {
   scopes: string[];
 }
 
+// Verified-key cache: sha256(rawKey) -> the row id and the stored salted hash
+// this raw key was proven to derive to. A hit re-reads that row by id (one
+// indexed query, the same per-request cost as the old SHA-256 lookup) and is
+// honored only while the row still holds that exact hash, so revocation,
+// expiry, scope edits and re-hashing take effect on the very next request
+// with no TTL window. Valid keys therefore pay scrypt once per process, not
+// once per request. Scoped per pool so two databases never share entries.
+interface CachedKeyProof {
+  apiKeyId: string;
+  keyHash: string;
+}
+// Abuse/memory protection: entries are only added after a successful verify,
+// so the count tracks distinct valid keys in use. 10,000 covers far more live
+// keys than a self-hosted team server mints; past it the oldest entry is
+// evicted, which costs that key one more scrypt derivation, never a refusal.
+const VERIFIED_KEY_CACHE_MAX_ENTRIES = 10_000;
+const verifiedKeyCacheByPool = new WeakMap<PostgresPool, Map<string, CachedKeyProof>>();
+const inFlightVerificationsByPool = new WeakMap<PostgresPool, Map<string, Promise<PostgresApiKey | null>>>();
+
+function poolScopedMap<T>(store: WeakMap<PostgresPool, Map<string, T>>, pool: PostgresPool): Map<string, T> {
+  let map = store.get(pool);
+  if (!map) {
+    map = new Map();
+    store.set(pool, map);
+  }
+  return map;
+}
+
+function rememberVerifiedKey(pool: PostgresPool, rawKeyDigest: string, proof: CachedKeyProof): void {
+  const cache = poolScopedMap(verifiedKeyCacheByPool, pool);
+  cache.delete(rawKeyDigest);
+  if (cache.size >= VERIFIED_KEY_CACHE_MAX_ENTRIES) {
+    const oldestDigest = cache.keys().next().value;
+    if (oldestDigest !== undefined) cache.delete(oldestDigest);
+    logger.debug('HTTP', 'verified API key cache full; evicted the oldest entry', {
+      maxEntries: VERIFIED_KEY_CACHE_MAX_ENTRIES,
+    });
+  }
+  cache.set(rawKeyDigest, proof);
+}
+
 export async function verifyPostgresApiKey(
   pool: PostgresPool,
   rawKey: string,
   requiredScopes: string[],
 ): Promise<VerifiedPostgresApiKey | null> {
   const repo = new PostgresAuthRepository(pool);
+  const matched = await resolveApiKeyRow(pool, repo, rawKey);
+
+  if (!matched) {
+    return null;
+  }
+  if (matched.revokedAtEpoch !== null) {
+    return null;
+  }
+  if (matched.expiresAtEpoch !== null && matched.expiresAtEpoch <= Date.now()) {
+    return null;
+  }
+  const scopes = normalizeScopes(matched.scopes);
+  if (!hasRequiredScopes(scopes, requiredScopes)) {
+    return null;
+  }
+  return {
+    apiKeyId: matched.id,
+    teamId: matched.teamId,
+    projectId: matched.projectId,
+    scopes,
+  };
+}
+
+/**
+ * The api_keys row this raw key belongs to, or null. Cached proofs are checked
+ * against a fresh read of the row; otherwise concurrent requests for the same
+ * raw key share one derivation (single flight) instead of each running scrypt.
+ */
+async function resolveApiKeyRow(
+  pool: PostgresPool,
+  repo: PostgresAuthRepository,
+  rawKey: string,
+): Promise<PostgresApiKey | null> {
+  const rawKeyDigest = hashApiKeyLegacySha256(rawKey);
+  const cache = poolScopedMap(verifiedKeyCacheByPool, pool);
+  const cached = cache.get(rawKeyDigest);
+  if (cached) {
+    const row = await repo.getApiKeyById(cached.apiKeyId);
+    if (row && row.keyHash === cached.keyHash) {
+      return row;
+    }
+    cache.delete(rawKeyDigest);
+  }
+
+  const inFlight = poolScopedMap(inFlightVerificationsByPool, pool);
+  const pending = inFlight.get(rawKeyDigest);
+  if (pending) {
+    return pending;
+  }
+  const verification = deriveAndMatchApiKeyRow(repo, rawKey).then(row => {
+    if (row && isSaltedHash(row.keyHash)) {
+      rememberVerifiedKey(pool, rawKeyDigest, { apiKeyId: row.id, keyHash: row.keyHash });
+    }
+    return row;
+  });
+  inFlight.set(rawKeyDigest, verification);
+  try {
+    return await verification;
+  } finally {
+    inFlight.delete(rawKeyDigest);
+  }
+}
+
+async function deriveAndMatchApiKeyRow(repo: PostgresAuthRepository, rawKey: string): Promise<PostgresApiKey | null> {
   const prefix = apiKeyPrefix(rawKey);
 
   // Salted scrypt hashes are not deterministic per raw key, so narrow by the
@@ -160,48 +277,34 @@ export async function verifyPostgresApiKey(
     return null;
   };
 
-  let matched = await matchSalted(await repo.listApiKeysByPrefix(prefix));
-
-  if (!matched) {
-    // Legacy unsalted SHA-256 rows: deterministic lookup, constant-time
-    // compare, then a transparent upgrade to the salted scheme now that the
-    // plaintext is in hand (same path the SQLite backend takes, #2541).
-    const legacy = await repo.getApiKeyByHash(hashApiKeyLegacySha256(rawKey));
-    if (legacy && await verifyRawKeyAgainstStoredHashAsync(rawKey, legacy.keyHash)) {
-      matched = legacy;
-    } else if (!legacy) {
-      // A concurrent request may have presented this same legacy key first and
-      // re-hashed the row between our prefix lookup and the legacy lookup, at
-      // which point both lookups miss and a valid key would be refused. One
-      // recheck closes that window; already-attempted rows are skipped so a
-      // wrong key never derives the same candidate twice.
-      matched = await matchSalted(await repo.listApiKeysByPrefix(prefix));
-    }
+  const salted = await matchSalted(await repo.listApiKeysByPrefix(prefix));
+  if (salted) {
+    return salted;
   }
 
-  if (!matched) {
+  // Legacy unsalted SHA-256 rows: deterministic lookup, constant-time
+  // compare, then a transparent upgrade to the salted scheme now that the
+  // plaintext is in hand (same path the SQLite backend takes, #2541).
+  const legacy = await repo.getApiKeyByHash(hashApiKeyLegacySha256(rawKey));
+  if (!legacy) {
+    // A concurrent request may have presented this same legacy key first and
+    // re-hashed the row between our prefix lookup and the legacy lookup, at
+    // which point both lookups miss and a valid key would be refused. One
+    // recheck closes that window; already-attempted rows are skipped so a
+    // wrong key never derives the same candidate twice.
+    return matchSalted(await repo.listApiKeysByPrefix(prefix));
+  }
+  if (!await verifyRawKeyAgainstStoredHashAsync(rawKey, legacy.keyHash)) {
     return null;
   }
-  if (matched.revokedAtEpoch !== null) {
-    return null;
+  const legacyIsUsable = legacy.revokedAtEpoch === null
+    && (legacy.expiresAtEpoch === null || legacy.expiresAtEpoch > Date.now());
+  if (!legacyIsUsable) {
+    return legacy; // the caller refuses it; a dead key is never re-hashed
   }
-  if (matched.expiresAtEpoch !== null && matched.expiresAtEpoch <= Date.now()) {
-    return null;
-  }
-  const scopes = normalizeScopes(matched.scopes);
-  if (!hasRequiredScopes(scopes, requiredScopes)) {
-    return null;
-  }
-  // Only after every check passes: upgrade a legacy row on first use.
-  if (!isSaltedHash(matched.keyHash)) {
-    await repo.updateApiKeyHash(matched.id, await hashApiKeyAsync(rawKey), prefix);
-  }
-  return {
-    apiKeyId: matched.id,
-    teamId: matched.teamId,
-    projectId: matched.projectId,
-    scopes,
-  };
+  const upgradedHash = await hashApiKeyAsync(rawKey);
+  await repo.updateApiKeyHash(legacy.id, upgradedHash, prefix);
+  return { ...legacy, keyHash: upgradedHash, keyPrefix: prefix };
 }
 
 function normalizeScopes(value: unknown): string[] {

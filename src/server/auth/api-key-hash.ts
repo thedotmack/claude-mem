@@ -29,13 +29,31 @@ const SCRYPT_SALT_BYTES = 16;
 // or block the main thread. A waiting request holds only a promise; in-flight
 // derivations stay capped, and fs/dns work elsewhere keeps flowing.
 const SCRYPT_MAX_CONCURRENT = 4;
+// Abuse protection: without a cap, a caller who knows a key's 10-char prefix
+// can queue unlimited failing derivations and starve every other request that
+// needs one. 64 waiters drain through 4 slots in 16 rounds, i.e. at most
+// ~0.8-1.6 s of queueing at the ~50-100 ms per derivation of N=16384. Past the
+// cap the request fails loudly (ScryptQueueFullError -> HTTP 503) instead of
+// waiting. Keys already verified skip scrypt entirely (verified-key cache in
+// middleware/postgres-auth.ts), so a flood does not lock out valid callers.
+export const SCRYPT_MAX_WAITERS = 64;
 let scryptInFlight = 0;
 const scryptWaiters: Array<() => void> = [];
+
+export class ScryptQueueFullError extends Error {
+  constructor() {
+    super(`API key verification queue is full (${SCRYPT_MAX_WAITERS} waiting); retry shortly`);
+    this.name = 'ScryptQueueFullError';
+  }
+}
 
 async function acquireScryptSlot(): Promise<void> {
   if (scryptInFlight < SCRYPT_MAX_CONCURRENT) {
     scryptInFlight++;
     return;
+  }
+  if (scryptWaiters.length >= SCRYPT_MAX_WAITERS) {
+    throw new ScryptQueueFullError();
   }
   await new Promise<void>(resolve => scryptWaiters.push(resolve));
   // Slot handed off by release(): scryptInFlight already accounts for it.

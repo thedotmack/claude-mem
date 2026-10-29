@@ -174,6 +174,11 @@ export class PostgresAuthRepository {
     const row = await queryOne<ApiKeyRow>(this.client, 'SELECT * FROM api_keys WHERE key_hash = $1', [keyHash]);
     return row ? mapApiKeyRow(row) : null;
   }
+
+  async getApiKeyById(id: string): Promise<PostgresApiKey | null> {
+    const row = await queryOne<ApiKeyRow>(this.client, 'SELECT * FROM api_keys WHERE id = $1', [id]);
+    return row ? mapApiKeyRow(row) : null;
+  }
 }
 
 function mapApiKeyRow(row: ApiKeyRow): PostgresApiKey {
