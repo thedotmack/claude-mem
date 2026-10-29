@@ -239,6 +239,20 @@ describe('Cowork hook image capture', () => {
     expectNoBytes(staged, png);
   });
 
+  it('an image inside a Duet-escaped &lt;private&gt; region is never uploaded', async () => {
+    await runHook(observation({ content: [
+      { type: 'text', text: '&lt;private&gt;secret screenshot' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: b64(png) } },
+      { type: 'text', text: 'end&lt;/private&gt; public text' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: b64(png) } },
+    ] }));
+    expect(uploads()).toHaveLength(1);
+    expect(uploads()[0].manifest.provenance.source_pointer).toBe('/tool_response/content/3');
+    const staged = String(ingests()[0].json.payload.tool_response);
+    expect(staged).not.toContain('secret');
+    expect(staged).toContain('public text');
+  });
+
   it('is off by default: no upload and the existing envelope behavior', async () => {
     await runHook(observation(SHAPES.anthropic_base64.response()), { CMEM_MEDIA_CAPTURE_ENABLED: '' });
     expect(uploads()).toHaveLength(0);

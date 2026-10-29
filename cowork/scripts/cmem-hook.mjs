@@ -312,12 +312,16 @@ const STRIP_TAGS_RE = /<(private|claude-mem-context|system_instruction|system-in
 // FIRST (on the full serialized value) so truncation can never cut off a
 // closing tag and leak a partial private region. Always emits a string for
 // non-null values so every pass sees the whole payload.
+// Duet escapes < and > in what people write, so their <private> arrives as
+// &lt;private&gt;…&lt;/private&gt; and is stripped in that form too. clean()
+// and the image upload gate share this, so they agree on what is private.
+function stripPrivacyRegions(text) {
+  return text.replace(STRIP_TAGS_RE, '').replace(/&lt;private\b[\s\S]*?&lt;\/private&gt;/gi, '');
+}
+
 function clean(v, cap) {
   if (v == null) return v;
-  // Duet escapes < and > in what people write, so their <private> arrives as
-  // &lt;private&gt;…&lt;/private&gt; and is stripped in that form too
-  const s = (typeof v === 'string' ? v : JSON.stringify(v)).replace(STRIP_TAGS_RE, '')
-    .replace(/&lt;private\b[\s\S]*?&lt;\/private&gt;/gi, '');
+  const s = stripPrivacyRegions(typeof v === 'string' ? v : JSON.stringify(v));
   const t = truncate(s, cap);
   return redactSecrets(typeof t === 'string' ? t : JSON.stringify(t));
 }
@@ -991,13 +995,13 @@ async function uploadImage(image, toolUseId, deadline) {
 
 /**
  * Labels of extracted images whose descriptor sits inside a privacy-tagged
- * region, judged on the same serialized text clean() strips (STRIP_TAGS_RE).
+ * region, judged on the same serialized text clean() strips (stripPrivacyRegions).
  */
 function labelsInsidePrivateRegions(response, images) {
   const hidden = new Set();
   if (!images.length) return hidden;
   const serialized = typeof response === 'string' ? response : JSON.stringify(response);
-  const stripped = serialized.replace(STRIP_TAGS_RE, '');
+  const stripped = stripPrivacyRegions(serialized);
   for (const image of images) {
     const labelPattern = new RegExp(`"${image.label}"`, 'g');
     if ((stripped.match(labelPattern)?.length ?? 0) < (serialized.match(labelPattern)?.length ?? 0)) hidden.add(image.label);
