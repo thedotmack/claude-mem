@@ -45,12 +45,16 @@ def cost(price, fresh, write_5m, write_1h, read, output, flat=False):
 
 
 def usage_of(raw):
-    """(model, usage dict, final output tokens) from a saved response: an SSE stream or a JSON body."""
+    """(model, usage dict, final output tokens, complete) from a saved response: an SSE stream or a JSON body.
+
+    `complete` is False for a stream that never reached `message_stop` (cut off, or still running when read): its
+    output count may be short, so the report counts such requests.
+    """
     text = raw.decode('utf-8', errors='replace')
-    model, usage, output = None, None, None
+    model, usage, output, complete = None, None, None, False
     if text.lstrip().startswith('{'):
         body = json.loads(text)
-        return body.get('model'), body.get('usage') or {}, (body.get('usage') or {}).get('output_tokens')
+        return body.get('model'), body.get('usage') or {}, (body.get('usage') or {}).get('output_tokens'), True
     for line in text.splitlines():
         if not line.startswith('data: '):
             continue
@@ -65,14 +69,16 @@ def usage_of(raw):
         elif event.get('type') == 'message_delta' and event.get('usage'):
             output = event['usage'].get('output_tokens', output)
             usage = {**(usage or {}), **{k: v for k, v in event['usage'].items() if v is not None and k != 'output_tokens'}}
-    return model, usage, output
+        elif event.get('type') == 'message_stop':
+            complete = True
+    return model, usage, output, complete
 
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS requests (
   run_id TEXT, source TEXT, n INTEGER, time TEXT, epoch REAL, turn_no INTEGER, status INTEGER, model TEXT,
   input_tokens INTEGER, cache_write_5m INTEGER, cache_write_1h INTEGER, cache_read INTEGER, output_tokens INTEGER,
-  prompt_tokens INTEGER, long_prompt INTEGER, cost_usd REAL, cost_opus55_usd REAL,
+  prompt_tokens INTEGER, long_prompt INTEGER, cost_usd REAL, cost_opus55_usd REAL, complete INTEGER,
   PRIMARY KEY (run_id, source, n)
 );
 """
@@ -86,6 +92,8 @@ def main():
     args = p.parse_args()
     db = sqlite3.connect(args.db, timeout=60)
     db.executescript(SCHEMA)
+    if 'complete' not in [row[1] for row in db.execute('PRAGMA table_info(requests)')]:
+        db.execute('ALTER TABLE requests ADD COLUMN complete INTEGER')  # results files from before the column
     turns = db.execute('SELECT turn_no, started_epoch, ended_epoch FROM turns WHERE run_id=? ORDER BY turn_no',
                        (args.run_id,)).fetchall()
     db.execute('DELETE FROM requests WHERE run_id=?', (args.run_id,))
@@ -103,7 +111,7 @@ def main():
             epoch = datetime.fromisoformat(meta['time'].replace('Z', '+00:00')).timestamp()
             # The turn a request belongs to: the one running when it was sent (observer work after the last turn: none).
             turn_no = next((t for t, start, end in turns if start <= epoch <= end), None)
-            model, usage, output = usage_of((args.arm_dir / folder / f'{n}-resp.raw').read_bytes())
+            model, usage, output, complete = usage_of((args.arm_dir / folder / f'{n}-resp.raw').read_bytes())
             if status != 200 or usage is None:
                 db.execute('INSERT INTO requests (run_id, source, n, time, epoch, turn_no, status, model) VALUES (?,?,?,?,?,?,?,?)',
                            (args.run_id, source, int(n), meta['time'], epoch, turn_no, status, model))
@@ -118,9 +126,12 @@ def main():
             output = output or 0
             usd, long_prompt = cost(price_of(model), fresh, write_5m, write_1h, read, output)
             usd_opus, _ = cost(OPUS55, fresh, write_5m, write_1h, read, output, flat=True)
-            db.execute('INSERT INTO requests VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            db.execute('INSERT INTO requests (run_id, source, n, time, epoch, turn_no, status, model, input_tokens, '
+                       'cache_write_5m, cache_write_1h, cache_read, output_tokens, prompt_tokens, long_prompt, cost_usd, '
+                       'cost_opus55_usd, complete) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                        (args.run_id, source, int(n), meta['time'], epoch, turn_no, status, model, fresh, write_5m,
-                        write_1h, read, output, fresh + write_5m + write_1h + read, int(long_prompt), usd, usd_opus))
+                        write_1h, read, output, fresh + write_5m + write_1h + read, int(long_prompt), usd, usd_opus,
+                        int(complete)))
             count += 1
     db.commit()
     print(f'{args.run_id}: {count} requests with usage')

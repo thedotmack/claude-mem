@@ -47,8 +47,18 @@ python3 scripts/endless-mode-validation/tasks/report.py --db .scratch/endless-mo
 config dir and claude-mem data dir, ports from 39100 and 39200 up), runs them side by side, then extracts usage.
 `--exercises a,b,c` or `--limit N` runs fewer exercises.
 
+An output dir, run directory or run id is never reused: a rerun into one would mix old turns and requests into the new
+run. Every stack is stopped when `run_all.sh` ends, fails or is interrupted. Before extraction it waits until each
+observer has finished what the session sent it, and the report counts any response that was cut off.
+
+Credentials: an `ANTHROPIC_API_KEY` in your environment goes to the agent; otherwise your Claude Code login
+(`EMV_CLAUDE_OAUTH_TOKEN`, the macOS keychain or `~/.claude/.credentials.json`, read only, never written) goes to the
+agent as `CLAUDE_CODE_OAUTH_TOKEN` before every turn, and to the observer through its recording proxy. The observer uses
+the Claude Code login only.
+
 The agent runs with a narrow tool allowlist (file tools, `python`, `pytest`, `ls`, `cat`), not with permissions
-bypassed.
+bypassed. Its solutions are graded with a bare environment and a throwaway HOME, but not in a sandbox: run the benchmark
+on a machine you would let the agent work on.
 
 ## Results file
 

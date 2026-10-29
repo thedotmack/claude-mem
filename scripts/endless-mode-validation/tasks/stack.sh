@@ -7,9 +7,13 @@
 #            in Endless Mode's cost.
 # Ports: base = agent tee, base+1 = worker, base+2 = gateway, base+3 = observer tee.
 # Everything lives under <arm dir>; nothing touches the real ~/.claude or ~/.claude-mem.
+# Credentials: the observer is given your Claude Code login through its tee (tee-proxy.ts --inject-claude-token, read
+# only, never written). With no login found (EMV_CLAUDE_OAUTH_TOKEN, the macOS keychain or ~/.claude/.credentials.json)
+# the observer is started without one, which works only where the host supplies credentials itself.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd); repo=$(cd "$here/../../.." && pwd)
 action=$1 arm=$2 dir=$3 base=${4:-0}
+mkdir -p "$dir"; dir=$(cd "$dir" && pwd)  # absolute: the worker starts from inside the data dir
 BUN=${EMV_BUN:-$(command -v bun)}
 UPSTREAM=${EMV_UPSTREAM:-https://api.anthropic.com}
 tee_port=$base worker_port=$((base + 1)) gateway_port=$((base + 2)) obs_port=$((base + 3))
@@ -21,6 +25,12 @@ if [[ $action == stop ]]; then
 fi
 
 mkdir -p "$dir"/{data,home/.claude-mem,claude-config,proj,logs,tee,observer-tee}
+# The real login's location, for the observer tee's read-only token lookup (tee-proxy.ts readClaudeAccessToken).
+export EMV_REAL_HOME=${EMV_REAL_HOME:-$HOME} EMV_REAL_USER=${EMV_REAL_USER:-$(id -un)}
+export EMV_REAL_CLAUDE_DIR=${EMV_REAL_CLAUDE_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}
+has_login=0
+"$BUN" -e "import { readClaudeAccessToken } from '$repo/scripts/endless-mode-validation/forward/tee-proxy.ts'; process.exit(readClaudeAccessToken() ? 0 : 1)" \
+  > /dev/null 2>&1 && has_login=1
 export HOME=$dir/home CLAUDE_CONFIG_DIR=$dir/claude-config CLAUDE_MEM_DATA_DIR=$dir/data DO_NOT_TRACK=1
 unset ANTHROPIC_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDECODE
 for v in $(compgen -e | grep -E '^CLAUDE_CODE_' || true); do unset "$v"; done
@@ -55,9 +65,16 @@ if [[ $arm == endless ]]; then
     CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH: "false"
   }' > "$CLAUDE_MEM_DATA_DIR/settings.json"
   cp "$CLAUDE_MEM_DATA_DIR/settings.json" "$HOME/.claude-mem/settings.json"
-  # The observer's API base: claude-mem re-injects ANTHROPIC_BASE_URL from its .env into the observer's spawn.
-  for d in "$CLAUDE_MEM_DATA_DIR" "$HOME/.claude-mem"; do echo "ANTHROPIC_BASE_URL=http://127.0.0.1:$obs_port" > "$d/.env"; done
-  "$BUN" "$repo/scripts/endless-mode-validation/forward/tee-proxy.ts" $obs_port "$UPSTREAM" "$dir/observer-tee" > "$dir/logs/observer-tee.log" 2>&1 &
+  # The observer's API base: claude-mem re-injects ANTHROPIC_BASE_URL (and ANTHROPIC_AUTH_TOKEN) from its .env into the
+  # observer's spawn. With a base URL claude-mem never injects the login itself, so the token is a placeholder the
+  # observer tee swaps for the real one; nothing secret is written.
+  inject=()
+  for d in "$CLAUDE_MEM_DATA_DIR" "$HOME/.claude-mem"; do
+    echo "ANTHROPIC_BASE_URL=http://127.0.0.1:$obs_port" > "$d/.env"
+    [[ $has_login == 1 ]] && echo "ANTHROPIC_AUTH_TOKEN=emv-tee-injects-claude-token" >> "$d/.env"
+  done
+  [[ $has_login == 1 ]] && inject=(--inject-claude-token)
+  "$BUN" "$repo/scripts/endless-mode-validation/forward/tee-proxy.ts" $obs_port "$UPSTREAM" "$dir/observer-tee" ${inject[@]+"${inject[@]}"} > "$dir/logs/observer-tee.log" 2>&1 &
   echo $! >> "$pids"
   (cd "$CLAUDE_MEM_DATA_DIR" && exec "$BUN" "$repo/src/services/worker-service.ts" --daemon > "$dir/logs/worker.log" 2>&1) &
   echo $! >> "$pids"

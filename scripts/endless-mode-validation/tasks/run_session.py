@@ -92,10 +92,16 @@ def prepare_project(proj, bench, exercises):
 
 
 def grade(proj, bench, ex):
-    """Run the exercise's hidden tests against the project's current solution, in a scratch directory."""
+    """Run the exercise's hidden tests against the project's current solution, in a scratch directory.
+
+    The solution is code the agent wrote, so it runs with a bare environment and a throwaway HOME: no credentials or
+    settings of the host reach it. (It is not a sandbox; run the benchmark on a machine you would let the agent use.)
+    """
     solution, tests = exercise_files(bench / ex)
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
+        env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': str(tmp), 'LANG': 'C.UTF-8',
+               'PYTHONDONTWRITEBYTECODE': '1'}
         for name in solution:
             if (proj / ex / name).exists():
                 shutil.copy(proj / ex / name, tmp / name)
@@ -103,7 +109,7 @@ def grade(proj, bench, ex):
             shutil.copy(bench / ex / name, tmp / name)
         try:
             out = subprocess.run([sys.executable, '-m', 'pytest', '-q', '-p', 'no:cacheprovider', *tests], cwd=tmp,
-                                 capture_output=True, text=True, timeout=180)
+                                 env=env, capture_output=True, text=True, timeout=180)
             text = out.stdout + out.stderr
         except subprocess.TimeoutExpired:
             text = 'TIMEOUT: the tests ran longer than 180 seconds'
@@ -126,10 +132,40 @@ def rule_kept(proj, bench, ex):
     return 1
 
 
+REPO = Path(__file__).resolve().parents[3]
+
+
+def claude_login():
+    """Claude Code's current access token from your own login (read only, the tee's lookup), or None.
+
+    Read before every turn: Claude Code rotates the token and revokes the old one. Never printed or written.
+    """
+    tee = REPO / 'scripts' / 'endless-mode-validation' / 'forward' / 'tee-proxy.ts'
+    env = dict(os.environ)
+    env.setdefault('EMV_REAL_HOME', env.get('HOME', ''))
+    env.setdefault('EMV_REAL_CLAUDE_DIR', env.get('CLAUDE_CONFIG_DIR') or str(Path(env.get('HOME', '')) / '.claude'))
+    env.setdefault('EMV_REAL_USER', os.environ.get('USER', ''))
+    code = f"import {{ readClaudeAccessToken }} from '{tee}'; process.stdout.write(readClaudeAccessToken() ?? '')"
+    try:
+        out = subprocess.run([shutil.which('bun') or 'bun', '-e', code], env=env, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return out.stdout.strip() or None
+
+
 def claude_env(arm_dir):
+    """The agent's environment: its own sandbox HOME and config dir, plus your credential.
+
+    An API key in ANTHROPIC_API_KEY is passed on as is; otherwise your Claude Code login goes in as
+    CLAUDE_CODE_OAUTH_TOKEN. With neither, the agent starts with none, which works only where the host supplies it.
+    """
     keep = ['PATH', 'HTTPS_PROXY', 'NO_PROXY', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'NODE_OPTIONS', 'LANG']
     env = {k: os.environ[k] for k in keep if k in os.environ}
     env.update(HOME=str(arm_dir / 'home'), CLAUDE_CONFIG_DIR=str(arm_dir / 'claude-config'), DO_NOT_TRACK='1')
+    if os.environ.get('ANTHROPIC_API_KEY'):
+        env['ANTHROPIC_API_KEY'] = os.environ['ANTHROPIC_API_KEY']
+    elif token := claude_login():
+        env['CLAUDE_CODE_OAUTH_TOKEN'] = token
     return env
 
 
@@ -166,6 +202,7 @@ def main():
     p.add_argument('--turn-timeout', type=int, default=1500)
     p.add_argument('--claude', default=shutil.which('claude'))
     args = p.parse_args()
+    args.arm_dir = args.arm_dir.resolve()
 
     exercises = [e for e in args.exercises.split(',') if e] or sorted(d.name for d in args.bench.iterdir() if d.is_dir())
     if args.limit:
@@ -173,10 +210,14 @@ def main():
     proj = args.arm_dir / 'proj'
     logs = args.arm_dir / 'logs' / 'turns'
     logs.mkdir(parents=True, exist_ok=True)
-    prepare_project(proj, args.bench, exercises)
-
     db = sqlite3.connect(args.db, timeout=60)
     db.executescript(SCHEMA)
+    # One run, one directory, one run id: a rerun into either would mix old turns and requests into the new run.
+    if db.execute('SELECT 1 FROM runs WHERE run_id=?', (args.run_id,)).fetchone():
+        sys.exit(f'run {args.run_id} is already in {args.db}; use a new run id or a new results file')
+    if proj.exists() and any(proj.iterdir()):
+        sys.exit(f'{proj} is not empty; use a new arm dir')
+    prepare_project(proj, args.bench, exercises)
     version = subprocess.run([args.claude, '--version'], capture_output=True, text=True).stdout.strip()
     label = args.arm_label or args.arm
     db.execute('INSERT OR REPLACE INTO runs VALUES (?,?,?,?,?,?,?,?,?,?)',
@@ -220,7 +261,13 @@ def main():
               f'{row["elapsed_s"]:.0f}s error={row["is_error"]}{status}', flush=True)
         return row, output
 
-    turn('rule', None, 0, RULE_PROMPT)
+    opening, _ = turn('rule', None, 0, RULE_PROMPT)
+    if opening['is_error'] or not opening['session_id']:
+        # Without the opening turn there is no session to continue and no standing rule: not a valid run.
+        db.execute('UPDATE runs SET notes=? WHERE run_id=?', ('invalid: the opening turn failed', args.run_id))
+        db.commit()
+        sys.exit(f'{args.run_id}: the opening turn failed; run marked invalid')
+    first_session = opening['session_id']
     for ex in exercises:
         solution, _ = exercise_files(args.bench / ex)
         files = ', '.join(f'`{ex}/{name}`' for name in solution)
@@ -231,6 +278,11 @@ def main():
             tail = '\n'.join(output.strip().splitlines()[-TEST_OUTPUT_LINES:])
             row, output = turn('task', ex, attempt, SECOND_TRY.format(ex=ex, output=tail, files=files))
 
+    # Every turn must have continued the opening turn's session; a turn that started a new one broke the long session.
+    other = db.execute('SELECT min(turn_no) FROM turns WHERE run_id=? AND session_id != ?',
+                       (args.run_id, first_session)).fetchone()[0]
+    if other:
+        db.execute('UPDATE runs SET notes=? WHERE run_id=?', (f'invalid: a new session started at turn {other}', args.run_id))
     db.execute('UPDATE runs SET ended_at=? WHERE run_id=?', (now_iso(), args.run_id))
     db.commit()
 

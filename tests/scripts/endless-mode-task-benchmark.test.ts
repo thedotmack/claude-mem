@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, it } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { TEE_INJECT_PLACEHOLDER, startTee } from '../../scripts/endless-mode-validation/forward/tee-proxy';
 
 const REPO_ROOT = resolve(import.meta.dir, '../..');
 const TASKS = join(REPO_ROOT, 'scripts/endless-mode-validation/tasks');
@@ -25,11 +26,16 @@ describe('task benchmark extract.py', () => {
       'data: {"type":"message_delta","usage":{"output_tokens":42}}',
       '',
     ].join('\n');
-    const file = join(scratch, 'resp.raw');
-    writeFileSync(file, sse);
-    const out = python(`import json, extract; m, u, o = extract.usage_of(open(${JSON.stringify(file)}, 'rb').read()); print(json.dumps([m, u['cache_read_input_tokens'], u['cache_creation']['ephemeral_1h_input_tokens'], o]))`);
-    expect(out.code).toBe(0);
-    expect(JSON.parse(out.stdout)).toEqual(['claude-haiku-5-5', 1000, 300, 42]);
+    const read = (text: string) => {
+      const file = join(scratch, 'resp.raw');
+      writeFileSync(file, text);
+      const out = python(`import json, extract; m, u, o, done = extract.usage_of(open(${JSON.stringify(file)}, 'rb').read()); print(json.dumps([m, u['cache_read_input_tokens'], u['cache_creation']['ephemeral_1h_input_tokens'], o, done]))`);
+      expect(out.code).toBe(0);
+      return JSON.parse(out.stdout);
+    };
+    // Cut off before message_stop: the usage is read, and the response is flagged as not complete.
+    expect(read(sse)).toEqual(['claude-haiku-5-5', 1000, 300, 42, false]);
+    expect(read(`${sse}\nevent: message_stop\ndata: {"type":"message_stop"}\n`)).toEqual(['claude-haiku-5-5', 1000, 300, 42, true]);
   });
 
   it('prices cache writes and reads, and a prompt over the long-prompt threshold at the long rates', () => {
@@ -51,6 +57,30 @@ describe('task benchmark extract.py', () => {
     const out = python("import extract; extract.price_of('some-unknown-model')");
     expect(out.code).not.toBe(0);
     expect(out.stderr).toContain('no price for model');
+  });
+});
+
+describe('tee-proxy --inject-claude-token', () => {
+  it('swaps only the placeholder bearer for the real token and adds the OAuth beta', async () => {
+    const seen: Array<[string, string]> = [];
+    const upstream = Bun.serve({
+      port: 0,
+      fetch(request) {
+        seen.push([request.headers.get('authorization') ?? '', request.headers.get('anthropic-beta') ?? '']);
+        return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+      },
+    });
+    const tee = startTee({ port: 0, upstream: `http://127.0.0.1:${upstream.port}`, outDir: join(scratch, 'tee-inject'), injectToken: () => 'real-token' });
+    const send = (auth: string) => fetch(`http://127.0.0.1:${tee.port}/v1/messages`, {
+      method: 'POST', headers: { authorization: auth, 'anthropic-beta': 'some-beta', 'content-type': 'application/json' }, body: '{}',
+    }).then(r => r.text());
+    await send(`Bearer ${TEE_INJECT_PLACEHOLDER}`);
+    await send('Bearer someone-elses-token');
+    tee.stop(true);
+    upstream.stop(true);
+    expect(seen).toEqual([['Bearer real-token', 'some-beta,oauth-2025-04-20'], ['Bearer someone-elses-token', 'some-beta']]);
+    const saved = readdirSync(join(scratch, 'tee-inject')).map(f => readFileSync(join(scratch, 'tee-inject', f), 'utf8')).join('\n');
+    expect(saved).not.toContain('real-token');
   });
 });
 
