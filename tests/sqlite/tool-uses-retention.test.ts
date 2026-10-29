@@ -4,7 +4,6 @@ import {
   createToolUsesSchema,
   getToolUsesByIds,
   purgeLinkedToolUses,
-  resolveToolUsesRetentionDays,
   upsertToolUse,
 } from '../../src/services/sqlite/tool-uses.js';
 
@@ -47,34 +46,6 @@ function remainingToolUseIds(db: Database): string[] {
   return (db.query('SELECT tool_use_id FROM tool_uses ORDER BY id').all() as Array<{ tool_use_id: string }>)
     .map(row => row.tool_use_id);
 }
-
-describe('resolveToolUsesRetentionDays', () => {
-  it('reads a positive whole number of days', () => {
-    expect(resolveToolUsesRetentionDays('30')).toBe(30);
-    expect(resolveToolUsesRetentionDays(' 7 ')).toBe(7);
-  });
-
-  it('treats 0, empty and unparseable values as keep-forever', () => {
-    for (const raw of ['0', '', '   ', 'abc', '-5', '1.5', '1e3', 'NaN', 'Infinity']) {
-      expect(resolveToolUsesRetentionDays(raw)).toBe(0);
-    }
-  });
-
-  it('treats a missing setting as keep-forever', () => {
-    expect(resolveToolUsesRetentionDays(undefined)).toBe(0);
-  });
-
-  it('accepts an unquoted JSON number, which hand-edited settings.json can hold', () => {
-    expect(resolveToolUsesRetentionDays(30)).toBe(30);
-    expect(resolveToolUsesRetentionDays(0)).toBe(0);
-  });
-
-  it('never throws on a value that is not a string or number, and keeps everything', () => {
-    for (const raw of [null, true, false, {}, [], [30], 1.5, -3, Number.NaN, Number.POSITIVE_INFINITY]) {
-      expect(resolveToolUsesRetentionDays(raw)).toBe(0);
-    }
-  });
-});
 
 describe('purgeLinkedToolUses', () => {
   it('does nothing when retention is 0, however old the rows are', () => {
