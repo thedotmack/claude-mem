@@ -12,7 +12,8 @@ import { runShutdownSequence, WORKER_GRACEFUL_SHUTDOWN_DEADLINE_BASE_MS, type Wo
 import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensureDir, paths } from '../shared/paths.js';
 import { HookSpool, migrateLegacySessionEndReplay } from '../shared/hook-spool.js';
 import { HookSpoolDrainer, hookSpoolConsumedMarkers } from './worker/hook-spool-drain.js';
-import { pruneOldLogs, resolveLogRetentionDays } from './worker/log-retention.js';
+import { pruneOldLogs } from './worker/log-retention.js';
+import { parseRetentionDays } from '../shared/retention-days.js';
 import { HookSpoolRoutes } from './worker/http/routes/HookSpoolRoutes.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { getUptimeSeconds } from '../shared/uptime.js';
@@ -541,20 +542,22 @@ export class WorkerService implements WorkerRef {
    */
   private startLogRetention(): void {
     if (this.logRetentionTimer !== null || this.isShuttingDown) return;
-    const sweep = (): void => {
+    // The sweep is async (fs/promises) so a large backlog never blocks the
+    // event loop that serves health checks and hook requests.
+    const sweep = async (): Promise<void> => {
       if (this.isShuttingDown) return;
       try {
         const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-        pruneOldLogs(paths.logsDir(), resolveLogRetentionDays(settings.CLAUDE_MEM_LOG_RETENTION_DAYS));
+        await pruneOldLogs(paths.logsDir(), parseRetentionDays(settings.CLAUDE_MEM_LOG_RETENTION_DAYS));
       } catch (error) {
         logger.warn('SYSTEM', 'Log retention sweep failed; logs are kept until the next sweep', {},
           error instanceof Error ? error : new Error(String(error)));
       }
     };
     this.logRetentionTimer = setTimeout(() => {
-      sweep();
+      void sweep();
       if (this.isShuttingDown) return;
-      this.logRetentionTimer = setInterval(sweep, 24 * 60 * 60 * 1000);
+      this.logRetentionTimer = setInterval(() => void sweep(), 24 * 60 * 60 * 1000);
       this.logRetentionTimer.unref?.();
     }, 5 * 60_000);
     this.logRetentionTimer.unref?.();

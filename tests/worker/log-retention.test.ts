@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { pruneOldLogs, resolveLogRetentionDays } from '../../src/services/worker/log-retention.js';
+import { pruneOldLogs } from '../../src/services/worker/log-retention.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const NOW = Date.UTC(2026, 9, 7, 12, 0, 0);
@@ -39,26 +39,12 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-describe('resolveLogRetentionDays', () => {
-  it('accepts whole numbers as a string or an unquoted number', () => {
-    expect(resolveLogRetentionDays('30')).toBe(30);
-    expect(resolveLogRetentionDays(' 14 ')).toBe(14);
-    expect(resolveLogRetentionDays(30)).toBe(30);
-  });
-
-  it('keeps everything for 0 and for anything that is not a whole number of days', () => {
-    for (const raw of ['0', 0, '', 'abc', '-5', -5, '1.5', 1.5, '1e3', null, undefined, ['30'], { days: 30 }]) {
-      expect(resolveLogRetentionDays(raw)).toBe(0);
-    }
-  });
-});
-
 describe('pruneOldLogs', () => {
-  it('deletes daily logs older than the window and keeps the rest', () => {
+  it('deletes daily logs older than the window and keeps the rest', async () => {
     const old = [dailyLog(31), dailyLog(45), dailyLog(200)];
     const kept = [dailyLog(0), dailyLog(1), dailyLog(29), dailyLog(30)];
 
-    const result = pruneOldLogs(dir, 30, NOW);
+    const result = await pruneOldLogs(dir, 30, NOW);
 
     expect(result.removed.sort()).toEqual(old.map(baseName).sort());
     expect(result.bytes).toBe(3);
@@ -66,29 +52,29 @@ describe('pruneOldLogs', () => {
     for (const path of kept) expect(existsSync(path)).toBe(true);
   });
 
-  it('always keeps today and yesterday, even with a one-day retention', () => {
+  it('always keeps today and yesterday, even with a one-day retention', async () => {
     const today = dailyLog(0);
     const yesterday = dailyLog(1);
     const older = dailyLog(2);
 
-    pruneOldLogs(dir, 1, NOW);
+    await pruneOldLogs(dir, 1, NOW);
 
     expect(existsSync(today)).toBe(true);
     expect(existsSync(yesterday)).toBe(true);
     expect(existsSync(older)).toBe(false);
   });
 
-  it('keeps an old-named file that is still being written inside the window', () => {
+  it('keeps an old-named file that is still being written inside the window', async () => {
     // A pre-#4063 daemon appended to its start-date file for weeks.
     const latched = dailyLog(60, 0);
 
-    const result = pruneOldLogs(dir, 30, NOW);
+    const result = await pruneOldLogs(dir, 30, NOW);
 
     expect(result.removed).toEqual([]);
     expect(existsSync(latched)).toBe(true);
   });
 
-  it('never touches files that are not the logger\'s daily logs', () => {
+  it('never touches files that are not the logger\'s daily logs', async () => {
     const others = [
       seedLog('runner-errors.log', 400),
       seedLog(`worker-${utcDate(400)}.log`, 400),
@@ -99,29 +85,29 @@ describe('pruneOldLogs', () => {
     ];
     mkdirSync(join(dir, `claude-mem-${utcDate(400)}.log`));
 
-    const result = pruneOldLogs(dir, 30, NOW);
+    const result = await pruneOldLogs(dir, 30, NOW);
 
     expect(result.removed).toEqual([]);
     for (const path of others) expect(existsSync(path)).toBe(true);
     expect(readdirSync(dir)).toHaveLength(others.length + 1);
   });
 
-  it('is a no-op for a retention of 0', () => {
+  it('is a no-op for a retention of 0', async () => {
     const old = dailyLog(400);
 
-    expect(pruneOldLogs(dir, 0, NOW)).toEqual({ removed: [], bytes: 0 });
+    expect(await pruneOldLogs(dir, 0, NOW)).toEqual({ removed: [], bytes: 0 });
     expect(existsSync(old)).toBe(true);
   });
 
-  it('returns nothing when the logs directory does not exist', () => {
-    expect(pruneOldLogs(join(dir, 'missing'), 30, NOW)).toEqual({ removed: [], bytes: 0 });
+  it('returns nothing when the logs directory does not exist', async () => {
+    expect(await pruneOldLogs(join(dir, 'missing'), 30, NOW)).toEqual({ removed: [], bytes: 0 });
   });
 
-  it('skips a file it cannot delete and still removes the others', () => {
+  it('skips a file it cannot delete and still removes the others', async () => {
     const locked = dailyLog(40);
     const free = dailyLog(50);
 
-    const result = pruneOldLogs(dir, 30, NOW, path => {
+    const result = await pruneOldLogs(dir, 30, NOW, async path => {
       if (path === locked) throw Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' });
       rmSync(path);
     });
@@ -131,7 +117,21 @@ describe('pruneOldLogs', () => {
     expect(existsSync(free)).toBe(false);
   });
 
-  it('counts the age of a file from its UTC date name just after UTC midnight', () => {
+  it('yields to the event loop instead of deleting a backlog in one blocking pass', async () => {
+    for (let daysAgo = 40; daysAgo < 60; daysAgo++) dailyLog(daysAgo);
+    const order: string[] = [];
+    setImmediate(() => order.push('event-loop-turn'));
+
+    const result = await pruneOldLogs(dir, 30, NOW, async path => {
+      order.push('remove');
+      rmSync(path);
+    });
+
+    expect(result.removed).toHaveLength(20);
+    expect(order[0]).toBe('event-loop-turn');
+  });
+
+  it('counts the age of a file from its UTC date name just after UTC midnight', async () => {
     // 00:30 UTC: the file dated 31 calendar days back was last written ~30.02 days ago.
     const justAfterMidnight = Date.UTC(2026, 9, 7, 0, 30, 0);
     const day = new Date(justAfterMidnight - 31 * DAY_MS).toISOString().split('T')[0];
@@ -141,6 +141,6 @@ describe('pruneOldLogs', () => {
     const mtime = new Date(Date.UTC(2026, 8, 6, 23, 59, 0));
     utimesSync(path, mtime, mtime);
 
-    expect(pruneOldLogs(dir, 30, justAfterMidnight).removed).toEqual([name]);
+    expect((await pruneOldLogs(dir, 30, justAfterMidnight)).removed).toEqual([name]);
   });
 });
