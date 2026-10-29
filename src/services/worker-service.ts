@@ -18,6 +18,7 @@ import { getUptimeSeconds } from '../shared/uptime.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { describeObserverAuthMethod } from './worker/observer-auth-method.js';
 import { logger } from '../utils/logger.js';
+import { isHookStdoutClosed } from '../shared/hook-io.js';
 import { ChromaMcpManager } from './sync/ChromaMcpManager.js';
 import { ChromaSync } from './sync/ChromaSync.js';
 import { openConfiguredSqliteDatabase } from './sqlite/connection.js';
@@ -2186,6 +2187,11 @@ const isMainModule = typeof require !== 'undefined' && typeof module !== 'undefi
 // this flag explicitly; source/library imports retain their normal semantics.
 if (isMainModule || (typeof __CMEM_MEDIA_STANDALONE__ !== 'undefined' && __CMEM_MEDIA_STANDALONE__)) {
   main().catch((error) => {
+    if (isHookStdoutClosed(error)) {
+      // The session closed before the hook wrote its output. Nothing to fix.
+      logger.debug('SYSTEM', 'Hook output not delivered: session already closed (EPIPE)');
+      process.exit(0);
+    }
     logger.error('SYSTEM', 'Fatal error in main', {}, error instanceof Error ? error : undefined);
     // A fatal error on the daemon boot path is a dead boot, not a success:
     // exit non-zero so it is not laundered (#3557). Every other command keeps

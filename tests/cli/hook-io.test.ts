@@ -6,6 +6,7 @@ import {
   exitGraceful,
   resetHookIoState,
   HookStdoutError,
+  isHookStdoutClosed,
 } from '../../src/shared/hook-io.js';
 import type { PlatformAdapter, HookResult } from '../../src/cli/types.js';
 
@@ -253,5 +254,20 @@ describe('exitGraceful', () => {
     } finally {
       process.stdout.write = original;
     }
+  });
+});
+
+describe('isHookStdoutClosed (#5175)', () => {
+  it('is true for a stdout write that failed with EPIPE', () => {
+    const epipe = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+    expect(isHookStdoutClosed(new HookStdoutError(epipe))).toBe(true);
+  });
+
+  it('is false for other stdout failures and other errors', () => {
+    const other = Object.assign(new Error('write EIO'), { code: 'EIO' });
+    expect(isHookStdoutClosed(new HookStdoutError(other))).toBe(false);
+    expect(isHookStdoutClosed(new HookStdoutError('boom'))).toBe(false);
+    expect(isHookStdoutClosed(Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }))).toBe(false);
+    expect(isHookStdoutClosed(undefined)).toBe(false);
   });
 });

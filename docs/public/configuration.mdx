@@ -234,7 +234,7 @@ If an Anthropic-compatible gateway rejects the `thinking` parameter with a 400, 
 | `CLAUDE_MEM_CHROMA_UVX_PATH`  | _(empty — search uv's install folders, then PATH)_ | The `uvx` that launches chroma-mcp, as the full path to the binary (on Windows, e.g. `C:\Users\you\AppData\Local\Programs\Python\Python313\Scripts\uvx.exe`) or its folder. Set it when `pip install uv` put `uvx` outside uv's usual folders, or when another tool's `uvx` comes first on PATH. An environment variable of the same name overrides `settings.json`. File/env only — not writable via the viewer HTTP API. Restart the worker after changing it. |
 | `CLAUDE_CODE_PATH`            | _(auto-detect)_                 | Path to Claude Code CLI (for Windows). File/env only — not writable via the viewer HTTP API. |
 | `CLAUDE_MEM_PROJECT_NAME_SOURCE` | `path`                       | How a git repository's project name is derived: `path` (the repository folder's name) or `git-remote` (a stable `org/repo` slug from the `origin` remote, which survives renaming the folder and tells same-named repositories apart; every worktree of the repository shares it). Opt-in. Memory stored under the folder name before you switch stays readable. See [Project Names](#project-names). |
-| `CLAUDE_MEM_PROJECT_ENVIRONMENTS` | `[]`                       | Named environments: a JSON array of `{"name", "patterns"}`. Folders matching an environment's glob patterns (the same rules as `CLAUDE_MEM_EXCLUDED_PROJECTS`) share one project named after it. See [Project Names](#project-names). |
+| `CLAUDE_MEM_PROJECT_ENVIRONMENTS` | `[]`                       | Named environments: a JSON array of `{"name", "patterns", "inherit?"}`. Optional `inherit` selects which additional project keys remain readable; `[]` isolates the environment from derived keys. Folders matching an environment's glob patterns (the same rules as `CLAUDE_MEM_EXCLUDED_PROJECTS`) share one project named after it. See [Project Names](#project-names). |
 | `CLAUDE_MEM_CLAUDE_CONFIG_DIR`| _(unset — falls through to `CLAUDE_CONFIG_DIR`/`~/.claude`)_ | Override which `CLAUDE_CONFIG_DIR` profile's OAuth keychain entry to read, and which `CLAUDE_CONFIG_DIR` the spawned SDK subprocess sees. For running multiple named Claude Code profiles (e.g. `~/.claude-profiles/<name>`, each logged in separately) side by side on one machine. macOS only for the keychain lookup; Windows/Linux credential stores are not profile-aware yet. |
 | `CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR` | _(unset — transcripts follow the credential profile dir)_ | Transcript-only `CLAUDE_CONFIG_DIR` for claude-mem's internal SDK sessions (observer, knowledge corpus). By default they persist under `~/.claude/projects/`, where importers like Codex pick them up as user chats; set this to a dedicated directory (e.g. `~/.claude-mem/observer-claude`) to keep them out. Credentials are unaffected — the worker keeps reading your default login and injects a fresh OAuth token at each spawn, so the directory itself never needs to be logged in. Only honored while `CLAUDE_MEM_CLAUDE_CONFIG_DIR` is unset (an explicit profile keeps its transcripts beside its credentials by design). Two things to know: a token-injected subprocess cannot refresh the token itself — capture pauses with the usual re-login notice if your Claude Code login expires — and sessions recorded before you set this cannot be resumed — a corpus primed before enabling this misses its resume once, and its next query recovers automatically through the existing reprime path into a fresh session here. To carry the old session over instead of starting fresh, move the store first: `mkdir -p <dir>/projects && mv ~/.claude/projects/-<munged-home>-claude-mem-observer-sessions <dir>/projects/`. |
 
@@ -427,6 +427,42 @@ claude-mem files every observation under a project name, and SessionStart inject
 - **With `CLAUDE_MEM_PROJECT_NAME_SOURCE=git-remote`** a repository that has an `origin` remote is named by its `org/repo` slug instead (e.g. `thedotmack/claude-mem`), so renaming or re-cloning the folder keeps its memory, two repositories with the same folder name stay apart, and every worktree of the repository shares the slug (a submodule, being a repository of its own, is named by its own `origin`). Memory stored under the folder-based names stays readable, and a deleted worktree's memory from before the switch is still folded into the repository. Repositories without a usable `origin` (or with a local one) keep the folder-based name.
 - **Outside git** the name is the current folder's name. To give a non-git project one name across all of its subfolders, put an empty `.claude-mem-project` file (or a `.claude-mem.json`) in its root folder: every folder below it then uses the root folder's name. Memory stored under a subfolder's own name before you added the file stays readable from that subfolder. Marker files in your home directory, the system temp directory or Claude's config directory are ignored, so they can never fold unrelated folders together.
 - **Named environments** (`CLAUDE_MEM_PROJECT_ENVIRONMENTS`) group several folders, git or not, into one project and win over every rule above. For example, `[{"name": "acme", "patterns": ["~/work/acme/**"]}]` files everything under `~/work/acme` as `acme`, and SessionStart labels it as an environment. Memory those folders stored under their own names stays readable from them; to fold it into the environment for good, run `npx claude-mem project merge <old-name> acme` (it runs inside claude-mem's worker whenever the worker is running). The merge rewrites nothing (rows are marked as merged, the way a worktree folds into its repository) and brings along memory already folded into the old name, such as a merged worktree's. It reaches your other devices through cloud sync and updates semantic search; if that last step fails, the command says so, and running it again retries it.
+
+### Choosing an environment's memory scope
+
+By default, naming an environment retains the folder and git-remote keys it
+previously read. To keep a business or package inside a larger repository from
+reading the parent's entire history, set `inherit` explicitly:
+
+```json
+{
+  "CLAUDE_MEM_PROJECT_ENVIRONMENTS": [
+    { "name": "business-a", "patterns": ["~/Workspace/business-a/**"], "inherit": [] },
+    { "name": "business-b", "patterns": ["~/Workspace/business-b/**"], "inherit": ["shared"] }
+  ]
+}
+```
+
+- **Omitted `inherit`** keeps existing behavior: derived keys and the environment key are readable.
+- **`inherit: []`** reads only the environment key and memory explicitly merged or adopted into it.
+- **`inherit: ["shared"]`** reads the environment and the listed project keys, including their existing merged history, without automatically adding parent, folder, or remote-derived keys. Entries are project names, not environment names to resolve recursively or path patterns.
+
+Writes still use `name`. This changes the checkout's default read scope for
+SessionStart, semantic injection, file context, and MCP queries for that project;
+it does not move or delete stored history. Ordinary worktrees and submodules with
+no explicit inheritance configuration keep their existing behavior.
+Reading a project's memory does not merge the environment's history back into
+that project. Automatic orphan adoption uses recorded folder-derived identity,
+not the environment's read scope.
+
+`inherit` must be an array of non-empty project names. Names are trimmed and
+deduplicated, and cannot contain commas (the query protocol uses commas to
+separate projects). An invalid explicit value raises a configuration error rather
+than reverting to the broader derived scope; correct it before using those hooks.
+
+This setting selects default context, not access permissions. Explicit queries
+for other projects and `CLAUDE_MEM_CONTEXT_PROJECTS=all` can still read a broader
+scope. Previously performed whole-project merges also remain in effect.
 
 Environment patterns and `CLAUDE_MEM_EXCLUDED_PROJECTS` use the same glob rules. A complete `**/` segment matches zero or more directories: `~/work/**/private` matches both `~/work/private` and `~/work/team/private`. Add a trailing `/**` to match their descendants too.
 

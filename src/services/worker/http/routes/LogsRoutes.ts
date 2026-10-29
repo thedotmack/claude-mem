@@ -36,7 +36,10 @@ export function readLastLines(filePath: string, lineCount: number): { lines: str
         if (content[i] === '\n') newlineCount++;
       }
 
-      if (newlineCount >= lineCount || startPosition === 0 || readSize === MAX_READ_SIZE) {
+      // A trailing newline terminates the last line; it is not the boundary
+      // before the first requested line when the chunk starts mid-line.
+      const requiredNewlines = lineCount + (content.endsWith('\n') ? 1 : 0);
+      if (newlineCount >= requiredNewlines || startPosition === 0 || readSize === MAX_READ_SIZE) {
         break;
       }
 
