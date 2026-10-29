@@ -813,7 +813,10 @@ function reexecWithProxy(event, stdinRaw) {
     // under each hook's own timeout (hooks.json), so the parent always exits 0
     timeout: SYNC_EVENTS.has(event) ? 13000 : event === 'session-end' ? 4500 : 27000
   });
-  return !r.error;
+  // Only a child that never started is retried here. One that ran and timed
+  // out may already have sent events or claimed the queue, so running the
+  // handler again in this process could repeat or lose its work.
+  return !r.error || !!r.pid;
 }
 
 const event = process.argv[2] || '';
