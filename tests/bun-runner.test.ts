@@ -412,7 +412,12 @@ describe('bun-runner.js spawn: no cmd.exe for .exe targets (#3196)', () => {
     );
     const res = spawnSync('node', [BUN_RUNNER_PATH, join('..', 'scripts', 'report-cwd.js')], {
       cwd: projectDir,
-      env: { ...process.env, HOME: root, USERPROFILE: root, CLAUDE_CONFIG_DIR: projectDir, CLAUDE_MEM_DATA_DIR: dataDirSetting },
+      // HOME/USERPROFILE point at the temp root, which hides the usual
+      // ~/.bun install (Windows CI has Bun only there), so name this Bun.
+      env: {
+        ...process.env, HOME: root, USERPROFILE: root, BUN_PATH: process.execPath,
+        CLAUDE_CONFIG_DIR: projectDir, CLAUDE_MEM_DATA_DIR: dataDirSetting,
+      },
       input: '{"dummy": true}',
       encoding: 'utf-8',
       windowsHide: true,
