@@ -4,7 +4,7 @@ import { SessionSearch } from '../../src/services/sqlite/SessionSearch.js';
 import { SearchManager } from '../../src/services/worker/SearchManager.js';
 import { FormattingService } from '../../src/services/worker/FormattingService.js';
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
-import { formatMcpPayload } from '../../src/servers/mcp-text-format.js';
+import { formatMcpPayload, formatWorkerMcpResponse } from '../../src/servers/mcp-text-format.js';
 
 let store: SessionStore;
 let search: SessionSearch;
@@ -117,6 +117,29 @@ describe('raw-tool search is an explicit deeper tier', () => {
     expect(Buffer.byteLength(formatted)).toBeLessThanOrEqual(32 * 1024);
     expect(formatted).toContain('#T' + rawId);
     expect(formatted).toContain('get_tool_uses');
+  });
+
+  it('keeps raw evidence in the default MCP text path after a long matching summary', async () => {
+    store.storeSummary('memory', 'shop-api', {request: query + ' 摘要🧪'.repeat(10_000), investigated:'', learned:'', completed:'', next_steps:'', notes:null});
+    const result = await manager.search({...args, format:undefined});
+    expect(result.toolUses).toHaveLength(1);
+    const formatted = formatWorkerMcpResponse('search', result).content[0].text;
+    expect(formatted).toContain('#S');
+    expect(formatted).toContain('#T' + rawId);
+    expect(formatted).toContain('pool size 10; increase to 30');
+    expect(formatted).toContain('get_tool_uses');
+    expect(formatted.match(/Raw tool evidence/g)).toHaveLength(1);
+    expect(Buffer.byteLength(formatted)).toBeLessThanOrEqual(32 * 1024);
+    expect(formatted.isWellFormed()).toBe(true);
+  });
+
+  it('keeps the explicit raw status visible after a long ordinary text result', async () => {
+    store.storeSummary('memory', 'shop-api', {request: query + ' summary'.repeat(10_000), investigated:'', learned:'', completed:'', next_steps:'', notes:null});
+    await search.configureToolUseIndex(false);
+    const result = await manager.search({...args, format:undefined});
+    const formatted = formatWorkerMcpResponse('search', result).content[0].text;
+    expect(formatted).toContain('Raw tool search: disabled.');
+    expect(Buffer.byteLength(formatted)).toBeLessThanOrEqual(32 * 1024);
   });
 
   it('reports deep-query errors without losing successful ordinary memory results', async () => {

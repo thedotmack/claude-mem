@@ -1,4 +1,5 @@
 import type { Database } from 'bun:sqlite';
+import { randomUUID } from 'node:crypto';
 import { checkAndRaiseSchemaWriterStampInTransaction, LATEST_SCHEMA_VERSION } from './connection.js';
 import { buildFTSMatchQuery, buildSubstringClause, substringTerms, UNSEGMENTED_SCRIPT } from './search-query.js';
 import { projectScopeSql, scopedProjects } from './project-read-keys.js';
@@ -127,6 +128,51 @@ export async function configureToolUseIndexAsync(db: Database, enabled: boolean,
   return 'building'; // committed cursor and guarded triggers survive restart
 }
 
+/** Keep match text ahead of surrounding context within the shared snippet budget. */
+function matchingSnippet(columns: string[], terms: string[], markers?: [string, string]): string {
+  const matches = new Map<string, { before: string[]; hit: string[]; after: string[] }>();
+  // SQLite LIKE folds ASCII only. Keep offsets aligned with the original body.
+  const fold = (text: string) => text.replace(/[A-Z]/g, char => char.toLowerCase());
+  const add = (text: string, start: number, length: number) => {
+    const hit = text.slice(start, start + length);
+    const key = fold(hit);
+    // Share 480 code points across distinct matches, with room for context.
+    if (matches.has(key) || matches.size >= 10) return;
+    matches.set(key, { before: Array.from(text.slice(0, start)).slice(-60), hit: Array.from(hit),
+      after: Array.from(text.slice(start + length)).slice(0, 60) });
+  };
+  for (const column of columns) {
+    if (markers) {
+      // FTS supplies the actual matched spans, including unicode61 case/accent
+      // folding and phrase punctuation. Do not try to retokenize them in JS.
+      const [open, close] = markers;
+      const chunks = column.split(open);
+      let text = chunks[0];
+      const spans: Array<[number, number]> = [];
+      for (const chunk of chunks.slice(1)) {
+        const end = chunk.indexOf(close);
+        spans.push([text.length, end]);
+        text += chunk.slice(0, end) + chunk.slice(end + close.length);
+      }
+      for (const [start, length] of spans) add(text, start, length);
+    } else {
+      const folded = fold(column);
+      for (const term of terms) {
+        const start = folded.indexOf(fold(term));
+        if (start !== -1) add(column, start, term.length);
+      }
+    }
+  }
+  const separator = ' … ';
+  const budget = Math.floor((480 - separator.length * (matches.size - 1)) / Math.max(1, matches.size));
+  return [...matches.values()].map(({before, hit, after}) => {
+    if (hit.length > budget) return hit.slice(0, budget - 1).join('') + '…';
+    const context = budget - hit.length;
+    const leading = Math.min(before.length, Math.floor(context / 2));
+    return [...before.slice(before.length - leading), ...hit, ...after.slice(0, context - leading)].join('');
+  }).join(separator);
+}
+
 /** Only already-stored, privacy-filtered bodies are indexed. No raw bodies leave this query. */
 export function searchToolUses(db: Database, query: string, options: SearchOptions = {}): DeepSearchResult {
   const status = toolUseIndexStatus(db);
@@ -157,20 +203,22 @@ export function searchToolUses(db: Database, query: string, options: SearchOptio
   const order = options.orderBy === 'date_asc' ? 't.created_at_epoch ASC, t.id ASC'
     : options.orderBy === 'date_desc' || cjk ? 't.created_at_epoch DESC, t.id DESC'
     : 'tool_uses_fts.rank, t.created_at_epoch DESC, t.id DESC';
-  const term = substringTerms(query)[0] ?? query;
-  // Substring snippets are centered around the first term in either column.
-  // SQLite slices them before crossing the worker boundary, including on a 64 KiB field.
-  const excerpt = cjk ? `
-    COALESCE(substr(t.tool_input, max(1, instr(lower(t.tool_input), lower(?)) - 60), 200), '')
-    || ' … ' || COALESCE(substr(t.tool_response, max(1, instr(lower(t.tool_response), lower(?)) - 60), 200), '')`
-    : "snippet(tool_uses_fts, -1, '', '', ' … ', 24)";
+  // Random delimiters cannot be confused with ordinary stored text. Bind them
+  // so the prepared query remains reusable. Only bounded snippets leave the reader.
+  const nonce = randomUUID();
+  const markers: [string, string] = [`\u0001${nonce}\u0002`, `\u0003${nonce}\u0004`];
+  const excerpt = cjk ? "COALESCE(t.tool_input, '') AS input_excerpt, COALESCE(t.tool_response, '') AS response_excerpt"
+    : "snippet(tool_uses_fts, 0, ?, ?, ' … ', 24) AS input_excerpt, snippet(tool_uses_fts, 1, ?, ?, ' … ', 24) AS response_excerpt";
   const rows = db.query(`SELECT t.id, t.tool_use_id, t.tool_name, t.project,
-    t.content_session_id, t.platform_source, t.created_at_epoch, ${excerpt} AS snippet
+    t.content_session_id, t.platform_source, t.created_at_epoch, ${excerpt}
     FROM tool_uses t ${cjk ? '' : 'JOIN tool_uses_fts ON tool_uses_fts.rowid = t.id'}
     WHERE ${[...conditions, match.clause].join(' AND ')} ORDER BY ${order} LIMIT ?
-  `).all(...(cjk ? [term, term] : []), ...params, ...match.params, limit + 1) as ToolUseHit[];
-  const toolUses = rows.slice(0, limit).map(row => ({ ...row,
-    snippet: Array.from(row.snippet).slice(0, 480).join(''),
+  `).all(...(cjk ? [] : [...markers, ...markers]), ...params, ...match.params, limit + 1) as Array<
+    Omit<ToolUseHit, 'snippet'> & { input_excerpt: string | null; response_excerpt: string | null }
+  >;
+  const terms = substringTerms(query);
+  const toolUses = rows.slice(0, limit).map(({input_excerpt, response_excerpt, ...row}) => ({ ...row,
+    snippet: matchingSnippet([input_excerpt ?? '', response_excerpt ?? ''], terms, cjk ? undefined : markers),
   }));
   return { deep: { status: 'ok', count: toolUses.length, hasMore: rows.length > limit }, toolUses };
 }

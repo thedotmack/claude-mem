@@ -154,6 +154,37 @@ describe('optional raw-tool content index (#4060)', () => {
     expect(h.find('x'.repeat(4097)).deep.status).toBe('not_applicable');
     h.write('long', 'longword'.repeat(400) + ' needle');
     expect(h.find('needle').toolUses[0].snippet.length).toBeLessThanOrEqual(480);
+    expect(h.find('needle').toolUses[0].snippet).toContain('needle');
+  });
+
+  it('keeps FTS matches from both columns, including tokenizer-normalized words', () => {
+    const h = fixture(); h.enable();
+    h.write('accent', 'longword'.repeat(400) + ' Café needle', {toolInput: 'WORKER'});
+    const hit = h.find('worker cafe needle').toolUses[0];
+    expect(hit.snippet).toContain('WORKER');
+    expect(hit.snippet).toContain('Café');
+    expect(hit.snippet).toContain('needle');
+    expect(Array.from(hit.snippet).length).toBeLessThanOrEqual(480);
+    expect(hit).not.toHaveProperty('tool_input');
+    expect(hit).not.toHaveProperty('tool_response');
+  });
+
+  it('centers mixed-script excerpts on the terms present in each body', () => {
+    const h = fixture(); h.enable();
+    for (const reversed of [false, true]) {
+      const bodies = ['prefix '.repeat(100) + 'worker', '🧪'.repeat(700) + '数据库连接池已恢复'];
+      if (reversed) bodies.reverse();
+      h.write('mixed-' + reversed, bodies[1], {toolInput: bodies[0]});
+    }
+    h.write('same-column', 'worker ' + '🧪'.repeat(700) + '数据库连接池已恢复', {toolInput:null});
+    const hits = h.find('worker 连接池').toolUses;
+    expect(hits).toHaveLength(3);
+    for (const hit of hits) {
+      expect(hit.snippet).toContain('worker');
+      expect(hit.snippet).toContain('连接池');
+      expect(Array.from(hit.snippet).length).toBeLessThanOrEqual(480);
+      expect(hit.snippet.isWellFormed()).toBe(true);
+    }
   });
 
   it('keeps orphan evidence indexed while retention removes only live-linked old rows', () => {

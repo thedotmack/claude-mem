@@ -216,6 +216,14 @@ export function formatWorkerMcpResponse(purpose: McpTextPurpose, payload: unknow
       const parsed = parseStored(text);
       return typeof parsed === 'string' ? parsed : formatMcpPayload(purpose, parsed).content[0].text;
     });
+    if (purpose === 'search' && data.deep && Array.isArray(data.toolUses)) {
+      const rawText = formatDeepSearch(data as unknown as DeepSearchResult);
+      // SearchManager appends this block after ordinary memory text. Budget the
+      // latter separately so long summaries cannot consume the raw tier's space.
+      const ordinary = (readable.at(-1) === rawText ? readable.slice(0, -1) : readable).join('\n\n');
+      const budget = MAX_TEXT_BYTES - Buffer.byteLength(rawText, 'utf8') - 2;
+      return mcpTextResult(`${bounded(ordinary, budget)}\n\n${rawText}`, data.isError === true);
+    }
     if (readable.length) return mcpTextResult(readable.join('\n\n'), data.isError === true, purpose === 'observations' ? MAX_OBSERVATION_TEXT_BYTES : MAX_TEXT_BYTES);
     logger.debug('SYSTEM', 'Omitted unsupported MCP response content', { purpose });
     return mcpTextResult('The tool returned no readable text.', data.isError === true);
