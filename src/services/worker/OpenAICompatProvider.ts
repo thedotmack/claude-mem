@@ -226,10 +226,18 @@ function structuredErrorMarkers(envelope: ErrorEnvelope | null): string[] {
  * The status to classify by. An error envelope inside a 2xx response often
  * carries the real HTTP status as a numeric `error.code` (a 429 or a 503
  * relayed by a gateway), and that is the one that says whether to retry.
+ * Some gateways use a textual code ("bad_gateway") and name the status only in
+ * the message, as "(HTTP 503)" (#5185). That is read when the code is not
+ * numeric, but only as a 429 or a 5xx: a combo gateway's message can also name
+ * an upstream's 401 or 413, which is not this request's failure.
  */
 function effectiveStatus(status: number | undefined, envelope: ErrorEnvelope | null): number | undefined {
   const code = envelope?.code;
-  const numeric = typeof code === 'number' ? code : typeof code === 'string' && /^\d{3}$/.test(code) ? Number(code) : NaN;
+  const message = typeof envelope?.message === 'string' ? envelope.message : '';
+  const fromMessage = Number(/\(HTTP (\d{3})\)/.exec(message)?.[1] ?? NaN);
+  const numeric = typeof code === 'number' ? code
+    : typeof code === 'string' && /^\d{3}$/.test(code) ? Number(code)
+    : fromMessage === 429 || fromMessage >= 500 ? fromMessage : NaN;
   if (status !== undefined && status >= 200 && status < 300 && numeric >= 400 && numeric < 600) {
     return numeric;
   }

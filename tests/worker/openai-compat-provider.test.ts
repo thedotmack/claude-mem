@@ -701,6 +701,21 @@ describe('200 error envelopes are classified by what they report', () => {
     expect(classify({ code: 401, message: 'bad key' }).kind).toBe('auth_invalid');
   });
 
+  // #5185: OmniRoute answers a failed stream with a textual code and names the
+  // status only in the message. That 503 must pause and fall back, not end the session.
+  it('reads an (HTTP NNN) status from the message when error.code is not numeric', () => {
+    expect(classify({
+      code: 'bad_gateway',
+      type: 'server_error',
+      message: 'cfp/some-model: provider — [503]: Service temporarily unavailable (HTTP 503)',
+    }).kind).toBe('transient');
+    expect(classify({ code: 'rate_limited_upstream', message: 'slow down (HTTP 429)' }).kind).toBe('rate_limit');
+    expect(classify({ code: 'bad_gateway', message: 'no status here' }).kind).toBe('unrecoverable');
+    expect(classify({ code: 'weird', message: 'odd (HTTP 200)' }).kind).toBe('unrecoverable');
+    // An upstream's auth failure named in a combo message is not this request's status.
+    expect(classify({ code: 'bad_gateway', message: 'unc/model: auth (HTTP 401)' }).kind).toBe('unrecoverable');
+  });
+
   // Never pay twice (Phase 1): the model ran and was billed; only its output
   // was lost, so a resend would pay for the same work again. It used to be
   // classified transient and retried.
