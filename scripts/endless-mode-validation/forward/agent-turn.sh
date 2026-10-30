@@ -42,7 +42,7 @@ credentials() {
   if [[ $EMV_MODEL_PROFILE == openrouter-deepseek-flash ]]; then
     emv_read_openrouter_key || exit; export ANTHROPIC_AUTH_TOKEN=$EMV_OPENROUTER_KEY ANTHROPIC_API_KEY=''
   else
-    emv_read_claude_token || exit; export CLAUDE_CODE_OAUTH_TOKEN=$EMV_CLAUDE_TOKEN
+    emv_read_claude_token || exit; [[ -n $EMV_CLAUDE_TOKEN ]] && export CLAUDE_CODE_OAUTH_TOKEN=$EMV_CLAUDE_TOKEN
   fi
 }
 run_claude() {

@@ -8,7 +8,7 @@
 set -e
 source ${0:A:h}/lib/env.sh
 emv_use_stack $1
-mkdir -p $EMV_STACK/{data,proj,logs/turns,bin,tee-anthropic,tee-codex} $HOME/.claude-mem $XDG_CONFIG_HOME $XDG_DATA_HOME $XDG_CACHE_HOME $XDG_STATE_HOME $CLAUDE_CONFIG_DIR
+mkdir -p $EMV_STACK/{data,proj,logs/turns,bin,tee-anthropic,tee-codex,tee-observer} $HOME/.claude-mem $XDG_CONFIG_HOME $XDG_DATA_HOME $XDG_CACHE_HOME $XDG_STATE_HOME $CLAUDE_CONFIG_DIR
 
 row_format=$([[ $1 == observation ]] && echo observation || echo timeline)
 if [[ $EMV_MODEL_PROFILE == openrouter-deepseek-flash ]]; then
@@ -17,7 +17,7 @@ if [[ $EMV_MODEL_PROFILE == openrouter-deepseek-flash ]]; then
   observer_settings=$(jq -n --arg m "$EMV_OPENROUTER_MODEL" '{CLAUDE_MEM_PROVIDER: "openrouter", CLAUDE_MEM_OPENROUTER_MODEL: $m,
     CLAUDE_MEM_OPENROUTER_BASE_URL: "", CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: "off"}')
 else
-  observer_settings='{"CLAUDE_MEM_PROVIDER": "claude"}'
+  observer_settings=$(jq -n --arg m "${EMV_OBSERVER_MODEL:-}" '{CLAUDE_MEM_PROVIDER: "claude"} + (if $m == "" then {} else {CLAUDE_MEM_MODEL: $m} end)')
 fi
 jq -n --arg wp $EMV_WORKER_PORT --arg gp $EMV_GATEWAY_PORT --arg fmt $row_format --arg tw "$CLAUDE_MEM_DATA_DIR/transcript-watch.json" \
   --argjson observer "$observer_settings" '{
@@ -41,6 +41,15 @@ jq -n --arg wp $EMV_WORKER_PORT --arg gp $EMV_GATEWAY_PORT --arg fmt $row_format
 } + $observer' > $CLAUDE_MEM_DATA_DIR/settings.json
 # Any homedir()-relative claude-mem setting resolves into the sandbox HOME: give it the same settings.
 cp $CLAUDE_MEM_DATA_DIR/settings.json $HOME/.claude-mem/settings.json
+# EMV_OBSERVER_TEE=1: claude-mem re-injects ANTHROPIC_BASE_URL (and ANTHROPIC_AUTH_TOKEN) from its .env into the
+# observer's spawn. With a base URL it never injects the login itself, so the token is a placeholder the observer tee
+# swaps for the real one (start-stack.sh); nothing secret is written.
+if [[ $EMV_OBSERVER_TEE == 1 && $EMV_MODEL_PROFILE == anthropic && $1 != none ]]; then
+  for d in $CLAUDE_MEM_DATA_DIR $HOME/.claude-mem; do
+    print -r -- "ANTHROPIC_BASE_URL=http://127.0.0.1:$EMV_TEE_OBSERVER_PORT" > $d/.env
+    [[ $EMV_HOST_AUTH == 1 ]] || print -r -- "ANTHROPIC_AUTH_TOKEN=emv-tee-injects-claude-token" >> $d/.env
+  done
+fi
 # Optional My Rules for the durable header (EMV_MY_RULES=<file>); our reported runs had none.
 [[ -n $EMV_MY_RULES ]] && cp $EMV_MY_RULES $CLAUDE_MEM_DATA_DIR/MY-RULES.md
 

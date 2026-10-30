@@ -11,6 +11,9 @@
 # again before every turn (agent-turn.sh), on a 401 (tee-proxy.ts --refresh-claude-token) and for the observers
 # (token-watch.sh).
 emv_read_claude_token() {
+  # EMV_HOST_AUTH=1: the host adds the credentials itself (e.g. a cloud sandbox's egress proxy), so no token is read
+  # and none is passed; the agents and observers start with none.
+  if [[ $EMV_HOST_AUTH == 1 ]]; then typeset -g EMV_CLAUDE_TOKEN=''; return 0; fi
   if [[ -n $EMV_CLAUDE_OAUTH_TOKEN ]]; then typeset -g EMV_CLAUDE_TOKEN=$EMV_CLAUDE_OAUTH_TOKEN; return 0; fi
   local json=''
   if [[ $(uname) == Darwin ]]; then

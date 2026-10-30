@@ -6,7 +6,7 @@ source $EMV_FORWARD_DIR/lib/claude-token.sh
 emv_use_stack $1 || exit
 emv_check_profile || exit
 L=$EMV_STACK/logs; pids=$EMV_STACK/pids; : >> $pids
-for p in $EMV_WORKER_PORT $EMV_GATEWAY_PORT $EMV_TEE_ANTHROPIC_PORT $EMV_TEE_CODEX_PORT; do
+for p in $EMV_WORKER_PORT $EMV_GATEWAY_PORT $EMV_TEE_ANTHROPIC_PORT $EMV_TEE_CODEX_PORT $EMV_TEE_OBSERVER_PORT; do
   lsof -nP -iTCP:$p -sTCP:LISTEN >/dev/null 2>&1 && { echo "port $p is in use; set EMV_PORT_BASE to a free range" >&2; exit 2; }
 done
 
@@ -18,11 +18,18 @@ if [[ $EMV_AGENT == codex ]]; then
   print $! >> $pids
 fi
 
+observer_tee=0; [[ $EMV_OBSERVER_TEE == 1 && $EMV_MODEL_PROFILE == anthropic && $1 != none ]] && observer_tee=1
+if (( observer_tee )); then
+  inject=(); [[ $EMV_HOST_AUTH == 1 ]] || inject=(--inject-claude-token)
+  nohup $EMV_BUN $EMV_FORWARD_DIR/tee-proxy.ts $EMV_TEE_OBSERVER_PORT $(emv_anthropic_upstream) $EMV_STACK/tee-observer $inject > $L/tee-observer.log 2>&1 &
+  print $! >> $pids
+fi
+
 if [[ $1 != none ]]; then
   # The observer's credential goes into the worker's environment only.
   (
     if [[ $EMV_MODEL_PROFILE == openrouter-deepseek-flash ]]; then export CLAUDE_MEM_OPENROUTER_API_KEY=$EMV_OPENROUTER_KEY
-    else emv_read_claude_token || exit; export CLAUDE_CODE_OAUTH_TOKEN=$EMV_CLAUDE_TOKEN; fi
+    else emv_read_claude_token || exit; [[ -n $EMV_CLAUDE_TOKEN ]] && export CLAUDE_CODE_OAUTH_TOKEN=$EMV_CLAUDE_TOKEN; fi
     cd $CLAUDE_MEM_DATA_DIR && nohup $EMV_BUN $EMV_REPO_ROOT/src/services/worker-service.ts --daemon > $L/worker.log 2>&1 &
     print $! >> $pids
   )
@@ -33,6 +40,7 @@ fi
 # Wait for everything to listen (60 x 0.5 s: the worker's first start migrates a new database, measured at a few seconds).
 wanted=($EMV_TEE_ANTHROPIC_PORT); [[ $EMV_AGENT == codex ]] && wanted+=($EMV_TEE_CODEX_PORT)
 [[ $1 != none ]] && wanted+=($EMV_WORKER_PORT $EMV_GATEWAY_PORT)
+(( observer_tee )) && wanted+=($EMV_TEE_OBSERVER_PORT)
 for i in {1..60}; do
   up=0; for p in $wanted; do lsof -nP -iTCP:$p -sTCP:LISTEN >/dev/null 2>&1 && (( up++ )); done
   (( up == ${#wanted} )) && break; sleep 0.5

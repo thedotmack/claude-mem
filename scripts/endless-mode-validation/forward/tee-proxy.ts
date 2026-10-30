@@ -8,11 +8,20 @@
 // Each retry is logged to <outDir>/retries.tsv (time, request number, first status, retry status); the token itself
 // is never written anywhere. Use it only on the Anthropic tee of the `anthropic` model profile.
 //
-// Usage: bun tee-proxy.ts <port> <upstream> <outDir> [--refresh-claude-token]
+// --inject-claude-token: a request whose bearer token is the placeholder TEE_INJECT_PLACEHOLDER goes upstream with
+// Claude Code's current access token instead (same read-only lookup, read per request, never written) and the OAuth
+// beta header. The task benchmark sends claude-mem's observer through a tee this way: the observer only runs through a
+// custom base URL with a token in its .env, and the placeholder keeps the real token off disk.
+//
+// Usage: bun tee-proxy.ts <port> <upstream> <outDir> [--refresh-claude-token] [--inject-claude-token]
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 export type AccessTokenReader = () => string | null;
+
+/** The bearer token a sender uses to ask the tee for Claude Code's real token (not a secret). */
+export const TEE_INJECT_PLACEHOLDER = 'emv-tee-injects-claude-token';
+const OAUTH_BETA = 'oauth-2025-04-20';
 
 /** Claude Code's claude.ai access token from the contributor's own login, read only. */
 export function readClaudeAccessToken(env: NodeJS.ProcessEnv = process.env): string | null {
@@ -30,8 +39,8 @@ export function readClaudeAccessToken(env: NodeJS.ProcessEnv = process.env): str
   catch { return null; }
 }
 
-export function startTee(options: { port: number; upstream: string; outDir: string; refreshToken?: AccessTokenReader }) {
-  const { upstream, outDir, refreshToken } = options;
+export function startTee(options: { port: number; upstream: string; outDir: string; refreshToken?: AccessTokenReader; injectToken?: AccessTokenReader }) {
+  const { upstream, outDir, refreshToken, injectToken } = options;
   mkdirSync(outDir, { recursive: true });
   let counter = 0;
   return Bun.serve({
@@ -52,6 +61,14 @@ export function startTee(options: { port: number; upstream: string; outDir: stri
       headers.delete('host');
       headers.delete('content-length');
       headers.set('accept-encoding', 'identity');
+      if (injectToken && headers.get('authorization') === `Bearer ${TEE_INJECT_PLACEHOLDER}`) {
+        const token = injectToken();
+        if (token) {
+          headers.set('authorization', `Bearer ${token}`);
+          const betas = (headers.get('anthropic-beta') ?? '').split(',').map(b => b.trim()).filter(Boolean);
+          if (!betas.includes(OAUTH_BETA)) headers.set('anthropic-beta', [...betas, OAUTH_BETA].join(','));
+        }
+      }
       writeFileSync(join(outDir, `${n}-req.json`), JSON.stringify({
         time: new Date().toISOString(), method: request.method, path: url.pathname + url.search,
         headerNames: [...request.headers.keys()], bodyBytes: body.length,
@@ -101,8 +118,10 @@ export function startTee(options: { port: number; upstream: string; outDir: stri
 if (import.meta.main) {
   const args = process.argv.slice(2);
   const refresh = args.includes('--refresh-claude-token');
+  const inject = args.includes('--inject-claude-token');
   const [portText, upstream, outDir] = args.filter(arg => !arg.startsWith('--'));
   if (!portText || !upstream || !outDir) throw new Error('usage: bun tee-proxy.ts <port> <upstream> <outDir> [--refresh-claude-token]');
-  startTee({ port: Number(portText), upstream, outDir, refreshToken: refresh ? () => readClaudeAccessToken() : undefined });
+  startTee({ port: Number(portText), upstream, outDir, refreshToken: refresh ? () => readClaudeAccessToken() : undefined,
+    injectToken: inject ? () => readClaudeAccessToken() : undefined });
   console.log(`tee on 127.0.0.1:${portText} -> ${upstream}, saving to ${outDir}${refresh ? ' (re-reads the claude.ai token on 401)' : ''}`);
 }
