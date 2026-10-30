@@ -164,6 +164,30 @@ describe('Context Injection', () => {
   });
 
   describe('replace existing context section', () => {
+    it.each([
+      '- ~~~sh\n  npm test\n  ~~~\n\n',
+      '- ```sh\n  npm test\n  ```\n\n',
+      '1) ~~~sh\n   npm test\n   ~~~\n\n',
+      '1. ```sh\n   npm test\n   ```\n\n',
+      '10. ~~~sh\n    npm test\n      ~~~\n\n',
+      '- - ~~~sh\n    npm test\n    ~~~\n\n',
+      '- parent\n  - ~~~sh\n    npm test\n    ~~~\n\n',
+      '- ~~~sh\n  unfinished command\n\n',
+      '-     ~~~sh\n      indented code\n  ~~~\n\n',
+      '-\t~~~sh\n\tnpm test\n\t~~~\n\n',
+    ])('preserves list-owned code and refreshes one managed block twice: %j', (before) => {
+      const filePath = join(tempDir, 'CLAUDE.md');
+      const after = '\n\nKeep this footer.\n';
+      writeFileSync(filePath, `${before}${CONTEXT_TAG_OPEN}\nold memory\n${CONTEXT_TAG_CLOSE}${after}`);
+
+      injectContextIntoMarkdownFile(filePath, 'current memory');
+      injectContextIntoMarkdownFile(filePath, 'current memory');
+
+      expect(readFileSync(filePath, 'utf-8')).toBe(
+        `${before}${CONTEXT_TAG_OPEN}\ncurrent memory\n${CONTEXT_TAG_CLOSE}${after}`,
+      );
+    });
+
     it('replaces managed memory even when its content has an unclosed code fence', () => {
       const filePath = join(tempDir, 'CLAUDE.md');
       injectContextIntoMarkdownFile(filePath, '```ts\nold partial code');
