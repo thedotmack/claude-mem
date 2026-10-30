@@ -311,6 +311,23 @@ describe('redactSensitive generic built-in patterns', () => {
     expect(result.redacted).not.toContain(secret);
   });
 
+  it.each([
+    ['in a curl header', 'curl -H "Authorization: Basic dXNlcjpodW50ZXIy" https://x', 'dXNlcjpodW50ZXIy'],
+    ['lowercase header', 'proxy-authorization: basic YWxhZGRpbjpvcGVuc2VzYW1l',     'YWxhZGRpbjpvcGVuc2VzYW1l'],
+  ])('basic_auth redacts a %s', (_style, input, secret) => {
+    for (const text of [input, JSON.stringify({ stdout: input })]) {
+      const result = redactSensitive(text, cfg);
+      expect(result.counts.basic_auth).toBe(1);
+      expect(result.redacted).not.toContain(secret);
+    }
+  });
+
+  it('basic_auth leaves prose and short or numeric values alone', () => {
+    for (const text of ['Basic configuration is covered below', 'Authorization: Basic', 'Authorization: Basic 12345678']) {
+      expect(redactSensitive(text, cfg).redacted).toBe(text);
+    }
+  });
+
   it('does NOT redact numeric, short or non-secret lookalikes', () => {
     const inputs = [
       'password=12345678',        // purely numeric
@@ -429,6 +446,16 @@ describe('redactSensitive generic built-in patterns', () => {
     const result = redactJsonStrings({ headers: { Authorization: value } }, cfg) as { headers: { Authorization: string } };
     expect(result.headers.Authorization).toBe(expected);
     expect(redactSensitive(`Authorization: ${value}`, cfg).redacted).toBe(`Authorization: ${expected}`);
+  });
+
+  it('redacts the Basic credentials of an Authorization header object (structured events)', () => {
+    const event = { headers: { Authorization: 'Basic dXNlcjpodW50ZXIy', accept: 'application/json' } };
+    const result = redactJsonStrings(event, cfg) as typeof event;
+    expect(result.headers.Authorization).toBe("Basic <redacted type='basic_auth'/>");
+    expect(result.headers.accept).toBe('application/json');
+    const off = { ...cfg, disabledBuiltinPatterns: ['basic_auth'] };
+    expect(redactJsonStrings(event, off)).toEqual(event);
+    expect(redactJsonStrings(event, { enabled: true })).toEqual(event);
   });
 
   it('leaves non-secret or opted-out Authorization header values alone', () => {
