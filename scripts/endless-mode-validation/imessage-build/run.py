@@ -279,7 +279,7 @@ def stop_stack(arm, arm_dir):
 
 
 def builder_env(arm_dir, profile, key, registry, gh_repo, gh_token):
-    keep = ['PATH', 'LANG', 'TERM', 'TMPDIR', 'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'NODE_EXTRA_CA_CERTS',
+    keep = ['PATH', 'LANG', 'TERM', 'TMPDIR', 'SHELL', 'USER', 'LOGNAME', 'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'NODE_EXTRA_CA_CERTS',
             'SSL_CERT_FILE', 'NODE_OPTIONS']
     env = {k: os.environ[k] for k in keep if k in os.environ}
     home = arm_dir / 'home'

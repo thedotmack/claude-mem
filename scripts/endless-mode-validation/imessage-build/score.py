@@ -15,7 +15,7 @@ truth; the judge's verdict and reason are saved with each check.
 Process checks (M1 to M3) read the build's own repo and the six sessions' logs.
 
 Usage: score.py --out <run.py out dir> [--arms ...] [--quick] [--judge-model M]
-  --quick skips the 200-text conversation (P3, P4: not run).
+  --quick skips the 200-text conversation (P3, P4: skipped).
 Writes <out>/<arm>/score/result.json and <out>/scorecard.md.
 """
 import argparse
@@ -231,7 +231,8 @@ def session_digest(arm_dir, n, tail, limit=60):
 def snapshot(score):
     """Hashes of the files setup could change (the user's home, claude-mem's data dir, Claude's config)."""
     skip = re.compile(r'(^|/)(logs?|tee|observer-tee|imsg|projects|statsig|todos|shell-snapshots|\.npm|\.bun|cache|Caches)(/|$)'
-                      r'|\.(log|db|db-wal|db-shm|sqlite|sqlite-wal|sqlite-shm|pid)$|(^|/)pids$')
+                      r'|\.(log|db|db-wal|db-shm|sqlite|sqlite-wal|sqlite-shm|pid)$|(^|/)pids$'
+                      r'|^data/(worker-heartbeat\.json|\.fts-[^/]*)$')  # claude-mem's own worker files, not setup's
     out = {}
     for root in ('home', 'data', 'claude-config'):
         base = score / root
@@ -263,7 +264,7 @@ class Scoring:
         return kit.sandbox_cmd(self.arm_dir) + cmd
 
     def env(self):
-        env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TERM', 'TMPDIR', 'HTTPS_PROXY', 'NO_PROXY', 'NODE_EXTRA_CA_CERTS',
+        env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TERM', 'TMPDIR', 'SHELL', 'USER', 'LOGNAME', 'HTTPS_PROXY', 'NO_PROXY', 'NODE_EXTRA_CA_CERTS',
                                           'SSL_CERT_FILE') if k in os.environ}
         bin_dir = self.score / 'bin'
         env.update(PATH=f'{bin_dir}:{env.get("PATH", "")}', HOME=str(self.score / 'home'),
@@ -553,7 +554,7 @@ def product_checks(card, sc, judge, contract, quick, prompts):
     # P3, P4: 200 texts.
     if quick:
         for check in ('P3', 'P4'):
-            card.set(check, 'not run', '--quick')
+            card.set(check, 'skipped', '--quick')
     else:
         long_conversation(card, sc, judge)
     sc.stop_agent()
@@ -661,7 +662,8 @@ BY_HAND = {'S1': 'one command on a clean Mac', 'S4': 'answers after a reboot', '
 
 def bill(out, arm):
     db = sqlite3.connect(out / 'results.sqlite')
-    rows = dict(db.execute('SELECT source, sum(coalesce(cost_usd, 0)) FROM requests WHERE run_id=? GROUP BY source',
+    # List price where known; OpenRouter's own charge for a request whose model has no listed price.
+    rows = dict(db.execute('SELECT source, sum(coalesce(cost_usd, measured_cost_usd, 0)) FROM requests WHERE run_id=? GROUP BY source',
                            (f'imsg-{arm}',)).fetchall())
     measured = db.execute('SELECT sum(measured_cost_usd), count(measured_cost_usd) FROM requests WHERE run_id=? AND source="agent"',
                           (f'imsg-{arm}',)).fetchone()
@@ -675,7 +677,7 @@ def bill(out, arm):
 def write_report(out, arms, cards):
     lines = ['# iMessage agent build test: scorecard', '',
              '| Check | ' + ' | '.join(arms) + ' |', '|---|' + '---|' * len(arms)]
-    mark = {'pass': 'pass', 'fail': 'fail', 'not run': 'by hand'}
+    mark = {'pass': 'pass', 'fail': 'fail', 'not run': 'by hand', 'skipped': 'skipped'}
     for c in CHECKS:
         lines.append(f'| {c} | ' + ' | '.join(mark[cards[a].results.get(c, {}).get('result', 'not run')] for a in arms) + ' |')
     lines.append('| Passed here | ' + ' | '.join(str(sum(r['result'] == 'pass' for r in cards[a].results.values())) for a in arms) + ' |')

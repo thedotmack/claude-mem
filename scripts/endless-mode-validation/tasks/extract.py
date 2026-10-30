@@ -48,6 +48,8 @@ def price_of(model):
             doc = json.loads(path.read_text())
             return {'input': doc['input'], 'output': doc['output'], 'cache_read': doc.get('cache_read'),
                     'cache_write': doc.get('cache_write_5m')}
+        print(f'no listed price for {model!r}: its requests keep OpenRouter\'s own charge only (measured_cost_usd)')
+        return None
     raise SystemExit(f'no price for model {model!r}; add it to PRICES (or pass --openrouter-prices)')
 
 
@@ -151,7 +153,8 @@ def main():
             if write_5m is None:
                 write_5m = (usage.get('cache_creation_input_tokens') or 0) - write_1h
             output = output or 0
-            usd, long_prompt = cost(price_of(model), fresh, write_5m, write_1h, read, output)
+            price = price_of(model)
+            usd, long_prompt = cost(price, fresh, write_5m, write_1h, read, output) if price else (None, False)
             usd_opus, _ = cost(OPUS55, fresh, write_5m, write_1h, read, output, flat=True)
             db.execute('INSERT INTO requests (run_id, source, n, time, epoch, turn_no, status, model, input_tokens, '
                        'cache_write_5m, cache_write_1h, cache_read, output_tokens, prompt_tokens, long_prompt, cost_usd, '
