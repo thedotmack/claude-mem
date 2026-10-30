@@ -137,6 +137,10 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   { name: 'gitlab_token',    regex: /\bglpat-[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)*(?!\w)/g },
   { name: 'huggingface_token', regex: /\bhf_[A-Za-z0-9]{30,}\b/g },
   { name: 'npm_token',       regex: /\bnpm_[A-Za-z0-9]{36}\b/g },
+  // PyPI API tokens: `pypi-` + a base64url macaroon whose header always
+  // starts `AgE` (pypi.org and test.pypi.org alike), printed by `twine`,
+  // `uv publish` and `~/.pypirc` dumps. Real tokens run past 150 characters.
+  { name: 'pypi_token',      regex: /\bpypi-AgE[A-Za-z0-9_-]{50,}(?!\w)/g },
   // claude-mem's own credentials: server API keys (`cmem_` + 43 base64url
   // chars, server-bootstrap.ts createRawApiKey) and cmem.ai Pro memory keys.
   { name: 'claude_mem_key',  regex: /\bcmem_[A-Za-z0-9_-]{32,}|\bcm_pro_[A-Za-z0-9_-]{8,}/g },
