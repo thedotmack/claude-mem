@@ -540,6 +540,11 @@ export class ClaudeProvider {
         });
       };
 
+      // Whether the provider answered the current turn's request: set by its
+      // first assistant frame, cleared when the turn's result arrives. The
+      // quota guard reads it to tell a refusal from a served request that
+      // carries a rejected overage bucket (#5182).
+      let turnServed = false;
       for await (const message of queryResult) {
         // A stall already handed the claimed batch back to pending; a frame
         // processed now would be stored twice once the batch is re-sent (#4066).
@@ -577,7 +582,11 @@ export class ClaudeProvider {
               observed_billing: session.observedBilling,
             });
           }
-          const decision = shouldAbortForQuota(authMethod, globalRateLimitStore, Date.now(), observerProfile);
+          // A rejection on an overage bucket that arrives with a served
+          // response is not a refusal of this request (#5182).
+          const decision = shouldAbortForQuota(authMethod, globalRateLimitStore, Date.now(), observerProfile, {
+            requestServed: turnServed,
+          });
           if (decision.abort) {
             logger.warn('SDK', `Aborting session for quota guard: ${decision.reason}`, {
               sessionDbId: session.sessionDbId,
@@ -627,6 +636,7 @@ export class ClaudeProvider {
         }
 
         if (message.type === 'assistant') {
+          turnServed = true;
           const content = message.message.content;
           // A turn can arrive as several assistant messages, and a frame that
           // holds only thinking or tool_use blocks carries no text at all.
@@ -745,6 +755,7 @@ export class ClaudeProvider {
         }
 
         if (message.type === 'result') {
+          turnServed = false;
           // The result message carries the turn's finalized usage (per-turn,
           // not cumulative — verified empirically against the SDK) plus a
           // CUMULATIVE total_cost_usd; per-compression cost is the delta
