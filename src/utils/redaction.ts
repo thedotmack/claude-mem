@@ -65,7 +65,8 @@ function keyedLookbehind(key: string): string {
 // - an env/shell or query assignment with no spaces around `=`, at the start
 //   or after whitespace, `?` or `&` (`api_key=…`, `export secret=…`,
 //   `?token=…`), whose value is not a call (`token=getAuthToken()`);
-// - a CLI flag (`--token=…`, `--api-key …`);
+// - a CLI flag (`--token=…`, `--api-key …`), prefixed ones too
+//   (`--auth-token …`, `--client-secret=…`, `--hf-token …`);
 // - a yaml line (`token: …` at a line start, raw or JSON-escaped `\n`) whose
 //   value runs to the end of the line, which a typed field (`token: T;`) doesn't.
 // The worker scans tool output as `JSON.stringify(response)`, so a JSON
@@ -81,7 +82,7 @@ const GENERIC_TOKEN_REGEX = new RegExp([
   `${keyedLookbehind(String.raw`\b\w*_${BARE_TOKEN_KEY}`)}${GENERIC_VALUE}`,
   `(?<=${ESCAPED_QUOTE}${BARE_TOKEN_KEY}${ESCAPED_QUOTE}${BOUNDED_SPACE}:${BOUNDED_SPACE}${ESCAPED_QUOTE})${GENERIC_VALUE}`,
   `(?<=${ASSIGNMENT_START}${BARE_TOKEN_KEY}=${OPTIONAL_QUOTE})${GENERIC_VALUE}(?!\\(|${GENERIC_VALUE_CLASS})`,
-  String.raw`(?<=--(?:token|secret|api[-_]key)(?:=|[ \t]{1,8})${OPTIONAL_QUOTE})${GENERIC_VALUE}`,
+  String.raw`(?<=--(?:[a-z0-9]+[-_])*(?:token|secret|api[-_]key)(?:=|[ \t]{1,8})${OPTIONAL_QUOTE})${GENERIC_VALUE}`,
   `(?<=${LINE_START}${BARE_TOKEN_KEY}:[ \\t]{1,8}${OPTIONAL_QUOTE})${GENERIC_VALUE}(?=${LINE_END})`,
 ].join('|'), 'gi');
 
