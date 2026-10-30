@@ -20,11 +20,12 @@ const STATUS: Record<SetupScanPhase, string> = {
 }
 
 /** Step 1: each detected agent ticks in and its prompt count climbs while the worker reads the last 30 days. */
-export function ScanScreen({ scan, onImproveProductChange, onConfirmUpload, consentError, preferenceError, onRetry, retrying, retryError }: {
+export function ScanScreen({ scan, onImproveProductChange, onConfirmUpload, consentError, consentSending, preferenceError, onRetry, retrying, retryError }: {
   scan: SetupScanView
   onImproveProductChange: (improveProduct: boolean) => void
   onConfirmUpload: (upload: boolean, agents?: string[]) => void
   consentError?: string | null
+  consentSending?: boolean
   preferenceError: string | null
   onRetry: () => void
   retrying: boolean
@@ -82,8 +83,9 @@ export function ScanScreen({ scan, onImproveProductChange, onConfirmUpload, cons
                 </li>
               ))}
             </ul>
-            <button type="button" disabled={chosen.length === 0} onClick={() => onConfirmUpload(true, chosen)}>Upload my prompts to cmem.ai</button>
-            <button type="button" className="secondary" onClick={() => onConfirmUpload(false)}>Keep everything local</button>
+            <button type="button" disabled={chosen.length === 0 || consentSending} onClick={() => onConfirmUpload(true, chosen)}>Upload my prompts to cmem.ai</button>
+            <button type="button" className="secondary" disabled={consentSending} onClick={() => onConfirmUpload(false)}>Keep everything local</button>
+            {consentSending && <p className="scan-status" role="status">Sending your choice…</p>}
             {consentError && <p className="scan-error" role="alert">{consentError}</p>}
           </div>
         )}

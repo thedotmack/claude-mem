@@ -74,16 +74,18 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
 
   const [consentError, setConsentError] = useState<string | null>(null)
   const consentPending = useRef(false)
+  const [consentSending, setConsentSending] = useState(false)
   const confirmUpload = async (upload: boolean, agents?: string[]) => {
     if (!source || consentPending.current) return
     consentPending.current = true
     setConsentError(null)
+    setConsentSending(true)
     try {
       // The sharing choice travels with the consent, so a queued preference request cannot lose a race with the upload.
       await source.confirmUpload(upload, agents, improveProduct ?? data.scan.improveProduct)
     } catch (error) {
-      setConsentError(`Could not send your choice, nothing was uploaded: ${error instanceof Error ? error.message : String(error)}. Try again.`)
-    } finally { consentPending.current = false }
+      setConsentError(`Could not confirm your choice: ${error instanceof Error ? error.message : String(error)}. If you chose to upload, your prompts may already have been uploaded; reload this page to check.`)
+    } finally { consentPending.current = false; setConsentSending(false) }
   }
 
   const [retrying, setRetrying] = useState(false)
@@ -173,7 +175,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
   const installerFailed = data.installer?.stage === 'failed'
 
   const screens: Record<SetupStep, () => ReactNode> = {
-    scan: () => <ScanScreen scan={{ ...data.scan, improveProduct: improveProduct ?? data.scan.improveProduct }} onImproveProductChange={(checked) => void changeImproveProduct(checked)} onConfirmUpload={(upload, agents) => void confirmUpload(upload, agents)} consentError={consentError} preferenceError={preferenceError} onRetry={() => void retryScan()} retrying={retrying} retryError={retryError} />,
+    scan: () => <ScanScreen scan={{ ...data.scan, improveProduct: improveProduct ?? data.scan.improveProduct }} onImproveProductChange={(checked) => void changeImproveProduct(checked)} onConfirmUpload={(upload, agents) => void confirmUpload(upload, agents)} consentError={consentError} consentSending={consentSending} preferenceError={preferenceError} onRetry={() => void retryScan()} retrying={retrying} retryError={retryError} />,
     reveal: () => <RevealScreen agents={data.scan.agents} reveal={data.reveal} extraction={data.extraction} recentPrompts={data.recentPrompts} onContinue={() => update({ revealContinued: true }, 'choice')} />,
     choice: () => <ChoiceScreen branch={flow.branch} onChoose={(branch) => update({ branch, memoryBilling: branch === 'go' ? 'hosted' : 'existing', choiceContinued: true, savingsComplete: false, checkoutReviewed: false, setupComplete: false, finishTools: [] }, 'savings')} />,
     savings: () => (
