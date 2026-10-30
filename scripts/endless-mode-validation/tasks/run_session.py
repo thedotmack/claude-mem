@@ -10,7 +10,7 @@ sees only the failing output, as in Aider's harness). Each turn is written to th
 stopped run keeps what it measured. Costs are not computed here: extract.py reads the tees afterwards.
 
 Usage:
-  run_session.py --arm plain|endless --arm-dir DIR --bench DIR --db FILE --run-id ID [--model M] [--tries 2]
+  run_session.py --arm plain|claudemem|endless --arm-dir DIR --bench DIR --db FILE --run-id ID [--model M] [--tries 2]
                  [--exercises a,b,c] [--limit N]
 """
 import argparse
@@ -243,7 +243,7 @@ def run_claude(args, arm_dir, prompt, session_id, log_base):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('--arm', required=True, choices=['plain', 'endless'])
+    p.add_argument('--arm', required=True, choices=['plain', 'claudemem', 'endless'])
     p.add_argument('--arm-label', help='name this arm in the results (default: --arm), e.g. endless-observer-haiku55')
     p.add_argument('--arm-dir', required=True, type=Path)
     p.add_argument('--bench', required=True, type=Path, help='polyglot-benchmark/python/exercises/practice')

@@ -157,7 +157,8 @@ def main():
                                        f'window {k[4]} at {k[5]}%: {", ".join(v)}' for k, v in settings.items()))
     (model, tries, exercises, sessions, compact_window, compact_pct), = settings
     price_of(model)  # refuses a model with no price
-    arms = [a for a in ('plain', 'endless') if a in runs] + sorted(a for a in runs if a not in ('plain', 'endless'))
+    first = ('plain', 'claudemem', 'endless')
+    arms = [a for a in first if a in runs] + sorted(a for a in runs if a not in first)
     def name(arm):
         if arm == 'plain':
             return 'Plain Claude Code'
@@ -167,7 +168,8 @@ def main():
         used = sorted({m for (m,) in db.execute(
             f"SELECT DISTINCT model FROM requests WHERE run_id IN ({','.join('?' * len(ids))}) "
             "AND source = 'observer' AND model IS NOT NULL", ids)})
-        return f'Endless Mode, note-taker on {", ".join(used)}' if used else arm
+        kind = 'Claude-Mem, no wire gateway' if arm.startswith('claudemem') else 'Endless Mode'
+        return f'{kind}, note-taker on {", ".join(used)}' if used else arm
     label = {a: f'{name(a)} ({len(runs[a])} runs)' for a in arms}
     lines = ['| Measure | ' + ' | '.join(label[a] for a in arms) + ' |', '|---|' + '---|' * len(arms)]
     for title, key, kind in rows(len(exercises.split(',')), tries, model, sessions, compact_window, compact_pct):

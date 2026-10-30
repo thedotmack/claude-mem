@@ -4,7 +4,7 @@
 Each request's usage comes from the provider's own response (the `message_start` usage and the final
 `message_delta` output count), so these are measured numbers, not estimates. Two sources per run:
   agent     what Claude Code sent upstream (in the Endless arm, after the gateway's rewrite)
-  observer  claude-mem's observer, which writes the observations Endless Mode folds into (Endless arm only)
+  observer  claude-mem's observer, which writes the observations Endless Mode folds into (claudemem and Endless arms)
 
 Cost = tokens x list price. The price table is below with its source; a request whose prompt (input + cache writes
 + cache reads) is over a model's long-prompt threshold is priced at that model's long-prompt rates. `cost_opus55_usd`

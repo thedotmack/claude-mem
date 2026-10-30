@@ -11,8 +11,11 @@ done, whether it is right, and how long it takes, all from one run.
   Claude Code session (`claude -p --resume`). The conversation grows the way a real long session does.
 - **Aider's protocol:** the agent sees the instructions and the stub, never the tests. If the hidden tests fail, the
   next turn shows the last 50 lines of the failing output and asks for a fix (two tries in all).
-- **Two arms, side by side, same model, same exercises in the same order:**
+- **Arms, side by side, same model, same exercises in the same order:**
   - `plain`: Claude Code straight to the API (through a recording proxy only).
+  - `claudemem` (pick it with `EMV_ARMS`): regular claude-mem with no wire gateway. Claude Code goes straight to the
+    API, and claude-mem's own Claude Code hooks (context at session start, observations, summaries) feed a claude-mem
+    worker and its observer. Memory is written and injected; the agent's context is not trimmed.
   - `endless`: Claude Code through this checkout's wire gateway with memory injection, the durable header and Endless
     Mode on, and a claude-mem worker whose observer writes the observations Endless Mode folds in.
 - **Standing rule check:** the opening turn asks for a fixed first line in every solution file. Each graded exercise
