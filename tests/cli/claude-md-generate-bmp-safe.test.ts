@@ -47,14 +47,15 @@ describe('claude-mem generate writes a BMP-only CLAUDE.md block', () => {
 
   it('also holds for `npm run claude-md:regenerate`, whose type markers are emoji', () => {
     const root = mkdtempSync(join(tmpdir(), 'claude-md-bmp-')); sandboxes.push(root);
-    const project = join(root, 'project'); const data = join(root, '.claude-mem');
+    const project = join(root, 'project'); const data = join(root, 'data');
     mkdirSync(join(project, 'src'), { recursive: true }); mkdirSync(data);
     writeFileSync(join(project, 'src', 'direct.ts'), 'export {};');
     for (const args of [['init', '-q'], ['add', 'src/direct.ts']]) {
       const git = Bun.spawnSync(['git', ...args], { cwd: project }); expect(git.exitCode).toBe(0);
     }
-    // The script reads ~/.claude-mem/claude-mem.db, so HOME points at the sandbox.
-    const env = { ...process.env, HOME: root, CLAUDE_MEM_DATA_DIR: data, CLAUDE_CONFIG_DIR: data, CLAUDE_MEM_TELEMETRY: '0' };
+    // The home dir is an empty sandbox, so the script can only find the
+    // database through CLAUDE_MEM_DATA_DIR, as every other entry point does.
+    const env = { ...process.env, HOME: root, USERPROFILE: root, CLAUDE_MEM_DATA_DIR: data, CLAUDE_CONFIG_DIR: data, CLAUDE_MEM_TELEMETRY: '0' };
     const seed = Bun.spawnSync([process.execPath, '-e', `
       const { SessionStore } = await import(${JSON.stringify(source('services/sqlite/SessionStore.ts'))});
       const { paths } = await import(${JSON.stringify(source('shared/paths.ts'))});
