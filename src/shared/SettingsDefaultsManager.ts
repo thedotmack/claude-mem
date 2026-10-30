@@ -3,7 +3,8 @@ import { readFileSync, existsSync, writeFileSync } from 'fs';
 import { basename, dirname, join } from 'path';
 import { homedir, hostname } from 'os';
 import { HOOK_TIMEOUTS, defaultSessionInitRequestTimeoutMs, getTimeout } from './hook-constants.js';
-import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
+import { parseEnv } from 'util';
+import { parseJsonWithBom, stripUtf8Bom, writeJsonFileAtomic } from './atomic-json.js';
 import { isOpenRouterApiUrl } from './openrouter-base-url.js';
 import { settingsTarget, withoutStaleRootCopies } from './settings-document.js';
 import { expandHome } from './expand-home.js';
@@ -83,7 +84,10 @@ function envFileSetsAnthropicBaseUrl(settingsPath: string): boolean {
   const envFile = process.env.CLAUDE_MEM_ENV_FILE ?? join(dirname(settingsPath), '.env');
   try {
     if (!existsSync(envFile)) return false;
-    return /^[ \t]*(?:export[ \t]+)?ANTHROPIC_BASE_URL[ \t]*=[ \t]*['"]?[^\s'"#]/m.test(readFileSync(envFile, 'utf-8'));
+    // Parse it the way the worker does (EnvManager's parseEnvFile), so this sees
+    // exactly the base URL the worker will use: BOM stripped, empty means unset.
+    const parsed = parseEnv(stripUtf8Bom(readFileSync(envFile, 'utf-8'))) as Record<string, string>;
+    return Boolean(parsed.ANTHROPIC_BASE_URL);
   } catch {
     return true;  // unreadable: assume a gateway and leave the model alone
   }

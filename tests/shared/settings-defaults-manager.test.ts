@@ -649,6 +649,24 @@ describe('SettingsDefaultsManager', () => {
         }
       });
 
+      it('never touches a gateway .env saved with a BOM', () => {
+        const raw = JSON.stringify({ CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001' });
+        writeFileSync(settingsPath, raw);
+        const envPath = join(dirname(settingsPath), '.env');
+        writeFileSync(envPath, '\uFEFFANTHROPIC_BASE_URL=http://127.0.0.1:4000\n');
+        const saved = process.env.CLAUDE_MEM_ENV_FILE;
+        delete process.env.CLAUDE_MEM_ENV_FILE;
+        try {
+          const { value } = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath));
+
+          expect(value.CLAUDE_MEM_MODEL).toBe('claude-haiku-4-5-20251001');
+          expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
+        } finally {
+          if (saved !== undefined) process.env.CLAUDE_MEM_ENV_FILE = saved;
+          rmSync(envPath, { force: true });
+        }
+      });
+
       it('rewrites in memory only when read-only', () => {
         const raw = JSON.stringify({ CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001' });
         writeFileSync(settingsPath, raw);
