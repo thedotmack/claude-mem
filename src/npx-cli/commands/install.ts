@@ -1179,12 +1179,14 @@ export function openBrowser(url: string): void {
 export async function promptProvider(
   options: InstallOptions,
   /**
-   * Null only when login was skipped for an explicit local provider.
-   * That path cannot reach the CMEM branch below, which
-   * re-checks rather than assuming.
+   * Null when login was skipped for an explicit local provider, or when an
+   * interactive run left sign-in to this prompt (see `signIn`). The CMEM
+   * branch below re-checks rather than assuming.
    */
   pairing: InstallerOAuthPairing | null,
   version: string,
+  /** Runs the claude-mem sign-in when CMEM Pro is picked and no pairing exists yet. */
+  signIn?: () => Promise<InstallerOAuthPairing | null>,
 ): Promise<ProviderId> {
   const initialProvider = (getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude';
   const persistedSettings = readPersistedInstallerSettings();
@@ -1263,6 +1265,13 @@ export async function promptProvider(
   // OpenAI-compatible client whose endpoint and model both come from settings,
   // so "use the CMEM observer model" is four settings writes and nothing else.
   if (selectedProvider === 'cmem') {
+    if (!pairing && signIn) {
+      pairing = await signIn();
+      if (!pairing) {
+        p.cancel('CMEM Pro needs a claude-mem sign-in. Run npx claude-mem install again to retry, or pick your Anthropic plan.');
+        process.exit(1);
+      }
+    }
     if (!pairing) {
       // Unreachable via the flag that skips login (it forces 'claude'), but a
       // future caller passing null here would otherwise enroll against nothing.
@@ -2116,9 +2125,9 @@ async function requireInstallerOAuthLogin(version: string): Promise<InstallerOAu
   }
   spinner?.stop('OAuth login ready.');
 
-  // No provider, plan, or pricing language on this step: logging in is required
-  // of every user and runs BEFORE the provider choice, so anything about a paid
-  // plan here is an upsell bolted onto a mandatory step.
+  // No provider, plan, or pricing language on this step: the checkout page
+  // carries the plan and price, so anything about a paid plan here would be an
+  // upsell bolted onto the sign-in.
   log.info(`Open this URL: ${pairing.authorizationUrl}`);
   await waitForReturnToOpenBrowser('Continue setup in browser... (hit return to open automatically)');
   openBrowser(pairing.authorizationUrl);
@@ -2228,6 +2237,146 @@ export async function completeCmemTrialPairing(
     await captureCliEvent('trial_activated', { version });
   }
   return result;
+}
+
+// --- Email opt-in ------------------------------------------------------------
+// Interactive, optional, asked once. The CLI POSTs the email + optional note to
+// the waitlist endpoint (cmem.ai/api/waitlist), which handles persistence, dedup,
+// and the confirmation email server-side. CLAUDE_MEM_SIGNUP_URL overrides the
+// default for testing/staging. No API keys ever ship in the npx package — the
+// endpoint is unauthenticated and the secret (Resend) stays server-side.
+// Anything that goes wrong here is swallowed — a marketing opt-in must never
+// block or fail the install.
+
+const DEFAULT_SIGNUP_ENDPOINT = 'https://cmem.ai/api/waitlist';
+const SIGNUP_ENDPOINT = process.env.CLAUDE_MEM_SIGNUP_URL?.trim() || DEFAULT_SIGNUP_ENDPOINT;
+const SIGNUP_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+interface StoredSignup {
+  email: string;
+  note: string;
+  sent: boolean;
+}
+
+function parseStoredSignup(): StoredSignup | null {
+  const flat = readFlatSettings(USER_SETTINGS_PATH);
+  if (!flat) return null;
+  const email = typeof flat.CLAUDE_MEM_ONLINE_SIGNUP_EMAIL === 'string' ? flat.CLAUDE_MEM_ONLINE_SIGNUP_EMAIL : '';
+  if (!email) return null;
+  return {
+    email,
+    note: typeof flat.CLAUDE_MEM_ONLINE_SIGNUP_NOTE === 'string' ? flat.CLAUDE_MEM_ONLINE_SIGNUP_NOTE : '',
+    sent: flat.CLAUDE_MEM_ONLINE_SIGNUP_SENT === 'true',
+  };
+}
+
+function readStoredSignup(): StoredSignup | null {
+  try {
+    return parseStoredSignup();
+  } catch {
+    // [ANTI-PATTERN IGNORED]: settings.json is optional and may be missing or hand-edited into invalid JSON; treating that as "no stored signup" simply re-asks the opt-in, the designed recovery for this never-blocking marketing flow.
+    return null;
+  }
+}
+
+async function postSignup(payload: { email: string; note: string; version: string }, signal: AbortSignal): Promise<boolean> {
+  const res = await fetch(SIGNUP_ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      email: payload.email,
+      note: payload.note,
+      version: payload.version,
+      platform: process.platform,
+      source: 'npx-installer',
+    }),
+    signal,
+  });
+  return res.ok;
+}
+
+async function submitEmailSignup(payload: { email: string; note: string; version: string }): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+  try {
+    return await postSignup(payload, controller.signal);
+  } catch {
+    // [ANTI-PATTERN IGNORED]: network/timeout failures of this optional waitlist POST are expected offline; the caller persists the email locally and retries silently on the next install run.
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Optional email + "how can we help" note, asked once near the start of an
+ * interactive install. Never asked in non-TTY (agent-run) or CI installs, and
+ * CLAUDE_MEM_ONLINE_OPTIN=false turns it off for scripted ones. Enter skips it.
+ * Exported for the opt-in fixture test.
+ */
+export async function promptEmailOptIn(version: string): Promise<void> {
+  if (!isInteractive) return;
+  if (process.env.CI) return;
+  if (String(process.env.CLAUDE_MEM_ONLINE_OPTIN ?? '').trim().toLowerCase() === 'false') return;
+
+  const prior = readStoredSignup();
+  if (prior) {
+    // We already captured this email — don't re-nag. If a previous send never
+    // reached the service, quietly retry once now and record the result.
+    if (!prior.sent) {
+      const ok = await submitEmailSignup({ email: prior.email, note: prior.note, version });
+      if (ok) mergeSettings({ CLAUDE_MEM_ONLINE_SIGNUP_SENT: 'true' });
+    }
+    return;
+  }
+
+  p.note(
+    [
+      "Share your email and we'll keep you posted on what's new in claude-mem.",
+      'Optional: press Enter to skip.',
+    ].join('\n'),
+    'Stay in touch',
+  );
+
+  const emailResult = await p.text({
+    message: 'Your work email (press Enter to skip):',
+    placeholder: 'you@company.com',
+    defaultValue: '',
+    validate: (v?: string) => {
+      const value = (v ?? '').trim();
+      if (value.length === 0) return undefined; // empty = skip, not an error
+      if (!SIGNUP_EMAIL_RE.test(value)) return "That doesn't look like an email — fix it, or clear the field to skip.";
+      return undefined;
+    },
+  });
+
+  if (p.isCancel(emailResult)) return;
+  const email = String(emailResult).trim();
+  if (email.length === 0) return;
+
+  const noteResult = await p.text({
+    message: 'Optionally: what are you working on, or how can we help you and your team? (Enter to skip)',
+    placeholder: 'e.g. migrating a monorepo, onboarding a 5-dev team…',
+    defaultValue: '',
+  });
+  const note = p.isCancel(noteResult) ? '' : String(noteResult).trim();
+
+  const spin = p.spinner();
+  spin.start('Sending…');
+  const ok = await submitEmailSignup({ email, note, version });
+  // Persist locally regardless of the network result so we never re-prompt;
+  // a failed send is retried silently on the next install (see above).
+  mergeSettings({
+    CLAUDE_MEM_ONLINE_SIGNUP_EMAIL: email,
+    CLAUDE_MEM_ONLINE_SIGNUP_NOTE: note,
+    CLAUDE_MEM_ONLINE_SIGNUP_AT: new Date().toISOString(),
+    CLAUDE_MEM_ONLINE_SIGNUP_SENT: ok ? 'true' : 'false',
+  });
+  if (ok) {
+    spin.stop(`Thanks — we'll be in touch at ${styleText('cyan', email)}.`);
+  } else {
+    spin.stop(styleText('yellow', `Saved ${email} — we'll finish sending it next time you run the installer.`));
+  }
 }
 
 /**
@@ -2831,6 +2980,8 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   const claudeCodeTooOldWarning = claudeCodeVersionTooOldWarning(detectClaudeCodeVersion());
   if (claudeCodeTooOldWarning) log.warn(claudeCodeTooOldWarning);
 
+  await promptEmailOptIn(version);
+
   if (alreadyInstalled) {
     if (process.stdin.isTTY) {
       const shouldContinue = await p.confirm({
@@ -3106,9 +3257,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // The terminal flow: non-TTY (agent-run) installs, --provider, --no-auto-start,
   // the server runtime, and machines that already finished the funnel.
   const terminalAccountAndProvider = async (): Promise<ProviderId> => {
-    // Login is account-first for every install EXCEPT one that has already named
-    // a provider needing no claude-mem account. `--provider claude` (or the
-    // non-interactive default to claude) runs memory on the user's own Anthropic
+    // Login runs up front for an install that named an account-backed provider.
+    // An install that named a provider needing no claude-mem account skips it.
+    // `--provider claude` (or the non-interactive default to claude) runs memory on the user's own Anthropic
     // plan, so gating it on browser OAuth made an unrelated cmem.ai outage fail
     // an install that could have completed offline — and there is no account
     // question left to ask, because the provider already answered it. Such a
@@ -3124,8 +3275,14 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     // account and credentials, and promptProvider returns early for it without
     // enrolling anything. Running the blocking browser login here would hang an
     // agent shell polling for up to the pairing TTL and then exit 1.
+    //
+    // An interactive run with no provider named signs in only if the provider
+    // prompt picks CMEM Pro: the email opt-in up front is the lead capture, so
+    // the account is no longer a gate in front of a local install.
     if (options.providerSource === 'persisted') {
       log.info(`Skipping claude-mem login: keeping the existing account and ${options.provider} configuration.`);
+    } else if (isInteractive && !options.provider) {
+      // Sign-in waits for the provider prompt (CMEM Pro only).
     } else if (providerNeedsAccount(options.provider)) {
       oauthPairing = await requireInstallerOAuthLogin(version);
       if (!oauthPairing) {
@@ -3141,7 +3298,11 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
           : '--provider claude runs memory on your own Anthropic plan.';
       log.info(`Skipping claude-mem login: ${skipReason}`);
     }
-    const selectedProvider = await promptProvider(options, oauthPairing, version);
+    const signInForCmem = async (): Promise<InstallerOAuthPairing | null> => {
+      oauthPairing = await requireInstallerOAuthLogin(version);
+      return oauthPairing;
+    };
+    const selectedProvider = await promptProvider(options, oauthPairing, version, signInForCmem);
     if (selectedProvider === 'claude') {
       await promptClaudeModel(options);
     }
