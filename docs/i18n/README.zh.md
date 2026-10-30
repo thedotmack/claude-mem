@@ -50,7 +50,7 @@
   <a href="docs/i18n/README.no.md">🇳🇴 Norsk</a>
 </p>
 
-<h4 align="center">为 <a href="https://claude.com/claude-code" target="_blank">Claude Code</a> 构建的持久化内存压缩系统。</h4>
+<h4 align="center">为 <a href="https://claude.com/claude-code" target="_blank">Claude Code</a> 构建的持久化记忆压缩系统。</h4>
 
 <p align="center">
   <a href="LICENSE">
@@ -174,7 +174,7 @@ curl -fsSL https://install.cmem.ai/openclaw.sh | bash
 
 **核心特性:**
 
-- 🧠 **持久化内存** - 上下文跨会话保留
+- 🧠 **持久化记忆** - 上下文跨会话保留
 - 📊 **渐进式披露** - 分层内存检索,具有令牌成本可见性
 - 🔍 **基于技能的搜索** - 使用 mem-search 技能查询项目历史
 - 🖥️ **Web 查看器界面** - 在启动时打印的 worker URL 上实时查看内存流
