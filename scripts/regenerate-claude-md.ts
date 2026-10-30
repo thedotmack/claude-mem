@@ -2,14 +2,12 @@
 
 import { Database } from 'bun:sqlite';
 import path from 'path';
-import os from 'os';
 import { existsSync, mkdirSync, writeFileSync, readFileSync, renameSync, unlinkSync, readdirSync } from 'fs';
 import { execSync } from 'child_process';
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
+import { DB_PATH, USER_SETTINGS_PATH } from '../src/shared/paths.js';
 
-const DB_PATH = path.join(os.homedir(), '.claude-mem', 'claude-mem.db');
-const SETTINGS_PATH = path.join(os.homedir(), '.claude-mem', 'settings.json');
-const settings = SettingsDefaultsManager.loadFromFile(SETTINGS_PATH);
+const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
 const OBSERVATION_LIMIT = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10) || 50;
 
 interface ObservationRow {
