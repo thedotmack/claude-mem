@@ -2312,8 +2312,9 @@ async function submitEmailSignup(payload: { email: string; note: string; version
  * Optional email + "how can we help" note, asked once near the start of an
  * interactive install. Never asked in non-TTY (agent-run) or CI installs, and
  * CLAUDE_MEM_ONLINE_OPTIN=false turns it off for scripted ones. Enter skips it.
+ * Exported for the opt-in fixture test.
  */
-async function promptEmailOptIn(version: string): Promise<void> {
+export async function promptEmailOptIn(version: string): Promise<void> {
   if (!isInteractive) return;
   if (process.env.CI) return;
   if (String(process.env.CLAUDE_MEM_ONLINE_OPTIN ?? '').trim().toLowerCase() === 'false') return;
