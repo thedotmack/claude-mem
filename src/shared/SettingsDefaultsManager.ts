@@ -70,14 +70,26 @@ function coercePersistedSettingValue(value: unknown): unknown {
 // newest model of that tier, because each new Anthropic release is cheaper or
 // better at the same price. Older installs had `claude-haiku-4-5-20251001`
 // written into settings.json by the default or the installer; rewrite exactly
-// those shipped ids to the alias. Gateway auth is left alone, since a custom
-// endpoint serves its own model names.
+// those shipped ids to the alias. A gateway install is left alone, since a custom
+// endpoint serves its own model names: either the saved auth method says gateway,
+// or the claude-mem .env next to settings.json sets ANTHROPIC_BASE_URL (how the
+// installer detects one; such installs often never save the auth method).
 const PINNED_SHIPPED_HAIKU_MODELS: ReadonlySet<string> = new Set([
   'claude-haiku-4-5-20251001',
   'claude-haiku-4-5',
 ]);
 
-function hasPinnedShippedHaiku(flatSettings: Record<string, any>): boolean {
+function envFileSetsAnthropicBaseUrl(settingsPath: string): boolean {
+  const envFile = process.env.CLAUDE_MEM_ENV_FILE ?? join(dirname(settingsPath), '.env');
+  try {
+    if (!existsSync(envFile)) return false;
+    return /^\s*(?:export\s+)?ANTHROPIC_BASE_URL\s*=\s*['"]?[^\s'"#]/m.test(readFileSync(envFile, 'utf-8'));
+  } catch {
+    return true;  // unreadable: assume a gateway and leave the model alone
+  }
+}
+
+function hasPinnedShippedHaiku(flatSettings: Record<string, any>, settingsPath: string): boolean {
   const model = flatSettings.CLAUDE_MEM_MODEL;
   if (typeof model !== 'string' || !PINNED_SHIPPED_HAIKU_MODELS.has(model.trim())) {
     return false;
@@ -85,7 +97,7 @@ function hasPinnedShippedHaiku(flatSettings: Record<string, any>): boolean {
   const authMethod = typeof flatSettings.CLAUDE_MEM_CLAUDE_AUTH_METHOD === 'string'
     ? flatSettings.CLAUDE_MEM_CLAUDE_AUTH_METHOD.trim()
     : '';
-  return authMethod !== 'gateway';
+  return authMethod !== 'gateway' && !envFileSetsAnthropicBaseUrl(settingsPath);
 }
 
 function hasRetiredOpenRouterDefault(flatSettings: Record<string, any>): boolean {
@@ -872,7 +884,7 @@ export class SettingsDefaultsManager {
         }
       }
 
-      if (hasPinnedShippedHaiku(flatSettings)) {
+      if (hasPinnedShippedHaiku(flatSettings, settingsPath)) {
         const pinnedModel = String(flatSettings.CLAUDE_MEM_MODEL).trim();
         flatSettings = {
           ...flatSettings,

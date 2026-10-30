@@ -1,7 +1,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync, statSync, chmodSync, symlinkSync } from 'fs';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { homedir, tmpdir } from 'os';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 import { readFlatSettings } from '../../src/npx-cli/utils/settings.js';
@@ -611,6 +611,25 @@ describe('SettingsDefaultsManager', () => {
         expect(value.CLAUDE_MEM_MODEL).toBe('claude-haiku-4-5-20251001');
         expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
         expect(migrationWarnings(warnings)).toEqual([]);
+      });
+
+      it('never touches an install whose claude-mem .env points at a gateway', () => {
+        const raw = JSON.stringify({ CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001' });
+        writeFileSync(settingsPath, raw);
+        const envPath = join(dirname(settingsPath), '.env');
+        writeFileSync(envPath, 'ANTHROPIC_BASE_URL=http://127.0.0.1:4000\nANTHROPIC_AUTH_TOKEN=sk-litellm\n');
+        const saved = process.env.CLAUDE_MEM_ENV_FILE;
+        delete process.env.CLAUDE_MEM_ENV_FILE;
+        try {
+          const { value, warnings } = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath));
+
+          expect(value.CLAUDE_MEM_MODEL).toBe('claude-haiku-4-5-20251001');
+          expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
+          expect(migrationWarnings(warnings)).toEqual([]);
+        } finally {
+          if (saved !== undefined) process.env.CLAUDE_MEM_ENV_FILE = saved;
+          rmSync(envPath, { force: true });
+        }
       });
 
       it('rewrites in memory only when read-only', () => {

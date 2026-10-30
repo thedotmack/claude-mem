@@ -323,7 +323,7 @@ Configure which Claude model compresses your observations (only applies when `CL
 | `sonnet` | The newest Sonnet, balanced quality and speed |
 | `opus` | The newest Opus, highest quality (slowest) |
 
-Each alias follows the newest model of its tier, so new releases (usually cheaper or better for the price) reach you without a settings change. A full model ID, such as `claude-sonnet-5`, pins that one version and never updates. Installs that had the old shipped default `claude-haiku-4-5-20251001` saved are moved to `haiku` automatically.
+Each alias follows the newest model of its tier, so new releases (usually cheaper or better for the price) reach you without a settings change. A full model ID, such as `claude-sonnet-5`, pins that one version and never updates. Installs that had the old shipped default `claude-haiku-4-5-20251001` saved are moved to `haiku` automatically, except gateway installs (see Manual Configuration below).
 
 ### Picking via the Installer
 
@@ -339,7 +339,7 @@ Edit `~/.claude-mem/settings.json`:
 }
 ```
 
-`haiku` moves to each new Haiku release on its own. A full model ID such as `claude-haiku-4-5-20251001` pins that one version and never updates, so use one only when you deliberately want to stay on it. Installs that saved the old default keep it until you change it.
+`haiku` moves to each new Haiku release on its own. A full model ID such as `claude-haiku-4-5-20251001` pins that one version and never updates, so use one only when you deliberately want to stay on it. Installs that saved the old default, `claude-haiku-4-5-20251001`, are moved to `haiku` automatically, except gateway installs (an `ANTHROPIC_BASE_URL` in `~/.claude-mem/.env`, or the auth method set to `gateway`), which keep their saved model because the gateway decides which model names it accepts.
 
 ## Mode Configuration
 
