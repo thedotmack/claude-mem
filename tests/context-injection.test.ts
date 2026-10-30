@@ -31,6 +31,39 @@ describe('findContextBlockRange', () => {
     expect(rangeOf(`Mentions ${CONTEXT_TAG_OPEN} in prose.\n\nKeep this.\n\n${block}\n`)).toBe(block);
   });
 
+  it('does not treat a balanced inline-code example as the managed block', () => {
+    const example = `Preserve the \`${CONTEXT_TAG_OPEN} ... ${CONTEXT_TAG_CLOSE}\` marker names in examples.`;
+    expect(rangeOf(`${example}\n\n${block}\n`)).toBe(block);
+    expect(findContextBlockRange(`${example}\n`)).toBeNull();
+  });
+
+  it('does not mistake a complete triple-backtick code span for an opening fence', () => {
+    const example = `\`\`\`${CONTEXT_TAG_OPEN} ... ${CONTEXT_TAG_CLOSE}\`\`\``;
+    expect(rangeOf(`${example}\n\n${block}\n`)).toBe(block);
+  });
+
+  it.each(['```md', '~~~md', '   ````markdown'])('skips managed-tag examples in a %s fence', (fence) => {
+    const delimiter = fence.trimStart().match(/^[`~]+/)![0];
+    const example = `${fence}\n${CONTEXT_TAG_OPEN}\nexample only\n${CONTEXT_TAG_CLOSE}\n${delimiter}\n`;
+    expect(rangeOf(`${example}\n${block}\n`)).toBe(block);
+    expect(findContextBlockRange(example)).toBeNull();
+  });
+
+  it('does not close a code fence at a delimiter followed by a non-breaking space', () => {
+    const example = `\`\`\`md\n\`\`\`\u00a0\n${CONTEXT_TAG_OPEN}\nexample only\n${CONTEXT_TAG_CLOSE}\n\`\`\`\n`;
+    expect(rangeOf(`${example}\n${block}\n`)).toBe(block);
+  });
+
+  it('closes a code fence at a delimiter followed only by tabs and spaces', () => {
+    const example = `\`\`\`md\n${CONTEXT_TAG_OPEN}\nexample only\n${CONTEXT_TAG_CLOSE}\n\`\`\` \t \n`;
+    expect(rangeOf(`${example}\n${block}\n`)).toBe(block);
+  });
+
+  it('retains canonical standalone delimiters with CRLF and no final newline', () => {
+    const crlfBlock = `${CONTEXT_TAG_OPEN}\r\nold\r\n${CONTEXT_TAG_CLOSE}`;
+    expect(rangeOf(`# Notes\r\n\r\n${crlfBlock}`)).toBe(crlfBlock);
+  });
+
   it('is null without a complete block', () => {
     expect(findContextBlockRange('# Notes\n')).toBeNull();
     expect(findContextBlockRange(`${CONTEXT_TAG_OPEN}\nnever closed\n`)).toBeNull();
@@ -131,6 +164,32 @@ describe('Context Injection', () => {
   });
 
   describe('replace existing context section', () => {
+    it('replaces managed memory even when its content has an unclosed code fence', () => {
+      const filePath = join(tempDir, 'CLAUDE.md');
+      injectContextIntoMarkdownFile(filePath, '```ts\nold partial code');
+
+      injectContextIntoMarkdownFile(filePath, 'current memory');
+
+      expect(readFileSync(filePath, 'utf-8')).toBe(
+        `${CONTEXT_TAG_OPEN}\ncurrent memory\n${CONTEXT_TAG_CLOSE}\n`,
+      );
+    });
+
+    it('preserves authored marker examples and refreshes the real block exactly once', () => {
+      const filePath = join(tempDir, 'CLAUDE.md');
+      const before = `# Project instructions\nPreserve \`${CONTEXT_TAG_OPEN} ... ${CONTEXT_TAG_CLOSE}\` in examples.\n\n` +
+        `\`\`\`md\n${CONTEXT_TAG_OPEN}\nexample only\n${CONTEXT_TAG_CLOSE}\n\`\`\`\n\n`;
+      const after = '\n\n## User-owned footer\nKeep this byte for byte.\n';
+      writeFileSync(filePath, `${before}${CONTEXT_TAG_OPEN}\nold managed memory\n${CONTEXT_TAG_CLOSE}${after}`);
+
+      injectContextIntoMarkdownFile(filePath, 'current managed memory');
+      const expected = `${before}${CONTEXT_TAG_OPEN}\ncurrent managed memory\n${CONTEXT_TAG_CLOSE}${after}`;
+      expect(readFileSync(filePath, 'utf-8')).toBe(expected);
+
+      injectContextIntoMarkdownFile(filePath, 'current managed memory');
+      expect(readFileSync(filePath, 'utf-8')).toBe(expected);
+    });
+
     it('ignores a closing tag before the context section', () => {
       const filePath = join(tempDir, 'GEMINI.md');
       const before = `# Tag example\n${CONTEXT_TAG_CLOSE}\nKeep this line.\n`;
