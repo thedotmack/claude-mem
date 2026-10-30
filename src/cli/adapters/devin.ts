@@ -26,20 +26,6 @@ const DEVIN_TOOL_NAMES: Record<string, string> = {
   skill: 'Skill',
 };
 
-const FILE_PATH_TOOLS = new Set(['Read', 'Edit', 'Write']);
-
-// Shared read capture and file-context use `file_path`. Devin documents only
-// the exec input shape, so alias a `path` field for the file tools when
-// `file_path` is absent, without mutating the caller's object.
-function normalizeToolInput(toolName: string | undefined, input: unknown): unknown {
-  if (!toolName || !FILE_PATH_TOOLS.has(toolName)) return input;
-  if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
-  const fileInput = input as Record<string, unknown>;
-  if (stringOrUndefined(fileInput.file_path)) return input;
-  const filePath = stringOrUndefined(fileInput.path);
-  return filePath ? { ...fileInput, file_path: filePath } : input;
-}
-
 const SESSION_SOURCES = new Set(['startup', 'resume', 'clear', 'compact']);
 
 export const devinAdapter: PlatformAdapter = {
@@ -63,9 +49,13 @@ export const devinAdapter: PlatformAdapter = {
       cwd,
       prompt: stringOrUndefined(r.prompt),
       toolName,
-      toolInput: normalizeToolInput(toolName, r.tool_input),
+      // Devin's file tools already send `file_path` (captured read/edit payloads
+      // in tests/fixtures/hosts/devin-hooks.json), so the input passes through.
+      toolInput: r.tool_input,
       // `{ success, output, error }`, stored as the host sent it.
       toolResponse: r.tool_response,
+      // `<tool>:<index>#<hash>`; undocumented, but present in captured payloads.
+      toolUseId: stringOrUndefined(r.tool_use_id),
       // Devin's Stop carries no transcript path; summarize uses this instead.
       lastAssistantMessage: stringOrUndefined(r.last_assistant_message),
       reason: stringOrUndefined(r.reason),

@@ -1,8 +1,8 @@
 {
   "host": "Devin CLI / Devin Desktop",
-  "source": "docs.devin.ai cli/extensibility/hooks/overview and cli/extensibility/hooks/lifecycle-hooks (event fields, tool_response shape, exec tool_input), plus the payload notes in thedotmack/claude-mem#4976",
-  "capturedAt": "2026-10-28",
-  "note": "Keys and shapes follow the cited docs; values are examples. No `cwd` or `transcript_path` is documented (DEVIN_PROJECT_DIR is set in the hook's environment instead). Only the exec tool_input shape is documented; read/edit inputs are still to be captured from a real Devin session.",
+  "source": "docs.devin.ai cli/extensibility/hooks/overview and cli/extensibility/hooks/lifecycle-hooks (event fields, tool_response shape, exec tool_input); PostToolUseRead and PostToolUseEdit are raw stdin from a real Devin CLI session, posted by @rigel905 in thedotmack/claude-mem#4976",
+  "capturedAt": "2026-10-30",
+  "note": "PostToolUseRead and PostToolUseEdit are verbatim captures. The other payloads follow the cited docs, with example values. Neither the docs nor the captures carry `cwd` or `transcript_path` (DEVIN_PROJECT_DIR is set in the hook's environment instead). The captures carry `tool_use_id` (`<tool>:<index>#<hash>`), which the docs omit.",
   "payloads": {
     "SessionStart": {
       "hook_event_name": "SessionStart",
@@ -23,6 +23,8 @@
       "tool_input": { "command": "npm test", "shell_id": "main" },
       "tool_response": { "success": true, "output": "12 passing\n", "error": null }
     },
+    "PostToolUseRead": {"hook_event_name":"PostToolUse","tool_name":"read","tool_input":{"file_path":"/tmp/devin-fixture-test.txt"},"tool_use_id":"read:10#51bd603fafe14ea1abae3969e7ce4f11","tool_response":{"success":true,"output":"<file-view path=\"/tmp/devin-fixture-test.txt\" start_line=\"1\" end_line=\"1\">\n  1|hello\n</file-view>","error":null},"session_id":"glamorous-energy","prompt_id":"74fe6288-4e56-4bf2-9e2e-d8b184c43ee9"},
+    "PostToolUseEdit": {"hook_event_name":"PostToolUse","tool_name":"edit","tool_input":{"file_path":"/tmp/devin-fixture-test.txt","old_string":"hello","new_string":"world"},"tool_use_id":"edit:11#0065a456c7b04520b184df9e7dcc49ae","tool_response":{"success":true,"output":"Successfully edited file '/tmp/devin-fixture-test.txt' - made 1 replacement(s). 1 line(s) removed, 1 line(s) added at line 1.","error":null},"session_id":"glamorous-energy","prompt_id":"74fe6288-4e56-4bf2-9e2e-d8b184c43ee9"},
     "Stop": {
       "hook_event_name": "Stop",
       "session_id": "devin-session-1",

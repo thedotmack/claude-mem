@@ -11,7 +11,8 @@ afterEach(() => {
   else process.env.DEVIN_PROJECT_DIR = ORIGINAL_PROJECT_DIR;
 });
 
-// Payload shapes pinned from Devin's hook docs (tests/fixtures/hosts/devin-hooks.json).
+// Devin payloads: read/edit captured from a real session, the rest from the
+// hook docs (tests/fixtures/hosts/devin-hooks.json).
 const fixture = JSON.parse(
   readFileSync(path.join(import.meta.dir, '..', '..', 'fixtures', 'hosts', 'devin-hooks.json'), 'utf-8'),
 );
@@ -28,6 +29,21 @@ describe('devinAdapter against Devin payloads', () => {
     expect(input.toolInput).toEqual({ command: 'npm test', shell_id: 'main' });
     expect(input.toolResponse).toEqual({ success: true, output: '12 passing\n', error: null });
     expect(input.turnId).toBe('prompt-1');
+  });
+
+  test('maps captured read and edit payloads to Read and Edit, keeping file_path and tool_use_id', () => {
+    const read = devinAdapter.normalizeInput(fixture.payloads.PostToolUseRead);
+    expect(read.sessionId).toBe('glamorous-energy');
+    expect(read.toolName).toBe('Read');
+    expect(read.toolInput).toEqual({ file_path: '/tmp/devin-fixture-test.txt' });
+    expect(read.toolUseId).toBe('read:10#51bd603fafe14ea1abae3969e7ce4f11');
+    expect(read.turnId).toBe('74fe6288-4e56-4bf2-9e2e-d8b184c43ee9');
+
+    const edit = devinAdapter.normalizeInput(fixture.payloads.PostToolUseEdit);
+    expect(edit.toolName).toBe('Edit');
+    expect(edit.toolInput).toEqual({ file_path: '/tmp/devin-fixture-test.txt', old_string: 'hello', new_string: 'world' });
+    expect(edit.toolResponse).toEqual(fixture.payloads.PostToolUseEdit.tool_response);
+    expect(edit.toolUseId).toBe('edit:11#0065a456c7b04520b184df9e7dcc49ae');
   });
 
   test('reads the prompt, the Stop message and the SessionEnd reason', () => {
@@ -72,17 +88,6 @@ describe('devinAdapter tool names', () => {
   test('passes unmapped and MCP tool names through', () => {
     expect(normalize('run_subagent').toolName).toBe('run_subagent');
     expect(normalize('mcp__github__get_issue').toolName).toBe('mcp__github__get_issue');
-  });
-
-  test('aliases a file tool path to file_path without mutating the input', () => {
-    const raw = { path: 'src/login.ts', offset: 2 };
-    const before = { ...raw };
-    expect(normalize('read', raw).toolInput).toEqual({ ...before, file_path: 'src/login.ts' });
-    expect(raw).toEqual(before);
-    const supplied = { file_path: 'src/a.ts', path: 'src/b.ts' };
-    expect(normalize('edit', supplied).toolInput).toBe(supplied);
-    const execInput = { path: 'x', command: 'ls' };
-    expect(normalize('exec', execInput).toolInput).toBe(execInput);
   });
 });
 
