@@ -127,7 +127,9 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   // A PGP secret key is armored as `PRIVATE KEY BLOCK`, and an encrypted
   // PKCS#8 key as `ENCRYPTED PRIVATE KEY`.
   { name: 'private_key_pem', regex: /-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END (?:RSA |DSA |EC |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----/g },
-  { name: 'stripe_key',      regex: /\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{24,}\b/g },
+  // API keys (`sk_`/`pk_`/`rk_`) and webhook signing secrets (`whsec_`, what
+  // `stripe listen` prints and STRIPE_WEBHOOK_SECRET holds), which forge events.
+  { name: 'stripe_key',      regex: /\b(?:(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{24,}|whsec_[A-Za-z0-9]{32,})\b/g },
   { name: 'google_api_key',  regex: /\bAIza[0-9A-Za-z_-]{35}(?!\w)/g },
   // GitLab personal/project/group access tokens (`glpat-` + 20 chars; newer
   // routable tokens add dot-separated segments), Hugging Face user access

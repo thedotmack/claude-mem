@@ -35,6 +35,7 @@ describe('redactSensitive built-in patterns', () => {
     ['slack_token',     'Slack: ' + 'xox' + 'b-1234567890-0987654321-abcdefghijklmnop',             "<redacted type='slack_token'/>"],
     ['jwt',             'auth: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.AbCdEf0123456789',               "<redacted type='jwt'/>"],
     ['stripe_key',      'Stripe ' + 'sk' + '_live_abcdefghijklmnopqrstuvwx',                         "<redacted type='stripe_key'/>"],
+    ['stripe_key',      'STRIPE_WEBHOOK_SECRET=' + 'wh' + 'sec_aBcDeFgHiJkLmNoPqRsTuVwXyZ012345 tail', "<redacted type='stripe_key'/>"],
     ['google_api_key',  'key=AIzaSyA-0123456789abcdefghijklmnopqrstu',                                "<redacted type='google_api_key'/>"],
   ])('redacts %s', (name, input, marker) => {
     const result = redactSensitive(input, cfg);
