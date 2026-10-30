@@ -20,7 +20,7 @@ import { readJsonFileWithBom } from '../../shared/atomic-json.js';
 import { paths } from '../../shared/paths.js';
 import { buildSpawnSyncInvocation, lookupWindowsCommandCandidates, type SpawnSyncInvocation } from '../../shared/spawn.js';
 
-const CODEX_DIR = path.join(homedir(), '.codex');
+const CODEX_DIR = path.resolve(process.env.CODEX_HOME || path.join(homedir(), '.codex'));
 const CODEX_AGENTS_MD_PATH = path.join(CODEX_DIR, 'AGENTS.md');
 const CODEX_TRANSCRIPT_WATCH_CONFIG_PATH = paths.transcriptsConfig();
 const CODEX_CONFIG_PATH = path.join(CODEX_DIR, 'config.toml');
