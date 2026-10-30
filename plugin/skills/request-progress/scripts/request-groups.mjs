@@ -855,6 +855,8 @@ var init_SettingsDefaultsManager = __esm({
         // installs land here — no delivered key exists headlessly, so the settings
         // default stays 'claude'.
         CLAUDE_MEM_PROVIDER: "claude",
+        CLAUDE_MEM_MEDIA_CAPTURE_ENABLED: "false",
+        CLAUDE_MEM_MEDIA_INFERENCE_ENABLED: "false",
         CLAUDE_MEM_CODEX_MODEL: "",
         // Empty uses the Codex default model.
         CLAUDE_MEM_CODEX_PATH: "codex",
@@ -1214,6 +1216,8 @@ var init_SettingsDefaultsManager = __esm({
         // dedup-scan skips a project with more rows than this (memory safety)
         CLAUDE_MEM_TOOL_USES_RETENTION_DAYS: "0",
         // 0 = keep forever (default); N = purge linked tool_uses older than N days at worker start
+        CLAUDE_MEM_LOG_RETENTION_DAYS: "30",
+        // 30 days of daily logs; 0 = keep forever. Today's and yesterday's files are always kept
         CLAUDE_MEM_WORKER_AUTOSTART: "true",
         // 'false' = the worker is managed externally: hooks, the MCP server and `start` use a running worker but never launch, kill or recycle one.
         CLAUDE_MEM_PROJECT_NAME_SOURCE: "path"
