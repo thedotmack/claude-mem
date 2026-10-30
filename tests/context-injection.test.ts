@@ -164,6 +164,32 @@ describe('Context Injection', () => {
   });
 
   describe('replace existing context section', () => {
+    it.each(['- - -', '* * *', '___', '  -  -  -', '-\t-\t-'])('preserves an authored fence after thematic break %j', (divider) => {
+      const filePath = join(tempDir, 'CLAUDE.md');
+      const before = `${divider}\n  ~~~md\n${CONTEXT_TAG_OPEN}\nexample only\n${CONTEXT_TAG_CLOSE}\n  ~~~\n\n`;
+      writeFileSync(filePath, `${before}${CONTEXT_TAG_OPEN}\nold memory\n${CONTEXT_TAG_CLOSE}\n`);
+
+      injectContextIntoMarkdownFile(filePath, 'current memory');
+      injectContextIntoMarkdownFile(filePath, 'current memory');
+
+      expect(readFileSync(filePath, 'utf-8')).toBe(
+        `${before}${CONTEXT_TAG_OPEN}\ncurrent memory\n${CONTEXT_TAG_CLOSE}\n`,
+      );
+    });
+
+    it.each(['- - - -', '- * * *', '- outer\n  - - -'])('preserves list-owned code after a nested divider %j', (divider) => {
+      const filePath = join(tempDir, 'CLAUDE.md');
+      const before = `${divider}\n  ~~~md\n  ${CONTEXT_TAG_OPEN}\n  example only\n  ${CONTEXT_TAG_CLOSE}\n  ~~~\n\n`;
+      writeFileSync(filePath, `${before}${CONTEXT_TAG_OPEN}\nold memory\n${CONTEXT_TAG_CLOSE}\n`);
+
+      injectContextIntoMarkdownFile(filePath, 'current memory');
+      injectContextIntoMarkdownFile(filePath, 'current memory');
+
+      expect(readFileSync(filePath, 'utf-8')).toBe(
+        `${before}${CONTEXT_TAG_OPEN}\ncurrent memory\n${CONTEXT_TAG_CLOSE}\n`,
+      );
+    });
+
     it.each([
       '- ~~~sh\n  npm test\n  ~~~\n\n',
       '- ```sh\n  npm test\n  ```\n\n',

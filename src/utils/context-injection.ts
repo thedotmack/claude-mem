@@ -20,6 +20,7 @@ export function findContextBlockRange(content: string): { start: number; end: nu
   let opening = -1;
   let fence: { character: string; length: number; indent: number } | null = null;
   const listIndents: number[] = [];
+  const thematicBreak = /^ {0,3}([-*_])(?: *\1){2,} *$/;
 
   for (const rawLine of content.split('\n')) {
     const line = rawLine.replace(/\r$/, '');
@@ -39,7 +40,8 @@ export function findContextBlockRange(content: string): { start: number; end: nu
     let containerLine = expanded.slice(indent);
     if (!fence && opening === -1) {
       let item: RegExpExecArray | null;
-      while ((item = /^ {0,3}(?:[-+*]|[0-9]{1,9}[.)])( +)(?=\S)/.exec(containerLine))) {
+      while (!thematicBreak.test(containerLine) &&
+             (item = /^ {0,3}(?:[-+*]|[0-9]{1,9}[.)])( +)(?=\S)/.exec(containerLine))) {
         const padding = item[1].length > 4 ? 1 : item[1].length;
         indent += item[0].length - item[1].length + padding;
         listIndents.push(indent);
