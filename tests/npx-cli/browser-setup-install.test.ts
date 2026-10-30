@@ -45,6 +45,8 @@ process.env.CLAUDE_CONFIG_DIR = join(fixture, 'claude');
 process.env.CLAUDE_MEM_ENV_FILE = join(data, '.env');
 process.env.PATH = `${bin}:/usr/bin:/bin`;
 process.env.DO_NOT_TRACK = '1';
+// CI hides the optional email question; these cases play a person at a terminal.
+delete process.env.CI;
 for (const key of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_MEM_PROVIDER', 'CLAUDE_MEM_OPENROUTER_API_KEY']) delete process.env[key];
 
 // A free loopback port for the fixture worker.
