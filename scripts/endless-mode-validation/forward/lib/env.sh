@@ -14,7 +14,12 @@
 #   EMV_CODEX_MODEL     Codex model [gpt-6.1-sol]
 #   EMV_CLAUDE_BIN / EMV_CODEX_BIN   the real agent binaries [command -v claude / codex]. Point these past any wrapper
 #                       script that rewrites CLAUDE_CONFIG_DIR or HOME, or the isolation does not hold.
-#   EMV_PORT_BASE       first port; configuration i uses EMV_PORT_BASE + 10*i .. +3 [38100]
+#   EMV_PORT_BASE       first port; configuration i uses EMV_PORT_BASE + 10*i .. +4 [38100]
+#   EMV_OBSERVER_MODEL  the observer's Claude model under the anthropic profile [claude-mem's default]; use an alias
+#                       such as `haiku` (newest Haiku), never a dated id
+#   EMV_OBSERVER_TEE=1  send the observer through its own tee (stacks/<config>/tee-observer), so its tokens and cost
+#                       are measured too (stats.py reports the agent only; tasks/extract.py reads both)
+#   EMV_HOST_AUTH=1     the host supplies Claude credentials itself (a cloud sandbox's egress proxy): read no token
 
 typeset -g EMV_FORWARD_DIR=${0:A:h:h}  # sourced at top level: zsh sets $0 to this file
 typeset -g EMV_REPO_ROOT=${EMV_FORWARD_DIR:h:h:h}
@@ -59,6 +64,7 @@ emv_ports() {
   (( i > ${#EMV_ALL_CONFIGS} )) && { echo "unknown configuration '$1' (one of: ${EMV_ALL_CONFIGS[*]})" >&2; return 2; }
   local base=$(( EMV_PORT_BASE + 10 * (i - 1) ))
   typeset -g EMV_WORKER_PORT=$base EMV_GATEWAY_PORT=$((base + 1)) EMV_TEE_ANTHROPIC_PORT=$((base + 2)) EMV_TEE_CODEX_PORT=$((base + 3))
+  typeset -g EMV_TEE_OBSERVER_PORT=$((base + 4))
 }
 
 # Switch this shell into configuration $1's sandbox.
@@ -66,7 +72,7 @@ emv_use_stack() {
   emv_ports $1 || return
   export EMV_CONFIG=$1
   export EMV_STACK=$EMV_RUN_DIR/stacks/$1
-  export EMV_WORKER_PORT EMV_GATEWAY_PORT EMV_TEE_ANTHROPIC_PORT EMV_TEE_CODEX_PORT
+  export EMV_WORKER_PORT EMV_GATEWAY_PORT EMV_TEE_ANTHROPIC_PORT EMV_TEE_CODEX_PORT EMV_TEE_OBSERVER_PORT
   export CLAUDE_MEM_DATA_DIR=$EMV_STACK/data HOME=$EMV_STACK/home CLAUDE_CONFIG_DIR=$EMV_STACK/claude-config CODEX_HOME=$EMV_STACK/codex-home
   export XDG_CONFIG_HOME=$HOME/.config XDG_DATA_HOME=$HOME/.local/share XDG_CACHE_HOME=$HOME/.cache XDG_STATE_HOME=$HOME/.local/state
   # Package caches stay shared (they are caches, not configuration) so a sandbox HOME does not re-download them.

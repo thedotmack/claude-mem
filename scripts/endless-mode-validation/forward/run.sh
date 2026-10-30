@@ -51,7 +51,7 @@ tee_dirs=(); for c in $configs; do tee_dirs+=($EMV_RUN_DIR/stacks/$c/tee-anthrop
 zsh $EMV_FORWARD_DIR/netwatch.sh $EMV_RUN_DIR/logs/netwatch.log $stop &
 python3 $EMV_FORWARD_DIR/extract.py $stop $tee_dirs 2>> $EMV_RUN_DIR/logs/extract.err &
 extractor=$!
-[[ $EMV_MODEL_PROFILE == anthropic && $EMV_AGENT == claude && -z $EMV_CLAUDE_OAUTH_TOKEN ]] && zsh $EMV_FORWARD_DIR/token-watch.sh $stop $configs &
+[[ $EMV_MODEL_PROFILE == anthropic && $EMV_AGENT == claude && -z $EMV_CLAUDE_OAUTH_TOKEN && $EMV_HOST_AUTH != 1 ]] && zsh $EMV_FORWARD_DIR/token-watch.sh $stop $configs &
 
 say "sessions start"
 session_pids=()
