@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { CheckIcon } from 'lucide-react'
 import { AgentMark } from '@/components/brand'
 import { DottedGlowBackground } from '@/components/aceternity/dotted-glow-background'
@@ -12,21 +13,25 @@ const STATUS: Record<SetupScanPhase, string> = {
   reading: 'Looking for usage history.',
   checking: 'Checking repeated context.',
   saving: 'Preparing your usage summary.',
-  uploading: 'Finding your goals, work and rules.',
+  'awaiting-consent': 'Scan finished. Nothing has left this computer. Choose what happens next.',
+  uploading: 'Uploading your prompts to cmem.ai to find your goals, work and rules.',
   done: 'Preparing your usage summary.',
   failed: 'Setup stopped. Try again when you are ready.',
 }
 
 /** Step 1: each detected agent ticks in and its prompt count climbs while the worker reads the last 30 days. */
-export function ScanScreen({ scan, onImproveProductChange, preferenceError, onRetry, retrying, retryError }: {
+export function ScanScreen({ scan, onImproveProductChange, onConfirmUpload, preferenceError, onRetry, retrying, retryError }: {
   scan: SetupScanView
   onImproveProductChange: (improveProduct: boolean) => void
+  onConfirmUpload: (upload: boolean, agents?: string[]) => void
   preferenceError: string | null
   onRetry: () => void
   retrying: boolean
   retryError: string | null
 }) {
   const detected = scan.agents.filter((agent) => agent.detected)
+  const [unticked, setUnticked] = useState<string[]>([])
+  const chosen = detected.filter((agent) => agent.prompts > 0 && !unticked.includes(agent.id)).map((agent) => agent.id)
   const reducedMotion = useMatchesMedia('(prefers-reduced-motion: reduce)')
   return (
     <section aria-labelledby="scan-title">
@@ -54,8 +59,30 @@ export function ScanScreen({ scan, onImproveProductChange, preferenceError, onRe
         </div>
         <label className="scan-improve-product">
           <input type="checkbox" checked={scan.improveProduct} disabled={scan.phase === 'uploading'} onChange={(event) => onImproveProductChange(event.target.checked)} />
-          <span>Help make claude-mem smarter for everyone with my anonymized setup results</span>
+          <span>Also share my anonymized setup results to help improve claude-mem (optional)</span>
         </label>
+        {scan.phase === 'awaiting-consent' && (
+          <div className="scan-consent" role="group" aria-label="Upload your prompts">
+            <p>
+              To find your goals, work and rules, claude-mem can upload the <strong>full text of the prompts you typed in the last 30 days</strong>,
+              with session IDs, project names, folder paths and timestamps, to cmem.ai. They are processed by a third-party AI model provider.
+              If you skip this, your history stays on this computer.
+            </p>
+            <ul className="scan-consent-agents" aria-label="Tools to upload">
+              {detected.filter((agent) => agent.prompts > 0).map((agent) => (
+                <li key={agent.id}>
+                  <label>
+                    <input type="checkbox" checked={!unticked.includes(agent.id)}
+                      onChange={(event) => setUnticked(event.target.checked ? unticked.filter((id) => id !== agent.id) : [...unticked, agent.id])} />
+                    <span>{agent.label} ({agent.prompts.toLocaleString('en-US')} prompts)</span>
+                  </label>
+                </li>
+              ))}
+            </ul>
+            <button type="button" disabled={chosen.length === 0} onClick={() => onConfirmUpload(true, chosen)}>Upload my prompts to cmem.ai</button>
+            <button type="button" className="secondary" onClick={() => onConfirmUpload(false)}>Keep everything local</button>
+          </div>
+        )}
         <p className="scan-status" role="status" aria-live="polite">{STATUS[scan.phase]}</p>
         {preferenceError && <p className="scan-error" role="alert">{preferenceError}</p>}
         {scan.error && <p className="scan-error" role="alert">{scan.error}</p>}

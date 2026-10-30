@@ -18,6 +18,17 @@ reports: two anonymous [telemetry](/telemetry) counts (`work_view_opened`,
 prompts, observations and file paths stay on this computer, and
 `npx claude-mem telemetry disable` turns the counts off.
 
+## Browser setup and your prompts
+
+The browser setup reads your local agent histories (last 30 days) on this
+computer only. Nothing is uploaded until the scan finishes and you choose
+**Upload my prompts to cmem.ai**. That upload sends the full text of the prompts
+you typed, with session IDs, project names, folder paths and timestamps, to
+cmem.ai, which processes them with a third-party AI model provider. You can
+untick any tool before uploading, or choose **Keep everything local** to send
+nothing. The separate "share anonymized setup results" box is optional and off
+by default.
+
 ## Working, ready and checked
 
 - **In progress** means the latest saved work state says work is underway. It is

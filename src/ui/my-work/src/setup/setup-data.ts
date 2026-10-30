@@ -15,7 +15,7 @@ export interface SetupScanAgent {
   cannotRunReason: string | null
 }
 
-export type SetupScanPhase = 'idle' | 'reading' | 'checking' | 'saving' | 'uploading' | 'done' | 'failed'
+export type SetupScanPhase = 'idle' | 'reading' | 'checking' | 'saving' | 'awaiting-consent' | 'uploading' | 'done' | 'failed'
 export interface SetupScanView { agents: SetupScanAgent[]; percent: number; phase: SetupScanPhase; done: boolean; error: string | null; improveProduct: boolean }
 /** The owner's newest typed prompts, quoted as typed (SetupScanState.recentPrompts). */
 export interface SetupRecentPrompt { agent: string; at: string; text: string }
@@ -68,6 +68,8 @@ export interface SetupSource {
   retryScan(): Promise<void>
   /** Changes the hosted setup results preference without pausing the scan or upload. */
   setImproveProduct(improveProduct: boolean): Promise<void>
+  /** Answers the upload question: true sends the scanned prompts to cmem.ai, false keeps them on this machine. */
+  confirmUpload(upload: boolean, agents?: string[]): Promise<void>
   /** Hands the storage choice to the installer waiting in the terminal (POST /api/setup/choice). */
   choose(choice: SetupChoice): Promise<void>
   /** Asks the installer holding the On The Go sign-in to open checkout (POST /api/setup/checkout). */
@@ -84,7 +86,7 @@ export interface SetupSource {
 }
 
 export const EMPTY_SETUP_DATA: SetupData = {
-  scan: { agents: [], percent: 0, phase: 'idle', done: false, error: null, improveProduct: true },
+  scan: { agents: [], percent: 0, phase: 'idle', done: false, error: null, improveProduct: false },
   reveal: { goals: null, work: null, rules: null },
   extraction: null,
   recentPrompts: [],
@@ -141,7 +143,7 @@ const toScanView = (scan: WorkerScanState): SetupScanView => ({
     // Agent login is irrelevant to hosted setup; the transcript scan only reports which tools were found.
     id, label, detected, prompts, canRunSetup: null, cannotRunReason: null,
   })),
-  percent: scan.percent, phase: scan.phase, done: scan.done, error: scan.error, improveProduct: scan.improveProduct ?? true,
+  percent: scan.percent, phase: scan.phase, done: scan.done, error: scan.error, improveProduct: scan.improveProduct ?? false,
 })
 
 // Keep rapid checkbox changes in click order; scan and upload never wait on this queue.
@@ -167,7 +169,7 @@ export const localSetupSource: SetupSource = {
     const publish = (changes: Partial<SetupData>) => { if (closed) return; data = { ...data, ...changes }; onData(data) }
     const applyScan = (scan: WorkerScanState) => {
       scanRevision++
-      appliedImproveProduct = scan.improveProduct ?? true
+      appliedImproveProduct = scan.improveProduct ?? false
       publish({
         scan: toScanView(scan),
         usage: scan.usage ? toSetupUsage(scan.usage) : null,
@@ -254,6 +256,7 @@ export const localSetupSource: SetupSource = {
     preferenceWrite = write.catch(() => {})
     await write
   },
+  async confirmUpload(upload, agents) { await postJson('/api/setup/scan/consent', agents ? { upload, agents } : { upload }) },
   async choose(choice) { await postJson('/api/setup/choice', choice) },
   async checkout() { await postJson('/api/setup/checkout', {}) },
   async complete(tools) { await postJson('/api/setup/complete', { tools }) },

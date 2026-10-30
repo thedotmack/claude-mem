@@ -138,10 +138,44 @@ describe('setup prompt scan', () => {
     scan.setExtractor(async prompts => { extracted = prompts; });
     scan.start();
     await scan.finished();
+    await scan.confirmUpload(true);
     expect(extracted.filter(prompt => prompt.text === 'make the scan screen show each agent')).toHaveLength(1);
     expect(extracted.filter(prompt => prompt.text === 'plan the funnel')).toEqual([
       expect.objectContaining({ sessionId: 'session-older-than-its-transcript', project: 'alpha', agent: 'claude-code' }),
     ]);
+  });
+
+  it('never uploads before consent, and declining keeps everything local', async () => {
+    hookRecorded('claude', 'session-consent', 'alpha', 'private prompt', '2026-10-05T09:00:00.000Z');
+    let calls = 0;
+    const scan = setupScan();
+    scan.setExtractor(async () => { calls++; });
+    scan.start();
+    const waiting = await scan.finished();
+    expect(waiting.phase).toBe('awaiting-consent');
+    expect(waiting.improveProduct).toBe(false);
+    expect(calls).toBe(0);
+    const done = await scan.confirmUpload(false);
+    expect(done).toMatchObject({ phase: 'done', done: true });
+    expect(calls).toBe(0);
+  });
+
+  it('uploads only the tools the person left ticked', async () => {
+    hookRecorded('claude', 'session-tools', 'alpha', 'claude typed this', '2026-10-05T09:00:00.000Z');
+    let batches: Array<Array<{ agent: string }>> = [];
+    const scan = setupScan();
+    scan.setExtractor(async prompts => { batches.push(prompts); });
+    scan.start();
+    await scan.finished();
+    await scan.confirmUpload(true, []);
+    expect(batches).toEqual([]);
+    expect(scan.state()).toMatchObject({ phase: 'done', done: true });
+    scan.start();
+    await scan.finished();
+    await scan.confirmUpload(true, ['claude-code']);
+    expect(batches).toHaveLength(1);
+    expect(batches[0].length).toBeGreaterThan(0);
+    expect(batches[0].every(prompt => prompt.agent === 'claude-code')).toBe(true);
   });
 
   it('memory-only prompts get the current tag stripping and redaction before extraction', async () => {
@@ -154,7 +188,8 @@ describe('setup prompt scan', () => {
       const scan = setupScan();
       scan.setExtractor(async prompts => { extracted = prompts; });
       scan.start();
-      const state = await scan.finished();
+      await scan.finished();
+      const state = await scan.confirmUpload(true);
       const stored = extracted.find(prompt => prompt.sessionId === 'session-older-than-its-transcript')!;
       expect(stored.text).toStartWith('plan the funnel with');
       for (const text of [stored.text, ...state.recentPrompts.map(prompt => prompt.text)]) {

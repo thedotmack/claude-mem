@@ -59,7 +59,7 @@ const RECENT_PROMPTS = [
 
 function sampleData(newInstall: boolean, usage: SampleUsage, waitingForAgent: boolean): SetupData {
   return {
-    scan: { agents: [], percent: 0, phase: 'reading', done: false, error: null, improveProduct: true },
+    scan: { agents: [], percent: 0, phase: 'reading', done: false, error: null, improveProduct: false },
     reveal: { goals: null, work: null, rules: null },
     extraction: waitingForAgent ? { state: 'waiting-for-agent', step: null } : null,
     recentPrompts: RECENT_PROMPTS,
@@ -109,6 +109,7 @@ export function createSampleSetupSource(newInstall: boolean, holdScanAtPercent: 
       return () => listeners.delete(onData)
     },
     async retryScan() { if (!playing) play() },
+    async confirmUpload() { publish({ scan: { ...data.scan, phase: 'done', done: true, percent: 100 } }) },
     async setImproveProduct(improveProduct) { publish({ scan: { ...data.scan, improveProduct } }) },
     // Review fixtures hand nothing to an installer.
     async choose() {},

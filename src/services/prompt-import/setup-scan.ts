@@ -18,7 +18,7 @@ import { scanOwnerPrompts, scanWindowStart, type MemoryPrompt, type OwnerPrompt,
 /** How far apart the hook's time and the transcript's time may be for one prompt (measured: under 7 s on the owner's Mac). */
 export const HOOK_MATCH_WINDOW_MS = 10 * 60_000;
 
-export type SetupScanPhase = 'idle' | 'reading' | 'checking' | 'saving' | 'uploading' | 'done' | 'failed';
+export type SetupScanPhase = 'idle' | 'reading' | 'checking' | 'saving' | 'awaiting-consent' | 'uploading' | 'done' | 'failed';
 
 export interface SetupScanAgent {
   id: PromptAgentId;
@@ -104,7 +104,8 @@ const AGENT_LABELS: Array<[PromptAgentId, string]> = [
 
 function idleState(): SetupScanState {
   return {
-    improveProduct: true,
+    // Opt-in: nothing about setup results is shared unless the person ticks this.
+    improveProduct: false,
     agents: AGENT_LABELS.map(([id, label]) => ({ id, label, detected: false, prompts: 0, fromMemory: 0, fromTranscripts: 0, canRunSetup: null, cannotRunReason: null })),
     percent: 0, phase: 'idle', done: false, windowStart: null, startedAt: null, finishedAt: null, durationMs: null,
     added: 0, skippedSources: 0, error: null, usage: null, usageError: null, recentPrompts: [],
@@ -114,6 +115,7 @@ function idleState(): SetupScanState {
 export class SetupScan {
   private current: SetupScanState = idleState();
   private running: Promise<void> | null = null;
+  private pendingUpload: { ownerPrompts: OwnerPrompt[]; summary: Partial<SetupScanState>; startedAt: number } | null = null;
   private listeners = new Set<(state: SetupScanState) => void>();
   private lastNotified = 0;
   private now: () => number;
@@ -145,7 +147,11 @@ export class SetupScan {
 
   /** Starts a scan unless one is running. Resolves with the state at start. */
   start(improveProduct?: boolean): SetupScanState {
-    if (!this.running) {
+    // Waiting for the upload choice, or uploading: joining that state keeps a second scan from paying for a second upload.
+    const held = this.current.phase === 'awaiting-consent' || this.current.phase === 'uploading';
+    if (held) {
+      if (improveProduct !== undefined && this.current.phase === 'awaiting-consent') this.setImproveProduct(improveProduct);
+    } else if (!this.running) {
       if (improveProduct !== undefined) this.setImproveProduct(improveProduct);
       this.running = this.run().finally(() => { this.running = null; });
     }
@@ -191,6 +197,39 @@ export class SetupScan {
         return { ...agent, canRunSetup, cannotRunReason: canRunSetup ? null : runner.reason };
       }),
     }, true);
+  }
+
+  private finish(summary: Partial<SetupScanState>, startedAt: number): void {
+    const finishedAt = this.now();
+    this.update({
+      ...summary, phase: 'done', done: true, percent: 100,
+      finishedAt: new Date(finishedAt).toISOString(), durationMs: finishedAt - startedAt,
+    }, true);
+    logger.info('IMPORT', 'Setup prompt scan finished', { durationMs: finishedAt - startedAt });
+  }
+
+  /** The person's answer to "upload your last 30 days of prompts to cmem.ai?". Declining keeps everything local. */
+  async confirmUpload(allow: boolean, agents?: PromptAgentId[]): Promise<SetupScanState> {
+    const pending = this.pendingUpload;
+    if (this.current.phase !== 'awaiting-consent' || !pending) throw new Error('The setup scan is not waiting for an upload choice.');
+    this.pendingUpload = null;
+    // Only the tools the person left ticked are uploaded; the rest never leave this machine.
+    const selected = agents ? pending.ownerPrompts.filter(prompt => agents.includes(prompt.agent)) : pending.ownerPrompts;
+    if (!allow || !selected.length) {
+      logger.info('IMPORT', 'Setup prompt upload declined; prompts stay on this machine');
+      this.finish(pending.summary, pending.startedAt);
+      return this.state();
+    }
+    try {
+      this.update({ phase: 'uploading', percent: 99 }, true);
+      await this.extract!(selected, this.current.improveProduct);
+      this.finish(pending.summary, pending.startedAt);
+    } catch (error) {
+      const finishedAt = this.now();
+      logger.error('IMPORT', 'Setup prompt upload failed', {}, error as Error);
+      this.update({ phase: 'failed', done: true, error: error instanceof Error ? error.message : String(error), finishedAt: new Date(finishedAt).toISOString(), durationMs: finishedAt - pending.startedAt }, true);
+    }
+    return this.state();
   }
 
   private async run(): Promise<void> {
@@ -278,17 +317,18 @@ export class SetupScan {
       const { usage, usageError } = await this.tokenSavings(store, tokenUsage);
       const recentPrompts = [...ownerPrompts].sort((left, right) => right.at - left.at).slice(0, RECENT_PROMPTS)
         .map(prompt => ({ agent: prompt.agent, at: new Date(prompt.at).toISOString(), text: prompt.text.trim().slice(0, RECENT_PROMPT_CHARACTERS) }));
-      if (this.extract) {
-        // Keep the scan screen open until results are saved; its existing error slot shows Cloud failures.
-        this.update({ phase: 'uploading', percent: 99, agents, added, skippedSources: result.skippedSources.length, usage, usageError, recentPrompts }, true);
+      const summary = { agents, added, skippedSources: result.skippedSources.length, usage, usageError, recentPrompts };
+      if (this.extract && !ownerPrompts.length) {
+        // Nothing to upload, so there is nothing to ask about; the extractor records an empty result without contacting Cloud.
+        this.update({ phase: 'uploading', percent: 99, ...summary }, true);
         await this.extract(ownerPrompts, this.current.improveProduct);
+      } else if (this.extract) {
+        // Prompts leave this machine only after an explicit choice. Hold them in memory and wait for confirmUpload().
+        this.pendingUpload = { ownerPrompts, summary, startedAt };
+        this.update({ phase: 'awaiting-consent', percent: 98, ...summary }, true);
+        return;
       }
-      const finishedAt = this.now();
-      this.update({
-        phase: 'done', done: true, percent: 100, agents, added, skippedSources: result.skippedSources.length, usage, usageError, recentPrompts,
-        finishedAt: new Date(finishedAt).toISOString(), durationMs: finishedAt - startedAt,
-      }, true);
-      logger.info('IMPORT', 'Setup prompt scan finished', { added, durationMs: finishedAt - startedAt });
+      this.finish(summary, startedAt);
     } catch (error) {
       const finishedAt = this.now();
       logger.error('IMPORT', 'Setup prompt scan failed', {}, error as Error);

@@ -13,7 +13,7 @@ const compiled = buildSync({
       export { localSetupSource, EMPTY_SETUP_DATA } from './src/setup/setup-data';
       export { createSampleSetupSource } from './src/setup/setup-sample';
       export const renderScan = (scan, preferenceError = null, retrying = false, retryError = null) => renderToStaticMarkup(
-        <ScanScreen scan={scan} onImproveProductChange={() => {}} preferenceError={preferenceError} onRetry={() => {}} retrying={retrying} retryError={retryError} />
+        <ScanScreen scan={scan} onImproveProductChange={() => {}} onConfirmUpload={() => {}} preferenceError={preferenceError} onRetry={() => {}} retrying={retrying} retryError={retryError} />
       );
     `,
   },
@@ -61,15 +61,21 @@ function useNetwork(handle: (url: string, init: RequestInit) => Promise<Response
 }
 
 describe('hosted setup scan control', () => {
-  it('renders the approved checkbox checked under the progress meter, and locks it only for upload', () => {
+  it('renders the optional checkbox unchecked under the progress meter, and locks it only for upload', () => {
     const app = fixture();
     const initial = app.renderScan(app.EMPTY_SETUP_DATA.scan);
     const checkbox = initial.match(/<input[^>]+type="checkbox"[^>]*>/)?.[0] ?? '';
-    expect(checkbox).toContain('checked=""');
+    expect(checkbox).not.toContain('checked=""');
     expect(checkbox).not.toContain('disabled');
-    expect(initial).toContain('Help make claude-mem smarter for everyone with my anonymized setup results');
+    expect(initial).toContain('Also share my anonymized setup results to help improve claude-mem (optional)');
     expect(initial.indexOf('<progress')).toBeLessThan(initial.indexOf(checkbox));
-    expect(app.renderScan(scan({ phase: 'reading', improveProduct: false }))).not.toContain('checked=""');
+    expect(app.renderScan(scan({ phase: 'reading', improveProduct: true }))).toContain('checked=""');
+    expect(initial).not.toContain('Upload my prompts to cmem.ai');
+    const consent = app.renderScan(scan({ phase: 'awaiting-consent' }));
+    expect(consent).toContain('Upload my prompts to cmem.ai');
+    expect(consent).toContain('Keep everything local');
+    expect(app.renderScan(scan({ phase: 'awaiting-consent', agents: [{ id: 'codex', label: 'Codex', detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null }] }))).toContain('Codex (3 prompts)');
+    expect(consent).toContain('full text of the prompts you typed in the last 30 days');
     expect(app.renderScan(scan({ phase: 'saving' }))).not.toContain('disabled=""');
     expect(app.renderScan(scan({ phase: 'uploading' }))).toContain('disabled=""');
   });
