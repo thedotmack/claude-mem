@@ -148,7 +148,7 @@ export function App() {
 
   const visibleSessions = useMemo(() => {
     return catalog.sessions
-      .filter(session => !currentFilter || session.project === currentFilter)
+      .filter(session => !currentFilter || rowInProject(session, currentFilter))
       .sort((a, b) => b.started_at_epoch - a.started_at_epoch);
   }, [catalog.sessions, currentFilter]);
 
