@@ -30,6 +30,7 @@ import { LAUNCHER_PROTOCOL } from './launcher-protocol.js';
 import { bunVersionHonoursBunBeBun } from './bun-be-bun-support.js';
 import { findBun } from './bun-runtime.js';
 import { expandHome } from '../shared/expand-home.js';
+import { commandInvocation } from '../shared/spawn.js';
 
 const IS_WINDOWS = process.platform === 'win32';
 const STDIN_COLLECTION_TIMEOUT_MS = 5000;
@@ -340,9 +341,12 @@ async function runThroughWorker(workerServiceArguments: string[]): Promise<never
   // FIXED (security): never use `shell: true`; use cmd.exe with array args.
   const needsCmdShell = IS_WINDOWS && /\.(cmd|bat)$/i.test(bunRuntime.bunExecutablePath);
   if (needsCmdShell) {
-    // Safe: array-based args passed to cmd.exe /c — no shell string interpolation.
-    spawnCommand = 'cmd.exe';
-    spawnArguments = ['/c', bunRuntime.bunExecutablePath, ...workerArguments];
+    const invocation = commandInvocation(bunRuntime.bunExecutablePath, workerArguments, process.platform);
+    spawnCommand = invocation.command;
+    spawnArguments = invocation.args;
+    if (invocation.windowsVerbatimArguments) {
+      (spawnOptions as any).windowsVerbatimArguments = true;
+    }
   }
 
   return new Promise<never>(() => {
