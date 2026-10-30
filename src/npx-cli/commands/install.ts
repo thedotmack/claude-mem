@@ -1395,7 +1395,12 @@ export async function promptProvider(
 
 /** `interactive: false` keeps the defaults (or `--model`) without asking: the browser funnel's At Home branch. */
 async function promptClaudeModel(options: InstallOptions, interactive: boolean = isInteractive): Promise<void> {
+  // Model policy (CLAUDE.md): offer Claude Code's aliases, never dated ids, so every
+  // install follows each new and cheaper release. Pinned ids stay accepted for --model.
   const allowed = new Set([
+    'haiku',
+    'sonnet',
+    'opus',
     'claude-haiku-4-5-20251001',
     'claude-sonnet-5',
     'claude-opus-4-8',
@@ -1429,8 +1434,8 @@ async function promptClaudeModel(options: InstallOptions, interactive: boolean =
   if (allowCustomModel) {
     const result = await p.text({
       message: 'Which model should the gateway use?',
-      placeholder: 'claude-haiku-4-5-20251001',
-      defaultValue: initialModel || 'claude-haiku-4-5-20251001',
+      placeholder: 'haiku',
+      defaultValue: initialModel || 'haiku',
       validate: (v?: string) => (!v || v.trim().length === 0) ? 'Model required' : undefined,
     });
 
@@ -1447,15 +1452,20 @@ async function promptClaudeModel(options: InstallOptions, interactive: boolean =
     return;
   }
 
-  const initialValue = allowed.has(initialModel) ? initialModel : 'claude-haiku-4-5-20251001';
+  const initialValue = allowed.has(initialModel) ? initialModel : 'haiku';
+  const choices = [
+    { value: 'haiku', label: 'Haiku, newest version (recommended — fast, cheap, great for compression)' },
+    { value: 'sonnet', label: 'Sonnet, newest version (balanced quality and cost)' },
+    { value: 'opus', label: 'Opus, newest version (highest quality, slowest)' },
+  ];
+  // A pinned id saved by an older install stays selectable, so rerunning the installer can keep it.
+  if (!choices.some((o) => o.value === initialValue)) {
+    choices.push({ value: initialValue, label: `${initialValue} (your saved pin; never updates)` });
+  }
 
   const result = await p.select<string>({
     message: 'Which Claude model should claude-mem use to compress observations?\nThis runs whenever you and Claude touch a file — keep it cheap and fast.',
-    options: [
-      { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5 (recommended — fast, cheap, great for compression)' },
-      { value: 'claude-sonnet-5', label: 'Sonnet 5 (balanced quality and cost)' },
-      { value: 'claude-opus-4-8', label: 'Opus 4.8 (highest quality, slowest)' },
-    ],
+    options: choices,
     initialValue,
   });
 
