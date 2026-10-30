@@ -25,6 +25,10 @@ UPSTREAM=${EMV_UPSTREAM:-https://api.anthropic.com}
 # The agent's upstream can differ from the observer's (EMV_AGENT_UPSTREAM, e.g. OpenRouter's Anthropic-compatible API
 # for a DeepSeek agent while the observer stays on Claude). Default: the same upstream for both.
 AGENT_UPSTREAM=${EMV_AGENT_UPSTREAM:-$UPSTREAM}
+# The observer's upstream (EMV_OBSERVER_UPSTREAM) and, on a machine with no Claude login, the environment variable that
+# holds its API key (EMV_OBSERVER_KEY_ENV, e.g. OPENROUTER_API_KEY for the newest Haiku on OpenRouter). The observer tee
+# puts the key in; nothing secret is written.
+OBS_UPSTREAM=${EMV_OBSERVER_UPSTREAM:-$UPSTREAM}
 tee_port=$base worker_port=$((base + 1)) gateway_port=$((base + 2)) obs_port=$((base + 3))
 pids=$dir/pids
 
@@ -88,10 +92,11 @@ if [[ $arm == endless || $arm == claudemem ]]; then
   inject=()
   for d in "$CLAUDE_MEM_DATA_DIR" "$HOME/.claude-mem"; do
     echo "ANTHROPIC_BASE_URL=http://127.0.0.1:$obs_port" > "$d/.env"
-    [[ $has_login == 1 ]] && echo "ANTHROPIC_AUTH_TOKEN=emv-tee-injects-claude-token" >> "$d/.env"
+    [[ $has_login == 1 || -n ${EMV_OBSERVER_KEY_ENV:-} ]] && echo "ANTHROPIC_AUTH_TOKEN=emv-tee-injects-claude-token" >> "$d/.env"
   done
-  [[ $has_login == 1 ]] && inject=(--inject-claude-token)
-  "$BUN" "$kit/scripts/endless-mode-validation/forward/tee-proxy.ts" $obs_port "$UPSTREAM" "$dir/observer-tee" ${inject[@]+"${inject[@]}"} > "$dir/logs/observer-tee.log" 2>&1 &
+  if [[ -n ${EMV_OBSERVER_KEY_ENV:-} ]]; then inject=("--inject-key-env=$EMV_OBSERVER_KEY_ENV")
+  elif [[ $has_login == 1 ]]; then inject=(--inject-claude-token); fi
+  "$BUN" "$kit/scripts/endless-mode-validation/forward/tee-proxy.ts" $obs_port "$OBS_UPSTREAM" "$dir/observer-tee" ${inject[@]+"${inject[@]}"} > "$dir/logs/observer-tee.log" 2>&1 &
   echo $! >> "$pids"
   (cd "$CLAUDE_MEM_DATA_DIR" && exec "$BUN" "$repo/src/services/worker-service.ts" --daemon > "$dir/logs/worker.log" 2>&1) &
   echo $! >> "$pids"

@@ -34,9 +34,30 @@ Options go after the output dir: `run.sh <out dir> --model <OpenRouter model> --
 (for example with a different judge) with `score.py --out <out dir> --judge-model <model>`; `--quick` skips the
 200-text conversation.
 
+## Run it on Fly Sprites (instead of your Mac)
+
+One Sprite per build, so the three builds never share a machine. From any claude-mem checkout on your Mac, with the
+Sprites CLI installed (`curl https://sprites.dev/install.sh | bash`) and `sprite login` done:
+
+```sh
+git fetch origin test/imessage-agent-build-kit
+git worktree add /tmp/cmem-imessage-kit origin/test/imessage-agent-build-kit
+/tmp/cmem-imessage-kit/scripts/endless-mode-validation/imessage-build/sprites.sh start
+```
+
+Then `sprites.sh status` to check on them, `sprites.sh fetch` once all three say done (copies the results to
+`~/cmem-imessage-build/sprites/` and writes the combined scorecard), and `sprites.sh destroy` when you're finished.
+
+- **What's different on a Sprite:** it has no Claude login, so the note-taker (OpenRouter's newest-Haiku alias, never a
+  dated model) goes through OpenRouter too, still through the recording proxy, so it's in the bill. The builder runs
+  under bubblewrap instead of macOS's sandbox. Linux has no Messages, so no text can go out from a real Apple ID.
+- **Cost of the Sprites themselves:** Fly lists $0.0385 per CPU-hour and $0.021875 per GB-hour of memory. A Sprite is
+  8 CPUs and 4 GB, so one running flat out is at most about $0.40 an hour, $1.20 for all three. This is on top of the
+  model bill and isn't in the scorecard.
+
 ## What stays safe
 
-- **No texts from a real Apple ID:** every builder session and every scoring step runs under `sandbox-exec`. It can't
+- **No texts from a real Apple ID:** on macOS, every builder session and every scoring step runs under `sandbox-exec`. It can't
   read the Messages database, run `osascript`, Shortcuts or `launchctl`, send AppleEvents, run tunnel tools, use the
   keychain, read your SSH, GitHub, npm, Claude or claude-mem credentials, or write anywhere in your home outside the
   run's own folder. Before anything runs, probes inside the sandbox check each of those, and the run stops if one
@@ -63,3 +84,4 @@ note-taker included, plus time and sessions used. Scoring's own model calls are 
   (`sessions`, `turns`, `requests`) and logs under `<out>/<build>/logs/sessions/`.
 - `score.py`: scoring. Writes `<out>/<build>/score/result.json` and `<out>/scorecard.md`.
 - `scorecard-manual.md`: the by-hand checks.
+- `sprites.sh`, `sprite-setup.sh`, `sprite-job.sh`: the Fly Sprites runner (your Mac), each Sprite's setup, and its job.

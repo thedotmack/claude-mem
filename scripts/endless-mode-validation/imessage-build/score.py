@@ -674,7 +674,7 @@ def bill(out, arm):
             'sessions': s[0], 'hours': (s[1] or 0) / 3600, 'commits': s[2]}
 
 
-def write_report(out, arms, cards):
+def write_report(out, arms, cards, bills):
     lines = ['# iMessage agent build test: scorecard', '',
              '| Check | ' + ' | '.join(arms) + ' |', '|---|' + '---|' * len(arms)]
     mark = {'pass': 'pass', 'fail': 'fail', 'not run': 'by hand', 'skipped': 'skipped'}
@@ -685,7 +685,7 @@ def write_report(out, arms, cards):
                        ('hours', 'Build time (hours)'), ('sessions', 'Sessions used'), ('commits', 'Commits')):
         vals = []
         for a in arms:
-            v = bill(out, a)[key]
+            v = bills[a][key]
             vals.append(f'{v:.2f}' if isinstance(v, float) else str(v))
         lines.append(f'| {label} | ' + ' | '.join(vals) + ' |')
     lines += ['', 'Checks marked "by hand" need a real Mac, phone or release: see scorecard-manual.md.', '',
@@ -708,8 +708,20 @@ def main():
     p.add_argument('--model', default='~deepseek/deepseek-flash-latest', help='the built agent\'s model in scoring')
     p.add_argument('--judge-model', default='', help='default: --model')
     p.add_argument('--quick', action='store_true')
+    p.add_argument('--report-only', action='store_true',
+                   help='only write scorecard.md from each <out>/<arm>/score/result.json (builds scored on separate Sprites)')
     args = p.parse_args()
     out = args.out.resolve()
+    if args.report_only:
+        arms = [a for a in args.arms.split(',') if (out / a / 'score' / 'result.json').exists()]
+        cards, bills = {}, {}
+        for arm in arms:
+            doc = json.loads((out / arm / 'score' / 'result.json').read_text())
+            cards[arm] = Card()
+            cards[arm].results, bills[arm] = doc['checks'], doc['bill']
+        write_report(out, arms, cards, bills)
+        log(f'scorecard: {out / "scorecard.md"}')
+        return
     prompts = json.loads((HERE / 'prompts.json').read_text())
     key = os.environ.get('OPENROUTER_API_KEY', '') if args.profile == 'openrouter' else ''
     if args.profile == 'openrouter' and not key.startswith('sk-or-'):
@@ -717,7 +729,7 @@ def main():
     base = kit.OPENROUTER_BASE if args.profile == 'openrouter' else 'claude-cli'
     judge = Judge(base, args.judge_model or args.model, key)
     arms = args.arms.split(',')
-    cards = {}
+    cards, bills = {}, {}
     for arm in arms:
         arm_dir = out / arm
         card = cards[arm] = Card()
@@ -751,8 +763,9 @@ def main():
             else:
                 card.set(c, 'fail', why if not contract else 'not reached')
         (arm_dir / 'score').mkdir(exist_ok=True)
-        (arm_dir / 'score' / 'result.json').write_text(json.dumps({'checks': card.results, 'bill': bill(out, arm)}, indent=1))
-    write_report(out, arms, cards)
+        bills[arm] = bill(out, arm)
+        (arm_dir / 'score' / 'result.json').write_text(json.dumps({'checks': card.results, 'bill': bills[arm]}, indent=1))
+    write_report(out, arms, cards, bills)
     log(f'scorecard: {out / "scorecard.md"}')
 
 
