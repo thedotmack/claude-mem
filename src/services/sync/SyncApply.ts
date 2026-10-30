@@ -174,6 +174,7 @@
 //     'completed' even if a live local session later adopts them.
 
 import { emitContextInvalidation } from '../../shared/context-invalidation.js';
+import { syncReplicaMediaLinks } from '../media/replica.js';
 import type { Database } from 'bun:sqlite';
 import type { CurrentRow, StoredObservation, StoredSummary, StoredUserPrompt } from './ChromaSync.js';
 import { logger } from '../../utils/logger.js';
@@ -186,9 +187,121 @@ import {
   incrementCanonicalDecimal,
 } from './CanonicalContent.js';
 import { parseStringListField } from './string-list-field.js';
+import { getRedactionConfig, redactJsonStrings, redactSensitive, type RedactionConfig } from '../../utils/redaction.js';
 
 /** sync_state key: replaySetAsideWorkState has run on this database. */
 const WORK_STATE_REPLAY_MARKER = 'work_state_set_aside_replayed';
+
+/** Text fields redacted as plain text; a marker sits inside the value. */
+const OBSERVATION_TEXT_FIELDS = ['text', 'title', 'subtitle', 'narrative'] as const;
+/**
+ * JSON-string columns redacted by walking parsed values. Text-level patterns
+ * must start and end inside string literals, so a multi-quote pattern (the PEM
+ * block) would swallow the members between its two fragments while leaving the
+ * document parseable; the walker redacts each string on its own instead.
+ */
+const OBSERVATION_JSON_FIELDS = ['facts', 'concepts', 'metadata'] as const;
+const SUMMARY_TEXT_FIELDS = ['request', 'investigated', 'learned', 'completed', 'next_steps', 'notes'] as const;
+const PROMPT_TEXT_FIELDS = ['prompt_text'] as const;
+const WORK_STATE_JSON_FIELDS = ['fields'] as const;
+
+const ALL_INBOUND_TEXT_FIELDS = [
+  ...OBSERVATION_TEXT_FIELDS,
+  ...SUMMARY_TEXT_FIELDS,
+  ...PROMPT_TEXT_FIELDS,
+  'custom_title',
+] as const;
+const ALL_INBOUND_JSON_FIELDS = [...OBSERVATION_JSON_FIELDS, ...WORK_STATE_JSON_FIELDS] as const;
+
+/**
+ * Apply this device's redaction policy to a body pulled from a peer.
+ *
+ * Capture redaction runs only where the content is captured: the origin
+ * writes `stripMemoryTags(JSON.stringify(...))`, whose `stripTags` finishes
+ * with `redactSensitive`. A peer running with `CLAUDE_MEM_REDACT_ENABLED` off
+ * — the default — therefore ships raw values, and applying them here would
+ * store them raw even though this device opted in. `content_hash` is left as
+ * the origin sent it: it is the dedup identity of that content, not a checksum
+ * of the stored text.
+ */
+function redactInboundFields(
+  body: Record<string, unknown>,
+  textFields: readonly string[],
+  jsonFields: readonly string[] = []
+): Record<string, unknown> {
+  const config = getRedactionConfig();
+  if (!config.enabled) return body;
+  return redactFields(body, config, textFields, jsonFields);
+}
+
+function redactFields(
+  body: Record<string, unknown>,
+  config: RedactionConfig,
+  textFields: readonly string[],
+  jsonFields: readonly string[]
+): Record<string, unknown> {
+  let redacted: Record<string, unknown> | null = null;
+  const replace = (field: string, value: string): void => {
+    redacted ??= { ...body };
+    redacted[field] = value;
+  };
+  for (const field of textFields) {
+    const value = body[field];
+    if (typeof value !== 'string' || value.length === 0) continue;
+    const next = redactSensitive(value, config).redacted;
+    if (next !== value) replace(field, next);
+  }
+  for (const field of jsonFields) {
+    const value = body[field];
+    if (typeof value !== 'string' || value.length === 0) continue;
+    const next = redactJsonText(value, config);
+    if (next !== value) replace(field, next);
+  }
+  return redacted ?? body;
+}
+
+/** Redact a JSON string by walking its parsed values; fall back to text if it does not parse. */
+function redactJsonText(value: string, config: RedactionConfig): string {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (parsed === null || typeof parsed !== 'object') {
+      return redactSensitive(value, config).redacted;
+    }
+    const walked = redactJsonStrings(parsed, config);
+    const before = JSON.stringify(parsed);
+    const after = JSON.stringify(walked);
+    return after === before ? value : after;
+  } catch {
+    return redactSensitive(value, config).redacted;
+  }
+}
+
+/**
+ * A quarantined op's body is stored verbatim for diagnosis; redact the same
+ * fields before it lands, or a failed apply would leave the credential in
+ * `sync_pull_quarantine.raw_body`.
+ */
+function redactQuarantineBody(rawBody: string, kind: string | null): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawBody);
+  } catch {
+    return rawBody;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return rawBody;
+  const config = getRedactionConfig();
+  if (!config.enabled) return rawBody;
+  const body = parsed as Record<string, unknown>;
+  const textFields: readonly string[] = kind === 'observation' ? OBSERVATION_TEXT_FIELDS
+    : kind === 'summary' ? SUMMARY_TEXT_FIELDS
+    : kind === 'prompt' ? PROMPT_TEXT_FIELDS
+    : ALL_INBOUND_TEXT_FIELDS;
+  const jsonFields: readonly string[] = kind === 'observation' ? OBSERVATION_JSON_FIELDS
+    : kind === 'work_state' ? WORK_STATE_JSON_FIELDS
+    : ALL_INBOUND_JSON_FIELDS;
+  const redacted = redactFields(body, config, textFields, jsonFields);
+  return redacted === body ? rawBody : JSON.stringify(redacted);
+}
 
 /**
  * A hub change this client could not decode. It keeps its seq so the page
@@ -768,6 +881,7 @@ export class SyncApply {
     rawBody: string,
     retryable = false,
   ): Record<string, unknown> {
+    rawBody = redactQuarantineBody(rawBody, op?.kind ?? null);
     this.db.prepare(`
       INSERT OR IGNORE INTO sync_pull_quarantine
         (epoch, seq, kind, entity_id, origin_device_id, origin_local_id,
@@ -896,6 +1010,7 @@ export class SyncApply {
    * copy, so nothing else is created for it.
    */
   private applyWorkState(op: SyncOp, body: Record<string, unknown>): 'applied' | 'stale' {
+    body = redactInboundFields(body, [], WORK_STATE_JSON_FIELDS);
     const project = fieldString(op, body, 'project');
     const listName = fieldString(op, body, 'list_name');
     const fields = fieldString(op, body, 'fields');
@@ -1102,6 +1217,7 @@ export class SyncApply {
   }
 
   private applyObservation(op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[]): 'applied' | 'stale' {
+    body = redactInboundFields(body, OBSERVATION_TEXT_FIELDS, OBSERVATION_JSON_FIELDS);
     const memorySessionId = fieldString(op, body, 'memory_session_id');
     const project = fieldString(op, body, 'project');
     const type = fieldString(op, body, 'type');
@@ -1135,6 +1251,7 @@ export class SyncApply {
       // replaced too — otherwise the previous revision's paths stay
       // searchable and the new ones never resolve. Inside the batch tx.
       replaceObservationFileIndex(this.db, existing.id, fieldString(op, body, 'files_read'), fieldString(op, body, 'files_modified'));
+      syncReplicaMediaLinks(this.db, existing.id, fieldString(op, body, 'metadata'), this.now());
       this.forwardObservation(existing.id, op, body, chromaJobs, true);
       return 'applied';
     }
@@ -1169,6 +1286,7 @@ export class SyncApply {
       });
       return 'stale';
     }
+    syncReplicaMediaLinks(this.db, inserted.id, fieldString(op, body, 'metadata'), this.now());
 
     // Pulled observations bypass storeObservations, so their paths are
     // indexed here; inside the batch tx, atomic with the row itself.
@@ -1234,6 +1352,7 @@ export class SyncApply {
   }
 
   private applySummary(op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[]): 'applied' | 'stale' {
+    body = redactInboundFields(body, SUMMARY_TEXT_FIELDS);
     const memorySessionId = fieldString(op, body, 'memory_session_id');
     const project = fieldString(op, body, 'project');
     const createdAtEpoch = fieldNumber(op, body, 'created_at_epoch');
@@ -1354,6 +1473,7 @@ export class SyncApply {
   }
 
   private applyPrompt(op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[]): 'applied' | 'stale' {
+    body = redactInboundFields(body, PROMPT_TEXT_FIELDS);
     const contentSessionId = fieldString(op, body, 'content_session_id');
     const promptNumber = fieldNumber(op, body, 'prompt_number');
     const promptText = fieldString(op, body, 'prompt_text');

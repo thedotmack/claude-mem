@@ -11,6 +11,7 @@
         "@tree-sitter-grammars/tree-sitter-toml": "^0.7.0",
         "@tree-sitter-grammars/tree-sitter-yaml": "^0.7.1",
         "@tree-sitter-grammars/tree-sitter-zig": "^1.1.2",
+        "sharp": "0.35.5",
         "shell-quote": "1.9.0",
         "tree-sitter-bash": "^0.25.1",
         "tree-sitter-c": "^0.24.1",

@@ -59,6 +59,7 @@ import { normalizeStoredPromptText, MEDIA_PROMPT_PLACEHOLDER } from './prompt-st
 import { stripMemoryTags } from '../../utils/tag-stripping.js';
 import { applySqliteConnectionPragmas, assertSchemaWriterCompatible, claimSchemaWriter, LATEST_SCHEMA_VERSION } from './connection.js';
 import { streamRows } from './stream-rows.js';
+import { ensureMediaSchema } from './media.js';
 import { OBSERVATIONS_FTS_TRIGGERS_SQL, SESSION_SUMMARIES_FTS_TRIGGERS_SQL } from './SessionSearch.js';
 import {
   assertCanonicalDecimal,
@@ -323,6 +324,7 @@ export class SessionStore {
     this.ensureMergedIntoProjectCoveringIndexes();
     this.ensureNativePromptIdentity();
     this.ensureObservationFileIndex();
+    ensureMediaSchema(this.db);
   }
 
   /**
@@ -4367,6 +4369,57 @@ export class SessionStore {
     const rowMap = new Map(rows.map(r => [r.id, r]));
     const ordered = ids.map(id => rowMap.get(id)).filter((r): r is UserPromptRecord => !!r);
     return limit ? ordered.slice(0, limit) : ordered;
+  }
+
+  /**
+   * The ids of every row a semantic search with this scope can return, for
+   * ChromaSync's narrowed filtered fallback (#5091). Each category uses the
+   * joins, project scope and platform clause of its get*ByIds hydration, so no
+   * row the hydration would keep is missing. Chroma's `sqlite_id` repeats
+   * across doc types, so the categories share one list. Null when more than
+   * `maxIds` rows match.
+   */
+  getSearchScopeRowIds(
+    categories: { observations: boolean; sessions: boolean; prompts: boolean },
+    options: { project?: string; projects?: string[]; platformSource?: string },
+    maxIds: number
+  ): number[] | null {
+    const projects = scopedProjects(options);
+    const platformSource = options.platformSource ? normalizePlatformSource(options.platformSource) : undefined;
+    const sources = [
+      categories.observations && { alias: 'o', includeMerged: true,
+        from: 'SELECT o.id FROM observations o LEFT JOIN sdk_sessions s ON s.memory_session_id = o.memory_session_id' },
+      categories.sessions && { alias: 'ss', includeMerged: true,
+        from: 'SELECT ss.id FROM session_summaries ss LEFT JOIN sdk_sessions s ON s.memory_session_id = ss.memory_session_id' },
+      categories.prompts && { alias: 's', includeMerged: false,
+        from: 'SELECT up.id FROM user_prompts up JOIN sdk_sessions s ON up.session_db_id = s.id' },
+    ].filter((source): source is { alias: string; includeMerged: boolean; from: string } => !!source);
+
+    const ids = new Set<number>();
+    for (const source of sources) {
+      const conditions: string[] = [];
+      const params: Array<string | number> = [];
+      if (projects.length > 0) {
+        const scope = projectScopeSql(source.alias, projects, { includeMerged: source.includeMerged });
+        conditions.push(scope.sql);
+        params.push(...scope.params);
+      }
+      if (platformSource) {
+        conditions.push(`COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') = ?`);
+        params.push(platformSource);
+      }
+      const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+      const statement = this.db.prepare(`${source.from} ${where} LIMIT ?`);
+      let rows: Array<{ id: number }>;
+      try {
+        rows = statement.all(...params, maxIds + 1) as Array<{ id: number }>;
+      } finally {
+        statement.finalize();
+      }
+      for (const row of rows) ids.add(row.id);
+      if (ids.size > maxIds) return null;
+    }
+    return [...ids];
   }
 
   getTimelineAroundTimestamp(

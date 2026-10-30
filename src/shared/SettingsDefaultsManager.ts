@@ -3,7 +3,8 @@ import { readFileSync, existsSync, writeFileSync } from 'fs';
 import { basename, dirname, join } from 'path';
 import { homedir, hostname } from 'os';
 import { HOOK_TIMEOUTS, defaultSessionInitRequestTimeoutMs, getTimeout } from './hook-constants.js';
-import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
+import { parseEnv } from 'util';
+import { parseJsonWithBom, stripUtf8Bom, writeJsonFileAtomic } from './atomic-json.js';
 import { isOpenRouterApiUrl } from './openrouter-base-url.js';
 import { settingsTarget, withoutStaleRootCopies } from './settings-document.js';
 import { expandHome } from './expand-home.js';
@@ -63,6 +64,44 @@ const RETIRED_OPENROUTER_DEFAULT_MODELS: ReadonlySet<string> = new Set([
  */
 function coercePersistedSettingValue(value: unknown): unknown {
   return typeof value === 'boolean' ? String(value) : value;
+}
+
+// Model policy: claude-mem never pins a dated Claude model id. Defaults use
+// Claude Code's aliases (`haiku`, `sonnet`, `opus`), which resolve to the
+// newest model of that tier, because each new Anthropic release is cheaper or
+// better at the same price. Older installs had `claude-haiku-4-5-20251001`
+// written into settings.json by the default or the installer; rewrite exactly
+// those shipped ids to the alias. A gateway install is left alone, since a custom
+// endpoint serves its own model names: either the saved auth method says gateway,
+// or the claude-mem .env next to settings.json sets ANTHROPIC_BASE_URL (how the
+// installer detects one; such installs often never save the auth method).
+const PINNED_SHIPPED_HAIKU_MODELS: ReadonlySet<string> = new Set([
+  'claude-haiku-4-5-20251001',
+  'claude-haiku-4-5',
+]);
+
+function envFileSetsAnthropicBaseUrl(settingsPath: string): boolean {
+  const envFile = process.env.CLAUDE_MEM_ENV_FILE ?? join(dirname(settingsPath), '.env');
+  try {
+    if (!existsSync(envFile)) return false;
+    // Parse it the way the worker does (EnvManager's parseEnvFile), so this sees
+    // exactly the base URL the worker will use: BOM stripped, empty means unset.
+    const parsed = parseEnv(stripUtf8Bom(readFileSync(envFile, 'utf-8'))) as Record<string, string>;
+    return Boolean(parsed.ANTHROPIC_BASE_URL);
+  } catch {
+    return true;  // unreadable: assume a gateway and leave the model alone
+  }
+}
+
+function hasPinnedShippedHaiku(flatSettings: Record<string, any>, settingsPath: string): boolean {
+  const model = flatSettings.CLAUDE_MEM_MODEL;
+  if (typeof model !== 'string' || !PINNED_SHIPPED_HAIKU_MODELS.has(model.trim())) {
+    return false;
+  }
+  const authMethod = typeof flatSettings.CLAUDE_MEM_CLAUDE_AUTH_METHOD === 'string'
+    ? flatSettings.CLAUDE_MEM_CLAUDE_AUTH_METHOD.trim()
+    : '';
+  return authMethod !== 'gateway' && !envFileSetsAnthropicBaseUrl(settingsPath);
 }
 
 function hasRetiredOpenRouterDefault(flatSettings: Record<string, any>): boolean {
@@ -191,6 +230,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CAPTURE_ADVISOR_CALLS: string;       // #3165 — record Claude Code `advisor` tool calls (advice text) at Stop
   CLAUDE_MEM_DELIVERABLES_ENABLED: string;        // Stop hook copies the turn's deliverables into ~/.claude-mem/deliverables/<project>/ and My Work links them
   CLAUDE_MEM_PROVIDER: string;
+  CLAUDE_MEM_MEDIA_CAPTURE_ENABLED: string;
+  CLAUDE_MEM_MEDIA_INFERENCE_ENABLED: string;
   CLAUDE_MEM_CODEX_MODEL: string;
   CLAUDE_MEM_CODEX_PATH: string;
   CLAUDE_MEM_CODEX_REASONING_EFFORT: string;
@@ -419,6 +460,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_DEDUP_MAX_SCAN: string;               // cap Tier-1 candidate scan per insert (logged when hit)
   CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS: string;      // dedup-scan safety valve: skip a project larger than this (avoids OOM)
   CLAUDE_MEM_TOOL_USES_RETENTION_DAYS: string;     // 0 = keep tool_uses forever; N = at worker start, drop rows older than N days that are linked to an observation
+  CLAUDE_MEM_LOG_RETENTION_DAYS: string;           // 0 = keep daily logs forever; N = the worker deletes claude-mem-YYYY-MM-DD.log files older than N days, 5 min after start and daily
   CLAUDE_MEM_WORKER_AUTOSTART: string;
   CLAUDE_MEM_PROJECT_NAME_SOURCE: string;
 }
@@ -429,7 +471,9 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: 'true',
     // Explicit JSON [{path, project, platformSource?}]. Empty means no files imported.
     CLAUDE_MEM_MEMORY_WATCH_ROOTS: '',
-    CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001',
+    // Never a dated id: `haiku` is Claude Code's alias for the newest Haiku, so the
+    // note-taker moves to each new (cheaper) release on its own. See CLAUDE.md, Model policy.
+    CLAUDE_MEM_MODEL: 'haiku',
     CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
     CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: 'false',
     CLAUDE_MEM_CONTEXT_PROJECTS: 'current', // 'current' = this checkout only; 'all' = SessionStart context spans every project
@@ -464,6 +508,8 @@ export class SettingsDefaultsManager {
     // installs land here — no delivered key exists headlessly, so the settings
     // default stays 'claude'.
     CLAUDE_MEM_PROVIDER: 'claude',
+    CLAUDE_MEM_MEDIA_CAPTURE_ENABLED: 'false',
+    CLAUDE_MEM_MEDIA_INFERENCE_ENABLED: 'false',
     CLAUDE_MEM_CODEX_MODEL: '', // Empty uses the Codex default model.
     CLAUDE_MEM_CODEX_PATH: 'codex',
     CLAUDE_MEM_CODEX_REASONING_EFFORT: 'low',
@@ -554,7 +600,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_REDACT_LOG_MATCHES: 'false',               // Log pattern,count per invocation (no payload)
     CLAUDE_MEM_REDACT_GENERIC_ENABLED: 'false',           // #4745 — opt-in: also redact un-prefixed credentials (password=, *_TOKEN=, *_SECRET=, *_API_KEY=, Authorization: Bearer)
     CLAUDE_MEM_EXCLUDED_PROJECTS: '',  // Comma-separated glob patterns for excluded project paths
-    CLAUDE_MEM_PROJECT_ENVIRONMENTS: '[]',  // JSON array of {"name","patterns"}: directories matching an environment's globs share one project named after it
+    CLAUDE_MEM_PROJECT_ENVIRONMENTS: '[]',  // JSON array of {"name","patterns","inherit"?}: directories matching an environment's globs share one project named after it; an explicit inherit list replaces the derived read keys ([] reads only the environment)
     CLAUDE_MEM_FOLDER_MD_EXCLUDE: '[]',  // JSON array of folder paths to exclude from CLAUDE.md generation
     CLAUDE_MEM_FOLDER_MD_SKELETON_DENYLIST: '[]',  // #2400 — JSON array of glob patterns; when a folder matches AND its generated CLAUDE.md would be empty/skeleton, skip injection (avoids polluting non-content dirs with empty skeletons). Default [] preserves existing behavior.
     CLAUDE_MEM_SEMANTIC_INJECT: 'false',             // Inject relevant past observations on every UserPromptSubmit (experimental, disabled by default)
@@ -713,6 +759,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_DEDUP_MAX_SCAN: '2000',                  // per-insert candidate-scan cap (logged when exceeded)
     CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS: '50000',        // dedup-scan skips a project with more rows than this (memory safety)
     CLAUDE_MEM_TOOL_USES_RETENTION_DAYS: '0',           // 0 = keep forever (default); N = purge linked tool_uses older than N days at worker start
+    CLAUDE_MEM_LOG_RETENTION_DAYS: '30',                // 30 days of daily logs; 0 = keep forever. Today's and yesterday's files are always kept
     CLAUDE_MEM_WORKER_AUTOSTART: 'true',                    // 'false' = the worker is managed externally: hooks, the MCP server and `start` use a running worker but never launch, kill or recycle one.
     CLAUDE_MEM_PROJECT_NAME_SOURCE: 'path',                 // 'path' (default) = folder/git-root basename; 'git-remote' = stable org/repo slug from the git `origin` URL (survives directory renames). Opt-in; default preserves existing behavior.
   };
@@ -725,6 +772,13 @@ export class SettingsDefaultsManager {
     const value = process.env[key] ?? this.DEFAULTS[key];
     if (key === 'CLAUDE_MEM_WORKER_HOST') {
       return this.normalizeWorkerHost(value);
+    }
+    // Callers join the data dir into file paths, and fs reads a leading `~` as
+    // a directory name, so expand it the way paths.ts resolves the data dir
+    // (#3350). Otherwise an env value like `~/.claude-mem-work` sends the worker
+    // settings to `<cwd>/~/.claude-mem-work/settings.json`.
+    if (key === 'CLAUDE_MEM_DATA_DIR') {
+      return expandHome(value);
     }
     return value;
   }
@@ -835,6 +889,32 @@ export class SettingsDefaultsManager {
             console.warn('[SETTINGS] Migrated Telegram trigger types off the legacy default:', settingsPath);
           } catch (error: unknown) {
             console.warn('[SETTINGS] Failed to migrate Telegram trigger types:', settingsPath, error instanceof Error ? error.message : String(error));
+            // Continue with the in-memory migration even if the write fails
+          }
+        }
+      }
+
+      if (hasPinnedShippedHaiku(flatSettings, settingsPath)) {
+        const pinnedModel = String(flatSettings.CLAUDE_MEM_MODEL).trim();
+        flatSettings = {
+          ...flatSettings,
+          CLAUDE_MEM_MODEL: this.DEFAULTS.CLAUDE_MEM_MODEL,
+        };
+
+        if (!options.readOnly) {
+          try {
+            writeJsonFileAtomic(
+              settingsPath,
+              hasPeerRootKeys ? { ...writableRoot, env: flatSettings } : flatSettings,
+              { mode: 0o600 },
+            );
+            // stderr, never stdout — same JSON-on-stdout contract as above.
+            console.warn(
+              `[SETTINGS] Migrated Claude model off the pinned ${pinnedModel} to ${this.DEFAULTS.CLAUDE_MEM_MODEL}:`,
+              settingsPath,
+            );
+          } catch (error: unknown) {
+            console.warn('[SETTINGS] Failed to migrate the pinned Claude model:', settingsPath, error instanceof Error ? error.message : String(error));
             // Continue with the in-memory migration even if the write fails
           }
         }

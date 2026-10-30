@@ -35,6 +35,7 @@ const CHROMA_DOC_TYPES: Record<IndexedRowKind, string> = {
   summary: 'session_summary',
   prompt: 'user_prompt',
 };
+import { withObservationMedia } from '../../../media/feed.js';
 
 const integerArrayLike = z.preprocess((value) => {
   if (Array.isArray(value)) return value;
@@ -267,7 +268,8 @@ export class DataRoutes extends BaseRouteHandler {
       return;
     }
 
-    res.json(observation);
+    // Same media projection as the paged feed and SSE (media/feed.ts).
+    res.json(withObservationMedia(observation, true));
   });
 
   private handleGetObservationsByFile = this.wrapHandler((req: Request, res: Response): void => {
@@ -308,7 +310,7 @@ export class DataRoutes extends BaseRouteHandler {
     const readKeys = projectReadKeysFor(store, project, projects);
     const observations = store.getObservationsByIds(ids, { orderBy, limit, project, projects: readKeys, platformSource });
 
-    res.json(observations);
+    res.json(observations.map(observation => withObservationMedia(observation, true)));
   });
 
   /**

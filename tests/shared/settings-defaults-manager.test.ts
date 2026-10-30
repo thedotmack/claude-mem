@@ -1,7 +1,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync, statSync, chmodSync, symlinkSync } from 'fs';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { homedir, tmpdir } from 'os';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 import { readFlatSettings } from '../../src/npx-cli/utils/settings.js';
@@ -552,6 +552,132 @@ describe('SettingsDefaultsManager', () => {
       });
     });
 
+    // Older installs had the dated Haiku 4.5 id written in by the default or the
+    // installer. Model policy (CLAUDE.md): the note-taker follows the newest Haiku.
+    describe('pinned Haiku note-taker migration', () => {
+      function migrationWarnings(warnings: string[]): string[] {
+        return warnings.filter((line) => line.includes('Migrated Claude model off the pinned'));
+      }
+
+      it('ships an alias, not a dated id', () => {
+        expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_MODEL).toBe('haiku');
+        expect(VIEWER_DEFAULT_SETTINGS.CLAUDE_MEM_MODEL).toBe('haiku');
+      });
+
+      it.each(['claude-haiku-4-5-20251001', 'claude-haiku-4-5'])('moves a saved %s to haiku once', (pinned) => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_PROVIDER: 'claude',
+          CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription',
+          CLAUDE_MEM_MODEL: pinned,
+        }));
+
+        const first = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath));
+
+        expect(first.value.CLAUDE_MEM_MODEL).toBe('haiku');
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        expect(parsed.CLAUDE_MEM_MODEL).toBe('haiku');
+        expect(parsed.CLAUDE_MEM_CLAUDE_AUTH_METHOD).toBe('subscription');
+        const [logLine, ...extra] = migrationWarnings(first.warnings);
+        expect(extra).toEqual([]);
+        expect(logLine).toContain(`${pinned} to haiku`);
+
+        const second = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath));
+        expect(second.value.CLAUDE_MEM_MODEL).toBe('haiku');
+        expect(migrationWarnings(second.warnings)).toEqual([]);
+      });
+
+      it('keeps a model the user chose', () => {
+        for (const model of ['claude-sonnet-5', 'claude-opus-4-8', 'sonnet', 'claude-haiku-5-5']) {
+          const raw = JSON.stringify({ CLAUDE_MEM_MODEL: model });
+          writeFileSync(settingsPath, raw);
+
+          const { value, warnings } = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath));
+
+          expect(value.CLAUDE_MEM_MODEL).toBe(model);
+          expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
+          expect(migrationWarnings(warnings)).toEqual([]);
+        }
+      });
+
+      it('never touches a gateway install, which serves its own model names', () => {
+        const raw = JSON.stringify({
+          CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'gateway',
+          CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001',
+        });
+        writeFileSync(settingsPath, raw);
+
+        const { value, warnings } = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath));
+
+        expect(value.CLAUDE_MEM_MODEL).toBe('claude-haiku-4-5-20251001');
+        expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
+        expect(migrationWarnings(warnings)).toEqual([]);
+      });
+
+      it('never touches an install whose claude-mem .env points at a gateway', () => {
+        const raw = JSON.stringify({ CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001' });
+        writeFileSync(settingsPath, raw);
+        const envPath = join(dirname(settingsPath), '.env');
+        writeFileSync(envPath, 'ANTHROPIC_BASE_URL=http://127.0.0.1:4000\nANTHROPIC_AUTH_TOKEN=sk-litellm\n');
+        const saved = process.env.CLAUDE_MEM_ENV_FILE;
+        delete process.env.CLAUDE_MEM_ENV_FILE;
+        try {
+          const { value, warnings } = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath));
+
+          expect(value.CLAUDE_MEM_MODEL).toBe('claude-haiku-4-5-20251001');
+          expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
+          expect(migrationWarnings(warnings)).toEqual([]);
+        } finally {
+          if (saved !== undefined) process.env.CLAUDE_MEM_ENV_FILE = saved;
+          rmSync(envPath, { force: true });
+        }
+      });
+
+      it('still moves an install whose .env has an empty ANTHROPIC_BASE_URL', () => {
+        writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001' }));
+        const envPath = join(dirname(settingsPath), '.env');
+        writeFileSync(envPath, 'ANTHROPIC_BASE_URL=\nANTHROPIC_API_KEY=sk-ant-test\n');
+        const saved = process.env.CLAUDE_MEM_ENV_FILE;
+        delete process.env.CLAUDE_MEM_ENV_FILE;
+        try {
+          const { value } = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath));
+
+          expect(value.CLAUDE_MEM_MODEL).toBe('haiku');
+          expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_MODEL).toBe('haiku');
+        } finally {
+          if (saved !== undefined) process.env.CLAUDE_MEM_ENV_FILE = saved;
+          rmSync(envPath, { force: true });
+        }
+      });
+
+      it('never touches a gateway .env saved with a BOM', () => {
+        const raw = JSON.stringify({ CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001' });
+        writeFileSync(settingsPath, raw);
+        const envPath = join(dirname(settingsPath), '.env');
+        writeFileSync(envPath, '\uFEFFANTHROPIC_BASE_URL=http://127.0.0.1:4000\n');
+        const saved = process.env.CLAUDE_MEM_ENV_FILE;
+        delete process.env.CLAUDE_MEM_ENV_FILE;
+        try {
+          const { value } = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath));
+
+          expect(value.CLAUDE_MEM_MODEL).toBe('claude-haiku-4-5-20251001');
+          expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
+        } finally {
+          if (saved !== undefined) process.env.CLAUDE_MEM_ENV_FILE = saved;
+          rmSync(envPath, { force: true });
+        }
+      });
+
+      it('rewrites in memory only when read-only', () => {
+        const raw = JSON.stringify({ CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001' });
+        writeFileSync(settingsPath, raw);
+
+        const value = SettingsDefaultsManager.loadFromFile(settingsPath, false, { readOnly: true });
+
+        expect(value.CLAUDE_MEM_MODEL).toBe('haiku');
+        expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
+      });
+    });
+
     // Every settings.json was seeded with xiaomi/mimo-v2-flash:free, which
     // OpenRouter has since retired: each observer call 404s and nothing is
     // remembered (#3659). Only the openrouter.ai tuple is rewritten.
@@ -1056,9 +1182,14 @@ describe('SettingsDefaultsManager', () => {
 
   describe('get', () => {
     it('should return default value for key', () => {
-      expect(SettingsDefaultsManager.get('CLAUDE_MEM_MODEL')).toBe('claude-haiku-4-5-20251001');
+      expect(SettingsDefaultsManager.get('CLAUDE_MEM_MODEL')).toBe('haiku');
       const expectedPort = String(37700 + ((process.getuid?.() ?? 77) % 100));
       expect(SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT')).toBe(expectedPort);
+    });
+
+    it('expands a leading ~ in CLAUDE_MEM_DATA_DIR from the environment', () => {
+      process.env.CLAUDE_MEM_DATA_DIR = '~/x';
+      expect(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR')).toBe(join(homedir(), 'x'));
     });
   });
 

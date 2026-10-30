@@ -34,6 +34,7 @@ import { ledgerSignature, readLedger } from '../../../work-view/request-groups.m
 import { configuredJudge, decideSuggestion } from '../../../work-view/request-judge.mjs';
 import { configuredFocusJudge } from '../../../work-view/focus-judge.mjs';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
+import { captureEvent } from '../../../telemetry/telemetry.js';
 import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { validateBody } from '../middleware/validateBody.js';
 import type { SetupScan, SetupScanState } from '../../../prompt-import/setup-scan.js';
@@ -204,6 +205,14 @@ const suggestionBody = z.object({
   conversationKey: z.string().min(1).max(2000),
   action: z.enum(['join', 'not-this']),
 }).strict();
+
+// The viewer's page ids (src/ui/my-work/src/live/usage.ts `UsageView`: setup plus App.tsx `View`): a closed list, so a
+// usage report can carry nothing else. A focus area is My Work filtered to that area, so it counts as `work`, never by name.
+const WORK_VIEW_PAGES = ['setup', 'work', 'rules', 'suggested', 'past-focus'] as const;
+const usageBody = z.discriminatedUnion('event', [
+  z.object({ event: z.literal('opened'), view: z.enum(WORK_VIEW_PAGES) }).strict(),
+  z.object({ event: z.literal('switched'), view: z.enum(WORK_VIEW_PAGES), previousView: z.enum(WORK_VIEW_PAGES) }).strict(),
+]);
 
 /** A path as the owner reads it: `~/...` under the home folder, else absolute. */
 const homeRelative = (path: string) => path === homedir() || path.startsWith(`${homedir()}/`) ? `~${path.slice(homedir().length)}` : path;
@@ -559,6 +568,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     app.post('/api/work-view/agents/mark-finished', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(markAgentFinishedBody), this.wrapHandler(this.markAgentFinished));
     app.post('/api/work-view/suggestions', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(suggestionBody), this.wrapHandler(this.answerSuggestion));
     app.post('/api/work-view/rules/load-in-claude-code', workViewLoopbackOnly, requireWorkViewOrigin, this.wrapHandler(this.loadRulesInClaudeCode));
+    app.post('/api/work-view/usage', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(usageBody), this.wrapHandler(this.recordUsage));
     app.get('/api/setup/scan', workViewLoopbackOnly, this.wrapHandler((_req, res) => {
       if (!this.setupScan) { res.status(503).json({ error: 'The prompt scan is unavailable on this worker.' }); return; }
       res.setHeader('Cache-Control', 'no-store');
@@ -688,9 +698,9 @@ export class WorkViewRoutes extends BaseRouteHandler {
     for (const client of this.clients) this.send(client, event, value);
   }
 
-  private snapshot(): WorkViewSnapshot {
+  private snapshot(maxActivityAgeMs = 0): WorkViewSnapshot {
     this.source.localDeviceId = this.getLocalDeviceId();
-    const snapshot = this.source.read().agentView;
+    const snapshot = this.source.read({ maxActivityAgeMs }).agentView;
     for (const request of snapshot.humanRequests) {
       request.contentFingerprint = contentFingerprint(request);
       request.review = this.reviews.read(request.id, request.contentFingerprint);
@@ -824,7 +834,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
     this.writeRulesFile((updated.rules ?? []) as SavedRule[]);
     logger.debug('HTTP', 'My Rules updated', { action });
     res.setHeader('Cache-Control', 'no-store');
-    res.json(updated);
+    // The first row is the rule this change saved, so the page can name it without guessing from the snapshot.
+    res.json({ ...updated, savedRuleId: rows[0].rule_id });
     this.publish(updated);
   };
 
@@ -991,6 +1002,15 @@ export class WorkViewRoutes extends BaseRouteHandler {
    * finished before the SubagentStop hook existed). Saved like a hook stop, with
    * its own source, so a later tool call from the agent still reopens it.
    */
+  /** Counts the viewer opening on a page, or switching page, through the worker's own consent-gated, whitelist-scrubbed
+   * telemetry (telemetry.ts), so the page loads no analytics SDK. The report names the page only — never what it showed. */
+  private recordUsage = (req: Request, res: Response): void => {
+    const report = req.body as z.infer<typeof usageBody>;
+    if (report.event === 'opened') captureEvent('work_view_opened', { view: report.view });
+    else captureEvent('work_view_switched', { view: report.view, previous_view: report.previousView });
+    res.status(204).end();
+  };
+
   private markAgentFinished = (req: Request, res: Response): void => {
     const { agentGroupId } = req.body as z.infer<typeof markAgentFinishedBody>;
     if (!this.appendWorkStateEntry) { res.status(503).json({ error: 'Saving agent state is unavailable on this worker.' }); return; }
@@ -1055,6 +1075,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     const updated = this.snapshot();
     res.setHeader('Cache-Control', 'no-store');
     res.json(updated);
+    this.publish(updated);
   };
 
   private review = (req: Request, res: Response): void => {
@@ -1108,9 +1129,17 @@ export class WorkViewRoutes extends BaseRouteHandler {
     } catch (error) {
       logger.error('HTTP', 'Setup state could not be read for a new event stream', {}, error as Error);
     }
-    if (!this.poll) this.poll = setInterval(() => this.publish(), this.pollIntervalMs);
+    // Activity can change on every observer write. Coalesce these rebuilds;
+    // work-state, title-cache and ledger changes still appear on the next tick.
+    // 120 s is the window measured in #5124: on a 2.85 GB database with 4 live
+    // sessions, recomputing activity at most every 120 s kept /api/health at a
+    // 7 ms median (85 probes, none above 0.2 s) with an event stream open,
+    // versus 30 s stalls when it ran every 1 s tick. The owner asked for this
+    // window plus that health-probe measurement as the regression check.
+    const maxActivityAgeMs = 120_000;
+    if (!this.poll) this.poll = setInterval(() => this.publish(this.snapshot(maxActivityAgeMs)), this.pollIntervalMs);
     if (!this.heartbeat) this.heartbeat = setInterval(() => {
-      const snapshot = this.snapshot();
+      const snapshot = this.snapshot(maxActivityAgeMs);
       for (const client of this.clients) this.send(client, 'heartbeat', { at: new Date().toISOString(), source: snapshot.source });
     }, 15000);
     this.poll?.unref(); this.heartbeat?.unref();
@@ -1126,7 +1155,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   private publish(snapshot = this.snapshot()): void {
     if (this.closed) return;
-    const signature = JSON.stringify([snapshot.revision, snapshot.source.connected, snapshot.source.error, snapshot.setup]);
+    // rulesFile changes without a new revision when the rules are loaded in Claude Code; other tabs must still see it.
+    const signature = JSON.stringify([snapshot.revision, snapshot.source.connected, snapshot.source.error, snapshot.setup, snapshot.rulesFile]);
     if (signature === this.signature) return;
     this.signature = signature;
     for (const client of this.clients) this.send(client, 'work-view', snapshot);

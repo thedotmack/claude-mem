@@ -16,7 +16,7 @@ export const SQLITE_JOURNAL_SIZE_LIMIT_BYTES = 4194304;
  * can't land without it. Kept in this leaf module — both SessionStore and
  * SessionSearch already import from here, and they import each other.
  */
-export const LATEST_SCHEMA_VERSION = 68;
+export const LATEST_SCHEMA_VERSION = 71;
 
 export function readSchemaWriterStamp(db: Database): number {
   return (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;

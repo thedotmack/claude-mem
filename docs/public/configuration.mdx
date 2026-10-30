@@ -13,7 +13,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 
 | Setting                       | Default                         | Description                           |
 |-------------------------------|---------------------------------|---------------------------------------|
-| `CLAUDE_MEM_MODEL`            | `claude-haiku-4-5-20251001`     | Claude model used to compress observations (when using the Claude provider) |
+| `CLAUDE_MEM_MODEL`            | `haiku`                         | Claude model used to compress observations (when using the Claude provider). `haiku` follows the newest Haiku; a full ID pins one version |
 | `CLAUDE_MEM_PROVIDER`         | `claude`                        | AI provider: `claude`, `codex`, `gemini`, `openrouter`, or `openai-compatible` |
 | `CLAUDE_MEM_CLAUDE_AUTH_METHOD` | `subscription`                | Claude provider auth mode: `subscription`, `api-key`, or `gateway` |
 | `CLAUDE_MEM_CLAUDE_OBSERVATION_BATCH_SIZE` | `1` | Queued observations the Claude provider may send in one observer prompt (1–32). Only events with the same prompt number, agent and working directory are combined, in queue order, and queued events are added only while the prompt stays within two capped fields. Raise it when one session queues events faster than its observer answers. Trade-offs, as with Codex batching: every observation from a batched reply lists the files of all events in the batch, and a reply that fails twice drops the whole batch. An environment variable of the same name overrides `settings.json`. |
@@ -230,11 +230,12 @@ If an Anthropic-compatible gateway rejects the `thinking` parameter with a 400, 
 | `CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS` | `10000` (`7000` on Windows) | Total time the UserPromptSubmit hook may spend reaching the worker for each prompt (startup check, session init, semantic context). When it runs out, the prompt goes through without memory for that turn. Accepts 500–14000; it has to stay under Claude Code's 15 s timeout for that hook. The clock starts after the hook process has loaded, which takes 4–5 s on Windows, so on Windows the default is 7000 and any higher value is cut to 7000. Codex keeps its own bounded worker-startup wait, and its requests stay within this budget. Also read from the environment. |
 | `CLAUDE_MEM_IDLE_EXIT_SEC`    | `0` (off)                       | Opt-in worker idle exit, in seconds. `0` (the default) never exits, and values from 1 to 59 are raised to 60. Once this long passes with no session activity or running observer, no queued work, no open or recent request (a viewer tab, a memory search, a corpus build) and no AI interaction, the worker stops through the same graceful shutdown as `claude-mem stop` (telemetry `shutdown_reason: idle`). The next hook that reads memory, such as session start or your next prompt, starts it again. That first prompt pays a cold start and goes without memory if the boot outlasts the hook's time budget, and observations captured in between wait in the hook spool until the worker is back. Turn it on only where claude-mem's hooks run, such as Claude Code and Codex. Leave it off for OpenCode plugin capture and OpenClaw, which never start the worker, and for MCP-only hosts, where the first memory call after each idle exit waits for a worker boot. It stays off with `CLAUDE_MEM_WORKER_AUTOSTART=false` or while transcript watches are active, since nothing would start the worker again. Cloud sync and transcript capture run only while the worker is up. Also read from the environment. |
 | `CLAUDE_MEM_TOOL_USES_RETENTION_DAYS` | `0` (keep forever) | Opt-in retention for the raw tool input/response index behind `get_tool_uses`. With a positive number of days, the worker deletes `tool_uses` rows older than that **and** linked to an observation that still exists, once at start. Rows with no observation, or whose observation was deleted, are the only copy of that tool I/O and are never deleted. A purged id returns the usual not-found result from `get_tool_uses`. Freed pages are reused by SQLite; shrinking the file on disk needs a `VACUUM`. `30` and `"30"` both work. Anything that is not a whole number of days (empty, negative, `abc`) keeps everything. |
+| `CLAUDE_MEM_LOG_RETENTION_DAYS` | `30` | How many days of daily worker logs (`~/.claude-mem/logs/claude-mem-YYYY-MM-DD.log`, named by UTC date) to keep. The worker deletes older ones 5 minutes after it starts and then once a day; hooks and the MCP server never do. Today's and yesterday's files are always kept, and so is any file written to within the window. Other files in the folder, such as `runner-errors.log`, are never touched. `0` keeps every log forever, as before. `30` and `"30"` both work. Anything that is not a whole number of days (empty, negative, `abc`) also keeps everything. |
 | `CLAUDE_MEM_PYTHON_VERSION`   | `3.13`                          | Python version for chroma-mcp         |
 | `CLAUDE_MEM_CHROMA_UVX_PATH`  | _(empty — search uv's install folders, then PATH)_ | The `uvx` that launches chroma-mcp, as the full path to the binary (on Windows, e.g. `C:\Users\you\AppData\Local\Programs\Python\Python313\Scripts\uvx.exe`) or its folder. Set it when `pip install uv` put `uvx` outside uv's usual folders, or when another tool's `uvx` comes first on PATH. An environment variable of the same name overrides `settings.json`. File/env only — not writable via the viewer HTTP API. Restart the worker after changing it. |
 | `CLAUDE_CODE_PATH`            | _(auto-detect)_                 | Path to Claude Code CLI (for Windows). File/env only — not writable via the viewer HTTP API. |
 | `CLAUDE_MEM_PROJECT_NAME_SOURCE` | `path`                       | How a git repository's project name is derived: `path` (the repository folder's name) or `git-remote` (a stable `org/repo` slug from the `origin` remote, which survives renaming the folder and tells same-named repositories apart; every worktree of the repository shares it). Opt-in. Memory stored under the folder name before you switch stays readable. See [Project Names](#project-names). |
-| `CLAUDE_MEM_PROJECT_ENVIRONMENTS` | `[]`                       | Named environments: a JSON array of `{"name", "patterns"}`. Folders matching an environment's glob patterns (the same rules as `CLAUDE_MEM_EXCLUDED_PROJECTS`) share one project named after it. See [Project Names](#project-names). |
+| `CLAUDE_MEM_PROJECT_ENVIRONMENTS` | `[]`                       | Named environments: a JSON array of `{"name", "patterns", "inherit?"}`. Optional `inherit` selects which additional project keys remain readable; `[]` isolates the environment from derived keys. Folders matching an environment's glob patterns (the same rules as `CLAUDE_MEM_EXCLUDED_PROJECTS`) share one project named after it. See [Project Names](#project-names). |
 | `CLAUDE_MEM_CLAUDE_CONFIG_DIR`| _(unset — falls through to `CLAUDE_CONFIG_DIR`/`~/.claude`)_ | Override which `CLAUDE_CONFIG_DIR` profile's OAuth keychain entry to read, and which `CLAUDE_CONFIG_DIR` the spawned SDK subprocess sees. For running multiple named Claude Code profiles (e.g. `~/.claude-profiles/<name>`, each logged in separately) side by side on one machine. macOS only for the keychain lookup; Windows/Linux credential stores are not profile-aware yet. |
 | `CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR` | _(unset — transcripts follow the credential profile dir)_ | Transcript-only `CLAUDE_CONFIG_DIR` for claude-mem's internal SDK sessions (observer, knowledge corpus). By default they persist under `~/.claude/projects/`, where importers like Codex pick them up as user chats; set this to a dedicated directory (e.g. `~/.claude-mem/observer-claude`) to keep them out. Credentials are unaffected — the worker keeps reading your default login and injects a fresh OAuth token at each spawn, so the directory itself never needs to be logged in. Only honored while `CLAUDE_MEM_CLAUDE_CONFIG_DIR` is unset (an explicit profile keeps its transcripts beside its credentials by design). Two things to know: a token-injected subprocess cannot refresh the token itself — capture pauses with the usual re-login notice if your Claude Code login expires — and sessions recorded before you set this cannot be resumed — a corpus primed before enabling this misses its resume once, and its next query recovers automatically through the existing reprime path into a fresh session here. To carry the old session over instead of starting fresh, move the store first: `mkdir -p <dir>/projects && mv ~/.claude/projects/-<munged-home>-claude-mem-observer-sessions <dir>/projects/`. |
 
@@ -311,6 +312,62 @@ Review candidates via `GET /api/dedup/candidates?project=<name>` (add `&status=p
 unreviewed ones), and record a verdict with `POST /api/dedup/candidates/<id>/resolve` and a body of
 `{"status": "distinct"}` or `{"status": "dismissed"}`. A later scan keeps the verdict.
 
+### Screenshots and Images (opt-in)
+
+claude-mem can keep the screenshots and images that tools return (browser
+screenshots, a `Read` of an image file inside the project) and, separately,
+let the observer model look at them. Both switches are **off by default** and
+independent: turning on capture does not send any image to a model.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_MEDIA_CAPTURE_ENABLED` | `false` | Convert and retain images from tool results |
+| `CLAUDE_MEM_MEDIA_INFERENCE_ENABLED` | `false` | Send retained images to the observer model when the endpoint qualifies |
+
+**What is stored.** Only PNG, JPEG and WebP images, at most four per tool
+event and 3&nbsp;MiB each, are accepted. Each one is converted to two WebP
+copies: a full-size viewer copy and a smaller copy (longest edge 1536&nbsp;px,
+at most 256&nbsp;KiB) for the model. Conversion strips EXIF/GPS metadata. The
+original bytes are **not** kept: the image body is replaced by a short
+descriptor before the tool result is written to the database, so the raw
+base64 never reaches `tool_uses`, the observer prompt, logs or sync. If the
+image came from a file, its path is recorded so the viewer can tell you
+whether that file still exists; the path is shown only when you ask for
+source details in the image viewer and never appears in feeds, logs or sync.
+
+**Where it lives.** Converted copies are written under
+`<data dir>/media-v1/<attachment-id>/` (by default `~/.claude-mem/media-v1/`),
+readable only by your user. The worker serves them only to the viewer page on
+the same loopback port; other origins, LAN clients and proxies are refused.
+
+**How long it is kept.** An image lives as long as an observation or its
+source tool event still references it. Deleting an observation, a session or
+a project removes the references at once; the files are removed by a
+background cleanup within about 30 seconds (retried with backoff if the disk
+refuses). Images are never kept for analytics.
+
+**Cloud upload.** When capture is on *and* [Cloud Sync](cloud-sync) is
+configured, each converted image is uploaded privately to your cmem.ai account
+so your other devices can show it; they download it on first view. Deleting
+it locally also deletes the cloud copy. Observation text syncs without the
+image bytes.
+
+**Third-party image inference.** When inference is on and the observer
+endpoint qualifies (OpenRouter directly, or the cmem.ai gateway), the
+model-sized copy of each image in the current tool event is sent with that
+one observer request to the model provider behind that endpoint (OpenRouter
+and the provider it routes to). It is not re-sent in later turns, summaries
+or context injection. Other providers stay text-only. If the endpoint rejects
+images, the turn is resent once without them and the images are marked
+"not inspected".
+
+**Logs and metrics** about images contain only attachment IDs, byte sizes,
+dimensions, the conversion recipe, error codes and timings. They never contain
+pixels, paths, URLs, captions or your text. The cmem.ai gateway additionally
+receives an `X-Cmem-Correlation` header holding a random request ID, the retry
+attempt number and up to four hashed event IDs, so metered usage can be tied to
+a request.
+
 ## Model Configuration
 
 Configure which Claude model compresses your observations (only applies when `CLAUDE_MEM_PROVIDER=claude`).
@@ -319,9 +376,11 @@ Configure which Claude model compresses your observations (only applies when `CL
 
 | Value | Notes |
 |-------|-------|
-| `claude-haiku-4-5-20251001` | Default — fastest, ideal for compression |
-| `claude-sonnet-5` | Balanced quality and speed |
-| `claude-opus-4-8` | Highest quality (slowest) |
+| `haiku` | Default — the newest Haiku, fastest, ideal for compression |
+| `sonnet` | The newest Sonnet, balanced quality and speed |
+| `opus` | The newest Opus, highest quality (slowest) |
+
+Each alias follows the newest model of its tier, so new releases (usually cheaper or better for the price) reach you without a settings change. A full model ID, such as `claude-sonnet-5`, pins that one version and never updates. Installs that had the old shipped default `claude-haiku-4-5-20251001` saved are moved to `haiku` automatically, except gateway installs (see Manual Configuration below).
 
 ### Picking via the Installer
 
@@ -333,9 +392,11 @@ Edit `~/.claude-mem/settings.json`:
 
 ```json
 {
-  "CLAUDE_MEM_MODEL": "claude-haiku-4-5-20251001"
+  "CLAUDE_MEM_MODEL": "haiku"
 }
 ```
+
+`haiku` moves to each new Haiku release on its own. A full model ID such as `claude-haiku-4-5-20251001` pins that one version and never updates, so use one only when you deliberately want to stay on it. Installs that saved the old default, `claude-haiku-4-5-20251001`, are moved to `haiku` automatically, except gateway installs (an `ANTHROPIC_BASE_URL` in `~/.claude-mem/.env`, or the auth method set to `gateway`), which keep their saved model because the gateway decides which model names it accepts.
 
 ## Mode Configuration
 
@@ -372,6 +433,42 @@ claude-mem files every observation under a project name, and SessionStart inject
 - **Outside git** the name is the current folder's name. To give a non-git project one name across all of its subfolders, put an empty `.claude-mem-project` file (or a `.claude-mem.json`) in its root folder: every folder below it then uses the root folder's name. Memory stored under a subfolder's own name before you added the file stays readable from that subfolder. Marker files in your home directory, the system temp directory or Claude's config directory are ignored, so they can never fold unrelated folders together.
 - **Named environments** (`CLAUDE_MEM_PROJECT_ENVIRONMENTS`) group several folders, git or not, into one project and win over every rule above. For example, `[{"name": "acme", "patterns": ["~/work/acme/**"]}]` files everything under `~/work/acme` as `acme`, and SessionStart labels it as an environment. Memory those folders stored under their own names stays readable from them; to fold it into the environment for good, run `npx claude-mem project merge <old-name> acme` (it runs inside claude-mem's worker whenever the worker is running). The merge rewrites nothing (rows are marked as merged, the way a worktree folds into its repository) and brings along memory already folded into the old name, such as a merged worktree's. It reaches your other devices through cloud sync and updates semantic search; if that last step fails, the command says so, and running it again retries it.
 
+### Choosing an environment's memory scope
+
+By default, naming an environment retains the folder and git-remote keys it
+previously read. To keep a business or package inside a larger repository from
+reading the parent's entire history, set `inherit` explicitly:
+
+```json
+{
+  "CLAUDE_MEM_PROJECT_ENVIRONMENTS": [
+    { "name": "business-a", "patterns": ["~/Workspace/business-a/**"], "inherit": [] },
+    { "name": "business-b", "patterns": ["~/Workspace/business-b/**"], "inherit": ["shared"] }
+  ]
+}
+```
+
+- **Omitted `inherit`** keeps existing behavior: derived keys and the environment key are readable.
+- **`inherit: []`** reads only the environment key and memory explicitly merged or adopted into it.
+- **`inherit: ["shared"]`** reads the environment and the listed project keys, including their existing merged history, without automatically adding parent, folder, or remote-derived keys. Entries are project names, not environment names to resolve recursively or path patterns.
+
+Writes still use `name`. This changes the checkout's default read scope for
+SessionStart, semantic injection, file context, and MCP queries for that project;
+it does not move or delete stored history. Ordinary worktrees and submodules with
+no explicit inheritance configuration keep their existing behavior.
+Reading a project's memory does not merge the environment's history back into
+that project. Automatic orphan adoption uses recorded folder-derived identity,
+not the environment's read scope.
+
+`inherit` must be an array of non-empty project names. Names are trimmed and
+deduplicated, and cannot contain commas (the query protocol uses commas to
+separate projects). An invalid explicit value raises a configuration error rather
+than reverting to the broader derived scope; correct it before using those hooks.
+
+This setting selects default context, not access permissions. Explicit queries
+for other projects and `CLAUDE_MEM_CONTEXT_PROJECTS=all` can still read a broader
+scope. Previously performed whole-project merges also remain in effect.
+
 Environment patterns and `CLAUDE_MEM_EXCLUDED_PROJECTS` use the same glob rules. A complete `**/` segment matches zero or more directories: `~/work/**/private` matches both `~/work/private` and `~/work/team/private`. Add a trailing `/**` to match their descendants too.
 
 ## Files and Directories
@@ -387,6 +484,7 @@ The data directory location depends on the environment:
 ├── claude-mem.db           # SQLite database
 ├── .install-version        # Version marker written by `npx claude-mem install`/`repair`
 ├── settings.json           # Worker port + provider/model settings
+├── media-v1/               # Converted screenshots/images (only when media capture is on)
 └── logs/
     ├── worker-out.log      # Worker stdout logs
     └── worker-error.log    # Worker stderr logs
@@ -794,9 +892,10 @@ npm run worker:logs
 
 If you specify an invalid Claude model name, the worker logs a warning and uses the default. Valid Claude models for `CLAUDE_MEM_MODEL`:
 
-- `claude-haiku-4-5-20251001` (default)
-- `claude-sonnet-5`
-- `claude-opus-4-8`
+- `haiku` (default, the newest Haiku)
+- `sonnet` (the newest Sonnet)
+- `opus` (the newest Opus)
+- a full model ID, such as `claude-sonnet-5`, to pin one version
 
 ### Port Already in Use
 

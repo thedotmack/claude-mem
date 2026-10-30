@@ -192,6 +192,13 @@ export interface ChromaQueryProgress {
   exhausted?: boolean;
 }
 
+/**
+ * The SQLite ids of every row a scoped search can keep, or null when more than
+ * `maxIds` rows match. queryChroma asks for them only when it falls back to a
+ * filtered query, so a search the over-fetch answers never pays for the list.
+ */
+export type ChromaFallbackRowIds = (maxIds: number) => number[] | null;
+
 /** The last corrupt collection this process dropped, for health reporting. */
 export interface ChromaCollectionDrop {
   collection: string;
@@ -212,6 +219,18 @@ export interface ChromaCollectionDrop {
  */
 const CHROMA_OVERFETCH_FACTOR = 20;
 const CHROMA_OVERFETCH_CAP = 2000;
+
+/**
+ * A selective filter is not cheap when one of its members matches most of the
+ * collection: chromadb 1.5.9 evaluates every `$and` member over every document
+ * it matches before the selective member narrows anything (#4682). Every search
+ * sends a `doc_type` clause, so the filtered fallback took 13-20s on a
+ * 697k-document collection even for a 71-observation project or a 66-row
+ * platform (#5091). `sqlite_id: {$in}` with the rows SQLite says the search can
+ * keep matches only their fragments: 0.6-3.7s for 67-8,000 ids at n_results
+ * 2000 on the same collection. Past this many ids the plain `where` is sent.
+ */
+const CHROMA_FALLBACK_ROW_ID_CAP = 5000;
 
 type MetadataPredicate = (metadata: Record<string, unknown>) => boolean;
 
@@ -1875,7 +1894,8 @@ export class ChromaSync {
     query: string,
     limit: number,
     whereFilter?: Record<string, any>,
-    progress?: ChromaQueryProgress
+    progress?: ChromaQueryProgress,
+    fallbackRowIds?: ChromaFallbackRowIds
   ): Promise<{ ids: number[]; distances: number[]; metadatas: any[] }> {
     if (progress) progress.exhausted = false;
     await this.ensureCollectionExists();
@@ -1946,6 +1966,13 @@ export class ChromaSync {
         this.selectiveFilters.set(filterKey, filtered.ids.length);
       }
 
+      // A selective filter can still be slow in chroma; try it narrowed to the
+      // rows the caller can keep first (see CHROMA_FALLBACK_ROW_ID_CAP).
+      if (predicate && fallbackRowIds) {
+        const narrowed = await this.queryByRowIds(runQuery, limit, predicate, fallbackRowIds, progress);
+        if (narrowed) return narrowed;
+      }
+
       // The fallback consumes the same row metadata and distances as the fast
       // path; document text is never read, even for large corpus budgets.
       results = await runQuery(limit, whereFilter, ['metadatas', 'distances']);
@@ -1974,6 +2001,70 @@ export class ChromaSync {
     // many document slots, so a short unique-ID list does not imply exhaustion.
     if (progress) progress.exhausted = (results?.ids?.[0]?.length ?? 0) < limit;
     return this.deduplicateQueryResults(results);
+  }
+
+  /**
+   * The filtered fallback, asked as `sqlite_id: {$in}` of the rows the caller's
+   * SQLite scope can keep. Those ids repeat across doc types, and chroma's
+   * metadata is what the plain `where` would have matched, so the fast path's
+   * predicate picks the matching fragments. Returns null when the ids are
+   * unknown or too many, or when the window cannot prove the top `limit`
+   * matches; the caller then sends the plain `where`.
+   */
+  private async queryByRowIds(
+    runQuery: (nResults: number, where: Record<string, any> | undefined, include: string[]) => Promise<any>,
+    limit: number,
+    predicate: MetadataPredicate,
+    fallbackRowIds: ChromaFallbackRowIds,
+    progress?: ChromaQueryProgress
+  ): Promise<{ ids: number[]; distances: number[]; metadatas: any[] } | null> {
+    let rowIds: number[] | null;
+    try {
+      rowIds = fallbackRowIds(CHROMA_FALLBACK_ROW_ID_CAP);
+    } catch (error) {
+      logger.warn('CHROMA_SYNC', 'Could not list the rows in scope; sending the plain filter',
+        { project: this.project }, error as Error);
+      return null;
+    }
+    if (!rowIds || rowIds.length > CHROMA_FALLBACK_ROW_ID_CAP) return null;
+    if (rowIds.length === 0) {
+      // Nothing in scope: the caller's hydration would drop whatever chroma returned.
+      if (progress) progress.exhausted = true;
+      return { ids: [], distances: [], metadatas: [] };
+    }
+
+    // Over-fetch as the fast path does, because the predicate drops the other
+    // doc types' fragments that share these ids.
+    const nResults = Math.max(limit, Math.min(limit * CHROMA_OVERFETCH_FACTOR, CHROMA_OVERFETCH_CAP));
+    const raw: any = await runQuery(nResults, { sqlite_id: { $in: rowIds } }, ['metadatas', 'distances']);
+    const rawIds = raw?.ids?.[0] || [];
+    const rawMetadatas = raw?.metadatas?.[0] || [];
+    const rawDistances = raw?.distances?.[0] || [];
+
+    const keptIds: string[] = [];
+    const keptMetadatas: any[] = [];
+    const keptDistances: number[] = [];
+    for (let i = 0; i < rawIds.length && keptIds.length < limit; i++) {
+      if (!predicate(rawMetadatas[i] ?? {})) continue;
+      keptIds.push(rawIds[i]);
+      keptMetadatas.push(rawMetadatas[i]);
+      keptDistances.push(rawDistances[i]);
+    }
+
+    // The plain `where` ranks the same matches in the same order; the only ones
+    // missing here belong to rows outside the SQLite scope, which hydration
+    // drops anyway. So `limit` kept fragments are its top `limit`. A window
+    // shorter than n_results held every candidate. Otherwise more matches may
+    // sit past the window, and only the plain `where` can find them.
+    const windowExhausted = rawIds.length < nResults;
+    if (keptIds.length < limit && !windowExhausted) return null;
+    logger.debug('CHROMA_SYNC', 'Filtered fallback narrowed to row ids', {
+      rows: rowIds.length, fragments: rawIds.length, kept: keptIds.length
+    });
+    if (progress) progress.exhausted = windowExhausted && keptIds.length < limit;
+    return this.deduplicateQueryResults({
+      ids: [keptIds], metadatas: [keptMetadatas], distances: [keptDistances]
+    });
   }
 
   private deduplicateQueryResults(results: any): { ids: number[]; distances: number[]; metadatas: any[] } {

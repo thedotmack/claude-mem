@@ -55,23 +55,44 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
 }
 
 function parseSsl(connectionString: string, env: NodeJS.ProcessEnv): boolean | { rejectUnauthorized: boolean } {
-  if (env.CLAUDE_MEM_POSTGRES_SSL === 'disable' || env.PGSSLMODE === 'disable') {
-    return false;
-  }
-  if (env.CLAUDE_MEM_POSTGRES_SSL === 'require' || env.PGSSLMODE === 'require') {
-    return { rejectUnauthorized: false };
+  if (env.CLAUDE_MEM_POSTGRES_SSL) {
+    return sslForMode(env.CLAUDE_MEM_POSTGRES_SSL.trim().toLowerCase());
   }
 
+  // An explicit sslmode URL parameter wins over PGSSLMODE, matching libpq
+  // precedence; every mode must be honored — a silent fall-through to
+  // plaintext would downgrade an operator who asked for verified TLS.
+  let urlMode: string | null = null;
   try {
-    const url = new URL(connectionString);
-    if (url.searchParams.get('sslmode') === 'require') {
-      return { rejectUnauthorized: false };
-    }
+    urlMode = new URL(connectionString).searchParams.get('sslmode');
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     logger.warn('DB', 'Failed to parse Postgres connection string for sslmode, defaulting SSL off', {}, err);
     return false;
   }
 
-  return false;
+  const mode = (urlMode ?? env.PGSSLMODE)?.trim().toLowerCase();
+  return mode ? sslForMode(mode) : false;
+}
+
+function sslForMode(mode: string): boolean | { rejectUnauthorized: boolean } {
+  switch (mode) {
+    case 'disable':
+      return false;
+    // allow/prefer/require all mean "encrypt, don't verify" as far as node-pg
+    // is concerned — it has no connect-fallback ladder like libpq.
+    case 'allow':
+    case 'prefer':
+    case 'require':
+      return { rejectUnauthorized: false };
+    case 'verify-ca':
+    case 'verify-full':
+      return { rejectUnauthorized: true };
+    default:
+      logger.warn(
+        'DB',
+        `Unrecognized Postgres sslmode "${mode}", falling back to plaintext — valid modes are disable, allow, prefer, require, verify-ca, verify-full`
+      );
+      return false;
+  }
 }
