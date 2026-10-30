@@ -270,6 +270,8 @@ describe('Codex grouping answers', () => {
       const error = await groupingTask(dir, fixtureDatabase()).run(ask, 'codex').then(() => null, failure => failure as Error);
       expect(error?.message).toMatch(/^grouping \(raw answer: .+failed-answers.+-grouping-codex\.txt\): JSON Parse error/);
       expect(readFileSync(/\(raw answer: (.+?\.txt)\)/.exec(error!.message)![1], 'utf8')).toBe(malformed);
+      // A refused answer must not send the run on to another agent (#5189).
+      expect((error as { answerRefused?: boolean }).answerRefused).toBe(true);
       // Asked once more with the reason before failing; nothing was grouped.
       expect(prompts).toHaveLength(2);
       expect(prompts[1]).toMatch(/Your previous answer was refused: JSON Parse error/);
@@ -370,6 +372,7 @@ describe('focus step', () => {
       const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: FOCUS_BATCH + 1, ungrouped: 0, goalsStale: false, unplaced: FOCUS_BATCH + 1, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: writer.save });
       const error = await task.run(ask, 'codex').then(() => null, failure => failure as Error);
       expect(error?.message).toMatch(/^focus \(raw answer: .+\): Place every request asked about; missing/);
+      expect((error as { answerRefused?: boolean }).answerRefused).toBe(true);
       expect(batches).toEqual([FOCUS_BATCH, 1, 1]);
       // The first batch was saved; the story was written anyway.
       expect(readFocus(database, { localDeviceId: '' }).focusAreaIdByAnchor.size).toBe(FOCUS_BATCH);
@@ -380,6 +383,39 @@ describe('focus step', () => {
       const next = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 0, goalsStale: false, unplaced: 1, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: writer.save });
       expect(await next.run(ask, 'codex')).toBe('1 requests placed.');
       expect(batches).toEqual([1]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a refused focus answer keeps the run on this agent even when a later crash is the error the runner sees (#5189)', async () => {
+    const dir = scratchDir('auto-refresh-refused-then-crash');
+    try {
+      const database = fixtureDatabase();
+      requests(database, dir, Array.from({ length: FOCUS_BATCH }, (_, index) => `s${index}`));
+      const writer = focusWriter(database);
+      const ask = async (prompt: string) => {
+        if (prompt.includes('Do only section 2')) return reviewAll(prompt);
+        if (isOtherPass(prompt)) return JSON.stringify({ placements: [], proposals: [] });
+        // Every focus answer leaves requests out, so focus is refused twice.
+        if (prompt.includes('Do only section 3')) return JSON.stringify({ placements: [], proposals: [] });
+        // The story's agent call itself crashes, which on its own would let the runner try the next agent.
+        throw new Error('Claude Code stopped: socket hang up');
+      };
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: FOCUS_BATCH + 1, ungrouped: 0, goalsStale: false, unplaced: FOCUS_BATCH + 1, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: writer.save });
+      const error = await task.run(ask, 'claude-code').then(() => null, failure => failure as Error);
+      expect(error?.message).toBe('Claude Code stopped: socket hang up');
+      expect((error as { answerRefused?: boolean }).answerRefused).toBe(true);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('an agent crash with no refused answer still lets the runner try the next agent', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-crash-only-'));
+    try {
+      const ask = async () => { throw new Error('Claude Code stopped: socket hang up'); };
+      const database = fixtureDatabase();
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 1, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
+      const error = await task.run(ask, 'claude-code').then(() => null, failure => failure as Error);
+      expect(error?.message).toBe('Claude Code stopped: socket hang up');
+      expect((error as { answerRefused?: boolean }).answerRefused).toBeUndefined();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
