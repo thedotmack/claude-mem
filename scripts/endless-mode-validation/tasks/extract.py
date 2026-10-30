@@ -29,11 +29,26 @@ PRICES = {
 OPUS55 = PRICES['claude-opus-5-5']
 
 
+OPENROUTER_PRICES = None  # --openrouter-prices DIR: per-model files from ../fetch-openrouter-prices.py
+
+
 def price_of(model):
     for key, value in PRICES.items():
         if model and model.startswith(key):
             return value
-    raise SystemExit(f'no price for model {model!r}; add it to PRICES')
+    if OPENROUTER_PRICES and model:
+        # A model served through OpenRouter (the DeepSeek agent): its prices from OpenRouter's public list, fetched
+        # once per model into the prices dir (the file records when). Cache writes and reads at their listed prices.
+        path = OPENROUTER_PRICES / (model.replace('/', '__') + '.json')
+        if not path.exists():
+            fetch = Path(__file__).resolve().parent.parent / 'fetch-openrouter-prices.py'
+            import subprocess, sys
+            subprocess.run([sys.executable, str(fetch), model, str(path)], check=False)
+        if path.exists():
+            doc = json.loads(path.read_text())
+            return {'input': doc['input'], 'output': doc['output'], 'cache_read': doc.get('cache_read'),
+                    'cache_write': doc.get('cache_write_5m')}
+    raise SystemExit(f'no price for model {model!r}; add it to PRICES (or pass --openrouter-prices)')
 
 
 def cost(price, fresh, write_5m, write_1h, read, output, flat=False):
@@ -41,6 +56,10 @@ def cost(price, fresh, write_5m, write_1h, read, output, flat=False):
     long_prompt = not flat and 'long_over' in price and prompt > price['long_over']
     inp = price['long_input'] if long_prompt else price['input']
     out = price['long_output'] if long_prompt else price['output']
+    if 'cache_read' in price:  # an OpenRouter prices file: cache prices as listed (writes as input when none listed)
+        read_p = price['cache_read'] if price['cache_read'] is not None else inp
+        write_p = price['cache_write'] if price['cache_write'] is not None else inp
+        return (fresh * inp + (write_5m + write_1h) * write_p + read * read_p + output * out) / 1e6, long_prompt
     return (fresh * inp + write_5m * inp * 1.25 + write_1h * inp * 2 + read * inp * 0.1 + output * out) / 1e6, long_prompt
 
 
@@ -79,6 +98,7 @@ CREATE TABLE IF NOT EXISTS requests (
   run_id TEXT, source TEXT, n INTEGER, time TEXT, epoch REAL, turn_no INTEGER, status INTEGER, model TEXT,
   input_tokens INTEGER, cache_write_5m INTEGER, cache_write_1h INTEGER, cache_read INTEGER, output_tokens INTEGER,
   prompt_tokens INTEGER, long_prompt INTEGER, cost_usd REAL, cost_opus55_usd REAL, complete INTEGER,
+  measured_cost_usd REAL,
   PRIMARY KEY (run_id, source, n)
 );
 """
@@ -89,11 +109,18 @@ def main():
     p.add_argument('--db', required=True)
     p.add_argument('--run-id', required=True)
     p.add_argument('--arm-dir', required=True, type=Path)
+    p.add_argument('--openrouter-prices', type=Path, help='dir for OpenRouter models\' prices files (fetched as needed)')
     args = p.parse_args()
+    global OPENROUTER_PRICES
+    if args.openrouter_prices:
+        args.openrouter_prices.mkdir(parents=True, exist_ok=True)
+        OPENROUTER_PRICES = args.openrouter_prices
     db = sqlite3.connect(args.db, timeout=60)
     db.executescript(SCHEMA)
-    if 'complete' not in [row[1] for row in db.execute('PRAGMA table_info(requests)')]:
-        db.execute('ALTER TABLE requests ADD COLUMN complete INTEGER')  # results files from before the column
+    have = [row[1] for row in db.execute('PRAGMA table_info(requests)')]
+    for column in ('complete INTEGER', 'measured_cost_usd REAL'):  # results files from before these columns
+        if column.split()[0] not in have:
+            db.execute(f'ALTER TABLE requests ADD COLUMN {column}')
     turns = db.execute('SELECT turn_no, started_epoch, ended_epoch FROM turns WHERE run_id=? ORDER BY turn_no',
                        (args.run_id,)).fetchall()
     db.execute('DELETE FROM requests WHERE run_id=?', (args.run_id,))
@@ -128,10 +155,10 @@ def main():
             usd_opus, _ = cost(OPUS55, fresh, write_5m, write_1h, read, output, flat=True)
             db.execute('INSERT INTO requests (run_id, source, n, time, epoch, turn_no, status, model, input_tokens, '
                        'cache_write_5m, cache_write_1h, cache_read, output_tokens, prompt_tokens, long_prompt, cost_usd, '
-                       'cost_opus55_usd, complete) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                       'cost_opus55_usd, complete, measured_cost_usd) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                        (args.run_id, source, int(n), meta['time'], epoch, turn_no, status, model, fresh, write_5m,
                         write_1h, read, output, fresh + write_5m + write_1h + read, int(long_prompt), usd, usd_opus,
-                        int(complete)))
+                        int(complete), usage.get('cost')))  # usage.cost: the provider's own charge, where it sends one
             count += 1
     db.commit()
     print(f'{args.run_id}: {count} requests with usage')

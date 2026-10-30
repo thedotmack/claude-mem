@@ -1,0 +1,15 @@
+{
+  "spec_path": "docs/specs/photon-imessage-agent.md",
+  "base_prompt": "continue building the spec in docs/specs/photon-imessage-agent.md",
+  "sessions": {
+    "1": "continue building the spec in docs/specs/photon-imessage-agent.md. Three decisions for this build: the agent's name is Juniper; the debounce wait after the last of several quick texts is 4 seconds; the instant receipt text is exactly \"On it.\"",
+    "2": "continue building the spec in docs/specs/photon-imessage-agent.md. One change from before: the debounce wait is now 7 seconds, not 4."
+  },
+  "planted": {
+    "name": {"value": "Juniper", "set_in": 1},
+    "debounce": {"value": "7 seconds", "old_value": "4 seconds", "set_in": 1, "changed_in": 2},
+    "receipt": {"value": "On it.", "set_in": 1}
+  },
+  "stop_mid_session": {"session": 3, "after_tool_calls": 40},
+  "sessions_planned": 6
+}
