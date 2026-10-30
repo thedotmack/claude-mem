@@ -322,7 +322,12 @@ function extractField(content: string, fieldName: string): string | null {
  */
 function extractTypeField(content: string): string | null {
   const match = /<type>((?:(?!<type>)[\s\S])*?)<\/type>/i.exec(content);
-  if (!match) return null;
+  if (!match) {
+    // No </type> at all: the model closed it with a stray tag
+    // (`<type>gotcha</reasoning_effort>`). Accept one bare id, never prose.
+    const stray = /<type>\s*([A-Za-z][\w-]*)\s*<\/[A-Za-z_][\w-]*\s*>/i.exec(content);
+    return stray ? stray[1] : null;
+  }
 
   const value = decodeXmlReferences(match[1].replace(/<\/?[A-Za-z_][\w-]*\b[^>]*>/g, '')).trim();
   return value === '' ? null : value;
