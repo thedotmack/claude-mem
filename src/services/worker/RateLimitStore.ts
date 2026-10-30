@@ -53,9 +53,10 @@ export type RateLimitWindow =
    * headers that every response of an account with the bucket carries,
    * whatever model the request used, so the figure (and any warning the CLI
    * derives from it) is not evidence that the observer draws on it. Above 1
-   * it is usage that legitimately ran past the cap, not a refusal. Only the
-   * provider refusing the observer's own request (`rejected`) stops the
-   * observer on it.
+   * it is usage that legitimately ran past the cap, not a refusal. Claude
+   * Code reports status='rejected' once the included-overage allowance is spent,
+   * but requests continue to be served on the normal weekly allowance, so
+   * this window is tracked for health display only and does not pause capture (#5182).
    */
   | 'seven_day_overage_included'
   | 'overage';
@@ -369,7 +370,9 @@ export function buildUsageLimitHitProps(
  * users (cli/oauth). Crossing one of these aborts the SDK loop so we don't
  * burn through the window on background memory work and starve interactive
  * sessions. `seven_day_overage_included` has none: its figure does not say
- * the observer draws on it (see RateLimitWindow), so only a refusal counts.
+ * the observer draws on it (see RateLimitWindow), and its exhausted status
+ * reflects only the included overage tier being spent rather than a provider
+ * refusal (#5182).
  */
 const UTILIZATION_THRESHOLD_SETTINGS: Partial<Record<RateLimitWindow, keyof SettingsDefaults>> = {
   five_hour: 'CLAUDE_MEM_QUOTA_THRESHOLD_FIVE_HOUR',
@@ -446,7 +449,6 @@ const GUARDED_WINDOWS: readonly RateLimitWindow[] = [
   'seven_day_opus',
   'seven_day_sonnet',
   'seven_day',
-  'seven_day_overage_included',
   'overage',
 ];
 
@@ -508,8 +510,14 @@ export function shouldAbortForQuota(
  * The provider has already declared the bucket exhausted: status='rejected',
  * or overageStatus='rejected' on the overage window. Stop regardless of
  * whether utilization is reported.
+ *
+ * `seven_day_overage_included` is not guarded: Claude Code reports it with
+ * status='rejected' once the included overage tier is spent, even while
+ * requests continue to be served on the primary weekly allowance. Treating it
+ * as hard exhaustion pauses capture and causes an infinite cooldown loop (#5182).
  */
 function providerRejection(window: RateLimitWindow, entry: RateLimitEntry): QuotaDecision | undefined {
+  if (window === 'seven_day_overage_included') return undefined;
   const isRejected =
     entry.status === 'rejected' ||
     (window === 'overage' && entry.overageStatus === 'rejected');
