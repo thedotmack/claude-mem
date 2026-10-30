@@ -246,6 +246,70 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
     expect(decision.window).toBe('overage');
   });
 
+  // #5182: Claude Code reports these overage buckets `rejected` on responses it
+  // serves, once the overage-included bucket is spent or when extra usage is
+  // disabled or spent. A rejection that arrives with a served response is not a
+  // refusal of the observer's request; an unanswered one still is.
+  describe('rejected overage buckets on a served request (#5182)', () => {
+    const served = { requestServed: true };
+    const DAY = 24 * 60 * 60 * 1000;
+
+    it('does not abort on a rejected overage-included window when the request was served', () => {
+      store.set({ rateLimitType: 'seven_day_overage_included', status: 'rejected', resetsAt: FIXED_NOW + DAY });
+      expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW, undefined, served)).toEqual({ abort: false });
+    });
+
+    it('does not abort on disabled extra usage (overageStatus rejected) when the request was served', () => {
+      store.set({ rateLimitType: 'overage', utilization: 0, isUsingOverage: false, status: 'allowed_warning', overageStatus: 'rejected' });
+      expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW, undefined, served)).toEqual({ abort: false });
+    });
+
+    it('does not abort on a rejected overage status when the request was served', () => {
+      store.set({ rateLimitType: 'overage', utilization: 0, isUsingOverage: false, status: 'rejected' });
+      expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW, undefined, served)).toEqual({ abort: false });
+    });
+
+    it('matches the #5182 report: overage-included rejected while five_hour and seven_day have room', () => {
+      store.set({ rateLimitType: 'five_hour', status: 'allowed', utilization: 0.02, resetsAt: FIXED_NOW + 3 * 60 * 60 * 1000 });
+      store.set({ rateLimitType: 'seven_day', status: 'allowed', utilization: 0.52, resetsAt: FIXED_NOW + 4 * DAY });
+      store.set({ rateLimitType: 'seven_day_overage_included', status: 'rejected', resetsAt: FIXED_NOW + 4 * DAY });
+      store.set({ rateLimitType: 'overage', isUsingOverage: false, status: 'rejected', overageStatus: 'rejected' });
+      expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW, undefined, served)).toEqual({ abort: false });
+    });
+
+    it('still aborts on these rejections when the request went unanswered', () => {
+      store.set({ rateLimitType: 'seven_day_overage_included', status: 'rejected', resetsAt: FIXED_NOW + DAY });
+      const refused = shouldAbortForQuota(cliAuth, store, FIXED_NOW, undefined, { requestServed: false });
+      expect(refused.abort).toBe(true);
+      expect(refused.window).toBe('seven_day_overage_included');
+      expect(refused.pause?.kind).toBe('quota_exhausted');
+    });
+
+    it('still aborts on a rejected primary window even when the request was served', () => {
+      store.set({ rateLimitType: 'seven_day_overage_included', status: 'rejected', resetsAt: FIXED_NOW + DAY });
+      store.set({ rateLimitType: 'seven_day', status: 'rejected', resetsAt: FIXED_NOW + DAY });
+      const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW, undefined, served);
+      expect(decision.abort).toBe(true);
+      expect(decision.window).toBe('seven_day');
+    });
+
+    it('still aborts on a rejected five_hour window even when the request was served', () => {
+      store.set({ rateLimitType: 'overage', isUsingOverage: false, overageStatus: 'rejected', status: 'rejected' });
+      store.set({ rateLimitType: 'five_hour', status: 'rejected', resetsAt: FIXED_NOW + 60 * 60 * 1000 });
+      const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW, undefined, served);
+      expect(decision.abort).toBe(true);
+      expect(decision.window).toBe('five_hour');
+    });
+
+    it('keeps the utilization threshold on active extra usage when the request was served', () => {
+      store.set({ rateLimitType: 'overage', utilization: 0.96, isUsingOverage: true, status: 'allowed_warning' });
+      const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW, undefined, served);
+      expect(decision.abort).toBe(true);
+      expect(decision.window).toBe('overage');
+      expect(decision.pause?.kind).toBe('quota_guard');
+    });
+  });
+
   it('does not abort on a five_hour rejection after its reset time', () => {
     store.set({
       rateLimitType: 'five_hour',

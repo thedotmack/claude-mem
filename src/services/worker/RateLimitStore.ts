@@ -54,10 +54,19 @@ export type RateLimitWindow =
    * whatever model the request used, so the figure (and any warning the CLI
    * derives from it) is not evidence that the observer draws on it. Above 1
    * it is usage that legitimately ran past the cap, not a refusal. Only the
-   * provider refusing the observer's own request (`rejected`) stops the
-   * observer on it.
+   * provider refusing the observer's own request stops the observer on it:
+   * Claude Code also reports `rejected` here once the bucket is spent while it
+   * keeps serving requests on the normal allowance (#5182), so a `rejected`
+   * that arrives with a served response is not a refusal.
    */
   | 'seven_day_overage_included'
+  /**
+   * Extra usage. An account without extra usage enabled reports this bucket
+   * `rejected` (status or overageStatus) on every response, and so does one
+   * whose extra usage is spent while the normal allowance still serves it
+   * (#5182). Like `seven_day_overage_included`, a rejection here stops the
+   * observer only when its own request was refused.
+   */
   | 'overage';
 
 export interface RateLimitInfo {
@@ -427,6 +436,29 @@ export interface QuotaPause {
   message: string;
 }
 
+export interface QuotaGuardOptions {
+  /**
+   * The provider answered the observer's current request: a response arrived
+   * in this turn. A `rejected` status on a window in
+   * SERVED_REQUEST_ADVISORY_WINDOWS is then information about a bucket the
+   * observer is not drawing on, not a refusal (#5182). Leave unset when it is
+   * not known; the rejection then stops the observer as before.
+   */
+  requestServed?: boolean;
+}
+
+/**
+ * Windows whose `rejected` the provider also reports on requests it serves
+ * (#5182): the overage-included bucket once spent, and extra usage when it is
+ * disabled or spent. A rejection on them is a refusal only when the request
+ * went unanswered. The main windows (five_hour, the weekly windows) are not
+ * here: a rejection there is the provider refusing the account.
+ */
+const SERVED_REQUEST_ADVISORY_WINDOWS: ReadonlySet<RateLimitWindow> = new Set<RateLimitWindow>([
+  'seven_day_overage_included',
+  'overage',
+]);
+
 export type QuotaDecision =
   | { abort: false; reason?: undefined; window?: undefined; pause?: undefined }
   | { abort: true; reason: string; window: RateLimitWindow; pause: QuotaPause };
@@ -473,6 +505,7 @@ export function shouldAbortForQuota(
   store: RateLimitStore,
   now: number = Date.now(),
   profile?: string,
+  options: QuotaGuardOptions = {},
 ): QuotaDecision {
   // API-key users authorized per-call spend; the wall-clock guard is for
   // subscription quota only.
@@ -492,7 +525,7 @@ export function shouldAbortForQuota(
 
   for (const window of GUARDED_WINDOWS) {
     const entry = liveEntry(window);
-    const rejection = entry && providerRejection(window, entry);
+    const rejection = entry && providerRejection(window, entry, options);
     if (rejection) return rejection;
   }
   for (const window of GUARDED_WINDOWS) {
@@ -507,13 +540,20 @@ export function shouldAbortForQuota(
 /**
  * The provider has already declared the bucket exhausted: status='rejected',
  * or overageStatus='rejected' on the overage window. Stop regardless of
- * whether utilization is reported.
+ * whether utilization is reported, unless the window is one whose rejection
+ * the provider also reports on served requests and this request was served
+ * (#5182).
  */
-function providerRejection(window: RateLimitWindow, entry: RateLimitEntry): QuotaDecision | undefined {
+function providerRejection(
+  window: RateLimitWindow,
+  entry: RateLimitEntry,
+  options: QuotaGuardOptions = {},
+): QuotaDecision | undefined {
   const isRejected =
     entry.status === 'rejected' ||
     (window === 'overage' && entry.overageStatus === 'rejected');
   if (!isRejected) return undefined;
+  if (options.requestServed === true && SERVED_REQUEST_ADVISORY_WINDOWS.has(window)) return undefined;
   return {
     abort: true,
     window,
