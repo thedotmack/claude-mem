@@ -292,6 +292,9 @@ describe('redactSensitive generic built-in patterns', () => {
     ['bare escaped yaml token', String.raw`auth:\n  token: abc12345defghi\n`, 'abc12345defghi'],
     ['bare --token= flag',     'cli login --token=abc12345defghi',            'abc12345defghi'],
     ['bare --api-key flag',    'cli login --api-key abc12345defghi',          'abc12345defghi'],
+    ['prefixed --auth-token flag',    'npm publish --auth-token abc12345defghi',  'abc12345defghi'],
+    ['prefixed --client-secret= flag', 'az login --client-secret=abc12345defghi', 'abc12345defghi'],
+    ['prefixed --hf-token flag',      'cli download --hf-token abc12345defghi',   'abc12345defghi'],
   ])('generic_token redacts a %s', (_style, input, secret) => {
     // The worker scans tool output as JSON.stringify(response), so each
     // position must also hold as the start of a stringified value.
@@ -318,6 +321,8 @@ describe('redactSensitive generic built-in patterns', () => {
       'max_tokens=4096',          // `_TOKENS`, not `*_TOKEN`
       'tokens=abcdefghij',        // `tokens`, not `token`
       'csrftoken=abcdefghij',     // no `_` before `token`, as for structured keys
+      '--token-file /home/me/token.txt', // the flag names a file, not the token
+      '--max-tokens abcdefghij',  // `tokens`, not `token`
       'nosecret=abcdefghij',
       // Source code that names a bare token/secret: only config-shaped
       // positions (quoted JSON keys, env assignments, flags, yaml lines)
