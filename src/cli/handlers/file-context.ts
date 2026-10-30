@@ -19,6 +19,7 @@ import { claimFileContextInjection } from './file-context-dedupe.js';
 import { memorySearchHandler } from './memory-search.js';
 import { isQwenCodeHookEvent } from './session-init.js';
 import { resolveRuntimeContext } from '../../services/hooks/runtime-selector.js';
+import { normalizePlatformSource } from '../../shared/platform-source.js';
 
 /** Below this a file gets neither the timeline nor a deny: reading it costs about what the timeline would. */
 const FILE_CONTEXT_MIN_BYTES = 1_500;
@@ -504,6 +505,11 @@ async function lookupFileObservationHistory(
     queryParams.set('projects', context.allProjects.join(','));
   }
   queryParams.set('limit', String(FETCH_LOOKAHEAD_LIMIT));
+  // Keep the lookup on the calling harness's rows; the opt-out is the same
+  // cross-harness hand-off switch the other context paths honour.
+  if (input.platform && loadFromFileOnce().CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES !== 'true') {
+    queryParams.set('platformSource', normalizePlatformSource(input.platform));
+  }
 
   const result = await executeWithWorkerFallback<{ observations: ObservationRow[]; count: number }>(
     `/api/observations/by-file?${queryParams.toString()}`,
