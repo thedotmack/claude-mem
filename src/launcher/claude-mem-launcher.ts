@@ -30,6 +30,7 @@ import { LAUNCHER_PROTOCOL } from './launcher-protocol.js';
 import { bunVersionHonoursBunBeBun } from './bun-be-bun-support.js';
 import { findBun } from './bun-runtime.js';
 import { expandHome } from '../shared/expand-home.js';
+import { commandInvocation } from '../shared/spawn.js';
 
 const IS_WINDOWS = process.platform === 'win32';
 const STDIN_COLLECTION_TIMEOUT_MS = 5000;
@@ -337,12 +338,15 @@ async function runThroughWorker(workerServiceArguments: string[]): Promise<never
   // Only .cmd/.bat shims need cmd.exe; a resolved bun.exe must be spawned
   // directly. Routing it through `shell: true` breaks when the environment
   // grows past cmd.exe's ~8191-char per-variable limit (issue #3196).
+  // FIXED (security): never use `shell: true`; use cmd.exe with array args.
   const needsCmdShell = IS_WINDOWS && /\.(cmd|bat)$/i.test(bunRuntime.bunExecutablePath);
   if (needsCmdShell) {
-    const quote = (value: string) => `"${String(value).replace(/"/g, '\\"')}"`;
-    spawnOptions.shell = true;
-    spawnCommand = [bunRuntime.bunExecutablePath, ...workerArguments].map(quote).join(' ');
-    spawnArguments = [];
+    const invocation = commandInvocation(bunRuntime.bunExecutablePath, workerArguments, process.platform);
+    spawnCommand = invocation.command;
+    spawnArguments = invocation.args;
+    if (invocation.windowsVerbatimArguments) {
+      (spawnOptions as any).windowsVerbatimArguments = true;
+    }
   }
 
   return new Promise<never>(() => {
