@@ -338,6 +338,29 @@ Oops, let me restate the output cleanly.
     expect(result[0].type).toBe('discovery');
   });
 
+  it('reads the type when a stray tag closes it and no </type> follows', () => {
+    const xml = `<observation>
+      <type>discovery</reasoning_effort>
+      <title>Pinned pnpm invocation fails</title>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result[0].type).toBe('discovery');
+    expect(result[0].title).toBe('Pinned pnpm invocation fails');
+  });
+
+  it('does not take prose as the type when no </type> follows', () => {
+    const xml = `<observation>
+      <type>the model wrote a sentence</parameter>
+      <title>Prose in type</title>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result[0].type).toBe('bugfix');
+  });
+
   it('falls back to the first mode type when the type is only encoded whitespace', () => {
     const xml = `<observation>
       <type>&#32;</type>
