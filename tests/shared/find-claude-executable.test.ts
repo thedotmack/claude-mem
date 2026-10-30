@@ -475,6 +475,46 @@ describe('findClaudeExecutable on Windows', () => {
   });
 });
 
+describe('findClaudeExecutable with a global npm install on Windows (#5163)', () => {
+  // `npm install -g @anthropic-ai/claude-code` puts an extension-less sh
+  // script, claude.cmd and claude.ps1 on PATH; the real claude.exe lives in
+  // the package. The sh script must never be picked, and the package's
+  // claude.exe should win over the .cmd shim.
+  const NPM = 'C:\\Users\\u\\AppData\\Roaming\\npm';
+  const SH_SHIM = `${NPM}\\claude`;
+  const CMD_SHIM = `${NPM}\\claude.cmd`;
+  const NPM_EXE = `${NPM}\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe`;
+
+  it('uses the package claude.exe, not the extension-less sh shim', () => {
+    installFakes({
+      platform: 'win32',
+      whereOutputs: {
+        claude: `${SH_SHIM}\r\n${CMD_SHIM}\r\n`,
+        'claude.cmd': `${CMD_SHIM}\r\n`,
+      },
+    });
+    fakeClis.set(SH_SHIM, { version: '2.1.309', supportsDontAsk: true });
+    fakeClis.set(CMD_SHIM, { version: '2.1.309', supportsDontAsk: true });
+    fakeClis.set(NPM_EXE, { version: '2.1.309', supportsDontAsk: true });
+
+    expect(findClaudeExecutable('SDK')).toBe(NPM_EXE);
+    expect(probeCalls.some((call) => call.path === SH_SHIM)).toBe(false);
+  });
+
+  it('falls back to the .cmd shim when the package has no claude.exe', () => {
+    installFakes({
+      platform: 'win32',
+      whereOutputs: {
+        claude: `${SH_SHIM}\r\n${CMD_SHIM}\r\n`,
+      },
+    });
+    fakeClis.set(SH_SHIM, { version: '2.1.309', supportsDontAsk: true });
+    fakeClis.set(CMD_SHIM, { version: '2.1.309', supportsDontAsk: true });
+
+    expect(findClaudeExecutable('SDK')).toBe(CMD_SHIM);
+  });
+});
+
 describe('findClaudeExecutable code-page-garbled where output (#4694)', () => {
   // where.exe writes the console's active code page (cp949 on ko-KR) while the
   // lookup decodes its stdout as UTF-8, so a non-ASCII profile folder turns

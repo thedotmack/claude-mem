@@ -30,6 +30,7 @@ import { isWindowsNativeExecutable } from './spawn.js';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, expandTilde } from './paths.js';
 import { logger, type Component } from '../utils/logger.js';
+import { withNpmClaudeExe } from './windows-npm-claude.js';
 
 /**
  * How long to wait for a probe (`--version` / capability) before giving up (ms).
@@ -304,6 +305,9 @@ function discoverCandidates(): string[] {
         // Not found via this lookup — try the next discovery source.
       }
     }
+    // A global npm install's PATH hits are shims the SDK can't spawn: swap in
+    // the package's own claude.exe and drop the extension-less sh script.
+    candidates.splice(0, candidates.length, ...withNpmClaudeExe(candidates, (path) => _internals.existsSync(path)));
     // The native installer puts the CLI at ~/.local/bin/claude.exe (and the
     // legacy local install at ~/.claude/local/claude.exe), which may not be on
     // the worker's PATH at all — or where.exe may only report garbled lines
