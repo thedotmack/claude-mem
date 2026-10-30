@@ -59,6 +59,37 @@ export function useSSE(handlers: StreamHandlers) {
   };
 
   useEffect(() => {
+    let closed = false;
+    let processingVersion = 0;
+    let statusRequest: AbortController | null = null;
+
+    // A quiet or disconnected stream can leave an old queue count on screen.
+    // Reconcile with the worker, but never overwrite a newer stream event.
+    const refreshProcessingStatus = async () => {
+      if (closed || document.visibilityState === 'hidden' || statusRequest) return;
+      const controller = new AbortController();
+      statusRequest = controller;
+      const version = processingVersion;
+      // 10 s bounds a hung request below the 15 s reconcile interval, so one
+      // stuck fetch cannot hold the single in-flight slot past the next tick.
+      const timeout = setTimeout(() => controller.abort(), 10000);
+      try {
+        const response = await fetch('/api/processing-status', { cache: 'no-store', signal: controller.signal });
+        if (!response.ok) return;
+        const status = await response.json();
+        if (!closed && !controller.signal.aborted && version === processingVersion
+          && typeof status.isProcessing === 'boolean' && Number.isSafeInteger(status.queueDepth) && status.queueDepth >= 0) {
+          setIsProcessing(status.isProcessing);
+          setQueueDepth(status.queueDepth);
+        }
+      } catch {
+        // Keep the last known status through a temporary worker outage.
+      } finally {
+        clearTimeout(timeout);
+        if (statusRequest === controller) statusRequest = null;
+      }
+    };
+
     const connect = () => {
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
@@ -69,6 +100,7 @@ export function useSSE(handlers: StreamHandlers) {
 
       eventSource.onopen = () => {
         console.log('[SSE] Connected');
+        void refreshProcessingStatus();
         if (reconnectTimeoutRef.current) {
           clearTimeout(reconnectTimeoutRef.current);
         }
@@ -77,6 +109,7 @@ export function useSSE(handlers: StreamHandlers) {
       eventSource.onerror = (error) => {
         console.error('[SSE] Connection error:', error);
         eventSource.close();
+        void refreshProcessingStatus();
 
         reconnectTimeoutRef.current = setTimeout(() => {
           reconnectTimeoutRef.current = undefined;
@@ -137,6 +170,7 @@ export function useSSE(handlers: StreamHandlers) {
 
           case 'processing_status':
             if (typeof data.isProcessing === 'boolean') {
+              processingVersion++;
               console.log('[SSE] Processing status:', data.isProcessing, 'Queue depth:', data.queueDepth);
               setIsProcessing(data.isProcessing);
               setQueueDepth(data.queueDepth || 0);
@@ -147,8 +181,20 @@ export function useSSE(handlers: StreamHandlers) {
     };
 
     connect();
+    void refreshProcessingStatus();
+    // 15 s matches the heartbeat cadence of the worker's other event stream
+    // (WorkViewRoutes sends one every 15 s): one cheap status read per beat
+    // while visible; hidden tabs skip it (see refreshProcessingStatus).
+    const statusInterval = setInterval(refreshProcessingStatus, 15000);
+    window.addEventListener('focus', refreshProcessingStatus);
+    document.addEventListener('visibilitychange', refreshProcessingStatus);
 
     return () => {
+      closed = true;
+      clearInterval(statusInterval);
+      statusRequest?.abort();
+      window.removeEventListener('focus', refreshProcessingStatus);
+      document.removeEventListener('visibilitychange', refreshProcessingStatus);
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
       }

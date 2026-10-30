@@ -191,6 +191,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CAPTURE_ADVISOR_CALLS: string;       // #3165 — record Claude Code `advisor` tool calls (advice text) at Stop
   CLAUDE_MEM_DELIVERABLES_ENABLED: string;        // Stop hook copies the turn's deliverables into ~/.claude-mem/deliverables/<project>/ and My Work links them
   CLAUDE_MEM_PROVIDER: string;
+  CLAUDE_MEM_MEDIA_CAPTURE_ENABLED: string;
+  CLAUDE_MEM_MEDIA_INFERENCE_ENABLED: string;
   CLAUDE_MEM_CODEX_MODEL: string;
   CLAUDE_MEM_CODEX_PATH: string;
   CLAUDE_MEM_CODEX_REASONING_EFFORT: string;
@@ -419,6 +421,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_DEDUP_MAX_SCAN: string;               // cap Tier-1 candidate scan per insert (logged when hit)
   CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS: string;      // dedup-scan safety valve: skip a project larger than this (avoids OOM)
   CLAUDE_MEM_TOOL_USES_RETENTION_DAYS: string;     // 0 = keep tool_uses forever; N = at worker start, drop rows older than N days that are linked to an observation
+  CLAUDE_MEM_LOG_RETENTION_DAYS: string;           // 0 = keep daily logs forever; N = the worker deletes claude-mem-YYYY-MM-DD.log files older than N days, 5 min after start and daily
   CLAUDE_MEM_WORKER_AUTOSTART: string;
   CLAUDE_MEM_PROJECT_NAME_SOURCE: string;
 }
@@ -464,6 +467,8 @@ export class SettingsDefaultsManager {
     // installs land here — no delivered key exists headlessly, so the settings
     // default stays 'claude'.
     CLAUDE_MEM_PROVIDER: 'claude',
+    CLAUDE_MEM_MEDIA_CAPTURE_ENABLED: 'false',
+    CLAUDE_MEM_MEDIA_INFERENCE_ENABLED: 'false',
     CLAUDE_MEM_CODEX_MODEL: '', // Empty uses the Codex default model.
     CLAUDE_MEM_CODEX_PATH: 'codex',
     CLAUDE_MEM_CODEX_REASONING_EFFORT: 'low',
@@ -554,7 +559,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_REDACT_LOG_MATCHES: 'false',               // Log pattern,count per invocation (no payload)
     CLAUDE_MEM_REDACT_GENERIC_ENABLED: 'false',           // #4745 — opt-in: also redact un-prefixed credentials (password=, *_TOKEN=, *_SECRET=, *_API_KEY=, Authorization: Bearer)
     CLAUDE_MEM_EXCLUDED_PROJECTS: '',  // Comma-separated glob patterns for excluded project paths
-    CLAUDE_MEM_PROJECT_ENVIRONMENTS: '[]',  // JSON array of {"name","patterns"}: directories matching an environment's globs share one project named after it
+    CLAUDE_MEM_PROJECT_ENVIRONMENTS: '[]',  // JSON array of {"name","patterns","inherit"?}: directories matching an environment's globs share one project named after it; an explicit inherit list replaces the derived read keys ([] reads only the environment)
     CLAUDE_MEM_FOLDER_MD_EXCLUDE: '[]',  // JSON array of folder paths to exclude from CLAUDE.md generation
     CLAUDE_MEM_FOLDER_MD_SKELETON_DENYLIST: '[]',  // #2400 — JSON array of glob patterns; when a folder matches AND its generated CLAUDE.md would be empty/skeleton, skip injection (avoids polluting non-content dirs with empty skeletons). Default [] preserves existing behavior.
     CLAUDE_MEM_SEMANTIC_INJECT: 'false',             // Inject relevant past observations on every UserPromptSubmit (experimental, disabled by default)
@@ -713,6 +718,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_DEDUP_MAX_SCAN: '2000',                  // per-insert candidate-scan cap (logged when exceeded)
     CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS: '50000',        // dedup-scan skips a project with more rows than this (memory safety)
     CLAUDE_MEM_TOOL_USES_RETENTION_DAYS: '0',           // 0 = keep forever (default); N = purge linked tool_uses older than N days at worker start
+    CLAUDE_MEM_LOG_RETENTION_DAYS: '30',                // 30 days of daily logs; 0 = keep forever. Today's and yesterday's files are always kept
     CLAUDE_MEM_WORKER_AUTOSTART: 'true',                    // 'false' = the worker is managed externally: hooks, the MCP server and `start` use a running worker but never launch, kill or recycle one.
     CLAUDE_MEM_PROJECT_NAME_SOURCE: 'path',                 // 'path' (default) = folder/git-root basename; 'git-remote' = stable org/repo slug from the git `origin` URL (survives directory renames). Opt-in; default preserves existing behavior.
   };
@@ -725,6 +731,13 @@ export class SettingsDefaultsManager {
     const value = process.env[key] ?? this.DEFAULTS[key];
     if (key === 'CLAUDE_MEM_WORKER_HOST') {
       return this.normalizeWorkerHost(value);
+    }
+    // Callers join the data dir into file paths, and fs reads a leading `~` as
+    // a directory name, so expand it the way paths.ts resolves the data dir
+    // (#3350). Otherwise an env value like `~/.claude-mem-work` sends the worker
+    // settings to `<cwd>/~/.claude-mem-work/settings.json`.
+    if (key === 'CLAUDE_MEM_DATA_DIR') {
+      return expandHome(value);
     }
     return value;
   }

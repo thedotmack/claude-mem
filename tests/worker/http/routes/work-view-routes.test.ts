@@ -383,6 +383,23 @@ describe('local work view', () => {
     // afterEach may safely close an already closed handle.
   });
 
+  it('coalesces background activity without accepting stale evidence reviews', async () => {
+    seedLinkedEvidence();
+    const request = (await snapshot()).humanRequests[0];
+    const controller = new AbortController(); controllers.push(controller);
+    const response = await fetch(`${origin}/api/work-view/events`, { signal: controller.signal });
+    await response.body!.getReader().read();
+    const liveSource = (routes as any).source;
+    const initialRevision = liveSource.agentRevision;
+    source.prepare('UPDATE observations SET narrative=? WHERE id=1').run('Corrected full evidence.');
+    // Several real 20 ms polls must not rebuild for this activity-only commit.
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(liveSource.agentRevision).toBe(initialRevision);
+    expect((await review(request)).status).toBe(409);
+    expect(liveSource.agentRevision).toBeGreaterThan(initialRevision);
+    controller.abort();
+  });
+
   it('streams genuine external source changes and releases disconnected clients', async () => {
     const controller = new AbortController(); controllers.push(controller);
     const response = await fetch(`${origin}/api/work-view/events`, { signal: controller.signal });

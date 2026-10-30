@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { ingestObservation, ingestSummarize, ingestSessionEnd, type IngestContext } from '../shared.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { requireLocalhost } from '../middleware.js';
+import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { logger } from '../../../../utils/logger.js';
 import { logChromaWriteFailure } from '../../search/errors.js';
 import { stripMemoryTags, isCodexInternalPrompt, isGrokBotInternalPrompt, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
@@ -64,6 +65,20 @@ import {
 import type { TelegramWrapupFormatterInput } from '../../../integrations/TelegramWrapupNotifier.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
+
+// The session write endpoints are state-changing, so a browser page served
+// from a different local port may not call them. Origin-less callers (hooks,
+// the CLI, curl) pass. There is deliberately no requireLocalhost here: remote
+// capture (docs/remote-worker-capture.md), Docker bridge clients and the
+// OpenCode/Pi/DSH integrations call these routes from non-loopback peers, and
+// non-loopback writes are governed by the remote read-only guard instead.
+function rejectForeignLoopbackBrowserWrite(req: Request, res: Response, next: () => void): void {
+  if (isForeignLoopbackBrowserWrite(req)) {
+    res.status(403).json({ error: 'Session writes from a different localhost origin are not allowed' });
+    return;
+  }
+  next();
+}
 
 export class SessionRoutes extends BaseRouteHandler {
   // #2756 round 3: ensureGeneratorRunning is called from independent HTTP
@@ -588,21 +603,25 @@ export class SessionRoutes extends BaseRouteHandler {
     });
     app.post(
       '/api/sessions/init',
+      rejectForeignLoopbackBrowserWrite,
       validateBody(SessionRoutes.sessionInitByClaudeIdSchema),
       this.handleSessionInitByClaudeId.bind(this)
     );
     app.post(
       '/api/sessions/observations',
+      rejectForeignLoopbackBrowserWrite,
       validateBody(SessionRoutes.observationsByClaudeIdSchema),
       this.handleObservationsByClaudeId.bind(this)
     );
     app.post(
       '/api/sessions/summarize',
+      rejectForeignLoopbackBrowserWrite,
       validateBody(SessionRoutes.summarizeByClaudeIdSchema),
       this.handleSummarizeByClaudeId.bind(this)
     );
     app.post(
       '/api/sessions/session-end',
+      rejectForeignLoopbackBrowserWrite,
       validateBody(SessionRoutes.sessionEndSchema),
       this.handleSessionEnd.bind(this)
     );
@@ -823,7 +842,10 @@ export class SessionRoutes extends BaseRouteHandler {
       });
     }
 
-    let prompt = rawPrompt || MEDIA_PROMPT_PLACEHOLDER;
+    // Strip tagged private sections before any length cap: cutting first
+    // could sever a </private> closer and leave the rest of the block visible
+    // to storage (the stripper keeps unbalanced tags verbatim by design).
+    let prompt = stripMemoryTags(rawPrompt || MEDIA_PROMPT_PLACEHOLDER);
 
     const promptByteLength = Buffer.byteLength(prompt, 'utf8');
     if (promptByteLength > MAX_USER_PROMPT_BYTES) {

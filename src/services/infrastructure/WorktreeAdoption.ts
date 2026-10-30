@@ -392,14 +392,13 @@ function readWriterEvidence(
  * repository's memory into this one (and sync that to every device).
  *
  * - Keys whose sessions recorded their checkout (sdk_sessions.cwd): every
- *   recorded checkout that still exists must still resolve into this
- *   repository (read its key); a live repo-named worktree resolves to the
- *   repository itself (#3641). A checkout that no longer exists proves a
- *   deleted worktree or submodule only when the key was derived from that
- *   folder (project_key_source 'path'): deleting the only clone of a
- *   slug-named repository says nothing about which repository the slug belongs
- *   to (gate P1-2). A checkout recorded before key sources were (NULL) comes
- *   from the folder-only naming that predates slugs and environments.
+ *   recorded key must be folder-derived (project_key_source 'path', or NULL
+ *   before key sources were recorded). Environment names and remote slugs do
+ *   not identify orphaned worktrees, whether the checkout exists or not.
+ *   Every checkout that still exists must resolve into this repository using
+ *   its folder-based identity; a live repo-named worktree resolves to the
+ *   repository itself (#3641). Current read scopes cannot establish ownership
+ *   or hide historical folder-derived keys from adoption (#5022).
  * - Keys with nothing recorded: sessions record their checkout since v53, so
  *   only rows older than that are attributable, and those predate slug and
  *   environment naming. They must also be rows this device wrote: a replica's
@@ -421,10 +420,10 @@ function wasWrittenUnderRepository(
     ).all(candidateKey) as Array<{ cwd: string; key_source: string | null }>;
     if (checkouts.length > 0) {
       return checkouts.every(({ cwd, key_source }) => {
-        if (!existsSync(cwd)) return key_source === null || key_source === 'path';
-        // Checkouts of this repository (itself, its worktrees and submodules)
-        // read its folder-based key in every naming mode.
-        return getProjectContext(cwd).allProjects.includes(parentProject);
+        if (key_source !== null && key_source !== 'path') return false;
+        if (!existsSync(cwd)) return true;
+        const context = getPathModeProjectContext(cwd);
+        return context.primary === parentProject || context.parent === parentProject;
       });
     }
   }

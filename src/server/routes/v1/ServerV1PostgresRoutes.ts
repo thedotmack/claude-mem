@@ -39,7 +39,8 @@ import { createRecallMcpServer, type RecallBackend } from '../../mcp/recall-mcp-
 import { requireRateLimit, requireMonthlyQuota } from '../../middleware/rate-limit.js';
 import { meterRequests } from '../../middleware/usage-metering.js';
 import { PostgresUsageRepository } from '../../../storage/postgres/usage.js';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { apiKeyPrefix, hashApiKey } from '../../auth/api-key-hash.js';
 import { PostgresServerSessionsRepository } from '../../../storage/postgres/server-sessions.js';
 import { IngestEventsService, type EnqueueOutcome } from '../../services/IngestEventsService.js';
 import { EndSessionService } from '../../services/EndSessionService.js';
@@ -217,12 +218,14 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         const teamId = this.requireTeamId(req, res);
         if (!teamId) return;
         const raw = `cm_${randomBytes(24).toString('hex')}`;
-        const keyHash = createHash('sha256').update(raw).digest('hex');
+        const keyHash = hashApiKey(raw);
+        const keyPrefix = apiKeyPrefix(raw);
         const expiresAt = body.expiresInDays
           ? new Date(Date.now() + body.expiresInDays * 86_400_000)
           : null;
         const key = await new PostgresAuthRepository(this.options.pool).createApiKey({
           keyHash,
+          keyPrefix,
           teamId,
           projectId: req.authContext?.projectId ?? null,
           actorId: req.authContext?.apiKeyId ?? 'api',

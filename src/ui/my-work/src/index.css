@@ -130,7 +130,7 @@
     --sidebar-border: #ebe2d6;
     --sidebar-ring: #fd8a3d;
 
-    /* Soft semantic surfaces keep state and ownership readable without shadows. */
+    /* Soft semantic surfaces keep state and ownership readable; subtle shadows add texture. */
     --surface: #f8f3ec;
     --surface-warm: #fff7ee;
     --surface-cool: #f5f1eb;
@@ -215,7 +215,7 @@
     --sidebar-border: #3a312a;
     --sidebar-ring: #ff8a3d;
 
-    /* Soft semantic surfaces keep state and ownership readable without shadows. */
+    /* Soft semantic surfaces keep state and ownership readable; subtle shadows add texture. */
     --surface: #29231e;
     --surface-warm: #231b15;
     --surface-cool: #1b1815;
@@ -295,6 +295,41 @@
   text-transform: uppercase;
   color: var(--muted-foreground);
 }
+
+/*
+ * Done areas (pages/past-focus.tsx): the Aceternity GlareCard is a 320px dark-foil portrait. Here it is a 240px
+ * landscape card on the app's card surface, so three fit beside the timeline. Its face wrapper soft-light blends
+ * with the page and washes the text out, so the face keeps normal blending. Reduced motion: no tilt.
+ */
+.done-area-glare { width: 240px; }
+.done-area-glare > div { --radius: 18px !important; width: 100%; aspect-ratio: 240 / 150; }
+.done-area-glare > div > div { border-color: var(--shipped-border); }
+.done-area-glare .done-area-face { background: var(--card); color: var(--foreground); }
+.done-area-glare div:has(> .done-area-face) { mix-blend-mode: normal; }
+@media (prefers-reduced-motion: reduce) {
+  .done-area-glare > div > div { transform: none; }
+}
+
+/* A kept suggestion's sparkles (pages/suggested-areas.tsx): a band behind the confirmation, fading out at its edges. */
+.kept-sparkles { position: absolute; inset: -12px -16px; pointer-events: none; mask-image: radial-gradient(ellipse 60% 70% at 30% 50%, #000 30%, transparent 100%); }
+
+/*
+ * SplitFlapText (components/split-flap.tsx): one tile per character, a hairline across its middle where the flap
+ * splits; the fold on each flap is a Web Animation in the component. Colors come from the tile's state classes.
+ */
+.split-flap-tile {
+  position: relative; display: inline-flex; align-items: center; justify-content: center;
+  min-width: 1.05em; height: 1.7em; padding: 0 0.14em; border-radius: 3px; border: 1px solid currentColor;
+  border-color: color-mix(in oklab, currentColor 22%, transparent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; font-weight: 600; line-height: 1;
+  perspective: 120px; overflow: hidden;
+}
+.split-flap-tile::after {
+  content: ''; position: absolute; inset-inline: 0; top: 50%; height: 1px;
+  background: color-mix(in oklab, currentColor 18%, transparent);
+}
+.split-flap-gap { min-width: 0.4em; border-color: transparent; background: transparent !important; }
+.split-flap-gap::after { display: none; }
 
 /* Reduced motion everywhere: spinners stop, pulses and slides are instant, the text simply swaps (decision 5). */
 @media (prefers-reduced-motion: reduce) {

@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "execution_kind": "dry-run",
+  "qualification": "not_qualified",
+  "outcome": "dry_run",
+  "fixture_count": 8,
+  "request_count": 0,
+  "known_spend_usd": 0,
+  "unknown_charge": false,
+  "max_spend_usd": null,
+  "max_output_tokens": null,
+  "request_timeout_ms": null,
+  "fixtures": [
+    {
+      "id": "screenshot-small-text",
+      "hashes": [
+        "b2dc8ef54e12053b86f032d65387b1f717f8574e7cbc043eb736a3b7a344492a"
+      ],
+      "recipe": "screenshot-v1"
+    },
+    {
+      "id": "terminal-error",
+      "hashes": [
+        "62235115d60a2b10565b76111bc3b6abce8d1effcd44a3741dec379391c6387a"
+      ],
+      "recipe": "screenshot-v1"
+    },
+    {
+      "id": "chart",
+      "hashes": [
+        "7cded7ba506acf4b5a96818fe92a55508b2988ba57413b542fe015e54c12796d"
+      ],
+      "recipe": "screenshot-v1"
+    },
+    {
+      "id": "diagram",
+      "hashes": [
+        "5c3a23e58a73ad1f16cb0c1725c0575556ab5c727352628b010c57afa7d0925e"
+      ],
+      "recipe": "screenshot-v1"
+    },
+    {
+      "id": "generated-image",
+      "hashes": [
+        "f2159aaa512bbfd21b645b3a54551241979217e87a30e320987ce829e74b8e49"
+      ],
+      "recipe": "photo-v1"
+    },
+    {
+      "id": "photograph",
+      "hashes": [
+        "13419b34c17722be52b4a71a7f0beb3ecc8673183c8a2cee8572d5cd9bbe3f93"
+      ],
+      "recipe": "photo-v1"
+    },
+    {
+      "id": "dark-ui",
+      "hashes": [
+        "1e126a98b875947266cdae48955df0fe671e602874728c92f4ca85de1aa7b2c2"
+      ],
+      "recipe": "screenshot-v1"
+    },
+    {
+      "id": "two-image-event",
+      "hashes": [
+        "6f73a737b7915844944764b4ef668123848381063502bfee2f46cc349a62ace0",
+        "99a36b54ee2454cd04e1478ee559fa4487651163d258a7f976cda98388ec4656"
+      ],
+      "recipe": "screenshot-v1"
+    }
+  ],
+  "attempts": []
+}

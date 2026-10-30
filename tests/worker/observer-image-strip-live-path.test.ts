@@ -18,6 +18,16 @@ import { ingestObservation, setIngestContext } from '../../src/services/worker/h
 
 const BASE64 = 'iVBORw0KGgoAAAANSUhEUg' + 'A'.repeat(300_000);
 
+// Structure of a real Claude Code Read image result: the MIME is `file.type`
+// (not `file.media_type`), with originalSize and dimensions beside the bytes.
+const realReadImageResult = (base64: string) => ({
+  type: 'image',
+  file: {
+    base64, type: 'image/png', originalSize: 225_016,
+    dimensions: { originalWidth: 1440, originalHeight: 900, displayWidth: 1440, displayHeight: 900 },
+  },
+});
+
 /** Post one observation through the HTTP ingest route and return what was queued. */
 async function ingest(toolName: string, toolInput: unknown, toolResponse: unknown) {
   let queued: any;
@@ -65,16 +75,29 @@ async function observe(queued: any) {
 }
 
 describe('observer image stripping on the real ingest path (#3606)', () => {
+  test('the prompt stripper alone recognizes a real Read result and keeps its MIME', () => {
+    const prompt = buildObservationPrompt({
+      id: 0, tool_name: 'Read', tool_input: JSON.stringify({ file_path: '/frames/0001.png' }),
+      tool_output: JSON.stringify(realReadImageResult(BASE64)), created_at_epoch: Date.now(), cwd: '/fixture',
+    });
+    expect(prompt).not.toContain('iVBORw0KGgo');
+    expect(prompt).toContain('image data withheld from the observer');
+    expect(prompt).toContain('image/png');
+  });
+
   test('a Read of an image file sends no base64 to the compressor or the prompt', async () => {
     // Claude Code returns an image file in this shape: `file.base64`, not
     // `source.data`, so the Anthropic branch of the stripper never matched it.
     const queued = await ingest('Read', { file_path: '/frames/0001.png' },
-      { type: 'image', file: { base64: BASE64, media_type: 'image/png' } });
+      realReadImageResult(BASE64));
     const { prompt, compressed } = await observe(queued);
 
     expect(compressed).toEqual([]);
     expect(prompt).not.toContain('iVBORw0KGgo');
     expect(/A{200,}/.test(prompt)).toBe(false);
+    // The text signal beside the bytes survives to the observer.
+    expect(prompt).toContain('image/png');
+    expect(prompt).toContain('originalWidth');
   });
 
   test('an Anthropic image block sends no base64 to the compressor or the prompt', async () => {
@@ -107,7 +130,7 @@ describe('observer image stripping on the real ingest path (#3606)', () => {
     // Stripping has to be what shrinks this, not the head/tail guard: an
     // elided marker here would mean the image was still being measured.
     const queued = await ingest('Read', { file_path: '/frames/0001.png' },
-      { type: 'image', file: { base64: BASE64 } });
+      realReadImageResult(BASE64));
     const { prompt } = await observe(queued);
 
     expect(prompt).not.toContain('reason="oversize"');
@@ -139,7 +162,7 @@ describe('observer image stripping on the real ingest path (#3606)', () => {
     // is the double-encoded string, so the prompt build has to be able to
     // strip it on its own.
     const queued = await ingest('Read', { file_path: '/frames/0001.png' },
-      { type: 'image', file: { base64: BASE64 } });
+      realReadImageResult(BASE64));
     const prompt = buildObservationPrompt({
       id: 0,
       tool_name: queued.tool_name,
