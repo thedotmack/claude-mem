@@ -31,7 +31,7 @@ describe('install flow wiring', () => {
     // settings must not enter requireInstallerOAuthLogin: it would open a
     // browser in an agent shell and poll until the pairing expires.
     const gateStart = source.indexOf('let oauthPairing: InstallerOAuthPairing | null = null;');
-    const gateEnd = source.indexOf('const selectedProvider = await promptProvider(options, oauthPairing, version);');
+    const gateEnd = source.indexOf('const selectedProvider = await promptProvider(options, oauthPairing, version, signInForCmem);');
     expect(gateStart).toBeGreaterThan(-1);
     expect(gateEnd).toBeGreaterThan(gateStart);
     const gate = source.slice(gateStart, gateEnd);

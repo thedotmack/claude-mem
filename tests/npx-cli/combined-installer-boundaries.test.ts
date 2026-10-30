@@ -101,6 +101,8 @@ mock.module('@clack/prompts', () => ({
     return selectedHosts;
   },
   select: async () => runtimeChoice,
+  // The optional email opt-in: Enter (empty) skips it.
+  text: async () => '',
   confirm: async (options: { message: string }) => {
     if (options.message === 'Install Claude Code now?') hostOffers++;
     return false;

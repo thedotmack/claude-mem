@@ -85,7 +85,12 @@ mock.module('@clack/prompts', () => ({
   intro: () => {}, outro: (value: string) => lines.push(value), cancel: (value: string) => lines.push(value),
   note: (value: string, title?: string) => lines.push(`${title}\n${value}`),
   spinner: () => ({ start: (value: string) => lines.push(value), stop: (value: string) => lines.push(value), message: () => {} }),
-  multiselect: async (options: { message: string }) => { questions.push(options.message); return ['claude-code']; },
+  multiselect: async (options: { message: string }) => {
+    questions.push(options.message);
+    // The terminal flow's provider prompt: CMEM Pro, whose sign-in is the login boundary below.
+    if (options.message.startsWith('Select Provider')) return ['cmem'];
+    return ['claude-code'];
+  },
   select: async (options: { message: string }) => {
     questions.push(options.message);
     if (options.message.startsWith('Which runtime')) return 'worker';
@@ -93,6 +98,8 @@ mock.module('@clack/prompts', () => ({
     return 'claude-haiku-4-5-20251001';
   },
   confirm: async (options: { message: string }) => { questions.push(options.message); return false; },
+  // The optional email opt-in: Enter (empty) skips it, so the note question never follows.
+  text: async (options: { message: string }) => { questions.push(options.message); return ''; },
   // Plugin copy and dependency installs are other suites' business; IDE hooks and the worker start run for real.
   tasks: async (tasks: Array<{ title: string; task: (message: (value: string) => void) => Promise<string> }>) => {
     for (const task of tasks) {
@@ -262,8 +269,11 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     // useSubscriptionAuth(): local, logged-in Claude SDK account; no claude-mem login at all.
     expect(readSettings()).toMatchObject({ CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription', CLAUDE_MEM_CLOUD_SYNC_TOKEN: '' });
     expect(pairingStarts).toEqual([]);
+    // The optional email is asked once up front; skipping it skips the note too.
+    expect(questions.filter(q => q.startsWith('Your work email'))).toHaveLength(1);
+    expect(questions.some(q => q.includes('how can we help'))).toBe(false);
     // No provider multiselect and no model question: the browser made the choice, the model keeps its default.
-    expect(questions.filter(q => !q.startsWith('Which agents') && !q.startsWith('Which runtime') && !q.startsWith('Disable Claude Code') && !q.startsWith('Install Claude Code'))).toEqual([]);
+    expect(questions.filter(q => !q.startsWith('Which agents') && !q.startsWith('Which runtime') && !q.startsWith('Disable Claude Code') && !q.startsWith('Install Claude Code') && !q.startsWith('Your work email'))).toEqual([]);
     expect(JSON.parse(readFileSync(statePath, 'utf8'))).toMatchObject({ status: 'complete', choice: { branch: 'home' }, installer: { stage: 'home-ready' } });
     expect(lines.join('\n')).toContain('Not required (local provider)');
     expect(lines.join('\n')).toContain('claude-mem installed successfully!');
@@ -416,13 +426,16 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
   it('a machine that already finished setup keeps the terminal flow', async () => {
     const completed = { status: 'complete', choice: { branch: 'home', memoryBilling: 'existing', chosenAt: 'x' }, installer: null, completedAt: 'x' };
     writeFileSync(statePath, JSON.stringify(completed));
-    // The terminal flow's login step reaches cmem.ai, which this fixture refuses outside the pairing start.
-    // Stopping at the login boundary is enough to show no browser hand-off ran.
+    // The terminal flow's login step (after picking CMEM Pro) reaches cmem.ai, which this fixture refuses
+    // outside the pairing start. Stopping at the login boundary is enough to show no browser hand-off ran.
     fetchSpy.mockImplementationOnce(async () => { throw new Error('OWNED_LOGIN_BOUNDARY'); });
     await expect(runInstallCommand({})).rejects.toThrow('EXIT_1');
     expect(opened).toEqual([]);
     expect(setupRequests).toEqual([]);
     expect(JSON.parse(readFileSync(statePath, 'utf8'))).toEqual(completed);
+    // Sign-in waited for the provider choice instead of gating the install.
+    expect(questions.some(q => q.startsWith('Select Provider'))).toBe(true);
+    expect(lines.join('\n')).toContain('CMEM Pro needs a claude-mem sign-in.');
   });
 
   it('releases the GUI session when the worker fails while preserving saved setup state', async () => {
