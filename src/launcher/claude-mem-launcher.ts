@@ -337,12 +337,12 @@ async function runThroughWorker(workerServiceArguments: string[]): Promise<never
   // Only .cmd/.bat shims need cmd.exe; a resolved bun.exe must be spawned
   // directly. Routing it through `shell: true` breaks when the environment
   // grows past cmd.exe's ~8191-char per-variable limit (issue #3196).
+  // FIXED (security): never use `shell: true`; use cmd.exe with array args.
   const needsCmdShell = IS_WINDOWS && /\.(cmd|bat)$/i.test(bunRuntime.bunExecutablePath);
   if (needsCmdShell) {
-    const quote = (value: string) => `"${String(value).replace(/"/g, '\\"')}"`;
-    spawnOptions.shell = true;
-    spawnCommand = [bunRuntime.bunExecutablePath, ...workerArguments].map(quote).join(' ');
-    spawnArguments = [];
+    // Safe: array-based args passed to cmd.exe /c — no shell string interpolation.
+    spawnCommand = 'cmd.exe';
+    spawnArguments = ['/c', bunRuntime.bunExecutablePath, ...workerArguments];
   }
 
   return new Promise<never>(() => {
