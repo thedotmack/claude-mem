@@ -20,10 +20,11 @@ const STATUS: Record<SetupScanPhase, string> = {
 }
 
 /** Step 1: each detected agent ticks in and its prompt count climbs while the worker reads the last 30 days. */
-export function ScanScreen({ scan, onImproveProductChange, onConfirmUpload, preferenceError, onRetry, retrying, retryError }: {
+export function ScanScreen({ scan, onImproveProductChange, onConfirmUpload, consentError, preferenceError, onRetry, retrying, retryError }: {
   scan: SetupScanView
   onImproveProductChange: (improveProduct: boolean) => void
   onConfirmUpload: (upload: boolean, agents?: string[]) => void
+  consentError?: string | null
   preferenceError: string | null
   onRetry: () => void
   retrying: boolean
@@ -31,7 +32,9 @@ export function ScanScreen({ scan, onImproveProductChange, onConfirmUpload, pref
 }) {
   const detected = scan.agents.filter((agent) => agent.detected)
   const [unticked, setUnticked] = useState<string[]>([])
-  const chosen = detected.filter((agent) => agent.prompts > 0 && !unticked.includes(agent.id)).map((agent) => agent.id)
+  // Offer every tool that has prompts, even when its history folder is gone and only saved prompts remain.
+  const uploadable = scan.agents.filter((agent) => agent.prompts > 0)
+  const chosen = uploadable.filter((agent) => !unticked.includes(agent.id)).map((agent) => agent.id)
   const reducedMotion = useMatchesMedia('(prefers-reduced-motion: reduce)')
   return (
     <section aria-labelledby="scan-title">
@@ -69,7 +72,7 @@ export function ScanScreen({ scan, onImproveProductChange, onConfirmUpload, pref
               If you skip this, your history stays on this computer.
             </p>
             <ul className="scan-consent-agents" aria-label="Tools to upload">
-              {detected.filter((agent) => agent.prompts > 0).map((agent) => (
+              {uploadable.map((agent) => (
                 <li key={agent.id}>
                   <label>
                     <input type="checkbox" checked={!unticked.includes(agent.id)}
@@ -81,6 +84,7 @@ export function ScanScreen({ scan, onImproveProductChange, onConfirmUpload, pref
             </ul>
             <button type="button" disabled={chosen.length === 0} onClick={() => onConfirmUpload(true, chosen)}>Upload my prompts to cmem.ai</button>
             <button type="button" className="secondary" onClick={() => onConfirmUpload(false)}>Keep everything local</button>
+            {consentError && <p className="scan-error" role="alert">{consentError}</p>}
           </div>
         )}
         <p className="scan-status" role="status" aria-live="polite">{STATUS[scan.phase]}</p>

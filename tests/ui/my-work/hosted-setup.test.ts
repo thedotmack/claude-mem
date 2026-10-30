@@ -12,8 +12,8 @@ const compiled = buildSync({
       import { ScanScreen } from './src/setup/screens/scan-screen';
       export { localSetupSource, EMPTY_SETUP_DATA } from './src/setup/setup-data';
       export { createSampleSetupSource } from './src/setup/setup-sample';
-      export const renderScan = (scan, preferenceError = null, retrying = false, retryError = null) => renderToStaticMarkup(
-        <ScanScreen scan={scan} onImproveProductChange={() => {}} onConfirmUpload={() => {}} preferenceError={preferenceError} onRetry={() => {}} retrying={retrying} retryError={retryError} />
+      export const renderScan = (scan, preferenceError = null, retrying = false, retryError = null, consentError = null) => renderToStaticMarkup(
+        <ScanScreen scan={scan} onImproveProductChange={() => {}} onConfirmUpload={() => {}} consentError={consentError} preferenceError={preferenceError} onRetry={() => {}} retrying={retrying} retryError={retryError} />
       );
     `,
   },
@@ -74,6 +74,10 @@ describe('hosted setup scan control', () => {
     const consent = app.renderScan(scan({ phase: 'awaiting-consent' }));
     expect(consent).toContain('Upload my prompts to cmem.ai');
     expect(consent).toContain('Keep everything local');
+    const undetected = app.renderScan(scan({ phase: 'awaiting-consent', agents: [{ id: 'claude-code', label: 'Claude Code', detected: false, prompts: 2, canRunSetup: null, cannotRunReason: null }] }));
+    expect(undetected).toContain('Claude Code (2 prompts)');
+    expect(undetected).not.toMatch(/<button[^>]*disabled[^>]*>Upload my prompts/);
+    expect(app.renderScan(scan({ phase: 'awaiting-consent' }), null, false, null, 'Could not send your choice')).toContain('class="scan-error" role="alert">Could not send your choice');
     expect(app.renderScan(scan({ phase: 'awaiting-consent', agents: [{ id: 'codex', label: 'Codex', detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null }] }))).toContain('Codex (3 prompts)');
     expect(consent).toContain('full text of the prompts you typed in the last 30 days');
     expect(app.renderScan(scan({ phase: 'saving' }))).not.toContain('disabled=""');

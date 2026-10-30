@@ -69,7 +69,7 @@ export interface SetupSource {
   /** Changes the hosted setup results preference without pausing the scan or upload. */
   setImproveProduct(improveProduct: boolean): Promise<void>
   /** Answers the upload question: true sends the scanned prompts to cmem.ai, false keeps them on this machine. */
-  confirmUpload(upload: boolean, agents?: string[]): Promise<void>
+  confirmUpload(upload: boolean, agents?: string[], improveProduct?: boolean): Promise<void>
   /** Hands the storage choice to the installer waiting in the terminal (POST /api/setup/choice). */
   choose(choice: SetupChoice): Promise<void>
   /** Asks the installer holding the On The Go sign-in to open checkout (POST /api/setup/checkout). */
@@ -256,7 +256,7 @@ export const localSetupSource: SetupSource = {
     preferenceWrite = write.catch(() => {})
     await write
   },
-  async confirmUpload(upload, agents) { await postJson('/api/setup/scan/consent', agents ? { upload, agents } : { upload }) },
+  async confirmUpload(upload, agents, improveProduct) { await postJson('/api/setup/scan/consent', { upload, ...(agents ? { agents } : {}), ...(improveProduct === undefined ? {} : { improveProduct }) }) },
   async choose(choice) { await postJson('/api/setup/choice', choice) },
   async checkout() { await postJson('/api/setup/checkout', {}) },
   async complete(tools) { await postJson('/api/setup/complete', { tools }) },

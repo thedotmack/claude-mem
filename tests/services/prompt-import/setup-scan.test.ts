@@ -145,19 +145,30 @@ describe('setup prompt scan', () => {
     ]);
   });
 
-  it('never uploads before consent, and declining keeps everything local', async () => {
+  it('never uploads before consent, and declining hands off nothing so the extraction still finishes', async () => {
     hookRecorded('claude', 'session-consent', 'alpha', 'private prompt', '2026-10-05T09:00:00.000Z');
-    let calls = 0;
+    const batches: unknown[][] = [];
     const scan = setupScan();
-    scan.setExtractor(async () => { calls++; });
+    scan.setExtractor(async prompts => { batches.push(prompts); });
     scan.start();
     const waiting = await scan.finished();
     expect(waiting.phase).toBe('awaiting-consent');
     expect(waiting.improveProduct).toBe(false);
-    expect(calls).toBe(0);
+    expect(batches).toEqual([]);
     const done = await scan.confirmUpload(false);
     expect(done).toMatchObject({ phase: 'done', done: true });
-    expect(calls).toBe(0);
+    expect(batches).toEqual([[]]);
+  });
+
+  it('uses the sharing choice sent with the consent, not a stale stored one', async () => {
+    hookRecorded('claude', 'session-share', 'alpha', 'a prompt', '2026-10-05T09:00:00.000Z');
+    const flags: boolean[] = [];
+    const scan = setupScan();
+    scan.setExtractor(async (_prompts, improveProduct) => { flags.push(improveProduct); });
+    scan.start(true);
+    await scan.finished();
+    await scan.confirmUpload(true, undefined, false);
+    expect(flags).toEqual([false]);
   });
 
   it('uploads only the tools the person left ticked', async () => {
@@ -168,8 +179,9 @@ describe('setup prompt scan', () => {
     scan.start();
     await scan.finished();
     await scan.confirmUpload(true, []);
-    expect(batches).toEqual([]);
+    expect(batches).toEqual([[]]);
     expect(scan.state()).toMatchObject({ phase: 'done', done: true });
+    batches = [];
     scan.start();
     await scan.finished();
     await scan.confirmUpload(true, ['claude-code']);

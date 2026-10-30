@@ -260,7 +260,7 @@ export interface SetupWorkItem { groupId: string; title: string; platform: strin
 const SETUP_WORK_SHOWN = 5;
 
 const setupScanBody = z.object({ improveProduct: z.boolean().optional() }).strict();
-const setupScanConsentBody = z.object({ upload: z.boolean(), agents: z.array(z.enum(['claude-code', 'codex', 'gemini-cli', 'antigravity-cli', 'opencode'])).optional() }).strict();
+const setupScanConsentBody = z.object({ upload: z.boolean(), agents: z.array(z.enum(['claude-code', 'codex', 'gemini-cli', 'antigravity-cli', 'opencode'])).optional(), improveProduct: z.boolean().optional() }).strict();
 const setupScanPreferencesBody = z.object({ improveProduct: z.boolean() }).strict();
 // On The Go is always CMEM Pro: standalone Cloud Sync on your own tokens has no price yet (gap G1).
 const setupChoiceBody = z.object({
@@ -583,7 +583,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     app.post('/api/setup/scan/consent', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupScanConsentBody), this.wrapHandler(async (req, res) => {
       if (!this.setupScan) { res.status(503).json({ error: 'The prompt scan is unavailable on this worker.' }); return; }
       res.setHeader('Cache-Control', 'no-store');
-      try { res.json(await this.setupScan.confirmUpload(req.body.upload, req.body.agents)); } catch (error) {
+      try { res.json(await this.setupScan.confirmUpload(req.body.upload, req.body.agents, req.body.improveProduct)); } catch (error) {
         res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
       }
     }));

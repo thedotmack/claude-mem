@@ -72,6 +72,20 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
     }
   }
 
+  const [consentError, setConsentError] = useState<string | null>(null)
+  const consentPending = useRef(false)
+  const confirmUpload = async (upload: boolean, agents?: string[]) => {
+    if (!source || consentPending.current) return
+    consentPending.current = true
+    setConsentError(null)
+    try {
+      // The sharing choice travels with the consent, so a queued preference request cannot lose a race with the upload.
+      await source.confirmUpload(upload, agents, improveProduct ?? data.scan.improveProduct)
+    } catch (error) {
+      setConsentError(`Could not send your choice, nothing was uploaded: ${error instanceof Error ? error.message : String(error)}. Try again.`)
+    } finally { consentPending.current = false }
+  }
+
   const [retrying, setRetrying] = useState(false)
   const [retryError, setRetryError] = useState<string | null>(null)
   const retryPending = useRef(false)
@@ -159,7 +173,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
   const installerFailed = data.installer?.stage === 'failed'
 
   const screens: Record<SetupStep, () => ReactNode> = {
-    scan: () => <ScanScreen scan={{ ...data.scan, improveProduct: improveProduct ?? data.scan.improveProduct }} onImproveProductChange={(checked) => void changeImproveProduct(checked)} onConfirmUpload={(upload, agents) => void source?.confirmUpload(upload, agents)} preferenceError={preferenceError} onRetry={() => void retryScan()} retrying={retrying} retryError={retryError} />,
+    scan: () => <ScanScreen scan={{ ...data.scan, improveProduct: improveProduct ?? data.scan.improveProduct }} onImproveProductChange={(checked) => void changeImproveProduct(checked)} onConfirmUpload={(upload, agents) => void confirmUpload(upload, agents)} consentError={consentError} preferenceError={preferenceError} onRetry={() => void retryScan()} retrying={retrying} retryError={retryError} />,
     reveal: () => <RevealScreen agents={data.scan.agents} reveal={data.reveal} extraction={data.extraction} recentPrompts={data.recentPrompts} onContinue={() => update({ revealContinued: true }, 'choice')} />,
     choice: () => <ChoiceScreen branch={flow.branch} onChoose={(branch) => update({ branch, memoryBilling: branch === 'go' ? 'hosted' : 'existing', choiceContinued: true, savingsComplete: false, checkoutReviewed: false, setupComplete: false, finishTools: [] }, 'savings')} />,
     savings: () => (

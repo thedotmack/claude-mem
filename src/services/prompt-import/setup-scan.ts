@@ -209,15 +209,24 @@ export class SetupScan {
   }
 
   /** The person's answer to "upload your last 30 days of prompts to cmem.ai?". Declining keeps everything local. */
-  async confirmUpload(allow: boolean, agents?: PromptAgentId[]): Promise<SetupScanState> {
+  async confirmUpload(allow: boolean, agents?: PromptAgentId[], improveProduct?: boolean): Promise<SetupScanState> {
     const pending = this.pendingUpload;
     if (this.current.phase !== 'awaiting-consent' || !pending) throw new Error('The setup scan is not waiting for an upload choice.');
     this.pendingUpload = null;
+    // The sharing choice travels with the consent, so a delayed preference request can never leave a stale value.
+    if (improveProduct !== undefined) this.current = { ...this.current, improveProduct };
     // Only the tools the person left ticked are uploaded; the rest never leave this machine.
     const selected = agents ? pending.ownerPrompts.filter(prompt => agents.includes(prompt.agent)) : pending.ownerPrompts;
     if (!allow || !selected.length) {
       logger.info('IMPORT', 'Setup prompt upload declined; prompts stay on this machine');
-      this.finish(pending.summary, pending.startedAt);
+      try {
+        // An empty hand-off records a finished, local-only extraction without contacting Cloud, so the reveal screen stops waiting.
+        await this.extract!([], this.current.improveProduct);
+        this.finish(pending.summary, pending.startedAt);
+      } catch (error) {
+        const finishedAt = this.now();
+        this.update({ phase: 'failed', done: true, error: error instanceof Error ? error.message : String(error), finishedAt: new Date(finishedAt).toISOString(), durationMs: finishedAt - pending.startedAt }, true);
+      }
       return this.state();
     }
     try {
