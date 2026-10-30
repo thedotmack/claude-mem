@@ -8,12 +8,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import express from 'express';
 import {
-  safeConversationId,
+  conversationKey,
   toMirrorLine,
   TranscriptMirror,
   TranscriptMirrorError,
   type MirrorMessage,
 } from '../../src/services/transcript-mirror/TranscriptMirror.js';
+import { createMiddleware } from '../../src/services/worker/http/middleware.js';
 import { TranscriptMirrorRoutes } from '../../src/services/worker/http/routes/TranscriptMirrorRoutes.js';
 import { logger } from '../../src/utils/logger.js';
 
@@ -49,7 +50,7 @@ const conversation: MirrorMessage[] = [
 function files(mirror: TranscriptMirror, conversationId: string) {
   const jsonl = mirror.jsonlPathFor('openduet', conversationId);
   const dir = jsonl.slice(0, jsonl.lastIndexOf('/'));
-  return { jsonl, dir, id: safeConversationId(conversationId) };
+  return { jsonl, dir, id: conversationKey(conversationId) };
 }
 
 function lines(path: string) {
@@ -115,6 +116,15 @@ describe('TranscriptMirror', () => {
     const raw = readFileSync(files(mirror, 'thread-1').jsonl, 'utf8');
     expect(raw).not.toContain('4321');
     expect(raw).toContain('<b>bold</b> stays');
+  });
+
+  it('removes <private> blocks from a tool result even when its JSON escapes the tag', () => {
+    const line = toMirrorLine(
+      { id: 't1', role: 'tool', toolCallId: 'c1', content: '{"note":"\\u003cprivate\\u003esecret\\u003c/private\\u003e visible"}' },
+      '2026-10-30T00:00:00.000Z',
+    );
+    expect(JSON.stringify(line)).not.toContain('secret');
+    expect(line.message.content[0]).toMatchObject({ type: 'tool_result', result: { note: ' visible' } });
   });
 
   it('keeps structured content as-is', () => {
@@ -190,16 +200,50 @@ describe('TranscriptMirror', () => {
     await expect(attempt).rejects.toMatchObject({ code: 'changed_outside' });
   });
 
+  it('refuses an edit that keeps the file the same size', async () => {
+    const mirror = new TranscriptMirror(root);
+    await mirror.append({ source: 'openduet', conversationId: 'thread-1', messages: conversation.slice(0, 2) });
+    const { jsonl } = files(mirror, 'thread-1');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const text = readFileSync(jsonl, 'utf8');
+    writeFileSync(jsonl, text.replace('What is on my calendar', 'What is in my calendar'));
+    expect(statSync(jsonl).size).toBe(Buffer.byteLength(text));
+    await expect(new TranscriptMirror(root).read('openduet', 'thread-1')).rejects.toMatchObject({ code: 'changed_outside' });
+  });
+
+  it('never reads or adds to a folder that holds another conversation', async () => {
+    const mirror = new TranscriptMirror(root);
+    await mirror.append({ source: 'openduet', conversationId: 'thread-1', messages: conversation.slice(0, 1) });
+    const { dir, id } = files(mirror, 'thread-1');
+    const cursorPath = join(dir, `${id}.journal-cursor.json`);
+    writeFileSync(cursorPath, JSON.stringify({ ...JSON.parse(readFileSync(cursorPath, 'utf8')), conversationId: 'thread-2' }));
+    await expect(mirror.read('openduet', 'thread-1')).rejects.toMatchObject({ code: 'not_found' });
+    await expect(mirror.append({ source: 'openduet', conversationId: 'thread-1', messages: conversation })).rejects.toMatchObject({ code: 'corrupt' });
+  });
+
   it('keeps every conversation id inside its own folder', async () => {
     const mirror = new TranscriptMirror(root);
-    for (const bad of ['', '.', '..', ' padded', 'nul\0id', 'x'.repeat(201)]) {
+    for (const bad of ['', ' padded', 'nul\0id', 'x'.repeat(201)]) {
       await expect(mirror.append({ source: 'openduet', conversationId: bad, messages: conversation })).rejects.toMatchObject({ code: 'invalid_input' });
     }
     for (const badSource of ['', '../x', 'Upper', 'a/b']) {
       await expect(mirror.append({ source: badSource, conversationId: 'ok', messages: conversation })).rejects.toMatchObject({ code: 'invalid_input' });
     }
     await mirror.append({ source: 'openduet', conversationId: '../escape/attempt', messages: conversation });
-    expect(readdirSync(join(root, 'openduet'))).toEqual(['.._2Fescape_2Fattempt']);
+    expect(readdirSync(join(root, 'openduet'))).toEqual([expect.stringMatching(/^___escape_attempt-[0-9a-f]{16}$/)]);
+  });
+
+  it('gives ids that look alike their own folders, and keeps long ids to a short name', async () => {
+    const mirror = new TranscriptMirror(root);
+    // Grok Bot's encoding gave these two one folder.
+    for (const conversationId of ['a/b', 'a_2Fb', '.', '..', 'x'.repeat(200)]) {
+      await mirror.append({ source: 'openduet', conversationId, messages: [{ id: 'u1', role: 'user', content: conversationId }] });
+    }
+    const folders = readdirSync(join(root, 'openduet'));
+    expect(folders).toHaveLength(5);
+    expect(Math.max(...folders.map((name) => name.length))).toBeLessThanOrEqual(65);
+    expect((await mirror.read('openduet', 'a/b')).lines[0].message.content[0].text).toBe('a/b');
+    expect((await mirror.read('openduet', 'a_2Fb')).lines[0].message.content[0].text).toBe('a_2Fb');
   });
 
   it('lists conversations newest first', async () => {
@@ -218,8 +262,9 @@ describe('TranscriptMirrorRoutes', () => {
   let base = '';
 
   beforeEach(async () => {
+    // The worker's own middleware, so its 5 MB body limit is in the way unless the route skips it.
     const app = express();
-    app.use(express.json({ limit: '5mb' }));
+    for (const middleware of createMiddleware()) app.use(middleware);
     new TranscriptMirrorRoutes(new TranscriptMirror(root)).setupRoutes(app);
     await new Promise<void>((resolve) => {
       server = app.listen(0, '127.0.0.1', () => {
@@ -266,5 +311,13 @@ describe('TranscriptMirrorRoutes', () => {
     const refused = await post({ source: 'openduet', conversationId: 'thread-1', messages: conversation });
     expect(refused.status).toBe(409);
     expect(await refused.json()).toMatchObject({ error: 'changed_outside' });
+  });
+
+  it('takes a message larger than the worker\'s usual 5 MB body limit', async () => {
+    const big = 'x'.repeat(6 * 1024 * 1024);
+    const response = await post({ source: 'openduet', conversationId: 'big', messages: [{ id: 't1', role: 'tool', toolCallId: 'c1', content: big }] });
+    expect(response.status).toBe(200);
+    const read = await (await fetch(`${base}/api/chat-transcripts/openduet/big`)).json();
+    expect(read.lines[0].message.content[0].result).toHaveLength(big.length);
   });
 });

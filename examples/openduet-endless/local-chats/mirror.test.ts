@@ -145,7 +145,7 @@ describe('chat mirror into claude-mem', () => {
     const mirror = createClaudeMemMirror({ store, workerUrl: claudeMemUrl, catchUpIntervalMs: 0 });
     await mirror.catchUp();
     // Someone edits the kept file by hand; claude-mem then refuses to add to it.
-    appendFileSync(join(dir, 'claude-mem', 'chat-transcripts', 'openduet', 'first', 'first.jsonl'), 'edited by hand\n');
+    appendFileSync(new TranscriptMirror(join(dir, 'claude-mem', 'chat-transcripts')).jsonlPathFor('openduet', 'first'), 'edited by hand\n');
     fullRun(store, 'first', 'r2', 'u2', 'q2', 'a2');
     await new Promise((resolve) => setTimeout(resolve, 5));
     store.createThread({ id: 'second', userId: 'u', agentId: 'openduet' });
@@ -166,6 +166,29 @@ describe('chat mirror into claude-mem', () => {
     store.updateThread('t1', { name: 'Trip to Oslo' });
     expect(await mirror.catchUp()).toMatchObject({ threads: 1, appended: 0 });
     expect(await kept('t1')).toMatchObject({ title: 'Trip to Oslo', messageCount: 4 });
+    mirror.stop();
+    store.close();
+  });
+
+  test('a rename made while the thread is being sent is not lost', async () => {
+    const store = new ChatStore(join(dir, 'chats.db'));
+    store.createThread({ id: 't1', userId: 'u', agentId: 'openduet', name: 'Untitled' });
+    fullRun(store, 't1', 'r1', 'u1', 'q', 'a');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    let renamed = false;
+    const fetchImpl = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      if (!renamed) {
+        renamed = true;
+        store.updateThread('t1', { name: 'Trip to Oslo' });
+      }
+      return fetch(input, init);
+    }) as typeof fetch;
+    const mirror = createClaudeMemMirror({ store, workerUrl: claudeMemUrl, catchUpIntervalMs: 0, fetchImpl });
+    await mirror.catchUp();
+    expect((await kept('t1'))!.title).toBe('Untitled');
+    expect(await mirror.catchUp()).toMatchObject({ threads: 1, appended: 0 });
+    expect((await kept('t1'))!.title).toBe('Trip to Oslo');
+    expect(await mirror.catchUp()).toMatchObject({ threads: 0 });
     mirror.stop();
     store.close();
   });
@@ -237,7 +260,7 @@ describe('chat mirror into claude-mem', () => {
       expect(transcript!.lines.map((line) => line.message.content[0].text)).toEqual(['Rain in Oslo?', 'Yes, all week.']);
 
       // The file itself is plain JSONL in claude-mem's folder.
-      const file = join(dir, 'claude-mem', 'chat-transcripts', 'openduet', 't9', 't9.jsonl');
+      const file = new TranscriptMirror(join(dir, 'claude-mem', 'chat-transcripts')).jsonlPathFor('openduet', 't9');
       expect(readFileSync(file, 'utf8').trim().split('\n')).toHaveLength(2);
     } finally {
       instance.stop();

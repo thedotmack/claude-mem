@@ -8,6 +8,11 @@ import { TranscriptMirror, TranscriptMirrorError } from '../../../transcript-mir
 
 /** One request carries at most this many messages; a long chat is sent in batches. */
 export const MAX_MIRROR_MESSAGES_PER_REQUEST = 500;
+/**
+ * A request body may be this large. A message is never split across requests, so one long tool
+ * result must fit whole; the worker's usual 5 MB limit is skipped for this route (middleware.ts).
+ */
+export const MAX_MIRROR_REQUEST_BYTES = 64 * 1024 * 1024;
 
 const toolCallSchema = z.object({
   id: z.string().min(1),
@@ -51,7 +56,13 @@ export class TranscriptMirrorRoutes extends BaseRouteHandler {
   }
 
   setupRoutes(app: express.Application): void {
-    app.post('/api/chat-transcripts', requireLocalhost, validateBody(appendSchema), this.handleAppend.bind(this));
+    app.post(
+      '/api/chat-transcripts',
+      requireLocalhost,
+      express.json({ limit: MAX_MIRROR_REQUEST_BYTES }),
+      validateBody(appendSchema),
+      this.handleAppend.bind(this),
+    );
     app.get('/api/chat-transcripts', requireLocalhost, this.handleList.bind(this));
     app.get('/api/chat-transcripts/:source/:conversationId', requireLocalhost, this.handleRead.bind(this));
   }

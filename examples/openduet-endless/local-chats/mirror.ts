@@ -15,12 +15,12 @@ import { messagesFromEvents } from './messages.js';
 export const MIRROR_SOURCE = 'openduet';
 /** Messages per request; claude-mem takes at most 500. */
 const MESSAGES_PER_REQUEST = 200;
-/** A request body stays under this, well inside the worker's 5 MB limit. */
+/** A request body stays under this unless one message alone is larger (claude-mem takes up to 64 MB). */
 const REQUEST_BYTE_BUDGET = 3 * 1024 * 1024;
 const CATCH_UP_INTERVAL_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 30_000;
 
-type BehindRow = { id: string; name: string | null; target_seq: number };
+type BehindRow = { id: string; name: string | null; updated_at: string; target_seq: number };
 
 /** claude-mem answered, but would not keep this thread (for example its file was changed by hand). */
 class RefusedError extends Error {
@@ -62,14 +62,14 @@ export function prepareMirrorColumns(store: ChatStore): void {
 function threadsBehind(store: ChatStore, threadId?: string): BehindRow[] {
   return store.db
     .query<BehindRow, string[]>(
-      `SELECT t.id, t.name,
+      `SELECT t.id, t.name, t.updated_at,
               COALESCE((SELECT MAX(e.seq) FROM events e
                         WHERE e.thread_id = t.id AND e.type IN ('RUN_FINISHED', 'RUN_ERROR')), 0) AS target_seq
        FROM threads t
        WHERE ${threadId ? 't.id = ? AND' : ''}
              (COALESCE((SELECT MAX(e.seq) FROM events e
                         WHERE e.thread_id = t.id AND e.type IN ('RUN_FINISHED', 'RUN_ERROR')), 0) > t.mirrored_seq
-              OR (t.mirrored_at IS NOT NULL AND t.updated_at > t.mirrored_at))
+              OR (t.mirrored_at IS NOT NULL AND t.updated_at <> t.mirrored_at))
        ORDER BY t.updated_at`,
     )
     .all(...(threadId ? [threadId] : []));
@@ -128,9 +128,11 @@ export function createClaudeMemMirror(options: MirrorOptions): ClaudeMemMirror {
       }
       appended += Number(((await response.json()) as { appended?: number }).appended ?? 0);
     }
+    // The thread's own updated_at, read with the name that was sent: a rename while this was in
+    // flight leaves updated_at newer than mirrored_at, so the next pass sends the new name.
     store.db
       .query('UPDATE threads SET mirrored_seq = ?, mirrored_at = ? WHERE id = ?')
-      .run(row.target_seq, new Date().toISOString(), row.id);
+      .run(row.target_seq, row.updated_at, row.id);
     return appended;
   };
 

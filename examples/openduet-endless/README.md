@@ -59,7 +59,7 @@ made by setup and used only between OpenDuet and the store on this computer.
 - Kept: every conversation, its history when you come back to it, stopping a reply, scheduled and first-day turns.
 - Back up or move your chats by copying `~/openduet-endless/chats/` while OpenDuet is stopped.
 - Every chat is also copied whole into claude-mem, so the full transcripts are yours no matter what happens to
-  OpenDuet: `~/openduet-endless/claude-mem-data/chat-transcripts/openduet/<chat>/<chat>.jsonl`. See below.
+  OpenDuet: `~/openduet-endless/claude-mem-data/chat-transcripts/openduet/<chat>-<hash>/<chat>-<hash>.jsonl` (the chat id, then a short hash so two ids never share a folder). See below.
 
 ## Full transcripts in claude-mem
 

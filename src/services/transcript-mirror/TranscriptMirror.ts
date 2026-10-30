@@ -4,27 +4,30 @@
 // (sand host `src/host/transcript-mirror/transcript-mirror.ts` and `transcript-journal-codec.ts`,
 // preserved in thedotmack/grok-bot-backups):
 //
-// - one append-only JSONL file per conversation, `<root>/<source>/<safeId>/<safeId>.jsonl`, in Grok
+// - one append-only JSONL file per conversation, `<root>/<source>/<key>/<key>.jsonl`, in Grok
 //   Bot's line envelope `{ role, message: { content: [...] } }`;
-// - every append is written in two steps. `prepare` installs `<safeId>.journal-pending.json`
+// - every append is written in two steps. `prepare` installs `<key>.journal-pending.json`
 //   atomically (temp file, fsync, rename) holding the lines and the byte offset they go at;
 //   `commit` writes them at that offset, fsyncs, records the new size in
-//   `<safeId>.journal-cursor.json` and removes the pending file. A crash anywhere in between is
+//   `<key>.journal-cursor.json` and removes the pending file. A crash anywhere in between is
 //   finished on the next open by cutting the file back to the offset and writing the same lines
 //   again, so a transcript never ends in half a line or holds a message twice;
-// - the file is refused, not repaired, when it changed outside the journal (size or inode differ
-//   from the cursor and nothing is pending).
+// - the file is refused, not repaired, when it changed outside the journal (size, inode or
+//   modification time differ from the cursor and nothing is pending).
 //
-// Two differences from Grok Bot, on purpose: tool results are kept (Grok Bot's mirror wrote only
-// the tool name), and every line carries the source message id, which is how a resend of a message
-// already kept is recognised. Nothing here is ever cut, pruned or summarised: the point is the whole
+// Three differences from Grok Bot, on purpose: tool results are kept (Grok Bot's mirror wrote only
+// the tool name); every line carries the source message id, which is how a resend of a message
+// already kept is recognised; and the folder name is a readable prefix plus a hash of the id, where
+// Grok Bot's `encodeURIComponent` with `%` → `_` gives `a/b` and `a_2Fb` the same folder and can
+// outgrow a file name's length limit. Nothing here is ever cut, pruned or summarised: the point is the whole
 // transcript. Only `<private>` blocks are removed, the same promise every other claude-mem capture
 // keeps.
 
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { constants as fsConstants } from 'fs';
 import { mkdir, open, readFile, readdir, rename, stat, unlink, type FileHandle } from 'fs/promises';
 import { dirname, join } from 'path';
+import { IS_WINDOWS_PLATFORM } from '../../shared/atomic-json.js';
 import { removeTagBlocks } from '../../utils/tag-stripping.js';
 
 export const TRANSCRIPT_MIRROR_DIR_MODE = 0o700;
@@ -73,6 +76,8 @@ export type TranscriptCursor = {
   bytes: number;
   device: string;
   inode: string;
+  /** Modification time in nanoseconds: an edit that keeps the size still changes it. */
+  mtimeNs: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -83,7 +88,7 @@ type PendingCheckpoint = {
   device: string;
   inode: string;
   lines: string[];
-  cursor: Omit<TranscriptCursor, 'bytes' | 'device' | 'inode'>;
+  cursor: Omit<TranscriptCursor, 'bytes' | 'device' | 'inode' | 'mtimeNs'>;
 };
 
 export type AppendResult = {
@@ -95,7 +100,7 @@ export type AppendResult = {
   bytes: number;
 };
 
-export type TranscriptSummary = Omit<TranscriptCursor, 'version' | 'device' | 'inode'>;
+export type TranscriptSummary = Omit<TranscriptCursor, 'version' | 'device' | 'inode' | 'mtimeNs'>;
 
 export class TranscriptMirrorError extends Error {
   constructor(
@@ -107,17 +112,20 @@ export class TranscriptMirrorError extends Error {
   }
 }
 
-/** Grok Bot's rule: `encodeURIComponent`, then `%` → `_`, so the id is one safe path segment. */
-export function safeConversationId(conversationId: string): string {
+/**
+ * The folder and file name for a conversation: up to 48 readable characters of the id, then 16 hex
+ * characters of its SHA-256, so two ids never share a folder and the name always fits.
+ */
+export function conversationKey(conversationId: string): string {
   if (typeof conversationId !== 'string' || conversationId.length === 0 || conversationId.length > MAX_CONVERSATION_ID_LENGTH) {
     throw new TranscriptMirrorError(`conversation id must be 1 to ${MAX_CONVERSATION_ID_LENGTH} characters`, 'invalid_input');
   }
   if (conversationId !== conversationId.trim() || conversationId.includes('\0')) {
     throw new TranscriptMirrorError('conversation id has surrounding spaces or a NUL', 'invalid_input');
   }
-  const safe = encodeURIComponent(conversationId).replace(/%/g, '_');
-  if (safe === '.' || safe === '..') throw new TranscriptMirrorError('conversation id cannot be . or ..', 'invalid_input');
-  return safe;
+  const readable = conversationId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 48);
+  const hash = createHash('sha256').update(conversationId, 'utf8').digest('hex').slice(0, 16);
+  return `${readable}-${hash}`;
 }
 
 export function assertSource(source: string): void {
@@ -151,15 +159,20 @@ function parseArgs(args: unknown): unknown {
 /** A message as one transcript line, in Grok Bot's envelope plus the id and tool results. */
 export function toMirrorLine(message: MirrorMessage, now: string): MirrorLine {
   const content: MirrorContentPart[] = [];
-  const body = stripPrivate(message.content);
   if (message.role === 'tool') {
+    // Decoded before stripping: JSON can spell the tag as \u003cprivate\u003e, which only reads
+    // as `<private>` once parsed.
+    const result = typeof message.content === 'string' ? parseArgs(message.content) : message.content;
     content.push({
       type: 'tool_result',
       tool_use_id: message.toolCallId ?? '',
       ...(message.name ? { name: message.name } : {}),
-      result: typeof body === 'string' ? parseArgs(body) : (body ?? null),
+      result: stripPrivate(result ?? null),
     });
-  } else if (typeof body === 'string') {
+    return lineFor(message, now, content);
+  }
+  const body = stripPrivate(message.content);
+  if (typeof body === 'string') {
     if (body.length > 0) content.push({ type: 'text', text: body });
   } else if (Array.isArray(body)) {
     for (const part of body) {
@@ -175,6 +188,10 @@ export function toMirrorLine(message: MirrorMessage, now: string): MirrorLine {
   for (const call of message.toolCalls ?? []) {
     content.push({ type: 'tool_use', id: call.id, name: call.name, input: stripPrivate(parseArgs(call.args)) });
   }
+  return lineFor(message, now, content);
+}
+
+function lineFor(message: MirrorMessage, now: string, content: MirrorContentPart[]): MirrorLine {
   return {
     id: message.id,
     role: message.role,
@@ -184,8 +201,8 @@ export function toMirrorLine(message: MirrorMessage, now: string): MirrorLine {
   };
 }
 
-function fileIdentity(stats: { size: number | bigint; dev: number | bigint; ino: number | bigint }) {
-  return { size: Number(stats.size), device: String(stats.dev), inode: String(stats.ino) };
+function fileIdentity(stats: { size: bigint; dev: bigint; ino: bigint; mtimeNs: bigint }) {
+  return { size: Number(stats.size), device: String(stats.dev), inode: String(stats.ino), mtimeNs: String(stats.mtimeNs) };
 }
 
 function isMissing(error: unknown): boolean {
@@ -214,7 +231,7 @@ export class TranscriptMirror {
   }
   jsonlPathFor(source: string, conversationId: string): string {
     assertSource(source);
-    const id = safeConversationId(conversationId);
+    const id = conversationKey(conversationId);
     return join(this.dirFor(source, id), `${id}.jsonl`);
   }
   private pendingPathFor(source: string, id: string): string {
@@ -237,12 +254,31 @@ export class TranscriptMirror {
   }
 
   private async syncDir(path: string): Promise<void> {
+    // Windows cannot open a folder to fsync it (atomic-json skips it the same way); NTFS journals
+    // the rename itself.
+    if (IS_WINDOWS_PLATFORM) return;
     const handle = await open(path, 'r');
     try {
       await handle.sync();
     } finally {
       await handle.close();
     }
+  }
+
+  /** Creates the conversation's folder, syncing each newly made folder into its parent. */
+  private async ensureDir(source: string, id: string): Promise<void> {
+    const missing: string[] = [];
+    for (const dir of [this.root, join(this.root, source), this.dirFor(source, id)]) {
+      try {
+        await stat(dir);
+      } catch (error) {
+        if (!isMissing(error)) throw error;
+        missing.push(dir);
+      }
+    }
+    if (missing.length === 0) return;
+    await mkdir(this.dirFor(source, id), { recursive: true, mode: TRANSCRIPT_MIRROR_DIR_MODE });
+    for (const dir of missing) await this.syncDir(dirname(dir));
   }
 
   private async installAtomicFile(path: string, content: string): Promise<void> {
@@ -286,7 +322,7 @@ export class TranscriptMirror {
       const bytes = Buffer.from(lines.map((line) => `${line}\n`).join(''), 'utf8');
       await writeAll(handle, bytes, offset);
       await handle.sync();
-      return fileIdentity(await handle.stat());
+      return fileIdentity(await handle.stat({ bigint: true }));
     } finally {
       await handle.close();
     }
@@ -295,7 +331,14 @@ export class TranscriptMirror {
   private async commitPending(source: string, id: string, pending: PendingCheckpoint): Promise<TranscriptCursor> {
     const jsonl = join(this.dirFor(source, id), `${id}.jsonl`);
     const after = await this.writeAt(jsonl, pending.appendOffset, pending.lines);
-    const cursor: TranscriptCursor = { ...pending.cursor, version: 1, bytes: after.size, device: after.device, inode: after.inode };
+    const cursor: TranscriptCursor = {
+      ...pending.cursor,
+      version: 1,
+      bytes: after.size,
+      device: after.device,
+      inode: after.inode,
+      mtimeNs: after.mtimeNs,
+    };
     await this.installAtomicFile(this.cursorPathFor(source, id), JSON.stringify(cursor));
     await unlink(this.pendingPathFor(source, id)).catch((error) => {
       if (!isMissing(error)) throw error;
@@ -313,7 +356,7 @@ export class TranscriptMirror {
     const pending = await this.readJson<PendingCheckpoint>(this.pendingPathFor(source, id));
     let current: ReturnType<typeof fileIdentity> | null = null;
     try {
-      current = fileIdentity(await stat(jsonl));
+      current = fileIdentity(await stat(jsonl, { bigint: true }));
     } catch (error) {
       if (!isMissing(error)) throw error;
     }
@@ -338,7 +381,13 @@ export class TranscriptMirror {
       }
       return null;
     }
-    if (!current || current.size !== cursor.bytes || current.device !== cursor.device || current.inode !== cursor.inode) {
+    if (
+      !current ||
+      current.size !== cursor.bytes ||
+      current.device !== cursor.device ||
+      current.inode !== cursor.inode ||
+      current.mtimeNs !== cursor.mtimeNs
+    ) {
       throw new TranscriptMirrorError('transcript changed outside the journal', 'changed_outside');
     }
     return cursor;
@@ -382,7 +431,7 @@ export class TranscriptMirror {
    */
   async append(input: { source: string; conversationId: string; title?: string | null; messages: MirrorMessage[] }): Promise<AppendResult> {
     assertSource(input.source);
-    const id = safeConversationId(input.conversationId);
+    const id = conversationKey(input.conversationId);
     for (const message of input.messages) {
       if (!message || typeof message.id !== 'string' || !message.id || typeof message.role !== 'string' || !message.role) {
         throw new TranscriptMirrorError('every message needs a non-empty id and role', 'invalid_input');
@@ -390,8 +439,11 @@ export class TranscriptMirror {
     }
     const title = input.title === undefined ? undefined : input.title === null ? null : String(input.title).slice(0, MAX_TITLE_LENGTH);
     return this.serialize(`${input.source}/${id}`, async () => {
-      await mkdir(this.dirFor(input.source, id), { recursive: true, mode: TRANSCRIPT_MIRROR_DIR_MODE });
+      await this.ensureDir(input.source, id);
       const cursor = await this.recover(input.source, id);
+      if (cursor && cursor.conversationId !== input.conversationId) {
+        throw new TranscriptMirrorError('this folder holds another conversation', 'corrupt');
+      }
       const seen = await this.seenIds(input.source, id, cursor);
       const now = new Date().toISOString();
       const fresh: MirrorMessage[] = [];
@@ -447,7 +499,7 @@ export class TranscriptMirror {
   /** The whole transcript, oldest line first. */
   async read(source: string, conversationId: string): Promise<{ summary: TranscriptSummary; lines: MirrorLine[] }> {
     assertSource(source);
-    const id = safeConversationId(conversationId);
+    const id = conversationKey(conversationId);
     return this.serialize(`${source}/${id}`, async () => {
       let cursor: TranscriptCursor | null;
       try {
@@ -456,8 +508,10 @@ export class TranscriptMirror {
         if (isMissing(error)) cursor = null;
         else throw error;
       }
-      if (!cursor) throw new TranscriptMirrorError('no transcript is kept for this conversation', 'not_found');
-      const { version: _version, device: _device, inode: _inode, ...summary } = cursor;
+      if (!cursor || cursor.conversationId !== conversationId) {
+        throw new TranscriptMirrorError('no transcript is kept for this conversation', 'not_found');
+      }
+      const { version: _version, device: _device, inode: _inode, mtimeNs: _mtimeNs, ...summary } = cursor;
       return { summary, lines: await this.readLines(join(this.dirFor(source, id), `${id}.jsonl`)) };
     });
   }
@@ -473,7 +527,7 @@ export class TranscriptMirror {
       for (const id of ids) {
         const cursor = await this.readJson<TranscriptCursor>(this.cursorPathFor(name, id)).catch(() => null);
         if (!cursor) continue;
-        const { version: _version, device: _device, inode: _inode, ...summary } = cursor;
+        const { version: _version, device: _device, inode: _inode, mtimeNs: _mtimeNs, ...summary } = cursor;
         summaries.push(summary);
       }
     }
