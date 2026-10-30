@@ -58,6 +58,27 @@ made by setup and used only between OpenDuet and the store on this computer.
 
 - Kept: every conversation, its history when you come back to it, stopping a reply, scheduled and first-day turns.
 - Back up or move your chats by copying `~/openduet-endless/chats/` while OpenDuet is stopped.
+- Every chat is also copied whole into claude-mem, so the full transcripts are yours no matter what happens to
+  OpenDuet: `~/openduet-endless/claude-mem-data/chat-transcripts/openduet/<chat>-<hash>/<chat>-<hash>.jsonl` (the chat id, then a short hash so two ids never share a folder). See below.
+
+## Full transcripts in claude-mem
+
+After every reply finishes, the local chat store sends that chat to claude-mem (`local-chats/mirror.ts`), which keeps
+it in its own folder (`src/services/transcript-mirror/`). It works the way Grok Bot keeps its transcripts:
+
+- One plain JSONL file per chat, one line per message: what you asked, the bot's replies, every tool it called with
+  what it sent, and what the tool sent back. Nothing is cut short or summarised. `<private>…</private>` text is left
+  out, as everywhere else in claude-mem.
+- Each save is written in two steps (a small "about to add these lines" note first, then the lines), so a crash or a
+  power cut can never leave half a message or the same message twice. The next start finishes the save.
+- A reply that is still being written is not copied until it is done.
+- If claude-mem is not running, nothing is lost: the store tries again every minute and catches up, old chats
+  included. Deleting a chat in OpenDuet does not delete its transcript in claude-mem.
+- Read them: `curl http://127.0.0.1:37877/api/chat-transcripts` lists them,
+  `curl http://127.0.0.1:37877/api/chat-transcripts/openduet/<chat id>` gives one (add `?format=jsonl` for the raw
+  file). `status.sh` shows how many are kept. Only this computer can read them.
+- These copies are an archive. They do not add memories of their own; Endless Mode already does that through the
+  gateway, so nothing is remembered twice.
 - The store claims no CopilotKit licence. OpenDuet handles that as it always has: conversations run, it keeps its
   memory in its own database, and the extras CopilotKit licenses are off (Automatic Learning, CopilotKit's memory
   service, CopilotKit's hosted thread list). OpenDuet's start check would stop on "licence is 'none'", so a small
@@ -67,7 +88,8 @@ made by setup and used only between OpenDuet and the store on this computer.
   `npx --yes copilotkit@latest project select`, then `bun openbot/scripts/setup-learning.ts`). A CopilotKit key that
   was there before the switch to local is kept in `~/openduet-endless/copilotkit-cloud.env` and put back.
 
-Tests: `bun test examples/openduet-endless/local-chats`.
+Tests: `bun test examples/openduet-endless/local-chats` (the store, and the copy into claude-mem) and
+`bun test tests/transcript-mirror` (claude-mem's side).
 
 ## What the patches change in OpenDuet
 

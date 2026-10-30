@@ -44,8 +44,9 @@ export function createMiddleware(): RequestHandler[] {
 
   const parseJson = express.json({ limit: '5mb' });
   middlewares.push((req: Request, res: Response, next: NextFunction) => {
-    // Spool ingestion authenticates before applying its own body limit.
-    if (req.method === 'POST' && /^\/api\/spool\/ingest\/?$/i.test(req.path)) return next();
+    // Spool ingestion authenticates before applying its own body limit; the chat transcript mirror
+    // checks loopback first and takes a larger body, since one message is never split.
+    if (req.method === 'POST' && /^\/api\/(spool\/ingest|chat-transcripts)\/?$/i.test(req.path)) return next();
     parseJson(req, res, next);
   });
 

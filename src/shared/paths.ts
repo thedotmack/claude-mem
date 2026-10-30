@@ -77,6 +77,9 @@ export function ensureDir(dirPath: string): void {
   mkdirSync(dirPath, { recursive: true });
 }
 
+/** Full chat transcripts mirrored in by chat apps (services/transcript-mirror). Kept, never pruned. */
+export const CHAT_TRANSCRIPTS_DIR = join(DATA_DIR, 'chat-transcripts');
+
 /**
  * Wire gateway data root (plan D1/D12). Everything the gateway writes lives
  * here, temp files included (`tmp/`): never the OS temp dir.
