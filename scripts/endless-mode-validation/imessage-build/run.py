@@ -135,13 +135,24 @@ REAL_HOME = Path(os.environ.get('HOME', '/')).resolve()
 _BWRAP = None
 
 
-def bwrap_works():
+def bwrap_prefix():
+    """bubblewrap, with every Linux capability dropped first where setpriv exists. Sprites start commands with ambient
+    capabilities, which bwrap refuses ("unexpected capabilities"); dropping them also keeps the builder from using them."""
     global _BWRAP
     if _BWRAP is None:
-        _BWRAP = bool(shutil.which('bwrap')) and subprocess.run(
-            ['bwrap', '--ro-bind', '/', '/', '--dev-bind', '/dev', '/dev', '--proc', '/proc', 'true'],
-            capture_output=True).returncode == 0
+        _BWRAP = []
+        if shutil.which('bwrap'):
+            drop = ['setpriv', '--inh-caps=-all', '--ambient-caps=-all', '--bounding-set=-all'] if shutil.which('setpriv') else []
+            for prefix in ([drop + ['bwrap']] if drop else []) + [['bwrap']]:
+                if subprocess.run(prefix + ['--ro-bind', '/', '/', '--dev-bind', '/dev', '/dev', '--proc', '/proc', 'true'],
+                                  capture_output=True).returncode == 0:
+                    _BWRAP = prefix
+                    break
     return _BWRAP
+
+
+def bwrap_works():
+    return bool(bwrap_prefix())
 
 
 def sandbox_cmd(arm_dir):
@@ -151,7 +162,7 @@ def sandbox_cmd(arm_dir):
         return []
     tmp = arm_dir / 'tmp'
     tmp.mkdir(exist_ok=True)
-    cmd = ['bwrap', '--ro-bind', '/', '/', '--dev-bind', '/dev', '/dev', '--proc', '/proc', '--bind', str(tmp), '/tmp',
+    cmd = bwrap_prefix() + ['--ro-bind', '/', '/', '--dev-bind', '/dev', '/dev', '--proc', '/proc', '--bind', str(tmp), '/tmp',
            '--setenv', 'TMPDIR', '/tmp']
     for rel in SECRETS:
         rel = '.claude/.credentials.json' if rel == '.claude' else rel  # Claude Code itself may be installed there
