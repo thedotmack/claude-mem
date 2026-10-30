@@ -189,6 +189,7 @@
     "tree-sitter-cli": "^0.26.8",
     "tree-sitter-cpp": "^0.23.4",
     "tree-sitter-css": "^0.25.0",
+    "tree-sitter-delphi": "^0.1.0",
     "tree-sitter-go": "^0.25.0",
     "tree-sitter-haskell": "^0.23.1",
     "tree-sitter-java": "^0.23.5",
@@ -249,6 +250,7 @@
     "@derekstride/tree-sitter-sql": true,
     "esbuild": true,
     "@biomejs/biome": true,
-    "better-sqlite3": true
+    "better-sqlite3": true,
+    "tree-sitter-delphi": true
   }
 }

@@ -163,6 +163,7 @@ contents outside its language support, use a text-search tool such as `rg`.
 | Java | `.java` |
 | C | `.c`, `.h` |
 | C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh` |
+| Delphi / Pascal | `.pas`, `.dpr`, `.dpk`, `.lpr`, `.pp`, `.inc` |
 
 Files with unrecognized extensions do not produce structured symbols for
 `smart_outline` or `smart_unfold`. `smart_search` is not a general file-content
