@@ -116,7 +116,7 @@ if [[ $arm == claudemem ]]; then
   chmod +x "$dir/bin/claude-mem"
   hooks=$(jq --arg cm "$dir/bin/claude-mem" '.hooks | del(.Setup)
     | with_entries(.value |= (map(.hooks |= map(select(.command == "claude-mem" and .args[0] == "hook")
-        | {type, command: ([$cm] + .args | join(" "))} + (if .async then {async} else {} end)
+        | {type, command: ([$cm] + .args | map(@sh) | join(" "))} + (if .async then {async} else {} end)
           + (if .timeout then {timeout} else {} end))) | map(select(.hooks | length > 0))))
     | with_entries(select(.value | length > 0))' "$repo/plugin/hooks/hooks.json")
 fi
