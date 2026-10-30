@@ -32,12 +32,15 @@ if [ "$local_chats" = true ]; then
     chats_key=$(read_od_env INTELLIGENCE_API_KEY)
     [ -n "$chats_key" ] || die "no INTELLIGENCE_API_KEY in $OD_REPO/.env; run setup.sh again"
     # Exported rather than passed on the command line, so it never shows in the process list.
-    (export LOCAL_CHATS_API_KEY="$chats_key" LOCAL_CHATS_DB="$CHATS_DB" LOCAL_CHATS_PORT="$CHATS_PORT" &&
+    # Every finished chat is also copied whole into claude-mem (local-chats/mirror.ts). The worker starts just
+    # below; the store retries every minute, so nothing is lost while it comes up.
+    (export LOCAL_CHATS_API_KEY="$chats_key" LOCAL_CHATS_DB="$CHATS_DB" LOCAL_CHATS_PORT="$CHATS_PORT" \
+        LOCAL_CHATS_CLAUDE_MEM_URL="http://127.0.0.1:$WORKER_PORT" &&
       start_bg chats bun "$OD_KIT_DIR/local-chats/server.ts")
     for _ in $(seq 1 40); do curl -fsS --max-time 1 "http://127.0.0.1:$CHATS_PORT/health" >/dev/null 2>&1 && break; sleep 0.25; done
     curl -fsS --max-time 2 "http://127.0.0.1:$CHATS_PORT/health" >/dev/null || die "the local chat store did not start; log in $OD_LOGS/chats.log"
   fi
-  say "chats: kept on this computer in $CHATS_DB"
+  say "chats: kept on this computer in $CHATS_DB, and copied whole into claude-mem ($CM_DATA/chat-transcripts)"
 fi
 
 if port_in_use "$WORKER_PORT" || port_in_use "$GATEWAY_PORT"; then

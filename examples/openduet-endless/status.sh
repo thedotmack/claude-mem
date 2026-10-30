@@ -15,6 +15,9 @@ if [ "$(read_od_env OPENDUET_LOCAL_CHATS)" = true ]; then
     say "Chats on this computer: none yet ($CHATS_DB is made on the first one)"
   fi
   curl -fsS --max-time 2 "http://127.0.0.1:$CHATS_PORT/health" >/dev/null 2>&1 && say "Local chat store: running on $CHATS_PORT" || say "Local chat store: not running"
+  if kept=$(curl -fsS --max-time 2 "http://127.0.0.1:$WORKER_PORT/api/chat-transcripts?source=openduet" 2>/dev/null); then
+    say "$(printf '%s' "$kept" | jq -r '"Full transcripts in claude-mem: \(.transcripts | length) conversation(s), \([.transcripts[].messageCount] | add // 0) message(s)"')"
+  fi
 else
   say "Chats: kept in CopilotKit's cloud"
 fi

@@ -9,7 +9,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { formatHostForUrl, getWorkerPort, getWorkerHost, fetchWithTimeout, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js';
 import { runShutdownSequence, type WorkerShutdownReason } from './worker-shutdown.js';
-import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensureDir } from '../shared/paths.js';
+import { CHAT_TRANSCRIPTS_DIR, DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensureDir } from '../shared/paths.js';
 import { HookSpool, migrateLegacySessionEndReplay } from '../shared/hook-spool.js';
 import { writeAllSync } from '../shared/write-all-sync.js';
 import { HookSpoolDrainer, hookSpoolConsumedMarkers } from './worker/hook-spool-drain.js';
@@ -160,6 +160,8 @@ import { parseMemoryWatchRoots } from './memory/config.js';
 import { saveMemory } from './memory/save-memory.js';
 import { MemoryIngestRoutes } from './worker/http/routes/MemoryIngestRoutes.js';
 import { DedupRoutes } from './worker/http/routes/DedupRoutes.js';
+import { TranscriptMirrorRoutes } from './worker/http/routes/TranscriptMirrorRoutes.js';
+import { TranscriptMirror } from './transcript-mirror/TranscriptMirror.js';
 import { CorpusRoutes } from './worker/http/routes/CorpusRoutes.js';
 import { ChromaRoutes } from './worker/http/routes/ChromaRoutes.js';
 import { CloudSyncRoutes } from './worker/http/routes/CloudSyncRoutes.js';
@@ -594,6 +596,7 @@ export class WorkerService implements WorkerRef {
     this.server.registerRoutes(new WireViewerRoutes({ originPolicy: this.originPolicy }));
     this.server.registerRoutes(new MemoryIngestRoutes(this.dbManager));
     this.server.registerRoutes(new DedupRoutes(this.dbManager));
+    this.server.registerRoutes(new TranscriptMirrorRoutes(new TranscriptMirror(CHAT_TRANSCRIPTS_DIR)));
     this.server.registerRoutes(new ServerV1Routes({
       getDatabase: () => this.dbManager.getConnection(),
     }));

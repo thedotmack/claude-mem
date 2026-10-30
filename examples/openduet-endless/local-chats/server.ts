@@ -19,6 +19,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import type { Server, ServerWebSocket } from 'bun';
 import { messagesFromEvents, stateFromEvents } from './messages.js';
+import { createClaudeMemMirror, type ClaudeMemMirror } from './mirror.js';
 import { ChatStore, summarize, type ThreadSummary } from './store.js';
 
 export type LocalChatsOptions = {
@@ -30,6 +31,10 @@ export type LocalChatsOptions = {
   /** 0 picks a free port. */
   port?: number;
   log?: (line: string) => void;
+  /** claude-mem's worker. When set, every finished chat is copied whole into claude-mem (mirror.ts). */
+  claudeMemUrl?: string;
+  /** Passed to the mirror (tests). */
+  mirrorCatchUpIntervalMs?: number;
 };
 
 type Plane = 'runner' | 'client';
@@ -89,10 +94,18 @@ function eventIdOf(payload: Record<string, unknown>): string | null {
   return typeof metadata?.cpki_event_id === 'string' && metadata.cpki_event_id ? metadata.cpki_event_id : null;
 }
 
-export function createLocalChats(options: LocalChatsOptions): { server: Server<SocketData>; store: ChatStore; stop: () => void } {
+export function createLocalChats(options: LocalChatsOptions): {
+  server: Server<SocketData>;
+  store: ChatStore;
+  mirror: ClaudeMemMirror | null;
+  stop: () => void;
+} {
   if (!options.apiKey || options.apiKey.length < 16) throw new Error('local chats: the API key must be at least 16 characters');
   const log = options.log ?? (() => {});
   const store = new ChatStore(options.dbPath);
+  const mirror: ClaudeMemMirror | null = options.claudeMemUrl
+    ? createClaudeMemMirror({ store, workerUrl: options.claudeMemUrl, log, catchUpIntervalMs: options.mirrorCatchUpIntervalMs })
+    : null;
   const grants = new Map<string, Grant>();
   const locks = new Map<string, Lock>();
   const runners = new Map<string, Watcher>();
@@ -187,6 +200,7 @@ export function createLocalChats(options: LocalChatsOptions): { server: Server<S
       }
       const row = store.getThread(threadId);
       if (row) announce(row.user_id, 'updated', summarize(row));
+      mirror?.schedule(threadId);
     }
     return true;
   };
@@ -398,6 +412,7 @@ export function createLocalChats(options: LocalChatsOptions): { server: Server<S
         })!;
         const thread = summarize(updated);
         announce(updated.user_id, body.archived === true ? 'archived' : 'updated', thread);
+        if (body.name !== undefined) mirror?.schedule(threadId);
         return json({ thread });
       }
       if (method === 'DELETE') {
@@ -575,8 +590,10 @@ export function createLocalChats(options: LocalChatsOptions): { server: Server<S
   return {
     server,
     store,
+    mirror,
     stop: () => {
       clearInterval(sweep);
+      mirror?.stop();
       server.stop(true);
       store.close();
     },
@@ -596,6 +613,7 @@ if (import.meta.main) {
     host: process.env.LOCAL_CHATS_HOST ?? '127.0.0.1',
     port: Number(process.env.LOCAL_CHATS_PORT ?? 37879),
     log: (line) => process.stdout.write(`${new Date().toISOString()} ${line}\n`),
+    claudeMemUrl: process.env.LOCAL_CHATS_CLAUDE_MEM_URL || undefined,
   });
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.on(signal, () => {
