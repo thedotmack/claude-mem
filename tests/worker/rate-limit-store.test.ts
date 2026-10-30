@@ -176,15 +176,55 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
     expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW)).toEqual({ abort: false });
   });
 
-  it('aborts on a rejected overage-included weekly window', () => {
+  it('does not abort on a rejected overage-included weekly window (#5182)', () => {
+    // Claude Code reports status='rejected' when the included-overage pool is
+    // spent, but requests are still served from the normal weekly allowance.
     store.set({
       rateLimitType: 'seven_day_overage_included',
       status: 'rejected',
       resetsAt: FIXED_NOW + 24 * 60 * 60 * 1000,
     });
     const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(false);
+  });
+
+  it('does not abort on rejected overage-included when normal allowance has quota remaining (#5182)', () => {
+    // Production case from #5182: five_hour 2%, seven_day 52%, seven_day_overage_included rejected.
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      utilization: 0.02,
+      resetsAt: FIXED_NOW + 3 * 60 * 60 * 1000,
+    });
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'allowed',
+      utilization: 0.52,
+      resetsAt: FIXED_NOW + 4 * 24 * 60 * 60 * 1000,
+    });
+    store.set({
+      rateLimitType: 'seven_day_overage_included',
+      status: 'rejected',
+      resetsAt: FIXED_NOW + 4 * 24 * 60 * 60 * 1000,
+    });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(false);
+  });
+
+  it('still aborts if primary seven_day window is rejected alongside overage-included', () => {
+    store.set({
+      rateLimitType: 'seven_day_overage_included',
+      status: 'rejected',
+      resetsAt: FIXED_NOW + 24 * 60 * 60 * 1000,
+    });
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'rejected',
+      resetsAt: FIXED_NOW + 24 * 60 * 60 * 1000,
+    });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
     expect(decision.abort).toBe(true);
-    expect(decision.window).toBe('seven_day_overage_included');
+    expect(decision.window).toBe('seven_day');
   });
 
   it('does not abort on inactive overage at 100% utilization', () => {
