@@ -76,17 +76,30 @@ describe('redactSensitive built-in patterns', () => {
   it.each([
     ['gitlab_token', 'GITLAB_TOKEN=' + 'glp' + 'at-aBcDeFgHiJkLmNoPqRsT tail'],
     ['gitlab_token', 'token ' + 'glp' + 'at-aBcDeFgHiJkLmNoPqRsT_-9.01.0abcdefgh1 tail'],
+    ['gitlab_token', 'GITLAB_DEPLOY_TOKEN=' + 'gl' + 'dt-aBcDeFgHiJkLmNoPqRsT tail'],
+    ['gitlab_token', 'GITLAB_RUNNER_TOKEN=' + 'gl' + 'rt-aBcDeFgHiJkLmNoPqRsT tail'],
     ['huggingface_token', 'HF_TOKEN=' + 'h' + 'f_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789 tail'],
     ['npm_token', '//registry.npmjs.org/:_authToken=' + 'np' + 'm_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789 tail'],
+    ['docker_pat', 'DOCKER_PAT=' + 'dckr_' + 'pat_aBcDeFgHiJkLmNoPqRsTuVwXyZ0 tail'],
+    ['docker_pat', 'docker login -u user -p ' + 'dckr_' + 'pat_aBcDeFgHiJkLmNoPqRsTuVwXyZ0 tail'],
   ])('redacts a %s', (name, input) => {
     const result = redactSensitive(input, cfg);
     expect(result.redacted).toContain(`<redacted type='${name}'/>`);
     expect(result.redacted).toMatch(/^.*'\/> tail$/);
-    expect(result.redacted).not.toMatch(/glpat-|hf_a|npm_a/);
+    expect(result.redacted).not.toMatch(/gl(?:pat|dt|rt)-|hf_a|npm_a|dckr_pat_/);
     expect(Object.keys(result.counts)).toEqual([name]);
   });
 
-  it.each(['glpat-short', 'hf_short', 'npm_short', 'the hf_transformers module', 'npm_config_cache=/tmp/x'])(
+  it.each([
+    'glpat-short',
+    'gldt-short',
+    'glrt-short',
+    'hf_short',
+    'npm_short',
+    'dckr_pat_short',
+    'the hf_transformers module',
+    'npm_config_cache=/tmp/x',
+  ])(
     'leaves %s alone',
     (input) => {
       expect(redactSensitive(input, cfg).redacted).toBe(input);
