@@ -632,6 +632,23 @@ describe('SettingsDefaultsManager', () => {
         }
       });
 
+      it('still moves an install whose .env has an empty ANTHROPIC_BASE_URL', () => {
+        writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001' }));
+        const envPath = join(dirname(settingsPath), '.env');
+        writeFileSync(envPath, 'ANTHROPIC_BASE_URL=\nANTHROPIC_API_KEY=sk-ant-test\n');
+        const saved = process.env.CLAUDE_MEM_ENV_FILE;
+        delete process.env.CLAUDE_MEM_ENV_FILE;
+        try {
+          const { value } = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath));
+
+          expect(value.CLAUDE_MEM_MODEL).toBe('haiku');
+          expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_MODEL).toBe('haiku');
+        } finally {
+          if (saved !== undefined) process.env.CLAUDE_MEM_ENV_FILE = saved;
+          rmSync(envPath, { force: true });
+        }
+      });
+
       it('rewrites in memory only when read-only', () => {
         const raw = JSON.stringify({ CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001' });
         writeFileSync(settingsPath, raw);

@@ -83,7 +83,7 @@ function envFileSetsAnthropicBaseUrl(settingsPath: string): boolean {
   const envFile = process.env.CLAUDE_MEM_ENV_FILE ?? join(dirname(settingsPath), '.env');
   try {
     if (!existsSync(envFile)) return false;
-    return /^\s*(?:export\s+)?ANTHROPIC_BASE_URL\s*=\s*['"]?[^\s'"#]/m.test(readFileSync(envFile, 'utf-8'));
+    return /^[ \t]*(?:export[ \t]+)?ANTHROPIC_BASE_URL[ \t]*=[ \t]*['"]?[^\s'"#]/m.test(readFileSync(envFile, 'utf-8'));
   } catch {
     return true;  // unreadable: assume a gateway and leave the model alone
   }
