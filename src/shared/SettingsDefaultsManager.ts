@@ -65,6 +65,29 @@ function coercePersistedSettingValue(value: unknown): unknown {
   return typeof value === 'boolean' ? String(value) : value;
 }
 
+// Model policy: claude-mem never pins a dated Claude model id. Defaults use
+// Claude Code's aliases (`haiku`, `sonnet`, `opus`), which resolve to the
+// newest model of that tier, because each new Anthropic release is cheaper or
+// better at the same price. Older installs had `claude-haiku-4-5-20251001`
+// written into settings.json by the default or the installer; rewrite exactly
+// those shipped ids to the alias. Gateway auth is left alone, since a custom
+// endpoint serves its own model names.
+const PINNED_SHIPPED_HAIKU_MODELS: ReadonlySet<string> = new Set([
+  'claude-haiku-4-5-20251001',
+  'claude-haiku-4-5',
+]);
+
+function hasPinnedShippedHaiku(flatSettings: Record<string, any>): boolean {
+  const model = flatSettings.CLAUDE_MEM_MODEL;
+  if (typeof model !== 'string' || !PINNED_SHIPPED_HAIKU_MODELS.has(model.trim())) {
+    return false;
+  }
+  const authMethod = typeof flatSettings.CLAUDE_MEM_CLAUDE_AUTH_METHOD === 'string'
+    ? flatSettings.CLAUDE_MEM_CLAUDE_AUTH_METHOD.trim()
+    : '';
+  return authMethod !== 'gateway';
+}
+
 function hasRetiredOpenRouterDefault(flatSettings: Record<string, any>): boolean {
   const model = flatSettings.CLAUDE_MEM_OPENROUTER_MODEL;
   if (typeof model !== 'string' || !RETIRED_OPENROUTER_DEFAULT_MODELS.has(model.trim())) {
@@ -429,7 +452,9 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: 'true',
     // Explicit JSON [{path, project, platformSource?}]. Empty means no files imported.
     CLAUDE_MEM_MEMORY_WATCH_ROOTS: '',
-    CLAUDE_MEM_MODEL: 'haiku',  // Claude Code's alias for its newest Haiku, so the note-taker follows new releases
+    // Never a dated id: `haiku` is Claude Code's alias for the newest Haiku, so the
+    // note-taker moves to each new (cheaper) release on its own. See CLAUDE.md, Model policy.
+    CLAUDE_MEM_MODEL: 'haiku',
     CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
     CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: 'false',
     CLAUDE_MEM_CONTEXT_PROJECTS: 'current', // 'current' = this checkout only; 'all' = SessionStart context spans every project
@@ -842,6 +867,32 @@ export class SettingsDefaultsManager {
             console.warn('[SETTINGS] Migrated Telegram trigger types off the legacy default:', settingsPath);
           } catch (error: unknown) {
             console.warn('[SETTINGS] Failed to migrate Telegram trigger types:', settingsPath, error instanceof Error ? error.message : String(error));
+            // Continue with the in-memory migration even if the write fails
+          }
+        }
+      }
+
+      if (hasPinnedShippedHaiku(flatSettings)) {
+        const pinnedModel = String(flatSettings.CLAUDE_MEM_MODEL).trim();
+        flatSettings = {
+          ...flatSettings,
+          CLAUDE_MEM_MODEL: this.DEFAULTS.CLAUDE_MEM_MODEL,
+        };
+
+        if (!options.readOnly) {
+          try {
+            writeJsonFileAtomic(
+              settingsPath,
+              hasPeerRootKeys ? { ...writableRoot, env: flatSettings } : flatSettings,
+              { mode: 0o600 },
+            );
+            // stderr, never stdout — same JSON-on-stdout contract as above.
+            console.warn(
+              `[SETTINGS] Migrated Claude model off the pinned ${pinnedModel} to ${this.DEFAULTS.CLAUDE_MEM_MODEL}:`,
+              settingsPath,
+            );
+          } catch (error: unknown) {
+            console.warn('[SETTINGS] Failed to migrate the pinned Claude model:', settingsPath, error instanceof Error ? error.message : String(error));
             // Continue with the in-memory migration even if the write fails
           }
         }

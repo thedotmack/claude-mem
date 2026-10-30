@@ -1395,10 +1395,12 @@ export async function promptProvider(
 
 /** `interactive: false` keeps the defaults (or `--model`) without asking: the browser funnel's At Home branch. */
 async function promptClaudeModel(options: InstallOptions, interactive: boolean = isInteractive): Promise<void> {
-  // 'haiku' is Claude Code's alias for its newest Haiku, so the default follows new releases.
-  // The pinned ids stay accepted for --model and for settings saved by older installs.
+  // Model policy (CLAUDE.md): offer Claude Code's aliases, never dated ids, so every
+  // install follows each new and cheaper release. Pinned ids stay accepted for --model.
   const allowed = new Set([
     'haiku',
+    'sonnet',
+    'opus',
     'claude-haiku-4-5-20251001',
     'claude-sonnet-5',
     'claude-opus-4-8',
@@ -1453,8 +1455,8 @@ async function promptClaudeModel(options: InstallOptions, interactive: boolean =
   const initialValue = allowed.has(initialModel) ? initialModel : 'haiku';
   const choices = [
     { value: 'haiku', label: 'Haiku, newest version (recommended — fast, cheap, great for compression)' },
-    { value: 'claude-sonnet-5', label: 'Sonnet 5 (balanced quality and cost)' },
-    { value: 'claude-opus-4-8', label: 'Opus 4.8 (highest quality, slowest)' },
+    { value: 'sonnet', label: 'Sonnet, newest version (balanced quality and cost)' },
+    { value: 'opus', label: 'Opus, newest version (highest quality, slowest)' },
   ];
   // A pinned id saved by an older install stays selectable, so rerunning the installer can keep it.
   if (!choices.some((o) => o.value === initialValue)) {

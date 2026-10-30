@@ -552,6 +552,78 @@ describe('SettingsDefaultsManager', () => {
       });
     });
 
+    // Older installs had the dated Haiku 4.5 id written in by the default or the
+    // installer. Model policy (CLAUDE.md): the note-taker follows the newest Haiku.
+    describe('pinned Haiku note-taker migration', () => {
+      function migrationWarnings(warnings: string[]): string[] {
+        return warnings.filter((line) => line.includes('Migrated Claude model off the pinned'));
+      }
+
+      it('ships an alias, not a dated id', () => {
+        expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_MODEL).toBe('haiku');
+        expect(VIEWER_DEFAULT_SETTINGS.CLAUDE_MEM_MODEL).toBe('haiku');
+      });
+
+      it.each(['claude-haiku-4-5-20251001', 'claude-haiku-4-5'])('moves a saved %s to haiku once', (pinned) => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_PROVIDER: 'claude',
+          CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription',
+          CLAUDE_MEM_MODEL: pinned,
+        }));
+
+        const first = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath));
+
+        expect(first.value.CLAUDE_MEM_MODEL).toBe('haiku');
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        expect(parsed.CLAUDE_MEM_MODEL).toBe('haiku');
+        expect(parsed.CLAUDE_MEM_CLAUDE_AUTH_METHOD).toBe('subscription');
+        const [logLine, ...extra] = migrationWarnings(first.warnings);
+        expect(extra).toEqual([]);
+        expect(logLine).toContain(`${pinned} to haiku`);
+
+        const second = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath));
+        expect(second.value.CLAUDE_MEM_MODEL).toBe('haiku');
+        expect(migrationWarnings(second.warnings)).toEqual([]);
+      });
+
+      it('keeps a model the user chose', () => {
+        for (const model of ['claude-sonnet-5', 'claude-opus-4-8', 'sonnet', 'claude-haiku-5-5']) {
+          const raw = JSON.stringify({ CLAUDE_MEM_MODEL: model });
+          writeFileSync(settingsPath, raw);
+
+          const { value, warnings } = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath));
+
+          expect(value.CLAUDE_MEM_MODEL).toBe(model);
+          expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
+          expect(migrationWarnings(warnings)).toEqual([]);
+        }
+      });
+
+      it('never touches a gateway install, which serves its own model names', () => {
+        const raw = JSON.stringify({
+          CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'gateway',
+          CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001',
+        });
+        writeFileSync(settingsPath, raw);
+
+        const { value, warnings } = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath));
+
+        expect(value.CLAUDE_MEM_MODEL).toBe('claude-haiku-4-5-20251001');
+        expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
+        expect(migrationWarnings(warnings)).toEqual([]);
+      });
+
+      it('rewrites in memory only when read-only', () => {
+        const raw = JSON.stringify({ CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001' });
+        writeFileSync(settingsPath, raw);
+
+        const value = SettingsDefaultsManager.loadFromFile(settingsPath, false, { readOnly: true });
+
+        expect(value.CLAUDE_MEM_MODEL).toBe('haiku');
+        expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
+      });
+    });
+
     // Every settings.json was seeded with xiaomi/mimo-v2-flash:free, which
     // OpenRouter has since retired: each observer call 404s and nothing is
     // remembered (#3659). Only the openrouter.ai tuple is rewritten.

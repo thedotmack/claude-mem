@@ -320,8 +320,10 @@ Configure which Claude model compresses your observations (only applies when `CL
 | Value | Notes |
 |-------|-------|
 | `haiku` | Default — the newest Haiku, fastest, ideal for compression |
-| `claude-sonnet-5` | Balanced quality and speed |
-| `claude-opus-4-8` | Highest quality (slowest) |
+| `sonnet` | The newest Sonnet, balanced quality and speed |
+| `opus` | The newest Opus, highest quality (slowest) |
+
+Each alias follows the newest model of its tier, so new releases (usually cheaper or better for the price) reach you without a settings change. A full model ID, such as `claude-sonnet-5`, pins that one version and never updates. Installs that had the old shipped default `claude-haiku-4-5-20251001` saved are moved to `haiku` automatically.
 
 ### Picking via the Installer
 
@@ -833,8 +835,9 @@ npm run worker:logs
 If you specify an invalid Claude model name, the worker logs a warning and uses the default. Valid Claude models for `CLAUDE_MEM_MODEL`:
 
 - `haiku` (default, the newest Haiku)
-- `claude-sonnet-5`
-- `claude-opus-4-8`
+- `sonnet` (the newest Sonnet)
+- `opus` (the newest Opus)
+- a full model ID, such as `claude-sonnet-5`, to pin one version
 
 ### Port Already in Use
 
