@@ -392,7 +392,11 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       const persistedMemorySessionId = this.dbManager.getSessionById(session.sessionDbId).memory_session_id;
       const syntheticIdPrefix = `${this.syntheticIdPrefix}-${session.contentSessionId}-`;
 
-      if (persistedMemorySessionId?.startsWith(syntheticIdPrefix)) {
+      // This is the durable database identity, not a provider resume token.
+      // Replacing it on a provider switch cascades stored memories to a new
+      // id while leaving their content hashes keyed to the old one, so exact
+      // redelivery creates duplicates. Keep the identity once registered.
+      if (persistedMemorySessionId) {
         session.memorySessionId = persistedMemorySessionId;
         logger.info('SESSION', `MEMORY_ID_REUSED | sessionDbId=${session.sessionDbId} | provider=${this.providerName}`);
       } else {
