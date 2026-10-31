@@ -113,6 +113,9 @@ import {
   handleKimiCommand
 } from './integrations/KimiHooksInstaller.js';
 import {
+  handleDevinCommand
+} from './integrations/DevinHooksInstaller.js';
+import {
   handleAntigravityCliCommand
 } from './integrations/AntigravityCliHooksInstaller.js';
 import { notifyGrokBotIndex, watchGrokBotIndexSettings } from './integrations/GrokBotIndexWriter.js';
@@ -1913,6 +1916,13 @@ async function main() {
       const kimiSubcommand = process.argv[3];
       const kimiResult = await handleKimiCommand(kimiSubcommand, process.argv.slice(4));
       process.exit(kimiResult);
+      break;
+    }
+
+    case 'devin': {
+      const devinSubcommand = process.argv[3];
+      const devinResult = await handleDevinCommand(devinSubcommand, process.argv.slice(4));
+      process.exit(devinResult);
       break;
     }
 
