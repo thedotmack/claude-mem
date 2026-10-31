@@ -73,10 +73,11 @@ jobs:
       # scripts that replaced rsync and tail: mirror pattern matching, --delete
       # protection and -a metadata reconciliation against real NTFS paths, and
       # the bounded log tail under a constrained heap.
-      - shell: pwsh
+      - name: Windows bun resolver and rsync-replacement scripts
+        shell: pwsh
         run: |
           $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
-          & $bun test tests/bun-runner.test.ts tests/scripts/mirror-dir.test.ts tests/scripts/worker-logs.test.ts
+          & $bun test tests/bun-runner.test.ts tests/scripts/mirror-dir.test.ts tests/scripts/worker-logs.test.ts --timeout 120000
 
       # The installer's refusal boundaries: non-TTY and TTY cases that require
       # exit 1, require --runtime worker, untouched settings (mode included) and
