@@ -830,15 +830,23 @@ export class ChromaSync {
             // still advancing the watermark past them (data loss). So split
             // the batch: update the existing IDs in place, add only the new
             // ones, and count each part only if it actually succeeds.
+            //
+            // Updating a document makes Chroma embed it again, which is the
+            // whole cost of a write. A rebuild that restarts after an
+            // interruption replays rows that are already indexed with the same
+            // text, so only re-send the text when it changed and refresh the
+            // metadata alone otherwise.
             const existing = await chromaMcp.callTool('chroma_get_documents', {
               collection_name: this.collectionName,
               ids: batch.map(d => d.id),
-              include: []
-            }) as { ids?: string[] };
-            const existingIds = new Set(existing?.ids ?? []);
+              include: ['documents']
+            }) as { ids?: string[]; documents?: (string | null)[] };
+            const storedText = new Map<string, string | null>();
+            (existing?.ids ?? []).forEach((id, index) => storedText.set(id, existing?.documents?.[index] ?? null));
 
-            const toUpdate = batch.filter(d => existingIds.has(d.id));
-            const toAdd = batch.filter(d => !existingIds.has(d.id));
+            const toUpdate = batch.filter(d => storedText.has(d.id) && storedText.get(d.id) !== d.document);
+            const unchanged = batch.filter(d => storedText.has(d.id) && storedText.get(d.id) === d.document);
+            const toAdd = batch.filter(d => !storedText.has(d.id));
             const cleanFor = (docs: ChromaDocument[]) => docs.map(d =>
               Object.fromEntries(
                 Object.entries(d.metadata).filter(([_, v]) => v !== null && v !== undefined && v !== '')
@@ -853,6 +861,15 @@ export class ChromaSync {
                 metadatas: cleanFor(toUpdate)
               });
               written += toUpdate.length;
+            }
+
+            if (unchanged.length > 0) {
+              await chromaMcp.callTool('chroma_update_documents', {
+                collection_name: this.collectionName,
+                ids: unchanged.map(d => d.id),
+                metadatas: cleanFor(unchanged)
+              });
+              written += unchanged.length;
             }
 
             if (toAdd.length > 0) {
@@ -870,6 +887,7 @@ export class ChromaSync {
               batchStart: i,
               batchSize: batch.length,
               updated: toUpdate.length,
+              metadataOnly: unchanged.length,
               added: toAdd.length
             });
             ChromaSync.corruptSegmentBatches.delete(this.collectionName);
