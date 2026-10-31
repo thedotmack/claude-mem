@@ -137,6 +137,14 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   { name: 'gitlab_token',    regex: /\bglpat-[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)*(?!\w)/g },
   { name: 'huggingface_token', regex: /\bhf_[A-Za-z0-9]{30,}\b/g },
   { name: 'npm_token',       regex: /\bnpm_[A-Za-z0-9]{36}\b/g },
+  // SendGrid API keys (`SG.` + 22 + `.` + 43 base64url chars), DigitalOcean
+  // personal access, OAuth and refresh tokens (`dop_v1_`/`doo_v1_`/`dor_v1_` +
+  // 64 hex) and Shopify Admin API, app and shared-secret tokens (`shpat_`,
+  // `shpca_`, `shppa_`, `shpss_` + 32 hex): what `doctl`, the Shopify CLI and
+  // `.env` dumps print.
+  { name: 'sendgrid_key',    regex: /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}(?![\w-])/g },
+  { name: 'digitalocean_token', regex: /\bdo[opr]_v1_[a-f0-9]{64}\b/g },
+  { name: 'shopify_token',   regex: /\bshp(?:at|ca|pa|ss)_[a-fA-F0-9]{32}\b/g },
   // claude-mem's own credentials: server API keys (`cmem_` + 43 base64url
   // chars, server-bootstrap.ts createRawApiKey) and cmem.ai Pro memory keys.
   { name: 'claude_mem_key',  regex: /\bcmem_[A-Za-z0-9_-]{32,}|\bcm_pro_[A-Za-z0-9_-]{8,}/g },
