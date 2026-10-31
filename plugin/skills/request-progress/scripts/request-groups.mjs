@@ -3168,8 +3168,23 @@ function applyGroupDecisions(stored, decisions, now = Date.now(), { projectOf = 
 function boundedText(value, max, label, optional = false) {
   if (optional && (value == null || value === "")) return "";
   if (typeof value !== "string" || !value.trim()) throw new TypeError(`${label} must be 1\u2013${max} characters.`);
-  if (value.length > max) throw new TypeError(`${label} is ${value.length} characters; it must be 1\u2013${max}. Cut at least ${value.length - max} characters.`);
+  if (value.length > max) {
+    const target = textTarget(max);
+    throw new TypeError(`${label} is ${value.length} characters; it must be 1\u2013${max}. Bring it to about ${target} characters (cut at least ${value.length - target}).`);
+  }
   return value.trim();
+}
+function boundedQuote(value, max, label) {
+  if (typeof value === "string" && value.length > max) {
+    throw new TypeError(`${label} is ${value.length} characters; it must be 1\u2013${max}. Quote a shorter part of it word for word, about ${textTarget(max)} characters; never reword a quote.`);
+  }
+  return boundedText(value, max, label);
+}
+function boundedList(value, max, label) {
+  const list = value ?? [];
+  if (!Array.isArray(list)) throw new TypeError(`${label} must be an array of at most ${max}.`);
+  if (list.length > max) throw new TypeError(`${label} has ${list.length} items; it must have at most ${max}. Keep the ${max} that matter most.`);
+  return list;
 }
 function validateOutcome(outcome) {
   if (outcome == null) return null;
@@ -3179,9 +3194,7 @@ function validateOutcome(outcome) {
     if (!levels.includes(entry.level)) throw new TypeError(`${label}.level must be one of ${levels.join(", ")}.`);
     return { level: entry.level, text: boundedText(entry.text, 400, `${label}.text`), evidence: evidenceList(entry.evidence) };
   };
-  const regressions = outcome.regressions ?? [], changes = outcome.changes ?? [];
-  if (!Array.isArray(regressions) || regressions.length > 10) throw new TypeError("outcome.regressions must be an array of at most 10.");
-  if (!Array.isArray(changes) || changes.length > 12) throw new TypeError("outcome.changes must be an array of at most 12.");
+  const regressions = boundedList(outcome.regressions, 10, "outcome.regressions"), changes = boundedList(outcome.changes, 12, "outcome.changes");
   const dated = (value, label) => {
     if (!isIsoOrNull(value ?? null)) throw new TypeError(`${label} must be an ISO date or null.`);
     return value ?? null;
@@ -3216,9 +3229,7 @@ function validateProgress(entry, knownGroups) {
   for (const field of ["startedAt", "shippedAt", "lastActivityAt"]) if (!isIsoOrNull(entry[field] ?? null)) throw new TypeError(`${field} must be an ISO date or null.`);
   if (entry.state === "shipped" && (entry.percent !== 100 || !entry.shippedAt)) throw new TypeError("A shipped request needs percent 100 and shippedAt.");
   if (entry.state !== "shipped" && entry.shippedAt) throw new TypeError("Only a shipped request has shippedAt.");
-  const milestones = entry.milestones ?? [], preferences = entry.preferences ?? [];
-  if (!Array.isArray(milestones) || milestones.length > 12) throw new TypeError("milestones must be an array of at most 12.");
-  if (!Array.isArray(preferences) || preferences.length > 10) throw new TypeError("preferences must be an array of at most 10.");
+  const milestones = boundedList(entry.milestones, 12, "milestones"), preferences = boundedList(entry.preferences, 10, "preferences");
   return {
     groupId: entry.groupId,
     state: entry.state,
@@ -3235,7 +3246,7 @@ function validateProgress(entry, knownGroups) {
     preferences: preferences.map((preference, index) => {
       if (!PREFERENCE_KINDS.includes(preference.kind)) throw new TypeError(`preferences[${index}].kind must be one of ${PREFERENCE_KINDS.join(", ")}.`);
       if (!isIsoOrNull(preference.at ?? null)) throw new TypeError(`preferences[${index}].at must be an ISO date or null.`);
-      return { kind: preference.kind, preference: boundedText(preference.preference, 200, `preferences[${index}].preference`), quote: boundedText(preference.quote, 300, `preferences[${index}].quote`), at: preference.at ?? null };
+      return { kind: preference.kind, preference: boundedText(preference.preference, 200, `preferences[${index}].preference`), quote: boundedQuote(preference.quote, 300, `preferences[${index}].quote`), at: preference.at ?? null };
     }),
     outcome: validateOutcome(entry.outcome),
     evidence: evidenceList(entry.evidence, 20),
@@ -3297,8 +3308,7 @@ function storyParts(narrative) {
   });
 }
 function validateStory(story) {
-  const preferences = story?.preferences ?? [];
-  if (!Array.isArray(preferences) || preferences.length > 30) throw new TypeError("preferences must be an array of at most 30.");
+  const preferences = boundedList(story?.preferences, 30, "preferences");
   const narrativeChars = typeof story?.narrative === "string" ? story.narrative.length : 0;
   if (narrativeChars > STORY_NARRATIVE_MAX) {
     const over = storyParts(story.narrative).filter((part) => part.overBudgetChars > 0).sort((a, b) => b.overBudgetChars - a.overBudgetChars);
@@ -3318,7 +3328,7 @@ function validateStory(story) {
       preference: boundedText(preference.preference, 200, `preferences[${index}].preference`),
       kind: PREFERENCE_KINDS.includes(preference.kind) ? preference.kind : "directive",
       supportCount: Number.isInteger(preference.supportCount) && preference.supportCount > 0 ? preference.supportCount : 1,
-      quotes: (preference.quotes ?? []).slice(0, 3).map((quote, quoteIndex) => ({ quote: boundedText(quote.quote, 300, `preferences[${index}].quotes[${quoteIndex}]`), at: isIsoOrNull(quote.at ?? null) ? quote.at ?? null : null }))
+      quotes: (preference.quotes ?? []).slice(0, 3).map((quote, quoteIndex) => ({ quote: boundedQuote(quote.quote, 300, `preferences[${index}].quotes[${quoteIndex}]`), at: isIsoOrNull(quote.at ?? null) ? quote.at ?? null : null }))
     }))
   };
 }
@@ -3690,7 +3700,7 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
   if (command === "refresh-needs") return print2(refreshNeeds({ dir, database: db(), now, days: option(args, "days", 14), localDeviceId: localDeviceId2 }));
   throw new TypeError("Usage: request-groups.mjs candidates|grouping-input|judge|apply|pending|show|record-progress|story-input|record-story|focus-input|record-focus|refresh-needs (see file header).");
 }
-var DATA_DIR2, LEDGER_DIR, AGENT_WRITTEN_PROMPTS_FILE, DAY_MS2, GOALS_STALE_MS, MAX_CONVERSATIONS_PER_LINKING_LIST, PROGRESS_STATES, PREFERENCE_KINDS, USAGE_LEVELS, VALUE_LEVELS, LINK_KINDS, MAX_READINGS, iso3, groupIdFor, emptyGroups, isIsoOrNull, evidenceList, STORY_NARRATIVE_MAX, STORY_NARRATIVE_TARGET, STORY_RECAP_BUDGET, STORY_CHAPTER_MIN_BUDGET, STORY_CHARS_PER_WORD, STORY_REFUSAL_PARTS, FOCUS_ASK_CHARS, CONVERSATIONS_PER_QUERY, groupConversations, records, otherPassHash, focusAreaRecord, AREA_NAME_MAX, AREA_SENTENCE_MAX, requireDeviceId, GROUPING_BATCH, FOCUS_BATCH, CLOSED_STATES;
+var DATA_DIR2, LEDGER_DIR, AGENT_WRITTEN_PROMPTS_FILE, DAY_MS2, GOALS_STALE_MS, MAX_CONVERSATIONS_PER_LINKING_LIST, PROGRESS_STATES, PREFERENCE_KINDS, USAGE_LEVELS, VALUE_LEVELS, LINK_KINDS, MAX_READINGS, iso3, groupIdFor, emptyGroups, isIsoOrNull, textTarget, evidenceList, STORY_NARRATIVE_MAX, STORY_NARRATIVE_TARGET, STORY_RECAP_BUDGET, STORY_CHAPTER_MIN_BUDGET, STORY_CHARS_PER_WORD, STORY_REFUSAL_PARTS, FOCUS_ASK_CHARS, CONVERSATIONS_PER_QUERY, groupConversations, records, otherPassHash, focusAreaRecord, AREA_NAME_MAX, AREA_SENTENCE_MAX, requireDeviceId, GROUPING_BATCH, FOCUS_BATCH, CLOSED_STATES;
 var init_request_groups = __esm({
   "src/services/work-view/request-groups.mjs"() {
     "use strict";
@@ -3714,6 +3724,7 @@ var init_request_groups = __esm({
     groupIdFor = (anchorConversationKey) => `g_${createHash("sha256").update(anchorConversationKey).digest("hex").slice(0, 12)}`;
     emptyGroups = () => ({ version: 1, updatedAt: null, conversations: {}, groups: {}, ignored: {} });
     isIsoOrNull = (value) => value === null || typeof value === "string" && Number.isFinite(Date.parse(value));
+    textTarget = (max) => Math.floor(max * 0.75 / 10) * 10;
     evidenceList = (value, limit = 8) => (Array.isArray(value) ? value : typeof value === "string" && value.trim() ? [value] : []).map(String).slice(0, limit);
     STORY_NARRATIVE_MAX = 12e3;
     STORY_NARRATIVE_TARGET = 8e3;
