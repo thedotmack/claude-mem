@@ -2,6 +2,7 @@ import { AppError } from '../services/server/ErrorHandler.js';
 
 const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const ISO_DATE_PREFIX = /^(\d{4})-(\d{2})-(\d{2})/;
+const EPOCH_MS_PATTERN = /^\d{5,}$/;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /**
@@ -23,6 +24,10 @@ export function resolveDateBound(value: string | number, boundary: 'start' | 'en
   // Trim before parsing as well as classification: padded ISO dates otherwise
   // use the runtime local timezone instead of date-only UTC semantics.
   const normalized = value.trim();
+  // HTTP and MCP deliver every bound as a string, so an epoch ms arrives as
+  // digits. Date parsing reads only four digits as a year and returns NaN for
+  // an epoch, so read anything longer as the number it is.
+  if (EPOCH_MS_PATTERN.test(normalized)) return Number(normalized);
   const parsed = isCalendarDatePrefix(normalized) ? new Date(normalized).getTime() : Number.NaN;
   const epoch = requireValidEpoch(parsed, value, boundary);
   if (boundary === 'end' && DATE_ONLY_PATTERN.test(normalized)) {

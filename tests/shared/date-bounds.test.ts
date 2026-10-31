@@ -8,6 +8,15 @@ describe('resolveDateBound', () => {
     expect(resolveDateBound(1735689600000, 'end')).toBe(1735689600000);
   });
 
+  it('reads an all-digit string as epoch ms, the way HTTP and MCP deliver it', () => {
+    expect(resolveDateBound('1735689600000', 'start')).toBe(1735689600000);
+    expect(resolveDateBound(' 1735689600000 ', 'end')).toBe(1735689600000);
+  });
+
+  it('still reads a four-digit string as a year', () => {
+    expect(resolveDateBound('2025', 'start')).toBe(Date.parse('2025-01-01T00:00:00.000Z'));
+  });
+
   it('resolves a date-only start bound to the start of the day', () => {
     expect(resolveDateBound('2025-01-01', 'start')).toBe(Date.parse('2025-01-01T00:00:00.000Z'));
   });
