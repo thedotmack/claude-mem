@@ -10,10 +10,12 @@ const compiled = buildSync({
       import React from 'react';
       import { renderToStaticMarkup } from 'react-dom/server';
       import { ScanScreen } from './src/setup/screens/scan-screen';
+      import { RevealScreen } from './src/setup/screens/reveal-screen';
+      export const renderReveal = (agents, reveal, extraction) => renderToStaticMarkup(<RevealScreen agents={agents} reveal={reveal} extraction={extraction} recentPrompts={[]} onContinue={() => {}} />);
       export { localSetupSource, EMPTY_SETUP_DATA } from './src/setup/setup-data';
       export { createSampleSetupSource } from './src/setup/setup-sample';
-      export const renderScan = (scan, preferenceError = null, retrying = false, retryError = null) => renderToStaticMarkup(
-        <ScanScreen scan={scan} onImproveProductChange={() => {}} preferenceError={preferenceError} onRetry={() => {}} retrying={retrying} retryError={retryError} />
+      export const renderScan = (scan, preferenceError = null, retrying = false, retryError = null, consentError = null, consentSending = false) => renderToStaticMarkup(
+        <ScanScreen scan={scan} onImproveProductChange={() => {}} onConfirmUpload={() => {}} consentError={consentError} consentSending={consentSending} preferenceError={preferenceError} onRetry={() => {}} retrying={retrying} retryError={retryError} />
       );
     `,
   },
@@ -61,17 +63,47 @@ function useNetwork(handle: (url: string, init: RequestInit) => Promise<Response
 }
 
 describe('hosted setup scan control', () => {
-  it('renders the approved checkbox checked under the progress meter, and locks it only for upload', () => {
+  it('renders the optional checkbox unchecked under the progress meter, and locks it only for upload', () => {
     const app = fixture();
     const initial = app.renderScan(app.EMPTY_SETUP_DATA.scan);
     const checkbox = initial.match(/<input[^>]+type="checkbox"[^>]*>/)?.[0] ?? '';
-    expect(checkbox).toContain('checked=""');
+    expect(checkbox).not.toContain('checked=""');
     expect(checkbox).not.toContain('disabled');
-    expect(initial).toContain('Help make claude-mem smarter for everyone with my anonymized setup results');
+    expect(initial).toContain('Also share my anonymized setup results to help improve claude-mem (optional)');
     expect(initial.indexOf('<progress')).toBeLessThan(initial.indexOf(checkbox));
-    expect(app.renderScan(scan({ phase: 'reading', improveProduct: false }))).not.toContain('checked=""');
+    expect(app.renderScan(scan({ phase: 'reading', improveProduct: true }))).toContain('checked=""');
+    expect(initial).not.toContain('Upload my prompts to cmem.ai');
+    const consent = app.renderScan(scan({ phase: 'awaiting-consent' }));
+    expect(consent).toContain('Upload my prompts to cmem.ai');
+    expect(consent).toContain('Keep everything local');
+    const undetected = app.renderScan(scan({ phase: 'awaiting-consent', agents: [{ id: 'claude-code', label: 'Claude Code', detected: false, prompts: 2, canRunSetup: null, cannotRunReason: null }] }));
+    expect(undetected).toContain('Claude Code (2 prompts)');
+    expect(undetected).not.toMatch(/<button[^>]*disabled[^>]*>Upload my prompts/);
+    const sending = app.renderScan(scan({ phase: 'awaiting-consent', agents: [{ id: 'codex', label: 'Codex', detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null }] }), null, false, null, null, true);
+    expect(sending).toContain('Sending your choice');
+    expect(sending).toMatch(/<button[^>]*disabled[^>]*>Upload my prompts/);
+    expect(app.renderScan(scan({ phase: 'awaiting-consent' }), null, false, null, 'Could not send your choice')).toContain('class="scan-error" role="alert">Could not send your choice');
+    expect(app.renderScan(scan({ phase: 'awaiting-consent', agents: [{ id: 'codex', label: 'Codex', detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null }] }))).toContain('Codex (3 prompts)');
+    expect(consent).toContain('full text of the prompts you typed in the last 30 days');
     expect(app.renderScan(scan({ phase: 'saving' }))).not.toContain('disabled=""');
     expect(app.renderScan(scan({ phase: 'uploading' }))).toContain('disabled=""');
+  });
+
+  it('gives both consent buttons the same weight, local first', () => {
+    const app = fixture();
+    const html = app.renderScan(scan({ phase: 'awaiting-consent', agents: [{ id: 'codex', label: 'Codex', detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null }] }));
+    const buttons = [...html.matchAll(/<button[^>]*class="([^"]*)"[^>]*>(Keep everything local|Upload my prompts to cmem.ai)</g)];
+    expect(buttons.map(match => match[2])).toEqual(['Keep everything local', 'Upload my prompts to cmem.ai']);
+    expect(buttons[0][1]).toBe(buttons[1][1]);
+  });
+
+  it('after keeping prompts local, the reveal screen says so instead of promising knowledge', () => {
+    const app = fixture();
+    const agents = [{ id: 'codex', label: 'Codex', detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null }];
+    const local = app.renderReveal(agents, { goals: [], work: [], rules: [] }, { state: 'ok', step: null });
+    expect(local).toContain('Your prompts stayed on this computer.');
+    expect(local).not.toContain('already knows your work');
+    expect(app.renderReveal(agents, { goals: null, work: null, rules: null }, { state: 'running', step: 'goals' })).toContain('already knows your work');
   });
 
   it('renders hosted failures and preference failures in the existing alert style', () => {

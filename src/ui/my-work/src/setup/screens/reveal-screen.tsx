@@ -76,6 +76,20 @@ export function RevealScreen({ agents, reveal, extraction, recentPrompts, onCont
   const withPrompts = agents.filter((agent) => agent.prompts > 0)
   const promptCount = withPrompts.reduce((sum, agent) => sum + agent.prompts, 0)
   const promptsOnly = extraction?.state === 'waiting-for-agent' && !reveal.goals && !reveal.work && !reveal.rules
+  // Prompts were found but extraction finished with nothing to show: the person kept them local, so say that
+  // instead of promising knowledge that was never built.
+  const keptLocal = promptCount > 0 && extraction?.state === 'ok' && !reveal.goals?.length && !reveal.work?.length && !reveal.rules?.length
+  if (keptLocal) {
+    return (
+      <section aria-labelledby="reveal-title">
+        <PageHeading id="reveal-title" title="Your prompts stayed on this computer."
+          lead="Nothing was uploaded, so there are no goals, work or rules to show yet. You can continue setting up claude-mem." />
+        <div className="actions is-centered">
+          <button type="button" className="primary" onClick={onContinue}>Continue <ArrowRightIcon aria-hidden="true" /></button>
+        </div>
+      </section>
+    )
+  }
   return (
     <section aria-labelledby="reveal-title">
       <PageHeading id="reveal-title" title="Claude-Mem already knows your work."
