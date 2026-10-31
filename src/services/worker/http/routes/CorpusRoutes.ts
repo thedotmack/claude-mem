@@ -8,6 +8,7 @@ import { CorpusBuilder } from '../../knowledge/CorpusBuilder.js';
 import { KnowledgeAgent } from '../../knowledge/KnowledgeAgent.js';
 import type { CorpusFilter } from '../../knowledge/types.js';
 import { logger } from '../../../../utils/logger.js';
+import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { resolveDateBound } from '../../../../shared/date-bounds.js';
 
 const ALLOWED_CORPUS_TYPES = ['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change', 'security_alert', 'security_note', 'sensitive'] as const;
@@ -150,6 +151,14 @@ export class CorpusRoutes extends BaseRouteHandler {
     res: Response,
     work: (abortController: AbortController) => Promise<CorpusOutcome>
   ): Promise<void> {
+    // Every mutating corpus route (build, rebuild, prime, query, reprime) runs
+    // long Agent SDK work and writes corpus files, so other localhost pages may
+    // not trigger it. Origin-less callers (the MCP corpus tools, the CLI) keep
+    // the existing loopback-trust model.
+    if (isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({ error: 'Corpus work from a different localhost origin is not allowed' });
+      return;
+    }
     const abortController = new AbortController();
     let workSettled = false;
     let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
