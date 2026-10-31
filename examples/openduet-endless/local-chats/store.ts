@@ -183,13 +183,13 @@ export class ChatStore {
     );
   }
 
-  runEvents(runId: string): StoredEvent[] {
+  runEvents(threadId: string, runId: string): StoredEvent[] {
     return this.rowsToEvents(
       this.db
-        .query<{ seq: number; event_id: string; run_id: string; payload: string }, [string]>(
-          'SELECT seq, event_id, run_id, payload FROM events WHERE run_id = ? ORDER BY seq',
+        .query<{ seq: number; event_id: string; run_id: string; payload: string }, [string, string]>(
+          'SELECT seq, event_id, run_id, payload FROM events WHERE thread_id = ? AND run_id = ? ORDER BY seq',
         )
-        .all(runId),
+        .all(threadId, runId),
     );
   }
 

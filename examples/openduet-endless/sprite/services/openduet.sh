@@ -13,5 +13,10 @@ gateway routes endless "$ROUTE" on >> "$OD_LOGS/routes.log"
 say "claude-mem: worker $WORKER_PORT, gateway $GATEWAY_PORT, route $ROUTE -> $UPSTREAM, Endless Mode on, model $MODEL"
 # A service restart stops this script but not what OpenDuet's start.sh left running, which would then hold its ports.
 (cd "$OD_REPO" && bash scripts/stop.sh --keep-computers) > "$OD_LOGS/openduet-stop.log" 2>&1 || true
-(cd "$OD_REPO" && bash scripts/start.sh) || say "OpenDuet did not start; logs in $OD_REPO/openbot/.logs"
+# If OpenDuet doesn't start, clear what it left and try again after a pause, rather than stay up with no app.
+until (cd "$OD_REPO" && bash scripts/start.sh); do
+  say "OpenDuet did not start; trying again in 30 seconds (logs in $OD_REPO/openbot/.logs)"
+  (cd "$OD_REPO" && bash scripts/stop.sh --keep-computers) >> "$OD_LOGS/openduet-stop.log" 2>&1 || true
+  sleep 30
+done
 while true; do sleep 60 & wait $!; done

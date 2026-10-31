@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { messagesFromEvents, stateFromEvents } from './messages.js';
+import { applyJsonPatch, messagesFromEvents, stateFromEvents } from './messages.js';
 import { createLocalChats } from './server.js';
 
 const KEY = 'local-test-key-0123456789abcdef';
@@ -289,6 +289,72 @@ describe('local chats', () => {
     watcher.close();
   });
 
+  test("a thread's token can't replay or stop another thread's run", async () => {
+    await post('/api/threads', { threadId: 't1', userId: 'u1', agentId: 'openduet' });
+    await post('/api/threads', { threadId: 't2', userId: 'u1', agentId: 'openduet' });
+    await post('/api/threads/t2/lock', { runId: 'r2', userId: 'u1', agentId: 'openduet' });
+    const runner = PhoenixClient.runner(ws);
+    await runner.opened();
+    const { joinRef } = await runner.join('ingestion:r2', { thread_id: 't2', run_id: 'r2' });
+    await runner.request(joinRef, 'ingestion:r2', 'event', event('r2', 't2', { type: 'RUN_STARTED' }));
+
+    const connect = await (await post('/api/threads/t1/connect', { userId: 'u1', agentId: 'openduet' })).json();
+    const browser = PhoenixClient.client(ws, connect.joinToken);
+    await browser.opened();
+    const joined = await browser.join('thread:t1', { stream_mode: 'run', run_id: 'r2' });
+    expect(joined.reply.status).toBe('ok');
+    expect((await browser.request(joined.joinRef, 'thread:t1', 'stop_run', { run_id: 'r2' })).status).toBe('ok');
+    await Bun.sleep(100);
+    expect(browser.pushed('thread:t1', 'ag_ui_event')).toHaveLength(0);
+    expect(runner.frames.filter((f) => f[2] === 'ingestion:r2' && f[3] === 'ag-ui')).toHaveLength(0);
+    runner.close();
+    browser.close();
+  });
+
+  test('a waiting browser goes idle when a runner vanishes and its lock runs out', async () => {
+    instance.stop();
+    instance = createLocalChats({ dbPath: join(dir, 'chats.db'), apiKey: KEY, port: 0, sweepMs: 50 });
+    base = `http://127.0.0.1:${instance.server.port}`;
+    ws = `ws://127.0.0.1:${instance.server.port}`;
+    await post('/api/threads', { threadId: 't1', userId: 'u1', agentId: 'openduet' });
+    await post('/api/threads/t1/lock', { runId: 'r1', userId: 'u1', agentId: 'openduet', ttlSeconds: 0.3 });
+    const connect = await (await post('/api/threads/t1/connect', { userId: 'u1', agentId: 'openduet' })).json();
+    const watcher = PhoenixClient.client(ws, connect.joinToken);
+    await watcher.opened();
+    await watcher.join('thread:t1', { stream_mode: 'connect' });
+    await watcher.next((f) => f[3] === 'replay_complete');
+    expect(watcher.pushed('thread:t1', 'stream_idle')).toHaveLength(0);
+    // No last event and no release: the runner is gone.
+    await watcher.next((f) => f[3] === 'stream_idle', 2000);
+    watcher.close();
+  });
+
+  test('a later run keeps only the messages the thread did not have', async () => {
+    await post('/api/threads', { threadId: 't1', userId: 'u1', agentId: 'openduet' });
+    const runner = PhoenixClient.runner(ws);
+    await runner.opened();
+    const one = await runner.join('ingestion:r1', { thread_id: 't1', run_id: 'r1' });
+    await runner.request(one.joinRef, 'ingestion:r1', 'events', {
+      events: [
+        event('r1', 't1', { type: 'RUN_STARTED', input: { messages: [{ id: 'u1', role: 'user', content: 'one' }] } }),
+        event('r1', 't1', { type: 'TEXT_MESSAGE_CHUNK', messageId: 'a1', role: 'assistant', delta: 'first' }),
+        event('r1', 't1', { type: 'RUN_FINISHED' }),
+      ],
+    });
+    const two = await runner.join('ingestion:r2', { thread_id: 't1', run_id: 'r2' });
+    const resent = [
+      { id: 'u1', role: 'user', content: 'one' },
+      { id: 'a1', role: 'assistant', content: 'first' },
+      { id: 'u2', role: 'user', content: 'two' },
+    ];
+    await runner.request(two.joinRef, 'ingestion:r2', 'event', event('r2', 't1', { type: 'RUN_STARTED', input: { messages: resent } }));
+    const stored = instance.store.threadEvents('t1').find((e) => e.runId === 'r2')!.payload as any;
+    expect(stored.input.messages.map((m: any) => m.id)).toEqual(['u2']);
+    const history = await (await api('/api/threads/t1/messages?userId=u1')).json();
+    expect(history.messages.map((m: any) => m.id)).toEqual(['u1', 'a1', 'u2']);
+    runner.close();
+  });
+
   test('sockets need a valid key or join token, and a token opens only its own thread', async () => {
     const badRunner = PhoenixClient.runner(ws, 'not-the-key-0123456789');
     await badRunner.closed();
@@ -353,6 +419,12 @@ describe('messages from events', () => {
       { id: 't1', role: 'tool', content: 'rain', toolCallId: 'c1' },
       { id: 'a2', role: 'assistant', content: 'Checking.' },
     ]);
+  });
+
+  test("a patch can't reach an object's prototype", () => {
+    expect(() => applyJsonPatch({}, [{ op: 'add', path: '/__proto__/polluted', value: true }])).toThrow();
+    expect(() => applyJsonPatch({}, [{ op: 'add', path: '/constructor/polluted', value: true }])).toThrow();
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
   });
 
   test('a later run does not repeat the history the browser sent again', () => {

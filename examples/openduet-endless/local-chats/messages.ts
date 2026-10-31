@@ -56,13 +56,18 @@ function decodePointer(path: string): string[] {
   return path
     .slice(1)
     .split('/')
-    .map((part) => part.replace(/~1/g, '/').replace(/~0/g, '~'));
+    .map((part) => {
+      const key = part.replace(/~1/g, '/').replace(/~0/g, '~');
+      // A patch may only reach the document's own data, never an object's prototype.
+      if (key === '__proto__') throw new Error(`patch path ${path} is not allowed`);
+      return key;
+    });
 }
 
 function walk(document: unknown, parts: readonly string[]): unknown {
   let node = document;
   for (const part of parts) {
-    if (node === null || typeof node !== 'object') return undefined;
+    if (node === null || typeof node !== 'object' || !Object.hasOwn(node, part)) return undefined;
     node = (node as Record<string, unknown>)[part];
   }
   return node;

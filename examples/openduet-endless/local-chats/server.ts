@@ -30,6 +30,8 @@ export type LocalChatsOptions = {
   /** 0 picks a free port. */
   port?: number;
   log?: (line: string) => void;
+  /** How often expired run locks and join tokens are cleared. Tests shorten it. */
+  sweepMs?: number;
 };
 
 type Plane = 'runner' | 'client';
@@ -118,11 +120,26 @@ export function createLocalChats(options: LocalChatsOptions): { server: Server<S
     return found;
   };
 
+  // A browser that joined while a run was going is owed stream_idle when that run ends, however it ends.
+  const settleIdle = (threadId: string, latestEventId: string | null) => {
+    for (const watcher of threadWatchers.get(threadId) ?? []) {
+      if (watcher.channel.mode === 'connect' && watcher.channel.awaitingIdle) {
+        watcher.channel.awaitingIdle = false;
+        push(watcher, 'stream_idle', { latestEventId });
+      }
+    }
+  };
+
   const sweep = setInterval(() => {
     const now = Date.now();
     for (const [token, value] of grants) if (value.expiresAt < now) grants.delete(token);
-    for (const [threadId, lock] of locks) if (lock.finished || lock.expiresAt < now) locks.delete(threadId);
-  }, 60_000);
+    for (const [threadId, lock] of locks) {
+      if (!lock.finished && lock.expiresAt >= now) continue;
+      locks.delete(threadId);
+      // A runner that died without a last event or a release leaves its lock to expire: let waiting browsers go.
+      if (!lock.finished) settleIdle(threadId, store.latestEventId(threadId));
+    }
+  }, options.sweepMs ?? 60_000);
 
   // ---- Phoenix framing: [join_ref, ref, topic, event, payload] -----------------------------------
 
@@ -164,10 +181,25 @@ export function createLocalChats(options: LocalChatsOptions): { server: Server<S
 
   // ---- Events from the runner ---------------------------------------------------------------------
 
+  // Each run's RUN_STARTED carries the whole conversation again. Stored as is, a long chat would keep a fresh copy of
+  // its history every turn, so the stored copy keeps only the messages the thread doesn't have yet. History reads give
+  // the same messages either way (they keep the first copy of each id), and browsers watching live get the event whole.
+  const withoutKnownHistory = (threadId: string, payload: Record<string, unknown>): Record<string, unknown> => {
+    const input = payload.input as { messages?: unknown[] } | undefined;
+    if (payload.type !== 'RUN_STARTED' || !Array.isArray(input?.messages) || input.messages.length === 0) return payload;
+    const known = new Set(messagesFromEvents(store.threadEvents(threadId).map((e) => e.payload)).map((m) => m.id));
+    if (known.size === 0) return payload;
+    const fresh = input.messages.filter((raw) => {
+      const id = (raw as { id?: unknown } | null)?.id;
+      return typeof id !== 'string' || !known.has(id);
+    });
+    return fresh.length === input.messages.length ? payload : { ...payload, input: { ...input, messages: fresh } };
+  };
+
   const ingest = (threadId: string, runId: string, payload: Record<string, unknown>): boolean => {
     const eventId = eventIdOf(payload);
     if (!eventId) return false;
-    const { inserted } = store.appendEvent(threadId, runId, eventId, payload);
+    const { inserted } = store.appendEvent(threadId, runId, eventId, withoutKnownHistory(threadId, payload));
     if (!inserted) return true;
     for (const watcher of threadWatchers.get(threadId) ?? []) {
       const { channel } = watcher;
@@ -179,12 +211,7 @@ export function createLocalChats(options: LocalChatsOptions): { server: Server<S
       const lock = locks.get(threadId);
       if (lock && lock.runId === runId) lock.finished = true;
       store.touchRun(threadId);
-      for (const watcher of threadWatchers.get(threadId) ?? []) {
-        if (watcher.channel.mode === 'connect' && watcher.channel.awaitingIdle) {
-          watcher.channel.awaitingIdle = false;
-          push(watcher, 'stream_idle', { latestEventId: eventId });
-        }
-      }
+      settleIdle(threadId, eventId);
       const row = store.getThread(threadId);
       if (row) announce(row.user_id, 'updated', summarize(row));
     }
@@ -223,7 +250,7 @@ export function createLocalChats(options: LocalChatsOptions): { server: Server<S
         ok: true,
         response: {},
         after: () => {
-          for (const event of store.runEvents(params.run_id as string)) push(watcher, CLIENT_AG_UI_EVENT, event.payload);
+          for (const event of store.runEvents(threadId, params.run_id as string)) push(watcher, CLIENT_AG_UI_EVENT, event.payload);
           addWatcher(threadWatchers, threadId, watcher);
         },
       };
@@ -312,7 +339,8 @@ export function createLocalChats(options: LocalChatsOptions): { server: Server<S
     if (channel.kind === 'thread' && event === 'stop_run') {
       const runId = typeof payload?.run_id === 'string' ? payload.run_id : activeLock(channel.threadId!)?.runId;
       const runner = runId ? runners.get(runId) : undefined;
-      if (runner) push(runner, AG_UI_CHANNEL_EVENT, { type: 'CUSTOM', name: 'stop', value: { runId } });
+      // Only a run of the thread this browser joined: its token is for that thread alone.
+      if (runner && runner.channel.threadId === channel.threadId) push(runner, AG_UI_CHANNEL_EVENT, { type: 'CUSTOM', name: 'stop', value: { runId } });
       return reply('ok', {});
     }
 
@@ -451,12 +479,7 @@ export function createLocalChats(options: LocalChatsOptions): { server: Server<S
       if (method === 'DELETE') {
         if (lock && lock.runId === runId) {
           locks.delete(threadId);
-          for (const watcher of threadWatchers.get(threadId) ?? []) {
-            if (watcher.channel.mode === 'connect' && watcher.channel.awaitingIdle) {
-              watcher.channel.awaitingIdle = false;
-              push(watcher, 'stream_idle', { latestEventId: store.latestEventId(threadId) });
-            }
-          }
+          settleIdle(threadId, store.latestEventId(threadId));
         }
         return json({ released: true });
       }

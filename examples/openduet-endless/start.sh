@@ -41,18 +41,25 @@ if [ "$local_chats" = true ]; then
   say "chats: kept on this computer in $CHATS_DB"
 fi
 
-if port_in_use "$WORKER_PORT" || port_in_use "$GATEWAY_PORT"; then
-  say "claude-mem is already running on $WORKER_PORT/$GATEWAY_PORT (stop.sh stops it)"
+# The worker and the gateway are started and checked one at a time, so a rerun after one of them stopped brings back
+# just that one.
+# The observer's OpenRouter key goes into the worker's environment only, never into a file.
+cm_env=(env CLAUDE_MEM_DATA_DIR="$CM_DATA" HOME="$CM_HOME" DO_NOT_TRACK=1 PATH="$OD_HOME/bin:$PATH")
+if port_in_use "$WORKER_PORT"; then
+  say "the claude-mem worker is already running on $WORKER_PORT (stop.sh stops it)"
 else
-  # The observer's OpenRouter key goes into the worker's environment only, never into a file.
-  cm_env=(env CLAUDE_MEM_DATA_DIR="$CM_DATA" HOME="$CM_HOME" DO_NOT_TRACK=1 PATH="$OD_HOME/bin:$PATH")
   # Exported rather than passed on the command line, so it never shows in the process list.
   (cd "$CM_DATA" && export CLAUDE_MEM_OPENROUTER_API_KEY="$key" &&
     start_bg worker "${cm_env[@]}" bun "$CM_REPO/src/services/worker-service.ts" --daemon)
-  start_bg gateway "${cm_env[@]}" bun "$CM_REPO/src/services/wire-gateway/WireGatewayService.ts" start --foreground
-  for _ in $(seq 1 60); do port_in_use "$WORKER_PORT" && port_in_use "$GATEWAY_PORT" && break; sleep 0.5; done
-  port_in_use "$WORKER_PORT" && port_in_use "$GATEWAY_PORT" || die "claude-mem did not start; logs in $OD_LOGS"
 fi
+if port_in_use "$GATEWAY_PORT"; then
+  say "the claude-mem gateway is already running on $GATEWAY_PORT (stop.sh stops it)"
+else
+  start_bg gateway "${cm_env[@]}" bun "$CM_REPO/src/services/wire-gateway/WireGatewayService.ts" start --foreground
+fi
+for _ in $(seq 1 60); do port_in_use "$WORKER_PORT" && port_in_use "$GATEWAY_PORT" && break; sleep 0.5; done
+port_in_use "$WORKER_PORT" || die "the claude-mem worker did not start; log in $OD_LOGS/worker.log"
+port_in_use "$GATEWAY_PORT" || die "the claude-mem gateway did not start; log in $OD_LOGS/gateway.log"
 cat "$OD_PIDS.new" >> "$OD_PIDS"
 rm -f "$OD_PIDS.new"
 
