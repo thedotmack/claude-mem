@@ -295,12 +295,13 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
         const database = openDatabase();
         try {
           // Every ask, not each conversation's first ten: a long conversation's recent asks are the ones in the window.
+          // Prompts typed before the window are not read at all.
           const since = now() - LANGUAGE_WINDOW_MS;
-          asks = readCandidates(database, { sinceEpoch: since, fullAsks: true, excludedPromptIds: readLedger(ledgerDir).agentWrittenPromptIds })
-            .flatMap(candidate => candidate.asks as Array<{ at: string | null; text: string }>)
-            .map(ask => ({ at: Date.parse(ask.at ?? ''), text: ask.text }))
+          asks = readCandidates(database, { sinceEpoch: since, asksSince: since, excludedPromptIds: readLedger(ledgerDir).agentWrittenPromptIds })
+            .flatMap(candidate => candidate.asks as Array<{ promptId: number; at: string | null; text: string }>)
+            .map(ask => ({ id: ask.promptId, at: Date.parse(ask.at ?? ''), text: ask.text }))
             .filter(ask => ask.at >= since)
-            .sort((a, b) => b.at - a.at)
+            .sort((a, b) => b.at - a.at || b.id - a.id)
             .slice(0, LANGUAGE_SAMPLE).map(ask => ask.text.slice(0, LANGUAGE_ASK_CHARS));
         } finally { database.close(); }
       } catch { return null; }

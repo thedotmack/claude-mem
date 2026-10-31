@@ -570,10 +570,10 @@ describe('owner language', () => {
     try {
       const database = fixtureDatabase();
       longConversation(database, dir);
-      // The first full read of the asks is the language sample; the reviews' own reads afterwards work.
+      // Only the language sample reads the asks since a time; the reviews' own reads afterwards work.
       let locked = true;
       const flaky = () => ({ prepare: (sql: string) => {
-        if (locked && /SELECT id, session_db_id, prompt_number, prompt_text, created_at_epoch/.test(sql)) { locked = false; throw new Error('database is locked'); }
+        if (locked && /FROM user_prompts WHERE session_db_id IN \([^)]*\) AND created_at_epoch >= \?/.test(sql)) { locked = false; throw new Error('database is locked'); }
         return database.prepare(sql);
       }, close() {} });
       const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 2, ungrouped: 0, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: flaky, now: () => NOW, saveFocus: focusWriter(database).save });
