@@ -1,0 +1,20 @@
+diff --git a/openbot/app/src/styles.css b/openbot/app/src/styles.css
+index 37a2e63..22f0d71 100644
+--- a/openbot/app/src/styles.css
++++ b/openbot/app/src/styles.css
+@@ -717,3 +717,15 @@ body {
+   white-space: nowrap;
+   text-overflow: ellipsis;
+ }
++
++/*
++ * claude-mem's openduet-endless kit, chats kept on this computer: there is no CopilotKit licence here by design
++ * (CopilotKit's licensed extras stay off on the server), so the SDK's "Powered by CopilotKit · Get a license" bar
++ * says nothing this deployment can act on. The SDK has no switch for it; this hides it and the room it reserves.
++ */
++:root {
++  --copilotkit-license-banner-offset: 0px !important;
++}
++div:has(> div > a[href^="https://copilotkit.ai/pricing"]) {
++  display: none !important;
++}

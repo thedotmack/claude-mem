@@ -31,6 +31,13 @@ apply_patch() { # file, what it does
 apply_patch openduet-claude-mem.patch "full history to OpenRouter on every request, and the memory folder line"
 apply_patch openduet-local-chats.patch "start.sh accepts the local chat store"
 apply_patch openduet-client-ws.patch "the browser can join chat sockets at another address (sprite/)"
+# Only with local chats, where there is no CopilotKit licence by design; a licensed cloud setup keeps its warnings.
+banner=openduet-no-license-banner.patch
+if [ "$CHATS" = local ]; then
+  apply_patch "$banner" "no CopilotKit licence bar over the app"
+elif git -C "$OD_REPO" apply --reverse --check "$OD_KIT_DIR/$banner" >/dev/null 2>&1; then
+  git -C "$OD_REPO" apply --reverse "$OD_KIT_DIR/$banner" && say "    $banner taken back out (chats in CopilotKit's cloud)"
+fi
 
 say "3/5 OpenDuet settings"
 [ -f "$OD_REPO/.env" ] || cp "$OD_REPO/.env.example" "$OD_REPO/.env"

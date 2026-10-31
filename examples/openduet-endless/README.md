@@ -80,6 +80,10 @@ Tests: `bun test examples/openduet-endless/local-chats`.
 
 `openduet-local-chats.patch` changes the licence check in `openbot/scripts/start.sh`, as above.
 
+`openduet-no-license-banner.patch` hides the CopilotKit SDK's "Powered by CopilotKit · Get a license" bar, only with
+local chats. CopilotKit's code is MIT-licensed, the bar unlocks nothing, and there is no licence to get here by design;
+CopilotKit's licensed extras stay off either way. Switching to `OPENDUET_ENDLESS_CHATS=cloud` takes the patch back out.
+
 `openduet-client-ws.patch` lets `OPENDUET_CLIENT_WS_URL` tell the browser where to join chat sockets, when that is not
 where OpenDuet's server joins them (the Sprite setup below). Unset, nothing changes.
 
