@@ -1,6 +1,6 @@
 import { describe, it, expect, afterAll } from 'bun:test';
 import { execFileSync, spawnSync } from 'child_process';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -11,8 +11,8 @@ const projectRoot = path.resolve(__dirname, '../..');
 // Plugin installs run the files committed under plugin/, not a fresh build.
 // A build overwrites the working tree (#4728) and renames hashed My Work assets,
 // so the syntax check runs on the committed blobs, extracted from HEAD.
+// Each file is read with `git show`, so this needs only git (no sh or tar, which Windows may lack).
 const committedPluginRoot = mkdtempSync(path.join(tmpdir(), 'committed-plugin-'));
-execFileSync('sh', ['-c', `git archive HEAD plugin | tar -x -C "${committedPluginRoot}"`], { cwd: projectRoot });
 afterAll(() => rmSync(committedPluginRoot, { recursive: true, force: true }));
 
 const committedPluginScripts = execFileSync(
@@ -22,6 +22,13 @@ const committedPluginScripts = execFileSync(
 )
   .split('\n')
   .filter((trackedPath) => /\.c?js$/.test(trackedPath));
+
+for (const scriptPath of committedPluginScripts) {
+  const committed = execFileSync('git', ['show', `HEAD:${scriptPath}`], { cwd: projectRoot, maxBuffer: 256 * 1024 * 1024 });
+  const target = path.join(committedPluginRoot, scriptPath);
+  mkdirSync(path.dirname(target), { recursive: true });
+  writeFileSync(target, committed);
+}
 
 describe('Committed plugin bundles', () => {
   it('contain no merge-conflict markers', () => {
