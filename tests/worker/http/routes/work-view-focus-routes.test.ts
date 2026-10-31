@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import express from 'express';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Server } from 'node:http';
@@ -354,6 +354,83 @@ describe('My Focus routes', () => {
     it('the refresh writes in-process through the same check', () => {
       expect(() => routes.recordRouterFocus({ placements: [{ anchorConversationKey: CONVERSATION, focusAreaId: 'fa_nope', basis: BASIS, evidence: 'x' }], proposals: [] })).toThrow(TypeError);
       expect(routes.recordRouterFocus({ placements: [{ anchorConversationKey: CONVERSATION, focusAreaId: 'other', basis: BASIS, evidence: 'Fits no area.' }], proposals: [], otherPassHash: BASIS })).toEqual({ placed: 1, focusAreaIds: [] });
+    });
+  });
+
+  describe('rebuilds behind live activity (#5124)', () => {
+    const BASIS = '0123456789abcdef';
+    /** How many times the source has rebuilt the agent view. */
+    const rebuilds = () => (routes as any).source.agentRevision as number;
+    /** An activity-only commit, the kind a live session makes every few seconds: no work-state row changes. */
+    const liveActivity = () => source.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (1, 2, ?, ?)')
+      .run('Also show when each request was last touched', Date.now());
+    const rule = { scopeTier: 'everywhere', scopeName: '', when: 'Writing UI copy', then: 'Use sentence case.' };
+    const saveRule = (body: unknown) => fetch(`${origin}/api/work-view/rules`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin }, body: JSON.stringify(body),
+    });
+
+    it('a focus change rebuilds once, for the view it answers with, not again for its check', async () => {
+      await snapshot();
+      liveActivity();
+      const before = rebuilds();
+      const response = await saveFocus({ action: 'keep', focusAreaId: 'fa_viewer' });
+      expect(response.status).toBe(200);
+      expect(areaById(await response.json(), 'fa_viewer')).toMatchObject({ status: 'kept', decidedBy: 'owner' });
+      expect(rebuilds()).toBe(before + 1);
+    });
+
+    it('a rule change rebuilds once, and the answer and MY-RULES.md carry the new rule', async () => {
+      await snapshot();
+      liveActivity();
+      const before = rebuilds();
+      const response = await saveRule({ action: 'add', rule });
+      expect(response.status).toBe(200);
+      const view = await response.json();
+      expect(view.rules.map((entry: any) => entry.then)).toContain('Use sentence case.');
+      expect(readFileSync(join(directory, 'MY-RULES.md'), 'utf8')).toContain('When Writing UI copy: use sentence case.');
+      expect(rebuilds()).toBe(before + 1);
+      // The rule just written is in the next check, inside the window: work-state rows always read fresh.
+      const ruleId = view.rules.find((entry: any) => entry.then === 'Use sentence case.').ruleId;
+      liveActivity();
+      expect((await saveRule({ action: 'turn-off', ruleId })).status).toBe(200);
+    });
+
+    it('moving a request still checks against a fresh view, so a request newer than the window can be moved', async () => {
+      await snapshot();
+      const now = Date.now();
+      source.prepare('INSERT INTO sdk_sessions VALUES (2,?,?,?,?,?,?,?,?,?)').run('example-project', 'codex', 'conversation-2', 'memory-2', 'Add a dark theme to the viewer', null, 'active', now, null);
+      source.prepare('INSERT INTO user_prompts (id, session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (99, 2, 1, ?, ?)').run('Add a dark theme to the viewer', now);
+      const newRequest = JSON.stringify(['conversation', 'codex', 'conversation-2']);
+      const response = await saveFocus({ action: 'move-request', requestId: newRequest, focusAreaId: 'fa_viewer' });
+      expect(response.status).toBe(200);
+      expect((await response.json()).humanRequests.find((item: any) => item.id === newRequest).focusAreaId).toBe('fa_viewer');
+    });
+
+    it('a write with no My Work page open does not rebuild just to publish', async () => {
+      await snapshot();
+      const before = rebuilds();
+      expect(routes.recordRouterFocus({ placements: [{ anchorConversationKey: CONVERSATION, focusAreaId: 'other', basis: BASIS, evidence: 'Fits no area.' }], proposals: [], otherPassHash: BASIS })).toEqual({ placed: 1, focusAreaIds: [] });
+      expect(rebuilds()).toBe(before);
+      // The next reader still sees the write.
+      expect(request(await snapshot()).focusAreaId).toBe('other');
+    });
+
+    it('an open My Work page still gets the write pushed', async () => {
+      const controller = new AbortController();
+      const response = await fetch(`${origin}/api/work-view/events`, { signal: controller.signal });
+      const reader = response.body!.getReader();
+      await reader.read();
+      try {
+        routes.recordRouterFocus({ placements: [{ anchorConversationKey: CONVERSATION, focusAreaId: 'other', basis: BASIS, evidence: 'Fits no area.' }], proposals: [], otherPassHash: BASIS });
+        const decoder = new TextDecoder();
+        let text = '';
+        while (!text.includes('"focusAreaId":"other"')) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          text += decoder.decode(value);
+        }
+        expect(text).toContain('"focusAreaId":"other"');
+      } finally { controller.abort(); }
     });
   });
 
