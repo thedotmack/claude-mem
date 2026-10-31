@@ -93,6 +93,29 @@ describe('redactSensitive built-in patterns', () => {
     },
   );
 
+  // Provider API keys that CLIs and `.env` files print; fixtures are split so
+  // push protection doesn't flag them.
+  it.each([
+    ['sendgrid_key', 'SENDGRID_API_KEY=' + 'S' + 'G.aBcDeFgHiJkLmNoPqRsTuV.aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789_-aBcDe tail'],
+    ['digitalocean_token', 'DIGITALOCEAN_TOKEN=' + 'do' + 'p_v1_' + '0123456789abcdef'.repeat(4) + ' tail'],
+    ['digitalocean_token', 'refresh_token: ' + 'do' + 'r_v1_' + 'fedcba9876543210'.repeat(4) + ' tail'],
+    ['shopify_token', 'SHOPIFY_ACCESS_TOKEN=' + 'sh' + 'pat_' + '0123456789abcdef'.repeat(2) + ' tail'],
+    ['shopify_token', 'secret ' + 'sh' + 'pss_' + 'ABCDEF0123456789'.repeat(2) + ' tail'],
+  ])('redacts a %s', (name, input) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain(`<redacted type='${name}'/>`);
+    expect(result.redacted).toMatch(/^.*'\/> tail$/);
+    expect(result.redacted).not.toMatch(/SG\.a|_v1_|shp(?:at|ss)_/);
+    expect(Object.keys(result.counts)).toEqual([name]);
+  });
+
+  it.each(['SG.short.key', 'dop_v1_short', 'shpat_short', 'the shpat_ prefix'])(
+    'leaves %s alone',
+    (input) => {
+      expect(redactSensitive(input, cfg).redacted).toBe(input);
+    },
+  );
+
   // A password in a URL's userinfo is what `git remote -v` and a DATABASE_URL
   // print; only the password is replaced.
   it.each([
