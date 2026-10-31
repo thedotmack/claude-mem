@@ -13,6 +13,14 @@ describe('resolveDateBound', () => {
     expect(resolveDateBound(' 1735689600000 ', 'end')).toBe(1735689600000);
   });
 
+  it('rejects an epoch a Date cannot hold instead of returning Infinity', () => {
+    for (const value of ['9'.repeat(309), '99999999999999999', Number.POSITIVE_INFINITY, 8.64e15 + 1]) {
+      expect(() => resolveDateBound(value, 'start')).toThrow('Invalid date');
+      expect(() => resolveDateBound(value, 'end')).toThrow('Invalid date');
+    }
+    expect(resolveDateBound(String(8.64e15), 'end')).toBe(8.64e15);
+  });
+
   it('still reads a four-digit string as a year', () => {
     expect(resolveDateBound('2025', 'start')).toBe(Date.parse('2025-01-01T00:00:00.000Z'));
   });

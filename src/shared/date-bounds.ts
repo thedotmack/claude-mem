@@ -27,7 +27,7 @@ export function resolveDateBound(value: string | number, boundary: 'start' | 'en
   // HTTP and MCP deliver every bound as a string, so an epoch ms arrives as
   // digits. Date parsing reads only four digits as a year and returns NaN for
   // an epoch, so read anything longer as the number it is.
-  if (EPOCH_MS_PATTERN.test(normalized)) return Number(normalized);
+  if (EPOCH_MS_PATTERN.test(normalized)) return requireValidEpoch(Number(normalized), value, boundary);
   const parsed = isCalendarDatePrefix(normalized) ? new Date(normalized).getTime() : Number.NaN;
   const epoch = requireValidEpoch(parsed, value, boundary);
   if (boundary === 'end' && DATE_ONLY_PATTERN.test(normalized)) {
@@ -50,8 +50,11 @@ function isCalendarDatePrefix(value: string): boolean {
   return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
 }
 
+// Rejects NaN and also anything a Date cannot hold (Infinity, beyond +/-8.64e15
+// ms): a digit string of 309 nines reads as Infinity, and Chroma skipped the
+// comparison for it, so the bound filtered nothing.
 function requireValidEpoch(epoch: number, original: string | number, boundary: 'start' | 'end'): number {
-  if (Number.isNaN(epoch)) {
+  if (Number.isNaN(new Date(epoch).getTime())) {
     throw new AppError(
       `Invalid date for the ${boundary} of the range: ${JSON.stringify(original)}. Use an ISO date such as 2025-01-31 or 2025-01-31T08:00:00Z.`,
       400,

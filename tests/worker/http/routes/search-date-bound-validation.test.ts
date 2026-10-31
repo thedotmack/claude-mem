@@ -112,6 +112,12 @@ describe('invalid date bounds on the search routes', () => {
     expect(textOf(outOfRange.body)).not.toContain('zebrafish narrative');
   });
 
+  it('rejects a digit-string bound that overflows to Infinity', async () => {
+    const { status, body } = await request('/api/search', { query: 'zebrafish', dateEnd: '9'.repeat(309) });
+    expect(status).toBe(400);
+    expect(body.code).toBe('INVALID_DATE');
+  });
+
   it('resolveDateBound itself throws a 400 AppError for a non-date', () => {
     for (const value of ['nope', '', 'tomorrow-ish']) {
       expect(() => resolveDateBound(value, 'start')).toThrow(/Invalid date/);
