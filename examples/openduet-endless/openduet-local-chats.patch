@@ -1,0 +1,33 @@
+diff --git a/openbot/scripts/start.sh b/openbot/scripts/start.sh
+index b347d55..adaca1d 100755
+--- a/openbot/scripts/start.sh
++++ b/openbot/scripts/start.sh
+@@ -495,11 +495,17 @@ INFO="$(curl -fsS --max-time 8 "http://localhost:$SERVER_PORT/api/copilotkit/inf
+ # machine has. On Windows `python3` is usually the Microsoft Store alias, which prints "Python was not
+ # found" and exits 49, so the run stopped here with the server and worker up and the app never
+ # started.
+-bun run - "$INFO" <<'JS'
++bun run - "$INFO" "$(setting OPENDUET_LOCAL_CHATS false)" <<'JS'
+ const info = JSON.parse(process.argv[2]);
+ const status = info.licenseStatus;
+ const agents = Object.keys(info.agents ?? {});
+-if (status !== "valid") {
++// Chats kept by the local store (claude-mem's examples/openduet-endless/local-chats), which claims no
++// CopilotKit licence: conversations run, CopilotKit's licensed extras stay off.
++const localChats =
++  process.argv[3] === "true" && info.runtimeEntitlements?.error?.code === "LOCAL_CHAT_STORE";
++if (status !== "valid" && localChats) {
++  console.log("\x1b[32m  chats kept on this computer (no CopilotKit licence; its licensed extras are off)\x1b[0m");
++} else if (status !== "valid") {
+   console.log(`\x1b[31m  licence is '${status}', not 'valid'.\x1b[0m`);
+   console.log("\x1b[31m  Check INTELLIGENCE_API_KEY. From the repository root: npx copilotkit@latest login && npx copilotkit@latest project select && bun openbot/scripts/setup-learning.ts\x1b[0m");
+   console.log("\x1b[31m  The Quick start in the repository's README.md has the steps.\x1b[0m");
+@@ -509,7 +515,7 @@ if (agents.length === 0) {
+   console.log("\x1b[31m  No Bots registered.\x1b[0m");
+   process.exit(1);
+ }
+-console.log(`\x1b[32m  licence valid · mode ${info.mode} · Bots: ${agents.join(", ")}\x1b[0m`);
++console.log(`\x1b[32m  ${localChats ? "local chats" : "licence valid"} · mode ${info.mode} · Bots: ${agents.join(", ")}\x1b[0m`);
+ JS
+ 
+ info "4/4  App"

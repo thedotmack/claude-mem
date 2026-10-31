@@ -299,6 +299,21 @@ describe('OpenCode installer leaves the global AGENTS.md to the user', () => {
 });
 
 describe('OpenCode MCP entry host contract (plan-23 step 1)', () => {
+  // Like the other blocks: write opencode.json into a temp dir, never the real ~/.config/opencode.
+  let tempDir: string;
+  let previousConfigDir: string | undefined;
+  beforeEach(() => {
+    tempDir = join(tmpdir(), `opencode-mcp-contract-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(tempDir, { recursive: true });
+    previousConfigDir = process.env.OPENCODE_CONFIG_DIR;
+    process.env.OPENCODE_CONFIG_DIR = tempDir;
+  });
+  afterEach(() => {
+    if (previousConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR;
+    else process.env.OPENCODE_CONFIG_DIR = previousConfigDir;
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
   it('emits an entry that satisfies the checked-in OpenCode schema fixture', () => {
     const output = registerMcpThroughConfigFile({
       $schema: 'https://opencode.ai/config.json',

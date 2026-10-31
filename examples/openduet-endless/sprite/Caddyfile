@@ -1,0 +1,25 @@
+# The one door the Sprite's address opens (port 8080). The Sprite asks for sign-in before anything gets here.
+# SPRITE_ORIGIN is the Sprite's own address, e.g. https://my-sprite-abcd.sprites.app (set by sprite/setup.sh).
+{
+	admin off
+	auto_https off
+}
+:8080 {
+	# Chat sockets from the browser go to the local chat store.
+	handle_path /intelligence-ws/* {
+		reverse_proxy 127.0.0.1:{$CHATS_PORT:37879}
+	}
+	# Everything else, app and API and its sockets, goes to OpenDuet's server.
+	# OpenDuet refuses changes from pages that aren't its own address, and its own address is this machine.
+	# The Sprite's address is that same app (behind the Sprite's sign-in), so its pages are named as the local app.
+	# Pages from anywhere else keep their own origin and are still refused.
+	@own header Origin {$SPRITE_ORIGIN}
+	handle @own {
+		reverse_proxy 127.0.0.1:3001 {
+			header_up Origin http://localhost:3010
+		}
+	}
+	handle {
+		reverse_proxy 127.0.0.1:3001
+	}
+}

@@ -1,0 +1,39 @@
+diff --git a/openbot/supervisor/src/docker.ts b/openbot/supervisor/src/docker.ts
+index d339054..51bfee3 100644
+--- a/openbot/supervisor/src/docker.ts
++++ b/openbot/supervisor/src/docker.ts
+@@ -452,7 +452,8 @@ function hostConfig(names: ComputerNames, options: EnsureOptions) {
+     CapDrop: ["ALL"],
+     // A runaway Bot is a resource problem for itself, not for every other Bot on the host.
+     ...(options.memoryBytes ? { Memory: options.memoryBytes } : {}),
+-    PidsLimit: options.pidsLimit ?? 512,
++    // 0 is no limit, and leaves the setting out: on a host without the controller, any value fails.
++    ...(options.pidsLimit === 0 ? {} : { PidsLimit: options.pidsLimit ?? 512 }),
+     // Chromium's sandbox wants shared memory and will crash on the 64MB default.
+     ShmSize: 1_073_741_824,
+   };
+diff --git a/openbot/supervisor/src/index.ts b/openbot/supervisor/src/index.ts
+index e995abc..fb7a686 100644
+--- a/openbot/supervisor/src/index.ts
++++ b/openbot/supervisor/src/index.ts
+@@ -70,6 +70,12 @@ if (!resolvedMemory.ok) {
+   process.exit(1);
+ }
+ const memoryBytes = resolvedMemory.bytes;
++/*
++ * "0" sets no process limit at all, for a host whose Docker cannot set one (a Fly Sprite has no pids controller
++ * under Docker's cgroup, so every computer failed to start). Unset keeps the default.
++ */
++const pidsLimit =
++  process.env.COMPUTER_PIDS_LIMIT?.trim() === "0" ? 0 : undefined;
+ const spireSocketVolume =
+   process.env.SPIRE_AGENT_SOCKET_VOLUME?.trim() || undefined;
+ 
+@@ -108,6 +114,7 @@ app.post("/computers/:botId/ensure", async (context) => {
+       ...(network ? { network } : {}),
+       ...(runtime ? { runtime } : {}),
+       ...(memoryBytes ? { memoryBytes } : {}),
++      ...(pidsLimit !== undefined ? { pidsLimit } : {}),
+       ...(spireSocketVolume ? { spireSocketVolume } : {}),
+     });
+     return context.json({

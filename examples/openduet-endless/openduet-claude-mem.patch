@@ -1,0 +1,29 @@
+diff --git a/openbot/server/src/copilot.ts b/openbot/server/src/copilot.ts
+index ba0c635..cfbe432 100644
+--- a/openbot/server/src/copilot.ts
++++ b/openbot/server/src/copilot.ts
+@@ -467,8 +467,24 @@ export function builtInAgentConfiguration(
+         : []),
+       ...(computerGuidance ? [computerGuidance] : []),
+       ...(learnedSkills?.catalog ? [learnedSkills.catalog] : []),
++      /*
++       * claude-mem's wire gateway files what it captures under the folder a request names, and only
++       * then brings that folder's memory back into new conversations. Without it everything lands
++       * as unattributed and nothing carries over.
++       */
++      ...(process.env.CLAUDE_MEM_WORK_FOLDER?.trim()
++        ? [`<cwd>${process.env.CLAUDE_MEM_WORK_FOLDER.trim()}</cwd>`]
++        : []),
+     ].join("\n\n"),
+     ...(planModel ? {} : { apiKey: apiKey ?? undefined }),
++    /*
++     * A custom OpenAI-compatible endpoint (OpenRouter, a gateway) is stateless: it rejects stored
++     * responses and cannot resolve the item references the AI SDK sends when `store` is on. So the
++     * whole history goes in every request instead.
++     */
++    ...(model.provider === "openai" && process.env.OPENAI_BASE_URL?.trim()
++      ? { providerOptions: { openai: { store: false } } }
++      : {}),
+     /*
+      * A run stops after one step unless told otherwise, which for a Bot with tools means it calls
+      * one and never speaks: the tool executes, the result arrives, and the run ends before the model
