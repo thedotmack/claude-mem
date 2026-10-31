@@ -83,8 +83,8 @@ export function ScanScreen({ scan, onImproveProductChange, onConfirmUpload, cons
                 </li>
               ))}
             </ul>
-            <button type="button" disabled={chosen.length === 0 || consentSending} onClick={() => onConfirmUpload(true, chosen)}>Upload my prompts to cmem.ai</button>
             <button type="button" className="secondary" disabled={consentSending} onClick={() => onConfirmUpload(false)}>Keep everything local</button>
+            <button type="button" className="secondary" disabled={chosen.length === 0 || consentSending} onClick={() => onConfirmUpload(true, chosen)}>Upload my prompts to cmem.ai</button>
             {consentSending && <p className="scan-status" role="status">Sending your choice…</p>}
             {consentError && <p className="scan-error" role="alert">{consentError}</p>}
           </div>
