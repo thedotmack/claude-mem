@@ -114,6 +114,16 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     hint: 'rc_live_ key from runcrate.ai; vendor-prefixed open model ids such as deepseek-ai/DeepSeek-V4.1-Flash or zai-org/GLM-5.3.',
   },
   {
+    id: 'cheapaimodel',
+    label: 'cheapaimodel (cheapaimodel.ai)',
+    baseUrl: 'https://api.cheapaimodel.ai/v1',
+    // A small, fast open model for the same reason as NVIDIA's default:
+    // extraction is high volume. Ids are passed verbatim.
+    defaultModel: 'deepseek-v4-1-flash',
+    requiresApiKey: true,
+    hint: 'Key from console.cheapaimodel.ai; open model ids such as deepseek-v4-1-flash or glm-5.3.',
+  },
+  {
     id: 'deepseek',
     label: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com/v1',
