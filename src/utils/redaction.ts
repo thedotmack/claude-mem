@@ -129,14 +129,16 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   { name: 'private_key_pem', regex: /-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END (?:RSA |DSA |EC |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----/g },
   { name: 'stripe_key',      regex: /\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{24,}\b/g },
   { name: 'google_api_key',  regex: /\bAIza[0-9A-Za-z_-]{35}(?!\w)/g },
-  // GitLab personal/project/group access tokens (`glpat-` + 20 chars; newer
-  // routable tokens add dot-separated segments), Hugging Face user access
-  // tokens (`hf_` + 34 chars) and npm access tokens (`npm_` + 36 chars): the
-  // credentials `glab`, `huggingface-cli` and `npm` print in config and
-  // `.npmrc`/`.env` dumps.
-  { name: 'gitlab_token',    regex: /\bglpat-[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)*(?!\w)/g },
+  // GitLab personal/project/group access tokens (`glpat-`), deploy tokens (`gldt-`),
+  // and runner authentication tokens (`glrt-` + 20 chars; newer routable tokens
+  // add dot-separated segments), Hugging Face user access tokens (`hf_` + 34 chars),
+  // npm access tokens (`npm_` + 36 chars) and Docker Hub personal access tokens
+  // (`dckr_pat_` + 27 chars): credentials printed in config files, CLI commands
+  // (`glab`, `huggingface-cli`, `npm`, `docker login`), and env dumps.
+  { name: 'gitlab_token',    regex: /\bgl(?:pat|dt|rt)-[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)*(?!\w)/g },
   { name: 'huggingface_token', regex: /\bhf_[A-Za-z0-9]{30,}\b/g },
   { name: 'npm_token',       regex: /\bnpm_[A-Za-z0-9]{36}\b/g },
+  { name: 'docker_pat',      regex: /\bdckr_pat_[A-Za-z0-9_-]{27,}(?!\w)/g },
   // claude-mem's own credentials: server API keys (`cmem_` + 43 base64url
   // chars, server-bootstrap.ts createRawApiKey) and cmem.ai Pro memory keys.
   { name: 'claude_mem_key',  regex: /\bcmem_[A-Za-z0-9_-]{32,}|\bcm_pro_[A-Za-z0-9_-]{8,}/g },
