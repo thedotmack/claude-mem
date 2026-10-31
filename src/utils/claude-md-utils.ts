@@ -49,7 +49,10 @@ function isValidPathForClaudeMd(filePath: string, projectRoot?: string): boolean
       return false;
     }
 
-    if (hasConsecutiveDuplicateSegments(resolved)) {
+    // Start at the project folder's own name, so a doubled prefix like
+    // frontend/frontend still matches (#814) but a project checked out at
+    // ~/code/app/app does not reject every path.
+    if (hasConsecutiveDuplicateSegments(path.relative(path.dirname(normalizedRoot), resolved))) {
       return false;
     }
   }

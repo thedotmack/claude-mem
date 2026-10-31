@@ -830,6 +830,30 @@ describe('issue #814 - reject consecutive duplicate path segments', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it('only checks duplicate segments from the project folder down', async () => {
+    // A project checked out at a path like ~/code/app/app must still get folder CLAUDE.md files.
+    const apiResponse = {
+      content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
+    };
+    const fetchMock = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(apiResponse)
+    } as Response));
+    global.fetch = fetchMock;
+    const projectRoot = join(tempDir, 'app', 'app');
+    mkdirSync(join(projectRoot, 'src', 'utils'), { recursive: true });
+
+    await updateFolderClaudeMdFiles(
+      ['src/utils/file.ts'],
+      'test-project',
+      37777,
+      projectRoot
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(readFileSync(join(projectRoot, 'src', 'utils', 'CLAUDE.md'), 'utf-8')).toContain('#123');
+  });
 });
 
 describe('issue #859 - skip folders with active CLAUDE.md', () => {
