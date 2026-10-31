@@ -274,6 +274,9 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD',
       'CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER',
       'CLAUDE_MEM_WORK_VIEW_COPY_MODEL',
+      'CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL',
+      'CLAUDE_MEM_WORK_VIEW_CODEX_MODEL',
+      'CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL',
       'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
@@ -573,6 +576,11 @@ export class SettingsRoutes extends BaseRouteHandler {
     if (settings.CLAUDE_MEM_WORK_VIEW_COPY_MODEL !== undefined
       && (typeof settings.CLAUDE_MEM_WORK_VIEW_COPY_MODEL !== 'string' || settings.CLAUDE_MEM_WORK_VIEW_COPY_MODEL.length > 200)) {
       return { valid: false, error: 'CLAUDE_MEM_WORK_VIEW_COPY_MODEL must be a string of at most 200 characters' };
+    }
+    for (const key of ['CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL', 'CLAUDE_MEM_WORK_VIEW_CODEX_MODEL', 'CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL'] as const) {
+      if (settings[key] !== undefined && (typeof settings[key] !== 'string' || settings[key].length > 200)) {
+        return { valid: false, error: `${key} must be a string of at most 200 characters` };
+      }
     }
 
     if (settings.CLAUDE_MEM_OPENROUTER_SITE_URL) {
