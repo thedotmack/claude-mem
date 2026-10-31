@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { appendReading, applyGroupDecisions, groupIdFor, ledgerSignature, linkBackwards, MAX_READINGS, readCandidates, readGoals, readLedger, refreshNeeds, runCli, storyChaptersToMerge, storyParts, validateProgress, validateStory } from '../../src/services/work-view/request-groups.mjs';
+import { appendReading, applyGroupDecisions, groupIdFor, ledgerSignature, linkBackwards, MAX_READINGS, readCandidates, readGoals, readLedger, refreshNeeds, runCli, storyChaptersToMerge, storyParts, textTarget, validateProgress, validateStory } from '../../src/services/work-view/request-groups.mjs';
 import { readFocus, readFocusAreas } from '../../src/services/work-view/data-source.mjs';
 import { focusAreaRowFields, placementRowFields, routerFocusRows, type RouterFocusBody } from '../../src/services/work-view/my-focus.mjs';
 import { buildHumanRequests } from '../../src/services/work-view/request-projection.mjs';
@@ -93,6 +93,17 @@ describe('overall requests and progress reviews', () => {
   expect(() => validateProgress({ ...base, milestones }, groups))
     .toThrow('milestones has 13 items; it must have at most 12. Keep the 12 that matter most.');
   expect(() => validateProgress({ ...base, milestones: 'none' }, groups)).toThrow('milestones must be an array of at most 12.');
+  // A verbatim quote is shortened by quoting less, so its refusal never asks for a rewrite.
+  const preferences = [{ kind: 'directive', preference: 'Short replies.', quote: 'x'.repeat(301), at: null }];
+  expect(() => validateProgress({ ...base, preferences }, groups)).toThrow('Quote a shorter part of it word for word, about 220 characters; never reword a quote.');
+});
+
+  it('every length the skill asks for is the target a refusal names', () => {
+  const skill = readFileSync(join(import.meta.dir, '../../plugin/skills/request-progress/SKILL.md'), 'utf8');
+  // The story keeps its own target (STORY_NARRATIVE_TARGET), which its refusal names.
+  const pairs = [...skill.matchAll(/about (\d+) chars and never over (\d+)/g)].map(([, about, cap]) => [Number(about), Number(cap)]).filter(([, cap]) => cap !== 12000);
+  expect(pairs.length).toBeGreaterThan(10);
+  for (const [about, cap] of pairs) expect([about, cap]).toEqual([textTarget(cap), cap]);
 });
 
   it('a review records how released work landed, with evidence and the why of each change', () => {

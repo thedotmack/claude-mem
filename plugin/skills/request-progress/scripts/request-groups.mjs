@@ -3174,6 +3174,12 @@ function boundedText(value, max, label, optional = false) {
   }
   return value.trim();
 }
+function boundedQuote(value, max, label) {
+  if (typeof value === "string" && value.length > max) {
+    throw new TypeError(`${label} is ${value.length} characters; it must be 1\u2013${max}. Quote a shorter part of it word for word, about ${textTarget(max)} characters; never reword a quote.`);
+  }
+  return boundedText(value, max, label);
+}
 function boundedList(value, max, label) {
   const list = value ?? [];
   if (!Array.isArray(list)) throw new TypeError(`${label} must be an array of at most ${max}.`);
@@ -3240,7 +3246,7 @@ function validateProgress(entry, knownGroups) {
     preferences: preferences.map((preference, index) => {
       if (!PREFERENCE_KINDS.includes(preference.kind)) throw new TypeError(`preferences[${index}].kind must be one of ${PREFERENCE_KINDS.join(", ")}.`);
       if (!isIsoOrNull(preference.at ?? null)) throw new TypeError(`preferences[${index}].at must be an ISO date or null.`);
-      return { kind: preference.kind, preference: boundedText(preference.preference, 200, `preferences[${index}].preference`), quote: boundedText(preference.quote, 300, `preferences[${index}].quote`), at: preference.at ?? null };
+      return { kind: preference.kind, preference: boundedText(preference.preference, 200, `preferences[${index}].preference`), quote: boundedQuote(preference.quote, 300, `preferences[${index}].quote`), at: preference.at ?? null };
     }),
     outcome: validateOutcome(entry.outcome),
     evidence: evidenceList(entry.evidence, 20),
@@ -3322,7 +3328,7 @@ function validateStory(story) {
       preference: boundedText(preference.preference, 200, `preferences[${index}].preference`),
       kind: PREFERENCE_KINDS.includes(preference.kind) ? preference.kind : "directive",
       supportCount: Number.isInteger(preference.supportCount) && preference.supportCount > 0 ? preference.supportCount : 1,
-      quotes: (preference.quotes ?? []).slice(0, 3).map((quote, quoteIndex) => ({ quote: boundedText(quote.quote, 300, `preferences[${index}].quotes[${quoteIndex}]`), at: isIsoOrNull(quote.at ?? null) ? quote.at ?? null : null }))
+      quotes: (preference.quotes ?? []).slice(0, 3).map((quote, quoteIndex) => ({ quote: boundedQuote(quote.quote, 300, `preferences[${index}].quotes[${quoteIndex}]`), at: isIsoOrNull(quote.at ?? null) ? quote.at ?? null : null }))
     }))
   };
 }
