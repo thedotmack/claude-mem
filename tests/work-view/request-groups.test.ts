@@ -83,6 +83,18 @@ describe('overall requests and progress reviews', () => {
   expect(() => validateProgress({ ...base, reviewBasis: undefined }, groups)).toThrow(/reviewBasis/);
 });
 
+  it('a review over a cap is refused with a target well under it, so the retry does not miss again (Oct 31)', () => {
+  const groups = { g_000000000001: { title: 'Cards' } };
+  const base = { groupId: 'g_000000000001', state: 'in-progress', percent: 50, summary: 'Under way.', reviewBasis: { checkedThrough: '2026-10-04T00:00:00Z', conversations: [key('a')] } };
+  expect(() => validateProgress({ ...base, summary: 'x'.repeat(292) }, groups))
+    .toThrow('summary is 292 characters; it must be 1–280. Bring it to about 210 characters (cut at least 82).');
+  expect(() => validateProgress({ ...base, narrative: 'x'.repeat(1347) }, groups)).toThrow(/about 900 characters \(cut at least 447\)/);
+  const milestones = Array.from({ length: 13 }, (_, index) => ({ at: null, text: `Step ${index}` }));
+  expect(() => validateProgress({ ...base, milestones }, groups))
+    .toThrow('milestones has 13 items; it must have at most 12. Keep the 12 that matter most.');
+  expect(() => validateProgress({ ...base, milestones: 'none' }, groups)).toThrow('milestones must be an array of at most 12.');
+});
+
   it('a review records how released work landed, with evidence and the why of each change', () => {
   const groups = { g_000000000001: { title: 'Cards' } };
   const base = { groupId: 'g_000000000001', state: 'shipped', percent: 100, shippedAt: '2026-10-03T00:00:00Z', summary: 'Cards merged and released.', reviewBasis: { checkedThrough: '2026-10-04T00:00:00Z', conversations: [key('a')] } };

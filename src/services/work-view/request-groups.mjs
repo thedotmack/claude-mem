@@ -271,8 +271,24 @@ function boundedText(value, max, label, optional = false) {
   if (optional && (value == null || value === '')) return '';
   if (typeof value !== 'string' || !value.trim()) throw new TypeError(`${label} must be 1–${max} characters.`);
   // The length goes in the refusal: an agent asked to fix "must be 1–12000" without it rewrote a 22K story at 22K (Oct 24).
-  if (value.length > max) throw new TypeError(`${label} is ${value.length} characters; it must be 1–${max}. Cut at least ${value.length - max} characters.`);
+  // So does a target well under the cap: asked to "cut at least 12 characters", reviewers cut about that, miscounted and
+  // were refused again, which failed the whole refresh (Oct 31: eight runs in a row, each 2–147 characters over).
+  if (value.length > max) {
+    const target = textTarget(max);
+    throw new TypeError(`${label} is ${value.length} characters; it must be 1–${max}. Bring it to about ${target} characters (cut at least ${value.length - target}).`);
+  }
   return value.trim();
+}
+
+/** About three quarters of a cap: the length the skill asks for, so a reviewer's miscount still lands under the cap. */
+const textTarget = (max) => Math.floor((max * 0.75) / 10) * 10;
+
+/** A list of at most `max`, with the count in the refusal and what to drop, like boundedText's lengths. */
+function boundedList(value, max, label) {
+  const list = value ?? [];
+  if (!Array.isArray(list)) throw new TypeError(`${label} must be an array of at most ${max}.`);
+  if (list.length > max) throw new TypeError(`${label} has ${list.length} items; it must have at most ${max}. Keep the ${max} that matter most.`);
+  return list;
 }
 
 // Models sometimes answer one citation as a plain string instead of a list (Oct 25: a review's
@@ -290,9 +306,7 @@ export function validateOutcome(outcome) {
     if (!levels.includes(entry.level)) throw new TypeError(`${label}.level must be one of ${levels.join(', ')}.`);
     return { level: entry.level, text: boundedText(entry.text, 400, `${label}.text`), evidence: evidenceList(entry.evidence) };
   };
-  const regressions = outcome.regressions ?? [], changes = outcome.changes ?? [];
-  if (!Array.isArray(regressions) || regressions.length > 10) throw new TypeError('outcome.regressions must be an array of at most 10.');
-  if (!Array.isArray(changes) || changes.length > 12) throw new TypeError('outcome.changes must be an array of at most 12.');
+  const regressions = boundedList(outcome.regressions, 10, 'outcome.regressions'), changes = boundedList(outcome.changes, 12, 'outcome.changes');
   const dated = (value, label) => { if (!isIsoOrNull(value ?? null)) throw new TypeError(`${label} must be an ISO date or null.`); return value ?? null; };
   return {
     landed: outcome.landed == null ? null : { text: boundedText(outcome.landed.text, 400, 'outcome.landed.text'), at: dated(outcome.landed.at, 'outcome.landed.at'), evidence: evidenceList(outcome.landed.evidence) },
@@ -322,9 +336,7 @@ export function validateProgress(entry, knownGroups) {
   for (const field of ['startedAt', 'shippedAt', 'lastActivityAt']) if (!isIsoOrNull(entry[field] ?? null)) throw new TypeError(`${field} must be an ISO date or null.`);
   if (entry.state === 'shipped' && (entry.percent !== 100 || !entry.shippedAt)) throw new TypeError('A shipped request needs percent 100 and shippedAt.');
   if (entry.state !== 'shipped' && entry.shippedAt) throw new TypeError('Only a shipped request has shippedAt.');
-  const milestones = entry.milestones ?? [], preferences = entry.preferences ?? [];
-  if (!Array.isArray(milestones) || milestones.length > 12) throw new TypeError('milestones must be an array of at most 12.');
-  if (!Array.isArray(preferences) || preferences.length > 10) throw new TypeError('preferences must be an array of at most 10.');
+  const milestones = boundedList(entry.milestones, 12, 'milestones'), preferences = boundedList(entry.preferences, 10, 'preferences');
   return {
     groupId: entry.groupId, state: entry.state, percent: entry.percent,
     startedAt: entry.startedAt ?? null, shippedAt: entry.shippedAt ?? null, lastActivityAt: entry.lastActivityAt ?? null,
@@ -436,8 +448,7 @@ export function storyParts(narrative) {
 }
 
 export function validateStory(story) {
-  const preferences = story?.preferences ?? [];
-  if (!Array.isArray(preferences) || preferences.length > 30) throw new TypeError('preferences must be an array of at most 30.');
+  const preferences = boundedList(story?.preferences, 30, 'preferences');
   // The refusal names the target and the parts furthest over budget, so the retry condenses toward the target
   // instead of landing just under the cap again.
   const narrativeChars = typeof story?.narrative === 'string' ? story.narrative.length : 0;
