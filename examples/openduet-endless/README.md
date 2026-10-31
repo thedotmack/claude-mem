@@ -119,6 +119,10 @@ Needs Docker and Caddy on the Sprite. `sprite/setup.sh` adds, on top of `setup.s
 
 `sprite-env services list` shows them. `sprite-env services restart openduet` restarts OpenDuet.
 
+OpenDuet's own browser (its "computer") is driven from the page you have open: when it visits a site for you, the
+visit runs from your tab and the answer comes back to it. Keep the tab open until it answers; a tab closed mid-visit
+loses that reply. The first visit after the Sprite wakes can take half a minute while the browser starts.
+
 ## Settings
 
 Override any of these in the environment: `OPENDUET_ENDLESS_HOME` (default `~/openduet-endless`),
