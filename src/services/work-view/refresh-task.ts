@@ -20,7 +20,7 @@ import { runCommand } from '../agent-runner/detect.js';
 import { writeOwnerPromptsFile, type OwnerPromptsFile } from '../prompt-import/owner-prompts-file.js';
 import { resolvePythonCommand } from './python.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { FOCUS_BATCH, readGoals, readLedger, runCli, validateFocusAnswer, validateGroupingAnswer, type FocusInput, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
+import { FOCUS_BATCH, readCandidates, readGoals, readLedger, runCli, validateFocusAnswer, validateGroupingAnswer, type FocusInput, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
 import { FOCUS_AUTO_PLACE_THRESHOLD, judgeFocusBatch, placesAlone, type FocusJudge, type FocusJudgement } from './focus-judge.mjs';
 import { isWithdrawnArea, PROPOSAL_KINDS, readFocusAreas, type FocusArea, type RouterFocusBody } from './my-focus.mjs';
 import { NAV_LABELS } from './nav-words.mjs';
@@ -52,10 +52,18 @@ export function reviewConcurrency(dataDir: string): number {
  * Ids checked against claude --help (aliases), codex-cli 0.163.0 models_cache.json and gemini 0.49.0 aliases. */
 const LIGHT: StepModels = { 'claude-code': { model: 'haiku' }, codex: { model: 'gpt-6-luna', reasoningEffort: 'low' }, gemini: { model: 'flash-lite' } };
 const CAREFUL: StepModels = { 'claude-code': { model: 'sonnet' }, codex: {}, gemini: { model: 'flash' } };
-export const STEP_MODELS = { goals: CAREFUL, grouping: LIGHT, review: CAREFUL, focus: LIGHT, story: CAREFUL } as const;
+export const STEP_MODELS = { goals: CAREFUL, language: LIGHT, grouping: LIGHT, review: CAREFUL, focus: LIGHT, story: CAREFUL } as const;
 type Step = keyof typeof STEP_MODELS;
 
+/** The owner's asks the language step reads: the newest of the skill's default 14-day window. */
+const LANGUAGE_WINDOW_MS = 14 * 86400000;
+const LANGUAGE_SAMPLE = 40;
+const LANGUAGE_ASK_CHARS = 280;
+/** A language name the step may answer: letters, spaces, hyphens and parentheses, such as "Turkish" or "Chinese (Simplified)". */
+const LANGUAGE_NAME = /^\p{L}[\p{L} ()'-]{0,39}$/u;
+
 const strictObject = (properties: Record<string, unknown>) => ({ type: 'object', additionalProperties: false, required: Object.keys(properties), properties });
+export const LANGUAGE_ANSWER_SCHEMA: AnswerSchema = strictObject({ language: { type: 'string' } });
 const stringArray = { type: 'array', items: { type: 'string' } };
 /** The decisions `apply` takes, as Codex's structured-output schema (strict mode: every field required). */
 export const GROUPING_ANSWER_SCHEMA: AnswerSchema = strictObject({
@@ -273,7 +281,53 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
     };
     /** Ask, save, and on a refusal (unreadable JSON or a validator's) ask once more with the answer and reason.
      * A step refused twice fails with its last raw answer kept in failed-answers/ for diagnosis. */
-    const step = <T>(name: Step, question: string, save: (answer: any) => T | Promise<T>, answerSchema?: AnswerSchema): Promise<T> => timed(name, async () => {
+    /**
+     * The owner's language, decided once per run from the owner's own asks and named in every grouping, review, focus
+     * and story question. Those run as separate agents that each see only their own input (a review batch in "amend"
+     * mode sees only its later asks), so left to the skill's rule they could each pick a different language. The goals
+     * step reads every owner prompt in one question, so it keeps the skill's own rule. Null (no asks, no usable
+     * answer, or a failed read) leaves the skills' rule in place: the language is a hint, never a reason to fail a run.
+     */
+    let language: Promise<string | null> | undefined;
+    const ownerLanguage = () => language ??= (async () => {
+      let asks: string[];
+      try {
+        const database = openDatabase();
+        try {
+          // Every ask, not each conversation's first ten: a long conversation's recent asks are the ones in the window.
+          // Prompts typed before the window are not read at all.
+          const since = now() - LANGUAGE_WINDOW_MS;
+          asks = readCandidates(database, { sinceEpoch: since, asksSince: since, excludedPromptIds: readLedger(ledgerDir).agentWrittenPromptIds })
+            .flatMap(candidate => candidate.asks as Array<{ promptId: number; at: string | null; text: string }>)
+            .map(ask => ({ id: ask.promptId, at: Date.parse(ask.at ?? ''), text: ask.text }))
+            .filter(ask => ask.at >= since)
+            .sort((a, b) => b.at - a.at || b.id - a.id)
+            .slice(0, LANGUAGE_SAMPLE).map(ask => ask.text.slice(0, LANGUAGE_ASK_CHARS));
+        } finally { database.close(); }
+      } catch { return null; }
+      if (!asks.length) return null;
+      return timed('language', async () => {
+        try {
+          const answer = parseAgentJson(await ask([
+            readOnly,
+            'These are the owner\'s own requests from the last 14 days, newest first. Which human language are most of them written in? Ignore code, file paths, URLs, commands, repository and product names.',
+            `\`\`\`json\n${JSON.stringify(asks, null, 2)}\n\`\`\``,
+            'Reply with only {"language": "<that language\'s name in English, such as Turkish or English>"}.',
+          ].join('\n\n'), STEP_MODELS.language, LANGUAGE_ANSWER_SCHEMA));
+          const name = typeof answer.language === 'string' ? answer.language.trim() : '';
+          return LANGUAGE_NAME.test(name) ? name : null;
+        } catch { return null; }
+      });
+    })();
+    const languageRule = async () => {
+      const name = await ownerLanguage();
+      return name ? `The owner's language for this run is ${name}. Wherever these instructions ask for the owner's language (the human language most of the owner's asks are written in), use ${name}; quotes stay as typed, and the wording the instructions say to keep stays as it was.` : '';
+    };
+    const step = async <T>(name: Step, question: string, save: (answer: any) => T | Promise<T>, answerSchema?: AnswerSchema): Promise<T> => {
+      const rule = name === 'goals' ? '' : await languageRule();
+      return timed(name, () => askAndSave(name, rule ? `${question}\n\n${rule}` : question, save, answerSchema));
+    };
+    const askAndSave = async <T>(name: Step, question: string, save: (answer: any) => T | Promise<T>, answerSchema?: AnswerSchema): Promise<T> => {
       let refusal: string | null = null;
       let answer = '';
       for (let attempt = 0; attempt < 2; attempt++) {
@@ -291,7 +345,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       writeFileSync(answerPath, answer, { mode: 0o600 });
       // The path goes first: the runner keeps only the first 500 characters of an error.
       throw refused(new Error(`${name} (raw answer: ${answerPath}): ${refusal}`));
-    });
+    };
     const readOnly = [
       'You are running in a read-only sandbox for claude-mem\'s automatic refresh: you cannot run commands that write or save. Nobody is watching, so never ask a question.',
       agent === 'claude-code'
@@ -379,7 +433,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       const due: Array<{ groupId: string }> = cli(['pending', '--days', '14', '--limit', '1000000']).groups;
       let reviewed = 0;
       /** One batch of reviews. Like step(), but a refusal re-asks only for the groups that were refused. */
-      const reviewBatch = async (groups: Array<{ groupId: string }>) => {
+      const reviewBatch = async (groups: Array<{ groupId: string }>, rule: string) => {
         let shows = groups.map(group => cli(['show', group.groupId]));
         let refusals: string[] = [];
         let rejectedReviews: Array<{ groupId?: string }> = [];
@@ -387,8 +441,9 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
           const text = await ask([
             requestProgress, '---', readOnly,
             `Do only section 2's review for the groups whose \`show\` output is in ${writeInput('show', shows)}: decide each one from the evidence as the reviewer task describes (amend the previous review for a group in "amend" mode). Reply with only {"reviews": [<one record-progress input per group, with reviewBasis copied verbatim from its show output>]}.`,
+            rule,
             refusals.length ? `Your previous answer was refused for these groups:\n${refusals.join('\n')}\nFix them and answer again for those groups only. Here are the rejected reviews to correct, preserving their evidence and reviewBasis:\n${JSON.stringify(rejectedReviews)}` : '',
-          ].join('\n\n'), STEP_MODELS.review);
+          ].filter(Boolean).join('\n\n'), STEP_MODELS.review);
           let reviews: Array<{ groupId?: string }> = [];
           try { const answer = parseAgentJson(text); reviews = Array.isArray(answer.reviews) ? answer.reviews : []; }
           catch { /* Every group in this batch is refused below as "no review was given". */ }
@@ -410,11 +465,13 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       const batches: Array<Array<{ groupId: string }>> = [];
       for (let index = 0; index < due.length; index += REVIEW_BATCH) batches.push(due.slice(index, index + REVIEW_BATCH));
       const outcomes: PromiseSettledResult<void>[] = [];
+      // Decided before the lanes start, so every batch gets the same language and none waits inside its own timing.
+      const reviewRule = batches.length ? await languageRule() : '';
       let next = 0;
       const lane = async () => {
         while (next < batches.length) {
           const batch = batches[next++];
-          outcomes.push(...await Promise.allSettled([timed('review', () => reviewBatch(batch), { groups: batch.length })]));
+          outcomes.push(...await Promise.allSettled([timed('review', () => reviewBatch(batch, reviewRule), { groups: batch.length })]));
         }
       };
       await Promise.all(Array.from({ length: Math.min(reviewConcurrency(dataDir), batches.length) }, lane));

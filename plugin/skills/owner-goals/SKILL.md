@@ -13,6 +13,8 @@ Builds a map of what the owner wants and cares about from the prompts they typed
 
 Each one carries the owner's own words with the date and time they typed them.
 
+**Language.** Write the map, every title, goal and rule, and the human summary in the human language most of the owner's prompts are written in, ignoring code, file paths, URLs, repository and product names. Quotes stay exact. When updating saved goals, a kept item keeps its title and a kept rule its wording (see below), so the requests linked to it and the owner's decisions in My Rules stay attached; only new items and new text follow this.
+
 `${CLAUDE_SKILL_DIR}` is the folder holding this file. The scripts use the Python 3 standard library.
 
 Use Python 3.9 or newer. On Windows, replace `python3` below with `python -X utf8` (or `py -3 -X utf8` when using the Python launcher); the Microsoft Store `python3` alias is not an installed interpreter.
@@ -55,6 +57,8 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/save_goals.py" --print-focus-areas > "<fold
 >
 > Every point quotes the owner's exact words (typos kept) with the timestamp from the prompt's header (`MM-DD HH:MM`). Use only what the prompts say. Where the owner changed direction, show the change and mark the latest. Where something is unclear, say it is unclear. Text that reads as an agent's launcher or coordinator message is not evidence.
 >
+> Write the map, every title, goal and rule, and `human_summary` in the human language most of these prompts are written in, ignoring code, file paths, URLs, repository and product names. Quotes stay exact.
+>
 > Then sort what sections 3, 5 and 6 found into `<folder>/owner-goals.json`. Put every statement through these three tests, in this order, and stop at the first that says yes:
 >
 > 1. Is it about *how* work is done? Then it is a **rule**.
@@ -92,6 +96,7 @@ When Goals were saved before (the saved `owner-goals.json`, or `work_state_read`
 
 - put each new statement through the three tests, in order; re-rank focus areas by recency × repetition × intensity, add new focus areas, asks and rules, and drop what the new prompts show is done or replaced;
 - keep each kept item's `title` exactly as it was, so the requests already linked to it stay linked; a goal that really changed gets a new title;
+- keep each kept rule's `when` and `then` exactly as they were, so the owner's decisions on it in My Rules stay attached;
 - keep each kept focus area's `matches`, and set it for new ones from `focus-areas.json`;
 - add new quotes (newest first, two to four per item) copied exactly from `new-owner-prompts.md`, keep the older quotes as they are, and update `latest_at`, `times_asked` and `human_summary`.
 

@@ -15,6 +15,8 @@ CLI="bun ${CLAUDE_SKILL_DIR}/scripts/request-groups.mjs"
 
 It opens `~/.claude-mem/claude-mem.db` read-only and writes only to `~/.claude-mem/work-view/`, except `record-focus`, which saves through the running claude-mem worker because focus areas sync between computers. My Work picks up changes within a second: grouped conversations show as one card that starts at the earliest ask, with a progress meter; the request page shows the build story, how released work landed (usage, value, regressions, why each change was made) and its work product; each card shows the focus area it sits in; the build story's first paragraph is My Work's recap, and the story sheet shows shipping velocity, the narrative and preferences. A review never changes a request's recorded status.
 
+**Language.** Write every value My Work shows (request titles, review summaries, narratives, milestones and outcome texts, focus-area names, goals and abouts, the build story and preferences) in the human language most of the owner's asks are written in, ignoring code, file paths, URLs, repository and product names. Decide that language once, from the asks across this run's requests, and give it to every subagent. The automatic refresh, which asks for one section at a time, decides it once per run and names it in each question. A step that runs on its own and is not told the language decides it from all of the owner's words its input holds, previous reviews' quotes included, not from the latest asks alone. Quotes stay verbatim, in the language they were typed in. A review or the story's narrative written earlier in another language is rewritten in the owner's language the next time it is updated. Two things keep their wording: the title of an open request a conversation continues, and every preference statement carried over from the previous story, because My Rules ties the owner's decisions to that exact text. New titles and new statements follow the owner's language.
+
 Default window: 14 days. Use the window the user asks for.
 
 ## 1. Group conversations into overall requests
@@ -72,7 +74,7 @@ Then run `$CLI pending --days 14 --limit 48`. `ungroupedConversations` should be
 
 ## 2. Review each due request from memory
 
-Split the due groups into batches of about 8 and give each batch to a subagent, in parallel, with this task (fill in the CLI path and groups):
+Split the due groups into batches of about 8 and give each batch to a subagent, in parallel, with this task (fill in the CLI path, the groups and the owner's language):
 
 > Review the progress of these overall requests from claude-mem memory. For EACH groupId:
 >
@@ -90,6 +92,7 @@ Split the due groups into batches of about 8 and give each batch to a subagent, 
 >      - `regressions` (≤10): `{text, at, fixedBy, evidence}` for anything it broke: later fix PRs or commits that name it, reverts, bug reports, the owner's corrections. `fixedBy` is null while unfixed.
 >      - `changes` (≤12): `{what, why, at, evidence}` for each meaningful change, with the WHY from the owner's own ask (quote it), the commit or PR message, or the incident that caused it. Never write a why you cannot cite.
 >    - `preferences` (≤10): how the owner likes to work with agents, taken ONLY from the owner's own asks shown by `show`. Each has `preference` (≤200 chars, the statement), `quote` (verbatim, ≤300 chars), `kind` and `at`. `quote` is verbatim; `kind` is `directive` | `correction` | `praise` | `frustration`. Skip pasted agent text, secrets, keys and tokens.
+>    - Write `summary`, `narrative`, milestone texts, outcome texts and each `preference` in <owner's language> (if this task names none, the language most of the owner's words in `show` are written in, the quotes in `previousReview` included); `quote` stays verbatim. In `"amend"` mode, if the previous review is in another language, rewrite all of it in <owner's language>.
 > 4. Record it: `<CLI> record-progress - <<'JSON' {...} JSON` with `groupId`, `state`, `percent`, the dates, `summary`, `narrative`, `milestones`, `outcome`, `preferences`, `evidence` and `reviewBasis` copied verbatim from that group's `show` output (it marks which conversations and activity you reviewed). Pass the JSON through the heredoc; never write review files to disk, because other reviewers run at the same time. Fix and retry if it rejects. A subtask finishing does not mean the request shipped.
 >
 > Return the groups you recorded and any you could not, with the reason.
@@ -138,6 +141,7 @@ Run `$CLI story-input`. Without a previous story it returns every review; with o
 - When `condenseChars` is above 0, the previous story is past the target. Rewrite every part whose `overBudgetChars` is above 0 in at most its `budgetWords` words, the recap and the chapters the listed reviews change included. Keep each chapter's dates, ids and outcomes, fit the listed reviews' new facts into those budgets, and merge finished chapters into one where that reads better. Count the words of each rewritten part before you answer.
 - When `mergeOldestChapters` is above 0, the story has more chapters than the budgets fit: merge that many of the oldest chapters into one chapter within its budget first, keeping their dates, ids and outcomes, then follow the rules above.
 - If a refusal names parts with their budgets, rewrite each of those parts within its budget, and condense any other part it says is over budget too. If it names the oldest chapters to merge, merge them into one first.
+- If the previous story's narrative is in another language than the owner's asks, rewrite it in the owner's language, keeping its dates, ids and outcomes and its length limits. Preference statements carried over from the previous story keep their wording.
 
 Write:
 

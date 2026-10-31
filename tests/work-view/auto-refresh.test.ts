@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AutoRefreshWorker } from '../../src/services/work-view/auto-refresh-worker.mjs';
-import { buildRefreshTask, FOCUS_ANSWER_SCHEMA, GROUPING_ANSWER_SCHEMA, reviewConcurrency, STEP_MODELS } from '../../src/services/work-view/refresh-task.js';
+import { buildRefreshTask, FOCUS_ANSWER_SCHEMA, GROUPING_ANSWER_SCHEMA, LANGUAGE_ANSWER_SCHEMA, reviewConcurrency, STEP_MODELS } from '../../src/services/work-view/refresh-task.js';
 import { readLedger, runCli } from '../../src/services/work-view/request-groups.mjs';
 import { scratchDir } from '../helpers/scratch-dir.js';
 import { everyRequestInOther, focusInputFrom, focusWriter, isOtherPass } from '../helpers/fake-focus-writer.js';
@@ -201,6 +201,12 @@ describe('refresh task', () => {
         expect(prompt).not.toMatch(/with its MCP tools/);
         expect(prompt).not.toContain('${CLAUDE_SKILL_DIR}');
         const file = /is in (.+?\.json)/.exec(prompt)?.[1];
+        if (prompt.includes('Which human language')) {
+          expect(prompt).toContain('Build the release cards');
+          return '{"language": "Turkish"}';
+        }
+        // Decided once, then named in every question that writes what My Work shows.
+        expect(prompt).toContain("The owner's language for this run is Turkish.");
         if (prompt.includes('Do only section 1')) return '```json\n{"groups": [{"title": "Release cards", "conversations": [' + JSON.stringify(key('a')) + ']}]}\n```';
         if (prompt.includes("Do only section 2")) {
           const supplied = prompt.split(`--- ${file} ---\n`)[1];
@@ -222,8 +228,10 @@ describe('refresh task', () => {
       expect(ledger.story.narrative).toBe('One request is under way.');
       // Grouping and the focus step run on the light models; reviews and the story on the careful ones.
       // The focus step asks twice: place the request, then propose from Other (where it landed).
-      expect(models).toEqual([STEP_MODELS.grouping, STEP_MODELS.review, STEP_MODELS.review, STEP_MODELS.focus, STEP_MODELS.focus, STEP_MODELS.story]);
+      expect(prompts.filter(prompt => prompt.includes('Which human language'))).toHaveLength(1);
+      expect(models).toEqual([STEP_MODELS.language, STEP_MODELS.grouping, STEP_MODELS.review, STEP_MODELS.review, STEP_MODELS.focus, STEP_MODELS.focus, STEP_MODELS.story]);
       expect(STEP_MODELS.focus).toBe(STEP_MODELS.grouping);
+      expect(STEP_MODELS.language).toBe(STEP_MODELS.grouping);
       expect(STEP_MODELS.grouping).toEqual({ 'claude-code': { model: 'haiku' }, codex: { model: 'gpt-6-luna', reasoningEffort: 'low' }, gemini: { model: 'flash-lite' } });
       expect(STEP_MODELS.review).toEqual({ 'claude-code': { model: 'sonnet' }, codex: {}, gemini: { model: 'flash' } });
     } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -250,7 +258,8 @@ describe('Codex grouping answers', () => {
         return JSON.stringify({ narrative: 'Started.', preferences: [] });
       };
       expect(await groupingTask(dir, database).run(ask, 'codex')).toBe('1 new conversations grouped, 1 requests reviewed, 1 requests placed, story written.');
-      expect(schemas[0]).toBe(GROUPING_ANSWER_SCHEMA);
+      expect(schemas[0]).toBe(LANGUAGE_ANSWER_SCHEMA);
+      expect(schemas[1]).toBe(GROUPING_ANSWER_SCHEMA);
       expect(Object.values(readLedger(dir).groups.groups).map((group: any) => group.title)).toEqual(['Release cards for My Work']);
       // Strict structured output: every object lists all its properties as required and allows no others.
       const objects: any[] = [];
@@ -272,9 +281,12 @@ describe('Codex grouping answers', () => {
       expect(readFileSync(/\(raw answer: (.+?\.txt)\)/.exec(error!.message)![1], 'utf8')).toBe(malformed);
       // A refused answer must not send the run on to another agent (#5189).
       expect((error as { answerRefused?: boolean }).answerRefused).toBe(true);
+      // The language question came first; its unusable answer leaves the skill's own language rule.
+      expect(prompts[0]).toContain('Which human language');
+      expect(prompts[1]).not.toContain("The owner's language for this run");
       // Asked once more with the reason before failing; nothing was grouped.
-      expect(prompts).toHaveLength(2);
-      expect(prompts[1]).toMatch(/Your previous answer was refused: JSON Parse error/);
+      expect(prompts).toHaveLength(3);
+      expect(prompts[2]).toMatch(/Your previous answer was refused: JSON Parse error/);
       expect(Object.keys(readLedger(dir).groups.groups)).toEqual([]);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
@@ -332,8 +344,8 @@ describe('focus step', () => {
       const focusSteps = steps.filter(step => step.prompt.includes('Do only section 3'));
       expect(focusSteps).toHaveLength(3);
       for (const step of focusSteps) { expect(step.models).toBe(STEP_MODELS.focus); expect(step.schema).toBe(FOCUS_ANSWER_SCHEMA); }
-      expect(steps.map(step => /Do only section (\d)/.exec(step.prompt)?.[1] ?? 'review')).toEqual(['2', '3', '3', '3', '4']);
-      expect(task.steps.map(timing => timing.step)).toEqual(['review', 'focus', 'focus', 'story']);
+      expect(steps.map(step => step.prompt.includes('Which human language') ? 'language' : /Do only section (\d)/.exec(step.prompt)?.[1] ?? 'review')).toEqual(['language', '2', '3', '3', '3', '4']);
+      expect(task.steps.map(timing => timing.step)).toEqual(['language', 'review', 'focus', 'focus', 'story']);
       // Only accepted answers reached the worker's write: the placement batch and the Other pass.
       expect(writer.bodies).toHaveLength(2);
       const focus = readFocus(database, { localDeviceId: '' });
@@ -432,7 +444,7 @@ describe('focus step', () => {
       let asked = 0;
       const unavailable = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 0, goalsStale: false, unplaced: 1, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW,
         saveFocus: () => { throw new Error('Saving the focus step stopped after 1 of 2 rows: disk full'); } });
-      const error = await unavailable.run(async prompt => { asked++; return everyRequestInOther(prompt); }, 'codex').then(() => null, failure => failure as Error);
+      const error = await unavailable.run(async prompt => { if (prompt.includes('Do only section 3')) asked++; return everyRequestInOther(prompt); }, 'codex').then(() => null, failure => failure as Error);
       expect(error?.message).toBe('Saving the focus step stopped after 1 of 2 rows: disk full');
       expect(asked).toBe(1);
       const writer = focusWriter(database);
@@ -517,6 +529,64 @@ describe('review repair', () => {
   });
 });
 
+describe('owner language', () => {
+  /** Two one-conversation requests: the fixture's a, and b, a long conversation whose first twelve asks are older than
+   * the window and whose last three are recent. */
+  function longConversation(database: Database, dir: string) {
+    database.prepare('INSERT INTO sdk_sessions VALUES (?, ?, ?, ?, ?, ?, ?)').run(2, 'claude', 'b', 'm2', 'repo/tree', 'Build old feature 1', NOW - 20 * DAY);
+    const prompt = database.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)');
+    for (let index = 1; index <= 12; index++) prompt.run(2, index, `Build old feature ${index}`, NOW - 20 * DAY + index * 60000);
+    for (let index = 1; index <= 3; index++) prompt.run(2, 12 + index, `Kartları Türkçe göster ${index}`, NOW - DAY + index * 60000);
+    const decisions = join(dir, 'decisions.json');
+    writeFileSync(decisions, JSON.stringify({ groups: ['a', 'b'].map(session => ({ title: `Request ${session}`, conversations: [key(session)] })) }));
+    runCli(['apply', decisions], { dir, database, now: NOW, print: () => {} });
+  }
+  const answer = (languagePrompts: string[]) => async (prompt: string) => {
+    if (prompt.includes('Which human language')) { languagePrompts.push(prompt); return '{"language": "Turkish"}'; }
+    if (prompt.includes('Do only section 2')) {
+      const shows = JSON.parse(readFileSync(/is in (.+?\.json)/.exec(prompt)![1], 'utf8'));
+      return JSON.stringify({ reviews: shows.map((show: any) => ({ groupId: show.groupId, state: 'in-progress', percent: 10, summary: 'Started.', reviewBasis: show.reviewBasis })) });
+    }
+    if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+    return JSON.stringify({ narrative: 'Started.', preferences: [] });
+  };
+
+  it('samples the asks typed in the window, newest first, not each conversation\'s first ten', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-language-window-'));
+    try {
+      const database = fixtureDatabase();
+      longConversation(database, dir);
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 2, ungrouped: 0, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
+      const languagePrompts: string[] = [];
+      expect(await task.run(answer(languagePrompts), 'codex')).toBe('2 requests reviewed, 2 requests placed, story written.');
+      expect(languagePrompts).toHaveLength(1);
+      const sample: string[] = JSON.parse(/```json\n([\s\S]*?)\n```/.exec(languagePrompts[0])![1]);
+      expect(sample).toEqual(['Kartları Türkçe göster 3', 'Kartları Türkçe göster 2', 'Kartları Türkçe göster 1', 'Build the release cards']);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a failed read of the asks leaves the skill\'s rule and never fails the run', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-language-locked-'));
+    try {
+      const database = fixtureDatabase();
+      longConversation(database, dir);
+      // Only the language sample reads the asks since a time; the reviews' own reads afterwards work.
+      let locked = true;
+      const flaky = () => ({ prepare: (sql: string) => {
+        if (locked && /FROM user_prompts WHERE session_db_id IN \([^)]*\) AND created_at_epoch >= \?/.test(sql)) { locked = false; throw new Error('database is locked'); }
+        return database.prepare(sql);
+      }, close() {} });
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 2, ungrouped: 0, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: flaky, now: () => NOW, saveFocus: focusWriter(database).save });
+      const languagePrompts: string[] = [], prompts: string[] = [];
+      const ask = answer(languagePrompts);
+      expect(await task.run(async prompt => { prompts.push(prompt); return ask(prompt); }, 'codex')).toBe('2 requests reviewed, 2 requests placed, story written.');
+      expect(locked).toBe(false);
+      expect(languagePrompts).toHaveLength(0);
+      expect(prompts.some(prompt => prompt.includes("The owner's language for this run"))).toBe(false);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
 describe('parallel reviews', () => {
   it('review batches run at the same time, and every batch is saved', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-parallel-'));
@@ -536,6 +606,7 @@ describe('parallel reviews', () => {
       let lastPrompt = '';
       const ask = async (prompt: string) => {
         lastPrompt = prompt;
+        if (prompt.includes('Which human language')) return '{"language": "English"}';
         if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'Ten features under way.' });
         if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
         const shows = JSON.parse(readFileSync(/is in (.+?\.json)/.exec(prompt)![1], 'utf8'));
@@ -549,7 +620,7 @@ describe('parallel reviews', () => {
       expect(lastPrompt).toMatch(/Search claude-mem memory with its MCP tools/);
       expect(most).toBe(2);
       // refresh.json's run record gets one timing per step and review batch.
-      expect(task.steps.map(timing => [timing.step, timing.agent, timing.groups])).toEqual([['review', 'claude-code', 8], ['review', 'claude-code', 2], ['focus', 'claude-code', undefined], ['focus', 'claude-code', undefined], ['story', 'claude-code', undefined]]);
+      expect(task.steps.map(timing => [timing.step, timing.agent, timing.groups])).toEqual([['language', 'claude-code', undefined], ['review', 'claude-code', 8], ['review', 'claude-code', 2], ['focus', 'claude-code', undefined], ['focus', 'claude-code', undefined], ['story', 'claude-code', undefined]]);
       expect(task.steps.every(timing => timing.startedAt === new Date(NOW).toISOString() && timing.finishedAt === timing.startedAt)).toBe(true);
       expect(Object.keys(readLedger(dir).progress)).toHaveLength(10);
     } finally { rmSync(dir, { recursive: true, force: true }); }

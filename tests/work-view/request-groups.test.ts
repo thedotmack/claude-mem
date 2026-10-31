@@ -226,6 +226,24 @@ describe('overall requests and progress reviews', () => {
   expect(full.asks.at(-1).text.length).toBeGreaterThan(400);
 });
 
+  it('asksSince reads only the prompts typed since then, every ask in full', () => {
+  const database = fixtureDatabase();
+  const prompt = database.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)');
+  for (let number = 2; number <= 13; number += 1) prompt.run(1, number, `Fix card detail ${number}`, NOW - 30 * DAY + number);
+  // A long wrapper ahead of the ask: cut in SQL, the wrapper would never close and the ask would be lost.
+  for (let number = 14; number <= 25; number += 1) prompt.run(1, number, `<system-reminder>${'x'.repeat(1500)}</system-reminder>Fix recent card ${number}`, NOW - DAY + number);
+  prompt.run(1, 26, `Fix the long card ${'y'.repeat(400)}`, NOW - DAY + 26);
+  const statements: string[] = [];
+  const traced = { prepare: (sql: string) => { statements.push(sql); return database.prepare(sql); } };
+  const [sampled] = readCandidates(traced as unknown as Database, { conversationKeys: [key('a')], asksSince: NOW - 14 * DAY });
+  // The fixture's opening ask (three days ago) is in the window; the twelve from 30 days ago are not read.
+  expect(sampled.asks.map((ask: { text: string }) => ask.text)).toEqual(['Build the release cards', ...Array.from({ length: 12 }, (_, index) => `Fix recent card ${index + 14}`), `Fix the long card ${'y'.repeat(400)}`]);
+  expect(statements.find((sql) => /FROM user_prompts WHERE session_db_id IN/.test(sql))).toMatch(/AND created_at_epoch >= \?/);
+  // With fullAsks too, the window still bounds what is read.
+  const [both] = readCandidates(database, { conversationKeys: [key('a')], fullAsks: true, asksSince: NOW - 14 * DAY });
+  expect(both.asks).toHaveLength(14);
+});
+
   it('projection hides ignored conversations and keeps the stored anchor ask as the start', () => {
   const groupId = groupIdFor(key('a'));
   const anchorAsk = { text: 'Build the release cards', source: 'user-prompt', sourceId: 11, url: '/api/work-view/evidence/prompt/11', promptNumber: 1, atEpoch: 10 };

@@ -55,8 +55,11 @@ function placeholders(values) { return values.map(() => '?').join(','); }
 
 // Pass sinceEpoch for a time window, or conversationKeys for specific conversations.
 // fullAsks returns every qualifying ask untruncated (for `show`); listings stay short.
+// asksSince reads only the prompts typed since that epoch and returns every qualifying one untruncated
+// (for sampling the owner's recent asks); the candidate's other fields then cover only those prompts.
 // excludedPromptIds: hook-recorded prompts the setup scan found an agent wrote (agent-written-prompts.json).
-export function readCandidates(database, { sinceEpoch = 0, conversationKeys = null, fullAsks = false, excludedPromptIds = null }) {
+export function readCandidates(database, { sinceEpoch = 0, conversationKeys = null, fullAsks = false, asksSince = null, excludedPromptIds = null }) {
+  const everyAsk = fullAsks || asksSince != null;
   const columns = 'SELECT id, platform_source, content_session_id, project, user_prompt, started_at_epoch FROM sdk_sessions';
   const pairs = conversationKeys?.map((key) => JSON.parse(key).slice(1));
   const stored = pairs
@@ -70,8 +73,8 @@ export function readCandidates(database, { sinceEpoch = 0, conversationKeys = nu
   // A session started from an agent scratch folder takes the repo its tool calls touched.
   const sessions = withDerivedProjects(database, stored);
   const ids = sessions.map((session) => session.id);
-  const prompts = database.prepare(`SELECT id, session_db_id, prompt_number, ${fullAsks ? 'prompt_text' : 'substr(prompt_text, 1, 1200) AS prompt_text'}, created_at_epoch
-    FROM user_prompts WHERE session_db_id IN (${placeholders(ids)})`).all(...ids);
+  const prompts = database.prepare(`SELECT id, session_db_id, prompt_number, ${everyAsk ? 'prompt_text' : 'substr(prompt_text, 1, 1200) AS prompt_text'}, created_at_epoch
+    FROM user_prompts WHERE session_db_id IN (${placeholders(ids)})${asksSince != null ? ' AND created_at_epoch >= ?' : ''}`).all(...ids, ...(asksSince != null ? [asksSince] : []));
   const writes = database.prepare(`SELECT session_db_id, tool_input, created_at_epoch FROM tool_uses
     WHERE tool_name LIKE '%work_state_write%' AND session_db_id IN (${placeholders(ids)})`).all(...ids);
   const observations = database.prepare(`SELECT s.id AS session_db_id, COUNT(*) AS count, MAX(o.created_at_epoch) AS last_epoch
@@ -99,12 +102,12 @@ export function readCandidates(database, { sinceEpoch = 0, conversationKeys = nu
     own.sort((a, b) => a.created_at_epoch - b.created_at_epoch || a.id - b.id);
     const lastPrompt = own.at(-1)?.created_at_epoch ?? 0;
     const asks = own.filter((prompt) => isHumanActionRequest(prompt.prompt_text))
-      .map((prompt) => ({ promptId: prompt.id, at: iso(prompt.created_at_epoch), text: requestText(prompt.prompt_text, fullAsks ? Infinity : 280) }));
+      .map((prompt) => ({ promptId: prompt.id, at: iso(prompt.created_at_epoch), text: requestText(prompt.prompt_text, everyAsk ? Infinity : 280) }));
     candidates.set(key, {
       conversationKey: key, platform: session.platform_source, project: session.project,
       startedAt: iso(original.atEpoch ?? session.started_at_epoch), startedAtEpoch: original.atEpoch ?? session.started_at_epoch,
       lastActivityEpoch: Math.max(lastPrompt, observationsBySession.get(session.id)?.last_epoch ?? 0, lastToolUseBySession.get(session.id) ?? 0, session.started_at_epoch ?? 0),
-      firstAsk: requestText(original.text, 600), asks: fullAsks ? asks : asks.slice(0, 10), askCount: asks.length, original,
+      firstAsk: requestText(original.text, 600), asks: everyAsk ? asks : asks.slice(0, 10), askCount: asks.length, original,
       workLists: [], requestIds: [], observationCount: observationsBySession.get(session.id)?.count ?? 0,
       sessionDbId: session.id,
     });
