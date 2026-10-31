@@ -162,6 +162,16 @@ My Work can generate readable card wording using the configured OpenRouter or Op
 | `CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER` | empty | Empty uses OpenRouter when `CLAUDE_MEM_PROVIDER` is `openrouter`; otherwise generated wording is off. For `openai-compatible`, the request follows `CLAUDE_MEM_OPENAI_COMPAT_REASONING`. Set `openrouter` or `openai-compatible` to select that endpoint explicitly, or `off` to disable it. |
 | `CLAUDE_MEM_WORK_VIEW_COPY_MODEL` | empty | Optional model id used only for My Work wording. Empty uses the selected endpoint's configured model. |
 
+### My Work Refresh Models
+
+The My Work refresh (goals, grouping, review, focus and story steps) runs on whichever agent CLI is available: Claude Code, Codex or Gemini. By default the light steps (grouping, focus) use a small model and the others a stronger one: `haiku`/`sonnet` on Claude Code, `flash-lite`/`flash` on Gemini, and Codex's CLI default for the careful steps. On Claude Code the refresh runs on your Claude subscription, so set a model here to cap it, for example `haiku`. Each setting puts every step of that agent on one model and is read at the start of every refresh.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL` | empty | Model for every refresh step on Claude Code. Use an alias such as `haiku` or `sonnet`. Empty keeps the per-step defaults. |
+| `CLAUDE_MEM_WORK_VIEW_CODEX_MODEL` | empty | Model id for every refresh step on Codex. Each step keeps its reasoning effort. Empty keeps the per-step defaults. |
+| `CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL` | empty | Model for every refresh step on Gemini, such as `flash-lite`. Empty keeps the per-step defaults. |
+
 ### Quota Fallback Settings
 
 | Setting | Default | Description |

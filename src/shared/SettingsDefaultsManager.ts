@@ -396,6 +396,9 @@ export interface SettingsDefaults {
   CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH: string;
   CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: string;
   CLAUDE_MEM_WORK_VIEW_COPY_MODEL: string;
+  CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL: string;
+  CLAUDE_MEM_WORK_VIEW_CODEX_MODEL: string;
+  CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL: string;
   // Automatic local DB snapshots (BackupManager). Opt-in via ENABLED.
   CLAUDE_MEM_BACKUP_ENABLED: string;
   CLAUDE_MEM_BACKUP_INTERVAL_HOURS: string;
@@ -688,6 +691,9 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH: 'true', // 'false' = My Work never runs owner-goals / request-progress on its own (refresh.json in ~/.claude-mem/work-view)
     CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: '', // '' uses OpenRouter only when it is the primary provider; openrouter/openai-compatible explicitly select that provider; off disables generated My Work copy
     CLAUDE_MEM_WORK_VIEW_COPY_MODEL: '', // Optional model override for generated My Work copy; empty uses the selected provider's configured model
+    CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL: '', // #5164 — model for every My Work refresh step on Claude Code (an alias like 'haiku'); empty keeps haiku/sonnet per step
+    CLAUDE_MEM_WORK_VIEW_CODEX_MODEL: '',  // #5164 — same for Codex; empty keeps the per-step table
+    CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL: '', // #5164 — same for Gemini; empty keeps flash-lite/flash per step
     // Automatic local DB snapshots (BackupManager). Off by default; opt-in.
     CLAUDE_MEM_BACKUP_ENABLED: 'false',
     CLAUDE_MEM_BACKUP_INTERVAL_HOURS: '24',   // Snapshot cadence in hours
