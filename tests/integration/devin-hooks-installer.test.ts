@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import path from 'path';
 import {
@@ -106,6 +106,16 @@ describe('installDevinHooks', () => {
     expect(readdirSync(path.dirname(configPath)).filter((name) => name.startsWith('config.json.bak-'))).toHaveLength(1);
     expect(installDevinHooks(configPath)).toBe(0);
     expect(readConfig(configPath)).toEqual(config);
+  });
+
+  test.skipIf(process.platform === 'win32')('writes the backup owner-only, even from a readable config', () => {
+    const configPath = scratchConfigPath();
+    mkdirSync(path.dirname(configPath), { recursive: true });
+    writeFileSync(configPath, JSON.stringify({ model: 'swe-1' }));
+    chmodSync(configPath, 0o644);
+    expect(installDevinHooks(configPath)).toBe(0);
+    const backup = readdirSync(path.dirname(configPath)).find((name) => name.startsWith('config.json.bak-'));
+    expect(statSync(path.join(path.dirname(configPath), backup!)).mode & 0o777).toBe(0o600);
   });
 
   test('creates the config directory when Devin has never written one', () => {

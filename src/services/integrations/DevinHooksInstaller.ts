@@ -122,7 +122,9 @@ function backupOnce(configPath: string): void {
   const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
   const backupPath = `${configPath}.bak-${stamp}`;
   if (existsSync(configPath) && !existsSync(backupPath)) {
-    writeFileSync(backupPath, readFileSync(configPath, 'utf-8'));
+    // Owner-only: the backup holds every Devin setting, and the default umask
+    // would make it world-readable even when config.json is not.
+    writeFileSync(backupPath, readFileSync(configPath, 'utf-8'), { mode: 0o600 });
   }
 }
 
