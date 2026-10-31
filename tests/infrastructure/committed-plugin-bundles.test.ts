@@ -23,7 +23,15 @@ const committedPluginScripts = execFileSync(
   .split('\n')
   .filter((trackedPath) => /\.c?js$/.test(trackedPath));
 
-for (const scriptPath of committedPluginScripts) {
+// The package.json files go too: their "type" decides whether node --check reads a .js file as ESM or CommonJS.
+const committedPackageFiles = execFileSync('git', ['ls-files', '--', 'plugin/package.json', 'plugin/**/package.json'], {
+  cwd: projectRoot,
+  encoding: 'utf-8',
+})
+  .split('\n')
+  .filter(Boolean);
+
+for (const scriptPath of [...committedPackageFiles, ...committedPluginScripts]) {
   const committed = execFileSync('git', ['show', `HEAD:${scriptPath}`], { cwd: projectRoot, maxBuffer: 256 * 1024 * 1024 });
   const target = path.join(committedPluginRoot, scriptPath);
   mkdirSync(path.dirname(target), { recursive: true });
