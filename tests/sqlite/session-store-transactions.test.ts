@@ -143,4 +143,72 @@ describe('SessionStore.storeObservations', () => {
     expect(second.observationIds).toEqual(first.observationIds);
     expect(second.insertedObservationIds).toEqual([]);
   });
+
+  it('deduplicates repeated stops for the same turn and merges summary fields (#5225)', () => {
+    const mem = session('mem-dedup-summary-5225');
+    const firstSummary = summary({
+      request: 'Fix authentication bug',
+      investigated: 'Investigated auth middleware and headers',
+      learned: 'Token was expiring prematurely',
+      completed: 'Patched token refresh logic',
+      next_steps: '',
+      notes: null,
+      files_read: ['src/auth.ts'],
+      files_edited: ['src/auth.ts'],
+    });
+
+    const first = store.storeObservations(mem, 'project', [], firstSummary, 1, 100);
+    expect(first.summaryId).not.toBeNull();
+    expect(first.summaryUpdated).toBe(false);
+
+    const firstId = first.summaryId;
+
+    // A background task notification wakes up the agent; it stops again on prompt 1
+    // with a second summary where completed/learned are empty but next_steps is added
+    const secondSummary = summary({
+      request: 'Fix authentication bug',
+      investigated: '',
+      learned: '',
+      completed: '',
+      next_steps: 'Add integration tests for token refresh',
+      notes: 'Verified locally',
+      files_read: ['tests/auth.test.ts'],
+      files_edited: [],
+    });
+
+    const second = store.storeObservations(mem, 'project', [], secondSummary, 1, 50);
+    expect(second.summaryId).toBe(firstId);
+    expect(second.summaryUpdated).toBe(true);
+
+    // Verify only ONE summary row exists in database for this turn
+    const rows = store.db.prepare(
+      'SELECT * FROM session_summaries WHERE memory_session_id = ? AND prompt_number = ?'
+    ).all('mem-dedup-summary-5225', 1) as any[];
+    expect(rows.length).toBe(1);
+
+    const row = rows[0];
+    expect(row.id).toBe(firstId);
+    expect(row.request).toBe('Fix authentication bug');
+    // Content did not shrink: previous values preserved for empty fields
+    expect(row.investigated).toBe('Investigated auth middleware and headers');
+    expect(row.learned).toBe('Token was expiring prematurely');
+    expect(row.completed).toBe('Patched token refresh logic');
+    // New fields were applied
+    expect(row.next_steps).toBe('Add integration tests for token refresh');
+    expect(row.notes).toBe('Verified locally');
+    // Files were merged
+    expect(JSON.parse(row.files_read)).toEqual(['src/auth.ts', 'tests/auth.test.ts']);
+    expect(JSON.parse(row.files_edited)).toEqual(['src/auth.ts']);
+    // Tokens kept maximum
+    expect(row.discovery_tokens).toBe(100);
+
+    // Prompt 2 creates a separate summary as expected
+    const third = store.storeObservations(mem, 'project', [], summary({ request: 'New request' }), 2);
+    expect(third.summaryId).not.toBe(firstId);
+    const allSummaries = store.db.prepare(
+      'SELECT id, prompt_number FROM session_summaries WHERE memory_session_id = ? ORDER BY id ASC'
+    ).all('mem-dedup-summary-5225') as any[];
+    expect(allSummaries.length).toBe(2);
+    expect(allSummaries.map(s => s.prompt_number)).toEqual([1, 2]);
+  });
 });

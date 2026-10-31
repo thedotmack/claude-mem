@@ -675,7 +675,7 @@ export class ClaudeProvider {
             turnEmptyOutputReason = emptyOutputReason;
             logger.debug('SDK', 'Assistant frame carried no text block, leaving queued batch intact', {
               sessionId: session.sessionDbId,
-              promptNumber: session.lastPromptNumber,
+              promptNumber: activeResponseContext.current?.promptNumber ?? session.lastPromptNumber,
               blockTypes: Array.isArray(content)
                 ? [...new Set(content.map((c: any) => String(c?.type)))].join(',')
                 : typeof content,
@@ -693,7 +693,7 @@ export class ClaudeProvider {
               : textContent;
             logger.dataOut('SDK', `Response received (${responseSize} chars)`, {
               sessionId: session.sessionDbId,
-              promptNumber: session.lastPromptNumber
+              promptNumber: activeResponseContext.current?.promptNumber ?? session.lastPromptNumber
             }, truncatedResponse);
           }
 
