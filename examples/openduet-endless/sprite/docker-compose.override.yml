@@ -1,0 +1,18 @@
+# Sprite only, copied into OpenDuet's openbot/ by sprite/setup.sh. A Sprite's Docker can't step into a container whose
+# first process isn't root, so health checks and `docker exec` failed. A root init process (postgres) or a root user
+# (agent-bot, migrate) avoids that.
+services:
+  postgres:
+    init: true
+  agent-bot:
+    user: "0:0"
+  migrate:
+    user: "0:0"
+  # Its virtual screen sometimes takes longer than 5 seconds to come up on a Sprite; try again rather than stop.
+  agent-computer:
+    restart: on-failure:5
+  # A Sprite has no process-count control under Docker, so each Bot's own computer (its browser) failed to start
+  # with any limit set. openduet-sprite.patch lets "0" leave the limit out.
+  supervisor:
+    environment:
+      COMPUTER_PIDS_LIMIT: "0"

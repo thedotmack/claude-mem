@@ -30,10 +30,11 @@ apply_patch() { # file, what it does
 }
 apply_patch openduet-claude-mem.patch "full history to OpenRouter on every request, and the memory folder line"
 apply_patch openduet-local-chats.patch "start.sh accepts the local chat store"
+apply_patch openduet-client-ws.patch "the browser can join chat sockets at another address (sprite/)"
 
 say "3/5 OpenDuet settings"
 [ -f "$OD_REPO/.env" ] || cp "$OD_REPO/.env.example" "$OD_REPO/.env"
-upsert_env "$OD_REPO/.env" OPENAI_BASE_URL "http://127.0.0.1:$GATEWAY_PORT/r/$ROUTE"
+upsert_env "$OD_REPO/.env" OPENAI_BASE_URL "$GATEWAY_BASE_URL"
 upsert_env "$OD_REPO/.env" BOT_MODEL "$MODEL"
 upsert_env "$OD_REPO/.env" CLAUDE_MEM_WORK_FOLDER "$MEMORY_FOLDER"
 local_url="http://127.0.0.1:$CHATS_PORT"

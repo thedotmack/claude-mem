@@ -21,8 +21,8 @@ claude-mem install and its database are not touched.
 
 ```
 OpenDuet (localhost:3010)
-  -> wire gateway  127.0.0.1:37878/r/openduet   Endless Mode, memory in, memory out
-       -> https://openrouter.ai/api/v1          deepseek/deepseek-v4.1-flash-1017
+  -> wire gateway  127.0.0.1:37878/r/openduet/v1   Endless Mode, memory in, memory out
+       -> https://openrouter.ai/api/v1             deepseek/deepseek-v4.1-flash-1017
   claude-mem worker 127.0.0.1:37877             turns captured calls into memories (same model, same key)
   local chat store 127.0.0.1:37879              OpenDuet's conversations, in ~/openduet-endless/chats/chats.db
 ```
@@ -79,6 +79,45 @@ Tests: `bun test examples/openduet-endless/local-chats`.
   and only then brings them back into new conversations.
 
 `openduet-local-chats.patch` changes the licence check in `openbot/scripts/start.sh`, as above.
+
+`openduet-client-ws.patch` lets `OPENDUET_CLIENT_WS_URL` tell the browser where to join chat sockets, when that is not
+where OpenDuet's server joins them (the Sprite setup below). Unset, nothing changes.
+
+The version at the end of the upstream (`/v1`) is part of the address OpenDuet is given, and the route forwards to the
+rest (`https://openrouter.ai/api`). OpenDuet adds `/v1` to an address that has none when it names a chat, so with the
+version on the route instead every chat title came back "Not Found" from OpenRouter and stayed blank.
+
+## On a Fly Sprite
+
+To run it on a [Sprite](https://sprites.dev) and open it from anywhere at the Sprite's own address, behind the
+Sprite's sign-in:
+
+```sh
+examples/openduet-endless/setup.sh
+# put your OpenRouter key in ~/openduet-endless/OpenDuet/.env as OPENAI_API_KEY=sk-or-...
+examples/openduet-endless/sprite/setup.sh
+```
+
+Then open the Sprite's address (`sprite-env info` shows it) and sign in with your Sprites account. Set the address to
+private in Sprites: OpenDuet's own sign-in is off here, so the Sprite's sign-in is the only lock.
+
+Needs Docker and Caddy on the Sprite. `sprite/setup.sh` adds, on top of `setup.sh`:
+
+- `sprite/docker-compose.override.yml`, copied into OpenDuet's `openbot/`. A Sprite's Docker can't step into a
+  container whose first process isn't root, so OpenDuet's health checks failed; this gives those containers a root
+  init process or user, and lets the browser container try again when its screen is slow to start.
+- `sprite/openduet-sprite.patch`, applied to OpenDuet's supervisor. A Sprite's Docker can't limit how many processes a
+  container runs, so each Bot's own computer (its browser) failed to start. With `COMPUTER_PIDS_LIMIT=0`, set by the
+  override file, no limit is asked for. Unset, nothing changes.
+- OpenDuet's server serves the built app itself (`APP_DIST_DIR`), and the browser joins chat sockets at the Sprite's
+  address (`OPENDUET_CLIENT_WS_URL`).
+- `sprite/Caddyfile`, the one door the Sprite's address opens (port 8080): chat sockets go to the local chat store,
+  everything else to OpenDuet's server. OpenDuet refuses changes from pages that aren't its own address, so pages
+  from the Sprite's exact address are passed on as the local app; pages from anywhere else are still refused.
+- Each part as its own Sprite service (`sprite/services/`), so the Sprite starts them again after it sleeps:
+  `chats`, `cm-worker`, `cm-gateway`, `openduet` and `front`. claude-mem's worker is set not to exit when idle.
+
+`sprite-env services list` shows them. `sprite-env services restart openduet` restarts OpenDuet.
 
 ## Settings
 

@@ -28,6 +28,14 @@ CHATS_PORT=${OPENDUET_ENDLESS_CHATS_PORT:-37879}
 CHATS_DB=${OPENDUET_ENDLESS_CHATS_DB:-$OD_HOME/chats/chats.db}
 ROUTE=openduet
 UPSTREAM=${OPENDUET_ENDLESS_UPSTREAM:-https://openrouter.ai/api/v1}
+# The API version at the end of the upstream ("/v1") goes in the address OpenDuet is given, and the route forwards to
+# the rest. OpenDuet adds "/v1" itself to an address that has none (its chat titles do), which with the version on the
+# upstream became /api/v1/v1/chat/completions, and OpenRouter answered 404.
+UPSTREAM_VERSION=$(printf '%s' "${UPSTREAM%/}" | grep -oE '/v[0-9]+$' || true)
+UPSTREAM_ROOT=${UPSTREAM%/}
+UPSTREAM_ROOT=${UPSTREAM_ROOT%"$UPSTREAM_VERSION"}
+# What OpenDuet's OPENAI_BASE_URL is set to.
+GATEWAY_BASE_URL=http://127.0.0.1:$GATEWAY_PORT/r/$ROUTE$UPSTREAM_VERSION
 # DeepSeek's newest model on OpenRouter when this was written (Oct 29, 2026). Used by OpenDuet and by claude-mem's
 # observer alike.
 MODEL=${OPENDUET_ENDLESS_MODEL:-deepseek/deepseek-v4.1-flash-1017}

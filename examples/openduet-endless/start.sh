@@ -5,6 +5,7 @@ set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
 [ -f "$CM_DATA/settings.json" ] && [ -f "$OD_REPO/.env" ] || die "run setup.sh first"
+[ "$(read_od_env OPENAI_BASE_URL)" = "$GATEWAY_BASE_URL" ] || die "OpenDuet's OPENAI_BASE_URL is not $GATEWAY_BASE_URL; run setup.sh again"
 key=$(read_openrouter_key)
 case "$key" in
   sk-or-*) ;;
@@ -56,7 +57,7 @@ cat "$OD_PIDS.new" >> "$OD_PIDS"
 rm -f "$OD_PIDS.new"
 
 gateway routes remove "$ROUTE" >/dev/null 2>&1 || true
-gateway routes add "$ROUTE" --agent openduet --upstream "$UPSTREAM" --capture wire > "$OD_LOGS/routes.log"
+gateway routes add "$ROUTE" --agent openduet --upstream "$UPSTREAM_ROOT" --capture wire > "$OD_LOGS/routes.log"
 gateway routes endless "$ROUTE" on >> "$OD_LOGS/routes.log"
 say "claude-mem: worker $WORKER_PORT, gateway $GATEWAY_PORT, route $ROUTE -> $UPSTREAM, Endless Mode on, model $MODEL"
 

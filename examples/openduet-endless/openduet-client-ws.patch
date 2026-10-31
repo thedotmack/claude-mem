@@ -1,0 +1,15 @@
+diff --git a/openbot/server/src/intelligence-client.ts b/openbot/server/src/intelligence-client.ts
+index 2cfca73..c5e9b6f 100644
+--- a/openbot/server/src/intelligence-client.ts
++++ b/openbot/server/src/intelligence-client.ts
+@@ -12,6 +12,10 @@ export function observeIntelligenceAuthentication<
+   const methods = new Map<PropertyKey, (...args: unknown[]) => unknown>();
+   return new Proxy(client, {
+     get(target, property) {
++      // Where the browser joins chat sockets, when that differs from where the server does (the app
++      // behind a proxy that forwards those sockets to a local chat store). The server keeps its own.
++      const clientWsUrl = process.env.OPENDUET_CLIENT_WS_URL?.trim();
++      if (clientWsUrl && property === "ɵgetClientWsUrl") return () => clientWsUrl;
+       // Both getters and methods must keep the original receiver: the SDK owns #private fields.
+       const value: unknown = Reflect.get(target, property, target);
+       if (typeof value !== "function" || property === "constructor")
