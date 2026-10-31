@@ -171,6 +171,8 @@ def sandbox_cmd(arm_dir):
             cmd += ['--tmpfs', str(path)]
         elif path.exists():
             cmd += ['--ro-bind', '/dev/null', str(path)]
+    if Path('/.sprite/api.sock').exists():  # a Sprite's own control socket (tasks, services): not the builder's
+        cmd += ['--ro-bind', '/dev/null', '/.sprite/api.sock']
     return cmd + ['--bind', str(arm_dir), str(arm_dir)]
 
 
@@ -189,6 +191,7 @@ def preflight_sandbox(arm_dir, env, real_home):
         must_fail = dict(released, **{
             'send an iMessage': f'command -v osascript || test -e "{real_home}/Library/Messages"',
             'read your Claude login': f'test -s "{real_home}/.claude/.credentials.json"',
+            "use the Sprite's control socket": 'curl -sf --unix-socket /.sprite/api.sock http://sprite/v1/tasks',
         })
         if bwrap_works():
             must_fail.update({'write outside the run dir': f'touch "{real_home}/.emv-imessage-build-probe"',
