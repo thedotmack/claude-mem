@@ -4088,6 +4088,7 @@ export class SessionStore {
     insertedObservationIds: number[];
     summaryId: number | null;
     createdAtEpoch: number;
+    summaryUpdated?: boolean;
   } {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
@@ -4222,7 +4223,7 @@ export class SessionStore {
               `SELECT id, request, investigated, learned, completed, next_steps,
                       files_read, files_edited, notes, discovery_tokens, sync_rev, origin_device_id
                FROM session_summaries
-               WHERE memory_session_id = ? AND prompt_number = ?`
+               WHERE memory_session_id = ? AND prompt_number = ? AND origin_device_id IS NULL`
             ).get(memorySessionId, promptNumber) as {
               id: number;
               request: string | null;
@@ -4352,7 +4353,7 @@ export class SessionStore {
       const observationStmt = this.db.prepare('UPDATE observations SET discovery_tokens = ? WHERE id = ?');
       for (const id of observationIds) observationStmt.run(discoveryTokens, id);
       if (summaryId !== null) {
-        this.db.prepare('UPDATE session_summaries SET discovery_tokens = ? WHERE id = ?').run(discoveryTokens, summaryId);
+        this.db.prepare('UPDATE session_summaries SET discovery_tokens = MAX(COALESCE(discovery_tokens, 0), ?) WHERE id = ?').run(discoveryTokens, summaryId);
       }
     })();
   }

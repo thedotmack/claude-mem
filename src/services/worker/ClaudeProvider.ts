@@ -730,7 +730,9 @@ export class ClaudeProvider {
             );
             if (stored) {
               turnInsertedObservationIds.push(...(stored.insertedObservationIds ?? []));
-              turnSummaryId = stored.summaryId ?? turnSummaryId;
+              if (!stored.summaryUpdated && stored.summaryId !== null) {
+                turnSummaryId = stored.summaryId;
+              }
             }
           } catch (processingError) {
             responseProcessingThrew = true;

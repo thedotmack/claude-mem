@@ -211,4 +211,54 @@ describe('SessionStore.storeObservations', () => {
     expect(allSummaries.length).toBe(2);
     expect(allSummaries.map(s => s.prompt_number)).toEqual([1, 2]);
   });
+
+  it('does not overwrite remote-owned replica summaries when storing local turn (#5228)', () => {
+    const mem = session('mem-remote-check');
+    // Simulate a replica summary synced from a remote device
+    store.db.prepare(`
+      INSERT INTO session_summaries
+        (memory_session_id, project, request, prompt_number, origin_device_id, origin_local_id, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run('mem-remote-check', 'project', 'Remote summary from device B', 1, 'device-B', 'remote-id-1', '2026-01-01T00:00:00Z', 1000);
+
+    const remoteRow = store.db.prepare('SELECT * FROM session_summaries WHERE origin_device_id = ?').get('device-B') as any;
+    expect(remoteRow).toBeDefined();
+
+    // Local turn executes on the same session and prompt number
+    const localResult = store.storeObservations(mem, 'project', [], summary({ request: 'Local summary from this machine' }), 1);
+
+    // It must NOT update the remote replica row in place; it must insert a native row
+    expect(localResult.summaryUpdated).toBe(false);
+    expect(localResult.summaryId).not.toBe(remoteRow.id);
+
+    // Verify remote replica row is completely preserved
+    const preservedRemote = store.db.prepare('SELECT * FROM session_summaries WHERE id = ?').get(remoteRow.id) as any;
+    expect(preservedRemote.request).toBe('Remote summary from device B');
+    expect(preservedRemote.origin_device_id).toBe('device-B');
+
+    // Verify new native row exists
+    const nativeRow = store.db.prepare('SELECT * FROM session_summaries WHERE id = ?').get(localResult.summaryId) as any;
+    expect(nativeRow.request).toBe('Local summary from this machine');
+    expect(nativeRow.origin_device_id).toBeNull();
+  });
+
+  it('updateDiscoveryTokens preserves the maximum and does not shrink token counts (#5228)', () => {
+    const mem = session('mem-token-shrink-check');
+    const res = store.storeObservations(mem, 'project', [], summary({ request: 'Token test' }), 1, 500);
+    expect(res.summaryId).not.toBeNull();
+
+    // Verify initial tokens
+    let row = store.db.prepare('SELECT discovery_tokens FROM session_summaries WHERE id = ?').get(res.summaryId) as any;
+    expect(row.discovery_tokens).toBe(500);
+
+    // Backfill with a smaller token count (e.g. 150) must not shrink the saved count
+    store.updateDiscoveryTokens([], res.summaryId, 150);
+    row = store.db.prepare('SELECT discovery_tokens FROM session_summaries WHERE id = ?').get(res.summaryId) as any;
+    expect(row.discovery_tokens).toBe(500);
+
+    // Backfill with a larger token count (e.g. 1200) should increase it
+    store.updateDiscoveryTokens([], res.summaryId, 1200);
+    row = store.db.prepare('SELECT discovery_tokens FROM session_summaries WHERE id = ?').get(res.summaryId) as any;
+    expect(row.discovery_tokens).toBe(1200);
+  });
 });
