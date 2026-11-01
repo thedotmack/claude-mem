@@ -492,6 +492,44 @@ describe('findClaudeExecutable on Windows', () => {
     expect(findClaudeExecutable('SDK')).toBe('C:\\install\\claude.exe');
     expect(probeCalls.some((call) => call.path === plantedClaude)).toBe(false);
   });
+
+  it('skips the extensionless npm sh shim even when it probes as capable (#5163)', () => {
+    // `npm install -g` writes an extensionless `claude` POSIX sh shim next to
+    // claude.cmd/claude.ps1, and `where claude` lists it first. The SDK spawns
+    // the resolved path directly and cannot launch a shebang script on
+    // Windows, so a shim that answers the probe (an installed sh resolves it)
+    // must still never win: it would be handed to the SDK and every spawn
+    // would fail with it.
+    installFakes({
+      platform: 'win32',
+      whereOutputs: {
+        claude: 'C:\\npm\\claude\r\nC:\\npm\\claude.cmd\r\n',
+        'claude.cmd': 'C:\\npm\\claude.cmd\r\n',
+      },
+    });
+    fakeClis.set('C:\\npm\\claude', { version: '2.1.309', supportsDontAsk: true });
+    fakeClis.set('C:\\npm\\claude.cmd', { version: '2.1.309', supportsDontAsk: true });
+
+    expect(findClaudeExecutable('SDK')).toBe('C:\\npm\\claude.cmd');
+    expect(probeCalls.some((call) => call.path === 'C:\\npm\\claude')).toBe(false);
+  });
+
+  it('fails loud instead of returning a bare extensionless where hit (#5163)', () => {
+    // An npm layout where the shim is the only PATH hit: with no spawnable
+    // candidate left, resolution must report not-found (with the
+    // CLAUDE_CODE_PATH instructions) rather than hand back a file the SDK
+    // cannot spawn.
+    installFakes({
+      platform: 'win32',
+      whereOutputs: {
+        claude: 'C:\\npm\\claude\r\n',
+      },
+    });
+    fakeClis.set('C:\\npm\\claude', { version: '2.1.309', supportsDontAsk: true });
+
+    expect(() => findClaudeExecutable('SDK')).toThrow(/Claude executable not found/);
+    expect(probeCalls.some((call) => call.path === 'C:\\npm\\claude')).toBe(false);
+  });
 });
 
 describe('findClaudeExecutable code-page-garbled where output (#4694)', () => {
