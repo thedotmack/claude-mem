@@ -352,8 +352,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CLOUD_SYNC_HUB_URL: string;
   CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: string;
   CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: string;
-  CLAUDE_MEM_CLOUD_SYNC_WS: string;
-  CLAUDE_MEM_CLOUD_SYNC_KEEP_PULLING: string;    // live updates via Supabase Realtime — 'false' disables live updates (HTTP polling only)
+  CLAUDE_MEM_CLOUD_SYNC_WS: string;    // live updates via Supabase Realtime — 'false' disables live updates (HTTP polling only)
+  CLAUDE_MEM_CLOUD_SYNC_KEEP_PULLING: string;    // 'true' keeps pulling with no local session (cloud viewer replica)
   // Content flush knobs. 200-op pages + 30s timeout hit hub projection_busy
   // (#3618). Defaults: 40 ops / 90s (hub projection lease).
   CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: string;
