@@ -114,6 +114,41 @@ describe('automatic refresh scheduler', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it('records a failed status when opening the database prevents a manual refresh from starting', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
+    try {
+      const error = new Error('database is unavailable');
+      const worker = new AutoRefreshWorker({
+        localDeviceId: () => 'device-1', dir, openDatabase: () => { throw error; }, now: () => NOW,
+        runJob: async () => { throw new Error('refresh job must not start'); },
+      });
+
+      expect(await worker.runNow({ reason: 'manual' })).toBe('failed');
+      expect(worker.status()).toMatchObject({
+        state: 'failed', reason: 'manual', startedAt: new Date(NOW).toISOString(),
+        finishedAt: new Date(NOW).toISOString(), needs: null, error: error.message,
+        nextAt: new Date(NOW + 10 * 60000).toISOString(), failures: 1,
+      });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('records a failed status when a damaged saved ledger prevents a manual refresh from starting', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
+    try {
+      writeFileSync(join(dir, 'request-groups.json'), '{ damaged json');
+      const worker = new AutoRefreshWorker({
+        localDeviceId: () => 'device-1', dir, openDatabase: handle(fixtureDatabase()), now: () => NOW,
+        runJob: async () => { throw new Error('refresh job must not start'); },
+      });
+
+      expect(await worker.runNow({ reason: 'manual' })).toBe('failed');
+      expect(worker.status()).toMatchObject({
+        state: 'failed', reason: 'manual', needs: null,
+        error: expect.stringContaining('JSON'), nextAt: new Date(NOW + 10 * 60000).toISOString(), failures: 1,
+      });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('no logged-in agent: waiting-for-agent, then runs on the check after one appears', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
     try {
