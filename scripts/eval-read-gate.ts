@@ -360,7 +360,7 @@ function verdict(
   return { id, description, status: passed ? 'pass' : 'fail', detail };
 }
 
-/** The plan's verdicts (plans/2026-10-05-file-read-gate-restore.md, 5.2 step 7), with the deny size split. */
+/** The verdicts, with the deny size split. */
 export function decideVerdicts(runs: RunEvidence[]): Verdict[] {
   const gateOnLargeFileRuns = runs.filter(run => run.caseName === CASE_GATE_ON_LARGE_FILE);
   const gateOnEditRuns = runs.filter(run => run.caseName === CASE_GATE_ON_EDITS);

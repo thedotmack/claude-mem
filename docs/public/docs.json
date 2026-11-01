@@ -128,8 +128,7 @@
           "architecture/hooks",
           "architecture/worker-service",
           "architecture/database",
-          "architecture/search-architecture",
-          "architecture/pm2-to-bun-migration"
+          "architecture/search-architecture"
         ]
       }
     ]
@@ -189,6 +188,10 @@
     {
       "source": "/branches",
       "destination": "/development"
+    },
+    {
+      "source": "/architecture/pm2-to-bun-migration",
+      "destination": "/architecture-evolution"
     }
   ]
 }
