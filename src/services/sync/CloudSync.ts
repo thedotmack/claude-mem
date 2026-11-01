@@ -58,6 +58,7 @@ import {
   type CanonicalWireOp,
   type ContentKind,
 } from './CanonicalContent.js';
+import { SYNC_CAPABILITIES, SYNC_CAPABILITIES_HEADER } from './sync-capabilities.js';
 import { PROMPT_TEXT_COLUMNS_SQL, clampPromptTextForSync } from './prompt-text-clamp.js';
 import {
   classifySyncAuthFailure,
@@ -1036,6 +1037,7 @@ export class CloudSync {
           'X-User-Id': this.userId,
           'X-Device-Id': this.deviceId,
           ...(this.deviceName ? { 'X-Device-Name': this.deviceName } : {}),
+          [SYNC_CAPABILITIES_HEADER]: SYNC_CAPABILITIES,
         },
         signal,
       });
@@ -1689,6 +1691,7 @@ export class CloudSync {
         'X-User-Id': this.userId,
         'X-Device-Id': this.deviceId,
         ...(this.deviceName ? { 'X-Device-Name': this.deviceName } : {}),
+        [SYNC_CAPABILITIES_HEADER]: SYNC_CAPABILITIES,
       },
       body: requestBody,
       signal: AbortSignal.timeout(this.requestTimeoutMs),
