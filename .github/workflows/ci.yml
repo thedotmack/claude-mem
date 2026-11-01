@@ -273,6 +273,10 @@ jobs:
         working-directory: services/sync-api
         run: bun test test
 
+      - name: viewer-host gate tests
+        working-directory: services/viewer-host
+        run: bun install --frozen-lockfile && bun test test
+
       - name: protocol-v2 matrix e2e against local sync-api
         run: bun scripts/sync-matrix-e2e.ts
 

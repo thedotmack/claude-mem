@@ -20,6 +20,7 @@ const FORWARDED_REQUEST_HEADERS = [
 	"X-User-Id",
 	"X-Device-Id",
 	"X-Device-Name",
+	"X-Sync-Capabilities",
 	"Content-Type",
 	"Content-Encoding",
 	"Accept",

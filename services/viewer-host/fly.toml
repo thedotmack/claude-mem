@@ -1,0 +1,40 @@
+# One owner's cloud viewer: the claude-mem worker as a sync device, behind the
+# gate in src/gate.ts. Deploy from the repository root:
+#   fly deploy --config services/viewer-host/fly.toml --dockerfile services/viewer-host/Dockerfile .
+# Secrets (fly secrets set …):
+#   VIEWER_OWNER_USER_ID, VIEWER_LINK_SECRET (same value as cmem.ai's
+#   CMEM_VIEWER_LINK_SECRET), CLAUDE_MEM_CLOUD_SYNC_TOKEN
+# Volume (holds the worker's SQLite replica and its device id):
+#   fly volumes create viewer_data --size 3 --region iad
+
+app = "cmem-viewer"
+primary_region = "iad"
+
+[env]
+  VIEWER_PUBLIC_ORIGIN = "https://cmem-viewer.fly.dev"
+  VIEWER_SIGN_IN_URL = "https://cmem.ai/work"
+  CLAUDE_MEM_CLOUD_SYNC_HUB_URL = "https://sync.cmem.ai"
+
+[mounts]
+  source = "viewer_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Always on: the live feed and sync pulls need the worker running.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "30s"
+    interval = "15s"
+    method = "GET"
+    timeout = "5s"
+    path = "/health"
+
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1
