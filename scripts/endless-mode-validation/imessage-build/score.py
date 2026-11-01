@@ -242,15 +242,44 @@ def snapshot(score):
     """Hashes of the files setup could change (the user's home, claude-mem's data dir, Claude's config)."""
     skip = re.compile(r'(^|/)(logs?|tee|observer-tee|imsg|projects|statsig|todos|shell-snapshots|\.npm|\.bun|cache|Caches)(/|$)'
                       r'|\.(log|db|db-wal|db-shm|sqlite|sqlite-wal|sqlite-shm|pid)$|(^|/)pids$'
-                      r'|^data/(worker-heartbeat\.json|\.fts-[^/]*)$')  # claude-mem's own worker files, not setup's
+                      r'|^data/(worker-heartbeat\.json|observer-health\.json|\.fts-[^/]*)$'
+                      r'|^data/state/context-cache/')  # claude-mem's own worker files and caches, not setup's
     out = {}
     for root in ('home', 'data', 'claude-config'):
         base = score / root
         for path in base.rglob('*') if base.exists() else []:
             rel = f'{root}/{path.relative_to(base)}'
-            if path.is_file() and not skip.search(rel) and path.stat().st_size < 5_000_000:
-                out[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
+            if path.is_file() and not skip.search(rel) and not CLAUDE_OWN.search(rel) and path.stat().st_size < 5_000_000:
+                digest = file_digest(rel, path)
+                if digest:
+                    out[rel] = digest
     return out
+
+
+# Files Claude Code writes for itself whenever it runs (startup counters, its own backups and plugin caches): not
+# something a build's setup or undo controls, so the undo check leaves them out.
+CLAUDE_OWN = re.compile(r'^claude-config/(\.last-cleanup|backups/|plugins/plugin-directory-cache[^/]*\.json$'
+                        r'|plugins/store/[^/]*_builtin-[^/]*$|state/mcp-discover-verdicts\.json$)')
+# In .claude.json only the parts setup could register count (MCP servers); the rest is Claude Code's own bookkeeping.
+CLAUDE_JSON_KEYS = ('mcpServers', 'enabledMcpjsonServers', 'disabledMcpjsonServers')
+
+
+def file_digest(rel, path):
+    data = path.read_bytes()
+    if rel == 'claude-config/.claude.json':
+        try:
+            doc = json.loads(data)
+            kept = {k: doc.get(k) for k in CLAUDE_JSON_KEYS if doc.get(k)}
+            kept['projects'] = {p: {k: v.get(k) for k in CLAUDE_JSON_KEYS if v.get(k)}
+                                for p, v in (doc.get('projects') or {}).items() if any(v.get(k) for k in CLAUDE_JSON_KEYS)}
+            if not kept['projects']:
+                del kept['projects']
+            if not kept:
+                return None  # nothing setup-relevant in it: same as the file not being there
+            data = json.dumps(kept, sort_keys=True).encode()
+        except ValueError:
+            pass
+    return hashlib.sha256(data).hexdigest()
 
 
 def diff_snap(a, b):
@@ -261,9 +290,9 @@ def diff_snap(a, b):
 
 
 class Scoring:
-    def __init__(self, arm, arm_dir, args, key):
+    def __init__(self, arm, arm_dir, args, key, score_dir='score'):
         self.arm, self.arm_dir, self.args, self.key = arm, arm_dir, args, key
-        self.score = arm_dir / 'score'
+        self.score = arm_dir / score_dir
         self.repo = arm_dir / 'repo'
         self.port = SCORE_PORTS[arm]
         self.imsg = self.score / 'imsg'
@@ -718,7 +747,7 @@ BY_HAND = {'S1': 'one command on a clean Mac', 'S4': 'answers after a reboot', '
 
 def bill(out, arm):
     db = sqlite3.connect(out / 'results.sqlite')
-    # List price where known; OpenRouter's own charge for a request whose model has no listed price.
+    # OpenRouter's measured charge where recorded; list price otherwise.
     rows = dict(db.execute('SELECT source, sum(coalesce(measured_cost_usd, cost_usd, 0)) FROM requests WHERE run_id=? GROUP BY source',
                            (f'imsg-{arm}',)).fetchall())
     measured = db.execute('SELECT sum(measured_cost_usd), count(measured_cost_usd) FROM requests WHERE run_id=? AND source="agent"',
@@ -756,6 +785,59 @@ def write_report(out, arms, cards, bills):
     (out / 'scorecard.md').write_text('\n'.join(lines))
 
 
+def undo_check(sc, contract):
+    """S3 on its own, in a fresh sandbox (<arm>/score-undo): setup, a short chat on the fake line, then undo."""
+    before = snapshot(sc.score)
+    code, out = sc.run_cmd(contract['setup'])
+    if code:
+        return 'fail', f'setup failed (exit {code}): {out.strip().splitlines()[-1:]}'
+    sc.new_out()
+    sc.start_gateway()
+    if sc.start_agent(contract['run_fake']):
+        for q, _ in RECALL[:3]:
+            sc.send(q)
+            sc.answer(timeout=240, settle=10)
+    sc.stop_agent()
+    code, out = sc.run_cmd(contract['undo'])
+    added, removed, changed = diff_snap(before, snapshot(sc.score))
+    result = 'pass' if code == 0 and not (added or removed or changed) else 'fail'
+    return result, (f'undo exit {code}; versus before setup (setup, 3 texts, undo; Claude Code\'s own files left out): '
+                    f'added {added[:6]}, removed {removed[:6]}, changed {changed[:6]} (sandbox HOME)')
+
+
+def rescore_undo(out, arms, args, key):
+    for arm in arms:
+        arm_dir = out / arm
+        doc_path = arm_dir / 'score' / 'result.json'
+        doc = json.loads(doc_path.read_text())
+        contract = json.loads((arm_dir / 'repo' / 'imessage-agent.test.json').read_text())
+        work = arm_dir / 'score-undo'
+        if work.exists():
+            shutil.rmtree(work)
+        sc = Scoring(arm, arm_dir, args, key, score_dir='score-undo')
+        try:
+            problem = sc.setup_sandbox()
+            result, evidence = ('fail', problem) if problem else undo_check(sc, contract)
+        finally:
+            sc.stop_sandbox()
+        log(f'  {arm} S3: {result} ({evidence[:220]})')
+        doc['checks']['S3'] = {'result': result, 'evidence': evidence}
+        doc_path.write_text(json.dumps(doc, indent=1))
+
+
+def main_report(out, arms):
+    arms = [a for a in arms if (out / a / 'score' / 'result.json').exists()]
+    cards, bills = {}, {}
+    for arm in arms:
+        doc = json.loads((out / arm / 'score' / 'result.json').read_text())
+        cards[arm] = Card()
+        cards[arm].results, bills[arm] = doc['checks'], doc['bill']
+        if (out / 'results.sqlite').exists():
+            bills[arm] = bill(out, arm)  # recompute: measured charge first
+    write_report(out, arms, cards, bills)
+    log(f'scorecard: {out / "scorecard.md"}')
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     p.add_argument('--out', required=True, type=Path)
@@ -764,20 +846,13 @@ def main():
     p.add_argument('--model', default='~deepseek/deepseek-flash-latest', help='the built agent\'s model in scoring')
     p.add_argument('--judge-model', default='', help='default: --model')
     p.add_argument('--quick', action='store_true')
+    p.add_argument('--only-undo', action='store_true', help='rerun only S3 (undo) for each arm, then rewrite the scorecard')
     p.add_argument('--report-only', action='store_true',
                    help='only write scorecard.md from each <out>/<arm>/score/result.json (builds scored on separate Sprites)')
     args = p.parse_args()
     out = args.out.resolve()
     if args.report_only:
-        arms = [a for a in args.arms.split(',') if (out / a / 'score' / 'result.json').exists()]
-        cards, bills = {}, {}
-        for arm in arms:
-            doc = json.loads((out / arm / 'score' / 'result.json').read_text())
-            cards[arm] = Card()
-            cards[arm].results, bills[arm] = doc['checks'], doc['bill']
-        write_report(out, arms, cards, bills)
-        log(f'scorecard: {out / "scorecard.md"}')
-        return
+        return main_report(out, args.arms.split(','))
     prompts = json.loads((HERE / 'prompts.json').read_text())
     key = os.environ.get('OPENROUTER_API_KEY', '') if args.profile == 'openrouter' else ''
     if args.profile == 'openrouter' and not key.startswith('sk-or-'):
@@ -785,6 +860,10 @@ def main():
     base = kit.OPENROUTER_BASE if args.profile == 'openrouter' else 'claude-cli'
     judge = Judge(base, args.judge_model or args.model, key)
     arms = args.arms.split(',')
+    if args.only_undo:
+        rescore_undo(out, arms, args, key)
+        args.report_only = True
+        return main_report(out, arms)
     cards, bills = {}, {}
     for arm in arms:
         arm_dir = out / arm
