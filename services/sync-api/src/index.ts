@@ -1,6 +1,6 @@
 /**
  * sync-api — protocol-v2 hub on a long-running HTTP + WebSocket process.
- * Routes and shapes match workers/sync-hub. Storage is Postgres.
+ * Routes and shapes match services/sync-hub. Storage is Postgres.
  */
 import postgres from "postgres";
 import { authenticateRequest, errorResponse, json } from "./auth";

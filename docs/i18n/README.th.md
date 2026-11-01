@@ -390,7 +390,6 @@ Claude-Mem อยู่ภายใต้ใบอนุญาต Apache License
 และ [docs/ip-boundary.md](docs/ip-boundary.md) สำหรับขอบเขตของใบอนุญาตและ
 ขอบเขตระหว่างโอเพนซอร์ส/เชิงพาณิชย์
 
-**หมายเหตุเกี่ยวกับ Ragtime**: ไดเรกทอรี `ragtime/` อยู่ภายใต้ใบอนุญาต **Apache License 2.0** ดู [ragtime/LICENSE](ragtime/LICENSE) สำหรับรายละเอียด
 
 ---
 

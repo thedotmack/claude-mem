@@ -440,7 +440,6 @@ See the [LICENSE](LICENSE) file for full details. See [docs/license.md](docs/lic
 and [docs/ip-boundary.md](docs/ip-boundary.md) for licensing scope and the
 open/commercial boundary.
 
-**Note on Ragtime**: The `ragtime/` directory is licensed under the **Apache License 2.0**. See [ragtime/LICENSE](ragtime/LICENSE) for details.
 
 ---
 
