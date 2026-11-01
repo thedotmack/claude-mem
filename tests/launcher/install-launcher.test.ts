@@ -11,6 +11,7 @@ import {
   ensureLauncherOnPath,
   ensureLocalBinOnShellPath,
   findExecutableOnPath,
+  launcherFileEmbedsBundle,
   probeLauncherVersion,
   removeInstalledLauncher,
   resolveLauncherBinaryPath,
@@ -61,6 +62,20 @@ function recordingLogger(): LauncherInstallLogger & { lines: string[] } {
 function writeFakeLauncher(binaryPath: string, printedVersion: string): void {
   mkdirSync(path.dirname(binaryPath), { recursive: true });
   writeFileSync(binaryPath, `#!/bin/sh\necho ${printedVersion}\n`);
+  chmodSync(binaryPath, 0o755);
+}
+
+/**
+ * A launcher stand-in whose --version is killed before it can print, the way
+ * macOS 27 SIGKILLs a launcher whose code signature it rejects (#5247). The
+ * comment lines carry the bundle markers a real compiled launcher embeds.
+ */
+function writeKilledLauncher(binaryPath: string, { withBundleMarkers = true } = {}): void {
+  mkdirSync(path.dirname(binaryPath), { recursive: true });
+  const markerLines = withBundleMarkers
+    ? ['# usage: claude-mem hook <platform> <event>', '# continuing without memory']
+    : [];
+  writeFileSync(binaryPath, ['#!/bin/sh', 'kill -KILL $$', ...markerLines, ''].join('\n'));
   chmodSync(binaryPath, 0o755);
 }
 
@@ -233,6 +248,42 @@ describe('launcher bin dir and compile arguments per platform', () => {
   });
 });
 
+describe('launcherFileEmbedsBundle (#5247)', () => {
+  const usageLineMarker = 'usage: claude-mem hook <platform> <event>';
+  const failOpenMarker = 'continuing without memory';
+
+  it('finds both bundle markers a compiled launcher embeds', () => {
+    const launcherPath = path.join(makeScratchHome(), 'claude-mem');
+    writeFileSync(launcherPath, `\0binary${usageLineMarker}\0more${failOpenMarker}\0tail`);
+    expect(launcherFileEmbedsBundle(launcherPath)).toBe(true);
+  });
+
+  it('rejects a file that carries only one of the markers', () => {
+    const launcherPath = path.join(makeScratchHome(), 'claude-mem');
+    writeFileSync(launcherPath, `\0binary${usageLineMarker}\0tail`);
+    expect(launcherFileEmbedsBundle(launcherPath)).toBe(false);
+  });
+
+  it('finds a marker that straddles a scan-chunk boundary', () => {
+    const launcherPath = path.join(makeScratchHome(), 'claude-mem');
+    // A compiled launcher is scanned in chunks; put the marker across a chunk
+    // boundary (1 MiB is a whole number of 64 KiB chunks) to prove the overlap.
+    const prefix = 'x'.repeat((1 << 20) - 8);
+    writeFileSync(launcherPath, `${prefix}${usageLineMarker}${'x'.repeat(64)}${failOpenMarker}`);
+    expect(launcherFileEmbedsBundle(launcherPath)).toBe(true);
+  });
+
+  it('finds every marker in the committed launcher bundle', () => {
+    // Drift guard: the markers are copied from claude-mem-launcher.ts, so a
+    // rewording there must not silently stop the rebuild detection (#5247).
+    expect(launcherFileEmbedsBundle(path.join(pluginRoot, 'scripts', 'claude-mem-launcher.cjs'))).toBe(true);
+  });
+
+  it('answers false for a file that does not exist', () => {
+    expect(launcherFileEmbedsBundle(path.join(makeScratchHome(), 'no-such-file'))).toBe(false);
+  });
+});
+
 describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
   it('compiles into ~/.local/bin, renames into place and adds ~/.local/bin to the zsh rc', () => {
     const scratchHome = makeScratchHome();
@@ -331,6 +382,42 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
     expect(ensureResult).toEqual({ status: 'foreign-binary-kept', binaryPath, pathSetupOutcome: null });
     expect(logger.lines).toEqual([`warn: ${binaryPath} exists and is not the claude-mem hook launcher (--version printed "13.28.0" instead of a protocol number); not replacing`]);
     expect(readFileSync(binaryPath, 'utf-8')).toContain('13.28.0');
+  });
+
+  // #5247: macOS 27 SIGKILLs a launcher whose code signature it rejects, so
+  // `--version` never prints. That copy is ours to rebuild; classing it foreign
+  // left users deleting the file by hand.
+  it('rebuilds a killed launcher that embeds the claude-mem bundle, in both contexts (#5247)', () => {
+    for (const invocationContext of ['npx-installer', 'session-start-self-heal'] as const) {
+      const scratchHome = makeScratchHome();
+      const host = posixHost(scratchHome);
+      const binaryPath = resolveLauncherBinaryPath(host);
+      writeKilledLauncher(binaryPath);
+      const compile = fakeCompile();
+      const logger = recordingLogger();
+
+      const ensureResult = ensureLauncherOnPath({
+        pluginRoot, resolveBunPath: () => '/fake/bun', logger, host, runCompile: compile, runCodesign: codesignNoop, invocationContext,
+      });
+
+      expect(compile.calls).toHaveLength(1);
+      expect(ensureResult.status).toBe('installed');
+      expect(logger.lines.some((line) => line.includes('is the claude-mem launcher, but --version was killed by SIGKILL'))).toBe(true);
+      expect(spawnSync(binaryPath, ['--version'], { encoding: 'utf-8' }).stdout.trim()).toBe(String(LAUNCHER_PROTOCOL));
+    }
+  });
+
+  it('still keeps a killed binary that does not embed the claude-mem bundle (#5247)', () => {
+    const scratchHome = makeScratchHome();
+    const host = posixHost(scratchHome);
+    const binaryPath = resolveLauncherBinaryPath(host);
+    writeKilledLauncher(binaryPath, { withBundleMarkers: false });
+
+    const ensureResult = ensureLauncherOnPath({
+      pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host, runCompile: compileMustNotRun, invocationContext: 'npx-installer',
+    });
+
+    expect(ensureResult).toEqual({ status: 'foreign-binary-kept', binaryPath, pathSetupOutcome: null });
   });
 
   it('never replaces a symlink, even one pointing at a launcher', () => {
@@ -731,16 +818,18 @@ describe.skipIf(!isPosixHost)('probeLauncherVersion says why no protocol came ba
   }
 
   it('returns the protocol and no failure for the launcher', () => {
-    expect(probeLauncherVersion(writeScript(`echo ${LAUNCHER_PROTOCOL}`))).toEqual({ protocol: LAUNCHER_PROTOCOL, failure: null, failedToStart: false });
+    expect(probeLauncherVersion(writeScript(`echo ${LAUNCHER_PROTOCOL}`))).toEqual({ protocol: LAUNCHER_PROTOCOL, failure: null, failedToStart: false, signal: null });
   });
 
   it('reports a non-zero exit with the last stderr line', () => {
     expect(probeLauncherVersion(writeScript('echo first >&2\necho "access denied" >&2\nexit 3')))
-      .toEqual({ protocol: null, failure: 'exited 3: access denied', failedToStart: false });
+      .toEqual({ protocol: null, failure: 'exited 3: access denied', failedToStart: false, signal: null });
   });
 
   it('reports a kill signal', () => {
-    expect(probeLauncherVersion(writeScript('kill -KILL $$')).failure).toBe('killed by SIGKILL');
+    const versionProbe = probeLauncherVersion(writeScript('kill -KILL $$'));
+    expect(versionProbe.failure).toBe('killed by SIGKILL');
+    expect(versionProbe.signal).toBe('SIGKILL');
   });
 
   it('reports a timeout', () => {
