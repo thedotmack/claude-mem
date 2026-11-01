@@ -4,6 +4,8 @@
 # Secrets (fly secrets set …):
 #   VIEWER_OWNER_USER_ID, VIEWER_LINK_SECRET (same value as cmem.ai's
 #   CMEM_VIEWER_LINK_SECRET), CLAUDE_MEM_CLOUD_SYNC_TOKEN
+#   Optional: VIEWER_PUBLIC_ORIGIN (default https://cmem-viewer.fly.dev, src/index.ts).
+#   It is a secret, not [env], so a custom domain survives deploys from the repo.
 # Volume (holds the worker's SQLite replica and its device id):
 #   fly volumes create viewer_data --size 3 --region iad
 
@@ -11,7 +13,6 @@ app = "cmem-viewer"
 primary_region = "iad"
 
 [env]
-  VIEWER_PUBLIC_ORIGIN = "https://cmem-viewer.fly.dev"
   VIEWER_SIGN_IN_URL = "https://cmem.ai/work"
   CLAUDE_MEM_CLOUD_SYNC_HUB_URL = "https://sync.cmem.ai"
 
@@ -28,10 +29,12 @@ primary_region = "iad"
   min_machines_running = 1
 
   [[http_service.checks]]
-    grace_period = "30s"
+    # The gate answers /health itself (src/gate.ts), so a worker busy with a
+    # large first pull no longer fails it; the grace covers the cold start.
+    grace_period = "60s"
     interval = "15s"
     method = "GET"
-    timeout = "5s"
+    timeout = "10s"
     path = "/health"
 
 [[vm]]

@@ -128,12 +128,18 @@ export function createGate(options: GateOptions): (request: Request) => Promise<
     const url = new URL(request.url);
 
     if (url.pathname === '/health') {
+      // The gate answers this itself: a worker busy applying a large pull can
+      // take seconds per request, and a check that waits on it gets the only
+      // machine pulled from the load balancer. The worker's state rides along
+      // for people, never as the status code; index.ts restarts a dead worker.
+      let worker: 'ready' | 'busy' | 'down' = 'down';
       try {
-        const health = await fetchImpl(new URL('/api/health', upstream), { signal: AbortSignal.timeout(4000) });
-        return json(health.ok ? 200 : 503, { ok: health.ok });
-      } catch {
-        return json(503, { ok: false });
+        const health = await fetchImpl(new URL('/api/health', upstream), { signal: AbortSignal.timeout(1000) });
+        worker = health.ok ? 'ready' : 'busy';
+      } catch (error) {
+        worker = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError') ? 'busy' : 'down';
       }
+      return json(200, { ok: true, worker });
     }
 
     if (url.pathname === '/auth') {

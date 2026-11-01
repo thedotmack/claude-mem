@@ -220,11 +220,26 @@ describe('gate', () => {
   it('reports health from the worker without a session', async () => {
     const response = await gate()(new Request(`${PUBLIC_ORIGIN}/health`));
     expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, worker: 'ready' });
+  });
+
+  it('stays healthy while the worker is too busy to answer', async () => {
+    const slow: typeof fetch = (_input, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(init.signal!.reason));
+    });
+    const busy = createGate({ ownerUserId: OWNER, secret: SECRET, upstreamOrigin: 'http://127.0.0.1:37777', publicOrigin: PUBLIC_ORIGIN, signInUrl: SIGN_IN, fetchImpl: slow });
+    const started = Date.now();
+    const response = await busy(new Request(`${PUBLIC_ORIGIN}/health`));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, worker: 'busy' });
+    expect(Date.now() - started).toBeLessThan(3000);
   });
 
   it('says the viewer is starting while the worker is down', async () => {
     const down = createGate({ ownerUserId: OWNER, secret: SECRET, upstreamOrigin: 'http://127.0.0.1:1', publicOrigin: PUBLIC_ORIGIN, signInUrl: SIGN_IN });
-    expect((await down(new Request(`${PUBLIC_ORIGIN}/health`))).status).toBe(503);
+    const health = await down(new Request(`${PUBLIC_ORIGIN}/health`));
+    expect(health.status).toBe(200);
+    expect(await health.json()).toEqual({ ok: true, worker: 'down' });
     const page = await down(new Request(`${PUBLIC_ORIGIN}/`, { headers: { Cookie: sessionCookie(), Accept: 'text/html' } }));
     expect(page.status).toBe(503);
     expect(await page.text()).toContain('starting');
