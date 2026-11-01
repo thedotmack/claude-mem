@@ -765,7 +765,6 @@ function copyPluginToMarketplace(): void {
     'dsh',
     'dist',
     'README.md',
-    'CHANGELOG.md',
   ];
 
   for (const entry of allowedTopLevelEntries) {
