@@ -43,6 +43,18 @@ let realPaths: Map<string, string>;
 /** stdout of `which -a claude`; null = which fails. */
 let whichOutput: string | null;
 
+/**
+ * Paths built the way the code builds them: with the host path module. The
+ * fakes run a POSIX home ('/home/tester') on a mocked darwin platform, but
+ * join() is the host's — on a Windows host the built candidates come out
+ * backslashed, so fake-fs keys and assertions for those paths must be built,
+ * not written (the POSIX literals elsewhere compare against each other, so
+ * they pass on every host).
+ */
+function homeJoin(...parts: string[]): string {
+  return join('/home/tester', ...parts);
+}
+
 function installFakes(options: {
   settingsPath?: string;
   platform?: NodeJS.Platform;
@@ -187,9 +199,9 @@ describe('findClaudeExecutable candidate selection', () => {
   it('falls back to known install locations when PATH has no claude', () => {
     installFakes();
     whichOutput = null;
-    fakeClis.set('/home/tester/.local/bin/claude', { version: '2.1.176', supportsDontAsk: true });
+    fakeClis.set(homeJoin('.local', 'bin', 'claude'), { version: '2.1.176', supportsDontAsk: true });
 
-    expect(findClaudeExecutable('SDK')).toBe('/home/tester/.local/bin/claude');
+    expect(findClaudeExecutable('SDK')).toBe(homeJoin('.local', 'bin', 'claude'));
   });
 
   it('dedupes PATH repeats and symlink aliases to a single probe', () => {
@@ -376,13 +388,14 @@ describe('findClaudeExecutable explicit CLAUDE_CODE_PATH', () => {
 
   it('expands a leading ~ so a tilde path resolves instead of dying with ENOENT', () => {
     // The reported failure: `~/.local/bin/claude` hits existsSync/posix_spawn
-    // verbatim and fails ENOENT. Home is /home/tester in the fakes.
+    // verbatim and fails ENOENT. Home is /home/tester in the fakes. The
+    // expansion is host-join built, so the expected path is built too.
     installFakes({ settingsPath: '~/.local/bin/claude' });
-    fakeClis.set('/home/tester/.local/bin/claude', { version: '2.1.176', supportsDontAsk: true });
+    fakeClis.set(homeJoin('.local', 'bin', 'claude'), { version: '2.1.176', supportsDontAsk: true });
 
-    expect(findClaudeExecutable('SDK')).toBe('/home/tester/.local/bin/claude');
+    expect(findClaudeExecutable('SDK')).toBe(homeJoin('.local', 'bin', 'claude'));
     // Every spawn must see the expanded path, never the literal tilde.
-    expect(probeCalls.every((call) => call.path === '/home/tester/.local/bin/claude')).toBe(true);
+    expect(probeCalls.every((call) => call.path === homeJoin('.local', 'bin', 'claude'))).toBe(true);
   });
 
   it('labels a verbatim absolute path as un-expanded so a redacted ~ is not mistaken for a tilde setting', () => {
@@ -397,9 +410,13 @@ describe('findClaudeExecutable explicit CLAUDE_CODE_PATH', () => {
 
   it('labels a tilde path as expanded in the error so the two forms are visible', () => {
     installFakes({ settingsPath: '~/.local/bin/claude' });
-    fakeClis.set('/home/tester/.local/bin/claude', { version: '0.0.0', supportsDontAsk: false, broken: true });
+    fakeClis.set(homeJoin('.local', 'bin', 'claude'), { version: '0.0.0', supportsDontAsk: false, broken: true });
 
-    expect(() => findClaudeExecutable('SDK')).toThrow(/tilde-expanded to "\/home\/tester\/\.local\/bin\/claude"/);
+    // The expanded path in the message is host-join built, so the regex is
+    // built from the same join instead of a POSIX literal.
+    const expanded = homeJoin('.local', 'bin', 'claude');
+    const escaped = expanded.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    expect(() => findClaudeExecutable('SDK')).toThrow(new RegExp(`tilde-expanded to "${escaped}"`));
   });
 });
 
