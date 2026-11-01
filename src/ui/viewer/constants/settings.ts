@@ -1,5 +1,5 @@
 export const DEFAULT_SETTINGS = {
-  CLAUDE_MEM_MODEL: 'claude-sonnet-5',
+  CLAUDE_MEM_MODEL: 'haiku',  // an alias, never a dated id (CLAUDE.md, Model policy)
   CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
   CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: 'false',
   CLAUDE_MEM_WORKER_PORT: '37700',

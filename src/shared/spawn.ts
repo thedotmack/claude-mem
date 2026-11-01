@@ -7,7 +7,7 @@ import {
   type SpawnSyncOptionsWithStringEncoding,
 } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { dirname, extname, join } from 'node:path';
+import { dirname, extname, join, win32 } from 'node:path';
 
 export type SpawnHiddenOptions = SpawnOptions;
 
@@ -55,8 +55,27 @@ export function windowsWhereExecutablePath(env: NodeJS.ProcessEnv = process.env)
   return join(systemRoot, 'System32', 'where.exe');
 }
 
+/**
+ * True when `candidatePath` sits directly inside `cwd`. On Windows, where.exe
+ * searches the current directory BEFORE PATH, so a `bun.exe` / `codex.exe` /
+ * `dsh.exe` planted in the project a hook runs from would outrank the real
+ * install and execute untrusted code.
+ *
+ * The comparison is flavor-aware and separator-insensitive: a Windows-style
+ * `C:\tools\bun.exe` is parsed with win32 rules even on a POSIX test host
+ * (POSIX dirname would otherwise treat the whole string as a basename and
+ * resolve() would fold it into cwd, which is the bug this filter exists to
+ * prevent). Case-folded: NTFS is case-insensitive. Injectable `cwd` for tests.
+ */
+export function isCurrentDirectoryCandidate(candidatePath: string, cwd: string = process.cwd()): boolean {
+  const looksWindows = /^[a-zA-Z]:[\\/]|\\\\/.test(candidatePath);
+  const dir = looksWindows ? win32.dirname(candidatePath) : dirname(candidatePath);
+  const normalize = (p: string) => p.replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase();
+  return normalize(dir) === normalize(cwd);
+}
+
 /** Every PATH hit for `command`, in `where` order (PATH order). */
-export function lookupWindowsCommandCandidates(command: string): string[] {
+export function lookupWindowsCommandCandidates(command: string, cwd: string = process.cwd()): string[] {
   if (process.platform !== 'win32') return [];
   try {
     const result = spawnSync(windowsWhereExecutablePath(), [command], {
@@ -69,6 +88,10 @@ export function lookupWindowsCommandCandidates(command: string): string[] {
       .split(/\r?\n/)
       .map(line => line.trim())
       .filter(Boolean)
+      // where.exe reports the current directory first, and hooks run with the
+      // user's project as cwd: a planted `bun.exe`/`codex.exe`/`dsh.exe` there
+      // would otherwise be returned to a caller that spawns it verbatim.
+      .filter(line => !isCurrentDirectoryCandidate(line, cwd))
       // where.exe writes the console's active code page (cp949 on ko-KR) while
       // the `encoding: 'utf-8'` above decodes the bytes as UTF-8, so a
       // non-ASCII profile folder name arrives as U+FFFD and the path does not

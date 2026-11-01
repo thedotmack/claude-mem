@@ -28,7 +28,7 @@ Use claude-mem's persistent memory in Cursor without a Claude Code subscription.
 
 ### Windows
 - Cursor IDE
-- [Bun](https://bun.sh) (PowerShell: `powershell -c "irm bun.sh/install.ps1 | iex"`)
+- [Bun](https://bun.sh) (PowerShell: `powershell -c "irm https://bun.sh/install.ps1 | iex"`)
 - Git
 - PowerShell 5.1+ (included with Windows 10/11)
 

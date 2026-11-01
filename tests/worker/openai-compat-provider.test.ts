@@ -701,6 +701,48 @@ describe('200 error envelopes are classified by what they report', () => {
     expect(classify({ code: 401, message: 'bad key' }).kind).toBe('auth_invalid');
   });
 
+  // #5185: OmniRoute answers a failed stream with a textual code and names the
+  // status only in the message. That 503 must pause and fall back, not end the session.
+  it('reads an (HTTP NNN) status from the message when error.code is not numeric', () => {
+    expect(classify({
+      code: 'bad_gateway',
+      type: 'server_error',
+      message: 'cfp/some-model: provider — [503]: Service temporarily unavailable (HTTP 503)',
+    }).kind).toBe('transient');
+    expect(classify({ code: 'rate_limited_upstream', message: 'slow down (HTTP 429)' }).kind).toBe('rate_limit');
+    expect(classify({ code: 'weird', message: 'odd (HTTP 200)' }).kind).toBe('unrecoverable');
+    expect(classify({ code: 'weird', message: 'no status here' }).kind).toBe('unrecoverable');
+    // An upstream's auth failure named in a combo message is not this request's status.
+    expect(classify({ code: 'bad_gateway', message: 'unc/model: auth (HTTP 401)' }).kind).toBe('unrecoverable');
+  });
+
+  // A combo gateway lists every upstream's failure; the order is not fixed.
+  it('reads every (HTTP NNN) marker in a combo message, not only the first', () => {
+    expect(classify({
+      code: 'bad_gateway',
+      message: 'unc/model: auth (HTTP 401); cfp/model: Service temporarily unavailable (HTTP 503)',
+    }).kind).toBe('transient');
+    expect(classify({
+      code: 'bad_gateway',
+      message: 'unc/model: auth (HTTP 401); cfp/model: slow down (HTTP 429)',
+    }).kind).toBe('rate_limit');
+  });
+
+  it('reads a textual server-failure code or type as its status when the message names none', () => {
+    expect(classify({ code: 'bad_gateway', message: 'no status here' }).kind).toBe('transient');
+    expect(classify({ code: 'service_unavailable', message: 'try later' }).kind).toBe('transient');
+    expect(classify({ code: 'gateway_timeout', message: 'upstream timed out' }).kind).toBe('transient');
+    expect(classify({ code: 'upstream_failed', type: 'server_error', message: 'all upstreams failed' }).kind).toBe('transient');
+  });
+
+  // Never pay twice: a litellm output failure stays an output failure even
+  // under a server-failure code, because the model already ran and was billed.
+  it('keeps a litellm output failure under a textual server-failure code unretried', () => {
+    const err = classify({ code: 'bad_gateway', type: 'server_error', message: 'Unable to get json response - Expecting value (HTTP 502)' });
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.paidSendOutcome).toBe('output_failure');
+  });
+
   // Never pay twice (Phase 1): the model ran and was billed; only its output
   // was lost, so a resend would pay for the same work again. It used to be
   // classified transient and retried.

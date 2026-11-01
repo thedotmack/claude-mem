@@ -516,6 +516,11 @@ class ClaudeMemClient:
         self._sessions.pop(session.id, None)
         if not session.anchored or session.excluded or self._excluded(cwd):
             return
+        # Same gate as _record_tool: when the last prompt was wholly private the
+        # turn was never recorded, so its closing assistant message is dropped
+        # too — session.anchored is historical and does not cover the last turn.
+        # The session itself still ends: its earlier public turns were recorded.
+        last_turn_private = bool(session.prompts_sent and not session.last_prompt_recorded)
         try:
             if self.config.server:
                 reply = as_json(self.transport.server("POST", "/v1/sessions/start", {
@@ -528,22 +533,25 @@ class ClaudeMemClient:
                 server_id = started.get("id") if isinstance(started, dict) else None
                 if not isinstance(server_id, str) or not server_id:
                     return
-                self.transport.server("POST", "/v1/events", {
-                    "projectId": self.config.project_id,
-                    "serverSessionId": server_id,
-                    "contentSessionId": session.id,
-                    "platformSource": PLATFORM_SOURCE,
-                    "sourceType": "hook",
-                    "eventType": "assistant_message",
-                    "occurredAtEpoch": int(time.time() * 1000),
-                    "payload": {"last_assistant_message": strip_tags(last_assistant_message),
-                                "platformSource": PLATFORM_SOURCE},
-                })
+                if not last_turn_private:
+                    self.transport.server("POST", "/v1/events", {
+                        "projectId": self.config.project_id,
+                        "serverSessionId": server_id,
+                        "contentSessionId": session.id,
+                        "platformSource": PLATFORM_SOURCE,
+                        "sourceType": "hook",
+                        "eventType": "assistant_message",
+                        "occurredAtEpoch": int(time.time() * 1000),
+                        "payload": {"last_assistant_message": strip_tags(last_assistant_message),
+                                    "platformSource": PLATFORM_SOURCE},
+                    })
                 self.transport.server("POST", "/v1/sessions/" + urllib.parse.quote(server_id, safe="") + "/end", {})
-            else:
+            elif not last_turn_private:
+                # The worker also skips summarize for a private last prompt;
+                # not sending the message at all keeps it off the wire.
                 self.transport.worker("POST", "/api/sessions/summarize", {
                     "contentSessionId": session.id,
-                    "last_assistant_message": last_assistant_message,
+                    "last_assistant_message": strip_tags(last_assistant_message),
                     "platformSource": PLATFORM_SOURCE,
                     "cwd": cwd,
                 })

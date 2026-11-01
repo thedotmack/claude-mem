@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "15.6.0",
+  "version": "15.7.0",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",
@@ -129,7 +129,9 @@
     "release": "np",
     "release:patch": "np patch --no-cleanup",
     "release:minor": "np minor --no-cleanup",
-    "release:major": "np major --no-cleanup"
+    "release:major": "np major --no-cleanup",
+    "test:media-converter": "bun test tests/media/converter.test.ts",
+    "smoke:media-binary": "node scripts/smoke-media-binary.cjs"
   },
   "np": {
     "yarn": false,
@@ -139,9 +141,10 @@
   },
   "dependencies": {
     "@better-auth/api-key": "^1.6.16",
-    "better-auth": "^1.6.16"
+    "better-auth": "^1.6.16",
+    "sharp": "0.35.5"
   },
-  "//dependencies-note": "Only deps that survive the bundler as a live `import`/`require` in a shipped artifact live here — better-auth (+ api-key) is the server-runtime auth surface, externalized from the worker bundle deliberately (see scripts/build-hooks.js). @huggingface/transformers, the server's embedder, is a devDependency here: LocalEmbedder loads it by dynamic import, the server bundle keeps it external along with its onnxruntime-node and sharp, and a server resolves it from plugin/package.json's optional dependencies (see scripts/build-hooks.js), never from this package. Everything else (express, bullmq, ioredis, react, react-dom, dompurify, @clack/prompts, ansi-to-html, posthog-node, shell-quote, pg, zod, @modelcontextprotocol/sdk, @anthropic-ai/claude-agent-sdk) is esbuild-inlined into the worker/server/npx bundles (the worker and MCP server inline zod too; the other plugin bundles still resolve zod from plugin/package.json's own dependency), so it is a build-time devDependency and is not downloaded by consumers of the `claude-mem` package.",
+  "//dependencies-note": "Sharp is the native media decoder, externalized and lazy-loaded only by media conversion. Only deps that survive the bundler as a live `import`/`require` in a shipped artifact live here — better-auth (+ api-key) is the server-runtime auth surface, externalized from the worker bundle deliberately (see scripts/build-hooks.js). @huggingface/transformers, the server's embedder, is a devDependency here: LocalEmbedder loads it by dynamic import, the server bundle keeps it external along with its onnxruntime-node and sharp, and a server resolves it from plugin/package.json's optional dependencies (see scripts/build-hooks.js), never from this package. Everything else (express, bullmq, ioredis, react, react-dom, dompurify, @clack/prompts, ansi-to-html, posthog-node, shell-quote, pg, zod, @modelcontextprotocol/sdk, @anthropic-ai/claude-agent-sdk) is esbuild-inlined into the worker/server/npx bundles (the worker and MCP server inline zod too; the other plugin bundles still resolve zod from plugin/package.json's own dependency), so it is a build-time devDependency and is not downloaded by consumers of the `claude-mem` package.",
   "overrides": {
     "tmp": "^0.2.7",
     "onnxruntime-node": "1.23.2",

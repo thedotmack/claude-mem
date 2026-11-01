@@ -51,7 +51,7 @@ function causeMessage(cause: unknown): string {
 
 const BUN_REMEDIATION = (ctx: RemediationContext): string =>
   ctx.platform === 'win32'
-    ? 'Install Bun manually then re-run `npx claude-mem install`. Windows: `winget install Oven-sh.Bun` (or `powershell -c "irm bun.sh/install.ps1 | iex"`).'
+    ? 'Install Bun manually then re-run `npx claude-mem install`. Windows: `winget install Oven-sh.Bun` (or `powershell -c "irm https://bun.sh/install.ps1 | iex"`).'
     : 'Install Bun manually then re-run `npx claude-mem install`. macOS/Linux: `curl -fsSL https://bun.sh/install | bash` (or `brew install oven-sh/bun/bun`).';
 
 const UV_REMEDIATION = (ctx: RemediationContext): string =>

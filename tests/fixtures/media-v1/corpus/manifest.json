@@ -1,0 +1,260 @@
+{
+  "version": 1,
+  "origin": "public-generated-and-nasa",
+  "generator": "scripts/media/generate-corpus.ts",
+  "encoder": {
+    "aom": "3.15.1",
+    "archive": "3.8.9",
+    "cairo": "1.18.6",
+    "cgif": "0.5.4",
+    "exif": "0.6.26",
+    "expat": "2.8.5",
+    "ffi": "3.8.0",
+    "fontconfig": "2.18.3",
+    "freetype": "2.14.3",
+    "fribidi": "1.0.17",
+    "glib": "2.90.0",
+    "harfbuzz": "14.5.0",
+    "heif": "1.23.5",
+    "highway": "1.4.0",
+    "imagequant": "2.4.1",
+    "lcms": "2.19.1",
+    "mozjpeg": "0826579",
+    "pango": "1.58.2",
+    "pixman": "0.46.4",
+    "png": "1.6.58",
+    "proxy-libintl": "0.5",
+    "rsvg": "2.63.2",
+    "tiff": "4.7.2",
+    "uhdr": "2.0.2",
+    "vips": "8.18.7",
+    "webp": "1.6.0",
+    "xml2": "2.15.4",
+    "zlib-ng": "2.3.3",
+    "sharp": "0.35.5"
+  },
+  "fixtures": [
+    {
+      "id": "screenshot-small-text",
+      "kind": "screenshot",
+      "recipe": "screenshot-v1",
+      "images": [
+        {
+          "file": "screenshot-small-text.png",
+          "sha256": "b2dc8ef54e12053b86f032d65387b1f717f8574e7cbc043eb736a3b7a344492a",
+          "width": 960,
+          "height": 640,
+          "label": "event1_image1"
+        }
+      ],
+      "expected_observations": [
+        {
+          "image_labels": [
+            "event1_image1"
+          ],
+          "facts": [
+            "Result: FAILED",
+            "migration 0064 checksum mismatch",
+            "Passed: 128; Failed: 1; Skipped: 0"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "terminal-error",
+      "kind": "terminal",
+      "recipe": "screenshot-v1",
+      "images": [
+        {
+          "file": "terminal-error.png",
+          "sha256": "62235115d60a2b10565b76111bc3b6abce8d1effcd44a3741dec379391c6387a",
+          "width": 1100,
+          "height": 500,
+          "label": "event1_image1"
+        }
+      ],
+      "expected_observations": [
+        {
+          "image_labels": [
+            "event1_image1"
+          ],
+          "facts": [
+            "TS2322 at src/auth/token.ts:42:7",
+            "string is not assignable to number",
+            "exit code 2"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "chart",
+      "kind": "chart",
+      "recipe": "screenshot-v1",
+      "images": [
+        {
+          "file": "chart.png",
+          "sha256": "7cded7ba506acf4b5a96818fe92a55508b2988ba57413b542fe015e54c12796d",
+          "width": 960,
+          "height": 640,
+          "label": "event1_image1"
+        }
+      ],
+      "expected_observations": [
+        {
+          "image_labels": [
+            "event1_image1"
+          ],
+          "facts": [
+            "Success: 80",
+            "Failure: 20",
+            "chart measures counts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "diagram",
+      "kind": "diagram",
+      "recipe": "screenshot-v1",
+      "images": [
+        {
+          "file": "diagram.png",
+          "sha256": "5c3a23e58a73ad1f16cb0c1725c0575556ab5c727352628b010c57afa7d0925e",
+          "width": 960,
+          "height": 640,
+          "label": "event1_image1"
+        }
+      ],
+      "expected_observations": [
+        {
+          "image_labels": [
+            "event1_image1"
+          ],
+          "facts": [
+            "Capture -> Convert -> Private store",
+            "No public URL"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "generated-image",
+      "kind": "generated-image",
+      "recipe": "photo-v1",
+      "images": [
+        {
+          "file": "generated-art.png",
+          "sha256": "f2159aaa512bbfd21b645b3a54551241979217e87a30e320987ce829e74b8e49",
+          "width": 960,
+          "height": 640,
+          "label": "event1_image1"
+        }
+      ],
+      "expected_observations": [
+        {
+          "image_labels": [
+            "event1_image1"
+          ],
+          "facts": [
+            "two triangular mountains",
+            "yellow circular sun at upper right",
+            "left mountain has a white peak"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "photograph",
+      "kind": "photograph",
+      "recipe": "photo-v1",
+      "images": [
+        {
+          "file": "nasa-apollo17-blue-marble.jpg",
+          "sha256": "13419b34c17722be52b4a71a7f0beb3ecc8673183c8a2cee8572d5cd9bbe3f93",
+          "width": 1024,
+          "height": 1024,
+          "label": "event1_image1"
+        }
+      ],
+      "expected_observations": [
+        {
+          "image_labels": [
+            "event1_image1"
+          ],
+          "facts": [
+            "Earth against black space",
+            "Africa is visible near the center",
+            "white cloud bands cross the southern hemisphere"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "dark-ui",
+      "kind": "dark-ui",
+      "recipe": "screenshot-v1",
+      "images": [
+        {
+          "file": "dark-ui.png",
+          "sha256": "1e126a98b875947266cdae48955df0fe671e602874728c92f4ca85de1aa7b2c2",
+          "width": 960,
+          "height": 640,
+          "label": "event1_image1"
+        }
+      ],
+      "expected_observations": [
+        {
+          "image_labels": [
+            "event1_image1"
+          ],
+          "facts": [
+            "17 objects pending deletion",
+            "64 MiB / 256 MiB quota",
+            "Inference: DISABLED"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "two-image-event",
+      "kind": "two-image-event",
+      "recipe": "screenshot-v1",
+      "images": [
+        {
+          "file": "two-image-before.png",
+          "sha256": "6f73a737b7915844944764b4ef668123848381063502bfee2f46cc349a62ace0",
+          "width": 800,
+          "height": 500,
+          "label": "event1_image1"
+        },
+        {
+          "file": "two-image-after.png",
+          "sha256": "99a36b54ee2454cd04e1478ee559fa4487651163d258a7f976cda98388ec4656",
+          "width": 800,
+          "height": 500,
+          "label": "event1_image2"
+        }
+      ],
+      "expected_observations": [
+        {
+          "image_labels": [
+            "event1_image1"
+          ],
+          "facts": [
+            "BEFORE: HTTP 500",
+            "red status card"
+          ]
+        },
+        {
+          "image_labels": [
+            "event1_image2"
+          ],
+          "facts": [
+            "AFTER: HTTP 200",
+            "green status card"
+          ]
+        }
+      ]
+    }
+  ]
+}
