@@ -110,6 +110,33 @@ Until this endpoint deploys, the plugin falls back to JSON-RPC
 aware injected context = raw memory_search text until `/api/hooks/context`
 ships, so shipping it is what makes injection quality match local.
 
+### 3) `save_memory` tool on the hosted MCP connector
+
+Some hosts (Claude Duet cloud sessions) block the container's own network from
+cmem.ai, so the hooks above can't send anything. The hosted MCP connector still
+works there, because the host calls it through its own connector path. Today it
+is read-only (`memory_search`, `timeline`, `get_observations`, `get_summaries`,
+`list_projects`, `mem_answer`), so these sessions can recall but never save.
+
+Add one write tool to the hosted `/api/mcp` server, same contract as the local
+`save_memory` in `src/servers/mcp-server.ts`:
+
+- **Input:** `text` (required), `title`, `project`, `metadata` (object,
+  free-form provenance such as `{ "host": "duet", "channel": "chan_…" }`).
+- **Behavior:** strip `<private>` regions and redact secrets server-side (don't
+  trust the caller), then store it as an explicit note in `project` for the
+  key's user, through the same path `observation_add` uses. No observer run:
+  explicit notes are already durable.
+- **Output:** the new observation id and project, as text.
+- **Annotations:** `readOnlyHint: false`, `destructiveHint: false`,
+  `idempotentHint: false`.
+- **Limits:** cap `text` at ~8 KB; per-key rate limit like the other tools.
+
+The plugin already tells blocked sessions to use it: when it can't reach
+cmem.ai, the injected notice points at the connector for recall and says to
+save durable decisions through `save_memory` if the connector offers it. So
+shipping this tool is all that's left for Duet sessions to save.
+
 ---
 
 ## Rollout order
@@ -117,5 +144,7 @@ ships, so shipping it is what makes injection quality match local.
 1. `/api/hooks/context` (read-only, low risk) → good injection immediately.
 2. `/api/hooks/ingest` wired into the existing worker queue → Cowork sessions
    start generating observations.
-3. Optional later: per-event ack ids + client-side exactly-once, WebSocket
+3. `save_memory` on the hosted MCP connector → hosts that block cmem.ai
+   (Claude Duet) can save explicit notes.
+4. Optional later: per-event ack ids + client-side exactly-once, WebSocket
    push, and a `platformSource='cowork'` slice in the admin metrics strip.
