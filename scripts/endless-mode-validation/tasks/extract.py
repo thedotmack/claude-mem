@@ -141,7 +141,8 @@ def main():
             # The turn a request belongs to: the one running when it was sent (observer work after the last turn: none).
             turn_no = next((t for t, start, end in turns if start <= epoch <= end), None)
             model, usage, output, complete = usage_of((args.arm_dir / folder / f'{n}-resp.raw').read_bytes())
-            if status != 200 or usage is None:
+            # A 200 that is not a model reply (e.g. GET /v1/models) has no model and no usage: nothing to price.
+            if status != 200 or usage is None or (not model and not usage):
                 db.execute('INSERT INTO requests (run_id, source, n, time, epoch, turn_no, status, model) VALUES (?,?,?,?,?,?,?,?)',
                            (args.run_id, source, int(n), meta['time'], epoch, turn_no, status, model))
                 continue

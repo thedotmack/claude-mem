@@ -78,6 +78,13 @@ def log(msg):
 
 # ---------------------------------------------------------------------------------------------------- judge
 
+
+def port_open(port):
+    import socket
+    with socket.socket() as c:
+        c.settimeout(1)
+        return c.connect_ex(('127.0.0.1', port)) == 0
+
 class Judge:
     def __init__(self, base, model, key):
         self.base, self.model, self.key = base.rstrip('/'), model, key
@@ -93,7 +100,7 @@ class Judge:
 
     def ask(self, task, material):
         """One verdict: {"pass": bool, "why": str} (plus anything the task asks for)."""
-        body = {'model': self.model, 'max_tokens': 600, 'system':
+        body = {'model': self.model, 'max_tokens': 4000, 'system':  # room for a thinking model's reasoning before the verdict
                 'You grade one check of a software test. Read the material, then answer with one JSON object and '
                 'nothing else: {"pass": true|false, "why": "<one sentence>"} plus any keys the check asks for. '
                 'Judge only on the material; if it is missing or unclear, pass is false.',
@@ -122,6 +129,9 @@ class Judge:
                 data = json.load(urllib.request.urlopen(req, timeout=180))
                 text = ''.join(b.get('text', '') for b in data.get('content', []))
                 found = re.search(r'\{.*\}', text, re.S)
+                if not found and attempt < 2:
+                    err = f'no verdict in: {text[:200]!r}'
+                    continue  # an empty answer (the reasoning ran out of room): ask again
                 return json.loads(found.group(0)) if found else {'pass': False, 'why': f'judge gave no verdict: {text[:200]}'}
             except Exception as e:  # noqa: BLE001  (network or parse trouble: retry, then report it as the verdict)
                 err = repr(e)
@@ -258,6 +268,7 @@ class Scoring:
         self.port = SCORE_PORTS[arm]
         self.imsg = self.score / 'imsg'
         self.proc = None
+        self.gw = None
         self.seen = 0
 
     def sandboxed(self, cmd):
@@ -272,6 +283,8 @@ class Scoring:
                    IMSG_PROVIDER='fake', IMSG_FAKE_DIR=str(self.imsg), IMSG_OWNER=OWNER,
                    IMSG_SETUP_APPLE_ID='imessage-build-test@example.com', IMSG_SETUP_TUNNEL='test',
                    ANTHROPIC_BASE_URL=f'http://127.0.0.1:{self.port}', DO_NOT_TRACK='1',
+                   # the build's claude-mem keeps its wire gateway on base+2 (stack.sh); tell the build's own code too
+                   CLAUDE_MEM_WIRE_GATEWAY_PORT=str(self.port + 2), CLAUDE_MEM_WIRE_GATEWAY_HOST='127.0.0.1',
                    GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=str(self.score / 'home' / '.gitconfig'), GIT_TERMINAL_PROMPT='0')
         if self.args.profile == 'openrouter':
             env.update(ANTHROPIC_AUTH_TOKEN=self.key, ANTHROPIC_API_KEY='', CLAUDE_MEM_OPENROUTER_API_KEY=self.key)
@@ -325,8 +338,33 @@ class Scoring:
             (d / 'MY-RULES.md').write_text(MY_RULES)
         return None
 
+    def start_gateway(self):
+        """Stand in for the worker's gateway autostart. stack.sh turns autostart off so the test controls every
+        process; a real install starts the gateway whenever routes.json has a route. So if the build's setup added a
+        route, start the build's own gateway on its settings port before the agent runs."""
+        routes = self.score / 'data' / 'wire-gateway' / 'routes.json'
+        try:
+            has_route = bool(json.loads(routes.read_text()).get('routes'))
+        except (OSError, ValueError):
+            has_route = False
+        port = self.port + 2
+        if not has_route or self.gw or port_open(port):
+            return
+        log(f'{self.arm}: the build added a gateway route; starting its gateway on {port} (what autostart does on a real install)')
+        self.gw = subprocess.Popen(self.sandboxed(['bun', str(self.repo / 'src/services/wire-gateway/WireGatewayService.ts'), 'start', '--foreground']),
+                                   cwd=self.repo, env=self.env(), stdout=open(self.score / 'gateway.log', 'a'), stderr=subprocess.STDOUT,
+                                   start_new_session=True)
+        for _ in range(60):
+            if port_open(port):
+                return
+            time.sleep(0.5)
+        log(f'{self.arm}: the gateway did not come up; see gateway.log')
+
     def stop_sandbox(self):
         self.stop_agent()
+        if self.gw and self.gw.poll() is None:
+            os.killpg(self.gw.pid, signal.SIGTERM)
+        self.gw = None
         subprocess.run([str(TASKS / 'stack.sh'), 'stop', 'claudemem', str(self.score)], capture_output=True)
 
     def run_cmd(self, cmd, timeout=900):
@@ -337,6 +375,10 @@ class Scoring:
     # ------------------------------------------------------------------ the fake iMessage line
 
     def start_agent(self, cmd):
+        # Some builds write the spec's names as placeholders (IMSG_FAKE_DIR=<dir> IMSG_OWNER=<owner>); fill the contract
+        # with the same values the scorer already sets in the environment, so bash doesn't read <dir> as a redirect.
+        import shlex
+        cmd = cmd.replace('<dir>', shlex.quote(str(self.imsg))).replace('<owner>', shlex.quote(OWNER))
         out = open(self.score / 'agent.log', 'a')
         self.proc = subprocess.Popen(self.sandboxed(['/bin/bash', '-c', cmd]), cwd=self.repo, env=self.env(), stdout=out,
                                      stderr=subprocess.STDOUT, start_new_session=True)
@@ -422,6 +464,7 @@ def product_checks(card, sc, judge, contract, quick, prompts):
                       'real open item from the user\'s work state below (not a made-up one).',
                       f'Work state:\n{seed_txt}\n\nFirst text:\n{texts(setup_texts[:3])}')
         card.verdict('S5', v, '(fake iMessage line; confirm the real first text by hand)')
+    sc.start_gateway()
     started = sc.start_agent(contract['run_fake'])
     if not started:
         tail = (sc.score / 'agent.log').read_text()[-600:] if (sc.score / 'agent.log').exists() else ''
@@ -535,18 +578,25 @@ def product_checks(card, sc, judge, contract, quick, prompts):
     base_len = sum(len(r) for r in d1_replies) / max(len(d1_replies), 1)
     sc.send('be shorter with me from now on')
     sc.answer(timeout=180, settle=10)
-    lens = []
+    lens = []  # None: no answer at all (never counts as short)
+
+    def reply_len(msgs):
+        real = [m for m in msgs if not is_receipt(m)]
+        return len(texts(real)) if real else None
     for i in range(10):
         q, _ = RECALL[i % 5]
         sc.send(q)
-        lens.append(len(texts(sc.answer())))
+        lens.append(reply_len(sc.answer()))
+        if lens[-3:] == [None, None, None]:
+            break  # the agent has gone quiet: no point waiting out the rest
     sc.stop_agent()
     sc.start_agent(contract['run_fake'])
     sc.new_out()
     for q, _ in RECALL[:2]:
         sc.send(q)
-        lens.append(len(texts(sc.answer())))
-    short = sum(l <= 0.7 * base_len for l in lens)
+        lens.append(reply_len(sc.answer()))
+    lens += [None] * (12 - len(lens))
+    short = sum(l is not None and l <= 0.7 * base_len for l in lens)
     card.set('P2', 'pass' if short == len(lens) else 'fail',
              f'{short} of {len(lens)} replies at most 70% of the earlier average ({base_len:.0f} chars), the last 2 after a restart')
     # R1: the Role agent's own sessions use no edit or shell tools.
@@ -613,7 +663,7 @@ FILLER = ['how\'s your day going?', 'what\'s a good name for a cat?', 'any tips 
 def long_conversation(card, sc, judge):
     """P3, P4: 200 texts. Text 5 plants a fact; text 200 asks for it. The largest prompt per text comes from the
     recording proxy in front of the model."""
-    marks = []
+    marks, silent = [], 0
     for i in range(1, 201):
         if i == 5:
             text = 'remember this: my gym locker code is 4711'
@@ -624,6 +674,12 @@ def long_conversation(card, sc, judge):
         t = sc.send(text)
         got = sc.answer(timeout=240, settle=3)
         marks.append((i, t, time.time()))
+        silent = silent + 1 if not [m for m in got if not is_receipt(m)] else 0
+        if silent >= 5:
+            log(f'  P3/P4: no answer to texts {i - 4}-{i}; stopping the 200-text conversation')
+            card.set('P3', 'fail', f'the agent stopped answering (no answer to texts {i - 4}-{i})')
+            card.set('P4', 'fail', f'the agent stopped answering before text 200 (last 5 unanswered: {i - 4}-{i})')
+            return
         if i == 200:
             v = judge.ask('The user said at text 5 "my gym locker code is 4711"; at text 200 they asked for it. '
                           'Pass if the answer gives 4711.', f'Answer:\n{texts(got)}')
@@ -663,7 +719,7 @@ BY_HAND = {'S1': 'one command on a clean Mac', 'S4': 'answers after a reboot', '
 def bill(out, arm):
     db = sqlite3.connect(out / 'results.sqlite')
     # List price where known; OpenRouter's own charge for a request whose model has no listed price.
-    rows = dict(db.execute('SELECT source, sum(coalesce(cost_usd, measured_cost_usd, 0)) FROM requests WHERE run_id=? GROUP BY source',
+    rows = dict(db.execute('SELECT source, sum(coalesce(measured_cost_usd, cost_usd, 0)) FROM requests WHERE run_id=? GROUP BY source',
                            (f'imsg-{arm}',)).fetchall())
     measured = db.execute('SELECT sum(measured_cost_usd), count(measured_cost_usd) FROM requests WHERE run_id=? AND source="agent"',
                           (f'imsg-{arm}',)).fetchone()

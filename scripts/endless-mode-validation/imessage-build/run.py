@@ -254,8 +254,10 @@ def make_seed(out, base_ref, prompts):
     git_env = clean_git_env(out / 'seed-home')
     pushed = sh(['git', '-C', str(REPO), 'push', '-q', '--no-verify', str(seed), f'{base}:refs/heads/feat/wire-gateway'],
                 check=False)
+    # The seed's only branch is feat/wire-gateway: point its HEAD there so clones check it out.
+    sh(['git', '-C', str(seed), 'symbolic-ref', 'HEAD', 'refs/heads/feat/wire-gateway'])
     if pushed.returncode == 0:
-        sh(['git', 'clone', '-q', str(seed), str(work)])
+        sh(['git', 'clone', '-q', '-b', 'feat/wire-gateway', str(seed), str(work)])
     else:
         # A shallow checkout can't push its history: start from a one-commit snapshot of the base instead.
         log(f'seed: no history to copy ({pushed.stderr.strip().splitlines()[-1] if pushed.stderr.strip() else "push failed"});'
