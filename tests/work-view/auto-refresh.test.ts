@@ -54,6 +54,22 @@ function deferred<T>() {
 }
 
 describe('automatic refresh scheduler', () => {
+  it('allows an on-demand run while scheduled refresh is disabled', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
+    try {
+      const database = fixtureDatabase();
+      const jobs: Array<{ needs: any; reason: string }> = [];
+      const worker = new AutoRefreshWorker({
+        localDeviceId: () => '', dir, openDatabase: handle(database), enabled: () => false,
+        runJob: async job => { jobs.push(job); return { state: 'ok', agent: 'claude-code', result: 'done', error: null }; },
+      });
+      expect(await worker.check()).toBe('disabled');
+      expect(await worker.runNow({ reason: 'manual' })).toBe('ok');
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0].reason).toBe('manual');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('starts one run when something is due, never a second while it runs, and records the result', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
     try {

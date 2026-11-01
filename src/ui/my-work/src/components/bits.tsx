@@ -10,7 +10,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
 import { isSampleHref, measuredEstimate, SAMPLE_DEVICES, type Device, type LiveState, type Request, type Run, type SkillRun } from '@/data'
-import { agentById, deviceById, useConnection, useWorkModel, useWorkspace } from '@/store'
+import { agentById, deviceById, useConnection, useStore, useWorkModel, useWorkspace } from '@/store'
 import type { AutoRefresh } from '@/live/work-data-source'
 import { focusAreaLabel, resolveFocusAreaId } from '@/live/to-focus-model'
 import { AgentMark } from './brand'
@@ -324,6 +324,31 @@ export function RefreshStatus({ refresh, run, ids, label = 'Last run' }: { refre
   return (
     <Req ids={[...ids, 'R14.10']}>
       <span className="block w-full text-xs leading-tight text-muted-foreground sm:w-auto sm:text-right" aria-live="polite">{text}</span>
+    </Req>
+  )
+}
+
+/** Starts the local goals and progress refresh on demand. */
+export function ManualRefreshButton({ ids, running = false }: { ids: string[]; running?: boolean }) {
+  const refreshWork = useStore((state) => state.refreshWork)
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const start = async () => {
+    setPending(true)
+    setError(null)
+    try { await refreshWork() }
+    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
+    finally { setPending(false) }
+  }
+  return (
+    <Req ids={ids}>
+      <div className="flex items-center gap-2">
+        {error && <span role="alert" className="text-xs text-attention-foreground">{error}</span>}
+        <Button variant="outline" size="sm" className="h-11 min-w-11 md:h-8 md:min-w-0" onClick={start} disabled={pending || running}>
+          {pending || running ? <Spinner /> : <RefreshCwIcon />}
+          Refresh now
+        </Button>
+      </div>
     </Req>
   )
 }

@@ -605,6 +605,12 @@ export class WorkViewRoutes extends BaseRouteHandler {
     app.post('/api/work-view/agents/mark-finished', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(markAgentFinishedBody), this.wrapHandler(this.markAgentFinished));
     app.post('/api/work-view/suggestions', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(suggestionBody), this.wrapHandler(this.answerSuggestion));
     app.post('/api/work-view/rules/load-in-claude-code', workViewLoopbackOnly, requireWorkViewOrigin, this.wrapHandler(this.loadRulesInClaudeCode));
+    app.post('/api/work-view/refresh', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(z.object({}).strict()), this.wrapHandler((_req, res) => {
+      if (!this.autoRefresh) { res.status(503).json({ error: 'Refresh is unavailable on this worker.' }); return; }
+      const started = this.autoRefresh.runNow({ reason: 'manual' });
+      void started.catch(error => logger.warn('HTTP', 'Could not start a manual work-view refresh', { error: error instanceof Error ? error.message : String(error) }));
+      res.status(202).json({ accepted: true });
+    }));
     app.post('/api/work-view/usage', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(usageBody), this.wrapHandler(this.recordUsage));
     // Shared focus pages: this worker signs the cmem.ai calls, so the sync credential never reaches the page.
     app.get('/api/work-view/focus/shares', workViewLoopbackOnly, requireWorkViewReadOrigin, this.wrapHandler(this.listFocusShares));
