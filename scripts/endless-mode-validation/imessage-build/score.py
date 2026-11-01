@@ -240,16 +240,27 @@ def session_digest(arm_dir, n, tail, limit=60):
 
 def snapshot(score):
     """Hashes of the files setup could change (the user's home, claude-mem's data dir, Claude's config)."""
-    skip = re.compile(r'(^|/)(logs?|tee|observer-tee|imsg|projects|statsig|todos|shell-snapshots|\.npm|\.bun|cache|Caches)(/|$)'
+    return {rel: digest for rel, digest in snapshot_all(score).items() if counted(rel)}
+
+
+SNAP_SKIP = re.compile(r'(^|/)(logs?|tee|observer-tee|imsg|projects|statsig|todos|shell-snapshots|\.npm|\.bun|cache|Caches)(/|$)'
                       r'|\.(log|db|db-wal|db-shm|sqlite|sqlite-wal|sqlite-shm|pid)$|(^|/)pids$'
                       r'|^data/(worker-heartbeat\.json|observer-health\.json|\.fts-[^/]*)$'
                       r'|^data/state/context-cache/')  # claude-mem's own worker files and caches, not setup's
+
+
+def counted(rel):
+    return not SNAP_SKIP.search(rel) and not CLAUDE_OWN.search(rel)
+
+
+def snapshot_all(score):
+    """Every file under the sandbox's home, data dir and Claude config, before the undo check's filters."""
     out = {}
     for root in ('home', 'data', 'claude-config'):
         base = score / root
         for path in base.rglob('*') if base.exists() else []:
             rel = f'{root}/{path.relative_to(base)}'
-            if path.is_file() and not skip.search(rel) and not CLAUDE_OWN.search(rel) and path.stat().st_size < 5_000_000:
+            if path.is_file() and path.stat().st_size < 5_000_000:
                 digest = file_digest(rel, path)
                 if digest:
                     out[rel] = digest
@@ -259,13 +270,20 @@ def snapshot(score):
 # Files Claude Code writes for itself whenever it runs (startup counters, its own backups and plugin caches): not
 # something a build's setup or undo controls, so the undo check leaves them out.
 CLAUDE_OWN = re.compile(r'^claude-config/(\.last-cleanup|backups/|plugins/plugin-directory-cache[^/]*\.json$'
-                        r'|plugins/store/[^/]*_builtin-[^/]*$|state/mcp-discover-verdicts\.json$)')
+                        r'|plugins/store/[^/]*_builtin-[^/]*$|state/mcp-discover-verdicts\.json$)'
+                        r'|^home/\.cache/claude-cli-nodejs/')
 # In .claude.json only the parts setup could register count (MCP servers); the rest is Claude Code's own bookkeeping.
 CLAUDE_JSON_KEYS = ('mcpServers', 'enabledMcpjsonServers', 'disabledMcpjsonServers')
 
 
 def file_digest(rel, path):
     data = path.read_bytes()
+    if rel == 'data/wire-gateway/routes.json':
+        try:
+            if not (json.loads(data).get('routes') or {}):
+                return None  # a routes file with no routes is the same as no route
+        except (ValueError, AttributeError):
+            pass
     if rel == 'claude-config/.claude.json':
         try:
             doc = json.loads(data)
@@ -787,7 +805,8 @@ def write_report(out, arms, cards, bills):
 
 def undo_check(sc, contract):
     """S3 on its own, in a fresh sandbox (<arm>/score-undo): setup, a short chat on the fake line, then undo."""
-    before = snapshot(sc.score)
+    before = snapshot_all(sc.score)
+    (sc.score / 'undo-before.json').write_text(json.dumps(before, indent=0, sort_keys=True))
     code, out = sc.run_cmd(contract['setup'])
     if code:
         return 'fail', f'setup failed (exit {code}): {out.strip().splitlines()[-1:]}'
@@ -799,10 +818,18 @@ def undo_check(sc, contract):
             sc.answer(timeout=240, settle=10)
     sc.stop_agent()
     code, out = sc.run_cmd(contract['undo'])
-    added, removed, changed = diff_snap(before, snapshot(sc.score))
+    after = snapshot_all(sc.score)
+    (sc.score / 'undo-after.json').write_text(json.dumps(after, indent=0, sort_keys=True))
+    (sc.score / 'undo-exit').write_text(str(code))
+    return undo_verdict(code, before, after)
+
+
+def undo_verdict(code, before, after):
+    keep = lambda snap: {k: v for k, v in snap.items() if counted(k) and v}  # noqa: E731
+    added, removed, changed = diff_snap(keep(before), keep(after))
     result = 'pass' if code == 0 and not (added or removed or changed) else 'fail'
-    return result, (f'undo exit {code}; versus before setup (setup, 3 texts, undo; Claude Code\'s own files left out): '
-                    f'added {added[:6]}, removed {removed[:6]}, changed {changed[:6]} (sandbox HOME)')
+    return result, (f'undo exit {code}; versus before setup (setup, 3 texts, undo; Claude Code\'s and Claude-Mem\'s own '
+                    f'runtime files left out): added {added[:10]}, removed {removed[:10]}, changed {changed[:10]} (sandbox HOME)')
 
 
 def rescore_undo(out, arms, args, key):
@@ -812,6 +839,13 @@ def rescore_undo(out, arms, args, key):
         doc = json.loads(doc_path.read_text())
         contract = json.loads((arm_dir / 'repo' / 'imessage-agent.test.json').read_text())
         work = arm_dir / 'score-undo'
+        if getattr(args, 'undo_from_saved', False):  # re-judge the last undo run with the current filters
+            before, after = (json.loads((work / f).read_text()) for f in ('undo-before.json', 'undo-after.json'))
+            result, evidence = undo_verdict(int((work / 'undo-exit').read_text()), before, after)
+            log(f'  {arm} S3: {result} ({evidence[:220]})')
+            doc['checks']['S3'] = {'result': result, 'evidence': evidence}
+            doc_path.write_text(json.dumps(doc, indent=1))
+            continue
         if work.exists():
             shutil.rmtree(work)
         sc = Scoring(arm, arm_dir, args, key, score_dir='score-undo')
@@ -847,6 +881,8 @@ def main():
     p.add_argument('--judge-model', default='', help='default: --model')
     p.add_argument('--quick', action='store_true')
     p.add_argument('--only-undo', action='store_true', help='rerun only S3 (undo) for each arm, then rewrite the scorecard')
+    p.add_argument('--undo-from-saved', action='store_true',
+                   help='with --only-undo: re-judge the saved file lists of the last undo run instead of running it again')
     p.add_argument('--report-only', action='store_true',
                    help='only write scorecard.md from each <out>/<arm>/score/result.json (builds scored on separate Sprites)')
     args = p.parse_args()
