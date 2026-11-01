@@ -72,3 +72,17 @@ test('a title that repeats the owner\'s prompt stays home; a written title goes 
   const written = { ...model, requests: model.requests.map((request) => request.id === 'r1' ? { ...request, title: 'Safari sign-in fixed', prompts: [{ at: 'now', quote: prompt }] } : request) }
   assert.equal(toSharedFocusPage(written, 'fa-viewer', NOW)!.requests.find((request) => request.id === 'r1')!.title, 'Safari sign-in fixed')
 })
+
+test('a title that repeats a prompt past the quoted part, an echoing ask or an echoing goal stays home', async () => {
+  const model = await sampleSource.loadWorkModel()
+  const flagged = { ...model, requests: model.requests.map((request) => request.id === 'r1' ? { ...request, title: 'Ship the private beta to Acme', titleRepeatsPrompt: true } : request) }
+  assert.equal(toSharedFocusPage(flagged, 'fa-viewer', NOW)!.requests.find((request) => request.id === 'r1')!.title, 'Untitled request')
+  const quote = { at: 'now', quote: 'Get the board deck to Acme by Friday, please.' }
+  const echoing = { ...model, focusAreas: model.focusAreas.map((area) => area.id === 'fa-viewer'
+    ? { ...area, goal: 'Get the board deck to Acme by Friday', quotes: [quote], asks: [{ id: 'ask-x', title: 'board deck to Acme', timesAsked: 2, latestAt: '', quotes: [quote] }] }
+    : area) }
+  const page = toSharedFocusPage(echoing, 'fa-viewer', NOW)!
+  assert.equal(page.area.goal, null)
+  assert.deepEqual(page.notStarted.map((ask) => ask.title), ['Untitled ask'])
+  assert.ok(!JSON.stringify(page).includes('Acme'))
+})

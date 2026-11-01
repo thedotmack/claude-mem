@@ -6,9 +6,10 @@
 // What it shows stays relevant to the people it is shared with (R17.3): only requests placed in this area, so a new
 // request shows up when it lands here and nothing from other areas or Other ever does. Moving a request out of the
 // area takes it off the page. Closed requests stay off, as they do on My Work. The owner's own words (quotes,
-// prompts, and titles that repeat a prompt), terminal lines, evidence links, work product, conversations and machine
-// names never leave.
+// prompts, and any title, ask or goal that repeats them), terminal lines, evidence links, work product,
+// conversations and machine names never leave.
 import { OTHER_FOCUS_AREA_ID, type FocusArea, type Request } from '../data.ts'
+import { repeatsOwnerWords } from './prompt-echo.ts'
 import { resolveFocusAreaId } from './to-focus-model.ts'
 import type { WorkModel } from './work-data-source.ts'
 
@@ -46,25 +47,22 @@ export interface SharedFocusPage {
 
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text)
 const UNTITLED = 'New request, title being written'
-/** In place of a title that repeats the owner's own prompt, which stays on this computer. */
+/** In place of text that repeats the owner's own words (prompt-echo.ts), which stay on this computer. */
 const PRIVATE_TITLE = 'Untitled request'
+const PRIVATE_ASK = 'Untitled ask'
 
-const plain = (text: string) => text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
-
-/**
- * Whether a title repeats the request's own prompts. A request's first title can be the opening prompt's first
- * sentence (request-judge.mjs ownTitle), so a title found in a prompt, cut marks and markdown aside, never leaves.
- */
+/** Whether a title repeats the request's own prompts as the card quotes them. */
 export function titleQuotesPrompt(title: string, prompts: readonly { quote: string }[]): boolean {
-  const words = plain(title.replace(/…$/, ''))
-  return !!words && prompts.some((prompt) => plain(prompt.quote).includes(words))
+  return repeatsOwnerWords(title, prompts.map((prompt) => prompt.quote))
 }
 
 function sharedTitle(request: Request): string {
   const title = request.title?.trim()
   if (!title) return UNTITLED
-  return titleQuotesPrompt(title, request.prompts) ? PRIVATE_TITLE : title
+  return request.titleRepeatsPrompt || titleQuotesPrompt(title, request.prompts) ? PRIVATE_TITLE : title
 }
+
+const ownWords = (area: FocusArea) => [...area.quotes, ...area.asks.flatMap((ask) => ask.quotes)].map((quote) => quote.quote)
 
 /** The requests in an area, as My Work lists them when the area is selected. */
 export function requestsInArea(model: Pick<WorkModel, 'requests' | 'focusAreas'>, focusAreaId: string): Request[] {
@@ -91,7 +89,7 @@ export function toSharedFocusPage(model: Pick<WorkModel, 'requests' | 'focusArea
     area: {
       id: area.id,
       name: clip(area.name, 120),
-      goal: area.goal ? clip(area.goal, 500) : null,
+      goal: area.goal && !repeatsOwnerWords(area.goal, ownWords(area)) ? clip(area.goal, 500) : null,
       done: area.status === 'done',
       shipped: all.filter((request) => request.state === 'shipped').length,
       progress: { percent, reviewed: reviewed.length, total: all.length },
@@ -109,7 +107,7 @@ export function toSharedFocusPage(model: Pick<WorkModel, 'requests' | 'focusArea
       runningFor: clip(request.runningFor, 60),
       completedAt: request.progress.completedAt ? clip(request.progress.completedAt, 60) : null,
     })),
-    notStarted: area.asks.slice(0, SHARED_ASKS_MAX).map((ask) => ({ id: ask.id, title: clip(ask.title, 200), timesAsked: ask.timesAsked, latestAt: ask.latestAt || null })),
+    notStarted: area.asks.slice(0, SHARED_ASKS_MAX).map((ask) => ({ id: ask.id, title: clip(repeatsOwnerWords(ask.title, ask.quotes.map((quote) => quote.quote)) ? PRIVATE_ASK : ask.title, 200), timesAsked: ask.timesAsked, latestAt: ask.latestAt || null })),
     generatedAt: new Date(now).toISOString(),
   }
 }
