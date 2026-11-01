@@ -183,6 +183,23 @@ check('multi-line private region gone from tool_response', !out2c.includes('line
 check('private region gone from session-init prompt', init2c?.body.payload.prompt === 'plan the launch  by friday', init2c?.body.payload.prompt);
 check('surrounding signal kept', in2c.includes('before') && in2c.includes('after'), in2c);
 
+// nested blocks go whole, an unclosed tag drops the rest, escaped forms too
+received = [];
+await run('observation', {
+  session_id: 's1', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_2c2',
+  tool_input: { command: 'ls', note: 'keep this <private>confidential plan' },
+  tool_response: 'README <private>outer<private>inner</private>secret tail</private> done &lt;private&gt;a&lt;private&gt;b&lt;/private&gt;escaped tail&lt;/private&gt; end'
+});
+await run('session-init', { session_id: 's1', prompt: 'ship it <private>unclosed budget note' });
+const ing2c2 = received.find(r => r.body?.payload?.tool_use_id === 'tu_2c2');
+const init2c2 = received.find(r => r.body?.event === 'session-init');
+const in2c2 = String(ing2c2?.body.payload.tool_input || '');
+const out2c2 = String(ing2c2?.body.payload.tool_response || '');
+check('unclosed private region dropped from tool_input', in2c2.includes('keep this') && !in2c2.includes('confidential'), in2c2);
+check('nested private region removed whole', !/outer|inner|secret tail|private/i.test(out2c2) && out2c2.includes('README') && out2c2.includes('done'), out2c2);
+check('nested escaped private region removed whole', !out2c2.includes('escaped tail') && out2c2.includes('end'), out2c2);
+check('unclosed private region dropped from session-init prompt', init2c2?.body.payload.prompt === 'ship it ', init2c2?.body.payload.prompt);
+
 // ---- 3. memory-tool feedback guard ----
 console.log('\n[3] skip guard');
 received = [];

@@ -28,7 +28,7 @@ import { spawnSync } from 'node:child_process';
 
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 // Keep in step with cowork/.claude-plugin/plugin.json "version"; every request sends it.
-const PLUGIN_HEADER = 'claude-mem-cowork/0.1.5';
+const PLUGIN_HEADER = 'claude-mem-cowork/0.1.6';
 // per-user, 0600 — never a shared world-readable temp dir (payloads may hold tool output)
 const SPOOL_DIR = join(homedir(), '.claude-mem');
 const SPOOL = join(SPOOL_DIR, 'cowork-spool.jsonl');
@@ -306,7 +306,25 @@ function redactSecrets(s) {
 // claude-mem's documented privacy convention: <private>…</private> regions are
 // never stored. Same tag list as the local plugin's src/utils/tag-stripping.ts
 // (context/system tags are dropped too so injected blocks don't echo back in).
-const STRIP_TAGS_RE = /<(private|claude-mem-context|system_instruction|system-instruction|persisted-output|system-reminder)\b[^>]*>[\s\S]*?<\/\1>/g;
+const STRIP_TAGS_RE = /<(claude-mem-context|system_instruction|system-instruction|persisted-output|system-reminder)\b[^>]*>[\s\S]*?<\/\1>/g;
+
+// <private> regions, literal or escaped (the app escapes < and > in what people
+// write). Nested blocks go innermost-first until none are left, so the outer
+// region goes whole instead of leaving its tail behind; an opening tag with no
+// close drops everything after it; a stray close tag is dropped. Errs toward
+// removing too much, never too little.
+const PRIVATE_ESCAPED_TAG_RE = /&lt;(\/?)private\b((?:(?!&gt;)[^<>])*)&gt;/gi;
+const PRIVATE_INNERMOST_RE = /<private\b[^>]*>(?:(?!<private\b)[\s\S])*?<\/private\s*>/gi;
+const PRIVATE_OPEN_TO_END_RE = /<private\b[\s\S]*$/i;
+const PRIVATE_STRAY_CLOSE_RE = /<\/private\s*>/gi;
+function removePrivateRegions(text, replacement = '') {
+  let out = text.replace(PRIVATE_ESCAPED_TAG_RE, '<$1private$2>');
+  for (let previous = null; previous !== out;) {
+    previous = out;
+    out = out.replace(PRIVATE_INNERMOST_RE, replacement);
+  }
+  return out.replace(PRIVATE_OPEN_TO_END_RE, replacement).replace(PRIVATE_STRAY_CLOSE_RE, replacement);
+}
 
 // strip privacy-tagged regions → truncate → redact secrets. Tag stripping runs
 // FIRST (on the full serialized value) so truncation can never cut off a
@@ -316,7 +334,7 @@ const STRIP_TAGS_RE = /<(private|claude-mem-context|system_instruction|system-in
 // &lt;private&gt;…&lt;/private&gt; and is stripped in that form too. clean()
 // and the image upload gate share this, so they agree on what is private.
 function stripPrivacyRegions(text) {
-  return text.replace(STRIP_TAGS_RE, '').replace(/&lt;private\b[\s\S]*?&lt;\/private&gt;/gi, '');
+  return removePrivateRegions(text).replace(STRIP_TAGS_RE, '');
 }
 
 function clean(v, cap) {
@@ -678,10 +696,7 @@ async function onSessionStart(input) {
 // anything is cut, and again after decoding; an opening tag with no close
 // drops everything after it.
 function stripPrivate(s) {
-  return s
-    .replace(/<private\b[^>]*>[\s\S]*?<\/private>/gi, ' ')
-    .replace(/&lt;private\b[\s\S]*?&lt;\/private&gt;/gi, ' ')
-    .replace(/(?:<|&lt;)private\b[\s\S]*$/i, ' ');
+  return removePrivateRegions(s, ' ');
 }
 
 // What the person asked, without the envelope around it: the triggering
