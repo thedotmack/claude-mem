@@ -10,6 +10,7 @@ import {
   TranscriptAnchorError,
   TranscriptEventProcessor,
   TranscriptObservationError,
+  TranscriptSummaryError,
   TranscriptSpoolError,
   type TranscriptFileContext,
   type TranscriptObservationTransport,
@@ -1228,7 +1229,7 @@ export class TranscriptWatcher {
       // A turn whose prompt the worker did not record, or an event it did not
       // accept, stops the pass with the checkpoint at its line (or frame), so
       // it is retried, not misfiled or lost.
-      if (error instanceof TranscriptAnchorError || error instanceof TranscriptObservationError || error instanceof TranscriptSpoolError) {
+      if (error instanceof TranscriptAnchorError || error instanceof TranscriptObservationError || error instanceof TranscriptSummaryError || error instanceof TranscriptSpoolError) {
         logger.warn('TRANSCRIPT', 'Transcript event not accepted; it is retried from its own line', {
           watch: watch.name,
           file: basename(filePath),
