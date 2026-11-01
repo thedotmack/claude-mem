@@ -24,7 +24,7 @@ npm run eval:read-gate -- --runs 1 --case gate-on-edits-file
 | `--case <glob>` | all cases | Passed through as `--case`; verdicts for cases that did not run are reported as not run |
 | `--preflight-only` | off | Stop after the pre-flight; no model is called |
 
-The suite lives in `evals/read-gate/`, outside `plugin/`, because marketplace installs copy `plugin/` from git and none of them needs it. `claude plugin eval --eval-dir` only reads a directory below the plugin, so the runner copies the suite to `plugin/evals-read-gate/` (gitignored) for each run and removes it afterwards.
+The suite lives in `tests/evals/read-gate/`, outside `plugin/`, because marketplace installs copy `plugin/` from git and none of them needs it. `claude plugin eval --eval-dir` only reads a directory below the plugin, so the runner copies the suite to `plugin/evals-read-gate/` (gitignored) for each run and removes it afterwards.
 
 ## Cases
 
