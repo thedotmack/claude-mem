@@ -215,7 +215,6 @@ O instalador trata das dependências, da configuração do plugin, da configura�
 
 - **[Configuração](https://docs.claude-mem.ai/configuration)** - Variáveis de ambiente e definições
 - **[Desenvolvimento](https://docs.claude-mem.ai/development)** - Compilação, testes e contribuição
-- **[Ramos de Lançamento](https://docs.claude-mem.ai/branches)** - Fluxo dos ramos stable, core-dev e community-edge
 - **[Resolução de Problemas](https://docs.claude-mem.ai/troubleshooting)** - Problemas comuns e soluções
 
 ---
@@ -271,15 +270,6 @@ get_observations(ids=[123, 456])
 ```
 
 Consulte o [Guia de Ferramentas de Pesquisa](https://docs.claude-mem.ai/usage/search-tools) para exemplos detalhados.
-
----
-
-## Ramos de Lançamento
-
-Os lançamentos stable partem do ramo `main` e são publicados no npm. Os ramos `core-dev` e
-`community-edge` são ramos executados a partir do código-fonte, destinados a correções de fiabilidade antecipadas e
-integrações com a comunidade. Consulte **[Ramos de Lançamento](https://docs.claude-mem.ai/branches)**
-para o fluxo dos ramos e instruções de execução não-stable.
 
 ---
 
@@ -383,11 +373,6 @@ Contribuições são bem-vindas! Por favor:
 3. Faça as suas alterações com testes
 4. Atualize a documentação
 5. Submeta um Pull Request
-
-O Claude-Mem é lançado a partir de três ramos: `main` (stable), `core-dev` e
-`community-edge`. Apenas o `main` é publicado no npm; os restantes são executados a partir do
-código-fonte. Consulte [Ramos de Lançamento](https://docs.claude-mem.ai/branches) para a
-estratégia e instruções de execução local.
 
 Consulte o [Guia de Desenvolvimento](https://docs.claude-mem.ai/development) para o fluxo de contribuição.
 

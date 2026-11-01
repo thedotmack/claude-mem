@@ -215,7 +215,6 @@ O instalador cuida das dependências, da configuração do plugin, da configura�
 
 - **[Configuração](https://docs.claude-mem.ai/configuration)** - Variáveis de ambiente e configurações
 - **[Desenvolvimento](https://docs.claude-mem.ai/development)** - Build, testes e contribuição
-- **[Branches de Release](https://docs.claude-mem.ai/branches)** - Fluxo das branches stable, core-dev e community-edge
 - **[Solução de Problemas](https://docs.claude-mem.ai/troubleshooting)** - Problemas comuns e soluções
 
 ---
@@ -271,15 +270,6 @@ get_observations(ids=[123, 456])
 ```
 
 Veja o [Guia de Ferramentas de Busca](https://docs.claude-mem.ai/usage/search-tools) para exemplos detalhados.
-
----
-
-## Branches de Release
-
-Os releases estáveis são publicados a partir da branch `main` e disponibilizados no npm. As branches `core-dev` e
-`community-edge` são branches executadas a partir do código-fonte para correções de confiabilidade antecipadas e
-integrações da comunidade. Veja **[Branches de Release](https://docs.claude-mem.ai/branches)**
-para o fluxo das branches e instruções de execução não estável.
 
 ---
 
@@ -383,11 +373,6 @@ Contribuições são bem-vindas! Por favor:
 3. Faça suas alterações com testes
 4. Atualize a documentação
 5. Envie um Pull Request
-
-O Claude-Mem é distribuído a partir de três branches: `main` (estável), `core-dev` e
-`community-edge`. Apenas a `main` é publicada no npm; as demais são executadas a partir do
-código-fonte. Veja [Branches de Release](https://docs.claude-mem.ai/branches) para a
-estratégia e instruções de execução local.
 
 Veja o [Guia de Desenvolvimento](https://docs.claude-mem.ai/development) para o fluxo de contribuição.
 

@@ -1,0 +1,47 @@
+{
+  "host": "Copilot CLI",
+  "source": "https://docs.github.com/en/copilot/reference/hooks-reference",
+  "capturedAt": "2026-10-01",
+  "note": "Documented stdin payloads for GitHub Copilot CLI lifecycle hooks.",
+  "payloads": {
+    "sessionStart": {
+      "sessionId": "copilot-session-123",
+      "timestamp": "2026-10-01T12:00:00Z",
+      "cwd": "/work/project",
+      "source": "cli",
+      "initialPrompt": "fix the authentication bug"
+    },
+    "userPromptSubmitted": {
+      "sessionId": "copilot-session-123",
+      "timestamp": "2026-10-01T12:01:00Z",
+      "cwd": "/work/project",
+      "source": "cli",
+      "prompt": "run tests"
+    },
+    "postToolUse": {
+      "sessionId": "copilot-session-123",
+      "timestamp": "2026-10-01T12:02:00Z",
+      "cwd": "/work/project",
+      "source": "cli",
+      "toolName": "bash",
+      "toolArgs": {
+        "command": "npm test"
+      },
+      "toolResult": {
+        "resultType": "success",
+        "textResultForLlm": "15 tests passed"
+      }
+    },
+    "postToolUseFailure": {
+      "sessionId": "copilot-session-123",
+      "timestamp": "2026-10-01T12:03:00Z",
+      "cwd": "/work/project",
+      "source": "cli",
+      "toolName": "bash",
+      "toolArgs": {
+        "command": "npm test"
+      },
+      "error": "Command failed with exit code 1"
+    }
+  }
+}

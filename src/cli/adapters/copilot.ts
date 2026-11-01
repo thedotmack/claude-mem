@@ -2,13 +2,12 @@
  * Copilot CLI adapter.
  *
  * GitHub Copilot CLI writes hook stdin as JSON (see
- * https://docs.github.com/en/copilot/how-tos/use-copilot/use-copilot-cli ).
+ * https://docs.github.com/en/copilot/reference/hooks-reference ).
  * Field names have drifted between CLI versions, so this adapter accepts both
  * camelCase and snake_case plus a few aliases used in the copilot-sdk samples.
  *
- * Copilot CLI does not currently document Codex-style `suppressOutput`. Keep
- * stdout to `additionalContext` (and a continue permission) so unknown keys
- * cannot stall the host.
+ * Copilot CLI honours `additionalContext` on sessionStart and postToolUse*.
+ * Unknown keys must not be emitted so they cannot stall the host.
  */
 import type { PlatformAdapter, NormalizedHookInput, HookResult } from '../types.js';
 import { AdapterRejectedInput, isValidCwd } from './errors.js';
@@ -46,13 +45,18 @@ function extractToolResponse(r: Record<string, unknown>): unknown {
 export const copilotAdapter: PlatformAdapter = {
   normalizeInput(raw) {
     const r = (raw ?? {}) as Record<string, unknown>;
+    const sessionId = firstString(r.sessionId, r.session_id, r.conversationId, r.conversation_id);
+    if (!sessionId) {
+      throw new AdapterRejectedInput('missing_session_id');
+    }
+
     const cwd = firstString(r.cwd, r.workingDirectory, r.working_directory) ?? process.cwd();
     if (!isValidCwd(cwd)) {
       throw new AdapterRejectedInput('invalid_cwd');
     }
 
     return {
-      sessionId: firstString(r.sessionId, r.session_id, r.conversationId, r.conversation_id) ?? 'unknown',
+      sessionId,
       cwd,
       prompt: firstString(r.prompt, r.userPrompt, r.user_prompt, r.message, r.initialPrompt, r.initial_prompt),
       toolName: firstString(r.toolName, r.tool_name, r.tool),
@@ -65,15 +69,6 @@ export const copilotAdapter: PlatformAdapter = {
 
   formatOutput(result: HookResult) {
     const additionalContext = result.hookSpecificOutput?.additionalContext;
-    const output: Record<string, unknown> = {
-      permissionDecision: 'continue',
-    };
-    if (additionalContext) {
-      output.additionalContext = additionalContext;
-    }
-    if (result.systemMessage) {
-      output.systemMessage = result.systemMessage;
-    }
-    return output;
+    return additionalContext ? { additionalContext } : {};
   },
 };

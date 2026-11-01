@@ -6,24 +6,30 @@
  * When the installer's browser login delivers a memory key, the worker talks
  * to the cmem.ai gateway through the generic OpenRouter provider
  * (CLAUDE_MEM_OPENROUTER_BASE_URL points at `${CMEM_PRO_ORIGIN}/api/inference/v1`).
- * Once the free trial ends without a subscription, the gateway answers with a
- * terminal quota/key error — and instead of surfacing an outage, memory falls
- * back to the user's Anthropic plan. The fallback state lives in settings.json
- * as CLAUDE_MEM_PRO_FALLBACK_AT (ISO timestamp; '' = no fallback) and is
- * strictly EVENT-driven: it is written only when the gateway rejects a request,
- * never from trial dates — a subscribed user's key keeps working past
- * `ends_at`, so the date alone must never disable anything.
+ * When the gateway stops serving the account it answers with a terminal code —
+ * `subscription_inactive` for a lapsed, cancelled, or unpaid trial or plan,
+ * `allowance_exhausted` for a spent allowance (paid accounts at their cap
+ * included), `key_invalid` for an unrecognized key — and instead of surfacing
+ * an outage, memory falls back to the user's Anthropic plan. The fallback
+ * state lives in settings.json as CLAUDE_MEM_PRO_FALLBACK_AT (ISO timestamp;
+ * '' = no fallback), with the gateway's own words beside it for the
+ * session-start notice. It is strictly EVENT-driven: written only when the
+ * gateway rejects a request, never from trial dates — a subscribed user's key
+ * keeps working past `ends_at`, so the date alone must never disable anything.
  *
  * Shared (not npx-cli) because the worker, the session-start hook, and the
  * installer all need the same gateway check. The npx-cli endpoint constants in
  * src/npx-cli/cmem-pro-costs.ts derive from the same origin resolution.
  */
 
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { paths, USER_SETTINGS_PATH } from './paths.js';
-import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
+import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
+import { updateSettingsDocument } from './settings-document.js';
 import { emitDiagnostic } from './hook-io.js';
+import { proTrialUrl } from './pro-promo.js';
+import { relayedLine, relayedLink } from './relayed-text.js';
 
 /**
  * Origin for the cmem.ai funnel and gateway. Overridable so the whole flow can
@@ -69,36 +75,148 @@ export function isCmemGatewayUrl(url: string | undefined | null): boolean {
 }
 
 /**
- * Read settings.json while retaining both the complete document and the
- * subtree where claude-mem settings live. The legacy `{ env: {...} }` shape
- * may also contain peer root keys such as hooks and permissions; flattening
- * that subtree and writing it back as the whole document destroys those keys.
+ * How the cmem.ai gateway figures in a setup, from settings alone (the same
+ * predicates dispatch applies): 'primary' when memory runs on it (the
+ * OpenRouter provider selected with the gateway as its base URL), 'quota-fallback'
+ * when it is the opt-in quota fallback (CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER
+ * 'openrouter' on the gateway), else null.
  */
-function readRawSettingsDocument(settingsPath: string): {
-  document: Record<string, unknown>;
-  target: Record<string, unknown>;
-} {
-  if (!existsSync(settingsPath)) {
-    const document: Record<string, unknown> = {};
-    return { document, target: document };
-  }
+export type CmemGatewayRole = 'primary' | 'quota-fallback';
 
-  const parsed = parseJsonWithBom<unknown>(readFileSync(settingsPath, 'utf-8'));
-  const document = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-    ? parsed as Record<string, unknown>
-    : {};
-  const env = document.env;
-  const target = env && typeof env === 'object' && !Array.isArray(env)
-    ? env as Record<string, unknown>
-    : document;
-  return { document, target };
+export function cmemGatewayRole(settings: {
+  CLAUDE_MEM_PROVIDER?: string;
+  CLAUDE_MEM_OPENROUTER_BASE_URL?: string;
+  CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER?: string;
+}): CmemGatewayRole | null {
+  if (!isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL)) return null;
+  if (settings.CLAUDE_MEM_PROVIDER === 'openrouter') return 'primary';
+  return String(settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER ?? '').trim() === 'openrouter' ? 'quota-fallback' : null;
 }
 
-/** Persist the fallback timestamp — the OpenRouter dispatch reads it back. */
-export function writeProFallbackAt(isoNow: string, settingsPath: string = USER_SETTINGS_PATH): void {
-  const { document, target } = readRawSettingsDocument(settingsPath);
-  target.CLAUDE_MEM_PRO_FALLBACK_AT = isoNow;
-  writeJsonFileAtomic(settingsPath, document);
+/**
+ * Whether the cmem.ai gateway can serve observer requests on this setup, as
+ * memory's provider or as the opt-in quota fallback — whether or not it is
+ * serving right now. Unattended retries are bounded whenever it can, because
+ * each one may spend plan tokens.
+ */
+export function canCmemGatewayServe(settingsPath: string = USER_SETTINGS_PATH): boolean {
+  return cmemGatewayRole(SettingsDefaultsManager.loadFromFile(settingsPath)) !== null;
+}
+
+/**
+ * Whether an API key is the account-owned cmem.ai memory key. Every key the
+ * gateway has issued is `cm_pro_` + 24 or 32 hex chars (the server-side
+ * validator the installer once mirrored, 9d6742f1a); the prefix alone is the
+ * test, so a future key length is still recognized. Such a key authenticates
+ * only against the gateway and must never be sent anywhere else.
+ */
+export function isCmemMemoryKey(apiKey: string | undefined | null): boolean {
+  return (apiKey ?? '').trim().startsWith('cm_pro_');
+}
+
+/**
+ * Whether a key may be sent to an endpoint: the cmem gateway and its keys go
+ * together, both ways. A cm_pro_ key goes only to the gateway, and the gateway
+ * only gets a cm_pro_ key (#4276). Every provider that sends a bearer key
+ * checks the pair here, so a key pasted into any provider's settings can never
+ * leave for the wrong host.
+ */
+export function isKeyAllowedForEndpoint(apiUrl: string, apiKey: string): boolean {
+  return isCmemGatewayUrl(apiUrl) === isCmemMemoryKey(apiKey);
+}
+
+/**
+ * The keys a provider may send to an endpoint, from its configured keys in
+ * priority order: the one lock every key pool goes through.
+ *  - The cmem gateway gets the first cm_pro_ key and nothing else. Its key is
+ *    account-delivered, so there is no pool to rotate through: several
+ *    cm_pro_ keys would mean rotating across accounts, and a personal key is
+ *    never sent there.
+ *  - Every other host gets the keys that are not cm_pro_, so an account key
+ *    pasted into any provider's settings never leaves for a third party.
+ */
+export function keysForEndpoint(apiUrl: string, keys: readonly string[]): string[] {
+  if (isCmemGatewayUrl(apiUrl)) {
+    const accountKey = keys.find(key => isCmemMemoryKey(key));
+    return accountKey ? [accountKey] : [];
+  }
+  return keys.filter(key => !isCmemMemoryKey(key));
+}
+
+/** What the gateway said about the rejection that armed the fallback. */
+export interface ProFallbackNotice {
+  message?: string;
+  action?: string;
+  url?: string;
+}
+
+/** The settings keys that make up a fallback: the marker and the gateway's words. */
+const PRO_FALLBACK_KEYS = [
+  'CLAUDE_MEM_PRO_FALLBACK_AT',
+  'CLAUDE_MEM_PRO_FALLBACK_MESSAGE',
+  'CLAUDE_MEM_PRO_FALLBACK_ACTION',
+  'CLAUDE_MEM_PRO_FALLBACK_URL',
+] as const;
+
+/**
+ * The one-time session-start notice for an active fallback. The gateway's
+ * words enter model context here, so each is relayed as one plain, bounded
+ * line (relayed-text.ts), and its link only when it is a cmem.ai page, where
+ * the plan is managed. Anything else gets the renewal link.
+ *
+ * Plan-neutral: paid accounts at their monthly cap are turned away too, so it
+ * never assumes a trial ended. Without the gateway's words it says only what
+ * is true for every account.
+ */
+export function proFallbackNotice(notice: ProFallbackNotice, role: CmemGatewayRole = 'primary'): string {
+  const message = relayedLine(notice.message) || 'cmem.ai memory is paused for this account.';
+  const action = relayedLine(notice.action);
+  // As the opt-in quota fallback the gateway never had memory: nothing moved
+  // to the Anthropic plan. Dispatch skips it inside the marker's window and
+  // re-probes it once per window after that.
+  const consequence = role === 'primary'
+    ? 'Memory is using your Anthropic plan for now.'
+    : 'claude-mem skips it as your quota fallback until it answers again; capture waits for your selected provider.';
+  return [
+    message,
+    ...(action ? [action] : []),
+    `${consequence} Manage your plan: ${planLink(notice.url)}`,
+  ].join('\n');
+}
+
+function planLink(url: string | undefined): string {
+  const link = relayedLink(url);
+  return link !== null && new URL(link).hostname === 'cmem.ai' ? link : proTrialUrl('fallback');
+}
+
+/**
+ * Persist the fallback timestamp — the OpenRouter dispatch reads it back —
+ * together with the gateway's words, in one write. Passing `notice` replaces
+ * the stored words (missing parts become ''); omitting it re-stamps the time
+ * and keeps the words of the rejection that started the fallback.
+ *
+ * Written through settings-document.ts, the one rule every settings reader
+ * and writer uses: the marker lands where SettingsDefaultsManager, and so
+ * dispatch, reads it (the root of a flat document, even with Claude Code's
+ * `env` block beside claude-mem's keys), the document's other keys are kept,
+ * and the file stays owner-only. Throws when settings.json cannot be updated,
+ * e.g. it is unreadable: the caller then books an ordinary failure.
+ */
+export function writeProFallbackAt(
+  isoNow: string,
+  settingsPath: string = USER_SETTINGS_PATH,
+  notice?: ProFallbackNotice,
+): void {
+  const updates: Record<string, string> = { CLAUDE_MEM_PRO_FALLBACK_AT: isoNow };
+  if (notice) {
+    updates.CLAUDE_MEM_PRO_FALLBACK_MESSAGE = notice.message ?? '';
+    updates.CLAUDE_MEM_PRO_FALLBACK_ACTION = notice.action ?? '';
+    updates.CLAUDE_MEM_PRO_FALLBACK_URL = notice.url ?? '';
+  }
+  const result = updateSettingsDocument(settingsPath, updates);
+  if (result.status === 'refused') {
+    throw result.error instanceof Error ? result.error : new Error(String(result.error));
+  }
 }
 
 /**
@@ -110,17 +228,24 @@ export function clearProFallback(
   settingsPath: string = USER_SETTINGS_PATH,
   dataDir: string = paths.dataDir(),
 ): void {
-  try {
-    const { document, target } = readRawSettingsDocument(settingsPath);
-    if (target.CLAUDE_MEM_PRO_FALLBACK_AT) {
-      target.CLAUDE_MEM_PRO_FALLBACK_AT = '';
-      writeJsonFileAtomic(settingsPath, document);
+  // No settings file means no fallback to clear, and no reason to create one.
+  if (existsSync(settingsPath)) {
+    // Every key, not only the marker: a re-pair blanks the marker through the
+    // installer's settings merge before calling this, and the gateway's words
+    // must not outlive the fallback they described. An unchanged document is
+    // not rewritten — a successful gateway response calls this every time.
+    const result = updateSettingsDocument(settingsPath, {}, {}, (target) => {
+      for (const key of PRO_FALLBACK_KEYS) {
+        if (target[key]) target[key] = '';
+      }
+    });
+    if (result.status === 'refused') {
+      // Cleanup follows a successful login/request and must never turn that
+      // success into an installer or provider failure. Leave a diagnostic so
+      // the stale timestamp is still actionable.
+      const reason = result.error instanceof Error ? result.error.message : String(result.error);
+      emitDiagnostic(`[cmem-gateway] Could not clear fallback setting at ${settingsPath}: ${reason}\n`);
     }
-  } catch (error: unknown) {
-    // Cleanup follows a successful login/request and must never turn that
-    // success into an installer or provider failure. Leave a diagnostic so
-    // the stale timestamp is still actionable.
-    emitDiagnostic(`[cmem-gateway] Could not clear fallback setting at ${settingsPath}: ${error instanceof Error ? error.message : String(error)}\n`);
   }
 
   try {

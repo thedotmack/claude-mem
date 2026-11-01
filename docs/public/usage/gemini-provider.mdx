@@ -37,10 +37,11 @@ Claude-mem supports Google's Gemini API as an alternative to the Claude Agent SD
 
 | Setting | Values | Default | Description |
 |---------|--------|---------|-------------|
-| `CLAUDE_MEM_PROVIDER` | `claude`, `gemini` | `claude` | AI provider for observation extraction |
+| `CLAUDE_MEM_PROVIDER` | `claude`, `codex`, `gemini`, `openrouter`, `openai-compatible` | `claude` | AI provider for observation extraction |
 | `CLAUDE_MEM_GEMINI_API_KEY` | string | — | Your Gemini API key |
+| `CLAUDE_MEM_GEMINI_API_KEYS` | newline- or comma-separated keys | — | Extra keys to rotate through when one is rate-limited or spent ([Multi-Key Rotation](/usage/multi-key-rotation)) |
 | `CLAUDE_MEM_GEMINI_MODEL` | `gemini-flash-latest`, `gemini-flash-lite-latest`, `gemini-3.5-flash`, `gemini-3.1-flash-lite`, `gemini-3-flash-preview` | `gemini-flash-latest` | Gemini model to use |
-| `CLAUDE_MEM_GEMINI_BILLING_ENABLED` | `true`, `false` | `false` | Skip rate limiting if billing is enabled on Google Cloud |
+| `CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED` | `true`, `false` | `true` | Pace requests to the model's no-billing RPM. Set `false` once billing is enabled on Google Cloud |
 
 ### Using the Settings UI
 
@@ -61,7 +62,7 @@ Edit `~/.claude-mem/settings.json`:
   "CLAUDE_MEM_PROVIDER": "gemini",
   "CLAUDE_MEM_GEMINI_API_KEY": "your-api-key-here",
   "CLAUDE_MEM_GEMINI_MODEL": "gemini-flash-latest",
-  "CLAUDE_MEM_GEMINI_BILLING_ENABLED": "true"
+  "CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED": "true"
 }
 ```
 
@@ -111,14 +112,16 @@ You can switch between Claude and Gemini at any time:
 
 ## Error Behavior
 
-If Gemini is selected and the API errors, claude-mem logs the failure and re-throws so the message stays pending for later retry. There is no Claude SDK fallback — earlier docs claimed automatic Claude fallback, but the wiring was never actually engaged in production (#2087). To switch providers, change `CLAUDE_MEM_PROVIDER` in settings.
+When Gemini refuses a request, queued observations stay pending; what happens next depends on the refusal:
 
-**Throwing conditions:**
-- Rate limiting (HTTP 429)
-- Server errors (HTTP 5xx)
-- Network issues (connection refused, timeout)
-- 4xx errors other than 429
-- Missing API key
+- **Per-minute throttle** (a 429 whose quota is per minute): claude-mem waits the delay Google names and resumes. If the throttle keeps refusing, Gemini is held for 90 seconds.
+- **Spent daily (or weekly, monthly) quota** (a 429 naming a per-day quota): Gemini is held for 30 minutes, then one request checks whether the quota has reset.
+- **Region not served** ("User location is not supported"): capture pauses with the work kept, and the next session start says to switch providers. Gemini is re-checked once every 30 minutes. Extra keys are not tried, since every key gets the same answer.
+- **Invalid or revoked key**: with extra keys configured, the next key is tried; otherwise the same pause, and the notice says to fix the key.
+- **Server errors and network faults**: paused with the work kept, then resumed automatically on a backoff.
+- **Other malformed requests** (HTTP 400): that session's pending observations are dropped. A request too long for the model's window retires the conversation instead and keeps them.
+
+To keep capturing while Gemini is held, configure a [quota fallback](/usage/quota-fallback) (opt-in, off by default). Extra keys rotate within Gemini ([Multi-Key Rotation](/usage/multi-key-rotation)). To switch providers for good, change `CLAUDE_MEM_PROVIDER`.
 
 ## Troubleshooting
 
@@ -155,8 +158,8 @@ Claude-mem enforces these limits automatically with built-in delays between requ
 </Tip>
 
 If you hit rate limits:
-- The failed message remains pending and can be retried after the rate limit resets
-- Or switch back to Claude as your primary provider
+- The pending observations stay queued and resume when the limit resets (see [Error Behavior](#error-behavior))
+- Or configure a [quota fallback](/usage/quota-fallback), or switch back to Claude as your primary provider
 
 ### Observation Quality
 
@@ -169,3 +172,10 @@ If observations seem lower quality with Gemini:
 - [Configuration](/configuration) - Full settings reference
 - [Getting Started](/usage/getting-started) - Basic usage guide
 - [Troubleshooting](/troubleshooting) - Common issues
+
+## Multiple keys
+
+`CLAUDE_MEM_GEMINI_API_KEYS` accepts additional keys (newline- or comma-separated) alongside
+`CLAUDE_MEM_GEMINI_API_KEY`. When a key hits a rate limit, spends its quota, or is rejected as
+invalid, Gemini requests rotate to the next key instead of failing for the
+rest of the window. See [Multi-Key Rotation](/usage/multi-key-rotation).

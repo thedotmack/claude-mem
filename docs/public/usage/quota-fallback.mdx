@@ -1,0 +1,92 @@
+---
+title: "Quota Fallback"
+description: "Keep capturing memories on your Anthropic plan (or another provider) while the selected provider can't serve"
+---
+
+# Quota Fallback
+
+When the observer's provider can't serve (its allowance is spent, it stays rate limited or over capacity after its retries, it is down, or it keeps answering without usable output), claude-mem holds it for a short cooldown and stops sending it work, so it does not keep buying the same refusal.
+
+**By default, that work moves to your Anthropic plan (Claude)** for as long as the provider is held, provided Claude can run on this machine (a Claude Code login, or an `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` in `~/.claude-mem/.env`). When the cooldown ends, one generator probes the original provider; if it answers, everything moves back on its own. If Claude can't run, or you turn the fallback off, work waits and stays queued until the provider recovers.
+
+This applies when your selected provider is the claude-mem observer (cmem.ai), OpenRouter, Gemini, Codex, or an OpenAI-compatible endpoint. When Claude is your selected provider, it can also switch between its two credentials, an API key and your Claude Code login: see [Claude credential fallback](#claude-credential-fallback).
+
+## Settings
+
+Add these to `~/.claude-mem/settings.json`, or set them in the viewer under **Settings → Advanced**:
+
+| Setting | Values | Meaning |
+|---|---|---|
+| `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` | `claude` (the default; `""` means the same), `gemini`, `openrouter`, `openai-compatible`, `off` | Where observation work goes while the selected provider can't serve. `off` turns the fallback off: work waits for the provider. |
+| `CLAUDE_MEM_QUOTA_FALLBACK_MODEL` | `""` or a Claude model id or alias | The model for a **Claude** fallback run. Empty keeps `CLAUDE_MEM_MODEL` and tier routing. Ignored for every other fallback. |
+| `CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD` | `""` (the default, off), `subscription`, `api-key` | For a **Claude** observer: the other credential to run on while the primary one is held for quota. Tried before `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER`. See below. |
+
+For example, Gemini as the primary with Claude Haiku as the fallback:
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "gemini",
+  "CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER": "claude",
+  "CLAUDE_MEM_QUOTA_FALLBACK_MODEL": "claude-haiku-4-5-20251001"
+}
+```
+
+To turn the fallback off:
+
+```json
+{
+  "CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER": "off"
+}
+```
+
+Settings files from earlier versions hold `""` for this setting; that now means the default, so those installs get the Anthropic-plan fallback too. Only `off` opts out.
+
+The fallback needs its own credentials: a Gemini, OpenRouter or OpenAI-compatible API key, or a Claude Code login (or Anthropic key) for Claude. A fallback without them, or any fallback that is itself held (a quota cooldown, or a refused key), is skipped, and work waits as it does without a fallback. For Claude, claude-mem checks that a login or key exists; a login that has expired fails its first fallback run and is then skipped until you log in again. When the cmem.ai gateway turns your account away (a lapsed plan, a spent allowance), it is skipped as a fallback for 15 minutes and then re-tried by a single request; the next session start tells you once, in the gateway's own words. Unattended retries on the gateway are capped the same way whether it is your provider or your fallback.
+
+## What switches, and what does not
+
+- **Switches:** a spent allowance (a 30-minute cooldown); rate limits and "over capacity" refusals that are still refused after the provider's own retries; outages (5xx, network errors, timeouts) that outlast the retries; and a provider that answers the same batch twice without usable output, which hands that batch to the fallback instead of dropping it (each a 90-second cooldown). Work moves back as soon as the cooldown ends and the original provider answers its probe.
+- **The claude-mem observer (cmem.ai) refusing your key** (a lapsed trial or plan) moves memory to your Anthropic plan as well, and re-checks the observer every 15 minutes.
+- **Does not switch:** authentication errors on other providers — an invalid, expired or revoked key (401/403). Those pause capture exactly as before, because a different provider would not fix the key.
+- **A fallback with a bad key is skipped once it is refused.** Only a *missing* key is detected ahead of time; an invalid or revoked fallback key fails its first run, and its auth cooldown then takes it out of rotation. Fix or clear the fallback key.
+- **Paused work resumes on its own.** A generator that stops on a quota error keeps its queued observations. The worker's periodic resume (once a minute) restarts them on whichever provider can take the work — the fallback, or the original provider again if it has recovered by then — and the session's next tool call does the same sooner. If neither can, it waits as before.
+- **Both exhausted:** if the fallback is also in a quota cooldown, nothing changes: work waits until one of them clears.
+
+## Claude credential fallback
+
+A Claude observer bills one of two credentials: the `ANTHROPIC_API_KEY` in `~/.claude-mem/.env` when one is set, otherwise your Claude Code login. When that credential is held for quota, `CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD` names the other one to run on meanwhile:
+
+| Value | Primary credential | Runs on while it is held |
+|---|---|---|
+| `""` (default) | | Nothing: work waits, or goes to `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` |
+| `subscription` | `ANTHROPIC_API_KEY` | Your Claude Code login. Needs a signed-in login. |
+| `api-key` | Your Claude Code login | `ANTHROPIC_FALLBACK_API_KEY` in `~/.claude-mem/.env`. Only claude-mem reads this key; it is never the primary. |
+
+For example, to protect your plan and spend API credits once the quota guard pauses it:
+
+```bash
+# ~/.claude-mem/.env
+ANTHROPIC_FALLBACK_API_KEY=sk-ant-...
+```
+
+```json
+{
+  "CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD": "api-key"
+}
+```
+
+- **What switches:** a spent allowance (a credit balance too low, a plan limit) and, for the login, a pause by the quota guard at its `CLAUDE_MEM_QUOTA_THRESHOLD_*` limits. Outages, rate limits and auth errors do not switch: the same API serves both credentials, and a refused credential needs you to act.
+- **Order:** the other credential is tried first, then `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` once both are held, then capture pauses.
+- **How it ends:** when the 30-minute cooldown elapses, one generator probes the primary credential. If it answers, every session goes back to it. If not, the cooldown re-arms and the fallback credential carries on.
+- **What it spends:** `subscription` runs count against the plan you use interactively, so the quota guard still pauses them near its limits. `api-key` runs are billed per request with nobody watching; set a spend limit on the key's workspace in the Anthropic Console.
+- **Gateways:** neither value applies under `ANTHROPIC_BASE_URL`, so observer traffic is never routed around a gateway you configured.
+- The log shows the switch once: `API key quota exhausted; running the Claude observer on the subscription login until the key recovers`, or `Claude Code login paused for quota; running the Claude observer on the fallback API key until the login recovers`. The session-start notice names the credential memory is running on.
+
+## Things to know
+
+- **It spends the fallback's allowance.** With Claude as the fallback, observation runs count against your Claude plan. Setting `CLAUDE_MEM_QUOTA_FALLBACK_MODEL` to a Haiku model keeps that cheap.
+- **Claude runs are capped by `CLAUDE_MEM_MAX_CONCURRENT_AGENTS`** (default 2). With three or more busy sessions on a Claude fallback, the extra sessions wait for a slot.
+- **Telegram wrap-ups** are not governed by `CLAUDE_MEM_QUOTA_FALLBACK_MODEL`: they use the model the session last ran on, or the summary tier model.
+- **Session-start notice.** While another provider is serving, the notice says capture continues there (for Claude: that memory is running on your Anthropic plan) instead of saying memory is paused. It is refreshed whenever a cooldown starts or ends, so right after a settings change it can be one step behind.
+
+In the worker log, the switch shows as `Primary cannot serve right now; memory runs on the Anthropic plan (Claude) until it recovers` (or `Primary in quota cooldown; dispatching to fallback` for another fallback), followed later by `Primary quota cooldown elapsed; probing primary` and `Primary recovered from quota cooldown`. If nothing can take the work, the log says so once: `Primary and fallback both in quota cooldown; …` or `Primary in quota cooldown and the quota fallback cannot serve; …`.

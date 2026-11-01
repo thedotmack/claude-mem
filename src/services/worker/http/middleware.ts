@@ -1,19 +1,54 @@
 
 import express, { Request, Response, NextFunction, RequestHandler } from 'express';
 import path from 'path';
+import { isIP } from 'net';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import { getPackageRoot } from '../../../shared/paths.js';
 import {
   hasForwardedClientHeaders,
   isLocalhost,
   parseBearerToken,
+  parseHostWithoutPort,
 } from '../../../server/middleware/request-auth-helpers.js';
 import { logger } from '../../../utils/logger.js';
+import {
+  isLocalhostOrigin,
+  isOwnPageOrigin,
+  isSameHostOrigin,
+  type WorkerOriginPolicy,
+} from './origin-policy.js';
+import { redactForLog } from '../../../utils/redaction.js';
+import { scanMediaFields } from '../../../shared/media-ingress.js';
+
+/**
+ * Every worker response refuses framing, except Observation TV (`/tv`,
+ * `/tv.html`). The viewer can delete observations and save settings, and its
+ * requests are same-origin, so a hostile page that frames it could harvest
+ * real clicks through an overlay.
+ *
+ * The check is an allowlist on purpose. A per-page check on `req.path` misses
+ * the URLs the static mounts decode and normalize to the same file
+ * (`/viewer%2Ehtml`, `/%76iewer.html`, `//viewer.html`, and `/Viewer.html` on
+ * a case-insensitive disk). Here any such variant is simply refused.
+ */
+export function refuseFramingExceptObservationTv(req: Request, res: Response, next: NextFunction): void {
+  if (req.path !== '/tv' && req.path !== '/tv.html') {
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
+    res.setHeader('X-Frame-Options', 'DENY');
+  }
+  next();
+}
 
 export function createMiddleware(): RequestHandler[] {
-  const middlewares: RequestHandler[] = [];
+  // First, so it covers both static UI mounts and every route after them.
+  const middlewares: RequestHandler[] = [refuseFramingExceptObservationTv];
 
-  middlewares.push(express.json({ limit: '5mb' }));
+  const parseJson = express.json({ limit: '5mb' });
+  middlewares.push((req: Request, res: Response, next: NextFunction) => {
+    // Spool ingestion authenticates before applying its own body limit.
+    if (req.method === 'POST' && /^\/api\/spool\/ingest\/?$/i.test(req.path)) return next();
+    parseJson(req, res, next);
+  });
 
   middlewares.push((req: Request, res: Response, next: NextFunction) => {
     const staticExtensions = ['.html', '.js', '.css', '.svg', '.png', '.jpg', '.jpeg', '.webp', '.woff', '.woff2', '.ttf', '.eot'];
@@ -46,11 +81,103 @@ export function createMiddleware(): RequestHandler[] {
   return middlewares;
 }
 
-export function createCorsMiddleware(): RequestHandler {
+export {
+  buildWorkerOriginPolicy,
+  isLocalhostOrigin,
+  isOwnPageOrigin,
+  parseAllowedOriginsSetting,
+  type WorkerOriginPolicy,
+} from './origin-policy.js';
+
+/**
+ * Refuses a DELETE sent by a browser page other than the worker's own (see
+ * isOwnPageOrigin). Deletes are tombstoned for cloud sync, so a page that CORS
+ * lets read the API (any http://localhost:* page) must not be able to remove
+ * memories on every device. Reads stay open to those pages, and clients that
+ * send no Origin (hooks, the CLI, curl) keep the loopback-trust model. Worker
+ * runtime only, mounted right after the Host check.
+ */
+export function createForeignPageDeleteGuard(policy: WorkerOriginPolicy): RequestHandler {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const origin = req.headers.origin;
+    if (req.method !== 'DELETE' || origin === undefined || isOwnPageOrigin(origin, req.headers.host, policy)) {
+      next();
+      return;
+    }
+    logger.warn('SECURITY', 'Refused a DELETE from a page other than the viewer', { origin, method: req.method, path: req.path });
+    res.status(403).json({
+      error: 'Forbidden',
+      message: 'Deletes are accepted only from the claude-mem viewer itself (or an origin in CLAUDE_MEM_ALLOWED_ORIGINS), not from other pages.',
+    });
+  };
+}
+
+// Names that only ever refer to this machine (or, from inside a container, to
+// the machine hosting it). A browser sends one of these as Host only when it is
+// really talking to that name. A DNS-rebinding page always sends its own domain.
+const ALWAYS_TRUSTED_HOSTNAMES = ['localhost', 'host.docker.internal'];
+
+export function trustedWorkerHostnames(policy: WorkerOriginPolicy): Set<string> {
+  const names = new Set(ALWAYS_TRUSTED_HOSTNAMES);
+  const workerHost = policy.workerHost.trim().toLowerCase();
+  if (workerHost) names.add(workerHost);
+  for (const origin of policy.allowedOrigins) {
+    try {
+      names.add(new URL(origin).hostname.toLowerCase());
+    } catch {
+      // Not a parseable origin: there is no host name to trust.
+    }
+  }
+  return names;
+}
+
+/**
+ * The DNS-rebinding check. A page on evil.example whose DNS record is repointed
+ * at 127.0.0.1 can send same-origin requests to the worker, but the browser
+ * still sends `Host: evil.example`, never an IP address. So a Host that is a DNS
+ * name the operator did not name is refused. IP addresses, `localhost` and
+ * `*.localhost` always pass, so hooks, curl, the local viewer and LAN access by
+ * IP keep working. The socket peer is deliberately not checked.
+ */
+export function isTrustedWorkerHost(rawHost: string | undefined, trustedHostnames: Set<string>): boolean {
+  // Only HTTP/1.0 clients omit Host; browsers never do.
+  if (!rawHost) return true;
+  const host = parseHostWithoutPort(rawHost);
+  if (isIP(host) !== 0) return true;
+  if (host.endsWith('.localhost')) return true;
+  return trustedHostnames.has(host);
+}
+
+export function createWorkerHostGuard(policy: WorkerOriginPolicy): RequestHandler {
+  const trustedHostnames = trustedWorkerHostnames(policy);
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const rawHost = req.headers.host;
+    if (isTrustedWorkerHost(rawHost, trustedHostnames)) {
+      next();
+      return;
+    }
+    const host = parseHostWithoutPort(rawHost ?? '');
+    logger.warn('SECURITY', 'Refused a request whose Host is not a trusted name (DNS rebinding check)', {
+      host,
+      method: req.method,
+      path: req.path,
+    });
+    res.status(403).json({
+      error: 'Forbidden',
+      message: `Host "${host}" is not trusted. To reach the worker by this name, add its origin (for example http://${rawHost}) to CLAUDE_MEM_ALLOWED_ORIGINS and restart the worker.`,
+    });
+  };
+}
+
+export function createCorsMiddleware(policy?: WorkerOriginPolicy): RequestHandler {
+  const allowedOrigins = new Set(policy?.allowedOrigins ?? []);
   return (req: Request, res: Response, next: NextFunction): void => {
     const origin = req.headers.origin;
     if (origin) {
-      if (!origin.startsWith('http://localhost:') && !origin.startsWith('http://127.0.0.1:')) {
+      const allowed = isLocalhostOrigin(origin)
+        || allowedOrigins.has(origin.toLowerCase())
+        || (policy !== undefined && isSameHostOrigin(origin, req.headers.host));
+      if (!allowed) {
         // Write the response here rather than forwarding an error. The worker never
         // calls finalizeRoutes(), so it has no terminal error handler: a
         // forwarded error lands in Express's default handler, which returns a
@@ -330,8 +457,8 @@ export function summarizeRequestBody(method: string, path: string, body: any): s
 
   if (path.includes('/observations')) {
     const toolName = body.tool_name || '?';
-    const toolInput = body.tool_input;
-    const toolSummary = logger.formatTool(toolName, toolInput);
+    const toolInput = scanMediaFields(body.tool_input, undefined, 'disabled').toolInput;
+    const toolSummary = redactForLog(logger.formatTool(toolName, toolInput));
     return `tool=${toolSummary}`;
   }
 

@@ -215,7 +215,6 @@ Kurulum programı bağımlılıkları, plugin kurulumunu, AI sağlayıcı yapıl
 
 - **[Yapılandırma](https://docs.claude-mem.ai/configuration)** - Ortam değişkenleri ve ayarlar
 - **[Geliştirme](https://docs.claude-mem.ai/development)** - Derleme, test etme, katkıda bulunma
-- **[Sürüm Dalları](https://docs.claude-mem.ai/branches)** - Stable, core-dev ve community-edge dal akışı
 - **[Sorun Giderme](https://docs.claude-mem.ai/troubleshooting)** - Yaygın sorunlar ve çözümler
 
 ---
@@ -271,15 +270,6 @@ get_observations(ids=[123, 456])
 ```
 
 Detaylı örnekler için [Arama Araçları Kılavuzu](https://docs.claude-mem.ai/usage/search-tools) bölümüne bakın.
-
----
-
-## Release Branches
-
-Kararlı sürümler `main` dalından yayımlanır ve npm'e gönderilir. `core-dev` ve
-`community-edge`, erken güvenilirlik düzeltmeleri ve topluluk entegrasyonları için
-kaynaktan çalıştırılan dallardır. Dal akışı ve kararlı olmayan çalıştırma talimatları
-için **[Sürüm Dalları](https://docs.claude-mem.ai/branches)** bölümüne bakın.
 
 ---
 
@@ -383,11 +373,6 @@ Katkılar memnuniyetle karşılanır! Lütfen:
 3. Testlerle değişikliklerinizi yapın
 4. Dokümantasyonu güncelleyin
 5. Pull Request gönderin
-
-Claude-Mem üç daldan yayımlanır: `main` (kararlı), `core-dev` ve
-`community-edge`. Yalnızca `main` npm'e yayımlanır; diğerleri kaynaktan
-çalıştırılır. Strateji ve yerel çalıştırma talimatları için
-[Sürüm Dalları](https://docs.claude-mem.ai/branches) bölümüne bakın.
 
 Katkı iş akışı için [Geliştirme Kılavuzu](https://docs.claude-mem.ai/development) bölümüne bakın.
 

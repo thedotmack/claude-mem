@@ -59,21 +59,21 @@ if (!registeredService) {
   console.log("OK: Service registered with id 'claude-mem-observation-feed'");
 }
 
-if (!registeredCommands.has("claude-mem-feed")) {
-  console.error("FAIL: No 'claude-mem-feed' command registered");
+if (!registeredCommands.has("claude_mem_feed")) {
+  console.error("FAIL: No 'claude_mem_feed' command registered");
   failures++;
 } else {
-  console.log("OK: Command registered with name 'claude-mem-feed'");
+  console.log("OK: Command registered with name 'claude_mem_feed'");
 }
 
-if (!registeredCommands.has("claude-mem-status")) {
-  console.error("FAIL: No 'claude-mem-status' command registered");
+if (!registeredCommands.has("claude_mem_status")) {
+  console.error("FAIL: No 'claude_mem_status' command registered");
   failures++;
 } else {
-  console.log("OK: Command registered with name 'claude-mem-status'");
+  console.log("OK: Command registered with name 'claude_mem_status'");
 }
 
-const expectedEvents = ["before_agent_start", "tool_result_persist", "agent_end", "gateway_start"];
+const expectedEvents = ["before_agent_start", "after_tool_call", "agent_end", "gateway_start"];
 for (const event of expectedEvents) {
   if (!eventHandlers.has(event) || eventHandlers.get(event).length === 0) {
     console.error(`FAIL: No handler registered for '${event}'`);

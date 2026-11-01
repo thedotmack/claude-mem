@@ -10,9 +10,14 @@
  */
 
 import { SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
+	AUTH_CACHE_TTL_DEFAULT_SECONDS,
+	AUTH_CACHE_TTL_MAX_SECONDS,
+	AUTH_CACHE_TTL_MIN_SECONDS,
+	__resetAuthVerdictMemoryForTests,
 	authenticateRequest,
+	defaultAuthDependencies,
 	type AuthDependencies,
 } from "../src/index";
 
@@ -115,6 +120,12 @@ describe("token verification (real path)", () => {
 	});
 });
 
+function unusedInvalidate(): Pick<AuthDependencies, "invalidateCachedVerdict"> {
+	return {
+		async invalidateCachedVerdict() {},
+	};
+}
+
 describe("token-verdict cache behavior", () => {
 	const userId = "user-auth-cache-failure";
 	const token = `valid-for:${userId}`;
@@ -140,6 +151,7 @@ describe("token-verdict cache behavior", () => {
 			async cacheVerifiedVerdict() {
 				putCalls += 1;
 			},
+			...unusedInvalidate(),
 			async verifyToken(verifyRequest) {
 				verifyCalls += 1;
 				expect(verifyRequest.url).toBe(authEnv.TOKEN_VERIFY_URL);
@@ -167,6 +179,7 @@ describe("token-verdict cache behavior", () => {
 			async cacheVerifiedVerdict() {
 				throw new Error("simulated KV write outage");
 			},
+			...unusedInvalidate(),
 			async verifyToken() {
 				verifyCalls += 1;
 				return Response.json({ userId });
@@ -182,12 +195,13 @@ describe("token-verdict cache behavior", () => {
 		expect(logged).toEqual(["put"]);
 	});
 
-	it("caps positive verdicts at 60s and re-verifies at the boundary", async () => {
+	it("honors AUTH_CACHE_TTL_SECONDS and re-verifies a revoked token at the boundary", async () => {
 		let nowMs = 0;
 		let cachedUntilMs = 0;
 		let verifyCalls = 0;
 		let revoked = false;
 		const ttlWrites: number[] = [];
+		const invalidated: string[] = [];
 		const dependencies: AuthDependencies = {
 			async readCachedVerdict() {
 				return nowMs < cachedUntilMs ? "1" : null;
@@ -195,6 +209,10 @@ describe("token-verdict cache behavior", () => {
 			async cacheVerifiedVerdict(_cacheKey, ttlSeconds) {
 				ttlWrites.push(ttlSeconds);
 				cachedUntilMs = nowMs + ttlSeconds * 1_000;
+			},
+			async invalidateCachedVerdict(cacheKey) {
+				invalidated.push(cacheKey);
+				cachedUntilMs = 0;
 			},
 			async verifyToken() {
 				verifyCalls += 1;
@@ -211,22 +229,23 @@ describe("token-verdict cache behavior", () => {
 			deviceId: "dev-auth",
 			deviceName: null,
 		});
-		expect(ttlWrites).toEqual([60]);
+		expect(ttlWrites).toEqual([300]);
 		revoked = true;
 
-		nowMs = 59_999;
+		nowMs = 299_999;
 		expect((await authenticateRequest(request, authEnv, dependencies)).ok).toBe(true);
 		expect(verifyCalls).toBe(1);
 
-		nowMs = 60_000;
+		nowMs = 300_000;
 		const rejected = await authenticateRequest(request, authEnv, dependencies);
 		expect(rejected.ok).toBe(false);
 		if (rejected.ok) throw new Error("rotated token unexpectedly authenticated");
 		expect(rejected.response.status).toBe(401);
 		expect(verifyCalls).toBe(2);
+		expect(invalidated).toHaveLength(1);
 	});
 
-	it("cannot extend entitlement expiry beyond the 60s composed bound", async () => {
+	it("cannot extend entitlement expiry beyond the configured TTL", async () => {
 		let nowMs = 0;
 		const entitlementExpiresAtMs = 1_000;
 		let cachedUntilMs = 0;
@@ -236,9 +255,11 @@ describe("token-verdict cache behavior", () => {
 				return nowMs < cachedUntilMs ? "1" : null;
 			},
 			async cacheVerifiedVerdict(_cacheKey, ttlSeconds) {
-				expect(ttlSeconds).toBeLessThanOrEqual(60);
+				expect(ttlSeconds).toBeLessThanOrEqual(AUTH_CACHE_TTL_MAX_SECONDS);
+				expect(ttlSeconds).toBe(300);
 				cachedUntilMs = nowMs + ttlSeconds * 1_000;
 			},
+			...unusedInvalidate(),
 			async verifyToken() {
 				verifyCalls += 1;
 				return nowMs < entitlementExpiresAtMs
@@ -249,16 +270,174 @@ describe("token-verdict cache behavior", () => {
 		};
 
 		expect((await authenticateRequest(request, authEnv, dependencies)).ok).toBe(true);
-		nowMs = 59_999;
+		nowMs = 299_999;
 		expect((await authenticateRequest(request, authEnv, dependencies)).ok).toBe(true);
 		expect(verifyCalls).toBe(1);
 
-		nowMs = 60_000;
+		nowMs = 300_000;
 		const rejected = await authenticateRequest(request, authEnv, dependencies);
 		expect(rejected.ok).toBe(false);
 		if (rejected.ok) throw new Error("expired entitlement unexpectedly authenticated");
 		expect(rejected.response.status).toBe(401);
-		expect(nowMs - entitlementExpiresAtMs).toBeLessThanOrEqual(60_000);
+		expect(nowMs - entitlementExpiresAtMs).toBeLessThanOrEqual(300_000);
 		expect(verifyCalls).toBe(2);
+	});
+
+	it("defaults TTL to 15 minutes and clamps to 60s–60m", async () => {
+		const ttlWrites: number[] = [];
+		const captureTtl = (env: Env): AuthDependencies => ({
+			async readCachedVerdict() {
+				return null;
+			},
+			async cacheVerifiedVerdict(_cacheKey, ttlSeconds) {
+				ttlWrites.push(ttlSeconds);
+			},
+			...unusedInvalidate(),
+			async verifyToken() {
+				return Response.json({ userId });
+			},
+			logCacheFailure() {},
+		});
+
+		await authenticateRequest(
+			request,
+			{ ...authEnv, AUTH_CACHE_TTL_SECONDS: "" } as Env,
+			captureTtl(authEnv),
+		);
+		await authenticateRequest(
+			request,
+			{ ...authEnv, AUTH_CACHE_TTL_SECONDS: "30" } as Env,
+			captureTtl(authEnv),
+		);
+		await authenticateRequest(
+			request,
+			{ ...authEnv, AUTH_CACHE_TTL_SECONDS: "7200" } as Env,
+			captureTtl(authEnv),
+		);
+		expect(ttlWrites).toEqual([
+			AUTH_CACHE_TTL_DEFAULT_SECONDS,
+			AUTH_CACHE_TTL_MIN_SECONDS,
+			AUTH_CACHE_TTL_MAX_SECONDS,
+		]);
+	});
+
+	it("invalidates the cached verdict when verify rejects the token", async () => {
+		const invalidated: string[] = [];
+		const dependencies: AuthDependencies = {
+			async readCachedVerdict() {
+				return null;
+			},
+			async cacheVerifiedVerdict() {},
+			async invalidateCachedVerdict(cacheKey) {
+				invalidated.push(cacheKey);
+			},
+			async verifyToken() {
+				return Response.json({ error: "revoked" }, { status: 401 });
+			},
+			logCacheFailure() {},
+		};
+
+		const rejected = await authenticateRequest(request, authEnv, dependencies);
+		expect(rejected.ok).toBe(false);
+		if (rejected.ok) throw new Error("revoked token unexpectedly authenticated");
+		expect(rejected.response.status).toBe(401);
+		expect(invalidated).toHaveLength(1);
+		expect(invalidated[0]).toMatch(/^verdict:[0-9a-f]{64}$/);
+	});
+});
+
+describe("token-verdict isolate memory (default KV adapter)", () => {
+	const userId = "user-auth-memory";
+	const token = `valid-for:${userId}`;
+	const request = new Request(`${base}/v1/sync/status`, {
+		headers: headers(token, userId),
+	});
+
+	afterEach(() => {
+		__resetAuthVerdictMemoryForTests();
+	});
+
+	function fakeKvEnv(): {
+		env: Env;
+		gets: number;
+		puts: number;
+		deletes: number;
+	} {
+		const store = new Map<string, string>();
+		let gets = 0;
+		let puts = 0;
+		let deletes = 0;
+		const env = {
+			TOKEN_VERIFY_URL: "https://cmem.ai/api/pro/sync/verify",
+			AUTH_CACHE_TTL_SECONDS: "900",
+			AUTH_CACHE: {
+				async get(key: string) {
+					gets += 1;
+					return store.get(key) ?? null;
+				},
+				async put(key: string, value: string) {
+					puts += 1;
+					store.set(key, value);
+				},
+				async delete(key: string) {
+					deletes += 1;
+					store.delete(key);
+				},
+			},
+		} as unknown as Env;
+		return {
+			env,
+			get gets() {
+				return gets;
+			},
+			get puts() {
+				return puts;
+			},
+			get deletes() {
+				return deletes;
+			},
+		};
+	}
+
+	it("does not rewrite KV when isolate memory can still serve the verdict", async () => {
+		const kv = fakeKvEnv();
+		const dependencies = defaultAuthDependencies(kv.env);
+		let verifyCalls = 0;
+		const wrapped: AuthDependencies = {
+			readCachedVerdict: (cacheKey) => dependencies.readCachedVerdict(cacheKey),
+			cacheVerifiedVerdict: (cacheKey, ttlSeconds) =>
+				dependencies.cacheVerifiedVerdict(cacheKey, ttlSeconds),
+			invalidateCachedVerdict: (cacheKey) => dependencies.invalidateCachedVerdict(cacheKey),
+			async verifyToken() {
+				verifyCalls += 1;
+				return Response.json({ userId });
+			},
+			logCacheFailure() {},
+		};
+
+		expect((await authenticateRequest(request, kv.env, wrapped)).ok).toBe(true);
+		expect((await authenticateRequest(request, kv.env, wrapped)).ok).toBe(true);
+		expect(verifyCalls).toBe(1);
+		expect(kv.puts).toBe(1);
+		expect(kv.gets).toBe(1);
+	});
+
+	it("skips a second KV put when a concurrent miss already populated memory", async () => {
+		const kv = fakeKvEnv();
+		const dependencies = defaultAuthDependencies(kv.env);
+		await dependencies.cacheVerifiedVerdict("verdict:demo", AUTH_CACHE_TTL_DEFAULT_SECONDS);
+		await dependencies.cacheVerifiedVerdict("verdict:demo", AUTH_CACHE_TTL_DEFAULT_SECONDS);
+		expect(kv.puts).toBe(1);
+		expect(await dependencies.readCachedVerdict("verdict:demo")).toBe("1");
+		expect(kv.gets).toBe(0);
+	});
+
+	it("deletes the KV entry on invalidate", async () => {
+		const kv = fakeKvEnv();
+		const dependencies = defaultAuthDependencies(kv.env);
+		await dependencies.cacheVerifiedVerdict("verdict:demo", AUTH_CACHE_TTL_DEFAULT_SECONDS);
+		await dependencies.invalidateCachedVerdict("verdict:demo");
+		expect(kv.deletes).toBe(1);
+		expect(await dependencies.readCachedVerdict("verdict:demo")).toBeNull();
 	});
 });

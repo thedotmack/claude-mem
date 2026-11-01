@@ -6,6 +6,25 @@ import { toBmpSafe } from './bmp-safe.js';
 export const CONTEXT_TAG_OPEN = '<claude-mem-context>';
 export const CONTEXT_TAG_CLOSE = '</claude-mem-context>';
 
+/**
+ * Where the managed context block sits in `content`, from its opening tag
+ * through its closing tag, or null when there is no complete block.
+ *
+ * The closing tag is the first one after an opening tag, so a stray closing
+ * tag earlier in the file (a tag mentioned in prose) is never taken for the end
+ * of the block. Taking it duplicated the text between it and the block and left
+ * the old block in place, on every refresh. The opening tag is the nearest one
+ * before that closing tag, so a dangling opening tag earlier in the file can't
+ * swallow the user's text between it and the block.
+ */
+export function findContextBlockRange(content: string): { start: number; end: number } | null {
+  const firstOpen = content.indexOf(CONTEXT_TAG_OPEN);
+  if (firstOpen === -1) return null;
+  const close = content.indexOf(CONTEXT_TAG_CLOSE, firstOpen + CONTEXT_TAG_OPEN.length);
+  if (close === -1) return null;
+  return { start: content.lastIndexOf(CONTEXT_TAG_OPEN, close), end: close + CONTEXT_TAG_CLOSE.length };
+}
+
 export function injectContextIntoMarkdownFile(
   filePath: string,
   contextContent: string,
@@ -21,14 +40,13 @@ export function injectContextIntoMarkdownFile(
   if (existsSync(filePath)) {
     let existingContent = readFileSync(filePath, 'utf-8');
 
-    const tagStartIndex = existingContent.indexOf(CONTEXT_TAG_OPEN);
-    const tagEndIndex = existingContent.indexOf(CONTEXT_TAG_CLOSE);
+    const block = findContextBlockRange(existingContent);
 
-    if (tagStartIndex !== -1 && tagEndIndex !== -1) {
+    if (block) {
       existingContent =
-        existingContent.slice(0, tagStartIndex) +
+        existingContent.slice(0, block.start) +
         wrappedContent +
-        existingContent.slice(tagEndIndex + CONTEXT_TAG_CLOSE.length);
+        existingContent.slice(block.end);
     } else {
       existingContent = existingContent.trimEnd() + '\n\n' + wrappedContent + '\n';
     }

@@ -215,7 +215,6 @@ Der Installer übernimmt Abhängigkeiten, Plugin-Einrichtung, KI-Anbieter-Konfig
 
 - **[Konfiguration](https://docs.claude-mem.ai/configuration)** - Umgebungsvariablen & Einstellungen
 - **[Entwicklung](https://docs.claude-mem.ai/development)** - Erstellen, Testen, Beitragen
-- **[Release-Branches](https://docs.claude-mem.ai/branches)** - Ablauf der Branches Stable, core-dev und community-edge
 - **[Fehlerbehebung](https://docs.claude-mem.ai/troubleshooting)** - Häufige Probleme & Lösungen
 
 ---
@@ -271,15 +270,6 @@ get_observations(ids=[123, 456])
 ```
 
 Siehe [Suchwerkzeuge-Anleitung](https://docs.claude-mem.ai/usage/search-tools) für detaillierte Beispiele.
-
----
-
-## Release-Branches
-
-Stabile Releases werden von `main` ausgeliefert und auf npm veröffentlicht. `core-dev` und
-`community-edge` sind aus dem Quellcode betriebene Branches für frühe Zuverlässigkeitskorrekturen und
-Community-Integrationen. Siehe **[Release-Branches](https://docs.claude-mem.ai/branches)**
-für den Branch-Ablauf und Anweisungen zum Ausführen der nicht-stabilen Versionen.
 
 ---
 
@@ -383,11 +373,6 @@ Beiträge sind willkommen! Bitte:
 3. Nehmen Sie Ihre Änderungen mit Tests vor
 4. Aktualisieren Sie die Dokumentation
 5. Reichen Sie einen Pull Request ein
-
-Claude-Mem wird aus drei Branches ausgeliefert: `main` (stabil), `core-dev` und
-`community-edge`. Nur `main` wird auf npm veröffentlicht; die anderen werden aus dem
-Quellcode ausgeführt. Siehe [Release-Branches](https://docs.claude-mem.ai/branches) für die
-Strategie und Anweisungen zur lokalen Ausführung.
 
 Siehe [Entwicklungsanleitung](https://docs.claude-mem.ai/development) für den Beitrags-Workflow.
 

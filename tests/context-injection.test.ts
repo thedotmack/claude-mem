@@ -4,9 +4,39 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import {
   injectContextIntoMarkdownFile,
+  findContextBlockRange,
   CONTEXT_TAG_OPEN,
   CONTEXT_TAG_CLOSE,
 } from '../src/utils/context-injection';
+
+// Every writer and cleaner of the managed block pairs its tags through this one
+// helper: the inject and folder CLAUDE.md writers, `claude-mem generate`, and
+// the Codex and OpenCode AGENTS.md cleanups.
+describe('findContextBlockRange', () => {
+  const block = `${CONTEXT_TAG_OPEN}\nold\n${CONTEXT_TAG_CLOSE}`;
+  const rangeOf = (content: string) => {
+    const range = findContextBlockRange(content);
+    return range && content.slice(range.start, range.end);
+  };
+
+  it('finds the block on its own', () => {
+    expect(rangeOf(`# Notes\n\n${block}\n`)).toBe(block);
+  });
+
+  it('skips a closing tag that comes before the block', () => {
+    expect(rangeOf(`Mentions ${CONTEXT_TAG_CLOSE} in prose.\n\n${block}\n`)).toBe(block);
+  });
+
+  it('pairs the closing tag with its nearest opening tag, so a dangling one earlier keeps the text after it', () => {
+    expect(rangeOf(`Mentions ${CONTEXT_TAG_OPEN} in prose.\n\nKeep this.\n\n${block}\n`)).toBe(block);
+  });
+
+  it('is null without a complete block', () => {
+    expect(findContextBlockRange('# Notes\n')).toBeNull();
+    expect(findContextBlockRange(`${CONTEXT_TAG_OPEN}\nnever closed\n`)).toBeNull();
+    expect(findContextBlockRange(`${CONTEXT_TAG_CLOSE}\nbefore any opening tag\n`)).toBeNull();
+  });
+});
 
 describe('Context Injection', () => {
   let tempDir: string;
@@ -101,6 +131,19 @@ describe('Context Injection', () => {
   });
 
   describe('replace existing context section', () => {
+    it('ignores a closing tag before the context section', () => {
+      const filePath = join(tempDir, 'GEMINI.md');
+      const before = `# Tag example\n${CONTEXT_TAG_CLOSE}\nKeep this line.\n`;
+      const after = '\n## Other instructions\n';
+      writeFileSync(filePath, `${before}${CONTEXT_TAG_OPEN}\nold\n${CONTEXT_TAG_CLOSE}${after}`);
+
+      injectContextIntoMarkdownFile(filePath, 'new');
+
+      expect(readFileSync(filePath, 'utf-8')).toBe(
+        `${before}${CONTEXT_TAG_OPEN}\nnew\n${CONTEXT_TAG_CLOSE}${after}`,
+      );
+    });
+
     it('replaces content between existing context tags', () => {
       const filePath = join(tempDir, 'CLAUDE.md');
       const initialContent = [

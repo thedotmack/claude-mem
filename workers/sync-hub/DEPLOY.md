@@ -26,7 +26,7 @@ Paste the returned id into `wrangler.jsonc` → `kv_namespaces[0].id`
 (replacing the `00000000…` placeholder). This one namespace serves two
 purposes, separated by key prefix:
 
-- `verdict:<sha256>` — positive token-verification verdicts (short TTL).
+- `verdict:<sha256>` — positive token-verification verdicts (default 15 min TTL).
 - `control:kill-switch` — the kill-switch flag (no TTL; see §3).
 
 A dedicated `SYNC_CONTROL` namespace was considered and rejected: the
@@ -47,10 +47,11 @@ return the canonical user id the token belongs to, as JSON `{userId}` or
 claimed user id.
 
 SyncHub is the sole positive cache in this composed verification path. The Pro
-route performs a fresh identity lookup, while `AUTH_CACHE` positives are fixed
-at 60 seconds (Cloudflare KV's minimum). This preserves the dashboard promise
-that rotating a setup token stops uploads within 60 seconds and bounds any
-time-limited entitlement overrun to the same interval.
+route performs a fresh identity lookup, while `AUTH_CACHE` positives default to
+15 minutes (`AUTH_CACHE_TTL_SECONDS`, clamped 60s–60m). Rotating or revoking a
+setup token can therefore keep succeeding on a warm cache for up to that TTL.
+A verify 401/403 deletes the verdict key, but only on a cache miss that
+reaches upstream.
 
 There is no local or production authentication bypass. Vitest intercepts the
 verify request with Miniflare's mocked outbound service; manual `wrangler dev`
@@ -74,9 +75,12 @@ including the envelope, brackets, and commas. Timing is deliberately fenced:
 Hub response-body abort (45s) < Pro maxDuration (60s) < Hub lease (90s)
 ```
 
-The Hub heartbeats immediately before the bounded fetch and performs the token
-check plus checkpoint compare-and-set in one synchronous transaction. A stale
-request cannot checkpoint after a successor acquires a new token.
+`getProjectionPage` renews the 90s fencing lease. The Worker does not add a
+second heartbeat RPC before the bounded fetch — that extra storage knock
+wakes the SQLite Durable Object without changing fencing (Hub abort is 45s).
+The token check plus checkpoint compare-and-set stay one synchronous
+transaction. A stale request cannot checkpoint after a successor acquires a
+new token.
 
 If a fetch times out/aborts, fails at the network, returns a retryable status,
 or yields a truncated, invalid, or ambiguous response, the Hub deliberately
@@ -87,7 +91,10 @@ authoritative checkpoint already proves the target complete, or Pro returns
 its deterministic nonretryable 409 outcome.
 
 A public push returns 200 only after the Hub's authoritative `projected_seq`
-covers the committed `head_seq`. Retryable projection failures after a durable
+covers the committed `head_seq` — including while the kill switch is tripped.
+Poll mode refuses WebSockets and bounds the request-path drain (then continues
+via `waitUntil` / client retry / this repair route). It never returns 200 with
+`head_seq > projected_seq`. Retryable projection failures after a durable
 append return 503 with `durable:true` and `retryable:true`; retrying the
 identical operation reuses its sequence and resumes projection. Pro's
 deterministic document/revision rejection returns nonretryable 409 and never
@@ -286,10 +293,15 @@ curl "http://localhost:8787/__scheduled?cron=7+*+*+*+*"
 
 ## 3. Kill switch operations (Phase 5 task 2)
 
+Poll-mode projection catch-up (keep the switch ON until spend is green): `PLAN.md`.
+
 State = presence of KV key `control:kill-switch` in `AUTH_CACHE`. Tripped ⇒
 WS upgrades answer `503 {"error":…,"mode":"poll"}` and every HTTP sync
 response carries `X-Sync-Mode: poll`; clients close their sockets, suppress
-reconnects, and keep polling (their polls are also the re-probe).
+reconnects, and keep polling (their polls are also the re-probe). Push-path
+projection still runs for those HTTP writes (bounded drain + catch-up) so
+`projected_seq` can cover `head_seq`. The switch quiets idle sockets and
+automated DO storage knocks; it does not turn sync off.
 
 ```sh
 cd workers/sync-hub

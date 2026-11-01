@@ -7,7 +7,12 @@ import { parseJsonWithBom } from './atomic-json.js';
 
 const PLUGIN_SETTINGS_KEY = 'claude-mem@thedotmack';
 
+/**
+ * Claude Code's plugin toggle. It is host-local: a Qoder hook (marked by
+ * qoder-hook-launcher.cjs) runs even when the Claude Code plugin is disabled.
+ */
 export function isPluginDisabledInClaudeSettings(): boolean {
+  if (process.env.CLAUDE_MEM_QODER_HOOK === '1') return false;
   try {
     const claudeConfigDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
     const settingsPath = join(claudeConfigDir, 'settings.json');

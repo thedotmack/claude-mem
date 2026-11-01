@@ -215,7 +215,6 @@ curl -fsSL https://install.cmem.ai/openclaw.sh | bash
 
 - **[ترتیبات](https://docs.claude-mem.ai/configuration)** - ماحول کے متغیرات اور سیٹنگز
 - **[ترقی](https://docs.claude-mem.ai/development)** - تعمیر، جانچ، حصہ داری
-- **[ریلیز برانچز](https://docs.claude-mem.ai/branches)** - Stable، core-dev، اور community-edge برانچ کا بہاؤ
 - **[مسائل کی تشخیص](https://docs.claude-mem.ai/troubleshooting)** - عام مسائل اور حل
 
 ---
@@ -271,14 +270,6 @@ get_observations(ids=[123, 456])
 ```
 
 تفصیلی مثالوں کے لیے [تلاش کے اوزار گائیڈ](https://docs.claude-mem.ai/usage/search-tools) دیکھیں۔
-
----
-
-## ریلیز برانچز
-
-مستحکم ریلیزز `main` سے شپ ہوتی ہیں اور npm پر شائع کی جاتی ہیں۔ `core-dev` اور
-`community-edge` ابتدائی اعتماد کی اصلاحات اور کمیونٹی انٹیگریشنز کے لیے سورس سے چلائی جانے والی برانچز ہیں۔ برانچ کے بہاؤ اور غیر مستحکم رن ہدایات کے لیے **[ریلیز برانچز](https://docs.claude-mem.ai/branches)**
-دیکھیں۔
 
 ---
 
@@ -382,10 +373,6 @@ npm run bug-report
 3. ٹیسٹ کے ساتھ اپنی تبدیلیاں کریں
 4. دستاویزات کو اپڈیٹ کریں
 5. ایک Pull Request جمع کریں
-
-Claude-Mem تین برانچز سے شپ ہوتا ہے: `main` (مستحکم)، `core-dev`، اور
-`community-edge`۔ صرف `main` ہی npm پر شائع کیا جاتا ہے؛ باقی سورس سے
-چلائی جاتی ہیں۔ حکمت عملی اور لوکل رن ہدایات کے لیے [ریلیز برانچز](https://docs.claude-mem.ai/branches) دیکھیں۔
 
 حصہ داری کے کام کے بہاؤ کے لیے [ترقی گائیڈ](https://docs.claude-mem.ai/development) دیکھیں۔
 

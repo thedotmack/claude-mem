@@ -3,10 +3,40 @@ import {
   conversationChars,
   shouldRecycleConversation,
   resolveConversationMaxChars,
+  windowAwareConversationMaxChars,
   OBSERVER_CONVERSATION_MAX_CHARS,
 } from '../../src/shared/observer-recycle.js';
 import { wrapPriorContext } from '../../src/sdk/prompts.js';
 import type { ConversationMessage } from '../../src/services/worker-types.js';
+
+describe('window-aware generation budget (#3625)', () => {
+  it('retires a narrow-window generation at half its window', () => {
+    // 16k tokens * 0.5 * 4 chars/token.
+    expect(windowAwareConversationMaxChars(OBSERVER_CONVERSATION_MAX_CHARS, 16_384)).toBe(32_768);
+    // The 131,072 fallback for an unknown endpoint.
+    expect(windowAwareConversationMaxChars(OBSERVER_CONVERSATION_MAX_CHARS, 131_072)).toBe(262_144);
+  });
+
+  it('keeps the configured budget for windows it already fits inside', () => {
+    expect(windowAwareConversationMaxChars(OBSERVER_CONVERSATION_MAX_CHARS, 200_000)).toBe(OBSERVER_CONVERSATION_MAX_CHARS);
+    expect(windowAwareConversationMaxChars(OBSERVER_CONVERSATION_MAX_CHARS, 1_048_576)).toBe(OBSERVER_CONVERSATION_MAX_CHARS);
+  });
+
+  it('never raises an operator budget that is already smaller than the window allows', () => {
+    expect(windowAwareConversationMaxChars(20_000, 1_048_576)).toBe(20_000);
+    expect(windowAwareConversationMaxChars(20_000, 16_384)).toBe(20_000);
+  });
+
+  it('keeps the configured budget when the window is unknown', () => {
+    expect(windowAwareConversationMaxChars(OBSERVER_CONVERSATION_MAX_CHARS, undefined)).toBe(OBSERVER_CONVERSATION_MAX_CHARS);
+  });
+
+  it('recycles a 16k-window generation long before the fixed budget would', () => {
+    const history = windowOf(8, 5_000); // 40k chars: past half a 16k window, far under 400k
+    expect(shouldRecycleConversation(history, windowAwareConversationMaxChars(OBSERVER_CONVERSATION_MAX_CHARS, 16_384))).toBe(true);
+    expect(shouldRecycleConversation(history)).toBe(false);
+  });
+});
 
 function windowOf(count: number, charsEach: number): ConversationMessage[] {
   return Array.from({ length: count }, (_, i) => ({

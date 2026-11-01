@@ -1,8 +1,8 @@
 /**
  * CopilotCliHooksInstaller.ts — GitHub Copilot CLI user-level hooks.json writer.
  *
- * Copilot CLI loads every `*.json` file under `~/.copilot/hooks/` (or
- * `$COPILOT_HOOKS_DIR`). Each file is version 1 with a `hooks` map of event
+ * Copilot CLI loads every `*.json` file under `$COPILOT_HOME/hooks/` (or
+ * default `~/.copilot/hooks/`). Each file is version 1 with a `hooks` map of event
  * name → command entries. Entries use `exec` + `args` so the host does not
  * go through a shell (see Copilot CLI hook docs).
  *
@@ -13,17 +13,26 @@ import { existsSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from 'fs
 import { join } from 'path';
 import { homedir } from 'os';
 import { logger } from '../../utils/logger.js';
-import { getBunAbsolutePath as findBunPath, getWorkerServiceAbsolutePath as findWorkerServicePath, getMcpServerAbsolutePath } from './install-paths.js';
+import {
+  getBunAbsolutePath as findBunPath,
+  getWorkerServiceAbsolutePath as findWorkerServicePath,
+  getMcpServerAbsolutePath,
+} from './install-paths.js';
 import { writeMcpJsonConfig } from './McpIntegrations.js';
+import { COPILOT_HOOK_TIMEOUT_MS } from '../../shared/host-hook-limits.js';
 
-export const COPILOT_CLI_HOOKS_DIR = process.env.COPILOT_HOOKS_DIR
-  || join(homedir(), '.copilot', 'hooks');
-export const COPILOT_CLI_HOOKS_FILE = join(COPILOT_CLI_HOOKS_DIR, 'claude-mem.json');
+export function copilotHooksDir(): string {
+  return join(process.env.COPILOT_HOME || join(homedir(), '.copilot'), 'hooks');
+}
+
+export function copilotHooksFile(): string {
+  return join(copilotHooksDir(), 'claude-mem.json');
+}
 
 /** Copilot CLI reads this file for MCP servers. */
-export const COPILOT_CLI_MCP_CONFIG = join(homedir(), '.copilot', 'mcp-config.json');
-/** Older GitHub Copilot docs path — dual-write so both hosts see the server. */
-export const COPILOT_CLI_LEGACY_MCP_CONFIG = join(homedir(), '.github', 'copilot', 'mcp.json');
+export function copilotMcpConfigFile(): string {
+  return join(process.env.COPILOT_HOME || join(homedir(), '.copilot'), 'mcp-config.json');
+}
 
 const MARKER_ENV = 'CLAUDE_MEM_COPILOT_HOOK';
 
@@ -56,10 +65,12 @@ function buildHooksFile(exec: string, workerPath: string): CopilotHooksFile {
   const hook = (event: string, timeoutSec: number) =>
     hookCommand(exec, [workerPath, 'hook', 'copilot', event], timeoutSec);
 
+  const sessionStartTimeoutSec = Math.round(COPILOT_HOOK_TIMEOUT_MS / 1000);
+
   return {
     version: 1,
     hooks: {
-      sessionStart: [hook('context', 20)],
+      sessionStart: [hook('context', sessionStartTimeoutSec)],
       userPromptSubmitted: [hook('session-init', 15)],
       postToolUse: [hook('observation', 120)],
       postToolUseFailure: [hook('observation', 120)],
@@ -90,24 +101,26 @@ export async function installCopilotCliHooks(): Promise<number> {
   console.log(`  Worker service: ${workerServicePath}`);
 
   try {
-    mkdirSync(COPILOT_CLI_HOOKS_DIR, { recursive: true });
-    writeJsonAtomic(COPILOT_CLI_HOOKS_FILE, buildHooksFile(bunPath, workerServicePath));
-    console.log(`  Wrote hooks to ${COPILOT_CLI_HOOKS_FILE}`);
+    const hooksDir = copilotHooksDir();
+    const hooksFile = copilotHooksFile();
+    const mcpConfigFile = copilotMcpConfigFile();
+
+    mkdirSync(hooksDir, { recursive: true });
+    writeJsonAtomic(hooksFile, buildHooksFile(bunPath, workerServicePath));
+    console.log(`  Wrote hooks to ${hooksFile}`);
 
     const mcpServerPath = getMcpServerAbsolutePath();
     if (!mcpServerPath) {
       console.error('Could not find MCP server script — hooks installed, MCP skipped');
     } else {
-      writeMcpJsonConfig(COPILOT_CLI_MCP_CONFIG, mcpServerPath);
-      writeMcpJsonConfig(COPILOT_CLI_LEGACY_MCP_CONFIG, mcpServerPath);
-      console.log(`  MCP config: ${COPILOT_CLI_MCP_CONFIG}`);
-      console.log(`  MCP config (legacy): ${COPILOT_CLI_LEGACY_MCP_CONFIG}`);
+      writeMcpJsonConfig(mcpConfigFile, mcpServerPath);
+      console.log(`  MCP config: ${mcpConfigFile}`);
     }
 
     console.log(`
 Installation complete!
 
-Hooks installed to: ${COPILOT_CLI_HOOKS_FILE}
+Hooks installed to: ${hooksFile}
 Using unified CLI: bun worker-service.cjs hook copilot <event>
 
 Events registered:
@@ -136,14 +149,15 @@ Next steps:
  */
 export function uninstallCopilotCliHooks(): number {
   console.log('\nUninstalling Claude-Mem Copilot CLI hooks...\n');
-  if (!existsSync(COPILOT_CLI_HOOKS_FILE)) {
-    console.log(`  No hooks file at ${COPILOT_CLI_HOOKS_FILE}`);
+  const hooksFile = copilotHooksFile();
+  if (!existsSync(hooksFile)) {
+    console.log(`  No hooks file at ${hooksFile}`);
     return 0;
   }
   try {
-    unlinkSync(COPILOT_CLI_HOOKS_FILE);
-    console.log(`  Removed ${COPILOT_CLI_HOOKS_FILE}`);
-    logger.info('HOOK', `Removed Copilot CLI hooks at ${COPILOT_CLI_HOOKS_FILE}`);
+    unlinkSync(hooksFile);
+    console.log(`  Removed ${hooksFile}`);
+    logger.info('HOOK', `Removed Copilot CLI hooks at ${hooksFile}`);
     return 0;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -154,7 +168,7 @@ export function uninstallCopilotCliHooks(): number {
 }
 
 export function copilotCliHooksInstalled(): boolean {
-  return existsSync(COPILOT_CLI_HOOKS_FILE);
+  return existsSync(copilotHooksFile());
 }
 
 /** @internal test helper */

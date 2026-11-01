@@ -215,7 +215,6 @@ Programul de instalare gestionează dependențele, configurarea plugin-ului, con
 
 - **[Configurare](https://docs.claude-mem.ai/configuration)** - Variabile de mediu și setări
 - **[Dezvoltare](https://docs.claude-mem.ai/development)** - Construire, testare, contribuție
-- **[Ramuri de Lansare](https://docs.claude-mem.ai/branches)** - Fluxul ramurilor stable, core-dev și community-edge
 - **[Depanare](https://docs.claude-mem.ai/troubleshooting)** - Probleme comune și soluții
 
 ---
@@ -271,15 +270,6 @@ get_observations(ids=[123, 456])
 ```
 
 Consultați [Ghidul Instrumentelor de Căutare](https://docs.claude-mem.ai/usage/search-tools) pentru exemple detaliate.
-
----
-
-## Ramuri de Lansare
-
-Lansările stabile pornesc din `main` și sunt publicate pe npm. `core-dev` și
-`community-edge` sunt ramuri rulate direct din sursă pentru remedieri timpurii de fiabilitate și
-integrări comunitare. Consultați **[Ramuri de Lansare](https://docs.claude-mem.ai/branches)**
-pentru fluxul ramurilor și instrucțiunile de rulare non-stabile.
 
 ---
 
@@ -383,11 +373,6 @@ Contribuțiile sunt binevenite! Vă rugăm:
 3. Faceți modificările cu teste
 4. Actualizați documentația
 5. Trimiteți un Pull Request
-
-Claude-Mem este lansat din trei ramuri: `main` (stabilă), `core-dev` și
-`community-edge`. Doar `main` este publicată pe npm; celelalte sunt rulate din
-sursă. Consultați [Ramuri de Lansare](https://docs.claude-mem.ai/branches) pentru
-strategie și instrucțiuni de rulare locală.
 
 Consultați [Ghidul de Dezvoltare](https://docs.claude-mem.ai/development) pentru fluxul de contribuție.
 

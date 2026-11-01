@@ -215,7 +215,6 @@ Trình cài đặt xử lý các phần phụ thuộc, thiết lập plugin, c�
 
 - **[Cấu Hình](https://docs.claude-mem.ai/configuration)** - Biến môi trường & cài đặt
 - **[Phát Triển](https://docs.claude-mem.ai/development)** - Xây dựng, kiểm thử, đóng góp
-- **[Nhánh Phát Hành](https://docs.claude-mem.ai/branches)** - Luồng các nhánh stable, core-dev, và community-edge
 - **[Khắc Phục Sự Cố](https://docs.claude-mem.ai/troubleshooting)** - Các vấn đề thường gặp & giải pháp
 
 ---
@@ -271,15 +270,6 @@ get_observations(ids=[123, 456])
 ```
 
 Xem [Hướng Dẫn Công Cụ Tìm Kiếm](https://docs.claude-mem.ai/usage/search-tools) để biết các ví dụ chi tiết.
-
----
-
-## Nhánh Phát Hành
-
-Các bản phát hành ổn định được xây dựng từ `main` và phát hành lên npm. `core-dev` và
-`community-edge` là các nhánh chạy trực tiếp từ mã nguồn dành cho các bản sửa lỗi độ tin cậy
-sớm và các tích hợp cộng đồng. Xem **[Nhánh Phát Hành](https://docs.claude-mem.ai/branches)**
-để biết luồng nhánh và hướng dẫn chạy phiên bản không ổn định.
 
 ---
 
@@ -383,11 +373,6 @@ Chúng tôi hoan nghênh các đóng góp! Vui lòng:
 3. Thực hiện thay đổi của bạn kèm kiểm thử
 4. Cập nhật tài liệu
 5. Gửi Pull Request
-
-Claude-Mem được phát hành từ ba nhánh: `main` (ổn định), `core-dev`, và
-`community-edge`. Chỉ `main` được phát hành lên npm; các nhánh còn lại được chạy từ
-mã nguồn. Xem [Nhánh Phát Hành](https://docs.claude-mem.ai/branches) để biết
-chiến lược và hướng dẫn chạy cục bộ.
 
 Xem [Hướng Dẫn Phát Triển](https://docs.claude-mem.ai/development) để biết quy trình đóng góp.
 

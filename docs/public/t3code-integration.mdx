@@ -1,0 +1,62 @@
+---
+title: T3 Code Integration
+description: Native Claude-Mem hooks and MCP search for T3 Code's Codex and Claude Code providers.
+---
+
+T3 Code runs coding providers on its server's machine. Claude-Mem installs into those providers' native configuration homes, so their existing hooks capture prompts and tool results, generate summaries, and inject project context into future sessions. The same plugin supplies MCP memory search.
+
+## Install
+
+Open T3 Code once and configure a **Codex** or **Claude Code** provider. On the machine running the T3 server, run:
+
+```bash
+npx claude-mem@latest install --ide t3code
+```
+
+`t3` and `t3-code` are aliases for `t3code`. The memory observer provider is a separate choice: use the main installer's provider selector or an explicit `--provider` flag as usual.
+
+Restart T3 Code and start a new thread in your project. If Codex prompts to trust Claude-Mem's hooks, approve them through the provider's normal approval flow. If the T3 client does not expose that prompt, open the same Codex executable with the same `CODEX_HOME` in a terminal, trust the hooks there, then restart T3 Code. Installing the plugin does not bypass hook trust.
+
+## What gets configured
+
+The installer reads `~/.t3/userdata/settings.json`, including both `providerInstances` and legacy `providers`. An explicit instance overrides the legacy entry for its default slot. Disabled providers are skipped.
+
+| T3 provider | Claude-Mem installation |
+| --- | --- |
+| Codex | Native Codex plugin marketplace, plugin cache, and `features.hooks` in its shared home's `config.toml` |
+| Claude Code (`claudeAgent`) | Native Claude Code plugin registered at user scope in its configured `CLAUDE_CONFIG_DIR` |
+| Other T3 providers | Use that provider's existing Claude-Mem integration; this installer currently handles Codex and Claude Code |
+
+Configured binary paths and home paths are honored. T3-managed Codex uses the active installation in `T3CODE_HOME/tools/codex`. Codex shadow homes share configuration and plugins with their source home, so Claude-Mem installs into that source instead of creating conflicting files in the shadow directory.
+
+The connector uses the existing Claude-Mem plugin lifecycle, capture handlers, privacy filtering, and project resolution. It adds no transcript watcher and does not edit T3 settings or its database. Providers using the same native home share the installation with their standalone CLI.
+
+## Custom server or development profile
+
+If T3 Code uses a custom home, export `T3CODE_HOME` before installing. For a specific settings file, including a development profile:
+
+```bash
+CLAUDE_MEM_T3CODE_SETTINGS_PATH=/path/to/t3/userdata/settings.json \
+  npx claude-mem@latest install --ide t3code
+```
+
+Run on the remote server machine for a remote T3 environment, and inside WSL for a WSL-backed provider. Installing on the phone or browser's machine will not configure the remote provider.
+
+## Status and removal
+
+```bash
+npx claude-mem t3code status
+npx claude-mem t3code status --settings /path/to/settings.json
+npx claude-mem t3code uninstall
+```
+
+Status checks provider configuration, plugin enablement, marketplace registration, and runtime assets. It does not claim hook approval or successful capture: verify a new thread produces observations in the Claude-Mem viewer at `http://localhost:37777` on the server machine.
+
+Removal disables only Claude-Mem in the configured native homes, preserving other plugins and provider settings. This also disables Claude-Mem for standalone CLIs that share those homes. Restart T3 Code after removal. The main `npx claude-mem uninstall` command also performs this cleanup; memory data is preserved.
+
+## Troubleshooting
+
+- **No settings file:** open T3 Code and complete provider setup, or point the installer at the actual server's settings file.
+- **Managed Codex missing:** finish Codex setup inside T3 Code, then rerun the installer. Other usable providers are still configured, but the installer returns a nonzero exit code for the missing provider. The connector does not download or replace T3's provider runtime.
+- **Launch overrides block capture:** remove Codex overrides that disable `features.hooks` or Claude-Mem. Claude's `--setting-sources`, when explicitly set, must include `user`; `--strict-mcp-config` and `--disable-all-hooks` block the plugin's normal operation. The installer reports these conflicts instead of rewriting your T3 launch arguments.
+- **Provider install fails:** the installer reports each failed provider and returns a nonzero exit code. Repair that provider's binary or permissions, then rerun the installer; providers already installed remain usable.

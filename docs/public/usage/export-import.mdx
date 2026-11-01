@@ -36,6 +36,12 @@ Imports memories with **duplicate prevention**:
 - Maintains data integrity with transactional imports
 - Reports what was imported vs. skipped
 
+When a session already exists in the destination installation, its local title,
+prompt, and registered memory session ID are retained. New observations and
+summaries from the export attach to that existing session. If it has no memory
+session ID yet, the import registers the exported ID before adding those memories.
+Re-importing the same export still skips the memories already restored.
+
 **Duplicate Detection Strategy:**
 - **Sessions**: By `claude_session_id` (unique)
 - **Summaries**: By `sdk_session_id` (unique)

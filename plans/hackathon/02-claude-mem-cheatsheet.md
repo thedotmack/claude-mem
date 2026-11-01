@@ -72,7 +72,7 @@ Example (plain English):
 ## 6. Where notes live
 
 - Local database + meaning-aware search index in **`~/.claude-mem`** on your machine.
-- Nothing leaves except calls to the AI model that does the observing.
+- Nothing leaves except calls to the AI model that does the observing. Local installs contact cmem.ai once, at signup, to create the sign-in link; nothing else is sent to cmem.ai.
 - Optional: **CMEM Pro** cloud sync across machines (hackers: 30 days free, code **FASTHACK30** at cmem.ai).
 - A local **viewer** web page shows notes landing in real time, browsable + searchable.
 

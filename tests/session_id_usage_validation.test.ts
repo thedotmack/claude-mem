@@ -109,7 +109,7 @@ describe('Session ID Critical Invariants', () => {
 
       store.ensureMemorySessionIdRegistered(sessionDbId, 'second-generator-memory-id');
       session = store.getSessionById(sessionDbId);
-      expect(session?.memory_session_id).toBe('second-generator-memory-id');
+      expect(session?.memory_session_id).toBe(firstMemoryId);
     });
 
     it('should NOT reset memorySessionId when it is still NULL (first prompt scenario)', () => {

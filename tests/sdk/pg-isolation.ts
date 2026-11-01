@@ -29,6 +29,32 @@ export function newApiKey(): { raw: string; hash: string } {
 }
 
 /**
+ * Whether the test database offers pgvector, installing it in public when it
+ * does. A suite decides this before it is declared, so a database without
+ * pgvector reports its tests as skipped rather than passed. With
+ * CLAUDE_MEM_TEST_PGVECTOR=1 (CI's pgvector job) its absence is an error.
+ */
+export async function pgvectorAvailable(connectionString: string | undefined): Promise<boolean> {
+  let available = false;
+  if (connectionString) {
+    const client = new pg.Client({ connectionString });
+    await client.connect();
+    try {
+      if ((await client.query(`SELECT 1 FROM pg_available_extensions WHERE name = 'vector'`)).rows.length > 0) {
+        await client.query('CREATE EXTENSION IF NOT EXISTS vector SCHEMA public');
+        available = true;
+      }
+    } finally {
+      await client.end();
+    }
+  }
+  if (!available && process.env.CLAUDE_MEM_TEST_PGVECTOR === '1') {
+    throw new Error('CLAUDE_MEM_TEST_PGVECTOR=1, but the test database has no pgvector');
+  }
+  return available;
+}
+
+/**
  * Create a fresh, uniquely-named schema and return its name. The name is
  * `<prefix>_<uuid-with-underscores>`, i.e. only `[a-z0-9_]`, so it is safe
  * to interpolate into the unquoted `-c search_path=` libpq option below.

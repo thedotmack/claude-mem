@@ -1,9 +1,12 @@
 import { describe, it, expect, afterAll } from 'bun:test';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
+import path from 'path';
 import { collectDescendantIdentities } from '../../src/shared/kill-process-tree.js';
+import { reapSnapshottedDescendants, snapshotDescendants, type ProcessIdentity } from '../integration/helpers/process-tree.js';
 import {
   captureProcessStartToken,
   isSameProcess,
+  isSameProcessName,
   __identityProbeCountForTesting,
 } from '../../src/shared/process-identity.js';
 
@@ -22,46 +25,94 @@ import {
  * asserted rather than assumed — on whatever platform the suite runs.
  */
 
-const strays: number[] = [];
+const strays: Array<{ command: ReturnType<typeof spawn>; descendants: ProcessIdentity[] }> = [];
 
 function settle(ms = 500): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-afterAll(() => {
-  for (const pid of strays) {
-    try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+function stopFixture(fixture: (typeof strays)[number]): void {
+  try {
+    // The snapshot was taken while this exact root was alive. Revalidate each
+    // child's start token and kill only that PID, never an unchecked subtree.
+    if (process.platform === 'win32') {
+      reapSnapshottedDescendants(fixture.descendants);
+    } else {
+      reapSnapshottedDescendants(fixture.descendants, undefined, pid => {
+        try { process.kill(pid, 'SIGKILL'); }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+        }
+      });
+    }
+  } finally {
+    // ChildProcess retains the handle for the fixture root itself.
+    fixture.command.kill('SIGKILL');
   }
+}
+
+afterAll(() => {
+  for (const fixture of strays) stopFixture(fixture);
 });
 
 describe('descendant enumeration agrees with captureProcessStartToken', () => {
+  it.if(process.platform === 'win32')('ghost test helper recognizes real CIM creation times (Windows)', async () => {
+    // A slow CIM query can take most of this test's 30-second deadline. Keep
+    // the child alive long enough for enumeration, then stop the fixture.
+    const command = spawn('cmd.exe', ['/c', 'ping -n 60 127.0.0.1 > NUL'], {
+      stdio: 'ignore', windowsHide: true,
+    });
+    const rootPid = command.pid!;
+    const fixture = { command, descendants: [] as ProcessIdentity[] };
+    strays.push(fixture);
+    try {
+      await settle();
+
+      const rootToken = captureProcessStartToken(rootPid);
+      if (rootToken) fixture.descendants = snapshotDescendants(rootPid, rootToken);
+      expect(rootToken).toMatch(/^\d{14}\.\d{6}$/);
+      expect(fixture.descendants.length).toBeGreaterThan(0);
+      const verified = fixture.descendants.filter(entry => entry.startToken !== null);
+      expect(verified.length).toBeGreaterThan(0);
+      const reprobed = captureProcessStartToken(verified[0]!.pid);
+      if (reprobed !== null) expect(reprobed).toBe(verified[0]!.startToken);
+    } finally {
+      stopFixture(fixture);
+    }
+  }, 30_000);
+
   it('produces tokens identical to an independent re-probe', async () => {
     const command = process.platform === 'win32'
       ? spawn('cmd.exe', ['/c', 'ping -n 60 127.0.0.1 > NUL'], { stdio: 'ignore', windowsHide: true })
       : spawn('/bin/sh', ['-c', 'sleep 60 & sleep 60 & wait'], { stdio: 'ignore' });
 
     const rootPid = command.pid!;
-    strays.push(rootPid);
-    await settle();
+    const fixture = { command, descendants: [] as ProcessIdentity[] };
+    strays.push(fixture);
+    try {
+      await settle();
+      const rootToken = captureProcessStartToken(rootPid);
+      if (rootToken) fixture.descendants = snapshotDescendants(rootPid, rootToken);
 
-    const descendants = await collectDescendantIdentities(rootPid);
-    expect(descendants.length).toBeGreaterThan(0);
+      const descendants = await collectDescendantIdentities(rootPid);
+      expect(descendants.length).toBeGreaterThan(0);
 
-    // At least one token must have been readable, or the comparison below is
-    // vacuous — every entry would trivially "agree" via the null fallback.
-    const withTokens = descendants.filter(entry => entry.startToken !== null);
-    expect(withTokens.length).toBeGreaterThan(0);
+      // At least one token must have been readable, or the comparison below is
+      // vacuous — every entry would trivially "agree" via the null fallback.
+      const withTokens = descendants.filter(entry => entry.startToken !== null);
+      expect(withTokens.length).toBeGreaterThan(0);
 
-    for (const entry of withTokens) {
-      const reprobed = captureProcessStartToken(entry.pid);
-      // A null re-probe means the process exited between the two reads, which
-      // is legitimate; only a NON-null disagreement is a format bug.
-      if (reprobed === null) continue;
-      expect(reprobed).toBe(entry.startToken);
+      for (const entry of withTokens) {
+        const reprobed = captureProcessStartToken(entry.pid);
+        // A null re-probe means the process exited between the two reads, which
+        // is legitimate; only a NON-null disagreement is a format bug.
+        if (reprobed === null) continue;
+        expect(reprobed).toBe(entry.startToken);
+      }
+    } finally {
+      stopFixture(fixture);
     }
-
-    try { process.kill(rootPid, 'SIGKILL'); } catch { /* fine */ }
-  }, 30_000);
+  }, 60_000);
 
   it('returns leaves before their ancestors', async () => {
     if (process.platform === 'win32') return;
@@ -72,19 +123,24 @@ describe('descendant enumeration agrees with captureProcessStartToken', () => {
       { stdio: 'ignore' }
     );
     const rootPid = command.pid!;
-    strays.push(rootPid);
-    await settle();
+    const fixture = { command, descendants: [] as ProcessIdentity[] };
+    strays.push(fixture);
+    try {
+      await settle();
+      const rootToken = captureProcessStartToken(rootPid);
+      if (rootToken) fixture.descendants = snapshotDescendants(rootPid, rootToken);
 
-    const descendants = await collectDescendantIdentities(rootPid);
-    expect(descendants.length).toBeGreaterThanOrEqual(2);
+      const descendants = await collectDescendantIdentities(rootPid);
+      expect(descendants.length).toBeGreaterThanOrEqual(2);
 
-    // The intermediate shell is a direct child of the root; the innermost
-    // sleep is its child. Leaves-first means the deeper one comes first.
-    const pids = descendants.map(entry => entry.pid);
-    const intermediate = pids[pids.length - 1];
-    expect(descendants[0]!.pid).not.toBe(intermediate);
-
-    try { process.kill(rootPid, 'SIGKILL'); } catch { /* fine */ }
+      // The intermediate shell is a direct child of the root; the innermost
+      // sleep is its child. Leaves-first means the deeper one comes first.
+      const pids = descendants.map(entry => entry.pid);
+      const intermediate = pids[pids.length - 1];
+      expect(descendants[0]!.pid).not.toBe(intermediate);
+    } finally {
+      stopFixture(fixture);
+    }
   }, 30_000);
 });
 
@@ -141,5 +197,55 @@ describe('identity revalidation never trusts the cache', () => {
     const after = __identityProbeCountForTesting();
 
     expect(after).toBe(before);
+  });
+
+  it.if(process.platform === 'win32')('a failed read of our own PID is not cached (Windows)', () => {
+    // A null must not stick for the TTL: the Chroma writer lock captures its
+    // own token through this accessor and persisted a token-less lock (#4239).
+    // Runs in a fresh process so this file's earlier self-reads are not cached;
+    // an empty PATH makes the first powershell.exe spawn fail.
+    const modulePath = path.resolve(import.meta.dir, '../../src/shared/process-identity.ts').replace(/\\/g, '/');
+    const script = `
+      const { captureProcessStartToken } = await import('${modulePath}');
+      const saved = process.env.PATH;
+      process.env.PATH = '';
+      const first = captureProcessStartToken(process.pid);
+      process.env.PATH = saved;
+      console.log(JSON.stringify({ first, second: captureProcessStartToken(process.pid) }));
+    `;
+    const result = spawnSync(process.execPath, ['-e', script], { encoding: 'utf-8' });
+    const { first, second } = JSON.parse(result.stdout.trim().split('\n').pop()!);
+
+    expect(first).toBeNull();
+    expect(second).not.toBeNull();
+  });
+
+  it.if(process.platform === 'win32')('our own token outlives the TTL (Windows)', () => {
+    const token = captureProcessStartToken(process.pid);
+    expect(token).not.toBeNull();
+
+    const realNow = Date.now;
+    Date.now = () => realNow() + 60 * 60 * 1000;
+    try {
+      const before = __identityProbeCountForTesting();
+      expect(captureProcessStartToken(process.pid)).toBe(token);
+      expect(__identityProbeCountForTesting()).toBe(before);
+    } finally {
+      Date.now = realNow;
+    }
+  });
+});
+
+describe('isSameProcessName (Chroma writer lock, #4239)', () => {
+  it('matches a Linux comm name truncated to 15 characters', () => {
+    // `ps -o comm=` on Linux never reports more than 15 characters, so a live
+    // writer with a longer executable name must still match its lock.
+    expect(isSameProcessName('claude-mem-work', 'claude-mem-worker', 'linux')).toBe(true);
+    expect(isSameProcessName('python3', 'bun', 'linux')).toBe(false);
+  });
+
+  it('requires an exact match off Linux', () => {
+    expect(isSameProcessName('claude-mem-work', 'claude-mem-worker', 'darwin')).toBe(false);
+    expect(isSameProcessName('bun', 'bun', 'win32')).toBe(true);
   });
 });

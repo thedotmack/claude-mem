@@ -215,7 +215,6 @@ El instalador se encarga de las dependencias, la configuración del plugin, la c
 
 - **[Configuración](https://docs.claude-mem.ai/configuration)** - Variables de entorno y ajustes
 - **[Desarrollo](https://docs.claude-mem.ai/development)** - Compilación, pruebas y contribución
-- **[Ramas de Publicación](https://docs.claude-mem.ai/branches)** - Flujo de las ramas stable, core-dev y community-edge
 - **[Solución de Problemas](https://docs.claude-mem.ai/troubleshooting)** - Problemas comunes y soluciones
 
 ---
@@ -271,15 +270,6 @@ get_observations(ids=[123, 456])
 ```
 
 Ver [Guía de Herramientas de Búsqueda](https://docs.claude-mem.ai/usage/search-tools) para ejemplos detallados.
-
----
-
-## Ramas de Publicación
-
-Las versiones estables se publican desde `main` y se distribuyen en npm. `core-dev` y
-`community-edge` son ramas que se ejecutan desde el código fuente para correcciones tempranas
-de fiabilidad e integraciones de la comunidad. Consulta **[Ramas de Publicación](https://docs.claude-mem.ai/branches)**
-para conocer el flujo de ramas y las instrucciones de ejecución no estable.
 
 ---
 
@@ -383,11 +373,6 @@ npm run bug-report
 3. Realiza tus cambios con pruebas
 4. Actualiza la documentación
 5. Envía un Pull Request
-
-Claude-Mem se distribuye desde tres ramas: `main` (estable), `core-dev` y
-`community-edge`. Solo `main` se publica en npm; las demás se ejecutan desde
-el código fuente. Consulta [Ramas de Publicación](https://docs.claude-mem.ai/branches) para conocer la
-estrategia y las instrucciones de ejecución local.
 
 Ver [Guía de Desarrollo](https://docs.claude-mem.ai/development) para el flujo de contribución.
 

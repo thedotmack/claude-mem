@@ -1,0 +1,39 @@
+name: Native ODS integration
+
+on:
+  pull_request:
+    paths: ['ods/**', '.github/workflows/ods-native.yml']
+  push:
+    branches: [main]
+    paths: ['ods/**', '.github/workflows/ods-native.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  native-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/checkout@v4
+        with:
+          repository: Osmantic/ODS
+          ref: c99f52822f2c37813fd880004f964ca83dfc5a35
+          path: fixtures/ods
+          sparse-checkout: |
+            ods/extensions/services/pixel-agent
+            ods/installers/lib
+      - name: Native adapter and reversible installer
+        env:
+          ODS_TEST_REPO: ${{ github.workspace }}/fixtures/ods
+        run: node --test ods/test/native.test.mjs ods/test/install.test.mjs
+      - name: Prepare native ODS sources
+        run: node ods/install.mjs --ods-dir fixtures/ods
+      - name: ODS ingress capture, recall and replay
+        env:
+          ODS_TEST_ROOT: ${{ github.workspace }}/fixtures/ods/ods
+        run: node --test ods/test/ingress.test.mjs

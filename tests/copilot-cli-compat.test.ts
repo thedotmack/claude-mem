@@ -1,15 +1,22 @@
 import { describe, it, expect } from 'bun:test';
 import { readFileSync } from 'fs';
 import { copilotAdapter } from '../src/cli/adapters/copilot.js';
-import { _buildCopilotCliHooksFile } from '../src/services/integrations/CopilotCliHooksInstaller.js';
+import { AdapterRejectedInput } from '../src/cli/adapters/errors.js';
+import {
+  _buildCopilotCliHooksFile,
+  copilotHooksFile,
+  copilotHooksDir,
+  copilotMcpConfigFile,
+} from '../src/services/integrations/CopilotCliHooksInstaller.js';
+import { COPILOT_HOOK_TIMEOUT_MS } from '../src/shared/host-hook-limits.js';
 
 const INSTALLER_PATH = 'src/services/integrations/CopilotCliHooksInstaller.ts';
 
-describe('CopilotCliHooksInstaller - event mapping', () => {
+describe('CopilotCliHooksInstaller - event mapping and paths', () => {
   const src = readFileSync(INSTALLER_PATH, 'utf-8');
 
-  it('maps sessionStart to context', () => {
-    expect(src).toContain("sessionStart: [hook('context'");
+  it('maps sessionStart to context using COPILOT_HOOK_TIMEOUT_MS', () => {
+    expect(src).toContain("sessionStart: [hook('context', sessionStartTimeoutSec)]");
   });
 
   it('maps userPromptSubmitted to session-init', () => {
@@ -30,10 +37,25 @@ describe('CopilotCliHooksInstaller - event mapping', () => {
     expect(src).toContain('hook copilot');
   });
 
-  it('writes ~/.copilot/hooks/claude-mem.json and dual-writes MCP config', () => {
-    expect(src).toContain("join(homedir(), '.copilot', 'hooks')");
-    expect(src).toContain("join(homedir(), '.copilot', 'mcp-config.json')");
-    expect(src).toContain("join(homedir(), '.github', 'copilot', 'mcp.json')");
+  it('resolves hooks and MCP paths at call time via COPILOT_HOME or ~/.copilot', () => {
+    const defaultHooksFile = copilotHooksFile();
+    expect(defaultHooksFile).toEndWith('.copilot/hooks/claude-mem.json');
+    const defaultMcpConfig = copilotMcpConfigFile();
+    expect(defaultMcpConfig).toEndWith('.copilot/mcp-config.json');
+
+    const origCopilotHome = process.env.COPILOT_HOME;
+    try {
+      process.env.COPILOT_HOME = '/custom/copilot-home';
+      expect(copilotHooksDir()).toBe('/custom/copilot-home/hooks');
+      expect(copilotHooksFile()).toBe('/custom/copilot-home/hooks/claude-mem.json');
+      expect(copilotMcpConfigFile()).toBe('/custom/copilot-home/mcp-config.json');
+    } finally {
+      if (origCopilotHome !== undefined) {
+        process.env.COPILOT_HOME = origCopilotHome;
+      } else {
+        delete process.env.COPILOT_HOME;
+      }
+    }
   });
 
   it('reuses writeMcpJsonConfig from McpIntegrations.ts', () => {
@@ -46,22 +68,18 @@ describe('CopilotCliHooksInstaller - event mapping', () => {
     expect(uninstallSrc).toContain('uninstallCopilotCliHooks');
   });
 
-  it('bakes exec+args (no shell) with the copilot hook marker env', () => {
+  it('bakes exec+args (no shell) with the copilot hook marker env and registered sessionStart timeout', () => {
     const file = _buildCopilotCliHooksFile('/usr/bin/bun', '/tmp/worker-service.cjs');
     expect(file.version).toBe(1);
     const sessionStart = file.hooks.sessionStart[0];
     expect(sessionStart.exec).toBe('/usr/bin/bun');
     expect(sessionStart.args).toEqual(['/tmp/worker-service.cjs', 'hook', 'copilot', 'context']);
+    expect(sessionStart.timeoutSec).toBe(COPILOT_HOOK_TIMEOUT_MS / 1000);
     expect(sessionStart.env?.CLAUDE_MEM_COPILOT_HOOK).toBe('1');
     expect(typeof sessionStart.cwd).toBe('string');
   });
 
   it('round-trips Windows-style backslash paths through the JSON hooks file unchanged', () => {
-    // exec/args are baked absolute paths (Rule B, see file header) — on
-    // Windows those come from homedir()/path.join() and contain backslashes.
-    // JSON.stringify escapes them as \\, so this asserts the file installer
-    // actually writes survives a real JSON.stringify -> JSON.parse round trip
-    // rather than a hand-rolled string that could double-escape or truncate.
     const winExec = 'C:\\Users\\tester\\.bun\\bin\\bun.exe';
     const winWorkerPath = 'C:\\Users\\tester\\.claude\\plugins\\marketplaces\\thedotmack\\plugin\\scripts\\worker-service.cjs';
     const file = _buildCopilotCliHooksFile(winExec, winWorkerPath);
@@ -77,8 +95,17 @@ describe('CopilotCliHooksInstaller - event mapping', () => {
   });
 });
 
-describe('copilotAdapter - normalizeInput', () => {
-  it('falls back to process.cwd() when no cwd is provided', () => {
+describe('copilotAdapter - normalizeInput and formatOutput', () => {
+  it('throws AdapterRejectedInput(missing_session_id) when sessionId is missing', () => {
+    expect(() => copilotAdapter.normalizeInput({ cwd: '/tmp/test' })).toThrow(
+      new AdapterRejectedInput('missing_session_id')
+    );
+    expect(() => copilotAdapter.normalizeInput({})).toThrow(
+      new AdapterRejectedInput('missing_session_id')
+    );
+  });
+
+  it('falls back to process.cwd() when no cwd is provided but sessionId is present', () => {
     const result = copilotAdapter.normalizeInput({ sessionId: 's1' });
     expect(result.cwd).toBe(process.cwd());
     expect(result.sessionId).toBe('s1');
@@ -132,15 +159,65 @@ describe('copilotAdapter - normalizeInput', () => {
     expect(indexSrc).toContain("case 'copilot': case 'copilot-cli': return copilotAdapter");
   });
 
-  it('formatOutput emits additionalContext without suppressOutput', () => {
-    const output = copilotAdapter.formatOutput({
+  it('formatOutput emits only documented keys (additionalContext)', () => {
+    const withContext = copilotAdapter.formatOutput({
       continue: true,
       hookSpecificOutput: { additionalContext: 'past work' },
     });
-    expect(output).toEqual({
-      permissionDecision: 'continue',
+    expect(withContext).toEqual({
       additionalContext: 'past work',
     });
-    expect('suppressOutput' in (output as object)).toBe(false);
+    expect(Object.keys(withContext)).toEqual(['additionalContext']);
+
+    const empty = copilotAdapter.formatOutput({
+      continue: true,
+    });
+    expect(empty).toEqual({});
+    expect(Object.keys(empty)).toEqual([]);
+  });
+});
+
+describe('copilot contract fixture (tests/fixtures/hosts/copilot-cli-hooks.json)', () => {
+  const fixturePath = 'tests/fixtures/hosts/copilot-cli-hooks.json';
+  const fixture = JSON.parse(readFileSync(fixturePath, 'utf-8'));
+
+  it('normalizes sessionStart payload accurately', () => {
+    const normalized = copilotAdapter.normalizeInput(fixture.payloads.sessionStart);
+    expect(normalized.sessionId).toBe('copilot-session-123');
+    expect(normalized.cwd).toBe('/work/project');
+    expect(normalized.prompt).toBe('fix the authentication bug');
+  });
+
+  it('normalizes userPromptSubmitted payload accurately', () => {
+    const normalized = copilotAdapter.normalizeInput(fixture.payloads.userPromptSubmitted);
+    expect(normalized.sessionId).toBe('copilot-session-123');
+    expect(normalized.cwd).toBe('/work/project');
+    expect(normalized.prompt).toBe('run tests');
+  });
+
+  it('normalizes postToolUse payload with textResultForLlm unwrap', () => {
+    const normalized = copilotAdapter.normalizeInput(fixture.payloads.postToolUse);
+    expect(normalized.sessionId).toBe('copilot-session-123');
+    expect(normalized.toolName).toBe('bash');
+    expect(normalized.toolInput).toEqual({ command: 'npm test' });
+    expect(normalized.toolResponse).toBe('15 tests passed');
+  });
+
+  it('normalizes postToolUseFailure payload', () => {
+    const normalized = copilotAdapter.normalizeInput(fixture.payloads.postToolUseFailure);
+    expect(normalized.sessionId).toBe('copilot-session-123');
+    expect(normalized.toolName).toBe('bash');
+    expect(normalized.toolInput).toEqual({ command: 'npm test' });
+    expect(normalized.toolResponse).toBe('Command failed with exit code 1');
+  });
+
+  it('ensures formatOutput emits only documented keys for all hook responses', () => {
+    const output = copilotAdapter.formatOutput({
+      continue: true,
+      systemMessage: 'unsupported in copilot',
+      hookSpecificOutput: { additionalContext: 'test-context' },
+    });
+    expect(output).toEqual({ additionalContext: 'test-context' });
+    expect(Object.keys(output)).toEqual(['additionalContext']);
   });
 });
