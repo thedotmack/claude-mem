@@ -261,4 +261,26 @@ describe('SessionStore.storeObservations', () => {
     row = store.db.prepare('SELECT discovery_tokens FROM session_summaries WHERE id = ?').get(res.summaryId) as any;
     expect(row.discovery_tokens).toBe(1200);
   });
+
+  it('takes next_steps from the latest stop of the turn, even when empty (#5225)', () => {
+    const mem = session('mem-next-steps-latest');
+    // Stop 1 happens while a background task is still running
+    store.storeObservations(mem, 'project', [], summary({
+      completed: 'Started the build in the background',
+      next_steps: 'Wait for the background build, then check the log',
+    }), 1);
+
+    // Stop 2 after the <task-notification>: the build is done, nothing is left
+    const second = store.storeObservations(mem, 'project', [], summary({
+      completed: 'Build passed; read the log',
+      next_steps: '',
+    }), 1);
+    expect(second.summaryUpdated).toBe(true);
+
+    const row = store.db.prepare(
+      'SELECT completed, next_steps FROM session_summaries WHERE id = ?'
+    ).get(second.summaryId) as any;
+    expect(row.completed).toBe('Build passed; read the log');
+    expect(row.next_steps).toBe('');
+  });
 });

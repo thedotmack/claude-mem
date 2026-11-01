@@ -4245,7 +4245,8 @@ export class SessionStore {
           const mergedInvestigated = (summary.investigated && summary.investigated.trim()) ? summary.investigated : (existingSummary.investigated ?? '');
           const mergedLearned = (summary.learned && summary.learned.trim()) ? summary.learned : (existingSummary.learned ?? '');
           const mergedCompleted = (summary.completed && summary.completed.trim()) ? summary.completed : (existingSummary.completed ?? '');
-          const mergedNextSteps = (summary.next_steps && summary.next_steps.trim()) ? summary.next_steps : (existingSummary.next_steps ?? '');
+          // next_steps describes what is left as of this stop, so the latest value wins even when empty.
+          const mergedNextSteps = summary.next_steps ?? '';
           const mergedNotes = (summary.notes && summary.notes.trim()) ? summary.notes : existingSummary.notes;
 
           let existingFilesRead: string[] = [];
