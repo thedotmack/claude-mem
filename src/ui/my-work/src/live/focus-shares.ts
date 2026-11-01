@@ -35,8 +35,11 @@ const listeners = new Set<() => void>()
 const set = (next: Partial<State>) => { state = { ...state, ...next }; listeners.forEach((listener) => listener()) }
 const subscribe = (listener: () => void) => { listeners.add(listener); return () => listeners.delete(listener) }
 
+/** What My Work knows about shared areas right now. */
+export const focusSharesNow = (): State => state
+
 export function useFocusShares(): State {
-  return useSyncExternalStore(subscribe, () => state)
+  return useSyncExternalStore(subscribe, focusSharesNow)
 }
 
 async function call<T>(url: string, init?: { method: 'POST'; body: unknown }): Promise<T> {
@@ -89,11 +92,13 @@ export async function stopSharingFocusArea(focusAreaId: string): Promise<void> {
 }
 
 export async function readFocusShareComments(focusAreaId: string): Promise<FocusShareComment[]> {
+  const startedAt = changes
   try {
     const answer = await call<{ comments: FocusShareComment[] }>(`/api/work-view/focus/share/comments?focusAreaId=${encodeURIComponent(focusAreaId)}`)
     return answer.comments
   } catch (error) {
-    if ((error as { status?: number }).status === 410) forget(focusAreaId)
+    // A link stopped and shared again while this read was out is a new link: the old one's 410 leaves it alone.
+    if ((error as { status?: number }).status === 410 && startedAt === changes) forget(focusAreaId)
     throw error
   }
 }

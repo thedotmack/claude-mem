@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { sampleSource } from './sample-source.ts'
-import { canShareArea, toSharedFocusPage } from './to-shared-focus.ts'
+import { canShareArea, titleQuotesPrompt, toSharedFocusPage } from './to-shared-focus.ts'
 
 const NOW = Date.parse('2026-10-29T20:00:00Z')
 
@@ -59,4 +59,16 @@ test('Other, suggestions and unknown areas cannot be shared', async () => {
   assert.equal(toSharedFocusPage(model, 'fa-team', NOW), null)
   assert.equal(toSharedFocusPage(model, 'nope', NOW), null)
   assert.ok(canShareArea(model.focusAreas.find((area) => area.id === 'fa-fixes')), 'a done area can still be shared')
+})
+
+test('a title that repeats the owner\'s prompt stays home; a written title goes out', async () => {
+  const model = await sampleSource.loadWorkModel()
+  const prompt = 'Fix the **login** redirect loop. It breaks on Safari for everyone at work.'
+  const copied = { ...model, requests: model.requests.map((request) => request.id === 'r1' ? { ...request, title: 'Fix the login redirect loop.', prompts: [{ at: 'now', quote: prompt }] } : request) }
+  const page = toSharedFocusPage(copied, 'fa-viewer', NOW)!
+  assert.equal(page.requests.find((request) => request.id === 'r1')!.title, 'Untitled request')
+  assert.ok(!JSON.stringify(page).includes('redirect loop'))
+  assert.ok(titleQuotesPrompt('Fix the login redirect…', [{ quote: prompt }]), 'a cut title still counts as the prompt')
+  const written = { ...model, requests: model.requests.map((request) => request.id === 'r1' ? { ...request, title: 'Safari sign-in fixed', prompts: [{ at: 'now', quote: prompt }] } : request) }
+  assert.equal(toSharedFocusPage(written, 'fa-viewer', NOW)!.requests.find((request) => request.id === 'r1')!.title, 'Safari sign-in fixed')
 })
