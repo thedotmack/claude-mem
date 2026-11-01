@@ -222,6 +222,7 @@ The installer handles dependencies, plugin setup, AI provider configuration, wor
 - 👥 **TeamBrain** - An optional shared workspace beside My Work, with real team work lists, member attribution and linked findings. Each person chooses what to share; personal requests and review notes stay separate. [Set up a team](https://cmem.ai/teambrain/start).
 - 💻 **Claude Desktop Skill** - Search memory from Claude Desktop conversations
 - 🔒 **Privacy Control** - Use `<private>` tags to exclude sensitive content from storage
+- 🖼️ **Screenshots (opt-in, off by default)** - Keep converted copies of tool screenshots under `~/.claude-mem/media-v1/`, upload them to cmem.ai only when Cloud Sync is on, and send them to the observer model only when image inference is separately enabled ([details](https://docs.claude-mem.ai/configuration#screenshots-and-images-opt-in))
 - ⚙️ **Context Configuration** - Fine-grained control over what context gets injected
 - 🤖 **Automatic Operation** - No manual intervention required
 - 🔗 **Citations** - Reference past observations with IDs through the worker API or view all in the web viewer

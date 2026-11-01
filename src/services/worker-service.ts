@@ -12,6 +12,8 @@ import { runShutdownSequence, WORKER_GRACEFUL_SHUTDOWN_DEADLINE_BASE_MS, type Wo
 import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensureDir, paths } from '../shared/paths.js';
 import { HookSpool, migrateLegacySessionEndReplay } from '../shared/hook-spool.js';
 import { HookSpoolDrainer, hookSpoolConsumedMarkers } from './worker/hook-spool-drain.js';
+import { pruneOldLogs } from './worker/log-retention.js';
+import { parseRetentionDays } from '../shared/retention-days.js';
 import { HookSpoolRoutes } from './worker/http/routes/HookSpoolRoutes.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { getUptimeSeconds } from '../shared/uptime.js';
@@ -41,8 +43,10 @@ import { isWorkerAutostartDisabled } from '../shared/worker-autostart.js';
 export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 import { resolveRuntimeContext } from './hooks/runtime-selector.js';
+import { MediaError } from '../shared/media-contract.js';
 
 declare const __DEFAULT_PACKAGE_VERSION__: string;
+declare const __CMEM_MEDIA_STANDALONE__: boolean;
 const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
 
 // Exit code for "started but could not serve": the worker booted but never
@@ -151,6 +155,7 @@ import { Database as BunDatabase } from 'bun:sqlite';
 import { WorkViewRoutes } from './worker/http/routes/WorkViewRoutes.js';
 import { SessionRoutes } from './worker/http/routes/SessionRoutes.js';
 import { DataRoutes } from './worker/http/routes/DataRoutes.js';
+import { MediaRoutes } from './worker/http/routes/MediaRoutes.js';
 import { AdvisorRoutes } from './worker/http/routes/AdvisorRoutes.js';
 import { WorkStateRoutes } from './worker/http/routes/WorkStateRoutes.js';
 import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
@@ -288,6 +293,7 @@ export class WorkerService implements WorkerRef {
   private isShuttingDown: boolean = false;
   private bootWatchdog: ReturnType<typeof setTimeout> | null = null;
   private pendingSessionResumeTimer: ReturnType<typeof setInterval> | null = null;
+  private logRetentionTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly hookSpool = new HookSpool();
   private readonly hookSpoolDrainer = new HookSpoolDrainer(this.hookSpool);
 
@@ -528,6 +534,49 @@ export class WorkerService implements WorkerRef {
     }
   }
 
+  /**
+   * Daily log retention (CLAUDE_MEM_LOG_RETENTION_DAYS). The first sweep waits
+   * 5 minutes, like BackupManager's first snapshot, so deleting a backlog of
+   * old logs never competes with boot; then it runs once a day, because the
+   * daemon can stay up for weeks and a start-only prune would never run for
+   * it. Only the worker prunes; hooks and the MCP server never pay for it.
+   * Settings are re-read each sweep, and a failing sweep never reaches the
+   * worker: retention is housekeeping.
+   */
+  private startLogRetention(): void {
+    if (this.logRetentionTimer != null || this.isShuttingDown) return;
+    // The sweep is async (fs/promises) so a large backlog never blocks the
+    // event loop that serves health checks and hook requests.
+    const sweep = async (): Promise<void> => {
+      if (this.isShuttingDown) return;
+      try {
+        const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+        await pruneOldLogs(paths.logsDir(), parseRetentionDays(settings.CLAUDE_MEM_LOG_RETENTION_DAYS));
+      } catch (error) {
+        logger.warn('SYSTEM', 'Log retention sweep failed; logs are kept until the next sweep', {},
+          error instanceof Error ? error : new Error(String(error)));
+      }
+    };
+    this.logRetentionTimer = setTimeout(() => {
+      void sweep();
+      if (this.isShuttingDown) return;
+      this.logRetentionTimer = setInterval(() => void sweep(), 24 * 60 * 60 * 1000);
+      this.logRetentionTimer.unref?.();
+    }, 5 * 60_000);
+    this.logRetentionTimer.unref?.();
+  }
+
+  private stopLogRetention(): void {
+    // `!= null`: lifecycle tests build the worker with Object.create, where the
+    // field initializer never ran and the timer is undefined, not null.
+    if (this.logRetentionTimer != null) {
+      // clearTimeout and clearInterval share one id space in Node and Bun.
+      clearTimeout(this.logRetentionTimer);
+      clearInterval(this.logRetentionTimer);
+      this.logRetentionTimer = null;
+    }
+  }
+
   private registerRoutes(): void {
 
     this.server.registerRoutes(new ChromaRoutes());
@@ -592,6 +641,10 @@ export class WorkerService implements WorkerRef {
       sessionRoutes.ensureGeneratorRunning(sessionDbId, source),
     );
     this.server.registerRoutes(new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime));
+    this.server.registerRoutes(new MediaRoutes(
+      () => this.dbManager.getMediaStore(),
+      id => this.dbManager.getMediaReplicaResolver().resolve(id),
+    ));
     this.server.registerRoutes(new AdvisorRoutes(this.dbManager));
     this.server.registerRoutes(new WorkStateRoutes(this.dbManager));
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
@@ -1062,6 +1115,7 @@ export class WorkerService implements WorkerRef {
       // null when disabled — DatabaseManager gates construction). First run
       // lands ~5 minutes after start, then every backup interval.
       this.dbManager.getBackupManager()?.start();
+      this.startLogRetention();
 
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
       this.mcpReady = existsSync(mcpServerPath);
@@ -1234,6 +1288,7 @@ export class WorkerService implements WorkerRef {
         this.workViewRoutes?.close();
         this.workViewRoutes = null;
         this.stopPendingSessionResume();
+        this.stopLogRetention();
         this.hookSpoolDrainer.stop();
         // Stop the idle monitor before the drain: its own trigger has
         // already disarmed it, and a route- or signal-initiated drain must
@@ -1545,6 +1600,21 @@ function runServerApiKeyCli(args: string[]): never {
 
 async function main() {
   const { command, args: commandArgs } = parseWorkerServiceCommand(process.argv.slice(2));
+  // Load the bundle without binding a port or depending on a running worker.
+  if (command === '--version') {
+    console.log(packageVersion);
+    return;
+  }
+  if (command === 'media-smoke') {
+    try {
+      const { runMediaRuntimeSmoke } = await import('./media/smoke.js');
+      await runMediaRuntimeSmoke();
+    } catch (error) {
+      console.error(JSON.stringify({ mediaRuntime: 'failed', code: error instanceof MediaError ? error.code : 'decoder_unavailable' }));
+      process.exitCode = 1;
+    }
+    return;
+  }
 
   const hookInitiatedCommands = ['start', 'hook', 'restart', '--daemon'];
   if ((command === undefined || hookInitiatedCommands.includes(command)) && isPluginDisabledInClaudeSettings()) {
@@ -2175,7 +2245,9 @@ const isMainModule = typeof require !== 'undefined' && typeof module !== 'undefi
     || process.argv[1]?.endsWith('worker-service.cjs')
     || process.argv[1]?.replaceAll('\\', '/') === __filename?.replaceAll('\\', '/');
 
-if (isMainModule) {
+// Bun's compiled CJS entry can have a module parent. The binary build defines
+// this flag explicitly; source/library imports retain their normal semantics.
+if (isMainModule || (typeof __CMEM_MEDIA_STANDALONE__ !== 'undefined' && __CMEM_MEDIA_STANDALONE__)) {
   main().catch((error) => {
     if (isHookStdoutClosed(error)) {
       // The session closed before the hook wrote its output. Nothing to fix.

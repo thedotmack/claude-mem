@@ -4,6 +4,59 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [15.7.0] - 2026-10-30
+
+## My Work: refresh stays on your agent, and a Feedback button (#5190)
+
+When My Work's automatic refresh got an answer from Claude Code that claude-mem refused (most often a review over 1,200 characters), the whole refresh moved on to the next logged-in agent. On machines with Codex installed, that meant hidden codex exec --ephemeral runs on the owner's ChatGPT account, even with CLAUDE_MEM_PROVIDER=claude (#5189: about 230 runs in four days).
+
+- A refused answer now ends that refresh on the agent that gave it. The next scheduled run tries the same agent again, with the existing failure backoff. An agent that can't run at all (not signed in, crashed) still hands the run to the next one.
+- Feedback button in the My Work header, next to Star. It opens a short "My Work feedback" issue form.
+
+## Note-taker always uses the newest Haiku (#5195)
+
+The note-taker's default model is now Claude Code's haiku alias, which always resolves to the newest Haiku, instead of a pinned Haiku 4.5 ID. Saved settings that still carry the shipped pinned ID move to the alias on upgrade. A model you typed yourself is left alone. The repo's CLAUDE.md now states this as policy: never pin a dated model ID as a default.
+
+## My Work and the worker
+
+- Activity-driven background rebuilds of My Work are coalesced, so an open My Work page no longer rebuilds on every database commit (#5133, mitigates #5124).
+- Work View waits for the database to finish starting before it builds (#5157).
+- The viewer's processing status reconciles after a stream gap (#5139).
+- Daily worker logs older than CLAUDE_MEM_LOG_RETENTION_DAYS (default 30, 0 keeps forever) are pruned. Today's and yesterday's files are always kept (#5186).
+
+## Projects
+
+- Named environments inside a parent Git repository can declare explicit inheritance, so unrelated parent memory no longer leaks into their context (#5022).
+- Oh My Pi keeps transient project memory in model context (#5183).
+- Claude Duet: capture and recall (#5188).
+
+## Media (off by default)
+
+- First phase of image-aware observations: bounded media contracts and a lazy Sharp 0.35.5 converter with size, pixel and deadline limits. CLAUDE_MEM_MEDIA_CAPTURE_ENABLED and CLAUDE_MEM_MEDIA_INFERENCE_ENABLED both default to false (#4341).
+
+## Security
+
+- Executable discovery never looks in the current directory (#5148).
+- Installer URLs are https, and Bun runs from an owner-controlled directory (#5149).
+- The worker rejects cross-origin browser writes to session endpoints and to POST /api/memory/ingest (#5162, #5161).
+- Postgres API keys are stored as salted scrypt hashes (#5160), and every Postgres sslmode is honored (#5152).
+- Atomic writes use exclusive-create random temp names (#5151).
+- Private tags are stripped before caps, and Hermes' last turn is gated (#5150).
+- Redaction now covers GitLab, Hugging Face and npm tokens (#5174), passwords in URL credentials (#5173), and inbound sync text when local redaction is on (#5171).
+
+## Fixes
+
+- Hook stdin is framed when complete, without waiting for EOF (#5126).
+- A closed session's EPIPE is no longer logged as fatal (#5177).
+- Windows Codex sandbox refusals are explained (#5140).
+- The OpenAI-compatible provider reads the HTTP status from a 200 error envelope with a textual code (#5191).
+- SessionStart counts the memory-use block in its budget without TeamBrain (#5181).
+- A leading ~ in CLAUDE_MEM_DATA_DIR is expanded (#5179).
+- Log tails read only complete lines (#5166).
+- The filtered Chroma fallback narrows to SQLite row ids (#5154).
+
+Full changelog: https://github.com/thedotmack/claude-mem/compare/v15.6.0...v15.7.0
+
 ## [15.6.0] - 2026-10-29
 
 ## My Work: one store for the viewer's state (#5187)

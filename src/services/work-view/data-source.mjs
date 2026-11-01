@@ -69,6 +69,7 @@ export class WorkStateSource {
     this.agentView = buildAgentView(this.cachedState, {});
     this.agentRevision = 0;
     this.activitySignature = null;
+    this.activityCheckedAt = null;
     this.signature = null;
     this.source = {
       kind: 'claude-mem-work-state', mode: 'read-only-sqlite', connected: false,
@@ -89,19 +90,31 @@ export class WorkStateSource {
       this.databaseIdentity = identity;
       this.signature = null;
       this.activitySignature = null;
+      this.activityCheckedAt = null;
     }
     return this.database;
   }
 
-  read() {
+  read({ maxActivityAgeMs = 0 } = {}) {
     this.source.lastCheckedAt = new Date().toISOString();
     try {
       const database = this.openDatabase();
       const revision = database.prepare(`SELECT COUNT(*) AS count, MAX(id) AS id${this.columns.has('sync_rev') ? ', SUM(CAST(sync_rev AS INTEGER)) AS synced_revision' : ''} FROM work_state_entries`).get();
       const signature = `${revision.count}:${revision.id ?? 0}:${revision.synced_revision ?? 0}:${this.localDeviceId}`;
+      const previousTitles = this.titleCacheSignature;
+      const previousLedger = this.ledgerSignature;
       this.readTitleCache();
       this.readLedger();
-      const activity = `${activitySignature(database)}|titles:${this.titleCacheSignature}|ledger:${this.ledgerSignature}`;
+      const now = Date.now();
+      // Only background polling opts into this window. Direct reads (including
+      // review writes) must still notice evidence edits that retain row IDs.
+      // Owner edits and generated copy bypass it, even during a busy session.
+      const reuseActivity = this.source.connected && signature === this.signature
+        && previousTitles === this.titleCacheSignature && previousLedger === this.ledgerSignature
+        && this.activityCheckedAt !== null && now >= this.activityCheckedAt
+        && now - this.activityCheckedAt < maxActivityAgeMs;
+      const activity = reuseActivity ? this.activitySignature
+        : `${activitySignature(database)}|titles:${this.titleCacheSignature}|ledger:${this.ledgerSignature}`;
       if (signature !== this.signature || activity !== this.activitySignature || !this.source.connected) {
         database.exec('BEGIN');
         try {
@@ -156,6 +169,7 @@ export class WorkStateSource {
           throw error;
         }
       }
+      if (!reuseActivity) this.activityCheckedAt = now;
       this.source.connected = true;
       this.source.error = null;
       this.source.lastUpdatedAt = this.cachedState.lastUpdatedAt;

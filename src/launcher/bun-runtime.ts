@@ -2,6 +2,7 @@ import { spawn, spawnSync, type ChildProcess } from 'child_process';
 import { existsSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
+import { isCurrentDirectoryCandidate } from '../shared/spawn.js';
 
 export const BUN_PATH_LOOKUP_TIMEOUT_MS = 1500;
 
@@ -12,6 +13,8 @@ interface BunLookupOptions {
   exists?: (path: string) => boolean;
   spawnProcess?: typeof spawn;
   timeoutMs?: number;
+  /** Working directory where.exe results are filtered against. */
+  cwd?: string;
 }
 
 interface PathLookupResult {
@@ -118,11 +121,15 @@ export async function findBun(options: BunLookupOptions = {}): Promise<string | 
     );
     if (pathCheck.status === 0 && pathCheck.stdout.trim()) {
       // where.exe prints in the console code page, so a non-ASCII profile path
-      // can arrive garbled; keep only lines that exist on disk (#4694).
+      // can arrive garbled; keep only lines that exist on disk (#4694). It
+      // also searches the current directory first: hooks run inside the user's
+      // project, so a bun.exe planted there must never be returned.
+      const cwd = options.cwd ?? process.cwd();
       const bunPaths = pathCheck.stdout
         .split(/\r?\n/)
         .map((line) => line.trim())
         .filter(Boolean)
+        .filter((line) => !isCurrentDirectoryCandidate(line, cwd))
         .filter((line) => exists(line));
       const firstBunPath = bunPaths.find((line) => {
         const lowerPath = line.toLowerCase();

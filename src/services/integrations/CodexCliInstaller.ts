@@ -18,7 +18,7 @@ import { logger } from '../../utils/logger.js';
 import { findContextBlockRange } from '../../utils/context-injection.js';
 import { readJsonFileWithBom } from '../../shared/atomic-json.js';
 import { paths } from '../../shared/paths.js';
-import { buildSpawnSyncInvocation, type SpawnSyncInvocation } from '../../shared/spawn.js';
+import { buildSpawnSyncInvocation, lookupWindowsCommandCandidates, type SpawnSyncInvocation } from '../../shared/spawn.js';
 
 const CODEX_DIR = path.join(homedir(), '.codex');
 const CODEX_AGENTS_MD_PATH = path.join(CODEX_DIR, 'AGENTS.md');
@@ -71,10 +71,12 @@ function commandExists(command: string): boolean {
 
   try {
     if (process.platform === 'win32') {
-      execFileSync('where.exe', [command], { stdio: 'ignore', windowsHide: true });
-    } else {
-      execFileSync('which', [command], { stdio: 'ignore' });
+      // lookupWindowsCommandCandidates spawns System32's where.exe and drops
+      // current-directory hits, so a planted <command>.exe in the project dir
+      // cannot pose as an install.
+      return lookupWindowsCommandCandidates(command).length > 0;
     }
+    execFileSync('which', [command], { stdio: 'ignore' });
     return true;
   } catch {
     // [ANTI-PATTERN IGNORED]: where/which exits non-zero whenever the probed command is absent from PATH; that is the expected negative probe result and commandExists reports it as false.
@@ -128,23 +130,15 @@ function resolvePluginMarketplaceRoot(preferredRoot?: string): string {
 }
 
 function lookupCodexOnWindows(): string | null {
-  let stdout: string;
+  let candidates: string[];
   try {
-    stdout = execFileSync('where.exe', ['codex'], {
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      windowsHide: true,
-    });
+    candidates = lookupWindowsCommandCandidates('codex');
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     logger.warn('WORKER', 'Failed to locate codex via where; falling back to codex.cmd', { command: 'where codex' }, err);
     return null;
   }
 
-  const candidates = stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
   return candidates.find((candidate) => WINDOWS_CODEX_EXTENSIONS.has(path.extname(candidate).toLowerCase()))
     ?? candidates[0]
     ?? null;
