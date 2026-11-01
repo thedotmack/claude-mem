@@ -21,6 +21,7 @@ import {
 import { paths, CLAUDE_CONFIG_DIR, DEFAULT_CLAUDE_CONFIG_DIR } from '../../src/shared/paths.js';
 import { buildIsolatedEnvWithFreshOAuth } from '../../src/shared/EnvManager.js';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
+import { logger } from '../../src/utils/logger.js';
 
 /**
  * The implementation uses promisify(execFile), which captures execFile at
@@ -507,6 +508,28 @@ describe('resolveClaudeCredentialProfile (#4149)', () => {
  * host OS and never touches the real keychain.
  */
 describe('readMacOsKeychain with an injected execImpl (#2753)', () => {
+  it('logs the security command code, signal, and stderr when a Keychain lookup fails', async () => {
+    const stderr = 'User interaction is not allowed.';
+    const error = Object.assign(new Error('Command failed: security find-generic-password'), {
+      code: 36, signal: 'SIGTERM', stderr: Buffer.from(stderr),
+    });
+    const fakeExecImpl = mock(() => Promise.reject(error)) as any;
+    const warning = spyOn(logger, 'warn').mockImplementation(() => {});
+
+    try {
+      const result = await readMacOsKeychain('Claude Code-credentials', fakeExecImpl, 'kirat');
+
+      expect(result.kind).toBe('absent');
+      expect(warning).toHaveBeenCalledWith('OAUTH', 'macOS keychain lookup failed', expect.objectContaining({
+        service: 'Claude Code-credentials',
+        account: 'kirat',
+        diagnostic: { exitCode: 36, errorCode: null, signal: 'SIGTERM', stderr },
+      }), error);
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
   it('the default service name returns absent while a per-config-dir suffixed service name returns present ("default item empty, instance item valid")', async () => {
     const instanceServiceName = deriveMacKeychainServiceName({
       configDir: '/Users/matthewdnye/.ccs/instances/iveg50',

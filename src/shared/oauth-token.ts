@@ -231,7 +231,19 @@ export async function readMacOsKeychain(
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     // `security` exits non-zero when the entry doesn't exist — fail-fast as absent.
-    logger.warn('OAUTH', 'macOS keychain lookup failed', { service: serviceName, account }, err);
+    const commandError = error as { code?: unknown; signal?: unknown; stderr?: unknown };
+    const stderr = typeof commandError.stderr === 'string' ? commandError.stderr
+      : Buffer.isBuffer(commandError.stderr) ? commandError.stderr.toString('utf8') : '';
+    logger.warn('OAUTH', 'macOS keychain lookup failed', {
+      service: serviceName,
+      account,
+      diagnostic: {
+        exitCode: typeof commandError.code === 'number' ? commandError.code : null,
+        errorCode: typeof commandError.code === 'string' ? commandError.code : null,
+        signal: typeof commandError.signal === 'string' ? commandError.signal : null,
+        stderr: stderr.trim().slice(-1000) || null,
+      },
+    }, err);
     return {
       kind: 'absent',
       reason: `macOS keychain lookup failed for service "${serviceName}" (account=${account}): ${err.message}`,

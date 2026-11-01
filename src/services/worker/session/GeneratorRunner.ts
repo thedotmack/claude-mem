@@ -448,9 +448,9 @@ export async function startGeneratorWithProvider(
       // waiting out the failure threshold and then offering a restart.
       if (reason === 'auth:observer_text' && provider === 'claude' && !failureBooked) {
         recordObserverFailure(provider, {
-          message: 'Claude Code reported the observer as signed out',
+          message: 'Claude Code could not authenticate the observer',
           kind: 'auth_invalid',
-          action: 'Run /login in Claude Code (or `claude auth login` in a terminal) to refresh the observer credentials',
+          action: 'Check worker OAUTH logs for credential-store lookup errors first. If Claude Code itself is signed out, run /login or `claude auth login`; otherwise restore the worker\'s access to the credential store.',
         });
       }
       // A Claude fallback run, or a run on the quota-fallback credential,
@@ -463,7 +463,7 @@ export async function startGeneratorWithProvider(
         && (session.fallbackFrom != null || session.claudeAuthOverride != null)
         && (reason === 'auth:observer_text' || reason === 'auth:observer_org_policy');
       if (claudeStandInSignedOut) {
-        recordAuthCooldown('claude', 'Claude Code reported the fallback observer as signed out', session.observerProfile);
+        recordAuthCooldown('claude', 'Claude Code could not authenticate the fallback observer', session.observerProfile);
       }
       // The org-policy refusal (#4677) goes down the same preserved auth path,
       // but logging in again cannot lift it, so it carries the notice's own
