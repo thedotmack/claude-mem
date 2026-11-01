@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [15.8.1] - 2026-11-01
+
+Repository cleanup. No changes to how claude-mem runs.
+
+- The repo root drops from 60 entries to 36, so the README sits much higher on the GitHub page.
+- Old plans, reports, playbooks and generated files are gone, along with the superseded `cursor-hooks/` and `ragtime/` directories.
+- Docs, test assets and Docker files moved into `docs/`, `tests/`, `.github/`, `.claude/` and `docker/`. The changelog now lives at `docs/CHANGELOG.md`, and the security policy at `.github/SECURITY.md`.
+- The Cloudflare sync hub source moved to `services/sync-hub`.
+- The npm package contents are unchanged.
+
+Full PR: #5259
+
+## [15.8.0] - 2026-11-01
+
+## What's Changed
+* feat(viewer): cloud viewer host for My Work, and work_state sync for every account by @thedotmack in https://github.com/thedotmack/claude-mem/pull/5193
+
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v15.7.0...v15.8.0
+
 ## [15.7.0] - 2026-10-30
 
 ## My Work: refresh stays on your agent, and a Feedback button (#5190)
