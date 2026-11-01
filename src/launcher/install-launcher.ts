@@ -678,6 +678,32 @@ function removeStalePlacementLeftovers(binDirectory: string, platformPath: typeo
  * inode. Windows cannot replace an .exe that is running, but can rename it,
  * so the old one is moved aside first (and restored if the move-in fails).
  */
+// Windows antivirus, the search indexer or a sync client can hold a freshly
+// written .exe open for a moment, making renameSync fail with EPERM/EBUSY/
+// EACCES. Retry those transient codes with a short bounded backoff, mirroring
+// renameWithWindowsRetry in src/shared/atomic-json.ts (#5248).
+const WINDOWS_LAUNCHER_RENAME_RETRY_DELAYS_MS = [10, 20, 40, 80, 160, 320];
+function renameLauncherWithRetry(from: string, to: string, isWindows: boolean): void {
+  if (!isWindows) {
+    renameSync(from, to);
+    return;
+  }
+  for (let attempt = 0; ; attempt++) {
+    try {
+      renameSync(from, to);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code ?? '';
+      if (attempt >= WINDOWS_LAUNCHER_RENAME_RETRY_DELAYS_MS.length
+        || (code !== 'EPERM' && code !== 'EBUSY' && code !== 'EACCES')) {
+        throw err;
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0,
+        WINDOWS_LAUNCHER_RENAME_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+}
+
 function moveCompiledLauncherIntoPlace(
   temporaryOutfilePath: string,
   binaryPath: string,
@@ -685,15 +711,15 @@ function moveCompiledLauncherIntoPlace(
   platform: NodeJS.Platform,
 ): void {
   if (platform !== 'win32' || !existsSync(binaryPath)) {
-    renameSync(temporaryOutfilePath, binaryPath);
+    renameLauncherWithRetry(temporaryOutfilePath, binaryPath, platform === 'win32');
     return;
   }
   const renamedAsidePath = windowsPath.join(binDirectory, `claude-mem.old-${process.pid}.exe`);
-  renameSync(binaryPath, renamedAsidePath);
+  renameLauncherWithRetry(binaryPath, renamedAsidePath, platform === 'win32');
   try {
-    renameSync(temporaryOutfilePath, binaryPath);
+    renameLauncherWithRetry(temporaryOutfilePath, binaryPath, platform === 'win32');
   } catch (moveInError: unknown) {
-    renameSync(renamedAsidePath, binaryPath);
+    renameLauncherWithRetry(renamedAsidePath, binaryPath, platform === 'win32');
     throw moveInError;
   }
 }
