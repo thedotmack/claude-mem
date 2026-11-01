@@ -87,10 +87,28 @@ export class AutoRefreshWorker {
   async runNow({ reason }) {
     if (this.closed) return 'closed';
     if (this.busy) return 'running';
-    const needs = this.readNeeds();
-    // A re-scan that found nothing new starts no agent.
-    if (!needs.needed) return 'idle';
-    return this.run(needs, reason);
+    this.busy = true;
+    const startedAt = this.iso();
+    try {
+      let needs;
+      try { needs = this.readNeeds(); }
+      catch (error) {
+        // Surface failures that happen before run() can write its normal status, so My Work can explain
+        // why an on-demand refresh did not start (for example, a database or saved-ledger read failure).
+        let previousFailures = 0;
+        try { previousFailures = this.status()?.failures ?? 0; } catch { /* replace an unreadable old status */ }
+        const failures = Number(previousFailures) + 1;
+        const message = String(error?.message ?? error).slice(0, 500);
+        const finishedAt = this.iso();
+        const wait = Math.min(this.checkMs * 2 ** (failures - 1), MAX_FAILURE_BACKOFF_MS);
+        this.write({ state: 'failed', reason, startedAt, finishedAt, needs: null, result: null, error: message, nextAt: this.iso(this.now() + wait), failures });
+        this.log('warn', `Work view refresh failed before starting (${reason})`, { error: message });
+        return 'failed';
+      }
+      // A re-scan that found nothing new starts no agent.
+      if (!needs.needed) return 'idle';
+      return await this.run(needs, reason);
+    } finally { this.busy = false; }
   }
 
   async run(needs, reason) {
