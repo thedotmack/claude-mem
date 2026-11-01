@@ -88,15 +88,3 @@ export function uninstallOmpHooks(): number {
     return 1;
   }
 }
-
-export function checkOmpStatus(): number {
-  console.log('\nClaude-Mem OMP Integration Status\n');
-  const hooksDir = ompHooksPreDir();
-  const destination = ompHookDestination();
-  console.log(`Hooks directory: ${hooksDir}`);
-  console.log(`  Exists: ${existsSync(hooksDir) ? 'yes' : 'no'}`);
-  console.log(`Hook file: ${destination}`);
-  console.log(`  Installed: ${existsSync(destination) ? 'yes' : 'no'}`);
-  console.log('');
-  return 0;
-}

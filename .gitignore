@@ -57,10 +57,11 @@ docker/install-test/
 # Plans stay local; this repo is public
 /plans/
 
-# Context files claude-mem writes into a workspace (Warp, Windsurf, Antigravity)
+# Context files claude-mem writes into a workspace (Warp, Windsurf, Antigravity, Copilot)
 /WARP.md
 /.windsurf/
 /.agent/
+/.github/copilot-instructions.md
 
 # Local session report artifacts (not part of distribution)
 reports/

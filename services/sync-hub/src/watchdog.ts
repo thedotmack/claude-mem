@@ -12,8 +12,7 @@
  *   ESCALATION LADDER
  *   1. healthy                      → nothing (a JSON log line only).
  *   2. any metric ≥ alert threshold → Discord alert (webhook, secret
- *      binding DISCORD_WEBHOOK_URL — payload shape copied from
- *      scripts/discord-release-notify.js).
+ *      binding DISCORD_WEBHOOK_URL).
  *   3. duration / rowsWritten / rowsRead ≥ kill threshold → auto-trip the
  *      kill switch (KV flag, src/kill-switch.ts) FIRST, then Discord.
  *      Remediation is structural: tripped ⇒ clients drop to the Phase 3
@@ -370,8 +369,7 @@ function evaluate(env: Env, metrics: WatchdogMetrics): WatchdogBreach[] {
 }
 
 /**
- * Discord embed, shape copied from scripts/discord-release-notify.js
- * (posted via the shared src/discord.ts helper, which owns the
+ * Discord embed (posted via the shared src/discord.ts helper, which owns the
  * {embeds: [embed]} envelope). The webhook URL is a SECRET binding — never
  * hardcoded.
  */

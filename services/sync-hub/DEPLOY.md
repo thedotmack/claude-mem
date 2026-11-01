@@ -241,7 +241,6 @@ wrangler secret put DISCORD_WEBHOOK_URL
 - `DISCORD_WEBHOOK_URL`: the runtime credential lives in
   `~/Scripts/claude-mem/.env` as `DISCORD_UPDATES_WEBHOOK` — paste that
   value into the secret prompt. **Never hardcode or commit a webhook URL.**
-  (Payload shape matches `scripts/discord-release-notify.js`.)
 
 Secrets are deliberately NOT vars: a same-named var would shadow/conflict
 with the secret at deploy time (typing lives in `src/secrets.d.ts`).
@@ -293,7 +292,6 @@ curl "http://localhost:8787/__scheduled?cron=7+*+*+*+*"
 
 ## 3. Kill switch operations (Phase 5 task 2)
 
-Poll-mode projection catch-up (keep the switch ON until spend is green): `PLAN.md`.
 
 State = presence of KV key `control:kill-switch` in `AUTH_CACHE`. Tripped ⇒
 WS upgrades answer `503 {"error":…,"mode":"poll"}` and every HTTP sync

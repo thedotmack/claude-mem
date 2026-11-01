@@ -1,6 +1,6 @@
 /**
  * Shared Discord webhook posting — the ONE place that knows the wire shape
- * (payload = {embeds: [embed]}, copied from scripts/discord-release-notify.js).
+ * (payload = {embeds: [embed]}).
  * Used by the hourly watchdog (src/watchdog.ts) and the 5-minute
  * control-plane probe (src/control-plane-probe.ts); extracted so the two
  * monitors cannot drift apart. The webhook URL is always the

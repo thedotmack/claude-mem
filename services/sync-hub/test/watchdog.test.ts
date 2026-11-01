@@ -248,7 +248,7 @@ describe("watchdog: escalation ladder", () => {
 
 		const [call] = discordCalls(calls);
 		expect(call).toBeDefined();
-		// Payload shape copied from scripts/discord-release-notify.js:
+		// Payload shape:
 		// {embeds: [{title, description, color, fields, footer, timestamp}]}.
 		const payload = call.parsed as {
 			embeds: Array<{
