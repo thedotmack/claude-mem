@@ -75,6 +75,8 @@ export interface AgentTask {
   run: (ask: AskAgent, agent: UsableAgentId) => Promise<string>;
   /** Input every backend reads, prepared once a logged-in agent is found (e.g. the owner's prompts file). */
   prepare?: () => Promise<void>;
+  /** Which agents this task is allowed to run on (#5241: prevents unapproved background runs on Codex). */
+  allowedAgents?: UsableAgentId[];
 }
 
 export interface AgentAttempt { agent: UsableAgentId; error: string }
@@ -331,9 +333,15 @@ export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunn
   const autoApprovedFileTools = task.claudeCode.allowedTools.filter(tool => FILE_TOOLS.includes(tool));
   if (autoApprovedFileTools.length) throw new Error(`Agent task ${task.reason} auto-approves ${autoApprovedFileTools.join(', ')}, which would read anywhere on disk; name readableFolders instead.`);
   const dependencies = { ...defaultDependencies, ...overrides };
-  const usable = (await dependencies.detect()).filter(agent => agent.authenticated && agent.path);
+  const detected = (await dependencies.detect()).filter(agent => agent.authenticated && agent.path);
+  const usable = task.allowedAgents ? detected.filter(agent => task.allowedAgents!.includes(agent.id)) : detected;
   if (!usable.length) {
-    return { state: 'waiting-for-agent', agent: null, result: null, error: 'No logged-in Claude Code, Codex or Gemini on this computer yet.', attempts: [] };
+    const error = task.allowedAgents && task.allowedAgents.length > 0
+      ? `None of the allowed agents (${task.allowedAgents.join(', ')}) are logged in on this computer.`
+      : task.allowedAgents
+      ? 'No agents are allowed for this task.'
+      : 'No logged-in Claude Code, Codex or Gemini on this computer yet.';
+    return { state: 'waiting-for-agent', agent: null, result: null, error, attempts: [] };
   }
   const attempts: AgentAttempt[] = [];
   try { await task.prepare?.(); }

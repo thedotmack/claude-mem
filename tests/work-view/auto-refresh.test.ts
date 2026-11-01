@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AutoRefreshWorker } from '../../src/services/work-view/auto-refresh-worker.mjs';
-import { buildRefreshTask, FOCUS_ANSWER_SCHEMA, GROUPING_ANSWER_SCHEMA, reviewConcurrency, STEP_MODELS } from '../../src/services/work-view/refresh-task.js';
+import { buildRefreshTask, FOCUS_ANSWER_SCHEMA, GROUPING_ANSWER_SCHEMA, resolveAllowedRefreshAgents, reviewConcurrency, STEP_MODELS } from '../../src/services/work-view/refresh-task.js';
 import { readLedger, runCli } from '../../src/services/work-view/request-groups.mjs';
 import { scratchDir } from '../helpers/scratch-dir.js';
 import { everyRequestInOther, focusInputFrom, focusWriter, isOtherPass } from '../helpers/fake-focus-writer.js';
@@ -847,3 +847,41 @@ describe('automatic refresh timer', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
+
+describe('resolveAllowedRefreshAgents (#5241)', () => {
+  it('strictly follows CLAUDE_MEM_PROVIDER by default to prevent silent codex fallback', () => {
+    expect(resolveAllowedRefreshAgents(undefined, { CLAUDE_MEM_PROVIDER: 'claude' })).toEqual(['claude-code']);
+    expect(resolveAllowedRefreshAgents(undefined, { CLAUDE_MEM_PROVIDER: 'codex' })).toEqual(['codex']);
+    expect(resolveAllowedRefreshAgents(undefined, { CLAUDE_MEM_PROVIDER: 'gemini' })).toEqual(['gemini']);
+    expect(resolveAllowedRefreshAgents(undefined, { CLAUDE_MEM_PROVIDER: 'openrouter' })).toEqual(['claude-code']);
+    expect(resolveAllowedRefreshAgents(undefined, {})).toEqual(['claude-code']);
+  });
+
+  it('respects CLAUDE_MEM_WORK_VIEW_AGENT override', () => {
+    expect(resolveAllowedRefreshAgents(undefined, { CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_WORK_VIEW_AGENT: 'codex' })).toEqual(['codex']);
+    expect(resolveAllowedRefreshAgents(undefined, { CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_WORK_VIEW_AGENT: 'gemini' })).toEqual(['gemini']);
+    expect(resolveAllowedRefreshAgents(undefined, { CLAUDE_MEM_PROVIDER: 'codex', CLAUDE_MEM_WORK_VIEW_AGENT: 'claude-code' })).toEqual(['claude-code']);
+    expect(resolveAllowedRefreshAgents(undefined, { CLAUDE_MEM_WORK_VIEW_AGENT: 'off' })).toEqual([]);
+    expect(resolveAllowedRefreshAgents(undefined, { CLAUDE_MEM_WORK_VIEW_AGENT: 'all' })).toEqual(['claude-code', 'codex', 'gemini']);
+  });
+
+  it('reads settings from dataDir settings.json when not explicitly provided', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'refresh-agents-test-'));
+    try {
+      writeFileSync(join(dir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_PROVIDER: 'codex' }));
+      expect(resolveAllowedRefreshAgents(dir)).toEqual(['codex']);
+      writeFileSync(join(dir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_WORK_VIEW_AGENT: 'gemini' }));
+      expect(resolveAllowedRefreshAgents(dir)).toEqual(['gemini']);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('buildRefreshTask defaults allowedAgents to resolveAllowedRefreshAgents', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'refresh-task-agents-test-'));
+    try {
+      writeFileSync(join(dir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_PROVIDER: 'claude' }));
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 0, goalsStale: false, unplaced: 0, needed: false }, reason: 'test', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(fixtureDatabase()) });
+      expect(task.allowedAgents).toEqual(['claude-code']);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+

@@ -25,7 +25,7 @@ import { resolveOpenRouterConfig } from '../../OpenRouterProvider.js';
 import { resolveOpenAICompatConfig } from '../../OpenAICompatProvider.js';
 import { resolveOpenAICompatReasoning } from '../../reasoning-budget.js';
 import { AutoRefreshWorker } from '../../../work-view/auto-refresh-worker.mjs';
-import { buildRefreshTask } from '../../../work-view/refresh-task.js';
+import { buildRefreshTask, resolveAllowedRefreshAgents } from '../../../work-view/refresh-task.js';
 import { HostedIntent } from '../../../work-view/hosted-intent.js';
 import { cmemProOrigin } from '../../../../shared/cmem-gateway.js';
 import { isOpenRouterApiUrl } from '../../../../shared/openrouter-base-url.js';
@@ -365,9 +365,12 @@ export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTIN
     enabled: () => !setupActive() && (readSetupState(setupPath).status === 'complete' || !hasActiveSetupSession(setupPath))
       && SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true }).CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH !== 'false',
     runJob: async ({ needs, reason }) => {
+      const settings = SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true });
+      const allowedAgents = resolveAllowedRefreshAgents(DATA_DIR, settings);
       // The judges are read from settings per run, so a provider change applies to the next refresh.
       const task = buildRefreshTask({ needs, reason, dataDir: DATA_DIR, ledgerDir, pluginRoot: getPackageRoot(), openDatabase, localDeviceId, saveFocus,
-        judge: configuredJudge(settingsPath), focusJudge: configuredFocusJudge(settingsPath) });
+        judge: configuredJudge(settingsPath), focusJudge: configuredFocusJudge(settingsPath),
+        allowedAgents });
       return { ...(await runAgentTask(task)), steps: task.steps };
     },
     log: (level, message, data) => (level === 'info' ? logger.info : logger.warn).call(logger, 'WORKER', message, data),

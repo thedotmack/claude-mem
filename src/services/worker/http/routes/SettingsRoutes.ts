@@ -274,6 +274,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD',
       'CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER',
       'CLAUDE_MEM_WORK_VIEW_COPY_MODEL',
+      'CLAUDE_MEM_WORK_VIEW_AGENT',
       'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
@@ -566,6 +567,10 @@ export class SettingsRoutes extends BaseRouteHandler {
       return { valid: false, error: 'CLAUDE_MEM_OPENAI_COMPAT_REASONING must be "off" (default) or "on"' };
     }
 
+    if (settings.CLAUDE_MEM_WORK_VIEW_AGENT !== undefined
+      && !['', 'claude', 'claude-code', 'codex', 'gemini', 'off', 'all', 'any'].includes(settings.CLAUDE_MEM_WORK_VIEW_AGENT)) {
+      return { valid: false, error: 'CLAUDE_MEM_WORK_VIEW_AGENT must be empty (follow CLAUDE_MEM_PROVIDER), "claude-code", "codex", "gemini", "off", or "all"' };
+    }
     if (settings.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER !== undefined
       && !['', 'openrouter', 'openai-compatible', 'off'].includes(settings.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER)) {
       return { valid: false, error: 'CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER must be empty (follow the primary provider), "openrouter", "openai-compatible", or "off"' };

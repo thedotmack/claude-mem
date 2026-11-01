@@ -359,6 +359,30 @@ describe('agent runner', () => {
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 
+  it('allowedAgents confines the run: a failed agent does not fall through to unallowed ones (#5241)', async () => {
+    const query = (() => (async function* () { yield { type: 'result', subtype: 'error_during_execution', is_error: true, result: 'rate limit' }; })()) as never;
+    const calls: SpawnCall[] = [];
+    const spawnImpl = fakeSpawn(calls, call => {
+      call.child.stdout.emit('data', JSON.stringify({ response: 'fine' }));
+      call.child.emit('close', 0);
+    });
+    const taskWithAllowed: AgentTask = { ...task('/data'), allowedAgents: ['claude-code'] };
+    const result = await runTask(taskWithAllowed, { detect: async () => agents('claude-code', 'codex', 'gemini'), query, spawn: spawnImpl, buildEnv: env });
+    expect(result.state).toBe('failed');
+    expect(result.agent).toBe('claude-code');
+    expect(result.attempts.map(attempt => attempt.agent)).toEqual(['claude-code']);
+    expect(result.error).toMatch(/^Claude Code: .*rate limit/);
+    expect(calls).toEqual([]);
+  });
+
+  it('allowedAgents reports waiting-for-agent when none of the allowed agents are available (#5241)', async () => {
+    const taskWithAllowed: AgentTask = { ...task('/data'), allowedAgents: ['claude-code'] };
+    const result = await runTask(taskWithAllowed, { detect: async () => agents('codex'), query: neverQuery, spawn: fakeSpawn([], () => {}), buildEnv: env });
+    expect(result.state).toBe('waiting-for-agent');
+    expect(result.agent).toBeNull();
+    expect(result.error).toContain('None of the allowed agents (claude-code) are logged in on this computer.');
+  });
+
   it('an answer claude-mem refused is not handed to another agent (#5189: a too-long Claude review ran on the owner\'s Codex)', async () => {
     const query = (() => (async function* () { yield { type: 'result', subtype: 'success', is_error: false, result: '{"narrative":"far too long"}' }; })()) as never;
     const calls: SpawnCall[] = [];
