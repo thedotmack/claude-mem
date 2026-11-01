@@ -28,7 +28,7 @@ import { spawnSync } from 'node:child_process';
 
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 // Keep in step with cowork/.claude-plugin/plugin.json "version"; every request sends it.
-const PLUGIN_HEADER = 'claude-mem-cowork/0.1.5';
+const PLUGIN_HEADER = 'claude-mem-cowork/0.1.6';
 // per-user, 0600 — never a shared world-readable temp dir (payloads may hold tool output)
 const SPOOL_DIR = join(homedir(), '.claude-mem');
 const SPOOL = join(SPOOL_DIR, 'cowork-spool.jsonl');
