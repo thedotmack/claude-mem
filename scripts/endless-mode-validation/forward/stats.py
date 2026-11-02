@@ -2,8 +2,10 @@
 Usage: python3 stats.py <stack dir> <prices file> [<netwatch log>]   (prints one JSON object)
 
 Definitions (the same as in our reports):
-- requests: the session's requests that got an answer with usage (Anthropic: the session id in metadata.user_id;
-  Codex: the thread id as prompt_cache_key). Requests are assigned to turns by the session log's turn start times.
+- requests: every request in the tee that got an answer with usage. A stack's tee serves one scripted session, and side
+  calls (titles, summaries) are billed too, so all of them count. Requests are assigned to turns by the session log's
+  turn start times. requests_outside_session counts those not carrying the session's id (Anthropic: metadata.user_id;
+  Codex: the thread id as prompt_cache_key).
 - tool_calls: every tool call seen in any request, deduplicated by call id; file_reads: Read calls and shell commands
   that print a file; file_rereads: reads of a file after its first.
 - cost: from the provider's own usage on every request, at the prices file's per-MTok prices. Where the provider
@@ -51,8 +53,8 @@ for d in tee_dirs:
             r = json.loads(l); r['dir'] = d; by_n[r['n']] = r
         recs += sorted(by_n.values(), key=lambda r: r['n'])
     unextracted += len([f for f in os.listdir(d) if f.endswith('-req.body')])
-# Chat completions name no session; every request in the tee belongs to the one scripted session.
-recs = [r for r in recs if r['proto'] == 'chat' or (sid in r['conversation'] if r['proto'] == 'anthropic' else r['conversation'] == sid)]
+# Chat completions name no session.
+outside_session = sum(1 for r in recs if r['proto'] != 'chat' and not (sid in r['conversation'] if r['proto'] == 'anthropic' else r['conversation'] == sid))
 
 reads, seen, reqs, errors = {}, set(), [], []
 measured = dict(usd=0.0, requests=0)
@@ -122,8 +124,9 @@ for i, r in enumerate(reqs):
                                 prompt_after=a and a['size'], cost_after=a and round(a['cost'], 4)))
 per_turn = {}
 for r in reqs:
-    t = per_turn.setdefault(r['turn'], dict(requests=0, cost=0.0, prompt=0, measured=0.0))
+    t = per_turn.setdefault(r['turn'], dict(requests=0, cost=0.0, prompt=0, measured=0.0, uncached=0, cached=0, output=0))
     t['requests'] += 1; t['cost'] += r['cost']; t['prompt'] = r['size']; t['measured'] += r['measured'] or 0
+    t['uncached'] += r['inp'] + r['w5'] + r['w1']; t['cached'] += r['read']; t['output'] += r['out']
 
 # Spoiled turns: an unanswered/failed request, or a failed probe of this provider inside the turn.
 probe_key = 'chatgpt=' if any(r['proto'] == 'responses' for r in recs) else ('openrouter=' if 'openrouter' in (P.get('source') or '') else 'anthropic=')
@@ -145,17 +148,20 @@ res = dict(stack=os.path.basename(S), turns=max(per_turn) if per_turn else 0, tu
            output_tokens=sum(r['out'] for r in reqs), final_prompt_tokens=main_reqs[-1]['size'] if main_reqs else 0,
            max_prompt_tokens=max((r['size'] for r in main_reqs), default=0), side_calls=len(reqs) - len(main_reqs), tool_calls=len(seen), file_reads=sum(reads.values()), file_rereads=rereads,
            cache_read=sum(r['read'] for r in reqs), cache_write=sum(r['w5'] + r['w1'] for r in reqs), uncached_input=sum(r['inp'] for r in reqs),
-           input_cost_usd=round(sum((r['inp'] * price('input') + r['w5'] * price('cache_write_5m') + r['w1'] * price('cache_write_1h') + r['read'] * price('cache_read')) / 1e6 for r in reqs), 4),
-           output_cost_usd=round(sum(r['out'] for r in reqs) * price('output') / 1e6, 4))
-res['total_cost_usd'] = round(res['input_cost_usd'] + res['output_cost_usd'], 4)
+           input_cost_usd=round(sum((r['inp'] * price('input') + r['w5'] * price('cache_write_5m') + r['w1'] * price('cache_write_1h') + r['read'] * price('cache_read')) / 1e6 for r in reqs), 6),
+           output_cost_usd=round(sum(r['out'] for r in reqs) * price('output') / 1e6, 6))
+res['total_cost_usd'] = round(res['input_cost_usd'] + res['output_cost_usd'], 6)
 res['measured_cost_usd'] = round(measured['usd'], 6) if measured['requests'] else None
 res['measured_cost_requests'] = measured['requests']
 res['prices'] = dict(file=os.path.basename(prices_file), source=P.get('source'))
 last = reqs[-1] if reqs else None
 res['timeline_end'] = dict(blocks=last['timeline_blocks'], chars=last['timeline_chars'], est_tokens=last['timeline_chars'] // 4) if last else None
-res['per_turn'] = {k: dict(requests=v['requests'], cost=round(v['cost'], 5), prompt=v['prompt'], measured=round(v['measured'], 6)) for k, v in sorted(per_turn.items())}
+# Five places are too coarse for a turn at DeepSeek prices (a cheap turn is under a tenth of a cent), and the cells sum these.
+res['per_turn'] = {k: dict(requests=v['requests'], cost=round(v['cost'], 7), prompt=v['prompt'], measured=round(v['measured'], 9), uncached=v['uncached'], cached=v['cached'], output=v['output']) for k, v in sorted(per_turn.items())}
 res['compactions'] = compactions; res['errors'] = errors; res['spoiled_turns'] = spoiled; res['retried_turns'] = retried_turns
 res['unextracted_bodies'] = unextracted
+res['requests_outside_session'] = outside_session
+res['memory_tools_seen'] = sorted({t for r in recs for t in r.get('memory_tools') or []})
 # Observer health: turns whose observer wait hit session.sh's cap, and quota pauses in the worker's log. Either one
 # means fewer observations existed when Endless Mode folded, which makes its numbers worse, not better.
 res['observer_wait_capped_turns'] = sorted(int(m.group(1)) for m in re.finditer(r'turn (\d+) done; observer wait 240s', log))

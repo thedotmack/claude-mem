@@ -5,7 +5,8 @@ the usage numbers) stay. Runs until <stop file> exists, then does a last pass ov
 Usage: python3 extract.py <stop file> <tee dir>...
 Each line: n, time, proto, conversation (Anthropic metadata.user_id / Responses prompt_cache_key), model,
 tool_uses [{id, name, read_files}], messages, kind (Claude Code's summarizing request / first request continued from a
-summary), timeline_blocks, timeline_chars, thinking_blocks, body_bytes.
+summary), timeline_blocks, timeline_chars, thinking_blocks, body_bytes, memory_tools (claude-mem's search tools named
+anywhere in this request: the tools list, or the text where Claude Code names its deferred tools).
 """
 import glob, json, os, re, shlex, sys, time
 
@@ -13,6 +14,7 @@ FILE_CMDS = {'cat', 'head', 'tail', 'nl', 'less', 'more', 'bat'}
 CONTINUED = 'This session is being continued from a previous conversation'
 TIMELINE_OPEN = '<claude-mem-timeline>'
 TIMELINE_CLOSE = '</claude-mem-timeline>'
+MEMORY_TOOL = re.compile(r'dumb_search|get_observations|save_memory|smart_search|claude-mem-search|claude-mem-recent|mcp__[\w-]*mem[\w-]*__\w+')
 
 
 def shell_reads(cmd):
@@ -73,7 +75,7 @@ def extract_responses(b):
         tool_uses.append(dict(id=it.get('call_id') or it.get('id'), name=it.get('name') or it.get('type'), read_files=[os.path.basename(x) for x in files if x]))
     reasoning = sum(1 for it in items if it.get('type') == 'reasoning')
     return dict(proto='responses', conversation=b.get('prompt_cache_key', ''), model=b.get('model'), tool_uses=tool_uses,
-                messages=len(items), kind=None, thinking_blocks=reasoning, timeline=timeline_of(items, 'content'))
+                messages=len(items), kind=None, side_call=not b.get('tools'), thinking_blocks=reasoning, timeline=timeline_of(items, 'content'))
 
 
 # OpenAI chat completions (Hermes Agent, OpenClaw). Their file-read tools and their shell tools.
@@ -107,6 +109,7 @@ def extract(path):
     meta_path = json.load(open(path.replace('-req.body', '-req.json'))).get('path') or ''
     rec = extract_chat(b) if 'chat/completions' in meta_path else extract_anthropic(b) if 'messages' in b else extract_responses(b)
     blocks = rec.pop('timeline')
+    rec['memory_tools'] = sorted(set(MEMORY_TOOL.findall(json.dumps(b))))
     meta = json.load(open(path.replace('-req.body', '-req.json')))
     rec.update(n=os.path.basename(path)[:4], time=meta['time'], path=meta.get('path'), timeline_blocks=len(blocks),
                timeline_chars=sum(len(x) for x in blocks), body_bytes=os.path.getsize(path))
