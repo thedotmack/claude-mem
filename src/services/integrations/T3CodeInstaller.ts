@@ -93,6 +93,17 @@ export function discoverT3CodeProviders(settingsPath: string, baseEnv: NodeJS.Pr
   }
   // A newly initialized settings document may not yet persist provider defaults.
   if (entries.length === 0 && Object.keys(legacy).length === 0) entries.push(['codex', { driver: 'codex' }]);
+  // T3 saves only what differs from its defaults, so a built-in provider with
+  // no saved entry is still on (#5262). Use it when its home exists (the CLI
+  // has been set up here). Removal leaves those homes alone: they are the CLI's own.
+  const unsaved = new Set<string>();
+  if (!forRemoval) {
+    for (const driver of ['codex', 'claudeAgent'] as const) {
+      if (entries.some(([id]) => id === driver)) continue;
+      entries.push([driver, { driver }]);
+      unsaved.add(driver);
+    }
+  }
 
   const providers: T3CodeProvider[] = [];
   for (const [id, instance] of entries) {
@@ -121,6 +132,7 @@ export function discoverT3CodeProviders(settingsPath: string, baseEnv: NodeJS.Pr
     // Codex shadow homes share config.toml and plugins with this source home.
     // Install into the source, never create a shadow config that blocks T3's links.
     const homePath = resolve(expandPath(homeValue));
+    if (unsaved.has(id) && !existsSync(homePath)) continue;
     environment[homeVariable] = homePath;
     let command = expandPath(stringSetting(config, 'binaryPath').trim() || (driver === 'codex' ? 'codex' : 'claude'));
     let setupError: string | undefined;

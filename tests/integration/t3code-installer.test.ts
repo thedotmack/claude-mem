@@ -120,6 +120,19 @@ describe('T3 Code provider discovery', () => {
     expect(discoverT3CodeProviders(settingsPath)[0].id).toBe('codex');
   });
 
+  it('uses a built-in provider T3 never saved when its home exists (#5262)', () => {
+    // T3 writes only changes from its defaults: Codex turned off, Claude left on.
+    const { directory, settingsPath } = fixture({ providerInstances: { codex: { driver: 'codex', enabled: false } } });
+    const claudeHome = join(directory, 'claude home');
+    mkdirSync(claudeHome);
+    const providers = discoverT3CodeProviders(settingsPath, { CLAUDE_CONFIG_DIR: claudeHome });
+    expect(providers.map(provider => [provider.id, provider.driver, provider.homePath])).toEqual([['claudeAgent', 'claudeAgent', resolve(claudeHome)]]);
+    // Not set up on this machine: nothing to install into.
+    expect(discoverT3CodeProviders(settingsPath, { CLAUDE_CONFIG_DIR: join(directory, 'missing') })).toEqual([]);
+    // Uninstall never reaches into a home T3 didn't name.
+    expect(discoverT3CodeProviders(settingsPath, { CLAUDE_CONFIG_DIR: claudeHome }, true).map(provider => provider.id)).toEqual(['codex']);
+  });
+
   it('resolves custom settings and CLI aliases', () => {
     expect(t3CodeSettingsPath({ environment: { T3CODE_HOME: '/custom-t3' } })).toBe(resolve('/custom-t3/userdata/settings.json'));
     expect(t3CodeSettingsPath({ settingsPath: '/chosen.json', environment: { CLAUDE_MEM_T3CODE_SETTINGS_PATH: '/other.json' } })).toBe(resolve('/chosen.json'));
@@ -161,6 +174,7 @@ describe('T3 Code native plugin installation', () => {
     writeFileSync(settingsPath, JSON.stringify({ providerInstances: {
       codex: { driver: 'codex', environment: [{ name: 'T3_TEST_DRIVER', value: 'codex' }], config: { binaryPath: command, homePath: codexHome, shadowHomePath: join(directory, 'never-write-shadow'), launchArgs: '--config model="keep-model"' } },
       claude: { driver: 'claudeAgent', environment: [{ name: 'T3_TEST_DRIVER', value: 'claude' }], config: { binaryPath: command, homePath: claudeHome } },
+      claudeAgent: { driver: 'claudeAgent', enabled: false, config: { homePath: join(directory, 'unused claude home') } },
     }, futureSetting: { keep: true } }));
     const before = readFileSync(settingsPath, 'utf-8');
     const ambientHome = process.env.CODEX_HOME;
@@ -274,7 +288,7 @@ describe('T3 Code native plugin installation', () => {
     const { directory, settingsPath } = fixture({});
     const homePath = join(directory, 'claude');
     mkdirSync(join(homePath, 'plugins'), { recursive: true });
-    writeFileSync(settingsPath, JSON.stringify({ providers: { claudeAgent: { homePath } } }));
+    writeFileSync(settingsPath, JSON.stringify({ providerInstances: { codex: { driver: 'codex', enabled: false } }, providers: { claudeAgent: { homePath } } }));
     writeFileSync(join(homePath, 'settings.json'), '{"enabledPlugins":{"claude-mem@thedotmack":true}}');
     writeFileSync(join(homePath, 'plugins', 'known_marketplaces.json'), JSON.stringify({ thedotmack: { installLocation: repository } }));
     const spawn = () => ({ status: 0, stdout: JSON.stringify([{ id: 'claude-mem@thedotmack', scope: 'user', installPath: join(directory, 'deleted-cache'), readFromFolder: join(repository, 'plugin') }]), stderr: '', pid: 0, output: [], signal: null });
