@@ -73,7 +73,9 @@ it('matches legacy migration copies even when the header has no session ID', asy
 });
 
 it('a record without a valid timestamp cannot claim a later valid response identity', async () => {
-  chat('session-a.json', 'session-a', [{ ...message('response-1', 'same'), timestamp: 'invalid' }]);
-  chat('session-b.json', 'session-a', [message('response-1', 'same', 200)]);
+  chat('session-a.json', 'session-a', [
+    { ...message('response-1', 'same'), timestamp: 'invalid' },
+    message('response-1', 'same', 200),
+  ]);
   expect(await tokens()).toBe(200);
 });
