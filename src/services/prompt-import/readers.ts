@@ -254,7 +254,7 @@ export function createCodexReader(): AgentPromptReader {
         if (!text || CODEX_INJECTED_PREFIXES.some(prefix => text.startsWith(prefix)) || at === null || at < sinceEpochMs) continue;
         const sessionId = String(meta.id ?? basename(transcript.path, '.jsonl'));
         const nativePromptId = typeof payload.id === 'string' && payload.id ? payload.id : fallbackId(sessionId, record.timestamp, text);
-        const dedupeKey = `${sessionId}\u0000${nativePromptId}`;
+        const dedupeKey = fallbackId(sessionId, nativePromptId, String(at), text);
         if (seenKeys.has(dedupeKey)) continue;
         seenKeys.add(dedupeKey);
         sink.prompt({

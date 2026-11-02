@@ -4,12 +4,12 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { createCodexReader, type TypedPrompt } from '../../../src/services/prompt-import/readers.js';
 
-async function read(messages: Array<{ text: string; id?: string }>, reader = createCodexReader(), sessionId: string | null = 'same-session', filename = 'rollout.jsonl'): Promise<TypedPrompt[]> {
+async function read(messages: Array<{ text: string; id?: string; timestamp?: string }>, reader = createCodexReader(), sessionId: string | null = 'same-session', filename = 'rollout.jsonl'): Promise<TypedPrompt[]> {
   const folder = mkdtempSync(join(tmpdir(), 'codex-prompt-identity-'));
   try {
     const file = join(folder, filename);
     const records = [{ type: 'session_meta', payload: { ...(sessionId ? { id: sessionId } : {}), source: 'cli', cwd: '/example' } },
-      ...messages.map(({ text, id }) => ({ type: 'response_item', timestamp: '2026-10-01T00:00:00.000Z',
+      ...messages.map(({ text, id, timestamp }) => ({ type: 'response_item', timestamp: timestamp ?? '2026-10-01T00:00:00.000Z',
         payload: { type: 'message', role: 'user', ...(id ? { id } : {}), content: [{ type: 'input_text', text }] } }))];
     writeFileSync(file, records.map(record => JSON.stringify(record)).join('\n'));
     const info = statSync(file);
@@ -26,6 +26,16 @@ describe('Codex prompt identity', () => {
   it('keeps distinct native messages with the same timestamp and opening', async () => {
     const result = await read([{ id: 'first', text: prefix + 'first ending' }, { id: 'second', text: prefix + 'second ending' }]);
     expect(result.map(prompt => prompt.nativePromptId)).toEqual(['first', 'second']);
+  });
+
+  it('preserves changed revisions of an existing native message', async () => {
+    const result = await read([{ id: 'first', text: prefix + 'first revision' }, { id: 'first', text: prefix + 'second revision' }]);
+    expect(result).toHaveLength(2);
+  });
+
+  it('preserves messages recorded at different timestamps', async () => {
+    const result = await read([{ id: 'first', text: prefix }, { id: 'first', text: prefix, timestamp: '2026-10-02T00:00:00.000Z' }]);
+    expect(result).toHaveLength(2);
   });
 
   it('deduplicates repeated native messages', async () => {
