@@ -1,5 +1,5 @@
 /**
- * Per-user ordered sync log. Port of workers/sync-hub/src/do/SyncHub.ts
+ * Per-user ordered sync log. Port of services/sync-hub/src/do/SyncHub.ts
  * onto Postgres: one transaction + advisory lock replaces DO single-threading.
  *
  * Writers (push, projection lease/checkpoint, reset, rename, socket accept)

@@ -10,7 +10,7 @@ import {
   stableDocumentId,
 } from '../../../src/services/sync/CanonicalContent.js';
 
-const fixturePath = join(import.meta.dir, '../../../fixtures/tpuf-content-v2.json');
+const fixturePath = join(import.meta.dir, '../../fixtures/tpuf-content-v2.json');
 const fixtureBytes = readFileSync(fixturePath);
 const fixture = JSON.parse(fixtureBytes.toString('utf8')) as {
   stable_id_vectors: Array<{

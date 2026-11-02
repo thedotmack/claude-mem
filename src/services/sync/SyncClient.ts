@@ -59,6 +59,7 @@
 
 import { logger } from '../../utils/logger.js';
 import type { SyncApply, SyncOp, UndecodableOp } from './SyncApply.js';
+import { SYNC_CAPABILITIES, SYNC_CAPABILITIES_HEADER } from './sync-capabilities.js';
 import {
   assertCanonicalDecimal,
   canonicalDecimalToSafeInteger,
@@ -809,6 +810,7 @@ export class SyncClient {
       'X-User-Id': this.userId,
       'X-Device-Id': this.deviceId,
       ...(this.deviceName ? { 'X-Device-Name': this.deviceName } : {}),
+      [SYNC_CAPABILITIES_HEADER]: SYNC_CAPABILITIES,
     };
   }
 

@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { ActivePill, AgentIcon, ATTENTION_ORDER, FocusAreaChip, NextMove, ProgressMeter, RefreshButton, RefreshStatus, STATE_LABEL, STATE_SURFACE, StateBadge } from '@/components/bits'
+import { ActivePill, AgentIcon, ATTENTION_ORDER, FocusAreaChip, ManualRefreshButton, NextMove, ProgressMeter, RefreshButton, RefreshStatus, STATE_LABEL, STATE_SURFACE, StateBadge } from '@/components/bits'
 import { PointerHighlight } from '@/components/aceternity/pointer-highlight'
 import { TracingBeam } from '@/components/aceternity/tracing-beam'
 import { AgentMark } from '@/components/brand'
@@ -427,6 +427,13 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
         {sample ? (
           <div className="order-last w-full md:ml-auto md:w-auto">
             <RefreshButton run={SAMPLE_RUNS.progress} ids={['R14.12']} />
+          </div>
+        ) : sourceKind === 'local' ? (
+          <div className="order-last w-full md:ml-auto md:w-auto">
+            <div className="flex items-center justify-end gap-3">
+              <RefreshStatus refresh={refresh} run={lastRuns.progress} label="Last reviewed" ids={['R14.12']} />
+              <ManualRefreshButton ids={['R14.12']} running={refresh?.state === 'running'} />
+            </div>
           </div>
         ) : (refresh || lastRuns.progress) && (
           <div className="order-last w-full md:ml-auto md:w-auto">

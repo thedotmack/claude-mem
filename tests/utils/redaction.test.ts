@@ -35,6 +35,7 @@ describe('redactSensitive built-in patterns', () => {
     ['slack_token',     'Slack: ' + 'xox' + 'b-1234567890-0987654321-abcdefghijklmnop',             "<redacted type='slack_token'/>"],
     ['jwt',             'auth: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.AbCdEf0123456789',               "<redacted type='jwt'/>"],
     ['stripe_key',      'Stripe ' + 'sk' + '_live_abcdefghijklmnopqrstuvwx',                         "<redacted type='stripe_key'/>"],
+    ['stripe_key',      'STRIPE_WEBHOOK_SECRET=' + 'wh' + 'sec_aBcDeFgHiJkLmNoPqRsTuVwXyZ012345 tail', "<redacted type='stripe_key'/>"],
     ['google_api_key',  'key=AIzaSyA-0123456789abcdefghijklmnopqrstu',                                "<redacted type='google_api_key'/>"],
   ])('redacts %s', (name, input, marker) => {
     const result = redactSensitive(input, cfg);
@@ -76,17 +77,68 @@ describe('redactSensitive built-in patterns', () => {
   it.each([
     ['gitlab_token', 'GITLAB_TOKEN=' + 'glp' + 'at-aBcDeFgHiJkLmNoPqRsT tail'],
     ['gitlab_token', 'token ' + 'glp' + 'at-aBcDeFgHiJkLmNoPqRsT_-9.01.0abcdefgh1 tail'],
+    ['gitlab_token', 'GITLAB_DEPLOY_TOKEN=' + 'gl' + 'dt-aBcDeFgHiJkLmNoPqRsT tail'],
+    ['gitlab_token', 'GITLAB_RUNNER_TOKEN=' + 'gl' + 'rt-aBcDeFgHiJkLmNoPqRsT tail'],
     ['huggingface_token', 'HF_TOKEN=' + 'h' + 'f_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789 tail'],
     ['npm_token', '//registry.npmjs.org/:_authToken=' + 'np' + 'm_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789 tail'],
+    ['docker_pat', 'DOCKER_PAT=' + 'dckr_' + 'pat_aBcDeFgHiJkLmNoPqRsTuVwXyZ0 tail'],
+    ['docker_pat', 'docker login -u user -p ' + 'dckr_' + 'pat_aBcDeFgHiJkLmNoPqRsTuVwXyZ0 tail'],
   ])('redacts a %s', (name, input) => {
     const result = redactSensitive(input, cfg);
     expect(result.redacted).toContain(`<redacted type='${name}'/>`);
     expect(result.redacted).toMatch(/^.*'\/> tail$/);
-    expect(result.redacted).not.toMatch(/glpat-|hf_a|npm_a/);
+    expect(result.redacted).not.toMatch(/gl(?:pat|dt|rt)-|hf_a|npm_a|dckr_pat_/);
     expect(Object.keys(result.counts)).toEqual([name]);
   });
 
-  it.each(['glpat-short', 'hf_short', 'npm_short', 'the hf_transformers module', 'npm_config_cache=/tmp/x'])(
+  // A PyPI token is the macaroon after `pypi-`; split for push protection too.
+  const pypiMacaroon = 'AgE' + 'IcHlwaS5vcmcCJGQ1ZjE2NzBkLTk0NWUtNGNhYS1iMDhkLTI5ZDc2ZTA1MWQ2YwACKlsz-_9';
+  it.each([
+    ['password = ' + 'pyp' + 'i-' + pypiMacaroon + ' tail'],
+    ['UV_PUBLISH_TOKEN=' + 'pyp' + 'i-' + pypiMacaroon + ' tail'],
+    ['twine upload -u __token__ -p ' + 'pyp' + 'i-' + pypiMacaroon + ' tail'],
+  ])('redacts a pypi_token in %s', (input) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain("<redacted type='pypi_token'/> tail");
+    expect(result.redacted).not.toContain('AgEIcHlwaS5vcmc');
+    expect(Object.keys(result.counts)).toEqual(['pypi_token']);
+  });
+
+  it.each([
+    'glpat-short',
+    'gldt-short',
+    'glrt-short',
+    'hf_short',
+    'npm_short',
+    'dckr_pat_short',
+    'the hf_transformers module',
+    'npm_config_cache=/tmp/x',
+    'pypi-AgEshort',
+    'pypi-simple index',
+  ])(
+    'leaves %s alone',
+    (input) => {
+      expect(redactSensitive(input, cfg).redacted).toBe(input);
+    },
+  );
+
+  // Provider API keys that CLIs and `.env` files print; fixtures are split so
+  // push protection doesn't flag them.
+  it.each([
+    ['sendgrid_key', 'SENDGRID_API_KEY=' + 'S' + 'G.aBcDeFgHiJkLmNoPqRsTuV.aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789_-aBcDe tail'],
+    ['digitalocean_token', 'DIGITALOCEAN_TOKEN=' + 'do' + 'p_v1_' + '0123456789abcdef'.repeat(4) + ' tail'],
+    ['digitalocean_token', 'refresh_token: ' + 'do' + 'r_v1_' + 'fedcba9876543210'.repeat(4) + ' tail'],
+    ['shopify_token', 'SHOPIFY_ACCESS_TOKEN=' + 'sh' + 'pat_' + '0123456789abcdef'.repeat(2) + ' tail'],
+    ['shopify_token', 'secret ' + 'sh' + 'pss_' + 'ABCDEF0123456789'.repeat(2) + ' tail'],
+  ])('redacts a %s', (name, input) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain(`<redacted type='${name}'/>`);
+    expect(result.redacted).toMatch(/^.*'\/> tail$/);
+    expect(result.redacted).not.toMatch(/SG\.a|_v1_|shp(?:at|ss)_/);
+    expect(Object.keys(result.counts)).toEqual([name]);
+  });
+
+  it.each(['SG.short.key', 'dop_v1_short', 'shpat_short', 'the shpat_ prefix'])(
     'leaves %s alone',
     (input) => {
       expect(redactSensitive(input, cfg).redacted).toBe(input);
@@ -246,6 +298,7 @@ text after`;
       'sk-short',                                  // openai_key too short
       'AKIA12345',                                 // aws_access_key too short
       'ghp_short',                                 // github_pat too short
+      'whsec_xxx',                                 // stripe_key webhook placeholder under the 32-char floor
       'eyJhbGciOiJIUzI1NiJ9 some text',            // jwt missing 2nd/3rd segment
       '-----BEGIN PUBLIC KEY-----\nfoo\n-----END PUBLIC KEY-----',  // PEM but not PRIVATE
     ];
@@ -292,6 +345,9 @@ describe('redactSensitive generic built-in patterns', () => {
     ['bare escaped yaml token', String.raw`auth:\n  token: abc12345defghi\n`, 'abc12345defghi'],
     ['bare --token= flag',     'cli login --token=abc12345defghi',            'abc12345defghi'],
     ['bare --api-key flag',    'cli login --api-key abc12345defghi',          'abc12345defghi'],
+    ['prefixed --auth-token flag',    'npm publish --auth-token abc12345defghi',  'abc12345defghi'],
+    ['prefixed --client-secret= flag', 'az login --client-secret=abc12345defghi', 'abc12345defghi'],
+    ['prefixed --hf-token flag',      'cli download --hf-token abc12345defghi',   'abc12345defghi'],
   ])('generic_token redacts a %s', (_style, input, secret) => {
     // The worker scans tool output as JSON.stringify(response), so each
     // position must also hold as the start of a stringified value.
@@ -335,6 +391,8 @@ describe('redactSensitive generic built-in patterns', () => {
       'max_tokens=4096',          // `_TOKENS`, not `*_TOKEN`
       'tokens=abcdefghij',        // `tokens`, not `token`
       'csrftoken=abcdefghij',     // no `_` before `token`, as for structured keys
+      '--token-file /home/me/token.txt', // the flag names a file, not the token
+      '--max-tokens abcdefghij',  // `tokens`, not `token`
       'nosecret=abcdefghij',
       // Source code that names a bare token/secret: only config-shaped
       // positions (quoted JSON keys, env assignments, flags, yaml lines)

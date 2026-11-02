@@ -1,0 +1,69 @@
+---
+title: Devin Integration
+description: Persistent memory for Devin CLI and Devin Desktop — hook-based observation recording, session-start context injection, and session summaries
+icon: terminal
+---
+
+## Overview
+
+The Devin integration gives claude-mem persistent memory to agents running in Devin CLI, which Devin Desktop also uses. It handles three things:
+
+1. **Observation recording** — Captures tool usage from Devin's lifecycle hooks and sends it to the claude-mem worker for AI processing
+2. **Context injection** — Injects the observation timeline at session start through the `SessionStart` hook's `additionalContext`, the same envelope Claude Code uses
+3. **Session summaries** — Summarizes each session from the last assistant message Devin sends on `Stop`
+
+<Info>
+Devin reads user-level hooks from the `"hooks"` key of `~/.config/devin/config.json` (`%APPDATA%\devin\config.json` on Windows). The installer merges claude-mem's hook rules into that key and leaves your other Devin settings and hooks alone.
+</Info>
+
+## Installation
+
+```bash
+npx claude-mem install --ide devin
+```
+
+Or manage the hooks directly:
+
+```bash
+npx claude-mem devin install
+npx claude-mem devin status
+npx claude-mem devin uninstall
+```
+
+Start a new Devin session afterwards and run `/hooks` to confirm the claude-mem hooks loaded.
+
+## Event Mapping
+
+| Devin hook event | claude-mem internal event | Notes |
+| --- | --- | --- |
+| `SessionStart` | worker start, then `context` | the timeline is returned as `hookSpecificOutput.additionalContext` |
+| `UserPromptSubmit` | `session-init` | |
+| `PostToolUse` | `observation` | `tool_response` is Devin's `{ success, output, error }` |
+| `Stop` | `summarize` | uses `last_assistant_message`; Devin sends no transcript path |
+| `SessionEnd` | `session-end` | |
+
+`PreToolUse` is not registered: Devin's `PreToolUse` output can rewrite tool input and approve calls, so claude-mem does not hook it.
+
+### Tool names
+
+Devin names its tools in lowercase. The adapter maps the ones with a Claude Code counterpart, so capture, file tracking and the `CLAUDE_MEM_SKIP_TOOLS` defaults apply to them the same way:
+
+| Devin | claude-mem |
+| --- | --- |
+| `exec` | `Bash` |
+| `read` / `edit` / `write` | `Read` / `Edit` / `Write` |
+| `notebook_edit` | `NotebookEdit` |
+| `grep` / `glob` | `Grep` / `Glob` |
+| `webfetch` | `WebFetch` |
+| `todo_write` | `TodoWrite` |
+| `skill` | `Skill` |
+
+Other tools, including MCP tools (`mcp__<server>__<tool>`), are recorded under their Devin names.
+
+### Working directory
+
+Devin's hook payload carries no `cwd`. The adapter uses `DEVIN_PROJECT_DIR`, which Devin sets for every hook command, so observations land in the right project.
+
+## Claude Code hooks in Devin
+
+Devin also loads hooks from `~/.claude/settings.json` and `.claude/settings.json` by default (`read_config_from.claude`). claude-mem's Claude Code hooks ship as plugin hooks, not in those files, so Devin does not run them a second time.

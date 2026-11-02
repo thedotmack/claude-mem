@@ -15,7 +15,7 @@ const BASE_EXCLUDES = [
   'package-lock.json',
   'scripts/package.json',
   'scripts/node_modules',
-  '/workers',
+  '/services/sync-hub',
 ];
 
 function getCurrentBranch() {

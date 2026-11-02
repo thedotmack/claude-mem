@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import type { Server } from 'node:http';
 import { WorkViewRoutes } from '../../../../src/services/worker/http/routes/WorkViewRoutes.js';
 import { __resetTelemetryForTests } from '../../../../src/services/telemetry/telemetry.js';
+import { getOrCreateAnonymousDistinctId, getOrCreateInstallId } from '../../../../src/services/telemetry/consent.js';
 import { postHogCaptureCalls } from '../../../preload';
 
 // The viewer reports which page it opened on and which page it switched to; the worker counts that through its
@@ -59,15 +60,19 @@ const report = (body: unknown, headers: Record<string, string> = { 'Content-Type
 const captured = () => postHogCaptureCalls.map(call => ({ event: call.event, properties: call.properties as Record<string, unknown> }));
 
 describe('My Work usage telemetry', () => {
-  it('counts the viewer opening on a page: profile-less, keyed to the install id, carrying only the page id', async () => {
+  it('counts the viewer opening on a page: profile-less, not the install person, tagged local', async () => {
     expect((await report({ event: 'opened', view: 'work' })).status).toBe(204);
     expect(captured()).toHaveLength(1);
     const [opened] = captured();
     expect(opened.event).toBe('work_view_opened');
     expect(opened.properties.view).toBe('work');
+    expect(opened.properties.viewer_host).toBe('local');
+    expect(opened.properties.hostname).toBe('127.0.0.1');
     expect(opened.properties.previous_view).toBeUndefined();
     expect(opened.properties.$process_person_profile).toBe(false);
-    expect(typeof postHogCaptureCalls[0].distinctId).toBe('string');
+    expect(opened.properties.$set).toBeUndefined();
+    expect(postHogCaptureCalls[0].distinctId).toBe(getOrCreateAnonymousDistinctId());
+    expect(postHogCaptureCalls[0].distinctId).not.toBe(getOrCreateInstallId());
   });
 
   it('counts a switch together with the page it left', async () => {

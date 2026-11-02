@@ -84,4 +84,6 @@ export interface WorkDataSource {
   markAgentFinished(agentId: string): Promise<WorkModel>
   /** Adds the MY-RULES.md import to ~/.claude/CLAUDE.md (once). Rejects with the reason when it can't. */
   loadRulesInClaudeCode(): Promise<WorkModel>
+  /** Starts an on-demand refresh of goals and progress on this machine. `state` is `idle` when nothing was due. */
+  refreshWork(): Promise<{ state: string }>
 }
