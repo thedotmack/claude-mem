@@ -117,10 +117,23 @@ function writeMcpConfigAndContext(
 const COPILOT_CLI_CONFIG: McpInstallerConfig = {
   ideId: 'copilot-cli',
   ideLabel: 'Copilot CLI',
-  configPath: path.join(homedir(), '.github', 'copilot', 'mcp.json'),
-  configKey: 'servers',
+  // Copilot CLI loads user-level MCP servers from mcp-config.json in its config
+  // directory: ~/.copilot, or the directory COPILOT_HOME names.
+  configPath: path.join(process.env.COPILOT_HOME || path.join(homedir(), '.copilot'), 'mcp-config.json'),
+  configKey: 'mcpServers',
   contextPath: path.join(process.cwd(), '.github', 'copilot-instructions.md'),
 };
+
+/** Remove claude-mem from Copilot CLI's MCP servers so Copilot stops launching a deleted MCP server. Returns 0 when an entry was removed. */
+export function uninstallCopilotCliMcpIntegration(): number {
+  const { configPath } = COPILOT_CLI_CONFIG;
+  const config = readJsonSafe<Record<string, any>>(configPath, {});
+  if (!config.mcpServers?.['claude-mem']) return 1;
+  delete config.mcpServers['claude-mem'];
+  writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
+  console.log(`  Removed claude-mem from the Copilot CLI MCP servers in: ${configPath}`);
+  return 0;
+}
 
 const ROO_CODE_CONFIG: McpInstallerConfig = {
   ideId: 'roo-code',
