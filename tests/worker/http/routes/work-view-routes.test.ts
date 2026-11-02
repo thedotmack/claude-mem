@@ -410,7 +410,14 @@ describe('local work view', () => {
     const request = (await snapshot()).humanRequests[0];
     const controller = new AbortController(); controllers.push(controller);
     const response = await fetch(`${origin}/api/work-view/events`, { signal: controller.signal });
-    await response.body!.getReader().read();
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let initial = '';
+    while (!initial.includes('event: work-view')) {
+      const part = await reader.read();
+      if (part.done) throw new Error('event stream ended before its initial work view');
+      initial += decoder.decode(part.value, { stream: true });
+    }
     const liveSource = (routes as any).source;
     const initialRevision = liveSource.agentRevision;
     source.prepare('UPDATE observations SET narrative=? WHERE id=1').run('Corrected full evidence.');
