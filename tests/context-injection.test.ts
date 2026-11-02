@@ -64,6 +64,21 @@ describe('findContextBlockRange', () => {
     expect(rangeOf(`# Notes\r\n\r\n${crlfBlock}`)).toBe(crlfBlock);
   });
 
+  it('does not treat a code fence after a first-line BOM as plain text', () => {
+    const example = `﻿\`\`\`md\n${CONTEXT_TAG_OPEN}\nexample only\n${CONTEXT_TAG_CLOSE}\n\`\`\`\n`;
+    expect(rangeOf(`${example}\n${block}\n`)).toBe(block);
+  });
+
+  it('does not take a delimiter indented four spaces, which is indented code', () => {
+    const example = `    ${CONTEXT_TAG_OPEN}\n    example only\n    ${CONTEXT_TAG_CLOSE}\n`;
+    expect(rangeOf(`${example}\n${block}\n`)).toBe(block);
+    expect(findContextBlockRange(example)).toBeNull();
+  });
+
+  it('leaves both tags on one line alone, since no writer produces that form', () => {
+    expect(findContextBlockRange(`${CONTEXT_TAG_OPEN}example${CONTEXT_TAG_CLOSE}\n`)).toBeNull();
+  });
+
   it('is null without a complete block', () => {
     expect(findContextBlockRange('# Notes\n')).toBeNull();
     expect(findContextBlockRange(`${CONTEXT_TAG_OPEN}\nnever closed\n`)).toBeNull();
@@ -238,6 +253,54 @@ describe('Context Injection', () => {
 
       injectContextIntoMarkdownFile(filePath, 'current managed memory');
       expect(readFileSync(filePath, 'utf-8')).toBe(expected);
+    });
+
+    it.each([
+      ['an unclosed top-level fence', '# Notes\n\n```sh\nnpm test\n\n'],
+      ['a lone fence inside an HTML comment', '<!--\n```\n-->\n\n'],
+      ['a list fence closed flush left', '- ```sh\n  npm test\n```\n\n'],
+      ['a shorter closer inside a longer fence', '````md\ncode\n```\n\n'],
+    ])('keeps exactly one block across refreshes after %s', (_name, before) => {
+      const filePath = join(tempDir, 'CLAUDE.md');
+      writeFileSync(filePath, `${before}${CONTEXT_TAG_OPEN}\nold memory\n${CONTEXT_TAG_CLOSE}\n`);
+
+      for (let refresh = 0; refresh < 3; refresh++) {
+        injectContextIntoMarkdownFile(filePath, 'current memory');
+      }
+
+      expect(readFileSync(filePath, 'utf-8')).toBe(
+        `${before}${CONTEXT_TAG_OPEN}\ncurrent memory\n${CONTEXT_TAG_CLOSE}\n`,
+      );
+    });
+
+    it('appends once and then replaces when an unclosed fence comes before no block at all', () => {
+      const filePath = join(tempDir, 'CLAUDE.md');
+      writeFileSync(filePath, '```sh\nnpm test\n');
+
+      for (let refresh = 0; refresh < 3; refresh++) {
+        injectContextIntoMarkdownFile(filePath, 'current memory');
+      }
+
+      expect(readFileSync(filePath, 'utf-8')).toBe(
+        `\`\`\`sh\nnpm test\n\n${CONTEXT_TAG_OPEN}\ncurrent memory\n${CONTEXT_TAG_CLOSE}\n`,
+      );
+    });
+
+    it.each([
+      ['a BOM before the opening tag', '﻿', '', '', ''],
+      ['trailing spaces on both delimiters', '', '  ', '', ' \t'],
+      ['a two-space indent on both delimiters', '  ', '', '  ', ''],
+    ])('keeps replacing a block with %s', (_name, openPrefix, openSuffix, closePrefix, closeSuffix) => {
+      const filePath = join(tempDir, 'CLAUDE.md');
+      writeFileSync(filePath, `${openPrefix}${CONTEXT_TAG_OPEN}${openSuffix}\nold memory\n${closePrefix}${CONTEXT_TAG_CLOSE}${closeSuffix}\nKeep this.\n`);
+
+      for (let refresh = 0; refresh < 3; refresh++) {
+        injectContextIntoMarkdownFile(filePath, 'current memory');
+      }
+
+      expect(readFileSync(filePath, 'utf-8')).toBe(
+        `${openPrefix}${CONTEXT_TAG_OPEN}\ncurrent memory\n${CONTEXT_TAG_CLOSE}${closeSuffix}\nKeep this.\n`,
+      );
     });
 
     it('ignores a closing tag before the context section', () => {
