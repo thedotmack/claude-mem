@@ -280,11 +280,37 @@ function tomlStructuralLines(lines: string[]): string[] {
   });
 }
 
+/** Read semantic key names without changing their spelling in the user's document. */
+function tomlKeyPath(input: string): { keys: string[]; rest: string } | null {
+  const keys: string[] = [];
+  const escapes: Record<string, string> = { '"': '"', '\\': '\\', b: '\b', t: '\t', n: '\n', f: '\f', r: '\r' };
+  while (true) {
+    const part = /^[ \t]*(?:([A-Za-z0-9_-]+)|"((?:[^"\\\r\n]|\\(?:["\\btnfr]|u[\da-fA-F]{4}|U[\da-fA-F]{8}))*)"|'([^'\r\n]*)')[ \t]*/.exec(input);
+    if (!part) return null;
+    const name = part[1] ?? part[3] ?? part[2].replace(
+      /\\(?:u([\da-fA-F]{4})|U([\da-fA-F]{8})|(["\\btnfr]))/g,
+      (_escape, short: string | undefined, long: string | undefined, simple: string) =>
+        short || long ? String.fromCodePoint(Number.parseInt(short ?? long!, 16)) : escapes[simple],
+    );
+    keys.push(name);
+    input = input.slice(part[0].length);
+    if (!input.startsWith('.')) return { keys, rest: input };
+    input = input.slice(1);
+  }
+}
+
+function tomlTableKey(line: string): string | null {
+  const table = /^\s*\[(?!\[)(.*)\]\s*$/.exec(line);
+  const parsed = table ? tomlKeyPath(table[1]) : null;
+  return parsed && !parsed.rest ? JSON.stringify(parsed.keys) : null;
+}
+
 export function setTomlBooleanInTable(content: string, header: string, key: string, enabled: boolean): string {
   const booleanLine = `${key} = ${enabled ? 'true' : 'false'}`;
   const lines = content.split('\n');
   const structuralLines = tomlStructuralLines(lines);
-  const headerIndex = structuralLines.findIndex((line) => line.trim() === header);
+  const tableKey = tomlTableKey(header);
+  const headerIndex = structuralLines.findIndex((line) => tableKey !== null && tomlTableKey(line) === tableKey);
 
   if (headerIndex === -1) {
     const trimmed = content.trimEnd();
@@ -296,11 +322,11 @@ export function setTomlBooleanInTable(content: string, header: string, key: stri
     sectionEnd += 1;
   }
 
-  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const keyPattern = new RegExp(`^\\s*${escapedKey}\\s*=`);
-  const keyIndex = structuralLines.findIndex(
-    (line, index) => index > headerIndex && index < sectionEnd && keyPattern.test(line),
-  );
+  const keyIndex = structuralLines.findIndex((line, index) => {
+    if (index <= headerIndex || index >= sectionEnd) return false;
+    const parsed = tomlKeyPath(line);
+    return parsed?.keys.length === 1 && parsed.keys[0] === key && parsed.rest.startsWith('=');
+  });
 
   if (keyIndex === -1) {
     lines.splice(headerIndex + 1, 0, booleanLine);

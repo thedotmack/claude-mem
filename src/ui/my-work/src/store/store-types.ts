@@ -41,6 +41,7 @@ export interface WorkSlice {
   saveFocusChange: (change: FocusChange) => Promise<WorkModel>
   markAgentFinished: (agentId: string) => Promise<void>
   loadRulesInClaudeCode: () => Promise<void>
+  refreshWork: () => Promise<{ state: string }>
   /** Sample mode only: replace one fixture request everywhere. */
   updateSampleRequest: (id: string, change: (request: Request) => Request) => void
   /** Sample mode only: the wireframe agent finishes while you watch. Returns the stop. */

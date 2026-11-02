@@ -29,13 +29,14 @@ export class AutoRefreshWorker {
    * @param {() => any} options.openDatabase    read-only claude-mem.db handle with close()
    * @param {(job: {needs: object, reason: string}) => Promise<{state: string, agent: string|null, result: string|null, error: string|null}>} options.runJob
    *   runs the job on the first logged-in agent; 'waiting-for-agent' when there is none yet (agent-runner/run.ts)
-   * @param {() => boolean} [options.enabled]   CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH, read on every check
+   * @param {() => boolean} [options.enabled]   scheduled refresh on: setup not running and CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH, read on every check
+   * @param {() => boolean} [options.setupRunning]  setup is running, so no refresh may spend tokens, not even one the owner asks for
    * @param {() => string} options.localDeviceId the worker's sync device id ('' when cloud sync never started), so my-focus
    *   rows replay in its order; required
    */
-  constructor({ dir, openDatabase, runJob, enabled = () => true, checkMs = TEN_MINUTES_MS, now = Date.now, log = () => {}, localDeviceId }) {
+  constructor({ dir, openDatabase, runJob, enabled = () => true, setupRunning = () => false, checkMs = TEN_MINUTES_MS, now = Date.now, log = () => {}, localDeviceId }) {
     if (typeof localDeviceId !== 'function') throw new TypeError('AutoRefreshWorker needs localDeviceId, the worker\'s sync device id.');
-    Object.assign(this, { dir, openDatabase, runJob, enabled, checkMs, now, log, localDeviceId });
+    Object.assign(this, { dir, openDatabase, runJob, enabled, setupRunning, checkMs, now, log, localDeviceId });
     this.timer = null; this.closed = false; this.busy = false;
   }
 
@@ -48,7 +49,23 @@ export class AutoRefreshWorker {
 
   write(status) { writeJsonAtomic(this.path(), status); }
 
-  start() { this.tick(); this.timer = setInterval(() => this.tick(), this.checkMs); this.timer.unref?.(); }
+  start() { this.repairInterrupted(); this.tick(); this.timer = setInterval(() => this.tick(), this.checkMs); this.timer.unref?.(); }
+
+  /** Another live worker process owns a run in progress. */
+  otherWorkerIsRunning(status) { return status?.state === 'running' && status.pid !== process.pid && status.pid && processIsAlive(status.pid); }
+
+  /**
+   * At startup this worker has no run, so a "running" record no other live worker owns was cut off by a restart. Repaired
+   * here whether or not scheduled refresh is on: check() stops early when it is off, and My Work would otherwise show that
+   * run, with its Refresh now button disabled, forever. Not counted as a failed run, so it starts no back-off.
+   */
+  repairInterrupted() {
+    let previous;
+    try { previous = this.status(); }
+    catch (error) { this.log('warn', 'Work view refresh status could not be read at startup', { error: String(error?.message ?? error) }); return; }
+    if (previous?.state !== 'running' || this.otherWorkerIsRunning(previous)) return;
+    this.write({ ...previous, state: 'failed', error: 'The previous refresh stopped before finishing.', finishedAt: this.iso(), nextAt: this.iso(this.now() + this.checkMs) });
+  }
 
   /** A timer check: a failure (e.g. no database yet) is logged and the next check tries again. */
   tick() { this.check().catch((error) => this.log('warn', 'Work view refresh check failed', { error: String(error?.message ?? error) })); }
@@ -69,8 +86,7 @@ export class AutoRefreshWorker {
     if (!this.enabled()) return 'disabled';
     if (this.busy) return 'running';
     const previous = this.status();
-    // Another live worker process owns a run in progress.
-    if (previous?.state === 'running' && previous.pid !== process.pid && previous.pid && processIsAlive(previous.pid)) return 'running';
+    if (this.otherWorkerIsRunning(previous)) return 'running';
     // Backing off after failed runs: wait for the time the last failure set.
     if (previous?.state === 'failed' && previous.failures && this.now() < Date.parse(previous.nextAt)) return 'backing-off';
     const needs = this.readNeeds();
@@ -83,14 +99,34 @@ export class AutoRefreshWorker {
     return this.run(needs, 'scheduled');
   }
 
-  /** Run now instead of at the next ten-minute check (the install funnel after its scan), when something is due. */
+  /** Run now instead of at the next ten-minute check, when something is due. Never while setup runs. */
   async runNow({ reason }) {
     if (this.closed) return 'closed';
     if (this.busy) return 'running';
-    const needs = this.readNeeds();
-    // A re-scan that found nothing new starts no agent.
-    if (!needs.needed) return 'idle';
-    return this.run(needs, reason);
+    if (this.setupRunning()) return 'setup-running';
+    let previous = null;
+    try { previous = this.status(); } catch { /* replace an unreadable old status */ }
+    if (this.otherWorkerIsRunning(previous)) return 'running';
+    this.busy = true;
+    const startedAt = this.iso();
+    try {
+      let needs;
+      try { needs = this.readNeeds(); }
+      catch (error) {
+        // Surface failures that happen before run() can write its normal status, so My Work can explain
+        // why an on-demand refresh did not start (for example, a database or saved-ledger read failure).
+        const failures = Number(previous?.failures ?? 0) + 1;
+        const message = String(error?.message ?? error).slice(0, 500);
+        const finishedAt = this.iso();
+        const wait = Math.min(this.checkMs * 2 ** (failures - 1), MAX_FAILURE_BACKOFF_MS);
+        this.write({ state: 'failed', reason, startedAt, finishedAt, needs: null, result: null, error: message, nextAt: this.iso(this.now() + wait), failures });
+        this.log('warn', `Work view refresh failed before starting (${reason})`, { error: message });
+        return 'failed';
+      }
+      // A re-scan that found nothing new starts no agent.
+      if (!needs.needed) return 'idle';
+      return await this.run(needs, reason);
+    } finally { this.busy = false; }
   }
 
   async run(needs, reason) {

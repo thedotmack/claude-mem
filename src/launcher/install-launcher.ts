@@ -13,14 +13,14 @@
  * never used). No `/opt/homebrew/bin` or
  * `/usr/local/bin` symlink (SPIKE Decision 2).
  */
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { spawnSync, type SpawnSyncReturns } from 'child_process';
 import { homedir } from 'os';
 import { posix as posixPath, win32 as windowsPath } from 'path';
 import { buildSpawnSyncInvocation } from '../shared/spawn.js';
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 import { LAUNCHER_PROTOCOL } from './launcher-protocol.js';
-import { MINIMUM_BUN_VERSION_FOR_BUN_BE_BUN, bunVersionHonoursBunBeBun } from './bun-be-bun-support.js';
+import { MINIMUM_BUN_VERSION_FOR_BUN_BE_BUN, MINIMUM_BUN_VERSION_FOR_SIGNED_LAUNCHER_ON_DARWIN, bunVersionHonoursBunBeBun, bunVersionHonoursMacosSignatureFix } from './bun-be-bun-support.js';
 
 const LAUNCHER_VERSION_PROBE_TIMEOUT_MS = 10_000;
 // Antivirus scans a new .exe on its first launch, which can take longer than
@@ -97,6 +97,8 @@ export interface LauncherVersionProbe {
   failure: string | null;
   /** The process never started (spawn error). */
   failedToStart: boolean;
+  /** The signal that killed the process, or null when no signal did. */
+  signal: NodeJS.Signals | null;
 }
 
 function lastNonEmptyLine(text: string | null | undefined): string {
@@ -109,19 +111,27 @@ function formatExitStatus(status: number): string {
 }
 
 function interpretVersionProbe(versionProbe: SpawnSyncReturns<string>, timeoutMs: number): LauncherVersionProbe {
-  const failed = (failure: string, failedToStart = false): LauncherVersionProbe => ({ protocol: null, failure, failedToStart });
+  const failed = (
+    failure: string,
+    details: { failedToStart?: boolean; signal?: NodeJS.Signals | null } = {},
+  ): LauncherVersionProbe => ({
+    protocol: null,
+    failure,
+    failedToStart: details.failedToStart ?? false,
+    signal: details.signal ?? null,
+  });
   const stderrLine = lastNonEmptyLine(versionProbe.stderr);
   const withStderr = (failure: string) => (stderrLine ? `${failure}: ${stderrLine}` : failure);
   if (versionProbe.error) {
     if ((versionProbe.error as NodeJS.ErrnoException).code === 'ETIMEDOUT') {
       return failed(withStderr(`timed out after ${timeoutMs} ms`));
     }
-    return failed(`could not start: ${versionProbe.error.message}`, true);
+    return failed(`could not start: ${versionProbe.error.message}`, { failedToStart: true });
   }
-  if (versionProbe.signal) return failed(withStderr(`killed by ${versionProbe.signal}`));
+  if (versionProbe.signal) return failed(withStderr(`killed by ${versionProbe.signal}`), { signal: versionProbe.signal });
   if (versionProbe.status !== 0) return failed(withStderr(`exited ${formatExitStatus(versionProbe.status ?? -1)}`));
   const printedVersion = (versionProbe.stdout ?? '').trim();
-  if (/^\d+$/.test(printedVersion)) return { protocol: Number(printedVersion), failure: null, failedToStart: false };
+  if (/^\d+$/.test(printedVersion)) return { protocol: Number(printedVersion), failure: null, failedToStart: false, signal: null };
   if (!printedVersion) return failed(withStderr('printed nothing'));
   return failed(`printed "${printedVersion.split(/\r?\n/)[0].slice(0, PROBE_OUTPUT_QUOTE_LIMIT)}" instead of a protocol number`);
 }
@@ -131,7 +141,7 @@ export function probeLauncherVersion(
   binaryPath: string,
   timeoutMs: number = LAUNCHER_VERSION_PROBE_TIMEOUT_MS,
 ): LauncherVersionProbe {
-  if (!existsSync(binaryPath)) return { protocol: null, failure: 'file not found', failedToStart: false };
+  if (!existsSync(binaryPath)) return { protocol: null, failure: 'file not found', failedToStart: false, signal: null };
   const versionProbe = spawnSync(binaryPath, ['--version'], {
     encoding: 'utf-8',
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -139,6 +149,25 @@ export function probeLauncherVersion(
     windowsHide: true,
   });
   return interpretVersionProbe(versionProbe, timeoutMs);
+}
+
+/**
+ * The extra fix line for a rebuild the OS killed. macOS 27 SIGKILLs a launcher
+ * whose code signature it rejects, and Bun below 1.4.1 cannot produce a binary
+ * that check accepts, so rebuilding the same way is killed again while every
+ * session start pays for another failed compile (#5247, suggestion 2). Naming
+ * another `npx claude-mem install` would send the user in a loop.
+ *
+ * Exported so the wording is unit-tested on any platform.
+ */
+export function launcherSignatureFixHint(
+  platform: NodeJS.Platform,
+  probe: LauncherVersionProbe,
+  bunVersion: string | null,
+): string {
+  if (platform !== 'darwin' || probe.signal !== 'SIGKILL') return '';
+  if (bunVersion === null || bunVersionHonoursMacosSignatureFix(bunVersion)) return '';
+  return `; Bun ${bunVersion} cannot produce a launcher macOS 27 accepts, so reinstalling cannot fix this: run \`bun upgrade\` (${MINIMUM_BUN_VERSION_FOR_SIGNED_LAUNCHER_ON_DARWIN} or newer), then \`npx claude-mem install\``;
 }
 
 function sleepSync(milliseconds: number): void {
@@ -608,13 +637,67 @@ type ExistingLauncherBinary =
   | { kind: 'absent' }
   | { kind: 'dangling-symlink' }
   | { kind: 'foreign'; reason: string }
-  | { kind: 'launcher'; protocol: number };
+  | { kind: 'launcher'; protocol: number }
+  | { kind: 'killed-launcher'; signal: NodeJS.Signals };
+
+/**
+ * The strings that `bun build --compile` embeds from claude-mem-launcher.ts:
+ * its usage line and its fail-open exit message. They identify a launcher that
+ * can no longer answer `--version` as ours, so a killed copy is rebuilt instead
+ * of being mistaken for another program (#5247). Keep in sync with USAGE_TEXT
+ * and exitContinuingWithoutMemory there; the tests scan the committed bundle.
+ */
+const LAUNCHER_BUNDLE_MARKERS = [
+  'usage: claude-mem hook <platform> <event>',
+  'continuing without memory',
+] as const;
+
+const LAUNCHER_BUNDLE_SCAN_CHUNK_BYTES = 64 * 1024;
+
+/**
+ * True when `filePath` embeds every launcher-bundle marker. The scan runs in
+ * fixed-size chunks with one marker-length of overlap, so a compiled launcher
+ * (tens of megabytes, with its bundle at the end) is never read whole. A file
+ * that is unreadable, or that carries no launcher bundle, answers false.
+ */
+export function launcherFileEmbedsBundle(filePath: string): boolean {
+  let launcherFileDescriptor: number | null = null;
+  try {
+    launcherFileDescriptor = openSync(filePath, 'r');
+    const overlapBytes = Math.max(...LAUNCHER_BUNDLE_MARKERS.map((marker) => marker.length)) - 1;
+    const scanBuffer = Buffer.allocUnsafe(LAUNCHER_BUNDLE_SCAN_CHUNK_BYTES + overlapBytes);
+    const matchedMarkers = new Set<string>();
+    let carriedBytes = 0;
+    for (;;) {
+      const bytesRead = readSync(launcherFileDescriptor, scanBuffer, carriedBytes, LAUNCHER_BUNDLE_SCAN_CHUNK_BYTES, null);
+      if (bytesRead <= 0) break;
+      const scannedBytes = scanBuffer.subarray(0, carriedBytes + bytesRead);
+      for (const marker of LAUNCHER_BUNDLE_MARKERS) {
+        if (!matchedMarkers.has(marker) && scannedBytes.includes(marker)) matchedMarkers.add(marker);
+      }
+      if (matchedMarkers.size === LAUNCHER_BUNDLE_MARKERS.length) return true;
+      // A marker can straddle a chunk boundary: keep the tail for the next read.
+      carriedBytes = Math.min(overlapBytes, scannedBytes.length);
+      scannedBytes.copy(scanBuffer, 0, scannedBytes.length - carriedBytes);
+    }
+    return false;
+  } catch {
+    // [ANTI-PATTERN IGNORED]: an unreadable file cannot be shown to be the
+    // launcher, so it stays someone else's and is reported as foreign below.
+    return false;
+  } finally {
+    if (launcherFileDescriptor !== null) closeSync(launcherFileDescriptor);
+  }
+}
 
 /**
  * What sits at the launcher path. A symlink, or anything whose `--version` is
  * not a bare integer, is someone else's `claude-mem` (e.g. the npm CLI) and is
  * never overwritten. A dangling symlink (an old plugin-cache link whose target
- * is gone) is dead weight and may be replaced.
+ * is gone) is dead weight and may be replaced. The exception is a file that
+ * embeds the launcher bundle and whose probe was killed by a signal: macOS 27
+ * SIGKILLs a launcher whose code signature it rejects (#5247), and that copy is
+ * ours to rebuild.
  */
 function inspectExistingLauncherBinary(binaryPath: string): ExistingLauncherBinary {
   const linkStats = lstatSync(binaryPath, { throwIfNoEntry: false });
@@ -623,9 +706,11 @@ function inspectExistingLauncherBinary(binaryPath: string): ExistingLauncherBina
     return existsSync(binaryPath) ? { kind: 'foreign', reason: 'it is a symlink' } : { kind: 'dangling-symlink' };
   }
   const versionProbe = probeLauncherVersion(binaryPath);
-  return versionProbe.protocol === null
-    ? { kind: 'foreign', reason: `--version ${versionProbe.failure}` }
-    : { kind: 'launcher', protocol: versionProbe.protocol };
+  if (versionProbe.protocol !== null) return { kind: 'launcher', protocol: versionProbe.protocol };
+  if (versionProbe.signal !== null && launcherFileEmbedsBundle(binaryPath)) {
+    return { kind: 'killed-launcher', signal: versionProbe.signal };
+  }
+  return { kind: 'foreign', reason: `--version ${versionProbe.failure}` };
 }
 
 const TEMPORARY_OUTFILE_PATTERN = /^\.claude-mem-.*\.tmp/;
@@ -752,7 +837,8 @@ function moveCompiledLauncherIntoPlace(
  * puts that dir on PATH. When the placed binary is already current (see
  * LauncherEnsureInvocationContext) nothing is compiled, but the cheap PATH
  * step still runs. `resolveBunPath` runs only when a compile is needed.
- * A foreign `claude-mem` at the launcher path is never replaced.
+ * A foreign `claude-mem` at the launcher path is never replaced; a launcher of
+ * ours that a signal killed on exec is rebuilt (#5247).
  * Throws on a missing bundle, a Bun older than 1.2.16 (#4933), a Windows Bun
  * path with no ASCII form (#5038), a failed compile or an unusable result.
  */
@@ -784,6 +870,11 @@ export function ensureLauncherOnPath(options: {
   if (existingBinary.kind === 'foreign') {
     logger.warn(`${binaryPath} exists and is not the claude-mem hook launcher (${existingBinary.reason}); not replacing`);
     return { status: 'foreign-binary-kept', binaryPath, pathSetupOutcome: null };
+  }
+  if (existingBinary.kind === 'killed-launcher') {
+    // The file is our launcher, but the OS killed it before it could answer
+    // (#5247). Left alone it would never be replaced, so it is rebuilt below.
+    logger.warn(`${binaryPath} is the claude-mem launcher, but --version was killed by ${existingBinary.signal} (macOS 27 kills a launcher whose code signature it rejects, #5247); rebuilding it`);
   }
   if (existingBinary.kind === 'launcher') {
     if (existingBinary.protocol === LAUNCHER_PROTOCOL
@@ -853,7 +944,8 @@ export function ensureLauncherOnPath(options: {
       // binary (macOS SIGKILLs it on exec), and its stderr is the actionable
       // half: the protocol message alone reads like a broken build.
       const signFailure = codesignFailure ? `; ${codesignFailure}` : '';
-      throw new Error(`compiled launcher printed protocol ${compiledProbe.protocol}, expected ${LAUNCHER_PROTOCOL}${probeFailure}${signFailure}`);
+      const bunSignFix = launcherSignatureFixHint(host.platform, compiledProbe, bunVersion);
+      throw new Error(`compiled launcher printed protocol ${compiledProbe.protocol}, expected ${LAUNCHER_PROTOCOL}${probeFailure}${signFailure}${bunSignFix}`);
     }
     moveCompiledLauncherIntoPlace(temporaryOutfilePath, binaryPath, binDirectory, host.platform, placementFileOperations);
   } finally {
