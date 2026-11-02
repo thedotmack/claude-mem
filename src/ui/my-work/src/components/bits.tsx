@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { motion } from 'motion/react'
-import { BotIcon, CornerLeftUpIcon, RefreshCwIcon, StarIcon, UserIcon } from 'lucide-react'
+import { BotIcon, CornerLeftUpIcon, MessageSquareIcon, RefreshCwIcon, StarIcon, UserIcon } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card'
@@ -253,6 +253,20 @@ export function GitHubStars() {
         <StarIcon className="size-3.5" />
         <span className="hidden sm:inline">Star</span>
         {stargazerCount !== null && <span className="tabular-nums">{new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(stargazerCount)}</span>}
+      </a>
+    </Button>
+  )
+}
+
+/** Opens the My Work feedback form on GitHub (.github/ISSUE_TEMPLATE/my-work-feedback.yml). */
+const MY_WORK_FEEDBACK_URL = `${CLAUDE_MEM_REPO_URL}/issues/new?template=my-work-feedback.yml`
+
+export function FeedbackLink() {
+  return (
+    <Button asChild variant="outline" size="sm" className="h-7 gap-1.5 px-2 text-xs">
+      <a href={MY_WORK_FEEDBACK_URL} target="_blank" rel="noreferrer" aria-label="Send feedback about My Work on GitHub">
+        <MessageSquareIcon className="size-3.5" />
+        <span className="hidden sm:inline">Feedback</span>
       </a>
     </Button>
   )

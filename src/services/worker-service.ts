@@ -113,6 +113,9 @@ import {
   handleKimiCommand
 } from './integrations/KimiHooksInstaller.js';
 import {
+  handleDevinCommand
+} from './integrations/DevinHooksInstaller.js';
+import {
   handleAntigravityCliCommand
 } from './integrations/AntigravityCliHooksInstaller.js';
 import { notifyGrokBotIndex, watchGrokBotIndexSettings } from './integrations/GrokBotIndexWriter.js';
@@ -929,6 +932,9 @@ export class WorkerService implements WorkerRef {
           deviceId: pullDeviceId,
           deviceName: settings.CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME,
           isSessionActive: () => this.sessionManager.getActiveSessionCount() > 0,
+          // A replica with no sessions of its own (services/viewer-host) still
+          // has to follow the owner's other devices: never suspend there.
+          suspendAfterMs: settings.CLAUDE_MEM_CLOUD_SYNC_KEEP_PULLING === 'true' ? Number.POSITIVE_INFINITY : undefined,
           // Advisory WebSocket (plan Phase 4): enabled by default alongside
           // the hub URL; CLAUDE_MEM_CLOUD_SYNC_WS='false' pins HTTP-only.
           wsEnabled: settings.CLAUDE_MEM_CLOUD_SYNC_WS !== 'false',
@@ -1015,8 +1021,9 @@ export class WorkerService implements WorkerRef {
       this.initPhaseTracker.setInitPhase('ready');
       logger.info('SYSTEM', 'Core initialization complete (DB + search ready)');
 
-      // Lifecycle telemetry (person profile = anonymous install UUID). ide is
-      // this install's dominant client read from session history — a bounded
+      // Lifecycle telemetry. Profile-less: a person on this id would make every
+      // later worker event bill as identified. ide is
+      // this install's dominant client, read from session history — a bounded
       // platform enum (claude-code / cursor / ...), never user data. Props are
       // rebuilt per capture so the daily heartbeat reports the install's
       // current DB size/age/activity, not boot-time values.
@@ -1058,7 +1065,7 @@ export class WorkerService implements WorkerRef {
         previous_shutdown: this.previousShutdown,
         ...(this.previousUptimeSeconds !== null && { previous_uptime_seconds: this.previousUptimeSeconds }),
         ...buildLifecycleProps(),
-      }, { person: true });
+      });
       telemetryBuffer.start();
 
       // One-time historical telemetry backfill (anonymized daily rollups).
@@ -1913,6 +1920,13 @@ async function main() {
       const kimiSubcommand = process.argv[3];
       const kimiResult = await handleKimiCommand(kimiSubcommand, process.argv.slice(4));
       process.exit(kimiResult);
+      break;
+    }
+
+    case 'devin': {
+      const devinSubcommand = process.argv[3];
+      const devinResult = await handleDevinCommand(devinSubcommand, process.argv.slice(4));
+      process.exit(devinResult);
       break;
     }
 

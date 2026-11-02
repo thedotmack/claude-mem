@@ -293,8 +293,8 @@ describe('marketplace sync excludes', () => {
     writeFileSync(join(source, '.gitignore'), 'node_modules/\ndist/\n*.log\nplugin/data/\nbun.lock\n');
     mkdirSync(join(source, 'plugin'), { recursive: true });
     writeFileSync(join(source, 'plugin', 'index.cjs'), 'built');
-    mkdirSync(join(source, 'workers'), { recursive: true });
-    writeFileSync(join(source, 'workers', 'hub.ts'), 'hub');
+    mkdirSync(join(source, 'services', 'sync-hub'), { recursive: true });
+    writeFileSync(join(source, 'services', 'sync-hub', 'hub.ts'), 'hub');
 
     mkdirSync(join(dest, '.git'), { recursive: true });
     writeFileSync(join(dest, '.git', 'HEAD'), 'ref: refs/heads/main');
@@ -309,7 +309,7 @@ describe('marketplace sync excludes', () => {
     expect(existsSync(join(dest, 'node_modules', 'dep', 'index.js'))).toBe(true);
     expect(existsSync(join(dest, 'plugin', 'index.cjs'))).toBe(true);
     expect(existsSync(join(dest, 'plugin', 'removed-in-this-build.cjs'))).toBe(false);
-    expect(existsSync(join(dest, 'workers'))).toBe(false);
+    expect(existsSync(join(dest, 'services', 'sync-hub'))).toBe(false);
   });
 
   it('refreshes generated native bundles while leaving other ignored dist output alone', () => {

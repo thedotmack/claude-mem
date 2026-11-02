@@ -115,7 +115,10 @@ export const createViewSlice = (environment: StoreEnvironment): SliceCreator<Vie
       set((state) => { state.view.page = 'app'; state.view.section = 'work' })
     },
 
-    // One count for the page the viewer opened on. StrictMode runs effects twice in development; the flag keeps it to one.
+    // One count for the page the viewer opened on. StrictMode runs effects twice in development; the flag keeps
+    // that to one call on this store. The sender also drops a second open in the same document, because a rebuilt
+    // store (a new closure, `openReported` false again) is what repeated `{event:'opened'}` for view=work while
+    // switches stayed rare: the effect was `useEffect(reportOpen, [reportOpen])`, so a new action identity posted again.
     reportOpen: () => {
       if (!environment.reportsUsage || openReported) return
       openReported = true

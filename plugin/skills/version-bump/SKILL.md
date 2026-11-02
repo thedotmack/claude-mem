@@ -34,7 +34,7 @@ description: Automated semantic versioning and release workflow for Claude Code 
 
 ## Workflow
 
-1.  **Update**: Increment the version string in every path above. Do NOT touch `CHANGELOG.md` — it's regenerated.
+1.  **Update**: Increment the version string in every path above. Do NOT touch `docs/CHANGELOG.md` — it's regenerated.
 2.  **Verify**: `git grep -n "\"version\": \"<NEW>\""` — confirm all fourteen JSON files match, and the README badge reads `version-<NEW>-green`. `git grep -n "\"version\": \"<OLD>\""` — should return zero hits.
 3.  **Build and sync**: `npm run build-and-sync` to regenerate artifacts, sync the local marketplace copy, restart the worker, and clear the queue. Do not use plain `npm run build` for release validation because it can leave the local marketplace/worker out of sync.
 4.  **Commit**: `git add -A && git commit -m "chore: bump version to X.Y.Z"`.
@@ -45,8 +45,8 @@ description: Automated semantic versioning and release workflow for Claude Code 
     ```bash
     npm run changelog:generate
     ```
-    (Runs `node scripts/generate-changelog.js`, which pulls releases from the GitHub API and rewrites `CHANGELOG.md`.)
-9.  **Sync changelog**: Commit and push the updated `CHANGELOG.md`.
+    (Runs `node scripts/generate-changelog.js`, which pulls releases from the GitHub API and rewrites `docs/CHANGELOG.md`.)
+9.  **Sync changelog**: Commit and push the updated `docs/CHANGELOG.md`.
 10. **Pre-publish audit**: Verify the release commit, tag, GitHub release, and
     changelog are pushed, and the release worktree has no pending tracked changes.
 11. **Publish to npm — the workflow does it.** Pushing the `vX.Y.Z` tag triggers
@@ -94,7 +94,7 @@ description: Automated semantic versioning and release workflow for Claude Code 
 - [ ] `npm run build-and-sync` succeeded
 - [ ] Git tag created and pushed
 - [ ] GitHub release created with notes
-- [ ] `CHANGELOG.md` updated and pushed
+- [ ] `docs/CHANGELOG.md` updated and pushed
 - [ ] Pre-publish audit passed
 - [ ] `Publish to npm` workflow run for the tag succeeded (no local `npm publish`)
 - [ ] Exact npm version and `latest` both verified after publishing

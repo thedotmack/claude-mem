@@ -13,7 +13,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 
 | Setting                       | Default                         | Description                           |
 |-------------------------------|---------------------------------|---------------------------------------|
-| `CLAUDE_MEM_MODEL`            | `claude-haiku-4-5-20251001`     | Claude model used to compress observations (when using the Claude provider) |
+| `CLAUDE_MEM_MODEL`            | `haiku`                         | Claude model used to compress observations (when using the Claude provider). `haiku` follows the newest Haiku; a full ID pins one version |
 | `CLAUDE_MEM_PROVIDER`         | `claude`                        | AI provider: `claude`, `codex`, `gemini`, `openrouter`, or `openai-compatible` |
 | `CLAUDE_MEM_CLAUDE_AUTH_METHOD` | `subscription`                | Claude provider auth mode: `subscription`, `api-key`, or `gateway` |
 | `CLAUDE_MEM_CLAUDE_OBSERVATION_BATCH_SIZE` | `1` | Queued observations the Claude provider may send in one observer prompt (1–32). Only events with the same prompt number, agent and working directory are combined, in queue order, and queued events are added only while the prompt stays within two capped fields. Raise it when one session queues events faster than its observer answers. Trade-offs, as with Codex batching: every observation from a batched reply lists the files of all events in the batch, and a reply that fails twice drops the whole batch. An environment variable of the same name overrides `settings.json`. |
@@ -376,9 +376,11 @@ Configure which Claude model compresses your observations (only applies when `CL
 
 | Value | Notes |
 |-------|-------|
-| `claude-haiku-4-5-20251001` | Default — fastest, ideal for compression |
-| `claude-sonnet-5` | Balanced quality and speed |
-| `claude-opus-4-8` | Highest quality (slowest) |
+| `haiku` | Default — the newest Haiku, fastest, ideal for compression |
+| `sonnet` | The newest Sonnet, balanced quality and speed |
+| `opus` | The newest Opus, highest quality (slowest) |
+
+Each alias follows the newest model of its tier, so new releases (usually cheaper or better for the price) reach you without a settings change. A full model ID, such as `claude-sonnet-5`, pins that one version and never updates. Installs that had the old shipped default `claude-haiku-4-5-20251001` saved are moved to `haiku` automatically, except gateway installs (see Manual Configuration below).
 
 ### Picking via the Installer
 
@@ -390,9 +392,11 @@ Edit `~/.claude-mem/settings.json`:
 
 ```json
 {
-  "CLAUDE_MEM_MODEL": "claude-haiku-4-5-20251001"
+  "CLAUDE_MEM_MODEL": "haiku"
 }
 ```
+
+`haiku` moves to each new Haiku release on its own. A full model ID such as `claude-haiku-4-5-20251001` pins that one version and never updates, so use one only when you deliberately want to stay on it. Installs that saved the old default, `claude-haiku-4-5-20251001`, are moved to `haiku` automatically, except gateway installs (an `ANTHROPIC_BASE_URL` in `~/.claude-mem/.env`, or the auth method set to `gateway`), which keep their saved model because the gateway decides which model names it accepts.
 
 ## Mode Configuration
 
@@ -888,9 +892,10 @@ npm run worker:logs
 
 If you specify an invalid Claude model name, the worker logs a warning and uses the default. Valid Claude models for `CLAUDE_MEM_MODEL`:
 
-- `claude-haiku-4-5-20251001` (default)
-- `claude-sonnet-5`
-- `claude-opus-4-8`
+- `haiku` (default, the newest Haiku)
+- `sonnet` (the newest Sonnet)
+- `opus` (the newest Opus)
+- a full model ID, such as `claude-sonnet-5`, to pin one version
 
 ### Port Already in Use
 

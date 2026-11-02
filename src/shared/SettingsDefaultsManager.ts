@@ -3,7 +3,8 @@ import { readFileSync, existsSync, writeFileSync } from 'fs';
 import { basename, dirname, join } from 'path';
 import { homedir, hostname } from 'os';
 import { HOOK_TIMEOUTS, defaultSessionInitRequestTimeoutMs, getTimeout } from './hook-constants.js';
-import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
+import { parseEnv } from 'util';
+import { parseJsonWithBom, stripUtf8Bom, writeJsonFileAtomic } from './atomic-json.js';
 import { isOpenRouterApiUrl } from './openrouter-base-url.js';
 import { settingsTarget, withoutStaleRootCopies } from './settings-document.js';
 import { expandHome } from './expand-home.js';
@@ -63,6 +64,44 @@ const RETIRED_OPENROUTER_DEFAULT_MODELS: ReadonlySet<string> = new Set([
  */
 function coercePersistedSettingValue(value: unknown): unknown {
   return typeof value === 'boolean' ? String(value) : value;
+}
+
+// Model policy: claude-mem never pins a dated Claude model id. Defaults use
+// Claude Code's aliases (`haiku`, `sonnet`, `opus`), which resolve to the
+// newest model of that tier, because each new Anthropic release is cheaper or
+// better at the same price. Older installs had `claude-haiku-4-5-20251001`
+// written into settings.json by the default or the installer; rewrite exactly
+// those shipped ids to the alias. A gateway install is left alone, since a custom
+// endpoint serves its own model names: either the saved auth method says gateway,
+// or the claude-mem .env next to settings.json sets ANTHROPIC_BASE_URL (how the
+// installer detects one; such installs often never save the auth method).
+const PINNED_SHIPPED_HAIKU_MODELS: ReadonlySet<string> = new Set([
+  'claude-haiku-4-5-20251001',
+  'claude-haiku-4-5',
+]);
+
+function envFileSetsAnthropicBaseUrl(settingsPath: string): boolean {
+  const envFile = process.env.CLAUDE_MEM_ENV_FILE ?? join(dirname(settingsPath), '.env');
+  try {
+    if (!existsSync(envFile)) return false;
+    // Parse it the way the worker does (EnvManager's parseEnvFile), so this sees
+    // exactly the base URL the worker will use: BOM stripped, empty means unset.
+    const parsed = parseEnv(stripUtf8Bom(readFileSync(envFile, 'utf-8'))) as Record<string, string>;
+    return Boolean(parsed.ANTHROPIC_BASE_URL);
+  } catch {
+    return true;  // unreadable: assume a gateway and leave the model alone
+  }
+}
+
+function hasPinnedShippedHaiku(flatSettings: Record<string, any>, settingsPath: string): boolean {
+  const model = flatSettings.CLAUDE_MEM_MODEL;
+  if (typeof model !== 'string' || !PINNED_SHIPPED_HAIKU_MODELS.has(model.trim())) {
+    return false;
+  }
+  const authMethod = typeof flatSettings.CLAUDE_MEM_CLAUDE_AUTH_METHOD === 'string'
+    ? flatSettings.CLAUDE_MEM_CLAUDE_AUTH_METHOD.trim()
+    : '';
+  return authMethod !== 'gateway' && !envFileSetsAnthropicBaseUrl(settingsPath);
 }
 
 function hasRetiredOpenRouterDefault(flatSettings: Record<string, any>): boolean {
@@ -306,7 +345,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_SEARCH_RECENCY_DAYS: string;        // Implicit 90-day recency window on date-less semantic searches (#4770); 0 = no window
   // Worker-native cloud sync. Active ⇔ TOKEN, USER_ID, and HUB_URL are all
   // non-empty — there is no separate enabled flag. HUB_URL points at the
-  // two-lane sync hub (workers/sync-hub); while it is empty, sync is OFF
+  // two-lane sync hub (services/sync-hub); while it is empty, sync is OFF
   // entirely (the old per-kind cmem.ai lane was deleted in the hub cutover).
   CLAUDE_MEM_CLOUD_SYNC_TOKEN: string;
   CLAUDE_MEM_CLOUD_SYNC_USER_ID: string;
@@ -314,6 +353,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: string;
   CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: string;
   CLAUDE_MEM_CLOUD_SYNC_WS: string;    // live updates via Supabase Realtime — 'false' disables live updates (HTTP polling only)
+  CLAUDE_MEM_CLOUD_SYNC_KEEP_PULLING: string;    // 'true' keeps pulling with no local session (cloud viewer replica)
   // Content flush knobs. 200-op pages + 30s timeout hit hub projection_busy
   // (#3618). Defaults: 40 ops / 90s (hub projection lease).
   CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: string;
@@ -432,7 +472,9 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: 'true',
     // Explicit JSON [{path, project, platformSource?}]. Empty means no files imported.
     CLAUDE_MEM_MEMORY_WATCH_ROOTS: '',
-    CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001',
+    // Never a dated id: `haiku` is Claude Code's alias for the newest Haiku, so the
+    // note-taker moves to each new (cheaper) release on its own. See CLAUDE.md, Model policy.
+    CLAUDE_MEM_MODEL: 'haiku',
     CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
     CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: 'false',
     CLAUDE_MEM_CONTEXT_PROJECTS: 'current', // 'current' = this checkout only; 'all' = SessionStart context spans every project
@@ -616,6 +658,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '',      // Minted at first CloudSync start, then persisted back here
     CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: hostname(),  // Human-readable label for the cmem.ai Devices panel
     CLAUDE_MEM_CLOUD_SYNC_WS: 'true',  // Live updates (Supabase Realtime `advance` broadcasts). 'false' disables live updates — sync stays fully correct, just poll-latency (prime directive #2)
+    CLAUDE_MEM_CLOUD_SYNC_KEEP_PULLING: 'false',  // 'true' keeps pulling with no sessions running instead of suspending after an hour (the cloud viewer replica, which runs no hooks)
     CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: '40',  // Drain page size; 200-op content pushes timed out under hub projection_busy
     CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS: '90000',  // Content-push AbortSignal; matches hub PROJECTION_LEASE_MS (90s)
     CLAUDE_MEM_TEAMBRAIN_URL: '',      // TeamBrain base URL (e.g. https://cmem.ai). Empty = TeamBrain OFF
@@ -848,6 +891,32 @@ export class SettingsDefaultsManager {
             console.warn('[SETTINGS] Migrated Telegram trigger types off the legacy default:', settingsPath);
           } catch (error: unknown) {
             console.warn('[SETTINGS] Failed to migrate Telegram trigger types:', settingsPath, error instanceof Error ? error.message : String(error));
+            // Continue with the in-memory migration even if the write fails
+          }
+        }
+      }
+
+      if (hasPinnedShippedHaiku(flatSettings, settingsPath)) {
+        const pinnedModel = String(flatSettings.CLAUDE_MEM_MODEL).trim();
+        flatSettings = {
+          ...flatSettings,
+          CLAUDE_MEM_MODEL: this.DEFAULTS.CLAUDE_MEM_MODEL,
+        };
+
+        if (!options.readOnly) {
+          try {
+            writeJsonFileAtomic(
+              settingsPath,
+              hasPeerRootKeys ? { ...writableRoot, env: flatSettings } : flatSettings,
+              { mode: 0o600 },
+            );
+            // stderr, never stdout — same JSON-on-stdout contract as above.
+            console.warn(
+              `[SETTINGS] Migrated Claude model off the pinned ${pinnedModel} to ${this.DEFAULTS.CLAUDE_MEM_MODEL}:`,
+              settingsPath,
+            );
+          } catch (error: unknown) {
+            console.warn('[SETTINGS] Failed to migrate the pinned Claude model:', settingsPath, error instanceof Error ? error.message : String(error));
             // Continue with the in-memory migration even if the write fails
           }
         }
