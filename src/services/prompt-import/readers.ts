@@ -348,6 +348,7 @@ function geminiTypedText(message: any): string | null {
 
 export function createGeminiCliReader(): AgentPromptReader {
   let projectDirectories = new Map<string, string>();
+  const seenPrompts = new Set<string>();
   return {
     id: 'gemini-cli',
     label: 'Gemini CLI',
@@ -375,10 +376,14 @@ export function createGeminiCliReader(): AgentPromptReader {
         const text = geminiTypedText(message);
         const at = isoToEpochMs(message.timestamp);
         if (text === null || at === null || at < sinceEpochMs) continue;
+        const nativePromptId = typeof message.id === 'string' && message.id ? message.id : fallbackId(sessionId, message.timestamp, text);
+        const identity = fallbackId(sessionId, nativePromptId, String(at), text);
+        if (seenPrompts.has(identity)) continue;
+        seenPrompts.add(identity);
         sink.prompt({
           agent: 'gemini-cli',
           sessionId,
-          nativePromptId: typeof message.id === 'string' && message.id ? message.id : fallbackId(sessionId, message.timestamp, text),
+          nativePromptId,
           at,
           cwd: projectDirectories.get(projectName) ?? null,
           text,
