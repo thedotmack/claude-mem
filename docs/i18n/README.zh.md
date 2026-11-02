@@ -50,7 +50,7 @@
   <a href="docs/i18n/README.no.md">🇳🇴 Norsk</a>
 </p>
 
-<h4 align="center">为 <a href="https://claude.com/claude-code" target="_blank">Claude Code</a> 构建的持久化内存压缩系统。</h4>
+<h4 align="center">为 <a href="https://claude.com/claude-code" target="_blank">Claude Code</a> 构建的持久化记忆压缩系统。</h4>
 
 <p align="center">
   <a href="LICENSE">
@@ -164,7 +164,7 @@ npx claude-mem install --ide antigravity
 
 ### 🦞 OpenClaw Gateway
 
-只需一条命令,即可在 [OpenClaw](https://openclaw.ai) 网关上将 claude-mem 安装为持久化内存插件:
+只需一条命令,即可在 [OpenClaw](https://openclaw.ai) 网关上将 claude-mem 安装为持久化记忆插件:
 
 ```bash
 curl -fsSL https://install.cmem.ai/openclaw.sh | bash
@@ -174,11 +174,11 @@ curl -fsSL https://install.cmem.ai/openclaw.sh | bash
 
 **核心特性:**
 
-- 🧠 **持久化内存** - 上下文跨会话保留
-- 📊 **渐进式披露** - 分层内存检索,具有令牌成本可见性
+- 🧠 **持久化记忆** - 上下文跨会话保留
+- 📊 **渐进式披露** - 分层记忆检索,具有令牌成本可见性
 - 🔍 **基于技能的搜索** - 使用 mem-search 技能查询项目历史
-- 🖥️ **Web 查看器界面** - 在启动时打印的 worker URL 上实时查看内存流
-- 💻 **Claude Desktop 技能** - 从 Claude Desktop 对话中搜索内存
+- 🖥️ **Web 查看器界面** - 在启动时打印的 worker URL 上实时查看记忆流
+- 💻 **Claude Desktop 技能** - 从 Claude Desktop 对话中搜索记忆
 - 🔒 **隐私控制** - 使用 `<private>` 标签排除敏感内容的存储
 - ⚙️ **上下文配置** - 精细控制注入的上下文内容
 - 🤖 **自动操作** - 无需手动干预
@@ -236,7 +236,7 @@ curl -fsSL https://install.cmem.ai/openclaw.sh | bash
 
 ## MCP 搜索工具
 
-Claude-Mem 通过 **4 个 MCP 工具**提供智能内存搜索,遵循一种省令牌的**三层工作流模式**:
+Claude-Mem 通过 **4 个 MCP 工具**提供智能记忆搜索,遵循一种省令牌的**三层工作流模式**:
 
 **三层工作流:**
 
@@ -245,7 +245,7 @@ Claude-Mem 通过 **4 个 MCP 工具**提供智能内存搜索,遵循一种省�
 3. **`get_observations`** - 仅为筛选出的 ID 获取完整详情(约 500-1,000 个令牌/结果)
 
 **工作方式:**
-- Claude 使用 MCP 工具搜索您的内存
+- Claude 使用 MCP 工具搜索您的记忆
 - 首先使用 `search` 获取结果索引
 - 使用 `timeline` 查看特定观察周围发生的情况
 - 使用 `get_observations` 为相关 ID 获取完整详情
@@ -253,7 +253,7 @@ Claude-Mem 通过 **4 个 MCP 工具**提供智能内存搜索,遵循一种省�
 
 **可用的 MCP 工具:**
 
-1. **`search`** - 使用全文查询搜索内存索引,按类型/日期/项目筛选
+1. **`search`** - 使用全文查询搜索记忆索引,按类型/日期/项目筛选
 2. **`timeline`** - 获取特定观察或查询周围的时间顺序上下文
 3. **`get_observations`** - 按 ID 获取完整观察详情(始终批量处理多个 ID)
 
@@ -382,7 +382,7 @@ npm run bug-report
 
 Claude-Mem 根据 Apache License 2.0 授权。
 
-我们选择 Apache-2.0 是因为持久化的代理内存应该易于嵌入到
+我们选择 Apache-2.0 是因为持久化的代理记忆应该易于嵌入到
 开发者工具、本地代理、MCP 服务器、企业系统、机器人技术栈,
 以及生产环境的代理运行框架中。
 

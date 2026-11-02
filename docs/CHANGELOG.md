@@ -4,6 +4,40 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [15.8.3] - 2026-11-02
+
+## Privacy fix
+
+Browser setup no longer uploads your prompts to cmem.ai without asking. Fixes #5176.
+
+The browser setup opened by `npx claude-mem install` (since v15.2.0) scanned local agent histories and uploaded the full text of the last 30 days of prompts, with session IDs, project names, folder paths and timestamps, without asking.
+
+**What changed (#5220)**
+
+- The scan now reads local history only, then stops and asks. Nothing leaves the machine until you answer.
+- A new consent panel states what is sent and lists each detected tool with its prompt count. Only ticked tools are uploaded.
+- "Keep everything local", or unticking every tool, uploads nothing.
+- The analytics box is optional, off by default, and separate from upload consent.
+- A second start request while the question is open, or during an upload, joins the current state instead of starting a second upload.
+- New `POST /api/setup/scan/consent` route: loopback-only and origin-guarded.
+
+**Not covered by this release**
+
+- Prompts already uploaded by earlier versions are not removed by this update.
+- Server-side handling at cmem.ai and privacy-policy wording are outside this change.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v15.8.2...v15.8.3
+
+## [15.8.2] - 2026-11-02
+
+## Fixes
+- Work view: telemetry volume cuts. High-volume events (observer turns, work-state use, context injections, searches, skills) are now one daily rollup per install with a `count`; worker start/stop carry `restart_count`; failures are one event per type per day with `count`.
+- Observer: after a spent cmem.ai allowance, the gateway is probed once a day instead of on every resume.
+- Work view: fixed a runaway "opened" event; hosted viewer reports analytics with `viewer_host='hosted'`.
+- Work view: idle task cards no longer show a spinner (#5266).
+
+Includes #5266, #5269.
+
 ## [15.8.1] - 2026-11-01
 
 Repository cleanup. No changes to how claude-mem runs.

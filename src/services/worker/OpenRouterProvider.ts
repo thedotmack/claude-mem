@@ -8,6 +8,7 @@ import { parseOpenRouterExtraBody, withOpenRouterExtraBody } from '../../shared/
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { clearProFallbackOnGatewaySuccess, isCmemGatewayUrl, isKeyAllowedForEndpoint, keysForEndpoint } from '../../shared/cmem-gateway.js';
+import { clearCmemCapProbe, cmemCapProbeAllowed, noteCmemCapExhausted } from '../../shared/cmem-cap-probe.js';
 import { logger } from '../../utils/logger.js';
 import type { ActiveSession, ConversationMessage, PendingMessageWithId } from '../worker-types.js';
 import { DatabaseManager } from './DatabaseManager.js';
@@ -1158,6 +1159,13 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     /** Media source events this request carries (or, text-only, came from); IDs only. */
     correlationEventKeys: readonly string[] = [],
   ): Promise<ProviderQueryResult> {
+    // The gateway emits pro_inference_cap_exhausted on every spent request.
+    // After the first refusal, further sends wait until the next day.
+    if (isCmemGatewayUrl(apiUrl) && !cmemCapProbeAllowed()) {
+      throw new ClassifiedProviderError('cmem.ai inference allowance is still spent; the next probe is tomorrow', {
+        kind: 'quota_exhausted', code: 'allowance_exhausted', cause: new Error('cap probe withheld'),
+      });
+    }
     const carriesImages = imageCount > 0;
     // One logical request: every send (retries, the reasoning retry) shares
     // request_id and counts attempts.
@@ -1196,7 +1204,9 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     const liveness = streamed
       ? resolveStreamLiveness(perAttemptTimeoutMs, this.streamIdleTimeoutMs ?? resolveStreamIdleTimeoutMs())
       : null;
-    let data = await withRetry<OpenRouterResponse>(async (attemptSignal) => {
+    let data: OpenRouterResponse;
+    try {
+      data = await withRetry<OpenRouterResponse>(async (attemptSignal) => {
       const exchange = await this.requestChatCompletion(
         apiUrl, apiKey, model, fallbackModels, requestMessages, siteUrl, appName, clientAttemptId, attemptSignal,
         maxOutputTokens, liveness, plainText, extraBody, reasoningEffort, label, false, carriesImages,
@@ -1228,11 +1238,16 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       ...(streamed ? { attemptDeadlineOwnedByCaller: true, retryBeforeOutput: true } : {}),
       ...(signal ? { maxRetries: 0 } : {}), ...retryPolicyForPool(poolSize),
     });
+    } catch (error) {
+      if (isCmemGatewayUrl(apiUrl) && isClassified(error) && error.code === 'allowance_exhausted') noteCmemCapExhausted();
+      throw error;
+    }
 
     // A successful cmem-gateway response proves the delivered key is funded
     // again (resubscribed) — clear the trial-expiry fallback marker so
     // dispatch returns to the gateway. No-op for every other endpoint.
     clearProFallbackOnGatewaySuccess(apiUrl);
+    if (isCmemGatewayUrl(apiUrl)) clearCmemCapProbe();
 
     const choice = data.choices?.[0];
     let message = choice?.message;

@@ -106,6 +106,11 @@
 .scan-improve-product { display: flex; align-items: baseline; gap: 8px; margin-top: 16px; color: var(--muted); font-size: 14px; cursor: pointer; }
 .scan-improve-product input { flex: none; accent-color: var(--violet); }
 .scan-improve-product:has(input:disabled) { cursor: default; }
+.scan-consent { margin-top: 28px; padding: 24px 28px; border: 1px solid #d9dcfb; border-radius: 16px; background: #fff; font-size: 17px; line-height: 1.5; }
+.scan-consent-agents { list-style: none; margin: 16px 0 0; padding: 0; display: grid; gap: 8px; }
+.scan-consent-agents label { display: flex; align-items: baseline; gap: 8px; cursor: pointer; }
+.scan-consent-agents input { flex: none; accent-color: var(--violet); }
+.scan-consent-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 20px; }
 .scan-status { margin-top: 24px !important; color: var(--muted); font-size: 20px; }
 .scan-error { margin-top: 18px !important; color: #922837; font-size: 16px; }
 .scan-retry { margin-top: 20px; padding: 10px 24px; border: 0; border-radius: 999px; background: #1c2030; color: #fff !important; font-weight: 600; }
