@@ -1,5 +1,5 @@
-import { mock } from 'bun:test';
-import { mkdtempSync } from 'fs';
+import { beforeEach, mock } from 'bun:test';
+import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -23,6 +23,13 @@ if (!process.env.CLAUDE_MEM_DATA_DIR) {
 // The suite asserts each capture at the call. Production leaves this unset and
 // holds the high-volume events for the daily file (src/services/telemetry/daily-volume.ts).
 process.env.CLAUDE_MEM_TELEMETRY_IMMEDIATE = '1';
+
+// The cmem cap probe (src/shared/cmem-cap-probe.ts) is a file in the data dir.
+// One test's allowance_exhausted must not withhold gateway sends in the next.
+beforeEach(() => {
+  const dataDir = process.env.CLAUDE_MEM_DATA_DIR;
+  if (dataDir) rmSync(join(dataDir, 'cmem-cap-probe.json'), { force: true });
+});
 
 /**
  * Global posthog-node mock, registered via bunfig.toml [test].preload BEFORE
