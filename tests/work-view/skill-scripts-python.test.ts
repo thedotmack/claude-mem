@@ -289,6 +289,27 @@ describe('export_owner_prompts.py', () => {
     }
   });
 
+  it('keeps distinct Codex turns that share a timestamp and opening', () => {
+    const home = mkdtempSync(join(tmpdir(), 'export-owner-home-'));
+    try {
+      const sessionDir = join(home, '.codex', 'sessions', '2026', '10', '01');
+      mkdirSync(sessionDir, { recursive: true });
+      const timestamp = new Date().toISOString();
+      const sharedOpening = 'a shared prompt opening '.repeat(10);
+      const turn = (id: string, text: string) => JSON.stringify({ type: 'response_item', timestamp, payload: { type: 'message', role: 'user', id, content: [{ type: 'input_text', text }] } });
+      writeFileSync(join(sessionDir, 'rollout-a.jsonl'), [
+        JSON.stringify({ type: 'session_meta', payload: { id: 'session-a', source: 'cli', cwd: '/repo' } }),
+        turn('first', `${sharedOpening}first ending`),
+        turn('second', `${sharedOpening}second ending`),
+      ].join('\n') + '\n');
+      const result = spawnPython([join(SKILLS, 'owner-goals', 'scripts', 'export_owner_prompts.py'), '--out', join(home, 'out'), '--days', '1'], { env: { ...process.env, HOME: home, USERPROFILE: home } });
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout.toString().trim().split('\n').pop()!).owner_prompts).toBe(2);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('reads transcripts from CLAUDE_CONFIG_DIR and dates them in local time across daylight saving', () => {
     const home = mkdtempSync(join(tmpdir(), 'export-owner-home-'));
     try {
