@@ -235,7 +235,6 @@ export async function setupV2(
   if (typeof directory !== "string" || directory === "") {
     // OpenCode also calls setup() with a host registry that has no checkout.
     // Registering hooks there would send every write to the worker without a cwd.
-    console.warn("[claude-mem] OpenCode plugin skipped: context has no directory");
     return async () => {};
   }
   const ctx: CoreContext = {

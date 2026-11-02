@@ -26,6 +26,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { needsYou, OTHER_FOCUS_AREA_ID } from '@/data'
 import { ACTIVE_SOURCE, useStore, useWorkModel, useWorkspace, type FocusSelection, type NavPage } from '@/store'
 import { shownFocusAreaId } from '@/store/slices/view-slice'
+import { useFocusSharesLoader } from '@/live/focus-shares'
 /** MY FOCUS sits above these: its areas, Other and Suggested (focus-nav.tsx). Past focus is at the bottom of the rail. */
 const PAGES: { id: NavPage; label: string; icon: typeof InboxIcon; section: string }[] = [
   { id: 'work', label: 'My Work', icon: InboxIcon, section: 'Monitor' },
@@ -84,8 +85,9 @@ export default function App() {
   // existing installation must never lock My Work behind checkout.
   const page = useStore((state) => state.view.page)
   const finishSetup = useStore.use.finishSetup()
-  const reportOpen = useStore.use.reportOpen()
-  useEffect(reportOpen, [reportOpen])
+  // Once per mount, read from the store at effect time. Depending on the action
+  // identity re-posted an open whenever that function was replaced.
+  useEffect(() => { useStore.getState().reportOpen() }, [])
   if (page !== 'setup') return <WorkApp />
   return <MotionConfig reducedMotion="user"><Suspense fallback={null}><SetupPage onComplete={finishSetup} /></Suspense></MotionConfig>
 }
@@ -116,6 +118,8 @@ function WorkApp() {
 
 function LoadedApp() {
   const { sourceKind, requests, focusAreas } = useWorkModel()
+  // Which areas are shared, for their Shared mark. The worker keeps the pages current (R17.3).
+  useFocusSharesLoader(sourceKind === 'local')
   const sample = sourceKind === 'sample'
   const view = useStore((state) => state.view.section)
   const focusChoice = useStore((state) => state.view.focusChoice)

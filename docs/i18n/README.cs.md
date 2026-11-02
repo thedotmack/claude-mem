@@ -390,7 +390,6 @@ systémů, robotických stacků a produkčních harnessů pro agenty.
 a [docs/ip-boundary.md](docs/ip-boundary.md) pro rozsah licencování a hranici
 mezi open source a komerčním využitím.
 
-**Poznámka k Ragtime**: Adresář `ragtime/` je licencován pod licencí **Apache License 2.0**. Podrobnosti najdete v [ragtime/LICENSE](ragtime/LICENSE).
 
 ---
 

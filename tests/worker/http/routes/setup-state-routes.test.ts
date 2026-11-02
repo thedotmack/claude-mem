@@ -47,6 +47,63 @@ function post(path: string, body: unknown, headers: Record<string, string> = { '
 }
 
 describe('setup state endpoints', () => {
+  it('starts a manual refresh through the origin-guarded endpoint', async () => {
+    const reasons: string[] = [];
+    await start({ start() {}, close() {}, status: () => null, async runNow({ reason }: { reason: string }) { reasons.push(reason); return 'running'; } });
+    const response = await post('/api/work-view/refresh', {});
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({ state: 'running' });
+    expect(reasons).toEqual(['manual']);
+  });
+
+  it('answers at once while a manual refresh runs, without waiting for it to end', async () => {
+    const worker = { busy: false, start() {}, close() {}, status: () => null, runNow() { worker.busy = true; return new Promise(() => {}); } };
+    await start(worker);
+    const response = await post('/api/work-view/refresh', {});
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({ state: 'running' });
+  });
+
+  it('says when a manual refresh found nothing due', async () => {
+    await start({ start() {}, close() {}, status: () => null, async runNow() { return 'idle'; } });
+    const response = await post('/api/work-view/refresh', {});
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ state: 'idle' });
+  });
+
+  it('refuses a manual refresh while setup runs', async () => {
+    await start({ start() {}, close() {}, status: () => null, async runNow() { return 'setup-running'; } });
+    const response = await post('/api/work-view/refresh', {});
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: 'Refresh is unavailable until setup finishes.' });
+  });
+
+  it('a manual refresh spends nothing during setup, even with scheduled refresh off', async () => {
+    await start();
+    let scanning = true;
+    writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH: 'false' }));
+    const refresh = defaultAutoRefresh(dir, settingsPath, statePath, () => scanning, () => '', () => ({ placed: 0, focusAreaIds: [] }));
+    expect(await refresh.runNow({ reason: 'manual' })).toBe('setup-running');
+    scanning = false;
+    writeFileSync(sessionPath, JSON.stringify({ pid: process.pid }));
+    await post('/api/setup/installer', { stage: 'waiting-for-choice' });
+    expect(await refresh.runNow({ reason: 'manual' })).toBe('setup-running');
+    refresh.close();
+  });
+
+  it('refuses a manual refresh request from a different origin', async () => {
+    await start({ start() {}, close() {}, status: () => null, async runNow() { throw new Error('must not run'); } });
+    const response = await post('/api/work-view/refresh', {}, { 'Content-Type': 'application/json', Origin: 'https://evil.example' });
+    expect(response.status).toBe(403);
+  });
+
+  it('reports when manual refresh is unavailable on this worker', async () => {
+    await start();
+    const response = await post('/api/work-view/refresh', {});
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: 'Refresh is unavailable on this worker.' });
+  });
+
   it('start pending on a machine that never finished setup, with nothing pre-selected', async () => {
     await start();
     expect(await state()).toEqual({ status: 'pending', choice: null, installer: null, checkout: null, tools: null, completedAt: null, alreadyPro: false, history: { projects: 0, sessions: 0, observations: 0 }, historyImport: null, backgroundWorkRunning: [] });
@@ -108,7 +165,8 @@ describe('setup state endpoints', () => {
     let phase = 'reading';
     testRoutes.setupScan = { state: () => ({ phase }) };
     for (phase of ['reading', 'checking', 'saving', 'uploading']) expect(testRoutes.setupIsActive()).toBe(true);
-    for (phase of ['idle', 'done', 'failed']) expect(testRoutes.setupIsActive()).toBe(false);
+    // A closed tab leaves the scan waiting for an answer forever, so waiting must not hold local work paused.
+    for (phase of ['idle', 'done', 'failed', 'awaiting-consent']) expect(testRoutes.setupIsActive()).toBe(false);
   });
 
   it('report a live extraction run as background work (the installer holds any restart for it), not one a restart cut off', async () => {

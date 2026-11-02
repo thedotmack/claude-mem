@@ -17,6 +17,7 @@ import { describeObserverAuthMethod } from '../../src/services/worker/observer-a
 import { PaidSendBudget } from '../../src/services/worker/paid-send-budget.js';
 import {
   endpointRejectsReasoningField,
+  isReasoningDisabledRejection,
   isUnknownReasoningParameter,
   resetReasoningFieldRejectionsForTesting,
 } from '../../src/services/worker/reasoning-budget.js';
@@ -514,6 +515,157 @@ describe('reasoning budget exhaustion', () => {
     expect(skipped.content).toBe('');
     expect(spent.spentPaidSends).toBe(1);
     expect(errorSpy.mock.calls.some(call => String(call[1]).includes('paid sends'))).toBe(true);
+  });
+
+  it('names the OpenRouter refusal that says reasoning cannot be disabled', () => {
+    expect(isReasoningDisabledRejection('Reasoning is mandatory for this endpoint and cannot be disabled.')).toBe(true);
+    expect(isReasoningDisabledRejection('OpenRouter bad request (status 400): Reasoning is mandatory for this endpoint and cannot be disabled.')).toBe(true);
+    expect(isReasoningDisabledRejection("Unknown parameter: 'reasoning'. Extra fields are not permitted.")).toBe(false);
+    expect(isReasoningDisabledRejection('Invalid model id')).toBe(false);
+    expect(isUnknownReasoningParameter('Reasoning is mandatory for this endpoint and cannot be disabled.')).toBe(false);
+  });
+
+  it('treats every wording of the mandatory-reasoning refusal the same way', () => {
+    for (const wording of [
+      'This endpoint cannot disable reasoning.',
+      'Reasoning is required for this model.',
+      'This model requires reasoning.',
+      'Reasoning effort does not support none.',
+    ]) {
+      expect(isReasoningDisabledRejection(wording)).toBe(true);
+      expect(isUnknownReasoningParameter(wording)).toBe(false);
+    }
+  });
+
+  it('does not take a refusal about another field for the reasoning refusal', () => {
+    expect(isReasoningDisabledRejection('Streaming cannot be disabled for this endpoint.')).toBe(false);
+    expect(isReasoningDisabledRejection('The messages field is mandatory.')).toBe(false);
+  });
+
+  it('retries an OpenRouter 400 that says reasoning cannot be disabled, once, without the field', async () => {
+    const seen: Body[] = [];
+    const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String((init as RequestInit).body)) as Body;
+      seen.push(body);
+      if (reasoningDisabled(body)) {
+        return new Response(JSON.stringify({
+          error: { message: 'Reasoning is mandatory for this endpoint and cannot be disabled.', code: 400 },
+        }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify(observationReply(body)), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    spies.push(fetchSpy);
+    const warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
+    spies.push(warnSpy);
+    try {
+      const result = await queryOpenRouter('https://openrouter.ai/api/v1/chat/completions', {
+        extraBody: { reasoning: { enabled: false }, temperature: 0.1 },
+      });
+      expect(result.content).toContain('Kept the answer');
+      expect(seen).toHaveLength(2);
+      expect(reasoningDisabled(seen[0] ?? {})).toBe(true);
+      expect(seen[0]?.temperature).toBe(0.1);
+      expect('reasoning' in (seen[1] ?? {})).toBe(false);
+      expect(seen[1]?.temperature).toBe(0.1);
+      expect(seen[1]?.max_tokens).toBe(seen[0]?.max_tokens);
+      expect(warnSpy.mock.calls.some(call => String(call[1]).includes('without the reasoning field'))).toBe(true);
+
+      seen.length = 0;
+      const cmem = await queryOpenRouter('https://cmem.ai/api/inference/v1/chat/completions', { model: 'cmem-observer' });
+      expect(cmem.content).toContain('Kept the answer');
+      expect(seen).toHaveLength(2);
+      expect(reasoningDisabled(seen[0] ?? {})).toBe(true);
+      expect('reasoning' in (seen[1] ?? {})).toBe(false);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('does not resend a disable refusal when the request left reasoning on', async () => {
+    let calls = 0;
+    const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      calls += 1;
+      return new Response(JSON.stringify({
+        error: { message: 'Reasoning is mandatory for this endpoint and cannot be disabled.', code: 400 },
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    });
+    spies.push(fetchSpy);
+    try {
+      await expect(queryOpenRouter('https://openrouter.ai/api/v1/chat/completions', { reasoningEffort: 'low' })).rejects.toThrow(/mandatory/);
+      expect(calls).toBe(1);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it.each([
+    ['text', { content: 'partial answer' }],
+    ['reasoning', { reasoning: 'partial thinking' }],
+  ])('does not resend a disable refusal that arrives after the stream emitted %s', async (_outputKind, delta) => {
+    let calls = 0;
+    const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      calls += 1;
+      const events = [
+        { id: 'gen-1', model: 'served/model', choices: [{ index: 0, delta }] },
+        { error: { code: 400, message: 'Reasoning is mandatory for this endpoint and cannot be disabled.' } },
+      ];
+      return new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(''), {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      });
+    });
+    spies.push(fetchSpy);
+    try {
+      const error = await queryOpenRouter('https://openrouter.ai/api/v1/chat/completions').catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toMatch(/mandatory/);
+      expect((error as { paidSendOutcome?: string }).paidSendOutcome).toBe('output_failure');
+      expect(calls).toBe(1);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('does not resend an unrelated OpenRouter 400', async () => {
+    let calls = 0;
+    const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ error: { message: 'Invalid request payload', code: 400 } }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    spies.push(fetchSpy);
+    try {
+      await expect(queryOpenRouter('https://openrouter.ai/api/v1/chat/completions')).rejects.toThrow(/Invalid request payload/);
+      expect(calls).toBe(1);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('does not loop when the resend without the reasoning field is also rejected', async () => {
+    let calls = 0;
+    const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      calls += 1;
+      const message = calls === 1
+        ? 'Reasoning is mandatory for this endpoint and cannot be disabled.'
+        : 'provider unavailable for this request';
+      return new Response(JSON.stringify({ error: { message, code: 400 } }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    spies.push(fetchSpy);
+    try {
+      await expect(queryOpenRouter('https://openrouter.ai/api/v1/chat/completions')).rejects.toThrow(/provider unavailable/);
+      expect(calls).toBe(2);
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 
   it('does not treat a mandatory or invalid-effort refusal as an unknown reasoning field', async () => {
