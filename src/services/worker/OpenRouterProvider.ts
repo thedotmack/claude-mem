@@ -399,6 +399,8 @@ interface OpenRouterResponse {
     prompt_tokens?: number;
     completion_tokens?: number;
     total_tokens?: number;
+    /** How many of prompt_tokens were served from the provider's cache. */
+    prompt_tokens_details?: { cached_tokens?: number };
     /** Credits charged by openrouter.ai (~USD). With BYOK this is only the fee. */
     cost?: number;
     cost_details?: {
@@ -1176,6 +1178,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       logger.info('SDK', 'OpenRouter API usage', {
         model: servedModel ?? model,
         inputTokens: realInputTokens || 0,
+        ...(data.usage?.prompt_tokens_details?.cached_tokens !== undefined ? { cachedTokens: data.usage.prompt_tokens_details.cached_tokens } : {}),
         outputTokens: realOutputTokens || 0,
         totalTokens: tokensUsed,
         ...(costUsd !== undefined ? { costUSD: costUsd.toFixed(6) } : {}),
