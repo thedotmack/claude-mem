@@ -341,6 +341,15 @@ describe('wire identity: request kind', () => {
 });
 
 describe('wire identity: folder', () => {
+  it('reads the plain working-directory lines of Hermes Agent, Pi and OpenClaw from the system prompt only', () => {
+    const requestSaying = (systemLine: string, userText = 'hi') => parseBody('openai-chat', JSON.stringify({
+      model: 'm', messages: [{ role: 'system', content: `You are an agent.\n${systemLine}\nMore.` }, { role: 'user', content: userText }],
+    }));
+    expect(workPlaceOfRequest(requestSaying('Current working directory: /work/hermes')).workDir).toBe('/work/hermes');
+    expect(workPlaceOfRequest(requestSaying('Working directory: /work/openclaw')).workDir).toBe('/work/openclaw');
+    expect(workPlaceOfRequest(requestSaying('Nothing here', 'Working directory: /quoted/by/user')).workDir).toBeUndefined();
+  });
+
   it('each agent\'s own fixture (magpie workdir_test.go:29-47)', () => {
     expect(workPlaceOfRequest(parseFixture('workdir/claude-code-2.1.296.json', 'anthropic'))).toEqual({ workDir: '/Users/me/work/proj/a&b <c> 中文', gitRepositorySaid: false });
     expect(workPlaceOfRequest(parseFixture('workdir/codex-0.162.0.json', 'openai-responses')).workDir).toBe('/Users/me/work/proj/a&b <c> 中文');

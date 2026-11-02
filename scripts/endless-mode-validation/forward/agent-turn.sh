@@ -17,6 +17,12 @@ sidfile=$EMV_STACK/logs/session.sid
 cd $EMV_STACK/proj
 start=$(date +%s)
 
+if emv_is_chat_agent; then
+  emv_run_chat_turn $label "$prompt" $mode $T $sidfile
+  tail -3 $T/$label.err
+  exit 0
+fi
+
 if [[ $EMV_AGENT == codex ]]; then
   if [[ $mode == resume ]]; then set -- exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --json resume --last "$prompt"
   else set -- exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --json "$prompt"; fi

@@ -20,6 +20,7 @@
 //   kimi         [providers.<id>] base_url (magpie kimi.go:209-212)
 //   zed          language_models.openai_compatible.<id>.api_url (magpie zed.go)
 //   hermes       providers.<id>.base_url (magpie hermes.go:267-277)
+//   openclaw     models.providers.<id>.baseUrl in openclaw.json (OpenClaw docs, concepts/model-providers)
 //   droid        customModels[<i>].baseUrl in ~/.factory/settings.json (magpie droid.go:3-21,
 //                40-41, 134-143, 236-241)
 //   vscode-chat  [<i>].models[<j>].url of customendpoint/customoai groups in
@@ -587,6 +588,36 @@ const hermes: AgentDescriptor = {
 };
 
 // ---------------------------------------------------------------------------
+// OpenClaw
+
+function openclawDirectory(environment: AgentEnvironment): string {
+  return directoryFromEnv(environment, 'OPENCLAW_STATE_DIR') ?? join(environment.home, '.openclaw');
+}
+
+const openclaw: AgentDescriptor = {
+  id: 'openclaw',
+  name: 'OpenClaw',
+  userAgentPrefixes: ['openclaw'],
+  detect: { bins: ['openclaw'], directories: (environment) => [openclawDirectory(environment)] },
+  files: [{
+    key: 'config',
+    format: 'json',
+    candidatePaths: (environment) => [directoryFromEnv(environment, 'OPENCLAW_CONFIG_PATH') ?? join(openclawDirectory(environment), 'openclaw.json')],
+  }],
+  targets: [],
+  resolveTargets: (context) => providerBlockTargets(context, { file: 'config', providersKeyPath: 'models.providers', baseUrlKey: ['baseUrl'] }),
+  // OpenClaw's requests carry only the OpenAI SDK's User-Agent; its per-provider `headers` name them.
+  resolveIdentitySwitches: (_context, targets) => ({
+    switches: targets.map((target) => ({
+      file: target.file,
+      keyPath: joinConfigKeyPath(['models', 'providers', target.providerLabel!, 'headers', 'User-Agent']),
+      value: 'openclaw',
+    })),
+    notes: [],
+  }),
+};
+
+// ---------------------------------------------------------------------------
 // Droid (Factory)
 
 function factoryDirectory(environment: AgentEnvironment): string {
@@ -757,6 +788,7 @@ export const BUILT_IN_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = [
   kimi,
   zed,
   hermes,
+  openclaw,
   droid,
   vscodeChat,
   aider,
@@ -777,5 +809,4 @@ export const AGENTS_WITHOUT_DESCRIPTORS: readonly UnroutableAgentNote[] = [
   { id: 'kilo', reason: 'Kilo\'s base-URL key is unconfirmed' },
   { id: 'claude-desktop', reason: 'Claude Desktop\'s third-party gateway config lives in a generated config library entry; set it by hand' },
   { id: 'roo-code', reason: 'not described yet' },
-  { id: 'openclaw', reason: 'not described yet' },
 ];

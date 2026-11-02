@@ -174,6 +174,12 @@ const ROUND_TRIP_CASES: RoundTripCase[] = [
     expectRoutes: { 'hermes-local': 'http://localhost:8000' },
   },
   {
+    agentId: 'openclaw',
+    files: { '.openclaw/openclaw.json': JSON.stringify({ models: { providers: { local: { baseUrl: 'http://localhost:8000/v1', api: 'openai-completions' } } } }, null, 2) + '\n' },
+    expectAfterConnect: { '.openclaw/openclaw.json': [`"baseUrl": "${TEST_GATEWAY_ORIGIN}/r/openclaw-local/v1"`, '"User-Agent": "openclaw"'] },
+    expectRoutes: { 'openclaw-local': 'http://localhost:8000' },
+  },
+  {
     agentId: 'droid',
     files: { '.factory/settings.json': DROID_SETTINGS },
     expectAfterConnect: {

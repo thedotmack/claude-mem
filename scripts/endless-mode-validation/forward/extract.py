@@ -76,9 +76,36 @@ def extract_responses(b):
                 messages=len(items), kind=None, thinking_blocks=reasoning, timeline=timeline_of(items, 'content'))
 
 
+# OpenAI chat completions (Hermes Agent, OpenClaw). Their file-read tools and their shell tools.
+CHAT_READ_TOOLS = {'read_file', 'read'}
+CHAT_SHELL_TOOLS = {'terminal', 'exec', 'bash'}
+CHAT_SUMMARY_MARKERS = ('[CONTEXT COMPACTION', '[CONTEXT SUMMARY]', '<summary>')  # Hermes; Hermes (older); OpenClaw
+
+
+def extract_chat(b):
+    msgs = b.get('messages', []); tool_uses = []; reasoning = 0; summary = False
+    for m in msgs:
+        if m.get('reasoning_content') or m.get('reasoning') or m.get('reasoning_details'): reasoning += 1
+        content = m.get('content')
+        text = content if isinstance(content, str) else ' '.join(p.get('text', '') for p in content or [] if isinstance(p, dict))
+        if any(marker in text[:500] for marker in CHAT_SUMMARY_MARKERS): summary = True
+        for call in m.get('tool_calls') or []:
+            fn = call.get('function') or {}; name = fn.get('name')
+            try: args = json.loads(fn.get('arguments') or '{}')
+            except Exception: args = {}
+            if not isinstance(args, dict): args = {}
+            files = [args.get('path') or args.get('file_path') or ''] if name in CHAT_READ_TOOLS else shell_reads(args.get('command') or '') if name in CHAT_SHELL_TOOLS else []
+            tool_uses.append(dict(id=call.get('id'), name=name, read_files=[os.path.basename(x) for x in files if x]))
+    # A request with no tools is an agent's side call (title, compression summary): its cost counts, its prompt size
+    # is not the session's.
+    return dict(proto='chat', conversation='', model=b.get('model'), tool_uses=tool_uses, messages=len(msgs),
+                kind='continued from a summary' if summary else None, side_call=not b.get('tools'), thinking_blocks=reasoning, timeline=timeline_of(msgs, 'content'))
+
+
 def extract(path):
     b = json.load(open(path))
-    rec = extract_anthropic(b) if 'messages' in b else extract_responses(b)
+    meta_path = json.load(open(path.replace('-req.body', '-req.json'))).get('path') or ''
+    rec = extract_chat(b) if 'chat/completions' in meta_path else extract_anthropic(b) if 'messages' in b else extract_responses(b)
     blocks = rec.pop('timeline')
     meta = json.load(open(path.replace('-req.body', '-req.json')))
     rec.update(n=os.path.basename(path)[:4], time=meta['time'], path=meta.get('path'), timeline_blocks=len(blocks),

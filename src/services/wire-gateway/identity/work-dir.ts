@@ -12,6 +12,8 @@
 // - Codex (0.162): <environment_context> with "<cwd>/x</cwd>", entities escaped.
 // - Pi (1.1): the system prompt's "<cwd>\n/x\n</cwd>".
 // - OpenCode (2.0): "<env>\n  Working directory: /x\n…</env>".
+// - Hermes Agent (2026.9.24), Pi (0.79.6): the system prompt's line "Current working directory: /x".
+// - OpenClaw (2026.10.9): the system prompt's line "Working directory: /x".
 // The last one said wins. Only the agent's own text is read: never the
 // model's (assistant) words and never a tool's result. Unknown is undefined,
 // never "".
@@ -32,6 +34,8 @@ const CLAUDE_CODE_WORK_DIR_PATTERN = /^(?: - )?Primary working directory: (.+)$/
 const CWD_TAG_PATTERN = /<cwd>([^<]*)<\/cwd>/g;
 const OPENCODE_ENV_WORK_DIR_PATTERN = /^[ \t]*Working directory: (.+)$/m;
 const WAS_DIR_SUFFIX = ' (was ';
+/** Plain lines with no tag around them, so they count only in the system prompt: a user's message may quote one. */
+const SYSTEM_PROMPT_WORK_DIR_PATTERN = /^(?:Current w|W)orking directory: (.+)$/m;
 
 /** magpie provider/workplace.go:14 `gitSaidRe`, kept to one line (see above). */
 const GIT_REPOSITORY_SAID_PATTERN = /^[ \t]*(?:- )?Is (?:a git repository|directory a git repo): (true|false|yes|no)[ \t\r]*$/gim;
@@ -148,14 +152,14 @@ export interface WorkPlace {
  */
 export function workPlaceOfRequest(request: WireRequest): WorkPlace {
   const workPlace: WorkPlace = {};
-  const look = (text: string | undefined) => {
+  const look = (text: string | undefined, isSystemPrompt = false) => {
     if (!text) return;
-    const dir = workDirSaidInText(text);
+    const dir = workDirSaidInText(text) ?? (isSystemPrompt ? SYSTEM_PROMPT_WORK_DIR_PATTERN.exec(text)?.[1]?.trim() : undefined);
     if (dir === undefined) return;
     workPlace.workDir = dir;
     workPlace.gitRepositorySaid = gitRepositorySaidInText(text);
   };
-  look(request.system.map(part => part.text ?? '').filter(text => text !== '').join('\n\n'));
+  look(request.system.map(part => part.text ?? '').filter(text => text !== '').join('\n\n'), true);
   for (const message of request.messages) {
     if (message.role === 'assistant') continue;
     for (const part of message.parts) look(agentAuthoredText(part));

@@ -30,6 +30,7 @@ const USER_AGENT_PRODUCT_PREFIXES: ReadonlyArray<{ agentId: string; prefixes: re
   { agentId: 'zed', prefixes: ['zed'] },
   { agentId: 'vscode-chat', prefixes: ['githubcopilotchat'] },
   { agentId: 'hermes', prefixes: ['hermes-agent'] },
+  { agentId: 'openclaw', prefixes: ['openclaw'] },
   { agentId: 'cursor-private-inference', prefixes: ['cursor'] },
   { agentId: 'kilo', prefixes: ['kilo'] },
   { agentId: 'aider', prefixes: ['aider', 'litellm'] },

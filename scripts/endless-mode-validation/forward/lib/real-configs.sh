@@ -11,6 +11,8 @@ files=(
   $EMV_REAL_CLAUDE_MEM_DIR/MY-RULES.md
   $EMV_REAL_CODEX_HOME/config.toml
   $EMV_REAL_CODEX_HOME/auth.json
+  $EMV_REAL_HOME/.hermes/config.yaml
+  $EMV_REAL_HOME/.openclaw/openclaw.json
   # What the `release` configuration's installer writes, in case it ever escaped its sandbox: plugin registry,
   # marketplace copy, the on-PATH hook launcher, and the shell rc files it may add a PATH line to.
   $EMV_REAL_CLAUDE_DIR/plugins/installed_plugins.json

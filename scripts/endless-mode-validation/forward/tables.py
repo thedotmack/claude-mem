@@ -14,7 +14,7 @@ names = [(k, l) for k, l in names if os.path.exists(os.path.join(D, f'{k}.json')
 R = {k: json.load(open(os.path.join(D, f'{k}.json'))) for k, _ in names}
 base = next((k for k in ('none', 'off') if k in R), names[0][0])
 second = 'off' if base == 'none' and 'off' in R else None
-rows = ['turns', 'requests', 'output_tokens', 'final_prompt_tokens', 'max_prompt_tokens', 'tool_calls', 'file_reads', 'file_rereads',
+rows = ['turns', 'requests', 'side_calls', 'output_tokens', 'final_prompt_tokens', 'max_prompt_tokens', 'tool_calls', 'file_reads', 'file_rereads',
         'cache_read', 'cache_write', 'uncached_input', 'input_cost_usd', 'output_cost_usd', 'total_cost_usd', 'measured_cost_usd']
 
 def pct(v, b): return f'{(v / b - 1) * 100:+.1f}%' if b else 'n/a'

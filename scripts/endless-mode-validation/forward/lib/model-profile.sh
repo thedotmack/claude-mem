@@ -22,7 +22,8 @@
 #   CLAUDE_MEM_OPENROUTER_API_KEY in the real claude-mem settings.json. It must be an OpenRouter key (sk-or-…). A cmem.ai memory key (cm_pro_…) is refused: it works only
 #   at cmem.ai, and claude-mem never sends one to another host. The key goes into the agent's and worker's
 #   environment only; it is never printed or written to any file.
-#   Claude Code only (Codex is not wired for this profile).
+#   Claude Code, Hermes Agent and OpenClaw (Codex is not wired for this profile). Hermes and OpenClaw send OpenAI chat
+#   completions to the same upstream (https://openrouter.ai/api + /v1/chat/completions); see lib/chat-agents.sh.
 
 typeset -g EMV_OPENROUTER_MODEL=${EMV_OPENROUTER_MODEL:-'~deepseek/deepseek-flash-latest'}
 typeset -g EMV_OPENROUTER_ANTHROPIC_BASE=https://openrouter.ai/api
@@ -79,8 +80,9 @@ emv_check_profile() {
       [[ $EMV_ALLOW_FULL_PRICE_MODELS == 1 ]] && return 0
       echo "refused: EMV_MODEL_PROFILE=anthropic runs Claude models ($rule). Set EMV_MODEL_PROFILE=openrouter-deepseek-flash and OPENROUTER_API_KEY." >&2; return 4 ;;
     openrouter-deepseek-flash)
-      [[ $EMV_AGENT == claude ]] || { echo "openrouter-deepseek-flash supports EMV_AGENT=claude only" >&2; return 2; }
+      [[ $EMV_AGENT == (claude|hermes|openclaw) ]] || { echo "openrouter-deepseek-flash supports EMV_AGENT=claude, hermes or openclaw" >&2; return 2; }
       emv_read_openrouter_key ;;
     *) emv_anthropic_upstream ;;
   esac
+  if emv_is_chat_agent && [[ $EMV_MODEL_PROFILE != openrouter-deepseek-flash ]]; then echo "EMV_AGENT=$EMV_AGENT runs on openrouter-deepseek-flash only" >&2; return 2; fi
 }

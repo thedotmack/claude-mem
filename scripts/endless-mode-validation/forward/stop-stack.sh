@@ -3,6 +3,8 @@
 source ${0:A:h}/lib/env.sh || exit
 emv_use_stack $1 || exit
 [[ -f $EMV_STACK/pids ]] && for pid in $(<$EMV_STACK/pids); do kill $pid 2>/dev/null; done
+# Hermes Agent's own background runtime (started by the agent, not listed in pids).
+[[ -f $HERMES_HOME/gateway.pid ]] && kill $(jq -r '.pid // empty' $HERMES_HOME/gateway.pid 2>/dev/null || cat $HERMES_HOME/gateway.pid) 2>/dev/null
 ports=($EMV_WORKER_PORT $EMV_GATEWAY_PORT $EMV_TEE_ANTHROPIC_PORT $EMV_TEE_CODEX_PORT)
 # The worker may fork; anything still listening on this stack's own ports is this stack's.
 for i in {1..20}; do

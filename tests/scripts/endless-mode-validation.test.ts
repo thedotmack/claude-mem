@@ -334,3 +334,62 @@ describe('scripted prompts', () => {
     expect(probes.filter(([t]) => Number(t) > 200).length).toBeGreaterThanOrEqual(30);
   });
 });
+
+describe('forward harness: chat-completions agents', () => {
+  const forward = join(HARNESS, 'forward');
+
+  function chatTurn(agent: string, stdout: string, stderr: string, exitCode = '0') {
+    const directory = mkdtempSync(join(scratch, 'chat-turn-'));
+    writeFileSync(join(directory, 'raw'), stdout);
+    writeFileSync(join(directory, 'err'), stderr);
+    writeFileSync(join(directory, 'sid'), 'emv-session');
+    const run = python([join(forward, 'chat-turn-result.py'), agent, join(directory, 'raw'), join(directory, 'err'), join(directory, 'out.json'), exitCode, '5', join(directory, 'sid')]);
+    return { status: run.stdout.split('\n')[0], out: JSON.parse(readFileSync(join(directory, 'out.json'), 'utf8')), sid: readFileSync(join(directory, 'sid'), 'utf8') };
+  }
+
+  it('reads a Hermes turn: the reply from stdout and the session id from stderr', () => {
+    const turn = chatTurn('hermes', 'All 4 tests pass.\n', 'noise\nsession_id: local-abc\n');
+    expect(turn.status).toBe('rc=0 secs=5 error=False sid=local-abc');
+    expect(turn.out).toEqual({ result: 'All 4 tests pass.', session_id: 'local-abc' });
+    expect(turn.sid).toBe('local-abc');
+  });
+
+  it('reads an OpenClaw turn after any log lines before its JSON', () => {
+    const turn = chatTurn('openclaw', `[plugins] loaded\n${JSON.stringify({ payloads: [{ text: 'Done.' }], meta: {} })}`, '');
+    expect(turn.status).toBe('rc=0 secs=5 error=False sid=emv-session');
+    expect(turn.out.result).toBe('Done.');
+  });
+
+  it('calls a turn with no reply an error even when the agent exited 0', () => {
+    expect(chatTurn('hermes', '', 'session_id: local-abc\n').status).toContain('error=True');
+    expect(chatTurn('openclaw', JSON.stringify({ payloads: [], meta: {} }), '').status).toContain('error=True');
+    expect(chatTurn('openclaw', JSON.stringify({ payloads: [{ text: 'partial' }], meta: { aborted: true } }), '').status).toContain('error=True');
+  });
+
+  it('extracts tool calls, file reads and side calls from a chat completion, and stats counts its usage and cost', () => {
+    const stack = mkdtempSync(join(scratch, 'chat-stack-'));
+    const tee = join(stack, 'tee-anthropic');
+    mkdirSync(tee); mkdirSync(join(stack, 'logs'));
+    const assistant = (id: string, name: string, args: object) => ({ role: 'assistant', content: null, tool_calls: [{ id, function: { name, arguments: JSON.stringify(args) } }] });
+    writeFileSync(join(tee, '0001-req.body'), JSON.stringify({
+      model: 'm', tools: [{}], messages: [assistant('a', 'read_file', { path: '/p/calc.py' }), assistant('b', 'exec', { command: 'cat calc.py' }), { role: 'tool', content: 'x' }],
+    }));
+    writeFileSync(join(tee, '0001-req.json'), JSON.stringify({ time: '2026-11-02T00:00:02Z', path: '/v1/chat/completions' }));
+    writeFileSync(join(tee, '0001-resp.raw'), `data: ${JSON.stringify({ choices: [] })}\n\ndata: ${JSON.stringify({ usage: { prompt_tokens: 100, completion_tokens: 7, prompt_tokens_details: { cached_tokens: 60 }, cost: 0.01 } })}\n\ndata: [DONE]\n`);
+    writeFileSync(join(tee, '0002-req.body'), JSON.stringify({ model: 'm', messages: [{ role: 'user', content: 'title this' }] }));
+    writeFileSync(join(tee, '0002-req.json'), JSON.stringify({ time: '2026-11-02T00:00:03Z', path: '/v1/chat/completions' }));
+    writeFileSync(join(tee, '0002-resp.raw'), JSON.stringify({ usage: { prompt_tokens: 5, completion_tokens: 1, cost: 0.001 } }));
+    writeFileSync(join(tee, 'index.tsv'), '0001\tx\tx\t200\n0002\tx\tx\t200\n');
+    writeFileSync(join(stack, 'logs', 'session.log'), '2026-11-02T00:00:01Z turn 1 start\nrc=0 secs=1 error=False sid=x\n2026-11-02T00:00:09Z turn 1 done; observer wait 10s; status \n');
+    const stop = join(stack, 'stop');
+    writeFileSync(stop, '');
+    expect(python([join(forward, 'extract.py'), stop, tee]).code).toBe(0);
+    const prices = join(stack, 'prices.json');
+    writeFileSync(prices, JSON.stringify({ input: 1, cache_read: 0.5, output: 2 }));
+    const stats = python([join(forward, 'stats.py'), stack, prices]);
+    expect(stats.code).toBe(0);
+    const result = JSON.parse(stats.stdout);
+    expect(result).toMatchObject({ requests: 2, side_calls: 1, max_prompt_tokens: 100, tool_calls: 2, file_reads: 2, file_rereads: 1, cache_read: 60, uncached_input: 45, output_tokens: 8, measured_cost_usd: 0.011 });
+    expect(result.errors).toEqual([]);
+  });
+});

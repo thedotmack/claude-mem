@@ -23,7 +23,10 @@ say() { echo "$(date -u +%FT%TZ) $*" | tee -a $L; }
 for tool in python3 jq git curl lsof shasum tar; do command -v $tool >/dev/null || { echo "missing: $tool" >&2; exit 2; }; done
 [[ -x $EMV_BUN ]] || { echo "bun not found (set EMV_BUN)" >&2; exit 2; }
 if [[ $EMV_AGENT == codex ]]; then [[ -x $EMV_CODEX_BIN ]] || { echo "codex not found (set EMV_CODEX_BIN)" >&2; exit 2; }
+elif [[ $EMV_AGENT == hermes ]]; then [[ -x $EMV_HERMES_BIN ]] || { echo "hermes not found (set EMV_HERMES_BIN)" >&2; exit 2; }
+elif [[ $EMV_AGENT == openclaw ]]; then [[ -x $EMV_OPENCLAW_BIN ]] || { echo "openclaw not found (set EMV_OPENCLAW_BIN)" >&2; exit 2; }
 else [[ -x $EMV_CLAUDE_BIN ]] || { echo "claude not found (set EMV_CLAUDE_BIN)" >&2; exit 2; }; fi
+if emv_is_chat_agent && (( ${configs[(I)release]} )); then echo "the release configuration installs the Claude Code plugin; it does not apply to $EMV_AGENT" >&2; exit 2; fi
 if [[ $EMV_AGENT == claude ]] && head -c 2 $EMV_CLAUDE_BIN | grep -q '#!'; then
   echo "warning: $EMV_CLAUDE_BIN is a script; if it rewrites HOME or CLAUDE_CONFIG_DIR the isolation fails. Set EMV_CLAUDE_BIN to the real binary." >&2
 fi

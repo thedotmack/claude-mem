@@ -50,7 +50,7 @@ done
 
 if [[ $1 != none && $1 != release ]]; then
   endless=$([[ $1 == off ]] && echo off || echo on)
-  route=$([[ $EMV_AGENT == codex ]] && echo codex || echo claude-code)
+  route=$(case $EMV_AGENT in codex) echo codex ;; hermes|openclaw) echo $EMV_AGENT ;; *) echo claude-code ;; esac)
   tee_port=$([[ $EMV_AGENT == codex ]] && echo $EMV_TEE_CODEX_PORT || echo $EMV_TEE_ANTHROPIC_PORT)
   emv_gateway routes remove $route >/dev/null 2>&1
   emv_gateway routes add $route --agent $route --upstream http://127.0.0.1:$tee_port --capture wire >> $L/routes.log 2>&1 \

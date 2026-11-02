@@ -38,4 +38,8 @@ with the same `EMV_RUN_NAME` and `EMV_FIRST_TURN`. Settings are listed at the to
 `~deepseek/deepseek-flash-latest` (needs an OpenRouter key in `OPENROUTER_API_KEY`, or on macOS in the keychain
 entry `openrouter-endless-mode-tests`).
 
+Hermes Agent and OpenClaw run with `EMV_AGENT=hermes` or `EMV_AGENT=openclaw` (OpenRouter profile only; configurations
+`none off timeline observation`; `EMV_HERMES_BIN`, `EMV_OPENCLAW_BIN`, `EMV_OPENCLAW_NODE_DIR` point at the binaries).
+They send OpenAI chat completions; their side calls (titles, compression summaries) go through the tee and count.
+
 Tests: `bun test tests/scripts/endless-mode-validation.test.ts`. Typecheck: `bun run typecheck`.

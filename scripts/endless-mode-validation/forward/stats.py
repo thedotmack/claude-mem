@@ -20,7 +20,8 @@ S, prices_file = sys.argv[1], sys.argv[2]
 netwatch = sys.argv[3] if len(sys.argv) > 3 else None
 P = json.load(open(prices_file))
 log = open(os.path.join(S, 'logs', 'session.log')).read()
-sid = open(os.path.join(S, 'logs', 'session.sid')).read().strip()
+sid_path = os.path.join(S, 'logs', 'session.sid')
+sid = open(sid_path).read().strip() if os.path.exists(sid_path) else ''  # none when every turn failed: run health says so
 starts = [(m.group(1), int(m.group(2))) for m in re.finditer(r'^(\S+Z) turn (\d+) start', log, re.M)]
 dones = {int(m.group(2)): m.group(1) for m in re.finditer(r'^(\S+Z) turn (\d+) done', log, re.M)}
 turn_rc = {}
@@ -50,7 +51,8 @@ for d in tee_dirs:
             r = json.loads(l); r['dir'] = d; by_n[r['n']] = r
         recs += sorted(by_n.values(), key=lambda r: r['n'])
     unextracted += len([f for f in os.listdir(d) if f.endswith('-req.body')])
-recs = [r for r in recs if (sid in r['conversation'] if r['proto'] == 'anthropic' else r['conversation'] == sid)]
+# Chat completions name no session; every request in the tee belongs to the one scripted session.
+recs = [r for r in recs if r['proto'] == 'chat' or (sid in r['conversation'] if r['proto'] == 'anthropic' else r['conversation'] == sid)]
 
 reads, seen, reqs, errors = {}, set(), [], []
 measured = dict(usd=0.0, requests=0)
@@ -64,10 +66,18 @@ for r in recs:
     if not os.path.exists(rp) or status != '200':
         errors.append(dict(n=r['n'], turn=turn, status=status)); continue
     u, out, err, cost_reported = {}, 0, None, None
-    for line in open(rp, errors='replace'):
+    body_text = open(rp, errors='replace').read()
+    # A chat completion may be answered whole (side calls are not always streamed).
+    lines = body_text.splitlines() if body_text.lstrip().startswith(('data:', 'event:', ':')) else ['data: ' + body_text.replace('\n', ' ')]
+    for line in lines:
         if not line.startswith('data: '): continue
         try: ev = json.loads(line[6:])
         except Exception: continue
+        if r['proto'] == 'chat':
+            if ev.get('error'): err = json.dumps(ev)[:200]
+            if ev.get('usage'): u = ev['usage']; out = u.get('completion_tokens', 0)
+            if isinstance(u.get('cost'), (int, float)): cost_reported = u['cost']
+            continue
         t = ev.get('type')
         if t in ('error', 'response.failed'): err = json.dumps(ev)[:200]
         if t == 'message_start': u = dict(ev['message'].get('usage') or {})
@@ -80,7 +90,11 @@ for r in recs:
             u = ev['response'].get('usage') or {}; out = u.get('output_tokens', 0)
         if isinstance(u.get('cost'), (int, float)): cost_reported = u['cost']
     if err: errors.append(dict(n=r['n'], turn=turn, error=err)); continue
-    if r['proto'] == 'anthropic':
+    if r['proto'] == 'chat':
+        if not u: errors.append(dict(n=r['n'], turn=turn, error='answer carried no usage')); continue
+        rd = (u.get('prompt_tokens_details') or {}).get('cached_tokens') or 0
+        inp = (u.get('prompt_tokens') or 0) - rd; w5 = w1 = 0
+    elif r['proto'] == 'anthropic':
         cc = u.get('cache_creation') or {}
         w5 = cc.get('ephemeral_5m_input_tokens') or 0; w1 = cc.get('ephemeral_1h_input_tokens') or 0
         if not cc and u.get('cache_creation_input_tokens'): w5 = u['cache_creation_input_tokens']
@@ -93,7 +107,7 @@ for r in recs:
     cost = (inp * price('input') + w5 * price('cache_write_5m') + w1 * price('cache_write_1h') + rd * price('cache_read') + out * price('output')) / 1e6
     if cost_reported is not None: measured['usd'] += cost_reported; measured['requests'] += 1
     out = out or 0
-    reqs.append(dict(n=r['n'], turn=turn, inp=inp, read=rd, w5=w5, w1=w1, out=out, size=inp + rd + w5 + w1, cost=cost, measured=cost_reported, kind=r['kind'],
+    reqs.append(dict(n=r['n'], turn=turn, inp=inp, read=rd, w5=w5, w1=w1, out=out, size=inp + rd + w5 + w1, cost=cost, measured=cost_reported, kind=r['kind'], side_call=r.get('side_call', False),
                      timeline_blocks=r['timeline_blocks'], timeline_chars=r['timeline_chars']))
 
 cum = 0
@@ -126,9 +140,10 @@ for s, n in starts:
         spoiled[n] = dict(netwatch_failures=bad, request_errors=errs, turn_error=turn_rc.get(n, {}).get('error', False))
 
 rereads = sum(v - 1 for v in reads.values() if v > 1)
+main_reqs = [r for r in reqs if not r['side_call']]
 res = dict(stack=os.path.basename(S), turns=max(per_turn) if per_turn else 0, turns_started=len(starts), requests=len(reqs),
-           output_tokens=sum(r['out'] for r in reqs), final_prompt_tokens=reqs[-1]['size'] if reqs else 0,
-           max_prompt_tokens=max((r['size'] for r in reqs), default=0), tool_calls=len(seen), file_reads=sum(reads.values()), file_rereads=rereads,
+           output_tokens=sum(r['out'] for r in reqs), final_prompt_tokens=main_reqs[-1]['size'] if main_reqs else 0,
+           max_prompt_tokens=max((r['size'] for r in main_reqs), default=0), side_calls=len(reqs) - len(main_reqs), tool_calls=len(seen), file_reads=sum(reads.values()), file_rereads=rereads,
            cache_read=sum(r['read'] for r in reqs), cache_write=sum(r['w5'] + r['w1'] for r in reqs), uncached_input=sum(r['inp'] for r in reqs),
            input_cost_usd=round(sum((r['inp'] * price('input') + r['w5'] * price('cache_write_5m') + r['w1'] * price('cache_write_1h') + r['read'] * price('cache_read')) / 1e6 for r in reqs), 4),
            output_cost_usd=round(sum(r['out'] for r in reqs) * price('output') / 1e6, 4))

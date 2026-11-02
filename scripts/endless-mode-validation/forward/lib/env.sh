@@ -8,7 +8,7 @@
 # Env you may set (defaults in brackets):
 #   EMV_RUN_NAME        name of this run [run-<date>]
 #   EMV_RUN_DIR         where the run lives [<repo>/.scratch/endless-mode-validation/forward/<run name>] (.scratch is gitignored)
-#   EMV_AGENT           claude | codex [claude]
+#   EMV_AGENT           claude | codex | hermes | openclaw [claude]
 #   EMV_MODEL_PROFILE   openrouter-deepseek-flash | anthropic [none: required]; see lib/model-profile.sh. Full-price
 #                       models (the anthropic profile, and Codex) are refused unless EMV_ALLOW_FULL_PRICE_MODELS=1
 #   EMV_RELEASE_VERSION the published claude-mem the `release` configuration installs [npm's `latest`, resolved and
@@ -17,6 +17,8 @@
 #   EMV_CODEX_MODEL     Codex model [gpt-6.1-sol]
 #   EMV_CLAUDE_BIN / EMV_CODEX_BIN   the real agent binaries [command -v claude / codex]. Point these past any wrapper
 #                       script that rewrites CLAUDE_CONFIG_DIR or HOME, or the isolation does not hold.
+#   EMV_HERMES_BIN / EMV_OPENCLAW_BIN   those agents' binaries [command -v hermes / openclaw]
+#   EMV_OPENCLAW_NODE_DIR  directory with the Node that OpenClaw needs, when it is not the one on your PATH [unset]
 #   EMV_PORT_BASE       first port; configuration i uses EMV_PORT_BASE + 10*i .. +3 [38100]
 
 typeset -g EMV_FORWARD_DIR=${0:A:h:h}  # sourced at top level: zsh sets $0 to this file
@@ -44,6 +46,8 @@ export EMV_CLAUDE_MODEL=${EMV_CLAUDE_MODEL:-claude-opus-5-5}
 export EMV_CODEX_MODEL=${EMV_CODEX_MODEL:-gpt-6.1-sol}
 export EMV_CLAUDE_BIN=${EMV_CLAUDE_BIN:-$(PATH=$EMV_REAL_PATH command -v claude)}
 export EMV_CODEX_BIN=${EMV_CODEX_BIN:-$(PATH=$EMV_REAL_PATH command -v codex)}
+export EMV_HERMES_BIN=${EMV_HERMES_BIN:-$(PATH=$EMV_REAL_PATH command -v hermes)}
+export EMV_OPENCLAW_BIN=${EMV_OPENCLAW_BIN:-$(PATH=$EMV_REAL_PATH command -v openclaw)}
 export EMV_PORT_BASE=${EMV_PORT_BASE:-38100}
 export EMV_PROMPTS=${EMV_PROMPTS:-$EMV_FORWARD_DIR/prompts200.txt}
 export EMV_BUN=${EMV_BUN:-$(PATH=$EMV_REAL_PATH command -v bun)}
@@ -74,6 +78,7 @@ emv_use_stack() {
   export EMV_STACK=$EMV_RUN_DIR/stacks/$1
   export EMV_WORKER_PORT EMV_GATEWAY_PORT EMV_TEE_ANTHROPIC_PORT EMV_TEE_CODEX_PORT
   export CLAUDE_MEM_DATA_DIR=$EMV_STACK/data HOME=$EMV_STACK/home CLAUDE_CONFIG_DIR=$EMV_STACK/claude-config CODEX_HOME=$EMV_STACK/codex-home
+  export HERMES_HOME=$EMV_STACK/hermes-home OPENCLAW_STATE_DIR=$EMV_STACK/openclaw-state OPENCLAW_CONFIG_PATH=$EMV_STACK/openclaw-state/openclaw.json
   export XDG_CONFIG_HOME=$HOME/.config XDG_DATA_HOME=$HOME/.local/share XDG_CACHE_HOME=$HOME/.cache XDG_STATE_HOME=$HOME/.local/state
   # Package caches stay shared (they are caches, not configuration) so a sandbox HOME does not re-download them.
   export npm_config_cache=$EMV_REAL_HOME/.npm BUN_INSTALL_CACHE_DIR=$EMV_REAL_HOME/.bun/install/cache
@@ -112,3 +117,4 @@ emv_start_worker() {
 emv_gateway() { "$EMV_BUN" "$EMV_REPO_ROOT/src/services/wire-gateway/WireGatewayService.ts" "$@"; }
 
 source $EMV_FORWARD_DIR/lib/model-profile.sh
+source $EMV_FORWARD_DIR/lib/chat-agents.sh

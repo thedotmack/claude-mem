@@ -77,8 +77,14 @@ cp $CLAUDE_MEM_DATA_DIR/settings.json $HOME/.claude-mem/settings.json
 
 # Shims: nothing in the sandbox may reach the real launchd or systemd.
 for svc in launchctl systemctl; do
+  # `launchctl print` answers 113, launchctl's own code for "no such service": Hermes Agent asks it at every start,
+  # and a shim that "finds" the service in both domains makes Hermes refuse to run (service_scope_conflict).
+  # Its one-off runtime job is refused so that Hermes starts it as a plain child (its documented fallback) that this
+  # harness can see and stop, instead of "starting" a job that never ran.
   print -r -- '#!/bin/sh
 echo "$(date -u +%FT%TZ) '$svc' $*" >> "$(dirname "$0")/../logs/service-shim.log"
+[ "$1" = print ] && exit 113
+case "$1 $3" in "bootstrap "*hermes-home*) exit 5 ;; esac
 exit 0' > $EMV_STACK/bin/$svc
   chmod +x $EMV_STACK/bin/$svc
 done
@@ -96,6 +102,11 @@ claude_settings=$CLAUDE_CONFIG_DIR/settings.json
 [[ $1 == release && -f $claude_settings ]] || print '{}' > $claude_settings
 jq --argjson env "$claude_env" '. + {env: ((.env // {}) + $env), alwaysThinkingEnabled: true, permissions: ((.permissions // {}) + {defaultMode: "bypassPermissions"})}' \
   $claude_settings > $claude_settings.new && mv $claude_settings.new $claude_settings
+
+# Hermes / OpenClaw: sandbox config, base URL at the gateway route (or the tee for `none`), no plugins, no hooks.
+if emv_is_chat_agent; then
+  emv_setup_chat_agent $([[ $1 == none ]] && echo "http://127.0.0.1:$EMV_TEE_ANTHROPIC_PORT" || echo "http://127.0.0.1:$EMV_GATEWAY_PORT/r/$EMV_AGENT")
+fi
 
 # Codex: minimal config (no hooks, plugins, MCP or notify), base URL at the gateway route (or the tee for `none`).
 if [[ $EMV_AGENT == codex ]]; then
