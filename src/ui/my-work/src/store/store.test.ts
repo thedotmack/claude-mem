@@ -180,6 +180,24 @@ describe('saving work', () => {
   })
 })
 
+describe('usage counts', () => {
+  it('counts the page opening once, then a switch, and not another open', () => {
+    const { store, usage } = testStore()
+    store.getState().reportOpen()
+    store.getState().reportOpen()
+    store.getState().setListView('list')
+    store.getState().reportOpen()
+    assert.deepEqual(usage, [{ event: 'opened', view: 'work' }])
+    store.getState().goToPage('rules')
+    assert.deepEqual(usage, [
+      { event: 'opened', view: 'work' },
+      { event: 'switched', view: 'rules', previousView: 'work' },
+    ])
+    store.getState().showUrl()
+    assert.equal(usage.length, 2)
+  })
+})
+
 describe('where the person is', () => {
   it('reads its place from the URL and writes each move to it', () => {
     const { store, urls, usage } = testStore({ href: 'http://localhost/?source=sample&view=rules' })

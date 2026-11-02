@@ -9,8 +9,6 @@
  *
  * Warnings are NEVER printed live (a clack spinner would clobber them); they are
  * collected on the summary and flushed by `flushSummary` after the spinners.
- *
- * See plans/04-installer-transparency.md (Phase 3).
  */
 
 import { mkdirSync, rmSync, writeFileSync } from 'fs';

@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AutoRefreshWorker } from '../../src/services/work-view/auto-refresh-worker.mjs';
-import { buildRefreshTask, FOCUS_ANSWER_SCHEMA, GROUPING_ANSWER_SCHEMA, reviewConcurrency, STEP_MODELS } from '../../src/services/work-view/refresh-task.js';
+import { buildRefreshTask, FOCUS_ANSWER_SCHEMA, GROUPING_ANSWER_SCHEMA, resolveStepModels, reviewConcurrency, STEP_MODEL_SETTINGS, STEP_MODELS } from '../../src/services/work-view/refresh-task.js';
 import { readLedger, runCli } from '../../src/services/work-view/request-groups.mjs';
 import { scratchDir } from '../helpers/scratch-dir.js';
 import { everyRequestInOther, focusInputFrom, focusWriter, isOtherPass } from '../helpers/fake-focus-writer.js';
@@ -227,6 +227,79 @@ describe('refresh task', () => {
       expect(STEP_MODELS.grouping).toEqual({ 'claude-code': { model: 'haiku' }, codex: { model: 'gpt-6-luna', reasoningEffort: 'low' }, gemini: { model: 'flash-lite' } });
       expect(STEP_MODELS.review).toEqual({ 'claude-code': { model: 'sonnet' }, codex: {}, gemini: { model: 'flash' } });
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('My Work refresh model settings (#5164)', () => {
+  const KEYS = Object.values(STEP_MODEL_SETTINGS);
+  /** Run with a settings file and a clean environment for the three keys, restoring both afterwards. */
+  const withSettings = async <T>(file: Record<string, string> | null, env: Record<string, string>, body: (dir: string) => T | Promise<T>): Promise<T> => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-models-'));
+    const saved = Object.fromEntries(KEYS.map(key => [key, process.env[key]]));
+    try {
+      for (const key of KEYS) delete process.env[key];
+      Object.assign(process.env, env);
+      if (file) writeFileSync(join(dir, 'settings.json'), JSON.stringify(file));
+      return await body(dir);
+    } finally {
+      for (const key of KEYS) { if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key]; }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it('keeps the per-step table when no model is set, or only blanks are', async () => {
+    await withSettings(null, {}, dir => expect(resolveStepModels(dir)).toBe(STEP_MODELS));
+    await withSettings({ CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL: '  ' }, {}, dir => expect(resolveStepModels(dir)).toBe(STEP_MODELS));
+  });
+
+  it('puts every step of one agent on the configured model and leaves the other agents alone', async () => {
+    await withSettings({ CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL: 'haiku' }, {}, dir => {
+      const models = resolveStepModels(dir);
+      for (const step of Object.keys(STEP_MODELS) as Array<keyof typeof STEP_MODELS>) {
+        expect(models[step]['claude-code']).toEqual({ model: 'haiku' });
+        expect(models[step].codex).toEqual(STEP_MODELS[step].codex);
+        expect(models[step].gemini).toEqual(STEP_MODELS[step].gemini);
+      }
+      // The shared table is never mutated.
+      expect(STEP_MODELS.review['claude-code']).toEqual({ model: 'sonnet' });
+    });
+  });
+
+  it("keeps each Codex step's reasoning effort when only the model is overridden", async () => {
+    await withSettings({ CLAUDE_MEM_WORK_VIEW_CODEX_MODEL: 'gpt-6' }, {}, dir => {
+      const models = resolveStepModels(dir);
+      expect(models.grouping.codex).toEqual({ model: 'gpt-6', reasoningEffort: 'low' });
+      expect(models.review.codex).toEqual({ model: 'gpt-6' });
+    });
+  });
+
+  it('lets the environment override the settings file, like every other setting', async () => {
+    await withSettings({ CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL: 'flash' }, { CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL: 'flash-lite' }, dir => {
+      expect(resolveStepModels(dir).story.gemini).toEqual({ model: 'flash-lite' });
+    });
+  });
+
+  it('a refresh asks every step on the configured model, read when the run starts', async () => {
+    await withSettings(null, {}, async dir => {
+      const database = fixtureDatabase();
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 1, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
+      // Written after the task is built: the run reads settings when it starts, so no worker restart is needed.
+      writeFileSync(join(dir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL: 'haiku' }));
+      const asked: unknown[] = [];
+      const ask = async (prompt: string, models: any) => {
+        asked.push(models['claude-code']);
+        if (prompt.includes('Do only section 1')) return JSON.stringify({ groups: [{ title: 'Release cards', conversations: [key('a')] }] });
+        if (prompt.includes('Do only section 2')) {
+          const [show] = JSON.parse(readFileSync(/is in (.+?\.json)/.exec(prompt)![1], 'utf8'));
+          return JSON.stringify({ reviews: [{ groupId: show.groupId, state: 'in-progress', percent: 10, summary: 'Started.', reviewBasis: show.reviewBasis }] });
+        }
+        if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+        return JSON.stringify({ narrative: 'Started.', preferences: [] });
+      };
+      expect(await task.run(ask, 'claude-code')).toBe('1 new conversations grouped, 1 requests reviewed, 1 requests placed, story written.');
+      expect(asked.length).toBeGreaterThan(0);
+      for (const models of asked) expect(models).toEqual({ model: 'haiku' });
+    });
   });
 });
 
