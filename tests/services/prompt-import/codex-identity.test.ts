@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import { mkdtempSync, writeFileSync, statSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { createCodexReader, type TypedPrompt } from '../../../src/services/prompt-import/readers.js';
 
 async function read(messages: Array<{ text: string; id?: string; timestamp?: string }>, reader = createCodexReader(), sessionId: string | null = 'same-session', filename = 'rollout.jsonl'): Promise<TypedPrompt[]> {
@@ -36,6 +37,25 @@ describe('Codex prompt identity', () => {
   it('preserves messages recorded at different timestamps', async () => {
     const result = await read([{ id: 'first', text: prefix }, { id: 'first', text: prefix, timestamp: '2026-10-02T00:00:00.000Z' }]);
     expect(result).toHaveLength(2);
+  });
+
+  it('persists both distinct native turns once through the transcript importer', async () => {
+    const messages = [{ id: 'first', text: prefix + 'first ending' }, { id: 'second', text: prefix + 'second ending' }];
+    const store = new SessionStore(':memory:');
+    try {
+      for (const pass of [0, 1]) {
+        const reasons = [];
+        for (const prompt of await read(messages)) {
+          reasons.push(store.importTranscriptUserPrompt({ platformSource: 'codex', contentSessionId: prompt.sessionId,
+            project: 'example', nativePromptId: prompt.nativePromptId, promptText: prompt.text,
+            createdAtEpoch: prompt.at, hookMatchWindowMs: 1000, claimedHookRowIds: new Set() }).reason);
+        }
+        expect(reasons).toEqual(pass === 0 ? ['new', 'new'] : ['already-imported', 'already-imported']);
+      }
+      const rows = store.db.prepare('SELECT native_prompt_id, prompt_text FROM user_prompts ORDER BY id').all();
+      expect(rows).toEqual([{ native_prompt_id: 'transcript:first', prompt_text: messages[0].text },
+        { native_prompt_id: 'transcript:second', prompt_text: messages[1].text }]);
+    } finally { store.close(); }
   });
 
   it('deduplicates repeated native messages', async () => {
