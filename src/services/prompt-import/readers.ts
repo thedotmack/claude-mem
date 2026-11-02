@@ -253,7 +253,7 @@ export function createCodexReader(): AgentPromptReader {
         const at = isoToEpochMs(record.timestamp);
         if (!text || CODEX_INJECTED_PREFIXES.some(prefix => text.startsWith(prefix)) || at === null || at < sinceEpochMs) continue;
         const sessionId = String(meta.id ?? basename(transcript.path, '.jsonl'));
-        const nativePromptId = typeof payload.id === 'string' && payload.id ? payload.id : fallbackId(sessionId, record.timestamp, text);
+        const nativePromptId = typeof payload.id === 'string' && payload.id ? payload.id : fallbackId(String(meta.id), record.timestamp, text);
         const dedupeKey = fallbackId(sessionId, nativePromptId, String(at), text);
         if (seenKeys.has(dedupeKey)) continue;
         seenKeys.add(dedupeKey);

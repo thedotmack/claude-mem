@@ -58,6 +58,21 @@ describe('Codex prompt identity', () => {
     } finally { store.close(); }
   });
 
+  it('reuses legacy persisted IDs when a transcript has no session or message ID', async () => {
+    const store = new SessionStore(':memory:');
+    const original = { platformSource: 'codex', contentSessionId: 'legacy', project: 'example',
+      nativePromptId: '691afea36921521f55fbf154968de0c5', promptText: 'legacy prompt',
+      createdAtEpoch: Date.parse('2026-10-01T00:00:00.000Z'), hookMatchWindowMs: 1000, claimedHookRowIds: new Set<number>() };
+    try {
+      expect(store.importTranscriptUserPrompt(original).reason).toBe('new');
+      const prompt = (await read([{ text: 'legacy prompt' }], createCodexReader(), null, 'legacy.jsonl'))[0];
+      const result = store.importTranscriptUserPrompt({ ...original, nativePromptId: prompt.nativePromptId });
+      expect(store.db.prepare('SELECT COUNT(*) AS n FROM user_prompts').get()).toEqual({ n: 1 });
+      expect(result.reason).toBe('already-imported');
+      expect(prompt.nativePromptId).toBe(original.nativePromptId);
+    } finally { store.close(); }
+  });
+
   it('deduplicates repeated native messages', async () => {
     expect(await read([{ id: 'first', text: prefix }, { id: 'first', text: prefix }])).toHaveLength(1);
   });
