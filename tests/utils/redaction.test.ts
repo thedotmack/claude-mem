@@ -91,6 +91,19 @@ describe('redactSensitive built-in patterns', () => {
     expect(Object.keys(result.counts)).toEqual([name]);
   });
 
+  // A PyPI token is the macaroon after `pypi-`; split for push protection too.
+  const pypiMacaroon = 'AgE' + 'IcHlwaS5vcmcCJGQ1ZjE2NzBkLTk0NWUtNGNhYS1iMDhkLTI5ZDc2ZTA1MWQ2YwACKlsz-_9';
+  it.each([
+    ['password = ' + 'pyp' + 'i-' + pypiMacaroon + ' tail'],
+    ['UV_PUBLISH_TOKEN=' + 'pyp' + 'i-' + pypiMacaroon + ' tail'],
+    ['twine upload -u __token__ -p ' + 'pyp' + 'i-' + pypiMacaroon + ' tail'],
+  ])('redacts a pypi_token in %s', (input) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain("<redacted type='pypi_token'/> tail");
+    expect(result.redacted).not.toContain('AgEIcHlwaS5vcmc');
+    expect(Object.keys(result.counts)).toEqual(['pypi_token']);
+  });
+
   it.each([
     'glpat-short',
     'gldt-short',
@@ -100,6 +113,8 @@ describe('redactSensitive built-in patterns', () => {
     'dckr_pat_short',
     'the hf_transformers module',
     'npm_config_cache=/tmp/x',
+    'pypi-AgEshort',
+    'pypi-simple index',
   ])(
     'leaves %s alone',
     (input) => {

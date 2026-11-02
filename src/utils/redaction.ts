@@ -141,7 +141,7 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   { name: 'gitlab_token',    regex: /\bgl(?:pat|dt|rt)-[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)*(?!\w)/g },
   { name: 'huggingface_token', regex: /\bhf_[A-Za-z0-9]{30,}\b/g },
   { name: 'npm_token',       regex: /\bnpm_[A-Za-z0-9]{36}\b/g },
-  { name: 'docker_pat',      regex: /\bdckr_pat_[A-Za-z0-9_-]{27,}(?!\w)/g },
+  { name: 'docker_pat',     regex: /\bdckr_pat_[A-Za-z0-9_-]{27,}(?!\w)/g },
   // SendGrid API keys (`SG.` + 22 + `.` + 43 base64url chars), DigitalOcean
   // personal access, OAuth and refresh tokens (`dop_v1_`/`doo_v1_`/`dor_v1_` +
   // 64 hex) and Shopify Admin API, app and shared-secret tokens (`shpat_`,
@@ -150,6 +150,10 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   { name: 'sendgrid_key',    regex: /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}(?![\w-])/g },
   { name: 'digitalocean_token', regex: /\bdo[opr]_v1_[a-f0-9]{64}\b/g },
   { name: 'shopify_token',   regex: /\bshp(?:at|ca|pa|ss)_[a-fA-F0-9]{32}\b/g },
+  // PyPI API tokens: `pypi-` + a base64url macaroon whose header always
+  // starts `AgE` (pypi.org and test.pypi.org alike), printed by `twine`,
+  // `uv publish` and `~/.pypirc` dumps. Real tokens run past 150 characters.
+  { name: 'pypi_token',      regex: /\bpypi-AgE[A-Za-z0-9_-]{50,}(?!\w)/g },
   // claude-mem's own credentials: server API keys (`cmem_` + 43 base64url
   // chars, server-bootstrap.ts createRawApiKey) and cmem.ai Pro memory keys.
   { name: 'claude_mem_key',  regex: /\bcmem_[A-Za-z0-9_-]{32,}|\bcm_pro_[A-Za-z0-9_-]{8,}/g },
