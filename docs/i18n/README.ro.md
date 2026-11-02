@@ -390,7 +390,6 @@ Consultați fișierul [LICENSE](LICENSE) pentru detalii complete. Consultați [d
 și [docs/ip-boundary.md](docs/ip-boundary.md) pentru domeniul de aplicare al licenței și granița
 open-source/comercială.
 
-**Notă despre Ragtime**: Directorul `ragtime/` este licențiat sub **Apache License 2.0**. Consultați [ragtime/LICENSE](ragtime/LICENSE) pentru detalii.
 
 ---
 

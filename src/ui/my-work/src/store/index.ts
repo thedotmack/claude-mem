@@ -5,7 +5,8 @@ import type { Agent, Device } from '@/data'
 import type { ConnectionStatus } from '@/live/connection-status'
 import { localSource } from '@/live/local-source'
 import { sampleSource } from '@/live/sample-source'
-import { sendUsageReport } from '@/live/usage'
+import { isServedFromCloud } from '@/live/served-from'
+import { sendHostedUsage, sendUsageReport } from '@/live/usage'
 import type { WorkDataSource, WorkModel } from '@/live/work-data-source'
 import { createBoundStore } from './create-store'
 import { createSelectors } from './create-selectors'
@@ -40,8 +41,11 @@ const useStoreBase = createBoundStore({
   writeUrl: (url, replace) => replace ? window.history.replaceState(null, '', url) : window.history.pushState(null, '', url),
   prefersDark: window.matchMedia('(prefers-color-scheme: dark)').matches,
   storage: browserStorage(),
+  // Sample fixtures are not usage. The hosted viewer uses the same local source
+  // (the cloud worker) but its worker sets DO_NOT_TRACK, so its counts go to
+  // the host's usage endpoint instead of /api/work-view/usage.
   reportsUsage: ACTIVE_SOURCE === localSource,
-  sendUsage: sendUsageReport,
+  sendUsage: isServedFromCloud(window.location.hostname) ? sendHostedUsage : sendUsageReport,
   scrollToTop: () => window.scrollTo(0, 0),
 })
 

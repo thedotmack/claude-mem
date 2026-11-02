@@ -359,6 +359,24 @@ describe('agent runner', () => {
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 
+  it('an answer claude-mem refused is not handed to another agent (#5189: a too-long Claude review ran on the owner\'s Codex)', async () => {
+    const query = (() => (async function* () { yield { type: 'result', subtype: 'success', is_error: false, result: '{"narrative":"far too long"}' }; })()) as never;
+    const calls: SpawnCall[] = [];
+    const spawnImpl = fakeSpawn(calls, call => { call.child.stdout.emit('data', JSON.stringify({ response: 'fine' })); call.child.emit('close', 0); });
+    const refusing: AgentTask = {
+      ...task('/data'),
+      run: async ask => {
+        await ask('review these groups', {});
+        throw Object.assign(new Error('reviews: g_1: narrative is 1467 characters; it must be 1–1200.'), { answerRefused: true });
+      },
+    };
+    const result = await runTask(refusing, { detect: async () => agents('claude-code', 'codex', 'gemini'), query, spawn: spawnImpl, buildEnv: env });
+    expect(result).toMatchObject({ state: 'failed', agent: 'claude-code' });
+    expect(result.attempts.map(attempt => attempt.agent)).toEqual(['claude-code']);
+    expect(result.error).toMatch(/^Claude Code: reviews: g_1: narrative is 1467 characters/);
+    expect(calls).toEqual([]);
+  });
+
   it('when every agent fails, the error names each one\'s failure in the order tried', async () => {
     const query = (() => (async function* () { yield { type: 'result', subtype: 'error_during_execution', is_error: true, result: 'narrative is 22000 characters' }; })()) as never;
     const spawnImpl = fakeSpawn([], call => {

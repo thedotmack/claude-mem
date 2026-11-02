@@ -390,7 +390,6 @@ Claude-Mem מופץ תחת רישיון Apache License 2.0.
 ו-[docs/ip-boundary.md](docs/ip-boundary.md) להיקף הרישוי ולגבול
 הקוד הפתוח/מסחרי.
 
-**הערה בנוגע ל-Ragtime**: הספרייה `ragtime/` מופצת תחת **Apache License 2.0**. ראה [ragtime/LICENSE](ragtime/LICENSE) לפרטים.
 
 ---
 

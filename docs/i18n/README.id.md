@@ -390,7 +390,6 @@ Lihat file [LICENSE](LICENSE) untuk detail lengkap. Lihat [docs/license.md](docs
 dan [docs/ip-boundary.md](docs/ip-boundary.md) untuk cakupan lisensi dan batas
 open/commercial.
 
-**Catatan tentang Ragtime**: Direktori `ragtime/` dilisensikan di bawah **Apache License 2.0**. Lihat [ragtime/LICENSE](ragtime/LICENSE) untuk detail.
 
 ---
 

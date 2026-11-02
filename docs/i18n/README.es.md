@@ -390,7 +390,6 @@ Consulta el archivo [LICENSE](LICENSE) para todos los detalles. Consulta [docs/l
 y [docs/ip-boundary.md](docs/ip-boundary.md) para el alcance de la licencia y el límite
 entre lo abierto y lo comercial.
 
-**Nota sobre Ragtime**: El directorio `ragtime/` está licenciado bajo la **Apache License 2.0**. Consulta [ragtime/LICENSE](ragtime/LICENSE) para más detalles.
 
 ---
 
