@@ -1018,8 +1018,9 @@ export class WorkerService implements WorkerRef {
       this.initPhaseTracker.setInitPhase('ready');
       logger.info('SYSTEM', 'Core initialization complete (DB + search ready)');
 
-      // Lifecycle telemetry (person profile = anonymous install UUID). ide is
-      // this install's dominant client read from session history — a bounded
+      // Lifecycle telemetry. Profile-less: a person on this id would make every
+      // later worker event bill as identified. ide is
+      // this install's dominant client, read from session history — a bounded
       // platform enum (claude-code / cursor / ...), never user data. Props are
       // rebuilt per capture so the daily heartbeat reports the install's
       // current DB size/age/activity, not boot-time values.
@@ -1061,7 +1062,7 @@ export class WorkerService implements WorkerRef {
         previous_shutdown: this.previousShutdown,
         ...(this.previousUptimeSeconds !== null && { previous_uptime_seconds: this.previousUptimeSeconds }),
         ...buildLifecycleProps(),
-      }, { person: true });
+      });
       telemetryBuffer.start();
 
       // One-time historical telemetry backfill (anonymized daily rollups).

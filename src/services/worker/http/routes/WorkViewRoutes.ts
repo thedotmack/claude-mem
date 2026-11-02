@@ -1047,10 +1047,16 @@ export class WorkViewRoutes extends BaseRouteHandler {
    */
   /** Counts the viewer opening on a page, or switching page, through the worker's own consent-gated, whitelist-scrubbed
    * telemetry (telemetry.ts), so the page loads no analytics SDK. The report names the page only — never what it showed. */
+  private viewerHostname(req: Request): string {
+    const host = (req.hostname || '').trim().toLowerCase();
+    return /^[a-z0-9.-]{1,253}$/.test(host) ? host : 'unknown';
+  }
+
   private recordUsage = (req: Request, res: Response): void => {
     const report = req.body as z.infer<typeof usageBody>;
-    if (report.event === 'opened') captureEvent('work_view_opened', { view: report.view });
-    else captureEvent('work_view_switched', { view: report.view, previous_view: report.previousView });
+    const where = { viewer_host: 'local', hostname: this.viewerHostname(req) };
+    if (report.event === 'opened') captureEvent('work_view_opened', { view: report.view, ...where });
+    else captureEvent('work_view_switched', { view: report.view, previous_view: report.previousView, ...where });
     res.status(204).end();
   };
 

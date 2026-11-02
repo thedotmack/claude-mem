@@ -20,6 +20,10 @@ if (!process.env.CLAUDE_MEM_DATA_DIR) {
   process.env.CLAUDE_MEM_DATA_DIR = mkdtempSync(join(tmpdir(), 'claude-mem-test-run-'));
 }
 
+// The suite asserts each capture at the call. Production leaves this unset and
+// holds the high-volume events for the daily file (src/services/telemetry/daily-volume.ts).
+process.env.CLAUDE_MEM_TELEMETRY_IMMEDIATE = '1';
+
 /**
  * Global posthog-node mock, registered via bunfig.toml [test].preload BEFORE
  * any test file or src module loads. It must be global, not per-file:
