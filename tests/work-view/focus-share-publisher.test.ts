@@ -64,6 +64,19 @@ describe('FocusSharePublisher', () => {
     expect(order).toEqual(['shared after 0 stops', 'stopped after 1 shares']);
   });
 
+  it('stopping one area does not wait on another area still sharing', async () => {
+    let release!: (view: WorkViewSnapshot) => void;
+    const reading = new Promise<WorkViewSnapshot>(resolve => { release = resolve; });
+    const fake = shares([]);
+    const publisher = new FocusSharePublisher({ shares: fake, snapshot: () => reading, now: () => NOW, everyMs: 0 });
+    const shared = publisher.publishArea('launch');
+    await publisher.stopArea('docs');
+    expect(fake.stopped).toEqual(['docs']);
+    expect(fake.sent).toHaveLength(0);
+    release(snapshot({ [first]: 'launch' }));
+    await shared;
+  });
+
   it('a failed share does not stop a later stop', async () => {
     const fake = shares([]);
     const publisher = new FocusSharePublisher({ shares: fake, snapshot: () => snapshot({}), now: () => NOW, everyMs: 0 });

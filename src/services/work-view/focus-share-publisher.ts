@@ -36,7 +36,7 @@ export class FocusSharePublisher {
   /** Why the last publish of an area failed, by area id. */
   private readonly errors = new Map<string, string>();
   private readonly now: () => number;
-  private ownerRequestsDone: Promise<unknown> = Promise.resolve();
+  private readonly ownerRequestsDone = new Map<string, Promise<unknown>>();
 
   constructor(private readonly options: FocusSharePublisherOptions) {
     this.now = options.now ?? Date.now;
@@ -60,7 +60,7 @@ export class FocusSharePublisher {
 
   /** Shares an area (first call) or publishes its page now, built from the current work view. */
   publishArea(focusAreaId: string): Promise<{ entry: FocusShareEntry; sent: boolean }> {
-    return this.inOwnerOrder(async () => {
+    return this.inOwnerOrder(focusAreaId, async () => {
       const page = sharedFocusPageFrom(await this.readSnapshot(), focusAreaId, this.now());
       if (!page) throw new FocusShareError(NOT_SHAREABLE, 409);
       try {
@@ -76,16 +76,20 @@ export class FocusSharePublisher {
 
   /** Stops a share after any share the owner asked for before it. */
   stopArea(focusAreaId: string): Promise<void> {
-    return this.inOwnerOrder(() => this.options.shares.stop(focusAreaId));
+    return this.inOwnerOrder(focusAreaId, () => this.options.shares.stop(focusAreaId));
   }
 
   /**
    * A share reads the work view before it publishes, and a stop sent during that read must not finish first: the
-   * share would then create a new public link after the owner was told sharing had stopped.
+   * share would then create a new public link after the owner was told sharing had stopped. Per area, so stopping one
+   * link never waits on another area's share.
    */
-  private inOwnerOrder<T>(request: () => Promise<T>): Promise<T> {
-    const result = this.ownerRequestsDone.then(request);
-    this.ownerRequestsDone = result.catch(() => undefined);
+  private inOwnerOrder<T>(focusAreaId: string, request: () => Promise<T>): Promise<T> {
+    const result = (this.ownerRequestsDone.get(focusAreaId) ?? Promise.resolve()).then(request);
+    const settled = result.catch(() => undefined).finally(() => {
+      if (this.ownerRequestsDone.get(focusAreaId) === settled) this.ownerRequestsDone.delete(focusAreaId);
+    });
+    this.ownerRequestsDone.set(focusAreaId, settled);
     return result;
   }
 
