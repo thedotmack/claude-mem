@@ -405,6 +405,7 @@ export function validateProgress(entry, knownGroups, options = {}) {
     // What the reviewer actually saw: later activity or membership changes make it due again.
     reviewedThrough: new Date(Date.parse(basis.checkedThrough)).toISOString(),
     reviewedConversations: [...new Set(basis.conversations)].sort(),
+    ...(options.coerce && options.coercedFields.size ? { coercedFields: [...options.coercedFields].sort() } : {}),
   };
 }
 

@@ -336,6 +336,14 @@ describe('refresh task', () => {
       expect(review.outcome.regressions).toHaveLength(10);
       expect(review.outcome.regressions[0].fixedBy).toHaveLength(200);
       expect(review.outcome.regressions[0].fixedBy.endsWith('…')).toBe(true);
+      expect(review.coercedFields).toEqual([
+        'milestones',
+        'outcome.regressions',
+        'outcome.regressions[0].fixedBy',
+        'preferences',
+        'preferences[0].quote',
+        'summary',
+      ]);
       expect(ledger.story.narrative).toBe('One request is under way.');
       // Grouping and the focus step run on the light models; reviews and the story on the careful ones.
       // The focus step asks twice: place the request, then propose from Other (where it landed).
