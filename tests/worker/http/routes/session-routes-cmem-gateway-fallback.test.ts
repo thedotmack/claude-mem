@@ -13,7 +13,7 @@ import * as realWorkerUtils from '../../../../src/shared/worker-utils.js';
  * The cmem.ai gateway path through the worker, end to end.
  *
  * The gateway classifies once and sends `{code, message, action, url,
- * request_id}` (plans/2026-08-16-observer-error-path.md §1.2). Each code has
+ * request_id}`. Each code has
  * one outcome here:
  *   - allowance_exhausted / key_invalid / subscription_inactive: the
  *     trial-expiry fallback. Memory moves to the Anthropic plan at once, and
@@ -105,7 +105,7 @@ const MEMORY_KEY = 'cm_pro_0123456789abcdef01234567';
 const ON_ANTHROPIC_PLAN = 'Memory is using your Anthropic plan for now.';
 const QUOTA_FALLBACK_SKIPPED = 'claude-mem skips it as your quota fallback until it answers again';
 
-/** The gateway's own copy (plans/2026-08-16-observer-error-path.md §1.2). */
+/** The gateway's own copy. */
 const GATEWAY = {
   allowance_exhausted: {
     status: 402,

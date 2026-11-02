@@ -4,7 +4,7 @@
 // migration v36/v39). Write sites nudge `notify()` after each local write; a
 // trailing debounce coalesces bursts into one `flush()`, which drains
 // `WHERE synced_at IS NULL AND origin_device_id IS NULL` in batches, POSTs to
-// the per-user sync hub (workers/sync-hub), and stamps rows on ack. That
+// the per-user sync hub (services/sync-hub), and stamps rows on ack. That
 // single mechanism handles post-launch live sync, offline catch-up, and retry
 // — no historical/pre-launch backfill, second process, or cursor files.
 // Mutation ops (custom title, prompt→session
@@ -73,7 +73,7 @@ import {
 // projection page (PROJECTION_PAGE_MAX_OPS = 100).
 export const DEFAULT_CONTENT_BATCH_SIZE = 40;
 // Hub projection fetch aborts at 45s and holds a 90s lease
-// (workers/sync-hub PROJECTION_FETCH_TIMEOUT_MS / PROJECTION_LEASE_MS).
+// (services/sync-hub PROJECTION_FETCH_TIMEOUT_MS / PROJECTION_LEASE_MS).
 // The previous 30s client timeout was shorter than both, so the client
 // aborted mid-lease and retried into projection_busy. Default matches the lease.
 export const DEFAULT_REQUEST_TIMEOUT_MS = 90_000;
