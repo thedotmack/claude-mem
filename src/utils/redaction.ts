@@ -171,6 +171,9 @@ export const GENERIC_REDACTION_PATTERNS: RedactionPattern[] = [
   { name: 'generic_password', regex: genericBuiltinRegex(keyedLookbehind(String.raw`\b(?:\w*_?(?:password|passwd)|\w+_pwd)`)) },
   { name: 'generic_token',    regex: GENERIC_TOKEN_REGEX },
   { name: 'bearer_token',     regex: genericBuiltinRegex(`(?<=\\bAuthorization${OPTIONAL_QUOTE}${BOUNDED_SPACE}:${BOUNDED_SPACE}${OPTIONAL_QUOTE}Bearer${BOUNDED_SPACE})`) },
+  // `Authorization: Basic …` carries base64(user:password), a password anyone
+  // can decode, as in `curl -H "Authorization: Basic dXNlcjpodW50ZXIy"`.
+  { name: 'basic_auth',       regex: genericBuiltinRegex(`(?<=\\bAuthorization${OPTIONAL_QUOTE}${BOUNDED_SPACE}:${BOUNDED_SPACE}${OPTIONAL_QUOTE}Basic${BOUNDED_SPACE})`) },
 ];
 
 // Measured in UTF-16 code units (string.length). Bounds the regex work per
@@ -400,7 +403,7 @@ function genericMarkerForKeyedValue(key: string, value: string, config: Redactio
 // key paired with the value again. As in text, only the token after `Bearer`
 // is replaced: the same spacing is accepted around `Bearer`, and whatever
 // follows the token (trailing whitespace included) is kept, unanchored.
-const AUTHORIZATION_KEY = /^authorization$/i;
+const AUTHORIZATION_KEY = /^(?:proxy-)?authorization$/i;
 const KEYED_BEARER_VALUE = new RegExp(`^(${BOUNDED_SPACE}Bearer${BOUNDED_SPACE})${GENERIC_VALUE}`, 'i');
 
 function bearerMarkerForKeyedValue(key: string, value: string, config: RedactionConfig): string | null {
@@ -408,6 +411,16 @@ function bearerMarkerForKeyedValue(key: string, value: string, config: Redaction
   if (!AUTHORIZATION_KEY.test(key)) return null;
   const match = KEYED_BEARER_VALUE.exec(value);
   return match ? `${match[1]}<redacted type='bearer_token'/>${value.slice(match[0].length)}` : null;
+}
+
+// The same pairing for the credentials of `{"Authorization": "Basic …"}`.
+const KEYED_BASIC_VALUE = new RegExp(`^(${BOUNDED_SPACE}Basic${BOUNDED_SPACE})${GENERIC_VALUE}`, 'i');
+
+function basicMarkerForKeyedValue(key: string, value: string, config: RedactionConfig): string | null {
+  if (!config.genericEnabled || config.disabledBuiltinPatterns?.includes('basic_auth')) return null;
+  if (!AUTHORIZATION_KEY.test(key)) return null;
+  const match = KEYED_BASIC_VALUE.exec(value);
+  return match ? `${match[1]}<redacted type='basic_auth'/>${value.slice(match[0].length)}` : null;
 }
 
 // The aws_session_token built-in anchors on `SessionToken: …`, so a payload
@@ -448,6 +461,7 @@ export function redactJsonStrings<T>(value: T, config: RedactionConfig = getReda
       return awsSessionTokenMarkerForKeyedValue(key, node, config)
         ?? awsSecretKeyMarkerForKeyedValue(key, node, config)
         ?? bearerMarkerForKeyedValue(key, node, config)
+        ?? basicMarkerForKeyedValue(key, node, config)
         ?? genericMarkerForKeyedValue(key, node, config)
         ?? result.redacted;
     }
