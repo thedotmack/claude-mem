@@ -1386,7 +1386,8 @@ async function syncAndBroadcastSummary(
     summaryForStore,
     context.promptNumber,
     result.createdAtEpoch,
-    session.platformSource
+    session.platformSource,
+    result.summaryUpdated === true
   ).then(() => {
     const chromaDuration = Date.now() - chromaStart;
     logger.debug('CHROMA', 'Summary synced', {

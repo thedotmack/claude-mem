@@ -685,7 +685,7 @@ export class ClaudeProvider {
             turnEmptyOutputReason = emptyOutputReason;
             logger.debug('SDK', 'Assistant frame carried no text block, leaving queued batch intact', {
               sessionId: session.sessionDbId,
-              promptNumber: session.lastPromptNumber,
+              promptNumber: activeResponseContext.current?.promptNumber ?? session.lastPromptNumber,
               blockTypes: Array.isArray(content)
                 ? [...new Set(content.map((c: any) => String(c?.type)))].join(',')
                 : typeof content,
@@ -703,7 +703,7 @@ export class ClaudeProvider {
               : textContent;
             logger.dataOut('SDK', `Response received (${responseSize} chars)`, {
               sessionId: session.sessionDbId,
-              promptNumber: session.lastPromptNumber
+              promptNumber: activeResponseContext.current?.promptNumber ?? session.lastPromptNumber
             }, truncatedResponse);
           }
 
@@ -740,6 +740,8 @@ export class ClaudeProvider {
             );
             if (stored) {
               turnInsertedObservationIds.push(...(stored.insertedObservationIds ?? []));
+              // A summary a repeated Stop reused is tracked too: the result's
+              // usage can only raise it, because updateDiscoveryTokens keeps the maximum.
               turnSummaryId = stored.summaryId ?? turnSummaryId;
             }
           } catch (processingError) {
