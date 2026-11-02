@@ -42,6 +42,8 @@ export interface SetupScanAgent {
 export interface SetupScanState {
   /** Optional improvement use only; false still runs the complete hosted extraction. */
   improveProduct: boolean;
+  /** Which tools' prompts this scan sent to cmem.ai: null before the person answers, [] when nothing left this machine. */
+  uploadedAgents: PromptAgentId[] | null;
   agents: SetupScanAgent[];
   percent: number;
   phase: SetupScanPhase;
@@ -106,6 +108,7 @@ function idleState(): SetupScanState {
   return {
     // Opt-in: nothing about setup results is shared unless the person ticks this.
     improveProduct: false,
+    uploadedAgents: null,
     agents: AGENT_LABELS.map(([id, label]) => ({ id, label, detected: false, prompts: 0, fromMemory: 0, fromTranscripts: 0, canRunSetup: null, cannotRunReason: null })),
     percent: 0, phase: 'idle', done: false, windowStart: null, startedAt: null, finishedAt: null, durationMs: null,
     added: 0, skippedSources: 0, error: null, usage: null, usageError: null, recentPrompts: [],
@@ -219,6 +222,7 @@ export class SetupScan {
     const selected = agents ? pending.ownerPrompts.filter(prompt => agents.includes(prompt.agent)) : pending.ownerPrompts;
     if (!allow || !selected.length) {
       logger.info('IMPORT', 'Setup prompt upload declined; prompts stay on this machine');
+      this.current = { ...this.current, uploadedAgents: [] };
       try {
         // An empty hand-off records a finished, local-only extraction without contacting Cloud, so the reveal screen stops waiting.
         await this.extract!([], this.current.improveProduct);
@@ -230,7 +234,7 @@ export class SetupScan {
       return this.state();
     }
     try {
-      this.update({ phase: 'uploading', percent: 99 }, true);
+      this.update({ phase: 'uploading', percent: 99, uploadedAgents: [...new Set(selected.map(prompt => prompt.agent))] }, true);
       await this.extract!(selected, this.current.improveProduct);
       this.finish(pending.summary, pending.startedAt);
     } catch (error) {

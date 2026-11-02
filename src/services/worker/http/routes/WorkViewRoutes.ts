@@ -507,7 +507,9 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private setupIsActive(): boolean {
     const statePath = this.setupStatePath ?? setupStatePath();
     const scanPhase = this.setupScan?.state().phase ?? 'idle';
-    if (!['idle', 'done', 'failed'].includes(scanPhase)) return true;
+    // Waiting for the upload answer is not active: a closed tab never answers, and that must not hold local work
+    // paused. The installer's session below still covers a setup in progress; reopening the page rejoins the question.
+    if (!['idle', 'done', 'failed', 'awaiting-consent'].includes(scanPhase)) return true;
     return readSetupState(statePath).status !== 'complete' && hasActiveSetupSession(statePath);
   }
 

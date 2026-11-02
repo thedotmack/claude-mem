@@ -70,15 +70,16 @@ function PromptsOnly({ agents, recentPrompts }: { agents: SetupScanAgent[]; rece
 }
 
 /** Step 2: Work, Goals and Rules read from the person's own prompts. Live: each set lands as its extraction finishes; Continue never waits. */
-export function RevealScreen({ agents, reveal, extraction, recentPrompts, onContinue }: {
-  agents: SetupScanAgent[]; reveal: RevealSets; extraction: SetupExtraction | null; recentPrompts: SetupRecentPrompt[]; onContinue: () => void
+export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recentPrompts, onContinue }: {
+  agents: SetupScanAgent[]; reveal: RevealSets; extraction: SetupExtraction | null; uploadedAgents: string[] | null; recentPrompts: SetupRecentPrompt[]; onContinue: () => void
 }) {
-  const withPrompts = agents.filter((agent) => agent.prompts > 0)
+  // The results came only from the tools the person chose to upload.
+  const withPrompts = agents.filter((agent) => agent.prompts > 0 && (!uploadedAgents || uploadedAgents.includes(agent.id)))
   const promptCount = withPrompts.reduce((sum, agent) => sum + agent.prompts, 0)
   const promptsOnly = extraction?.state === 'waiting-for-agent' && !reveal.goals && !reveal.work && !reveal.rules
-  // Prompts were found but extraction finished with nothing to show: the person kept them local, so say that
-  // instead of promising knowledge that was never built.
-  const keptLocal = promptCount > 0 && extraction?.state === 'ok' && !reveal.goals?.length && !reveal.work?.length && !reveal.rules?.length
+  // The person kept everything local and no earlier run left results: say that instead of promising knowledge that
+  // was never built. This reads the recorded answer, because an upload can also come back with nothing to show.
+  const keptLocal = uploadedAgents?.length === 0 && agents.some((agent) => agent.prompts > 0) && !reveal.goals?.length && !reveal.work?.length && !reveal.rules?.length
   if (keptLocal) {
     return (
       <section aria-labelledby="reveal-title">

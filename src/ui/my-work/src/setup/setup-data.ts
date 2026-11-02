@@ -16,7 +16,11 @@ export interface SetupScanAgent {
 }
 
 export type SetupScanPhase = 'idle' | 'reading' | 'checking' | 'saving' | 'awaiting-consent' | 'uploading' | 'done' | 'failed'
-export interface SetupScanView { agents: SetupScanAgent[]; percent: number; phase: SetupScanPhase; done: boolean; error: string | null; improveProduct: boolean }
+export interface SetupScanView {
+  agents: SetupScanAgent[]; percent: number; phase: SetupScanPhase; done: boolean; error: string | null; improveProduct: boolean
+  /** Which tools' prompts were sent to cmem.ai: null before the person answers, [] when nothing left this machine. */
+  uploadedAgents: string[] | null
+}
 /** The owner's newest typed prompts, quoted as typed (SetupScanState.recentPrompts). */
 export interface SetupRecentPrompt { agent: string; at: string; text: string }
 /** The worker's subsidized hosted setup extraction. */
@@ -86,7 +90,7 @@ export interface SetupSource {
 }
 
 export const EMPTY_SETUP_DATA: SetupData = {
-  scan: { agents: [], percent: 0, phase: 'idle', done: false, error: null, improveProduct: false },
+  scan: { agents: [], percent: 0, phase: 'idle', done: false, error: null, improveProduct: false, uploadedAgents: null },
   reveal: { goals: null, work: null, rules: null },
   extraction: null,
   recentPrompts: [],
@@ -101,7 +105,9 @@ export const EMPTY_SETUP_DATA: SetupData = {
 }
 
 /** The worker's answers, trimmed to what this file reads. */
-interface WorkerScanState extends Omit<SetupScanView, 'agents' | 'improveProduct'> {
+interface WorkerScanState extends Omit<SetupScanView, 'agents' | 'improveProduct' | 'uploadedAgents'> {
+  /** Older workers upload without asking and do not send this. */
+  uploadedAgents?: string[] | null
   /** Older workers do not send the hosted setup preference. */
   improveProduct?: boolean
   /** An older worker sends no canRunSetup / cannotRunReason. */
@@ -144,6 +150,7 @@ const toScanView = (scan: WorkerScanState): SetupScanView => ({
     id, label, detected, prompts, canRunSetup: null, cannotRunReason: null,
   })),
   percent: scan.percent, phase: scan.phase, done: scan.done, error: scan.error, improveProduct: scan.improveProduct ?? false,
+  uploadedAgents: scan.uploadedAgents ?? null,
 })
 
 // Keep rapid checkbox changes in click order; scan and upload never wait on this queue.

@@ -11,7 +11,7 @@ const compiled = buildSync({
       import { renderToStaticMarkup } from 'react-dom/server';
       import { ScanScreen } from './src/setup/screens/scan-screen';
       import { RevealScreen } from './src/setup/screens/reveal-screen';
-      export const renderReveal = (agents, reveal, extraction) => renderToStaticMarkup(<RevealScreen agents={agents} reveal={reveal} extraction={extraction} recentPrompts={[]} onContinue={() => {}} />);
+      export const renderReveal = (agents, reveal, extraction, uploadedAgents = null) => renderToStaticMarkup(<RevealScreen agents={agents} reveal={reveal} extraction={extraction} uploadedAgents={uploadedAgents} recentPrompts={[]} onContinue={() => {}} />);
       export { localSetupSource, EMPTY_SETUP_DATA } from './src/setup/setup-data';
       export { createSampleSetupSource } from './src/setup/setup-sample';
       export const renderScan = (scan, preferenceError = null, retrying = false, retryError = null, consentError = null, consentSending = false) => renderToStaticMarkup(
@@ -97,13 +97,34 @@ describe('hosted setup scan control', () => {
     expect(buttons[0][1]).toBe(buttons[1][1]);
   });
 
-  it('after keeping prompts local, the reveal screen says so instead of promising knowledge', () => {
+  it('says prompts stayed local only when the person actually kept them local', () => {
     const app = fixture();
     const agents = [{ id: 'codex', label: 'Codex', detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null }];
-    const local = app.renderReveal(agents, { goals: [], work: [], rules: [] }, { state: 'ok', step: null });
+    const empty = { goals: [], work: [], rules: [] };
+    const local = app.renderReveal(agents, empty, { state: 'ok', step: null }, []);
     expect(local).toContain('Your prompts stayed on this computer.');
     expect(local).not.toContain('already knows your work');
-    expect(app.renderReveal(agents, { goals: null, work: null, rules: null }, { state: 'running', step: 'goals' })).toContain('already knows your work');
+    // An upload that came back with nothing must never be described as "nothing was uploaded".
+    const uploadedEmpty = app.renderReveal(agents, empty, { state: 'ok', step: null }, ['codex']);
+    expect(uploadedEmpty).not.toContain('stayed on this computer');
+    expect(uploadedEmpty).not.toContain('Nothing was uploaded');
+    expect(app.renderReveal(agents, { goals: null, work: null, rules: null }, { state: 'running', step: 'goals' }, ['codex'])).toContain('already knows your work');
+  });
+
+  it('credits the results only to the tools that were uploaded', () => {
+    const app = fixture();
+    const agents = [
+      { id: 'codex', label: 'Codex', detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null },
+      { id: 'claude-code', label: 'Claude Code', detected: true, prompts: 7, canRunSetup: null, cannotRunReason: null },
+    ];
+    const html = app.renderReveal(agents, { goals: null, work: null, rules: null }, { state: 'running', step: 'goals' }, ['codex']);
+    expect(html).toContain('From 3 prompts across Codex');
+    expect(html).not.toContain('Claude Code');
+  });
+
+  it('carries the upload record from the worker to the page', () => {
+    const app = fixture();
+    expect(app.EMPTY_SETUP_DATA.scan.uploadedAgents).toBeNull();
   });
 
   it('renders hosted failures and preference failures in the existing alert style', () => {

@@ -190,6 +190,38 @@ describe('setup prompt scan', () => {
     expect(batches[0].every(prompt => prompt.agent === 'claude-code')).toBe(true);
   });
 
+  it('records what actually left the machine, so later screens never have to guess', async () => {
+    hookRecorded('claude', 'session-record', 'alpha', 'a prompt', '2026-10-05T09:00:00.000Z');
+    const scan = setupScan();
+    scan.setExtractor(async () => {});
+    expect(scan.state().uploadedAgents).toBeNull();
+    scan.start();
+    await scan.finished();
+    expect(scan.state().uploadedAgents).toBeNull();
+    expect((await scan.confirmUpload(false)).uploadedAgents).toEqual([]);
+    scan.start();
+    expect(scan.state().uploadedAgents).toBeNull();
+    await scan.finished();
+    expect((await scan.confirmUpload(true, [])).uploadedAgents).toEqual([]);
+    scan.start();
+    await scan.finished();
+    expect((await scan.confirmUpload(true, ['claude-code'])).uploadedAgents).toEqual(['claude-code']);
+  });
+
+  it('a retry after a failed upload asks again instead of reusing the earlier yes', async () => {
+    hookRecorded('claude', 'session-retry', 'alpha', 'a prompt', '2026-10-05T09:00:00.000Z');
+    let uploads = 0;
+    const scan = setupScan();
+    scan.setExtractor(async () => { uploads++; throw new Error('HTTP 503'); });
+    scan.start();
+    await scan.finished();
+    expect((await scan.confirmUpload(true)).phase).toBe('failed');
+    expect(uploads).toBe(1);
+    scan.start();
+    expect((await scan.finished()).phase).toBe('awaiting-consent');
+    expect(uploads).toBe(1);
+  });
+
   it('memory-only prompts get the current tag stripping and redaction before extraction', async () => {
     // Stored while redaction was off; redaction is turned on before setup reads it.
     hookRecorded('claude', 'session-older-than-its-transcript', 'alpha', 'plan the funnel with sk-ABCDEFGHIJ1234567890abcdef <private>my secret</private>', '2026-10-05T09:00:00.000Z');

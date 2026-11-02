@@ -108,7 +108,8 @@ describe('setup state endpoints', () => {
     let phase = 'reading';
     testRoutes.setupScan = { state: () => ({ phase }) };
     for (phase of ['reading', 'checking', 'saving', 'uploading']) expect(testRoutes.setupIsActive()).toBe(true);
-    for (phase of ['idle', 'done', 'failed']) expect(testRoutes.setupIsActive()).toBe(false);
+    // A closed tab leaves the scan waiting for an answer forever, so waiting must not hold local work paused.
+    for (phase of ['idle', 'done', 'failed', 'awaiting-consent']) expect(testRoutes.setupIsActive()).toBe(false);
   });
 
   it('report a live extraction run as background work (the installer holds any restart for it), not one a restart cut off', async () => {
