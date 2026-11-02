@@ -374,6 +374,23 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
       };
     }
 
+    case 'devin': {
+      return {
+        title: 'Devin: installing hooks',
+        task: async (message) => {
+          message('Loading Devin installer…');
+          const { installDevinHooks } = await import('../../services/integrations/DevinHooksInstaller.js');
+          message('Installing Devin hooks…');
+          const { result, output } = await bufferConsole(async () => installDevinHooks());
+          if (result !== 0) {
+            recordFailure('Devin: hook installation failed', output);
+            return `Devin: hook installation failed ${styleText('red', 'FAIL')}`;
+          }
+          return `Devin: hooks installed ${styleText('green', 'OK')}`;
+        },
+      };
+    }
+
     case 'opencode': {
       return {
         title: 'OpenCode: installing plugin',
@@ -765,7 +782,6 @@ function copyPluginToMarketplace(): void {
     'dsh',
     'dist',
     'README.md',
-    'CHANGELOG.md',
   ];
 
   for (const entry of allowedTopLevelEntries) {
@@ -884,7 +900,7 @@ function writeMarketplaceInstallMarkers(
 /**
  * Install marketplace dependencies, strict-first.
  *
- * Phase 4 of plans/04-installer-transparency.md: the old code ALWAYS passed
+ * The old code ALWAYS passed
  * `--legacy-peer-deps`, papering over any real peer conflict unconditionally.
  * Now we run strict first and only fall back to `--legacy-peer-deps` on a
  * confirmed ERESOLVE token, announced loudly. `--ignore-scripts` is the default
@@ -3360,7 +3376,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     `Memory injection starts on your second session in a project.`,
     cloudSyncConfigured
       ? 'Memory syncs across your signed-in CMEM Pro agents and devices.'
-      : `Everything stays in ${styleText('cyan', '~/.claude-mem')} on this machine. cmem.ai is contacted once, at signup, to create the sign-in link, with a numbers-only usage summary (observation counts and token totals, no prompts, paths, or project names); nothing else is sent to cmem.ai (telemetry is separate: npx claude-mem telemetry).`,
+      : `Everything stays in ${styleText('cyan', '~/.claude-mem')} on this machine. cmem.ai is contacted once, at signup, to create the sign-in link, with a numbers-only usage summary (observation counts and token totals, no prompts, paths, or project names); nothing else is sent to cmem.ai unless you choose to upload your prompts during browser setup (telemetry is separate: npx claude-mem telemetry).`,
     ...(cloudSyncConfigured ? [] : [`${PRO_TRIAL_PITCH}: ${styleText('underline', proTrialUrl('installer'))}`]),
     ``,
     `${styleText('dim', `Optional: ${'/learn-codebase'} ingests a whole repo up front (~5 min)   ·   How it works: /how-it-works`)}`,

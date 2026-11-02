@@ -8,13 +8,14 @@ import { parseOpenRouterExtraBody, withOpenRouterExtraBody } from '../../shared/
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { clearProFallbackOnGatewaySuccess, isCmemGatewayUrl, isKeyAllowedForEndpoint, keysForEndpoint } from '../../shared/cmem-gateway.js';
+import { clearCmemCapProbe, cmemCapProbeAllowed, noteCmemCapExhausted } from '../../shared/cmem-cap-probe.js';
 import { logger } from '../../utils/logger.js';
 import type { ActiveSession, ConversationMessage, PendingMessageWithId } from '../worker-types.js';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { randomUUID } from 'crypto';
 import { buildCmemCorrelationHeader, CMEM_CORRELATION_HEADER } from './cmem-request-correlation.js';
-import { ClassifiedProviderError, rateLimitUntilNextKey, type ProviderErrorClass } from './provider-errors.js';
+import { ClassifiedProviderError, isClassified, rateLimitUntilNextKey, type ProviderErrorClass } from './provider-errors.js';
 import type { PaidSendBudget } from './paid-send-budget.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
 import {
@@ -44,6 +45,7 @@ import {
   claimReasoningBudgetRetry,
   combineBilledChatUsage,
   isLengthTruncatedEmptyReply,
+  isReasoningDisabledRejection,
   reasoningBudgetGiveUpMessage,
   reasoningBudgetRetryMessage,
   reasoningBudgetSkippedMessage,
@@ -605,7 +607,10 @@ export function openRouterReasoningBudgetTokens(input: {
   reasoningEffort?: OpenRouterReasoningEffort;
   label?: ObserverRequestLabel;
   forceReasoningOff?: boolean;
+  /** The #5265 resend leaves reasoning out, so it adds no reasoning budget. */
+  omitReasoning?: boolean;
 }): number {
+  if (input.omitReasoning === true) return 0;
   const answerOnly = (input.plainText || input.label?.kind === 'field_compression') && input.forceReasoningOff !== true;
   const typedReasoning = isOpenRouterApiUrl(input.apiUrl) && !answerOnly && input.forceReasoningOff !== true
     && input.reasoningEffort !== undefined;
@@ -648,23 +653,33 @@ export function buildOpenRouterRequestBody(input: {
    * extra body cannot put it back.
    */
   forceReasoningOff?: boolean;
+  /**
+   * One-shot resend after OpenRouter rejects `reasoning: {enabled: false}`
+   * because reasoning is mandatory for that endpoint (#5265). The field is
+   * left out entirely, including a reasoning key in the extra body.
+   */
+  omitReasoning?: boolean;
 }): Record<string, unknown> {
   const isOpenRouter = isOpenRouterApiUrl(input.apiUrl);
   // openrouter.ai itself, or the cmem gateway, which forwards the body there.
   const reachesOpenRouter = isOpenRouter || isCmemGatewayUrl(input.apiUrl);
   const useFallbacks = isOpenRouter && input.fallbackModels.length > 0;
+  const omitReasoning = input.omitReasoning === true;
   const force = input.forceReasoningOff === true;
   // A field condensation is a short rewrite like a wrap-up: a reasoning model
   // otherwise spends the whole output cap thinking and the pass is discarded
   // as cut off (#2995). A forced retry is an observation turn, not a wrap-up.
   const answerOnly = (input.plainText || input.label?.kind === 'field_compression') && !force;
-  const typedReasoning = isOpenRouter && !answerOnly && !force && input.reasoningEffort !== undefined;
+  const typedReasoning = isOpenRouter && !answerOnly && !force && !omitReasoning && input.reasoningEffort !== undefined;
   // Default for anything that reaches OpenRouter: reasoning off, so a
   // reasoning-by-default model cannot spend max_tokens thinking and return
-  // empty content. A typed effort still opts back in, on openrouter.ai only.
-  // A custom gateway gets no reasoning field until a length-truncated empty
-  // reply retries once with it forced off — unknown fields 400 on strict servers.
-  const defaultReasoningOff = force || (reachesOpenRouter && !answerOnly && !typedReasoning);
+  // empty content (#5029). A typed effort still opts back in, on openrouter.ai
+  // only. A custom gateway gets no reasoning field until a length-truncated
+  // empty reply retries once with it forced off — unknown fields 400 on
+  // strict servers. The #5265 resend leaves the field out: an endpoint where
+  // reasoning is mandatory rejects the disable with a 400, and that 400 is
+  // otherwise unrecoverable.
+  const defaultReasoningOff = !omitReasoning && (force || (reachesOpenRouter && !answerOnly && !typedReasoning));
   return withOpenRouterExtraBody({
     ...(useFallbacks
       ? { models: [input.model, ...input.fallbackModels] }
@@ -686,7 +701,7 @@ export function buildOpenRouterRequestBody(input: {
     // accept the vendor-specific reasoning control (cmem forwards it).
     ...(answerOnly && reachesOpenRouter ? {
       response_format: { type: 'text' },
-      reasoning: { enabled: false },
+      ...(omitReasoning ? {} : { reasoning: { enabled: false } }),
     } : {}),
     ...(defaultReasoningOff ? { reasoning: { enabled: false } } : {}),
     // The reasoning-effort setting, for openrouter.ai only: a custom gateway's
@@ -704,7 +719,7 @@ export function buildOpenRouterRequestBody(input: {
     // OpenRouter. A custom gateway gets neither: strict ones 400 on unknown
     // body fields.
     ...(input.label && reachesOpenRouter ? openRouterRequestLabels(input.label) : {}),
-  }, typedReasoning || force ? withoutReasoning(input.extraBody) : input.extraBody, input.apiUrl,
+  }, typedReasoning || force || omitReasoning ? withoutReasoning(input.extraBody) : input.extraBody, input.apiUrl,
   // A wrap-up, a field condensation that reaches OpenRouter, and a forced
   // retry own the reasoning field. A custom gateway's extra body keeps its
   // own control until that retry.
@@ -982,7 +997,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
   protected streamIdleTimeoutMs: number | undefined;
 
   /** POST the chat-completions request and read its (streamed) reply. */
-  private requestChatCompletion(
+  private async requestChatCompletion(
     apiUrl: string,
     apiKey: string,
     model: string,
@@ -1002,44 +1017,74 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     carriesImages: boolean = false,
     cmemCorrelationHeaderValue?: string,
   ): Promise<ChatCompletionExchange> {
-    return sendChatCompletion({
-      url: apiUrl,
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        ...openRouterAttributionHeaders(siteUrl, appName),
-        'Content-Type': 'application/json',
-        // Tracing only: names every send of one batch in our logs and the
-        // provider's. Never treated as server-side idempotency.
-        'x-client-request-id': clientAttemptId,
-        // ID-only correlation, cmem gateway only (cmem-request-correlation.ts).
-        ...(cmemCorrelationHeaderValue ? { [CMEM_CORRELATION_HEADER]: cmemCorrelationHeaderValue } : {}),
-      },
-      body: buildOpenRouterRequestBody({
+    const send = (omitReasoning: boolean) => {
+      const request = {
         model, fallbackModels, messages, apiUrl, plainText, maxOutputTokens, extraBody, reasoningEffort, label, forceReasoningOff,
-      }),
-      // The #4003 resend carries the body's whole cap: answer plus reasoning.
-      maxOutputTokens: maxOutputTokens + openRouterReasoningBudgetTokens({
-        apiUrl, plainText, reasoningEffort, label, forceReasoningOff,
-      }),
-      signal: attemptSignal,
-      liveness,
-      label: 'OpenRouter',
-      // max_completion_tokens is never sent with images: an endpoint that
-      // requires it rejects the image request, which goes out again text-only.
-      allowMaxCompletionTokensRetry: !carriesImages,
-      classify: (input) => {
-        if (carriesImages && input.status !== undefined && input.bodyText !== undefined) {
-          if (input.status === 400 && input.bodyText.includes(MEDIA_REQUEST_INVALID_MARKER)) {
-            return new MediaRequestRejectedError(input.bodyText);
+        ...(omitReasoning ? { omitReasoning: true } : {}),
+      };
+      return sendChatCompletion({
+        url: apiUrl,
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          ...openRouterAttributionHeaders(siteUrl, appName),
+          'Content-Type': 'application/json',
+          // Tracing only: names every send of one batch in our logs and the
+          // provider's. Never treated as server-side idempotency.
+          'x-client-request-id': clientAttemptId,
+          // ID-only correlation, cmem gateway only (cmem-request-correlation.ts).
+          ...(cmemCorrelationHeaderValue ? { [CMEM_CORRELATION_HEADER]: cmemCorrelationHeaderValue } : {}),
+        },
+        body: buildOpenRouterRequestBody(request),
+        // The #4003 resend carries the body's whole cap: answer plus reasoning.
+        maxOutputTokens: maxOutputTokens + openRouterReasoningBudgetTokens(request),
+        signal: attemptSignal,
+        liveness,
+        label: 'OpenRouter',
+        // max_completion_tokens is never sent with images: an endpoint that
+        // requires it rejects the image request, which goes out again text-only.
+        allowMaxCompletionTokensRetry: !carriesImages,
+        classify: (input) => {
+          if (carriesImages && input.status !== undefined && input.bodyText !== undefined) {
+            if (input.status === 400 && input.bodyText.includes(MEDIA_REQUEST_INVALID_MARKER)) {
+              return new MediaRequestRejectedError(input.bodyText);
+            }
+            if (isMaxCompletionTokensCompatibilityError(input.status, input.bodyText)) {
+              return new MediaRequestRejectedError('media_request_invalid:max_completion_tokens_required');
+            }
           }
-          if (isMaxCompletionTokensCompatibilityError(input.status, input.bodyText)) {
-            return new MediaRequestRejectedError('media_request_invalid:max_completion_tokens_required');
-          }
-        }
-        const requestId = openRouterRequestId(input.headers);
-        return classifyOpenRouterError({ ...input, requestUrl: apiUrl, ...(requestId ? { requestId } : {}) });
-      },
-    });
+          const requestId = openRouterRequestId(input.headers);
+          return classifyOpenRouterError({ ...input, requestUrl: apiUrl, ...(requestId ? { requestId } : {}) });
+        },
+      });
+    };
+
+    // The length-truncated retry is already the send that forces reasoning
+    // off. A mandatory-reasoning 400 there is the caller's give-up, not a
+    // second copy of the request that just burned the budget.
+    if (forceReasoningOff) return send(false);
+
+    try {
+      return await send(false);
+    } catch (error) {
+      // #5029 disables reasoning by default so a reasoning model cannot spend
+      // the answer budget thinking. An endpoint where reasoning is mandatory
+      // rejects that body with a 400, which is unrecoverable and drops the
+      // batch (#5265). Resend once without the field. Not remembered against
+      // the URL: a router serves a different model on the next request, and
+      // the ones that accept the disable should keep getting it. A refusal that
+      // arrives after the reply started is an output failure: that send was
+      // billed, so it is never resent.
+      const text = error instanceof Error ? error.message : String(error);
+      if (!isClassified(error) || error.kind !== 'unrecoverable' || error.paidSendOutcome === 'output_failure' || !isReasoningDisabledRejection(text)) {
+        throw error;
+      }
+      const sent = buildOpenRouterRequestBody({
+        model, fallbackModels, messages, apiUrl, plainText, maxOutputTokens, extraBody, reasoningEffort, label, forceReasoningOff,
+      });
+      if (!requestDisablesReasoning(sent)) throw error;
+      logger.warn('SDK', 'OpenRouter refused to disable reasoning; resending once without the reasoning field', { url: apiUrl });
+      return send(true);
+    }
   }
 
   private async queryOpenRouterMultiTurn(
@@ -1116,6 +1161,13 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     /** Media source events this request carries (or, text-only, came from); IDs only. */
     correlationEventKeys: readonly string[] = [],
   ): Promise<ProviderQueryResult> {
+    // The gateway emits pro_inference_cap_exhausted on every spent request.
+    // After the first refusal, further sends wait until the next day.
+    if (isCmemGatewayUrl(apiUrl) && !cmemCapProbeAllowed()) {
+      throw new ClassifiedProviderError('cmem.ai inference allowance is still spent; the next probe is tomorrow', {
+        kind: 'quota_exhausted', code: 'allowance_exhausted', cause: new Error('cap probe withheld'),
+      });
+    }
     const carriesImages = imageCount > 0;
     // One logical request: every send (retries, the reasoning retry) shares
     // request_id and counts attempts.
@@ -1154,7 +1206,9 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     const liveness = streamed
       ? resolveStreamLiveness(perAttemptTimeoutMs, this.streamIdleTimeoutMs ?? resolveStreamIdleTimeoutMs())
       : null;
-    let data = await withRetry<OpenRouterResponse>(async (attemptSignal) => {
+    let data: OpenRouterResponse;
+    try {
+      data = await withRetry<OpenRouterResponse>(async (attemptSignal) => {
       const exchange = await this.requestChatCompletion(
         apiUrl, apiKey, model, fallbackModels, requestMessages, siteUrl, appName, clientAttemptId, attemptSignal,
         maxOutputTokens, liveness, plainText, extraBody, reasoningEffort, label, false, carriesImages,
@@ -1186,11 +1240,16 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       ...(streamed ? { attemptDeadlineOwnedByCaller: true, retryBeforeOutput: true } : {}),
       ...(signal ? { maxRetries: 0 } : {}), ...retryPolicyForPool(poolSize),
     });
+    } catch (error) {
+      if (isCmemGatewayUrl(apiUrl) && isClassified(error) && error.code === 'allowance_exhausted') noteCmemCapExhausted();
+      throw error;
+    }
 
     // A successful cmem-gateway response proves the delivered key is funded
     // again (resubscribed) — clear the trial-expiry fallback marker so
     // dispatch returns to the gateway. No-op for every other endpoint.
     clearProFallbackOnGatewaySuccess(apiUrl);
+    if (isCmemGatewayUrl(apiUrl)) clearCmemCapProbe();
 
     const choice = data.choices?.[0];
     let message = choice?.message;

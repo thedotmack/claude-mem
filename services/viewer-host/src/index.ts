@@ -7,14 +7,17 @@
  * Required env:
  *   VIEWER_OWNER_USER_ID          the cmem.ai user this viewer belongs to
  *   VIEWER_LINK_SECRET            shared with cmem.ai (CMEM_VIEWER_LINK_SECRET), 32+ characters
- *   VIEWER_PUBLIC_ORIGIN          this host's https origin
  *   CLAUDE_MEM_CLOUD_SYNC_TOKEN   the owner's sync token (cmem.ai Connect)
  * Optional:
+ *   VIEWER_PUBLIC_ORIGIN          this host's https origin, default https://cmem-viewer.fly.dev
+ *                                 (set it as a Fly secret to move to a custom domain)
  *   VIEWER_SIGN_IN_URL            default https://cmem.ai/work
  *   CLAUDE_MEM_CLOUD_SYNC_HUB_URL default https://sync.cmem.ai
  *   CLAUDE_MEM_DATA_DIR           default /data/claude-mem (a persistent volume)
  *   CLAUDE_MEM_WORKER_SCRIPT      default /app/plugin/scripts/worker-service.cjs
  *   PORT                          default 8080
+ *   POSTHOG_API_KEY               hosted viewer usage; falls back to the public project key
+ *   POSTHOG_HOST                  default https://us.i.posthog.com
  * Any other CLAUDE_MEM_* setting passes through to the worker unchanged.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -32,7 +35,7 @@ function required(name: string): string {
 const ownerUserId = required('VIEWER_OWNER_USER_ID');
 const secret = required('VIEWER_LINK_SECRET');
 if (secret.length < 32) throw new Error('VIEWER_LINK_SECRET must be at least 32 characters');
-const publicOrigin = required('VIEWER_PUBLIC_ORIGIN');
+const publicOrigin = (process.env.VIEWER_PUBLIC_ORIGIN ?? '').trim() || 'https://cmem-viewer.fly.dev';
 required('CLAUDE_MEM_CLOUD_SYNC_TOKEN');
 
 const workerEnv: Record<string, string> = {

@@ -17,6 +17,7 @@ import { isDirectChild, normalizePath } from '../shared/path-utils.js';
 import { logger } from '../utils/logger.js';
 import { getProjectContext } from '../utils/project-name.js';
 import { replaceTaggedContent } from '../utils/claude-md-utils.js';
+import { findContextBlockRange } from '../utils/context-injection.js';
 import { toBmpSafe } from '../utils/bmp-safe.js';
 import { ensureDirectoryExists, resolveSymlinkWriteTarget } from '../shared/atomic-json.js';
 import { paths } from '../shared/paths.js';
@@ -510,9 +511,12 @@ function processFilesForCleanup(
   return 0;
 }
 
-function cleanSingleFile(file: string, relativePath: string, dryRun: boolean): 'deleted' | 'cleaned' {
-  const content = readFileSync(file, 'utf-8');
-  const stripped = content.replace(/<claude-mem-context>[\s\S]*?<\/claude-mem-context>/g, '').trim();
+export function cleanSingleFile(file: string, relativePath: string, dryRun: boolean): 'deleted' | 'cleaned' {
+  let remaining = readFileSync(file, 'utf-8');
+  for (let block = findContextBlockRange(remaining); block; block = findContextBlockRange(remaining)) {
+    remaining = remaining.slice(0, block.start) + remaining.slice(block.end);
+  }
+  const stripped = remaining.trim();
 
   if (stripped === '') {
     if (!dryRun) {
@@ -558,7 +562,7 @@ export async function cleanClaudeMd(dryRun: boolean): Promise<number> {
         } else if (entry.name === 'CLAUDE.md') {
           try {
             const content = readFileSync(fullPath, 'utf-8');
-            if (content.includes('<claude-mem-context>')) {
+            if (findContextBlockRange(content)) {
               filesToProcess.push(fullPath);
             }
           } catch {

@@ -4,6 +4,7 @@ import { hasStorableTitle } from '../../sqlite/observations/store.js';
 import { parseAgentXml, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
 import {
   classifyObserverOutput,
+  isAnthropicVerificationHoldObserverOutput,
   isAuthFailureObserverOutput,
   isContextOverflowObserverOutput,
   isOrgDisabledSubscriptionObserverOutput,
@@ -549,6 +550,7 @@ export async function processAgentResponse(
     !!text &&
     (isContextOverflowObserverOutput(text) ||
       isQuotaLimitedObserverOutput(text) ||
+      isAnthropicVerificationHoldObserverOutput(text) ||
       isAuthFailureObserverOutput(text) ||
       isTransportFailureObserverOutput(text));
 
@@ -595,6 +597,25 @@ export async function processAgentResponse(
         // best-effort; AbortController.abort() should not throw in normal use.
       }
       worker?.broadcastProcessingStatus?.();
+      return null;
+    }
+
+    if (isAnthropicVerificationHoldObserverOutput(text)) {
+      await sessionManager.resetProcessingToPending(session.sessionDbId);
+      session.abortReason = 'auth:observer_verification_hold';
+      try {
+        session.abortController.abort();
+      } catch {
+        // best-effort; AbortController.abort() should not throw in normal use.
+      }
+      worker?.broadcastProcessingStatus?.();
+      worker?.recordAiInteraction?.({ success: false, error: 'unauthenticated', provider: providerName });
+      // Do not log the response preview: its verification URL contains an account identifier.
+      logger.error('PARSER', `${agentName} refused: Claude account verification is required; queued batch preserved`, {
+        sessionId: session.sessionDbId,
+        outputClass: 'prose',
+        remediation: 'anthropic_verification_portal',
+      });
       return null;
     }
 
@@ -941,7 +962,7 @@ export async function processAgentResponse(
   // at the observation that now summarizes them. It has to happen here and not
   // at ingest — the observation did not exist yet, and neither did
   // memorySessionId. The batch's FIRST observation id owns the link (see
-  // linkToolUsesToObservation), and RECEIPT-JOIN.md documents that
+  // linkToolUsesToObservation), and docs/receipt-join.md documents that
   // observation_id is a pointer into the batch, not a 1:1 mapping; the reliable
   // per-call join stays (content_session_id, tool_use_id).
   //
@@ -1365,7 +1386,8 @@ async function syncAndBroadcastSummary(
     summaryForStore,
     context.promptNumber,
     result.createdAtEpoch,
-    session.platformSource
+    session.platformSource,
+    result.summaryUpdated === true
   ).then(() => {
     const chromaDuration = Date.now() - chromaStart;
     logger.debug('CHROMA', 'Summary synced', {

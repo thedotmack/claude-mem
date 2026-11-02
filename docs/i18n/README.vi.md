@@ -390,7 +390,6 @@ Xem tệp [LICENSE](LICENSE) để biết đầy đủ chi tiết. Xem [docs/lic
 và [docs/ip-boundary.md](docs/ip-boundary.md) để biết phạm vi cấp phép và ranh giới
 mở/thương mại.
 
-**Lưu ý về Ragtime**: Thư mục `ragtime/` được cấp phép theo **Apache License 2.0**. Xem [ragtime/LICENSE](ragtime/LICENSE) để biết chi tiết.
 
 ---
 
