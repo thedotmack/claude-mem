@@ -57,7 +57,7 @@ function runCli(args: string[]) {
 }
 
 describe('npx CLI subcommand --help', () => {
-  for (const sub of ['install', 'update', 'upgrade', 'uninstall', 'remove', 'repair', 'prune', 'start', 'stop', 'restart']) {
+  for (const sub of ['install', 'update', 'upgrade', 'uninstall', 'remove', 'repair', 'prune', 'start', 'stop', 'restart', 'adopt', 'cleanup']) {
     for (const flag of ['--help', '-h']) {
       it(`${sub} ${flag} prints help and does not run the command`, () => {
         const r = runCli([sub, flag]);

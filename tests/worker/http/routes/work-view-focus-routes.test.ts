@@ -91,6 +91,46 @@ const ownerRows = () => (source.prepare("SELECT project, fields FROM work_state_
   .map(row => ({ project: row.project, fields: JSON.parse(row.fields) }));
 
 describe('My Focus routes', () => {
+  it('a read already running before an edit never answers that edit', async () => {
+    const reader = (routes as any).sourceReader;
+    const realRead = reader.read.bind(reader);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let posted = false;
+    reader.read = (...args: [number, string]) => {
+      reader.read = realRead;
+      posted = true;
+      return realRead(...args).then(async (view: unknown) => { await gate; return view; });
+    };
+    const before = snapshot();
+    while (!posted) await Bun.sleep(1);
+    const saved = await saveFocus({ action: 'rename', focusAreaId: 'fa_viewer', name: 'The viewer' });
+    expect(saved.status).toBe(200);
+    expect(areaById(await saved.json(), 'fa_viewer').name).toBe('The viewer');
+    release();
+    expect(areaById(await before, 'fa_viewer').name).toBe('Viewer');
+  });
+
+  it('two merges of the same pair cannot both save', async () => {
+    const answers = await Promise.all([
+      saveFocus({ action: 'merge', focusAreaId: 'fa_viewer', intoFocusAreaId: 'fa_endless' }),
+      saveFocus({ action: 'merge', focusAreaId: 'fa_endless', intoFocusAreaId: 'fa_viewer' }),
+    ]);
+    expect(answers.map(answer => answer.status)).toEqual([200, 409]);
+    const view = await snapshot();
+    expect(areaById(view, 'fa_viewer').mergedInto).toBe('fa_endless');
+    expect(areaById(view, 'fa_endless').mergedInto).toBeFalsy();
+  });
+
+  it('a rename and a goal edit sent together both survive', async () => {
+    const answers = await Promise.all([
+      saveFocus({ action: 'rename', focusAreaId: 'fa_viewer', name: 'The viewer' }),
+      saveFocus({ action: 'edit-goal', focusAreaId: 'fa_viewer', goal: 'Show the work plainly.' }),
+    ]);
+    expect(answers.map(answer => answer.status)).toEqual([200, 200]);
+    expect(areaById(await snapshot(), 'fa_viewer')).toMatchObject({ name: 'The viewer', goal: 'Show the work plainly.' });
+  });
+
   it('shows the areas in priority order and the request as not sorted yet', async () => {
     const view = await snapshot();
     expect(view.focusAreas.map((area: any) => area.name)).toEqual(['Viewer', 'Endless Mode', 'Community']);
@@ -334,14 +374,14 @@ describe('My Focus routes', () => {
       expect(tooLong.status).toBe(400);
       expect(JSON.stringify(await tooLong.json())).toContain('too long to save');
       expect(focusRows()).toBe(before);
-      expect(() => routes.recordRouterFocus({ placements: [{ anchorConversationKey: long, focusAreaId: 'other', basis: BASIS, evidence: 'x' }], proposals: [] })).toThrow(TypeError);
+      await expect(routes.recordRouterFocus({ placements: [{ anchorConversationKey: long, focusAreaId: 'other', basis: BASIS, evidence: 'x' }], proposals: [] })).rejects.toThrow(TypeError);
       // The writer fails on the second row, as a TypeError: the error that reaches the refresh is a plain Error.
       const append = (routes as any).appendWorkStateEntry;
       let calls = 0;
       (routes as any).appendWorkStateEntry = (entry: unknown) => { if (++calls === 2) throw new TypeError('database is locked'); append(entry); };
       const body = { placements: [], proposals: [proposal()] };
       let thrown: unknown;
-      try { routes.recordRouterFocus(body as any); } catch (error) { thrown = error; }
+      try { await routes.recordRouterFocus(body as any); } catch (error) { thrown = error; }
       expect(thrown).toBeInstanceOf(Error);
       expect(thrown).not.toBeInstanceOf(TypeError);
       expect((thrown as Error).message).toBe('Saving the focus step stopped after 1 of 2 rows: database is locked');
@@ -351,9 +391,9 @@ describe('My Focus routes', () => {
       expect(JSON.stringify(await response.json())).toContain('stopped after 1 of 2 rows');
     });
 
-    it('the refresh writes in-process through the same check', () => {
-      expect(() => routes.recordRouterFocus({ placements: [{ anchorConversationKey: CONVERSATION, focusAreaId: 'fa_nope', basis: BASIS, evidence: 'x' }], proposals: [] })).toThrow(TypeError);
-      expect(routes.recordRouterFocus({ placements: [{ anchorConversationKey: CONVERSATION, focusAreaId: 'other', basis: BASIS, evidence: 'Fits no area.' }], proposals: [], otherPassHash: BASIS })).toEqual({ placed: 1, focusAreaIds: [] });
+    it('the refresh writes in-process through the same check', async () => {
+      await expect(routes.recordRouterFocus({ placements: [{ anchorConversationKey: CONVERSATION, focusAreaId: 'fa_nope', basis: BASIS, evidence: 'x' }], proposals: [] })).rejects.toThrow(TypeError);
+      expect(await routes.recordRouterFocus({ placements: [{ anchorConversationKey: CONVERSATION, focusAreaId: 'other', basis: BASIS, evidence: 'Fits no area.' }], proposals: [], otherPassHash: BASIS })).toEqual({ placed: 1, focusAreaIds: [] });
     });
   });
 
@@ -409,7 +449,7 @@ describe('My Focus routes', () => {
     it('a write with no My Work page open does not rebuild just to publish', async () => {
       await snapshot();
       const before = rebuilds();
-      expect(routes.recordRouterFocus({ placements: [{ anchorConversationKey: CONVERSATION, focusAreaId: 'other', basis: BASIS, evidence: 'Fits no area.' }], proposals: [], otherPassHash: BASIS })).toEqual({ placed: 1, focusAreaIds: [] });
+      expect(await routes.recordRouterFocus({ placements: [{ anchorConversationKey: CONVERSATION, focusAreaId: 'other', basis: BASIS, evidence: 'Fits no area.' }], proposals: [], otherPassHash: BASIS })).toEqual({ placed: 1, focusAreaIds: [] });
       expect(rebuilds()).toBe(before);
       // The next reader still sees the write.
       expect(request(await snapshot()).focusAreaId).toBe('other');
@@ -421,7 +461,7 @@ describe('My Focus routes', () => {
       const reader = response.body!.getReader();
       await reader.read();
       try {
-        routes.recordRouterFocus({ placements: [{ anchorConversationKey: CONVERSATION, focusAreaId: 'other', basis: BASIS, evidence: 'Fits no area.' }], proposals: [], otherPassHash: BASIS });
+        await routes.recordRouterFocus({ placements: [{ anchorConversationKey: CONVERSATION, focusAreaId: 'other', basis: BASIS, evidence: 'Fits no area.' }], proposals: [], otherPassHash: BASIS });
         const decoder = new TextDecoder();
         let text = '';
         while (!text.includes('"focusAreaId":"other"')) {

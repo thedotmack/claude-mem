@@ -145,7 +145,8 @@ def read_owner_typed_prompts(cutoff_seconds):
                 timestamp = record.get("timestamp", "")
                 if not text or text.startswith(CODEX_INJECTED_PREFIXES) or not timestamp or iso_to_epoch(timestamp) < cutoff_seconds:
                     continue
-                dedupe_key = (meta.get("id"), timestamp, text[:200])
+                native_prompt_id = payload.get("id")
+                dedupe_key = (meta.get("id") or session_path, native_prompt_id if isinstance(native_prompt_id, str) and native_prompt_id else None, timestamp, text)
                 if dedupe_key in seen_keys:
                     continue
                 seen_keys.add(dedupe_key)

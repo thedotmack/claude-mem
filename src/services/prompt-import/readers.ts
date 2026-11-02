@@ -252,13 +252,15 @@ export function createCodexReader(): AgentPromptReader {
         const text = textOf(payload.content, ['input_text']).trim();
         const at = isoToEpochMs(record.timestamp);
         if (!text || CODEX_INJECTED_PREFIXES.some(prefix => text.startsWith(prefix)) || at === null || at < sinceEpochMs) continue;
-        const dedupeKey = `${meta.id}\u0000${record.timestamp}\u0000${text.slice(0, 200)}`;
+        const sessionId = String(meta.id ?? basename(transcript.path, '.jsonl'));
+        const nativePromptId = typeof payload.id === 'string' && payload.id ? payload.id : fallbackId(String(meta.id), record.timestamp, text);
+        const dedupeKey = fallbackId(sessionId, nativePromptId, String(at), text);
         if (seenKeys.has(dedupeKey)) continue;
         seenKeys.add(dedupeKey);
         sink.prompt({
           agent: 'codex',
-          sessionId: String(meta.id ?? basename(transcript.path, '.jsonl')),
-          nativePromptId: typeof payload.id === 'string' && payload.id ? payload.id : fallbackId(String(meta.id), record.timestamp, text),
+          sessionId,
+          nativePromptId,
           at,
           cwd: typeof meta.cwd === 'string' ? meta.cwd : null,
           text,

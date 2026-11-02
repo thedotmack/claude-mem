@@ -296,6 +296,9 @@ describe('worker spool transport selection', () => {
     expect(usesRemoteHookSpool('worker.internal', 'filesystem')).toBe(false);
     expect(usesRemoteHookSpool('127.0.0.1', ' HTTP ')).toBe(true);
   });
+  it('uses HTTP spool transport for a worker URL in auto mode, including a loopback forward', () => {
+    expect(usesRemoteHookSpool('127.0.0.1', 'auto', 'http://127.0.0.1:37777')).toBe(true);
+  });
   it('refuses token values that cannot safely be placed in an HTTP header', () => {
     expect(remoteHookSpoolToken(' token ')).toBe('token');
     for (const value of ['token\nheader', 'token\rheader', 'token\0', 'x'.repeat(1025), null, 42]) {

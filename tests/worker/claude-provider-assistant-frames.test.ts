@@ -498,3 +498,65 @@ describe('ClaudeProvider MEMORY_ID_CAPTURED spawn-health line (#4150)', () => {
     expect(lines[0]).toStartWith(`MEMORY_ID_CAPTURED | sessionDbId=3492 | memorySessionId=${MEMORY_SESSION_ID} |`);
   });
 });
+
+describe('ClaudeProvider per-turn usage visibility (#5023)', () => {
+  let infoSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    scriptedMessages = [];
+    infoSpy = spyOn(logger, 'info').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    infoSpy.mockRestore();
+  });
+
+  it('logs finalized result-frame counts once without including prompt content', async () => {
+    const session = createSession();
+    const harness = createHarness(session);
+    const promptText = 'private observation prompt content';
+    session.userPrompt = promptText;
+
+    scriptedMessages = [
+      assistantFrame([{ type: 'text', text: OBSERVATION_XML }]),
+      resultFrame({
+        usage: {
+          input_tokens: 101,
+          cache_creation_input_tokens: 202,
+          cache_read_input_tokens: 303,
+          output_tokens: 40,
+        },
+      }),
+    ];
+
+    await harness.provider.startSession(session);
+
+    const usageCalls = infoSpy.mock.calls.filter(call => call[1] === 'Observer turn usage');
+    expect(usageCalls).toHaveLength(1);
+    expect(usageCalls[0]?.[2]).toEqual({
+      sessionId: 3492,
+      promptNumber: 2,
+      inputTokens: 101,
+      cacheCreationInputTokens: 202,
+      cacheReadInputTokens: 303,
+      fullContextTokens: 606,
+      outputTokens: 40,
+    });
+    expect(JSON.stringify(usageCalls[0])).not.toContain(promptText);
+  });
+
+  it('does not log usage for the synthetic init result', async () => {
+    const session = createSession();
+    session.lastGeneratorSource = 'init';
+    const harness = createHarness(session);
+
+    scriptedMessages = [
+      assistantFrame([{ type: 'text', text: OBSERVATION_XML }]),
+      resultFrame(),
+    ];
+
+    await harness.provider.startSession(session);
+
+    expect(infoSpy.mock.calls.filter(call => call[1] === 'Observer turn usage')).toHaveLength(0);
+  });
+});
