@@ -374,6 +374,23 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
       };
     }
 
+    case 'devin': {
+      return {
+        title: 'Devin: installing hooks',
+        task: async (message) => {
+          message('Loading Devin installer…');
+          const { installDevinHooks } = await import('../../services/integrations/DevinHooksInstaller.js');
+          message('Installing Devin hooks…');
+          const { result, output } = await bufferConsole(async () => installDevinHooks());
+          if (result !== 0) {
+            recordFailure('Devin: hook installation failed', output);
+            return `Devin: hook installation failed ${styleText('red', 'FAIL')}`;
+          }
+          return `Devin: hooks installed ${styleText('green', 'OK')}`;
+        },
+      };
+    }
+
     case 'opencode': {
       return {
         title: 'OpenCode: installing plugin',
