@@ -256,6 +256,7 @@ describe('Claude credential fallback: order and booking', () => {
   it.each([
     ['subscription', 'auth:observer_text'],
     ['subscription', 'auth:observer_org_policy'],
+    ['subscription', 'auth:observer_verification_hold'],
     ['api-key', 'auth:auth_invalid'],
   ] as const)('automatically retries the primary after a refused %s fallback (%s)', async (target, reason) => {
     process.env.CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD = target;

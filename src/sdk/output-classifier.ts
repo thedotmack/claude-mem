@@ -244,6 +244,20 @@ export function isOrgDisabledSubscriptionObserverOutput(raw: unknown): boolean {
 }
 
 /**
+ * Detect Claude Code's Anthropic verification-hold response. It is an account
+ * refusal rather than observer prose: requeue the claimed work and tell the
+ * owner to complete verification. Keep the complete CLI envelope anchored so
+ * an observation that discusses the portal is not mistaken for a refusal.
+ */
+export function isAnthropicVerificationHoldObserverOutput(raw: unknown): boolean {
+  if (typeof raw !== 'string' || raw.trim() === '') return false;
+  if (/<(observation|summary)\b/i.test(raw) || /<skip_summary\b/i.test(raw)) return false;
+
+  const text = raw.toLowerCase().replace(/\s+/g, ' ').trim();
+  return /^api error:\s*your account can(?:not|'t|’t) receive replies from claude right now[.!]?\s+you can find the next step in the anthropic verification portal:\s*https:\/\/portal\.anthropic\.com\/verify\?org=[^\s]+[.!]?$/.test(text);
+}
+
+/**
  * Detect provider authentication-failure prose so claimed work can be retried
  * after the user restores provider authentication.
  */
