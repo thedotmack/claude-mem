@@ -165,7 +165,7 @@ export function createClaudeCodeReader(): AgentPromptReader {
     async readPrompts(transcript, sink, sinceEpochMs) {
       sink.session(basename(transcript.path, '.jsonl'));
       for await (const line of readLines(transcript.path)) {
-        if (!line.includes('"type":"user"')) continue;
+        if (!/"type"\s*:\s*"user"/.test(line)) continue;
         const record = parseLine(line);
         if (!record || typeof record !== 'object') continue;
         if (typeof record.sessionId === 'string') sink.session(record.sessionId);
@@ -192,7 +192,7 @@ export function createClaudeCodeReader(): AgentPromptReader {
     },
     async readAgentText(transcript, add) {
       for await (const line of readLines(transcript.path)) {
-        if (!line.includes('"type":"assistant"')) continue;
+        if (!/"type"\s*:\s*"assistant"/.test(line)) continue;
         const record = parseLine(line);
         const content = record?.message?.content;
         const pieces: string[] = [];
