@@ -91,6 +91,19 @@ describe('redactSensitive built-in patterns', () => {
     expect(Object.keys(result.counts)).toEqual([name]);
   });
 
+  // A PyPI token is the macaroon after `pypi-`; split for push protection too.
+  const pypiMacaroon = 'AgE' + 'IcHlwaS5vcmcCJGQ1ZjE2NzBkLTk0NWUtNGNhYS1iMDhkLTI5ZDc2ZTA1MWQ2YwACKlsz-_9';
+  it.each([
+    ['password = ' + 'pyp' + 'i-' + pypiMacaroon + ' tail'],
+    ['UV_PUBLISH_TOKEN=' + 'pyp' + 'i-' + pypiMacaroon + ' tail'],
+    ['twine upload -u __token__ -p ' + 'pyp' + 'i-' + pypiMacaroon + ' tail'],
+  ])('redacts a pypi_token in %s', (input) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain("<redacted type='pypi_token'/> tail");
+    expect(result.redacted).not.toContain('AgEIcHlwaS5vcmc');
+    expect(Object.keys(result.counts)).toEqual(['pypi_token']);
+  });
+
   it.each([
     'glpat-short',
     'gldt-short',
@@ -100,7 +113,32 @@ describe('redactSensitive built-in patterns', () => {
     'dckr_pat_short',
     'the hf_transformers module',
     'npm_config_cache=/tmp/x',
+    'pypi-AgEshort',
+    'pypi-simple index',
   ])(
+    'leaves %s alone',
+    (input) => {
+      expect(redactSensitive(input, cfg).redacted).toBe(input);
+    },
+  );
+
+  // Provider API keys that CLIs and `.env` files print; fixtures are split so
+  // push protection doesn't flag them.
+  it.each([
+    ['sendgrid_key', 'SENDGRID_API_KEY=' + 'S' + 'G.aBcDeFgHiJkLmNoPqRsTuV.aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789_-aBcDe tail'],
+    ['digitalocean_token', 'DIGITALOCEAN_TOKEN=' + 'do' + 'p_v1_' + '0123456789abcdef'.repeat(4) + ' tail'],
+    ['digitalocean_token', 'refresh_token: ' + 'do' + 'r_v1_' + 'fedcba9876543210'.repeat(4) + ' tail'],
+    ['shopify_token', 'SHOPIFY_ACCESS_TOKEN=' + 'sh' + 'pat_' + '0123456789abcdef'.repeat(2) + ' tail'],
+    ['shopify_token', 'secret ' + 'sh' + 'pss_' + 'ABCDEF0123456789'.repeat(2) + ' tail'],
+  ])('redacts a %s', (name, input) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain(`<redacted type='${name}'/>`);
+    expect(result.redacted).toMatch(/^.*'\/> tail$/);
+    expect(result.redacted).not.toMatch(/SG\.a|_v1_|shp(?:at|ss)_/);
+    expect(Object.keys(result.counts)).toEqual([name]);
+  });
+
+  it.each(['SG.short.key', 'dop_v1_short', 'shpat_short', 'the shpat_ prefix'])(
     'leaves %s alone',
     (input) => {
       expect(redactSensitive(input, cfg).redacted).toBe(input);
@@ -329,6 +367,23 @@ describe('redactSensitive generic built-in patterns', () => {
     expect(result.redacted).not.toContain(secret);
   });
 
+  it.each([
+    ['in a curl header', 'curl -H "Authorization: Basic dXNlcjpodW50ZXIy" https://x', 'dXNlcjpodW50ZXIy'],
+    ['lowercase header', 'proxy-authorization: basic YWxhZGRpbjpvcGVuc2VzYW1l',     'YWxhZGRpbjpvcGVuc2VzYW1l'],
+  ])('basic_auth redacts a %s', (_style, input, secret) => {
+    for (const text of [input, JSON.stringify({ stdout: input })]) {
+      const result = redactSensitive(text, cfg);
+      expect(result.counts.basic_auth).toBe(1);
+      expect(result.redacted).not.toContain(secret);
+    }
+  });
+
+  it('basic_auth leaves prose and short or numeric values alone', () => {
+    for (const text of ['Basic configuration is covered below', 'Authorization: Basic', 'Authorization: Basic 12345678']) {
+      expect(redactSensitive(text, cfg).redacted).toBe(text);
+    }
+  });
+
   it('does NOT redact numeric, short or non-secret lookalikes', () => {
     const inputs = [
       'password=12345678',        // purely numeric
@@ -449,6 +504,26 @@ describe('redactSensitive generic built-in patterns', () => {
     const result = redactJsonStrings({ headers: { Authorization: value } }, cfg) as { headers: { Authorization: string } };
     expect(result.headers.Authorization).toBe(expected);
     expect(redactSensitive(`Authorization: ${value}`, cfg).redacted).toBe(`Authorization: ${expected}`);
+  });
+
+  it('redacts the Basic credentials of an Authorization header object (structured events)', () => {
+    const event = { headers: { Authorization: 'Basic dXNlcjpodW50ZXIy', accept: 'application/json' } };
+    const result = redactJsonStrings(event, cfg) as typeof event;
+    expect(result.headers.Authorization).toBe("Basic <redacted type='basic_auth'/>");
+    expect(result.headers.accept).toBe('application/json');
+    const off = { ...cfg, disabledBuiltinPatterns: ['basic_auth'] };
+    expect(redactJsonStrings(event, off)).toEqual(event);
+    expect(redactJsonStrings(event, { enabled: true })).toEqual(event);
+  });
+
+  it.each([
+    ['Basic',  'Basic dXNlcjpodW50ZXIy',  "Basic <redacted type='basic_auth'/>"],
+    ['Bearer', 'Bearer abc12345defghi',   "Bearer <redacted type='bearer_token'/>"],
+  ])('redacts the %s credentials of a Proxy-Authorization header object (structured events)', (_scheme, value, expected) => {
+    for (const key of ['Proxy-Authorization', 'proxy-authorization']) {
+      expect(redactJsonStrings({ [key]: value }, cfg)).toEqual({ [key]: expected });
+      expect(redactJsonStrings({ [key]: value }, { enabled: true })).toEqual({ [key]: value });
+    }
   });
 
   it('leaves non-secret or opted-out Authorization header values alone', () => {

@@ -140,6 +140,19 @@ export function isUnknownReasoningParameter(text: string): boolean {
   return /unknown (?:parameter|field|argument)|unrecognized (?:parameter|field|argument)|unexpected (?:parameter|field|argument)|unsupported parameter|extra fields?|additional propert|not permitted/.test(lower);
 }
 
+/**
+ * OpenRouter's 400 when the endpoint refuses `reasoning.enabled: false`:
+ * "Reasoning is mandatory for this endpoint and cannot be disabled."
+ * The request is resent once without the field (#5265). This is not an
+ * unknown-field 400, which {@link isUnknownReasoningParameter} matches, and
+ * it is not remembered against the URL: a router picks a different model
+ * next time.
+ */
+export function isReasoningDisabledRejection(text: string): boolean {
+  const lower = text.toLowerCase();
+  return lower.includes('reasoning') && isMandatoryReasoningRejection(lower);
+}
+
 export function reasoningBudgetRetryMessage(label: string): string {
   return `${label} reply was empty because reasoning consumed the output budget; retrying with reasoning disabled`;
 }

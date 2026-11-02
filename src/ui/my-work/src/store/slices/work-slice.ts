@@ -143,6 +143,8 @@ export const createWorkSlice: SliceCreator<WorkSlice> = (set, get) => {
 
     loadRulesInClaudeCode: async () => { await saving('load the rules from', (to) => to.loadRulesInClaudeCode(), (model) => model) },
 
+    refreshWork: () => activeSource('start a refresh on').refreshWork(),
+
     updateSampleRequest: (id, change) => {
       const load = get().work.load
       if (load.state !== 'loaded') throw new Error(`Sample request ${id} changed before the work model loaded`)

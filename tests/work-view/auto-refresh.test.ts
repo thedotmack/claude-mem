@@ -54,6 +54,22 @@ function deferred<T>() {
 }
 
 describe('automatic refresh scheduler', () => {
+  it('allows an on-demand run while scheduled refresh is disabled', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
+    try {
+      const database = fixtureDatabase();
+      const jobs: Array<{ needs: any; reason: string }> = [];
+      const worker = new AutoRefreshWorker({
+        localDeviceId: () => '', dir, openDatabase: handle(database), enabled: () => false,
+        runJob: async job => { jobs.push(job); return { state: 'ok', agent: 'claude-code', result: 'done', error: null }; },
+      });
+      expect(await worker.check()).toBe('disabled');
+      expect(await worker.runNow({ reason: 'manual' })).toBe('ok');
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0].reason).toBe('manual');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('starts one run when something is due, never a second while it runs, and records the result', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
     try {
@@ -95,6 +111,87 @@ describe('automatic refresh scheduler', () => {
       writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: {} }));
       expect(await worker.runNow({ reason: 'setup-scan' })).toBe('ok');
       expect(ran).toBe(true);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('repairs a run cut off by a restart at startup even with scheduled refresh off, so My Work never stays stuck on it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
+    try {
+      writeFileSync(join(dir, 'refresh.json'), JSON.stringify({ state: 'running', pid: 2 ** 22 + 12345, reason: 'manual', startedAt: new Date(NOW - DAY).toISOString() }));
+      const worker = new AutoRefreshWorker({
+        localDeviceId: () => '', dir, openDatabase: handle(fixtureDatabase()), enabled: () => false, now: () => NOW,
+        runJob: async () => { throw new Error('a disabled worker must not run'); },
+      });
+      worker.start();
+      worker.close();
+      const status = worker.status();
+      expect(status).toMatchObject({ state: 'failed', reason: 'manual', error: 'The previous refresh stopped before finishing.' });
+      expect(status.failures).toBeUndefined();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('startup leaves alone a run another live worker owns', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
+    try {
+      const owned = { state: 'running', pid: process.ppid, startedAt: new Date(NOW).toISOString() };
+      writeFileSync(join(dir, 'refresh.json'), JSON.stringify(owned));
+      const worker = new AutoRefreshWorker({
+        localDeviceId: () => '', dir, openDatabase: handle(fixtureDatabase()), enabled: () => false, now: () => NOW,
+        runJob: async () => { throw new Error('must not run'); },
+      });
+      worker.start();
+      worker.close();
+      expect(worker.status()).toEqual(owned);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a manual refresh does not start while another live worker owns a run, or while setup runs', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
+    try {
+      let setup = true;
+      const worker = new AutoRefreshWorker({
+        localDeviceId: () => '', dir, openDatabase: handle(fixtureDatabase()), setupRunning: () => setup, now: () => NOW,
+        runJob: async () => { throw new Error('must not run'); },
+      });
+      expect(await worker.runNow({ reason: 'manual' })).toBe('setup-running');
+      setup = false;
+      writeFileSync(join(dir, 'refresh.json'), JSON.stringify({ state: 'running', pid: process.ppid, startedAt: new Date(NOW).toISOString() }));
+      expect(await worker.runNow({ reason: 'manual' })).toBe('running');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('records a failed status when opening the database prevents a manual refresh from starting', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
+    try {
+      const error = new Error('database is unavailable');
+      const worker = new AutoRefreshWorker({
+        localDeviceId: () => 'device-1', dir, openDatabase: () => { throw error; }, now: () => NOW,
+        runJob: async () => { throw new Error('refresh job must not start'); },
+      });
+
+      expect(await worker.runNow({ reason: 'manual' })).toBe('failed');
+      expect(worker.status()).toMatchObject({
+        state: 'failed', reason: 'manual', startedAt: new Date(NOW).toISOString(),
+        finishedAt: new Date(NOW).toISOString(), needs: null, error: error.message,
+        nextAt: new Date(NOW + 10 * 60000).toISOString(), failures: 1,
+      });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('records a failed status when a damaged saved ledger prevents a manual refresh from starting', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
+    try {
+      writeFileSync(join(dir, 'request-groups.json'), '{ damaged json');
+      const worker = new AutoRefreshWorker({
+        localDeviceId: () => 'device-1', dir, openDatabase: handle(fixtureDatabase()), now: () => NOW,
+        runJob: async () => { throw new Error('refresh job must not start'); },
+      });
+
+      expect(await worker.runNow({ reason: 'manual' })).toBe('failed');
+      expect(worker.status()).toMatchObject({
+        state: 'failed', reason: 'manual', needs: null,
+        error: expect.stringContaining('JSON'), nextAt: new Date(NOW + 10 * 60000).toISOString(), failures: 1,
+      });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 

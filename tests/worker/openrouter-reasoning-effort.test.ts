@@ -95,6 +95,25 @@ describe('buildOpenRouterRequestBody reasoning effort', () => {
     expect(observation.reasoning).toEqual({ max_tokens: OBSERVER_REASONING_BUDGET_TOKENS_BY_EFFORT.high });
   });
 
+  it('can omit the reasoning field, including one the extra body would put back', () => {
+    const openrouter = buildOpenRouterRequestBody({
+      ...base,
+      apiUrl: OPENROUTER_URL,
+      omitReasoning: true,
+      extraBody: { reasoning: { enabled: false }, temperature: 0.1 },
+    });
+    expect(openrouter.reasoning).toBeUndefined();
+    expect(openrouter.temperature).toBe(0.1);
+    expect(openrouter.max_tokens).toBe(base.maxOutputTokens);
+    expect(openRouterReasoningBudgetTokens({ apiUrl: OPENROUTER_URL, omitReasoning: true, reasoningEffort: 'high' })).toBe(0);
+
+    const wrapUp = buildOpenRouterRequestBody({
+      ...base, apiUrl: OPENROUTER_URL, plainText: true, omitReasoning: true,
+    });
+    expect(wrapUp.reasoning).toBeUndefined();
+    expect(wrapUp.response_format).toEqual({ type: 'text' });
+  });
+
   it('leaves a custom gateway field condensation to its own extra body', () => {
     const body = buildOpenRouterRequestBody({
       ...base,

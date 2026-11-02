@@ -445,12 +445,14 @@ export async function startGeneratorWithProvider(
       // cmem gateway's key_invalid is the trial-expiry fallback, not an outage.
       // It is booked as the refused credential it is (auth_invalid), so the
       // SessionStart banner shows at once with the /login remedy rather than
-      // waiting out the failure threshold and then offering a restart.
+      // waiting out the failure threshold and then offering a restart. The same
+      // prose appears when the worker cannot read a credential that exists
+      // (#5250), so the notice names that as the next check after /login.
       if (reason === 'auth:observer_text' && provider === 'claude' && !failureBooked) {
         recordObserverFailure(provider, {
-          message: 'Claude Code reported the observer as signed out',
+          message: 'Claude Code could not authenticate the observer',
           kind: 'auth_invalid',
-          action: 'Run /login in Claude Code (or `claude auth login` in a terminal) to refresh the observer credentials',
+          action: 'Run /login in Claude Code (or `claude auth login` in a terminal) to refresh the observer credentials. If you are already signed in, check the worker log for OAUTH credential-store lookup errors',
         });
       }
       if (reason === 'auth:observer_verification_hold' && provider === 'claude' && !failureBooked) {
