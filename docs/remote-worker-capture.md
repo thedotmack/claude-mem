@@ -22,6 +22,10 @@ or the worker answers 403. A TLS proxy on the worker's own machine connects from
 loopback, so the worker treats every request through it as local, including
 `/api/admin/*`. Block those paths at the proxy.
 
+The URL applies to the hook commands, the MCP server and the `npx claude-mem`
+commands. The Hermes, OpenClaw and OpenCode integrations keep their own host and
+port settings and do not read it.
+
 Configure `CLAUDE_MEM_WORKER_INGEST_TOKEN` with the same shared secret on the
 worker and every client. Set it in the environment or in each machine's
 `~/.claude-mem/settings.json`; keep credentials out of repositories. The new
