@@ -83,8 +83,8 @@ export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recen
   if (keptLocal) {
     return (
       <section aria-labelledby="reveal-title">
-        <PageHeading id="reveal-title" title="Your prompts stayed on this computer."
-          lead="Nothing was uploaded, so there are no goals, work or rules to show yet. You can continue setting up claude-mem." />
+        <PageHeading id="reveal-title" title="Continue with local setup."
+          lead="Your prompts stayed on this computer. Finish setup to start using Claude-Mem." />
         <div className="actions is-centered">
           <button type="button" className="primary" onClick={onContinue}>Continue <ArrowRightIcon aria-hidden="true" /></button>
         </div>

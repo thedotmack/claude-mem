@@ -13,7 +13,7 @@ const STATUS: Record<SetupScanPhase, string> = {
   reading: 'Looking for usage history.',
   checking: 'Checking repeated context.',
   saving: 'Preparing your usage summary.',
-  'awaiting-consent': 'Scan finished. Nothing has left this computer. Choose what happens next.',
+  'awaiting-consent': 'Choose which tools to include, or keep everything local.',
   uploading: 'Uploading your prompts to cmem.ai to find your goals, work and rules.',
   done: 'Preparing your usage summary.',
   failed: 'Setup stopped. Try again when you are ready.',
@@ -39,7 +39,7 @@ export function ScanScreen({ scan, onImproveProductChange, onConfirmUpload, cons
   const reducedMotion = useMatchesMedia('(prefers-reduced-motion: reduce)')
   return (
     <section aria-labelledby="scan-title">
-      <PageHeading id="scan-title" title="Checking your AI usage." lead={detected.map((agent) => agent.label).join(' · ') || undefined} />
+      <PageHeading id="scan-title" title={scan.phase === 'awaiting-consent' ? 'Find your work, goals and rules.' : 'Checking your AI usage.'} lead={detected.map((agent) => agent.label).join(' · ') || undefined} />
       <div className="panel is-memory scan-panel">
         {/* Texture behind the panel's content; reduced motion holds the dots still (speedScale 0). */}
         <DottedGlowBackground className="scan-dots" gap={16} radius={1.5} color="rgba(75, 70, 200, 0.5)" glowColor="rgba(91, 87, 230, 0.9)" opacity={0.5} speedScale={reducedMotion ? 0 : 1} />
@@ -68,10 +68,13 @@ export function ScanScreen({ scan, onImproveProductChange, onConfirmUpload, cons
         {scan.phase === 'awaiting-consent' && (
           <div className="scan-consent" role="group" aria-label="Upload your prompts">
             <p>
-              To find your goals, work and rules, claude-mem can upload the <strong>full text of the prompts you typed in the last 30 days</strong>,
-              with session IDs, project names, folder paths and timestamps, to cmem.ai. They are processed by a third-party AI model provider.
-              If you skip this, your history stays on this computer.
+              Turn your last 30 days of prompts into work, goals and rules. If you upload, we send the full prompt text
+              from your selected tools to cmem.ai for processing by an AI provider.
             </p>
+            <details className="scan-consent-details">
+              <summary>What gets uploaded?</summary>
+              <p>Your prompts include session IDs, project names, folder paths and timestamps.</p>
+            </details>
             <ul className="scan-consent-agents" aria-label="Tools to upload">
               {uploadable.map((agent) => (
                 <li key={agent.id}>

@@ -84,7 +84,14 @@ describe('hosted setup scan control', () => {
     expect(sending).toMatch(/<button[^>]*disabled[^>]*>Upload my prompts/);
     expect(app.renderScan(scan({ phase: 'awaiting-consent' }), null, false, null, 'Could not send your choice')).toContain('class="scan-error" role="alert">Could not send your choice');
     expect(app.renderScan(scan({ phase: 'awaiting-consent', agents: [{ id: 'codex', label: 'Codex', detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null }] }))).toContain('Codex (3 prompts)');
-    expect(consent).toContain('full text of the prompts you typed in the last 30 days');
+    // The decision's essential facts stay visible; only supporting metadata is expandable.
+    const visibleConsent = consent.replace(/<details\b[^>]*>[\s\S]*?<\/details>/g, '');
+    expect(visibleConsent).toContain('last 30 days of prompts');
+    expect(visibleConsent).toContain('full prompt text');
+    expect(visibleConsent).toContain('cmem.ai');
+    expect(visibleConsent).toContain('AI provider');
+    expect(consent).toContain('What gets uploaded?');
+    expect(consent).toContain('session IDs, project names, folder paths and timestamps');
     expect(app.renderScan(scan({ phase: 'saving' }))).not.toContain('disabled=""');
     expect(app.renderScan(scan({ phase: 'uploading' }))).toContain('disabled=""');
   });

@@ -107,6 +107,9 @@
 .scan-improve-product input { flex: none; accent-color: var(--violet); }
 .scan-improve-product:has(input:disabled) { cursor: default; }
 .scan-consent { margin-top: 28px; padding: 24px 28px; border: 1px solid #d9dcfb; border-radius: 16px; background: #fff; font-size: 17px; line-height: 1.5; }
+.scan-consent-details { margin-top: 12px; color: var(--muted); font-size: 15px; }
+.scan-consent-details summary { cursor: pointer; }
+.scan-consent-details p { margin-top: 8px !important; }
 .scan-consent-agents { list-style: none; margin: 16px 0 0; padding: 0; display: grid; gap: 8px; }
 .scan-consent-agents label { display: flex; align-items: baseline; gap: 8px; cursor: pointer; }
 .scan-consent-agents input { flex: none; accent-color: var(--violet); }
