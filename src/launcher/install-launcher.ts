@@ -757,6 +757,54 @@ function removeStalePlacementLeftovers(binDirectory: string, platformPath: typeo
   }
 }
 
+// Antivirus keeps a handle on the .exe the probe just ran. #5248 traced this
+// with Restart Manager: Norton held it for more than 15 s, and the rename had
+// failed 1 ms after the probe. 40 retries of 500 ms (20 s, the tracer's
+// suggestion) outlasts that one measurement; it is not a known upper bound, so
+// running out fails loudly with the likely cause.
+const WINDOWS_LAUNCHER_RENAME_RETRY_COUNT = 40;
+const WINDOWS_LAUNCHER_RENAME_RETRY_DELAY_MS = 500;
+const WINDOWS_FILE_LOCK_ERROR_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
+
+/** The file operations placement performs, injectable so tests can fake a locked file on any host. */
+export interface LauncherPlacementFileOperations {
+  rename(fromPath: string, toPath: string): void;
+  remove(filePath: string): void;
+  sleep(milliseconds: number): void;
+}
+
+const realPlacementFileOperations: LauncherPlacementFileOperations = {
+  rename: renameSync,
+  remove: (filePath) => rmSync(filePath, { force: true }),
+  sleep: sleepSync,
+};
+
+/** Rename that waits out a Windows file lock. Other platforms and other errors throw at once. */
+export function renameLauncherWithRetry(
+  fromPath: string,
+  toPath: string,
+  platform: NodeJS.Platform,
+  fileOperations: LauncherPlacementFileOperations = realPlacementFileOperations,
+): void {
+  for (let retriesDone = 0; ; retriesDone++) {
+    try {
+      fileOperations.rename(fromPath, toPath);
+      return;
+    } catch (renameError: unknown) {
+      const errorCode = (renameError as NodeJS.ErrnoException).code ?? '';
+      if (platform !== 'win32' || !WINDOWS_FILE_LOCK_ERROR_CODES.has(errorCode)) throw renameError;
+      if (retriesDone >= WINDOWS_LAUNCHER_RENAME_RETRY_COUNT) {
+        const waitedSeconds = (WINDOWS_LAUNCHER_RENAME_RETRY_COUNT * WINDOWS_LAUNCHER_RENAME_RETRY_DELAY_MS) / 1000;
+        throw Object.assign(
+          new Error(`could not rename ${fromPath} to ${toPath}: still ${errorCode} after waiting ${waitedSeconds} s. The file is locked, probably by antivirus scanning it; wait a minute and try again, or exclude ${windowsPath.dirname(toPath)} from scanning`, { cause: renameError }),
+          { code: errorCode },
+        );
+      }
+      fileOperations.sleep(WINDOWS_LAUNCHER_RENAME_RETRY_DELAY_MS);
+    }
+  }
+}
+
 /**
  * Moves the compiled temp file onto the launcher path. POSIX rename replaces
  * the target atomically and a hook already running the old binary keeps its
@@ -768,17 +816,18 @@ function moveCompiledLauncherIntoPlace(
   binaryPath: string,
   binDirectory: string,
   platform: NodeJS.Platform,
+  fileOperations: LauncherPlacementFileOperations,
 ): void {
   if (platform !== 'win32' || !existsSync(binaryPath)) {
-    renameSync(temporaryOutfilePath, binaryPath);
+    renameLauncherWithRetry(temporaryOutfilePath, binaryPath, platform, fileOperations);
     return;
   }
   const renamedAsidePath = windowsPath.join(binDirectory, `claude-mem.old-${process.pid}.exe`);
-  renameSync(binaryPath, renamedAsidePath);
+  renameLauncherWithRetry(binaryPath, renamedAsidePath, platform, fileOperations);
   try {
-    renameSync(temporaryOutfilePath, binaryPath);
+    renameLauncherWithRetry(temporaryOutfilePath, binaryPath, platform, fileOperations);
   } catch (moveInError: unknown) {
-    renameSync(renamedAsidePath, binaryPath);
+    renameLauncherWithRetry(renamedAsidePath, binaryPath, platform, fileOperations);
     throw moveInError;
   }
 }
@@ -803,6 +852,7 @@ export function ensureLauncherOnPath(options: {
   readBunVersion?: LauncherBunVersionReader;
   runCodesign?: LauncherCodesignRunner;
   runPowerShell?: PowerShellRunner;
+  placementFileOperations?: LauncherPlacementFileOperations;
 }): LauncherEnsureResult {
   const { logger, invocationContext } = options;
   const host = options.host ?? currentLauncherHostEnvironment();
@@ -863,6 +913,7 @@ export function ensureLauncherOnPath(options: {
   const temporaryOutfilePath = platformPath.join(binDirectory, `.claude-mem-${process.pid}.tmp${executableSuffix}`);
   const runCompile = options.runCompile ?? runBunCompile;
   const runCodesign = options.runCodesign ?? runAdhocCodesign;
+  const placementFileOperations = options.placementFileOperations ?? realPlacementFileOperations;
   try {
     const compileResult = runCompile(
       compileBunPath,
@@ -896,9 +947,16 @@ export function ensureLauncherOnPath(options: {
       const bunSignFix = launcherSignatureFixHint(host.platform, compiledProbe, bunVersion);
       throw new Error(`compiled launcher printed protocol ${compiledProbe.protocol}, expected ${LAUNCHER_PROTOCOL}${probeFailure}${signFailure}${bunSignFix}`);
     }
-    moveCompiledLauncherIntoPlace(temporaryOutfilePath, binaryPath, binDirectory, host.platform);
+    moveCompiledLauncherIntoPlace(temporaryOutfilePath, binaryPath, binDirectory, host.platform, placementFileOperations);
   } finally {
-    rmSync(temporaryOutfilePath, { force: true });
+    // A throw here would replace the real error: in #5248 the user saw this
+    // EPERM instead of the rename's EBUSY. removeStalePlacementLeftovers sweeps
+    // a file left behind on a later run.
+    try {
+      placementFileOperations.remove(temporaryOutfilePath);
+    } catch (cleanupError: unknown) {
+      logger.warn(`Could not remove ${temporaryOutfilePath}: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}; a later run removes it`);
+    }
   }
   logger.success(`claude-mem launcher installed at ${binaryPath} (protocol ${LAUNCHER_PROTOCOL})`);
 
