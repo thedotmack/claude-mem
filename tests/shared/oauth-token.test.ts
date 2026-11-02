@@ -523,7 +523,10 @@ describe('readMacOsKeychain with an injected execImpl (#2753)', () => {
       expect(warning).toHaveBeenCalledWith('OAUTH', 'macOS keychain lookup failed', expect.objectContaining({
         service: 'Claude Code-credentials',
         account: 'kirat',
-        diagnostic: { exitCode: 36, errorCode: null, signal: 'SIGTERM', stderr },
+        exitCode: 36,
+        errorCode: null,
+        signal: 'SIGTERM',
+        stderr,
       }), error);
     } finally {
       warning.mockRestore();

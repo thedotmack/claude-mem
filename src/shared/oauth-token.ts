@@ -237,12 +237,10 @@ export async function readMacOsKeychain(
     logger.warn('OAUTH', 'macOS keychain lookup failed', {
       service: serviceName,
       account,
-      diagnostic: {
-        exitCode: typeof commandError.code === 'number' ? commandError.code : null,
-        errorCode: typeof commandError.code === 'string' ? commandError.code : null,
-        signal: typeof commandError.signal === 'string' ? commandError.signal : null,
-        stderr: stderr.trim().slice(-1000) || null,
-      },
+      exitCode: typeof commandError.code === 'number' ? commandError.code : null,
+      errorCode: typeof commandError.code === 'string' ? commandError.code : null,
+      signal: typeof commandError.signal === 'string' ? commandError.signal : null,
+      stderr: stderr.trim().slice(-1000) || null,
     }, err);
     return {
       kind: 'absent',

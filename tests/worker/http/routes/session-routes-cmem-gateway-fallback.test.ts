@@ -995,9 +995,10 @@ describe('SessionRoutes — cmem gateway integrity', () => {
       // Paused, not finalized: the batch waits for the re-login.
       expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
 
-      // Shown at once, with the /login remedy: a restart cannot sign the CLI in.
+      // Shown at once, with guidance that distinguishes worker credential-store access from a signed-out CLI.
       const notice = observerHealthWarning();
-      expect(notice).toContain('What to do: Run /login in Claude Code');
+      expect(notice).toContain('What to do: Check worker OAUTH logs for credential-store lookup errors first.');
+      expect(notice).toContain('If Claude Code itself is signed out, run /login or `claude auth login`');
       expect(notice).not.toContain('npx claude-mem restart');
     });
 
