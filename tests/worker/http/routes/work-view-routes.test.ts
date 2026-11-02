@@ -30,6 +30,7 @@ async function start(humanCopy: HumanCopyWorker | null = null) {
   const app = express();
   app.use(express.json());
   routes.setupRoutes(app);
+  app.get('/probe', (_req, res) => { res.json({ ok: true }); }); // Touches no database: answers only if the event loop is free.
   await new Promise<void>(resolve => { server = app.listen(0, '127.0.0.1', resolve); });
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('No test port');
@@ -105,6 +106,109 @@ function seedLinkedEvidence(promptText = 'Build a local work viewer') {
 }
 
 describe('local work view', () => {
+  /** A database in rollback-journal mode, where another connection's lock really blocks a reader (WAL readers never wait). */
+  async function restartOnLockableDatabase() {
+    await stop();
+    source.close();
+    databasePath = join(directory, 'lockable.db');
+    source = new Database(databasePath);
+    source.exec('CREATE TABLE work_state_entries (id INTEGER PRIMARY KEY, project TEXT, list_name TEXT, fields TEXT, created_at_epoch INTEGER)');
+    nextId = 1;
+    append({ task: 'Build the local viewer', status: 'done', request_id: 'viewer-request', human_request: 'Build a local work viewer' });
+    await start();
+    await snapshot(); // Starts the worker, so the next read reaches a lock at once rather than while it loads.
+    return new Database(databasePath);
+  }
+
+  it('answers another request while a real read is held open in the worker thread', async () => {
+    const lock = await restartOnLockableDatabase();
+    (routes as any).source.read = () => { throw new Error('snapshot read ran on the HTTP thread'); };
+    lock.exec('BEGIN EXCLUSIVE');
+    try {
+      let readFinished = false;
+      const held = snapshot().then(view => { readFinished = true; return view; });
+      await Bun.sleep(100);
+      expect((await fetch(`${origin}/probe`, { signal: AbortSignal.timeout(1000) })).status).toBe(200);
+      expect(readFinished).toBe(false);
+      lock.exec('ROLLBACK');
+      const view = await held;
+      expect(view.source.connected).toBe(true);
+      expect(view.humanRequests).toHaveLength(1);
+    } finally {
+      if (lock.inTransaction) lock.exec('ROLLBACK');
+      lock.close();
+    }
+  });
+
+  it('the reader answers in the order it was asked', async () => {
+    const reader = (routes as any).sourceReader;
+    const order: string[] = [];
+    await Promise.all([
+      // The first answer takes more steps to reach its consumer, and still has to arrive first.
+      reader.read(0, '').then(async () => { for (let step = 0; step < 10; step++) await null; order.push('first'); }),
+      reader.read(0, '').then(() => { order.push('second'); }),
+      reader.read(120_000, '').then(() => { order.push('third'); }),
+    ]);
+    expect(order).toEqual(['first', 'second', 'third']);
+  });
+
+  it('never sends an older view after a newer one, with a write landing while a read is held', async () => {
+    const lock = await restartOnLockableDatabase();
+    const controller = new AbortController(); controllers.push(controller);
+    const reader = (await fetch(`${origin}/api/work-view/events`, { signal: controller.signal })).body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    const views = () => buffer.split('\n\n').slice(0, -1).filter(block => block.startsWith('event: work-view\n'));
+    const collect = (async () => { for (;;) { const part = await reader.read(); if (part.done) return; buffer += decoder.decode(part.value, { stream: true }); } })().catch(() => undefined);
+    while (!views().length) await Bun.sleep(5);
+    lock.exec('BEGIN EXCLUSIVE');
+    try {
+      await Bun.sleep(60); // Ticks every 20 ms, so a background read is now held at the lock.
+      (routes as any).publish();
+      lock.exec('ROLLBACK');
+      append({ task: 'Keep the newest view', status: 'done', request_id: 'newest-request', human_request: 'Keep the newest view' });
+    } finally {
+      if (lock.inTransaction) lock.exec('ROLLBACK');
+      lock.close();
+    }
+    while (!views().some(view => view.includes('Keep the newest view'))) await Bun.sleep(5);
+    await Bun.sleep(200); // Ten more ticks.
+    const all = views();
+    const firstWithRow = all.findIndex(view => view.includes('Keep the newest view'));
+    expect(all.slice(firstWithRow).every(view => view.includes('Keep the newest view'))).toBe(true);
+    controller.abort();
+    await collect;
+  });
+
+  it('collapses reads while one is held, however often a publish or tick asks', async () => {
+    const lock = await restartOnLockableDatabase();
+    const controller = new AbortController(); controllers.push(controller);
+    const stream = (await fetch(`${origin}/api/work-view/events`, { signal: controller.signal })).body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (!buffer.includes('event: work-view\n')) buffer += decoder.decode((await stream.read()).value, { stream: true });
+    const sourceReader = (routes as any).sourceReader;
+    const realRead = sourceReader.read.bind(sourceReader);
+    let reads = 0;
+    sourceReader.read = (...args: [number, string]) => { reads++; return realRead(...args); };
+    lock.exec('BEGIN EXCLUSIVE');
+    try {
+      for (let ask = 0; ask < 20; ask++) { (routes as any).publish(); await Bun.sleep(5); }
+      expect(reads).toBeLessThanOrEqual(2); // One tick's read and one publish's read, with 20 ticks and 20 asks waiting on them.
+    } finally {
+      lock.exec('ROLLBACK');
+      lock.close();
+    }
+  });
+
+  it('ends a new event stream when its first read fails, so the page reconnects', async () => {
+    (routes as any).sourceReader.read = () => Promise.reject(new Error('reader is down'));
+    const controller = new AbortController(); controllers.push(controller);
+    const reader = (await fetch(`${origin}/api/work-view/events`, { signal: controller.signal })).body!.getReader();
+    while (!(await reader.read()).done) { /* retry line only */ }
+    expect(routes.getClientCount()).toBe(0);
+  });
+
   it('serves a work-product file only through the work-state entry that attached it', async () => {
     const image = join(directory, 'hero.png');
     writeFileSync(image, 'png-bytes');
@@ -388,7 +492,14 @@ describe('local work view', () => {
     const request = (await snapshot()).humanRequests[0];
     const controller = new AbortController(); controllers.push(controller);
     const response = await fetch(`${origin}/api/work-view/events`, { signal: controller.signal });
-    await response.body!.getReader().read();
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let initial = '';
+    while (!initial.includes('event: work-view')) {
+      const part = await reader.read();
+      if (part.done) throw new Error('event stream ended before its initial work view');
+      initial += decoder.decode(part.value, { stream: true });
+    }
     const liveSource = (routes as any).source;
     const initialRevision = liveSource.agentRevision;
     source.prepare('UPDATE observations SET narrative=? WHERE id=1').run('Corrected full evidence.');
