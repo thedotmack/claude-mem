@@ -213,6 +213,15 @@ export function createClaudeCodeReader(): AgentPromptReader {
 
 const CODEX_INJECTED_PREFIXES = ['# AGENTS.md', '<environment_context', '<user_instructions', '<permissions', '<INSTRUCTIONS', '<turn_aborted'];
 
+/** Verified creator protocol: a fork persists its own settings before any child turn.
+ * Resume retains the creation header; older/unknown creators keep their existing interpretation. */
+export function codexForkThreadId(meta: any): string | null {
+  return typeof meta?.id === 'string' && meta.id
+    && typeof meta.forked_from_id === 'string' && meta.forked_from_id
+    && typeof meta.cli_version === 'string' && Bun.semver.satisfies(meta.cli_version, '>=0.154.0')
+    ? meta.id : null;
+}
+
 export function createCodexReader(): AgentPromptReader {
   const seenKeys = new Set<string>();
   return {
@@ -235,14 +244,24 @@ export function createCodexReader(): AgentPromptReader {
     },
     async readPrompts(transcript, sink, sinceEpochMs) {
       let meta: any = null;
+      let awaitingThreadId: string | null = null;
       for await (const line of readLines(transcript.path)) {
         if (meta === null) {
           const first = parseLine(line);
           if (!first || typeof first !== 'object') return;
           meta = first.payload ?? {};
+          awaitingThreadId = codexForkThreadId(meta);
           if (meta.id) sink.session(String(meta.id));
           const isInteractiveSession = typeof meta.source === 'string' && meta.originator !== 'codex_exec' && meta.source !== 'exec';
           if (!isInteractiveSession) return;
+          continue;
+        }
+        if (awaitingThreadId !== null) {
+          if (line.includes('"thread_settings_applied"')) {
+            const record = parseLine(line);
+            if (record?.type === 'event_msg' && record.payload?.type === 'thread_settings_applied'
+              && record.payload.thread_id === awaitingThreadId) awaitingThreadId = null;
+          }
           continue;
         }
         if (!/"role"\s*:\s*"user"/.test(line)) continue;

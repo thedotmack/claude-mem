@@ -36,7 +36,7 @@ import { logger } from '../../utils/logger.js';
 import { calculateTokenEconomics, combineTokenEconomics, type ObservationTokenFields } from '../context/TokenCalculator.js';
 import type { TokenEconomics } from '../context/types.js';
 import { PROMPT_SCAN_WINDOW_DAYS } from './index.js';
-import { createPromptReaders, isoToEpochMs, parseLine, readGeminiChat, readLines, type PromptAgentId, type TranscriptSource } from './readers.js';
+import { codexForkThreadId, createPromptReaders, isoToEpochMs, parseLine, readGeminiChat, readLines, type PromptAgentId, type TranscriptSource } from './readers.js';
 
 export type UsageCoverage = 'complete' | 'partial' | 'none';
 export type UsagePersona = 'Cracked Dev' | 'Heavy AI User' | 'Medium AI User' | 'Light AI User';
@@ -170,10 +170,7 @@ const codexUsage: UsageReader = {
               // These creator versions persist a child-owned startup snapshot
               // before any child turn. Resume retains the original header, so
               // an older fork's later upgrade snapshot must not erase its usage.
-              awaitingForkSettings = typeof record.payload?.forked_from_id === 'string'
-                && record.payload.forked_from_id.length > 0
-                && typeof record.payload.cli_version === 'string'
-                && Bun.semver.satisfies(record.payload.cli_version, '>=0.154.0');
+              awaitingForkSettings = codexForkThreadId(record.payload) !== null;
             }
             continue;
           }
