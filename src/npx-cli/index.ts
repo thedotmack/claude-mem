@@ -139,9 +139,10 @@ function parseInstallOptions(argv: string[]): InstallOptions {
   };
 }
 
-// Commands that change the install or the worker and would otherwise ignore -h/--help
+// Commands that change the install, the worker or stored memory and would otherwise ignore -h/--help
 const HELP_AWARE_COMMANDS = new Set([
   '', 'install', 'update', 'upgrade', 'uninstall', 'remove', 'repair', 'prune', 'start', 'stop', 'restart',
+  'adopt', 'cleanup',
 ]);
 
 async function main(): Promise<void> {
