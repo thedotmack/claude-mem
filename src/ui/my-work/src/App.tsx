@@ -85,8 +85,9 @@ export default function App() {
   // existing installation must never lock My Work behind checkout.
   const page = useStore((state) => state.view.page)
   const finishSetup = useStore.use.finishSetup()
-  const reportOpen = useStore.use.reportOpen()
-  useEffect(reportOpen, [reportOpen])
+  // Once per mount, read from the store at effect time. Depending on the action
+  // identity re-posted an open whenever that function was replaced.
+  useEffect(() => { useStore.getState().reportOpen() }, [])
   if (page !== 'setup') return <WorkApp />
   return <MotionConfig reducedMotion="user"><Suspense fallback={null}><SetupPage onComplete={finishSetup} /></Suspense></MotionConfig>
 }
