@@ -29,6 +29,7 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { paths } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { isCmemGatewayUrl, writeProFallbackAt, type ProFallbackNotice } from '../../shared/cmem-gateway.js';
+import { cmemCapProbeAllowed } from '../../shared/cmem-cap-probe.js';
 import { scrubErrorMessage } from '../../shared/observer-health.js';
 import { isGeminiAvailable, isGeminiSelected } from './GeminiProvider.js';
 import { isOpenRouterAvailable, isOpenRouterSelected } from './OpenRouterProvider.js';
@@ -407,6 +408,11 @@ export function selectProviderForGenerator(): ProviderSelection {
   if (isCodexSelected()) return selectWithQuotaFallback('codex');
   if (isOpenRouterSelected() && isOpenRouterAvailable()) {
     const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
+    // A spent cmem allowance is one probe a day. Selecting the gateway again
+    // on the immediate fallback resume is what re-sent pro_inference_cap_exhausted.
+    if (isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL) && !cmemCapProbeAllowed()) {
+      return { provider: 'claude', gatewayProbeClaimId: null };
+    }
     if (settings.CLAUDE_MEM_PRO_FALLBACK_AT && isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL)) {
       if (staysOnClaudeInFallback(settings.CLAUDE_MEM_PRO_FALLBACK_AT)) {
         return { provider: 'claude', gatewayProbeClaimId: null };

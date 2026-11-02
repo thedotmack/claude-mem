@@ -765,7 +765,6 @@ function copyPluginToMarketplace(): void {
     'dsh',
     'dist',
     'README.md',
-    'CHANGELOG.md',
   ];
 
   for (const entry of allowedTopLevelEntries) {
@@ -884,7 +883,7 @@ function writeMarketplaceInstallMarkers(
 /**
  * Install marketplace dependencies, strict-first.
  *
- * Phase 4 of plans/04-installer-transparency.md: the old code ALWAYS passed
+ * The old code ALWAYS passed
  * `--legacy-peer-deps`, papering over any real peer conflict unconditionally.
  * Now we run strict first and only fall back to `--legacy-peer-deps` on a
  * confirmed ERESOLVE token, announced loudly. `--ignore-scripts` is the default
@@ -1395,7 +1394,12 @@ export async function promptProvider(
 
 /** `interactive: false` keeps the defaults (or `--model`) without asking: the browser funnel's At Home branch. */
 async function promptClaudeModel(options: InstallOptions, interactive: boolean = isInteractive): Promise<void> {
+  // Model policy (CLAUDE.md): offer Claude Code's aliases, never dated ids, so every
+  // install follows each new and cheaper release. Pinned ids stay accepted for --model.
   const allowed = new Set([
+    'haiku',
+    'sonnet',
+    'opus',
     'claude-haiku-4-5-20251001',
     'claude-sonnet-5',
     'claude-opus-4-8',
@@ -1429,8 +1433,8 @@ async function promptClaudeModel(options: InstallOptions, interactive: boolean =
   if (allowCustomModel) {
     const result = await p.text({
       message: 'Which model should the gateway use?',
-      placeholder: 'claude-haiku-4-5-20251001',
-      defaultValue: initialModel || 'claude-haiku-4-5-20251001',
+      placeholder: 'haiku',
+      defaultValue: initialModel || 'haiku',
       validate: (v?: string) => (!v || v.trim().length === 0) ? 'Model required' : undefined,
     });
 
@@ -1447,15 +1451,20 @@ async function promptClaudeModel(options: InstallOptions, interactive: boolean =
     return;
   }
 
-  const initialValue = allowed.has(initialModel) ? initialModel : 'claude-haiku-4-5-20251001';
+  const initialValue = allowed.has(initialModel) ? initialModel : 'haiku';
+  const choices = [
+    { value: 'haiku', label: 'Haiku, newest version (recommended — fast, cheap, great for compression)' },
+    { value: 'sonnet', label: 'Sonnet, newest version (balanced quality and cost)' },
+    { value: 'opus', label: 'Opus, newest version (highest quality, slowest)' },
+  ];
+  // A pinned id saved by an older install stays selectable, so rerunning the installer can keep it.
+  if (!choices.some((o) => o.value === initialValue)) {
+    choices.push({ value: initialValue, label: `${initialValue} (your saved pin; never updates)` });
+  }
 
   const result = await p.select<string>({
     message: 'Which Claude model should claude-mem use to compress observations?\nThis runs whenever you and Claude touch a file — keep it cheap and fast.',
-    options: [
-      { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5 (recommended — fast, cheap, great for compression)' },
-      { value: 'claude-sonnet-5', label: 'Sonnet 5 (balanced quality and cost)' },
-      { value: 'claude-opus-4-8', label: 'Opus 4.8 (highest quality, slowest)' },
-    ],
+    options: choices,
     initialValue,
   });
 
@@ -3350,7 +3359,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     `Memory injection starts on your second session in a project.`,
     cloudSyncConfigured
       ? 'Memory syncs across your signed-in CMEM Pro agents and devices.'
-      : `Everything stays in ${styleText('cyan', '~/.claude-mem')} on this machine. cmem.ai is contacted once, at signup, to create the sign-in link, with a numbers-only usage summary (observation counts and token totals, no prompts, paths, or project names); nothing else is sent to cmem.ai (telemetry is separate: npx claude-mem telemetry).`,
+      : `Everything stays in ${styleText('cyan', '~/.claude-mem')} on this machine. cmem.ai is contacted once, at signup, to create the sign-in link, with a numbers-only usage summary (observation counts and token totals, no prompts, paths, or project names); nothing else is sent to cmem.ai unless you choose to upload your prompts during browser setup (telemetry is separate: npx claude-mem telemetry).`,
     ...(cloudSyncConfigured ? [] : [`${PRO_TRIAL_PITCH}: ${styleText('underline', proTrialUrl('installer'))}`]),
     ``,
     `${styleText('dim', `Optional: ${'/learn-codebase'} ingests a whole repo up front (~5 min)   ·   How it works: /how-it-works`)}`,

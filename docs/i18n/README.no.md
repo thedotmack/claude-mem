@@ -390,7 +390,6 @@ Se filen [LICENSE](LICENSE) for fullstendige detaljer. Se [docs/license.md](docs
 og [docs/ip-boundary.md](docs/ip-boundary.md) for lisensieringsomfang og
 grensen mellom åpen kildekode og kommersiell bruk.
 
-**Merknad om Ragtime**: Katalogen `ragtime/` er lisensiert under **Apache License 2.0**. Se [ragtime/LICENSE](ragtime/LICENSE) for detaljer.
 
 ---
 

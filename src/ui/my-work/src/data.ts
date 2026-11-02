@@ -26,6 +26,8 @@ export type WorkProductKind = 'PR' | 'Commit' | 'Branch' | 'Page' | 'Deck' | 'Do
 export interface Request {
   id: string
   title: string | null
+  /** True when the title repeats the request's own prompts in full text (prompt-echo.ts); a shared page hides it. */
+  titleRepeatsPrompt?: boolean
   summary: string | null
   /** The focus area it sits in: an area id, OTHER_FOCUS_AREA_ID, or absent while it is not sorted yet ("Sorting…"). */
   focusAreaId?: string

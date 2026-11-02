@@ -119,8 +119,8 @@ jobs:
           if (-not (Test-Path (Join-Path $dep 'index.js'))) {
             throw 'sync deleted installed deps that --delete protected'
           }
-          if (Test-Path (Join-Path $marketplace 'workers')) {
-            throw 'sync copied the excluded workers/ tree'
+          if (Test-Path (Join-Path $marketplace 'services/sync-hub')) {
+            throw 'sync copied the excluded services/sync-hub tree'
           }
 
       # worker:logs replaced `tail -n 50` + `date +%F`, neither of which exists
