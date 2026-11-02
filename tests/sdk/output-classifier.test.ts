@@ -3,6 +3,7 @@ import {
   classifyObserverOutput,
   describeObserverOutputShape,
   formatEmptyOutputReason,
+  isAnthropicVerificationHoldObserverOutput,
   isAuthFailureObserverOutput,
   isContextOverflowObserverOutput,
   isOrgDisabledSubscriptionObserverOutput,
@@ -183,6 +184,19 @@ describe('isAuthFailureObserverOutput', () => {
     expect(isAuthFailureObserverOutput('No observations to record.')).toBe(false);
     expect(isAuthFailureObserverOutput('Please run /login in the observed project instructions.')).toBe(false);
     expect(isAuthFailureObserverOutput('The project authentication guide says to run /login before testing.')).toBe(false);
+  });
+});
+
+describe('isAnthropicVerificationHoldObserverOutput (#5251)', () => {
+  const response = "API Error: Your account can't receive replies from Claude right now. You can find the next step in the Anthropic Verification Portal: https://portal.anthropic.com/verify?org=org-fixture";
+
+  it('recognises the complete Claude CLI verification-hold response', () => {
+    expect(isAnthropicVerificationHoldObserverOutput(response)).toBe(true);
+  });
+
+  it('does not match an observation discussing account verification', () => {
+    expect(isAnthropicVerificationHoldObserverOutput('<observation><title>Account verification</title><narrative>The portal returned an API Error.</narrative></observation>')).toBe(false);
+    expect(isAnthropicVerificationHoldObserverOutput('The account cannot receive replies from Claude until verification is complete.')).toBe(false);
   });
 });
 

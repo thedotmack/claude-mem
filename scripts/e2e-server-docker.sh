@@ -16,7 +16,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT_NAME="${COMPOSE_PROJECT_NAME:-claude-mem-server-e2e-$(date +%s)}"
 RUN_ID="${E2E_RUN_ID:-$(date +%s)-$RANDOM}"
-COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.e2e.yml)
+COMPOSE_FILES=(-f docker-compose.yml -f docker/e2e/docker-compose.e2e.yml)
 # Test-only credentials. docker-compose.yml requires these to be set; the
 # stack will refuse to start without them. The values here are scoped to the
 # ephemeral E2E project namespace and are torn down by the cleanup trap.

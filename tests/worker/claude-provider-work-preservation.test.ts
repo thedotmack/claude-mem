@@ -801,6 +801,38 @@ describe('work preservation — a generator that throws, seen from the runner', 
     }
   });
 
+  it('preserves a queued batch and records the Anthropic verification remedy (#5251)', async () => {
+    const cleanUp = useCredentialFallback('api-key');
+    const booked: unknown[][] = [];
+    const { routes, session, sessionManager, finalizeCalls } = await buildRoutesWithRealProvider(6110);
+    liveSessions.push(session);
+    const recordFailure = spyOn(observerHealth, 'recordObserverFailure').mockImplementation((...args: unknown[]) => {
+      booked.push(args);
+    });
+    try {
+      await startAndClaim(routes, session);
+      const claimedId = session.claimedMessageIds[0];
+      expect(claimedId).toBeDefined();
+
+      sdk().answer("API Error: Your account can't receive replies from Claude right now. You can find the next step in the Anthropic Verification Portal: https://portal.anthropic.com/verify?org=private-org-id");
+      await withTimeout(session.generatorPromise ?? Promise.resolve(), 'generator after verification hold');
+      await settle(5);
+
+      expect(sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId)).toBe(1);
+      expect(sessionManager.getSession(session.sessionDbId)).toBe(session);
+      expect(finalizeCalls()).toBe(0);
+      expect(session.abortReason).toBeNull();
+      expect(booked).toHaveLength(1);
+      expect(booked[0][0]).toBe('claude');
+      expect(booked[0][1]).toMatchObject({ kind: 'auth_invalid' });
+      expect(booked[0][1]).toMatchObject({ action: expect.stringContaining('Verification Portal') });
+      expect(JSON.stringify(booked)).not.toContain('private-org-id');
+    } finally {
+      recordFailure.mockRestore();
+      cleanUp();
+    }
+  });
+
   /**
    * CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD set to `target`, with both a Claude
    * Code login (a temp profile's .credentials.json) and a fallback API key (a
