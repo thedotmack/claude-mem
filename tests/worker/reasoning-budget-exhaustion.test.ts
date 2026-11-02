@@ -601,6 +601,34 @@ describe('reasoning budget exhaustion', () => {
     }
   });
 
+  it.each([
+    ['text', { content: 'partial answer' }],
+    ['reasoning', { reasoning: 'partial thinking' }],
+  ])('does not resend a disable refusal that arrives after the stream emitted %s', async (_outputKind, delta) => {
+    let calls = 0;
+    const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      calls += 1;
+      const events = [
+        { id: 'gen-1', model: 'served/model', choices: [{ index: 0, delta }] },
+        { error: { code: 400, message: 'Reasoning is mandatory for this endpoint and cannot be disabled.' } },
+      ];
+      return new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(''), {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      });
+    });
+    spies.push(fetchSpy);
+    try {
+      const error = await queryOpenRouter('https://openrouter.ai/api/v1/chat/completions').catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toMatch(/mandatory/);
+      expect((error as { paidSendOutcome?: string }).paidSendOutcome).toBe('output_failure');
+      expect(calls).toBe(1);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it('does not resend an unrelated OpenRouter 400', async () => {
     let calls = 0;
     const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(async () => {

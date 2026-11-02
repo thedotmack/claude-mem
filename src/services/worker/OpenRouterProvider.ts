@@ -1071,9 +1071,11 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       // rejects that body with a 400, which is unrecoverable and drops the
       // batch (#5265). Resend once without the field. Not remembered against
       // the URL: a router serves a different model on the next request, and
-      // the ones that accept the disable should keep getting it.
+      // the ones that accept the disable should keep getting it. A refusal that
+      // arrives after the reply started is an output failure: that send was
+      // billed, so it is never resent.
       const text = error instanceof Error ? error.message : String(error);
-      if (!isClassified(error) || error.kind !== 'unrecoverable' || !isReasoningDisabledRejection(text)) {
+      if (!isClassified(error) || error.kind !== 'unrecoverable' || error.paidSendOutcome === 'output_failure' || !isReasoningDisabledRejection(text)) {
         throw error;
       }
       const sent = buildOpenRouterRequestBody({
