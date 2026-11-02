@@ -127,6 +127,7 @@ session transcript. For CI or a remote box, see
 | `CLAUDE_MEM_CLOUD_SYNC_USER_ID` | `''` | Your cmem.ai user id (from **cmem.ai → Connect**). All your devices share it — it names your hub log. |
 | `CLAUDE_MEM_CLOUD_SYNC_HUB_URL` | `''` | Sync hub base URL. **Empty = sync off.** |
 | `CLAUDE_MEM_CLOUD_SYNC_WS` | `'true'` | Live updates over Realtime. `'false'` disables live updates (HTTP polling only); sync stays fully correct at poll latency. |
+| `CLAUDE_MEM_CLOUD_SYNC_KEEP_PULLING` | `'false'` | `'true'` keeps pulling when no session has run for an hour, instead of pausing until the next one. For a machine that only shows synced memory and runs no sessions, such as the cloud viewer. |
 | `CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID` | `''` | Stable identity of this machine. A fresh UUID is minted and persisted on first start. Don't edit it: every row is attributed to its origin device. |
 | `CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME` | machine hostname | Human-readable label for this device. |
 | `CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE` | `'40'` | Ops per content flush page. 200-op pages timed out at 30s under hub `projection_busy`. Max 500. |
