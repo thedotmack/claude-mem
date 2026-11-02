@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, spyOn } from 'bun:test';
+import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -265,7 +266,8 @@ describe('T3 Code native plugin installation', () => {
     const homePath = join(directory, 'claude');
     const plugins = join(homePath, 'plugins');
     mkdirSync(plugins, { recursive: true });
-    writeFileSync(settingsPath, JSON.stringify({ providers: { claudeAgent: { binaryPath: command, homePath } } }));
+    // Codex is off explicitly: otherwise its unsaved default would reach this machine's real Codex home.
+    writeFileSync(settingsPath, JSON.stringify({ providerInstances: { codex: { driver: 'codex', enabled: false } }, providers: { claudeAgent: { binaryPath: command, homePath } } }));
     writeFileSync(join(plugins, 'known_marketplaces.json'), JSON.stringify({
       thedotmack: { source: { source: 'github', repo: 'thedotmack/claude-mem' }, installLocation: join(directory, 'old-bundle') },
       other: { installLocation: '/keep-other-marketplace' },
@@ -295,6 +297,85 @@ describe('T3 Code native plugin installation', () => {
     const logSpy = spyOn(console, 'log').mockImplementation(() => {});
     try { expect(t3CodeStatus({ settingsPath, spawn })).toBe(0); }
     finally { logSpy.mockRestore(); }
+  });
+
+  describe('unsaved default providers (#5262)', () => {
+    const claudeNotOnPath = (provider: T3CodeProvider, args: string[]): SpawnSyncReturns<string> => {
+      if (provider.driver === 'claudeAgent') {
+        return { status: null, stdout: '', stderr: '', pid: 0, output: [], signal: null, error: Object.assign(new Error('spawn claude ENOENT'), { code: 'ENOENT' }) };
+      }
+      return spawnSync(provider.command, args, { env: provider.environment, encoding: 'utf-8' });
+    };
+
+    function codexSavedClaudeUnsaved() {
+      const { directory, settingsPath } = fixture({});
+      const { command } = nativeCli(directory);
+      const codexHome = join(directory, 'codex home');
+      const claudeHome = join(directory, 'claude home');
+      mkdirSync(codexHome);
+      mkdirSync(claudeHome);
+      writeFileSync(settingsPath, JSON.stringify({ providerInstances: {
+        codex: { driver: 'codex', environment: [{ name: 'T3_TEST_DRIVER', value: 'codex' }], config: { binaryPath: command, homePath: codexHome } },
+      } }));
+      return { settingsPath, codexHome, claudeHome, environment: { ...process.env, CLAUDE_CONFIG_DIR: claudeHome } };
+    }
+
+    it.skipIf(process.platform === 'win32')('skips one whose CLI is missing instead of failing the install', async () => {
+      const { settingsPath, codexHome, claudeHome, environment } = codexSavedClaudeUnsaved();
+      const logSpy = spyOn(console, 'log').mockImplementation(() => {});
+      const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        expect(await installT3Code(repository, { settingsPath, environment, spawn: claudeNotOnPath })).toBe(0);
+        expect(readFileSync(join(codexHome, 'config.toml'), 'utf-8')).toContain('[plugins."claude-mem@claude-mem-local"]\nenabled = true');
+        expect(logSpy.mock.calls.flat()).toContain('T3 Code claudeAgent: skipped, claude not found');
+        expect(existsSync(join(claudeHome, 'settings.json'))).toBe(false);
+        expect(t3CodeStatus({ settingsPath, environment, spawn: claudeNotOnPath })).toBe(0);
+      } finally { logSpy.mockRestore(); errorSpy.mockRestore(); }
+    });
+
+    it('fails clearly when every provider is skipped', async () => {
+      const { directory, settingsPath } = fixture({ providerInstances: { codex: { driver: 'codex', enabled: false } } });
+      const claudeHome = join(directory, 'claude home');
+      mkdirSync(claudeHome);
+      const environment = { ...process.env, CLAUDE_CONFIG_DIR: claudeHome };
+      const logSpy = spyOn(console, 'log').mockImplementation(() => {});
+      const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        expect(await installT3Code(repository, { settingsPath, environment, spawn: claudeNotOnPath })).toBe(1);
+        expect(errorSpy.mock.calls.flat().join('\n')).toContain('none of their CLIs were found');
+        expect(t3CodeStatus({ settingsPath, environment, spawn: claudeNotOnPath })).toBe(1);
+      } finally { logSpy.mockRestore(); errorSpy.mockRestore(); }
+    });
+
+    it('still fails when a saved provider has no CLI', async () => {
+      const { directory, settingsPath } = fixture({});
+      writeFileSync(settingsPath, JSON.stringify({ providers: { claudeAgent: { homePath: join(directory, 'claude') } }, providerInstances: { codex: { driver: 'codex', enabled: false } } }));
+      const logSpy = spyOn(console, 'log').mockImplementation(() => {});
+      const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        expect(await installT3Code(repository, { settingsPath, spawn: claudeNotOnPath })).toBe(1);
+      } finally { logSpy.mockRestore(); errorSpy.mockRestore(); }
+    });
+
+    it('uninstall says which unsaved default stays on, and leaves it on', () => {
+      const { directory, settingsPath } = fixture({});
+      writeFileSync(settingsPath, JSON.stringify({ providerInstances: { codex: { driver: 'codex', enabled: false, config: { homePath: join(directory, 'codex') } } } }));
+      const claudeHome = join(directory, 'claude home');
+      mkdirSync(claudeHome);
+      writeFileSync(join(claudeHome, 'settings.json'), '{"enabledPlugins":{"claude-mem@thedotmack":true}}');
+      const environment = { ...process.env, CLAUDE_CONFIG_DIR: claudeHome };
+      const logSpy = spyOn(console, 'log').mockImplementation(() => {});
+      try {
+        expect(uninstallT3Code({ settingsPath, environment })).toBe(0);
+        expect(logSpy.mock.calls.flat().join('\n')).toContain(`Claude-Mem stays enabled in ${resolve(claudeHome)}`);
+        expect(JSON.parse(readFileSync(join(claudeHome, 'settings.json'), 'utf-8')).enabledPlugins['claude-mem@thedotmack']).toBe(true);
+
+        logSpy.mockClear();
+        writeFileSync(join(claudeHome, 'settings.json'), '{"enabledPlugins":{"claude-mem@thedotmack":false}}');
+        expect(uninstallT3Code({ settingsPath, environment })).toBe(0);
+        expect(logSpy.mock.calls.flat().join('\n')).not.toContain('stays enabled');
+      } finally { logSpy.mockRestore(); }
+    });
   });
 
   it('removes disabled providers even after a managed executable was deleted', () => {
