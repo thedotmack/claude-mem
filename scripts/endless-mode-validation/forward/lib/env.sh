@@ -103,6 +103,19 @@ emv_use_stack() {
   local v; for v in ${(k)parameters[(I)CLAUDE_CODE_*]} ${(k)parameters[(I)SUPERSET_*]}; do unset $v; done
 }
 
+# The instruction files Claude Code would pick up from the folders above the sandbox project (the checkout's CLAUDE.md,
+# and the contributor's private ~/.claude/CLAUDE.md, because ~ is an ancestor), as a JSON list for `claudeMdExcludes`. A
+# sandbox HOME does not stop that walk. Without this they go to the model provider in every request of every configuration.
+emv_claude_md_excludes() {
+  local d=$EMV_REPO_ROOT; local -a out=()
+  while :; do
+    out+=($d/CLAUDE.md $d/CLAUDE.local.md $d/.claude/CLAUDE.md $d/.claude/CLAUDE.local.md "$d/.claude/rules/**")
+    [[ $d == / ]] && break
+    d=${d:h}
+  done
+  printf '%s\n' $out | jq -R . | jq -s .
+}
+
 emv_free_gb() { df -Pk "$EMV_RUN_DIR" 2>/dev/null | awk 'NR==2 {print int($4 / 1048576)}'; }
 
 # The installed release's plugin root in the `release` stack (the installer's plugin cache dir for the version

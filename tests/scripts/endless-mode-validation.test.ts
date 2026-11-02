@@ -619,3 +619,15 @@ describe('forward harness: chat-completions agents', () => {
     expect(result.errors).toEqual([]);
   });
 });
+
+describe('forward harness: private instruction files', () => {
+  it('excludes the instruction files above the sandbox project, including ~/.claude/CLAUDE.md, and not the project itself', () => {
+    const script = `source '${join(HARNESS, 'forward/lib/env.sh')}' && emv_claude_md_excludes`;
+    const run = Bun.spawnSync(['zsh', '-c', script], { cwd: REPO_ROOT, env: { ...process.env, EMV_MODEL_PROFILE: 'openrouter-deepseek-flash' } });
+    expect(run.exitCode).toBe(0);
+    const excludes = JSON.parse(run.stdout.toString()) as string[];
+    expect(excludes).toContain(join(REPO_ROOT, 'CLAUDE.md'));
+    expect(excludes).toContain(join(process.env.HOME!, '.claude', 'CLAUDE.md'));
+    expect(excludes.some(path => path.includes('/stacks/'))).toBe(false);
+  });
+});

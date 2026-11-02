@@ -174,7 +174,7 @@ fi
 # `release` keeps what its installer wrote (enabledPlugins and the rest) and gets the same env and switches on top.
 claude_settings=$CLAUDE_CONFIG_DIR/settings.json
 [[ $1 == release && -f $claude_settings ]] || print '{}' > $claude_settings
-jq --argjson env "$claude_env" '. + {env: ((.env // {}) + $env), alwaysThinkingEnabled: true, permissions: ((.permissions // {}) + {defaultMode: "bypassPermissions"})}' \
+jq --argjson env "$claude_env" --argjson excludes "$(emv_claude_md_excludes)" '. + {env: ((.env // {}) + $env), alwaysThinkingEnabled: true, claudeMdExcludes: $excludes, permissions: ((.permissions // {}) + {defaultMode: "bypassPermissions"})}' \
   $claude_settings > $claude_settings.new && mv $claude_settings.new $claude_settings
 
 # What ran, for the page.
