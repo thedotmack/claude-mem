@@ -18,7 +18,7 @@ import {
 } from '../../types/database.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
 import { computeObservationContentHash, hasStorableTitle } from './observations/store.js';
-import { replaceObservationFileIndex } from './observations/files.js';
+import { parseFileList, replaceObservationFileIndex } from './observations/files.js';
 import { seedReinforcement, reinforceObservation } from '../reinforcement/persist.js';
 import {
   createToolUsesSchema,
@@ -4221,9 +4221,10 @@ export class SessionStore {
         const existingSummary = promptNumber
           ? (this.db.prepare(
               `SELECT id, request, investigated, learned, completed, next_steps,
-                      files_read, files_edited, notes, discovery_tokens, sync_rev, origin_device_id
+                      files_read, files_edited, notes, discovery_tokens, sync_rev
                FROM session_summaries
-               WHERE memory_session_id = ? AND prompt_number = ? AND origin_device_id IS NULL`
+               WHERE memory_session_id = ? AND prompt_number = ? AND origin_device_id IS NULL
+               ORDER BY id DESC LIMIT 1`
             ).get(memorySessionId, promptNumber) as {
               id: number;
               request: string | null;
@@ -4236,7 +4237,6 @@ export class SessionStore {
               notes: string | null;
               discovery_tokens: number | null;
               sync_rev: string | null;
-              origin_device_id: string | null;
             } | undefined)
           : undefined;
 
@@ -4249,27 +4249,11 @@ export class SessionStore {
           const mergedNextSteps = summary.next_steps ?? '';
           const mergedNotes = (summary.notes && summary.notes.trim()) ? summary.notes : existingSummary.notes;
 
-          let existingFilesRead: string[] = [];
-          if (existingSummary.files_read) {
-            try {
-              const parsed = JSON.parse(existingSummary.files_read);
-              if (Array.isArray(parsed)) existingFilesRead = parsed;
-            } catch {}
-          }
-          const mergedFilesRead = [...new Set([...existingFilesRead, ...filesRead])];
-
-          let existingFilesEdited: string[] = [];
-          if (existingSummary.files_edited) {
-            try {
-              const parsed = JSON.parse(existingSummary.files_edited);
-              if (Array.isArray(parsed)) existingFilesEdited = parsed;
-            } catch {}
-          }
-          const mergedFilesEdited = [...new Set([...existingFilesEdited, ...filesEdited])];
+          const mergedFilesRead = [...new Set([...parseFileList(existingSummary.files_read), ...filesRead])];
+          const mergedFilesEdited = [...new Set([...parseFileList(existingSummary.files_edited), ...filesEdited])];
 
           const mergedTokens = Math.max(existingSummary.discovery_tokens ?? 0, discoveryTokens);
-          const isNative = existingSummary.origin_device_id === null;
-          const nextRev = isNative ? incrementCanonicalDecimal(existingSummary.sync_rev || '0') : existingSummary.sync_rev;
+          const nextRev = incrementCanonicalDecimal(existingSummary.sync_rev || '0');
 
           this.db.prepare(`
             UPDATE session_summaries SET

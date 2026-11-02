@@ -740,9 +740,9 @@ export class ClaudeProvider {
             );
             if (stored) {
               turnInsertedObservationIds.push(...(stored.insertedObservationIds ?? []));
-              if (!stored.summaryUpdated && stored.summaryId !== null) {
-                turnSummaryId = stored.summaryId;
-              }
+              // A summary a repeated Stop reused is tracked too: the result's
+              // usage can only raise it, because updateDiscoveryTokens keeps the maximum.
+              turnSummaryId = stored.summaryId ?? turnSummaryId;
             }
           } catch (processingError) {
             responseProcessingThrew = true;

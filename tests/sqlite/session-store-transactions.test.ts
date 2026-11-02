@@ -283,4 +283,32 @@ describe('SessionStore.storeObservations', () => {
     expect(row.completed).toBe('Build passed; read the log');
     expect(row.next_steps).toBe('');
   });
+
+  it('updates the newest row when the turn already holds duplicates from before the fix (#5225)', () => {
+    const mem = session('mem-existing-duplicates');
+    const first = store.storeObservations(mem, 'project', [], summary({ completed: 'oldest' }), 1);
+    store.db.prepare(
+      `INSERT INTO session_summaries (memory_session_id, project, request, completed, prompt_number, created_at, created_at_epoch)
+       VALUES (?, 'project', 'request', 'newest', 1, '2026-01-01T00:00:00.000Z', 1767225600000)`
+    ).run(mem);
+    const newest = store.db.prepare('SELECT MAX(id) AS id FROM session_summaries').get() as { id: number };
+    expect(newest.id).not.toBe(first.summaryId);
+
+    const repeat = store.storeObservations(mem, 'project', [], summary({ completed: 'merged' }), 1);
+
+    expect(repeat.summaryId).toBe(newest.id);
+    const oldest = store.db.prepare('SELECT completed FROM session_summaries WHERE id = ?').get(first.summaryId) as any;
+    expect(oldest.completed).toBe('oldest');
+  });
+
+  it('keeps a stored file list that is not JSON instead of dropping it on a repeated stop (#5225)', () => {
+    const mem = session('mem-bad-file-list');
+    const first = store.storeObservations(mem, 'project', [], summary({ files_read: ['a.ts'] }), 1);
+    store.db.prepare('UPDATE session_summaries SET files_read = ? WHERE id = ?').run('legacy/path.ts', first.summaryId);
+
+    store.storeObservations(mem, 'project', [], summary({ files_read: ['b.ts'] }), 1);
+
+    const row = store.db.prepare('SELECT files_read FROM session_summaries WHERE id = ?').get(first.summaryId) as any;
+    expect(JSON.parse(row.files_read)).toEqual(['legacy/path.ts', 'b.ts']);
+  });
 });
