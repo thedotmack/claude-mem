@@ -10,7 +10,7 @@ import { MARKETPLACE_ROOT, DATA_DIR, resolveDataDir } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { isWorkerAutostartDisabled } from "./worker-autostart.js";
 import { viewerBaseUrl } from "./viewer-url.js";
-import { formatHostForUrl } from "./worker-url.js";
+import { formatHostForUrl, InvalidWorkerUrlError, normalizeWorkerBaseUrl } from "./worker-url.js";
 import { WorkerRequestTimeoutError } from "./worker-request-timeout-error.js";
 import { readOwnedWorkerPidInfo } from "../supervisor/index.js";
 import { emitDiagnostic } from "./hook-io.js";
@@ -478,8 +478,14 @@ function boundedByBudget(stepTimeoutMs: number, deadlineAt: number | null): numb
 // plugin bundle can share it; re-exported here for existing callers.
 export { formatHostForUrl } from "./worker-url.js";
 
+/** Where this client reaches the worker. Throws InvalidWorkerUrlError rather than falling back to host and port. */
+export function getWorkerBaseUrl(options: { readOnly?: boolean } = {}): string {
+  return normalizeWorkerBaseUrl(getWorkerSettings(options).CLAUDE_MEM_WORKER_URL)
+    || `http://${formatHostForUrl(getWorkerHost(options))}:${getWorkerPort(options)}`;
+}
+
 export function buildWorkerUrl(apiPath: string): string {
-  return `http://${formatHostForUrl(getWorkerHost())}:${getWorkerPort()}${apiPath}`;
+  return `${getWorkerBaseUrl()}${apiPath.startsWith('/') ? apiPath : `/${apiPath}`}`;
 }
 
 export function workerHttpRequest(
@@ -845,6 +851,7 @@ async function readWorkerReadyStream(budgetMs: number): Promise<ReadyStreamRead>
       absoluteCapMs: Math.max(1, budgetMs),
     });
   } catch (error: unknown) {
+    if (error instanceof InvalidWorkerUrlError) throw error;
     if (isIdleTimeoutError(error)) return { outcome: 'unresponsive', detail: 'no response headers within the idle window' };
     if (isAbsoluteCapTimeoutError(error)) return { outcome: 'still_booting', detail: 'budget spent before response headers' };
     logger.debug('SYSTEM', 'Worker /api/ready connection failed', {
@@ -1212,6 +1219,7 @@ async function isWorkerPortAlive(deadline: number = Number.POSITIVE_INFINITY): P
   try {
     healthy = await isWorkerHealthy(Math.min(HEALTH_CHECK_TIMEOUT_MS, remainingMs));
   } catch (error: unknown) {
+    if (error instanceof InvalidWorkerUrlError) throw error;
     logger.debug('SYSTEM', 'Worker health check threw', {
       error: error instanceof Error ? error.message : String(error),
     });

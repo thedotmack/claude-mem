@@ -256,12 +256,13 @@ export interface CaptureDeliverablesOptions {
 export function captureDeliverables(input: NormalizedHookInput, options: CaptureDeliverablesOptions = {}): { copied: number; reused: number; failed: number } | null {
   const { sessionId, cwd, transcriptPath } = input;
   if (!sessionId || !cwd || !(options.subagentTranscriptPath ?? transcriptPath)) return null;
-  if (!isDeliverablesCaptureEnabled(process.env.CLAUDE_MEM_DELIVERABLES_ENABLED ?? loadFromFileOnce().CLAUDE_MEM_DELIVERABLES_ENABLED)) return null;
+  const settings = loadFromFileOnce();
+  if (!isDeliverablesCaptureEnabled(process.env.CLAUDE_MEM_DELIVERABLES_ENABLED ?? settings.CLAUDE_MEM_DELIVERABLES_ENABLED)) return null;
   // Server runtime has no local worker to record the copies; the bucket is a worker-runtime feature.
   if (resolveRuntimeContext().runtime === 'server') return null;
   // A worker on another host could not open a copy made on this disk, and My Work would hide its record: the bucket is for a worker that shares the disk.
   const workerHost = getWorkerHost();
-  if (usesRemoteHookSpool(workerHost)) {
+  if (usesRemoteHookSpool(workerHost, 'auto', settings.CLAUDE_MEM_WORKER_URL)) {
     logger.debug('HOOK', 'Deliverables are not captured for a worker on another host', { workerHost });
     return null;
   }

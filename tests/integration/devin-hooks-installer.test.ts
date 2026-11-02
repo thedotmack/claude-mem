@@ -5,11 +5,14 @@ import path from 'path';
 import {
   buildDevinHooks,
   checkDevinHooksStatus,
+  configureDevinMcp,
   devinConfigPath,
+  devinMcpConfigPath,
   installDevinHooks,
   isClaudeMemDevinCommand,
   mergeDevinHooks,
   removeDevinHooks,
+  removeDevinMcpServer,
   uninstallDevinHooks,
 } from '../../src/services/integrations/DevinHooksInstaller.js';
 
@@ -35,6 +38,14 @@ describe('devinConfigPath', () => {
     expect(devinConfigPath('darwin', {})).toBe(path.join(homedir(), '.config', 'devin', 'config.json'));
     expect(devinConfigPath('win32', { APPDATA: 'C:\\Users\\a\\AppData\\Roaming' }))
       .toBe('C:\\Users\\a\\AppData\\Roaming\\devin\\config.json');
+  });
+});
+
+describe('devinMcpConfigPath', () => {
+  test('sits next to config.json on POSIX and Windows', () => {
+    expect(devinMcpConfigPath('darwin', {})).toBe(path.join(homedir(), '.config', 'devin', 'mcp_config.json'));
+    expect(devinMcpConfigPath('win32', { APPDATA: 'C:\\Users\\a\\AppData\\Roaming' }))
+      .toBe('C:\\Users\\a\\AppData\\Roaming\\devin\\mcp_config.json');
   });
 });
 
@@ -195,5 +206,81 @@ describe('installDevinHooks', () => {
     expect(installDevinHooks(configPath)).toBe(0);
     expect(uninstallDevinHooks(configPath)).toBe(0);
     expect(readConfig(configPath)).toEqual({});
+  });
+
+  test('uninstall also removes the claude-mem server from the sibling mcp_config.json', () => {
+    const configPath = scratchConfigPath();
+    mkdirSync(path.dirname(configPath), { recursive: true });
+    writeFileSync(configPath, JSON.stringify({ model: 'swe-1' }));
+    const mcpPath = path.join(path.dirname(configPath), 'mcp_config.json');
+    writeFileSync(mcpPath, JSON.stringify({ mcpServers: { 'claude-mem': { command: 'node', args: ['/x/mcp-server.cjs'] }, other: { command: 'y' } } }));
+    expect(uninstallDevinHooks(configPath)).toBe(0);
+    expect(readConfig(mcpPath).mcpServers).toEqual({ other: { command: 'y' } });
+  });
+
+  test('a corrupt mcp_config.json still lets uninstall remove the hooks, and reports the failure', () => {
+    const configPath = scratchConfigPath();
+    expect(installDevinHooks(configPath)).toBe(0);
+    const mcpPath = path.join(path.dirname(configPath), 'mcp_config.json');
+    const corruptMcpConfig = '{ not json';
+    writeFileSync(mcpPath, corruptMcpConfig);
+
+    expect(uninstallDevinHooks(configPath)).toBe(1);
+
+    expect(readConfig(configPath).hooks).toBeUndefined();
+    expect(readFileSync(mcpPath, 'utf-8')).toBe(corruptMcpConfig);
+  });
+
+  test('a corrupt mcp_config.json is reported even when there are no hooks left to remove', () => {
+    const configPath = scratchConfigPath();
+    mkdirSync(path.dirname(configPath), { recursive: true });
+    writeFileSync(path.join(path.dirname(configPath), 'mcp_config.json'), '{ not json');
+
+    expect(uninstallDevinHooks(configPath)).toBe(1);
+
+    writeFileSync(configPath, JSON.stringify({ model: 'swe-1' }));
+    expect(uninstallDevinHooks(configPath)).toBe(1);
+
+    writeFileSync(configPath, JSON.stringify({ hooks: { Stop: [] } }));
+    expect(uninstallDevinHooks(configPath)).toBe(1);
+  });
+});
+
+describe('configureDevinMcp', () => {
+  const scratchMcpPath = (): string => {
+    scratch = path.join(tmpdir(), `devin-mcp-test-${process.pid}-${Date.now()}`);
+    mkdirSync(scratch, { recursive: true });
+    return path.join(scratch, 'mcp_config.json');
+  };
+
+  test('creates the file and registers the claude-mem stdio server, keeping other servers', () => {
+    const mcpPath = scratchMcpPath();
+    expect(configureDevinMcp(mcpPath)).toBe(0);
+    const config = readConfig(mcpPath);
+    expect(config.mcpServers['claude-mem'].command).toBe(process.execPath);
+    expect(String(config.mcpServers['claude-mem'].args[0])).toContain('mcp-server.cjs');
+
+    writeFileSync(mcpPath, JSON.stringify({ mcpServers: { other: { command: 'y' } } }));
+    expect(configureDevinMcp(mcpPath)).toBe(0);
+    expect(readConfig(mcpPath).mcpServers.other).toEqual({ command: 'y' });
+    expect(readConfig(mcpPath).mcpServers['claude-mem']).toBeTruthy();
+  });
+
+  test('refuses to overwrite a config that is not a JSON object', () => {
+    const mcpPath = scratchMcpPath();
+    for (const content of ['{ not json', '[]', JSON.stringify({ mcpServers: [] })]) {
+      writeFileSync(mcpPath, content);
+      expect(configureDevinMcp(mcpPath)).toBe(1);
+      expect(readFileSync(mcpPath, 'utf-8')).toBe(content);
+    }
+  });
+
+  test('removeDevinMcpServer drops only the claude-mem entry and tolerates a missing file', () => {
+    const mcpPath = scratchMcpPath();
+    expect(removeDevinMcpServer(mcpPath)).toBe(false);
+    expect(configureDevinMcp(mcpPath)).toBe(0);
+    expect(removeDevinMcpServer(mcpPath)).toBe(true);
+    expect(readConfig(mcpPath).mcpServers).toEqual({});
+    expect(removeDevinMcpServer(mcpPath)).toBe(false);
   });
 });
