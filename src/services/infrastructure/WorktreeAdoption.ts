@@ -224,7 +224,7 @@ function isPathInside(candidate: string, directory: string): boolean {
     try { return realpathSync(p); } catch { return path.resolve(p); }
   };
   const relative = path.relative(real(directory), real(candidate));
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+  return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
 /**
@@ -276,15 +276,16 @@ function rekeyBareWorktreeSessions(
 }
 
 async function listWorktrees(mainRepo: string): Promise<WorktreeEntry[]> {
-  const raw = await gitCapture(mainRepo, ['worktree', 'list', '--porcelain']);
+  const raw = await gitCapture(mainRepo, ['worktree', 'list', '--porcelain', '-z']);
   if (!raw) return [];
 
   const entries: WorktreeEntry[] = [];
   let current: Partial<WorktreeEntry> = {};
-  for (const line of raw.split('\n')) {
+  // NUL fields preserve newlines, tabs, and edge whitespace in checkout paths.
+  for (const line of raw.split('\0')) {
     if (line.startsWith('worktree ')) {
       if (current.path) entries.push({ path: current.path, branch: current.branch ?? null, head: current.head ?? null });
-      current = { path: line.slice('worktree '.length).trim(), branch: null, head: null };
+      current = { path: line.slice('worktree '.length), branch: null, head: null };
     } else if (line.startsWith('HEAD ')) {
       current.head = line.slice('HEAD '.length).trim() || null;
     } else if (line.startsWith('branch ')) {
