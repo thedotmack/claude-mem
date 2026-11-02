@@ -16,6 +16,8 @@
  *   CLAUDE_MEM_DATA_DIR           default /data/claude-mem (a persistent volume)
  *   CLAUDE_MEM_WORKER_SCRIPT      default /app/plugin/scripts/worker-service.cjs
  *   PORT                          default 8080
+ *   POSTHOG_API_KEY               hosted viewer usage; falls back to the public project key
+ *   POSTHOG_HOST                  default https://us.i.posthog.com
  * Any other CLAUDE_MEM_* setting passes through to the worker unchanged.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
