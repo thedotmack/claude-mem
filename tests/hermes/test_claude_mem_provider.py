@@ -535,10 +535,13 @@ class CheckoutProjectTest(unittest.TestCase):
         self.git("init", "-q", cwd)
         self.assertEqual(client_module.checkout_project(cwd), "nested")
 
-    def test_an_expired_cache_entry_is_recomputed(self):
+    def test_a_cache_entry_expires_at_its_original_deadline(self):
         client_module._PROJECT_KEYS.clear()
-        original_ttl = client_module._PROJECT_KEY_TTL_S
-        client_module._PROJECT_KEY_TTL_S = -1.0
+        ttl = client_module._PROJECT_KEY_TTL_S
+        start = 1000.0
+        clock = [start]
+        original_time = client_module.time
+        client_module.time = types.SimpleNamespace(monotonic=lambda: clock[0])
         try:
             root = tempfile.mkdtemp(prefix="hermes-ttl-")
             repo = os.path.join(root, "nested")
@@ -549,11 +552,13 @@ class CheckoutProjectTest(unittest.TestCase):
             cwd = os.path.join(repo, "sub")
             self.assertEqual(client_module.checkout_project(cwd), "nested")
             self.git("init", "-q", cwd)
-            # The entry was born expired, so the nested repository is now its
-            # own root and the key is recomputed instead of served stale.
+            # A hit near the end of the window must not extend the deadline.
+            clock[0] = start + ttl - 1
+            self.assertEqual(client_module.checkout_project(cwd), "nested")
+            clock[0] = start + ttl + 1
             self.assertEqual(client_module.checkout_project(cwd), "sub")
         finally:
-            client_module._PROJECT_KEY_TTL_S = original_ttl
+            client_module.time = original_time
 
 
 class RecallPrivacyTest(unittest.TestCase):
