@@ -390,7 +390,6 @@ npm run bug-report
 και [docs/ip-boundary.md](docs/ip-boundary.md) για το πεδίο εφαρμογής της άδειας και το
 όριο ανοιχτού/εμπορικού χαρακτήρα.
 
-**Σημείωση για το Ragtime**: Ο κατάλογος `ragtime/` διανέμεται με άδεια **Apache License 2.0**. Δείτε το [ragtime/LICENSE](ragtime/LICENSE) για λεπτομέρειες.
 
 ---
 

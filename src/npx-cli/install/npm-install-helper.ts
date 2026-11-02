@@ -1,7 +1,7 @@
 /**
  * npm install helpers for the marketplace dependency step.
  *
- * Strategy (see plans/04-installer-transparency.md Phase 4):
+ * Strategy:
  *  1. Run `npm install --omit=dev --ignore-scripts` STRICTLY first.
  *  2. If it fails WITHOUT an ERESOLVE token in stderr, that's a real bug — ABORT,
  *     never retry (retrying a non-ERESOLVE failure just hides it).
