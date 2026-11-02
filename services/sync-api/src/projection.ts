@@ -1,5 +1,5 @@
 /**
- * Push-path projection drain. Port of workers/sync-hub drainProjection.
+ * Push-path projection drain. Port of services/sync-hub drainProjection.
  * Catch-up and checkpoint both finish inside the calling request.
  */
 import {

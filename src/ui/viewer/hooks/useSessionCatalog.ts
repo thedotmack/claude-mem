@@ -5,6 +5,7 @@ import {
   catalogEntryRef,
   emptyCatalogJournal,
   mergeCatalogPage,
+  rowInProject,
   sameSession,
   sessionKey,
   type CatalogJournal,
@@ -116,7 +117,7 @@ export function useSessionCatalog() {
     setSessions(prev => {
       const index = prev.findIndex(entry => sameSession(catalogEntryRef(entry), item.session));
       if (index === -1) {
-        if (projectRef.current && item.project !== projectRef.current) return prev;
+        if (projectRef.current && !rowInProject(item, projectRef.current)) return prev;
         const entry: SessionCatalogEntry = {
           content_session_id: item.session.contentSessionId,
           project: item.project,

@@ -3,7 +3,7 @@
 import { execSync } from 'child_process';
 import { writeFileSync, readFileSync, existsSync } from 'fs';
 
-const CHANGELOG_PATH = 'CHANGELOG.md';
+const CHANGELOG_PATH = 'docs/CHANGELOG.md';
 const HEADER_LINES = [
   '# Changelog',
   '',

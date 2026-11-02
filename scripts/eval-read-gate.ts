@@ -2,7 +2,7 @@
 /**
  * File Read Gate eval: gate ON against gate OFF, through real claude-mem
  * workers and real Claude Code. What it proves and how to read the results:
- * evals/read-gate/README.md.
+ * tests/evals/read-gate/README.md.
  *
  *   npm run eval:read-gate [-- --runs 3 --model claude-sonnet-5-5 -j 3 --max-cost-usd 10 --case <glob> --preflight-only]
  *
@@ -15,7 +15,7 @@
  * 3. Pre-flight, no model: checks the tree-sitter CLI the built hook resolves,
  *    then pipes PreToolUse Read payloads into the real file-context hook
  *    against each worker.
- * 4. Runs evals/read-gate with `claude plugin eval`, analyzes every
+ * 4. Runs tests/evals/read-gate with `claude plugin eval`, analyzes every
  *    run's trace, writes reports/read-gate/<timestamp>/summary.{md,json} and
  *    exits non-zero when a verdict fails or a requested run did not complete.
  * Both workers are always stopped, and the sandboxes --keep-temp kept are
@@ -38,7 +38,7 @@ const pluginDirectory = path.join(repoRoot, 'plugin');
  * --eval-dir` only reads a directory below the plugin, so each run stages a
  * copy at plugin/evals-read-gate (gitignored) and removes it afterwards.
  */
-const suiteSourceDirectory = path.join(repoRoot, 'evals', 'read-gate');
+const suiteSourceDirectory = path.join(repoRoot, 'tests', 'evals', 'read-gate');
 const SUITE_DIRECTORY_NAME = 'evals-read-gate';
 const stagedSuiteDirectory = path.join(pluginDirectory, SUITE_DIRECTORY_NAME);
 const fixtureDirectory = path.join(suiteSourceDirectory, 'fixture');
@@ -65,7 +65,7 @@ export const CASE_GATE_OFF_LARGE_FILE = 'gate-off-large-file';
 export const CASE_GATE_ON_EDITS = 'gate-on-edits-file';
 export const CASE_GATE_ON_SMALL_FILE = 'gate-on-small-file';
 export const CASE_GATE_OFF_SMALL_FILE = 'gate-off-small-file';
-/** Every case in evals/read-gate. */
+/** Every case in tests/evals/read-gate. */
 export const EVAL_CASE_NAMES: readonly string[] = [
   CASE_GATE_ON_LARGE_FILE, CASE_GATE_OFF_LARGE_FILE, CASE_GATE_ON_EDITS, CASE_GATE_ON_SMALL_FILE, CASE_GATE_OFF_SMALL_FILE,
 ];
@@ -360,7 +360,7 @@ function verdict(
   return { id, description, status: passed ? 'pass' : 'fail', detail };
 }
 
-/** The plan's verdicts (plans/2026-10-05-file-read-gate-restore.md, 5.2 step 7), with the deny size split. */
+/** The verdicts, with the deny size split. */
 export function decideVerdicts(runs: RunEvidence[]): Verdict[] {
   const gateOnLargeFileRuns = runs.filter(run => run.caseName === CASE_GATE_ON_LARGE_FILE);
   const gateOnEditRuns = runs.filter(run => run.caseName === CASE_GATE_ON_EDITS);
