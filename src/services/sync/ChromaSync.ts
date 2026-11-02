@@ -20,10 +20,8 @@ import { streamRows } from '../sqlite/stream-rows.js';
 
 type SessionStore = SessionStoreType;
 
-// Lazy CJS require so tsup (used by the cmem-sdk build) does not follow
-// these SQLite-coupled modules into the SDK bundle. Worker/Bun runtime
-// reaches them at first call; the SDK never calls the methods that
-// trigger these loads, so they never load in SDK consumers.
+// Lazy CJS require: the worker/Bun runtime reaches these SQLite-coupled
+// modules at first call.
 const lazyCreateRequire = (): ((id: string) => unknown) => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const mod = require('module') as typeof import('module');

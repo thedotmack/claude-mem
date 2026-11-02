@@ -5,7 +5,7 @@
 // an install / preinstall / postinstall script must be explicitly allowlisted.
 // A new dep with a network postinstall that is NOT allowlisted fails CI.
 //
-// Why: see CHANGELOG.md (v12.6.1 -> v12.6.2 incident). PR #2300 moved 21
+// Why: see docs/CHANGELOG.md (v12.6.1 -> v12.6.2 incident). PR #2300 moved 21
 // tree-sitter grammars into dependencies; tree-sitter-swift's postinstall pulled
 // a nested tree-sitter-cli that downloaded a Rust binary and SIGINT'd, hanging
 // `npx claude-mem install`. npm does NOT honor trustedDependencies (Bun-only),

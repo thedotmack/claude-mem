@@ -1,5 +1,5 @@
 /**
- * Token verification against the Pro app. Same contract as workers/sync-hub:
+ * Token verification against the Pro app. Same contract as services/sync-hub:
  * Bearer + X-User-Id, bind to canonical user id, cache positive verdicts.
  * In-memory only (no KV).
  */

@@ -27,6 +27,8 @@ import { resolveOpenAICompatReasoning } from '../../reasoning-budget.js';
 import { AutoRefreshWorker } from '../../../work-view/auto-refresh-worker.mjs';
 import { buildRefreshTask } from '../../../work-view/refresh-task.js';
 import { HostedIntent } from '../../../work-view/hosted-intent.js';
+import { FocusShareError, FocusShares } from '../../../work-view/focus-share.js';
+import { FocusSharePublisher } from '../../../work-view/focus-share-publisher.js';
 import { cmemProOrigin } from '../../../../shared/cmem-gateway.js';
 import { isOpenRouterApiUrl } from '../../../../shared/openrouter-base-url.js';
 import { runAgentTask } from '../../../agent-runner/run.js';
@@ -102,6 +104,16 @@ export function requireWorkViewOrigin(req: Request, res: Response, next: NextFun
   const valid = req.get('sec-fetch-site') !== 'cross-site' && !isForeignLoopbackBrowserWrite(req);
   if (!valid || !req.is('application/json')) {
     res.status(403).json({ error: 'Review changes must come from the local work viewer.' });
+    return;
+  }
+  next();
+}
+
+// Reads that return share links or comments: the viewer's own page only. Worker CORS lets other local pages read
+// responses, and a cross-origin fetch carries its Origin.
+function requireWorkViewReadOrigin(req: Request, res: Response, next: NextFunction): void {
+  if (req.get('sec-fetch-site') === 'cross-site' || isForeignLoopbackBrowserWrite(req)) {
+    res.status(403).json({ error: 'Sharing is available only from the local work viewer.' });
     return;
   }
   next();
@@ -200,6 +212,10 @@ const markAgentFinishedBody = z.object({
   agentGroupId: z.string().min(1).max(2000),
 }).strict();
 
+// Shared focus pages. cmem.ai checks the page's shape (src/lib/focus-share/snapshot.ts there); here it only has to be an object.
+const focusShareAreaBody = z.object({ focusAreaId: focusAreaIdField }).strict();
+const focusShareCommentBody = z.object({ focusAreaId: focusAreaIdField, body: z.string().trim().min(1).max(4000) }).strict();
+
 /** The owner's answer to the judge's "Looks like part of <request>" on a card. */
 const suggestionBody = z.object({
   conversationKey: z.string().min(1).max(2000),
@@ -253,6 +269,10 @@ interface WorkViewOptions {
   historyImport?: HistoryImport | null;
   /** Setup extraction only. Ongoing automatic refresh continues to use the local agent runner. */
   hostedIntent?: Pick<HostedIntent, 'run' | 'state'> | null;
+  /** Shared focus pages on cmem.ai. Defaults to the cloud sync credential and focus-shares.json beside settings.json. */
+  focusShares?: Pick<FocusShares, 'connected' | 'list' | 'publish' | 'stop' | 'comments' | 'comment'> | null;
+  /** How often shared focus pages are republished from this worker; 0 stops the timer (tests). */
+  focusSharePublishEveryMs?: number;
 }
 
 /** One overall request on the Reveal, read from the request-group ledger so new installs (prompts only) have work too. */
@@ -260,6 +280,7 @@ export interface SetupWorkItem { groupId: string; title: string; platform: strin
 const SETUP_WORK_SHOWN = 5;
 
 const setupScanBody = z.object({ improveProduct: z.boolean().optional() }).strict();
+const setupScanConsentBody = z.object({ upload: z.boolean(), agents: z.array(z.enum(['claude-code', 'codex', 'gemini-cli', 'antigravity-cli', 'opencode'])).optional(), improveProduct: z.boolean().optional() }).strict();
 const setupScanPreferencesBody = z.object({ improveProduct: z.boolean() }).strict();
 // On The Go is always CMEM Pro: standalone Cloud Sync on your own tokens has no price yet (gap G1).
 const setupChoiceBody = z.object({
@@ -401,6 +422,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private historyImport: HistoryImport | null;
   private unsubscribeHistoryImport: (() => void) | null = null;
   private hostedIntent: Pick<HostedIntent, 'run' | 'state'> | null;
+  private focusShares: NonNullable<WorkViewOptions['focusShares']> | null;
+  private focusSharePublisher: FocusSharePublisher | null;
 
   constructor(options: WorkViewOptions = {}) {
     super();
@@ -450,6 +473,21 @@ export class WorkViewRoutes extends BaseRouteHandler {
         localDeviceId: () => this.getLocalDeviceId(),
       }) : null)
       : options.hostedIntent;
+    this.focusShares = options.focusShares === undefined
+      ? new FocusShares({
+        origin: () => cmemProOrigin(),
+        registryPath: join(dirname(this.settingsPath), 'focus-shares.json'),
+        credentials: () => {
+          const settings = SettingsDefaultsManager.loadFromFile(this.settingsPath, true, { readOnly: true });
+          return { token: settings.CLAUDE_MEM_CLOUD_SYNC_TOKEN?.trim() ?? '', userId: settings.CLAUDE_MEM_CLOUD_SYNC_USER_ID?.trim() ?? '' };
+        },
+      })
+      : options.focusShares;
+    // Shared pages keep updating with My Work closed (R17.3): the worker publishes them on its own timer.
+    this.focusSharePublisher = this.focusShares
+      ? new FocusSharePublisher({ shares: this.focusShares, snapshot: () => this.snapshot(), everyMs: options.focusSharePublishEveryMs })
+      : null;
+    this.focusSharePublisher?.start();
     if (this.hostedIntent) this.setupScan?.setExtractor((prompts, improveProduct) => this.hostedIntent!.run(prompts, improveProduct));
     this.unsubscribeHistoryImport = this.historyImport?.subscribe(state => this.broadcast('setup-import', state)) ?? null;
     // Hosted extraction is awaited inside the scan, so failures stay in the scan screen's error slot.
@@ -469,7 +507,9 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private setupIsActive(): boolean {
     const statePath = this.setupStatePath ?? setupStatePath();
     const scanPhase = this.setupScan?.state().phase ?? 'idle';
-    if (!['idle', 'done', 'failed'].includes(scanPhase)) return true;
+    // Waiting for the upload answer is not active: a closed tab never answers, and that must not hold local work
+    // paused. The installer's session below still covers a setup in progress; reopening the page rejoins the question.
+    if (!['idle', 'done', 'failed', 'awaiting-consent'].includes(scanPhase)) return true;
     return readSetupState(statePath).status !== 'complete' && hasActiveSetupSession(statePath);
   }
 
@@ -569,6 +609,12 @@ export class WorkViewRoutes extends BaseRouteHandler {
     app.post('/api/work-view/suggestions', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(suggestionBody), this.wrapHandler(this.answerSuggestion));
     app.post('/api/work-view/rules/load-in-claude-code', workViewLoopbackOnly, requireWorkViewOrigin, this.wrapHandler(this.loadRulesInClaudeCode));
     app.post('/api/work-view/usage', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(usageBody), this.wrapHandler(this.recordUsage));
+    // Shared focus pages: this worker signs the cmem.ai calls, so the sync credential never reaches the page.
+    app.get('/api/work-view/focus/shares', workViewLoopbackOnly, requireWorkViewReadOrigin, this.wrapHandler(this.listFocusShares));
+    app.post('/api/work-view/focus/share', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(focusShareAreaBody), this.wrapHandler(this.publishFocusShare));
+    app.post('/api/work-view/focus/share/stop', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(focusShareAreaBody), this.wrapHandler(this.stopFocusShare));
+    app.get('/api/work-view/focus/share/comments', workViewLoopbackOnly, requireWorkViewReadOrigin, this.wrapHandler(this.focusShareComments));
+    app.post('/api/work-view/focus/share/comments', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(focusShareCommentBody), this.wrapHandler(this.commentOnFocusShare));
     app.get('/api/setup/scan', workViewLoopbackOnly, this.wrapHandler((_req, res) => {
       if (!this.setupScan) { res.status(503).json({ error: 'The prompt scan is unavailable on this worker.' }); return; }
       res.setHeader('Cache-Control', 'no-store');
@@ -578,6 +624,13 @@ export class WorkViewRoutes extends BaseRouteHandler {
       if (!this.setupScan) { res.status(503).json({ error: 'The prompt scan is unavailable on this worker.' }); return; }
       res.setHeader('Cache-Control', 'no-store');
       res.status(202).json(this.setupScan.start(req.body.improveProduct));
+    }));
+    app.post('/api/setup/scan/consent', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupScanConsentBody), this.wrapHandler(async (req, res) => {
+      if (!this.setupScan) { res.status(503).json({ error: 'The prompt scan is unavailable on this worker.' }); return; }
+      res.setHeader('Cache-Control', 'no-store');
+      try { res.json(await this.setupScan.confirmUpload(req.body.upload, req.body.agents, req.body.improveProduct)); } catch (error) {
+        res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
+      }
     }));
     app.post('/api/setup/scan/preferences', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupScanPreferencesBody), this.wrapHandler((req, res) => {
       if (!this.setupScan) { res.status(503).json({ error: 'The prompt scan is unavailable on this worker.' }); return; }
@@ -1004,11 +1057,68 @@ export class WorkViewRoutes extends BaseRouteHandler {
    */
   /** Counts the viewer opening on a page, or switching page, through the worker's own consent-gated, whitelist-scrubbed
    * telemetry (telemetry.ts), so the page loads no analytics SDK. The report names the page only — never what it showed. */
+  private viewerHostname(req: Request): string {
+    const host = (req.hostname || '').trim().toLowerCase();
+    return /^[a-z0-9.-]{1,253}$/.test(host) ? host : 'unknown';
+  }
+
   private recordUsage = (req: Request, res: Response): void => {
     const report = req.body as z.infer<typeof usageBody>;
-    if (report.event === 'opened') captureEvent('work_view_opened', { view: report.view });
-    else captureEvent('work_view_switched', { view: report.view, previous_view: report.previousView });
+    const where = { viewer_host: 'local', hostname: this.viewerHostname(req) };
+    if (report.event === 'opened') captureEvent('work_view_opened', { view: report.view, ...where });
+    else captureEvent('work_view_switched', { view: report.view, previous_view: report.previousView, ...where });
     res.status(204).end();
+  };
+
+  /** Which areas this install shares, by id, with their links. No credentials and no page content. */
+  private listFocusShares = (_req: Request, res: Response): void => {
+    const shares = this.focusShares;
+    if (!shares) { res.json({ connected: false, shares: {} }); return; }
+    const listed = Object.fromEntries(Object.entries(shares.list()).map(([id, entry]) => [id, {
+      url: entry.url, sharedAt: entry.sharedAt, publishedAt: entry.publishedAt, publishError: this.focusSharePublisher?.errorFor(id) ?? null,
+    }]));
+    res.json({ connected: shares.connected(), shares: listed });
+  };
+
+  private focusShareRefusal(res: Response, error: unknown): void {
+    if (error instanceof FocusShareError) { res.status(error.status).json({ error: error.message }); return; }
+    throw error;
+  }
+
+  /** Shares an area (first call) or publishes its page now. The worker builds the page from its own work view. */
+  private publishFocusShare = async (req: Request, res: Response): Promise<void> => {
+    const { focusAreaId } = req.body as z.infer<typeof focusShareAreaBody>;
+    if (!this.focusSharePublisher) { res.status(503).json({ error: 'Sharing is unavailable on this worker.' }); return; }
+    try {
+      const { entry, sent } = await this.focusSharePublisher.publishArea(focusAreaId);
+      res.json({ url: entry.url, sharedAt: entry.sharedAt, publishedAt: entry.publishedAt, sent });
+    } catch (error) { this.focusShareRefusal(res, error); }
+  };
+
+  private stopFocusShare = async (req: Request, res: Response): Promise<void> => {
+    const { focusAreaId } = req.body as z.infer<typeof focusShareAreaBody>;
+    if (!this.focusShares) { res.status(503).json({ error: 'Sharing is unavailable on this worker.' }); return; }
+    try {
+      await this.focusShares.stop(focusAreaId);
+      res.json({ stopped: true });
+    } catch (error) { this.focusShareRefusal(res, error); }
+  };
+
+  private focusShareComments = async (req: Request, res: Response): Promise<void> => {
+    const focusAreaId = typeof req.query.focusAreaId === 'string' ? req.query.focusAreaId : '';
+    if (!focusAreaIdField.safeParse(focusAreaId).success) { res.status(400).json({ error: 'focusAreaId is required.' }); return; }
+    if (!this.focusShares) { res.status(503).json({ error: 'Sharing is unavailable on this worker.' }); return; }
+    try {
+      res.json(await this.focusShares.comments(focusAreaId));
+    } catch (error) { this.focusShareRefusal(res, error); }
+  };
+
+  private commentOnFocusShare = async (req: Request, res: Response): Promise<void> => {
+    const { focusAreaId, body } = req.body as z.infer<typeof focusShareCommentBody>;
+    if (!this.focusShares) { res.status(503).json({ error: 'Sharing is unavailable on this worker.' }); return; }
+    try {
+      res.status(201).json({ comment: await this.focusShares.comment(focusAreaId, body) });
+    } catch (error) { this.focusShareRefusal(res, error); }
   };
 
   private markAgentFinished = (req: Request, res: Response): void => {
@@ -1176,6 +1286,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     this.unsubscribeHistoryImport?.();
     this.stopRulesSync();
     this.stopTimers();
+    this.focusSharePublisher?.close();
     for (const client of this.clients) client.end();
     this.clients.clear();
     this.source.close();

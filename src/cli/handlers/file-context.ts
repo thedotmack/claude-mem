@@ -27,7 +27,7 @@ const FILE_CONTEXT_MIN_BYTES = 1_500;
  * The File Read Gate denies a whole-file Read only from this size up; smaller
  * files get the timeline as context. A deny costs turns: the denied Read and
  * every smart-tool or targeted Read after it, each re-reading the whole
- * context, against the file it keeps out. evals/read-gate asked one question
+ * context, against the file it keeps out. tests/evals/read-gate asked one question
  * with the gate on and off: on a 19 KB file it cost -6% on Sonnet and +20% on
  * Opus, on a 49 KB file -35% and -32%.
  */
@@ -162,7 +162,7 @@ function formatFileContextTimeline(history: FileObservationHistory): string {
 }
 
 // The `Full-file Read blocked by claude-mem:` line is the read-gate eval's trace
-// anchor (evals/read-gate) — keep it verbatim.
+// anchor (tests/evals/read-gate) — keep it verbatim.
 function formatFullFileReadDenyReason(history: FileObservationHistory): string {
   const safePath = escapePathForHint(history.filePath);
   const displayedIds = history.displayedObservations.map(obs => obs.id).join(', ');
