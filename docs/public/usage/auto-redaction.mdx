@@ -28,7 +28,7 @@ Add to `~/.claude-mem/settings.json`:
 }
 ```
 
-That is all you need for the 21 built-in patterns to kick in. Add `"CLAUDE_MEM_REDACT_GENERIC_ENABLED": "true"` to also turn on the 4 [generic patterns](#generic-patterns).
+That is all you need for the 23 built-in patterns to kick in. Add `"CLAUDE_MEM_REDACT_GENERIC_ENABLED": "true"` to also turn on the 4 [generic patterns](#generic-patterns).
 
 ## Built-in patterns
 
@@ -53,6 +53,8 @@ That is all you need for the 21 built-in patterns to kick in. Add `"CLAUDE_MEM_R
 | `digitalocean_token` | `dop_v1_…`, `doo_v1_…`, `dor_v1_…` DigitalOcean personal access, OAuth and refresh tokens (64 hex chars) |
 | `shopify_token` | `shpat_…`, `shpca_…`, `shppa_…`, `shpss_…` Shopify access tokens and shared secrets (32 hex chars) |
 | `pypi_token` | `pypi-AgE…` PyPI API tokens (≥50 trailing chars) |
+| `slack_webhook` | the secret of Slack incoming webhook URLs (`hooks.slack.com/services/T…/B…/…`, workflow and trigger URLs); the host and ids are kept |
+| `discord_webhook` | the token of Discord webhook URLs (`discord.com/api/webhooks/<id>/<token>`, `discordapp.com` too); the host and id are kept |
 | `claude_mem_key` | claude-mem's own server API keys (`cmem_…`) and cmem.ai Pro memory keys (`cm_pro_…`) |
 | `url_credentials` | the password in `scheme://user:password@host` URLs (database URLs, `git remote -v`); the scheme, user and host are kept |
 

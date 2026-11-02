@@ -23,13 +23,17 @@ function formatHostForUrl(host: string): string {
 // healthy worker's sub-100ms response and below every caller's retry budget.
 const HEALTH_PROBE_TIMEOUT_MS = 5_000;
 
+function localWorkerOrigin(port: number): string {
+  return `http://${formatHostForUrl(getWorkerHost())}:${port}`;
+}
+
 async function httpRequestToWorker(
-  port: number,
+  workerOrigin: string,
   endpointPath: string,
   method: string = 'GET',
   timeoutMs: number = HEALTH_PROBE_TIMEOUT_MS,
 ): Promise<{ ok: boolean; statusCode: number; body: string }> {
-  const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}${endpointPath}`, {
+  const response = await fetch(`${workerOrigin}${endpointPath}`, {
     method,
     signal: AbortSignal.timeout(Math.max(1, timeoutMs)),
   });
@@ -200,7 +204,7 @@ export function probePortBind(port: number, timeoutMs: number = HEALTH_PROBE_TIM
 }
 
 async function pollEndpointUntilOk(
-  port: number,
+  workerOrigin: string,
   endpointPath: string,
   timeoutMs: number,
   retryLogMessage: string
@@ -210,7 +214,7 @@ async function pollEndpointUntilOk(
     try {
       const remainingMs = deadline - Date.now();
       const result = await httpRequestToWorker(
-        port,
+        workerOrigin,
         endpointPath,
         'GET',
         Math.min(HEALTH_PROBE_TIMEOUT_MS, remainingMs),
@@ -231,12 +235,17 @@ async function pollEndpointUntilOk(
   return false;
 }
 
-export function waitForHealth(port: number, timeoutMs: number = 30000): Promise<boolean> {
-  return pollEndpointUntilOk(port, '/api/health', timeoutMs, 'Service not ready yet, will retry');
+/**
+ * `explicitWorkerOrigin` is the validated CLAUDE_MEM_WORKER_URL, for a caller
+ * reporting on a worker it does not run. Without it these probe host and port,
+ * which is what the daemon's duplicate gate and the port reclaim must ask about.
+ */
+export function waitForHealth(port: number, timeoutMs: number = 30000, explicitWorkerOrigin?: string): Promise<boolean> {
+  return pollEndpointUntilOk(explicitWorkerOrigin ?? localWorkerOrigin(port), '/api/health', timeoutMs, 'Service not ready yet, will retry');
 }
 
-export function waitForReadiness(port: number, timeoutMs: number = 30000): Promise<boolean> {
-  return pollEndpointUntilOk(port, '/api/readiness', timeoutMs, 'Worker not ready yet, will retry');
+export function waitForReadiness(port: number, timeoutMs: number = 30000, explicitWorkerOrigin?: string): Promise<boolean> {
+  return pollEndpointUntilOk(explicitWorkerOrigin ?? localWorkerOrigin(port), '/api/readiness', timeoutMs, 'Worker not ready yet, will retry');
 }
 
 export async function waitForPortFree(port: number, timeoutMs: number = 10000): Promise<boolean> {
@@ -258,7 +267,7 @@ export async function httpShutdown(port: number, reason: 'stop' | 'restart' = 's
     // reason tag lets the worker report shutdown_reason: 'restart' on its
     // worker_stopped telemetry instead of a generic 'stop'.
     const endpointPath = reason === 'restart' ? '/api/admin/shutdown?reason=restart' : '/api/admin/shutdown';
-    const result = await httpRequestToWorker(port, endpointPath, 'POST');
+    const result = await httpRequestToWorker(localWorkerOrigin(port), endpointPath, 'POST');
     if (!result.ok) {
       logger.warn('SYSTEM', 'Shutdown request returned error', { status: result.statusCode });
       return false;
@@ -279,7 +288,7 @@ export async function getRunningWorkerVersion(
   timeoutMs: number = HEALTH_PROBE_TIMEOUT_MS,
 ): Promise<string | null> {
   try {
-    const result = await httpRequestToWorker(port, '/api/health', 'GET', timeoutMs);
+    const result = await httpRequestToWorker(localWorkerOrigin(port), '/api/health', 'GET', timeoutMs);
     if (!result.ok) return null;
     const data = JSON.parse(result.body) as { version: string };
     return data.version;

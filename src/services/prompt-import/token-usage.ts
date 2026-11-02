@@ -262,8 +262,11 @@ export function summarizeTokenUsage(
   const measured = scan.agents.filter(agent => agent.detected && agent.recordsTokens);
   const totalTokens = measured.reduce((sum, agent) => sum + agent.tokens, 0);
   const shortRetention = measured.some(agent => agent.retentionShorterThanWindow && agent.firstRecordAt !== null);
+  // Successfully read history can establish the window start, but it cannot
+  // make the totals complete when another supported source failed to read.
+  const hasReadFailures = measured.some(agent => agent.skippedSources > 0);
   const coverage: UsageCoverage = totalTokens === 0 ? 'none'
-    : !shortRetention && scan.windowDays === PROMPT_SCAN_WINDOW_DAYS && measured.some(agent => agent.historyStartsBeforeWindow) ? 'complete'
+    : !shortRetention && !hasReadFailures && scan.windowDays === PROMPT_SCAN_WINDOW_DAYS && measured.some(agent => agent.historyStartsBeforeWindow) ? 'complete'
       : 'partial';
   const hasHistory = !!economics && economics.totalObservations > 0 && economics.totalDiscoveryTokens > 0 && economics.savingsPercent > 0;
   return {

@@ -299,6 +299,48 @@ function boundedList(value, max, label) {
   return list;
 }
 
+function reviewText(value, max, label, options) {
+  if (!options.coerce) return boundedText(value, max, label, options.optional);
+  if (options.optional && (value == null || value === '')) return '';
+  if (typeof value !== 'string' || !value.trim()) throw new TypeError(`${label} must be 1–${max} characters.`);
+  const text = value.trim();
+  if (text.length <= max) return text;
+  options.coercedFields.add(label);
+  const suffix = '…';
+  let prefix = text.slice(0, max - suffix.length);
+  if (/[\uD800-\uDBFF]$/.test(prefix)) prefix = prefix.slice(0, -1);
+  const boundary = prefix.lastIndexOf(' ');
+  if (boundary >= prefix.length - 40) prefix = prefix.slice(0, boundary);
+  return `${prefix.trimEnd()}${suffix}`;
+}
+
+function reviewQuote(value, max, label, options) {
+  if (!options.coerce || typeof value !== 'string' || !value.trim()) return boundedQuote(value, max, label);
+  const text = value.trim();
+  if (text.length <= max) return text;
+  options.coercedFields.add(label);
+  // Keep the quote verbatim by shortening at a word boundary without adding punctuation.
+  let quote = text.slice(0, max);
+  if (/[\uD800-\uDBFF]$/.test(quote)) quote = quote.slice(0, -1);
+  const boundary = quote.lastIndexOf(' ');
+  if (boundary >= quote.length - 40) quote = quote.slice(0, boundary);
+  return quote.trimEnd();
+}
+
+function reviewList(value, max, label, options) {
+  const list = value ?? [];
+  if (!Array.isArray(list)) throw new TypeError(`${label} must be an array of at most ${max}.`);
+  if (list.length <= max) return list;
+  if (!options.coerce) throw new TypeError(`${label} has ${list.length} items; it must have at most ${max}. Keep the ${max} that matter most.`);
+  options.coercedFields.add(label);
+  // Amend mode starts from the previous review and adds new entries, so a list at its cap must lose its oldest
+  // entries, not the new one. Dates decide when every entry has one; otherwise the model's order does.
+  const times = list.map(entry => Date.parse(entry?.at));
+  if (times.some(Number.isNaN)) return list.slice(-max);
+  const newestIndexes = new Set(list.map((_, index) => index).sort((a, b) => times[a] - times[b] || a - b).slice(-max));
+  return list.filter((_, index) => newestIndexes.has(index));
+}
+
 // Models sometimes answer one citation as a plain string instead of a list (Oct 25: a review's
 // `evidence: "obs 101"` threw `.map is not a function` and failed the whole refresh run).
 const evidenceList = (value, limit = 8) => (Array.isArray(value) ? value : typeof value === 'string' && value.trim() ? [value] : []).map(String).slice(0, limit);
@@ -306,34 +348,38 @@ const evidenceList = (value, limit = 8) => (Array.isArray(value) ? value : typeo
 // How released work landed: where it shipped, whether anyone uses it, whether
 // it was worth it, what it broke, and why each change was made. Every judgment
 // cites evidence; "no-evidence" / "unclear" are answers, not gaps to fill.
-export function validateOutcome(outcome) {
+export function validateOutcome(outcome, options = {}) {
   if (outcome == null) return null;
   if (typeof outcome !== 'object' || Array.isArray(outcome)) throw new TypeError('outcome must be an object.');
+  options = { coerce: false, coercedFields: new Set(), ...options };
+  const text = (value, max, label, optional = false) => reviewText(value, max, label, { ...options, optional });
   const leveled = (entry, levels, label) => {
     if (entry == null) return null;
     if (!levels.includes(entry.level)) throw new TypeError(`${label}.level must be one of ${levels.join(', ')}.`);
-    return { level: entry.level, text: boundedText(entry.text, 400, `${label}.text`), evidence: evidenceList(entry.evidence) };
+    return { level: entry.level, text: text(entry.text, 400, `${label}.text`), evidence: evidenceList(entry.evidence) };
   };
-  const regressions = boundedList(outcome.regressions, 10, 'outcome.regressions'), changes = boundedList(outcome.changes, 12, 'outcome.changes');
+  const regressions = reviewList(outcome.regressions, 10, 'outcome.regressions', options), changes = reviewList(outcome.changes, 12, 'outcome.changes', options);
   const dated = (value, label) => { if (!isIsoOrNull(value ?? null)) throw new TypeError(`${label} must be an ISO date or null.`); return value ?? null; };
   return {
-    landed: outcome.landed == null ? null : { text: boundedText(outcome.landed.text, 400, 'outcome.landed.text'), at: dated(outcome.landed.at, 'outcome.landed.at'), evidence: evidenceList(outcome.landed.evidence) },
+    landed: outcome.landed == null ? null : { text: text(outcome.landed.text, 400, 'outcome.landed.text'), at: dated(outcome.landed.at, 'outcome.landed.at'), evidence: evidenceList(outcome.landed.evidence) },
     usage: leveled(outcome.usage, USAGE_LEVELS, 'outcome.usage'),
     value: leveled(outcome.value, VALUE_LEVELS, 'outcome.value'),
     regressions: regressions.map((regression, index) => ({
-      text: boundedText(regression.text, 300, `outcome.regressions[${index}].text`), at: dated(regression.at, `outcome.regressions[${index}].at`),
-      fixedBy: boundedText(regression.fixedBy, 200, `outcome.regressions[${index}].fixedBy`, true) || null, evidence: evidenceList(regression.evidence),
+      text: text(regression.text, 300, `outcome.regressions[${index}].text`), at: dated(regression.at, `outcome.regressions[${index}].at`),
+      fixedBy: text(regression.fixedBy, 200, `outcome.regressions[${index}].fixedBy`, true) || null, evidence: evidenceList(regression.evidence),
     })),
     changes: changes.map((change, index) => ({
-      what: boundedText(change.what, 200, `outcome.changes[${index}].what`), why: boundedText(change.why, 400, `outcome.changes[${index}].why`),
+      what: text(change.what, 200, `outcome.changes[${index}].what`), why: text(change.why, 400, `outcome.changes[${index}].why`),
       at: dated(change.at, `outcome.changes[${index}].at`), evidence: evidenceList(change.evidence),
     })),
   };
 }
 
 /** Progress reviews are agent assessments; keep them bounded and dated. */
-export function validateProgress(entry, knownGroups) {
+export function validateProgress(entry, knownGroups, options = {}) {
   if (!entry || typeof entry !== 'object') throw new TypeError('Progress must be an object.');
+  options = { coerce: false, coercedFields: new Set(), ...options };
+  const text = (value, max, label, optional = false) => reviewText(value, max, label, { ...options, optional });
   if (!knownGroups[entry.groupId]) throw new TypeError(`Unknown group ${entry.groupId}.`);
   const basis = entry.reviewBasis;
   if (!basis || typeof basis.checkedThrough !== 'string' || !Number.isFinite(Date.parse(basis.checkedThrough)) || !Array.isArray(basis.conversations) || !basis.conversations.length || !basis.conversations.every(isConversationKey)) {
@@ -344,26 +390,27 @@ export function validateProgress(entry, knownGroups) {
   for (const field of ['startedAt', 'shippedAt', 'lastActivityAt']) if (!isIsoOrNull(entry[field] ?? null)) throw new TypeError(`${field} must be an ISO date or null.`);
   if (entry.state === 'shipped' && (entry.percent !== 100 || !entry.shippedAt)) throw new TypeError('A shipped request needs percent 100 and shippedAt.');
   if (entry.state !== 'shipped' && entry.shippedAt) throw new TypeError('Only a shipped request has shippedAt.');
-  const milestones = boundedList(entry.milestones, 12, 'milestones'), preferences = boundedList(entry.preferences, 10, 'preferences');
+  const milestones = reviewList(entry.milestones, 12, 'milestones', options), preferences = reviewList(entry.preferences, 10, 'preferences', options);
   return {
     groupId: entry.groupId, state: entry.state, percent: entry.percent,
     startedAt: entry.startedAt ?? null, shippedAt: entry.shippedAt ?? null, lastActivityAt: entry.lastActivityAt ?? null,
-    summary: boundedText(entry.summary, 280, 'summary'),
-    narrative: boundedText(entry.narrative, 1200, 'narrative', true),
+    summary: text(entry.summary, 280, 'summary'),
+    narrative: text(entry.narrative, 1200, 'narrative', true),
     milestones: milestones.map((milestone, index) => {
       if (!isIsoOrNull(milestone.at ?? null)) throw new TypeError(`milestones[${index}].at must be an ISO date or null.`);
-      return { at: milestone.at ?? null, text: boundedText(milestone.text, 200, `milestones[${index}].text`), evidence: evidenceList(milestone.evidence, 6) };
+      return { at: milestone.at ?? null, text: text(milestone.text, 200, `milestones[${index}].text`), evidence: evidenceList(milestone.evidence, 6) };
     }),
     preferences: preferences.map((preference, index) => {
       if (!PREFERENCE_KINDS.includes(preference.kind)) throw new TypeError(`preferences[${index}].kind must be one of ${PREFERENCE_KINDS.join(', ')}.`);
       if (!isIsoOrNull(preference.at ?? null)) throw new TypeError(`preferences[${index}].at must be an ISO date or null.`);
-      return { kind: preference.kind, preference: boundedText(preference.preference, 200, `preferences[${index}].preference`), quote: boundedQuote(preference.quote, 300, `preferences[${index}].quote`), at: preference.at ?? null };
+      return { kind: preference.kind, preference: text(preference.preference, 200, `preferences[${index}].preference`), quote: reviewQuote(preference.quote, 300, `preferences[${index}].quote`, options), at: preference.at ?? null };
     }),
-    outcome: validateOutcome(entry.outcome),
+    outcome: validateOutcome(entry.outcome, options),
     evidence: evidenceList(entry.evidence, 20),
     // What the reviewer actually saw: later activity or membership changes make it due again.
     reviewedThrough: new Date(Date.parse(basis.checkedThrough)).toISOString(),
     reviewedConversations: [...new Set(basis.conversations)].sort(),
+    ...(options.coerce && options.coercedFields.size ? { coercedFields: [...options.coercedFields].sort() } : {}),
   };
 }
 
@@ -887,7 +934,7 @@ export function applyDecisions(stored, decisions, { database, now = Date.now(), 
  * judge: the Jev judge for the `judge` command: undefined reads it from the install's settings
  * (request-judge.mjs configuredJudge), null routes with code links only. That command returns a promise.
  */
-export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), print = (value) => console.log(JSON.stringify(value, null, 2)), localDeviceId, saveFocus = null, judge = undefined } = {}) {
+export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), print = (value) => console.log(JSON.stringify(value, null, 2)), localDeviceId, saveFocus = null, judge = undefined, coerceProgress = false } = {}) {
   const [command, ...args] = argv;
   const db = () => database ?? openDatabase();
   const since = () => now - option(args, 'days', 14) * DAY_MS;
@@ -953,14 +1000,15 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
   }
   if (command === 'record-progress') {
     const ledger = readLedger(dir);
-    const reviewed = validateProgress(readInput(args[0] ?? '-'), ledger.groups.groups);
+    const coercedFields = new Set();
+    const reviewed = validateProgress(readInput(args[0] ?? '-'), ledger.groups.groups, { coerce: coerceProgress, coercedFields });
     const checkedAt = iso(now);
     const previous = ledger.progress[reviewed.groupId];
     // The story is retold only from reviews whose facts moved; reworded prose and review timestamps are not news.
     const unchanged = previous && JSON.stringify(storyFacts(previous)) === JSON.stringify(storyFacts(reviewed));
     const entry = { ...reviewed, checkedAt, changedAt: unchanged ? previous.changedAt ?? previous.checkedAt : checkedAt, readings: appendReading(ledger.progress[reviewed.groupId], { at: checkedAt, percent: reviewed.percent }) };
     writeJsonAtomic(join(dir, 'progress', `${entry.groupId}.json`), entry);
-    return print({ recorded: entry.groupId, state: entry.state, percent: entry.percent, readings: entry.readings.length });
+    return print({ recorded: entry.groupId, state: entry.state, percent: entry.percent, readings: entry.readings.length, ...(coercedFields.size ? { coercedFields: [...coercedFields] } : {}) });
   }
   if (command === 'story-input') {
     const { groups, progress, story } = readLedger(dir);

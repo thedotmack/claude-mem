@@ -376,17 +376,30 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
 
     case 'devin': {
       return {
-        title: 'Devin: installing hooks',
+        title: 'Devin: installing hooks + MCP',
         task: async (message) => {
           message('Loading Devin installer…');
-          const { installDevinHooks } = await import('../../services/integrations/DevinHooksInstaller.js');
+          const { installDevinHooks, configureDevinMcp } = await import('../../services/integrations/DevinHooksInstaller.js');
           message('Installing Devin hooks…');
           const { result, output } = await bufferConsole(async () => installDevinHooks());
           if (result !== 0) {
             recordFailure('Devin: hook installation failed', output);
             return `Devin: hook installation failed ${styleText('red', 'FAIL')}`;
           }
-          return `Devin: hooks installed ${styleText('green', 'OK')}`;
+          message('Configuring Devin MCP…');
+          const { result: mcpResult, output: mcpOutput } = await bufferConsole(async () => configureDevinMcp());
+          if (mcpResult === 0) {
+            return `Devin: hooks + MCP installed ${styleText('green', 'OK')}`;
+          }
+          installerError(ErrorSeverity.WARN_CONTINUE, {
+            component: 'devin',
+            ide: 'devin',
+            phase: 'ide-install',
+            cause: new Error('Devin hooks installed, but MCP setup failed.'),
+            remediation: 'Fix the problem named above, then run `npx claude-mem devin install`.',
+            details: mcpOutput,
+          }, summary);
+          return `Devin: hooks installed; MCP setup failed — run \`npx claude-mem devin install\` ${styleText('yellow', '!')}`;
         },
       };
     }
@@ -2446,12 +2459,15 @@ export async function requireWorkerStopped(
   // (#2828). claude-mem never stops, kills or recycles it, and its manager
   // would restart it the moment it exited, so leave it running and say once
   // how to load the new version.
-  if (isWorkerAutostartDisabled({ CLAUDE_MEM_WORKER_AUTOSTART: getSetting('CLAUDE_MEM_WORKER_AUTOSTART') })) {
+  if (isWorkerAutostartDisabled({
+    CLAUDE_MEM_WORKER_AUTOSTART: getSetting('CLAUDE_MEM_WORKER_AUTOSTART'),
+    CLAUDE_MEM_WORKER_URL: getSetting('CLAUDE_MEM_WORKER_URL'),
+  })) {
     if (phase === 'pre-overwrite') {
       installerError(ErrorSeverity.WARN_CONTINUE, {
         component: 'worker-shutdown',
         phase,
-        cause: new Error('CLAUDE_MEM_WORKER_AUTOSTART=false: the worker is managed externally, so the installer did not stop it.'),
+        cause: new Error('CLAUDE_MEM_WORKER_AUTOSTART=false or CLAUDE_MEM_WORKER_URL is set: the worker is managed externally, so the installer did not stop it.'),
         remediation: 'When the install finishes, restart the worker with whatever manages it so it runs the new version.',
       }, summary);
     }
@@ -3180,6 +3196,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // worker that is not up yet is that manager's to start, not an install failure.
   const workerManagedExternally = isWorkerAutostartDisabled({
     CLAUDE_MEM_WORKER_AUTOSTART: getSetting('CLAUDE_MEM_WORKER_AUTOSTART'),
+    CLAUDE_MEM_WORKER_URL: getSetting('CLAUDE_MEM_WORKER_URL'),
   });
 
   await runTasks([

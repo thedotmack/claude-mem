@@ -492,6 +492,13 @@ received = [];
 out = (await run('prompt-context', { session_id: 'd5', cwd: '/home/user', prompt: wake('chan_6Off', 'Offline', 'cmsg_O', 'hi') }, { ...DUET, CMEM_API_BASE: 'http://127.0.0.1:1' })).out;
 j = out.trim() ? JSON.parse(out) : null;
 check('unreachable cloud → honest notice', j?.hookSpecificOutput?.additionalContext.includes("can't reach cmem.ai") && !j.hookSpecificOutput.additionalContext.includes('automatically taking notes'), out);
+{
+  const ctx = j?.hookSpecificOutput?.additionalContext || '';
+  const proj = (ctx.match(/project="([^"]+)"/) || [])[1];
+  check('unreachable cloud → points at the Claude-Mem connector for recall', ctx.includes('Claude-Mem connector') && ctx.includes('memory_search'), out);
+  check('…searching this project first, then without a filter', !!proj && ctx.includes(`try project ${proj} first`) && ctx.includes('without a project filter'), out);
+  check('…and saving only if the connector offers save_memory', ctx.includes('If that connector offers save_memory') && ctx.includes(`(project: ${proj})`), out);
+}
 
 // a proxied host re-runs the hook with the proxy turned on; stdin and output survive the hop
 received = [];
