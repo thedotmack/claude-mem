@@ -95,6 +95,29 @@ describe('invalid date bounds on the search routes', () => {
     expect(textOf(body)).toContain('zebrafish');
   });
 
+  // HTTP and MCP deliver every query value as a string, and the mem-search
+  // skill documents dateStart/dateEnd as "YYYY-MM-DD or epoch ms".
+  it('accepts epoch ms bounds that arrive as strings', async () => {
+    const now = Date.now();
+    const inRange = await request('/api/search', {
+      query: 'zebrafish', dateStart: String(now - 86_400_000), dateEnd: String(now + 86_400_000),
+    });
+    expect(inRange.status).toBe(200);
+    expect(textOf(inRange.body)).toContain('zebrafish');
+
+    const outOfRange = await request('/api/search', {
+      query: 'zebrafish', dateStart: String(now + 86_400_000),
+    });
+    expect(outOfRange.status).toBe(200);
+    expect(textOf(outOfRange.body)).not.toContain('zebrafish narrative');
+  });
+
+  it('rejects a digit-string bound that overflows to Infinity', async () => {
+    const { status, body } = await request('/api/search', { query: 'zebrafish', dateEnd: '9'.repeat(309) });
+    expect(status).toBe(400);
+    expect(body.code).toBe('INVALID_DATE');
+  });
+
   it('resolveDateBound itself throws a 400 AppError for a non-date', () => {
     for (const value of ['nope', '', 'tomorrow-ish']) {
       expect(() => resolveDateBound(value, 'start')).toThrow(/Invalid date/);
