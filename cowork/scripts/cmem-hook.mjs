@@ -627,7 +627,7 @@ function contextBlock(text, cwd) {
 // When the hooks can't reach cmem.ai, a connected Claude-Mem connector usually
 // still can (it goes through the host's own connector path, not this
 // container's network). Point the session at it so recall keeps working, and
-// so durable notes land there once the connector offers a save tool.
+// so durable notes land there when the connector offers a save tool.
 function connectorFallback(project) {
   return [
     '',
