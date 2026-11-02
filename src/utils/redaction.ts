@@ -154,6 +154,15 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   // starts `AgE` (pypi.org and test.pypi.org alike), printed by `twine`,
   // `uv publish` and `~/.pypirc` dumps. Real tokens run past 150 characters.
   { name: 'pypi_token',      regex: /\bpypi-AgE[A-Za-z0-9_-]{50,}(?!\w)/g },
+  // Incoming webhook URLs carry their secret in the path, so anyone holding
+  // one can post to the channel: Slack (`hooks.slack.com/services/T…/B…/…`,
+  // plus workflow and trigger URLs) and Discord (`discord.com/api/webhooks/
+  // <id>/<token>`, discordapp.com and the ptb/canary hosts too), as printed by
+  // `.env` dumps, CI configs and `curl -X POST` commands. Only the last path
+  // segment is replaced, so the host and the workspace/channel ids stay
+  // readable.
+  { name: 'slack_webhook',   regex: /(?<=\bhooks\.slack\.com\/(?:services|workflows|triggers)\/T[A-Z0-9]+\/[A-Z0-9]+\/(?:[0-9]+\/)?)[A-Za-z0-9]{20,}(?!\w)/g },
+  { name: 'discord_webhook', regex: /(?<=\b(?:(?:ptb|canary)\.)?discord(?:app)?\.com\/api\/(?:v\d+\/)?webhooks\/[0-9]{17,20}\/)[A-Za-z0-9_-]{60,}(?![\w-])/g },
   // claude-mem's own credentials: server API keys (`cmem_` + 43 base64url
   // chars, server-bootstrap.ts createRawApiKey) and cmem.ai Pro memory keys.
   { name: 'claude_mem_key',  regex: /\bcmem_[A-Za-z0-9_-]{32,}|\bcm_pro_[A-Za-z0-9_-]{8,}/g },

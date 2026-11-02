@@ -145,6 +145,36 @@ describe('redactSensitive built-in patterns', () => {
     },
   );
 
+  // Incoming webhook URLs hold their secret in the last path segment; only
+  // that segment is replaced. Fixtures are split so push protection doesn't
+  // flag them.
+  const SLACK_SECRET = 'aBcDeFgHiJkLmNoP' + 'qRsTuVwX';
+  const DISCORD_TOKEN = 'aBcDeFgHiJkLmNoPqRsTuVwXyZ' + '0123456789_-aBcDeFgHiJkLmNoPqRsTuVwXyZ01234';
+  it.each([
+    ['slack_webhook', 'SLACK_WEBHOOK_URL=https://' + 'hooks.slack' + '.com/services/T01ABCDEF/B02GHIJKL/' + SLACK_SECRET + ' tail',
+      "SLACK_WEBHOOK_URL=https://hooks.slack.com/services/T01ABCDEF/B02GHIJKL/<redacted type='slack_webhook'/> tail"],
+    ['slack_webhook', 'curl -X POST https://' + 'hooks.slack' + '.com/workflows/T01ABCDEF/A02GHIJKL/123456789012345678/' + SLACK_SECRET + ' tail',
+      "curl -X POST https://hooks.slack.com/workflows/T01ABCDEF/A02GHIJKL/123456789012345678/<redacted type='slack_webhook'/> tail"],
+    ['discord_webhook', '{"url":"https://' + 'discord' + '.com/api/webhooks/123456789012345678/' + DISCORD_TOKEN + '"} tail',
+      `{"url":"https://discord.com/api/webhooks/123456789012345678/<redacted type='discord_webhook'/>"} tail`],
+    ['discord_webhook', 'https://' + 'canary.discordapp' + '.com/api/v10/webhooks/123456789012345678/' + DISCORD_TOKEN + ' tail',
+      "https://canary.discordapp.com/api/v10/webhooks/123456789012345678/<redacted type='discord_webhook'/> tail"],
+  ])('redacts the secret of a %s URL', (name, input, expected) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toBe(expected);
+    expect(Object.keys(result.counts)).toEqual([name]);
+  });
+
+  it.each([
+    'https://hooks.slack.com/services/T01ABCDEF/B02GHIJKL/short',
+    'https://hooks.slack.com/services/',
+    'https://discord.com/api/webhooks/123456789012345678/short',
+    'https://discord.com/api/webhooks/123456789012345678',
+    'https://example.com/services/T01ABCDEF/B02GHIJKL/' + 'aBcDeFgHiJkLmNoPqRsTuVwX',
+  ])('leaves %s alone', (input) => {
+    expect(redactSensitive(input, cfg).redacted).toBe(input);
+  });
+
   // A password in a URL's userinfo is what `git remote -v` and a DATABASE_URL
   // print; only the password is replaced.
   it.each([
