@@ -526,6 +526,34 @@ describe('server REST API v1 routes', () => {
     expect(stored.project_id).toBe(projectA.id);
   });
 
+  it('supports anchored Smart context and selected details without crossing projects', async () => {
+    const { project } = await (await post('/v1/projects', { name: 'Smart recall' })).json();
+    const { project: foreign } = await (await post('/v1/projects', { name: 'Other project' })).json();
+    const ids: string[] = [];
+    for (let index = 0; index < 3; index++) {
+      const { memory } = await (await post('/v1/memories', { projectId: project.id, kind: 'manual', type: 'note', title: `recall ${index}` })).json();
+      ids.push(memory.id);
+      db.prepare('UPDATE memory_items SET created_at_epoch = ? WHERE id = ?').run(1000 + index, memory.id);
+    }
+    const { memory: other } = await (await post('/v1/memories', { projectId: foreign.id, kind: 'manual', type: 'note', title: 'foreign recall' })).json();
+    const context = await post('/v1/timeline', { projectId: project.id, anchorId: ids[1], depthBefore: 1, depthAfter: 1 });
+    expect(context.status).toBe(200);
+    expect((await context.json()).observations.map((row: { id: string }) => row.id)).toEqual(ids);
+    const selected = await post('/v1/observations/batch', { projectId: project.id, ids: [ids[2], other.id, 'missing', ids[0], ids[2]] });
+    expect((await selected.json()).observations.map((row: { id: string }) => row.id)).toEqual([ids[2], ids[0]]);
+    expect((await (await post('/v1/timeline', { projectId: project.id, anchorId: other.id })).json()).observations).toEqual([]);
+    expect((await post('/v1/timeline', { projectId: project.id, anchorId: ids[1], depthBefore: -1 })).status).toBe(400);
+    expect((await post('/v1/observations/batch', { projectId: project.id, ids: [] })).status).toBe(400);
+    const key = createServerApiKey(db, { name: 'Smart scoped read', projectId: project.id, scopes: ['memories:read'] });
+    for (const [path, body] of [
+      ['/v1/timeline', { projectId: foreign.id, anchorId: other.id }],
+      ['/v1/observations/batch', { projectId: foreign.id, ids: [other.id] }],
+    ] as const) {
+      const response = await fetch(`http://127.0.0.1:${port}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key.rawKey}` }, body: JSON.stringify(body) });
+      expect(response.status).toBe(403);
+    }
+  });
+
   async function post(path: string, body: unknown): Promise<Response> {
     return fetch(`http://127.0.0.1:${port}${path}`, {
       method: 'POST',

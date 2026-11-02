@@ -4,7 +4,7 @@ import { observationHandler } from '../../src/cli/handlers/observation.js';
 
 describe('claude-mem retrieval and explicit note classifiers', () => {
   it('excludes normalized MCP retrieval names and native mem_search', () => {
-    for (const name of ['mem_search', 'get_summaries', 'mcp__mcp_search__mem_search', 'mcp__mcp-search__get_observations', 'mcp__plugin_claude-mem_mcp-search__mem_search', 'mcp__claude_mem_remote__get_summaries']) {
+    for (const name of ['claude_mem_search', 'claude_mem_timeline', 'claude_mem_get_observations', 'dumb_search', 'mcp__mcp_search__dumb_search', 'mem_search', 'get_summaries', 'mcp__mcp_search__mem_search', 'mcp__mcp-search__get_observations', 'mcp__plugin_claude-mem_mcp-search__mem_search', 'mcp__claude_mem_remote__get_summaries']) {
       expect(isRecursiveMemoryTool(name)).toBe(true);
       expect(isExplicitMemoryWrite(name)).toBe(false);
     }

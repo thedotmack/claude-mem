@@ -217,7 +217,7 @@ describe('Telegram wrap-up provider reuse', () => {
     expect(result).toMatchObject({ content: '', tokensUsed: 20, inputTokens: 12, outputTokens: 8 });
     const body = JSON.parse(String(network.mock.calls[0][1]?.body));
     expect(body.response_format).toBeUndefined();
-    expect(body.reasoning).toBeUndefined();
+    expect(body.reasoning).toEqual({ enabled: false });
     expect(body.max_tokens).toBe(4096);
   });
 });

@@ -8,6 +8,7 @@ import { SessionSearch } from '../../src/services/sqlite/SessionSearch.js';
 import { SearchManager } from '../../src/services/worker/SearchManager.js';
 import { FormattingService } from '../../src/services/worker/FormattingService.js';
 import { TimelineService } from '../../src/services/worker/TimelineService.js';
+import { ModeManager } from '../../src/services/domain/ModeManager.js';
 import { SearchRoutes } from '../../src/services/worker/http/routes/SearchRoutes.js';
 import { MemoryRoutes } from '../../src/services/worker/http/routes/MemoryRoutes.js';
 import { WorkStateRoutes } from '../../src/services/worker/http/routes/WorkStateRoutes.js';
@@ -21,14 +22,10 @@ function modelText(result: CallToolResult): string {
   expect(() => JSON.parse(text)).toThrow();
   return text;
 }
-function cursor(text: string): string {
-  const value = /^Continue with: (ms_[A-Za-z0-9_-]{24})$/m.exec(text)?.[1];
-  expect(value).toBeDefined();
-  return value!;
-}
 
-describe('built local MCP progressive stdio integration', () => {
-  it('advertises guided/automatic search and delivers curated text through the real stdio transport', async () => {
+describe('built local MCP Dumb search stdio integration', () => {
+  it('advertises Dumb search, restores the layered tools and delivers curated text through the real stdio transport', async () => {
+    ModeManager.getInstance().loadMode('code');
     const db = new Database(':memory:');
     const store = new SessionStore(db);
     const project = 'stdio-progressive-fixture';
@@ -37,6 +34,13 @@ describe('built local MCP progressive stdio integration', () => {
       type: 'decision', title: 'Authentication token expiry', subtitle: null, narrative: 'PRIVATE_STDIO_BODY',
       facts: [], concepts: [], files_read: [], files_modified: [],
     }, 1, 0, Date.now());
+    const summary = store.storeSummary(memory, project, {
+      request: 'Authentication session summary', investigated: '', learned: '', completed: '', next_steps: '', notes: null,
+    }, 1, 0, Date.now());
+    const promptSession = store.createSDKSession('stdio-prompt-content', project, 'Authentication prompt');
+    const promptId = store.saveUserPrompt('stdio-prompt-content', 1, 'Authentication prompt', promptSession);
+    expect(summary.id).toBe(saved.id);
+    expect(promptId).toBe(saved.id);
     const literals = [
       { project: 'stdio-json-object', title: 'Configuration timeout example', body: '{"timeoutSeconds":30}' },
       { project: 'stdio-json-array', title: 'Staging environment example', body: '["use staging"]' },
@@ -73,33 +77,30 @@ describe('built local MCP progressive stdio integration', () => {
     try {
       await client.connect(transport);
       const listing = await client.listTools();
-      expect(listing.tools.find(tool => tool.name === 'mem_search')?.annotations?.readOnlyHint).toBe(true);
+      expect(listing.tools.find(tool => tool.name === 'dumb_search')?.annotations?.readOnlyHint).toBe(true);
+      expect(listing.tools.some(tool => tool.name === 'mem_search' || tool.name === 'flash_search')).toBe(false);
+      expect(listing.tools.find(tool => tool.name === 'dumb_search')?.description).toContain('Doesn’t reason about the results. Fast, but shallow. Use Smart for reliable recall.');
+      expect(listing.tools.find(tool => tool.name === 'search')?.description).toStartWith('Smart search (default), step 1:');
       expect(listing.tools.some(tool => tool.name === 'save_memory')).toBe(true);
-      const first = modelText(await client.callTool({ name: 'mem_search', arguments: { query: 'authentication', project } }) as CallToolResult);
-      expect(first).toStartWith('mem-search step 1 of 3');
-      expect(first).toContain(`[${saved.id}]`);
-      expect(first).not.toContain('PRIVATE_STDIO_BODY');
-      const second = modelText(await client.callTool({ name: 'mem_search', arguments: { continuation: cursor(first), selectedIds: [saved.id] } }) as CallToolResult);
-      expect(second).toStartWith('mem-search step 2 of 3');
-      expect(second).not.toContain('PRIVATE_STDIO_BODY');
-      const third = modelText(await client.callTool({ name: 'mem_search', arguments: { continuation: cursor(second), selectedIds: [String(saved.id)] } }) as CallToolResult);
-      expect(third).toStartWith('mem-search step 3 of 3');
-      expect(third).toContain('PRIVATE_STDIO_BODY');
-      const auto = modelText(await client.callTool({ name: 'mem_search', arguments: { query: 'authentication', project, mode: 'auto' } }) as CallToolResult);
-      expect(auto).toContain('Automatic search: index → context → selected details.');
-      expect(auto).toContain('PRIVATE_STDIO_BODY');
+      for (const format of [undefined, 'json']) {
+        const index = modelText(await client.callTool({ name: 'search', arguments: {
+          query: 'authentication', project, ...(format ? { format } : {}),
+        } }) as CallToolResult);
+        expect(index).toContain(`#${saved.id}`);
+        expect(index).toContain(`#S${summary.id}`);
+        expect(index).toContain(`#P${promptId}`);
+        expect(index).not.toContain('PRIVATE_STDIO_BODY');
+        if (format === 'json') expect(index).toContain('never pass S/P IDs');
+      }
+      const flash = modelText(await client.callTool({ name: 'dumb_search', arguments: { query: 'authentication', project } }) as CallToolResult);
+      expect(flash).toStartWith('dumb-search — selected details');
+      expect(flash).toContain('PRIVATE_STDIO_BODY');
       for (const fixture of literals) {
-        const index = modelText(await client.callTool({ name: 'mem_search', arguments: { query: fixture.title, project: fixture.project } }) as CallToolResult);
-        expect(index).not.toContain(fixture.body);
-        const context = modelText(await client.callTool({ name: 'mem_search', arguments: { continuation: cursor(index), selectedIds: [fixture.id] } }) as CallToolResult);
-        expect(context).not.toContain(fixture.body);
-        const selected = modelText(await client.callTool({ name: 'mem_search', arguments: { continuation: cursor(context), selectedIds: [fixture.id] } }) as CallToolResult);
-        expect(selected).toContain(fixture.body);
-        const automatic = modelText(await client.callTool({ name: 'mem_search', arguments: { query: fixture.title, project: fixture.project, mode: 'auto' } }) as CallToolResult);
+        const automatic = modelText(await client.callTool({ name: 'dumb_search', arguments: { query: fixture.title, project: fixture.project } }) as CallToolResult);
         expect(automatic).toContain(fixture.body);
         expect(automatic).not.toContain('No readable memory details');
       }
-      const bad = await client.callTool({ name: 'mem_search', arguments: { query: 'authentication', limit: 1000 } }) as CallToolResult;
+      const bad = await client.callTool({ name: 'dumb_search', arguments: { query: 'authentication', limit: 1000 } }) as CallToolResult;
       expect(bad.isError).toBe(true);
       expect(modelText(bad)).toContain('limit must be an integer');
       const note = modelText(await client.callTool({ name: 'save_memory', arguments: { text: 'A durable SQLite fixture note.', title: 'Saved fixture note', project } }) as CallToolResult);
@@ -133,14 +134,21 @@ describe('built local MCP progressive stdio integration', () => {
   it('formats every server-runtime observation handler as readable selected information', async () => {
     const app = express(); app.use(express.json());
     let localWrites = 0;
+    let localReads = 0;
+    const serverReads: Array<{ path: string; body: Record<string, unknown> }> = [];
+    app.all('/api/search', (_req, res) => { localReads++; res.json({ observations: [] }); });
+    app.all('/api/timeline', (_req, res) => { localReads++; res.json({ observations: [] }); });
+    app.post('/api/observations/batch', (_req, res) => { localReads++; res.json([]); });
     app.post('/api/memory/save', (_req, res) => { localWrites++; res.json({ success: true, id: 99, title: 'WRONG_DATABASE_WRITE' }); });
-    const observation = { id: 'memory-fixture', projectId: 'project-fixture', content: 'PRIVATE_SERVER_NARRATIVE', metadata: { title: 'A server decision', secret: 'PRIVATE_SERVER_METADATA' }, teamId: 'PRIVATE_TEAM', tokenUsage: 12345 };
+    const observation = { id: 'memory-fixture', projectId: 'project-fixture', content: 'PRIVATE_SERVER_NARRATIVE ' + 'x'.repeat(1_000), metadata: { title: 'A server decision', secret: 'PRIVATE_SERVER_METADATA' }, teamId: 'PRIVATE_TEAM', tokenUsage: 12345 };
     app.post('/v1/memories', (_req, res) => res.json({ memory: observation }));
     app.post('/v1/events', (_req, res) => res.json({ event: { id: 'event-fixture', payload: 'PRIVATE_EVENT_PAYLOAD' }, generationJob: { id: 'job-fixture', status: 'queued' } }));
     app.post('/v1/search', (_req, res) => res.json({ observations: [observation,
       { id: 'plain-fixture', projectId: 'project-fixture', content: 'Use staging for deployment rehearsals.', metadata: { secret: 'PRIVATE_NOTE_METADATA' } },
       { id: 'summary-fixture', projectId: 'project-fixture', content: 'PRIVATE_SUMMARY_BODY', metadata: { request: 'How did we fix login redirects?', secret: 'PRIVATE_SUMMARY_METADATA' } },
     ] }));
+    app.post('/v1/timeline', (req, res) => { serverReads.push({ path: req.path, body: req.body }); res.json({ observations: [observation] }); });
+    app.post('/v1/observations/batch', (req, res) => { serverReads.push({ path: req.path, body: req.body }); res.json({ observations: [observation] }); });
     app.post('/v1/context', (_req, res) => res.json({ observations: [observation], context: 'Selected server context.' }));
     app.get('/v1/jobs/:id', (req, res) => req.params.id === 'bad-fixture'
       ? res.status(502).json({ error: 'PRIVATE_BACKEND_ERROR_BODY' })
@@ -174,14 +182,38 @@ describe('built local MCP progressive stdio integration', () => {
         if (entry.name === 'search' || entry.name === 'observation_search') {
           expect(text).toContain('#plain-fixture — Excerpt: Use staging for deployment rehearsals.');
           expect(text).toContain('#summary-fixture — How did we fix login redirects?');
-          expect(text).toContain('Use observation_context with a focused query and limit');
-          expect(text).not.toContain('Use mem_search');
+          expect(text).toContain('Next: timeline(anchor=ID) for server context');
+          expect(text).toContain('get_observations(ids=');
           const supported = await client.callTool({ name: 'observation_context', arguments: { query: 'staging', limit: 1 } }) as CallToolResult;
           expect(supported.isError).not.toBe(true);
           expect(modelText(supported)).toContain('Selected server context.');
         }
       }
-      const unavailable = await client.callTool({ name: 'mem_search', arguments: { query: 'decision' } }) as CallToolResult;
+      const workflow = modelText(await client.callTool({ name: 'important_workflow', arguments: {} }) as CallToolResult);
+      expect(workflow).toContain('1. search({query})');
+      expect(workflow).toContain('2. timeline({anchor: ID})');
+      expect(workflow).toContain('3. get_observations({ids})');
+      const timeline = modelText(await client.callTool({ name: 'timeline', arguments: { anchor: 'memory-fixture', depth_before: 2, depth_after: 1 } }) as CallToolResult);
+      expect(timeline).toContain('#memory-fixture — A server decision');
+      expect(timeline).toContain('PRIVATE_SERVER_NARRATIVE');
+      expect(timeline).not.toContain('x'.repeat(200));
+      const selected = modelText(await client.callTool({ name: 'get_observations', arguments: { ids: ['memory-fixture'] } }) as CallToolResult);
+      expect(selected).toContain('PRIVATE_SERVER_NARRATIVE');
+      expect(serverReads).toEqual([
+        { path: '/v1/timeline', body: { projectId: 'project-fixture', anchorId: 'memory-fixture', depthBefore: 2, depthAfter: 1 } },
+        { path: '/v1/observations/batch', body: { projectId: 'project-fixture', ids: ['memory-fixture'] } },
+      ]);
+      for (const unsupported of [
+        { name: 'search', arguments: { query: 'decision', project: 'local-project' } },
+        { name: 'timeline', arguments: { query: 'decision' } },
+        { name: 'get_observations', arguments: { ids: ['memory-fixture'], project: 'local-project' } },
+        { name: 'get_tool_uses', arguments: { ids: ['memory-fixture'] } },
+      ]) {
+        const denied = await client.callTool(unsupported) as CallToolResult;
+        expect(denied.isError).toBe(true);
+      }
+      expect(localReads).toBe(0);
+      const unavailable = await client.callTool({ name: 'dumb_search', arguments: { query: 'decision' } }) as CallToolResult;
       expect(unavailable.isError).toBe(true);
       expect(modelText(unavailable)).toContain('hosted claude-mem MCP');
       const note = await client.callTool({ name: 'save_memory', arguments: { text: 'A server-scoped note.' } }) as CallToolResult;

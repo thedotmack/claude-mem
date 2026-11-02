@@ -1,6 +1,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
-import { stripMemoryTags, stripMemoryTagsFromJsonStrings, isInternalProtocolPayload, isCodexInternalPrompt } from '../../src/utils/tag-stripping.js';
+import { stripMemoryTags, stripMemoryTagsFromJsonStrings, isInternalProtocolPayload, isCodexInternalPrompt, isGrokBotInternalPrompt } from '../../src/utils/tag-stripping.js';
 import { logger } from '../../src/utils/logger.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
@@ -646,6 +646,50 @@ after`;
     it('does not match a person asking about suggestions or rollout summaries', () => {
       expect(isCodexInternalPrompt('This is an app-generated request? I did not expect that.')).toBe(false);
       expect(isCodexInternalPrompt('Consolidate the supplied rollout summaries please')).toBe(false);
+    });
+  });
+
+  describe('isGrokBotInternalPrompt', () => {
+    it('returns false for empty input', () => {
+      expect(isGrokBotInternalPrompt('')).toBe(false);
+    });
+
+    it('returns false for general user queries', () => {
+      expect(isGrokBotInternalPrompt('How do I run a backup?')).toBe(false);
+      expect(isGrokBotInternalPrompt('Investigate why the tests fail on CI')).toBe(false);
+      expect(isGrokBotInternalPrompt('Break the build into smaller modules')).toBe(false);
+    });
+
+    it('does not match a person paraphrasing a brief opening', () => {
+      expect(isGrokBotInternalPrompt('Verify every candidate claim in the JSON packet below, please')).toBe(false);
+      expect(isGrokBotInternalPrompt('Investigate the question in the JSON file I attached')).toBe(false);
+      expect(isGrokBotInternalPrompt('Rewrite the research findings to be shorter')).toBe(false);
+    });
+
+    it('matches a brief with leading whitespace', () => {
+      expect(isGrokBotInternalPrompt('  Independently verify every candidate claim in the JSON packet below')).toBe(true);
+    });
+
+    it('returns false for non-matching user queries and incomplete openings', () => {
+      expect(isGrokBotInternalPrompt('Independently verify this claim? I typed it myself.')).toBe(false);
+      expect(isGrokBotInternalPrompt('Please break the JSON-encoded research query for me')).toBe(false);
+      expect(isGrokBotInternalPrompt('Rewrite the verified research')).toBe(false);
+    });
+
+    it('returns true for the research verification briefing', () => {
+      expect(isGrokBotInternalPrompt('Independently verify every candidate claim in the JSON packet below.\n\n{"claims": []}')).toBe(true);
+    });
+
+    it('returns true for the verified findings rewrite briefing', () => {
+      expect(isGrokBotInternalPrompt('   Rewrite the verified research findings into a clear answer.')).toBe(true);
+    });
+
+    it('returns true for the research question investigation briefing', () => {
+      expect(isGrokBotInternalPrompt('Investigate the JSON-encoded question below.\n\n{"question": "How does this work?"}')).toBe(true);
+    });
+
+    it('returns true for the research query decomposition briefing', () => {
+      expect(isGrokBotInternalPrompt('Break the JSON-encoded research query into focused research tasks.')).toBe(true);
     });
   });
 

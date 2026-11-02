@@ -235,7 +235,6 @@ export async function setupV2(
   if (typeof directory !== "string" || directory === "") {
     // OpenCode also calls setup() with a host registry that has no checkout.
     // Registering hooks there would send every write to the worker without a cwd.
-    console.warn("[claude-mem] OpenCode plugin skipped: context has no directory");
     return async () => {};
   }
   const ctx: CoreContext = {
@@ -347,7 +346,7 @@ export async function setupV2(
         editor.add({
           name: "claude_mem_search",
           description:
-            "Search claude-mem memory database for past observations, sessions, and context",
+            "Smart search (default), step 1: get a memory index. Review claude_mem_timeline, then fetch only selected IDs with claude_mem_get_observations.",
           input: {
             type: "object",
             properties: {
@@ -358,6 +357,18 @@ export async function setupV2(
           execute: async (input: Record<string, unknown>) => ({
             content: await core.search(String(input?.query || "")),
           }),
+        });
+        editor.add({
+          name: "claude_mem_timeline",
+          description: "Smart search, step 2: inspect context around an observation ID from claude_mem_search.",
+          input: { type: "object", properties: { anchor: { type: "integer" } }, required: ["anchor"] },
+          execute: async (input: Record<string, unknown>) => ({ content: await core.timeline(Number(input.anchor)) }),
+        });
+        editor.add({
+          name: "claude_mem_get_observations",
+          description: "Smart search, step 3: fetch only IDs selected after reviewing the index and timeline.",
+          input: { type: "object", properties: { ids: { type: "array", items: { type: "integer" }, minItems: 1 } }, required: ["ids"] },
+          execute: async (input: Record<string, unknown>) => ({ content: await core.getObservations(input.ids as number[]) }),
         });
       }),
     );

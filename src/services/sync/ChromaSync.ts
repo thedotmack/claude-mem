@@ -20,10 +20,8 @@ import { streamRows } from '../sqlite/stream-rows.js';
 
 type SessionStore = SessionStoreType;
 
-// Lazy CJS require so tsup (used by the cmem-sdk build) does not follow
-// these SQLite-coupled modules into the SDK bundle. Worker/Bun runtime
-// reaches them at first call; the SDK never calls the methods that
-// trigger these loads, so they never load in SDK consumers.
+// Lazy CJS require: the worker/Bun runtime reaches these SQLite-coupled
+// modules at first call.
 const lazyCreateRequire = (): ((id: string) => unknown) => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const mod = require('module') as typeof import('module');
@@ -47,6 +45,20 @@ export interface ChromaDocument {
   document: string;
   metadata: Record<string, string | number>;
 }
+
+/**
+ * Chroma doc_type → row-writer kind, mirroring the worker routes'
+ * CHROMA_DOC_TYPES. Row cleanup (`deleteRowDocuments`) receives the doc_type
+ * but must queue on the same `rowWriters` turn live writes and backfill key by
+ * kind, so the two string spaces meet here. Unknown doc types fall back to
+ * their own name: they match no writer key, which only matters if a new doc
+ * type is added without updating this table.
+ */
+const DOC_TYPE_ROW_KIND: Record<string, string> = {
+  observation: 'observations',
+  session_summary: 'summaries',
+  user_prompt: 'prompts',
+};
 
 /**
  * Why a backfill run stopped before attempting every row: the worker began
@@ -178,6 +190,13 @@ export interface ChromaQueryProgress {
   exhausted?: boolean;
 }
 
+/**
+ * The SQLite ids of every row a scoped search can keep, or null when more than
+ * `maxIds` rows match. queryChroma asks for them only when it falls back to a
+ * filtered query, so a search the over-fetch answers never pays for the list.
+ */
+export type ChromaFallbackRowIds = (maxIds: number) => number[] | null;
+
 /** The last corrupt collection this process dropped, for health reporting. */
 export interface ChromaCollectionDrop {
   collection: string;
@@ -198,6 +217,18 @@ export interface ChromaCollectionDrop {
  */
 const CHROMA_OVERFETCH_FACTOR = 20;
 const CHROMA_OVERFETCH_CAP = 2000;
+
+/**
+ * A selective filter is not cheap when one of its members matches most of the
+ * collection: chromadb 1.5.9 evaluates every `$and` member over every document
+ * it matches before the selective member narrows anything (#4682). Every search
+ * sends a `doc_type` clause, so the filtered fallback took 13-20s on a
+ * 697k-document collection even for a 71-observation project or a 66-row
+ * platform (#5091). `sqlite_id: {$in}` with the rows SQLite says the search can
+ * keep matches only their fragments: 0.6-3.7s for 67-8,000 ids at n_results
+ * 2000 on the same collection. Past this many ids the plain `where` is sent.
+ */
+const CHROMA_FALLBACK_ROW_ID_CAP = 5000;
 
 type MetadataPredicate = (metadata: Record<string, unknown>) => boolean;
 
@@ -797,15 +828,23 @@ export class ChromaSync {
             // still advancing the watermark past them (data loss). So split
             // the batch: update the existing IDs in place, add only the new
             // ones, and count each part only if it actually succeeds.
+            //
+            // Updating a document makes Chroma embed it again, which is the
+            // whole cost of a write. A rebuild that restarts after an
+            // interruption replays rows that are already indexed with the same
+            // text, so only re-send the text when it changed and refresh the
+            // metadata alone otherwise.
             const existing = await chromaMcp.callTool('chroma_get_documents', {
               collection_name: this.collectionName,
               ids: batch.map(d => d.id),
-              include: []
-            }) as { ids?: string[] };
-            const existingIds = new Set(existing?.ids ?? []);
+              include: ['documents']
+            }) as { ids?: string[]; documents?: (string | null)[] };
+            const storedText = new Map<string, string | null>();
+            (existing?.ids ?? []).forEach((id, index) => storedText.set(id, existing?.documents?.[index] ?? null));
 
-            const toUpdate = batch.filter(d => existingIds.has(d.id));
-            const toAdd = batch.filter(d => !existingIds.has(d.id));
+            const toUpdate = batch.filter(d => storedText.has(d.id) && storedText.get(d.id) !== d.document);
+            const unchanged = batch.filter(d => storedText.has(d.id) && storedText.get(d.id) === d.document);
+            const toAdd = batch.filter(d => !storedText.has(d.id));
             const cleanFor = (docs: ChromaDocument[]) => docs.map(d =>
               Object.fromEntries(
                 Object.entries(d.metadata).filter(([_, v]) => v !== null && v !== undefined && v !== '')
@@ -820,6 +859,15 @@ export class ChromaSync {
                 metadatas: cleanFor(toUpdate)
               });
               written += toUpdate.length;
+            }
+
+            if (unchanged.length > 0) {
+              await chromaMcp.callTool('chroma_update_documents', {
+                collection_name: this.collectionName,
+                ids: unchanged.map(d => d.id),
+                metadatas: cleanFor(unchanged)
+              });
+              written += unchanged.length;
             }
 
             if (toAdd.length > 0) {
@@ -837,6 +885,7 @@ export class ChromaSync {
               batchStart: i,
               batchSize: batch.length,
               updated: toUpdate.length,
+              metadataOnly: unchanged.length,
               added: toAdd.length
             });
             ChromaSync.corruptSegmentBatches.delete(this.collectionName);
@@ -871,16 +920,18 @@ export class ChromaSync {
     return written;
   }
 
-  /** Remove only disappeared fragments; surviving deterministic IDs update in place. */
-  private async removeObsoleteFragments(docType: string, sqliteId: number, documents: ChromaDocument[]): Promise<void> {
+  /**
+   * Look up the deterministic fragment ids of one content row that belong to
+   * `docType`. Query by sqlite_id alone: chromadb 1.5.9 evaluates an $and
+   * member over every document matching it before the selective condition
+   * narrows anything, so a doc_type prefix scanned ~1.2M observation docs per
+   * lookup and blew the chroma-mcp 60s timeout on a cold page cache (#4682).
+   * doc_type still matters — observation and session_summary ids overlap —
+   * so it is filtered client-side here.
+   */
+  private async lookupRowFragmentIds(docType: string, sqliteId: number): Promise<string[]> {
     await this.ensureCollectionExists();
     const manager = ChromaMcpManager.getInstance();
-    // Query by sqlite_id alone: chromadb 1.5.9 evaluates an $and member over
-    // every document matching it before the selective condition narrows
-    // anything, so a doc_type prefix scanned ~1.2M observation docs per lookup
-    // and blew the chroma-mcp 60s timeout on a cold page cache (#4682).
-    // doc_type still matters — observation and session_summary ids overlap —
-    // so it is filtered client-side below.
     const existing = await manager.callTool('chroma_get_documents', {
       collection_name: this.collectionName,
       where: { sqlite_id: sqliteId },
@@ -899,12 +950,45 @@ export class ChromaSync {
       || (ids.length > 0 && (!Array.isArray(metadatas) || metadatas.length !== ids.length))) {
       throw new Error('Chroma fragment lookup did not return a valid document ID list with metadatas');
     }
+    return (ids as string[]).filter((id, k) =>
+      (metadatas as Array<Record<string, unknown> | null>)[k]?.doc_type === docType);
+  }
+
+  /** Remove only disappeared fragments; surviving deterministic IDs update in place. */
+  private async removeObsoleteFragments(docType: string, sqliteId: number, documents: ChromaDocument[]): Promise<void> {
     const currentIds = new Set(documents.map(doc => doc.id));
-    const obsolete = (ids as string[]).filter((id, k) =>
-      (metadatas as Array<Record<string, unknown> | null>)[k]?.doc_type === docType
-      && !currentIds.has(id));
+    const obsolete = (await this.lookupRowFragmentIds(docType, sqliteId))
+      .filter(id => !currentIds.has(id));
+    const manager = ChromaMcpManager.getInstance();
     for (let i = 0; i < obsolete.length; i += this.BATCH_SIZE) {
       await manager.callTool('chroma_delete_documents', { collection_name: this.collectionName, ids: obsolete.slice(i, i + this.BATCH_SIZE) });
+    }
+  }
+
+  /**
+   * Delete every remaining fragment of one content row. The delete routes call
+   * this after the SQLite row is committed gone; without it the row's documents
+   * stay in the index forever (#4805) — backfill walks SQLite rows and never
+   * reconciles toward Chroma, so nothing else reclaims them.
+   * Returns the number of fragments removed.
+   */
+  public async deleteRowDocuments(docType: string, sqliteId: number): Promise<number> {
+    // Queue on the same per-row writer turn live writes and backfill use: a
+    // batch still being written when the delete committed must land before the
+    // lookup below, or it would finish after these deletions and orphan its
+    // fragments again even though every Chroma call here succeeded (Greptile
+    // P1 on PR #4813). Holding the turn through deletion also makes a write
+    // that races the delete wait instead of interleaving with it.
+    const release = await this.acquireRowWriter(DOC_TYPE_ROW_KIND[docType] ?? docType, sqliteId);
+    try {
+      const doomed = await this.lookupRowFragmentIds(docType, sqliteId);
+      const manager = ChromaMcpManager.getInstance();
+      for (let i = 0; i < doomed.length; i += this.BATCH_SIZE) {
+        await manager.callTool('chroma_delete_documents', { collection_name: this.collectionName, ids: doomed.slice(i, i + this.BATCH_SIZE) });
+      }
+      return doomed.length;
+    } finally {
+      release();
     }
   }
 
@@ -1826,7 +1910,8 @@ export class ChromaSync {
     query: string,
     limit: number,
     whereFilter?: Record<string, any>,
-    progress?: ChromaQueryProgress
+    progress?: ChromaQueryProgress,
+    fallbackRowIds?: ChromaFallbackRowIds
   ): Promise<{ ids: number[]; distances: number[]; metadatas: any[] }> {
     if (progress) progress.exhausted = false;
     await this.ensureCollectionExists();
@@ -1897,6 +1982,13 @@ export class ChromaSync {
         this.selectiveFilters.set(filterKey, filtered.ids.length);
       }
 
+      // A selective filter can still be slow in chroma; try it narrowed to the
+      // rows the caller can keep first (see CHROMA_FALLBACK_ROW_ID_CAP).
+      if (predicate && fallbackRowIds) {
+        const narrowed = await this.queryByRowIds(runQuery, limit, predicate, fallbackRowIds, progress);
+        if (narrowed) return narrowed;
+      }
+
       // The fallback consumes the same row metadata and distances as the fast
       // path; document text is never read, even for large corpus budgets.
       results = await runQuery(limit, whereFilter, ['metadatas', 'distances']);
@@ -1925,6 +2017,70 @@ export class ChromaSync {
     // many document slots, so a short unique-ID list does not imply exhaustion.
     if (progress) progress.exhausted = (results?.ids?.[0]?.length ?? 0) < limit;
     return this.deduplicateQueryResults(results);
+  }
+
+  /**
+   * The filtered fallback, asked as `sqlite_id: {$in}` of the rows the caller's
+   * SQLite scope can keep. Those ids repeat across doc types, and chroma's
+   * metadata is what the plain `where` would have matched, so the fast path's
+   * predicate picks the matching fragments. Returns null when the ids are
+   * unknown or too many, or when the window cannot prove the top `limit`
+   * matches; the caller then sends the plain `where`.
+   */
+  private async queryByRowIds(
+    runQuery: (nResults: number, where: Record<string, any> | undefined, include: string[]) => Promise<any>,
+    limit: number,
+    predicate: MetadataPredicate,
+    fallbackRowIds: ChromaFallbackRowIds,
+    progress?: ChromaQueryProgress
+  ): Promise<{ ids: number[]; distances: number[]; metadatas: any[] } | null> {
+    let rowIds: number[] | null;
+    try {
+      rowIds = fallbackRowIds(CHROMA_FALLBACK_ROW_ID_CAP);
+    } catch (error) {
+      logger.warn('CHROMA_SYNC', 'Could not list the rows in scope; sending the plain filter',
+        { project: this.project }, error as Error);
+      return null;
+    }
+    if (!rowIds || rowIds.length > CHROMA_FALLBACK_ROW_ID_CAP) return null;
+    if (rowIds.length === 0) {
+      // Nothing in scope: the caller's hydration would drop whatever chroma returned.
+      if (progress) progress.exhausted = true;
+      return { ids: [], distances: [], metadatas: [] };
+    }
+
+    // Over-fetch as the fast path does, because the predicate drops the other
+    // doc types' fragments that share these ids.
+    const nResults = Math.max(limit, Math.min(limit * CHROMA_OVERFETCH_FACTOR, CHROMA_OVERFETCH_CAP));
+    const raw: any = await runQuery(nResults, { sqlite_id: { $in: rowIds } }, ['metadatas', 'distances']);
+    const rawIds = raw?.ids?.[0] || [];
+    const rawMetadatas = raw?.metadatas?.[0] || [];
+    const rawDistances = raw?.distances?.[0] || [];
+
+    const keptIds: string[] = [];
+    const keptMetadatas: any[] = [];
+    const keptDistances: number[] = [];
+    for (let i = 0; i < rawIds.length && keptIds.length < limit; i++) {
+      if (!predicate(rawMetadatas[i] ?? {})) continue;
+      keptIds.push(rawIds[i]);
+      keptMetadatas.push(rawMetadatas[i]);
+      keptDistances.push(rawDistances[i]);
+    }
+
+    // The plain `where` ranks the same matches in the same order; the only ones
+    // missing here belong to rows outside the SQLite scope, which hydration
+    // drops anyway. So `limit` kept fragments are its top `limit`. A window
+    // shorter than n_results held every candidate. Otherwise more matches may
+    // sit past the window, and only the plain `where` can find them.
+    const windowExhausted = rawIds.length < nResults;
+    if (keptIds.length < limit && !windowExhausted) return null;
+    logger.debug('CHROMA_SYNC', 'Filtered fallback narrowed to row ids', {
+      rows: rowIds.length, fragments: rawIds.length, kept: keptIds.length
+    });
+    if (progress) progress.exhausted = windowExhausted && keptIds.length < limit;
+    return this.deduplicateQueryResults({
+      ids: [keptIds], metadatas: [keptMetadatas], distances: [keptDistances]
+    });
   }
 
   private deduplicateQueryResults(results: any): { ids: number[]; distances: number[]; metadatas: any[] } {

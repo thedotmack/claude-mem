@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
 import { mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -6,7 +6,8 @@ import { tmpdir } from 'os';
 import { ChromaSync } from '../../../src/services/sync/ChromaSync.js';
 import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
 import { ChromaSyncState } from '../../../src/services/sync/ChromaSyncState.js';
-import { ChromaCorruptCollectionError, ChromaUnavailableError } from '../../../src/services/worker/search/errors.js';
+import { ChromaCorruptCollectionError, ChromaUnavailableError, logChromaWriteFailure } from '../../../src/services/worker/search/errors.js';
+import { logger } from '../../../src/utils/logger.js';
 
 // Corrupt-collection coverage (#3202).
 //
@@ -457,5 +458,38 @@ describe('ChromaSync rebuild after a dropped collection (#3202)', () => {
     expect(calls('chroma_delete_collection')).toBe(1);
     // Row 1 landed before the drop, but the whole project is rebuilt anyway.
     expect(ChromaSyncState.isRebuildPending('proj')).toBe(true);
+  });
+});
+
+describe('logChromaWriteFailure', () => {
+  let sink: Error[] = [];
+  beforeEach(() => {
+    sink = [];
+    logger.setErrorSink(error => { sink.push(error); });
+  });
+  afterEach(() => {
+    logger.setErrorSink(null);
+  });
+
+  it('reports a corrupt-collection drop to the error sink only once', async () => {
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
+      return {};
+    });
+    const sync = new ChromaSync('claude-mem');
+    expect(await sync.addDocuments([makeDoc('d1')])).toBe(0);
+    const failure = await sync.addDocuments([makeDoc('d2')]).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ChromaCorruptCollectionError);
+    const reportedBeforeCaller = sink.length;
+    expect(reportedBeforeCaller).toBeGreaterThan(0);
+
+    logChromaWriteFailure('CHROMA', 'live write failed', {}, failure);
+
+    expect(sink.length).toBe(reportedBeforeCaller);
+  });
+
+  it('still reports any other write failure to the error sink', () => {
+    logChromaWriteFailure('CHROMA', 'live write failed', {}, EMBEDDING_RUNTIME_ERROR);
+    expect(sink).toEqual([EMBEDDING_RUNTIME_ERROR]);
   });
 });

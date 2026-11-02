@@ -143,4 +143,172 @@ describe('SessionStore.storeObservations', () => {
     expect(second.observationIds).toEqual(first.observationIds);
     expect(second.insertedObservationIds).toEqual([]);
   });
+
+  it('deduplicates repeated stops for the same turn and merges summary fields (#5225)', () => {
+    const mem = session('mem-dedup-summary-5225');
+    const firstSummary = summary({
+      request: 'Fix authentication bug',
+      investigated: 'Investigated auth middleware and headers',
+      learned: 'Token was expiring prematurely',
+      completed: 'Patched token refresh logic',
+      next_steps: '',
+      notes: null,
+      files_read: ['src/auth.ts'],
+      files_edited: ['src/auth.ts'],
+    });
+
+    const first = store.storeObservations(mem, 'project', [], firstSummary, 1, 100);
+    expect(first.summaryId).not.toBeNull();
+    expect(first.summaryUpdated).toBe(false);
+
+    const firstId = first.summaryId;
+
+    // A background task notification wakes up the agent; it stops again on prompt 1
+    // with a second summary where completed/learned are empty but next_steps is added
+    const secondSummary = summary({
+      request: 'Fix authentication bug',
+      investigated: '',
+      learned: '',
+      completed: '',
+      next_steps: 'Add integration tests for token refresh',
+      notes: 'Verified locally',
+      files_read: ['tests/auth.test.ts'],
+      files_edited: [],
+    });
+
+    const second = store.storeObservations(mem, 'project', [], secondSummary, 1, 50);
+    expect(second.summaryId).toBe(firstId);
+    expect(second.summaryUpdated).toBe(true);
+
+    // Verify only ONE summary row exists in database for this turn
+    const rows = store.db.prepare(
+      'SELECT * FROM session_summaries WHERE memory_session_id = ? AND prompt_number = ?'
+    ).all('mem-dedup-summary-5225', 1) as any[];
+    expect(rows.length).toBe(1);
+
+    const row = rows[0];
+    expect(row.id).toBe(firstId);
+    expect(row.request).toBe('Fix authentication bug');
+    // Content did not shrink: previous values preserved for empty fields
+    expect(row.investigated).toBe('Investigated auth middleware and headers');
+    expect(row.learned).toBe('Token was expiring prematurely');
+    expect(row.completed).toBe('Patched token refresh logic');
+    // New fields were applied
+    expect(row.next_steps).toBe('Add integration tests for token refresh');
+    expect(row.notes).toBe('Verified locally');
+    // Files were merged
+    expect(JSON.parse(row.files_read)).toEqual(['src/auth.ts', 'tests/auth.test.ts']);
+    expect(JSON.parse(row.files_edited)).toEqual(['src/auth.ts']);
+    // Tokens kept maximum
+    expect(row.discovery_tokens).toBe(100);
+
+    // Prompt 2 creates a separate summary as expected
+    const third = store.storeObservations(mem, 'project', [], summary({ request: 'New request' }), 2);
+    expect(third.summaryId).not.toBe(firstId);
+    const allSummaries = store.db.prepare(
+      'SELECT id, prompt_number FROM session_summaries WHERE memory_session_id = ? ORDER BY id ASC'
+    ).all('mem-dedup-summary-5225') as any[];
+    expect(allSummaries.length).toBe(2);
+    expect(allSummaries.map(s => s.prompt_number)).toEqual([1, 2]);
+  });
+
+  it('does not overwrite remote-owned replica summaries when storing local turn (#5228)', () => {
+    const mem = session('mem-remote-check');
+    // Simulate a replica summary synced from a remote device
+    store.db.prepare(`
+      INSERT INTO session_summaries
+        (memory_session_id, project, request, prompt_number, origin_device_id, origin_local_id, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run('mem-remote-check', 'project', 'Remote summary from device B', 1, 'device-B', 'remote-id-1', '2026-01-01T00:00:00Z', 1000);
+
+    const remoteRow = store.db.prepare('SELECT * FROM session_summaries WHERE origin_device_id = ?').get('device-B') as any;
+    expect(remoteRow).toBeDefined();
+
+    // Local turn executes on the same session and prompt number
+    const localResult = store.storeObservations(mem, 'project', [], summary({ request: 'Local summary from this machine' }), 1);
+
+    // It must NOT update the remote replica row in place; it must insert a native row
+    expect(localResult.summaryUpdated).toBe(false);
+    expect(localResult.summaryId).not.toBe(remoteRow.id);
+
+    // Verify remote replica row is completely preserved
+    const preservedRemote = store.db.prepare('SELECT * FROM session_summaries WHERE id = ?').get(remoteRow.id) as any;
+    expect(preservedRemote.request).toBe('Remote summary from device B');
+    expect(preservedRemote.origin_device_id).toBe('device-B');
+
+    // Verify new native row exists
+    const nativeRow = store.db.prepare('SELECT * FROM session_summaries WHERE id = ?').get(localResult.summaryId) as any;
+    expect(nativeRow.request).toBe('Local summary from this machine');
+    expect(nativeRow.origin_device_id).toBeNull();
+  });
+
+  it('updateDiscoveryTokens preserves the maximum and does not shrink token counts (#5228)', () => {
+    const mem = session('mem-token-shrink-check');
+    const res = store.storeObservations(mem, 'project', [], summary({ request: 'Token test' }), 1, 500);
+    expect(res.summaryId).not.toBeNull();
+
+    // Verify initial tokens
+    let row = store.db.prepare('SELECT discovery_tokens FROM session_summaries WHERE id = ?').get(res.summaryId) as any;
+    expect(row.discovery_tokens).toBe(500);
+
+    // Backfill with a smaller token count (e.g. 150) must not shrink the saved count
+    store.updateDiscoveryTokens([], res.summaryId, 150);
+    row = store.db.prepare('SELECT discovery_tokens FROM session_summaries WHERE id = ?').get(res.summaryId) as any;
+    expect(row.discovery_tokens).toBe(500);
+
+    // Backfill with a larger token count (e.g. 1200) should increase it
+    store.updateDiscoveryTokens([], res.summaryId, 1200);
+    row = store.db.prepare('SELECT discovery_tokens FROM session_summaries WHERE id = ?').get(res.summaryId) as any;
+    expect(row.discovery_tokens).toBe(1200);
+  });
+
+  it('takes next_steps from the latest stop of the turn, even when empty (#5225)', () => {
+    const mem = session('mem-next-steps-latest');
+    // Stop 1 happens while a background task is still running
+    store.storeObservations(mem, 'project', [], summary({
+      completed: 'Started the build in the background',
+      next_steps: 'Wait for the background build, then check the log',
+    }), 1);
+
+    // Stop 2 after the <task-notification>: the build is done, nothing is left
+    const second = store.storeObservations(mem, 'project', [], summary({
+      completed: 'Build passed; read the log',
+      next_steps: '',
+    }), 1);
+    expect(second.summaryUpdated).toBe(true);
+
+    const row = store.db.prepare(
+      'SELECT completed, next_steps FROM session_summaries WHERE id = ?'
+    ).get(second.summaryId) as any;
+    expect(row.completed).toBe('Build passed; read the log');
+    expect(row.next_steps).toBe('');
+  });
+
+  it('updates the newest row when the turn already holds duplicates from before the fix (#5225)', () => {
+    const mem = session('mem-existing-duplicates');
+    const first = store.storeObservations(mem, 'project', [], summary({ completed: 'oldest' }), 1);
+    store.db.prepare(
+      `INSERT INTO session_summaries (memory_session_id, project, request, completed, prompt_number, created_at, created_at_epoch)
+       VALUES (?, 'project', 'request', 'newest', 1, '2026-01-01T00:00:00.000Z', 1767225600000)`
+    ).run(mem);
+    const newest = store.db.prepare('SELECT MAX(id) AS id FROM session_summaries').get() as { id: number };
+    expect(newest.id).not.toBe(first.summaryId);
+
+    const repeat = store.storeObservations(mem, 'project', [], summary({ completed: 'merged' }), 1);
+
+    expect(repeat.summaryId).toBe(newest.id);
+    const oldest = store.db.prepare('SELECT completed FROM session_summaries WHERE id = ?').get(first.summaryId) as any;
+    expect(oldest.completed).toBe('oldest');
+  });
+
+  it('keeps a stored file list that is not JSON instead of dropping it on a repeated stop (#5225)', () => {
+    const mem = session('mem-bad-file-list');
+    const first = store.storeObservations(mem, 'project', [], summary({ files_read: ['a.ts'] }), 1);
+    store.db.prepare('UPDATE session_summaries SET files_read = ? WHERE id = ?').run('legacy/path.ts', first.summaryId);
+
+    store.storeObservations(mem, 'project', [], summary({ files_read: ['b.ts'] }), 1);
+
+    const row = store.db.prepare('SELECT files_read FROM session_summaries WHERE id = ?').get(first.summaryId) as any;
+    expect(JSON.parse(row.files_read)).toEqual(['legacy/path.ts', 'b.ts']);
+  });
 });

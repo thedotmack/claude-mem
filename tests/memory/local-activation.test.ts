@@ -16,7 +16,7 @@ function fixture() {
   for (const folder of [source, ...targets]) {
     write(path.join(folder, '.claude-plugin/plugin.json'), JSON.stringify({name: 'claude-mem', version: '13.34.2'}));
     write(path.join(folder, 'scripts/worker-service.cjs'), folder === source ? 'claude-mem-retrieved-data sourceFingerprint' : 'old worker');
-    write(path.join(folder, 'scripts/mcp-server.cjs'), folder === source ? 'mem_search save_memory' : 'old mcp');
+    write(path.join(folder, 'scripts/mcp-server.cjs'), folder === source ? 'dumb_search save_memory' : 'old mcp');
     for (const file of ['hooks/hooks.json','hooks/codex-hooks.json','skills/mem-search/SKILL.md']) write(path.join(folder, file), folder === source ? 'new instructions' : 'old instructions');
   }
   write(path.join(root, 'source/src/shared/memory-instructions.ts'), 'export const MEMORY_PLUGIN_INSTRUCTIONS = `use plugin notes`;');
@@ -188,7 +188,7 @@ describe('reversible local activation', () => {
     writeFileSync(path.join(f.source,'scripts/mcp-server.cjs'),'old mcp');
     expect(f.run('--apply').status).not.toBe(0);
     expect(existsSync(path.join(f.workspace,'.agent-jobs'))).toBe(false);
-    writeFileSync(path.join(f.source,'scripts/mcp-server.cjs'),'mem_search save_memory');
+    writeFileSync(path.join(f.source,'scripts/mcp-server.cjs'),'dumb_search save_memory');
     writeFileSync(path.join(f.targets[1],'.claude-plugin/plugin.json'),JSON.stringify({name:'claude-mem',version:'13.35.0'}));
     expect(f.run('--apply').status).not.toBe(0);
     expect(readFileSync(path.join(f.targets[0],'scripts/worker-service.cjs'),'utf8')).toBe('old worker');

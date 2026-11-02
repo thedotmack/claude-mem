@@ -41,21 +41,36 @@ describe('smart outline import ranges', () => {
     expect(parsed.imports).toEqual(['import ( "fmt" "os" )']);
     expect(formatFoldedView(parsed).split('\n')).toContain('    import ( "fmt" "os" )');
   }, 120000);
-  test('collapses a Ruby call with a do … end block to one line', () => {
-    const source = 'class A\n  def x\n    items.each do |i|\n      puts i\n    end\n  end\nend\n';
-    expect(parseFile(source, 'a.rb').imports).toEqual(['items.each do |i| puts i end', 'puts i']);
+  test('collapses a multiline Ruby require to one line', () => {
+    expect(parseFile('require(\n  "json"\n)\nclass A\nend\n', 'a.rb').imports).toEqual(['require( "json" )']);
   }, 120000);
-  test('bounds a file-wide RSpec block instead of printing the whole file', () => {
+  test('lists only the Ruby calls that load code as imports', () => {
+    const source = [
+      'require "yaml"',
+      'require_relative "lib/a"',
+      'autoload :Parser, "lib/parser"',
+      'load "tasks.rb"',
+      'class A',
+      '  include Comparable',
+      '  attr_reader :items',
+      '  def x',
+      '    items.each do |i|',
+      '      puts i',
+      '    end',
+      '    YAML.load(File.read("a.yml"))',
+      '  end',
+      'end',
+    ].join('\n');
+    expect(parseFile(source, 'a.rb').imports)
+      .toEqual(['require "yaml"', 'require_relative "lib/a"', 'autoload :Parser, "lib/parser"', 'load "tasks.rb"']);
+  }, 120000);
+  test('does not list a file-wide RSpec block as an import', () => {
     const examples = Array.from({ length: 30 }, (_, index) =>
       `  it "handles case ${index}" do\n    expect(widget.value).to eq(${index})\n  end`);
     const source = `RSpec.describe Widget do\n${examples.join('\n')}\nend\n`;
-    const imports = parseFile(source, 'widget_spec.rb').imports;
-    expect(imports[0]).toStartWith('RSpec.describe Widget do it "handles case 0" do');
-    expect(imports[0]).toEndWith('end end');
-    for (const entry of imports) {
-      expect(entry).not.toContain('\n');
-      expect(entry.length).toBeLessThanOrEqual(200);
-    }
+    const parsed = parseFile(source, 'widget_spec.rb');
+    expect(parsed.imports).toEqual([]);
+    expect(formatFoldedView(parsed)).not.toContain('handles case');
   }, 120000);
   test('collapses an SCSS @include block to one line', () => {
     const source = '.button {\n  @include hover {\n    color: blue;\n  }\n}\n';

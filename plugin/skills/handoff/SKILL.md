@@ -37,7 +37,7 @@ Think hard about the full arc of this conversation before writing. The handoff m
 
 7. **Key Constraints and Context** — Any non-obvious constraints: environment specifics, user preferences expressed during this session, things the user explicitly said NOT to do, external dependencies, performance requirements, etc.
 
-8. **Memory Pointers** — If claude-mem's search tools are available, run `search` for this task's key terms and list the few observation IDs that matter most (a decision, the root cause, a failed approach), so the fresh agent can pull full details with `get_observations`. Also list one or two `search` queries worth re-running. Skip this section if the tools are not available.
+8. **Memory Pointers** — If claude-mem's search tools are available, use Smart search: run `search` for this task's key terms, inspect `timeline` around relevant results, then fetch only selected records with `get_observations`. List the few observation IDs that matter most (a decision, the root cause, a failed approach), so the fresh agent can retrieve those records. Also list one or two `search` queries worth re-running. Skip this section if the tools are not available.
 
 ## Writing Rules
 

@@ -47,6 +47,7 @@ import { resolveContextWindowTokens, observationFieldMaxChars } from './context-
 import { recycleObserverConversation, loadSessionStartContext, openObserverGeneration, observesBarePrompts } from './session/recycle-conversation.js';
 import { MAX_CONSECUTIVE_SDK_STREAM_EXITS, ObserverResponsePacer } from './session/response-pacer.js';
 import { recordObserverFailure } from '../../shared/observer-health.js';
+import type { ClaudeCredential } from '../../shared/quota-cooldown.js';
 import { IDLE_TIMEOUT_MS } from './SessionMessageBuffer.js';
 import { optimizeObservationFields, buildFieldCompressionPrompt, type CompressedField, type FieldCompressor } from './field-optimizer.js';
 import { resolveFieldOptimizeTimeoutMs } from './retry.js';
@@ -190,8 +191,13 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
     return new ClassifiedProviderError(message, { kind: 'rate_limit', cause: err });
   }
 
-  // Quota.
-  if (message.toLowerCase().includes('quota exceeded')) {
+  // Quota. A spent API key's credit balance comes back as a 400
+  // invalid_request_error ("API Error: 400 {…credit balance is too low…}"),
+  // so it is matched here, before the 400 branches call it unrecoverable.
+  if (
+    message.toLowerCase().includes('quota exceeded') ||
+    /\bcredit balance is too low\b/i.test(describeErrorFeedbackText(err))
+  ) {
     return new ClassifiedProviderError(message, { kind: 'quota_exhausted', cause: err });
   }
 
@@ -278,6 +284,18 @@ export function computeFullContextTokens(
     (usage.cache_creation_input_tokens || 0) +
     (usage.cache_read_input_tokens || 0)
   );
+}
+
+/**
+ * The credential a Claude spawn bills, from the env it is spawned with. With no
+ * key, no gateway token and no gateway URL the CLI runs on the Claude Code
+ * login, whether a fresh token was injected or the CLI uses its own stored one
+ * (the token read came back expired or absent). A gateway run is neither.
+ */
+export function observerCredentialOf(spawnEnv: Record<string, string | undefined>): ClaudeCredential | undefined {
+  if (spawnEnv.ANTHROPIC_API_KEY) return 'api-key';
+  if (spawnEnv.ANTHROPIC_AUTH_TOKEN || spawnEnv.ANTHROPIC_BASE_URL) return undefined;
+  return 'subscription';
 }
 
 export class ClaudeProvider {
@@ -415,8 +433,15 @@ export class ClaudeProvider {
     // it in observer health.
     let responseProcessingThrew = false;
     try {
-      const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
-      const authMethod = getAuthMethodDescription();
+      const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth(true, {
+        standIn: session.claudeAuthOverride ?? undefined,
+      }));
+      session.observerAuth = observerCredentialOf(isolatedEnv);
+      // A quota-fallback run is labelled by what it actually bills: the quota
+      // guard protects a login it runs on, and never pauses a key.
+      const authMethod = !session.claudeAuthOverride ? getAuthMethodDescription()
+        : session.observerAuth === 'api-key' ? 'API key (quota fallback run)'
+          : 'Claude Code OAuth token (quota fallback run)';
       // The account this generator bills for its whole life: its env (and so
       // its OAuth identity) is fixed at spawn, even if the setting changes
       // while it runs. Quota snapshots are tagged with it and checked against
@@ -515,6 +540,11 @@ export class ClaudeProvider {
         });
       };
 
+      // Whether the provider answered the current turn's request: set by its
+      // first assistant frame, cleared when the turn's result arrives. The
+      // quota guard reads it to tell a refusal from a served request that
+      // carries a rejected overage bucket (#5182).
+      let turnServed = false;
       for await (const message of queryResult) {
         // A stall already handed the claimed batch back to pending; a frame
         // processed now would be stored twice once the batch is re-sent (#4066).
@@ -552,7 +582,11 @@ export class ClaudeProvider {
               observed_billing: session.observedBilling,
             });
           }
-          const decision = shouldAbortForQuota(authMethod, globalRateLimitStore, Date.now(), observerProfile);
+          // A rejection on an overage bucket that arrives with a served
+          // response is not a refusal of this request (#5182).
+          const decision = shouldAbortForQuota(authMethod, globalRateLimitStore, Date.now(), observerProfile, {
+            requestServed: turnServed,
+          });
           if (decision.abort) {
             logger.warn('SDK', `Aborting session for quota guard: ${decision.reason}`, {
               sessionDbId: session.sessionDbId,
@@ -602,6 +636,7 @@ export class ClaudeProvider {
         }
 
         if (message.type === 'assistant') {
+          turnServed = true;
           const content = message.message.content;
           // A turn can arrive as several assistant messages, and a frame that
           // holds only thinking or tool_use blocks carries no text at all.
@@ -650,7 +685,7 @@ export class ClaudeProvider {
             turnEmptyOutputReason = emptyOutputReason;
             logger.debug('SDK', 'Assistant frame carried no text block, leaving queued batch intact', {
               sessionId: session.sessionDbId,
-              promptNumber: session.lastPromptNumber,
+              promptNumber: activeResponseContext.current?.promptNumber ?? session.lastPromptNumber,
               blockTypes: Array.isArray(content)
                 ? [...new Set(content.map((c: any) => String(c?.type)))].join(',')
                 : typeof content,
@@ -668,7 +703,7 @@ export class ClaudeProvider {
               : textContent;
             logger.dataOut('SDK', `Response received (${responseSize} chars)`, {
               sessionId: session.sessionDbId,
-              promptNumber: session.lastPromptNumber
+              promptNumber: activeResponseContext.current?.promptNumber ?? session.lastPromptNumber
             }, truncatedResponse);
           }
 
@@ -705,6 +740,8 @@ export class ClaudeProvider {
             );
             if (stored) {
               turnInsertedObservationIds.push(...(stored.insertedObservationIds ?? []));
+              // A summary a repeated Stop reused is tracked too: the result's
+              // usage can only raise it, because updateDiscoveryTokens keeps the maximum.
               turnSummaryId = stored.summaryId ?? turnSummaryId;
             }
           } catch (processingError) {
@@ -720,6 +757,7 @@ export class ClaudeProvider {
         }
 
         if (message.type === 'result') {
+          turnServed = false;
           // The result message carries the turn's finalized usage (per-turn,
           // not cumulative — verified empirically against the SDK) plus a
           // CUMULATIVE total_cost_usd; per-compression cost is the delta
@@ -798,6 +836,21 @@ export class ClaudeProvider {
 
           const resultSubtype = (message as any).subtype as string | undefined;
           const resultIsError = (message as any).is_error === true || resultSubtype !== 'success';
+
+          // the result frame is authoritative for this turn's usage. keep the
+          // fields flat so the info logger prints every count, and skip the
+          // synthetic init prompt because it is not an observer response.
+          if (resultUsage && session.lastGeneratorSource !== 'init') {
+            logger.info('SDK', 'Observer turn usage', {
+              sessionId: session.sessionDbId,
+              promptNumber: activeResponseContext.current?.promptNumber ?? session.lastPromptNumber,
+              inputTokens: resultUsage.input_tokens ?? 0,
+              cacheCreationInputTokens: resultUsage.cache_creation_input_tokens ?? 0,
+              cacheReadInputTokens: resultUsage.cache_read_input_tokens ?? 0,
+              fullContextTokens: computeFullContextTokens(resultUsage),
+              outputTokens: resultUsage.output_tokens ?? 0,
+            });
+          }
 
           // The turn is over and the model never emitted text. Only a
           // successful turn means the model read the batch — forward its empty
@@ -928,10 +981,27 @@ export class ClaudeProvider {
         });
         await this.releaseClaimedBatchForTransportExit(session, 'transport:thinking_rejected');
       }
+      // A spent allowance thrown by the CLI (a spent API key's credit balance
+      // arrives as a 400) pauses like the quota prose path: the claimed batch
+      // goes back to pending, and the classified error tells the runner to
+      // book a quota pause instead of a generic failure.
+      if (!session.abortReason && !responseProcessingThrew && !isClassified(error)) {
+        const classified = classifyClaudeError(error);
+        if (classified.kind === 'quota_exhausted') {
+          session.abortReason = 'quota:unknown:quota_exhausted';
+          try {
+            session.abortController.abort();
+          } catch {
+            // best-effort
+          }
+          await this.sessionManager.resetProcessingToPending(session.sessionDbId);
+          throw classified;
+        }
+      }
       // The stream broke with the batch still claimed. Only a transient fault
       // of the stream itself is released for the transport resume. Anything
       // classifyClaudeError calls non-transient (a refused credential, a 400,
-      // "Prompt is too long", a quota) and any throw from processAgentResponse
+      // "Prompt is too long") and any throw from processAgentResponse
       // (storage) is rethrown untouched, so the runner books it in observer
       // health exactly as before instead of resending it on the backoff.
       if (
@@ -1018,11 +1088,13 @@ export class ClaudeProvider {
       signals?: AbortSignal[];
       /** Set when the session's gateway already refused the thinking param (#4732). */
       thinkingStripped?: boolean;
+      /** The session's quota-fallback credential (ActiveSession.claudeAuthOverride). */
+      standIn?: ClaudeCredential;
     },
     modelId: string,
     claudePath: string,
   ): Promise<string | null> {
-    const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
+    const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth(true, { standIn: context.standIn }));
     const controller = new AbortController();
     const abort = () => controller.abort();
     const signals = context.signals ?? [];
@@ -1089,6 +1161,7 @@ export class ClaudeProvider {
         project: session.project,
         signals: [signal, session.abortController.signal],
         thinkingStripped: session.observerThinkingStripped,
+        standIn: session.claudeAuthOverride ?? undefined,
       },
       modelId,
       claudePath,

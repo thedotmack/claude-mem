@@ -62,7 +62,7 @@
  */
 
 import { execFile } from 'node:child_process';
-import { readdirSync, readFileSync, statSync, promises as fsPromises } from 'node:fs';
+import { readdirSync, readFileSync, readlinkSync, statSync, promises as fsPromises } from 'node:fs';
 import { promisify } from 'node:util';
 import { logger } from '../utils/logger.js';
 import { killProcessTree } from './kill-process-tree.js';
@@ -391,8 +391,87 @@ export function parsePidLines(output: string): number[] {
   return [...pids];
 }
 
-/** Full command line of a POSIX process, or null when it cannot be read. */
-async function readPosixCommandLine(pid: number, capMs?: number): Promise<string | null> {
+/**
+ * Linux counterpart of listListeningOwnerPidsPosix, read from /proc like this
+ * module's other Linux reads: the LISTEN sockets on `port` from
+ * /proc/net/tcp{,6}, then the processes holding one of those inodes. BusyBox
+ * `lsof` ignores `-iTCP -sTCP:LISTEN -t` and lists every open file of every
+ * process, so every PID it printed looked like an owner (#5098). As with `lsof`
+ * run as the user, only the user's own processes' fds are readable. Null when
+ * /proc/net/tcp cannot be read. Exported for tests.
+ */
+export function listListeningOwnerPidsLinux(port: number): number[] | null {
+  const inodes = new Set<string>();
+  let readAnyTable = false;
+  for (const table of ['/proc/net/tcp', '/proc/net/tcp6']) {
+    let text: string;
+    try {
+      text = readFileSync(table, 'utf-8');
+    } catch {
+      continue; // tcp6 is absent on a kernel without IPv6
+    }
+    readAnyTable = true;
+    for (const inode of parseProcNetTcpListenInodes(text, port)) inodes.add(inode);
+  }
+  if (!readAnyTable) {
+    logger.warn('PROCESS', 'Cannot read /proc/net/tcp, so the worker port owner cannot be verified', { port });
+    return null;
+  }
+  if (inodes.size === 0) return [];
+  const owners = new Set<number>();
+  for (const entry of readdirSync('/proc')) {
+    if (!/^\d+$/.test(entry)) continue;
+    let fds: string[];
+    try {
+      fds = readdirSync(`/proc/${entry}/fd`);
+    } catch {
+      continue; // another user's process, or exited
+    }
+    for (const fd of fds) {
+      let target: string;
+      try {
+        target = readlinkSync(`/proc/${entry}/fd/${fd}`);
+      } catch {
+        continue;
+      }
+      const socket = /^socket:\[(\d+)\]$/.exec(target);
+      if (socket && inodes.has(socket[1])) {
+        owners.add(Number.parseInt(entry, 10));
+        break;
+      }
+    }
+  }
+  return [...owners];
+}
+
+/** Inodes of the LISTEN (state 0A) sockets on `port` in a /proc/net/tcp or tcp6 table. Pure and exported for tests. */
+export function parseProcNetTcpListenInodes(table: string, port: number): string[] {
+  const portHex = port.toString(16).toUpperCase().padStart(4, '0');
+  const inodes: string[] = [];
+  // Columns: sl local_address rem_address st tx_queue:rx_queue tr:tm->when retrnsmt uid timeout inode
+  for (const line of table.split(/\r?\n/).slice(1)) {
+    const fields = line.trim().split(/\s+/);
+    if (fields.length < 10) continue;
+    const localPort = fields[1].split(':').pop()?.toUpperCase();
+    if (localPort === portHex && fields[3] === '0A' && fields[9] !== '0') inodes.push(fields[9]);
+  }
+  return inodes;
+}
+
+/**
+ * Full command line of a POSIX process, or null when it cannot be read. Linux
+ * reads /proc/<pid>/cmdline, joined as readLinuxProcessTableWithNames does:
+ * BusyBox `ps` has no `-p` and no `command` field, so the `ps` read always
+ * failed there and no wedged worker was ever reclaimed (#5098). Exported for tests.
+ */
+export async function readPosixCommandLine(pid: number, capMs?: number): Promise<string | null> {
+  if (process.platform === 'linux') {
+    try {
+      return readFileSync(`/proc/${pid}/cmdline`, 'utf-8').split('\0').filter(Boolean).join(' ') || null;
+    } catch {
+      return null;
+    }
+  }
   try {
     const result = await execFileAsync('ps', ['-p', String(pid), '-o', 'command='], { timeout: cappedTimeoutMs(5_000, capMs) });
     const cmdline = result.stdout.trim();
@@ -742,7 +821,11 @@ export async function reclaimGhostListeningPort(
   }
 
   const readOwners = deps.listOwners
-    ?? ((p: number, capMs?: number) => (isWin32() ? listListeningOwnerPids(p, capMs) : listListeningOwnerPidsPosix(p, capMs)));
+    ?? ((p: number, capMs?: number) => (isWin32()
+      ? listListeningOwnerPids(p, capMs)
+      : process.platform === 'linux'
+        ? Promise.resolve(listListeningOwnerPidsLinux(p))
+        : listListeningOwnerPidsPosix(p, capMs)));
   const listOwners = (p: number) => readOwners(p, readCapMs());
   const readProcessTable = deps.readTable ?? readWindowsProcessTableWithNames;
   const readTable = () => readProcessTable(readCapMs());

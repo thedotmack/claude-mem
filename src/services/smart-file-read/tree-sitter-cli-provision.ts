@@ -21,6 +21,14 @@ import { condaPackageUnsupportedReason, treeSitterExecutableFromCondaPackage } f
 const TREE_SITTER_VERSION_TIMEOUT_MS = 10_000;
 const TREE_SITTER_VERSION_OUTPUT = /^tree-sitter \d+\.\d+\.\d+(?:\s|$)/;
 
+/**
+ * Every provisioning error for a verified release executable that the OS
+ * cannot run (#4758: glibc too old; #4858: musl) contains this text. The
+ * installer error taxonomy uses it to tell this case apart from a failed
+ * download.
+ */
+export const TREE_SITTER_CLI_CANNOT_RUN = "cannot run on this system";
+
 function treeSitterCliPackageDir(pluginRoot: string): string {
   return join(pluginRoot, "node_modules", "tree-sitter-cli");
 }
@@ -36,27 +44,51 @@ export interface TreeSitterCliVersionProbe {
   reason?: string;
 }
 
-async function answersTreeSitterVersion(executablePath: string): Promise<TreeSitterCliVersionProbe> {
+/** How the probe runs the executable; tests pass a stub to control the callback. */
+export type TreeSitterProbeExec = (
+  file: string,
+  args: readonly string[],
+  options: { encoding: "utf-8"; timeout: number; windowsHide: boolean },
+  callback: (error: NodeJS.ErrnoException | null, stdout: string | Buffer, stderr: string | Buffer) => void,
+) => { stdin?: { end(): void } | null } | undefined;
+
+/**
+ * Bun can pass the callback a Buffer even with `encoding: "utf-8"` set
+ * (#5019), and a Buffer has no `.trim`. Read either shape as text.
+ */
+function probeText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value == null) return "";
+  if (Buffer.isBuffer(value)) return value.toString("utf8");
+  return String(value);
+}
+
+/** Answers `--version` for `executablePath`; exported for its output-shape test. */
+export async function answersTreeSitterVersion(
+  executablePath: string,
+  execFileImpl: TreeSitterProbeExec = execFile as unknown as TreeSitterProbeExec,
+): Promise<TreeSitterCliVersionProbe> {
   return await new Promise<TreeSitterCliVersionProbe>((resolve) => {
     // Bun can throw synchronously when the OS refuses the file outright (a
     // truncated Mach-O is EBADMACHO on macOS); that is "not usable", the same
     // as a spawn failure reported through the callback.
     try {
-      const child = execFile(executablePath, ["--version"], {
+      const child = execFileImpl(executablePath, ["--version"], {
         encoding: "utf-8",
         timeout: TREE_SITTER_VERSION_TIMEOUT_MS,
         windowsHide: true,
       }, (error, stdout, stderr) => {
-        if (!error && TREE_SITTER_VERSION_OUTPUT.test((stdout ?? "").trim())) {
+        const stdoutText = probeText(stdout);
+        if (!error && TREE_SITTER_VERSION_OUTPUT.test(stdoutText.trim())) {
           resolve({ usable: true });
           return;
         }
-        const detail = (stderr ?? "").trim().split("\n")[0]
+        const detail = probeText(stderr).trim().split("\n")[0]
           || (error?.message ?? "").split("\n")[0]
           || undefined;
         resolve({ usable: false, reason: detail });
       });
-      child.stdin?.end();
+      child?.stdin?.end();
     } catch (spawnError) {
       const message = spawnError instanceof Error ? spawnError.message : String(spawnError);
       resolve({ usable: false, reason: message.split("\n")[0] || undefined });
@@ -248,7 +280,7 @@ export async function ensureTreeSitterCliBinary(
     if (existingSha256 === pinnedSha256 && isExecutableFile(existingBinaryPath)) {
       return await useGlibcCompatibleBuildOrThrow(existingProbe, new Error(
         `The tree-sitter ${version} executable at ${existingBinaryPath} is intact (SHA-256 matches the pinned value) `
-        + `but cannot run on this system${existingProbe.reason ? `: ${existingProbe.reason}` : ""}. `
+        + `but ${TREE_SITTER_CLI_CANNOT_RUN}${existingProbe.reason ? `: ${existingProbe.reason}` : ""}. `
         + "smart_search, smart_outline and smart_unfold cannot parse here, and the File Read Gate stays off.",
       ));
     }
@@ -272,8 +304,8 @@ export async function ensureTreeSitterCliBinary(
       // not find an intact-but-unrunnable binary either way.
       return await useGlibcCompatibleBuildOrThrow(stagedProbe, Object.assign(
         new Error(
-          `tree-sitter-cli install completed without creating a working executable ${treeSitterCliBinaryPath(pluginRoot)}`
-          + `${stagedProbe.reason ? `: ${stagedProbe.reason}` : ""}`,
+          `The downloaded tree-sitter ${version} executable matches the pinned SHA-256 but ${TREE_SITTER_CLI_CANNOT_RUN}`
+          + `${stagedProbe.reason ? `: ${stagedProbe.reason}` : ""}; it was not moved to ${treeSitterCliBinaryPath(pluginRoot)}`,
         ),
         installOutput,
       ));

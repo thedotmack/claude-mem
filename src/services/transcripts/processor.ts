@@ -101,6 +101,8 @@ export interface TranscriptFileContext {
   pendingTools?: Record<string, Record<string, { toolName: string; toolInput?: unknown }>>;
   /** Real host identity from the header, including non-UUID session IDs. */
   sessionId?: string;
+  /** Every session this file's lines fed, content session id → platform source. */
+  sessions?: Map<string, string>;
 }
 
 /** How many subagent rollouts the processor remembers past their last turn. */
@@ -283,6 +285,7 @@ export class TranscriptEventProcessor {
     const session = this.getOrCreateSession(watch, sessionId);
     const sessionKey = this.getSessionKey(watch, sessionId);
     if (file) {
+      (file.sessions ??= new Map()).set(sessionId, session.platformSource);
       const keys = this.fileSessionKeys.get(file) ?? new Set<string>();
       keys.add(sessionKey);
       this.fileSessionKeys.set(file, keys);

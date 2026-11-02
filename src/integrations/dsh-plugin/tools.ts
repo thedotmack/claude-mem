@@ -145,7 +145,7 @@ export function applyMemoryTools(ctx: Context, worker: WorkerClient, config: Too
 function applySearchTool(ctx: Context, worker: WorkerClient, timeoutMs: number): void {
   ctx.tools.register(defineTool<QueryOutput>({
     name: 'mem_search',
-    description: 'Search persistent cross-session memory for observations matching a query. Returns an index with ids, titles, and types — fetch full details only for filtered ids.',
+    description: 'Smart search (default), step 1: search persistent memory for an index with ids, titles, and types. Then inspect mem_timeline and fetch only selected ids with mem_get_observations.',
     parameters: {
       query: { type: 'string', required: true, description: 'Free-text search query.' },
       limit: { type: 'integer', description: 'Max results (default 20).' },

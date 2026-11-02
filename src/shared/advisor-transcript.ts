@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { closeSync, existsSync, fstatSync, openSync, readSync } from 'fs';
-import { SYSTEM_REMINDER_REGEX } from '../utils/tag-stripping.js';
+import { stripSystemReminderBlocks } from '../utils/tag-stripping.js';
 
 /**
  * Extraction of `advisor` tool calls from a Claude Code transcript.
@@ -82,9 +82,10 @@ export interface ExtractAdvisorCallsOptions {
 
 /**
  * The last `maxBytes` of a file, starting at a line boundary, and the byte
- * offset where that text starts in the file.
+ * offset where that text starts in the file. Shared with the deliverables
+ * scan (deliverables-transcript.ts), which reads the same tail.
  */
-function readTail(transcriptPath: string, maxBytes: number): { text: string; startOffset: number } {
+export function readTranscriptTail(transcriptPath: string, maxBytes: number): { text: string; startOffset: number } {
   const fd = openSync(transcriptPath, 'r');
   try {
     const size = fstatSync(fd).size;
@@ -120,7 +121,7 @@ export function extractAdvisorCalls(
   if (!transcriptPath || !existsSync(transcriptPath)) {
     return [];
   }
-  const { text, startOffset } = readTail(transcriptPath, options.maxTailBytes ?? ADVISOR_SCAN_TAIL_BYTES);
+  const { text, startOffset } = readTranscriptTail(transcriptPath, options.maxTailBytes ?? ADVISOR_SCAN_TAIL_BYTES);
   if (!text.trim()) {
     return [];
   }
@@ -164,8 +165,7 @@ export function extractAdvisorCallsFromJsonl(
     const msgContent = entry?.message?.content;
 
     if (entryType === 'user') {
-      const text = textFromContent(msgContent)
-        .replace(SYSTEM_REMINDER_REGEX, '')
+      const text = stripSystemReminderBlocks(textFromContent(msgContent))
         .replace(/\n{3,}/g, '\n\n')
         .trim();
       // Tool results are user-role records too, but do not start a turn.

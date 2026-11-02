@@ -390,7 +390,6 @@ MCP সার্ভার, এন্টারপ্রাইজ সিস্ট�
 ওপেন/কমার্শিয়াল সীমারেখার জন্য [docs/license.md](docs/license.md)
 এবং [docs/ip-boundary.md](docs/ip-boundary.md) দেখুন।
 
-**Ragtime সম্পর্কে উল্লেখ্য**: `ragtime/` ডিরেক্টরি **Apache License 2.0**-এর অধীনে লাইসেন্সপ্রাপ্ত। বিস্তারিত জানতে [ragtime/LICENSE](ragtime/LICENSE) দেখুন।
 
 ---
 

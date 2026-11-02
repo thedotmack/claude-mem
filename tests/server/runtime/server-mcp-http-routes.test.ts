@@ -140,25 +140,44 @@ describe('POST /v1/mcp — remote authenticated MCP recall (streamable HTTP)', (
   it('lists the recall tools over HTTP with a valid key', async () => {
     const mcp = await connectMcp(apiKeyRaw);
     const { tools } = await mcp.listTools();
-    expect(tools.map(t => t.name).sort()).toEqual(['context', 'recent', 'search']);
+    expect(tools.map(t => t.name).sort()).toEqual(['context', 'get_observations', 'recent', 'search', 'timeline']);
     await mcp.close();
   });
 
   it('recent returns the team-scoped observations', async () => {
     const mcp = await connectMcp(apiKeyRaw);
     const res = await mcp.callTool({ name: 'recent', arguments: { projectId, limit: 10 } });
-    const { observations } = JSON.parse(textOf(res));
-    expect(observations.length).toBe(2);
-    const contents = observations.map((o: { content: string }) => o.content).join(' ');
-    expect(contents).toContain('CSRF cookie');
+    expect(textOf(res)).toContain('CSRF cookie');
     await mcp.close();
   });
 
   it('search finds an observation by content', async () => {
     const mcp = await connectMcp(apiKeyRaw);
     const res = await mcp.callTool({ name: 'search', arguments: { projectId, query: 'login bug' } });
-    const { observations } = JSON.parse(textOf(res));
-    expect(observations.some((o: { content: string }) => o.content.includes('login bug'))).toBe(true);
+    expect(textOf(res)).toContain('login bug');
+    await mcp.close();
+  });
+
+  it('serves three-stage Smart recall and excludes foreign/missing selected IDs', async () => {
+    const own = await storage.observations.create({ projectId, teamId, content: 'Selected private evidence '.repeat(40) + 'FULL_SELECTED_DETAIL', metadata: { title: 'Smart policy fixture' } });
+    const foreignTeam = await storage.teams.create({ name: 'foreign' });
+    const foreignProject = await storage.projects.create({ teamId: foreignTeam.id, name: 'foreign' });
+    const foreign = await storage.observations.create({ projectId: foreignProject.id, teamId: foreignTeam.id, content: 'Foreign private evidence.', metadata: { title: 'Smart policy fixture' } });
+    const mcp = await connectMcp(apiKeyRaw);
+    const index = await mcp.callTool({ name: 'search', arguments: { projectId, query: 'Selected private evidence' } });
+    expect(textOf(index)).toContain(own.id);
+    expect(textOf(index)).not.toContain('FULL_SELECTED_DETAIL');
+    const context = await mcp.callTool({ name: 'timeline', arguments: { projectId, anchorId: own.id, depthBefore: 0, depthAfter: 0 } });
+    expect(textOf(context)).toContain(own.id);
+    expect(textOf(context)).not.toContain('FULL_SELECTED_DETAIL');
+    const selected = await mcp.callTool({ name: 'get_observations', arguments: { projectId, ids: [own.id, foreign.id, 'missing'] } });
+    expect(textOf(selected)).toContain('FULL_SELECTED_DETAIL');
+    expect(textOf(selected)).not.toContain('Foreign private evidence.');
+    expect(selected.structuredContent).toBeUndefined();
+    const foreignAnchor = await mcp.callTool({ name: 'timeline', arguments: { projectId, anchorId: foreign.id } });
+    expect(textOf(foreignAnchor)).not.toContain(foreign.id);
+    const forbidden = await mcp.callTool({ name: 'timeline', arguments: { projectId: foreignProject.id, anchorId: foreign.id } });
+    expect(forbidden.isError).toBe(true);
     await mcp.close();
   });
 

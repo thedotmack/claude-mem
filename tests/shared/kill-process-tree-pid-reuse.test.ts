@@ -1,4 +1,4 @@
-import { describe, it, expect, afterAll, afterEach, mock } from 'bun:test';
+import { describe, it, expect, afterAll, afterEach, beforeEach, mock, spyOn } from 'bun:test';
 import { spawn, execFileSync } from 'child_process';
 
 // Capture the real module before mock.module mutates the live namespace, and
@@ -60,6 +60,28 @@ async function waitUntil(predicate: () => boolean, timeoutMs: number): Promise<b
   return predicate();
 }
 
+/** Direct children of `pid`, or [] when it has none (yet). */
+function directChildrenOf(pid: number): number[] {
+  try {
+    const out = execFileSync('pgrep', ['-P', String(pid)], { encoding: 'utf-8', timeout: 5_000 });
+    return out.split('\n').map(l => Number.parseInt(l.trim(), 10)).filter(n => Number.isFinite(n) && n > 0);
+  } catch {
+    // pgrep exits 1 when nothing matched.
+    return [];
+  }
+}
+
+/** Polls until `pid` has a direct child; returns it. Fails loud if it never does. */
+async function waitForDirectChild(pid: number, excluding: ReadonlySet<number> = new Set()): Promise<number> {
+  let found: number | undefined;
+  const appeared = await waitUntil(() => {
+    found = directChildrenOf(pid).find(candidate => !excluding.has(candidate));
+    return found !== undefined;
+  }, 10_000);
+  if (!appeared || found === undefined) throw new Error(`fixture: no new direct child of ${pid} appeared`);
+  return found;
+}
+
 /**
  * A root whose DIRECT CHILD ignores SIGTERM.
  *
@@ -67,21 +89,27 @@ async function waitUntil(predicate: () => boolean, timeoutMs: number): Promise<b
  * pass — that union is the only place a stale PID is signalled, so it is the
  * only place the identity check can be seen to matter.
  *
- * The returned pid is the direct child specifically, resolved via `pgrep -P`.
- * collectDescendantPids returns leaves-FIRST, so its [0] is the child's own
- * transient `sleep`, which dies to the plain SIGTERM pass no matter what the
- * identity check decides — targeting that would make both assertions below
- * pass for the wrong reason.
+ * The returned childPid is the direct child specifically, resolved via
+ * `pgrep -P`. collectDescendantPids returns leaves-FIRST, so its [0] is the
+ * child's own transient `sleep`, which dies to the plain SIGTERM pass no matter
+ * what the identity check decides — targeting that would make both assertions
+ * below pass for the wrong reason.
+ *
+ * Ready once the child has spawned its first `sleep`: `trap` precedes the loop,
+ * so a loop iteration proves SIGTERM is already ignored. The loop sleeps
+ * briefly so a fresh iteration (a new `sleep` child) is quick to observe.
  */
-function spawnTermProofChild(): { rootPid: number } {
+async function spawnTermProofChild(): Promise<{ rootPid: number; childPid: number }> {
   const child = spawn(
     '/bin/sh',
-    ['-c', `/bin/sh -c "trap '' TERM; while :; do sleep 1; done" & wait`],
+    ['-c', `/bin/sh -c "trap '' TERM; while :; do sleep 0.05; done" & wait`],
     { stdio: 'ignore' }
   );
   const rootPid = child.pid!;
   strays.push(rootPid);
-  return { rootPid };
+  const childPid = await waitForDirectChild(rootPid);
+  await waitForDirectChild(childPid);
+  return { rootPid, childPid };
 }
 
 /**
@@ -90,21 +118,33 @@ function spawnTermProofChild(): { rootPid: number } {
  * initial-signal guard observable: skipped means it is still alive afterwards,
  * because nothing else in the run will signal it.
  */
-function spawnTermKillableChild(): { rootPid: number } {
+async function spawnTermKillableChild(): Promise<{ rootPid: number; childPid: number }> {
   const child = spawn('/bin/sh', ['-c', 'sleep 300 & wait'], { stdio: 'ignore' });
   const rootPid = child.pid!;
   strays.push(rootPid);
-  return { rootPid };
+  return { rootPid, childPid: await waitForDirectChild(rootPid) };
 }
 
-function directChildOf(rootPid: number): number {
-  const out = execFileSync('pgrep', ['-P', String(rootPid)], { encoding: 'utf-8' });
-  const pids = out.split('\n').map(l => Number.parseInt(l.trim(), 10)).filter(n => Number.isFinite(n) && n > 0);
-  if (pids.length === 0) throw new Error(`fixture has no direct child of ${rootPid}`);
-  return pids[0]!;
+/**
+ * Every real signal (not the signal-0 liveness probe) sent through
+ * process.kill during the test. Proves a skipped target was never signalled at
+ * all, instead of waiting a fixed interval for a death that should not come.
+ * killProcessTree has no other way to signal on POSIX.
+ */
+let killSpy: ReturnType<typeof spyOn<typeof process, 'kill'>>;
+
+function signalsSentTo(pid: number): Array<string | number> {
+  return killSpy.mock.calls
+    .filter(([target, signal]) => target === pid && signal !== 0)
+    .map(([, signal]) => signal ?? 'SIGTERM');
 }
+
+beforeEach(() => {
+  killSpy = spyOn(process, 'kill');
+});
 
 afterEach(() => {
+  killSpy.mockRestore();
   forcedReuse.clear();
   probeSeesReplacement.clear();
 });
@@ -127,13 +167,13 @@ describe.if(isPosix)('killProcessTree revalidates descendant identity before SIG
   // pass 1 and the OS reissues the number before pass 2.
 
   it('kills a descendant whose identity is UNCHANGED', async () => {
-    const { rootPid } = spawnTermProofChild();
-    await settle();
-    const termProof = directChildOf(rootPid);
+    const { rootPid, childPid: termProof } = await spawnTermProofChild();
 
     // Sanity: it must actually be TERM-proof, or this proves nothing.
+    // It cannot fork another loop iteration without first surviving the TERM.
+    const childrenBeforeTerm = new Set(directChildrenOf(termProof));
     process.kill(termProof, 'SIGTERM');
-    await settle(300);
+    await waitForDirectChild(termProof, childrenBeforeTerm);
     expect(isPidAlive(termProof)).toBe(true);
 
     // No forced reuse: identity matches, so the union pass must SIGKILL it.
@@ -144,17 +184,15 @@ describe.if(isPosix)('killProcessTree revalidates descendant identity before SIG
   }, 30_000);
 
   it('SKIPS a descendant whose PID was reused since the scan', async () => {
-    const { rootPid } = spawnTermProofChild();
-    await settle();
-    const bystander = directChildOf(rootPid);
+    const { rootPid, childPid: bystander } = await spawnTermProofChild();
 
     // Stand in for "this PID now names an unrelated process". Pre-fix, the
     // union SIGKILLed it regardless; post-fix it must be left alone.
     forcedReuse.add(bystander);
 
     await killProcessTree(rootPid);
-    await settle(1_000);
 
+    expect(signalsSentTo(bystander)).toEqual([]);
     expect(isPidAlive(bystander)).toBe(true);
 
     try { process.kill(bystander, 'SIGKILL'); } catch { /* fine */ }
@@ -171,9 +209,7 @@ describe.if(isPosix)('killProcessTree revalidates identity before the INITIAL si
     const opts = mode === 'immediate' ? { signalMode: 'immediate' as const } : {};
 
     it(`[${mode}] signals a descendant whose identity is UNCHANGED`, async () => {
-      const { rootPid } = spawnTermKillableChild();
-      await settle();
-      const target = directChildOf(rootPid);
+      const { rootPid, childPid: target } = await spawnTermKillableChild();
       expect(isPidAlive(target)).toBe(true);
 
       await killProcessTree(rootPid, opts);
@@ -183,18 +219,16 @@ describe.if(isPosix)('killProcessTree revalidates identity before the INITIAL si
     }, 30_000);
 
     it(`[${mode}] SKIPS a descendant whose PID was reused since enumeration`, async () => {
-      const { rootPid } = spawnTermKillableChild();
-      await settle();
-      const bystander = directChildOf(rootPid);
+      const { rootPid, childPid: bystander } = await spawnTermKillableChild();
       expect(isPidAlive(bystander)).toBe(true);
 
       forcedReuse.add(bystander);
 
       await killProcessTree(rootPid, opts);
-      await settle(1_000);
-
+  
       // Never signalled: the initial pass skipped it on identity, and the
       // union pass skips it for the same reason.
+      expect(signalsSentTo(bystander)).toEqual([]);
       expect(isPidAlive(bystander)).toBe(true);
 
       try { process.kill(bystander, 'SIGKILL'); } catch { /* fine */ }
@@ -209,9 +243,7 @@ describe.if(isPosix)('killProcessTree refuses a ROOT whose PID was reused', () =
   // since those children belong to the replacement.
 
   it('kills the tree when the root token still matches', async () => {
-    const { rootPid } = spawnTermKillableChild();
-    await settle();
-    const child = directChildOf(rootPid);
+    const { rootPid, childPid: child } = await spawnTermKillableChild();
     const token = realIdentitySnapshot.captureProcessStartToken(rootPid);
 
     await killProcessTree(rootPid, { expectedStartToken: token });
@@ -221,15 +253,14 @@ describe.if(isPosix)('killProcessTree refuses a ROOT whose PID was reused', () =
   }, 30_000);
 
   it('is a complete no-op when the root token differs', async () => {
-    const { rootPid } = spawnTermKillableChild();
-    await settle();
-    const child = directChildOf(rootPid);
+    const { rootPid, childPid: child } = await spawnTermKillableChild();
 
     await killProcessTree(rootPid, { expectedStartToken: 'stale-token-from-a-dead-process' });
-    await settle(1_000);
 
     // Root untouched AND its children never enumerated or signalled.
+    expect(signalsSentTo(rootPid)).toEqual([]);
     expect(isPidAlive(rootPid)).toBe(true);
+    expect(signalsSentTo(child)).toEqual([]);
     expect(isPidAlive(child)).toBe(true);
 
     try { process.kill(rootPid, 'SIGKILL'); } catch { /* fine */ }
@@ -248,9 +279,7 @@ describe.if(isPosix)('killProcessTree is root-safe BY DEFAULT, with no token pas
   // shape ~11 of the 13 real call sites use.
 
   it('kills the tree when the root identity is intact (no token passed)', async () => {
-    const { rootPid } = spawnTermKillableChild();
-    await settle();
-    const child = directChildOf(rootPid);
+    const { rootPid, childPid: child } = await spawnTermKillableChild();
 
     await killProcessTree(rootPid);
 
@@ -259,9 +288,7 @@ describe.if(isPosix)('killProcessTree is root-safe BY DEFAULT, with no token pas
   }, 30_000);
 
   it('does NOT signal a reused root when no token was passed', async () => {
-    const { rootPid } = spawnTermKillableChild();
-    await settle();
-    const child = directChildOf(rootPid);
+    const { rootPid, childPid: child } = await spawnTermKillableChild();
 
     // The root's PID now names an unrelated process. Pre-fix this was
     // unguarded whenever the caller omitted expectedStartToken, so the root
@@ -269,11 +296,12 @@ describe.if(isPosix)('killProcessTree is root-safe BY DEFAULT, with no token pas
     forcedReuse.add(rootPid);
 
     await killProcessTree(rootPid);
-    await settle(1_000);
 
+    expect(signalsSentTo(rootPid)).toEqual([]);
     expect(isPidAlive(rootPid)).toBe(true);
     // Descendants are not enumerated from a reused root either — they would
     // be the replacement's children.
+    expect(signalsSentTo(child)).toEqual([]);
     expect(isPidAlive(child)).toBe(true);
 
     try { process.kill(rootPid, 'SIGKILL'); } catch { /* fine */ }
@@ -281,16 +309,15 @@ describe.if(isPosix)('killProcessTree is root-safe BY DEFAULT, with no token pas
   }, 30_000);
 
   it('does NOT signal a reused root in immediate mode either', async () => {
-    const { rootPid } = spawnTermKillableChild();
-    await settle();
-    const child = directChildOf(rootPid);
+    const { rootPid, childPid: child } = await spawnTermKillableChild();
 
     forcedReuse.add(rootPid);
 
     await killProcessTree(rootPid, { signalMode: 'immediate' });
-    await settle(1_000);
 
+    expect(signalsSentTo(rootPid)).toEqual([]);
     expect(isPidAlive(rootPid)).toBe(true);
+    expect(signalsSentTo(child)).toEqual([]);
     expect(isPidAlive(child)).toBe(true);
 
     try { process.kill(rootPid, 'SIGKILL'); } catch { /* fine */ }
@@ -312,25 +339,21 @@ describe.if(isPosix)('descendant identity comes from the discovering observation
   // the discovering read makes the two disagree, so it is skipped.
 
   it('does NOT signal a descendant whose probe disagrees with the table read', async () => {
-    const { rootPid } = spawnTermKillableChild();
-    await settle();
-    const bystander = directChildOf(rootPid);
+    const { rootPid, childPid: bystander } = await spawnTermKillableChild();
     expect(isPidAlive(bystander)).toBe(true);
 
     probeSeesReplacement.set(bystander, 'token-of-an-unrelated-replacement-process');
 
     await killProcessTree(rootPid);
-    await settle(1_000);
 
+    expect(signalsSentTo(bystander)).toEqual([]);
     expect(isPidAlive(bystander)).toBe(true);
 
     try { process.kill(bystander, 'SIGKILL'); } catch { /* fine */ }
   }, 30_000);
 
   it('still signals a descendant when table and probe agree', async () => {
-    const { rootPid } = spawnTermKillableChild();
-    await settle();
-    const target = directChildOf(rootPid);
+    const { rootPid, childPid: target } = await spawnTermKillableChild();
     expect(isPidAlive(target)).toBe(true);
 
     await killProcessTree(rootPid);
@@ -351,9 +374,7 @@ describe.if(isPosix)('a caller-supplied token beats self-capture for a DEAD pid'
   // against itself.
 
   it('SKIPS the kill when the spawn-time token no longer matches', async () => {
-    const { rootPid } = spawnTermKillableChild();
-    await settle();
-    const child = directChildOf(rootPid);
+    const { rootPid, childPid: child } = await spawnTermKillableChild();
 
     // Stand in for "this PID now belongs to someone else by the time cleanup
     // runs". A caller passing its spawn-time token detects that; self-capture
@@ -361,9 +382,10 @@ describe.if(isPosix)('a caller-supplied token beats self-capture for a DEAD pid'
     probeSeesReplacement.set(rootPid, 'token-of-whatever-now-owns-this-pid');
 
     await killProcessTree(rootPid, { expectedStartToken: 'token-captured-while-the-child-was-alive' });
-    await settle(1_000);
 
+    expect(signalsSentTo(rootPid)).toEqual([]);
     expect(isPidAlive(rootPid)).toBe(true);
+    expect(signalsSentTo(child)).toEqual([]);
     expect(isPidAlive(child)).toBe(true);
 
     try { process.kill(rootPid, 'SIGKILL'); } catch { /* fine */ }
@@ -371,9 +393,7 @@ describe.if(isPosix)('a caller-supplied token beats self-capture for a DEAD pid'
   }, 30_000);
 
   it('still kills when the spawn-time token matches the live process', async () => {
-    const { rootPid } = spawnTermKillableChild();
-    await settle();
-    const child = directChildOf(rootPid);
+    const { rootPid, childPid: child } = await spawnTermKillableChild();
 
     const token = realIdentitySnapshot.captureProcessStartToken(rootPid);
     expect(token).not.toBeNull();

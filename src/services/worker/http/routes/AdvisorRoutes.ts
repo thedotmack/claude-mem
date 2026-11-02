@@ -5,6 +5,7 @@ import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
 import { ingestAdvisorCalls } from '../shared.js';
+import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 
 const advisorCallsIngestSchema = z.object({
   contentSessionId: z.string().min(1),
@@ -67,6 +68,12 @@ export class AdvisorRoutes extends BaseRouteHandler {
   });
 
   private handleIngestAdvisorCalls = this.wrapHandler((req: Request, res: Response): void => {
+    // Rows arrive from the Stop hook's transcript scan (Origin-less), which
+    // passes; other localhost pages may not inject advisor records.
+    if (isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({ error: 'Advisor call ingests from a different localhost origin are not allowed' });
+      return;
+    }
     const { contentSessionId, cwd, transcriptPath, calls } = req.body as z.infer<typeof advisorCallsIngestSchema>;
     res.json(ingestAdvisorCalls({
       contentSessionId,

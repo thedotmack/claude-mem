@@ -227,7 +227,7 @@ describe("OpenCode V2 hook registration", () => {
     const { ctx, tools } = createV2Context();
     await setupV2(ctx);
 
-    expect(tools.length).toBe(1);
+    expect(tools.map(tool => tool.name)).toEqual(["claude_mem_search", "claude_mem_timeline", "claude_mem_get_observations"]);
     const tool = tools[0];
     expect(tool.name).toBe("claude_mem_search");
     expect(typeof tool.description).toBe("string");
@@ -779,7 +779,7 @@ describe("OpenCode V2 callbacks drive the worker", () => {
 });
 
 describe("OpenCode V2 setup with a context that is not a plugin context", () => {
-  it("returns early with one warning, no banner, and no registrations or worker calls", async () => {
+  it("silently ignores the host registry without registering hooks or calling the worker", async () => {
     const worker = recordWorkerRequests();
     const originalLog = console.log;
     const originalWarn = console.warn;
@@ -803,7 +803,7 @@ describe("OpenCode V2 setup with a context that is not a plugin context", () => 
       worker.restore();
     }
     expect(logs.filter((line) => line.includes("OpenCode plugin loading"))).toEqual([]);
-    expect(warnings.length).toBe(1);
+    expect(warnings).toEqual([]);
     expect(registered).toBe(0);
     expect(worker.requests).toEqual([]);
   });

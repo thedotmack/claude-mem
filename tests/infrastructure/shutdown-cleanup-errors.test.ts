@@ -7,15 +7,15 @@ import { paths } from '../../src/shared/paths';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-test('an MCP close rejection still closes the database and supervisor', async () => {
+test.each(['mcpClient', 'contextReader'] as const)('%s close rejection still closes the database and supervisor', async resource => {
   const db = new Database(':memory:');
-  const error = new Error('MCP connection closed during teardown');
+  const error = new Error(`${resource} connection closed during teardown`);
   const supervisor = spyOn(getSupervisor(), 'stop').mockResolvedValue(undefined);
   try {
     await expect(performGracefulShutdown({
       server: null,
       sessionManager: { async shutdownAll() {} },
-      mcpClient: { async close() { throw error; } },
+      [resource]: { async close() { throw error; } },
       dbManager: { async close() { db.close(); } },
     })).rejects.toBe(error);
     expect(() => db.query('SELECT 1').get()).toThrow();

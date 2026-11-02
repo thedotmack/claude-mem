@@ -418,6 +418,10 @@ export async function runUninstallCommand(): Promise<void> {
       const { uninstallT3Code } = await import('../../services/integrations/T3CodeInstaller.js');
       return uninstallT3Code();
     }},
+    { label: 'Hermes Agent memory provider', fn: async () => {
+      const { uninstallHermesIntegration } = await import('../../services/integrations/HermesInstaller.js');
+      return uninstallHermesIntegration();
+    }},
     { label: 'Pi memory', fn: async () => {
       const { uninstallPiExtension } = await import('../../services/integrations/PiInstaller.js');
       return uninstallPiExtension();
@@ -425,6 +429,10 @@ export async function runUninstallCommand(): Promise<void> {
     { label: 'Windsurf hooks', fn: async () => {
       const { uninstallWindsurfHooks } = await import('../../services/integrations/WindsurfHooksInstaller.js');
       return uninstallWindsurfHooks();
+    }},
+    { label: 'Goose MCP extension', fn: async () => {
+      const { uninstallGooseMcpIntegration } = await import('../../services/integrations/McpIntegrations.js');
+      return uninstallGooseMcpIntegration();
     }},
     { label: 'OpenCode plugin', fn: async () => {
       const { uninstallOpenCodePlugin } = await import('../../services/integrations/OpenCodeInstaller.js');
@@ -445,6 +453,10 @@ export async function runUninstallCommand(): Promise<void> {
     { label: 'Kimi Code hooks + MCP', fn: async () => {
       const { uninstallKimiHooks } = await import('../../services/integrations/KimiHooksInstaller.js');
       return uninstallKimiHooks();
+    }},
+    { label: 'Devin hooks', fn: async () => {
+      const { uninstallDevinHooks } = await import('../../services/integrations/DevinHooksInstaller.js');
+      return uninstallDevinHooks();
     }},
     { label: 'OMP hooks', fn: async () => {
       const { uninstallOmpHooks } = await import('../../services/integrations/OmpHooksInstaller.js');

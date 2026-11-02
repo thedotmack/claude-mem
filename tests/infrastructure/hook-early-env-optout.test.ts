@@ -4,12 +4,28 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { buildShellCommand, buildCodexWindowsCommand } from '../../src/build/hook-shell-template.js';
+import { checkWindowsGitBash } from '../../src/npx-cli/utils/windows-git-bash-preflight.js';
 
 const flags = [
   'CLAUDE_MEM_DISABLE_TOOL_HOOKS',
   'CLAUDE_MEM_DISABLE_OBSERVATION',
   'CLAUDE_MEM_DISABLE_FILE_CONTEXT',
 ];
+
+const isWindows = process.platform === 'win32';
+
+/**
+ * The shell each generated command needs. The POSIX template is what a POSIX host
+ * runs, and on Windows only the Setup hook still reaches it, through Git Bash, so
+ * it is resolved the way that hook resolves it. Where no bash exists the POSIX
+ * cases are skipped rather than failed: without a POSIX shell they cannot run.
+ * The Windows template is already a `node -e "…"` command line, so it runs under
+ * whatever shell the host itself would use.
+ */
+const posixShell: string | null = isWindows
+  ? checkWindowsGitBash().resolvedPath ?? null
+  : '/bin/sh';
+const canRunPosixCases = posixShell !== null;
 
 function probe(event: string, flag: string, windows = false, value?: string) {
   const dir = mkdtempSync(join(tmpdir(), 'hook-early-optout-'));
@@ -36,7 +52,9 @@ function probe(event: string, flag: string, windows = false, value?: string) {
     };
     for (const name of flags) delete env[name];
     if (value !== undefined) env[flag] = value;
-    const result = spawnSync('/bin/sh', ['-c', command], { env, encoding: 'utf8', timeout: 10000 });
+    const result = windows
+      ? spawnSync(command, { shell: true, env, encoding: 'utf8', timeout: 10000 })
+      : spawnSync(posixShell!, ['-c', command], { env, encoding: 'utf8', timeout: 10000 });
     expect(result.error).toBeUndefined();
     return { status: result.status, stderr: result.stderr, started: existsSync(marker) };
   } finally {
@@ -52,7 +70,7 @@ for (const windows of [false, true]) {
     ['observation', 'CLAUDE_MEM_DISABLE_TOOL_HOOKS'],
   ]) {
     for (const value of ['1', '0', 'true', '', undefined]) {
-      test(`launcher ${event} ${flag}=${value ?? '<unset>'} windows=${windows}`, () => {
+      test.skipIf(!windows && !canRunPosixCases)(`launcher ${event} ${flag}=${value ?? '<unset>'} windows=${windows}`, () => {
         expect(probe(event, flag, windows, value)).toEqual({
           status: 0,
           stderr: '',
@@ -62,9 +80,9 @@ for (const windows of [false, true]) {
     }
   }
 }
-test('does not skip an unrelated tool hook', () => {
+test.skipIf(!canRunPosixCases)('does not skip an unrelated tool hook', () => {
   expect(probe('observation', 'CLAUDE_MEM_DISABLE_FILE_CONTEXT', false, '1').started).toBe(true);
 });
-test('does not skip SessionStart context', () => {
+test.skipIf(!canRunPosixCases)('does not skip SessionStart context', () => {
   expect(probe('context', 'CLAUDE_MEM_DISABLE_TOOL_HOOKS', false, '1').started).toBe(true);
 });

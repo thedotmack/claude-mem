@@ -52,8 +52,16 @@
 #     auth contract (bearer API keys) is unchanged.
 
 services:
+  # Postgres 17 with pgvector and pg_textsearch, built locally from
+  # docker/postgres/Dockerfile (no third-party registry image is pulled).
+  # Debian, not Alpine: a volume created by postgres:17-alpine has its text
+  # indexes rebuilt once by postgres-collation below. Before upgrading an
+  # existing stack, read "Upgrading the Postgres image" in
+  # docs/public/hosted-server.mdx (back up first).
   postgres:
-    image: postgres:17-alpine
+    image: claude-mem-postgres:17
+    build:
+      context: docker/postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
@@ -67,6 +75,24 @@ services:
       timeout: 3s
       retries: 12
       start_period: 5s
+
+  # Rebuilds text indexes whose order depends on the C library, once, after
+  # the postgres image's C library changed (musl to glibc, or a glibc
+  # upgrade); a second start finds nothing to do. The server and worker wait
+  # for it, so they never read an index in the wrong order.
+  postgres-collation:
+    # The image the postgres service builds; never pulled.
+    image: claude-mem-postgres:17
+    pull_policy: never
+    command: ["reindex-collation"]
+    restart: "no"
+    environment:
+      PGHOST: postgres
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   valkey:
     image: valkey/valkey:8-alpine
@@ -96,6 +122,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      postgres-collation:
+        condition: service_completed_successfully
       valkey:
         condition: service_healthy
     environment:
@@ -122,6 +150,11 @@ services:
       # The HTTP service does not consume BullMQ jobs; the worker container
       # does. This split keeps HTTP latency unaffected by provider calls.
       CLAUDE_MEM_GENERATION_DISABLED: "true"
+      # Search by meaning: the server embeds queries and the worker embeds the
+      # observations it generates, so both containers take the same settings:
+      # a query only matches vectors from the model it was embedded with.
+      CLAUDE_MEM_SERVER_VECTOR_SEARCH: ${CLAUDE_MEM_SERVER_VECTOR_SEARCH:-auto}
+      CLAUDE_MEM_EMBEDDING_MODEL: ${CLAUDE_MEM_EMBEDDING_MODEL:-all-MiniLM-L6-v2}
     ports:
       - "37877:37877"
     volumes:
@@ -146,6 +179,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      postgres-collation:
+        condition: service_completed_successfully
       valkey:
         condition: service_healthy
       claude-mem-server:
@@ -170,6 +205,9 @@ services:
       CLAUDE_MEM_ANTHROPIC_API_KEY: ${CLAUDE_MEM_ANTHROPIC_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      # Search by meaning; the same as the server's (see the server service above).
+      CLAUDE_MEM_SERVER_VECTOR_SEARCH: ${CLAUDE_MEM_SERVER_VECTOR_SEARCH:-auto}
+      CLAUDE_MEM_EMBEDDING_MODEL: ${CLAUDE_MEM_EMBEDDING_MODEL:-all-MiniLM-L6-v2}
     volumes:
       - claude-mem-data:/data/claude-mem
       # #2558 — credentials-file mount (see server service above). Keeps

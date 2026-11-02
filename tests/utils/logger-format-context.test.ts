@@ -27,6 +27,43 @@ describe('logger context formatting', () => {
     expect(line).not.toContain('[object Object]');
   });
 
+  it('should render each Keychain command diagnostic in a warning line', () => {
+    const marker = 'oauth-keychain-diagnostic-1';
+    logger.warn('OAUTH', marker, {
+      service: 'Claude Code-credentials',
+      account: 'kirat',
+      exitCode: 36,
+      errorCode: null,
+      signal: 'SIGTERM',
+      stderr: 'User interaction is not allowed.',
+    });
+    const line = lastLoggedLineFor(marker);
+    expect(line).toContain('{service=Claude Code-credentials, account=kirat, exitCode=36, errorCode=null, signal=SIGTERM, stderr=User interaction is not allowed.}');
+    expect(line).not.toContain('keys:');
+  });
+
+  it('should render both Keychain attempts in a warning line', () => {
+    const marker = 'oauth-keychain-diagnostic-2';
+    logger.warn('OAUTH', marker, {
+      service: 'Claude Code-credentials',
+      account: 'kirat',
+      exitCode: 36,
+      errorCode: null,
+      signal: null,
+      stderr: 'User interaction is not allowed.',
+      searchListExitCode: 44,
+      searchListErrorCode: null,
+      searchListSignal: null,
+      searchListStderr: 'The specified item could not be found in the keychain.',
+    });
+    const line = lastLoggedLineFor(marker);
+    expect(line).toContain('exitCode=36');
+    expect(line).toContain('stderr=User interaction is not allowed.');
+    expect(line).toContain('searchListExitCode=44');
+    expect(line).toContain('searchListStderr=The specified item could not be found in the keychain.');
+    expect(line).not.toContain('keys:');
+  });
+
   it('should render an array of numbers context value as JSON', () => {
     const marker = 'ctx-test-array-1';
     logger.info('SYSTEM', marker, { items: [1, 2, 3] });

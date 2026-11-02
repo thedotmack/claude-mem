@@ -189,3 +189,42 @@ describe('ingest without a cwd registers the project as unknown (#4772)', () => 
     expect(projectOf('unknown-with-cwd')).toBe('unknown');
   });
 });
+
+describe('missing-cwd log level depends on whether the session has a project', () => {
+  function missingCwdCalls(spy: ReturnType<typeof spyOn>): unknown[][] {
+    return spy.mock.calls.filter(call => String(call[1]).includes('Missing cwd'));
+  }
+
+  it('a host with no checkout whose session init set the project logs at debug, not error', async () => {
+    // ODS and other HTTP hosts have no checkout: init names the project and
+    // every observation arrives without a cwd. That is expected, not a fault.
+    store.createSDKSession('ods-no-checkout', 'ods/abc123', 'first prompt', undefined, 'ods');
+
+    const result = await ingestObservation({
+      contentSessionId: 'ods-no-checkout',
+      platformSource: 'ods',
+      toolName: 'ODSConversation',
+      toolInput: { request: 'x' },
+      toolResponse: { answer: 'y' },
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    expect(sessionManager.queueObservation).toHaveBeenCalledTimes(1);
+    expect(missingCwdCalls(loggerSpies[3])).toHaveLength(0);
+    expect(missingCwdCalls(loggerSpies[0])).toHaveLength(1);
+    expect(projectOf('ods-no-checkout')).toBe('ods/abc123');
+  });
+
+  it('a missing cwd with no project from init still logs an error', async () => {
+    const result = await ingestObservation({
+      contentSessionId: 'no-cwd-no-project',
+      platformSource: 'claude',
+      toolName: 'Bash',
+      toolInput: { command: 'ls' },
+      toolResponse: { stdout: 'x' },
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    expect(missingCwdCalls(loggerSpies[3])).toHaveLength(1);
+  });
+});

@@ -12,7 +12,7 @@ Claude-mem uses an **MCP-based search architecture** that provides intelligent m
 **Architecture**: MCP Tools → MCP Protocol → HTTP API → Worker Service
 
 **Key Components**:
-1. **MCP Tools** (4 tools) - `search`, `timeline`, `get_observations`, `important_workflow`
+1. **MCP Tools** — Smart search (default): `search`, `timeline`, `get_observations`, `important_workflow`
 2. **MCP Server** (`plugin/scripts/mcp-server.cjs`) - Thin wrapper over HTTP API
 3. **HTTP API Endpoints** - Fast search operations on the configured Worker Service port
 4. **Worker Service** - Express.js server with FTS5 full-text search
@@ -273,7 +273,7 @@ ORDER BY rank
 LIMIT ? OFFSET ?
 ```
 
-## The 3-Layer Workflow Pattern
+## Smart Search: The Default Three-Step Workflow
 
 ### Design Philosophy
 
@@ -309,9 +309,10 @@ Waste: 18,000 tokens on irrelevant context
 **3-Layer Workflow:**
 ```
 Step 1: search (20 results)        ~1,000-2,000 tokens
-Step 2: Review index, filter to 3 relevant IDs
+Step 2: timeline around relevant IDs ~300-600 tokens
+        Review context, select 3 relevant IDs
 Step 3: get_observations (3 IDs)   ~1,500-3,000 tokens
-Total: 2,500-5,000 tokens (50-75% savings)
+Total: ~2,800-5,600 tokens
 ```
 
 **10x Savings:** By filtering at index level before fetching full details

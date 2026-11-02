@@ -73,7 +73,9 @@ describe('team_brief / team_search MCP tools', () => {
       const names = (await client.listTools()).tools.map(tool => tool.name);
       expect(names).not.toContain('team_brief');
       expect(names).not.toContain('team_search');
-      expect(names).toContain('mem_search');
+      expect(names).toContain('search');
+      expect(names).toContain('dumb_search');
+      expect(names).not.toContain('mem_search');
 
       for (const call of teamBrainCalls) {
         const result = await client.callTool(call) as CallToolResult;

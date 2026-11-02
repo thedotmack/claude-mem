@@ -1,30 +1,22 @@
 import { expect, it } from 'bun:test';
-import { execFileSync } from 'node:child_process';
-import { createRequire } from 'node:module';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import {
+  FIXTURE_PAGE_HTML, UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, compileBrowserFixture, failOnCiWithoutChrome,
+  htmlResponse, launchChrome, scriptResponse, type OwnedChrome,
+} from '../../helpers/chrome-devtools';
 
-const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
-  ?? (existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
-    ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : null);
-if (process.env.CI && !chrome) throw new Error('CI requires Chrome for session-list recovery tests');
+failOnCiWithoutChrome('CI requires Chrome for session-list recovery tests');
 
 for (const [scenario, slow] of [['first-page', false], ['older-page', false], ['project-switch', false], ['project-switch', true]] as const) {
-  (chrome ? it : it.skip)(`session catalog recovers ${scenario}${slow ? " after slow responses" : ""} failures by explicit retry`, async () => {
-    const owned = mkdtempSync(join(tmpdir(), 'claude-mem-session-retry-'));
-    let child: ReturnType<typeof Bun.spawn> | undefined;
+  (chromeExecutablePath ? it : it.skip)(`session catalog recovers ${scenario}${slow ? " after slow responses" : ""} failures by explicit retry`, async () => {
+    let chrome: OwnedChrome | undefined;
     let server: ReturnType<typeof Bun.serve> | undefined;
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let requests = 0;
     const offsets: number[] = [];
     let report!: (value: unknown) => void;
     const result = new Promise(resolve => { report = resolve; });
-    const esbuild = createRequire(import.meta.url).resolve(`@esbuild/${process.platform}-${process.arch}/${process.platform === 'win32' ? 'esbuild.exe' : 'bin/esbuild'}`);
     try {
-      const bundle = execFileSync(esbuild, ['--bundle', '--loader=tsx', '--platform=browser', '--format=iife',
-        '--define:process.env.NODE_ENV="production"', '--log-level=error'], {
-        cwd: resolve(import.meta.dir, '../../..'), encoding: 'utf8', timeout: 20000, maxBuffer: 8 * 1024 * 1024, input: `
+      const bundle = compileBrowserFixture(`
           import React, {useEffect} from 'react';
           import {createRoot} from 'react-dom/client';
           import {SessionList} from './src/ui/viewer/components/SessionList';
@@ -65,13 +57,13 @@ for (const [scenario, slow] of [['first-page', false], ['older-page', false], ['
               recovered:[...document.querySelectorAll('.session-card-name')].some(x=>x.textContent==='Recovered')})});
           }
           run().catch(error=>fetch('/result',{method:'POST',body:JSON.stringify({failure:String(error)})}));
-        ` });
+        `);
       const session={content_session_id:'owned-session',platform_source:'claude',project:'owned-project',
         custom_title:'Seed',started_at_epoch:1,item_count:1};
       server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
         const path = new URL(request.url).pathname;
-        if(path==='/') return new Response('<div id="root"></div><script src="/fixture.js"></script>',{headers:{'Content-Type':'text/html'}});
-        if(path==='/fixture.js') return new Response(bundle,{headers:{'Content-Type':'application/javascript'}});
+        if(path==='/') return htmlResponse(FIXTURE_PAGE_HTML);
+        if(path==='/fixture.js') return scriptResponse(bundle);
         if(path==='/ready') {
           clearTimeout(timeout);
           timeout=setTimeout(()=>report({failure:'Browser page timed out'}),45000);
@@ -91,17 +83,15 @@ for (const [scenario, slow] of [['first-page', false], ['older-page', false], ['
         return new Response('not found',{status:404});
       }});
       timeout=setTimeout(()=>report({failure:'Chrome startup timed out'}),30000);
-      child=Bun.spawn([chrome!,'--headless','--no-sandbox','--disable-gpu','--disable-background-networking',
-        '--disable-background-timer-throttling','--disable-renderer-backgrounding','--no-first-run',`--user-data-dir=${join(owned,'browser')}`,server.url.href],{stdout:'ignore',stderr:'ignore'});
+      chrome=launchChrome(server.url.href,{profilePrefix:'claude-mem-session-retry-',extraFlags:UNTHROTTLED_TIMER_FLAGS});
       const received=await result;
       expect(received).toEqual({before:scenario==='first-page'?1:2,hasRetry:true,recovered:true,names:scenario==='older-page'?['Seed','Recovered']:['Recovered']});
       if(scenario==='project-switch') expect(offsets).toEqual([0,0,0]);
       expect(requests).toBe(scenario==='first-page'?2:3);
     } finally {
       clearTimeout(timeout);
-      if(child){child.kill();await child.exited;}
+      await chrome?.close();
       server?.stop(true);
-      rmSync(owned,{recursive:true,force:true});
     }
   },90000);
 }

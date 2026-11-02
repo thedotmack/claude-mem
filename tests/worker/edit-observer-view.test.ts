@@ -79,9 +79,57 @@ test('Edit budget uses the same escaped representation as optimizeField', async 
   }
 });
 
+// A native Edit result shaped like Claude Code 2.1.309 records it: the whole file, a hunk with three
+// lines of context, and scalar flags such as contentNotInModelContext (#5023).
+const source = Array.from({ length: 4000 }, (_, i) => `export const value${i} = ${i};`);
+function nativeEdit(oldLine: string, newLine: string, flags: Record<string, unknown>) {
+  const toolInput = { file_path: '/fixture/values.ts', old_string: oldLine, new_string: newLine, replace_all: false };
+  const context = (from: number) => source.slice(from, from + 3).map(line => ' ' + line);
+  const toolOutput = { filePath: toolInput.file_path, oldString: oldLine, newString: newLine,
+    originalFile: [...source.slice(0, 2000), oldLine, ...source.slice(2000)].join('\n'),
+    structuredPatch: [{ oldStart: 1998, oldLines: 7, newStart: 1998, newLines: 7,
+      lines: [...context(1997), '-' + oldLine, '+' + newLine, ...context(2000)] }],
+    userModified: false, replaceAll: false, ...flags };
+  return { toolInput, toolOutput };
+}
+
+test('scalar flags newer Claude Code adds to Edit results keep the observer view (#5023)', async () => {
+  for (const flags of [{ contentNotInModelContext: true }, { staleRecovered: true, contentNotInModelContext: true },
+    { futureFlag: null, futureCount: 3 }]) {
+    const fields = nativeEdit('export const answer = 41;', 'export const answer = 42;', flags);
+    const before = JSON.stringify(fields);
+    let calls = 0;
+    const result: any = await optimizeObservationFields(fields, async () => { calls++; return null; },
+      { sessionDbId: 0, toolName: 'Edit' });
+    expect(calls).toBe(0);
+    expect(result.toolOutput).toMatchObject({ ...flags, userModified: false,
+      oldString: 'export const answer = 41;', newString: 'export const answer = 42;',
+      originalFile: `[omitted ${fields.toolOutput.originalFile.length} source characters]` });
+    expect(result.toolOutput.structuredPatch).toEqual([{ oldStart: 1998, oldLines: 7, newStart: 1998, newLines: 7, omitted_lines: 8 }]);
+    expect(JSON.stringify(result.toolOutput).length).toBeLessThan(2000);
+    expect(JSON.stringify(fields)).toBe(before);
+  }
+});
+
+test('an Edit view still over budget is what gets condensed, not the raw payload', async () => {
+  const fields = nativeEdit(`const blob = '${'a'.repeat(9000)}';`, `const blob = '${'b'.repeat(9000)}';`,
+    { contentNotInModelContext: true });
+  const sent: string[] = [];
+  const result: any = await optimizeObservationFields(fields, async text => { sent.push(text); return null; },
+    { sessionDbId: 0, toolName: 'Edit' });
+  const outcome = sent.filter(text => text.includes('"filePath"'));
+  expect(outcome).toHaveLength(1);
+  expect(outcome[0]).toContain('[omitted ');
+  expect(outcome[0]).not.toContain('export const value');
+  expect(outcome[0].length).toBeLessThan(JSON.stringify(fields.toolOutput, null, 2).length / 4);
+  expect(result.toolOutput).toMatchObject({ contentNotInModelContext: true, oldString: fields.toolInput.old_string,
+    originalFile: `[omitted ${fields.toolOutput.originalFile.length} source characters]` });
+});
+
 test('unknown, inconsistent, modified, or failed Edit results keep the normal path', async () => {
   for (const change of [{ userModified: true }, { oldString: 'different' }, { error: 'failed' },
-    { extraNativeField: true }, { structuredPatch: [{ ...output.structuredPatch[0], oldLines: 2 }] },
+    { extraNativeField: { nested: true } }, { extraNativeField: ['value'] },
+    { structuredPatch: [{ ...output.structuredPatch[0], oldLines: 2 }] },
     { structuredPatch: [{ ...output.structuredPatch[0], lines: ['-' + prefix + 'other()', '+' + prefix + 'new()'] }] }]) {
     const raw = { ...output, ...change };
     let calls = 0;

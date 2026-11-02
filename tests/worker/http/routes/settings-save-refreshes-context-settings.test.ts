@@ -37,7 +37,7 @@ describe('settings save refreshes the context settings snapshot', () => {
 
   it('the re-render after POST /api/settings renders the saved values, not the 5s-old snapshot', async () => {
     const sessionStore = {
-      db: { prepare: mock(() => ({ get: mock(() => ({ count: 0 })) })) },
+      db: { prepare: mock(() => ({ get: mock(() => ({ count: 0 })), finalize: () => {} })) },
       getWorkStateEntries: mock(() => []),
     };
     const searchRoutes = new SearchRoutes({ getSessionStore: () => sessionStore } as any);

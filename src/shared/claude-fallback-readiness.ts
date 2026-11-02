@@ -17,7 +17,8 @@ import { join } from 'path';
 import { paths } from './paths.js';
 import { parseJsonWithBom } from './atomic-json.js';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
-import { hasAnthropicApiKey, hasAnthropicAuthToken } from './EnvManager.js';
+import { getCredential, hasAnthropicApiKey, hasAnthropicAuthToken } from './EnvManager.js';
+import { cooldownAppliesToCurrentAccount, getQuotaCooldown, isQuotaCooldownHolding, type ClaudeCredential } from './quota-cooldown.js';
 import { resolveClaudeCredentialProfile } from './oauth-token.js';
 import {
   CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS,
@@ -42,6 +43,12 @@ function claudeJsonHasSignedInAccount(claudeJsonFile: string): boolean {
 /** Whether a Claude credential exists for the profile the next Claude spawn uses. */
 export function hasClaudeCredentials(): boolean {
   if (hasAnthropicApiKey() || hasAnthropicAuthToken()) return true;
+  return hasClaudeSubscriptionLogin();
+}
+
+/** Whether a Claude Code login (not a key) exists for the profile the next Claude spawn uses. */
+export function hasClaudeSubscriptionLogin(): boolean {
+  // A headless login: readClaudeOAuthToken serves this token too ('env-fallback').
   if (process.env.CLAUDE_CODE_OAUTH_TOKEN) return true;
   const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
   const profile = resolveClaudeCredentialProfile(settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR);
@@ -53,6 +60,41 @@ export function hasClaudeCredentials(): boolean {
     ? join(profile.configDir, '.claude.json')
     : join(homedir(), '.claude.json');
   return claudeJsonHasSignedInAccount(claudeJson);
+}
+
+/**
+ * The credential a Claude run held by its quota breaker may go on instead
+ * (CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD), or null to wait as before.
+ *
+ * Only a breaker the OTHER credential armed qualifies: 'subscription' stands in
+ * for a spent API key, 'api-key' (ANTHROPIC_FALLBACK_API_KEY) for a login that
+ * is spent or paused by the quota guard. Once the stand-in's own run is refused,
+ * the breaker re-arms untagged and this returns null: both are spent. A gateway
+ * (ANTHROPIC_BASE_URL) never qualifies, so observer traffic is never routed
+ * around it (nor the OAuth token sent to it).
+ */
+export function claudeQuotaStandIn(): ClaudeCredential | null {
+  const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
+  const target = settings.CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD;
+  if (target !== 'subscription' && target !== 'api-key') return null;
+  const cooldown = getQuotaCooldown('claude');
+  if (!cooldown?.auth || cooldown.auth === target || !cooldownAppliesToCurrentAccount(cooldown)) return null;
+  if (getCredential('ANTHROPIC_BASE_URL')) return null;
+  const isTargetReady = target === 'subscription'
+    ? hasClaudeSubscriptionLogin()
+    : Boolean(getCredential('ANTHROPIC_FALLBACK_API_KEY'));
+  return isTargetReady ? target : null;
+}
+
+/**
+ * Whether a running quota-fallback run on `standIn` may take its next batch:
+ * the primary credential is still held and `standIn` still qualifies. Once the
+ * primary's window elapses, or another session's success clears its breaker,
+ * the run ends at its next message boundary, and the next admission probes the
+ * primary through the single probe claim (tryAdmitQuotaProbe).
+ */
+export function claudeStandInStillServes(standIn: ClaudeCredential): boolean {
+  return isQuotaCooldownHolding('claude') && claudeQuotaStandIn() === standIn;
 }
 
 function detectClaudeFallbackReadiness(): boolean {

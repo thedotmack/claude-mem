@@ -18,9 +18,9 @@ import { logger } from '../../utils/logger.js';
 import { findContextBlockRange } from '../../utils/context-injection.js';
 import { readJsonFileWithBom } from '../../shared/atomic-json.js';
 import { paths } from '../../shared/paths.js';
-import { buildSpawnSyncInvocation, type SpawnSyncInvocation } from '../../shared/spawn.js';
+import { buildSpawnSyncInvocation, lookupWindowsCommandCandidates, type SpawnSyncInvocation } from '../../shared/spawn.js';
 
-const CODEX_DIR = path.join(homedir(), '.codex');
+const CODEX_DIR = path.resolve(process.env.CODEX_HOME || path.join(homedir(), '.codex'));
 const CODEX_AGENTS_MD_PATH = path.join(CODEX_DIR, 'AGENTS.md');
 const CODEX_TRANSCRIPT_WATCH_CONFIG_PATH = paths.transcriptsConfig();
 const CODEX_CONFIG_PATH = path.join(CODEX_DIR, 'config.toml');
@@ -71,10 +71,12 @@ function commandExists(command: string): boolean {
 
   try {
     if (process.platform === 'win32') {
-      execFileSync('where.exe', [command], { stdio: 'ignore', windowsHide: true });
-    } else {
-      execFileSync('which', [command], { stdio: 'ignore' });
+      // lookupWindowsCommandCandidates spawns System32's where.exe and drops
+      // current-directory hits, so a planted <command>.exe in the project dir
+      // cannot pose as an install.
+      return lookupWindowsCommandCandidates(command).length > 0;
     }
+    execFileSync('which', [command], { stdio: 'ignore' });
     return true;
   } catch {
     // [ANTI-PATTERN IGNORED]: where/which exits non-zero whenever the probed command is absent from PATH; that is the expected negative probe result and commandExists reports it as false.
@@ -128,23 +130,15 @@ function resolvePluginMarketplaceRoot(preferredRoot?: string): string {
 }
 
 function lookupCodexOnWindows(): string | null {
-  let stdout: string;
+  let candidates: string[];
   try {
-    stdout = execFileSync('where.exe', ['codex'], {
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      windowsHide: true,
-    });
+    candidates = lookupWindowsCommandCandidates('codex');
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     logger.warn('WORKER', 'Failed to locate codex via where; falling back to codex.cmd', { command: 'where codex' }, err);
     return null;
   }
 
-  const candidates = stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
   return candidates.find((candidate) => WINDOWS_CODEX_EXTENSIONS.has(path.extname(candidate).toLowerCase()))
     ?? candidates[0]
     ?? null;
@@ -286,11 +280,37 @@ function tomlStructuralLines(lines: string[]): string[] {
   });
 }
 
+/** Read semantic key names without changing their spelling in the user's document. */
+function tomlKeyPath(input: string): { keys: string[]; rest: string } | null {
+  const keys: string[] = [];
+  const escapes: Record<string, string> = { '"': '"', '\\': '\\', b: '\b', t: '\t', n: '\n', f: '\f', r: '\r' };
+  while (true) {
+    const part = /^[ \t]*(?:([A-Za-z0-9_-]+)|"((?:[^"\\\r\n]|\\(?:["\\btnfr]|u[\da-fA-F]{4}|U[\da-fA-F]{8}))*)"|'([^'\r\n]*)')[ \t]*/.exec(input);
+    if (!part) return null;
+    const name = part[1] ?? part[3] ?? part[2].replace(
+      /\\(?:u([\da-fA-F]{4})|U([\da-fA-F]{8})|(["\\btnfr]))/g,
+      (_escape, short: string | undefined, long: string | undefined, simple: string) =>
+        short || long ? String.fromCodePoint(Number.parseInt(short ?? long!, 16)) : escapes[simple],
+    );
+    keys.push(name);
+    input = input.slice(part[0].length);
+    if (!input.startsWith('.')) return { keys, rest: input };
+    input = input.slice(1);
+  }
+}
+
+function tomlTableKey(line: string): string | null {
+  const table = /^\s*\[(?!\[)(.*)\]\s*$/.exec(line);
+  const parsed = table ? tomlKeyPath(table[1]) : null;
+  return parsed && !parsed.rest ? JSON.stringify(parsed.keys) : null;
+}
+
 export function setTomlBooleanInTable(content: string, header: string, key: string, enabled: boolean): string {
   const booleanLine = `${key} = ${enabled ? 'true' : 'false'}`;
   const lines = content.split('\n');
   const structuralLines = tomlStructuralLines(lines);
-  const headerIndex = structuralLines.findIndex((line) => line.trim() === header);
+  const tableKey = tomlTableKey(header);
+  const headerIndex = structuralLines.findIndex((line) => tableKey !== null && tomlTableKey(line) === tableKey);
 
   if (headerIndex === -1) {
     const trimmed = content.trimEnd();
@@ -302,11 +322,11 @@ export function setTomlBooleanInTable(content: string, header: string, key: stri
     sectionEnd += 1;
   }
 
-  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const keyPattern = new RegExp(`^\\s*${escapedKey}\\s*=`);
-  const keyIndex = structuralLines.findIndex(
-    (line, index) => index > headerIndex && index < sectionEnd && keyPattern.test(line),
-  );
+  const keyIndex = structuralLines.findIndex((line, index) => {
+    if (index <= headerIndex || index >= sectionEnd) return false;
+    const parsed = tomlKeyPath(line);
+    return parsed?.keys.length === 1 && parsed.keys[0] === key && parsed.rest.startsWith('=');
+  });
 
   if (keyIndex === -1) {
     lines.splice(headerIndex + 1, 0, booleanLine);
@@ -679,7 +699,7 @@ Plugin source:     ${marketplaceRoot}
 
 Next steps:
   1. Open Codex CLI in your project
-  2. Review and trust the six claude-mem hooks when Codex prompts you
+  2. Review and trust the seven claude-mem hooks when Codex prompts you
   3. Restart sessions opened before trusting the hooks
 
 For a fresh setup, the supported entry point is:

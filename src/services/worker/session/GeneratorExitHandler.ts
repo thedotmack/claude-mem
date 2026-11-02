@@ -65,9 +65,10 @@ export async function handleGeneratorExit(
   // fresh generator and drain it. Finalizing here would drop that work (#3800).
   // 'provider_switch' (#2756) is the same shape for a different reason:
   // SessionRoutes aborted a generator that was PARKED in waitForSlot (never
-  // acquired a slot / never spawned) to switch providers, and is about to
-  // start a fresh generator for the newly-selected provider on this same
-  // session — finalizeSession + removeSessionImmediate would dispose the
+  // acquired a slot / never spawned), or a running generator ended at a
+  // message boundary (#4846), to switch providers, and a fresh generator for
+  // the newly-selected provider starts on this same session —
+  // finalizeSession + removeSessionImmediate would dispose the
   // in-RAM buffer (SessionManager.removeSessionImmediate -> buffer.dispose),
   // wiping the very queue the switch is meant to preserve. The transcript is
   // not carried over: every generator start opens a new generation seeded from

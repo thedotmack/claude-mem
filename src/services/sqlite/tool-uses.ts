@@ -11,7 +11,7 @@
 // Receipt freeze 2026-09-06: this table carries tool IDENTITY only. Dollars
 // live on OpenRouter call-time stamps / the Receipt spend log. `or_generation_id`
 // and `or_session_id` are nullable JOIN keys back to those lines — never a
-// `cost_usd` / micros column here. See reports/tool-sqlite-offload/RECEIPT-JOIN.md.
+// `cost_usd` / micros column here. See docs/receipt-join.md.
 import { Database } from 'bun:sqlite';
 import { createHash } from 'crypto';
 import { logger } from '../../utils/logger.js';
@@ -488,25 +488,6 @@ export function toolUsesTableExists(db: Database): boolean {
     return false;
   }
   return true;
-}
-
-/**
- * `CLAUDE_MEM_TOOL_USES_RETENTION_DAYS` as a whole number of days. 0 means keep
- * forever, and so does anything that is not a plain non-negative integer: a
- * typo in a hand-edited settings.json must never turn into a purge, and must
- * never stop the worker from starting. settings.json is hand-editable JSON, so
- * the value may arrive as an unquoted number (`30`) as well as a string (`"30"`);
- * both mean 30 days. Any other type is ignored.
- */
-export function resolveToolUsesRetentionDays(raw: unknown): number {
-  if (typeof raw === 'number') {
-    return Number.isSafeInteger(raw) && raw > 0 ? raw : 0;
-  }
-  if (typeof raw !== 'string') return 0;
-  const trimmed = raw.trim();
-  if (!/^\d+$/.test(trimmed)) return 0;
-  const days = Number(trimmed);
-  return Number.isSafeInteger(days) ? days : 0;
 }
 
 /**

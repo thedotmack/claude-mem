@@ -94,6 +94,8 @@ export interface ObserverQuotaCooldown {
    * else can serve; the notice then says capture is paused.
    */
   servingProvider?: string;
+  /** 'claude' only: the credential that is held ('api-key' | 'subscription'), when one is. */
+  auth?: string;
 }
 
 /**
@@ -329,6 +331,7 @@ export function recordObserverQuotaCooldown(
         ...(cooldown.window ? { window: cooldown.window } : {}),
         ...(cooldown.message ? { message: scrubErrorMessage(cooldown.message) } : {}),
         ...(cooldown.servingProvider ? { servingProvider: cooldown.servingProvider } : {}),
+        ...(cooldown.auth ? { auth: cooldown.auth } : {}),
       },
     }, filePath, prior);
   });
@@ -542,6 +545,12 @@ export function renderObserverQuotaCooldownNotice(
   // below applies — least of all "do not restart", advice about a problem
   // that is not happening. No primary/fallback wording: the held provider can
   // be either one.
+  if (cooldown?.servingProvider === 'claude' && provider === 'claude') {
+    // CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD: same provider, the other credential.
+    return cooldown.auth === 'subscription'
+      ? `ℹ️ claude-mem's Claude Code subscription login is paused for quota${windowText}; memory is running on your fallback API key (ANTHROPIC_FALLBACK_API_KEY) meanwhile, and switches back to the login after ${untilText}.`
+      : `ℹ️ claude-mem's Claude API key is in a quota cooldown${windowText}; memory is running on your Claude Code subscription login meanwhile, and switches back to the key after ${untilText}.`;
+  }
   if (cooldown?.servingProvider === 'claude') {
     // The default fallback: say plainly that memory is on the Anthropic plan.
     const why = cooldown.window === 'unavailable' ? 'is unavailable'
