@@ -38,6 +38,35 @@ afterEach(() => {
 });
 
 describe('daily telemetry volume', () => {
+  it('drops saved errors at send time once the person turns error reporting off', () => {
+    const saved = process.env.CLAUDE_MEM_TELEMETRY_ERRORS;
+    directory = mkdtempSync(join(tmpdir(), 'cmem-daily-'));
+    try {
+      arm(DAY);
+      captureEvent('hook_failed', { hook_name: 'stop', error_category: 'timeout' });
+      captureException(new TypeError('saved before the opt-out'));
+      expect(postHogExceptionCalls).toHaveLength(0);
+
+      process.env.CLAUDE_MEM_TELEMETRY_ERRORS = '0';
+      __setTelemetryVolumeClockForTests(() => NEXT);
+      captureEvent('test_event_flush_errors');
+      expect(postHogExceptionCalls).toHaveLength(0);
+      // Only error text is opted out; the anonymous counters still go.
+      expect(postHogCaptureCalls.filter(call => call.event === 'hook_failed')).toHaveLength(1);
+
+      // Dropped, not postponed: turning reporting back on must not send what was opted out.
+      delete process.env.CLAUDE_MEM_TELEMETRY_ERRORS;
+      __setTelemetryVolumeClockForTests(() => NEXT + 24 * 60 * 60_000);
+      captureEvent('test_event_flush_errors');
+      expect(postHogExceptionCalls).toHaveLength(0);
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_MEM_TELEMETRY_ERRORS;
+      else process.env.CLAUDE_MEM_TELEMETRY_ERRORS = saved;
+      __setTelemetryVolumeClockForTests(null);
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('sums a day of rollups into one event and sends it when the day closes', () => {
     directory = mkdtempSync(join(tmpdir(), 'telemetry-daily-'));
     try {
