@@ -27,6 +27,7 @@
  */
 
 import { Database } from 'bun:sqlite';
+import { createHash } from 'crypto';
 import { readFileSync } from 'fs';
 import { homedir } from 'os';
 import { basename, dirname, join } from 'path';
@@ -175,14 +176,25 @@ const geminiCliUsage: UsageReader = {
     const seenMessages = new Set<string>();
     for (const source of sources) {
       try {
-        const { messages } = await readGeminiChat(source.path);
+        const { header, messages } = await readGeminiChat(source.path);
+        const sessionKey = typeof header.sessionId === 'string' && header.sessionId
+          ? header.sessionId : source.path.replace(/\.jsonl?$/, '');
         for (const message of messages) {
           if (message?.type !== 'gemini' || !message.tokens) continue;
-          const key = typeof message.id === 'string' && message.id ? message.id : `${source.path}\u0000${message.timestamp}`;
+          const at = isoToEpochMs(message.timestamp);
+          if (at === null) continue;
+          // A resumed session can keep both JSON and JSONL copies. Native IDs
+          // retain their global identity; legacy records use the shared session,
+          // timestamp and payload rather than the storage extension. Hashing
+          // keeps large response text out of the scan's identity set.
+          const identity = typeof message.id === 'string' && message.id
+            ? ['native', message.id]
+            : ['legacy', sessionKey, at, message.content ?? null, message.toolCalls ?? null];
+          const key = createHash('sha256').update(JSON.stringify(identity)).digest('hex');
           if (seenMessages.has(key)) continue;
           seenMessages.add(key);
           const { total, input, output, thoughts, tool } = message.tokens;
-          tally(usage, isoToEpochMs(message.timestamp), typeof total === 'number' ? count(total) : count(input) + count(output) + count(thoughts) + count(tool), sinceEpochMs);
+          tally(usage, at, typeof total === 'number' ? count(total) : count(input) + count(output) + count(thoughts) + count(tool), sinceEpochMs);
         }
       } catch (error) { skip(source, error); }
     }
