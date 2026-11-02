@@ -1,3 +1,6 @@
+import { assistantText } from '../../shared/assistant-text.js';
+export { assistantText } from '../../shared/assistant-text.js';
+import { createHash } from 'crypto';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
@@ -12,7 +15,6 @@ import {
   buildContinuationPrompt,
   splitFramingPrompt,
 } from '../../sdk/prompts.js';
-import { pruneProcessedObservationPayloads } from './history-pruning.js';
 import type { ActiveSession, ConversationMessage, PendingMessageWithId } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
@@ -31,6 +33,7 @@ import { recycleObserverConversation, loadSessionStartContext, openObserverGener
 import { optimizeObservationFields, buildFieldCompressionPrompt, type CompressedField } from './field-optimizer.js';
 import { resolveFieldOptimizeTimeoutMs } from './retry.js';
 import { buildTelegramWrapupPrompt, type TelegramWrapupFormatterInput } from '../integrations/TelegramWrapupNotifier.js';
+import { freezeResponseMedia, type PreparedTurnMedia, type TurnImageRequest } from '../media/inference.js';
 
 import {
   processAgentResponse,
@@ -61,6 +64,47 @@ export interface ProviderQueryResult {
    * the reply off (#3868).
    */
   finishReason?: string;
+  /**
+   * The request labels of the images the accepted request actually carried.
+   * Empty when the turn had images but was sent (or resent) text-only; absent
+   * when the turn had none.
+   */
+  deliveredImageLabels?: string[];
+}
+
+/**
+ * What one request is and whose it is. OpenRouterProvider sends it to
+ * OpenRouter-family endpoints as `session_id` and `trace`; every other
+ * provider ignores it.
+ */
+export interface ObserverRequestLabel {
+  kind: 'init' | 'observation' | 'summary' | 'field_compression' | 'telegram_wrapup';
+  /** anonymousSessionId() of the observed session. */
+  sessionId: string;
+  /**
+   * session.observerGenerationId when the request belongs to an observer
+   * generation. Absent for the wrap-up, which belongs to none.
+   */
+  generationId?: string;
+}
+
+/**
+ * The observed session's id as a provider sees it: a one-way hash, so the
+ * session id itself never leaves the machine. Derived rather than stored,
+ * because it must hold for the whole session and the session object does
+ * not: an idle generator drops it and the next tool call builds a new one.
+ */
+export function anonymousSessionId(contentSessionId: string): string {
+  return createHash('sha256').update(`claude-mem observed session:${contentSessionId}`).digest('hex');
+}
+
+/** The label for a request made for the session's current observer generation. */
+function generationLabel(session: ActiveSession, kind: ObserverRequestLabel['kind']): ObserverRequestLabel {
+  return {
+    kind,
+    sessionId: anonymousSessionId(session.contentSessionId),
+    generationId: session.observerGenerationId,
+  };
 }
 
 /** The first user turn of an observer request when the framing prompt carries no request block. */
@@ -75,28 +119,13 @@ export interface OpenAIChatMessage {
 /** Sent when every turn is empty, so a request never carries `messages: []`. */
 const EMPTY_HISTORY_FALLBACK = '(context unavailable)';
 
-/**
- * The answer text of an OpenAI-shaped reply's `message.content`. Gateways may
- * send content blocks instead of a string; only text blocks count, and
- * reasoning or tool-call arguments are never substituted for the answer
- * (#4017). Anything else reads as no text.
- */
-export function assistantText(content: unknown): string {
-  if (typeof content === 'string') return content;
-  if (!Array.isArray(content)) return '';
-  return content
-    .filter((part): part is { type: 'text'; text: string } =>
-      part !== null && typeof part === 'object' && part.type === 'text' && typeof part.text === 'string')
-    .map(part => part.text)
-    .join('\n');
-}
 
 /**
  * Shared scaffolding for OpenAI-compatible, multi-turn HTTP providers
  * (Gemini, OpenRouter). The session lifecycle — synthetic memory-session-id
  * generation, init/continuation prompt, the observation/summary message loop,
- * cumulative token accounting, abort-aware error handling, and history
- * truncation — is identical between them. Per-provider differences (config
+ * cumulative token accounting, abort-aware error handling, and bounded
+ * generations — is identical between them. Per-provider differences (config
  * resolution, request shape, token estimation, usage/cost reporting) are
  * supplied by abstract members.
  */
@@ -146,7 +175,8 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
    * deadline for callers racing their own, longer deadline (the field pass).
    * `paidSendBudget` is the claimed batch's allowance (absent for an init
    * turn, a field condensation or a wrap-up, which are not batches); its
-   * clientAttemptId goes out as `x-client-request-id`.
+   * clientAttemptId goes out as `x-client-request-id`. `label` says what the
+   * request is (ObserverRequestLabel).
    */
   protected abstract query(
     history: ConversationMessage[],
@@ -154,7 +184,26 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     signal?: AbortSignal,
     perAttemptTimeoutMs?: number,
     paidSendBudget?: PaidSendBudget,
+    label?: ObserverRequestLabel,
+    /**
+     * This observation turn's image side refs. Passed only by the observation
+     * path, never by summary, wrap-up or condensation requests, and never
+     * stored in history. Providers without image support ignore it.
+     */
+    turnImages?: TurnImageRequest,
   ): Promise<ProviderQueryResult>;
+
+  /**
+   * The current observation turn's images, when this provider and its
+   * configured endpoint qualify for image input. The default sends none.
+   */
+  protected async prepareObservationMedia(
+    _session: ActiveSession,
+    _messages: PendingMessageWithId[],
+    _config: TConfig,
+  ): Promise<PreparedTurnMedia | null> {
+    return null;
+  }
 
   /**
    * One bounded, standalone call that condenses an oversized tool payload.
@@ -169,6 +218,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     config: TConfig,
     signal: AbortSignal,
     deadlineMs?: number,
+    label?: ObserverRequestLabel,
   ): Promise<CompressedField | null> {
     // The field pass races `deadlineMs` (CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS).
     // Without it the request keeps the LLM per-attempt default, and a longer
@@ -178,6 +228,8 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       config,
       signal,
       deadlineMs,
+      undefined,
+      label,
     );
     if (!result.content) return null;
     return { text: result.content, truncated: result.finishReason === 'length' || result.finishReason === 'MAX_TOKENS' };
@@ -208,6 +260,10 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     const result = await this.query(
       [{ role: 'user', content: buildTelegramWrapupPrompt(input.summaryText) }],
       summaryConfig,
+      undefined,
+      undefined,
+      undefined,
+      { kind: 'telegram_wrapup', sessionId: anonymousSessionId(input.contentSessionId) },
     );
     if (!result.content?.trim()) {
       const error = new Error(`${this.providerName} returned no text for the Telegram wrap-up`);
@@ -336,7 +392,11 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       const persistedMemorySessionId = this.dbManager.getSessionById(session.sessionDbId).memory_session_id;
       const syntheticIdPrefix = `${this.syntheticIdPrefix}-${session.contentSessionId}-`;
 
-      if (persistedMemorySessionId?.startsWith(syntheticIdPrefix)) {
+      // This is the durable database identity, not a provider resume token.
+      // Replacing it on a provider switch cascades stored memories to a new
+      // id while leaving their content hashes keyed to the old one, so exact
+      // redelivery creates duplicates. Keep the identity once registered.
+      if (persistedMemorySessionId) {
         session.memorySessionId = persistedMemorySessionId;
         logger.info('SESSION', `MEMORY_ID_REUSED | sessionDbId=${session.sessionDbId} | provider=${this.providerName}`);
       } else {
@@ -375,7 +435,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       try {
         session.lastPromptSentAt = Date.now();
         session.lastGeneratorSource = 'init';
-        const initResponse = await this.queryObserverTurn(session, config, undefined);
+        const initResponse = await this.queryObserverTurn(session, config, undefined, 'init');
         this.handleInitResponse(initResponse, session, model);
       } catch (error: unknown) {
         if (await this.recycleOnContextOverflow(error, session, worker)) return;
@@ -483,10 +543,6 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     originalTimestamp: number | null,
     lastCwd: string | undefined
   ): Promise<void> {
-    if (message.prompt_number !== undefined) {
-      session.lastPromptNumber = message.prompt_number;
-    }
-
     if (!session.memorySessionId) {
       throw new Error('Cannot process observations: memorySessionId not yet captured. This session may need to be reinitialized.');
     }
@@ -509,10 +565,17 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     // prompt is built, so the observation carries a summary of the whole field
     // rather than a head/tail slice with the middle cut out (#3800). The field
     // cap scales with the model's window (#3625).
+    // A newer user prompt may arrive while the payload is being condensed.
+    let responseContext = {
+      ...snapshotResponseContext(session),
+      promptNumber: message.prompt_number ?? session.lastPromptNumber,
+    };
     const fieldMaxChars = observationFieldMaxChars(session.observerContextWindowTokens);
     const optimized = await optimizeObservationFields(
       { toolInput: message.tool_input, toolOutput: message.tool_response },
-      (text, budgetChars, signal, deadlineMs) => this.compressField(text, budgetChars, config, signal, deadlineMs),
+      (text, budgetChars, signal, deadlineMs) => this.compressField(
+        text, budgetChars, config, signal, deadlineMs, generationLabel(session, 'field_compression'),
+      ),
       { sessionDbId: session.sessionDbId, toolName: message.tool_name },
       fieldMaxChars,
       resolveFieldOptimizeTimeoutMs,
@@ -528,20 +591,40 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       created_at_epoch: originalTimestamp ?? Date.now(),
       cwd: message.cwd
     }, fieldMaxChars, takeObserverSchemaReminder(session));
-    const responseContext = snapshotResponseContext(session);
+    // Bounded per-turn side refs: loaded here, sent with this request only,
+    // and released when the turn returns. History keeps the string turn.
+    let turnMedia = message.mediaRefs?.length ? await this.prepareObservationMedia(session, [message], config) : null;
+    if (turnMedia) {
+      responseContext = { ...responseContext, media: freezeResponseMedia(turnMedia, turnMedia.images.length > 0) };
+    }
 
     const turnPrompt = this.observationTurnPrompt(session, message, obsPrompt);
     if (this.rejectAbortedObservation) session.abortController.signal.throwIfAborted();
     session.conversationHistory.push({ role: 'user', content: turnPrompt });
 
-    // Stub out payloads already converted to stored observations so the
-    // request below stays bounded instead of re-sending every prior tool
-    // dump (see history-pruning.ts).
-    pruneProcessedObservationPayloads(session.conversationHistory);
+    // Keep completed turns unchanged within this bounded generation so every
+    // request preserves the provider's cached prefix. Retire the generation
+    // through the existing budget/overflow paths rather than rewriting it.
 
     session.lastPromptSentAt = Date.now();
     session.lastGeneratorSource = 'ingest';
-    const obsResponse = await this.queryObserverTurn(session, config, paidSendBudgetForClaimedBatch(session));
+    let obsResponse: ProviderQueryResult;
+    try {
+      obsResponse = await this.queryObserverTurn(
+        session, config, paidSendBudgetForClaimedBatch(session), 'observation',
+        turnMedia?.images.length ? { images: turnMedia.images, maxBodyBytes: turnMedia.maxBodyBytes } : undefined,
+      );
+    } finally {
+      // Clear the derivative bytes as soon as the request settles.
+      if (turnMedia) turnMedia.images.forEach(image => { image.dataUrl = ''; });
+    }
+    if (turnMedia && responseContext.media?.imagesDelivered) {
+      // Only images the accepted request carried can be inspected; a
+      // text-only send or resend marks none.
+      const delivered = obsResponse.deliveredImageLabels ?? [];
+      responseContext = { ...responseContext, media: freezeResponseMedia(turnMedia, delivered.length > 0, delivered) };
+    }
+    turnMedia = null;
 
     // Billed usage counts even when the reply came back empty.
     accumulateObserverUsage(session, obsResponse);
@@ -572,7 +655,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
   private async processSummaryMessage(
     session: ActiveSession,
-    message: { last_assistant_message?: string },
+    message: { last_assistant_message?: string; prompt_number?: number },
     worker: WorkerRef | undefined,
     config: TConfig,
     mode: ModeConfig,
@@ -582,7 +665,6 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     if (!session.memorySessionId) {
       throw new Error('Cannot process summary: memorySessionId not yet captured. This session may need to be reinitialized.');
     }
-
     const summaryPrompt = buildSummaryPrompt({
       id: session.sessionDbId,
       memory_session_id: session.memorySessionId,
@@ -590,13 +672,12 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       user_prompt: session.userPrompt,
       last_assistant_message: message.last_assistant_message || ''
     }, mode);
-    const responseContext = snapshotResponseContext(session);
+    const responseContext = {
+      ...snapshotResponseContext(session),
+      promptNumber: message.prompt_number ?? session.lastPromptNumber,
+    };
 
     session.conversationHistory.push({ role: 'user', content: summaryPrompt });
-
-    // Same bounding as the observation path: the summary reads the assistant
-    // observations for its narrative, not the raw tool payloads behind them.
-    pruneProcessedObservationPayloads(session.conversationHistory);
 
     session.lastPromptSentAt = Date.now();
     session.lastGeneratorSource = 'summarize';
@@ -608,7 +689,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
         sessionId: session.sessionDbId, model: summaryModel
       });
     }
-    const summaryResponse = await this.queryObserverTurn(session, summaryConfig, paidSendBudgetForClaimedBatch(session));
+    const summaryResponse = await this.queryObserverTurn(session, summaryConfig, paidSendBudgetForClaimedBatch(session), 'summary');
 
     accumulateObserverUsage(session, summaryResponse);
     this.recordMeasuredContext(session, summaryResponse);
@@ -642,9 +723,13 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     session: ActiveSession,
     config: TConfig,
     paidSendBudget: PaidSendBudget | undefined,
+    kind: ObserverRequestLabel['kind'],
+    turnImages?: TurnImageRequest,
   ): Promise<ProviderQueryResult> {
     try {
-      return await this.query(session.conversationHistory, config, undefined, undefined, paidSendBudget);
+      return await this.query(
+        session.conversationHistory, config, undefined, undefined, paidSendBudget, generationLabel(session, kind), turnImages,
+      );
     } catch (error: unknown) {
       if (!isClassified(error) || paidSendOutcomeOf(error) !== 'output_failure') throw error;
       logger.warn('SDK', `${this.providerName} answered with unusable output; passing an empty reply on, not resending`, {

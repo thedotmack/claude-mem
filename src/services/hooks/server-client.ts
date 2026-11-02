@@ -14,6 +14,7 @@
 import { fetchWithTimeout } from '../../shared/worker-utils.js';
 import { HOOK_TIMEOUTS, getTimeout } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { stripMemoryTags, stripMemoryTagsFromJsonStrings } from '../../utils/tag-stripping.js';
 
 const DEFAULT_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.API_REQUEST);
 
@@ -186,6 +187,8 @@ export interface ServerContextObservationsRequest {
   // and rejects `""` -- so the key must be omitted, never blanked.
   query?: string;
   limit?: number;
+  // In recency mode, reserve this portion of limit for session summaries.
+  summaryLimit?: number;
   platformSource?: string | null;
   // Folder labels (observations.metadata.project) to scope the read to. Omitted
   // or empty means every folder in the server project.
@@ -202,6 +205,35 @@ export interface ServerContextObservationsResponse {
     [key: string]: unknown;
   }>;
   context: string;
+}
+
+export interface ServerTimelineRequest {
+  projectId: string;
+  anchorId: string;
+  depthBefore?: number;
+  depthAfter?: number;
+}
+export interface ServerSelectedObservationsRequest {
+  projectId: string;
+  ids: string[];
+}
+
+// Per-prompt injection (CLAUDE_MEM_SEMANTIC_INJECT): observations near the
+// prompt in meaning, rendered like the worker's /api/context/semantic.
+export interface ServerSemanticContextRequest {
+  projectId: string;
+  query: string;
+  limit?: number;
+  platformSource?: string | null;
+  folderProjects?: string[];
+  // The Claude Code session id, as on /v1/sessions/start and /v1/events, so
+  // the server can leave out the asking session's own recent observations.
+  contentSessionId?: string | null;
+}
+
+export interface ServerSemanticContextResponse {
+  context: string;
+  count: number;
 }
 
 // Phase 8 — generation job status, scoped by api-key team/project.
@@ -232,10 +264,13 @@ export class ServerClient {
     return this.request<ServerStartSessionResponse>('POST', '/v1/sessions/start', body, options);
   }
 
-  async recordEvent(input: ServerRecordEventRequest): Promise<ServerRecordEventResponse> {
+  async recordEvent(
+    input: ServerRecordEventRequest,
+    options: ServerRequestOptions = {},
+  ): Promise<ServerRecordEventResponse> {
     const body = this.buildEventPayload(input);
     const path = input.generate === false ? '/v1/events?generate=false' : '/v1/events';
-    return this.request<ServerRecordEventResponse>('POST', path, body);
+    return this.request<ServerRecordEventResponse>('POST', path, body, options);
   }
 
   async endSession(input: ServerEndSessionRequest): Promise<ServerEndSessionResponse> {
@@ -275,6 +310,14 @@ export class ServerClient {
     );
   }
 
+  async timelineObservations(input: ServerTimelineRequest): Promise<ServerSearchObservationsResponse> {
+    return this.request<ServerSearchObservationsResponse>('POST', '/v1/timeline', input);
+  }
+
+  async selectedObservations(input: ServerSelectedObservationsRequest): Promise<ServerSearchObservationsResponse> {
+    return this.request<ServerSearchObservationsResponse>('POST', '/v1/observations/batch', input);
+  }
+
   // Phase 8 — MCP `observation_context` and the server-runtime session-start
   // read. With a query this is the same FTS surface as search; without one the
   // route returns the most recent rows. Either way it also returns a pre-joined
@@ -289,6 +332,7 @@ export class ServerClient {
     const payload: Record<string, unknown> = { projectId: input.projectId };
     if (input.query !== undefined) payload.query = input.query;
     if (input.limit !== undefined) payload.limit = input.limit;
+    if (input.summaryLimit !== undefined) payload.summaryLimit = input.summaryLimit;
     if (input.platformSource !== undefined) {
       payload.platformSource = normalizePlatformSourceField(input.platformSource);
     }
@@ -297,6 +341,23 @@ export class ServerClient {
     }
     if (input.excludeSubagents !== undefined) payload.excludeSubagents = input.excludeSubagents;
     return this.request<ServerContextObservationsResponse>('POST', '/v1/context', payload, options);
+  }
+
+  async semanticContext(
+    input: ServerSemanticContextRequest,
+    options: ServerRequestOptions = {},
+  ): Promise<ServerSemanticContextResponse> {
+    // The query is the user's prompt; <private> sections never leave the hook.
+    const payload: Record<string, unknown> = { projectId: input.projectId, query: stripMemoryTags(input.query) };
+    if (input.limit !== undefined) payload.limit = input.limit;
+    if (input.platformSource !== undefined) {
+      payload.platformSource = normalizePlatformSourceField(input.platformSource);
+    }
+    if (input.folderProjects && input.folderProjects.length > 0) {
+      payload.folderProjects = input.folderProjects;
+    }
+    if (input.contentSessionId) payload.contentSessionId = input.contentSessionId;
+    return this.request<ServerSemanticContextResponse>('POST', '/v1/context/semantic', payload, options);
   }
 
   // Phase 8 — MCP `observation_generation_status`. Server returns the same
@@ -367,7 +428,8 @@ export class ServerClient {
       ...(input.agentId !== undefined ? { agentId: input.agentId } : {}),
       ...(input.agentType !== undefined ? { agentType: input.agentType } : {}),
       ...(input.platformSource !== undefined ? { platformSource: normalizePlatformSourceField(input.platformSource) } : {}),
-      ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
+      // The prompt rides in metadata; <private> sections never leave the hook.
+      ...(input.metadata !== undefined ? { metadata: stripMemoryTagsFromJsonStrings(input.metadata) } : {}),
     };
   }
 
@@ -381,7 +443,10 @@ export class ServerClient {
       ...(input.contentSessionId !== undefined ? { contentSessionId: input.contentSessionId } : {}),
       ...(input.memorySessionId !== undefined ? { memorySessionId: input.memorySessionId } : {}),
       ...(input.platformSource !== undefined ? { platformSource: normalizePlatformSourceField(input.platformSource) } : {}),
-      ...(input.payload !== undefined ? { payload: input.payload } : {}),
+      // Every server-bound event (tool use, file edit, assistant message, MCP
+      // record_event) passes here: <private> sections never leave the hook,
+      // the same rule worker ingest applies before storing tool data.
+      ...(input.payload !== undefined ? { payload: stripMemoryTagsFromJsonStrings(input.payload) } : {}),
     };
   }
 
@@ -410,18 +475,22 @@ export class ServerClient {
       init.body = JSON.stringify(body);
     }
 
+    const transportFailure = (error: unknown): ServerClientError => {
+      const message = error instanceof Error ? error.message : String(error);
+      const isTimeout = /timed out|timeout/i.test(message)
+        || (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError'));
+      return new ServerClientError(
+        isTimeout ? 'timeout' : 'transport',
+        `Server ${method} ${path} failed: ${message}`,
+        { cause: error },
+      );
+    };
     let response: Response;
     const timeoutMs = options.timeoutMs ?? this.timeoutMs;
     try {
       response = await fetchWithTimeout(url, init, timeoutMs);
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      const isTimeout = /timed out|timeout/i.test(message);
-      throw new ServerClientError(
-        isTimeout ? 'timeout' : 'transport',
-        `Server ${method} ${path} failed: ${message}`,
-        { cause: error },
-      );
+      throw transportFailure(error);
     }
 
     if (!response.ok) {
@@ -433,7 +502,12 @@ export class ServerClient {
       );
     }
 
-    const text = await response.text();
+    let text: string;
+    try {
+      text = await response.text();
+    } catch (error: unknown) {
+      throw transportFailure(error);
+    }
     if (!text || text.length === 0) {
       // Endpoints we call always return JSON; a body-less success is unusual
       // but not fatal — return undefined-shaped object.

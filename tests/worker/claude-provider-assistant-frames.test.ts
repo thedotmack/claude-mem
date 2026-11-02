@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, mock, spyOn } from 'bun:test';
+import codeMode from '../../plugin/modes/code.json';
 import type { ActiveSession } from '../../src/services/worker-types.js';
 
 // bun's mock.module is process-global and sticky: it is never auto-unregistered
@@ -49,7 +50,7 @@ mock.module('../../src/services/domain/ModeManager.js', () => ({
     getInstance: () => ({
       getActiveMode: () => ({
         name: 'code',
-        prompts: { init: 'init prompt', observation: 'obs prompt', summary: 'summary prompt' },
+        prompts: codeMode.prompts,
         observation_types: [{ id: 'discovery' }, { id: 'bugfix' }, { id: 'refactor' }],
         observation_concepts: [],
       }),
@@ -145,7 +146,14 @@ function createHarness(session: ActiveSession) {
     session.earliestPendingTimestamp = null;
     return confirmed;
   });
-  const resetProcessingToPending = mock(async () => 0);
+  // Mirrors SessionManager.resetProcessingToPending: the claim is released on
+  // the session as well as in the buffer. Without this, the stream-end release
+  // below sees a still-claimed batch and the fake counts a second reset that
+  // the real manager never makes.
+  const resetProcessingToPending = mock(async () => {
+    session.claimedMessageIds = [];
+    return 0;
+  });
   const storeObservations = mock(() => ({
     observationIds: [7],
     summaryId: null,
@@ -380,6 +388,10 @@ describe('ClaudeProvider assistant frame dispatch (#3492)', () => {
     expect(harness.confirmClaimedMessages).not.toHaveBeenCalled();
     expect(harness.resetProcessingToPending).toHaveBeenCalledTimes(1);
     expect(harness.remainingClaimed()).toHaveLength(1);
+    // The scripted stream ends after the failed turn, with nothing answering
+    // the re-sent batch: that exit is named so GeneratorExitHandler keeps the
+    // session instead of finalizing the batch away.
+    expect(session.abortReason).toBe('transport:sdk_eof');
   });
 });
 
@@ -484,5 +496,67 @@ describe('ClaudeProvider MEMORY_ID_CAPTURED spawn-health line (#4150)', () => {
     const lines = memoryIdLines();
     expect(lines).toHaveLength(1);
     expect(lines[0]).toStartWith(`MEMORY_ID_CAPTURED | sessionDbId=3492 | memorySessionId=${MEMORY_SESSION_ID} |`);
+  });
+});
+
+describe('ClaudeProvider per-turn usage visibility (#5023)', () => {
+  let infoSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    scriptedMessages = [];
+    infoSpy = spyOn(logger, 'info').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    infoSpy.mockRestore();
+  });
+
+  it('logs finalized result-frame counts once without including prompt content', async () => {
+    const session = createSession();
+    const harness = createHarness(session);
+    const promptText = 'private observation prompt content';
+    session.userPrompt = promptText;
+
+    scriptedMessages = [
+      assistantFrame([{ type: 'text', text: OBSERVATION_XML }]),
+      resultFrame({
+        usage: {
+          input_tokens: 101,
+          cache_creation_input_tokens: 202,
+          cache_read_input_tokens: 303,
+          output_tokens: 40,
+        },
+      }),
+    ];
+
+    await harness.provider.startSession(session);
+
+    const usageCalls = infoSpy.mock.calls.filter(call => call[1] === 'Observer turn usage');
+    expect(usageCalls).toHaveLength(1);
+    expect(usageCalls[0]?.[2]).toEqual({
+      sessionId: 3492,
+      promptNumber: 2,
+      inputTokens: 101,
+      cacheCreationInputTokens: 202,
+      cacheReadInputTokens: 303,
+      fullContextTokens: 606,
+      outputTokens: 40,
+    });
+    expect(JSON.stringify(usageCalls[0])).not.toContain(promptText);
+  });
+
+  it('does not log usage for the synthetic init result', async () => {
+    const session = createSession();
+    session.lastGeneratorSource = 'init';
+    const harness = createHarness(session);
+
+    scriptedMessages = [
+      assistantFrame([{ type: 'text', text: OBSERVATION_XML }]),
+      resultFrame(),
+    ];
+
+    await harness.provider.startSession(session);
+
+    expect(infoSpy.mock.calls.filter(call => call[1] === 'Observer turn usage')).toHaveLength(0);
   });
 });

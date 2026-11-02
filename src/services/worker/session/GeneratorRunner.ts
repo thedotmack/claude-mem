@@ -8,9 +8,14 @@ import type { OpenRouterProvider } from '../OpenRouterProvider.js';
 import type { OpenAICompatProvider } from '../OpenAICompatProvider.js';
 import type { CodexProvider } from '../CodexProvider.js';
 import type { SessionCompletionHandler } from './SessionCompletionHandler.js';
-import { recordCmemFallbackIfEligible, releaseCmemGatewayProbe, type SelectableProvider } from '../provider-dispatch.js';
+import {
+  recordCmemFallbackIfEligible,
+  releaseCmemGatewayProbe,
+  routeAroundUnservableProvider,
+  type SelectableProvider,
+} from '../provider-dispatch.js';
 import { handleGeneratorExit } from './GeneratorExitHandler.js';
-import { normalizeAbortReason } from './abort-reason.js';
+import { normalizeAbortReason, PROVIDER_SWITCH_BOUNDARY_ABORT_REASON } from './abort-reason.js';
 import {
   MAX_CONSECUTIVE_STALL_RESUMES,
   RESPONSE_STALL_RESUME_DELAY_MS,
@@ -20,7 +25,8 @@ import {
 } from './response-pacer.js';
 import { telemetryBuffer } from '../../telemetry/buffer.js';
 import { observerUsageLogFields } from '../observer-usage.js';
-import { recordObserverFailure } from '../../../shared/observer-health.js';
+import { AMBIGUOUS_QUOTA_MESSAGE, recordObserverFailure } from '../../../shared/observer-health.js';
+import { explainQuotaAbort, globalRateLimitStore } from '../RateLimitStore.js';
 import {
   CODEX_CLI_SETUP_REMEDIATION,
   recordClaudeSetupRequired,
@@ -31,6 +37,7 @@ import {
   releaseQuotaProbe,
   recordAuthCooldown,
   recordQuotaExhausted,
+  type ClaudeCredential,
   QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
 } from '../../../shared/quota-cooldown.js';
 import {
@@ -94,6 +101,37 @@ function recordDeadlineExpiry(
   });
 }
 
+/** Quota prose: the observer's own reply said its allowance is spent. */
+export const OBSERVER_TEXT_QUOTA_MESSAGE = 'The observer replied that its usage allowance is exhausted';
+
+/**
+ * The pause to book for a quota exit.
+ * - 'quota:observer_text': the provider's own refusal, written as the reply
+ *   (any provider), so it is exhausted, not ambiguous.
+ * - Claude's guard: 'quota:<window>:<kind>'. The kind is what the guard
+ *   decided at abort time; the snapshot only supplies the wording, and when it
+ *   no longer explains the stop a kind-appropriate generic message is used.
+ * - Anything else keeps the generic record the banner reads as ambiguous.
+ */
+export function quotaPauseForExit(
+  provider: string,
+  reason: string | null | undefined,
+  profile?: string,
+): { kind: 'quota_guard' | 'quota_exhausted'; message: string } {
+  if (reason === 'quota:observer_text') {
+    return { kind: 'quota_exhausted', message: OBSERVER_TEXT_QUOTA_MESSAGE };
+  }
+  const kind = (reason ?? '').split(':')[2];
+  if (provider === 'claude' && (kind === 'quota_guard' || kind === 'quota_exhausted')) {
+    const explained = explainQuotaAbort(reason, globalRateLimitStore, Date.now(), profile);
+    if (explained?.kind === kind) return explained;
+    return kind === 'quota_guard'
+      ? { kind, message: 'Memory capture paused by the Claude usage reserve guard.' }
+      : { kind, message: 'Claude rejected the request because a usage allowance is exhausted.' };
+  }
+  return { kind: 'quota_exhausted', message: AMBIGUOUS_QUOTA_MESSAGE };
+}
+
 export async function startGeneratorWithProvider(
   session: ActiveSession | undefined,
   provider: SelectableProvider,
@@ -121,6 +159,7 @@ export async function startGeneratorWithProvider(
   // too, its exit records a fresh reason. Without this, one auth pause would
   // keep the session out of every automatic sweep for good.
   session.pausedReason = null;
+  session.providerSwitchPending = false;
 
   if (session.abortController.signal.aborted) {
     logger.debug('SESSION', 'Resetting aborted AbortController before starting generator', {
@@ -288,6 +327,18 @@ export async function startGeneratorWithProvider(
         } else {
           logger.debug('SESSION', pauseLine, pauseContext, describeProviderError(classified));
         }
+        // The fault outlived the provider's own retries. When the fallback (by
+        // default the Anthropic plan) can take the work, hold this provider
+        // briefly and move the buffered work there now, rather than waiting
+        // for the next captured event to hit the same outage.
+        const fallback = routeAroundUnservableProvider(provider, classified.message, 'unavailable', session.observerProfile);
+        if (fallback !== null) {
+          logger.warn('SESSION', 'Provider unavailable after its retries; buffered work moves to the fallback', {
+            ...pauseContext,
+            fallback,
+          }, describeProviderError(classified));
+          scheduledResume = { afterMs: 0, source: 'provider-fallback' };
+        }
       } else if (classified?.code === CODEX_COOLDOWN_REFUSAL_CODE) {
         // Withheld by the armed Codex breaker, never sent: the request that
         // armed it was booked once. Booking this one too would re-arm the
@@ -312,8 +363,7 @@ export async function startGeneratorWithProvider(
           ...(classified.requestId ? { requestId: classified.requestId } : {}),
           ...observerUsageLogFields(session),
         }, describeProviderError(classified));
-        const resumeAfterMs = bookClassifiedFailure(session, provider, classified);
-        if (resumeAfterMs !== null) scheduledResume = { afterMs: resumeAfterMs, source: 'rate-limit' };
+        scheduledResume = bookClassifiedFailure(session, provider, classified);
       } else {
         logger.error('SESSION', 'Generator failed', {
           sessionId: session.sessionDbId,
@@ -372,14 +422,17 @@ export async function startGeneratorWithProvider(
       // is never re-booked here as a spent allowance (a rate limit is not
       // one), nor given a breaker over a cmem fallback's window.
       if (normalizedReason === 'quota' && !failureBooked) {
-        const quotaMessage = 'Provider reported the inference allowance exhausted';
-        recordQuotaExhausted(provider, quotaMessage, reason?.split(':')[1], undefined, session.observerProfile);
+        // Book what actually stopped the observer (quotaPauseForExit): the
+        // SessionStart banner must not call a 95% reserve pause a spent
+        // allowance, nor a provider's own refusal a precaution.
+        const pause = quotaPauseForExit(provider, reason, session.observerProfile);
+        recordQuotaExhausted(provider, pause.message, reason?.split(':')[1], undefined, session.observerProfile, primaryCredentialOf(session, provider));
         // Quota returned as assistant prose never throws, so it never reaches
         // the .catch above and never armed the health ledger. Without this the
         // session-start warning is structurally blind to an entire outage
         // class: the allowance is spent, no observation will ever store, and
         // the user is told nothing.
-        recordObserverFailure(provider, { message: quotaMessage, kind: 'quota_exhausted' });
+        recordObserverFailure(provider, pause);
       }
       // A signed-out Claude observer answers with the CLI's own prose ("Not
       // logged in · Please run /login"). ResponseProcessor resets the batch to
@@ -392,12 +445,43 @@ export async function startGeneratorWithProvider(
       // cmem gateway's key_invalid is the trial-expiry fallback, not an outage.
       // It is booked as the refused credential it is (auth_invalid), so the
       // SessionStart banner shows at once with the /login remedy rather than
-      // waiting out the failure threshold and then offering a restart.
+      // waiting out the failure threshold and then offering a restart. The same
+      // prose appears when the worker cannot read a credential that exists
+      // (#5250), so the notice names that as the next check after /login.
       if (reason === 'auth:observer_text' && provider === 'claude' && !failureBooked) {
         recordObserverFailure(provider, {
-          message: 'Claude Code reported the observer as signed out',
+          message: 'Claude Code could not authenticate the observer',
           kind: 'auth_invalid',
-          action: 'Run /login in Claude Code (or `claude auth login` in a terminal) to refresh the observer credentials',
+          action: 'Run /login in Claude Code (or `claude auth login` in a terminal) to refresh the observer credentials. If you are already signed in, check the worker log for OAUTH credential-store lookup errors',
+        });
+      }
+      if (reason === 'auth:observer_verification_hold' && provider === 'claude' && !failureBooked) {
+        recordObserverFailure(provider, {
+          message: 'Claude Code cannot receive replies until the account verification hold is resolved',
+          kind: 'auth_invalid',
+          action: 'Complete the account check in Anthropic’s Verification Portal, then retry the preserved work',
+        });
+      }
+      // A Claude fallback run, or a run on the quota-fallback credential,
+      // that finds Claude signed out (or refused by org policy) takes Claude
+      // out of the fallback rotation for a cooldown, as a
+      // thrown auth refusal already does (bookClassifiedFailure). Otherwise each
+      // captured event would start the same signed-out fallback again while
+      // the primary is held. A Claude primary keeps retrying on the next event.
+      const claudeStandInAuthBlocked = provider === 'claude' && !failureBooked
+        && (session.fallbackFrom != null || session.claudeAuthOverride != null)
+        && (reason === 'auth:observer_text' || reason === 'auth:observer_org_policy' || reason === 'auth:observer_verification_hold');
+      if (claudeStandInAuthBlocked) {
+        recordAuthCooldown('claude', 'Claude Code refused the fallback observer', session.observerProfile);
+      }
+      // The org-policy refusal (#4677) goes down the same preserved auth path,
+      // but logging in again cannot lift it, so it carries the notice's own
+      // remedy instead of the /login advice.
+      if (reason === 'auth:observer_org_policy' && provider === 'claude' && !failureBooked) {
+        recordObserverFailure(provider, {
+          message: 'Your organization has disabled Claude subscription access for Claude Code',
+          kind: 'auth_invalid',
+          action: 'Set ANTHROPIC_API_KEY in ~/.claude-mem/.env, or ask your organization admin to enable subscription access',
         });
       }
       if (reason !== null) {
@@ -429,6 +513,15 @@ export async function startGeneratorWithProvider(
         resumeGenerator: resumeSource => resumeGeneratorLater(session, 0, resumeSource, ensureGeneratorRunning),
       });
 
+      // A refused stand-in is not the user's provider failing: the fallback's
+      // credential was refused (and is now held), but the primary it stood in
+      // for can take the work back once it recovers. Left as an auth pause the
+      // periodic sweep would skip the session for good, so mark it resumable;
+      // the sweep paces itself on the primary's breaker.
+      if ((session.fallbackFrom != null || session.claudeAuthOverride != null) && session.pausedReason === 'auth') {
+        session.pausedReason = 'provider_switch';
+      }
+
       // Paused work that nothing else is guaranteed to pick up resumes on its
       // own — without it, a session's last event (a summarize) stays in RAM:
       //  - a cmem fallback (or a failed gateway re-probe) moves to the
@@ -457,6 +550,11 @@ export async function startGeneratorWithProvider(
       // after its batches were stored; buffered work continues in a fresh one.
       if (normalizedReason === 'drift') {
         resumeGeneratorLater(session, 0, 'schema-drift', ensureGeneratorRunning);
+      }
+      // A generator ended at a message boundary to change providers resumes
+      // on the provider dispatch selects now. A parked switch starts its own.
+      if (reason === PROVIDER_SWITCH_BOUNDARY_ABORT_REASON) {
+        resumeGeneratorLater(session, 0, 'provider-switch', ensureGeneratorRunning);
       }
 
       // A response stall preserved its claimed batch but, like a recycle, has
@@ -503,23 +601,32 @@ export async function startGeneratorWithProvider(
 }
 
 /**
+ * The credential this Claude run spent (or had paused by the quota guard), so
+ * its breaker may hand the work to the other one (claudeQuotaStandIn). A
+ * quota-fallback run is never tagged: when it is refused too, both are spent.
+ */
+function primaryCredentialOf(session: ActiveSession, provider: SelectableProvider): ClaudeCredential | undefined {
+  return provider === 'claude' && !session.claudeAuthOverride ? session.observerAuth : undefined;
+}
+
+/**
  * Book a classified provider failure once, with the provider's own detail
  * (code, message, action, link, request id), so the session-start warning
- * shows the same words as the log line. Returns how long a rate-limited
- * session waits before it resumes on its own, or null when it waits for the
- * next captured event (or the user).
+ * shows the same words as the log line. Returns when and why a paused session
+ * resumes on its own, or null when it waits for the next captured event (or
+ * the user).
  */
 function bookClassifiedFailure(
   session: ActiveSession,
   provider: SelectableProvider,
   error: ClassifiedProviderError,
-): number | null {
-  let resumeAfterMs: number | null = null;
+): { afterMs: number; source: string } | null {
+  let resume: { afterMs: number; source: string } | null = null;
   switch (error.kind) {
     case 'quota_exhausted':
       // A spent allowance: withhold requests for a cooldown, then let one
       // through to re-probe, instead of one doomed request per event (#3634).
-      recordQuotaExhausted(provider, error.message, undefined, undefined, session.observerProfile);
+      recordQuotaExhausted(provider, error.message, undefined, undefined, session.observerProfile, primaryCredentialOf(session, provider));
       break;
     case 'auth_invalid':
       // A refused credential fails every request until the user acts; the
@@ -539,10 +646,21 @@ function bookClassifiedFailure(
       // On the cmem gateway the resume also draws on the unattended budget it
       // shares with transport and fallback resumes; once that is spent, the
       // breaker takes over here too.
+      // When the fallback (by default the Anthropic plan) can take the work,
+      // the limit already outlasted the provider's in-place retries: hold the
+      // provider for the throttle cooldown and move the work there now, rather
+      // than resuming into the same refusal.
+      if (routeAroundUnservableProvider(provider, error.message, 'rate_limit', session.observerProfile) !== null) {
+        resume = { afterMs: 0, source: 'provider-fallback' };
+        break;
+      }
       const plan = error.retryAfterMs !== undefined ? planRateLimitResume(session) : null;
       if (plan?.resume && error.retryAfterMs !== undefined
         && planUnattendedGatewayResume(session, 'rate-limit', canCmemGatewayServe()).resume) {
-        resumeAfterMs = Math.min(Math.max(error.retryAfterMs, 0), QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS);
+        resume = {
+          afterMs: Math.min(Math.max(error.retryAfterMs, 0), QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS),
+          source: 'rate-limit',
+        };
       } else {
         recordQuotaExhausted(provider, error.message, 'rate_limit', undefined, session.observerProfile);
       }
@@ -557,7 +675,7 @@ function bookClassifiedFailure(
     url: error.url,
     requestId: error.requestId,
   });
-  return resumeAfterMs;
+  return resume;
 }
 
 /**

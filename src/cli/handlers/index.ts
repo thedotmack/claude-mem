@@ -1,28 +1,37 @@
 
-import type { EventHandler, HookResult } from '../types.js';
+import type { EventHandler, HookResult, NormalizedHookInput } from '../types.js';
+import { resolveAntigravityPreInvocation } from '../adapters/antigravity-cli.js';
+import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { isWorkerUnavailableError } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { contextHandler } from './context.js';
 import { sessionInitHandler } from './session-init.js';
 import { hasInjected, markInjected } from '../../shared/kimi-context-gate.js';
+import { takeTimelinePending } from '../../shared/codex-compaction-gate.js';
 import { observationHandler } from './observation.js';
 import { summarizeHandler } from './summarize.js';
 import { sessionEndHandler } from './session-end.js';
+import { subagentStopHandler } from './subagent-stop.js';
 import { userMessageHandler } from './user-message.js';
 import { fileEditHandler } from './file-edit.js';
 import { fileContextHandler } from './file-context.js';
+import { postCompactHandler } from './post-compact.js';
+import { subagentContextHandler } from './subagent-context.js';
 
 export type EventType =
-  | 'context'           
-  | 'session-init'      
+  | 'context'
+  | 'session-init'
   | 'session-init-context'
-  | 'observation'       
-  | 'summarize'         
+  | 'observation'
+  | 'summarize'
   | 'session-end'
-  | 'user-message'      
-  | 'file-edit'         
-  | 'file-context';     
+  | 'subagent-stop'
+  | 'user-message'
+  | 'file-edit'
+  | 'file-context'
+  | 'post-compact'
+  | 'subagent-context';
 
 export const sessionInitContextHandler: EventHandler = {
   async execute(input) {
@@ -91,16 +100,76 @@ export const sessionInitContextHandler: EventHandler = {
   }
 };
 
+// Codex PostToolUse: a thread that compacted and has had no SessionStart since
+// (every subagent thread, since Codex sends SessionStart only to the root)
+// gets its memory timeline back here, once, as PostToolUse additionalContext.
+// The observation is recorded first, so the context fetch can never cost the
+// write. See src/shared/codex-compaction-gate.ts.
+export const observationWithPendingTimelineHandler: EventHandler = {
+  async execute(input) {
+    const observationResult = await observationHandler.execute(input);
+    if (input.platform !== 'codex' || !takeTimelinePending(input.sessionId, input.agentId)) {
+      return observationResult;
+    }
+
+    const contextResult = await contextHandler.execute(input);
+    // The once-per-session worker-outage notice, if the context hook consumed
+    // it. It is passed on even without a timeline, or nobody would see it.
+    const outageNotice = contextResult.systemMessage ? { systemMessage: contextResult.systemMessage } : {};
+    const timeline = contextResult.hookSpecificOutput?.additionalContext;
+    if (!timeline) {
+      return { ...observationResult, ...outageNotice };
+    }
+    logger.debug('HOOK', 'Re-injecting the memory timeline after a Codex compaction', {
+      sessionId: input.sessionId,
+      agentId: input.agentId,
+    });
+    return {
+      ...observationResult,
+      hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: timeline },
+      ...outageNotice,
+    };
+  }
+};
+
+// Antigravity CLI has no prompt-submit hook, so its PreInvocation, which fires
+// before every model call, is wired to session-init. Only the first call of a
+// user turn records the prompt; a follow-up call after a tool step gets
+// file-context for the files that step read instead, and nothing else.
+export async function runAntigravityPreInvocation(input: NormalizedHookInput): Promise<HookResult> {
+  const resolved = resolveAntigravityPreInvocation(input);
+  if (resolved.submittedPrompt !== null) {
+    return sessionInitHandler.execute(resolved);
+  }
+  const filePaths = (resolved.toolInput as { filePaths?: string[] } | undefined)?.filePaths ?? [];
+  if (filePaths.length === 0) {
+    return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+  }
+  return fileContextHandler.execute(resolved);
+}
+
+export const sessionInitWithAntigravityTurnsHandler: EventHandler = {
+  async execute(input) {
+    if (normalizePlatformSource(input.platform) === 'antigravity-cli') {
+      return runAntigravityPreInvocation(input);
+    }
+    return sessionInitHandler.execute(input);
+  }
+};
+
 const handlers: Record<EventType, EventHandler> = {
   'context': contextHandler,
-  'session-init': sessionInitHandler,
+  'session-init': sessionInitWithAntigravityTurnsHandler,
   'session-init-context': sessionInitContextHandler,
-  'observation': observationHandler,
+  'observation': observationWithPendingTimelineHandler,
   'summarize': summarizeHandler,
   'session-end': sessionEndHandler,
+  'subagent-stop': subagentStopHandler,
   'user-message': userMessageHandler,
   'file-edit': fileEditHandler,
-  'file-context': fileContextHandler
+  'file-context': fileContextHandler,
+  'post-compact': postCompactHandler,
+  'subagent-context': subagentContextHandler
 };
 
 export function getEventHandler(eventType: string): EventHandler {
@@ -121,6 +190,9 @@ export { sessionInitHandler } from './session-init.js';
 export { observationHandler } from './observation.js';
 export { summarizeHandler } from './summarize.js';
 export { sessionEndHandler } from './session-end.js';
+export { subagentStopHandler } from './subagent-stop.js';
 export { userMessageHandler } from './user-message.js';
 export { fileEditHandler } from './file-edit.js';
 export { fileContextHandler } from './file-context.js';
+export { postCompactHandler } from './post-compact.js';
+export { subagentContextHandler } from './subagent-context.js';

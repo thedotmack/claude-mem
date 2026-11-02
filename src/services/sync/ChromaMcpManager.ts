@@ -7,11 +7,13 @@ import { promisify } from 'util';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
+import { randomUUID } from 'crypto';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { getUvxBinDirs } from '../../shared/uvx-bin-dirs.js';
 import { killProcessTree, collectDescendantIdentities } from '../../shared/kill-process-tree.js';
+import { reclaimOrphanChromaDataDirWriters } from '../../shared/port-reclaim.js';
 import { stripForeignPythonEnv } from '../../shared/uvx-env.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
@@ -117,12 +119,20 @@ const CHROMA_MCP_PINNED_VERSION = '0.2.6';
 // and what an unpinned env resolves today; it opens stores written by 1.0.16
 // and by 1.5.9. Raise it only after the same check on both.
 //
+// Why pydantic<2.14: chroma-mcp 0.2.6 pins mcp[cli]==1.6.0, whose
+// fastmcp func_metadata.py imports the private
+// pydantic._internal._typing_extra.eval_type_backport. pydantic 2.14.0
+// removed it, so every fresh env failed prewarm with an ImportError and
+// vector search stayed off (#4593). Lift the cap once a chroma-mcp release
+// ships an mcp newer than 1.6.0.
+//
 // These pins are runtime-only (uvx --with) so we don't have to fork
 // chroma-mcp upstream — they apply only to claude-mem's spawned subprocess.
 const CHROMA_MCP_DEP_OVERRIDES: ReadonlyArray<string> = [
   'onnxruntime>=1.20',
   'protobuf<7',
   'chromadb==1.5.9',
+  'pydantic<2.14',
 ];
 
 // The chromadb version the launcher pins, read from the override list itself
@@ -201,6 +211,21 @@ interface ChromaWriterLockPayload {
   acquiredAt: string;
   startToken?: string | null;
   processName?: string | null;
+  /** Unique per acquisition, so a release can only ever remove the lock it took. */
+  lockToken?: string;
+}
+
+/**
+ * One acquisition of the writer lock. A connection attempt keeps the handle it
+ * acquired and releases only that handle: after stop(), a cancelled attempt's
+ * cleanup can run while a newer attempt already holds a fresh lock on the same
+ * store, and the process-wide ownerId alone cannot tell the two apart.
+ */
+interface ChromaWriterLockHandle {
+  path: string;
+  dataDir: string;
+  ownerId: string;
+  lockToken: string;
 }
 
 interface ChromaStoreRecord {
@@ -246,7 +271,7 @@ export class ChromaMcpManager {
   private connectionGeneration: number = 0;
   private intentionallyClosingTransports = new WeakSet<object>();
   private readonly chromaWriterOwnerId = CHROMA_WRITER_OWNER_ID;
-  private chromaWriterLock: { path: string; dataDir: string; ownerId: string } | null = null;
+  private chromaWriterLock: ChromaWriterLockHandle | null = null;
   /**
    * Teardown of a subprocess that is gone or being taken down: an unexpected
    * close, or the restart of one hung on a read. Callers wait for it before
@@ -271,6 +296,8 @@ export class ChromaMcpManager {
   private chromaCrashCount = 0;
   private chromaLastExit: ChromaCrashState['lastExit'] = null;
   private static uvxAvailabilityProbe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null = null;
+  private static exitObserveTimeoutMs = CHROMA_EXIT_OBSERVE_TIMEOUT_MS;
+  private static prewarmReapTimeoutMs = CHROMA_PREWARM_REAP_TIMEOUT_MS;
 
   private constructor() {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
@@ -312,9 +339,10 @@ export class ChromaMcpManager {
       return;
     }
 
-    this.connecting = this.connectInternal();
+    const connectionAttempt = this.connectInternal();
+    this.connecting = connectionAttempt;
     try {
-      await this.connecting;
+      await connectionAttempt;
     } catch (error) {
       if (error instanceof ChromaMcpConnectionCancelledError) {
         logger.debug('CHROMA_MCP', 'Connection attempt cancelled during shutdown');
@@ -334,7 +362,10 @@ export class ChromaMcpManager {
       }
       throw error;
     } finally {
-      this.connecting = null;
+      // stop() clears `connecting`, so a newer attempt may own it by now.
+      if (this.connecting === connectionAttempt) {
+        this.connecting = null;
+      }
     }
   }
 
@@ -391,9 +422,27 @@ export class ChromaMcpManager {
       args: uvxSpawnArgs.join(' ')
     });
 
+    let writerLock: ChromaWriterLockHandle | null = null;
     try {
       if (localChromaDataDir) {
-        this.acquireChromaWriterLock(localChromaDataDir);
+        writerLock = this.acquireChromaWriterLock(localChromaDataDir);
+        // #4608: the writer lock proves no LIVE worker owns this store, so a
+        // chroma-mcp still carrying our --data-dir is an orphan of a dead
+        // generation (PPID=1 after a crash or an upgrade replaced the
+        // worker). Kill it BEFORE spawning our own sidecar, or two writers
+        // share one persistent store — the state the reporter logged for 16
+        // days (110 failed batch adds, 84 transport errors, a store once
+        // judged corrupt). Fail-soft: a sweep hiccup never blocks the
+        // connection.
+        await reclaimOrphanChromaDataDirWriters({
+          dataDir: () => localChromaDataDir,
+          // stop() bumps the generation and releases the lock; a sweep it
+          // overtook must not kill the next owner's sidecar, even once a newer
+          // attempt holds a fresh lock on the same store.
+          stillOwnsStore: () =>
+            this.connectionGeneration === connectionGeneration && this.chromaWriterLock === writerLock,
+        });
+        this.assertConnectionNotCancelled(connectionGeneration);
         ChromaMcpManager.assertChromaStoreCompatible(localChromaDataDir);
       }
 
@@ -405,9 +454,12 @@ export class ChromaMcpManager {
         stderr: 'pipe'
       });
     } catch (error) {
-      this.releaseChromaWriterLock();
+      // Only the lock THIS attempt acquired: after stop(), a newer attempt may
+      // already hold a fresh one on the same store.
+      this.releaseChromaWriterLock(writerLock);
       throw error;
     }
+    const ownTransport = this.transport;
     const transportStderrTail = ChromaMcpManager.captureOutputTail(this.transport.stderr);
 
     let mcpConnectionPromise: Promise<void>;
@@ -439,7 +491,12 @@ export class ChromaMcpManager {
         this.connectionGeneration !== connectionGeneration
       ) {
         logger.debug('CHROMA_MCP', 'MCP connection cancelled during shutdown');
-        await this.disposeCurrentSubprocess();
+        // stop() already disposed our transport; whatever is current now
+        // belongs to a newer attempt and is not ours to kill.
+        if (this.transport === ownTransport) {
+          await this.disposeCurrentSubprocess();
+        }
+        this.releaseChromaWriterLock(writerLock);
         throw connectionError instanceof ChromaMcpConnectionCancelledError
           ? connectionError
           : new ChromaMcpConnectionCancelledError();
@@ -481,7 +538,12 @@ export class ChromaMcpManager {
     const transportChild = (this.transport as unknown as { _process?: ChildProcess })._process;
     const currentTracked = transportChild ? trackChild(transportChild) : null;
     const currentTrackedPid = currentTracked?.pid;
+    // client.connect() installed the SDK's own close handler, which rejects
+    // in-flight requests with ConnectionClosed. Replacing it would leave a
+    // pending write waiting out the full mutation timeout after a crash.
+    const sdkOnClose = this.transport.onclose;
     this.transport.onclose = () => {
+      sdkOnClose?.();
       if (this.transport !== currentTransport) {
         logger.debug('CHROMA_MCP', 'Ignoring stale onclose from previous transport');
         return;
@@ -503,12 +565,14 @@ export class ChromaMcpManager {
         code: transportChild?.exitCode ?? null,
         signal: transportChild?.signalCode ?? null,
       };
+      const stderrTail = transportStderrTail();
       logger.warn('CHROMA_MCP', 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff', {
         count: this.chromaCrashCount,
         exitCode: this.chromaLastExit.code,
         signalCode: this.chromaLastExit.signal,
         chromaMcpVersion: CHROMA_MCP_PINNED_VERSION,
         dependencyOverrides: [...CHROMA_MCP_DEP_OVERRIDES],
+        ...(stderrTail ? { stderrTail } : {}),
       });
       this.connected = false;
       if (currentTrackedPid) getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID, currentTrackedPid);
@@ -521,7 +585,7 @@ export class ChromaMcpManager {
       // does not use process groups. Sweep the descendant tree using the
       // captured PID — best-effort; pgrep returns nothing if everything
       // already exited (#2313).
-      this.scheduleUnexpectedCloseCleanup(currentTracked);
+      this.scheduleUnexpectedCloseCleanup(currentTracked, writerLock);
     };
   }
 
@@ -543,9 +607,9 @@ export class ChromaMcpManager {
     };
   }
 
-  private scheduleUnexpectedCloseCleanup(tracked: TrackedChild | null): void {
+  private scheduleUnexpectedCloseCleanup(tracked: TrackedChild | null, writerLock: ChromaWriterLockHandle | null): void {
     let cleanup: Promise<void>;
-    cleanup = this.cleanupUnexpectedCloseSubprocess(tracked).finally(() => {
+    cleanup = this.cleanupUnexpectedCloseSubprocess(tracked, writerLock).finally(() => {
       if (this.unexpectedCloseCleanup === cleanup) {
         this.unexpectedCloseCleanup = null;
       }
@@ -553,7 +617,10 @@ export class ChromaMcpManager {
     this.unexpectedCloseCleanup = cleanup;
   }
 
-  private async cleanupUnexpectedCloseSubprocess(tracked: TrackedChild | null): Promise<void> {
+  private async cleanupUnexpectedCloseSubprocess(
+    tracked: TrackedChild | null,
+    writerLock: ChromaWriterLockHandle | null,
+  ): Promise<void> {
     const pid = tracked?.pid;
     try {
       if (tracked) {
@@ -570,7 +637,7 @@ export class ChromaMcpManager {
         error: error instanceof Error ? error.message : String(error)
       });
     } finally {
-      this.releaseChromaWriterLock();
+      this.releaseChromaWriterLock(writerLock);
     }
   }
 
@@ -637,10 +704,10 @@ export class ChromaMcpManager {
     ];
   }
 
-  private acquireChromaWriterLock(dataDir: string): void {
+  private acquireChromaWriterLock(dataDir: string): ChromaWriterLockHandle {
     const normalizedDataDir = path.resolve(dataDir);
     if (this.chromaWriterLock?.dataDir === normalizedDataDir) {
-      return;
+      return this.chromaWriterLock;
     }
     if (this.chromaWriterLock) {
       this.releaseChromaWriterLock();
@@ -655,6 +722,13 @@ export class ChromaMcpManager {
       acquiredAt: new Date().toISOString(),
       startToken: captureProcessStartToken(process.pid),
       processName: normalizeProcessName(process.execPath),
+      lockToken: randomUUID(),
+    };
+    const handle: ChromaWriterLockHandle = {
+      path: lockPath,
+      dataDir: normalizedDataDir,
+      ownerId: this.chromaWriterOwnerId,
+      lockToken: payload.lockToken!,
     };
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -663,9 +737,9 @@ export class ChromaMcpManager {
           encoding: 'utf-8',
           flag: 'wx',
         });
-        this.chromaWriterLock = { path: lockPath, dataDir: normalizedDataDir, ownerId: this.chromaWriterOwnerId };
+        this.chromaWriterLock = handle;
         logger.debug('CHROMA_MCP', 'Acquired Chroma writer lock', { lockPath, dataDir: normalizedDataDir });
-        return;
+        return handle;
       } catch (error) {
         const errno = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
         if (errno !== 'EEXIST') {
@@ -696,8 +770,17 @@ export class ChromaMcpManager {
         }
 
         if (existing.pid === process.pid && existing.ownerId === this.chromaWriterOwnerId) {
-          this.chromaWriterLock = { path: lockPath, dataDir: normalizedDataDir, ownerId: this.chromaWriterOwnerId };
-          return;
+          // Re-stamp it with this acquisition's token, so an earlier holder's
+          // release can no longer remove it.
+          try {
+            fs.writeFileSync(lockPath, JSON.stringify(payload, null, 2), 'utf-8');
+          } catch (rewriteError) {
+            const message = `Unable to re-acquire Chroma writer lock at ${lockPath}: ${rewriteError instanceof Error ? rewriteError.message : String(rewriteError)}`;
+            recordChromaVectorSearchUnavailable(message);
+            throw new ChromaUnavailableError(message, rewriteError instanceof Error ? rewriteError : undefined);
+          }
+          this.chromaWriterLock = handle;
+          return handle;
         }
 
         if (!ChromaMcpManager.isChromaWriterLockLive(existing)) {
@@ -727,12 +810,14 @@ export class ChromaMcpManager {
     throw new ChromaUnavailableError(message);
   }
 
-  private releaseChromaWriterLock(): void {
-    const lock = this.chromaWriterLock;
+  /** Release one acquisition (by default the current one); never a newer lock on the same store. */
+  private releaseChromaWriterLock(lock: ChromaWriterLockHandle | null = this.chromaWriterLock): void {
     if (!lock) {
       return;
     }
-    this.chromaWriterLock = null;
+    if (this.chromaWriterLock === lock) {
+      this.chromaWriterLock = null;
+    }
 
     const existing = ChromaMcpManager.readChromaWriterLock(lock.path);
     if (!existing) {
@@ -742,8 +827,8 @@ export class ChromaMcpManager {
       return;
     }
 
-    if (existing.pid !== process.pid || existing.ownerId !== lock.ownerId) {
-      logger.debug('CHROMA_MCP', 'Chroma writer lock not owned by this manager, leaving it in place', {
+    if (existing.pid !== process.pid || existing.ownerId !== lock.ownerId || existing.lockToken !== lock.lockToken) {
+      logger.debug('CHROMA_MCP', 'Chroma writer lock not owned by this acquisition, leaving it in place', {
         lockPath: lock.path,
         recordedPid: existing.pid,
         currentPid: process.pid,
@@ -781,6 +866,7 @@ export class ChromaMcpManager {
         acquiredAt: raw.acquiredAt,
         startToken: typeof raw.startToken === 'string' || raw.startToken === null ? raw.startToken : undefined,
         processName: typeof raw.processName === 'string' ? raw.processName : undefined,
+        lockToken: typeof raw.lockToken === 'string' ? raw.lockToken : undefined,
       };
     } catch {
       return null;
@@ -790,9 +876,11 @@ export class ChromaMcpManager {
   private static isChromaWriterLockAbandoned(lockPath: string): boolean {
     try {
       return Date.now() - fs.statSync(lockPath).mtimeMs >= CHROMA_WRITER_LOCK_UNREADABLE_GRACE_MS;
-    } catch {
-      // Vanished between the failed create and the stat: nothing left to reap.
-      return true;
+    } catch (error) {
+      // Only ENOENT proves the lock vanished between the failed create and the stat;
+      // transient stat errors (e.g. EMFILE, EIO, EACCES) must not reap a live lock (#4951).
+      const errno = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+      return errno === 'ENOENT';
     }
   }
 
@@ -1668,7 +1756,7 @@ export class ChromaMcpManager {
     // able to reach them. So win32 always escalates; taskkill against an
     // already-dead pid is the tolerated not-found case, not an error.
     const exitedCleanly = chromaProcess
-      ? await ChromaMcpManager.waitForChildExit(chromaProcess, CHROMA_EXIT_OBSERVE_TIMEOUT_MS)
+      ? await ChromaMcpManager.waitForChildExit(chromaProcess, ChromaMcpManager.exitObserveTimeoutMs)
       : true;
     const mustEscalate = process.platform === 'win32' || !exitedCleanly;
 
@@ -1828,7 +1916,7 @@ export class ChromaMcpManager {
       // Already dead.
     }
 
-    await ChromaMcpManager.waitForChildClose(prewarmChild, CHROMA_PREWARM_REAP_TIMEOUT_MS);
+    await ChromaMcpManager.waitForChildClose(prewarmChild, ChromaMcpManager.prewarmReapTimeoutMs);
   }
 
   private static async waitForChildClose(child: ChildProcess, timeoutMs: number): Promise<void> {
@@ -1966,6 +2054,14 @@ export class ChromaMcpManager {
   }
 
   /**
+   * CLAUDE_MEM_CHROMA_UVX_PATH from settings.json, with the environment
+   * variable taking precedence (loadFromFile applies env overrides).
+   */
+  private static uvxPathSetting(): string {
+    return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_CHROMA_UVX_PATH;
+  }
+
+  /**
    * uv installs `uvx` to a per-user bin dir that is often NOT on the PATH the
    * worker inherited (the worker is spawned by the host with a minimal env that
    * predates the user adding uv to PATH). Without it, `uvx`/`cmd /c uvx` dies
@@ -1976,7 +2072,7 @@ export class ChromaMcpManager {
   private static uvBinDirs(): string[] {
     return getUvxBinDirs({
       homedir: os.homedir,
-      override: process.env.CLAUDE_MEM_CHROMA_UVX_PATH,
+      override: ChromaMcpManager.uvxPathSetting(),
       platform: process.platform,
       isFile: dir => {
         try {
@@ -2009,7 +2105,7 @@ export class ChromaMcpManager {
     if (platform !== 'win32') {
       return 'uvx';
     }
-    const override = process.env.CLAUDE_MEM_CHROMA_UVX_PATH;
+    const override = ChromaMcpManager.uvxPathSetting();
     if (override) {
       try {
         if (fs.existsSync(override) && fs.statSync(override).isFile()) {
@@ -2079,6 +2175,16 @@ export class ChromaMcpManager {
     probe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null,
   ): void {
     ChromaMcpManager.uvxAvailabilityProbe = probe;
+  }
+
+  /**
+   * Bounds on how long teardown waits to see a child exit: the chroma-mcp
+   * child after close() before tree-killing it, and a killed prewarm child.
+   * null restores the defaults.
+   */
+  static setChildExitWaitTimeoutsForTesting(timeoutMs: number | null): void {
+    ChromaMcpManager.exitObserveTimeoutMs = timeoutMs ?? CHROMA_EXIT_OBSERVE_TIMEOUT_MS;
+    ChromaMcpManager.prewarmReapTimeoutMs = timeoutMs ?? CHROMA_PREWARM_REAP_TIMEOUT_MS;
   }
 
   private static ensureUvOnPath(env: Record<string, string>): void {

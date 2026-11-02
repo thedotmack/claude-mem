@@ -62,15 +62,17 @@
  */
 
 import { execFile } from 'node:child_process';
+import { readdirSync, readFileSync, readlinkSync, statSync, promises as fsPromises } from 'node:fs';
 import { promisify } from 'node:util';
 import { logger } from '../utils/logger.js';
 import { killProcessTree } from './kill-process-tree.js';
 import { isPidAlive, type PidInfo } from '../supervisor/process-registry.js';
 import { readOwnedWorkerPidInfo } from '../supervisor/index.js';
 import { waitForHealth } from '../services/infrastructure/HealthMonitor.js';
-import { captureProcessStartToken, isSameProcess } from './process-identity.js';
+import { captureProcessStartToken, isSameProcess, normalizeProcessName } from './process-identity.js';
 import { readWedgedWorkerUptimeSeconds } from './hook-constants.js';
-import { DATA_DIR } from './paths.js';
+import { DATA_DIR, USER_SETTINGS_PATH, paths } from './paths.js';
+import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -88,6 +90,28 @@ export function isChromaSidecarName(name: string): boolean {
   return CHROMA_SIDECAR_NAME_PATTERN.test(name.trim());
 }
 
+/**
+ * The chroma-mcp entry point anywhere in a command line, in either spelling
+ * (`chroma-mcp` console script, `chroma_mcp` module form).
+ *
+ * Needed alongside isChromaSidecarName because the chain's LEAF is an
+ * interpreter: on POSIX the python running the chroma-mcp console script
+ * reports comm `python3.13` — 15-char kernel truncation and version suffix
+ * keep it off the name whitelist — while its argv still names chroma-mcp and
+ * carries the data-dir fingerprint.
+ */
+const CHROMA_MCP_CMDLINE_PATTERN = /chroma[-_]mcp/i;
+
+/**
+ * A process-table row names a chroma-mcp sidecar chain member: by executable
+ * name (the uvx/uv/uvx.exe/... launchers) or by the chroma-mcp entry point in
+ * its command line (the python leaf). Only ever combined with a data-dir
+ * fingerprint match — the name alone never justifies a kill.
+ */
+function isChromaSidecarCandidate(row: WindowsProcessRow): boolean {
+  return isChromaSidecarName(row.name) || (row.cmdline !== null && CHROMA_MCP_CMDLINE_PATTERN.test(row.cmdline));
+}
+
 export interface WindowsProcessRow {
   pid: number;
   ppid: number;
@@ -95,6 +119,8 @@ export interface WindowsProcessRow {
   startToken: string | null;
   /** Full command line; null when the OS did not expose it. */
   cmdline: string | null;
+  /** Owning uid (POSIX readers only; Windows rows leave it undefined). */
+  uid?: number | null;
 }
 
 /**
@@ -178,6 +204,138 @@ async function readWindowsProcessTableWithNames(capMs?: number): Promise<Windows
   }
 }
 
+/**
+ * Linux counterpart of readWindowsProcessTableWithNames: one readdir plus up
+ * to three small reads per pid. Identity comes from /proc/<pid>/stat, which
+ * yields ppid and starttime (the token format captureProcessStartToken()
+ * revalidates against on this platform) from the SAME read — the atomicity
+ * rule that keeps a discovered PID from being certified with a replacement's
+ * token (see readProcessTable in kill-process-tree.ts).
+ */
+function readLinuxProcessTableWithNames(): WindowsProcessRow[] {
+  let entries: string[];
+  try {
+    entries = readdirSync('/proc');
+  } catch (error) {
+    logger.warn(
+      'PROCESS',
+      'Cannot read /proc — orphan chroma-mcp sweep disabled for this attempt',
+      { error: error instanceof Error ? error.message : String(error) }
+    );
+    return [];
+  }
+
+  const rows: WindowsProcessRow[] = [];
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    const pid = Number.parseInt(entry, 10);
+    let raw: string;
+    try {
+      raw = readFileSync(`/proc/${entry}/stat`, 'utf-8');
+    } catch {
+      // Exited between readdir and read. Safe: a row we never observed simply
+      // is not a target.
+      continue;
+    }
+    const stat = parseLinuxProcStat(raw);
+    if (!stat) continue;
+    let name = '';
+    let cmdline: string | null = null;
+    let uid: number | null = null;
+    try {
+      uid = statSync(`/proc/${entry}`).uid;
+    } catch { /* exited — an unknown owner is never a target */ }
+    try {
+      name = readFileSync(`/proc/${entry}/comm`, 'utf-8').trim();
+    } catch { /* name is supplementary evidence; the cmdline marker still applies */ }
+    try {
+      cmdline = readFileSync(`/proc/${entry}/cmdline`, 'utf-8').split('\0').filter(Boolean).join(' ') || null;
+    } catch { /* kernel thread or exited — nothing to fingerprint */ }
+    rows.push({ pid, ppid: stat.ppid, name, cmdline, uid, startToken: stat.startToken });
+  }
+  return rows;
+}
+
+/**
+ * ppid and starttime from one /proc/<pid>/stat line. comm (field 2) is
+ * parenthesised and may itself contain spaces or `) `, so fields are read
+ * after its LAST closing paren. Pure and exported for tests.
+ */
+export function parseLinuxProcStat(raw: string): { ppid: number; startToken: string | null } | null {
+  const tailStart = raw.lastIndexOf(') ');
+  if (tailStart < 0) return null;
+  const fields = raw.slice(tailStart + 2).split(' ');
+  const ppid = Number.parseInt(fields[1] ?? '', 10);
+  if (!Number.isFinite(ppid)) return null;
+  const starttime = fields[19];
+  return { ppid, startToken: starttime && /^\d+$/.test(starttime) ? starttime : null };
+}
+
+/**
+ * macOS/BSD counterpart: `ps -eo pid=,ppid=,uid=,lstart=,command=` is one snapshot
+ * carrying discovery and identity. Its lstart is byte-identical to
+ * `ps -p <pid> -o lstart=`, which is what captureProcessStartToken() uses on
+ * this platform — the same agreement readProcessTablePosix() in
+ * kill-process-tree.ts relies on (and asserts by test). LC_ALL/LANG are
+ * pinned so a locale-formatted date would not compare unequal on the
+ * revalidation.
+ */
+async function readMacProcessTableWithNames(capMs?: number): Promise<WindowsProcessRow[]> {
+  let stdout: string;
+  try {
+    const result = await execFileAsync('ps', ['-eo', 'pid=,ppid=,uid=,lstart=,command='], {
+      timeout: cappedTimeoutMs(10_000, capMs),
+      maxBuffer: 32 * 1024 * 1024,
+      env: { ...process.env, LC_ALL: 'C', LANG: 'C' },
+    });
+    stdout = result.stdout;
+  } catch (error) {
+    logger.warn(
+      'PROCESS',
+      'Cannot enumerate the process table with names — orphan chroma-mcp sweep disabled for this attempt',
+      { error: error instanceof Error ? error.message : String(error) }
+    );
+    return [];
+  }
+  return parseMacProcessTable(stdout);
+}
+
+/** Rows from `ps -eo pid=,ppid=,uid=,lstart=,command=` output. Pure and exported for tests. */
+export function parseMacProcessTable(stdout: string): WindowsProcessRow[] {
+  const rows: WindowsProcessRow[] = [];
+  for (const line of stdout.split('\n')) {
+    // lstart is `EEE MMM d HH:mm:ss yyyy` — five fields with whatever internal
+    // padding ps printed, preserved verbatim so the token byte-matches the
+    // later revalidation read. The command line follows it.
+    const match = line.trim().match(
+      /^(\d+)\s+(\d+)\s+(\d+)\s+([A-Za-z]{3}\s+[A-Za-z]{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.*)$/
+    );
+    if (!match) continue;
+    rows.push({
+      pid: Number.parseInt(match[1]!, 10),
+      ppid: Number.parseInt(match[2]!, 10),
+      uid: Number.parseInt(match[3]!, 10),
+      name: normalizeProcessName(match[5]!.split(' ')[0] ?? ''),
+      cmdline: match[5]!.trim().length > 0 ? match[5]! : null,
+      startToken: match[4]!.trim(),
+    });
+  }
+  return rows;
+}
+
+/**
+ * Cross-platform process table with names and command lines.
+ *
+ * Null means "cannot enumerate" — only the Windows reader signals that (it is
+ * shared with the ghost-listener path); the POSIX readers degrade to an empty
+ * table and log. Callers must refuse to kill on null, never guess.
+ */
+function readProcessTableWithNames(capMs?: number): Promise<WindowsProcessRow[] | null> {
+  if (process.platform === 'win32') return readWindowsProcessTableWithNames(capMs);
+  if (process.platform === 'linux') return Promise.resolve(readLinuxProcessTableWithNames());
+  return readMacProcessTableWithNames(capMs);
+}
+
 /** Owner PIDs currently LISTENING on `port`, or null when netstat failed. */
 async function listListeningOwnerPids(port: number, capMs?: number): Promise<number[] | null> {
   try {
@@ -233,8 +391,87 @@ export function parsePidLines(output: string): number[] {
   return [...pids];
 }
 
-/** Full command line of a POSIX process, or null when it cannot be read. */
-async function readPosixCommandLine(pid: number, capMs?: number): Promise<string | null> {
+/**
+ * Linux counterpart of listListeningOwnerPidsPosix, read from /proc like this
+ * module's other Linux reads: the LISTEN sockets on `port` from
+ * /proc/net/tcp{,6}, then the processes holding one of those inodes. BusyBox
+ * `lsof` ignores `-iTCP -sTCP:LISTEN -t` and lists every open file of every
+ * process, so every PID it printed looked like an owner (#5098). As with `lsof`
+ * run as the user, only the user's own processes' fds are readable. Null when
+ * /proc/net/tcp cannot be read. Exported for tests.
+ */
+export function listListeningOwnerPidsLinux(port: number): number[] | null {
+  const inodes = new Set<string>();
+  let readAnyTable = false;
+  for (const table of ['/proc/net/tcp', '/proc/net/tcp6']) {
+    let text: string;
+    try {
+      text = readFileSync(table, 'utf-8');
+    } catch {
+      continue; // tcp6 is absent on a kernel without IPv6
+    }
+    readAnyTable = true;
+    for (const inode of parseProcNetTcpListenInodes(text, port)) inodes.add(inode);
+  }
+  if (!readAnyTable) {
+    logger.warn('PROCESS', 'Cannot read /proc/net/tcp, so the worker port owner cannot be verified', { port });
+    return null;
+  }
+  if (inodes.size === 0) return [];
+  const owners = new Set<number>();
+  for (const entry of readdirSync('/proc')) {
+    if (!/^\d+$/.test(entry)) continue;
+    let fds: string[];
+    try {
+      fds = readdirSync(`/proc/${entry}/fd`);
+    } catch {
+      continue; // another user's process, or exited
+    }
+    for (const fd of fds) {
+      let target: string;
+      try {
+        target = readlinkSync(`/proc/${entry}/fd/${fd}`);
+      } catch {
+        continue;
+      }
+      const socket = /^socket:\[(\d+)\]$/.exec(target);
+      if (socket && inodes.has(socket[1])) {
+        owners.add(Number.parseInt(entry, 10));
+        break;
+      }
+    }
+  }
+  return [...owners];
+}
+
+/** Inodes of the LISTEN (state 0A) sockets on `port` in a /proc/net/tcp or tcp6 table. Pure and exported for tests. */
+export function parseProcNetTcpListenInodes(table: string, port: number): string[] {
+  const portHex = port.toString(16).toUpperCase().padStart(4, '0');
+  const inodes: string[] = [];
+  // Columns: sl local_address rem_address st tx_queue:rx_queue tr:tm->when retrnsmt uid timeout inode
+  for (const line of table.split(/\r?\n/).slice(1)) {
+    const fields = line.trim().split(/\s+/);
+    if (fields.length < 10) continue;
+    const localPort = fields[1].split(':').pop()?.toUpperCase();
+    if (localPort === portHex && fields[3] === '0A' && fields[9] !== '0') inodes.push(fields[9]);
+  }
+  return inodes;
+}
+
+/**
+ * Full command line of a POSIX process, or null when it cannot be read. Linux
+ * reads /proc/<pid>/cmdline, joined as readLinuxProcessTableWithNames does:
+ * BusyBox `ps` has no `-p` and no `command` field, so the `ps` read always
+ * failed there and no wedged worker was ever reclaimed (#5098). Exported for tests.
+ */
+export async function readPosixCommandLine(pid: number, capMs?: number): Promise<string | null> {
+  if (process.platform === 'linux') {
+    try {
+      return readFileSync(`/proc/${pid}/cmdline`, 'utf-8').split('\0').filter(Boolean).join(' ') || null;
+    } catch {
+      return null;
+    }
+  }
   try {
     const result = await execFileAsync('ps', ['-p', String(pid), '-o', 'command='], { timeout: cappedTimeoutMs(5_000, capMs) });
     const cmdline = result.stdout.trim();
@@ -283,6 +520,7 @@ export type GhostPortReclaimResult =
         // Wedged-worker path refusals — our worker is alive but not provably wedged:
         | 'owner-booting' // inside its boot/migration grace (pid-file age)
         | 'owner-responding' // answered a health re-probe
+        | 'owner-progressing' // silent, but its heartbeat is fresh: slow, not dead
         | 'owner-identity-mismatch' // start token or command line is not our worker
         | 'out-of-budget'; // a caller's hook deadline leaves too little to finish (RECLAIM_MIN_BUDGET_MS)
       killedPids?: number[];
@@ -343,6 +581,12 @@ export interface GhostPortReclaimDeps {
   readIdentity?: (pid: number, capMs?: number) => Promise<ProcessIdentity>;
   /** Minimum worker age (seconds) before a silent worker may count as wedged. */
   minOwnerAgeSeconds?: number;
+  /** The worker's own liveness heartbeat, or null when it has written none (or it is unreadable). */
+  readHeartbeat?: () => WorkerHeartbeat | null;
+  /** A heartbeat younger than this (ms) means the worker's event loop still turns. */
+  heartbeatStaleMs?: number;
+  /** A fresh heartbeat spares the worker only if it finished an HTTP response within this long (ms). */
+  maxSilentProtectionMs?: number;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   /** Deadline (read with `now`) of a caller spending a hook budget; absent or null for none. */
@@ -356,6 +600,9 @@ interface WedgedReclaimDeps {
   probeHealth: (port: number) => Promise<boolean>;
   readIdentity: (pid: number) => Promise<ProcessIdentity>;
   minOwnerAgeSeconds: number;
+  readHeartbeat: () => WorkerHeartbeat | null;
+  heartbeatStaleMs: number;
+  maxSilentProtectionMs: number;
   now: () => number;
   sleep: (ms: number) => Promise<void>;
   /** False when a kill could no longer finish inside the caller's deadline. */
@@ -397,7 +644,7 @@ async function reclaimWedgedOwnedWorker(
   const owned = deps.readOwnedWorker();
   if (owned === null || owned.port !== port) return null;
   const refuse = (
-    reason: 'owner-booting' | 'owner-responding' | 'owner-identity-mismatch' | 'netstat-unreadable' | 'out-of-budget',
+    reason: 'owner-booting' | 'owner-responding' | 'owner-progressing' | 'owner-identity-mismatch' | 'netstat-unreadable' | 'out-of-budget',
     details: Record<string, unknown> = {},
   ): GhostPortReclaimResult => {
     logger.info('PROCESS', 'Wedged-worker reclaim declined', { port, pid: owned.pid, reason, ...details });
@@ -426,6 +673,39 @@ async function reclaimWedgedOwnedWorker(
       listeners,
     });
     return null;
+  }
+
+  // Silence is not death. Under on-access antivirus a worker's event loop can
+  // be held in slow synchronous file opens (traced up to 2 s each), and a held
+  // loop misses health probes. After one such reclaim the restart re-ran the
+  // backfill, and health came back about 9 minutes after the kill. The worker
+  // publishes its own heartbeat: a timer (which runs only when the loop turns)
+  // stamps beatAtMs, and lastResponseAtMs is when it last finished any HTTP
+  // response. A fresh beat alone cannot tell a slow worker from one whose loop
+  // turns while every request hangs, so it spares the worker only while that
+  // worker has finished a response within maxSilentProtectionMs. The worker
+  // writes both fields, so a recovery resets the window by itself and no hook
+  // keeps state of its own. A heartbeat from another pid (an earlier run), or
+  // none at all (an older worker), keeps the previous verdict.
+  const heartbeat = deps.readHeartbeat();
+  if (heartbeat !== null && heartbeat.pid === owned.pid) {
+    const nowMs = deps.now();
+    const heartbeatAgeMs = Math.max(0, nowMs - heartbeat.beatAtMs);
+    const sinceLastResponseMs = Math.max(0, nowMs - heartbeat.lastResponseAtMs);
+    if (heartbeatAgeMs < deps.heartbeatStaleMs) {
+      if (sinceLastResponseMs < deps.maxSilentProtectionMs) {
+        return refuse('owner-progressing', {
+          heartbeatAgeMs: Math.round(heartbeatAgeMs),
+          sinceLastResponseMs: Math.round(sinceLastResponseMs),
+        });
+      }
+      logger.warn('PROCESS', 'Worker finished no response within the protection window despite a fresh liveness heartbeat', {
+        port,
+        pid: owned.pid,
+        sinceLastResponseMs: Math.round(sinceLastResponseMs),
+        maxSilentProtectionMs: deps.maxSilentProtectionMs,
+      });
+    }
   }
 
   const identity = await deps.readIdentity(owned.pid);
@@ -541,7 +821,11 @@ export async function reclaimGhostListeningPort(
   }
 
   const readOwners = deps.listOwners
-    ?? ((p: number, capMs?: number) => (isWin32() ? listListeningOwnerPids(p, capMs) : listListeningOwnerPidsPosix(p, capMs)));
+    ?? ((p: number, capMs?: number) => (isWin32()
+      ? listListeningOwnerPids(p, capMs)
+      : process.platform === 'linux'
+        ? Promise.resolve(listListeningOwnerPidsLinux(p))
+        : listListeningOwnerPidsPosix(p, capMs)));
   const listOwners = (p: number) => readOwners(p, readCapMs());
   const readProcessTable = deps.readTable ?? readWindowsProcessTableWithNames;
   const readTable = () => readProcessTable(readCapMs());
@@ -560,6 +844,9 @@ export async function reclaimGhostListeningPort(
     probeHealth: deps.probeHealth ?? ((p: number) => waitForHealth(p, WEDGED_HEALTH_PROBE_TIMEOUT_MS)),
     readIdentity: (pid: number) => readIdentity(pid, readCapMs()),
     minOwnerAgeSeconds: deps.minOwnerAgeSeconds ?? readWedgedWorkerUptimeSeconds(),
+    readHeartbeat: deps.readHeartbeat ?? (() => readWorkerHeartbeat()),
+    heartbeatStaleMs: deps.heartbeatStaleMs ?? readWorkerHeartbeatStaleMs(),
+    maxSilentProtectionMs: deps.maxSilentProtectionMs ?? MAX_SILENT_PROTECTION_MS,
     now,
     sleep: deps.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))),
     hasKillBudget: () => !lacksBudget(RECLAIM_KILL_BUDGET_MS),
@@ -679,4 +966,251 @@ export async function reclaimGhostListeningPort(
     stillOwnedBy: after,
   });
   return { reclaimed: false, reason: 'still-bound', killedPids };
+}
+
+/**
+ * Injectable seams for the orphan sweep, mirroring GhostPortReclaimDeps: the
+ * suite injects a fake table and kill so every decision branch runs on every
+ * CI platform without touching real processes.
+ */
+export interface OrphanSweepDeps {
+  /** The exact chroma store this worker holds the writer lock for. Required: no root default. */
+  dataDir: () => string | null;
+  /**
+   * Re-checked after the (possibly slow) table read and before every kill:
+   * false once this connection was cancelled or lost its writer lock, so a
+   * sweep overtaken by stop() can never kill a replacement worker's sidecar.
+   */
+  stillOwnsStore?: () => boolean;
+  readTable?: (capMs?: number) => Promise<WindowsProcessRow[] | null>;
+  killTree?: (pid: number, options: KillTreeOptions) => Promise<void>;
+  /** Our uid on POSIX, null on Windows (rows there carry no owner). */
+  ownUid?: () => number | null;
+  platform?: NodeJS.Platform;
+}
+
+/**
+ * Does a command line's --data-dir name EXACTLY this store?
+ *
+ * Stricter than chromaCmdlineMatchesDataDir (which the ghost-port path calls
+ * with the DATA_DIR root and so must accept children): a machine-wide kill
+ * may only target the store whose writer lock we hold. A child directory, or
+ * a path differing only in case on a case-sensitive filesystem (Linux), is a
+ * different store with its own lock.
+ */
+export function chromaCmdlineNamesExactDataDir(
+  cmdline: string | null,
+  dataDir: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (!cmdline) return false;
+  const flagIndex = cmdline.indexOf('--data-dir');
+  if (flagIndex < 0) return false;
+  let value = cmdline.slice(flagIndex + '--data-dir'.length).trim();
+  if (value.startsWith('=')) value = value.slice(1);
+  // A value containing spaces is double-quoted by the spawner.
+  if (value.startsWith('"')) {
+    const endQuote = value.indexOf('"', 1);
+    value = endQuote < 0 ? value.slice(1) : value.slice(1, endQuote);
+  }
+  const caseInsensitive = platform === 'win32' || platform === 'darwin';
+  const normalize = (dir: string): string => {
+    const slashed = dir.replace(/\\/g, '/').replace(/\/+$/, '');
+    return caseInsensitive ? slashed.toLowerCase() : slashed;
+  };
+  return normalize(value) === normalize(dataDir);
+}
+
+/**
+ * Kill every chroma-mcp sidecar still holding THIS install's chroma data dir
+ * (#4608).
+ *
+ * When a worker dies out of band — crash, SIGKILL without tree teardown, a
+ * package upgrade replacing it — its chroma-mcp sidecar chain survives
+ * re-parented to init (PPID=1). It holds no port (POSIX sockets died with the
+ * worker), so the Windows ghost-listener path above never sees it, and the
+ * chroma writer lock cannot help either: the lock only governs lock-file
+ * lifetime, while the orphan keeps the DATA DIR open and accepts nothing that
+ * would tell it to stop. The next worker then spawns its own chroma-mcp on
+ * the same store — two concurrent writers, which is what the reporter logged
+ * for 16 days (110 failed batch adds, 84 transport errors, a store once
+ * judged corrupt).
+ *
+ * Call it while holding the chroma writer lock: the lock proves no LIVE
+ * worker owns this store, so any process still carrying our --data-dir
+ * fingerprint is by definition an orphan of a dead generation. Every kill
+ * target is evidence-matched four ways — chroma sidecar by name or by the
+ * chroma-mcp entry point in its command line, PLUS exactly our data dir
+ * in its command line, PLUS our uid on POSIX, PLUS not our own pid — and goes through killProcessTree with
+ * the start token from the SAME table read that discovered it, so PID reuse
+ * between discovery and kill is never signalled.
+ *
+ * Fail-soft by design: an unreadable table or a failed tree-kill is logged
+ * and skipped, never thrown — the sweep is a pre-spawn cleanup, and turning
+ * a ps hiccup into a chroma outage would trade one degradation for another.
+ * Graceful teardown (SIGTERM first) leaves uv its builds-scratch cleanup.
+ */
+export async function reclaimOrphanChromaDataDirWriters(deps: OrphanSweepDeps): Promise<{ killedPids: number[] }> {
+  const dataDir = deps.dataDir;
+  const stillOwnsStore = deps.stillOwnsStore ?? (() => true);
+  const platform = deps.platform ?? process.platform;
+  const ownUid = (deps.ownUid ?? (() => (typeof process.getuid === 'function' ? process.getuid() : null)))();
+  const readTable = deps.readTable ?? readProcessTableWithNames;
+  const killTree = deps.killTree ?? ((pid: number, options: KillTreeOptions) => killProcessTree(pid, options));
+
+  const ownDataDir = dataDir();
+  if (!ownDataDir) return { killedPids: [] };
+
+  const table = await readTable();
+  if (table === null) {
+    logger.warn('PROCESS', 'Cannot enumerate the process table — refusing to guess at chroma orphans');
+    return { killedPids: [] };
+  }
+  if (!stillOwnsStore()) {
+    logger.debug('PROCESS', 'Chroma connection cancelled during the orphan sweep table read; killing nothing');
+    return { killedPids: [] };
+  }
+
+  const targets = table.filter(
+    row =>
+      row.pid !== process.pid &&
+      // POSIX: only our own uid's processes. A row with an unknown owner is
+      // never a target. Windows rows carry no owner; the exact data-dir match
+      // below binds them to this profile's store.
+      (ownUid === null || row.uid === ownUid) &&
+      isChromaSidecarCandidate(row) &&
+      chromaCmdlineNamesExactDataDir(row.cmdline, ownDataDir, platform)
+  );
+  if (targets.length === 0) return { killedPids: [] };
+
+  logger.warn('PROCESS', 'Killing orphaned chroma-mcp sidecar(s) still holding this install\'s chroma data dir', {
+    dataDir: ownDataDir,
+    targets: targets.map(target => ({ pid: target.pid, ppid: target.ppid, name: target.name })),
+  });
+
+  const killedPids: number[] = [];
+  for (const target of targets) {
+    if (!stillOwnsStore()) {
+      logger.debug('PROCESS', 'Chroma connection cancelled mid-sweep; leaving the remaining targets alone');
+      break;
+    }
+    try {
+      await killTree(target.pid, {
+        // Identity from the discovery read — never re-probed against a
+        // different observation, and never self-captured after an await.
+        expectedStartToken: target.startToken,
+        signalMode: 'graceful',
+      });
+      killedPids.push(target.pid);
+    } catch (error) {
+      logger.error(
+        'PROCESS',
+        'Orphan chroma-mcp tree-kill failed; leaving the rest of the sweep to proceed',
+        { pid: target.pid },
+        error instanceof Error ? error : new Error(String(error))
+      );
+    }
+  }
+  return { killedPids };
+}
+
+/** How often the worker refreshes its liveness heartbeat file. */
+export const WORKER_HEARTBEAT_INTERVAL_MS = 5_000;
+export const WORKER_HEARTBEAT_STALE_DEFAULT_MS = 120_000;
+const WORKER_HEARTBEAT_STALE_BOUNDS_MS = { min: 10_000, max: 3_600_000 } as const;
+
+/**
+ * CLAUDE_MEM_WORKER_HEARTBEAT_STALE_MS from the environment, else settings.json,
+ * else the default. Hooks are short processes, so each reclaim reads it afresh.
+ */
+export function readWorkerHeartbeatStaleMs(
+  env: NodeJS.ProcessEnv = process.env,
+  settingsPath: string = USER_SETTINGS_PATH,
+): number {
+  const raw = env.CLAUDE_MEM_WORKER_HEARTBEAT_STALE_MS
+    ?? SettingsDefaultsManager.loadFromFile(settingsPath, false, { readOnly: true }).CLAUDE_MEM_WORKER_HEARTBEAT_STALE_MS;
+  const value = Number(raw);
+  return Number.isSafeInteger(value)
+    && value >= WORKER_HEARTBEAT_STALE_BOUNDS_MS.min
+    && value <= WORKER_HEARTBEAT_STALE_BOUNDS_MS.max
+    ? value
+    : WORKER_HEARTBEAT_STALE_DEFAULT_MS;
+}
+
+/**
+ * A fresh liveness heartbeat spares a silent worker only while it has finished
+ * an HTTP response within this long: a worker with no completed response for
+ * 10 minutes is judged as before, whatever its heartbeat says.
+ */
+export const MAX_SILENT_PROTECTION_MS = 600_000;
+
+/** What the worker publishes about itself. Only the worker ever writes it. */
+export interface WorkerHeartbeat {
+  /** The worker process that wrote it; a heartbeat from any other pid is ignored. */
+  pid: number;
+  /** When the heartbeat timer last ran (ms epoch). Fresh means the event loop turns. */
+  beatAtMs: number;
+  /** When the worker last finished an HTTP response (ms epoch), or when it started if it has finished none. */
+  lastResponseAtMs: number;
+}
+
+/** The worker's heartbeat, or null when there is none or it does not parse as one. */
+export function readWorkerHeartbeat(heartbeatPath: string = paths.workerHeartbeat()): WorkerHeartbeat | null {
+  try {
+    const parsed = JSON.parse(readFileSync(heartbeatPath, 'utf8')) as Partial<WorkerHeartbeat> | null;
+    if (parsed
+      && Number.isSafeInteger(parsed.pid)
+      && Number.isFinite(parsed.beatAtMs)
+      && Number.isFinite(parsed.lastResponseAtMs)) {
+      return { pid: parsed.pid!, beatAtMs: parsed.beatAtMs!, lastResponseAtMs: parsed.lastResponseAtMs! };
+    }
+  } catch {
+    // No heartbeat yet (an older worker, or before the first beat).
+  }
+  return null;
+}
+
+export interface WorkerHeartbeatOptions {
+  /** When the worker last finished an HTTP response (ms epoch), or null if it has finished none. */
+  readLastResponseAtMs: () => number | null;
+  heartbeatPath?: string;
+  intervalMs?: number;
+  pid?: number;
+  now?: () => number;
+}
+
+/**
+ * Publish the heartbeat from an unref'd timer. The timer fires only when the
+ * event loop turns, so beatAtMs measures progress. Each beat writes a temp
+ * file and renames it over the heartbeat, so a hook never reads a torn one.
+ * The write is async (a thread-pool thread waits on a slow filesystem, not
+ * the loop), and a failed write is ignored: a missing or stale heartbeat only
+ * restores the old verdict.
+ */
+export function startWorkerHeartbeat(options: WorkerHeartbeatOptions): () => void {
+  const heartbeatPath = options.heartbeatPath ?? paths.workerHeartbeat();
+  const pid = options.pid ?? process.pid;
+  const now = options.now ?? Date.now;
+  const startedAtMs = now();
+  const tmpPath = `${heartbeatPath}.${pid}.tmp`;
+  // One write at a time: on a slow filesystem a second beat truncating the
+  // temp file while the first renames it could publish a torn heartbeat.
+  let writing = false;
+  const beat = () => {
+    if (writing) return;
+    writing = true;
+    const heartbeat: WorkerHeartbeat = {
+      pid,
+      beatAtMs: now(),
+      lastResponseAtMs: options.readLastResponseAtMs() ?? startedAtMs,
+    };
+    void fsPromises.writeFile(tmpPath, JSON.stringify(heartbeat))
+      .then(() => fsPromises.rename(tmpPath, heartbeatPath))
+      .catch(() => {})
+      .finally(() => { writing = false; });
+  };
+  beat();
+  const timer = setInterval(beat, options.intervalMs ?? WORKER_HEARTBEAT_INTERVAL_MS);
+  timer.unref?.();
+  return () => clearInterval(timer);
 }

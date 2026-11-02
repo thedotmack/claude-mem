@@ -34,6 +34,39 @@ describe('kimiAdapter.normalizeInput', () => {
     expect(input.toolResponse).toEqual({ stdout: 'ok' });
   });
 
+  test('maps Read path without mutating its original input or dropping read options', () => {
+    const rawInput = { path: 'src/owned.ts', line_offset: 2, n_lines: 3, column_offset: 4, max_chars: 500 };
+    const before = { ...rawInput };
+    const normalized = kimiAdapter.normalizeInput({ session_id: 'read-path', cwd: process.cwd(),
+      tool_name: 'Read', tool_input: rawInput });
+    expect(normalized.toolInput).toEqual({ ...before, file_path: before.path });
+    expect(normalized.toolInput).not.toBe(rawInput);
+    expect(rawInput).toEqual(before);
+    const write = kimiAdapter.normalizeInput({ session_id: 'write-path', cwd: process.cwd(),
+      tool_name: 'Write', tool_input: rawInput });
+    expect(write.toolInput).toBe(rawInput);
+  });
+
+  test('preserves a supplied canonical Read path and uses path for an absent or invalid canonical field', () => {
+    const base = { session_id: 'canonical-read', cwd: process.cwd(), tool_name: 'Read' };
+    const supplied = { file_path: 'src/canonical.ts', path: 'src/other.ts', line_offset: 2 };
+    expect(kimiAdapter.normalizeInput({ ...base, tool_input: supplied }).toolInput).toBe(supplied);
+    for (const file_path of [undefined, null, 17, '']) {
+      const input = { file_path, path: 'src/owned.ts', n_lines: 3 };
+      expect(kimiAdapter.normalizeInput({ ...base, tool_input: input }).toolInput)
+        .toEqual({ ...input, file_path: 'src/owned.ts' });
+      expect(input.file_path).toBe(file_path);
+    }
+  });
+
+  test('leaves a kimi-file:// attachment reference unaliased, so it is not recorded as a file read', () => {
+    const rawInput = { path: 'kimi-file://abc', n_lines: 3 };
+    const normalized = kimiAdapter.normalizeInput({ session_id: 'read-attachment', cwd: process.cwd(),
+      tool_name: 'Read', tool_input: rawInput });
+    expect(normalized.toolInput).toBe(rawInput);
+    expect(rawInput).toEqual({ path: 'kimi-file://abc', n_lines: 3 });
+  });
+
   test('maps SessionStart source startup|resume, drops unknown values', () => {
     const base = { hook_event_name: 'SessionStart', session_id: 's1', cwd: process.cwd() };
     expect(kimiAdapter.normalizeInput({ ...base, source: 'startup' }).sessionSource).toBe('startup');

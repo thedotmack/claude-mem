@@ -132,11 +132,12 @@ function hookEnv(): Record<string, string> {
 async function runWorkerService(
   args: string[],
   stdin?: string,
+  envOverrides: Record<string, string> = {},
 ): Promise<{ exitCode: number; stdout: string; stderr: string; elapsedMs: number }> {
   const startedAt = Date.now();
   const child = Bun.spawn([process.execPath, WORKER_SERVICE, ...args], {
     cwd: projectDir,
-    env: hookEnv(),
+    env: { ...hookEnv(), ...envOverrides },
     stdin: stdin === undefined ? 'ignore' : new Blob([stdin]),
     stdout: 'pipe',
     stderr: 'pipe',
@@ -149,12 +150,12 @@ async function runWorkerService(
   return { exitCode, stdout, stderr, elapsedMs: Date.now() - startedAt };
 }
 
-function sessionStartInput(): string {
+function sessionStartInput(source = 'startup'): string {
   return JSON.stringify({
     session_id: 'session-start-server-runtime',
     cwd: projectDir,
     hook_event_name: 'SessionStart',
-    source: 'startup',
+    source,
   });
 }
 
@@ -203,6 +204,20 @@ afterEach(async () => {
 });
 
 describe('SessionStart in server runtime (plan-24 step 4)', () => {
+  it('returns no timeline on Claude resume without reading the server or worker', async () => {
+    writeSettings(startFakeServer());
+
+    const result = await runWorkerService(['hook', 'claude-code', 'context'], sessionStartInput('resume'));
+
+    expect(result.exitCode).toBe(0);
+    expect(result.elapsedMs).toBeLessThan(HOOK_BUDGET_MS);
+    expect(workerPortConnections).toBe(0);
+    expect(contextRequests).toEqual([]);
+    expect(parseHookOutput(result.stdout)).toEqual({
+      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+    });
+  }, 30_000);
+
   it('renders the shared server\'s rows in under 5 s without touching the worker port', async () => {
     const serverBaseUrl = startFakeServer();
     writeSettings(serverBaseUrl);
@@ -291,5 +306,16 @@ describe('SessionStart in server runtime (plan-24 step 4)', () => {
     expect(result.elapsedMs).toBeLessThan(HOOK_BUDGET_MS);
     expect(workerPortConnections).toBe(0);
     expect(parseHookOutput(result.stdout)).toMatchObject({ continue: true, status: 'ready' });
+  }, 30_000);
+
+  it('`start` emits only supported SessionStart fields for Codex', async () => {
+    writeSettings(startFakeServer());
+
+    const result = await runWorkerService(['start'], undefined, { CLAUDE_MEM_CODEX_HOOK: '1' });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.elapsedMs).toBeLessThan(HOOK_BUDGET_MS);
+    expect(workerPortConnections).toBe(0);
+    expect(parseHookOutput(result.stdout)).toEqual({ continue: true });
   }, 30_000);
 });

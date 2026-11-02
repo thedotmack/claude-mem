@@ -4,8 +4,10 @@ import { z } from 'zod';
 import { ingestObservation, ingestSummarize, ingestSessionEnd, type IngestContext } from '../shared.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { requireLocalhost } from '../middleware.js';
+import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { logger } from '../../../../utils/logger.js';
-import { stripMemoryTags, isCodexInternalPrompt, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
+import { logChromaWriteFailure } from '../../search/errors.js';
+import { stripMemoryTags, isCodexInternalPrompt, isGrokBotInternalPrompt, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
@@ -13,6 +15,7 @@ import { GeminiProvider } from '../../GeminiProvider.js';
 import { OpenRouterProvider } from '../../OpenRouterProvider.js';
 import { OpenAICompatProvider } from '../../OpenAICompatProvider.js';
 import type { CodexProvider } from '../../CodexProvider.js';
+import { claudeQuotaStandIn } from '../../../../shared/claude-fallback-readiness.js';
 import { getSelectedProvider, recordCmemFallbackIfEligible, releaseCmemGatewayProbe, selectProviderForGenerator, type SelectableProvider } from '../../provider-dispatch.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
@@ -25,8 +28,11 @@ import { getProjectContext, isProjectKeySource } from '../../../../utils/project
 import { isProjectExcluded } from '../../../../utils/project-filter.js';
 import { startGeneratorWithProvider } from '../../session/GeneratorRunner.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
+import { recordWorkStatePrompt, recordWorkStatePrivacy } from '../../../telemetry/work-state.js';
 import { firstPartySkillFromSlashPrompt } from '../../../telemetry/skill-id.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
+import { isSimpleTierMessage, namesSameClaudeModel } from '../../session/tier-routing.js';
+import { resolveTierAlias } from '../../model-aliases.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../../../shared/user-prompts.js';
 import {
   CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS,
@@ -59,6 +65,20 @@ import {
 import type { TelegramWrapupFormatterInput } from '../../../integrations/TelegramWrapupNotifier.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
+
+// The session write endpoints are state-changing, so a browser page served
+// from a different local port may not call them. Origin-less callers (hooks,
+// the CLI, curl) pass. There is deliberately no requireLocalhost here: remote
+// capture (docs/remote-worker-capture.md), Docker bridge clients and the
+// OpenCode/Pi/DSH integrations call these routes from non-loopback peers, and
+// non-loopback writes are governed by the remote read-only guard instead.
+function rejectForeignLoopbackBrowserWrite(req: Request, res: Response, next: () => void): void {
+  if (isForeignLoopbackBrowserWrite(req)) {
+    res.status(403).json({ error: 'Session writes from a different localhost origin are not allowed' });
+    return;
+  }
+  next();
+}
 
 export class SessionRoutes extends BaseRouteHandler {
   // #2756 round 3: ensureGeneratorRunning is called from independent HTTP
@@ -193,7 +213,9 @@ export class SessionRoutes extends BaseRouteHandler {
     if (!includeOperatorOnly && sessionIds.length > 0) {
       const provider = getSelectedProvider();
       const cooldown = getQuotaCooldown(provider);
-      if (cooldown && cooldownAppliesToCurrentAccount(cooldown)) {
+      // The quota-fallback credential serves while the primary one is held, so it paces nothing.
+      if (cooldown && cooldownAppliesToCurrentAccount(cooldown)
+        && !(provider === 'claude' && claudeQuotaStandIn())) {
         if (isQuotaCooldownActive(provider)) return 0;
         sessionIds = sessionIds.slice(0, 1);
       }
@@ -381,9 +403,10 @@ export class SessionRoutes extends BaseRouteHandler {
     // because the idle monitor only runs once the generator loop is
     // consuming messages. Abort the parked wait and restart with the new
     // provider immediately instead of leaving it stuck. A generator that HAS
-    // acquired its slot (mid-response) is left alone — falls through to the
-    // log-only "switch after it finishes" path below, unchanged.
-    if (session.currentProvider && session.currentProvider !== selectedProvider && isSessionParkedForSlot(sessionDbId)) {
+    // acquired its slot (mid-response) is not aborted here — it switches at
+    // its next message boundary (see below).
+    const providerChanged = Boolean(session.currentProvider && session.currentProvider !== selectedProvider);
+    if (providerChanged && isSessionParkedForSlot(sessionDbId)) {
       // Defensive re-guard: `session` is already narrowed non-null by the
       // early return above, but this branch spans a 3-operand `&&` plus a
       // trailing function call before any property access — re-asserting
@@ -412,17 +435,21 @@ export class SessionRoutes extends BaseRouteHandler {
     // keep the gateway re-probe it claimed on the way in.
     releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
 
-    if (session.currentProvider && session.currentProvider !== selectedProvider) {
-      logger.info('SESSION', `Provider changed, will switch after current generator finishes`, {
+    // A running generator in an active session never idles out, so it ends at
+    // its next message boundary and the runner resumes on the selected
+    // provider (#4846). Not when dispatch routes around the provider this
+    // generator runs on: it is that provider's probe, or its own failure moves
+    // the work to the fallback, so a switch would only restart a healthy run.
+    const switchNeeded = providerChanged && (selection.fallbackFrom ?? null) !== session.currentProvider;
+    if (switchNeeded && !session.providerSwitchPending) {
+      logger.info('SESSION', 'Provider changed, will switch at the next message boundary', {
         sessionId: sessionDbId,
         currentProvider: session.currentProvider,
         selectedProvider,
         historyLength: session.conversationHistory.length
       });
-      // Let current generator finish naturally, next one will use new provider.
-      // The buffered queue carries over; the next generator opens a new
-      // generation seeded from this session's memory (#3800, #3479).
     }
+    session.providerSwitchPending = switchNeeded;
   }
 
   /**
@@ -482,7 +509,12 @@ export class SessionRoutes extends BaseRouteHandler {
       // sees the window elapse at the same instant, so a bare check would let
       // them all through together.
       const admission = tryAdmitQuotaProbe(selectedProvider);
-      if (!admission.admitted) {
+      // The primary Claude credential is held: run on the quota-fallback one
+      // (dispatch logs the switch). No probe claim is taken; the primary's own
+      // probe still runs when its window elapses.
+      const standIn = !admission.admitted && selectedProvider === 'claude' ? claudeQuotaStandIn() : null;
+      session.claudeAuthOverride = standIn;
+      if (!admission.admitted && !standIn) {
         // This run is not starting, so it must not hold the gateway re-probe.
         releaseCmemGatewayProbe(gatewayProbeClaimId);
         const cooldown = getQuotaCooldown(selectedProvider);
@@ -516,6 +548,7 @@ export class SessionRoutes extends BaseRouteHandler {
         return;
       }
       this.applyQuotaFallbackModel(session, selectedProvider, fallbackFrom);
+      session.fallbackFrom = fallbackFrom;
       // The claim travels with the run that took it: only that run may release
       // it, or an earlier generator's exit would clear a later session's probe.
       await this.startGeneratorWithProvider(
@@ -564,23 +597,31 @@ export class SessionRoutes extends BaseRouteHandler {
       validateBody(SessionRoutes.processingSchema),
       this.handleProcessing.bind(this)
     );
+    // Read-only admission probe: older workers must not silently ignore nativePromptId.
+    app.get('/api/sessions/native-prompt-capability', (_req: Request, res: Response) => {
+      res.json({ nativePromptId: 1 });
+    });
     app.post(
       '/api/sessions/init',
+      rejectForeignLoopbackBrowserWrite,
       validateBody(SessionRoutes.sessionInitByClaudeIdSchema),
       this.handleSessionInitByClaudeId.bind(this)
     );
     app.post(
       '/api/sessions/observations',
+      rejectForeignLoopbackBrowserWrite,
       validateBody(SessionRoutes.observationsByClaudeIdSchema),
       this.handleObservationsByClaudeId.bind(this)
     );
     app.post(
       '/api/sessions/summarize',
+      rejectForeignLoopbackBrowserWrite,
       validateBody(SessionRoutes.summarizeByClaudeIdSchema),
       this.handleSummarizeByClaudeId.bind(this)
     );
     app.post(
       '/api/sessions/session-end',
+      rejectForeignLoopbackBrowserWrite,
       validateBody(SessionRoutes.sessionEndSchema),
       this.handleSessionEnd.bind(this)
     );
@@ -608,6 +649,8 @@ export class SessionRoutes extends BaseRouteHandler {
     contentSessionId: z.string().min(1),
     project: z.string().optional(),
     prompt: z.string().optional(),
+    // A host's real user-turn ID, scoped by platform + content session.
+    nativePromptId: z.string().min(1).max(256).regex(/^[^\s\x00-\x1f\x7f]+$/).optional(),
     platformSource: z.string().optional(),
     customTitle: z.string().optional(),
     // The checkout `project` was resolved from, and how (gate P1-2).
@@ -677,6 +720,10 @@ export class SessionRoutes extends BaseRouteHandler {
       toolResponse: tool_response,
       cwd,
       platformSource,
+      telemetryPlatformSource: typeof req.body.telemetryPlatformSource === 'string'
+        ? req.body.telemetryPlatformSource : SessionRoutes.rawPlatformSourceFromRequest(req) ?? 'unknown',
+      enqueuedAtEpochMs: typeof req.body.enqueuedAtEpochMs === 'number' ? req.body.enqueuedAtEpochMs : undefined,
+      telemetryToolEpochMs: typeof req.body.telemetryToolEpochMs === 'number' ? req.body.telemetryToolEpochMs : undefined,
       agentId,
       agentType,
       toolUseId: typeof tool_use_id === 'string' ? tool_use_id : (typeof toolUseId === 'string' ? toolUseId : undefined),
@@ -759,6 +806,14 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
+    // Grok Bot's own research sub-agent briefings arrive like a user turn;
+    // Grok Bot only (see the hook handler, #4811).
+    if (rawPrompt && platformSource === 'grok-bot' && isGrokBotInternalPrompt(rawPrompt)) {
+      logger.debug('HTTP', 'session-init: skipping a Grok Bot internal helper prompt before session creation', { contentSessionId });
+      res.json({ skipped: true, reason: 'internal_system_prompt' });
+      return;
+    }
+
     // A host that runs inside another process (the OpenCode plugin) sends only
     // its checkout: key it here with the resolver observation ingest uses for
     // the same host, so init and capture agree (#3803). A hook that resolved
@@ -787,7 +842,10 @@ export class SessionRoutes extends BaseRouteHandler {
       });
     }
 
-    let prompt = rawPrompt || MEDIA_PROMPT_PLACEHOLDER;
+    // Strip tagged private sections before any length cap: cutting first
+    // could sever a </private> closer and leave the rest of the block visible
+    // to storage (the stripper keeps unbalanced tags verbatim by design).
+    let prompt = stripMemoryTags(rawPrompt || MEDIA_PROMPT_PLACEHOLDER);
 
     const promptByteLength = Buffer.byteLength(prompt, 'utf8');
     if (promptByteLength > MAX_USER_PROMPT_BYTES) {
@@ -831,7 +889,7 @@ export class SessionRoutes extends BaseRouteHandler {
     });
 
     const currentCount = store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId);
-    const promptNumber = currentCount + 1;
+    let promptNumber = currentCount + 1;
 
     const memorySessionId = dbSession?.memory_session_id || null;
     if (promptNumber > 1) {
@@ -841,8 +899,17 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     const cleanedPrompt = stripMemoryTags(prompt);
+    const telemetryAttribution = {
+      contentSessionId,
+      enqueuedAtEpochMs: typeof req.body.telemetryPromptEpochMs === 'number' ? req.body.telemetryPromptEpochMs : undefined,
+      platformSource: typeof req.body.telemetryPlatformSource === 'string'
+        ? req.body.telemetryPlatformSource : SessionRoutes.rawPlatformSourceFromRequest(req),
+      agentId: typeof req.body.agentId === 'string' ? req.body.agentId : undefined,
+      agentType: typeof req.body.agentType === 'string' ? req.body.agentType : undefined,
+    };
 
     if (!cleanedPrompt || cleanedPrompt.trim() === '') {
+      recordWorkStatePrivacy(store.db, telemetryAttribution, true);
       logger.debug('HOOK', 'Session init - prompt entirely private', {
         sessionId: sessionDbId,
         promptNumber,
@@ -858,15 +925,43 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
-    const duplicatePrompt = store.findRecentDuplicateUserPrompt(
-      contentSessionId,
-      cleanedPrompt,
-      USER_PROMPT_DEDUPE_WINDOW_MS,
-      sessionDbId
-    );
+    const nativePromptId = req.body.nativePromptId as string | undefined;
+    const normalizedSdkPrompt = cleanedPrompt.startsWith('/') ? cleanedPrompt.substring(1) : cleanedPrompt;
+    // A native slash-only ask is still a real turn. Keep its cleaned text
+    // when SDK normalization would erase it; legacy normalization is unchanged.
+    const sdkPrompt = nativePromptId ? normalizedSdkPrompt || cleanedPrompt : normalizedSdkPrompt;
+    let nativeAnchor: { id: number; promptNumber: number; duplicate: boolean } | undefined;
+    if (nativePromptId) {
+      try {
+        nativeAnchor = store.saveNativeUserPrompt(contentSessionId, sessionDbId, nativePromptId, cleanedPrompt, rawPrompt || MEDIA_PROMPT_PLACEHOLDER);
+      } catch (error) {
+        if (error instanceof Error && error.message === 'Native prompt identity was reused with different text') {
+          res.status(409).json({ error: error.message });
+          return;
+        }
+        throw error;
+      }
+      promptNumber = nativeAnchor.promptNumber;
+    }
+    // Legacy callers retain same-text retry protection. Native IDs distinguish
+    // intentional repeated prompts without delaying the user's next turn.
+    const duplicatePrompt = nativeAnchor
+      ? (nativeAnchor.duplicate ? { id: nativeAnchor.id, prompt_number: nativeAnchor.promptNumber } : undefined)
+      : store.findRecentDuplicateUserPrompt(contentSessionId, cleanedPrompt, USER_PROMPT_DEDUPE_WINDOW_MS, sessionDbId);
+
+    // A newer public submission reopens coverage even if its text reuses a row.
+    // The recorder rejects missing/old timestamps and preserves newer boundaries.
+    recordWorkStatePrivacy(store.db, telemetryAttribution, false);
 
     if (duplicatePrompt) {
-      const contextInjected = this.sessionManager.getSession(sessionDbId) !== undefined;
+      const activeSession = this.sessionManager.getSession(sessionDbId);
+      // The durable claim can survive an initialization failure. Repair only
+      // a stale live native turn; cold sessions remain lazy and older retries
+      // must never replace a newer prompt's context.
+      if (nativeAnchor && activeSession && activeSession.lastPromptNumber < duplicatePrompt.prompt_number) {
+        this.sessionManager.initializeSession(sessionDbId, sdkPrompt, duplicatePrompt.prompt_number, project);
+      }
+      const contextInjected = activeSession !== undefined;
       logger.debug('SESSION', 'Duplicate user prompt skipped', {
         sessionId: sessionDbId,
         promptNumber: duplicatePrompt.prompt_number,
@@ -879,6 +974,9 @@ export class SessionRoutes extends BaseRouteHandler {
         promptNumber: duplicatePrompt.prompt_number,
         skipped: true,
         reason: 'duplicate',
+        ...(nativePromptId ? { nativePromptId, nativePromptCurrent:
+          store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId) === duplicatePrompt.prompt_number
+          && (this.sessionManager.getSession(sessionDbId)?.lastPromptNumber ?? duplicatePrompt.prompt_number) === duplicatePrompt.prompt_number } : {}),
         contextInjected
       });
       return;
@@ -896,9 +994,15 @@ export class SessionRoutes extends BaseRouteHandler {
     // (#2373). Only this route reopens at all: the observation and summarize
     // routes can carry trailing traffic from the turn that just ended, where
     // 'completed' is the truth.
-    store.reopenCompletedSession(sessionDbId);
+    let savedUserPromptId: number;
+    if (nativeAnchor) {
+      savedUserPromptId = nativeAnchor.id;
+    } else {
+      store.reopenCompletedSession(sessionDbId);
+      savedUserPromptId = store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt, sessionDbId);
+    }
 
-    store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt, sessionDbId);
+    recordWorkStatePrompt(store.db, telemetryAttribution, savedUserPromptId);
 
     // Fire-and-forget cloud sync nudge, beside the write itself so every
     // saved prompt nudges — including cursor sessions, which skip the
@@ -914,45 +1018,46 @@ export class SessionRoutes extends BaseRouteHandler {
     });
 
     if (platformSource !== 'cursor') {
-      const sdkPrompt = cleanedPrompt.startsWith('/') ? cleanedPrompt.substring(1) : cleanedPrompt;
       const session = this.sessionManager.initializeSession(sessionDbId, sdkPrompt, promptNumber, project);
 
-      const latestPrompt = store.getLatestUserPrompt(session.contentSessionId, sessionDbId);
+      // The row this request saved, by id. A newest-by-timestamp lookup can
+      // return a neighbouring turn saved in the same millisecond.
+      const savedUserPrompt = store.getUserPromptById(savedUserPromptId);
 
-      if (latestPrompt) {
+      if (savedUserPrompt) {
         this.eventBroadcaster.broadcastNewPrompt({
-          id: latestPrompt.id,
-          content_session_id: latestPrompt.content_session_id,
-          project: latestPrompt.project,
-          platform_source: latestPrompt.platform_source,
-          prompt_number: latestPrompt.prompt_number,
-          prompt_text: latestPrompt.prompt_text,
-          created_at_epoch: latestPrompt.created_at_epoch
+          id: savedUserPrompt.id,
+          content_session_id: savedUserPrompt.content_session_id,
+          project: savedUserPrompt.project,
+          platform_source: savedUserPrompt.platform_source,
+          prompt_number: savedUserPrompt.prompt_number,
+          prompt_text: savedUserPrompt.prompt_text,
+          created_at_epoch: savedUserPrompt.created_at_epoch
         });
 
         const chromaStart = Date.now();
-        const promptText = latestPrompt.prompt_text;
+        const promptText = savedUserPrompt.prompt_text;
         this.dbManager.getChromaSync()?.syncUserPrompt(
-          latestPrompt.id,
-          latestPrompt.memory_session_id,
-          latestPrompt.project,
+          savedUserPrompt.id,
+          savedUserPrompt.memory_session_id,
+          savedUserPrompt.project,
           promptText,
-          latestPrompt.prompt_number,
-          latestPrompt.created_at_epoch,
-          latestPrompt.platform_source
+          savedUserPrompt.prompt_number,
+          savedUserPrompt.created_at_epoch,
+          savedUserPrompt.platform_source
         ).then(() => {
           const chromaDuration = Date.now() - chromaStart;
           const truncatedPrompt = promptText.length > 60
             ? promptText.substring(0, 60) + '...'
             : promptText;
           logger.debug('CHROMA', 'User prompt synced', {
-            promptId: latestPrompt.id,
+            promptId: savedUserPrompt.id,
             duration: `${chromaDuration}ms`,
             prompt: truncatedPrompt
           });
         }).catch((error) => {
-          logger.error('CHROMA', 'User prompt sync failed, continuing without vector search', {
-            promptId: latestPrompt.id,
+          logChromaWriteFailure('CHROMA', 'User prompt sync failed, continuing without vector search', {
+            promptId: savedUserPrompt.id,
             prompt: promptText.length > 60 ? promptText.substring(0, 60) + '...' : promptText
           }, error);
         });
@@ -962,6 +1067,10 @@ export class SessionRoutes extends BaseRouteHandler {
 
       this.eventBroadcaster.broadcastSessionStarted(sessionDbId, session.project);
     } else {
+      // Cursor creates its observer lazily, but accepted prompts still update an existing session.
+      if (this.sessionManager.getSession(sessionDbId)) {
+        this.sessionManager.initializeSession(sessionDbId, sdkPrompt, promptNumber, project);
+      }
       logger.debug('HTTP', 'session-init: Skipping SDK agent init for Cursor platform', { sessionDbId, promptNumber });
     }
 
@@ -969,17 +1078,17 @@ export class SessionRoutes extends BaseRouteHandler {
       sessionDbId,
       promptNumber,
       skipped: false,
+      ...(nativePromptId ? { nativePromptId, nativePromptCurrent:
+        store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId) === promptNumber
+        && (this.sessionManager.getSession(sessionDbId)?.lastPromptNumber ?? promptNumber) === promptNumber } : {}),
       contextInjected,
       status: 'initialized'
     });
   });
 
-  private static readonly SIMPLE_TOOLS = new Set([
-    'Read', 'Glob', 'Grep', 'LS', 'ListMcpResourcesTool'
-  ]);
-
   private async applyTierRouting(session: NonNullable<ReturnType<typeof this.sessionManager.getSession>>): Promise<void> {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    session.simpleTierRun = false;
     if (settings.CLAUDE_MEM_TIER_ROUTING_ENABLED === 'false') {
       session.modelOverride = undefined;
       return;
@@ -995,9 +1104,7 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     const hasSummarize = pending.some(m => m.message_type === 'summarize');
-    const allSimple = pending.every(m =>
-      m.message_type === 'observation' && m.tool_name && SessionRoutes.SIMPLE_TOOLS.has(m.tool_name)
-    );
+    const allSimple = pending.every(m => isSimpleTierMessage(m.message_type, m.tool_name));
 
     if (hasSummarize) {
       const summaryModel = settings.CLAUDE_MEM_TIER_SUMMARY_MODEL;
@@ -1011,6 +1118,13 @@ export class SessionRoutes extends BaseRouteHandler {
       const simpleModel = settings.CLAUDE_MEM_TIER_SIMPLE_MODEL;
       if (simpleModel) {
         session.modelOverride = simpleModel;
+        // Hold the run to the simple tier only when that tier is a different
+        // model from the one a non-simple message would get; otherwise ending
+        // the run at the next Bash/Edit/summarize only resends the prompt.
+        session.simpleTierRun = !namesSameClaudeModel(
+          resolveTierAlias(simpleModel, settings),
+          resolveTierAlias(settings.CLAUDE_MEM_MODEL, settings),
+        );
         logger.debug('SESSION', `Tier routing: simple model`, {
           sessionId: session.sessionDbId, model: simpleModel
         });
@@ -1036,6 +1150,7 @@ export class SessionRoutes extends BaseRouteHandler {
     const model = (SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_QUOTA_FALLBACK_MODEL ?? '').trim();
     if (!model) return;
     session.modelOverride = model;
+    session.simpleTierRun = false;
     logger.info('SESSION', 'Quota fallback run uses the configured fallback model', {
       sessionId: session.sessionDbId,
       model,

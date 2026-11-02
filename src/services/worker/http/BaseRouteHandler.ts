@@ -38,8 +38,9 @@ export abstract class BaseRouteHandler {
   }
 
   protected parseIntParam(req: Request, res: Response, paramName: string): number | null {
-    const value = parseInt(this.toStringParam(req.params[paramName]), 10);
-    if (isNaN(value)) {
+    const raw = this.toStringParam(req.params[paramName]);
+    const value = /^\d+$/.test(raw) ? Number(raw) : NaN;
+    if (!Number.isSafeInteger(value)) {
       this.badRequest(res, `Invalid ${paramName}`);
       return null;
     }
@@ -68,7 +69,7 @@ export abstract class BaseRouteHandler {
     return typeof current === 'string' && current.trim() ? current : undefined;
   }
 
-  private static rawPlatformSourceFromRequest(req: Request): string | undefined {
+  protected static rawPlatformSourceFromRequest(req: Request): string | undefined {
     const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
     const header = req.get?.('x-platform-source')
       ?? req.get?.('x-claude-mem-platform-source');

@@ -27,6 +27,13 @@ describe('extractFilePaths', () => {
     expect(paths).toEqual(['README.md', 'src.ts']);
   });
 
+  it('expands ~/ to the home directory, as the shell does, instead of resolving it under cwd', () => {
+    // tmpDir stands in for the home directory; cwd is elsewhere.
+    const paths = extractFilePaths('Bash', { command: 'cat ~/README.md ~/missing.md' }, '/nonexistent-cwd', tmpDir);
+
+    expect(paths).toEqual([join(tmpDir, 'README.md')]);
+  });
+
   it('does not consume cat boolean flags as file arguments', () => {
     const paths = extractFilePaths('Bash', {
       command: 'cat -n README.md',

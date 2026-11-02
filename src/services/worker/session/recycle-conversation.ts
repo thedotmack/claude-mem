@@ -14,6 +14,7 @@
  * continuity rides on the observations claude-mem has already written.
  */
 
+import { randomUUID } from 'crypto';
 import type { ActiveSession } from '../../worker-types.js';
 import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef } from '../agents/types.js';
@@ -55,7 +56,7 @@ export async function loadSessionStartContext(
       // XML, so the batch is confirmed and dropped while the banner keeps
       // itself up (#4221).
       includeHealthWarning: false,
-    });
+    }, false, { execution: 'worker' });
     logger.info('SESSION', 'Briefed the observer generation with session-start context', {
       sessionId: session.sessionDbId,
       project: session.project,
@@ -90,6 +91,9 @@ export function openObserverGeneration(session: ActiveSession, initPrompt: strin
   // Marked as the framing prompt: HTTP providers anchor it as the system
   // message on every request of the generation (#3868).
   session.conversationHistory = [{ role: 'user', content: initPrompt, framing: true }];
+  // A new conversation gets a new id, the trace id every request of this
+  // generation carries.
+  session.observerGenerationId = randomUUID();
   // The last generation's measured context says nothing about this one (#2957).
   session.lastContextTokens = undefined;
   if (discardedMessages > 0) {

@@ -7,10 +7,12 @@
  */
 
 /**
- * Longest free trial cmem.ai grants, in days. The server picks each user's
- * actual length (3, 7, or 14 days), so copy only promises "up to" this.
+ * The standard free trial cmem.ai grants, in days.
  */
-export const PRO_TRIAL_MAX_DAYS = 14;
+export const PRO_TRIAL_MAX_DAYS = 30;
+
+/** Public offer label, mirrored from the Node-side shared module. */
+export const PRO_TRIAL_LABEL = `${PRO_TRIAL_MAX_DAYS} Day Free Trial`;
 
 /** Trial landing URL, tagged so cmem.ai can attribute viewer-sourced signups. */
 export const PRO_TRIAL_URL = 'https://cmem.ai/pro?from=viewer';
@@ -21,7 +23,14 @@ export const PRO_TRIAL_URL = 'https://cmem.ai/pro?from=viewer';
  */
 export const PLAN_USAGE_GAIN_PERCENT = 100;
 
-export const PRO_TRIAL_PITCH = `Get up to ${PLAN_USAGE_GAIN_PERCENT}% more usage from your plan — memory runs off-plan, free for up to ${PRO_TRIAL_MAX_DAYS} days`;
+export const PRO_TRIAL_PITCH = `${PRO_TRIAL_LABEL} — memory runs off-plan. Get up to ${PLAN_USAGE_GAIN_PERCENT}% more usage from your plan`;
 
 /** Header CTA label. The full pitch rides in the title/aria attributes. */
-export const PRO_TRIAL_SHORT = 'Get up to 100% more usage from your plan';
+export const PRO_TRIAL_SHORT = PRO_TRIAL_LABEL;
+
+/**
+ * TeamBrain discovery link, shown until this install joins a team. Mirrors
+ * teamBrainStartUrl() in `src/shared/teambrain.ts` for the hosted origin.
+ */
+export const TEAMBRAIN_START_URL = 'https://cmem.ai/teambrain/start';
+export const TEAMBRAIN_PITCH = 'TeamBrain: see who on your team is working on what, inside every session';

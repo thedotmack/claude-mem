@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
+import { homedir, tmpdir } from 'os';
 import path from 'path';
 import {
   AGENT_ID_RE,
@@ -162,13 +162,13 @@ describe('mergeIndexObservations', () => {
 describe('queryObservationsNewest manual saves', () => {
   function seedDb(): Database {
     const db = new Database(':memory:');
-    db.run(`CREATE TABLE sdk_sessions (memory_session_id TEXT, platform_source TEXT)`);
+    db.run(`CREATE TABLE sdk_sessions (memory_session_id TEXT, platform_source TEXT, content_session_id TEXT)`);
     db.run(`CREATE TABLE observations (
       id INTEGER PRIMARY KEY, memory_session_id TEXT, type TEXT, title TEXT, subtitle TEXT,
       narrative TEXT, facts TEXT, concepts TEXT, files_read TEXT, files_modified TEXT,
       discovery_tokens INTEGER, created_at TEXT, created_at_epoch INTEGER, project TEXT,
       merged_into_project TEXT)`);
-    db.run(`INSERT INTO sdk_sessions VALUES ('manual-seat', 'claude'), ('sdk-1', 'claude')`);
+    db.run(`INSERT INTO sdk_sessions VALUES ('manual-seat', 'claude', 'manual-host'), ('sdk-1', 'claude', 'observed-host')`);
     const insert = db.prepare(`INSERT INTO observations
       (id, memory_session_id, type, title, concepts, created_at, created_at_epoch, project)
       VALUES (?, ?, ?, ?, ?, '', ?, ?)`);
@@ -548,6 +548,17 @@ describe('loadGrokBotIndexConfig', () => {
       GROK_BOT_AGENT_DATA: '/tmp/agent-data-does-not-need-to-exist',
     });
     expect(cfg.standingLine).toBe('Run the self-save skill.');
+  });
+
+  it('expands a ~ transcript-watch path the same way the worker does', () => {
+    const settingsPath = path.join(tempRoot(), 'settings.json');
+    writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: '~/x/transcript-watch.json' }));
+    const cfg = loadGrokBotIndexConfig(settingsPath, {
+      ...process.env,
+      CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: undefined,
+      GROK_BOT_AGENT_DATA: '/tmp/agent-data-does-not-need-to-exist',
+    });
+    expect(cfg.watchConfigFile).toBe(path.join(homedir(), 'x', 'transcript-watch.json'));
   });
 
   it('can be turned off without touching Claude Code hooks', () => {

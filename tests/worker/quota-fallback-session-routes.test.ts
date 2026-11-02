@@ -4,6 +4,7 @@ import { logger } from '../../src/utils/logger.js';
 import { clearQuotaCooldown, recordQuotaExhausted, resetQuotaCooldownsForTesting } from '../../src/shared/quota-cooldown.js';
 import { resetDependencyStatusesForTesting } from '../../src/shared/dependency-health.js';
 import { resetQuotaFallbackStateForTesting } from '../../src/services/worker/provider-dispatch.js';
+import { setClaudeFallbackReadinessForTesting } from '../../src/shared/claude-fallback-readiness.js';
 
 const { SessionRoutes } = await import('../../src/services/worker/http/routes/SessionRoutes.js');
 
@@ -132,6 +133,8 @@ describe('quota fallback in SessionRoutes', () => {
     expect(warnLines).not.toContain('Skipping generator start while the provider cooldown is active');
   }
 
+  let previousClaudeReadiness: (() => boolean) | null;
+
   beforeEach(() => {
     savedEnv = {};
     for (const key of ENV_KEYS) {
@@ -141,6 +144,8 @@ describe('quota fallback in SessionRoutes', () => {
     resetQuotaCooldownsForTesting();
     resetDependencyStatusesForTesting();
     resetQuotaFallbackStateForTesting();
+    // A Claude login exists, so Claude can take fallback work.
+    previousClaudeReadiness = setClaudeFallbackReadinessForTesting(() => true);
     infoLines = [];
     warnLines = [];
     spies = [
@@ -152,6 +157,7 @@ describe('quota fallback in SessionRoutes', () => {
   });
 
   afterEach(() => {
+    setClaudeFallbackReadinessForTesting(previousClaudeReadiness);
     spies.forEach(spy => spy.mockRestore());
     for (const key of ENV_KEYS) {
       if (savedEnv[key] === undefined) delete process.env[key];
@@ -228,8 +234,8 @@ describe('quota fallback in SessionRoutes', () => {
     await expectNoResume(routes);
   });
 
-  it('with no fallback configured, a quota pause waits out its cooldown', async () => {
-    pin({ CLAUDE_MEM_PROVIDER: 'gemini', CLAUDE_MEM_GEMINI_API_KEY: 'gemini-test-key' });
+  it('with the fallback turned off, a quota pause waits out its cooldown', async () => {
+    pin({ CLAUDE_MEM_PROVIDER: 'gemini', CLAUDE_MEM_GEMINI_API_KEY: 'gemini-test-key', CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: 'off' });
     const session = makeSession();
     let geminiStarts = 0;
     let claudeStarts = 0;

@@ -13,6 +13,8 @@ export interface ProjectWatermarks {
   summaries: number;
   prompts: number;
   pending?: PendingIdsByKind;
+  /** Rows whose remote revision must remove obsolete document fragments. */
+  fragmentReconciliation?: PendingIdsByKind;
   /**
    * Set once this project's title-only observations, which older versions
    * skipped while advancing the watermark, have been requeued (#4069).
@@ -34,6 +36,13 @@ function statePath(): string {
 }
 
 let cache: Record<string, ProjectWatermarks> | null = null;
+
+/**
+ * After a failed write, skip writes for this long. The backfill writes once or
+ * twice per row, and each failed write can block for the full rename retry.
+ */
+const PERSIST_FAILURE_BACKOFF_MS = 5_000;
+let persistBlockedUntil = 0;
 
 function normalizePendingIds(ids: unknown): number[] {
   if (!Array.isArray(ids)) {
@@ -64,6 +73,13 @@ function normalizeProjectWatermarks(marks: Partial<ProjectWatermarks> | undefine
     normalized.pending = pending;
   }
 
+  if (marks?.fragmentReconciliation) {
+    normalized.fragmentReconciliation = {
+      observations: normalizePendingIds(marks.fragmentReconciliation.observations),
+      summaries: normalizePendingIds(marks.fragmentReconciliation.summaries),
+    };
+  }
+
   if (marks?.titleOnlyRequeued === true) {
     normalized.titleOnlyRequeued = true;
   }
@@ -85,6 +101,9 @@ function load(): Record<string, ProjectWatermarks> {
   let parsed: Record<string, Partial<ProjectWatermarks>>;
   try {
     parsed = readJsonFileWithBom<Record<string, Partial<ProjectWatermarks>>>(path);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      throw new Error('checkpoint must be a project-watermark object');
+    }
   } catch (error) {
     // A truncated or corrupt state file must not abort the sync pipeline. Treat
     // it as empty and rebuild from the SQLite watermarks on the next backfill.
@@ -102,15 +121,32 @@ function load(): Record<string, ProjectWatermarks> {
   return cache;
 }
 
-function persist(): void {
+function persistOrThrow(): void {
   if (!cache) return;
   writeJsonFileAtomic(statePath(), cache);
+}
+
+/**
+ * A failed write must not abort the sync pipeline. The cache keeps the
+ * change, the next persist writes it, and SQLite stays the source of truth.
+ */
+function persist(): void {
+  if (Date.now() < persistBlockedUntil) return;
+  try {
+    persistOrThrow();
+  } catch (error) {
+    persistBlockedUntil = Date.now() + PERSIST_FAILURE_BACKOFF_MS;
+    logger.warn('CHROMA_SYNC', 'Could not write chroma-sync-state.json, will retry on the next change', {
+      path: statePath()
+    }, error instanceof Error ? error : new Error(String(error)));
+  }
 }
 
 export const ChromaSyncState = {
   /** Test hook: drop the in-memory watermark cache so the next read hits disk. */
   resetCacheForTests(): void {
     cache = null;
+    persistBlockedUntil = 0;
   },
 
   exists(): boolean {
@@ -139,13 +175,17 @@ export const ChromaSyncState = {
     persist();
   },
 
-  /** Flag every project with recorded progress for a rebuild from zero (#3202). */
+  /**
+   * Flag every project with recorded progress for a rebuild from zero (#3202).
+   * Throws when the write fails: the collection is dropped only after the
+   * flags are on disk.
+   */
   markAllForRebuild(): void {
     const all = load();
     for (const project of Object.keys(all)) {
       all[project] = { ...normalizeProjectWatermarks(all[project]), rebuildPending: true };
     }
-    persist();
+    persistOrThrow();
   },
 
   isRebuildPending(project: string): boolean {
@@ -223,6 +263,35 @@ export const ChromaSyncState = {
 
     current.pending = current.pending ?? {};
     current.pending[kind] = merged;
+    all[project] = current;
+    persist();
+  },
+
+  /**
+   * Throws when the write fails: the caller changes a row's existing documents
+   * only after its pending entry and repair flag are on disk, so a restart
+   * mid-repair retries the row even below the watermark.
+   */
+  markFragmentReconciliation(project: string, kind: DocKind, id: number): void {
+    const all = load();
+    const current = normalizeProjectWatermarks(all[project] ?? ZERO);
+    current.pending = current.pending ?? {};
+    current.pending[kind] = normalizePendingIds([...(current.pending[kind] ?? []), id]);
+    current.fragmentReconciliation = current.fragmentReconciliation ?? {};
+    current.fragmentReconciliation[kind] = normalizePendingIds([...(current.fragmentReconciliation[kind] ?? []), id]);
+    all[project] = current;
+    persistOrThrow();
+  },
+
+  needsFragmentReconciliation(project: string, kind: DocKind, id: number): boolean {
+    return this.get(project).fragmentReconciliation?.[kind]?.includes(id) ?? false;
+  },
+
+  clearFragmentReconciliation(project: string, kind: DocKind, id: number): void {
+    const all = load();
+    const current = normalizeProjectWatermarks(all[project] ?? ZERO);
+    if (!current.fragmentReconciliation?.[kind]?.includes(id)) return;
+    current.fragmentReconciliation[kind] = current.fragmentReconciliation[kind]!.filter(value => value !== id);
     all[project] = current;
     persist();
   },

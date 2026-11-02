@@ -105,3 +105,26 @@ describe('readSseEvents', () => {
     expect(cancelled).toBe(true);
   });
 });
+
+describe('SSE reader failure cleanup', () => {
+  it('releases the stream lock when the source errors', async () => {
+    const failure = new Error('connection interrupted');
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) { controller.error(failure); },
+    });
+    await expect(collect(stream)).rejects.toBe(failure);
+    expect(stream.locked).toBe(false);
+  });
+
+  it('releases the stream lock when early-stop cancellation rejects', async () => {
+    const failure = new Error('transport cancellation failed');
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(encoder.encode('data: first\n\n')); },
+      cancel() { return Promise.reject(failure); },
+    });
+    const iterator = readSseEvents(stream);
+    expect((await iterator.next()).value?.data).toBe('first');
+    await expect(iterator.return(undefined)).rejects.toBe(failure);
+    expect(stream.locked).toBe(false);
+  });
+});

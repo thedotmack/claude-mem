@@ -125,6 +125,14 @@ export function classifyGeminiServerError(input: ClassifyGeminiServerErrorInput)
 
   if (status === 400 && !isQuotaBody(bodyText)) {
     const category = categorizeGeminiBadRequest(bodyText);
+    // Google also answers a refused key with HTTP 400. That is a refused
+    // credential, as on 401/403 and in the worker's classifyGeminiError.
+    if (category === 'api_key') {
+      return new ServerClassifiedProviderError('Gemini auth invalid (status 400)', {
+        kind: 'auth_invalid',
+        cause: new Error('Gemini HTTP error (status 400)'),
+      });
+    }
     return new ServerClassifiedProviderError(`Gemini bad request: ${category}`, {
       kind: 'unrecoverable',
       cause: new Error('Gemini HTTP error (status 400)'),

@@ -210,6 +210,16 @@ export function captureProcessStartToken(pid: number): string | null {
  */
 export function captureProcessName(pid: number): string | null {
   if (!Number.isInteger(pid) || pid <= 0) return null;
+  // Linux reads /proc/<pid>/comm, the field `ps -o comm=` prints: BusyBox
+  // `ps` has no `-p`, so the `ps` read always returned null there (#5098).
+  if (process.platform === 'linux') {
+    try {
+      const name = normalizeProcessName(readFileSync(`/proc/${pid}/comm`, 'utf-8').trim());
+      return name.length > 0 ? name : null;
+    } catch {
+      return null;
+    }
+  }
   try {
     const result = process.platform === 'win32'
       ? spawnSync(
@@ -269,10 +279,15 @@ export function isSameProcess(pid: number, snapshotToken: string | null): boolea
   // `taskkill /PID <pid> /T /F`, taking an unrelated process AND its whole
   // descendant tree with it.
   //
-  // The uncached reader is intentionally NOT exported: the only way to obtain
-  // a bypassing read is through this predicate, so a caller cannot acquire a
-  // raw probe and use it somewhere the cache is actually wanted.
+  // The uncached reader is intentionally NOT exported: callers can obtain a
+  // bypassing verdict only through this predicate or the stricter helper
+  // below, not a raw probe that could be used where caching is wanted.
   const currentToken = readStartToken(pid, true);
   if (currentToken === null) return true;
   return currentToken === snapshotToken;
+}
+
+/** A fail-closed identity check for test cleanup of already snapshotted children. */
+export function hasMatchingProcessStartToken(pid: number, snapshotToken: string): boolean {
+  return readStartToken(pid, true) === snapshotToken;
 }

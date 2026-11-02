@@ -3,6 +3,7 @@ import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { describeNetworkFailure, isConnectionRefused } from '../../shared/network-failure.js';
 import { getCredential } from '../../shared/EnvManager.js';
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { estimateTokens } from '../../shared/timeline-formatting.js';
@@ -23,6 +24,13 @@ import {
 import { readGeminiAnswerText, type GeminiPart } from '../../shared/gemini-answer-text.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
 import { resolveContextWindowTokens, resolveObserverMaxOutputTokens } from './context-window.js';
+import {
+  claimReasoningBudgetRetry,
+  combineBilledGeminiUsage,
+  isLengthTruncatedEmptyReply,
+  reasoningBudgetSkippedMessage,
+  startReasoningRetryDeadline,
+} from './reasoning-budget.js';
 
 // v1beta is required: the current Gemini 3.x models and the Google-maintained
 // `-latest` aliases are only exposed under v1beta, and the retired v1-only 2.x
@@ -112,6 +120,14 @@ export function classifyGeminiError(input: {
 
   if (status === 400) {
     const category = categorizeGeminiBadRequest(body);
+    if (category === 'api_key') {
+      // Google also reports invalid credentials as HTTP 400. The key pool
+      // must retire this key and try its next credential, as for 401/403.
+      return new ClassifiedProviderError(
+        'Gemini auth invalid (status 400)',
+        { kind: 'auth_invalid', cause },
+      );
+    }
     // A request too large for the window is fixed by retiring the
     // conversation, not by the user (#3625).
     return new ClassifiedProviderError(
@@ -129,9 +145,16 @@ export function classifyGeminiError(input: {
 
   // Network errors (no status) — treat as transient.
   if (status === undefined) {
+    const network = describeNetworkFailure(input.cause);
     return new ClassifiedProviderError(
       `Gemini network error: ${input.cause instanceof Error ? input.cause.message : String(input.cause)}`,
-      { kind: 'transient', cause: input.cause },
+      {
+        kind: 'transient',
+        cause: input.cause,
+        // A refused connection never sent the request, so it is pre-send and
+        // must not spend the paid-send budget (#4604).
+        ...(isConnectionRefused(network) ? { paidSendOutcome: 'refused_before_work' as const } : {}),
+      },
     );
   }
 
@@ -152,7 +175,7 @@ export type GeminiModel =
   | 'gemini-3.1-flash-lite'
   | 'gemini-3-flash-preview';
 
-const GEMINI_RPM_LIMITS: Record<GeminiModel, number> = {
+export const GEMINI_RPM_LIMITS: Record<GeminiModel, number> = {
   'gemini-flash-latest': 10,
   'gemini-flash-lite-latest': 15,
   'gemini-3.5-flash': 10,
@@ -161,6 +184,7 @@ const GEMINI_RPM_LIMITS: Record<GeminiModel, number> = {
 };
 
 let lastRequestTime = 0;
+let rateLimitQueue: Promise<void> = Promise.resolve();
 
 const GEMINI_EMPTY_HISTORY_FALLBACK = 'Continue the memory observation request.';
 
@@ -219,27 +243,49 @@ export function categorizeGeminiBadRequest(bodyText: string): GeminiBadRequestCa
   return 'unknown_bad_request';
 }
 
-async function enforceRateLimitForModel(model: GeminiModel, rateLimitingEnabled: boolean): Promise<void> {
-  if (!rateLimitingEnabled) {
-    return;
-  }
+async function enforceRateLimitForModel(
+  model: GeminiModel,
+  rateLimitingEnabled: boolean,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (!rateLimitingEnabled) return;
 
   const rpm = GEMINI_RPM_LIMITS[model] || 5;
   const minimumDelayMs = Math.ceil(60000 / rpm) + 100;
-
-  const now = Date.now();
-  const timeSinceLastRequest = now - lastRequestTime;
-
-  if (timeSinceLastRequest < minimumDelayMs) {
-    const waitTime = minimumDelayMs - timeSinceLastRequest;
-    logger.debug('SDK', `Rate limiting: waiting ${waitTime}ms before Gemini request`, { model, rpm });
-    await new Promise(resolve => setTimeout(resolve, waitTime));
-  }
-
-  lastRequestTime = Date.now();
+  // Only the front waiter computes a delay, using the previous actual
+  // admission. Late timers cannot release several expired reservations.
+  const admission = rateLimitQueue.then(async () => {
+    signal?.throwIfAborted();
+    const waitTime = Math.max(0, lastRequestTime + minimumDelayMs - Date.now());
+    if (waitTime > 0) {
+      logger.debug('SDK', `Rate limiting: waiting ${waitTime}ms before Gemini request`, { model, rpm });
+      await new Promise<void>((resolve, reject) => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const onAbort = () => {
+          if (timer !== undefined) clearTimeout(timer);
+          signal?.removeEventListener('abort', onAbort);
+          reject(signal?.reason ?? new Error('Aborted'));
+        };
+        const onTimeout = () => {
+          signal?.removeEventListener('abort', onAbort);
+          resolve();
+        };
+        signal?.addEventListener('abort', onAbort, { once: true });
+        timer = setTimeout(onTimeout, waitTime);
+        if (signal?.aborted) onAbort();
+      });
+    }
+    signal?.throwIfAborted();
+    lastRequestTime = Date.now();
+  });
+  // A cancelled compression pass never consumes an admission and must not
+  // reject the next healthy waiter's chain.
+  rateLimitQueue = admission.catch(() => {});
+  await admission;
 }
 
 interface GeminiResponse {
+  modelVersion?: string;
   candidates?: Array<{
     content?: {
       parts?: GeminiPart[];
@@ -250,6 +296,7 @@ interface GeminiResponse {
   usageMetadata?: {
     promptTokenCount?: number;
     candidatesTokenCount?: number;
+    thoughtsTokenCount?: number;
     totalTokenCount?: number;
   };
 }
@@ -376,7 +423,8 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
     systemInstruction: string | null,
     maxOutputTokens: number,
     clientAttemptId: string,
-    attemptSignal: AbortSignal
+    attemptSignal: AbortSignal,
+    disableThinking: boolean = false,
   ): Promise<Response> {
     return fetch(url, {
       method: 'POST',
@@ -392,6 +440,10 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
         generationConfig: {
           temperature: 0.3,  // Lower temperature for structured extraction
           maxOutputTokens,
+          // Only on the one-shot retry. Sending thinkingBudget 0 up front is
+          // rejected by models whose thinking is mandatory (Gemini 2.5 Pro,
+          // Gemini 3.5 Flash).
+          ...(disableThinking ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
         },
       }),
       signal: attemptSignal,
@@ -424,13 +476,13 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
 
     const url = `${GEMINI_API_URL}/${model}:generateContent?key=${apiKey}`;
 
-    await enforceRateLimitForModel(model, rateLimitingEnabled);
+    await enforceRateLimitForModel(model, rateLimitingEnabled, signal);
 
     const clientAttemptId = paidSendBudget?.clientAttemptId ?? randomUUID();
     // The id of the response actually returned, for the cut-off warning.
     let finalRequestId: string | undefined;
 
-    const data = await withRetry<GeminiResponse>(async (attemptSignal) => {
+    let data = await withRetry<GeminiResponse>(async (attemptSignal) => {
       let response: Response;
       try {
         response = await this.fetchGenerateContent(url, contents, system, maxOutputTokens, clientAttemptId, attemptSignal);
@@ -471,10 +523,10 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
       ...(signal ? { maxRetries: 0 } : {}), ...retryPolicyForPool(poolSize),
     });
 
-    const candidate = data.candidates?.[0];
-    const finishReason = typeof candidate?.finishReason === 'string' ? candidate.finishReason : undefined;
+    let candidate = data.candidates?.[0];
+    let finishReason = typeof candidate?.finishReason === 'string' ? candidate.finishReason : undefined;
     // The answer parts, joined — never a leading reasoning part (gemini-answer-text.ts).
-    const text = readGeminiAnswerText(candidate?.content?.parts);
+    let text = readGeminiAnswerText(candidate?.content?.parts);
     // MAX_TOKENS: the output-token cap cut the reply off. A block cut mid-tag
     // never closes, so the parser drops it. Named before the empty-reply exit
     // so a reply cut off before any text is named too (parity with OpenRouter).
@@ -490,16 +542,82 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
       });
     }
 
-    if (!text) {
-      logger.error('SDK', 'Empty response from Gemini');
-      return { content: '', ...(finishReason ? { finishReason } : {}) };
+    // Thoughts spend maxOutputTokens and come back as an empty MAX_TOKENS
+    // reply. Retry once with thinking off, on the same paid-send allowance and
+    // the same per-attempt deadline as the first request. Not the default:
+    // mandatory-thinking models reject thinkingBudget 0.
+    if (isLengthTruncatedEmptyReply(text, finishReason)) {
+      if (!claimReasoningBudgetRetry(paidSendBudget)) {
+        logger.error('SDK', reasoningBudgetSkippedMessage('Gemini', paidSendBudget?.spentPaidSends ?? 0), { model, finishReason });
+      } else {
+        const firstUsage = data.usageMetadata;
+        logger.error('SDK', 'Gemini reply was empty because thinking consumed the output budget; retrying with thinking disabled', { model, finishReason });
+        const deadline = startReasoningRetryDeadline(signal, perAttemptTimeoutMs);
+        try {
+          const response = await this.fetchGenerateContent(
+            url, contents, system, maxOutputTokens, clientAttemptId, deadline.signal, true,
+          );
+          finalRequestId = response.headers.get('x-goog-request-id') ?? response.headers.get('x-request-id') ?? finalRequestId;
+          if (!response.ok) {
+            const errorBody = await readCappedErrorBody(response);
+            logger.error('SDK', `Gemini reply was empty because thinking consumed the output budget, and disabling thinking was rejected (status ${response.status}); this turn stores no observations`, {
+              model,
+              body: errorBody.slice(0, 300),
+            });
+          } else {
+            const retryData = await response.json() as GeminiResponse;
+            const retryCandidate = retryData.candidates?.[0];
+            const retryReason = typeof retryCandidate?.finishReason === 'string' ? retryCandidate.finishReason : undefined;
+            const retryText = readGeminiAnswerText(retryCandidate?.content?.parts);
+            data = {
+              ...retryData,
+              usageMetadata: combineBilledGeminiUsage(firstUsage, retryData.usageMetadata),
+            };
+            candidate = retryCandidate;
+            finishReason = retryReason;
+            text = retryText;
+            if (isLengthTruncatedEmptyReply(text, finishReason)) {
+              logger.error('SDK', `Gemini reply was empty with finish_reason=${finishReason ?? 'unknown'} even though thinking was disabled; thinking consumed the output budget and the model ignored the flag or thinking is mandatory, so this turn stores no observations`, { model });
+            }
+          }
+        } catch (error) {
+          logger.error('SDK', 'Gemini reply was empty because thinking consumed the output budget; disabling thinking failed, so this turn stores no observations', {
+            model,
+          }, error instanceof Error ? error : new Error(String(error)));
+        } finally {
+          deadline.finish();
+        }
+      }
     }
 
     const tokensUsed = data.usageMetadata?.totalTokenCount;
+    const inputTokens = data.usageMetadata?.promptTokenCount;
+    const candidateTokens = data.usageMetadata?.candidatesTokenCount;
+    const thoughtTokens = data.usageMetadata?.thoughtsTokenCount;
+    // Gemini reports reasoning separately from generated answer tokens. Both
+    // belong to output usage, including when the answer itself is empty.
+    const outputTokens = candidateTokens === undefined && thoughtTokens === undefined
+      ? undefined : (candidateTokens ?? 0) + (thoughtTokens ?? 0);
+
+    if (!text) {
+      if (!isLengthTruncatedEmptyReply(text, finishReason)) {
+        logger.error('SDK', 'Empty response from Gemini');
+      }
+      // Empty answers can still carry billed usage (safety refusal, thinking
+      // only, or an output cap). The session accounts for every completed turn.
+      return {
+        content: '',
+        tokensUsed,
+        inputTokens,
+        outputTokens,
+        ...(finishReason ? { finishReason } : {}),
+      };
+    }
+
     logger.debug('SDK', 'Gemini API usage', {
       model,
-      inputTokens: data.usageMetadata?.promptTokenCount ?? 0,
-      outputTokens: data.usageMetadata?.candidatesTokenCount ?? 0,
+      inputTokens: inputTokens ?? 0,
+      outputTokens: outputTokens ?? 0,
       requestId: finalRequestId,
       clientAttemptId,
     });
@@ -507,8 +625,9 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
     return {
       content: text,
       tokensUsed,
-      inputTokens: data.usageMetadata?.promptTokenCount,
-      outputTokens: data.usageMetadata?.candidatesTokenCount,
+      inputTokens,
+      outputTokens,
+      ...(typeof data.modelVersion === 'string' && data.modelVersion ? { servedModel: data.modelVersion } : {}),
       ...(finishReason ? { finishReason } : {}),
     };
   }

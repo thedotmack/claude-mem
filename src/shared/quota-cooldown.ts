@@ -48,6 +48,9 @@ import {
 
 export type QuotaProvider = 'claude' | 'gemini' | 'openrouter' | 'codex' | 'openai-compatible' | 'cmem-gateway';
 
+/** The credential a Claude run billed: an ANTHROPIC_API_KEY, or the Claude Code login. */
+export type ClaudeCredential = 'api-key' | 'subscription';
+
 export const QUOTA_COOLDOWN_FILENAME = 'quota-cooldown.json';
 
 /**
@@ -60,6 +63,7 @@ interface PersistedQuotaCooldown {
   profile?: string;
   armedAtMs: number;
   cause?: 'auth';
+  auth?: ClaudeCredential;
 }
 
 /**
@@ -126,6 +130,7 @@ function hydrateFromDisk(filePath: string = defaultCooldownFilePath()): void {
         ...(entry.window ? { window: entry.window } : {}),
         ...(entry.profile ? { profile: entry.profile } : {}),
         ...(entry.cause === 'auth' ? { cause: 'auth' as const } : {}),
+        ...(entry.auth === 'api-key' || entry.auth === 'subscription' ? { auth: entry.auth } : {}),
         armedAtMs: entry.armedAtMs,
         // Never restored: the process that could have held this is gone.
         probeInFlightSinceMs: null,
@@ -157,6 +162,7 @@ function persistToDisk(filePath: string = defaultCooldownFilePath()): void {
         ...(state.profile ? { profile: state.profile } : {}),
         armedAtMs: state.armedAtMs,
         ...(state.cause ? { cause: state.cause } : {}),
+        ...(state.auth ? { auth: state.auth } : {}),
       }));
     if (rows.length === 0) {
       if (existsSync(filePath)) unlinkSync(filePath);
@@ -196,7 +202,13 @@ export const RATE_LIMIT_RECHECK_COOLDOWN_MS = 90_000;
  * or absent window keeps the full quota cooldown, so an unfamiliar provider is
  * never treated as transient by accident.
  */
-const TRANSIENT_QUOTA_WINDOWS = new Set(['rate_limit']);
+const TRANSIENT_QUOTA_WINDOWS = new Set([
+  'rate_limit',
+  // A provider that cannot serve right now (an outage that outlived its
+  // retries, replies with no usable output), armed only while the fallback
+  // takes the work (provider-dispatch's routeAroundUnservableProvider).
+  'unavailable',
+]);
 
 /**
  * The cooldown an armed window is entitled to. Read from the window rather than
@@ -239,6 +251,13 @@ export interface QuotaCooldownState {
    * warning is what the user sees.
    */
   cause?: 'auth';
+  /**
+   * 'claude' only: the credential whose run spent its allowance (or was paused
+   * by the quota guard). CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD names the other
+   * credential to run on while this breaker holds (claudeQuotaStandIn). Absent
+   * when a quota-fallback run was refused too: both are spent.
+   */
+  auth?: ClaudeCredential;
   /**
    * When the single post-expiry probe was claimed, or null when none is in
    * flight. Without this the expiry check is a bare read: every concurrent
@@ -296,8 +315,10 @@ export function recordQuotaExhausted(
    * to that account, not the one selected now. Defaults to the current one.
    */
   profile?: string,
+  /** 'claude' only: the credential the refused generator billed (QuotaCooldownState.auth). */
+  auth?: ClaudeCredential,
 ): QuotaCooldownState {
-  return armCooldown({ provider, message, ...(window ? { window } : {}), armedAtMs, profile });
+  return armCooldown({ provider, message, ...(window ? { window } : {}), armedAtMs, profile, ...(auth ? { auth } : {}) });
 }
 
 /**
@@ -315,7 +336,7 @@ export function recordAuthCooldown(
 }
 
 function armCooldown(
-  armed: Pick<QuotaCooldownState, 'provider' | 'message' | 'window' | 'armedAtMs' | 'profile' | 'cause'>,
+  armed: Pick<QuotaCooldownState, 'provider' | 'message' | 'window' | 'armedAtMs' | 'profile' | 'cause' | 'auth'>,
 ): QuotaCooldownState {
   hydrateFromDisk();
   const { profile, ...rest } = armed;
@@ -524,6 +545,33 @@ export type QuotaFallbackResolver = (provider: QuotaProvider, nowMs: number) => 
 
 let quotaFallbackResolver: QuotaFallbackResolver | null = null;
 
+/**
+ * provider-dispatch's routeAroundUnservableProvider, for callers that cannot
+ * import provider-dispatch: ResponseProcessor sits on the import path of the
+ * very providers dispatch imports, so a direct import is a cycle that leaves
+ * OpenRouterProvider's base class uninitialized. Registered when dispatch
+ * loads; until then (a process that never loads it) nothing is routed.
+ */
+export type UnservableProviderRouter = (
+  provider: QuotaProvider,
+  message: string,
+  window: 'unavailable' | 'rate_limit',
+  profile?: string,
+) => QuotaProvider | null;
+
+let unservableProviderRouter: UnservableProviderRouter | null = null;
+
+export function setUnservableProviderRouter(router: UnservableProviderRouter | null): void {
+  unservableProviderRouter = router;
+}
+
+/** See UnservableProviderRouter. Null when dispatch is not loaded. */
+export function routeAroundUnservableProviderIfLoaded(
+  ...args: Parameters<UnservableProviderRouter>
+): QuotaProvider | null {
+  return unservableProviderRouter?.(...args) ?? null;
+}
+
 /** Install the resolver; returns the previous one so a caller can restore it. */
 export function setQuotaFallbackResolver(resolver: QuotaFallbackResolver | null): QuotaFallbackResolver | null {
   const previous = quotaFallbackResolver;
@@ -606,6 +654,7 @@ export function syncObserverHealthQuotaCooldown(
       armedAt: latest.armedAtMs,
       until: latestUntil,
       ...(latest.window ? { window: latest.window } : {}),
+      ...(latest.auth ? { auth: latest.auth } : {}),
       message: latest.message,
       ...(servingProvider ? { servingProvider } : {}),
     });

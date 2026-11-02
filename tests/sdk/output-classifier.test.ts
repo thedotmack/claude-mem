@@ -3,8 +3,10 @@ import {
   classifyObserverOutput,
   describeObserverOutputShape,
   formatEmptyOutputReason,
+  isAnthropicVerificationHoldObserverOutput,
   isAuthFailureObserverOutput,
   isContextOverflowObserverOutput,
+  isOrgDisabledSubscriptionObserverOutput,
   isQuotaLimitedObserverOutput,
   isTransportFailureObserverOutput,
   previewOutput,
@@ -84,6 +86,33 @@ describe('isQuotaLimitedObserverOutput', () => {
     ).toBe(true);
   });
 
+  it('detects the Anthropic API credit-balance wording returned as assistant text', () => {
+    // #4632: on an API key with no credit, the SDK returns the billing notice
+    // as the whole assistant response instead of raising an error.
+    expect(isQuotaLimitedObserverOutput('Credit balance is too low')).toBe(true);
+    expect(
+      isQuotaLimitedObserverOutput(
+        'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.',
+      ),
+    ).toBe(true);
+  });
+
+  it('detects the credit-balance notice inside the CLI 400 envelope', () => {
+    expect(
+      isQuotaLimitedObserverOutput(
+        'API Error: 400 {"error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API."}}',
+      ),
+    ).toBe(true);
+  });
+
+  it('does not treat prose that merely narrates a low credit balance as quota prose', () => {
+    expect(
+      isQuotaLimitedObserverOutput(
+        'The deploy failed because the credit balance is too low on the staging key; nothing was recorded.',
+      ),
+    ).toBe(false);
+  });
+
   it('does not treat XML that mentions a limit as quota prose', () => {
     expect(
       isQuotaLimitedObserverOutput(
@@ -116,12 +145,58 @@ describe('isAuthFailureObserverOutput', () => {
     expect(isAuthFailureObserverOutput('Request failed with 403')).toBe(true);
   });
 
+  it('detects the organization-disabled subscription notice (#4677)', () => {
+    // Returned as the whole assistant response when the account's org has
+    // disabled Claude subscription access for Claude Code.
+    const notice =
+      'Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key instead, or ask your admin to enable access';
+    expect(isAuthFailureObserverOutput(notice)).toBe(true);
+    // Disjoint from the quota and transport detectors: transport defers to
+    // auth, and quota must not claim an account-policy refusal.
+    expect(isQuotaLimitedObserverOutput(notice)).toBe(false);
+    expect(isTransportFailureObserverOutput(notice)).toBe(false);
+  });
+
+  it('does not treat prose narrating an organization policy as an auth failure', () => {
+    expect(
+      isAuthFailureObserverOutput(
+        'The admin explained that your organization has disabled Claude subscription access for Claude Code, so nothing was recorded.',
+      ),
+    ).toBe(false);
+    // Opens with the notice's words but runs on: an observation, not the CLI.
+    expect(
+      isAuthFailureObserverOutput(
+        'Your organization has disabled Claude subscription access for Claude Code, so we updated the setup guide to use API keys.',
+      ),
+    ).toBe(false);
+  });
+
+  it('matches the org notice alone or with its own remediation only', () => {
+    expect(isOrgDisabledSubscriptionObserverOutput('Your organization has disabled Claude subscription access for Claude Code')).toBe(true);
+    expect(isOrgDisabledSubscriptionObserverOutput('Your organization has disabled Claude subscription access for Claude Code.')).toBe(true);
+    expect(isOrgDisabledSubscriptionObserverOutput('Not logged in · Please run /login')).toBe(false);
+    expect(isAuthFailureObserverOutput('Not logged in · Please run /login')).toBe(true);
+  });
+
   it('does not classify XML, ordinary prose, or unrelated numeric output as auth failure', () => {
     expect(isAuthFailureObserverOutput('<observation><title>HTTP 401</title></observation>')).toBe(false);
     expect(isAuthFailureObserverOutput('The request returned 500 and produced no XML.')).toBe(false);
     expect(isAuthFailureObserverOutput('No observations to record.')).toBe(false);
     expect(isAuthFailureObserverOutput('Please run /login in the observed project instructions.')).toBe(false);
     expect(isAuthFailureObserverOutput('The project authentication guide says to run /login before testing.')).toBe(false);
+  });
+});
+
+describe('isAnthropicVerificationHoldObserverOutput (#5251)', () => {
+  const response = "API Error: Your account can't receive replies from Claude right now. You can find the next step in the Anthropic Verification Portal: https://portal.anthropic.com/verify?org=org-fixture";
+
+  it('recognises the complete Claude CLI verification-hold response', () => {
+    expect(isAnthropicVerificationHoldObserverOutput(response)).toBe(true);
+  });
+
+  it('does not match an observation discussing account verification', () => {
+    expect(isAnthropicVerificationHoldObserverOutput('<observation><title>Account verification</title><narrative>The portal returned an API Error.</narrative></observation>')).toBe(false);
+    expect(isAnthropicVerificationHoldObserverOutput('The account cannot receive replies from Claude until verification is complete.')).toBe(false);
   });
 });
 

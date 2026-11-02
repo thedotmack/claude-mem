@@ -8,7 +8,7 @@ import { logger } from '../../utils/logger.js';
 import { extractLastAssistantTurn, extractLastAssistantModel } from '../../shared/transcript-parser.js';
 import { detectObservedBilling } from '../../shared/observed-billing.js';
 import { stripMemoryTags } from '../../utils/tag-stripping.js';
-import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
+import { HOOK_EXIT_CODES, isSummarizeDisabledByEnv } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { clearInjected } from '../../shared/kimi-context-gate.js';
@@ -17,6 +17,7 @@ import type { ServerRuntimeContext } from '../../services/hooks/runtime-selector
 import { isServerClientError } from '../../services/hooks/server-client.js';
 import { extractAdvisorCalls } from '../../shared/advisor-transcript.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
+import { captureDeliverables } from '../deliverables-capture.js';
 
 // The ingest route accepts at most this many calls per request; one spool
 // entry carries at most the same.
@@ -140,6 +141,15 @@ export const summarizeHandler: EventHandler = {
       clearInjected(sessionId);
     }
 
+    // #4734: CLAUDE_MEM_DISABLE_SUMMARY skips the summary (and advisor capture)
+    // for headless read-only runs. Checked here, after the Kimi PreCompact
+    // marker clear above, so a disabled summary never stops Kimi re-injecting
+    // fresh context after a compaction.
+    if (isSummarizeDisabledByEnv('summarize')) {
+      logger.debug('HOOK', 'Skipping summary: CLAUDE_MEM_DISABLE_SUMMARY=1', { sessionId });
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
     // Advisor capture runs before summarize's own early returns (an empty
     // assistant message must not drop the turn's advisor calls) and is
     // failure-isolated from it.
@@ -147,6 +157,19 @@ export const summarizeHandler: EventHandler = {
       recordAdvisorCalls(sessionId, transcriptPath, input.cwd, normalizePlatformSource(input.platform));
     } catch (err) {
       logger.warn('HOOK', 'Advisor-call capture failed; continuing with summary', {
+        sessionId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    // Deliverables capture copies what this turn made for a person into the
+    // project bucket (deliverables-capture.ts). It runs before summarize's own
+    // early returns, like advisor capture: a turn with an empty assistant
+    // message can still have written a deck. Failure-isolated from the summary.
+    try {
+      captureDeliverables(input);
+    } catch (err) {
+      logger.warn('HOOK', 'Deliverables capture failed; continuing with summary', {
         sessionId,
         error: err instanceof Error ? err.message : String(err),
       });

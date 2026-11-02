@@ -117,3 +117,106 @@ describe('POST /api/sessions/init: Codex internal helper prompts', () => {
     expect(store.findSessionDbIdByContentSessionId('cursor-session', 'cursor')).toBe(body.sessionDbId as number);
   });
 });
+
+// Grok Bot fires UserPromptSubmit inside its research sub-agent sessions too
+// (#4811): the first "prompt" is a generated brief of 10–28k characters, not
+// a person typing. It became a stored user prompt and spent a semantic
+// search. The skip applies to grok-bot only: the same text from another host
+// is a person's prompt.
+const GROK_BRIEF = 'Independently verify every candidate claim in the JSON packet below against the cited sources.\n\n{"claims": []}';
+
+describe('session-init hook: grok-bot sub-agent briefs', () => {
+  const cwd = join(tmpdir(), 'claude-mem-grok-subagent-brief-test');
+  let workerCalls: string[] = [];
+
+  beforeEach(() => {
+    workerCalls = [];
+    setSessionInitDependenciesForTesting({
+      shouldTrackProject: () => true,
+      loadFromFileOnce: () => ({ CLAUDE_MEM_SEMANTIC_INJECT: 'false' }),
+      resolveRuntimeContext: () => ({ runtime: 'worker' }),
+      isWorkerFallback: () => false,
+      executeWithWorkerFallback: async (apiPath: string) => {
+        workerCalls.push(apiPath);
+        return { sessionDbId: 42, promptNumber: 1 };
+      },
+    });
+  });
+
+  afterEach(() => {
+    setSessionInitDependenciesForTesting();
+  });
+
+  it('does not start a session for a grok-bot sub-agent brief', async () => {
+    const result = await sessionInitHandler.execute({ sessionId: 'grok-bot-subagent', cwd, platform: 'grok-bot', prompt: GROK_BRIEF });
+    expect(result.continue).toBe(true);
+    expect(workerCalls).toEqual([]);
+  });
+
+  it('still records an ordinary grok-bot prompt', async () => {
+    await sessionInitHandler.execute({ sessionId: 'grok-bot-user', cwd, platform: 'grok-bot', prompt: 'fix the flaky test' });
+    expect(workerCalls).toEqual(['/api/sessions/init']);
+  });
+
+  it('still records the same text when Claude Code sends it', async () => {
+    await sessionInitHandler.execute({ sessionId: 'claude-user', cwd, platform: 'claude-code', prompt: GROK_BRIEF });
+    expect(workerCalls).toEqual(['/api/sessions/init']);
+  });
+});
+
+describe('POST /api/sessions/init: grok-bot sub-agent briefs', () => {
+  let server: Server | undefined;
+  let store: SessionStore;
+  let port = 0;
+  let loggerSpies: Array<ReturnType<typeof spyOn>> = [];
+
+  beforeEach(async () => {
+    loggerSpies = [
+      spyOn(logger, 'info').mockImplementation(() => {}),
+      spyOn(logger, 'debug').mockImplementation(() => {}),
+      spyOn(logger, 'warn').mockImplementation(() => {}),
+      spyOn(logger, 'error').mockImplementation(() => {}),
+    ];
+    store = new SessionStore(new Database(':memory:'));
+    const routes = new SessionRoutes(
+      { getSession: () => undefined } as any,
+      { getSessionStore: () => store, getCloudSync: () => null } as any,
+      {} as any, {} as any, {} as any, {} as any, {} as any, {} as any,
+    );
+    const app = express();
+    app.use(express.json());
+    routes.setupRoutes(app);
+    await new Promise<void>((resolve) => {
+      server = app.listen(0, '127.0.0.1', () => {
+        const addr = server!.address();
+        port = addr && typeof addr !== 'string' ? addr.port : 0;
+        resolve();
+      });
+    });
+  });
+
+  afterEach(async () => {
+    loggerSpies.forEach(spy => spy.mockRestore());
+    await new Promise<void>(resolve => server?.close(() => resolve()) ?? resolve());
+  });
+
+  async function init(platformSource: string, prompt: string): Promise<Record<string, unknown>> {
+    const response = await fetch(`http://127.0.0.1:${port}/api/sessions/init`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contentSessionId: `${platformSource}-session`, project: 'demo', prompt, platformSource }),
+    });
+    return await response.json() as Record<string, unknown>;
+  }
+
+  it('skips a grok-bot sub-agent brief before creating a session', async () => {
+    expect(await init('grok-bot', GROK_BRIEF)).toEqual({ skipped: true, reason: 'internal_system_prompt' });
+    expect(store.findSessionDbIdByContentSessionId('grok-bot-session', 'grok-bot')).toBeNull();
+  });
+
+  it('creates the session when another host sends the same text', async () => {
+    const body = await init('cursor', GROK_BRIEF);
+    expect(body.skipped).toBe(false);
+    expect(store.findSessionDbIdByContentSessionId('cursor-session', 'cursor')).toBe(body.sessionDbId as number);
+  });
+});

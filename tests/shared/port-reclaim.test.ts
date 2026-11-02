@@ -11,14 +11,20 @@
  */
 
 import { describe, it, expect } from 'bun:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   parseNetstatListeningPids,
   parsePidLines,
   isChromaSidecarName,
   chromaCmdlineMatchesDataDir,
   reclaimGhostListeningPort,
+  readWorkerHeartbeat,
+  startWorkerHeartbeat,
   type GhostPortReclaimDeps,
   type WindowsProcessRow,
+  type WorkerHeartbeat,
 } from '../../src/shared/port-reclaim.js';
 
 const SAMPLE_NETSTAT = [
@@ -367,6 +373,16 @@ interface WedgedOverrides {
   listenersAfter?: number[] | null;
   identity?: { startToken: string | null; cmdline: string | null };
   killFails?: boolean;
+  /**
+   * The worker's heartbeat, as ages relative to NOW_MS: `beatAgeMs` since the
+   * timer last ran, `responseAgeMs` since it last finished a response (default
+   * 30 s), `pid` of the writer (default the owned worker). null = none.
+   */
+  heartbeat?: { beatAgeMs: number; responseAgeMs?: number; pid?: number } | null;
+  /** Replace the heartbeat reader outright (scenario tests reading a real file). */
+  readHeartbeat?: () => WorkerHeartbeat | null;
+  /** Clock override (scenario tests that move time between reclaims). */
+  now?: () => number;
 }
 
 function wedgedDeps(overrides: WedgedOverrides = {}): {
@@ -381,6 +397,7 @@ function wedgedDeps(overrides: WedgedOverrides = {}): {
   let healthProbes = 0;
   let listOwnersCalls = 0;
   const startedAt = new Date(NOW_MS - (overrides.ageSeconds ?? 3_600) * 1000).toISOString();
+  const heartbeat = overrides.heartbeat;
   return {
     killed,
     sleeps,
@@ -390,9 +407,16 @@ function wedgedDeps(overrides: WedgedOverrides = {}): {
       readOwnedWorker: () => (overrides.owned === undefined
         ? { pid: WEDGED_WORKER_PID, port: 37777, startedAt, startToken: WEDGED_WORKER_TOKEN }
         : overrides.owned),
-      now: () => NOW_MS,
+      now: overrides.now ?? (() => NOW_MS),
       sleep: async (ms: number) => { sleeps.push(ms); },
       minOwnerAgeSeconds: 300,
+      heartbeatStaleMs: 120_000,
+      readHeartbeat: overrides.readHeartbeat ?? (() => (heartbeat == null ? null : {
+        pid: heartbeat.pid ?? WEDGED_WORKER_PID,
+        beatAtMs: NOW_MS - heartbeat.beatAgeMs,
+        lastResponseAtMs: NOW_MS - (heartbeat.responseAgeMs ?? 30_000),
+      })),
+      maxSilentProtectionMs: 600_000,
       probeHealth: async () => {
         healthProbes += 1;
         return healthAnswers.shift() ?? false;
@@ -420,6 +444,138 @@ function wedgedDeps(overrides: WedgedOverrides = {}): {
     },
   };
 }
+
+describe('a slow worker is not a dead worker (heartbeat)', () => {
+  // On a machine with on-access antivirus the worker's event loop was held in
+  // file opens long enough for both health probes to fail, and the hooks
+  // killed a worker that was still making progress. The restart then re-ran
+  // the backfill: health came back about 9 minutes after the kill. The worker
+  // now publishes a heartbeat from a timer, with the time it last finished an
+  // HTTP response; a fresh beat plus a recent response means slow, not dead.
+  it('never kills a silent worker whose heartbeat is fresh', async () => {
+    const { deps: testDeps, killed } = wedgedDeps({ heartbeat: { beatAgeMs: 10_000 } });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect(result).toEqual({ reclaimed: false, reason: 'owner-progressing', killedPids: [] });
+    expect(killed).toEqual([]);
+  });
+
+  it('still kills a silent worker whose heartbeat is stale', async () => {
+    const { deps: testDeps, killed } = wedgedDeps({ heartbeat: { beatAgeMs: 600_000 } });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect(result.reclaimed).toBe(true);
+    expect(killed.map(k => k.pid)).toEqual([WEDGED_WORKER_PID]);
+  });
+
+  it('still kills a silent worker that writes no heartbeat (an older worker)', async () => {
+    const { deps: testDeps, killed } = wedgedDeps({ heartbeat: null });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect(result.reclaimed).toBe(true);
+    expect(killed.map(k => k.pid)).toEqual([WEDGED_WORKER_PID]);
+  });
+
+  it('ignores a fresh heartbeat written by a different process', async () => {
+    // A heartbeat left by an earlier worker, or by another one sharing the data
+    // dir, says nothing about the process that owns the port now.
+    const { deps: testDeps, killed } = wedgedDeps({ heartbeat: { beatAgeMs: 1_000, responseAgeMs: 1_000, pid: WEDGED_WORKER_PID + 1 } });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect(result.reclaimed).toBe(true);
+    expect(killed.map(k => k.pid)).toEqual([WEDGED_WORKER_PID]);
+  });
+
+  it('stops protecting a worker that has finished no response for 10 minutes, even with a fresh heartbeat', async () => {
+    // A loop that turns while every request hangs (an async deadlock) keeps the
+    // heartbeat fresh; the window bounds how long that is forgiven.
+    const { deps: testDeps, killed } = wedgedDeps({ heartbeat: { beatAgeMs: 10_000, responseAgeMs: 600_001 } });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect(result.reclaimed).toBe(true);
+    expect(killed.map(k => k.pid)).toEqual([WEDGED_WORKER_PID]);
+  });
+
+  it('still protects a worker that finished a response just inside the window', async () => {
+    const { deps: testDeps, killed } = wedgedDeps({ heartbeat: { beatAgeMs: 10_000, responseAgeMs: 599_000 } });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect(result).toEqual({ reclaimed: false, reason: 'owner-progressing', killedPids: [] });
+    expect(killed).toEqual([]);
+  });
+
+  it('a heartbeat cannot save a worker whose beat is older than the stale limit', async () => {
+    const { deps: testDeps, killed } = wedgedDeps({ heartbeat: { beatAgeMs: 120_001 } });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect(result.reclaimed).toBe(true);
+    expect(killed).toHaveLength(1);
+  });
+});
+
+describe('a recovery between two stalls resets the protection window (heartbeat file round trip)', () => {
+  // The worker writes the heartbeat file with the real writer; the reclaim
+  // reads it with the real reader. Hooks keep no state of their own, so a
+  // recovery that happens entirely outside reclaim (healthy checks return
+  // before it) still resets the window: the worker answered, and says so.
+  const MINUTE_MS = 60_000;
+
+  async function publishHeartbeat(path: string, beatAtMs: number, lastResponseAtMs: number): Promise<void> {
+    const stop = startWorkerHeartbeat({
+      heartbeatPath: path,
+      pid: WEDGED_WORKER_PID,
+      now: () => beatAtMs,
+      readLastResponseAtMs: () => lastResponseAtMs,
+      intervalMs: 3_600_000,
+    });
+    stop();
+    // The first beat is written asynchronously at start; wait for it to land.
+    for (let attempt = 0; attempt < 200; attempt++) {
+      if (readWorkerHeartbeat(path)?.beatAtMs === beatAtMs) return;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    throw new Error('heartbeat was never published');
+  }
+
+  async function silentReclaimAt(path: string, nowMs: number) {
+    const harness = wedgedDeps({ now: () => nowMs, readHeartbeat: () => readWorkerHeartbeat(path) });
+    const result = await reclaimGhostListeningPort(37777, harness.deps);
+    return { result, killed: harness.killed };
+  }
+
+  it('spares a second short stall more than 10 minutes after the first when the worker recovered in between', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'claude-mem-heartbeat-scenario-'));
+    try {
+      const path = join(dir, 'worker-heartbeat.json');
+      // Minute 0: the worker stalls. Its last finished response was 30 s ago.
+      await publishHeartbeat(path, NOW_MS - 2_000, NOW_MS - 30_000);
+      const first = await silentReclaimAt(path, NOW_MS);
+      expect(first.result).toEqual({ reclaimed: false, reason: 'owner-progressing', killedPids: [] });
+
+      // Minutes 1-10: healthy. Hooks' health checks succeed and never enter
+      // reclaim; the worker records the responses it finished.
+      await publishHeartbeat(path, NOW_MS + 10 * MINUTE_MS, NOW_MS + 10 * MINUTE_MS);
+
+      // Minute 11: a second, short stall.
+      await publishHeartbeat(path, NOW_MS + 11 * MINUTE_MS - 2_000, NOW_MS + 10 * MINUTE_MS);
+      const second = await silentReclaimAt(path, NOW_MS + 11 * MINUTE_MS);
+      expect(second.result).toEqual({ reclaimed: false, reason: 'owner-progressing', killedPids: [] });
+      expect(second.killed).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reclaims at minute 11 when the worker finished no response since the first stall', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'claude-mem-heartbeat-scenario-'));
+    try {
+      const path = join(dir, 'worker-heartbeat.json');
+      await publishHeartbeat(path, NOW_MS - 2_000, NOW_MS - 30_000);
+      expect((await silentReclaimAt(path, NOW_MS)).result.reclaimed).toBe(false);
+
+      // The loop keeps turning (fresh beats), but nothing is ever answered.
+      await publishHeartbeat(path, NOW_MS + 11 * MINUTE_MS - 2_000, NOW_MS - 30_000);
+      const second = await silentReclaimAt(path, NOW_MS + 11 * MINUTE_MS);
+      expect(second.result.reclaimed).toBe(true);
+      expect(second.killed.map(k => k.pid)).toEqual([WEDGED_WORKER_PID]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('reclaimWedgedOwnedWorker (via reclaimGhostListeningPort)', () => {
   it('reclaims a wedged worker we own on POSIX: graceful tree-kill pinned to the recorded start token', async () => {

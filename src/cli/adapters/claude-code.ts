@@ -47,9 +47,13 @@ export const claudeCodeAdapter: PlatformAdapter = {
     if (!isValidCwd(cwd)) {
       throw new AdapterRejectedInput('invalid_cwd');
     }
+    const source = r.source;
     return {
       sessionId: r.session_id ?? r.id ?? r.sessionId,
       cwd,
+      sessionSource: source === 'startup' || source === 'resume' || source === 'clear' || source === 'compact'
+        ? source
+        : undefined,
       prompt: r.prompt,
       submittedPrompt: normalizeSubmittedPrompt(r),
       toolName: r.tool_name,
@@ -57,6 +61,7 @@ export const claudeCodeAdapter: PlatformAdapter = {
       toolResponse: r.tool_response ?? failedToolResponse(r),
       toolUseId: typeof r.tool_use_id === 'string' ? r.tool_use_id : undefined,
       transcriptPath: r.transcript_path,
+      agentTranscriptPath: pickStringField(r.agent_transcript_path),
       // stop_hook_active is deliberately not mapped. Claude Code sets it once a
       // Stop hook has blocked the stop and Claude kept working. claude-mem's
       // Stop hook never blocks (it always exits 0 with continue: true), so the

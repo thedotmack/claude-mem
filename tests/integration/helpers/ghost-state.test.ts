@@ -29,6 +29,13 @@ describe('classifyPostKillState', () => {
     expect(classifyPostKillState(base)).toEqual({ kind: 'runtime-capability-skip' });
   });
 
+  it('fails if the fixture PID is alive even when its port is free', () => {
+    expect(classifyPostKillState({ ...base, fixtureAlive: true })).toEqual({
+      kind: 'malformed',
+      reason: 'fixture-pid-alive',
+    });
+  });
+
   it('fails on a free port when the sidecar chain died with the worker', () => {
     // Scenario: the chain is gone too, so a free port proves nothing about
     // socket inheritance — the scenario failed to form for unknown reasons.
@@ -63,10 +70,10 @@ describe('classifyPostKillState', () => {
 
   it('fails when the port is under the fixture pid but that pid is alive', () => {
     // Scenario: the fixture pid was recycled by a new process after the kill.
-    // Expected: malformed (fixture-pid-recycled), not a ghost.
+    // Expected: malformed (fixture-pid-alive), not a ghost.
     expect(classifyPostKillState({ ...base, fixtureAlive: true, portOwners: [100] })).toEqual({
       kind: 'malformed',
-      reason: 'fixture-pid-recycled',
+      reason: 'fixture-pid-alive',
     });
   });
 });

@@ -215,7 +215,6 @@ curl -fsSL https://install.cmem.ai/openclaw.sh | bash
 
 - **[설정](https://docs.claude-mem.ai/configuration)** - 환경 변수 및 설정
 - **[개발](https://docs.claude-mem.ai/development)** - 빌드, 테스트, 기여
-- **[릴리스 브랜치](https://docs.claude-mem.ai/branches)** - Stable, core-dev, community-edge 브랜치 흐름
 - **[문제 해결](https://docs.claude-mem.ai/troubleshooting)** - 일반적인 문제 및 해결 방법
 
 ---
@@ -271,15 +270,6 @@ get_observations(ids=[123, 456])
 ```
 
 자세한 예제는 [검색 도구 가이드](https://docs.claude-mem.ai/usage/search-tools)를 참조하세요.
-
----
-
-## 릴리스 브랜치
-
-안정적인 릴리스는 `main`에서 배포되며 npm에 게시됩니다. `core-dev`와
-`community-edge`는 초기 안정성 수정과 커뮤니티 통합을 위한 소스 실행 브랜치입니다.
-브랜치 흐름과 비안정 버전 실행 방법은 **[릴리스 브랜치](https://docs.claude-mem.ai/branches)**를
-참조하세요.
 
 ---
 
@@ -384,11 +374,6 @@ npm run bug-report
 4. 문서 업데이트
 5. Pull Request 제출
 
-Claude-Mem은 `main` (stable), `core-dev`, `community-edge`의 세 브랜치에서
-배포됩니다. `main`만 npm에 게시되며, 나머지는 소스에서 실행됩니다.
-전략과 로컬 실행 방법은 [릴리스 브랜치](https://docs.claude-mem.ai/branches)를
-참조하세요.
-
 기여 워크플로우는 [개발 가이드](https://docs.claude-mem.ai/development)를 참조하세요.
 
 ---
@@ -405,7 +390,6 @@ Claude-Mem은 Apache License 2.0에 따라 라이선스가 부여됩니다.
 오픈/상업적 경계에 대해서는 [docs/license.md](docs/license.md)와
 [docs/ip-boundary.md](docs/ip-boundary.md)를 참조하세요.
 
-**Ragtime 관련 참고 사항**: `ragtime/` 디렉토리는 **Apache License 2.0**에 따라 라이선스가 부여됩니다. 자세한 내용은 [ragtime/LICENSE](ragtime/LICENSE)를 참조하세요.
 
 ---
 

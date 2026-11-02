@@ -6,7 +6,8 @@ import {
   type ChildProcess,
   type SpawnSyncOptionsWithStringEncoding,
 } from 'node:child_process';
-import { dirname, extname, join } from 'node:path';
+import { existsSync } from 'node:fs';
+import { dirname, extname, join, win32 } from 'node:path';
 
 export type SpawnHiddenOptions = SpawnOptions;
 
@@ -44,11 +45,40 @@ export function isWindowsNativeExecutable(command: string): boolean {
   return WINDOWS_NATIVE_EXTENSIONS.has(extname(command).toLowerCase());
 }
 
+/**
+ * Absolute path of where.exe. Spawning the bare name lets Windows run a
+ * `where.exe` from the current directory (often the user's project, for hooks)
+ * before PATH, which would execute untrusted code.
+ */
+export function windowsWhereExecutablePath(env: NodeJS.ProcessEnv = process.env): string {
+  const systemRoot = env.SystemRoot || env.SYSTEMROOT || env.windir || env.WINDIR || 'C:\\Windows';
+  return join(systemRoot, 'System32', 'where.exe');
+}
+
+/**
+ * True when `candidatePath` sits directly inside `cwd`. On Windows, where.exe
+ * searches the current directory BEFORE PATH, so a `bun.exe` / `codex.exe` /
+ * `dsh.exe` planted in the project a hook runs from would outrank the real
+ * install and execute untrusted code.
+ *
+ * The comparison is flavor-aware and separator-insensitive: a Windows-style
+ * `C:\tools\bun.exe` is parsed with win32 rules even on a POSIX test host
+ * (POSIX dirname would otherwise treat the whole string as a basename and
+ * resolve() would fold it into cwd, which is the bug this filter exists to
+ * prevent). Case-folded: NTFS is case-insensitive. Injectable `cwd` for tests.
+ */
+export function isCurrentDirectoryCandidate(candidatePath: string, cwd: string = process.cwd()): boolean {
+  const looksWindows = /^[a-zA-Z]:[\\/]|\\\\/.test(candidatePath);
+  const dir = looksWindows ? win32.dirname(candidatePath) : dirname(candidatePath);
+  const normalize = (p: string) => p.replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase();
+  return normalize(dir) === normalize(cwd);
+}
+
 /** Every PATH hit for `command`, in `where` order (PATH order). */
-export function lookupWindowsCommandCandidates(command: string): string[] {
+export function lookupWindowsCommandCandidates(command: string, cwd: string = process.cwd()): string[] {
   if (process.platform !== 'win32') return [];
   try {
-    const result = spawnSync('where', [command], {
+    const result = spawnSync(windowsWhereExecutablePath(), [command], {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
@@ -57,7 +87,17 @@ export function lookupWindowsCommandCandidates(command: string): string[] {
     return result.stdout
       .split(/\r?\n/)
       .map(line => line.trim())
-      .filter(Boolean);
+      .filter(Boolean)
+      // where.exe reports the current directory first, and hooks run with the
+      // user's project as cwd: a planted `bun.exe`/`codex.exe`/`dsh.exe` there
+      // would otherwise be returned to a caller that spawns it verbatim.
+      .filter(line => !isCurrentDirectoryCandidate(line, cwd))
+      // where.exe writes the console's active code page (cp949 on ko-KR) while
+      // the `encoding: 'utf-8'` above decodes the bytes as UTF-8, so a
+      // non-ASCII profile folder name arrives as U+FFFD and the path does not
+      // exist (#4694, #3865). Callers spawn these paths; a nonexistent one can
+      // only fail with ENOENT, so drop it here.
+      .filter(line => existsSync(line));
   } catch {
     // where exits non-zero when absent and can throw if PATH is malformed.
     return [];
@@ -124,6 +164,38 @@ export function lookupWindowsCommand(command: string): string | null {
   );
 }
 
+export interface CommandInvocation {
+  command: string;
+  args: string[];
+  /** Set for a .cmd/.bat shim run through cmd.exe: Node must pass the payload unescaped. */
+  windowsVerbatimArguments: boolean;
+}
+
+/**
+ * How to start `command` with `args` (spawn or spawnSync). Node cannot start a
+ * .cmd/.bat shim directly on Windows, so one runs through cmd.exe.
+ */
+export function commandInvocation(
+  command: string,
+  args: readonly string[],
+  platform: NodeJS.Platform = process.platform,
+): CommandInvocation {
+  if (platform === 'win32' && WINDOWS_CMD_EXTENSIONS.has(extname(command).toLowerCase())) {
+    const commandLine = [command, ...args].map(quoteWindowsCmdArgument).join(' ');
+    return {
+      command: process.env.ComSpec ?? 'cmd.exe',
+      // Wrap the per-arg-quoted command line in ONE outer quote pair: `cmd /s /c`
+      // strips the outermost quotes and leaves the inner per-arg quoting intact,
+      // so a shim path (or any arg) containing spaces survives. Pairs with
+      // windowsVerbatimArguments, which stops Node re-escaping this payload
+      // (without it the leading `"` becomes `\"` and cmd.exe rejects the command).
+      args: ['/d', '/s', '/c', `"${commandLine}"`],
+      windowsVerbatimArguments: true,
+    };
+  }
+  return { command, args: [...args], windowsVerbatimArguments: false };
+}
+
 export function buildSpawnSyncInvocation(
   command: string,
   args: readonly string[],
@@ -135,24 +207,10 @@ export function buildSpawnSyncInvocation(
     // Force hide on Windows last so callers cannot override it off (#3521).
     ...(platform === 'win32' ? { windowsHide: true } : {}),
   };
-
-  if (platform === 'win32' && WINDOWS_CMD_EXTENSIONS.has(extname(command).toLowerCase())) {
-    const commandLine = [command, ...args].map(quoteWindowsCmdArgument).join(' ');
-    return {
-      command: process.env.ComSpec ?? 'cmd.exe',
-      // Wrap the per-arg-quoted command line in ONE outer quote pair: `cmd /s /c`
-      // strips the outermost quotes and leaves the inner per-arg quoting intact,
-      // so a shim path (or any arg) containing spaces survives. Pairs with
-      // windowsVerbatimArguments below, which stops Node re-escaping this payload
-      // (without it the leading `"` becomes `\"` and cmd.exe rejects the command).
-      args: ['/d', '/s', '/c', `"${commandLine}"`],
-      options: { ...invocationOptions, windowsVerbatimArguments: true },
-    };
-  }
-
+  const invocation = commandInvocation(command, args, platform);
   return {
-    command,
-    args: [...args],
-    options: invocationOptions,
+    command: invocation.command,
+    args: invocation.args,
+    options: invocation.windowsVerbatimArguments ? { ...invocationOptions, windowsVerbatimArguments: true } : invocationOptions,
   };
 }

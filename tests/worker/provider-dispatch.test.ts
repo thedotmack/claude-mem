@@ -27,6 +27,7 @@ import {
   tryAdmitQuotaProbe,
 } from '../../src/shared/quota-cooldown.js';
 import { isCmemGatewayUrl } from '../../src/shared/cmem-gateway.js';
+import { setClaudeFallbackReadinessForTesting } from '../../src/shared/claude-fallback-readiness.js';
 import { paths } from '../../src/shared/paths.js';
 import { logger } from '../../src/utils/logger.js';
 import {
@@ -418,9 +419,13 @@ describe('provider-dispatch', () => {
       return lines.filter(message => message.startsWith('Primary '));
     }
 
+    let previousClaudeReadiness: (() => boolean) | null;
+
     beforeEach(() => {
       resetQuotaCooldownsForTesting();
       resetQuotaFallbackStateForTesting();
+      // A Claude login exists, so Claude can take fallback work.
+      previousClaudeReadiness = setClaudeFallbackReadinessForTesting(() => true);
       lines = [];
       spies = [
         spyOn(logger, 'warn').mockImplementation((_component: string, message: string) => { lines.push(message); }),
@@ -429,6 +434,7 @@ describe('provider-dispatch', () => {
     });
 
     afterEach(() => {
+      setClaudeFallbackReadinessForTesting(previousClaudeReadiness);
       spies.forEach(spy => spy.mockRestore());
       resetQuotaCooldownsForTesting();
       resetQuotaFallbackStateForTesting();
@@ -440,14 +446,14 @@ describe('provider-dispatch', () => {
       resetQuotaCooldownsForTesting();
     });
 
-    it('with no fallback configured, every primary is unchanged', () => {
+    it('with the fallback turned off, every primary is unchanged', () => {
       const primaries = [
         ['gemini', { CLAUDE_MEM_PROVIDER: 'gemini', CLAUDE_MEM_GEMINI_API_KEY: 'gemini-test-key', CLAUDE_MEM_OPENROUTER_API_KEY: '' }],
         ['openrouter', { CLAUDE_MEM_PROVIDER: 'openrouter', CLAUDE_MEM_OPENROUTER_API_KEY: PERSONAL_KEY, CLAUDE_MEM_OPENROUTER_BASE_URL: '' }],
         ['claude', { CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_GEMINI_API_KEY: '', CLAUDE_MEM_OPENROUTER_API_KEY: '' }],
       ] as const;
       for (const [provider, env] of primaries) {
-        Object.assign(process.env, env, { CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: '' });
+        Object.assign(process.env, env, { CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: 'off' });
         recordQuotaExhausted(provider, 'Allowance spent');
         expect(selectProviderForGenerator()).toEqual({ provider, gatewayProbeClaimId: null });
         expect(getSelectedProvider()).toBe(provider);
@@ -618,7 +624,7 @@ describe('provider-dispatch', () => {
       clearQuotaCooldown('gemini');
       selectProviderForGenerator(); // the probe succeeded and cleared the breaker
       expect(quotaFallbackLines()).toEqual([
-        'Primary in quota cooldown; dispatching to fallback',
+        'Primary cannot serve right now; memory runs on the Anthropic plan (Claude) until it recovers',
         'Primary quota cooldown elapsed; probing primary',
         'Primary recovered from quota cooldown',
       ]);
@@ -647,8 +653,8 @@ describe('provider-dispatch', () => {
       expect(mirrored.servingProvider).toBe('claude');
     });
 
-    it('mirrors no serving provider when no fallback is configured', () => {
-      pinGeminiPrimary('');
+    it('mirrors no serving provider when the fallback is turned off', () => {
+      pinGeminiPrimary('off');
       recordQuotaExhausted('gemini', 'Daily limit reached');
       const mirrored = readObserverHealth(join(paths.dataDir(), OBSERVER_HEALTH_FILENAME))!.quotaCooldown!;
       expect(mirrored.servingProvider).toBeUndefined();

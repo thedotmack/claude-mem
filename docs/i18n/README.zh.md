@@ -50,7 +50,7 @@
   <a href="docs/i18n/README.no.md">🇳🇴 Norsk</a>
 </p>
 
-<h4 align="center">为 <a href="https://claude.com/claude-code" target="_blank">Claude Code</a> 构建的持久化内存压缩系统。</h4>
+<h4 align="center">为 <a href="https://claude.com/claude-code" target="_blank">Claude Code</a> 构建的持久化记忆压缩系统。</h4>
 
 <p align="center">
   <a href="LICENSE">
@@ -164,7 +164,7 @@ npx claude-mem install --ide antigravity
 
 ### 🦞 OpenClaw Gateway
 
-只需一条命令,即可在 [OpenClaw](https://openclaw.ai) 网关上将 claude-mem 安装为持久化内存插件:
+只需一条命令,即可在 [OpenClaw](https://openclaw.ai) 网关上将 claude-mem 安装为持久化记忆插件:
 
 ```bash
 curl -fsSL https://install.cmem.ai/openclaw.sh | bash
@@ -174,11 +174,11 @@ curl -fsSL https://install.cmem.ai/openclaw.sh | bash
 
 **核心特性:**
 
-- 🧠 **持久化内存** - 上下文跨会话保留
-- 📊 **渐进式披露** - 分层内存检索,具有令牌成本可见性
+- 🧠 **持久化记忆** - 上下文跨会话保留
+- 📊 **渐进式披露** - 分层记忆检索,具有令牌成本可见性
 - 🔍 **基于技能的搜索** - 使用 mem-search 技能查询项目历史
-- 🖥️ **Web 查看器界面** - 在启动时打印的 worker URL 上实时查看内存流
-- 💻 **Claude Desktop 技能** - 从 Claude Desktop 对话中搜索内存
+- 🖥️ **Web 查看器界面** - 在启动时打印的 worker URL 上实时查看记忆流
+- 💻 **Claude Desktop 技能** - 从 Claude Desktop 对话中搜索记忆
 - 🔒 **隐私控制** - 使用 `<private>` 标签排除敏感内容的存储
 - ⚙️ **上下文配置** - 精细控制注入的上下文内容
 - 🤖 **自动操作** - 无需手动干预
@@ -215,7 +215,6 @@ curl -fsSL https://install.cmem.ai/openclaw.sh | bash
 
 - **[配置](https://docs.claude-mem.ai/configuration)** - 环境变量与设置
 - **[开发](https://docs.claude-mem.ai/development)** - 构建、测试、贡献
-- **[发布分支](https://docs.claude-mem.ai/branches)** - Stable、core-dev 和 community-edge 分支流程
 - **[故障排除](https://docs.claude-mem.ai/troubleshooting)** - 常见问题与解决方案
 
 ---
@@ -237,7 +236,7 @@ curl -fsSL https://install.cmem.ai/openclaw.sh | bash
 
 ## MCP 搜索工具
 
-Claude-Mem 通过 **4 个 MCP 工具**提供智能内存搜索,遵循一种省令牌的**三层工作流模式**:
+Claude-Mem 通过 **4 个 MCP 工具**提供智能记忆搜索,遵循一种省令牌的**三层工作流模式**:
 
 **三层工作流:**
 
@@ -246,7 +245,7 @@ Claude-Mem 通过 **4 个 MCP 工具**提供智能内存搜索,遵循一种省�
 3. **`get_observations`** - 仅为筛选出的 ID 获取完整详情(约 500-1,000 个令牌/结果)
 
 **工作方式:**
-- Claude 使用 MCP 工具搜索您的内存
+- Claude 使用 MCP 工具搜索您的记忆
 - 首先使用 `search` 获取结果索引
 - 使用 `timeline` 查看特定观察周围发生的情况
 - 使用 `get_observations` 为相关 ID 获取完整详情
@@ -254,7 +253,7 @@ Claude-Mem 通过 **4 个 MCP 工具**提供智能内存搜索,遵循一种省�
 
 **可用的 MCP 工具:**
 
-1. **`search`** - 使用全文查询搜索内存索引,按类型/日期/项目筛选
+1. **`search`** - 使用全文查询搜索记忆索引,按类型/日期/项目筛选
 2. **`timeline`** - 获取特定观察或查询周围的时间顺序上下文
 3. **`get_observations`** - 按 ID 获取完整观察详情(始终批量处理多个 ID)
 
@@ -271,14 +270,6 @@ get_observations(ids=[123, 456])
 ```
 
 详见[搜索工具指南](https://docs.claude-mem.ai/usage/search-tools)的详细示例。
-
----
-
-## 发布分支
-
-稳定版发布自 `main` 分支,并发布到 npm。`core-dev` 和
-`community-edge` 是用于早期可靠性修复和社区集成的源码运行分支。请参阅
-**[发布分支](https://docs.claude-mem.ai/branches)** 了解分支流程和非稳定版运行说明。
 
 ---
 
@@ -383,10 +374,6 @@ npm run bug-report
 4. 更新文档
 5. 提交 Pull Request
 
-Claude-Mem 从三个分支发布:`main`(稳定版)、`core-dev` 和
-`community-edge`。只有 `main` 会发布到 npm;其他分支从源码运行。请参阅
-[发布分支](https://docs.claude-mem.ai/branches) 了解相关策略和本地运行说明。
-
 详见[开发指南](https://docs.claude-mem.ai/development)了解贡献工作流程。
 
 ---
@@ -395,14 +382,13 @@ Claude-Mem 从三个分支发布:`main`(稳定版)、`core-dev` 和
 
 Claude-Mem 根据 Apache License 2.0 授权。
 
-我们选择 Apache-2.0 是因为持久化的代理内存应该易于嵌入到
+我们选择 Apache-2.0 是因为持久化的代理记忆应该易于嵌入到
 开发者工具、本地代理、MCP 服务器、企业系统、机器人技术栈,
 以及生产环境的代理运行框架中。
 
 完整详情请参阅 [LICENSE](LICENSE) 文件。授权范围及开源/商业边界
 请参阅 [docs/license.md](docs/license.md) 和 [docs/ip-boundary.md](docs/ip-boundary.md)。
 
-**关于 Ragtime 的说明**:`ragtime/` 目录根据 **Apache License 2.0** 授权。详情请参阅 [ragtime/LICENSE](ragtime/LICENSE)。
 
 ---
 

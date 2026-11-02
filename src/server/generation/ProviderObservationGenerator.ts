@@ -85,7 +85,7 @@ export interface ProviderObservationGeneratorOptions {
 // generation lane (concurrency 1) indefinitely. Well above the ~325s longest
 // job observed in production. A timeout is rethrown as a transient
 // ServerClassifiedProviderError so it takes the normal retry path.
-const DEFAULT_PROVIDER_GENERATE_TIMEOUT_MS = 600_000;
+export const DEFAULT_PROVIDER_GENERATE_TIMEOUT_MS = 600_000;
 
 
 // The session event query (`listSessionEvents`, head + tail) caps the event
@@ -167,7 +167,7 @@ export class ProviderObservationGenerator {
    */
   async process(
     job: Job<ServerGenerationJobPayload>,
-  ): Promise<{ jobId: string; status: 'completed'; observationCount: number }> {
+  ): Promise<{ jobId: string; status: 'completed' | 'superseded'; observationCount: number }> {
     const correlationId = `bullmq:${job.id ?? '?'}`;
     // Phase 12 — pivot id captured up front so every log line in this
     // dispatch carries the same identifier whether or not we manage to
@@ -315,6 +315,7 @@ export class ProviderObservationGenerator {
         await markGenerationFailed({
           pool: this.options.pool,
           job: fresh,
+          expectedAttempt: fresh,
           reason: error instanceof Error ? error.message : String(error),
           classification: classified?.kind ?? 'unknown',
           retryable,
@@ -334,7 +335,7 @@ export class ProviderObservationGenerator {
     fresh: PostgresObservationGenerationJob,
     correlationId: string,
     payloadRequestId: string | null,
-  ): Promise<{ jobId: string; status: 'completed'; observationCount: number }> {
+  ): Promise<{ jobId: string; status: 'completed' | 'superseded'; observationCount: number }> {
     const events = await this.loadEvents(fresh, payload);
     const project = await this.loadProject(fresh);
 
@@ -390,6 +391,7 @@ export class ProviderObservationGenerator {
       await markGenerationFailed({
         pool: this.options.pool,
         job: fresh,
+        expectedAttempt: fresh,
         reason: outcome.reason,
         classification: outcome.kind,
         retryable: false,
@@ -401,6 +403,10 @@ export class ProviderObservationGenerator {
           ? `generation empty response: ${outcome.reason}`
           : `generation parse error: ${outcome.reason}`,
       );
+    }
+
+    if (outcome.kind === 'superseded') {
+      return { jobId: outcome.jobId, status: 'superseded', observationCount: 0 };
     }
 
     logger.info('SYSTEM', 'generation completed', {
@@ -622,8 +628,8 @@ export class ProviderObservationGenerator {
       // workers to issue the (paid, rate-limited) external provider call,
       // and the persistence-level terminal-status guard only collapses the
       // duplicate after the call has already happened. Skip instead. If the
-      // first worker truly died, `reconcileOnStartup` (and the next BullMQ
-      // retry) will resurrect the row.
+      // first worker truly died, the stale-lock sweep
+      // (reclaimStaleProcessingJobs) returns the row to the queue.
       logger.info('SYSTEM', 'generation job already in processing; skipping duplicate worker run', {
         jobId: current.id,
         lockedBy: current.lockedBy,

@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import codeMode from '../../../../plugin/modes/code.json';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { SettingsDefaultsManager } from '../../../../src/shared/SettingsDefaultsManager.js';
@@ -12,7 +13,7 @@ import * as realWorkerUtils from '../../../../src/shared/worker-utils.js';
  * The cmem.ai gateway path through the worker, end to end.
  *
  * The gateway classifies once and sends `{code, message, action, url,
- * request_id}` (plans/2026-08-16-observer-error-path.md §1.2). Each code has
+ * request_id}`. Each code has
  * one outcome here:
  *   - allowance_exhausted / key_invalid / subscription_inactive: the
  *     trial-expiry fallback. Memory moves to the Anthropic plan at once, and
@@ -104,7 +105,7 @@ const MEMORY_KEY = 'cm_pro_0123456789abcdef01234567';
 const ON_ANTHROPIC_PLAN = 'Memory is using your Anthropic plan for now.';
 const QUOTA_FALLBACK_SKIPPED = 'claude-mem skips it as your quota fallback until it answers again';
 
-/** The gateway's own copy (plans/2026-08-16-observer-error-path.md §1.2). */
+/** The gateway's own copy. */
 const GATEWAY = {
   allowance_exhausted: {
     status: 402,
@@ -168,7 +169,7 @@ const ENV_KEYS = [
 
 const mockMode = {
   name: 'code',
-  prompts: { init: 'init prompt', observation: 'obs prompt', summary: 'summary prompt' },
+  prompts: codeMode.prompts,
   observation_types: [{ id: 'discovery' }],
   observation_concepts: [],
 };
@@ -994,10 +995,35 @@ describe('SessionRoutes — cmem gateway integrity', () => {
       // Paused, not finalized: the batch waits for the re-login.
       expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
 
-      // Shown at once, with the /login remedy: a restart cannot sign the CLI in.
+      // Shown at once, with the /login remedy first: a restart cannot sign the
+      // CLI in. The credential-store check is second, for a worker that cannot
+      // read a credential that exists (#5250).
       const notice = observerHealthWarning();
       expect(notice).toContain('What to do: Run /login in Claude Code');
+      expect(notice).toContain('If you are already signed in, check the worker log for OAUTH credential-store lookup errors');
       expect(notice).not.toContain('npx claude-mem restart');
+    });
+
+    it('an org that disabled subscription access is booked with the API-key / admin remedy, not /login (#4677)', async () => {
+      const id = 924004;
+      seedSettings({ CLAUDE_MEM_PROVIDER: 'claude' });
+      const { routes, claudeAgent, completionHandler } = makeHarness([id]);
+      claudeAgent.startSession.mockImplementationOnce((s: ActiveSession) => {
+        s.abortReason = 'auth:observer_org_policy';
+        s.abortController.abort();
+        return Promise.resolve();
+      });
+
+      await routes.ensureGeneratorRunning(id, 'observation');
+      await settle(id);
+
+      const health = readObserverHealth();
+      expect(health?.consecutiveFailures).toBe(1);
+      expect(health?.lastErrorKind).toBe('auth_invalid');
+      expect(health?.lastErrorMessage).toContain('organization has disabled Claude subscription access');
+      expect(health?.lastErrorAction).toContain('ANTHROPIC_API_KEY');
+      expect(health?.lastErrorAction).not.toContain('/login');
+      expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
     });
 
     it('a classified refusal that also paused on the prose is booked once, by the catch', async () => {

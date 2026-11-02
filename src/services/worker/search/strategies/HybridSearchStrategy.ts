@@ -72,13 +72,16 @@ export class HybridSearchStrategy {
         }
       }
 
+      const dateOrder = options.orderBy === 'date_asc' || options.orderBy === 'date_desc' ? options.orderBy : undefined;
       const observations = this.sessionStore.getObservationsByIds(rankedIds, {
-        orderBy: 'relevance',
+        orderBy: dateOrder ?? 'relevance',
         limit: options.limit,
         ...(options.readKeys.length > 0 ? { projects: options.readKeys } : {}),
         platformSource: options.platformSource
       });
-      observations.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
+      if (!dateOrder) {
+        observations.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
+      }
 
       return { observations, sessions, usedChroma: true };
     }

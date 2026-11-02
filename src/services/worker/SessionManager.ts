@@ -10,6 +10,9 @@ import { deliverSessionWrapup, type TelegramWrapupFormatter } from '../integrati
 import { MAX_LLM_TIMEOUT_MS, resolveLlmTimeoutMs } from './retry.js';
 import { canCmemGatewayServe } from '../../shared/cmem-gateway.js';
 import { planUnattendedGatewayResume, unattendedGatewayResumesSpent } from './session/response-pacer.js';
+import { PROVIDER_SWITCH_BOUNDARY_ABORT_REASON } from './session/abort-reason.js';
+import { isSimpleTierMessage } from './session/tier-routing.js';
+import { claudeStandInStillServes } from '../../shared/claude-fallback-readiness.js';
 
 export const SESSION_END_WRAPUP_GRACE_MS = 5_000;
 
@@ -469,7 +472,7 @@ export class SessionManager {
    * so ingest can record the hook-spool hand-off before any await (and before
    * the generator kick) — see HookSpool.drain.
    */
-  queueObservation(sessionDbId: number, data: ObservationData): void {
+  queueObservation(sessionDbId: number, data: ObservationData, enqueuedAtEpochMs?: number): void {
     let session = this.sessions.get(sessionDbId);
     if (!session) {
       session = this.initializeSession(sessionDbId);
@@ -485,9 +488,13 @@ export class SessionManager {
       agentId: data.agentId,
       agentType: data.agentType,
       toolUseId: data.toolUseId,
+      // Bounded side references only; tool_input/tool_response stay text and
+      // the durable identity lives in media_events, never this RAM buffer ID.
+      ...(data.mediaRefs ? { mediaRefs: data.mediaRefs, mediaEventKey: data.mediaEventKey } : {}),
+      ...(data.mediaFailures ? { mediaFailures: data.mediaFailures } : {}),
     };
 
-    const messageId = this.buffer.enqueue(sessionDbId, message);
+    const messageId = this.buffer.enqueue(sessionDbId, message, enqueuedAtEpochMs);
     const queueDepth = this.buffer.getPendingCount(sessionDbId);
     const toolSummary = redactForLog(logger.formatTool(data.tool_name, data.tool_input));
     if (messageId === 0) {
@@ -502,7 +509,12 @@ export class SessionManager {
   }
 
   /** Synchronous on purpose — see queueObservation. */
-  queueSummarize(sessionDbId: number, lastAssistantMessage?: string): void {
+  queueSummarize(
+    sessionDbId: number,
+    lastAssistantMessage?: string,
+    promptNumber?: number,
+    enqueuedAtEpochMs?: number,
+  ): void {
     let session = this.sessions.get(sessionDbId);
     if (!session) {
       session = this.initializeSession(sessionDbId);
@@ -510,10 +522,11 @@ export class SessionManager {
 
     const message: PendingMessage = {
       type: 'summarize',
+      prompt_number: promptNumber ?? session.lastPromptNumber,
       last_assistant_message: lastAssistantMessage
     };
 
-    const messageId = this.buffer.enqueue(sessionDbId, message);
+    const messageId = this.buffer.enqueue(sessionDbId, message, enqueuedAtEpochMs);
     const queueDepth = this.buffer.getPendingCount(sessionDbId);
     if (messageId === 0) {
       logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=summarize | depth=${queueDepth}`, {
@@ -640,7 +653,7 @@ export class SessionManager {
       }
       this.clearTransportResume(sessionDbId);
       this.logParkedMessagesEndingWithSession(sessionDbId);
-      this.buffer.dispose(sessionDbId);
+      this.disposeSessionBuffer(sessionDbId);
       this.summarizeRescues.delete(sessionDbId);
       this.sessions.delete(sessionDbId);
       logger.info('SESSION', 'Session deleted', {
@@ -696,7 +709,7 @@ export class SessionManager {
 
     this.clearTransportResume(sessionDbId);
     this.logParkedMessagesEndingWithSession(sessionDbId);
-    this.buffer.dispose(sessionDbId);
+    this.disposeSessionBuffer(sessionDbId);
     this.summarizeRescues.delete(sessionDbId);
     this.sessions.delete(sessionDbId);
     logger.info('SESSION', 'Session removed from active sessions', {
@@ -716,13 +729,56 @@ export class SessionManager {
     });
   }
 
+  private disposeSessionBuffer(sessionDbId: number): void {
+    const pendingCount = this.buffer.getPendingCount(sessionDbId);
+    if (pendingCount > 0) {
+      logger.warn('SESSION', 'Discarding pending session messages', {
+        sessionId: sessionDbId,
+        pendingCount,
+      });
+    }
+    this.buffer.dispose(sessionDbId);
+  }
+
   async shutdownAll(): Promise<void> {
     const sessionIds = Array.from(this.sessions.keys());
+    const pendingCountAtShutdownStart = sessionIds.reduce((total, id) => total + this.buffer.getPendingCount(id), 0);
+    if (pendingCountAtShutdownStart > 0) {
+      logger.warn('SESSION', 'Worker shutdown starting with pending session messages', {
+        pendingCountAtShutdownStart,
+      });
+    }
     await Promise.all(sessionIds.map(id => this.deleteSession(id)));
   }
 
   getActiveSessionCount(): number {
     return this.sessions.size;
+  }
+
+  /**
+   * True when any in-memory session saw message/generator activity at or
+   * after the cutoff — the idle-exit monitor's session signal.
+   *
+   * Deliberately NOT a session count: a session that merely EXISTS is not
+   * activity. A standing memory seat registered at boot (Grok Bot awareness
+   * registers one), or a session idling between prompts, would hold
+   * `sessions.size` above zero for the life of the worker and make the
+   * worker permanently un-idleable. lastGeneratorActivity is stamped at
+   * session creation and refreshed as the generator drains messages, so this
+   * answers "did any session do work recently?" instead of "are any sessions
+   * registered?". Queued-but-unprocessed work is a separate signal
+   * (getTotalQueueDepth).
+   *
+   * A running generator is activity however old its last message: it may be
+   * waiting on an observer reply with nothing left in the buffer (the
+   * bare-prompt init turn). It cannot pin the worker awake for long, since a
+   * generator with no messages ends after IDLE_TIMEOUT_MS (3 min).
+   */
+  hasSessionActivitySince(cutoffMs: number): boolean {
+    for (const session of this.sessions.values()) {
+      if (session.generatorPromise || session.lastGeneratorActivity >= cutoffMs) return true;
+    }
+    return false;
   }
 
   /**
@@ -762,6 +818,16 @@ export class SessionManager {
     return this.buffer.getTotalDepth();
   }
 
+  /** See SessionMessageBuffer.getLastAssignedId. */
+  getLastBufferedMessageId(): number {
+    return this.buffer.getLastAssignedId();
+  }
+
+  /** See SessionMessageBuffer.getOldestPendingId. */
+  getOldestPendingMessageId(sessionDbId: number): number | null {
+    return this.buffer.getOldestPendingId(sessionDbId);
+  }
+
   async getTotalActiveWork(): Promise<number> {
     return this.getTotalQueueDepth();
   }
@@ -789,6 +855,33 @@ export class SessionManager {
         session.abortController.abort();
       }
     })) {
+      // The previous request is answered, so nothing is in flight: end this
+      // generator before it sends on the old provider. The next generator
+      // releases this claim when it starts.
+      // A Claude quota-fallback run (claudeAuthOverride) hands back the same
+      // way once the primary credential's window elapses or its breaker clears:
+      // the next admission probes the primary through the single probe claim.
+      const standInLapsed = Boolean(session.claudeAuthOverride)
+        && !claudeStandInStillServes(session.claudeAuthOverride!);
+      // A run tier routing put on the simple model keeps that model for its
+      // whole life, so a Bash/Edit/Write that arrives later ends it here and
+      // the next generator routes it to CLAUDE_MEM_MODEL (#4963).
+      const leavesSimpleTier = this.leavesSimpleTier(session, message);
+      if (session.providerSwitchPending || standInLapsed || leavesSimpleTier) {
+        logger.info('SESSION', standInLapsed
+          ? 'Primary Claude credential may serve again; ending the quota-fallback run at a message boundary'
+          : leavesSimpleTier
+            ? 'Ending the simple-tier run at a message boundary for a message it should not serve'
+            : 'Ending generator at a message boundary to switch providers', {
+          sessionDbId,
+          currentProvider: session.currentProvider,
+          ...(standInLapsed ? { credential: session.claudeAuthOverride } : {}),
+          ...(leavesSimpleTier ? { messageType: message.type, toolName: message.tool_name } : {}),
+        });
+        session.abortReason = PROVIDER_SWITCH_BOUNDARY_ABORT_REASON;
+        session.abortController.abort();
+        return;
+      }
       session.claimedMessageIds.push(message._persistentId);
       if (session.earliestPendingTimestamp === null) {
         session.earliestPendingTimestamp = message._originalTimestamp;
@@ -802,12 +895,21 @@ export class SessionManager {
     }
   }
 
+  /** Only ClaudeProvider reads modelOverride, so only its runs are held to the tier. */
+  private leavesSimpleTier(session: ActiveSession, message: PendingMessageWithId): boolean {
+    return Boolean(session.simpleTierRun)
+      && session.currentProvider === 'claude'
+      && !isSimpleTierMessage(message.type, message.tool_name);
+  }
+
   /** Extend the current request without advancing the asynchronous iterator. */
   claimNextObservation(sessionDbId: number, accepts: (message: PendingMessageWithId) => boolean): PendingMessageWithId | null {
     const session = this.sessions.get(sessionDbId);
     if (!session || session.abortController.signal.aborted) return null;
     const message = this.buffer.claimNextMatching(sessionDbId,
-      candidate => candidate.type === 'observation' && accepts(candidate));
+      candidate => candidate.type === 'observation'
+        && !this.leavesSimpleTier(session, candidate)
+        && accepts(candidate));
     if (message) {
       session.claimedMessageIds.push(message._persistentId);
       session.earliestPendingTimestamp = Math.min(session.earliestPendingTimestamp ?? message._originalTimestamp, message._originalTimestamp);

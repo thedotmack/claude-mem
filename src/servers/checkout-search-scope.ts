@@ -1,12 +1,12 @@
 import type { ProjectContext } from '../utils/project-name.js';
 
 /**
- * Extend an MCP search for the checkout's own project key to every key that
+ * Extend an MCP retrieval for the checkout's own project key to every key that
  * checkout reads (gate P2-5). The model only sees the current key, in the
  * SessionStart header, so `project` alone missed the memory the checkout
  * stored before a git-remote slug, an environment or a marker re-keyed it.
- * Searches for any other project, explicit `projects` lists and unscoped
- * searches pass through unchanged.
+ * Requests for any other project, explicit `projects` lists and unscoped
+ * requests pass through unchanged, keeping index, timeline and details aligned.
  */
 export function withCheckoutProjects<T extends { project?: unknown; projects?: unknown }>(
   args: T,

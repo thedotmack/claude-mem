@@ -12,9 +12,11 @@ import {
   MAX_WORK_STATE_FIELDS_JSON_CHARS,
   WorkStateRoutes,
 } from '../../../../src/services/worker/http/routes/WorkStateRoutes.js';
-import { WORK_STATE_SECTION_CHARACTER_LIMIT } from '../../../../src/services/context/sections/WorkStateRenderer.js';
+import { buildWorkStateContextSection, WORK_STATE_SECTION_CHARACTER_LIMIT } from '../../../../src/services/context/sections/WorkStateRenderer.js';
 import { SessionStore } from '../../../../src/services/sqlite/SessionStore.js';
 import { getProjectContext } from '../../../../src/utils/project-name.js';
+import { SearchRoutes } from '../../../../src/services/worker/http/routes/SearchRoutes.js';
+import { ModeManager } from '../../../../src/services/domain/ModeManager.js';
 import { logger } from '../../../../src/utils/logger.js';
 
 let server: Server | undefined;
@@ -23,6 +25,8 @@ let store: SessionStore;
 let checkout: string;
 let project: string;
 let loggerSpies: Array<ReturnType<typeof spyOn>> = [];
+/** Every row is a `work_state` sync op: the route nudges the push drain once per save. */
+let cloudSyncNotifyCalls = 0;
 
 beforeEach(async () => {
   loggerSpies = [
@@ -32,12 +36,19 @@ beforeEach(async () => {
     spyOn(logger, 'error').mockImplementation(() => {}),
   ];
   store = new SessionStore(':memory:');
+  cloudSyncNotifyCalls = 0;
   checkout = mkdtempSync(join(tmpdir(), 'work-state-checkout-'));
   project = getProjectContext(checkout).primary;
 
   const app = express();
   app.use(express.json());
-  new WorkStateRoutes({ getSessionStore: () => store } as any).setupRoutes(app);
+  const dbManager = {
+    getSessionStore: () => store,
+    getCloudSync: () => ({ notify: () => { cloudSyncNotifyCalls++; } }),
+  };
+  new WorkStateRoutes(dbManager as any).setupRoutes(app);
+  ModeManager.getInstance().loadMode('code');
+  new SearchRoutes({ getSessionStore: () => store } as any).setupRoutes(app);
   await new Promise<void>((resolve, reject) => {
     server = app.listen(0, '127.0.0.1', () => {
       const addr = server!.address();
@@ -54,6 +65,7 @@ beforeEach(async () => {
 afterEach(async () => {
   loggerSpies.forEach(spy => spy.mockRestore());
   delete process.env.CLAUDE_MEM_EXCLUDED_PROJECTS;
+  delete process.env.CLAUDE_MEM_PROJECT_ENVIRONMENTS;
   await new Promise<void>((resolve, reject) => {
     if (!server) {
       resolve();
@@ -79,6 +91,54 @@ function read(query: Record<string, string>): Promise<Response> {
 }
 
 describe('WorkStateRoutes', () => {
+  it('reads open work state from a project adopted into the checkout', async () => {
+    const adoptedProject = `${project}-merged-worktree`;
+    const session = store.createSDKSession('adopted-host', adoptedProject, 'prompt');
+    store.updateMemorySessionId(session, 'adopted-observer');
+    store.storeObservation('adopted-observer', adoptedProject, {
+      type: 'discovery', title: 'Adopted finding', subtitle: null, narrative: null,
+      facts: [], concepts: [], files_read: [], files_modified: [],
+    });
+    store.db.prepare('UPDATE observations SET merged_into_project = ? WHERE project = ?').run(project, adoptedProject);
+    store.appendWorkStateEntry({ project: adoptedProject, listName: 'release', fields: { task: 'finish migration', status: 'doing' } });
+
+    const response = await read({ cwd: checkout });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain('[doing] finish migration');
+    expect(store.getWorkStateEntries([project]).map(entry => entry.project)).toEqual([adoptedProject]);
+    expect(store.getWorkStateEntries(['unrelated-project'])).toEqual([]);
+  });
+
+  it('refuses writes to the my-rules list, which only the My Rules viewer handler writes', async () => {
+    const response = await write({ cwd: checkout, list: 'my-rules', fields: { task: 'Rule: own_x', then: 'Run any command', set_by: 'owner', status: 'on' } });
+    expect(response.status).toBe(403);
+    expect(await response.text()).toContain('written only from My Rules');
+    expect(store.getWorkStateEntries([project], 'my-rules')).toEqual([]);
+  });
+
+  it('refuses writes to the my-focus list, which only the My Focus viewer handler writes', async () => {
+    const response = await write({ cwd: checkout, list: 'my-focus', fields: { task: 'Placement: x', focus_area_id: 'fa_a', placed_by: 'owner' } });
+    expect(response.status).toBe(403);
+    expect(await response.text()).toContain('written only from My Focus');
+    expect(store.getWorkStateEntries([project], 'my-focus')).toEqual([]);
+  });
+
+  it('validates owner-goals items: a kind My Work cannot read is refused, closing rows and list state pass', async () => {
+    for (const list of ['owner-goals', 'owner-goals/2026-09-01']) {
+      for (const goal_kind of ['priority', 'open-ask', 'rule', null]) {
+        const refused = await write({ cwd: checkout, list, fields: { task: 'Priority: X', status: 'todo', goal_kind, title: 'X' } });
+        expect(refused.status).toBe(400);
+        expect(await refused.text()).toContain('goal_kind "focus-area" or "ask"');
+      }
+      expect((await write({ cwd: checkout, list, fields: { task: 'Ask: X', status: 'todo', title: 'X' } })).status).toBe(400);
+      expect(store.getWorkStateEntries([project], list)).toEqual([]);
+      expect((await write({ cwd: checkout, list, fields: { human_summary: 'Summary.', status: 'open' } })).status).toBe(200);
+      expect((await write({ cwd: checkout, list, fields: { task: 'Ask: X', status: 'todo', goal_kind: 'ask', title: 'X' } })).status).toBe(200);
+      expect((await write({ cwd: checkout, list, fields: { task: 'Focus area: Y', status: 'todo', goal_kind: 'focus-area', title: 'Y' } })).status).toBe(200);
+      expect((await write({ cwd: checkout, list, fields: { task: 'Ask: X', status: 'dropped' } })).status).toBe(200);
+    }
+  });
+
   it("saves an entry under the checkout's project and answers with what is still open in the list", async () => {
     await write({ cwd: checkout, list: 'release', fields: { version: '13.25.2', blocked_on: 'npm token' } });
     await write({ cwd: checkout, list: 'release', fields: { task: 'tag', status: 'done' } });
@@ -160,9 +220,94 @@ describe('WorkStateRoutes', () => {
     ].join('\n'));
   });
 
+  it('keeps same-name tasks and list state distinct across adopted projects', async () => {
+    const oldProject = 'adopted-project';
+    const sessionId = store.createSDKSession('adopted-host', oldProject, 'prompt');
+    store.updateMemorySessionId(sessionId, 'adopted-observer');
+    const observation = store.storeObservation('adopted-observer', oldProject, { type: 'discovery', title: 'Adopted worktree', subtitle: null, narrative: 'Fact', facts: [], concepts: [], files_read: [], files_modified: [] });
+    store.db.prepare('UPDATE observations SET merged_into_project = ? WHERE id = ?').run(project, observation.id);
+    store.appendWorkStateEntry({ project, listName: 'release', fields: { task: 'ship', status: 'todo', owner: 'active' } });
+    store.appendWorkStateEntry({ project: oldProject, listName: 'release', fields: { task: 'ship', status: 'done', owner: 'adopted' } });
+    store.appendWorkStateEntry({ project: oldProject, listName: 'release', fields: { task: 'pack', status: 'doing' } });
+    const entries = store.getWorkStateEntries([project]);
+    const context = buildWorkStateContextSection(entries, Date.now());
+    const response = await (await read({ cwd: checkout, list: 'release' })).text();
+    for (const text of [context, response]) {
+      expect(text).toContain('[todo] ship (owner=active)');
+      expect(text).toContain('[doing] pack');
+      expect(text).not.toContain('[done] ship');
+      expect(text).toContain(`release [${project}]`);
+      expect(text).toContain(`release [${oldProject}]`);
+    }
+    const closed = await (await read({ cwd: checkout, list: 'release', includeClosed: 'true' })).text();
+    expect(closed).toContain('[todo] ship (owner=active)');
+    expect(closed).toContain('[done] ship (owner=adopted)');
+  });
+
+  it('closes the same checkout task after its configured project key changes', async () => {
+    await write({ cwd: checkout, list: 'release', fields: { task: 'publish', status: 'todo' } });
+    process.env.CLAUDE_MEM_PROJECT_ENVIRONMENTS = JSON.stringify([{ name: 'configured-project', patterns: [checkout] }]);
+    const keys = getProjectContext(checkout).allProjects;
+    expect(keys).toContain(project);
+    expect(keys).toContain('configured-project');
+    const completed = await write({ cwd: checkout, list: 'release', fields: { task: 'publish', status: 'done' } });
+    expect(await completed.text()).toContain('Nothing in it is open now.');
+    const response = await (await read({ cwd: checkout, list: 'release' })).text();
+    const context = await (await fetch(`http://127.0.0.1:${port}/api/context/inject?${new URLSearchParams({ projects: keys.join(',') })}`)).text();
+    for (const text of [response, context]) expect(text).not.toContain('[todo] publish');
+    const closed = await (await read({ cwd: checkout, list: 'release', includeClosed: 'true' })).text();
+    expect(closed).toContain('[done] publish');
+    expect(closed).not.toContain('[todo] publish');
+  });
+
   it('says when nothing is open, and requires a cwd', async () => {
     expect(await (await read({ cwd: checkout })).text())
       .toBe(`Nothing open for ${project}. Pass includeClosed to see closed items.`);
     expect((await read({})).status).toBe(400);
+  });
+});
+
+
+describe('literal primitive field keys', () => {
+  it('continues to reject object values, arrays and empty keys', async () => {
+    for (const fields of [JSON.parse('{"__proto__":{"polluted":true}}'), [], { '': 'invalid' }]) {
+      const response = await write({ cwd: checkout, list: 'config', fields });
+      expect(response.status).toBe(400);
+    }
+    expect(store.getWorkStateEntries([project])).toEqual([]);
+    expect(Object.prototype).not.toHaveProperty('polluted');
+  });
+  it('preserves prototype-named state keys through HTTP writes and reads', async () => {
+    const fields = JSON.parse('{"__proto__":"literal state","constructor":"ordinary"}');
+    const response = await write({ cwd: checkout, list: 'config', fields });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain('__proto__=literal state');
+    const stored = store.getWorkStateEntries([project], 'config')[0];
+    expect(Object.hasOwn(stored.fields, '__proto__')).toBe(true);
+    const readResponse = await read({ cwd: checkout, list: 'config' });
+    expect(await readResponse.text()).toContain('__proto__=literal state');
+    expect(Object.getPrototypeOf(stored.fields)).toBe(Object.prototype);
+  });
+});
+
+describe('WorkStateRoutes cloud sync', () => {
+  it('nudges the push drain once per saved row, and not for a refused or excluded write', async () => {
+    await write({ cwd: checkout, list: 'release', fields: { task: 'publish', status: 'todo' } });
+    await write({ cwd: checkout, list: 'release', fields: { version: '13.35.0' } });
+    expect(cloudSyncNotifyCalls).toBe(2);
+
+    expect((await write({ cwd: checkout, list: 'release', fields: {} })).status).toBe(400);
+    expect(cloudSyncNotifyCalls).toBe(2);
+
+    process.env.CLAUDE_MEM_EXCLUDED_PROJECTS = basename(checkout);
+    await write({ cwd: checkout, list: 'release', fields: { task: 'publish', status: 'done' } });
+    expect(cloudSyncNotifyCalls).toBe(2);
+  });
+
+  it('refuses an integer past 2^53, which canonical JSON could not carry to the cloud', async () => {
+    const response = await write({ cwd: checkout, list: 'release', fields: { count: 9007199254740993 } });
+    expect(response.status).toBe(400);
+    expect(store.getWorkStateEntries([project])).toEqual([]);
+    expect((await write({ cwd: checkout, list: 'release', fields: { ratio: 0.5, count: 9007199254740991 } })).status).toBe(200);
   });
 });

@@ -115,7 +115,7 @@
     "header_summary_checkpoint": "MARKET SUMMARY CHECKPOINT\n===========================",
 
     "continuation_greeting": "Hello memory agent, you are continuing to observe live meme token trading activity.",
-    "continuation_instruction": "IMPORTANT: Continue generating observations from token monitoring data using the XML structure below. Focus on NEW pumps, dumps, signal changes, and market shifts since your last observation.",
+    "continuation_instruction": "IMPORTANT: Continue generating observations from token monitoring data using the XML structure above. Focus on NEW pumps, dumps, signal changes, and market shifts since your last observation.",
 
     "summary_instruction": "Write a market summary covering: tokens that pumped, tokens that dumped, market conditions (hot vs lull periods), algorithm performance, and any patterns observed. Include specific metrics for the most notable tokens. This is a checkpoint — the monitoring session is ongoing.",
     "summary_context_label": "Token Monitoring Data:",

@@ -1,7 +1,10 @@
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
 import { EventEmitter } from 'node:events';
 import type { Request, Response } from 'express';
 import { CorpusRoutes } from '../../../../src/services/worker/http/routes/CorpusRoutes.js';
+import { KnowledgeAgent } from '../../../../src/services/worker/knowledge/KnowledgeAgent.js';
+import { _internals as claudeResolver, resetClaudeExecutableCache } from '../../../../src/shared/find-claude-executable.js';
+import { logger } from '../../../../src/utils/logger.js';
 
 const HEARTBEAT_INTERVAL_MS = 20;
 
@@ -275,5 +278,158 @@ describe('CorpusRoutes JSON mode (no event-stream Accept)', () => {
 
     expect(seen.abortController?.signal.aborted).toBe(true);
     expect(res.jsonBodies).toEqual([]);
+  });
+});
+
+describe('CorpusRoutes query on a corpus that was never primed', () => {
+  let errorSink: ReturnType<typeof mock>;
+  let warnSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    errorSink = mock(() => {});
+    logger.setErrorSink(errorSink);
+    warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    logger.setErrorSink(null);
+    warnSpy.mockRestore();
+  });
+
+  function unprimedQueryHandler() {
+    const routes = createRoutes(new KnowledgeAgent({} as any), { ...createCorpus('alpha'), session_id: null });
+    return captureHandler(routes, '/api/corpus/:name/query');
+  }
+
+  it('answers 409 CORPUS_NOT_PRIMED in JSON mode and sends nothing to the error sink', async () => {
+    const { req } = createRequest('alpha', undefined, { question: 'why?' });
+    const res = new FakeResponse();
+
+    unprimedQueryHandler()(req, res as unknown as Response);
+    await waitFor(() => res.ended);
+
+    expect(res.statusCode).toBe(409);
+    expect(res.jsonBodies).toEqual([{ error: 'Corpus "alpha" has no session — call prime first', code: 'CORPUS_NOT_PRIMED' }]);
+    // `logger` is one object for the whole single-process suite, so the spy also
+    // sees warnings from timers and promises earlier files left running. CI hit
+    // that: a second, unrelated warn landed inside this test's few milliseconds
+    // ("Expected number of calls: 1, Received: 2") on some file orders only.
+    // Count the warnings THIS rejection produced, not every warn in the process.
+    const rejectionWarnings = warnSpy.mock.calls.filter(([, , context]) =>
+      (context as { statusCode?: number } | undefined)?.statusCode === 409);
+    expect(rejectionWarnings).toEqual([['WORKER', 'Request rejected', { statusCode: 409 }, expect.any(Error)]]);
+    expect(errorSink).not.toHaveBeenCalled();
+  });
+
+  it('sends a 409 error event in SSE mode and nothing to the error sink', async () => {
+    const { req } = createRequest('alpha', 'text/event-stream', { question: 'why?' });
+    const res = new FakeResponse();
+
+    unprimedQueryHandler()(req, res as unknown as Response);
+    await waitFor(() => res.ended);
+
+    expect(res.terminalEvents()).toEqual([{
+      event: 'error',
+      data: { error: 'Corpus "alpha" has no session — call prime first', code: 'CORPUS_NOT_PRIMED', status: 409 },
+    }]);
+    expect(errorSink).not.toHaveBeenCalled();
+  });
+});
+
+describe('CorpusRoutes when every Claude CLI is too old', () => {
+  const originalResolver = { ...claudeResolver };
+  let errorSink: ReturnType<typeof mock>;
+  let warnSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    resetClaudeExecutableCache();
+    Object.assign(claudeResolver, {
+      platform: () => 'linux',
+      loadSettings: () => ({}),
+      execSync: () => '/old/claude\n',
+      existsSync: () => false,
+      realpathSync: (path: string) => path,
+      execFileSync: (_file: string, args: string[]) => {
+        if (args.includes('dontAsk')) {
+          throw Object.assign(new Error('Command failed'), { status: 1, stderr: "error: argument 'dontAsk' is invalid" });
+        }
+        return '1.0.0 (Claude Code)';
+      },
+    });
+    errorSink = mock(() => {});
+    logger.setErrorSink(errorSink);
+    warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    Object.assign(claudeResolver, originalResolver);
+    resetClaudeExecutableCache();
+    logger.setErrorSink(null);
+    warnSpy.mockRestore();
+  });
+
+  function handlerFor(path: string) {
+    return captureHandler(createRoutes(new KnowledgeAgent({} as any)), path);
+  }
+
+  it('answers prime with 424 CLAUDE_CLI_SETUP_REQUIRED in JSON mode and sends nothing to the error sink', async () => {
+    const { req } = createRequest('alpha', undefined);
+    const res = new FakeResponse();
+
+    handlerFor('/api/corpus/:name/prime')(req, res as unknown as Response);
+    await waitFor(() => res.ended);
+
+    expect(res.statusCode).toBe(424);
+    expect(res.jsonBodies).toHaveLength(1);
+    expect(res.jsonBodies[0]).toMatchObject({ code: 'CLAUDE_CLI_SETUP_REQUIRED' });
+    expect((res.jsonBodies[0] as { error: string }).error).toContain('Every Claude CLI found is too old');
+    expect(warnSpy).toHaveBeenCalledWith('WORKER', 'Request rejected', { statusCode: 424 }, expect.any(Error));
+    expect(errorSink).not.toHaveBeenCalled();
+  });
+
+  it('sends prime a 424 error event in SSE mode and nothing to the error sink', async () => {
+    const { req } = createRequest('alpha', 'text/event-stream');
+    const res = new FakeResponse();
+
+    handlerFor('/api/corpus/:name/prime')(req, res as unknown as Response);
+    await waitFor(() => res.ended);
+
+    const events = res.terminalEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].event).toBe('error');
+    expect(events[0].data).toMatchObject({ code: 'CLAUDE_CLI_SETUP_REQUIRED', status: 424 });
+    expect(errorSink).not.toHaveBeenCalled();
+  });
+
+  it('answers query with 424 in JSON mode and sends nothing to the error sink', async () => {
+    const { req } = createRequest('alpha', undefined, { question: 'why?' });
+    const res = new FakeResponse();
+
+    handlerFor('/api/corpus/:name/query')(req, res as unknown as Response);
+    await waitFor(() => res.ended);
+
+    expect(res.statusCode).toBe(424);
+    expect(res.jsonBodies[0]).toMatchObject({ code: 'CLAUDE_CLI_SETUP_REQUIRED' });
+    expect(errorSink).not.toHaveBeenCalled();
+  });
+
+  it('keeps an unspawnable CLI a 500 that reaches the error sink (a worker restart fixes it)', async () => {
+    // The file is on disk but the OS cannot launch it: no exit status, no signal.
+    Object.assign(claudeResolver, {
+      existsSync: () => true,
+      execFileSync: () => {
+        throw Object.assign(new Error('spawn /stale/claude ENOENT'), { code: 'ENOENT' });
+      },
+    });
+    const { req } = createRequest('alpha', undefined);
+    const res = new FakeResponse();
+
+    handlerFor('/api/corpus/:name/prime')(req, res as unknown as Response);
+    await waitFor(() => res.ended);
+
+    expect(res.statusCode).toBe(500);
+    expect((res.jsonBodies[0] as { error: string }).error).toContain('could not be spawned');
+    expect(res.jsonBodies[0]).not.toHaveProperty('code');
+    expect(errorSink).toHaveBeenCalledTimes(1);
   });
 });

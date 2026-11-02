@@ -17,6 +17,7 @@ export const rawAdapter: PlatformAdapter = {
       toolResponse: r.toolResponse ?? r.tool_response,
       toolUseId: r.toolUseId ?? r.tool_use_id,
       transcriptPath: r.transcriptPath ?? r.transcript_path,
+      lastAssistantMessage: r.lastAssistantMessage ?? r.last_assistant_message,
       filePath: r.filePath ?? r.file_path,
       edits: r.edits,
     };

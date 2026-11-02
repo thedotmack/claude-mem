@@ -61,6 +61,9 @@ import {
   snapshotDescendants,
   survivingProcesses,
   describeProcesses,
+  reapSnapshottedDescendants,
+  reapOwnedLiveTree,
+  runForMatchingProcess,
   type ProcessIdentity,
 } from './helpers/process-tree.js';
 import { classifyPostKillState } from './helpers/ghost-state.js';
@@ -97,6 +100,7 @@ const FIXTURE = path.join(here, 'fixtures', 'ghost-worker-host.ts');
 
 interface FixtureHandle {
   pid: number;
+  startToken: string;
   port: number;
   chromaRootPid: number;
 }
@@ -106,12 +110,26 @@ let active: FixtureHandle | null = null;
 // `active` is only assigned by the ready event, so without this a fixture that
 // hangs before readiness has no teardown handle and its tree outlives the run.
 let spawnedFixturePid: number | null = null;
+// Reported by the running fixture itself before readiness. A PID alone is not
+// authority to tree-kill when a failed start reaches teardown later.
+let spawnedFixtureToken: string | null = null;
 // The port the fixture reported binding (it rides along on every progress
 // event), so a listener it leaves behind can be swept even without `ready`.
 let reportedPort: number | null = null;
 // A deadline failure cannot cancel ensureWorkerStarted() — track the call so
 // teardown can let it settle (or reap what it spawned) before cleanup runs.
 let inflightEnsureStarted: Promise<unknown> | null = null;
+// Captured while the fixture root is alive. The port can become free while
+// these exact descendants remain alive, so teardown must retain this proof.
+let descendantSnapshot: ProcessIdentity[] = [];
+
+function retainDescendants(target: ProcessIdentity[], entries: ProcessIdentity[]): void {
+  for (const entry of entries) {
+    if (!target.some(saved => saved.pid === entry.pid && saved.startToken === entry.startToken)) {
+      target.push(entry);
+    }
+  }
+}
 
 function bunExecutable(): string {
   return process.env.BUN_EXECUTABLE || process.execPath;
@@ -119,13 +137,17 @@ function bunExecutable(): string {
 
 /** Kill exactly ONE process — never its descendants (`/T` deliberately omitted). */
 function killProcessOnly(pid: number): void {
-  execFileSync('taskkill', ['/F', '/PID', String(pid)], {
-    stdio: 'ignore',
-    windowsHide: true,
-    // Bounded like every other child-process call in this gate: a wedged kill
-    // must fail the run loudly instead of hanging it invisibly.
-    timeout: 30_000,
-  });
+  try {
+    execFileSync('taskkill', ['/F', '/PID', String(pid)], {
+      stdio: 'ignore',
+      windowsHide: true,
+      // Bounded like every other child-process call in this gate.
+      timeout: 30_000,
+    });
+  } catch (error) {
+    // A child can exit between its final identity check and taskkill.
+    if ((error as { status?: number }).status !== 128) throw error;
+  }
 }
 
 function processExists(pid: number): boolean {
@@ -251,40 +273,68 @@ async function startFixture(): Promise<FixtureHandle> {
   const deadline = startedAt + FIXTURE_READY_TIMEOUT_MS;
   let lastStage = '(none)';
   let lastReportAt = startedAt;
+  let processedEventLines = 0;
 
   while (Date.now() < deadline) {
-    if (!processExists(spawnedPid)) {
-      throw new Error(
-        `fixture exited early (pid ${spawnedPid})\n--- events ---\n${readFileOrEmpty(eventsFile)}\n--- stderr ---\n${readFileOrEmpty(stderrFile)}`
-      );
-    }
-
     // Only the events file is a contract channel — stdout is deliberately NOT
     // read back. A fallback would mask a broken file channel exactly as it did
     // before (the env-var handshake never wrote the file, every local run
     // passed on the fallback anyway, and CI kept hanging), and on CI it cannot
     // save the run either: the buffering that hides the events is what
     // redirects to that same stdout.
-    for (const line of readJsonLines(eventsFile)) {
+    const eventLines = readJsonLines(eventsFile);
+    for (const line of eventLines.slice(processedEventLines)) {
       const payload = JSON.parse(line) as Record<string, unknown>;
       if (payload.event === 'progress') {
         lastStage = `${String(payload.stage)}@${String(payload.elapsedMs)}ms`;
         if (typeof payload.port === 'number') reportedPort = payload.port;
+        // Capture while the root still proves the ancestry. Readiness can
+        // fail after sidecars spawn, and then a post-mortem walk loses them.
+        if (spawnedFixtureToken) {
+          retainDescendants(descendantSnapshot, snapshotDescendants(spawnedPid, spawnedFixtureToken));
+        }
+        continue;
+      }
+      if (payload.event === 'spawned') {
+        if (payload.pid !== spawnedPid || typeof payload.startToken !== 'string' || !payload.startToken) {
+          throw new Error('fixture spawned event has an invalid pid or start token');
+        }
+        spawnedFixtureToken = payload.startToken;
         continue;
       }
       if (payload.event === 'ready') {
+        if (payload.pid !== spawnedPid || typeof payload.startToken !== 'string' || !payload.startToken) {
+          throw new Error('fixture ready event has an invalid pid or start token');
+        }
+        if (spawnedFixtureToken && spawnedFixtureToken !== payload.startToken) {
+          throw new Error('fixture start token changed between spawned and ready');
+        }
+        spawnedFixtureToken = payload.startToken;
         const handle: FixtureHandle = {
-          pid: payload.pid as number,
+          pid: spawnedPid,
+          startToken: payload.startToken,
           port: payload.port as number,
           chromaRootPid: payload.chromaRootPid as number,
         };
         active = handle;
+        // Take the ownership snapshot before returning, so even an assertion
+        // failure immediately after readiness leaves teardown safe targets.
+        retainDescendants(descendantSnapshot, snapshotDescendants(handle.pid, handle.startToken));
         console.log(`[ghost-gate] fixture ready after ${Date.now() - startedAt}ms: ${JSON.stringify(handle)}`);
         return handle;
       }
       if (payload.event === 'error') {
         throw new Error(`fixture failed: ${String(payload.message)}`);
       }
+    }
+    processedEventLines = eventLines.length;
+
+    // Read its last events before reporting an early exit: they can carry the
+    // self-reported token and port needed for safe failed-start cleanup.
+    if (!processExists(spawnedPid)) {
+      throw new Error(
+        `fixture exited early (pid ${spawnedPid})\n--- events ---\n${readFileOrEmpty(eventsFile)}\n--- stderr ---\n${readFileOrEmpty(stderrFile)}`
+      );
     }
 
     // Keep the log informative even if bun's test timeout kills the run: the
@@ -346,21 +396,40 @@ afterEach(async () => {
   active = null;
   const detachedPid = spawnedFixturePid;
   spawnedFixturePid = null;
+  const detachedToken = spawnedFixtureToken;
+  spawnedFixtureToken = null;
   const fixturePort = handle?.port ?? reportedPort;
   reportedPort = null;
+  const snapshot = descendantSnapshot;
+  descendantSnapshot = [];
   if (!handle && detachedPid === null) return;
 
-  const { killProcessTree } = await import('../../src/shared/kill-process-tree.js');
-  if (handle) {
-    await killProcessTree(handle.chromaRootPid).catch(() => {});
-    if (processExists(handle.pid)) {
-      killProcessOnly(handle.pid);
+  const cleanupErrors: string[] = [];
+  const cleanupSnapshots = [...snapshot];
+  const retainCleanupDescendants = (children: ProcessIdentity[]): void => {
+    retainDescendants(cleanupSnapshots, children);
+  };
+  const recordError = (stage: string, error: unknown): void => {
+    cleanupErrors.push(`${stage}: ${error instanceof Error ? error.message : String(error)}`);
+  };
+  if (handle && processExists(handle.pid)) {
+    try {
+      if (reapOwnedLiveTree(handle.pid, handle.startToken, killProcessOnly, undefined, undefined, retainCleanupDescendants) === null) {
+        cleanupErrors.push(`fixture pid ${handle.pid} is alive without a matching start token`);
+      }
+    } catch (error) {
+      recordError('fixture root', error);
     }
   } else if (detachedPid !== null && processExists(detachedPid)) {
-    // Readiness never arrived, so no chroma root pid was ever reported: take
-    // the whole tree from the fixture root, where the sidecar chain is still a
-    // descendant.
-    await killProcessTree(detachedPid).catch(() => {});
+    // A failed start has no trusted chroma root. Discover each child with its
+    // start token in the same row and never walk a reused fixture PID.
+    try {
+      if (reapOwnedLiveTree(detachedPid, detachedToken, killProcessOnly, undefined, undefined, retainCleanupDescendants) === null) {
+        cleanupErrors.push(`failed-readiness fixture pid ${detachedPid} is alive without a matching start token`);
+      }
+    } catch (error) {
+      recordError('failed-readiness fixture root', error);
+    }
   }
 
   const { paths } = await import('../../src/shared/paths.js');
@@ -368,27 +437,56 @@ afterEach(async () => {
   const killPidFileWorker = async (): Promise<void> => {
     const pidFile = paths.workerPid();
     if (!fs.existsSync(pidFile)) return;
-    const info = JSON.parse(fs.readFileSync(pidFile, 'utf-8')) as { pid?: number };
-    if (typeof info.pid === 'number' && info.pid !== handle?.pid) {
-      await killProcessTree(info.pid).catch(() => {});
+    try {
+      const info = JSON.parse(fs.readFileSync(pidFile, 'utf-8')) as { pid?: number; startToken?: string };
+      if (typeof info.pid === 'number' && info.pid !== handle?.pid && info.pid !== detachedPid && processExists(info.pid)) {
+        // Real replacement workers write a token in the PID file. Never use
+        // the current token as proof for a PID learned from an older file.
+        if (reapOwnedLiveTree(info.pid, info.startToken, killProcessOnly, undefined, undefined, retainCleanupDescendants) === null) {
+          cleanupErrors.push(`pid-file worker ${info.pid} is alive without a matching start token`);
+        }
+      }
+    } catch (error) {
+      recordError('pid-file worker', error);
+    } finally {
+      fs.rmSync(pidFile, { force: true });
     }
-    fs.rmSync(pidFile, { force: true });
   };
   await killPidFileWorker();
 
-  if (fixturePort === null) return;
+  // Reap the pre-kill-identified sidecars even when Bun released the port.
+  // Each PID is checked against a fresh, non-null start token before a
+  // single-process kill; recycled PIDs and unsnapshotted processes are left
+  // alone. A failed kill must remain visible after the port sweep.
+  try {
+    reapSnapshottedDescendants(snapshot);
+  } catch (error) {
+    recordError('snapshotted descendants', error);
+  }
 
   // Bounded sweep. The wait above is time-boxed, so a launcher that was still
   // mid-flight can spawn its worker or reclaim the chain AFTER the kills —
   // that late work is what survives cleanup and leaks a listener into the next
   // run. Repeat "reap the worker, free the port" until the port is quiet.
-  const { reclaimGhostListeningPort } = await import('../../src/shared/port-reclaim.js');
-  for (let attempt = 0; attempt < 3; attempt++) {
-    if (listeningOwnerPids(fixturePort).length === 0) return;
-    await reclaimGhostListeningPort(fixturePort).catch(() => {});
-    await new Promise(resolve => setTimeout(resolve, 2_000));
-    await killPidFileWorker();
+  if (fixturePort !== null) {
+    const { reclaimGhostListeningPort } = await import('../../src/shared/port-reclaim.js');
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        if (listeningOwnerPids(fixturePort).length === 0) break;
+        await reclaimGhostListeningPort(fixturePort);
+        await new Promise(resolve => setTimeout(resolve, 2_000));
+        await killPidFileWorker();
+      } catch (error) {
+        recordError('port sweep', error);
+      }
+    }
   }
+
+  const remaining = await waitForOrphansToClear(cleanupSnapshots, 5_000);
+  if (remaining.length > 0) {
+    cleanupErrors.push(`fixture or replacement sidecars survived teardown: ${describeProcesses(remaining)}`);
+  }
+  if (cleanupErrors.length > 0) throw new Error(cleanupErrors.join('\n'));
 });
 
 describe.if(RUN_GATE && IS_WINDOWS)('worker recovers from a ghost listener left by an out-of-band kill', () => {
@@ -398,7 +496,7 @@ describe.if(RUN_GATE && IS_WINDOWS)('worker recovers from a ghost listener left 
 
     // Snapshot BEFORE the kill: once the root exits, identity is the only
     // way to tell the survivors apart from anything that recycled its PID.
-    const snapshot = snapshotDescendants(fixture.pid);
+    const snapshot = descendantSnapshot;
     expect(snapshot.length).toBeGreaterThan(0);
     const names = snapshot.map(p => p.name.toLowerCase()).join(' ');
     expect(names).toMatch(/uv|python/);
@@ -411,7 +509,10 @@ describe.if(RUN_GATE && IS_WINDOWS)('worker recovers from a ghost listener left 
     // elapsed time that says whether it was the step that hung.
     const killStartedAt = Date.now();
     console.log(`[ghost-gate] killing fixture pid=${fixture.pid} out-of-band (taskkill /F /PID, no /T)`);
-    killProcessOnly(fixture.pid);
+    expect(
+      await runForMatchingProcess(fixture.pid, fixture.startToken, killProcessOnly),
+      'fixture PID must still carry its recorded start token before taskkill'
+    ).toBe(true);
     console.log(`[ghost-gate] taskkill returned after ${Date.now() - killStartedAt}ms`);
     await waitFor(
       () => !processExists(fixture.pid),

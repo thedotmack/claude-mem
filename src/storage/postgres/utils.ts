@@ -101,7 +101,7 @@ function sortJson(value: unknown): unknown {
       .reduce<Record<string, unknown>>((acc, key) => {
         acc[key] = sortJson(record[key]);
         return acc;
-      }, {});
+      }, Object.create(null));
   }
   return value;
 }

@@ -6,7 +6,7 @@ export function parseJsonArray(json: string | null): string[] {
   if (!json) return [];
   try {
     const parsed = JSON.parse(json);
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
   } catch (err: unknown) {
     logger.debug('PARSER', 'Failed to parse JSON array, using empty fallback', {
       preview: json?.substring(0, 50)

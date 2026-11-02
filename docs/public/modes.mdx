@@ -41,11 +41,15 @@ Mode: Code Development (code)
 
 Run `/mode-creator` to design a domain-specific note system through an interactive interview. It helps choose observation types and concept tags, writes and validates the mode, installs it under `~/.claude-mem/modes/`, activates it, optionally configures Telegram alerts, restarts the worker, and verifies the active mode in startup context.
 
-Custom modes in the data directory are durable across plugin upgrades. The worker searches user modes before bundled modes, while inherited custom modes can still use a bundled parent such as `code`:
+Custom modes in the data directory are durable across plugin upgrades. A same-named user file cannot shadow a bundled mode ID: for example, `~/.claude-mem/modes/code.json` is ignored and logged as an error. To customize bundled `code`, use a `code--<name>` override, which inherits the bundled parent:
 
 ```text
 ~/.claude-mem/modes/code--architecture-practice.json
 ```
+
+Custom IDs that do not collide with bundled modes load from the user modes directory. `CLAUDE_MEM_MODES_DIR` remains an explicit override for development and tests and may supply any ID. All loaded modes must have complete prompts and valid observation types and concepts after inheritance is applied.
+
+Invalid mode content is logged and rejected with its file paths and missing or invalid keys. A missing mode file is logged before falling back to validated bundled `code`; an invalid bundled fallback also throws.
 
 Avoid editing files inside the plugin cache because a plugin update can replace them.
 

@@ -62,7 +62,7 @@ export class SessionMessageBuffer {
    * tool_use_id) index: only observations that carry a toolUseId are deduped,
    * and only against others in the same session for this worker's lifetime.
    */
-  enqueue(sessionDbId: number, message: PendingMessage): number {
+  enqueue(sessionDbId: number, message: PendingMessage, enqueuedAt = Date.now()): number {
     const toolUseId = message.toolUseId;
     if (toolUseId) {
       const seen = this.getSeen(sessionDbId);
@@ -73,7 +73,7 @@ export class SessionMessageBuffer {
     }
 
     const id = this.nextId++;
-    this.getList(sessionDbId).push({ id, message, claimed: false, parked: false, enqueuedAt: Date.now() });
+    this.getList(sessionDbId).push({ id, message, claimed: false, parked: false, enqueuedAt });
     this.onMutate?.();
     this.signal(sessionDbId);
     return id;
@@ -160,6 +160,20 @@ export class SessionMessageBuffer {
   /** Messages still to be sent: parked ones are excluded, nothing will send them. */
   getPendingCount(sessionDbId: number): number {
     return (this.buffers.get(sessionDbId) ?? []).filter(m => !m.parked).length;
+  }
+
+  /** The id the last enqueued message got; every later message gets a higher one. */
+  getLastAssignedId(): number {
+    return this.nextId - 1;
+  }
+
+  /** The lowest id of the session's messages still to be stored, or null when none are. */
+  getOldestPendingId(sessionDbId: number): number | null {
+    let oldest: number | null = null;
+    for (const m of this.buffers.get(sessionDbId) ?? []) {
+      if (!m.parked && (oldest === null || m.id < oldest)) oldest = m.id;
+    }
+    return oldest;
   }
 
   getTotalDepth(): number {

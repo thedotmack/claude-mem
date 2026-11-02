@@ -1,0 +1,12 @@
+{
+  "session_id": "owned-codex-patch-fixture",
+  "turn_id": "owned-turn",
+  "cwd": "/owned-project",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "apply_patch",
+  "tool_use_id": "owned-call",
+  "tool_input": {
+    "command": "*** Begin Patch\n*** Update File: src/owned.ts\n@@\n-old\n+new\n*** End Patch"
+  },
+  "tool_response": "Success. Updated the following files:\nM src/owned.ts"
+}

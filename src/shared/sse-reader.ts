@@ -46,7 +46,11 @@ const CR = 13;
 const LF = 10;
 const COLON = 58;
 
-async function* iterateByteStream(
+/**
+ * Yields a byte stream's chunks. On an early stop or a read error it cancels the
+ * stream, and it always releases the reader lock, even when that cancel rejects.
+ */
+export async function* iterateByteStream(
   source: ReadableStream<Uint8Array> | AsyncIterable<Uint8Array>
 ): AsyncGenerator<Uint8Array> {
   if (!(source instanceof ReadableStream)) {
@@ -63,8 +67,11 @@ async function* iterateByteStream(
     }
   } finally {
     // Consumer stopped early (break/throw): release the underlying request.
-    if (!finished) await reader.cancel();
-    reader.releaseLock();
+    try {
+      if (!finished) await reader.cancel();
+    } finally {
+      reader.releaseLock();
+    }
   }
 }
 
@@ -100,7 +107,7 @@ export async function* readSseEvents(
     if (lineBytes.length === 0) {
       const hasEvent = eventName !== null || dataLines !== null;
       const dispatched: SseEvent | null = hasEvent
-        ? { event: eventName ?? 'message', data: (dataLines ?? []).join('\n'), ...(eventId !== undefined ? { id: eventId } : {}) }
+        ? { event: eventName || 'message', data: (dataLines ?? []).join('\n'), ...(eventId !== undefined ? { id: eventId } : {}) }
         : null;
       eventName = null; eventId = undefined; dataLines = null; eventBytes = 0;
       return dispatched;
@@ -123,7 +130,6 @@ export async function* readSseEvents(
   };
 
   for await (const chunk of iterateByteStream(source)) {
-    const ready: SseEvent[] = [];
     let lineStart = 0;
     for (let index = 0; index < chunk.length; index++) {
       const byte = chunk[index];
@@ -137,7 +143,10 @@ export async function* readSseEvents(
       pendingLineParts = [];
       pendingLineBytes = 0;
       const dispatched = handleLine(lineBytes);
-      if (dispatched) ready.push(dispatched);
+      if (dispatched) {
+        if (options.terminalEventNames?.includes(dispatched.event)) sawTerminalEvent = true;
+        yield dispatched;
+      }
       skipLeadingLF = byte === CR;
       lineStart = index + 1;
     }
@@ -146,10 +155,6 @@ export async function* readSseEvents(
       pendingLineParts.push(tail);
       pendingLineBytes += tail.length;
       assertWithinCap(pendingLineBytes);
-    }
-    for (const event of ready) {
-      if (options.terminalEventNames?.includes(event.event)) sawTerminalEvent = true;
-      yield event;
     }
   }
 

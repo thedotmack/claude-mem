@@ -215,7 +215,6 @@ Installer ini menangani dependensi, pengaturan plugin, konfigurasi penyedia AI, 
 
 - **[Konfigurasi](https://docs.claude-mem.ai/configuration)** - Variabel environment & pengaturan
 - **[Pengembangan](https://docs.claude-mem.ai/development)** - Membangun, testing, kontribusi
-- **[Release Branches](https://docs.claude-mem.ai/branches)** - Alur branch stable, core-dev, dan community-edge
 - **[Pemecahan Masalah](https://docs.claude-mem.ai/troubleshooting)** - Masalah umum & solusi
 
 ---
@@ -271,15 +270,6 @@ get_observations(ids=[123, 456])
 ```
 
 Lihat [Panduan Alat Pencarian](https://docs.claude-mem.ai/usage/search-tools) untuk contoh detail.
-
----
-
-## Release Branches
-
-Rilis stabil dikirim dari `main` dan dipublikasikan ke npm. `core-dev` dan
-`community-edge` adalah branch yang dijalankan dari source untuk perbaikan reliabilitas awal dan
-integrasi komunitas. Lihat **[Release Branches](https://docs.claude-mem.ai/branches)**
-untuk alur branch dan instruksi menjalankan versi non-stable.
 
 ---
 
@@ -384,11 +374,6 @@ Kontribusi sangat dipersilakan! Silakan:
 4. Perbarui dokumentasi
 5. Kirim Pull Request
 
-Claude-Mem dikirim dari tiga branch: `main` (stable), `core-dev`, dan
-`community-edge`. Hanya `main` yang dipublikasikan ke npm; yang lainnya dijalankan dari
-source. Lihat [Release Branches](https://docs.claude-mem.ai/branches) untuk
-strategi dan instruksi menjalankan secara lokal.
-
 Lihat [Panduan Pengembangan](https://docs.claude-mem.ai/development) untuk alur kerja kontribusi.
 
 ---
@@ -405,7 +390,6 @@ Lihat file [LICENSE](LICENSE) untuk detail lengkap. Lihat [docs/license.md](docs
 dan [docs/ip-boundary.md](docs/ip-boundary.md) untuk cakupan lisensi dan batas
 open/commercial.
 
-**Catatan tentang Ragtime**: Direktori `ragtime/` dilisensikan di bawah **Apache License 2.0**. Lihat [ragtime/LICENSE](ragtime/LICENSE) untuk detail.
 
 ---
 

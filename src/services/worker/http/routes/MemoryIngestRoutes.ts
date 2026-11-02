@@ -1,7 +1,6 @@
 import express, { Request, Response } from 'express';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
-import '../../../sqlite/manual-session.js';
 import {
   ingestMemorySource,
   claudeProjectsDir,
@@ -12,6 +11,8 @@ import {
 } from '../../../memory/ingest.js';
 import { computeObservationContentHash } from '../../../sqlite/observations/store.js';
 import { logger } from '../../../../utils/logger.js';
+import { logChromaWriteFailure } from '../../search/errors.js';
+import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 
 /**
  * Auto-memory ingest route. Stores Claude Code memory files DIRECTLY as
@@ -59,14 +60,18 @@ export class MemoryIngestRoutes extends BaseRouteHandler {
           .get(memorySessionId, contentHash) as { id: number } | undefined;
         if (existing) return { id: existing.id, deduped: true };
 
-        // Backdate to the file mtime via overrideTimestampEpoch.
+        // Backdate to the file mtime. Native notes are already distilled:
+        // preserve changed prose under a stable title instead of treating it
+        // as a repeated generated finding. Exact content replays still skip above.
         const result = sessionStore.storeObservation(
           memorySessionId,
           obs.project,
           observation,
           0,
           0,
-          obs.createdAtEpoch
+          obs.createdAtEpoch,
+          undefined,
+          { skipTitleDedup: true }
         );
 
         // A Tier-0 merge re-confirmed an existing row whose vector already
@@ -75,7 +80,7 @@ export class MemoryIngestRoutes extends BaseRouteHandler {
           chromaSync
             .syncObservation(result.id, memorySessionId, obs.project, observation, 0, result.createdAtEpoch)
             .catch((err: unknown) => {
-              logger.error('CHROMA', 'memory-ingest Chroma sync failed', { id: result.id }, err as Error);
+              logChromaWriteFailure('CHROMA', 'memory-ingest Chroma sync failed', { id: result.id }, err);
             });
         }
 
@@ -85,6 +90,13 @@ export class MemoryIngestRoutes extends BaseRouteHandler {
   }
 
   private async handleIngest(req: Request, res: Response): Promise<void> {
+    // A full-tree ingest stores observations and nudges Chroma, so other
+    // localhost pages may not trigger it — same policy as /api/memory/save.
+    // Origin-less clients (the npx CLI, curl) keep the loopback-trust model.
+    if (isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({ error: 'Memory ingests from a different localhost origin are not allowed' });
+      return;
+    }
     const body = (req.body ?? {}) as { source?: unknown; all?: unknown; requireCwd?: unknown };
     const source = typeof body.source === 'string' ? body.source.trim() : '';
     const all = body.all === true;

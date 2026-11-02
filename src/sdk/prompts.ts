@@ -1,7 +1,16 @@
 
+import { retainTextHeadTail } from '../shared/text-truncation.js';
 import { logger } from '../utils/logger.js';
 import { REDACTION_MARKER_HINT, hasRedactionMarker } from '../utils/redaction.js';
 import type { ModeConfig } from '../services/domain/types.js';
+import type { RequiredPromptKey } from '../services/domain/mode-validation.js';
+import {
+  anthropicImageSourceOf,
+  claudeReadImageFileOf,
+  declaredReadImageMimeType,
+  isMcpInlineImageBlock,
+  openAiImageUrlOf,
+} from '../shared/native-image-shapes.js';
 
 export const SUMMARY_MODE_MARKER = 'MODE SWITCH: PROGRESS SUMMARY';
 
@@ -22,44 +31,76 @@ export interface SDKSession {
   last_assistant_message?: string;
 }
 
+function getPrompt(mode: ModeConfig, key: RequiredPromptKey): string {
+  const prompt = mode.prompts?.[key];
+  const allowEmpty = key === 'format_examples' || key === 'xml_file_placeholder';
+  if (typeof prompt !== 'string' || (!allowEmpty && !prompt.trim())) {
+    throw new Error(`Mode "${mode.id ?? mode.name}" is missing prompt "${key}"`);
+  }
+  return prompt;
+}
+
 function observationSkeleton(mode: ModeConfig): string {
-  return `${mode.prompts.output_format_header}
+  return `${getPrompt(mode, 'output_format_header')}
 
 <observation>
   <type>[ ${mode.observation_types.map(t => t.id).join(' | ')} ]</type>
   <!--
-    ${mode.prompts.type_guidance}
+    ${getPrompt(mode, 'type_guidance')}
   -->
-  <title>${mode.prompts.xml_title_placeholder}</title>
-  <subtitle>${mode.prompts.xml_subtitle_placeholder}</subtitle>
+  <title>${getPrompt(mode, 'xml_title_placeholder')}</title>
+  <subtitle>${getPrompt(mode, 'xml_subtitle_placeholder')}</subtitle>
   <facts>
-    <fact>${mode.prompts.xml_fact_placeholder}</fact>
-    <fact>${mode.prompts.xml_fact_placeholder}</fact>
-    <fact>${mode.prompts.xml_fact_placeholder}</fact>
+    <fact>${getPrompt(mode, 'xml_fact_placeholder')}</fact>
+    <fact>${getPrompt(mode, 'xml_fact_placeholder')}</fact>
+    <fact>${getPrompt(mode, 'xml_fact_placeholder')}</fact>
   </facts>
   <!--
-    ${mode.prompts.field_guidance}
+    ${getPrompt(mode, 'field_guidance')}
   -->
-  <narrative>${mode.prompts.xml_narrative_placeholder}</narrative>
+  <narrative>${getPrompt(mode, 'xml_narrative_placeholder')}</narrative>
   <concepts>
-    <concept>${mode.prompts.xml_concept_placeholder}</concept>
-    <concept>${mode.prompts.xml_concept_placeholder}</concept>
+    <concept>${getPrompt(mode, 'xml_concept_placeholder')}</concept>
+    <concept>${getPrompt(mode, 'xml_concept_placeholder')}</concept>
   </concepts>
   <!--
-    ${mode.prompts.concept_guidance}
+    ${getPrompt(mode, 'concept_guidance')}
   -->
   <files_read>
-    <file>${mode.prompts.xml_file_placeholder}</file>
-    <file>${mode.prompts.xml_file_placeholder}</file>
+    <file>${getPrompt(mode, 'xml_file_placeholder')}</file>
+    <file>${getPrompt(mode, 'xml_file_placeholder')}</file>
   </files_read>
   <files_modified>
-    <file>${mode.prompts.xml_file_placeholder}</file>
-    <file>${mode.prompts.xml_file_placeholder}</file>
+    <file>${getPrompt(mode, 'xml_file_placeholder')}</file>
+    <file>${getPrompt(mode, 'xml_file_placeholder')}</file>
   </files_modified>
 </observation>
-${mode.prompts.format_examples}
+${getPrompt(mode, 'format_examples')}
 
-${mode.prompts.footer}`;
+${getPrompt(mode, 'footer')}`;
+}
+
+/**
+ * The observer instructions every init and continuation prompt opens with.
+ *
+ * A provider prompt cache (OpenRouter, the cmem.ai gateway) hits only on a
+ * byte-identical prefix. This block depends on the mode alone, so it goes
+ * first and everything per-session (prior context, the user's request, the
+ * continuation greeting, dates, project names) follows it: every generation,
+ * session and user then shares one cacheable start.
+ */
+function observerInstructions(mode: ModeConfig): string {
+  return `${getPrompt(mode, 'system_identity')}
+
+${getPrompt(mode, 'observer_role')}
+
+${getPrompt(mode, 'spatial_awareness')}
+
+${getPrompt(mode, 'recording_focus')}
+
+${getPrompt(mode, 'skip_guidance')}
+
+${observationSkeleton(mode)}`;
 }
 
 export function buildInitPrompt(
@@ -69,7 +110,7 @@ export function buildInitPrompt(
   mode: ModeConfig,
   priorContext: string = '',
 ): string {
-  return `${mode.prompts.system_identity}
+  return `${observerInstructions(mode)}
 ${wrapPriorContext(priorContext)}
 
 <observed_from_primary_session>
@@ -77,17 +118,7 @@ ${wrapPriorContext(priorContext)}
   <requested_at>${new Date().toISOString().split('T')[0]}</requested_at>
 </observed_from_primary_session>
 
-${mode.prompts.observer_role}
-
-${mode.prompts.spatial_awareness}
-
-${mode.prompts.recording_focus}
-
-${mode.prompts.skip_guidance}
-
-${observationSkeleton(mode)}
-
-${mode.prompts.header_memory_start}`;
+${getPrompt(mode, 'header_memory_start')}`;
 }
 
 /**
@@ -168,10 +199,14 @@ function isElided(container: Record<string, unknown>): boolean {
   return typeof container.elided === 'string';
 }
 
-function elideImageSource(source: Record<string, unknown>, dataKey: string = 'data'): Record<string, unknown> {
+function elideImageSource(
+  source: Record<string, unknown>,
+  dataKey: string = 'data',
+  declaredMimeType: string | undefined = typeof source.media_type === 'string' ? source.media_type : undefined,
+): Record<string, unknown> {
   const data = source[dataKey];
   const elided: Record<string, unknown> = { elided: 'image data withheld from the observer' };
-  if (typeof source.media_type === 'string') elided.media_type = source.media_type;
+  if (declaredMimeType) elided.media_type = declaredMimeType;
   if (typeof data === 'string') elided.bytes = data.length;
   return elided;
 }
@@ -240,9 +275,8 @@ function stripImagePayloads(value: unknown, depth = 0): unknown {
   // Anthropic content block: { type: 'image', source: { data: '<base64>' } }.
   // A url-backed source is the same case as OpenAI's plain http URL — short,
   // and it carries signal — so only an inlined payload is removed.
-  const source = record.source;
-  if (record.type === 'image' && source !== null && typeof source === 'object') {
-    const record_source = source as Record<string, unknown>;
+  const record_source = anthropicImageSourceOf(record);
+  if (record_source) {
     if (isElided(record_source)) return value;
     const url = record_source.url;
     if (typeof url === 'string' && !isDataUrl(url)) {
@@ -252,32 +286,31 @@ function stripImagePayloads(value: unknown, depth = 0): unknown {
   }
 
   // Claude Code's Read returns an image file as
-  // { type: 'image', file: { base64: '<base64>' } } — no `source`, so the
-  // block above never matched it and a video frame or screenshot read off
-  // disk went to the model whole (#3606).
-  const file = record.file;
-  if (record.type === 'image' && file !== null && typeof file === 'object') {
-    const record_file = file as Record<string, unknown>;
+  // { type: 'image', file: { base64: '<base64>', type: 'image/png', ... } } —
+  // no `source`, so the block above never matched it and a video frame or
+  // screenshot read off disk went to the model whole (#3606).
+  const record_file = claudeReadImageFileOf(record);
+  if (record_file) {
     if (isElided(record_file)) return value;
     if (typeof record_file.base64 === 'string') {
-      return { type: 'image', file: elideImageSource(record_file, 'base64') };
+      return { type: 'image', file: elideImageSource(record_file, 'base64', declaredReadImageMimeType(record_file)) };
     }
   }
 
   // MCP tool result: { type: 'image', data: '<base64>', mimeType } — the bytes
   // sit on the block itself, so neither branch above matched it and a
   // browser-automation screenshot went to the condense pass whole.
-  if (record.type === 'image' && typeof record.data === 'string') {
+  if (isMcpInlineImageBlock(record)) {
     const elided: Record<string, unknown> = { type: 'image', ...elideImageSource(record) };
     if (typeof record.mimeType === 'string') elided.mimeType = record.mimeType;
     return elided;
   }
 
   // OpenAI content block: { type: 'image_url', image_url: { url: 'data:...' } }.
-  const imageUrl = record.image_url;
-  if (record.type === 'image_url' && imageUrl !== null && typeof imageUrl === 'object') {
-    if (isElided(imageUrl as Record<string, unknown>)) return value;
-    const url = (imageUrl as Record<string, unknown>).url;
+  const imageUrl = openAiImageUrlOf(record);
+  if (imageUrl) {
+    if (isElided(imageUrl)) return value;
+    const url = imageUrl.url;
     // A plain http(s) URL is short and can carry signal; only a data: URL is
     // the inlined payload this exists to remove.
     if (typeof url === 'string' && isDataUrl(url)) {
@@ -337,8 +370,7 @@ function truncateObservationField(value: unknown, maxChars: number = OBS_PROMPT_
   if (raw.length <= maxChars) return raw;
   const headChars = Math.max(0, Math.floor(maxChars * OBS_PROMPT_FIELD_HEAD_RATIO));
   const tailChars = Math.max(0, Math.floor(maxChars * OBS_PROMPT_FIELD_TAIL_RATIO));
-  const head = raw.slice(0, headChars);
-  const tail = tailChars > 0 ? raw.slice(-tailChars) : '';
+  const { head, tail } = retainTextHeadTail(raw, headChars, tailChars);
   const elidedChars = Math.max(0, raw.length - head.length - tail.length);
   return `${head}\n... <elided chars="${elidedChars}" original_size_chars="${raw.length}" reason="oversize" /> ...\n${tail}`;
 }
@@ -438,25 +470,25 @@ export function buildSummaryPrompt(session: SDKSession, mode: ModeConfig): strin
 • Do NOT use <observation> tags. <observation> output will be DISCARDED and cause a system error.
 • The ONLY accepted root tag is <summary>. Any other root tag is a protocol violation.
 
-${mode.prompts.header_summary_checkpoint}
-${mode.prompts.summary_instruction}
+${getPrompt(mode, 'header_summary_checkpoint')}
+${getPrompt(mode, 'summary_instruction')}
 
-${mode.prompts.summary_context_label}
+${getPrompt(mode, 'summary_context_label')}
 ${lastAssistantMessage}
 ${hasRedactionMarker(lastAssistantMessage) ? `\n${REDACTION_MARKER_HINT}\n` : ''}
-${mode.prompts.summary_format_instruction}
+${getPrompt(mode, 'summary_format_instruction')}
 <summary>
-  <request>${mode.prompts.xml_summary_request_placeholder}</request>
-  <investigated>${mode.prompts.xml_summary_investigated_placeholder}</investigated>
-  <learned>${mode.prompts.xml_summary_learned_placeholder}</learned>
-  <completed>${mode.prompts.xml_summary_completed_placeholder}</completed>
-  <next_steps>${mode.prompts.xml_summary_next_steps_placeholder}</next_steps>
-  <notes>${mode.prompts.xml_summary_notes_placeholder}</notes>
+  <request>${getPrompt(mode, 'xml_summary_request_placeholder')}</request>
+  <investigated>${getPrompt(mode, 'xml_summary_investigated_placeholder')}</investigated>
+  <learned>${getPrompt(mode, 'xml_summary_learned_placeholder')}</learned>
+  <completed>${getPrompt(mode, 'xml_summary_completed_placeholder')}</completed>
+  <next_steps>${getPrompt(mode, 'xml_summary_next_steps_placeholder')}</next_steps>
+  <notes>${getPrompt(mode, 'xml_summary_notes_placeholder')}</notes>
 </summary>
 
 REMINDER: Your response MUST use <summary> as the root tag, NOT <observation>.
 If there is genuinely nothing to summarize, reply with exactly <skip_summary reason="nothing durable" /> instead of an empty response or prose.
-${mode.prompts.summary_footer}`;
+${getPrompt(mode, 'summary_footer')}`;
 }
 
 export function buildContinuationPrompt(
@@ -466,7 +498,9 @@ export function buildContinuationPrompt(
   mode: ModeConfig,
   priorContext: string = '',
 ): string {
-  return `${mode.prompts.continuation_greeting}
+  return `${observerInstructions(mode)}
+
+${getPrompt(mode, 'continuation_greeting')}
 ${wrapPriorContext(priorContext)}
 
 <observed_from_primary_session>
@@ -474,21 +508,9 @@ ${wrapPriorContext(priorContext)}
   <requested_at>${new Date().toISOString().split('T')[0]}</requested_at>
 </observed_from_primary_session>
 
-${mode.prompts.system_identity}
+${getPrompt(mode, 'continuation_instruction')}
 
-${mode.prompts.observer_role}
-
-${mode.prompts.spatial_awareness}
-
-${mode.prompts.recording_focus}
-
-${mode.prompts.skip_guidance}
-
-${mode.prompts.continuation_instruction}
-
-${observationSkeleton(mode)}
-
-${mode.prompts.header_memory_continued}`;
+${getPrompt(mode, 'header_memory_continued')}`;
 }
 
 /** The user-request block buildInitPrompt and buildContinuationPrompt embed. */

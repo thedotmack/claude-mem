@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { persistServerSettings, readServerKeyRotationState } from '../src/services/hooks/server-bootstrap.js';
+import { HOOK_API_KEY_SCOPES, persistServerSettings, readServerKeyRotationState } from '../src/services/hooks/server-bootstrap.js';
+import { DEFAULT_LOCAL_API_KEY_SCOPES } from '../src/server/auth/sqlite-api-key-service.js';
 
 const VALUES = { apiKey: 'cmem_testkey', projectId: 'proj-test' };
 
@@ -171,5 +172,34 @@ describe('readServerKeyRotationState: only the retry marker resumes a rotation',
       CLAUDE_MEM_SERVER_PREVIOUS_API_KEY_ID: '',
     })).toEqual({ pendingRevocationKeyId: null, currentApiKey: 'cmem_beta', currentProjectId: 'proj-beta' });
     expect(readServerKeyRotationState(null)).toEqual({ pendingRevocationKeyId: null, currentApiKey: null, currentProjectId: null });
+  });
+});
+
+// The installer writes this key into ~/.claude-mem/settings.json and every hook
+// then authenticates with it against the server runtime's /v1 routes. Those
+// routes gate reads on `memories:read` and writes on `memories:write`
+// (ServerV1PostgresRoutes.ts), and hasRequiredScopes() requires exact scope
+// membership with no alias/expansion. A bootstrapped key whose scopes do not
+// include those two values 403s on every route — the server runtime is unusable
+// for hooked clients even though the installer just reported success.
+describe('HOOK_API_KEY_SCOPES satisfies the /v1 route scope requirements', () => {
+  // Mirrors hasRequiredScopes() in src/server/middleware/postgres-auth.ts.
+  const hasRequiredScopes = (grantedScopes: string[], requiredScopes: string[]): boolean =>
+    requiredScopes.length === 0
+    || grantedScopes.includes('*')
+    || requiredScopes.every(scope => grantedScopes.includes(scope));
+
+  it('grants memories:write, which every /v1 write route requires', () => {
+    expect(hasRequiredScopes([...HOOK_API_KEY_SCOPES], ['memories:write'])).toBe(true);
+  });
+
+  it('grants memories:read, which every /v1 read route requires', () => {
+    expect(hasRequiredScopes([...HOOK_API_KEY_SCOPES], ['memories:read'])).toBe(true);
+  });
+
+  it('covers the same route scopes as a default local (SQLite) key', () => {
+    for (const scope of DEFAULT_LOCAL_API_KEY_SCOPES) {
+      expect([...HOOK_API_KEY_SCOPES]).toContain(scope);
+    }
   });
 });

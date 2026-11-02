@@ -16,13 +16,14 @@ interface SessionDetailPageProps {
   items: FeedItem[];
   isLoading: boolean;
   hasMore: boolean;
+  loadError?: string | null;
   onLoadMore: () => void;
   onDeleted: (itemType: DeletableItemType, id: number) => void;
   onBack: () => void;
 }
 
 export function SessionDetailPage({
-  tabs, session, title, items, isLoading, hasMore, onLoadMore, onDeleted, onBack,
+  tabs, session, title, items, isLoading, hasMore, loadError, onLoadMore, onDeleted, onBack,
 }: SessionDetailPageProps) {
   const [activeCategories, setActiveCategories] = useState<Set<string>>(new Set());
   const currentSessionKey = sessionKey(session);
@@ -83,6 +84,7 @@ export function SessionDetailPage({
       onDeleted={onDeleted}
       isLoading={isLoading}
       hasMore={hasMore}
+      loadError={loadError}
     />
   );
 }

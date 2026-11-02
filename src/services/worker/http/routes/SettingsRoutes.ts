@@ -15,7 +15,9 @@ import { clearPortCache } from '../../../../shared/worker-utils.js';
 import { snapshotDependencyHealth } from '../../../../shared/dependency-health.js';
 import { ensureSettingsDocument, updateSettingsDocument } from '../../../../shared/settings-document.js';
 import { isHttpUrl } from '../../../../shared/openrouter-base-url.js';
+import { parseContextCountValue } from '../../../../shared/context-count.js';
 import { OPENROUTER_REASONING_EFFORTS, parseOpenRouterReasoningEffort } from '../../OpenRouterProvider.js';
+import { parseOpenAICompatReasoning } from '../../reasoning-budget.js';
 import { CODEX_REASONING_EFFORTS, isCodexReasoningEffort } from '../../CodexProvider.js';
 import { emitContextInvalidation, noteUserSettingsSaved } from '../../../../shared/context-invalidation.js';
 
@@ -46,12 +48,14 @@ const SECRET_SETTING_KEYS = new Set([
   'CLAUDE_MEM_SERVER_API_KEY',
   'CLAUDE_MEM_SERVER_BETA_API_KEY',
   'CLAUDE_MEM_TV_TOKEN',
+  'CLAUDE_MEM_WORKER_INGEST_TOKEN',
   'CLAUDE_MEM_PRO_MEMORY_KEY',
   'CLAUDE_MEM_REDIS_URL',
   // Brainbeat webhook: the shared secret, and the URL (it can carry userinfo
   // or query tokens). Both are file/env only — never on the POST whitelist.
   'CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET',
   'CLAUDE_MEM_GROK_BOT_WEBHOOK_URL',
+  'CLAUDE_MEM_NOTION_TOKEN',
 ]);
 
 function maskSecretString(value: string): string {
@@ -119,6 +123,7 @@ function withoutEnvironmentEchoes(posted: Record<string, unknown>, settingsPath:
 const FILE_ONLY_SETTING_KEYS = new Set([
   'CLAUDE_CODE_PATH',
   'CLAUDE_MEM_CODEX_PATH',
+  'CLAUDE_MEM_CHROMA_UVX_PATH',
 ]);
 
 const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
@@ -231,7 +236,8 @@ export class SettingsRoutes extends BaseRouteHandler {
     // GET and an unchanged mask is skipped on POST. Observation TV / Chroma /
     // Telegram / CloudSync / Redis tokens remain file/env only.
     //
-    // Executable spawn paths (CLAUDE_CODE_PATH, CLAUDE_MEM_CODEX_PATH) are also
+    // Executable spawn paths (CLAUDE_CODE_PATH, CLAUDE_MEM_CODEX_PATH,
+    // CLAUDE_MEM_CHROMA_UVX_PATH) are also
     // file/env only: each value is a binary the worker spawns, so it must not be
     // HTTP-writable.
     const settingKeys = [
@@ -259,15 +265,23 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_OPENAI_COMPAT_PRESET',
       'CLAUDE_MEM_OPENAI_COMPAT_BASE_URL',
       'CLAUDE_MEM_OPENAI_COMPAT_MODEL',
+      'CLAUDE_MEM_OPENAI_COMPAT_REASONING',
       'CLAUDE_MEM_OPENROUTER_REASONING_EFFORT',
       'CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW',
       'CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS',
       'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER',
       'CLAUDE_MEM_QUOTA_FALLBACK_MODEL',
+      'CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD',
+      'CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER',
+      'CLAUDE_MEM_WORK_VIEW_COPY_MODEL',
+      'CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL',
+      'CLAUDE_MEM_WORK_VIEW_CODEX_MODEL',
+      'CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL',
       'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
       'CLAUDE_MEM_CLAUDE_CONFIG_DIR',
+      'CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR',
       'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
@@ -279,8 +293,12 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_SESSION_COUNT',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
+      'CLAUDE_MEM_FILE_READ_GATE_ENABLED',
       'CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY',
       'CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED',
+      'CLAUDE_MEM_BACKUP_ENABLED',
+      'CLAUDE_MEM_BACKUP_INTERVAL_HOURS',
+      'CLAUDE_MEM_BACKUP_RETAIN_COUNT',
     ];
 
     // Every rule runs inside the settings-document boundary's mutate callback,
@@ -324,6 +342,18 @@ export class SettingsRoutes extends BaseRouteHandler {
   });
 
   private handleToggleMcp = this.wrapHandler((req: Request, res: Response): void => {
+    // The MCP toggle renames the plugin's .mcp.json, so it gets the same
+    // browser cross-port rejection as POST /api/settings: the viewer's own
+    // page keeps working, another localhost origin cannot flip the MCP server.
+    // Origin-less clients (hooks, CLI, curl) keep the loopback-trust model.
+    if (isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({
+        success: false,
+        error: 'Settings writes from a different localhost origin are not allowed'
+      });
+      return;
+    }
+
     const { enabled } = req.body as z.infer<typeof toggleMcpSchema>;
 
     this.toggleMcp(enabled);
@@ -355,13 +385,18 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
-    // Empty is valid: it turns the fallback off.
+    // Empty is valid: it means the default, the Anthropic plan. 'off' turns it off.
     if (settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER) {
-      // The names provider-dispatch's QUOTA_FALLBACK_PROVIDERS accepts.
-      const validFallbacks = ['claude', 'gemini', 'openrouter', 'openai-compatible'];
+      // The names provider-dispatch's QUOTA_FALLBACK_PROVIDERS accepts, plus QUOTA_FALLBACK_OFF.
+      const validFallbacks = ['claude', 'gemini', 'openrouter', 'openai-compatible', 'off'];
       if (!validFallbacks.includes(settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER)) {
-        return { valid: false, error: 'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER must be empty (off), "claude", "gemini", "openrouter", or "openai-compatible"' };
+        return { valid: false, error: 'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER must be "claude" (or empty, the default), "gemini", "openrouter", "openai-compatible", or "off"' };
       }
+    }
+
+    if (settings.CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD
+      && !['subscription', 'api-key'].includes(settings.CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD)) {
+      return { valid: false, error: 'CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD must be "subscription", "api-key", or empty (off, the default)' };
     }
 
     if (settings.CLAUDE_MEM_CLAUDE_AUTH_METHOD) {
@@ -378,9 +413,9 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
-    if (settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS) {
-      const obsCount = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10);
-      if (isNaN(obsCount) || obsCount < 1 || obsCount > 200) {
+    if (settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS !== undefined) {
+      const obsCount = parseContextCountValue(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS);
+      if (obsCount === undefined || obsCount < 1 || obsCount > 200) {
         return { valid: false, error: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 1 and 200' };
       }
     }
@@ -456,6 +491,18 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
+    // #4689 — same shape guard as CLAUDE_MEM_CLAUDE_CONFIG_DIR: the value is
+    // stamped verbatim onto the SDK subprocess env (EnvManager's
+    // buildIsolatedEnv), so a type-confused payload must not reach the child.
+    if (
+      settings.CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR !== undefined &&
+      settings.CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR !== ''
+    ) {
+      if (typeof settings.CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR !== 'string' || !settings.CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR.trim()) {
+        return { valid: false, error: 'CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR must be a non-empty path string, or "" to keep transcripts beside the credential profile' };
+      }
+    }
+
     const booleanSettings = [
       'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
@@ -463,7 +510,9 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
+      'CLAUDE_MEM_FILE_READ_GATE_ENABLED',
       'CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY',
+      'CLAUDE_MEM_BACKUP_ENABLED',
     ];
 
     for (const key of booleanSettings) {
@@ -472,17 +521,35 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
-    if (settings.CLAUDE_MEM_CONTEXT_FULL_COUNT) {
-      const count = parseInt(settings.CLAUDE_MEM_CONTEXT_FULL_COUNT, 10);
-      if (isNaN(count) || count < 0 || count > 20) {
+    if (settings.CLAUDE_MEM_CONTEXT_FULL_COUNT !== undefined) {
+      const count = parseContextCountValue(settings.CLAUDE_MEM_CONTEXT_FULL_COUNT);
+      if (count === undefined || count < 0 || count > 20) {
         return { valid: false, error: 'CLAUDE_MEM_CONTEXT_FULL_COUNT must be between 0 and 20' };
       }
     }
 
-    if (settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT) {
-      const count = parseInt(settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT, 10);
-      if (isNaN(count) || count < 1 || count > 50) {
+    if (settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT !== undefined) {
+      const count = parseContextCountValue(settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT);
+      if (count === undefined || count < 1 || count > 50) {
         return { valid: false, error: 'CLAUDE_MEM_CONTEXT_SESSION_COUNT must be between 1 and 50' };
+      }
+    }
+
+    // Backup bounds. Each snapshot is a full VACUUM INTO copy of the database:
+    // a 1-hour floor caps that I/O at 24 full copies a day, and a 168-hour
+    // (one week) ceiling keeps doctor's two-interval staleness warning
+    // meaningful. The 100-snapshot cap bounds disk use at 100 database copies.
+    if (settings.CLAUDE_MEM_BACKUP_INTERVAL_HOURS) {
+      const hours = parseFloat(settings.CLAUDE_MEM_BACKUP_INTERVAL_HOURS);
+      if (isNaN(hours) || hours < 1 || hours > 168) {
+        return { valid: false, error: 'CLAUDE_MEM_BACKUP_INTERVAL_HOURS must be between 1 and 168' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_BACKUP_RETAIN_COUNT) {
+      const count = parseInt(settings.CLAUDE_MEM_BACKUP_RETAIN_COUNT, 10);
+      if (isNaN(count) || count < 1 || count > 100) {
+        return { valid: false, error: 'CLAUDE_MEM_BACKUP_RETAIN_COUNT must be between 1 and 100' };
       }
     }
 
@@ -495,6 +562,25 @@ export class SettingsRoutes extends BaseRouteHandler {
     if (settings.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT
       && !parseOpenRouterReasoningEffort(settings.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT)) {
       return { valid: false, error: `CLAUDE_MEM_OPENROUTER_REASONING_EFFORT must be empty or one of: ${OPENROUTER_REASONING_EFFORTS.join(', ')}` };
+    }
+
+    if (settings.CLAUDE_MEM_OPENAI_COMPAT_REASONING !== undefined
+      && parseOpenAICompatReasoning(settings.CLAUDE_MEM_OPENAI_COMPAT_REASONING) === undefined) {
+      return { valid: false, error: 'CLAUDE_MEM_OPENAI_COMPAT_REASONING must be "off" (default) or "on"' };
+    }
+
+    if (settings.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER !== undefined
+      && !['', 'openrouter', 'openai-compatible', 'off'].includes(settings.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER)) {
+      return { valid: false, error: 'CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER must be empty (follow the primary provider), "openrouter", "openai-compatible", or "off"' };
+    }
+    if (settings.CLAUDE_MEM_WORK_VIEW_COPY_MODEL !== undefined
+      && (typeof settings.CLAUDE_MEM_WORK_VIEW_COPY_MODEL !== 'string' || settings.CLAUDE_MEM_WORK_VIEW_COPY_MODEL.length > 200)) {
+      return { valid: false, error: 'CLAUDE_MEM_WORK_VIEW_COPY_MODEL must be a string of at most 200 characters' };
+    }
+    for (const key of ['CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL', 'CLAUDE_MEM_WORK_VIEW_CODEX_MODEL', 'CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL'] as const) {
+      if (settings[key] !== undefined && (typeof settings[key] !== 'string' || settings[key].length > 200)) {
+        return { valid: false, error: `${key} must be a string of at most 200 characters` };
+      }
     }
 
     if (settings.CLAUDE_MEM_OPENROUTER_SITE_URL) {
@@ -537,16 +623,25 @@ export class SettingsRoutes extends BaseRouteHandler {
     return { valid: true };
   }
 
-  private isMcpEnabled(): boolean {
+  // Installed plugin: the worker bundle runs from <pluginRoot>/scripts, so the
+  // package root is the plugin root and holds .mcp.json. Repo checkout: plugin/.
+  // Same layout resolution as ViewerRoutes' UI assets.
+  private mcpConfigDir(): string {
     const packageRoot = getPackageRoot();
-    const mcpPath = path.join(packageRoot, 'plugin', '.mcp.json');
-    return existsSync(mcpPath);
+    const candidates = [packageRoot, path.join(packageRoot, 'plugin')];
+    return candidates.find(dir =>
+      existsSync(path.join(dir, '.mcp.json')) || existsSync(path.join(dir, '.mcp.json.disabled'))
+    ) ?? candidates[0];
+  }
+
+  private isMcpEnabled(): boolean {
+    return existsSync(path.join(this.mcpConfigDir(), '.mcp.json'));
   }
 
   private toggleMcp(enabled: boolean): void {
-    const packageRoot = getPackageRoot();
-    const mcpPath = path.join(packageRoot, 'plugin', '.mcp.json');
-    const mcpDisabledPath = path.join(packageRoot, 'plugin', '.mcp.json.disabled');
+    const mcpDir = this.mcpConfigDir();
+    const mcpPath = path.join(mcpDir, '.mcp.json');
+    const mcpDisabledPath = path.join(mcpDir, '.mcp.json.disabled');
 
     if (enabled && existsSync(mcpDisabledPath)) {
       renameSync(mcpDisabledPath, mcpPath);
