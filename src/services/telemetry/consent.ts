@@ -9,6 +9,12 @@ export type TelemetryConfig = {
   /** Explicit user decision. Absent = no decision recorded; the opt-out default applies. */
   enabled?: boolean;
   installId: string;
+  /**
+   * Distinct id for worker and plugin events that must not create a person.
+   * Never the install id: that id receives `$set` from install events, and
+   * PostHog then bills every later event for it as identified.
+   */
+  anonymousId?: string;
   decidedAt: string;
 };
 
@@ -116,6 +122,7 @@ export function loadTelemetryConfig(): TelemetryConfig | null {
   return {
     enabled: raw.enabled,
     installId: raw.installId,
+    ...(typeof raw.anonymousId === 'string' && raw.anonymousId ? { anonymousId: raw.anonymousId } : {}),
     decidedAt: typeof raw.decidedAt === 'string' ? raw.decidedAt : '',
   };
 }
@@ -139,6 +146,25 @@ export function getOrCreateInstallId(): string {
   saveTelemetryConfig({
     installId,
     decidedAt: '',
+    ...(existing?.anonymousId ? { anonymousId: existing.anonymousId } : {}),
   });
   return installId;
+}
+
+/**
+ * Stable id for profile-less worker and plugin events. A second UUID, not the
+ * install id, so `$set` on install/auth/trial/checkout/subscription cannot
+ * make these events bill as identified.
+ */
+export function getOrCreateAnonymousDistinctId(): string {
+  const existing = loadTelemetryConfig();
+  if (existing?.anonymousId && existing.anonymousId !== existing.installId) return existing.anonymousId;
+
+  const anonymousId = randomUUID();
+  if (existing?.installId) {
+    saveTelemetryConfig({ ...existing, anonymousId });
+  } else {
+    saveTelemetryConfig({ installId: randomUUID(), anonymousId, decidedAt: '' });
+  }
+  return anonymousId;
 }

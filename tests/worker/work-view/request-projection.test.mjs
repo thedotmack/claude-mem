@@ -132,6 +132,31 @@ test('vague assurances and testing permission do not override a later actionable
   assert.equal(buildHumanRequests({ agents: [agent('a', [item(1)])] }, records).humanRequests[0].original.text, 'yes fix the reactivate button');
 });
 
+test('substantive requests in any language link work while priming and filler stay excluded', () => {
+  for (const ask of ['Güncellemeyi doğrula', '3 yeni skilli anlat', 'Arregla el error de inicio de sesión', '修复登录错误', '로그인 버그를 고쳐줘', 'Исправь ошибку входа', 'the login page is broken']) {
+    assert.equal(isHumanActionRequest(ask), true, ask);
+  }
+  for (const filler of ['hi', 'thanks!', 'continue', 'keep going', 'ok', '1', '?', 'Read AGENTS.md and follow it.', 'You are Codex, a coding agent.', '<environment_context><cwd>/private/test</cwd></environment_context>']) {
+    assert.equal(isHumanActionRequest(filler), false, filler);
+  }
+  const result = buildHumanRequests({ agents: [agent('a', [item(1)])] }, { sessions: [{ ...session, user_prompt: 'Güncellemeyi doğrula' }], prompts: [
+    { ...prompts[0], prompt_text: 'Güncellemeyi doğrula' },
+  ] });
+  assert.equal(result.unlinkedWork.length, 0);
+  assert.equal(result.humanRequests[0].original.text, 'Güncellemeyi doğrula');
+});
+
+test('English asks need an action, so shell words and fragments never become requests', () => {
+  for (const junk of ['list', 'ps', 'ls -la', 'the', 'on main now', 'about the login', 'npm']) {
+    assert.equal(isHumanActionRequest(junk), false, junk);
+  }
+  // Any verb acting on an object counts, not only the listed ones: "wowerpoint" is a skill's own verb.
+  for (const ask of ['fix the login', 'GOAL: one card per request', 'can you check the build', 'merge the PR', 'ship it', 'the login page is broken', 'Why is the worker slow?',
+    'Delete the branch', 'Summarize this file', 'List all tasks', 'please archive these logs', 'wowerpoint the childhood skill']) {
+    assert.equal(isHumanActionRequest(ask), true, ask);
+  }
+});
+
 test('cached object titles require exact original source identity', () => {
   const view = { agents: [agent('a', [item(1)])] }, records = { sessions: [session], prompts };
   const original = buildHumanRequests(view, records).humanRequests[0];

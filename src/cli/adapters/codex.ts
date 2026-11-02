@@ -7,6 +7,7 @@ type CodexEventName =
   | 'PermissionRequest'
   | 'PostToolUse'
   | 'SessionStart'
+  | 'SubagentStart'
   | 'UserPromptSubmit'
   | 'Stop';
 
@@ -15,6 +16,7 @@ const EVENT_NAMES = new Set<CodexEventName>([
   'PermissionRequest',
   'PostToolUse',
   'SessionStart',
+  'SubagentStart',
   'UserPromptSubmit',
   'Stop',
 ]);

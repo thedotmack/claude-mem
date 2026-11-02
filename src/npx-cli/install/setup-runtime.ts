@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { execFile, execSync } from 'child_process';
 import { createRequire } from 'module';
 import { join } from 'path';
-import { ErrorSeverity } from './error-taxonomy.js';
+import { classifyError, ErrorSeverity } from './error-taxonomy.js';
 import { installerError, type InstallSummary } from './error-reporter.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { bunCommonPaths, findBunExecutablePath, getToolPath, spawnVersionProbe } from './tool-path.js';
@@ -24,7 +24,7 @@ const INSTALL_TIMEOUT_MS = (() => {
  */
 export function platformBunRemediation(): string {
   return IS_WINDOWS
-    ? 'Install Bun manually: `winget install Oven-sh.Bun` (or `powershell -c "irm bun.sh/install.ps1 | iex"`), then re-run `npx claude-mem install`.'
+    ? 'Install Bun manually: `winget install Oven-sh.Bun` (or `powershell -c "irm https://bun.sh/install.ps1 | iex"`), then re-run `npx claude-mem install`.'
     : 'Install Bun manually: `curl -fsSL https://bun.sh/install | bash` (or `brew install oven-sh/bun/bun`), then re-run `npx claude-mem install`.';
 }
 
@@ -135,7 +135,7 @@ function describeExecError(error: unknown, includeStdoutWithStderr = false): str
 /** Run the platform-specific Bun installer, then confirm the binary is resolvable. */
 function runBunInstaller(): void {
   if (IS_WINDOWS) {
-    execSync('powershell -c "irm bun.sh/install.ps1 | iex"', {
+    execSync('powershell -c "irm https://bun.sh/install.ps1 | iex"', {
       stdio: 'pipe',
       timeout: INSTALL_TIMEOUT_MS,
       shell: process.env.ComSpec ?? 'cmd.exe',
@@ -161,7 +161,7 @@ function installBun(): void {
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     const manualInstructions = IS_WINDOWS
-      ? '  - winget install Oven-sh.Bun\n  - Or: powershell -c "irm bun.sh/install.ps1 | iex"'
+      ? '  - winget install Oven-sh.Bun\n  - Or: powershell -c "irm https://bun.sh/install.ps1 | iex"'
       : '  - curl -fsSL https://bun.sh/install | bash\n  - Or: brew install oven-sh/bun/bun';
     throw new Error(
       `Failed to install Bun. Please install manually:\n${manualInstructions}\nThen restart your terminal and try again.\n` +
@@ -400,7 +400,16 @@ export async function ensureUv(
   return { uvPath, version };
 }
 
-export async function installPluginDependencies(targetDir: string, bunPath: string): Promise<void> {
+/**
+ * `optional` also installs plugin/package.json's optional dependencies: the
+ * server's embedder, about 300 MB, which only a server runs
+ * (scripts/build-hooks.js), so a plugin install leaves it out.
+ */
+export async function installPluginDependencies(
+  targetDir: string,
+  bunPath: string,
+  options: { optional?: boolean } = {},
+): Promise<void> {
   if (!existsSync(join(targetDir, 'package.json'))) {
     throw new Error(`installPluginDependencies: no package.json at ${targetDir}`);
   }
@@ -415,7 +424,7 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
   // resolved path with spaces or shell metacharacters is never parsed.
   const runBunInstall = (): Promise<void> =>
     new Promise<void>((resolve, reject) => {
-      execFile(bunPath, ['install', '--frozen-lockfile', '--ignore-scripts'], {
+      execFile(bunPath, ['install', '--frozen-lockfile', '--ignore-scripts', ...(options.optional ? [] : ['--omit=optional'])], {
         cwd: targetDir,
         timeout: INSTALL_TIMEOUT_MS,
         maxBuffer: 16 * 1024 * 1024,
@@ -433,6 +442,16 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
   }
 
   verifyCriticalModules(targetDir);
+}
+
+export function hasServerEmbedder(pluginRoot: string): boolean {
+  return existsSync(join(pluginRoot, 'node_modules', '@huggingface', 'transformers', 'package.json'));
+}
+
+/** Install the server's embedder into a plugin root that lacks it. */
+export async function ensureServerEmbedder(pluginRoot: string, bunPath: string): Promise<void> {
+  if (hasServerEmbedder(pluginRoot)) return;
+  await installPluginDependencies(pluginRoot, bunPath, { optional: true });
 }
 
 /**
@@ -458,15 +477,16 @@ export async function provisionTreeSitterCli(
       : typeof processError.code === 'number'
         ? `exited with code ${processError.code}`
         : err.message;
+    const matchContext = { component: 'tree-sitter-cli-cache', phase: 'dependency-install' };
+    const cause = Object.assign(new Error(`tree-sitter-cli provisioning failed in ${targetDir}: ${failure}`), {
+      code: processError.code,
+      killed: processError.killed,
+    });
     installerError(severity, {
-      component: 'tree-sitter-cli-cache',
-      phase: 'dependency-install',
-      cause: Object.assign(new Error(`tree-sitter-cli provisioning failed in ${targetDir}: ${failure}`), {
-        code: processError.code,
-        killed: processError.killed,
-      }),
+      ...matchContext,
+      cause,
       details: describeExecError(err, true).slice(0, 4000),
-      ...(severity === ErrorSeverity.WARN_CONTINUE
+      ...(severity === ErrorSeverity.WARN_CONTINUE && classifyError(cause, matchContext).id !== 'tree-sitter-cli-cannot-run'
         ? { remediation: 'smart_search and smart_outline stay disabled until the tree-sitter CLI is provisioned: run `npx claude-mem repair`.' }
         : {}),
     }, summary);

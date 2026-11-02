@@ -80,7 +80,7 @@ for (const { root } of targets) {
   for (const artifact of artifacts) {
     const bytes = readFileSync(path.join(source, artifact));
     if (artifact.endsWith('worker-service.cjs') && (!bytes.includes(Buffer.from('claude-mem-retrieved-data')) || !bytes.includes(Buffer.from('sourceFingerprint')))) fail('Build the progressive worker with the native-memory bridge before activation');
-    if (artifact.endsWith('mcp-server.cjs') && (!bytes.includes(Buffer.from('mem_search')) || !bytes.includes(Buffer.from('save_memory')))) fail('Build MCP mem_search/save_memory tools before activation');
+    if (artifact.endsWith('mcp-server.cjs') && (!bytes.includes(Buffer.from('dumb_search')) || !bytes.includes(Buffer.from('save_memory')))) fail('Build MCP dumb_search/save_memory tools before activation');
     addChange(path.join(root, artifact), bytes);
   }
 }

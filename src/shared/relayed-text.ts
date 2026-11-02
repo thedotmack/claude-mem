@@ -48,9 +48,9 @@ const STRUCTURAL_MARKDOWN_LINE = /^\s*(#|```|---)/;
  * everything else follows relayedLine: control and format characters are
  * dropped, angle brackets are escaped, a line that would open a heading,
  * fence or rule is escaped (STRUCTURAL_MARKDOWN_LINE), and the result is
- * capped at `maxCodePoints` without splitting one.
+ * capped at `maxUtf16Units` (clipUtf16).
  */
-export function relayedBlock(text: string | null | undefined, maxCodePoints: number): string {
+export function relayedBlock(text: string | null | undefined, maxUtf16Units: number): string {
   const block = (text ?? '')
     .replace(/\r\n?|[\u2028\u2029]/g, '\n')
     .split('\n')
@@ -63,10 +63,19 @@ export function relayedBlock(text: string | null | undefined, maxCodePoints: num
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
-  const codePoints = Array.from(block);
-  return codePoints.length > maxCodePoints
-    ? `${codePoints.slice(0, Math.max(0, maxCodePoints - 1)).join('').trimEnd()}…`
-    : block;
+  return clipUtf16(block, maxUtf16Units);
+}
+
+/**
+ * Caps `text` at `maxUtf16Units` String.length units, the unit context budgets
+ * and host delivery caps count, ending a cut text with `…`. A cut never splits
+ * a surrogate pair.
+ */
+export function clipUtf16(text: string, maxUtf16Units: number): string {
+  if (text.length <= maxUtf16Units) return text;
+  let kept = text.slice(0, Math.max(0, maxUtf16Units - 1));
+  if (/[\uD800-\uDBFF]$/.test(kept)) kept = kept.slice(0, -1);
+  return `${kept.trimEnd()}…`;
 }
 
 /**

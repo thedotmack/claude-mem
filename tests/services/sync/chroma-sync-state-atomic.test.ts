@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'fs';
+import { afterEach, beforeEach, describe, expect, it, setSystemTime } from 'bun:test';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { ChromaSyncState } from '../../../src/services/sync/ChromaSyncState.js';
@@ -53,5 +53,43 @@ describe('ChromaSyncState atomic persistence', () => {
 
     const written = JSON.parse(readFileSync(statePath(dataDir), 'utf8'));
     expect(written[project].observations).toBe(3);
+  });
+
+  it('keeps a watermark change in memory when the write fails, and writes it after the backoff', () => {
+    // A directory at the state path makes the rename fail on every platform.
+    mkdirSync(join(statePath(dataDir), 'blocker'), { recursive: true });
+
+    expect(() => ChromaSyncState.bump(project, 'observations', 5)).not.toThrow();
+    expect(ChromaSyncState.get(project).observations).toBe(5);
+    expect(readdirSync(dataDir).filter(name => name.endsWith('.tmp'))).toEqual([]);
+
+    rmSync(statePath(dataDir), { recursive: true });
+    ChromaSyncState.bump(project, 'summaries', 1);
+    expect(existsSync(statePath(dataDir))).toBe(false);
+
+    setSystemTime(new Date(Date.now() + 10_000));
+    try {
+      ChromaSyncState.bump(project, 'summaries', 2);
+    } finally {
+      setSystemTime();
+    }
+
+    const written = JSON.parse(readFileSync(statePath(dataDir), 'utf8'));
+    expect(written[project].observations).toBe(5);
+    expect(written[project].summaries).toBe(2);
+  });
+
+  it('throws when the rebuild flags cannot be written', () => {
+    ChromaSyncState.replace(project, { observations: 3, summaries: 0, prompts: 0 });
+    rmSync(statePath(dataDir));
+    mkdirSync(join(statePath(dataDir), 'blocker'), { recursive: true });
+
+    expect(() => ChromaSyncState.markAllForRebuild()).toThrow();
+  });
+
+  it('throws when a revised row\'s repair state cannot be written', () => {
+    mkdirSync(join(statePath(dataDir), 'blocker'), { recursive: true });
+
+    expect(() => ChromaSyncState.markFragmentReconciliation(project, 'observations', 4)).toThrow();
   });
 });

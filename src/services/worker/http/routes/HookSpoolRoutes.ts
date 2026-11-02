@@ -1,5 +1,5 @@
 import { timingSafeEqual } from 'crypto';
-import type { Application, Request, Response } from 'express';
+import express, { type Application, type Request, type Response, type NextFunction } from 'express';
 import { HookSpool, type HookSpoolConsumedMarkers } from '../../../../shared/hook-spool.js';
 import { normalizeRemoteSpoolEntry, remoteSpoolEnvelopeSchema,
   remoteHookSpoolToken, REMOTE_SPOOL_PROTOCOL_VERSION } from '../../../../shared/hook-spool-remote.js';
@@ -12,13 +12,16 @@ export class HookSpoolRoutes extends BaseRouteHandler {
     private readonly consumedMarkers: () => HookSpoolConsumedMarkers,
     private readonly requestDrain: () => void,
     private readonly getToken: () => string,
+    private readonly maxBodyBytes: string | number = 5 * 1024 * 1024,
   ) { super(); }
 
   setupRoutes(app: Application): void {
-    app.post('/api/spool/ingest', this.wrapHandler(this.handleIngest));
+    const configuredLimit = Number(this.maxBodyBytes);
+    const limit = Number.isSafeInteger(configuredLimit) && configuredLimit > 0 ? configuredLimit : 5 * 1024 * 1024;
+    app.post('/api/spool/ingest', this.authenticate, express.json({ limit }), this.wrapHandler(this.handleIngest));
   }
 
-  private handleIngest = (req: Request, res: Response): void => {
+  private authenticate = (req: Request, res: Response, next: NextFunction): void => {
     const token = remoteHookSpoolToken(this.getToken());
     if (!token) {
       res.status(503).json({ error: 'Remote spool ingestion is disabled; configure CLAUDE_MEM_WORKER_INGEST_TOKEN' });
@@ -30,6 +33,10 @@ export class HookSpoolRoutes extends BaseRouteHandler {
       res.status(401).json({ error: 'Remote spool authentication failed' });
       return;
     }
+    next();
+  };
+
+  private handleIngest = (req: Request, res: Response): void => {
     if (req.body?.protocolVersion !== REMOTE_SPOOL_PROTOCOL_VERSION) {
       res.status(400).json({ error: 'Unsupported remote spool protocol', code: 'UNSUPPORTED_SPOOL_PROTOCOL' });
       return;

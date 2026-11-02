@@ -11,14 +11,16 @@
  * carries the cmem.ai gateway's credential-pinning rules, and neither should
  * follow a user to NVIDIA.
  *
- * What this sends is deliberately plain — model, messages, temperature, the
- * output-token cap, and the standard OpenAI streaming fields (`stream`,
- * `stream_options.include_usage`), nothing else. Strict endpoints (vLLM in
- * particular) reject unknown body fields, so there is no vendor-specific
- * extra; one that refuses the streaming fields is sent the plain body instead
- * (streamed-chat-completion.ts). Token counts are used when the endpoint
- * reports them and are never estimated into the usage event, matching the rule OpenRouter's
- * `buildLastUsage` already enforces: real numbers on both sides or none.
+ * The body is model, messages, temperature, the output-token cap, the standard
+ * OpenAI streaming fields, and `reasoning: { enabled: false }` by default
+ * (CLAUDE_MEM_OPENAI_COMPAT_REASONING). A reasoning-by-default model otherwise
+ * spends max_tokens thinking and returns empty content (#2995). A strict
+ * endpoint that rejects the field (vLLM in particular) is sent the request
+ * once more without it. One that refuses the streaming fields is sent the
+ * plain body instead (streamed-chat-completion.ts). Token counts are used when
+ * the endpoint reports them and are never estimated into the usage event,
+ * matching the rule OpenRouter's `buildLastUsage` already enforces: real
+ * numbers on both sides or none.
  */
 
 import { getCredential } from '../../shared/EnvManager.js';
@@ -30,11 +32,29 @@ import { describeNetworkFailure, isConnectionRefused, networkFailureSuffix } fro
 import { resolveOpenAICompatPreset, type OpenAICompatPreset } from '../../shared/openai-compat-presets.js';
 import { buildKeyPool, resolvePoolKeys, retryPolicyForPool, withKeyPool } from '../../shared/api-key-pool.js';
 import { logger } from '../../utils/logger.js';
-import type { ActiveSession, ConversationMessage } from '../worker-types.js';
+import type { ActiveSession, ConversationMessage, PendingMessageWithId } from '../worker-types.js';
+import { buildObservationPrompt, renderObservationPrompt, type ObservationPromptParts } from '../../sdk/prompts.js';
+import { observationFieldMaxChars } from './context-window.js';
+import { boundedInteger } from './CodexAppServerPool.js';
+import { sameObservationContext } from './codex-observation-batch.js';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { randomUUID } from 'crypto';
-import { ClassifiedProviderError, rateLimitUntilNextKey } from './provider-errors.js';
+import { ClassifiedProviderError, isClassified, rateLimitUntilNextKey } from './provider-errors.js';
+import {
+  claimReasoningBudgetRetry,
+  combineBilledChatUsage,
+  endpointRejectsReasoningField,
+  isLengthTruncatedEmptyReply,
+  isUnknownReasoningParameter,
+  REASONING_DISABLED,
+  reasoningBudgetGiveUpMessage,
+  reasoningBudgetRetryMessage,
+  reasoningBudgetSkippedMessage,
+  rememberEndpointRejectsReasoningField,
+  resolveOpenAICompatReasoning,
+  startReasoningRetryDeadline,
+} from './reasoning-budget.js';
 import type { PaidSendBudget } from './paid-send-budget.js';
 import { isContextOverflowBody } from './OpenRouterProvider.js';
 import { namesPeriodRateLimit } from '../../shared/period-rate-limit.js';
@@ -71,6 +91,30 @@ interface ChatCompletionResponse {
     total_tokens?: number;
   };
   error?: { message?: string; code?: string | number; type?: string };
+}
+
+/** Last prompt for context size; both requests' completion tokens were billed. */
+function withCombinedCompatUsage(
+  first: ChatCompletionResponse['usage'],
+  retry: ChatCompletionResponse,
+): ChatCompletionResponse {
+  const combined = combineBilledChatUsage(
+    {
+      promptTokens: first?.prompt_tokens,
+      completionTokens: first?.completion_tokens,
+      totalTokens: first?.total_tokens,
+    },
+    {
+      promptTokens: retry.usage?.prompt_tokens,
+      completionTokens: retry.usage?.completion_tokens,
+      totalTokens: retry.usage?.total_tokens,
+    },
+  );
+  const usage: NonNullable<ChatCompletionResponse['usage']> = { ...retry.usage };
+  if (combined.promptTokens !== undefined) usage.prompt_tokens = combined.promptTokens;
+  if (combined.completionTokens !== undefined) usage.completion_tokens = combined.completionTokens;
+  if (combined.totalTokens !== undefined) usage.total_tokens = combined.totalTokens;
+  return { ...retry, usage };
 }
 
 export interface OpenAICompatConfig {
@@ -182,14 +226,58 @@ function structuredErrorMarkers(envelope: ErrorEnvelope | null): string[] {
  * The status to classify by. An error envelope inside a 2xx response often
  * carries the real HTTP status as a numeric `error.code` (a 429 or a 503
  * relayed by a gateway), and that is the one that says whether to retry.
+ * Some gateways use a textual code ("bad_gateway") and name the status only in
+ * the message, as "(HTTP 503)" (#5185). When the code is not numeric, that is
+ * read from the message or from the textual code itself.
  */
 function effectiveStatus(status: number | undefined, envelope: ErrorEnvelope | null): number | undefined {
   const code = envelope?.code;
-  const numeric = typeof code === 'number' ? code : typeof code === 'string' && /^\d{3}$/.test(code) ? Number(code) : NaN;
+  const numeric = typeof code === 'number' ? code
+    : typeof code === 'string' && /^\d{3}$/.test(code) ? Number(code)
+    : textualEnvelopeStatus(envelope);
   if (status !== undefined && status >= 200 && status < 300 && numeric >= 400 && numeric < 600) {
     return numeric;
   }
   return status;
+}
+
+/** Textual codes and types that name a server-side failure, as the HTTP status they stand for. */
+const SERVER_FAILURE_ERROR_CODES: ReadonlyMap<string, number> = new Map([
+  ['bad_gateway', 502],
+  ['service_unavailable', 503],
+  ['gateway_timeout', 504],
+  ['server_error', 500],
+  ['internal_server_error', 500],
+]);
+
+/**
+ * The status an envelope with a non-numeric code reports, or NaN.
+ *
+ * Only a 429 or a 5xx counts, because those are the ones worth retrying. A
+ * combo gateway's message lists every upstream's failure
+ * ("a: auth (HTTP 401); b: ... (HTTP 503)"), and an upstream's 401 or 413 is not
+ * this request's failure, so every marker is scanned for the first retryable one.
+ * Only when the message names no status at all does a textual code or type that names a server failure
+ * ("bad_gateway", type "server_error") stand for its status.
+ *
+ * A litellm output failure keeps its own classification: the model ran and was
+ * billed, so promoting it to a 5xx would resend it and pay twice.
+ */
+function textualEnvelopeStatus(envelope: ErrorEnvelope | null): number {
+  const message = typeof envelope?.message === 'string' ? envelope.message : '';
+  const lowerMessage = message.toLowerCase();
+  if (UPSTREAM_OUTPUT_FAILURE_MARKERS.some(marker => lowerMessage.includes(marker))) return NaN;
+  const markers = [...message.matchAll(/\(HTTP (\d{3})\)/g)].map(match => Number(match[1]));
+  const retryable = markers.find(fromMessage => fromMessage === 429 || (fromMessage >= 500 && fromMessage < 600));
+  if (retryable !== undefined) return retryable;
+  // The message named statuses and none is retryable (every upstream refused
+  // the key, say): that is the answer, whatever the gateway's own code says.
+  if (markers.length > 0) return NaN;
+  for (const marker of structuredErrorMarkers(envelope)) {
+    const mapped = SERVER_FAILURE_ERROR_CODES.get(marker);
+    if (mapped !== undefined) return mapped;
+  }
+  return NaN;
 }
 
 /**
@@ -422,12 +510,19 @@ export function resolveOpenAICompatConfig(
   };
 }
 
+function errorText(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const cause = error.cause instanceof Error ? error.cause.message : '';
+  return `${error.message}\n${cause}`;
+}
+
 export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatConfig> {
   protected readonly providerName = 'OpenAI-compatible';
   protected readonly syntheticIdPrefix = 'openai-compat';
   // Match OpenRouter: forward the empty batch so the parser/recovery path sees
   // it, rather than dropping it the way Gemini does.
   protected readonly forwardEmptyMessageResponse = true;
+  protected override readonly rejectAbortedObservation = true;
 
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
     super(dbManager, sessionManager);
@@ -435,6 +530,38 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
 
   protected getConfig(): OpenAICompatConfig {
     return resolveOpenAICompatConfig(paths.settings());
+  }
+
+  /** Extend this turn with already-queued events; normal confirm/reset covers every claim. */
+  protected override observationTurnPrompt(session: ActiveSession, first: PendingMessageWithId, prompt: ObservationPromptParts): string {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const count = boundedInteger(settings.CLAUDE_MEM_OPENAI_COMPAT_OBSERVATION_BATCH_SIZE, 1, 32);
+    const fieldMaxChars = observationFieldMaxChars(session.observerContextWindowTokens);
+    // Like the Claude observer, add events only within two window-aware field
+    // caps. The first event keeps its normal condensation/rendering path.
+    const maxChars = 2 * fieldMaxChars;
+    let combined = renderObservationPrompt(prompt);
+    for (let size = 1; size < count; size++) {
+      let addition = '';
+      const next = this.sessionManager.claimNextObservation(session.sessionDbId, candidate => {
+        if (!sameObservationContext(first, candidate)) return false;
+        // Oversized fields need their own asynchronous condensation pass.
+        if ([candidate.tool_input, candidate.tool_response].some(field =>
+          (JSON.stringify(field, null, 2) ?? '').length > fieldMaxChars)) return false;
+        addition = buildObservationPrompt({
+          id: candidate._persistentId,
+          tool_name: candidate.tool_name!,
+          tool_input: JSON.stringify(candidate.tool_input),
+          tool_output: JSON.stringify(candidate.tool_response),
+          created_at_epoch: candidate._originalTimestamp,
+          cwd: candidate.cwd,
+        }, fieldMaxChars);
+        return combined.length + 2 + addition.length <= maxChars;
+      });
+      if (!next) break;
+      combined += '\n\n' + addition;
+    }
+    return combined;
   }
 
   protected missingApiKeyError(): Error {
@@ -509,7 +636,7 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
    * POST the request and read its (streamed) reply. A model that only takes
    * max_completion_tokens gets the #4003 resend inside sendChatCompletion.
    */
-  private requestChatCompletion(
+  private async requestChatCompletion(
     config: OpenAICompatConfig,
     apiKey: string,
     messages: OpenAIChatMessage[],
@@ -518,10 +645,19 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     attemptSignal: AbortSignal,
     liveness: StreamLiveness | null,
     sessionId: string | undefined,
+    forceReasoningOff: boolean = false,
   ): Promise<ChatCompletionExchange> {
     const label = config.preset.label;
     const sessionHeader = config.preset.sessionHeader;
-    return sendChatCompletion({
+    const reasoningMode = resolveOpenAICompatReasoning(
+      SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_OPENAI_COMPAT_REASONING,
+    );
+    // Default off. A URL that already 400'd on the field never sees it again.
+    // The forced retry (after an empty length reply) sends it even when the
+    // setting is "on", unless that URL has rejected the field.
+    const includeReasoning = !endpointRejectsReasoningField(config.apiUrl)
+      && (forceReasoningOff || reasoningMode !== 'on');
+    const send = (withReasoning: boolean) => sendChatCompletion({
       url: config.apiUrl,
       headers: {
         'Content-Type': 'application/json',
@@ -539,6 +675,7 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
         messages,
         temperature: 0.3,
         ...(liveness ? STREAMED_REQUEST_FIELDS : {}),
+        ...(withReasoning ? { reasoning: REASONING_DISABLED } : {}),
       },
       maxOutputTokens,
       signal: attemptSignal,
@@ -546,6 +683,21 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
       label,
       classify: (input) => classifyOpenAICompatError({ ...input, endpointLabel: label, requestUrl: config.apiUrl }),
     });
+    try {
+      return await send(includeReasoning);
+    } catch (error) {
+      // Strict schemas (vLLM) 400 on the unknown field. Remember the URL and
+      // resend once without it. A model that says reasoning is mandatory is
+      // not this: stripping the field would hide that refusal.
+      const text = errorText(error);
+      if (!includeReasoning || !isClassified(error) || error.kind !== 'unrecoverable' || !isUnknownReasoningParameter(text)) {
+        throw error;
+      }
+      if (rememberEndpointRejectsReasoningField(config.apiUrl)) {
+        logger.warn('SDK', `${label} rejected the reasoning field; resending without it`, { url: config.apiUrl });
+      }
+      return send(false);
+    }
   }
 
   private async queryChatCompletions(
@@ -564,6 +716,12 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     const label = config.preset.label;
     const clientAttemptId = paidSendBudget?.clientAttemptId ?? randomUUID();
     const maxOutputTokens = resolveObserverMaxOutputTokens();
+    // Before the send. A 400 that strips the field must not look like "we
+    // never asked", and an already-disabled request must not be sent twice.
+    const disabledOnSend = !endpointRejectsReasoningField(config.apiUrl)
+      && resolveOpenAICompatReasoning(
+        SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_OPENAI_COMPAT_REASONING,
+      ) !== 'on';
 
     logger.debug('SDK', `Querying ${label} multi-turn (${config.model})`, {
       turns: history.length,
@@ -576,7 +734,7 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     const liveness = streamed
       ? resolveStreamLiveness(perAttemptTimeoutMs, this.streamIdleTimeoutMs ?? resolveStreamIdleTimeoutMs())
       : null;
-    const data = await withRetry<ChatCompletionResponse>(async (attemptSignal) => {
+    let data = await withRetry<ChatCompletionResponse>(async (attemptSignal) => {
       const exchange = await this.requestChatCompletion(config, apiKey, messages, maxOutputTokens, clientAttemptId, attemptSignal, liveness, sessionId);
       const responseData = exchange.body as ChatCompletionResponse;
 
@@ -606,12 +764,13 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
       ...retryPolicyForPool(poolSize),
     });
 
-    const choice = data.choices?.[0];
+    let choice = data.choices?.[0];
     // Text blocks only: reasoning and tool-call arguments are never the answer,
     // and neither is a leading <think> block in the text itself.
-    const content = stripLeadingThinkBlock(assistantText(choice?.message?.content));
-    const finishReason = typeof choice?.finish_reason === 'string' ? choice.finish_reason : undefined;
-    if (finishReason === 'length') {
+    let content = stripLeadingThinkBlock(assistantText(choice?.message?.content));
+    let finishReason = typeof choice?.finish_reason === 'string' ? choice.finish_reason : undefined;
+    const warnIfCutOff = () => {
+      if (finishReason !== 'length') return;
       logger.warn('SDK', `${label} reply was cut off at the output-token limit`, {
         model: config.model,
         maxTokens: maxOutputTokens,
@@ -619,8 +778,57 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
         contentChars: content.length,
         clientAttemptId,
       });
-    }
-    if (!content) {
+    };
+    warnIfCutOff();
+
+    if (isLengthTruncatedEmptyReply(content, finishReason) && !disabledOnSend && !endpointRejectsReasoningField(config.apiUrl)) {
+      if (!claimReasoningBudgetRetry(paidSendBudget)) {
+        logger.error('SDK', reasoningBudgetSkippedMessage(label, paidSendBudget?.spentPaidSends ?? 0), {
+          model: config.model,
+          finishReason,
+          maxTokens: maxOutputTokens,
+        });
+      } else {
+        const firstUsage = data.usage;
+        logger.error('SDK', reasoningBudgetRetryMessage(label), { model: config.model, finishReason, maxTokens: maxOutputTokens });
+        const deadline = liveness ? undefined : startReasoningRetryDeadline(signal, perAttemptTimeoutMs);
+        try {
+          const retrySignal = deadline?.signal ?? signal ?? new AbortController().signal;
+          const exchange = await this.requestChatCompletion(
+            config, apiKey, messages, maxOutputTokens, clientAttemptId, retrySignal, liveness, sessionId, true,
+          );
+          const retryData = exchange.body as ChatCompletionResponse;
+          if (retryData.error) {
+            throw classifyOpenAICompatError({
+              status: exchange.status,
+              bodyText: JSON.stringify(retryData),
+              headers: exchange.headers,
+              cause: new Error(`${label} API error: ${retryData.error.code} - ${retryData.error.message}`),
+              endpointLabel: label,
+            });
+          }
+          data = withCombinedCompatUsage(firstUsage, retryData);
+          choice = data.choices?.[0];
+          content = stripLeadingThinkBlock(assistantText(choice?.message?.content));
+          finishReason = typeof choice?.finish_reason === 'string' ? choice.finish_reason : undefined;
+          warnIfCutOff();
+          if (isLengthTruncatedEmptyReply(content, finishReason)) {
+            logger.error('SDK', reasoningBudgetGiveUpMessage(label, finishReason), { model: config.model });
+          }
+        } catch (error) {
+          logger.error('SDK', reasoningBudgetGiveUpMessage(label, finishReason), {
+            model: config.model,
+          }, error instanceof Error ? error : new Error(String(error)));
+        } finally {
+          deadline?.finish();
+        }
+      }
+    } else if (isLengthTruncatedEmptyReply(content, finishReason)) {
+      logger.error('SDK', reasoningBudgetGiveUpMessage(label, finishReason), {
+        model: config.model,
+        maxTokens: maxOutputTokens,
+      });
+    } else if (!content) {
       logger.error('SDK', `Empty response from ${label}`, { model: config.model, finishReason });
     }
 

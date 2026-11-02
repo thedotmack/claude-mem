@@ -1,10 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { createHash } from 'crypto';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { provisionTreeSitterCliForPluginRoot } from '../../src/services/worker/tree-sitter-cli-provisioning.js';
 import { isTreeSitterCliBinaryUsable, treeSitterCliBinaryPath } from '../../src/services/smart-file-read/tree-sitter-cli-provision.js';
+import type { GlibcCompatibleFallback } from '../../src/services/smart-file-read/tree-sitter-cli-provision.js';
+import { fakeCondaPackage } from '../helpers/fake-conda-package.js';
 
 // Claude Code's marketplace install leaves node_modules/tree-sitter-cli with
 // its install.js but no executable (lifecycle scripts off), and the Setup hook
@@ -115,4 +117,133 @@ describe('worker tree-sitter CLI provisioning', () => {
     expect(await provisionTreeSitterCliForPluginRoot(pluginRoot, pinIntact)).toBe('provisioned');
     expect(await isTreeSitterCliBinaryUsable(pluginRoot)).toBe(true);
   });
+
+  // #4758: the release asset links against GLIBC_2.39, so Ubuntu 22.04,
+  // Debian 12 and RHEL 9 refuse it. Provisioning then installs the conda-forge
+  // build of the same version, pinned by digest. Linux-only: the fallback is
+  // only for glibc refusals, and the fakes are shell scripts.
+  describe.skipIf(process.platform !== 'linux')('glibc-compatible fallback', () => {
+    const sha256 = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
+    // What the OS prints when the release asset needs a newer glibc.
+    const refusedForGlibc = Buffer.from(
+      "#!/bin/sh\necho \"tree-sitter: /lib/x86_64-linux-gnu/libc.so.6: version \\`GLIBC_2.39' not found (required by tree-sitter)\" >&2\nexit 1\n",
+    );
+    const glibcCompatible = Buffer.from('#!/bin/sh\necho "tree-sitter 0.26.9 (conda-forge)"\n');
+    const condaPackage = fakeCondaPackage(glibcCompatible);
+    const URL = 'https://conda.example.invalid/tree-sitter-cli-0.26.9-test_0.conda';
+
+    function fallbackServing(archive: Buffer, pins = { archiveSha256: sha256(condaPackage), executableSha256: sha256(glibcCompatible) }) {
+      const downloads: string[] = [];
+      const fallback: GlibcCompatibleFallback = {
+        buildFor: (version) => (version === '0.26.9' ? { url: URL, ...pins } : undefined),
+        download: async (url) => {
+          downloads.push(url);
+          return archive;
+        },
+      };
+      return { fallback, downloads };
+    }
+
+    function writeRefusedReleaseAsset(cliDir: string): string {
+      const binaryPath = join(cliDir, TREE_SITTER_BINARY_NAME);
+      writeFileSync(binaryPath, refusedForGlibc);
+      chmodSync(binaryPath, 0o755);
+      return binaryPath;
+    }
+
+    it('replaces an intact release asset the OS refuses for its glibc', async () => {
+      const cliDir = writeMarketplaceCliPackage("throw new Error('install.js must not run');");
+      const binaryPath = writeRefusedReleaseAsset(cliDir);
+      const { fallback, downloads } = fallbackServing(condaPackage);
+
+      expect(await provisionTreeSitterCliForPluginRoot(pluginRoot, () => sha256(refusedForGlibc), fallback)).toBe('provisioned');
+      expect(downloads).toEqual([URL]);
+      expect(readFileSync(binaryPath).equals(glibcCompatible)).toBe(true);
+      expect(await isTreeSitterCliBinaryUsable(pluginRoot)).toBe(true);
+      // The next worker start finds a working CLI and downloads nothing.
+      expect(await provisionTreeSitterCliForPluginRoot(pluginRoot, () => sha256(refusedForGlibc), fallback)).toBe('already-usable');
+      expect(downloads).toEqual([URL]);
+    });
+
+    it('falls back on a fresh install when the downloaded release asset is refused for its glibc', async () => {
+      writeMarketplaceCliPackage([
+        `const fs = require('fs');`,
+        `const target = require('path').join(process.cwd(), ${JSON.stringify(TREE_SITTER_BINARY_NAME)});`,
+        `fs.writeFileSync(target, ${JSON.stringify(refusedForGlibc.toString())});`,
+        'fs.chmodSync(target, 0o755);',
+      ].join('\n'));
+      const { fallback, downloads } = fallbackServing(condaPackage);
+
+      expect(await provisionTreeSitterCliForPluginRoot(pluginRoot, () => sha256(refusedForGlibc), fallback)).toBe('provisioned');
+      expect(downloads).toEqual([URL]);
+      expect(readFileSync(treeSitterCliBinaryPath(pluginRoot)).equals(glibcCompatible)).toBe(true);
+    });
+
+    it('never opens a package whose digest is not the pinned one, and keeps the original error', async () => {
+      const cliDir = writeMarketplaceCliPackage("throw new Error('install.js must not run');");
+      const binaryPath = writeRefusedReleaseAsset(cliDir);
+      const tampered = fakeCondaPackage(Buffer.from('#!/bin/sh\necho "tree-sitter 0.26.9"\ntouch /tmp/pwned\n'));
+      const { fallback } = fallbackServing(tampered);
+
+      const rejection = expect(provisionTreeSitterCliForPluginRoot(pluginRoot, () => sha256(refusedForGlibc), fallback)).rejects;
+      await rejection.toThrow(/is intact \(SHA-256 matches the pinned value\) but cannot run on this system: .*GLIBC_2\.39/);
+      await expect(provisionTreeSitterCliForPluginRoot(pluginRoot, () => sha256(refusedForGlibc), fallback))
+        .rejects.toThrow(/could not be installed either: .* not the pinned .*; it was not opened/);
+      expect(readFileSync(binaryPath).equals(refusedForGlibc)).toBe(true);
+    });
+
+    it('never runs an executable whose digest is not the pinned one', async () => {
+      const cliDir = writeMarketplaceCliPackage("throw new Error('install.js must not run');");
+      const binaryPath = writeRefusedReleaseAsset(cliDir);
+      const { fallback } = fallbackServing(condaPackage, { archiveSha256: sha256(condaPackage), executableSha256: '0'.repeat(64) });
+
+      await expect(provisionTreeSitterCliForPluginRoot(pluginRoot, () => sha256(refusedForGlibc), fallback))
+        .rejects.toThrow(/bin\/tree-sitter in .* not the pinned 0{64}; it was not run/);
+      expect(readFileSync(binaryPath).equals(refusedForGlibc)).toBe(true);
+    });
+
+    it('keeps the original binary and its error when the verified fallback does not run either', async () => {
+      const cliDir = writeMarketplaceCliPackage("throw new Error('install.js must not run');");
+      const binaryPath = writeRefusedReleaseAsset(cliDir);
+      const brokenBuild = Buffer.from("#!/bin/sh\necho 'tree-sitter: cannot open shared object file' >&2\nexit 127\n");
+      const brokenPackage = fakeCondaPackage(brokenBuild);
+      const { fallback, downloads } = fallbackServing(brokenPackage, {
+        archiveSha256: sha256(brokenPackage),
+        executableSha256: sha256(brokenBuild),
+      });
+
+      await expect(provisionTreeSitterCliForPluginRoot(pluginRoot, () => sha256(refusedForGlibc), fallback))
+        .rejects.toThrow(/GLIBC_2\.39.* could not be installed either: the glibc-compatible tree-sitter build does not run either: tree-sitter: cannot open shared object file/);
+      expect(downloads).toEqual([URL]);
+      // The release asset is untouched and no staging directory is left behind.
+      expect(readFileSync(binaryPath).equals(refusedForGlibc)).toBe(true);
+      expect(readdirSync(cliDir).filter((entry) => entry.startsWith('.provision-'))).toEqual([]);
+    });
+
+    it('does not download a fallback when the refusal is not about glibc', async () => {
+      const cliDir = writeMarketplaceCliPackage("throw new Error('install.js must not run');");
+      const truncated = readFileSync(REPO_TREE_SITTER_BINARY).subarray(0, 1024);
+      const binaryPath = join(cliDir, TREE_SITTER_BINARY_NAME);
+      writeFileSync(binaryPath, truncated);
+      chmodSync(binaryPath, 0o755);
+      const { fallback, downloads } = fallbackServing(condaPackage);
+
+      await expect(provisionTreeSitterCliForPluginRoot(pluginRoot, () => sha256(truncated), fallback))
+        .rejects.toThrow(/is intact \(SHA-256 matches the pinned value\) but cannot run on this system/);
+      expect(downloads).toEqual([]);
+    });
+
+    it('keeps the original error when no fallback build is pinned for this version', async () => {
+      const cliDir = writeMarketplaceCliPackage("throw new Error('install.js must not run');");
+      writeRefusedReleaseAsset(cliDir);
+      const fallback: GlibcCompatibleFallback = {
+        buildFor: () => undefined,
+        download: async () => { throw new Error('must not download'); },
+      };
+
+      await expect(provisionTreeSitterCliForPluginRoot(pluginRoot, () => sha256(refusedForGlibc), fallback))
+        .rejects.toThrow(/but cannot run on this system: .*GLIBC_2\.39.*File Read Gate stays off\.$/);
+    });
+  });
 });
+

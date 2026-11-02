@@ -7,8 +7,9 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { HookSpoolRoutes } from '../../src/services/worker/http/routes/HookSpoolRoutes.js';
+import { createMiddleware } from '../../src/services/worker/http/middleware.js';
 import { hookSpoolConsumedMarkers } from '../../src/services/worker/hook-spool-drain.js';
-import { HookSpool, HOOK_SPOOL_RETRY_WINDOW_MS, remoteHookSpoolReceipt, remoteHookSpoolReceivedKey, type HookSpoolEntry } from '../../src/shared/hook-spool.js';
+import { DELIVERABLE_ERRORS_PER_EVENT, HookSpool, HOOK_SPOOL_RETRY_WINDOW_MS, remoteHookSpoolReceipt, remoteHookSpoolReceivedKey, type HookSpoolEntry } from '../../src/shared/hook-spool.js';
 import { remoteSpoolEnvelopeSchema, usesRemoteHookSpool, remoteHookSpoolToken } from '../../src/shared/hook-spool-remote.js';
 
 let directory: string;
@@ -32,7 +33,7 @@ beforeEach(async () => {
   token = 'test-ingest-token';
   drains = 0;
   const app = express();
-  app.use(express.json({ limit: '5mb' }));
+  app.use(...createMiddleware());
   new HookSpoolRoutes(spool, () => hookSpoolConsumedMarkers(store), () => { drains++; }, () => token).setupRoutes(app);
   server = await new Promise<Server>(resolve => {
     const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
@@ -57,6 +58,48 @@ function send(value: unknown = entry, authorization: string = 'Bearer test-inges
 }
 
 describe('remote hook spool receipts', () => {
+  it('delivers both work-state telemetry variants with stable retry receipts', async () => {
+    for (const payload of [
+      { contentSessionId: 'telemetry-session', platformSource: 'codex', eventId: 'instruction-1', agentRole: 'main', kind: 'instruction', state: 'returned' },
+      { contentSessionId: 'telemetry-session', platformSource: 'claude', eventId: 'mcp-1', agentId: 'agent-1', agentRole: 'subagent', kind: 'mcp', tool: 'read', outcome: 'ok' },
+    ]) {
+      const value = { kind: 'work_state_telemetry', payload, enqueuedAtEpochMs: 1700000000000 } as HookSpoolEntry;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const response = await send(value);
+        expect(response.status).toBe(202);
+        expect((await response.json()).receipt).toBe(remoteHookSpoolReceipt(value));
+      }
+      expect(spool.entries()).toContainEqual(value);
+    }
+    expect(spool.entries()).toHaveLength(2);
+  });
+
+  it('rejects malformed or content-bearing work-state telemetry before persistence', async () => {
+    const payload = { contentSessionId: 's', platformSource: 'codex', eventId: 'event', kind: 'instruction', state: 'returned' };
+    for (const invalid of [
+      { eventId: '' }, { eventId: 'x'.repeat(2049) }, { agentId: 'x'.repeat(129) },
+      { agentRole: 'invalid' }, { state: 'invalid' }, { state: undefined },
+      { kind: 'mcp' }, { kind: 'mcp', state: undefined, tool: 'delete', outcome: 'ok' },
+      { kind: 'mcp', state: undefined, tool: 'read', outcome: 'invalid' },
+      { prompt: 'private content' },
+    ]) {
+      expect((await send({ kind: 'work_state_telemetry', payload: { ...payload, ...invalid }, enqueuedAtEpochMs: 1 })).status).toBe(400);
+    }
+    expect(spool.entries()).toEqual([]);
+    expect(drains).toBe(0);
+  });
+
+  it('bounds a deliverables event\'s error list at the shared constant the hook keeps to', async () => {
+    const file = { sourcePath: '/w/.scratch/report.html', bucketPath: '/home/u/.claude-mem/deliverables/repo/report-abcdef12.html', title: 'report.html', kind: 'page', bytes: 12, sha256: 'a'.repeat(64), declared: false, occurredAtEpoch: 1 };
+    const errorsOf = (count: number) => Array.from({ length: count }, (_, i) => ({ sourcePath: `/w/${i}.pdf`, error: 'over the limit' }));
+    const event = (errors: unknown[]) => ({ kind: 'deliverables', enqueuedAtEpochMs: 1700000000000, payload: {
+      contentSessionId: 'remote-session', platformSource: 'claude', cwd: '/w', project: 'repo', files: [file], errors,
+    } });
+    expect((await send(event(errorsOf(DELIVERABLE_ERRORS_PER_EVENT)))).status).toBe(202);
+    expect((await send(event(errorsOf(DELIVERABLE_ERRORS_PER_EVENT + 1)))).status).toBe(400);
+    expect(spool.entries()).toHaveLength(1);
+  });
+
   it('acknowledges the exact event only after it is in the server spool', async () => {
     const response = await send();
     expect(response.status).toBe(202);

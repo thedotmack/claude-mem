@@ -165,8 +165,8 @@ export function removeFromClaudeSettings(): void {
   }
 }
 
-function removeStrayClaudeMemPaths(): number {
-  const home = homedir();
+/** Exported for tests; `home` is injectable so tests never touch the real home directory. */
+export function removeStrayClaudeMemPaths(home: string = homedir()): number {
   let removedCount = 0;
 
   const npxRoot = join(home, '.npm', '_npx');
@@ -219,7 +219,7 @@ function removeStrayClaudeMemPaths(): number {
     }
   }
 
-  const pluginDataDir = join(home, '.claude', 'plugins', 'data', 'claude-mem-thedotmack');
+  const pluginDataDir = join(pluginsDirectory(), 'data', 'claude-mem-thedotmack');
   if (existsSync(pluginDataDir)) {
     try {
       rmSync(pluginDataDir, { recursive: true, force: true });
@@ -418,6 +418,10 @@ export async function runUninstallCommand(): Promise<void> {
       const { uninstallT3Code } = await import('../../services/integrations/T3CodeInstaller.js');
       return uninstallT3Code();
     }},
+    { label: 'Hermes Agent memory provider', fn: async () => {
+      const { uninstallHermesIntegration } = await import('../../services/integrations/HermesInstaller.js');
+      return uninstallHermesIntegration();
+    }},
     { label: 'Pi memory', fn: async () => {
       const { uninstallPiExtension } = await import('../../services/integrations/PiInstaller.js');
       return uninstallPiExtension();
@@ -425,6 +429,10 @@ export async function runUninstallCommand(): Promise<void> {
     { label: 'Windsurf hooks', fn: async () => {
       const { uninstallWindsurfHooks } = await import('../../services/integrations/WindsurfHooksInstaller.js');
       return uninstallWindsurfHooks();
+    }},
+    { label: 'Goose MCP extension', fn: async () => {
+      const { uninstallGooseMcpIntegration } = await import('../../services/integrations/McpIntegrations.js');
+      return uninstallGooseMcpIntegration();
     }},
     { label: 'OpenCode plugin', fn: async () => {
       const { uninstallOpenCodePlugin } = await import('../../services/integrations/OpenCodeInstaller.js');

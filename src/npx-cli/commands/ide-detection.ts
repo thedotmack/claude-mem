@@ -4,6 +4,8 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { IS_WINDOWS } from '../utils/paths.js';
 import { t3CodeSettingsPath } from '../../services/integrations/T3CodeInstaller.js';
+import { hermesHome } from '../../services/integrations/HermesInstaller.js';
+import { lookupWindowsCommandCandidates } from '../../shared/spawn.js';
 
 export interface IDEInfo {
   id: string;
@@ -20,10 +22,9 @@ export function initialIDESelection(ides: IDEInfo[]): string[] {
 function isCommandInPath(command: string): boolean {
   try {
     if (IS_WINDOWS) {
-      execFileSync('where.exe', [command], {
-        stdio: 'ignore',
-        windowsHide: true,
-      });
+      // System32 where.exe with current-directory hits dropped: a planted
+      // <command>.exe in the project dir must not count as an install.
+      return lookupWindowsCommandCandidates(command).length > 0;
     } else {
       execFileSync('which', [command], { stdio: 'ignore' });
     }
@@ -123,6 +124,12 @@ export function detectInstalledIDEs(): IDEInfo[] {
       label: 'OMP',
       detected: isCommandInPath('omp') || existsSync(join(home, '.omp')),
       hint: 'native hooks integration',
+    },
+    {
+      id: 'hermes',
+      label: 'Hermes Agent',
+      detected: isCommandInPath('hermes') || existsSync(hermesHome()),
+      hint: 'memory provider plugin + MCP search',
     },
     {
       id: 'pi',

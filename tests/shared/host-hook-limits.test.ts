@@ -48,9 +48,9 @@ describe('SESSION_START_HOOK_LIMIT_MS', () => {
     expect(SESSION_START_HOOK_LIMIT_MS['antigravity-cli']).toBe(ANTIGRAVITY_HOOK_TIMEOUT_MS);
     expect(SESSION_START_HOOK_LIMIT_MS.antigravity).toBe(ANTIGRAVITY_HOOK_TIMEOUT_MS);
 
-    // agy reads `timeout` in seconds (#4196); the PreInvocation hook runs `context`.
+    // agy reads `timeout` in seconds (#4196); the SessionStart hook runs `context` (#4911).
     const agyHooks = buildAntigravityHooksConfig('/usr/local/bin/bun', '/opt/plugin/scripts/worker-service.cjs') as Record<string, any>;
-    const contextHook = agyHooks['claude-mem'].PreInvocation[0];
+    const contextHook = agyHooks['claude-mem'].SessionStart[0];
     expect(contextHook.command).toEndWith('hook antigravity-cli context');
     expect(contextHook.timeout).toBe(ANTIGRAVITY_HOOK_TIMEOUT_MS / 1000);
   });

@@ -2,7 +2,7 @@ import { mkdirSync, watch as fsWatch } from 'fs';
 import { HOOK_SPOOL_SESSION_END_UNKNOWN_GRACE_MS, HookSpool, type HookSpoolConsumedMarkers, type HookSpoolDrainResult, type HookSpoolEntry } from '../../shared/hook-spool.js';
 import type { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
-import { ingestAdvisorCalls, ingestObservation, ingestSessionEnd, ingestSummarize, requireIngestContext } from './http/shared.js';
+import { ingestAdvisorCalls, ingestDeliverables, ingestObservation, ingestSessionEnd, ingestSubagentStop, ingestSummarize, requireIngestContext } from './http/shared.js';
 import { recordWorkStateInstruction, recordWorkStateMcp } from '../telemetry/work-state.js';
 
 const SAFETY_SWEEP_INTERVAL_MS = 30_000;
@@ -41,10 +41,16 @@ async function ingestHookSpoolEntry(entry: HookSpoolEntry, markHandedOff: () => 
       }
       return true;
     }
-    case 'summarize':
+    case 'summarize': {
       // unknown_session: init may not have landed yet (it raced the same
-      // outage) — keep the entry, exactly like the old SessionEnd replay.
-      return (await ingestSummarize({ ...entry.payload, enqueuedAtEpochMs: entry.enqueuedAtEpochMs }, undefined, { markHandedOff })).status !== 'unknown_session';
+      // outage), so keep it through the grace window. Past it the session
+      // never registered — the drain already holds a summarize behind any
+      // retained observation of its session — and it would only be retried
+      // until the retry window expires it, like session_end (#4629).
+      const outcome = (await ingestSummarize({ ...entry.payload, enqueuedAtEpochMs: entry.enqueuedAtEpochMs }, undefined, { markHandedOff })).status;
+      if (outcome !== 'unknown_session') return true;
+      return Date.now() - entry.enqueuedAtEpochMs > HOOK_SPOOL_SESSION_END_UNKNOWN_GRACE_MS ? 'expired' : false;
+    }
     case 'session_end': {
       // unknown_session here means the worker is up and its DB has no such
       // session: a session registers within moments of starting or never, so
@@ -57,8 +63,18 @@ async function ingestHookSpoolEntry(entry: HookSpoolEntry, markHandedOff: () => 
       if (outcome !== 'unknown_session') return true;
       return Date.now() - entry.enqueuedAtEpochMs > HOOK_SPOOL_SESSION_END_UNKNOWN_GRACE_MS ? 'expired' : false;
     }
+    case 'subagent_stop':
+      // Stamped with the hook's time, not the drain's, so a late drain never
+      // makes the stop look newer than work the agent did after it resumed.
+      ingestSubagentStop({ ...entry.payload, stoppedAtEpoch: entry.enqueuedAtEpochMs }, { markHandedOff });
+      return true;
     case 'advisor_calls':
       ingestAdvisorCalls(entry.payload, undefined, { markHandedOff });
+      return true;
+    case 'deliverables':
+      // The copies are already in the bucket; stamped with the hook's time so
+      // the record says when the turn made them, not when the drain ran.
+      ingestDeliverables({ ...entry.payload, enqueuedAtEpochMs: entry.enqueuedAtEpochMs }, undefined, { markHandedOff });
       return true;
   }
 }

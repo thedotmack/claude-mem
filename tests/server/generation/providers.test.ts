@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 import { readFileSync } from 'fs';
 import {
   ServerClassifiedProviderError,
@@ -24,6 +24,7 @@ import { OpenRouterObservationProvider } from '../../../src/server/generation/pr
 import { buildServerGenerationPrompt } from '../../../src/server/generation/providers/shared/prompt-builder.js';
 import type { ServerGenerationContext } from '../../../src/server/generation/providers/shared/types.js';
 import { SettingsDefaultsManager } from '../../../src/shared/SettingsDefaultsManager.js';
+import { logger } from '../../../src/utils/logger.js';
 
 function makeContext(overrides: Partial<{ payload: unknown; serverSessionId: string | null; sourceType: 'agent_event' | 'session_summary' }> = {}): ServerGenerationContext {
   return {
@@ -311,6 +312,69 @@ describe('ClaudeObservationProvider', () => {
     const fakeFetch = new FakeFetch(jsonResponse(401, { error: { message: 'Invalid API key' } }));
     const provider = new ClaudeObservationProvider({ apiKey: 'sk-fake', fetchImpl: fakeFetch.fetch });
     await expect(provider.generate(makeContext())).rejects.toBeInstanceOf(ServerClassifiedProviderError);
+  });
+
+  it('sends no temperature', async () => {
+    const capturing = new CapturingFetch(jsonResponse(200, { content: [{ type: 'text', text: 'ok' }] }));
+    const provider = new ClaudeObservationProvider({ apiKey: 'sk-fake', fetchImpl: capturing.fetch });
+    await provider.generate(makeContext());
+    expect('temperature' in JSON.parse(String(capturing.lastInit?.body))).toBe(false);
+  });
+
+  it('sends no thinking field unless given a policy', async () => {
+    const capturing = new CapturingFetch(jsonResponse(200, { content: [{ type: 'text', text: 'ok' }] }));
+    const provider = new ClaudeObservationProvider({ apiKey: 'sk-fake', fetchImpl: capturing.fetch });
+    await provider.generate(makeContext());
+    const body = JSON.parse(String(capturing.lastInit?.body));
+    expect('thinking' in body).toBe(false);
+    expect(body.max_tokens).toBe(4096);
+  });
+
+  it('sends the thinking policy: omit drops the field, adaptive passes through, an enabled budget adds to max_tokens', async () => {
+    const cases = [
+      { thinking: { type: 'disabled' as const }, expected: { type: 'disabled' }, maxTokens: 4096 },
+      { thinking: 'omit' as const, expected: undefined, maxTokens: 4096 },
+      { thinking: { type: 'adaptive' as const }, expected: { type: 'adaptive' }, maxTokens: 4096 },
+      { thinking: { type: 'enabled' as const, budgetTokens: 2048 }, expected: { type: 'enabled', budget_tokens: 2048 }, maxTokens: 6144 },
+    ];
+    for (const { thinking, expected, maxTokens } of cases) {
+      const capturing = new CapturingFetch(jsonResponse(200, { content: [{ type: 'text', text: 'ok' }] }));
+      const provider = new ClaudeObservationProvider({ apiKey: 'sk-fake', fetchImpl: capturing.fetch, thinking });
+      await provider.generate(makeContext());
+      const body = JSON.parse(String(capturing.lastInit?.body));
+      expect(body.thinking).toEqual(expected);
+      expect(body.max_tokens).toBe(maxTokens);
+    }
+  });
+
+  it('sends extra headers without letting them replace the api key, in any case', async () => {
+    const capturing = new CapturingFetch(jsonResponse(200, { content: [{ type: 'text', text: 'ok' }] }));
+    const provider = new ClaudeObservationProvider({
+      apiKey: 'sk-fake',
+      fetchImpl: capturing.fetch,
+      extraHeaders: { 'cf-aig-authorization': 'Bearer gw', 'X-Api-Key': 'other', 'content-type': 'text/plain' },
+    });
+    await provider.generate(makeContext());
+    const headers = new Headers(capturing.lastInit?.headers);
+    expect(headers.get('cf-aig-authorization')).toBe('Bearer gw');
+    expect(headers.get('x-api-key')).toBe('sk-fake');
+    expect(headers.get('content-type')).toBe('application/json');
+  });
+
+  it('logs an error when the reply is cut off at max_tokens', async () => {
+    const errorSpy = spyOn(logger, 'error').mockImplementation(() => {});
+    try {
+      const provider = new ClaudeObservationProvider({
+        apiKey: 'sk-fake',
+        fetchImpl: new CapturingFetch(jsonResponse(200, { content: [], stop_reason: 'max_tokens' })).fetch,
+      });
+      const result = await provider.generate(makeContext());
+      expect(result.rawText).toBe('');
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      expect(String(errorSpy.mock.calls[0]?.[1])).toContain('CLAUDE_MEM_SERVER_MAX_OUTPUT_TOKENS');
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it('POSTs to api.anthropic.com when baseUrl is unset', async () => {

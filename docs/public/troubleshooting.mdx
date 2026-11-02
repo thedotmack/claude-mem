@@ -888,7 +888,10 @@ Failed with non-blocking status code: ""bun"" is not recognized as an internal o
    # Start with search to get index
    search(query="...", limit=10)
 
-   # Review IDs, then fetch only relevant ones
+   # Review the index and inspect context around a relevant ID
+   timeline(anchor=<relevant_id>, depth_before=2, depth_after=2)
+
+   # Review that context, then fetch only the selected records
    get_observations(ids=[<2-3 relevant IDs>])
    ```
 

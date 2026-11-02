@@ -55,7 +55,9 @@ describe('Bash memory lookup uses the native search pattern', () => {
     for (const depth of ['-d 1', '-d1']) {
       expect(memorySearchLookup({ sessionId: 'pattern-fixture', cwd: '/project', toolName: 'Bash',
         toolInput: { command: `rg ${depth} timeout /notes/feedback.md` } }, ['/notes']))
-        .toEqual({ query: 'timeout', memoryPath: '/notes/feedback.md' });
+        // memoryPath is resolved against the session cwd, so it is host-shaped
+        // (D:\notes\... on Windows); a POSIX literal cannot match there.
+        .toEqual({ query: 'timeout', memoryPath: path.resolve('/project', '/notes/feedback.md') });
     }
   });
 
@@ -95,10 +97,8 @@ describe('Bash memory lookup uses the native search pattern', () => {
       const address = server.address();
       if (!address || typeof address === 'string') throw new Error('Owned search server did not bind');
       const search = async (query: string, project = 'pattern-project') => {
-        const response = await fetch(`http://127.0.0.1:${address.port}/api/mem-search`, {
-          method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ query, mode: 'auto', project, projects: [project], searchScope: project, limit: 8 }),
-        });
+        const params = new URLSearchParams({ query, project, projects: project, limit: '8' });
+        const response = await fetch(`http://127.0.0.1:${address.port}/api/search?${params}`);
         expect(response.status).toBe(200);
         const result = await response.json() as { content: Array<{ text: string }>; isError?: boolean };
         expect(result.isError).not.toBe(true);

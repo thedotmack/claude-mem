@@ -29,13 +29,14 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { paths } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { isCmemGatewayUrl, writeProFallbackAt, type ProFallbackNotice } from '../../shared/cmem-gateway.js';
+import { cmemCapProbeAllowed } from '../../shared/cmem-cap-probe.js';
 import { scrubErrorMessage } from '../../shared/observer-health.js';
 import { isGeminiAvailable, isGeminiSelected } from './GeminiProvider.js';
 import { isOpenRouterAvailable, isOpenRouterSelected } from './OpenRouterProvider.js';
 import { isOpenAICompatAvailable, isOpenAICompatSelected } from './OpenAICompatProvider.js';
 import { isCodexSelected } from './CodexProvider.js';
 import { isClassified, type ClassifiedProviderError } from './provider-errors.js';
-import { canClaudeServeAsFallback } from '../../shared/claude-fallback-readiness.js';
+import { canClaudeServeAsFallback, claudeQuotaStandIn } from '../../shared/claude-fallback-readiness.js';
 import {
   cooldownAppliesToCurrentAccount,
   getQuotaCooldown,
@@ -222,16 +223,22 @@ interface RoutedProvider {
  * The shared rule for every plain dispatch return: keep `primary` unless its
  * breaker holds for its quota AND the fallback can serve. When neither can,
  * this returns `primary`, and admission withholds it exactly as it does today.
+ *
+ * A Claude primary whose other credential can take the work
+ * (CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD) stays on Claude, and admission runs
+ * it on that credential: same models, same prompts. The provider fallback is
+ * next in line, once both credentials are held.
  */
 function applyQuotaFallback(primary: SelectableProvider, nowMs: number = Date.now()): RoutedProvider {
   if (!isHeldForQuota(primary, nowMs)) return { provider: primary, fallbackFrom: null };
+  if (primary === 'claude' && claudeQuotaStandIn() !== null) return { provider: primary, fallbackFrom: null };
   const fallback = quotaFallbackTarget(primary, nowMs);
   return fallback === null
     ? { provider: primary, fallbackFrom: null }
     : { provider: fallback, fallbackFrom: primary };
 }
 
-type QuotaFallbackState = 'primary' | 'fallback' | 'probing' | 'blocked';
+type QuotaFallbackState = 'primary' | 'fallback' | 'credential' | 'probing' | 'blocked';
 
 /**
  * Last state logged by `selectProviderForGenerator`. Module-level because
@@ -242,8 +249,9 @@ let quotaFallbackState: QuotaFallbackState = 'primary';
 
 function noteQuotaFallbackTransition(primary: SelectableProvider, routed: RoutedProvider, nowMs: number): void {
   let next: QuotaFallbackState;
+  const standIn = primary === 'claude' ? claudeQuotaStandIn() : null;
   if (routed.fallbackFrom != null) next = 'fallback';
-  else if (isHeldForQuota(primary, nowMs)) next = 'blocked';
+  else if (isHeldForQuota(primary, nowMs)) next = standIn ? 'credential' : 'blocked';
   else if (quotaBreakerOf(primary) !== null) next = 'probing';
   else next = 'primary';
   if (next === quotaFallbackState) return;
@@ -266,6 +274,12 @@ function noteQuotaFallbackTransition(primary: SelectableProvider, routed: Routed
       return;
     case 'probing':
       logger.info('SESSION', 'Primary quota cooldown elapsed; probing primary', { primary });
+      return;
+    case 'credential':
+      logger.warn('SESSION', standIn === 'subscription'
+        ? 'API key quota exhausted; running the Claude observer on the subscription login until the key recovers'
+        : 'Claude Code login paused for quota; running the Claude observer on the fallback API key until the login recovers',
+      { primary, credential: standIn });
       return;
     case 'blocked': {
       // Distinct from probing: nothing is being probed and nothing can take
@@ -354,6 +368,8 @@ export function getSelectedProvider(): SelectableProvider {
  * take them.
  */
 export function quotaServingProvider(held: QuotaProvider, nowMs: number = Date.now()): SelectableProvider | null {
+  // The primary Claude credential is held, but runs go on the other one meanwhile.
+  if (held === 'claude' && claudeQuotaStandIn()) return 'claude';
   if (readQuotaFallbackProvider() === null) return null;
   const serving = getSelectedProvider();
   if (serving === held || isQuotaCooldownHolding(serving, nowMs)) return null;
@@ -392,6 +408,11 @@ export function selectProviderForGenerator(): ProviderSelection {
   if (isCodexSelected()) return selectWithQuotaFallback('codex');
   if (isOpenRouterSelected() && isOpenRouterAvailable()) {
     const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
+    // A spent cmem allowance is one probe a day. Selecting the gateway again
+    // on the immediate fallback resume is what re-sent pro_inference_cap_exhausted.
+    if (isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL) && !cmemCapProbeAllowed()) {
+      return { provider: 'claude', gatewayProbeClaimId: null };
+    }
     if (settings.CLAUDE_MEM_PRO_FALLBACK_AT && isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL)) {
       if (staysOnClaudeInFallback(settings.CLAUDE_MEM_PRO_FALLBACK_AT)) {
         return { provider: 'claude', gatewayProbeClaimId: null };

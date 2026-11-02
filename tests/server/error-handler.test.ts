@@ -313,3 +313,31 @@ describe('ErrorHandler', () => {
     });
   });
 });
+
+describe('errorHandler with express.json request-body errors', () => {
+  it('answers 400 for malformed JSON and 413 for an oversized body instead of 500', async () => {
+    const express = (await import('express')).default;
+    const app = express();
+    app.use(express.json({ limit: '1kb' }));
+    app.post('/api/echo', (req, res) => { res.json(req.body); });
+    app.use(errorHandler);
+    const errorSpy = spyOn(logger, 'error').mockImplementation(() => {});
+    const server = await new Promise<import('node:http').Server>(resolve => {
+      const listener = app.listen(0, '127.0.0.1', () => resolve(listener));
+    });
+    try {
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('no listener');
+      const post = (body: string) => fetch(`http://127.0.0.1:${address.port}/api/echo`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
+      });
+
+      expect((await post('{"broken": ')).status).toBe(400);
+      expect((await post(JSON.stringify({ text: 'x'.repeat(4096) }))).status).toBe(413);
+      expect((await post('{"ok":true}')).status).toBe(200);
+    } finally {
+      errorSpy.mockRestore();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+});

@@ -242,10 +242,35 @@ describe('teamBrainUrlProblem', () => {
 });
 
 describe('teamBriefReserveChars', () => {
-  it('reserves nothing without a team, else the brief and the memory instructions after it', () => {
-    expect(teamBriefReserveChars({})).toBe(0);
+  it('reserves the memory instructions whenever they are on, plus the brief with a team', () => {
+    expect(teamBriefReserveChars({})).toBe(MEMORY_PLUGIN_INSTRUCTIONS.length + 2);
+    expect(teamBriefReserveChars({ CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: 'false' })).toBe(0);
     expect(teamBriefReserveChars({ CLAUDE_MEM_TEAMBRAIN_URL: 'https://cmem.ai' })).toBe(TEAM_BRIEF_RESERVE_CHARS + MEMORY_PLUGIN_INSTRUCTIONS.length + 2);
     expect(teamBriefReserveChars({ CLAUDE_MEM_TEAMBRAIN_URL: 'https://cmem.ai', CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: 'false' })).toBe(TEAM_BRIEF_RESERVE_CHARS);
+  });
+
+  it('caps supplementary characters in the name and text in UTF-16 units, within the reserve', () => {
+    const text = relayedBlock('😀'.repeat(TEAM_BRIEF_MAX_CHARS + 1), TEAM_BRIEF_MAX_CHARS);
+    const brief = formatTeamBrief({ team: { id: 't', name: '😀'.repeat(500) }, text });
+    // ContextBudget and the host delivery cap measure String.length, not code points,
+    // so the caps count the same unit and the reserve stays sized for one unit per character.
+    expect(text.length).toBeLessThanOrEqual(TEAM_BRIEF_MAX_CHARS);
+    expect(TEAM_BRIEF_RESERVE_CHARS).toBeLessThan(TEAM_BRIEF_MAX_CHARS * 2);
+    expect(brief.length + 2).toBeLessThanOrEqual(TEAM_BRIEF_RESERVE_CHARS);
+    expect((brief + '\n\n' + MEMORY_PLUGIN_INSTRUCTIONS + '\n\n').length).toBeLessThanOrEqual(
+      teamBriefReserveChars({ CLAUDE_MEM_TEAMBRAIN_URL: 'https://cmem.ai' }),
+    );
+  });
+
+  it('never leaves a lone high surrogate where a cap cuts', () => {
+    const loneHighSurrogateAtEnd = /[\uD800-\uDBFF]$/;
+    const text = relayedBlock('😀'.repeat(10), 4);
+    expect(text).toBe('😀…');
+    expect(loneHighSurrogateAtEnd.test(text.slice(0, -1))).toBe(false);
+    const heading = formatTeamBrief({ team: { id: 't', name: '😀'.repeat(500) }, text: 'x' }).split('\n')[0];
+    const clippedName = heading.slice(heading.indexOf('(') + 1, heading.lastIndexOf(')'));
+    expect(clippedName.endsWith('…')).toBe(true);
+    expect(loneHighSurrogateAtEnd.test(clippedName.slice(0, -1))).toBe(false);
   });
 
   it('covers the longest brief the hook can add', () => {

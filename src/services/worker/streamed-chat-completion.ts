@@ -88,6 +88,11 @@ export function resetStreamingEndpointMemoryForTests(): void {
   endpointsWarnedForMissingStreamUsage.clear();
 }
 
+/** Test hook: the next request to this URL is the non-streamed path. */
+export function markEndpointRefusesStreamingForTests(url: string): void {
+  endpointsThatRefuseStreaming.add(url);
+}
+
 /**
  * Whether requests to this endpoint are streamed. The cmem gateway calls its
  * upstream with stream:false and answers with one JSON body after the whole
@@ -142,6 +147,11 @@ export interface ChatCompletionRequest {
   liveness: StreamLiveness | null;
   /** Names the provider in error messages. */
   label: string;
+  /**
+   * False: no `max_completion_tokens` resend (#4003). An image request is
+   * never resent that way; its refusal reaches `classify` instead.
+   */
+  allowMaxCompletionTokensRetry?: boolean;
   /** The provider's classifier, for HTTP errors, network errors and in-stream error objects. */
   classify: (input: ChatCompletionClassifyInput) => ClassifiedProviderError;
 }
@@ -284,7 +294,9 @@ export async function sendChatCompletion(request: ChatCompletionRequest): Promis
   const { max_tokens: _ignoredCap, ...bodyWithoutCap } = request.body;
   const bodies = [
     { ...bodyWithoutCap, max_tokens: request.maxOutputTokens },
-    { ...bodyWithoutCap, max_completion_tokens: request.maxOutputTokens },
+    ...(request.allowMaxCompletionTokensRetry === false
+      ? []
+      : [{ ...bodyWithoutCap, max_completion_tokens: request.maxOutputTokens }]),
   ];
   // Re-read per send: another query may have learned the endpoint refuses streaming.
   let streamThisSend = request.liveness !== null && streamsChatCompletion(request.url);
@@ -370,7 +382,18 @@ async function assembleStream(opened: OpenedExchange, request: ChatCompletionReq
       try {
         chunk = JSON.parse(event.data) as StreamChunk;
       } catch (parseError: unknown) {
-        throw outputFailure(`${request.label} stream chunk could not be read: ${asError(parseError).message}`, parseError, STREAM_INTERRUPTED_CODE);
+        // Same rule as a stream that broke off: before any output the send is
+        // ambiguous and may be resent once; after output started it was billed.
+        const error = asError(parseError);
+        if (outputStarted) {
+          throw outputFailure(`${request.label} stream chunk could not be read: ${error.message}`, error, STREAM_INTERRUPTED_CODE);
+        }
+        throw new ClassifiedProviderError(`${request.label} stream chunk could not be read: ${error.message}`, {
+          kind: 'transient',
+          failedBeforeOutput: true,
+          code: STREAM_INTERRUPTED_CODE,
+          cause: error,
+        });
       }
       if (chunk === null || typeof chunk !== 'object') continue;
 

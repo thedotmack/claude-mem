@@ -1,7 +1,6 @@
 # Native memory lookup and note bridge
 
-The plugin now supplements supported native memory lookups with its automatic
-progressive search, and its startup instructions ask the agent to use
+The plugin now supplements supported native memory lookups with a compact Smart search index, and its startup instructions ask the agent to use
 `save_memory` for local-worker durable preferences, corrections, decisions, and
 lessons. Server-runtime notes use `observation_add` for the selected server
 project; `save_memory` refuses server-mode writes before calling the worker.
@@ -14,7 +13,7 @@ agents to use only tools actually available. To-do lists remain in
 The existing `PreToolUse` file-context hook recognizes `memory_search`, a local
 `memory` tool's read commands, and Read/Grep/Glob/Bash reads scoped to Claude
 native memory folders, Codex's memory folder, or configured note roots. It
-calls `/api/mem-search` in automatic mode, using the checkout's project scope.
+calls `/api/search` with `type=observations` for a compact observation index using the checkout's project scope. It never calls Dumb search or automatically fetches full records. Session and prompt rows are excluded so their numeric IDs cannot be mistaken for observation IDs. The agent continues with timeline context, then fetches only the selected observation IDs.
 An explicitly mapped note folder uses its own project instead, even when another
 checkout reads it. The internal HTTP transport carries a `content` envelope,
 while the model sees only its concise, selected readable text. Structured
@@ -30,11 +29,12 @@ configuration is incomplete. Native tools continue; this bridge does not query
 or start a local worker. Use the selected server's available search tools directly.
 
 Model-facing tool replies must be concise purpose-specific text. Both direct
-MCP retrieval and native-memory supplementation select useful evidence before
-disclosure; internal structured envelopes are transport data. Guided searches
-show numbered steps, readable next-call instructions, and a short **Continue
-with:** cursor. The server keeps continuation state instead of giving the
-agent serialized search rows to carry between calls.
+MCP retrieval and native-memory supplementation keep internal structured envelopes
+out of the prompt. Smart search is the default three-step workflow: search for
+an index, reason about timeline context, then fetch selected details. There are
+no auto or guided modes or continuation cursors. Optional `dumb_search` is an
+explicit one-call alternative: Doesn’t reason about the results. Fast, but
+shallow. Use Smart for reliable recall.
 
 Claude Code supports `PreToolUse` additional context. `InstructionsLoaded`
 observes instruction-file loads and provides no replacement mechanism.
@@ -47,7 +47,7 @@ code mode; hosted tools can bypass that path. Its hook output cannot replace
 MCP results through `updatedMCPToolOutput`. See the [Codex hooks
 reference](https://developers.openai.com/codex/hooks). Internal hosted memory
 retrieval and background native-memory generation have no verified plugin
-interception API. Use direct `mem_search` instructions and the optional file
+interception API. Use direct memory search instructions and the optional file
 bridge for those paths.
 
 ## Enable a note-folder bridge

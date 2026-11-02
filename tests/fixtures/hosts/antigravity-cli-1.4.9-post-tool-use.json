@@ -1,0 +1,39 @@
+{
+  "_source": "PostToolUse stdin captured from agy 1.4.9 (macOS) with a workspace .agents/hooks.json that saved each payload. Only the paths, the conversation id and lastUserInput were replaced; keys, nesting and value types are as agy sent them. agy sends no tool-call id; stepIdx is shared by a step's PreToolUse and PostToolUse and keeps counting across the turns of a resumed conversation (2, 4, 6, then 11 on the next turn).",
+  "callMcpTool": {
+    "artifactDirectoryPath": "/home/user/.gemini/antigravity-cli/brain/7d6a2a52-3f4e-4c55-9d3b-1b1f0e7c9a10",
+    "conversationId": "7d6a2a52-3f4e-4c55-9d3b-1b1f0e7c9a10",
+    "error": "",
+    "lastUserInput": "Call the claude-mem MCP tool smart_outline once.",
+    "modelName": "gemini-3.8-flash-low",
+    "stepIdx": 4,
+    "toolCall": {
+      "args": {
+        "Arguments": { "file_path": "/home/user/project/dump.sh" },
+        "ServerName": "claude-mem",
+        "ToolName": "smart_outline"
+      },
+      "name": "call_mcp_tool"
+    },
+    "transcriptPath": "/home/user/.gemini/antigravity-cli/brain/7d6a2a52-3f4e-4c55-9d3b-1b1f0e7c9a10/.system_generated/logs/transcript_full.jsonl",
+    "workspacePaths": ["/home/user/project"]
+  },
+  "runCommand": {
+    "artifactDirectoryPath": "/home/user/.gemini/antigravity-cli/brain/7d6a2a52-3f4e-4c55-9d3b-1b1f0e7c9a10",
+    "conversationId": "7d6a2a52-3f4e-4c55-9d3b-1b1f0e7c9a10",
+    "error": "",
+    "lastUserInput": "List the files, then call work_state_read.",
+    "modelName": "gemini-3.8-flash-low",
+    "stepIdx": 2,
+    "toolCall": {
+      "args": {
+        "CommandLine": "ls -la",
+        "WaitMsBeforeAsync": 5000,
+        "toolSummary": "List directory contents"
+      },
+      "name": "run_command"
+    },
+    "transcriptPath": "/home/user/.gemini/antigravity-cli/brain/7d6a2a52-3f4e-4c55-9d3b-1b1f0e7c9a10/.system_generated/logs/transcript_full.jsonl",
+    "workspacePaths": ["/home/user/project"]
+  }
+}

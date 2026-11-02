@@ -6,6 +6,7 @@ import {
   queryObservationsMulti,
   queryObservationsNewest,
   querySummariesMulti,
+  countObservationsByProjects,
 } from '../../src/services/context/ObservationCompiler.js';
 import type { ContextConfig } from '../../src/services/context/types.js';
 
@@ -54,15 +55,33 @@ function captureStatements(db: Database) {
 }
 
 describe('context query statement ownership', () => {
-  it('releases read-key, observation and summary statements while keeping the shared connection open', () => {
+  it('releases read-key, observation, summary and count statements while keeping the shared connection open', () => {
     const store = setup();
     const captured = captureStatements(store.db);
     try {
       const projects = projectReadKeys(store.db, ['app']);
       expect(queryObservationsMulti(store, projects, config).map(row => row.title)).toEqual(['Context record']);
       expect(querySummariesMulti(store, projects, config).map(row => row.request)).toEqual(['Context summary']);
-      expect(captured.statements).toHaveLength(3);
-      expect(captured.statements.map(statement => statement.toString() === '')).toEqual([true, true, true]);
+      expect(countObservationsByProjects(store, projects)).toBe(1);
+      expect(captured.statements).toHaveLength(4);
+      expect(captured.statements.map(statement => statement.toString() === '')).toEqual([true, true, true, true]);
+      store.db.exec('SELECT 1');
+    } finally {
+      captured.cleanup();
+      store.close();
+    }
+  });
+
+  it('releases work-state read statements and preserves the checkout scope', () => {
+    const store = setup();
+    store.appendWorkStateEntry({ project: 'app', listName: 'next', fields: { status: 'open' } });
+    const captured = captureStatements(store.db);
+    try {
+      expect(store.getWorkStateEntries(['app']).map(entry => ({ scope: entry.scope_project, fields: entry.fields }))).toEqual([
+        { scope: 'app', fields: { status: 'open' } },
+      ]);
+      expect(captured.statements).toHaveLength(2);
+      expect(captured.statements.map(statement => statement.toString() === '')).toEqual([true, true]);
       store.db.exec('SELECT 1');
     } finally {
       captured.cleanup();
@@ -103,10 +122,11 @@ describe('context query statement ownership', () => {
   for (const projects of [undefined, ['app']]) {
     it(`releases the observation statement after an execution error (${projects ? 'project-scoped' : 'house-wide'})`, () => {
       const store = setup();
-      store.db.exec("UPDATE observations SET concepts = 'invalid json'");
       const captured = captureStatements(store.db);
       try {
-        expect(() => queryObservationsNewest(store, config, { limit: 3, projects })).toThrow(/malformed JSON/);
+        // SQLite raises "datatype mismatch" when it steps a non-integer LIMIT.
+        const limit = 'not-a-number' as unknown as number;
+        expect(() => queryObservationsNewest(store, config, { limit, projects })).toThrow(/datatype mismatch/);
         expect(captured.statements).toHaveLength(1);
         expect(captured.statements[0].toString()).toBe('');
         store.db.exec('SELECT 1');

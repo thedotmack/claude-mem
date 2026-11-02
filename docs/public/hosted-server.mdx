@@ -87,13 +87,15 @@ claude mcp add --transport http claude-mem <server-base>/v1/mcp \
   --header "Authorization: Bearer cm_..."
 ```
 
-Three tools are exposed, each mirroring an existing REST path:
+Smart search is the default three-step workflow. Review the index, inspect timeline context, then fetch only the selected records. There are no auto or guided modes. Each tool uses the authenticated team and requested project:
 
 | Tool      | Arguments                          | Returns |
 |-----------|------------------------------------|---------|
-| `search`  | `{ projectId, query, limit? }`     | Matching observations (full-text search). |
-| `context` | `{ projectId, query, limit? }`     | Observations **plus** a concatenated `context` string ready for prompt injection. |
-| `recent`  | `{ projectId, limit? }`            | The newest observations for a project. |
+| `search` | `{ projectId, query, limit? }` | Compact index with IDs from full-text search. |
+| `timeline` | `{ projectId, anchorId, depthBefore?, depthAfter? }` | Chronological context around a selected ID. |
+| `get_observations` | `{ projectId, ids }` | Useful details for only the selected IDs, with shortening marked. |
+| `context` | `{ projectId, query, limit? }` | Legacy focused context lookup; prefer the Smart workflow. |
+| `recent` | `{ projectId, limit? }` | Compact index of the newest observations for a project. |
 
 <Note>
 The transport is **stateless** — one MCP server + transport per request — so it
@@ -226,6 +228,25 @@ This ownership check also applies to session summaries and does not hold a
 database lock during the provider call. Recovery may still require another paid
 provider call; it does not guarantee exactly-once provider execution.
 
+### Claude provider through a gateway
+
+With `CLAUDE_MEM_SERVER_PROVIDER=claude`, the generation worker calls
+api.anthropic.com. To send its calls through an Anthropic-compatible gateway
+(Cloudflare AI Gateway, LiteLLM, a corporate proxy) for per-call logs, cost and
+rate limits, set these on the generation worker:
+
+| Setting | Description |
+|---------|-------------|
+| `CLAUDE_MEM_ANTHROPIC_BASE_URL` | The gateway's Anthropic-compatible base URL; `/v1/messages` is appended |
+| `CLAUDE_MEM_ANTHROPIC_CUSTOM_HEADERS` | Extra headers on each request, such as the gateway's own auth header, in the format of Claude Code's `ANTHROPIC_CUSTOM_HEADERS`: one `Name: Value` per line. They can't replace the API key, version or content type. A line that isn't a valid header is skipped with a warning that gives its line number, never its text |
+
+Claude Code's own `ANTHROPIC_BASE_URL` and `ANTHROPIC_CUSTOM_HEADERS` are not
+read, so a server started from a shell that sets them for Claude Code doesn't
+send its key to that gateway.
+
+A cmem.ai memory key (`cm_pro_…`) is refused on this provider, as the API key
+or inside a custom header; it only works on the cmem.ai gateway.
+
 ### Custom generation provider (advanced)
 
 The generation worker ships with `claude`, `gemini` and `openrouter` providers, and
@@ -246,6 +267,40 @@ other code you deploy. The path is read only from the process environment, never
 from `settings.json` or an API route. It must be an absolute path, and the worker
 logs the path and the file's sha256 when it loads the module.
 </Warning>
+
+## Search by meaning
+
+With pgvector 0.8 or later in its Postgres, search ranks by meaning as well as
+by keyword: `/v1/search`, `/v1/context` and the MCP `search` and `context`
+tools fuse a keyword ranking with the observations nearest the query's vector,
+so a query finds a memory that shares none of its words. The server embeds
+queries and the generation worker embeds the observations it writes, in-process
+with the model `CLAUDE_MEM_EMBEDDING_MODEL` names. The Docker image includes the
+default one; build it with `--build-arg EMBEDDING_REPO=<repo>`, the model's
+repository in `src/services/vector/models.ts`, to include another, which would
+otherwise download at its first use. Without pgvector, or while the model cannot
+load, search is keyword-only.
+
+| Env var | Effect |
+|---------|--------|
+| `CLAUDE_MEM_SERVER_VECTOR_SEARCH` | `auto` (default) is on for a new database and off for one created before search by meaning, so an upgrade adds no embedding work. `true` turns it on; observations already stored get vectors in the background. `false` is keyword-only. Set it the same on the server and the worker. |
+| `CLAUDE_MEM_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` (default), `paraphrase-multilingual-MiniLM-L12-v2`, `multilingual-e5-small` or `granite-embedding-97m-multilingual-r2`. The multilingual models search Chinese, Japanese and Korean far better than the default; embedding costs 1.2 (MiniLM-L12) to 4.3 (granite) times as much. A query only matches vectors from its own model, so after a change stored observations are embedded again in the background, and search by meaning covers them as they are. Set it the same on the server and the worker. |
+| `CLAUDE_MEM_EMBEDDING_BACKFILL_THREADS` | CPU threads the model may use while stored observations still need vectors, until the next restart. Empty (default) is half the machine's threads; `0` is all of them. |
+
+`GET /v1/info` reports `vectorSearch`: whether it is available, the model, how
+many observations a search by meaning cannot find yet, and the last embedding
+error.
+
+Outside Docker, the model (about 90 MB) downloads from huggingface.co on first
+start. The server begins loading it at startup; until it is ready, searches are
+keyword-only and new memories are saved without vectors (a request waits at most
+two seconds for it). The background backfill embeds those memories once the
+model loads, or at the latest at the next start.
+`npx claude-mem server start`, `restart` and `worker start` install the embedder's
+packages (about 300 MB, once) unless `CLAUDE_MEM_SERVER_VECTOR_SEARCH=false`.
+
+Vectors cost about 28 KB of Postgres storage per observation (about 1 GB per
+40,000 observations), plus CPU time to embed each one.
 
 ## Endpoint reference
 
@@ -269,6 +324,8 @@ PATCH  /v1/memories/:id
 DELETE /v1/memories/:id           # forget one observation
 POST   /v1/search
 POST   /v1/context
+POST   /v1/timeline
+POST   /v1/observations/batch
 ALL    /v1/mcp                    # remote authenticated MCP recall
 POST   /v1/keys                   # mint a read-only key (write scope)
 GET    /v1/connect                # connect command with key placeholder
@@ -276,6 +333,72 @@ GET    /v1/usage                  # current-month usage totals
 DELETE /v1/projects/:projectId/memory   # purge a whole project
 GET    /v1/audit?projectId=<id>
 ```
+
+## Keyword search
+
+`/v1/search`, `/v1/context` and the MCP `search` tool match keywords with
+Postgres full-text search (English stemming). How plain words match depends on
+the Postgres the server runs on:
+
+- **With pg_textsearch** (the Docker Compose image): plain words match **any** of
+  the query's terms, ranked by bm25, so rare terms count for more than common ones
+  and a question such as `when did we change the retry limit` finds the memory
+  about the retry limit first. Memories with none of the terms are left out.
+- **Without it** (any other Postgres): plain words must **all** appear, ranked by
+  `ts_rank`, as before.
+
+Web-search syntax means the same on both: `"quoted phrase"` matches the words in
+that order, `-term` excludes memories containing it, and `or` matches either side.
+A query that uses any of them is filtered exactly as before; bm25 only orders the
+matches.
+
+## Upgrading the Postgres image (Docker Compose)
+
+`docker-compose.yml` builds its Postgres image locally from
+`docker/postgres/Dockerfile` as `claude-mem-postgres:17`: Postgres 17 on Debian
+(trixie) with the pgvector and pg_textsearch extensions from the PostgreSQL
+project's apt repository. No prebuilt image is pulled from a third-party
+registry. The image is about 650 MB, against 424 MB for the `postgres:17-alpine`
+image earlier releases used.
+
+Moving from Alpine to Debian changes the C library under your existing data
+volume (musl to glibc), which changes how text sorts. Indexes that order text by
+a C-library collation must be rebuilt, or lookups through them can miss rows.
+The one-shot `postgres-collation` service does this before the server and worker
+start: it finds databases whose recorded collation version differs from the C
+library's, `REINDEX`es only the indexes that order text by collation (vector,
+full-text and jsonb indexes are left alone), and records the new collation
+version. A second start finds nothing to do. New databases use Postgres's
+builtin `C.UTF-8` locale, so later C-library changes cannot affect them.
+
+To upgrade an existing stack:
+
+1. **Back up first.** With the old stack still running:
+   ```bash
+   docker compose exec postgres pg_dumpall -U "$POSTGRES_USER" > claude-mem-backup.sql
+   ```
+   A copy of the volume works too: `docker compose down`, then
+   `docker run --rm -v <project>_postgres-data:/from -v "$PWD":/to alpine tar czf /to/postgres-data.tgz -C /from .`
+2. **Build and start only Postgres** on the new image:
+   ```bash
+   docker compose build postgres
+   docker compose up -d postgres
+   ```
+3. **Dry run** to list the indexes that would be rebuilt, without changing anything:
+   ```bash
+   docker compose run --rm -e DRY_RUN=1 postgres-collation
+   ```
+4. **Start the rest.** `docker compose up -d` runs the rebuild, then the server and
+   worker. The rebuild takes seconds for typical databases.
+
+**Rollback.** Restore the backup from step 1; don't point the old image at the
+upgraded volume. After the rebuild its text indexes are ordered for glibc, and
+once the server has created pgvector or pg_textsearch objects, `postgres:17-alpine`
+(which has neither extension) cannot use them. Check out the previous
+`docker-compose.yml`, then either put the volume copy back
+(`docker compose down`, `docker volume rm <project>_postgres-data`, recreate it and
+untar `postgres-data.tgz` into it) or start the old stack on a fresh volume and load
+the dump with `psql -U "$POSTGRES_USER" -d postgres -f claude-mem-backup.sql`.
 
 ## What's solid vs. what's coming
 

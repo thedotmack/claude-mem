@@ -13,6 +13,7 @@ import {
 } from '../../../sdk/output-classifier.js';
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
 import { notifyTelegram } from '../../integrations/TelegramNotifier.js';
+import { notifyNotion } from '../../integrations/NotionExporter.js';
 import { notifyGrokBotAwareness } from '../../integrations/GrokBotAwarenessPusher.js';
 import { notifyGrokBotBrainbeat } from '../../integrations/GrokBotBrainbeat.js';
 import { notifyGrokBotIndex } from '../../integrations/GrokBotIndexWriter.js';
@@ -30,6 +31,11 @@ import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 import { telemetryBuffer } from '../../telemetry/buffer.js';
+import { logChromaWriteFailure } from '../search/errors.js';
+import { linkAttachmentRefs, type ResponseMediaContext } from '../../media/inference.js';
+import { observationMediaFromMetadata } from '../../media/feed.js';
+import { writeMediaEventResults, writeObservationMediaLinks, type MediaLinkageWriteResult, type ObservationLinkWrite } from '../../media/linkage.js';
+import type { Database } from 'bun:sqlite';
 
 type ObservationFileEvidenceMessage = Pick<PendingMessage, 'type' | 'tool_name' | 'tool_input'>;
 
@@ -38,8 +44,8 @@ export interface ObservationFileEvidence {
   files_modified: string[];
 }
 
-const READ_TOOL_NAMES = new Set(['Read']);
-const WRITE_TOOL_NAMES = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit', 'write_file']);
+const READ_TOOL_NAMES = new Set(['Read', 'read_file', 'view_file']);
+const WRITE_TOOL_NAMES = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit', 'write_file', 'edit_file']);
 const PATCH_TOOL_NAMES = new Set(['apply_patch']);
 
 export function extractObservationFileEvidence(messages: ReadonlyArray<ObservationFileEvidenceMessage>): ObservationFileEvidence {
@@ -129,6 +135,9 @@ function extractPathsFromToolInput(
   }
 
   const paths: string[] = [];
+  // A read's canonical `file_path` wins over a conflicting `path` (Kimi and
+  // OpenClaw send both), so reads never take `path`. agy's `Path` argument is
+  // mapped to `file_path` by its adapter (normalizeAgyToolInput).
   const directFields = mode === 'read'
     ? ['file_path', 'filePath', 'notebook_path', 'notebookPath', 'filePaths']
     : ['file_path', 'filePath', 'notebook_path', 'notebookPath', 'path', 'filePaths'];
@@ -275,15 +284,109 @@ export interface ResponseContext {
   promptNumber: number;
   pendingAgentId: string | null;
   pendingAgentType: string | null;
+  /**
+   * The turn's source events and its request label -> (event_key,
+   * attachment_id, event_label) map, frozen when the request was sent. Batch
+   * labels resolve through this, never through mutable session state.
+   */
+  media?: ResponseMediaContext;
 }
 
-export function snapshotResponseContext(session: ActiveSession): ResponseContext {
+export function snapshotResponseContext(session: ActiveSession, media?: ResponseMediaContext): ResponseContext {
   return {
     project: session.project,
     promptNumber: session.lastPromptNumber,
     pendingAgentId: session.pendingAgentId ?? null,
     pendingAgentType: session.pendingAgentType ?? null,
+    ...(media ? { media } : {}),
   };
+}
+
+/**
+ * The durable media source events this reply answers. `attributed` events get
+ * this reply's observation rows: the frozen turn events when the request
+ * recorded them, otherwise every claimed event (a provider that never sends
+ * images still records the text outcome). `unattributed` are other claimed
+ * events confirmed with this batch; they get a result but no observation rows.
+ */
+interface TurnMediaEventKeys { attributed: string[]; unattributed: string[] }
+
+function turnMediaEventKeys(context: ResponseContext, sessionManager: SessionManager, sessionDbId: number): TurnMediaEventKeys {
+  const claimed = typeof sessionManager.getClaimedMessages === 'function'
+    ? [...new Set(sessionManager.getClaimedMessages(sessionDbId)
+      .map(message => message.mediaEventKey)
+      .filter((key): key is string => typeof key === 'string' && key.length > 0))]
+    : [];
+  if (!context.media) return { attributed: claimed, unattributed: [] };
+  const attributed = context.media.events.map(event => event.eventKey);
+  return { attributed, unattributed: claimed.filter(key => !attributed.includes(key)) };
+}
+
+function hasMediaEvents(keys: TurnMediaEventKeys): boolean {
+  return keys.attributed.length > 0 || keys.unattributed.length > 0;
+}
+
+/** A SQLite/media error code for logs; never the message, which can carry data. */
+function errorCode(error: unknown): string {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && /^[A-Za-z0-9_]{1,64}$/.test(code) ? code : 'storage_unavailable';
+}
+
+/**
+ * Record a confirmed-without-storage outcome (skip, dropped batch) on the
+ * turn's source events before the batch is confirmed. A failure propagates,
+ * so the batch is not confirmed with its events still unprocessed (a replay
+ * would otherwise re-queue them).
+ */
+function recordSkippedMediaEvents(dbManager: DatabaseManager, keys: TurnMediaEventKeys): void {
+  if (!hasMediaEvents(keys)) return;
+  const db = dbManager.getSessionStore().db;
+  db.transaction(() => writeMediaEventResults(db, [...keys.attributed, ...keys.unattributed], 'skipped', []))();
+}
+
+/**
+ * Inside the storeObservations transaction. The durable event results are
+ * written in that outer transaction, with the observation rows. Only the
+ * manifest and junction writes run in a savepoint: if they fail, the
+ * observations and event results still commit, the images degrade to
+ * event-level/uninspected, and replay does not ask the model again.
+ */
+function commitTurnMediaLinkage(
+  db: Database,
+  stored: StorageResult,
+  storedLinks: string[][],
+  media: ResponseMediaContext | undefined,
+  keys: TurnMediaEventKeys,
+  sessionDbId: number,
+): MediaLinkageWriteResult | null {
+  writeMediaEventResults(db, keys.attributed, stored.observationIds.length > 0 ? 'stored' : 'skipped', stored.observationIds);
+  writeMediaEventResults(db, keys.unattributed, 'skipped', []);
+  if (!media?.imagesDelivered) return null;
+  try {
+    return db.transaction(() => {
+      const imageByRequestLabel = new Map(media.images.map(image => [image.requestLabel, image]));
+      const inserted = new Set(stored.insertedObservationIds ?? []);
+      const writes = new Map<number, ObservationLinkWrite>();
+      storedLinks.forEach((requestLabels, index) => {
+        const observationId = stored.observationIds[index];
+        if (observationId === undefined || requestLabels.length === 0) return;
+        const write = writes.get(observationId) ?? { observationId, insertedThisTurn: inserted.has(observationId), refs: [] };
+        for (const requestLabel of requestLabels) {
+          const image = imageByRequestLabel.get(requestLabel);
+          if (!image || write.refs.some(ref => ref.id === image.attachmentId)) continue;
+          write.refs.push({ id: image.attachmentId, label: image.eventLabel, inspection: 'inspected', eventKey: image.eventKey });
+        }
+        writes.set(observationId, write);
+      });
+      return writeObservationMediaLinks(db, [...writes.values()]);
+    })();
+  } catch (error) {
+    logger.error('DB', 'Observation media links were not written; images stay event-level and uninspected', {
+      sessionId: sessionDbId,
+      code: errorCode(error),
+    });
+    return null;
+  }
 }
 
 /**
@@ -391,6 +494,28 @@ function clearDebtForAnsweredWork(session: ActiveSession): void {
   session.consecutiveSdkStreamExits = 0;
   session.consecutiveRateLimitResumes = 0;
   session.consecutiveUnattendedGatewayResumes = 0;
+}
+
+/** finish_reason values that mean the reply hit its output-token cap (OpenAI-style and Gemini). */
+export function isOutputCapFinishReason(finishReason: string | null | undefined): boolean {
+  const reason = (finishReason ?? '').trim().toLowerCase();
+  return reason === 'length' || reason === 'max_tokens';
+}
+
+/**
+ * Whether the reply ends in an `<observation>` the parser cannot store. Every
+ * whole block the parser reads is removed first, using its own matches
+ * (parseAgentXml: observations, the summary, a skip_summary), so an
+ * `<observation>` written inside a block's content (CDATA, prose about the
+ * format) is not mistaken for an unfinished block. Any opening left has no
+ * close after it, so it begins the cut-off tail.
+ */
+export function hasUnfinishedObservationBlock(text: string): boolean {
+  const outsideWholeBlocks = text
+    .replace(/<observation>[\s\S]*?<\/observation>/gi, '')
+    .replace(/<summary>[\s\S]*?<\/summary>/gi, '')
+    .replace(/<skip_summary(?:\s+reason="[^"]*")?\s*\/>/gi, '');
+  return /<observation>/i.test(outsideWholeBlocks);
 }
 
 export async function processAgentResponse(
@@ -535,7 +660,7 @@ export async function processAgentResponse(
     const replyDiagnostics = {
       // An HTTP reply cut off at the output-token cap reads as xml/prose here;
       // name it, so a truncation is not mistaken for a skip (#3868).
-      ...(finishReason ? { finishReason, truncated: finishReason === 'length' || finishReason === 'MAX_TOKENS' } : {}),
+      ...(finishReason ? { finishReason, truncated: isOutputCapFinishReason(finishReason) } : {}),
       // Only an idle turn has a shape worth naming: blank text, thinking or
       // tool_use blocks only, or no content blocks at all (#3454).
       ...(outputClass === 'idle' && emptyOutputReason ? { emptyOutputReason } : {}),
@@ -606,6 +731,7 @@ export async function processAgentResponse(
         ...replyDiagnostics,
       });
       recordObserverFailure(providerName, `The observer answered a queued batch twice without observation XML (${outputClass}); the batch was dropped`);
+      recordSkippedMediaEvents(dbManager, turnMediaEventKeys(context, sessionManager, session.sessionDbId));
     } else {
       logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response to a prompt with no queued batch`, {
         sessionId: session.sessionDbId,
@@ -635,6 +761,21 @@ export async function processAgentResponse(
     return null;
   }
 
+  // A reply cut off at the output-token cap can still hold complete blocks.
+  // They are stored, but the unfinished tail is lost, so say so: hitting the
+  // cap is never silent. A provider that reports no finish reason (the Claude
+  // SDK path) still shows a cut reply as an <observation> with no close.
+  const hasUnfinishedBlock = hasUnfinishedObservationBlock(text);
+  if (isOutputCapFinishReason(finishReason) || hasUnfinishedBlock) {
+    logger.error('PARSER', `${agentName} reply was cut off; storing its complete blocks, the unfinished tail is lost. Raise CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS if this repeats`, {
+      sessionId: session.sessionDbId,
+      finishReason,
+      completeObservations: parsed.observations.length,
+      hasUnfinishedObservationBlock: hasUnfinishedBlock,
+      hasSummary: parsed.summary !== null,
+    });
+  }
+
   // Valid parse — clear the invalid-output counter so transient misses don't
   // accumulate toward a respawn across a healthy session, and clear the overflow
   // counter so recycles only ever trip on *consecutive* failures (not on an
@@ -648,6 +789,7 @@ export async function processAgentResponse(
     // same batch, for the same final answer, until the id appeared.
     if (parsed.summary?.skipped) {
       session.lastSummaryStored = false;
+      recordSkippedMediaEvents(dbManager, turnMediaEventKeys(context, sessionManager, session.sessionDbId));
       await sessionManager.confirmClaimedMessages(session.sessionDbId);
       session.earliestPendingTimestamp = null;
       worker?.broadcastProcessingStatus?.();
@@ -697,22 +839,33 @@ export async function processAgentResponse(
   // parsed observations with stored ids by position (Chroma sync, SSE, alerts,
   // the brainbeat webhook). Drop them here so one list feeds both sides: a
   // skipped row in the middle would shift every later id onto the wrong one.
-  const storableObservations = sanitizedObservations.filter(obs => hasStorableTitle(obs.title));
+  // Attachment refs are resolved against the labels frozen when the request
+  // was sent, and only when that accepted request carried the pixels. A
+  // text-only turn, skip or fallback links nothing.
+  const mediaEventKeys = turnMediaEventKeys(context, sessionManager, session.sessionDbId);
+  const attachmentLinkage = context.media?.imagesDelivered
+    ? linkAttachmentRefs(sanitizedObservations, context.media.images.map(image => ({ label: image.requestLabel, event: image.eventOrdinal })))
+    : null;
+  const storableEntries = sanitizedObservations
+    .map((obs, index) => ({ obs, requestLabels: attachmentLinkage?.observations[index]?.refs ?? [] }))
+    .filter(entry => hasStorableTitle(entry.obs.title));
+  const storableObservations = storableEntries.map(entry => entry.obs);
   if (storableObservations.length < sanitizedObservations.length) {
     logger.debug('DB', 'Dropped observations without a title before storage', {
       sessionId: session.sessionDbId,
       dropped: sanitizedObservations.length - storableObservations.length,
     });
   }
-  const labeledObservations = storableObservations.map(obs => ({
+  const labeledObservations = storableObservations.map(({ attachments: _attachmentLabels, ...obs }) => ({
     ...obs,
     agent_type: context.pendingAgentType,
     agent_id: context.pendingAgentId
   }));
 
   let result: ReturnType<typeof sessionStore.storeObservations>;
+  let mediaLinkResult: MediaLinkageWriteResult | null = null;
   try {
-    result = sessionStore.storeObservations(
+    const storeTurn = () => sessionStore.storeObservations(
       registeredMemorySessionId,
       context.project,
       labeledObservations,
@@ -722,6 +875,20 @@ export async function processAgentResponse(
       originalTimestamp ?? undefined,
       modelId
     );
+    if (!hasMediaEvents(mediaEventKeys)) {
+      result = storeTurn();
+    } else {
+      // Observation rows, manifests, junctions and the durable event result
+      // commit together, before the RAM batch is confirmed below.
+      result = sessionStore.db.transaction(() => {
+        const stored = storeTurn();
+        mediaLinkResult = commitTurnMediaLinkage(
+          sessionStore.db, stored, storableEntries.map(entry => entry.requestLabels),
+          context.media, mediaEventKeys, session.sessionDbId,
+        );
+        return stored;
+      })();
+    }
   } finally {
     session.pendingAgentId = null;
     session.pendingAgentType = null;
@@ -731,6 +898,25 @@ export async function processAgentResponse(
     sessionId: session.sessionDbId,
     memorySessionId: registeredMemorySessionId
   });
+  if (attachmentLinkage) {
+    // Reason codes and counts only, never label text from model output.
+    const rejectionCounts: Record<string, number> = {};
+    for (const observation of attachmentLinkage.observations) {
+      for (const rejection of observation.rejected) rejectionCounts[rejection.reason] = (rejectionCounts[rejection.reason] ?? 0) + 1;
+    }
+    const linkResult = mediaLinkResult as MediaLinkageWriteResult | null;
+    logger.info('DB', 'Observation media linked', {
+      sessionId: session.sessionDbId,
+      images: context.media?.images.length ?? 0,
+      unassigned: attachmentLinkage.unassigned.length,
+      rejected: rejectionCounts,
+      changedRows: linkResult?.changedNativeRows.length ?? 0,
+      eventLevelRefs: linkResult?.eventLevelRefs ?? 0,
+    });
+  }
+  if ((mediaLinkResult as MediaLinkageWriteResult | null)?.changedNativeRows.length) {
+    dbManager.getCloudSync()?.notify();
+  }
 
   // Storage is the irreversible step: confirm the batch at once, before the
   // telemetry and integration side effects below, so an exception in any of
@@ -755,7 +941,7 @@ export async function processAgentResponse(
   // at the observation that now summarizes them. It has to happen here and not
   // at ingest — the observation did not exist yet, and neither did
   // memorySessionId. The batch's FIRST observation id owns the link (see
-  // linkToolUsesToObservation), and RECEIPT-JOIN.md documents that
+  // linkToolUsesToObservation), and docs/receipt-join.md documents that
   // observation_id is a pointer into the batch, not a 1:1 mapping; the reliable
   // per-call join stays (content_session_id, tool_use_id).
   //
@@ -793,7 +979,8 @@ export async function processAgentResponse(
   // here must not erase a newer failure from a concurrent pool slot.
   if (result.observationIds.length > 0 || result.summaryId !== null) {
     recordObserverSuccess();
-    if (session.currentProvider && session.currentProvider !== 'codex') {
+    // A quota-fallback run proves its own credential works, not the spent primary one.
+    if (session.currentProvider && session.currentProvider !== 'codex' && !session.claudeAuthOverride) {
       clearQuotaCooldown(session.currentProvider);
     }
   }
@@ -890,6 +1077,16 @@ export async function processAgentResponse(
     observations: fresh.observations,
     observationIds: fresh.observationIds,
     project: context.project,
+  });
+
+  // Optional Notion export (off unless CLAUDE_MEM_NOTION_ENABLED). Queues and
+  // returns; the upserts run in the background and never fail capture.
+  notifyNotion({
+    observations: fresh.observations,
+    observationIds: fresh.observationIds,
+    project: context.project,
+    memorySessionId: registeredMemorySessionId,
+    createdAtEpoch: result.createdAtEpoch,
   });
 
   // Growing Grok Bot INDEX: any new observation (any project) can fill a
@@ -1074,7 +1271,7 @@ async function syncAndBroadcastObservations(
         title: obs.title || '(untitled)'
       });
     }).catch((error) => {
-      logger.error('CHROMA', `${agentName} chroma sync failed, continuing without vector search`, {
+      logChromaWriteFailure('CHROMA', `${agentName} chroma sync failed, continuing without vector search`, {
         obsId,
         type: obs.type,
         title: obs.title || '(untitled)'
@@ -1082,6 +1279,18 @@ async function syncAndBroadcastObservations(
     });
 
     dbManager.getCloudSync()?.notify();
+
+    // Media refs come from the committed row, so SSE carries exactly what the
+    // paged and by-id feeds serialize. A row can hold a manifest when this
+    // turn delivered pixels (linkage runs only then) or when the turn reused
+    // an earlier stored row, which may already have images; a newly inserted
+    // row of a text-only turn cannot, so it skips the read.
+    const reusedStoredRow = result.insertedObservationIds !== undefined && !result.insertedObservationIds.includes(obsId);
+    const media = context.media?.imagesDelivered || reusedStoredRow
+      ? observationMediaFromMetadata(
+          (dbManager.getSessionStore().db.prepare('SELECT metadata FROM observations WHERE id = ?').get(obsId) as { metadata: unknown } | null)?.metadata,
+        )
+      : undefined;
 
     broadcastObservation(worker, {
       id: obsId,
@@ -1100,7 +1309,8 @@ async function syncAndBroadcastObservations(
       files_modified: JSON.stringify(obs.files_modified || []),
       project: context.project,
       prompt_number: context.promptNumber,
-      created_at_epoch: result.createdAtEpoch
+      created_at_epoch: result.createdAtEpoch,
+      ...(media ? { media } : {}),
     });
   }
 
@@ -1164,7 +1374,7 @@ async function syncAndBroadcastSummary(
       request: summaryForStore.request || '(no request)'
     });
   }).catch((error) => {
-    logger.error('CHROMA', `${agentName} chroma sync failed, continuing without vector search`, {
+    logChromaWriteFailure('CHROMA', `${agentName} chroma sync failed, continuing without vector search`, {
       summaryId: result.summaryId,
       request: summaryForStore.request || '(no request)'
     }, error);

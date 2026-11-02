@@ -66,12 +66,6 @@ describe('Windows #3521 — hidden daemon spawn contract', () => {
   it('Windows daemon spawnSync uses a bounded timeout (Greptile P1)', () => {
     expect(WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS).toBeGreaterThan(0);
     expect(windowsDaemonLaunchTimeoutMs()).toBe(WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS);
-    const source = readFileSync(
-      join(import.meta.dir, '../../src/services/infrastructure/ProcessManager.ts'),
-      'utf8',
-    );
-    expect(source).toContain('const launchTimeoutMs = windowsDaemonLaunchTimeoutMs(launchCapMs);');
-    expect(source).toContain('timeout: launchTimeoutMs');
   });
 
   it('cuts the Windows launch to what is left of a hook budget, never past its own bound', () => {

@@ -2,11 +2,16 @@ import { strict as assert } from 'node:assert';
 import { spyOn } from 'bun:test';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.ts';
 import { SessionManager } from '../../../src/services/worker/SessionManager.ts';
-import { GeminiProvider } from '../../../src/services/worker/GeminiProvider.ts';
+import { GeminiProvider, GEMINI_RPM_LIMITS } from '../../../src/services/worker/GeminiProvider.ts';
 import { ModeManager } from '../../../src/services/domain/ModeManager.ts';
 import { SettingsDefaultsManager } from '../../../src/shared/SettingsDefaultsManager.ts';
 
 const scenario = process.argv[2];
+// The real pacing limiter at a higher per-model RPM: 60000 / 60 + 100 = an 1100ms
+// minimum spacing instead of 4100ms. It still clearly outlasts the 500ms
+// compression deadline, and a wrongly consumed slot would double the gap.
+GEMINI_RPM_LIMITS['gemini-flash-lite-latest'] = 60;
+const minimumDelayMs = Math.ceil(60000 / 60) + 100;
 const oversized = scenario !== 'normal-control';
 const enabled = scenario !== 'active-compression-control';
 const store = new SessionStore(':memory:');
@@ -45,7 +50,7 @@ try {
   assert.equal(observations.length, 2); assert.equal(rows, 2); assert.equal(manager.getTotalQueueDepth(), 0);
   if (enabled) {
     assert.equal(compressionRequests, 0, 'expired compression must not send a request');
-    assert.ok(gap >= 4000 && gap < 6000, `Healthy observation delayed ${gap.toFixed(1)}ms by an unused pacing slot`);
+    assert.ok(gap >= minimumDelayMs - 100 && gap < 2 * minimumDelayMs - 200, `Healthy observation delayed ${gap.toFixed(1)}ms by an unused pacing slot`);
   } else {
     assert.equal(compressionRequests, 1, 'disabled pacing must allow the active compression attempt');
     assert.ok(gap >= 450 && gap < 1500, `Active compression deadline took ${gap.toFixed(1)}ms`);

@@ -27,6 +27,8 @@ const {
   isPidFileRecent,
   touchPidFile,
   spawnDaemon,
+  spawnDetachedWorkerDaemon,
+  getLastWorkerDaemonLaunchError,
   probeWorkerBootFailure,
   shouldRetryWorkerBootProbe,
   buildWindowsDaemonStartCommand,
@@ -1037,5 +1039,14 @@ describe('ProcessManager', () => {
       // Verify the non-daemon path: SIGHUP should trigger shutdown (covered by registerSignalHandlers)
       // This is a logic verification test — actual signal delivery is tested manually
     });
+  });
+});
+
+describe('spawnDetachedWorkerDaemon launch error', () => {
+  it.skipIf(process.platform === 'win32')('records why the Windows PowerShell launch failed', () => {
+    const missingSystemRoot = path.join(TEST_DATA_DIR, 'no-windows');
+    expect(spawnDetachedWorkerDaemon('bun.exe', 'worker-service.cjs', { SystemRoot: missingSystemRoot }, 'win32', 1000)).toBeUndefined();
+    expect(getLastWorkerDaemonLaunchError()).toContain(`${missingSystemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe could not launch the worker: `);
+    expect(getLastWorkerDaemonLaunchError()).toContain('ENOENT');
   });
 });

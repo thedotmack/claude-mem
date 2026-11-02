@@ -17,10 +17,11 @@ import { HOOK_EXIT_CODES, HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
 import { logger } from '../../utils/logger.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
+import { isProjectExcluded } from '../../utils/project-filter.js';
 import { readStaleMarker } from '../../shared/oauth-token.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { proTrialLine } from '../../shared/pro-promo.js';
-import { MEMORY_PLUGIN_INSTRUCTIONS } from '../../shared/memory-instructions.js';
+import { memoryInstructionsForRuntime } from '../../shared/memory-instructions.js';
 import {
   cmemGatewayRole,
   hasShownProFallbackNotice,
@@ -28,7 +29,7 @@ import {
   proFallbackNotice,
   trialDaysRemaining,
 } from '../../shared/cmem-gateway.js';
-import { resolveRuntimeContext, type ServerRuntimeContext } from '../../services/hooks/runtime-selector.js';
+import { resolveRuntimeContext, selectRuntime, type ServerRuntimeContext } from '../../services/hooks/runtime-selector.js';
 import type { ContextInput } from '../../services/context/types.js';
 import { serverSessionStartBudgetMs } from '../../shared/host-hook-limits.js';
 import { contextCacheKeys, fillContextPlaceholders, readContextCache } from '../../shared/context-cache.js';
@@ -60,6 +61,62 @@ export function teamBriefSection(result: TeamBrainResult<TeamBrainBrief>): strin
   return result.ok
     ? formatTeamBrief(result.value)
     : `[claude-mem] TeamBrain brief unavailable: ${result.reason}`;
+}
+
+/**
+ * The lines under the SessionStart terminal preview. The preview leaves
+ * TERMINAL_BANNER_RESERVE_CHARS for them, and composeSessionStartSystemMessage
+ * keeps the whole `systemMessage` within Claude Code's 10,000-character field
+ * cap (#5079).
+ */
+export function sessionStartBannerFooter(
+  viewerUrl: string,
+  trialDaysLine: string | null,
+  teamBrainDiscoveryLine: string | null,
+): string {
+  return `\n\nView Observations Live @ ${viewerUrl}\n${proTrialLine('session-start')}${trialDaysLine ? `\n${trialDaysLine}` : ''}${teamBrainDiscoveryLine ? `\n${teamBrainDiscoveryLine}` : ''}`;
+}
+
+/**
+ * The user-visible SessionStart `systemMessage`: the once-per-session
+ * worker-outage notice, the terminal preview, then the footer. Claude Code
+ * replaces a field over CONTEXT_OUTPUT_LIMIT with a saved-to-disk stub
+ * (#5079), and neither the notice nor a server-runtime viewer URL is bounded
+ * by TERMINAL_BANNER_RESERVE_CHARS, so the message is measured whole: when it
+ * is over, the preview is cut at a line boundary until it fits. The notice and
+ * the footer are never cut. With no preview (banner off) the notice is the
+ * whole message.
+ */
+export function composeSessionStartSystemMessage(
+  preview: string | null,
+  footer: string,
+  workerOutageNotice: string | null,
+  limit: number = CONTEXT_OUTPUT_LIMIT,
+): string | undefined {
+  if (preview === null) return workerOutageNotice ?? undefined;
+  const noticePrefix = workerOutageNotice ? `${workerOutageNotice}\n\n` : '';
+  const previewRoom = limit - noticePrefix.length - footer.length;
+  let fittedPreview = preview;
+  if (preview.length > previewRoom) {
+    const previewCutToRoom = previewRoom > 0 ? preview.slice(0, previewRoom) : '';
+    const lastLineBreak = previewCutToRoom.lastIndexOf('\n');
+    fittedPreview = lastLineBreak > 0 ? previewCutToRoom.slice(0, lastLineBreak) : '';
+    logger.debug('HOOK', 'SessionStart terminal preview cut at a line boundary to keep systemMessage within the field cap', {
+      previewChars: preview.length,
+      keptPreviewChars: fittedPreview.length,
+      noticeChars: noticePrefix.length,
+      footerChars: footer.length,
+      limit,
+    });
+  }
+  const systemMessage = `${noticePrefix}${fittedPreview}${footer}`;
+  if (systemMessage.length > limit) {
+    logger.warn('HOOK', 'SessionStart systemMessage is over the field cap even with no preview', {
+      systemMessageChars: systemMessage.length,
+      limit,
+    });
+  }
+  return systemMessage;
 }
 
 /**
@@ -120,6 +177,44 @@ async function renderSessionStartFromServer(
   return { model, terminal: terminal ?? model };
 }
 
+/**
+ * The projects SessionStart reads. By default only this checkout's keys.
+ * With CLAUDE_MEM_CONTEXT_PROJECTS=all, every project in the local catalog
+ * (minus excluded ones), sorted so the context cache keys stay stable, with
+ * this checkout's keys last because the last key titles the rendered block.
+ * Any catalog failure falls back to this checkout. The server runtime has no
+ * local catalog, so it keeps this checkout.
+ */
+export async function resolveSessionStartProjects(
+  settings: { CLAUDE_MEM_CONTEXT_PROJECTS?: string; CLAUDE_MEM_EXCLUDED_PROJECTS?: string },
+  checkoutProjects: string[],
+  runtime: 'worker' | 'server',
+): Promise<string[]> {
+  if (settings.CLAUDE_MEM_CONTEXT_PROJECTS !== 'all') return checkoutProjects;
+  if (runtime === 'server') {
+    logger.debug('HOOK', 'CLAUDE_MEM_CONTEXT_PROJECTS=all is not supported in server runtime');
+    return checkoutProjects;
+  }
+  try {
+    const catalog = await executeWithWorkerFallback<{ projects?: unknown }>('/api/projects', 'GET', undefined, {
+      workerStartupTimeoutMs: HOOK_TIMEOUTS.POST_SPAWN_WAIT,
+      timeoutMs: 2_000,
+    });
+    if (isWorkerFallback(catalog) || !Array.isArray(catalog?.projects)) return checkoutProjects;
+    const excludedPatterns = settings.CLAUDE_MEM_EXCLUDED_PROJECTS ?? '';
+    const otherProjects = catalog.projects
+      .filter((project): project is string => typeof project === 'string' && project.length > 0)
+      .filter(project => !checkoutProjects.includes(project) && !isProjectExcluded(project, excludedPatterns))
+      .sort();
+    return [...otherProjects, ...checkoutProjects];
+  } catch (error) {
+    logger.debug('HOOK', 'Project catalog unavailable; SessionStart reads this checkout only', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return checkoutProjects;
+  }
+}
+
 export const contextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     const emptyResult: HookResult = {
@@ -158,7 +253,7 @@ export const contextHandler: EventHandler = {
     const port = getWorkerPort();
 
     const settings = loadFromFileOnce();
-    const memoryInstructions = settings.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED === 'false' ? '' : MEMORY_PLUGIN_INSTRUCTIONS;
+    const memoryInstructions = settings.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED === 'false' ? '' : memoryInstructionsForRuntime(selectRuntime());
     emptyResult.hookSpecificOutput!.additionalContext = memoryInstructions;
 
     // TeamBrain brief: a per-session notice, never part of the cacheable
@@ -174,7 +269,14 @@ export const contextHandler: EventHandler = {
       settings.CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT === 'true'
       && input.platform !== 'codex';
 
-    const projectsParam = context.allProjects.join(',');
+    // Server runtime reads the shared server (plan-24 step 4). When the server
+    // settings are incomplete, resolveRuntimeContext() falls back to the worker,
+    // exactly as the write hooks do, so reads and writes stay on one corpus.
+    const runtime = resolveRuntimeContext();
+    const serverRuntime = runtime.runtime === 'server' ? runtime : null;
+
+    const scopeProjects = await resolveSessionStartProjects(settings, context.allProjects, runtime.runtime);
+    const projectsParam = scopeProjects.join(',');
     const normalizedPlatformSource = input.platform
       ? normalizePlatformSource(input.platform)
       : undefined;
@@ -190,18 +292,13 @@ export const contextHandler: EventHandler = {
     const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}${platformSourceParam}&cwd=${encodeURIComponent(cwd)}${sessionParam}`;
     const colorApiPath = input.platform === 'claude-code' ? `${apiPath}&colors=true` : apiPath;
 
-    // Server runtime reads the shared server (plan-24 step 4). When the server
-    // settings are incomplete, resolveRuntimeContext() falls back to the worker,
-    // exactly as the write hooks do, so reads and writes stay on one corpus.
-    const runtime = resolveRuntimeContext();
-    const serverRuntime = runtime.runtime === 'server' ? runtime : null;
     const serverRender = serverRuntime
       ? await renderSessionStartFromServer(
           serverRuntime,
           {
             session_id: input.sessionId,
             cwd,
-            projects: context.allProjects,
+            projects: scopeProjects,
             ...(platformSourceParam ? { platformSource: normalizedPlatformSource } : {}),
             reserveChars: teamBriefReserveChars(settings),
           },
@@ -219,7 +316,7 @@ export const contextHandler: EventHandler = {
     const cacheNowEpochMs = Date.now();
     const readCachedRender = (colors: boolean): string | null => {
       if (serverRuntime) return null;
-      const keys = contextCacheKeys(context.allProjects, platformSourceParam ? normalizedPlatformSource : undefined, colors, cwd);
+      const keys = contextCacheKeys(scopeProjects, platformSourceParam ? normalizedPlatformSource : undefined, colors, cwd);
       const cached = readContextCache(keys, cacheNowEpochMs);
       if (!cached) return null;
       logger.debug('HOOK', 'SessionStart context served from the context cache', {
@@ -363,9 +460,11 @@ export const contextHandler: EventHandler = {
       ? TEAMBRAIN_DISCOVERY_LINE
       : null;
     if (teamBrainDiscoveryLine) markTeamBrainDiscoveryNoticeShown();
-    const systemMessage = showsBanner
-      ? `${displayContent}\n\nView Observations Live @ ${viewerUrl}\n${proTrialLine('session-start')}${trialDaysLine ? `\n${trialDaysLine}` : ''}${teamBrainDiscoveryLine ? `\n${teamBrainDiscoveryLine}` : ''}`
-      : undefined;
+    const systemMessage = composeSessionStartSystemMessage(
+      showsBanner ? displayContent : null,
+      sessionStartBannerFooter(viewerUrl, trialDaysLine, teamBrainDiscoveryLine),
+      workerOutageNotice,
+    );
 
     return {
       workStateTelemetry: 'measure',
@@ -373,9 +472,7 @@ export const contextHandler: EventHandler = {
         hookEventName: 'SessionStart',
         additionalContext
       },
-      systemMessage: workerOutageNotice
-        ? [workerOutageNotice, systemMessage].filter(Boolean).join('\n\n')
-        : systemMessage
+      systemMessage
     };
   }
 };

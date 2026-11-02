@@ -93,6 +93,15 @@ function runModeProbe(dataDir: string, modeId: string, options: {
   return JSON.parse(lastLine);
 }
 
+/**
+ * The lines a probe logged, joined as text. Assert on this rather than on
+ * `JSON.stringify(errors)`: serializing escapes backslashes, so on Windows the
+ * path the product logged never matches the path under test.
+ */
+function loggedText(result: { errors: unknown[][] }): string {
+  return result.errors.map(args => args.map(arg => String(arg)).join(' ')).join('\n');
+}
+
 describe('ModeManager user modes', () => {
   it('loads an inherited override from the durable data-directory modes folder', () => {
     const dataDir = makeTempDir();
@@ -125,8 +134,8 @@ describe('ModeManager user modes', () => {
       const result = runModeProbe(makeTempDir(), modeId);
       expect(result.mode.id).toBe('code');
       expect(result.mode.types).toContain('bugfix');
-      expect(JSON.stringify(result.errors)).toContain(reason);
-      expect(JSON.stringify(result.errors)).toContain('falling back');
+      expect(loggedText(result)).toContain(reason);
+      expect(loggedText(result)).toContain('falling back');
     });
   }
 
@@ -139,8 +148,8 @@ describe('ModeManager user modes', () => {
     const result = runModeProbe(dataDir, 'code', { renderPrompts: true });
     expect(result.error).toBeUndefined();
     expect(result.mode.prompts).toEqual(bundledMode().prompts);
-    expect(JSON.stringify(result.errors)).toContain(modePath);
-    expect(JSON.stringify(result.errors)).toContain('code--');
+    expect(loggedText(result)).toContain(modePath);
+    expect(loggedText(result)).toContain('code--');
     expect(result.rendered).toHaveLength(3);
     for (const prompt of result.rendered) expect(prompt).not.toContain('undefined');
   });
@@ -153,7 +162,7 @@ describe('ModeManager user modes', () => {
     const result = runModeProbe(dataDir, 'code--studio');
     expect(result.mode.name).toBe('Studio');
     expect(result.mode.prompts).toEqual({ ...bundledMode().prompts, footer: 'Studio footer' });
-    expect(JSON.stringify(result.errors)).toContain(shadowPath);
+    expect(loggedText(result)).toContain(shadowPath);
   });
 
   it('protects bundled override IDs from same-named user files', () => {
@@ -163,7 +172,7 @@ describe('ModeManager user modes', () => {
     const result = runModeProbe(dataDir, 'code--chill');
     expect(result.error).toBeUndefined();
     expect(result.mode.name).toBe(bundledMode('code--chill').name);
-    expect(JSON.stringify(result.errors)).toContain(shadowPath);
+    expect(loggedText(result)).toContain(shadowPath);
   });
 
   for (const useUserDir of [false, true]) {
@@ -177,7 +186,7 @@ describe('ModeManager user modes', () => {
       const result = runModeProbe(dataDir, 'code', { modesDir: path.dirname(modePath) });
       expect(result.error).toBeUndefined();
       expect(result.mode.name).toBe('Explicit code');
-      expect(JSON.stringify(result.errors)).not.toContain('Ignoring');
+      expect(loggedText(result)).not.toContain('Ignoring');
     });
   }
 
@@ -193,7 +202,7 @@ describe('ModeManager user modes', () => {
     expect(result.error).toContain(modePath);
     expect(result.error).toContain('prompts.summary_instruction');
     expect(result.error).toContain('prompts.footer');
-    expect(JSON.stringify(result.errors)).toContain('prompts.summary_instruction');
+    expect(loggedText(result)).toContain('prompts.summary_instruction');
   });
 
   it('validates explicit modes-directory files too', () => {
@@ -242,9 +251,9 @@ describe('ModeManager user modes', () => {
     const result = runModeProbe(dataDir, 'missing', { modesDir: path.dirname(explicitPath) });
     expect(result.mode.id).toBe('code');
     expect(result.mode.prompts).toEqual(bundledMode().prompts);
-    expect(JSON.stringify(result.errors)).toContain('not found');
-    expect(JSON.stringify(result.errors)).toContain('missing');
-    expect(JSON.stringify(result.errors)).toContain('falling back');
+    expect(loggedText(result)).toContain('not found');
+    expect(loggedText(result)).toContain('missing');
+    expect(loggedText(result)).toContain('falling back');
   });
 
   it('reports a parse error accurately and refuses to run the malformed mode', () => {
@@ -255,8 +264,8 @@ describe('ModeManager user modes', () => {
     const result = runModeProbe(dataDir, 'malformed');
     expect(result.mode).toBeUndefined();
     expect(result.error).toContain(modePath);
-    expect(JSON.stringify(result.errors)).toContain(modePath);
-    expect(JSON.stringify(result.errors)).not.toContain('not found');
+    expect(loggedText(result)).toContain(modePath);
+    expect(loggedText(result)).not.toContain('not found');
   });
 
   it('throws if bundled code is invalid when falling back', () => {
@@ -268,7 +277,7 @@ describe('ModeManager user modes', () => {
     expect(result.mode).toBeUndefined();
     expect(result.error).toContain(modePath);
     expect(result.error).toContain('prompts.summary_instruction');
-    expect(JSON.stringify(result.errors)).toContain('missing');
+    expect(loggedText(result)).toContain('missing');
   });
 
   for (const key of REQUIRED_PROMPT_KEYS) {

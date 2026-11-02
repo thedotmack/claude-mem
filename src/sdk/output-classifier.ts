@@ -163,8 +163,11 @@ export function isQuotaLimitedObserverOutput(raw: unknown): boolean {
     //   "Credit balance is too low"
     //   "Your credit balance is too low to access the Anthropic API. …"
     // Anchored at the start because the notice IS the response; prose that
-    // merely narrates a low balance mid-sentence stays unmatched.
+    // merely narrates a low balance mid-sentence stays unmatched. The CLI can
+    // also wrap it in its 400 envelope:
+    //   'API Error: 400 {"error":{…,"message":"Your credit balance is too low…"}}'
     /^(?:your )?credit balance is too low\b/.test(text) ||
+    /^api error: 400\b.*\bcredit balance is too low\b/.test(text) ||
     /\bsession limit\b/.test(text) ||
     /\bout of (?:usage )?credits\b/.test(text) ||
     /\/usage-credits\b/.test(text) ||

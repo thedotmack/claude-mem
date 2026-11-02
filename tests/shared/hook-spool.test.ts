@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'fs';
+import * as fs from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { basename, join } from 'path';
 import {
@@ -217,6 +218,37 @@ describe('HookSpool', () => {
     const errorSpy = loggerSpies[3];
     expect(errorSpy).toHaveBeenCalledTimes(2);
     expect(errorSpy.mock.calls[0][1]).toBe('Quarantined corrupt hook spool entry');
+  });
+
+  it('skips a past-window entry a concurrent drain already moved, without an error log', async () => {
+    const spool = new HookSpool();
+    const entryPath = spool.enqueue('session_end', { contentSessionId: 'never-known', platformSource: 'claude' }, Date.now() - HOOK_SPOOL_RETRY_WINDOW_MS - 60_000);
+
+    const result = await spool.drain(() => {
+      // Another worker process moves the file between the read and the expiry.
+      unlinkSync(entryPath);
+      return false;
+    });
+
+    expect(result).toEqual({ drained: 0, retained: 0, quarantined: 0, expired: 1 });
+    expect(loggerSpies[3]).not.toHaveBeenCalled();
+  });
+
+  it('skips a corrupt file a concurrent drain already quarantined, without an error log', async () => {
+    const spool = new HookSpool();
+    mkdirSync(spool.directory, { recursive: true });
+    writeFileSync(join(spool.directory, 'mystery-kind.json'), JSON.stringify({ kind: 'mystery', payload: { contentSessionId: 's' }, enqueuedAtEpochMs: 1 }));
+    const renameSpy = spyOn(fs, 'renameSync').mockImplementation(() => {
+      throw Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' });
+    });
+
+    try {
+      const result = await spool.drain(() => true);
+      expect(result).toEqual({ drained: 0, retained: 0, quarantined: 0, expired: 0 });
+    } finally {
+      renameSpy.mockRestore();
+    }
+    expect(loggerSpies[3]).not.toHaveBeenCalled();
   });
 });
 

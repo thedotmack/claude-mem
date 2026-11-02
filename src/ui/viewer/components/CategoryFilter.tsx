@@ -33,6 +33,7 @@ export function CategoryFilter({
             className={`console-filter-chip ${activeCategories.has(category) ? 'active' : ''}`}
             onClick={() => onToggle(category)}
             title={`Filter to ${labelForCategory(category)}`}
+            aria-pressed={activeCategories.has(category)}
           >
             {labelForCategory(category)} ({categoryCounts[category]})
           </button>

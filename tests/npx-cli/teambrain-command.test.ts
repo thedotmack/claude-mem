@@ -413,6 +413,22 @@ describe('npx claude-mem teambrain join', () => {
       cleanup();
     }
   }, 30_000);
+
+  it('shows the OAuth server message when the installation credential is rejected', async () => {
+    server.state.oauthStart = {
+      status: 401,
+      body: { error: 'intent_credentials_invalid', message: 'This installation credential was not accepted.' },
+    };
+    try {
+      const { exitCode, output } = await runCli(['teambrain', 'join', MOCK_INVITE_TOKEN]);
+      expect(exitCode).toBe(1);
+      expect(output).toContain('This installation credential was not accepted.');
+      expect(existsSync(settingsPath())).toBe(false);
+    } finally {
+      server.state.oauthStart = null;
+      cleanup();
+    }
+  });
 });
 
 describe('npx claude-mem teambrain status, share, leave, start', () => {
