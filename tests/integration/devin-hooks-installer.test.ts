@@ -217,6 +217,33 @@ describe('installDevinHooks', () => {
     expect(uninstallDevinHooks(configPath)).toBe(0);
     expect(readConfig(mcpPath).mcpServers).toEqual({ other: { command: 'y' } });
   });
+
+  test('a corrupt mcp_config.json still lets uninstall remove the hooks, and reports the failure', () => {
+    const configPath = scratchConfigPath();
+    expect(installDevinHooks(configPath)).toBe(0);
+    const mcpPath = path.join(path.dirname(configPath), 'mcp_config.json');
+    const corruptMcpConfig = '{ not json';
+    writeFileSync(mcpPath, corruptMcpConfig);
+
+    expect(uninstallDevinHooks(configPath)).toBe(1);
+
+    expect(readConfig(configPath).hooks).toBeUndefined();
+    expect(readFileSync(mcpPath, 'utf-8')).toBe(corruptMcpConfig);
+  });
+
+  test('a corrupt mcp_config.json is reported even when there are no hooks left to remove', () => {
+    const configPath = scratchConfigPath();
+    mkdirSync(path.dirname(configPath), { recursive: true });
+    writeFileSync(path.join(path.dirname(configPath), 'mcp_config.json'), '{ not json');
+
+    expect(uninstallDevinHooks(configPath)).toBe(1);
+
+    writeFileSync(configPath, JSON.stringify({ model: 'swe-1' }));
+    expect(uninstallDevinHooks(configPath)).toBe(1);
+
+    writeFileSync(configPath, JSON.stringify({ hooks: { Stop: [] } }));
+    expect(uninstallDevinHooks(configPath)).toBe(1);
+  });
 });
 
 describe('configureDevinMcp', () => {

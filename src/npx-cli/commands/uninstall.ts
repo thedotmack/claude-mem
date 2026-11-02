@@ -454,7 +454,7 @@ export async function runUninstallCommand(): Promise<void> {
       const { uninstallKimiHooks } = await import('../../services/integrations/KimiHooksInstaller.js');
       return uninstallKimiHooks();
     }},
-    { label: 'Devin hooks', fn: async () => {
+    { label: 'Devin hooks + MCP', fn: async () => {
       const { uninstallDevinHooks } = await import('../../services/integrations/DevinHooksInstaller.js');
       return uninstallDevinHooks();
     }},

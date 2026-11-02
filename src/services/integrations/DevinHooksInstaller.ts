@@ -205,7 +205,7 @@ export function configureDevinMcp(mcpConfigPath: string = devinMcpConfigPath()):
     console.log(`    Server path: ${mcpServerPath}`);
     return 0;
   } catch (error) {
-    console.error(`Failed to configure Devin MCP: ${(error as Error).message}`);
+    console.error(`Failed to configure Devin MCP in ${mcpConfigPath}: ${(error as Error).message}`);
     return 1;
   }
 }
@@ -228,33 +228,37 @@ export function removeDevinMcpServer(mcpConfigPath: string = devinMcpConfigPath(
 export function uninstallDevinHooks(configPath: string = devinConfigPath()): number {
   // mcp_config.json sits next to config.json, so a caller-scoped configPath
   // scopes the MCP file the same way (tests never touch the real one).
+  // A broken MCP file must not leave the hooks capturing after the user asked
+  // to remove them, so carry on and report the failure in the exit code.
+  let mcpRemovalFailed = false;
   try {
     removeDevinMcpServer(path.join(path.dirname(configPath), 'mcp_config.json'));
   } catch (error) {
     console.error(`Failed to remove the Devin MCP server: ${(error as Error).message}`);
-    return 1;
+    mcpRemovalFailed = true;
   }
+  const exitCodeAfterHooks = mcpRemovalFailed ? 1 : 0;
   if (!existsSync(configPath)) {
     console.log('  No Devin config.json found; nothing to uninstall');
-    return 0;
+    return exitCodeAfterHooks;
   }
   try {
     const config = readDevinConfig(configPath);
     if (!config.hooks) {
       console.log('  No claude-mem hooks found in Devin config.json');
-      return 0;
+      return exitCodeAfterHooks;
     }
     const next = removeDevinHooks(config.hooks);
     if (JSON.stringify(next) === JSON.stringify(config.hooks)) {
       console.log('  No claude-mem hooks found in Devin config.json');
-      return 0;
+      return exitCodeAfterHooks;
     }
     backupOnce(configPath);
     if (Object.keys(next).length > 0) config.hooks = next;
     else delete config.hooks;
     writeDevinConfig(configPath, config);
     console.log(`  Removed claude-mem hooks from ${configPath}`);
-    return 0;
+    return exitCodeAfterHooks;
   } catch (error) {
     console.error(`Failed to uninstall Devin hooks: ${(error as Error).message}`);
     return 1;
