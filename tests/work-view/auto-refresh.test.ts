@@ -114,6 +114,52 @@ describe('automatic refresh scheduler', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it('repairs a run cut off by a restart at startup even with scheduled refresh off, so My Work never stays stuck on it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
+    try {
+      writeFileSync(join(dir, 'refresh.json'), JSON.stringify({ state: 'running', pid: 2 ** 22 + 12345, reason: 'manual', startedAt: new Date(NOW - DAY).toISOString() }));
+      const worker = new AutoRefreshWorker({
+        localDeviceId: () => '', dir, openDatabase: handle(fixtureDatabase()), enabled: () => false, now: () => NOW,
+        runJob: async () => { throw new Error('a disabled worker must not run'); },
+      });
+      worker.start();
+      worker.close();
+      const status = worker.status();
+      expect(status).toMatchObject({ state: 'failed', reason: 'manual', error: 'The previous refresh stopped before finishing.' });
+      expect(status.failures).toBeUndefined();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('startup leaves alone a run another live worker owns', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
+    try {
+      const owned = { state: 'running', pid: process.ppid, startedAt: new Date(NOW).toISOString() };
+      writeFileSync(join(dir, 'refresh.json'), JSON.stringify(owned));
+      const worker = new AutoRefreshWorker({
+        localDeviceId: () => '', dir, openDatabase: handle(fixtureDatabase()), enabled: () => false, now: () => NOW,
+        runJob: async () => { throw new Error('must not run'); },
+      });
+      worker.start();
+      worker.close();
+      expect(worker.status()).toEqual(owned);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a manual refresh does not start while another live worker owns a run, or while setup runs', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
+    try {
+      let setup = true;
+      const worker = new AutoRefreshWorker({
+        localDeviceId: () => '', dir, openDatabase: handle(fixtureDatabase()), setupRunning: () => setup, now: () => NOW,
+        runJob: async () => { throw new Error('must not run'); },
+      });
+      expect(await worker.runNow({ reason: 'manual' })).toBe('setup-running');
+      setup = false;
+      writeFileSync(join(dir, 'refresh.json'), JSON.stringify({ state: 'running', pid: process.ppid, startedAt: new Date(NOW).toISOString() }));
+      expect(await worker.runNow({ reason: 'manual' })).toBe('running');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('records a failed status when opening the database prevents a manual refresh from starting', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
     try {

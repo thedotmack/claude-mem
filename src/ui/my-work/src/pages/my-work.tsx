@@ -428,12 +428,16 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
           <div className="order-last w-full md:ml-auto md:w-auto">
             <RefreshButton run={SAMPLE_RUNS.progress} ids={['R14.12']} />
           </div>
-        ) : (
+        ) : sourceKind === 'local' ? (
           <div className="order-last w-full md:ml-auto md:w-auto">
             <div className="flex items-center justify-end gap-3">
               <RefreshStatus refresh={refresh} run={lastRuns.progress} label="Last reviewed" ids={['R14.12']} />
               <ManualRefreshButton ids={['R14.12']} running={refresh?.state === 'running'} />
             </div>
+          </div>
+        ) : (refresh || lastRuns.progress) && (
+          <div className="order-last w-full md:ml-auto md:w-auto">
+            <RefreshStatus refresh={refresh} run={lastRuns.progress} label="Last reviewed" ids={['R14.12']} />
           </div>
         )}
         {/* Phone: the filters wrap to a second row instead of widening the page past the screen; the sort stays beside them. */}

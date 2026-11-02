@@ -379,11 +379,13 @@ export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTIN
     database.exec('PRAGMA busy_timeout = 1500');
     return database;
   };
+  // Setup's only extraction is hosted. Once setup is complete, ongoing refresh keeps its existing local path.
+  const setupRunning = () => setupActive() || (readSetupState(setupPath).status !== 'complete' && hasActiveSetupSession(setupPath));
   return new AutoRefreshWorker({
     dir: ledgerDir,
     openDatabase,
-    // Setup's only extraction is hosted. Once setup is complete, ongoing refresh keeps its existing local path.
-    enabled: () => !setupActive() && (readSetupState(setupPath).status === 'complete' || !hasActiveSetupSession(setupPath))
+    setupRunning,
+    enabled: () => !setupRunning()
       && SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true }).CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH !== 'false',
     runJob: async ({ needs, reason }) => {
       // The judges are read from settings per run, so a provider change applies to the next refresh.
@@ -608,12 +610,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     app.post('/api/work-view/agents/mark-finished', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(markAgentFinishedBody), this.wrapHandler(this.markAgentFinished));
     app.post('/api/work-view/suggestions', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(suggestionBody), this.wrapHandler(this.answerSuggestion));
     app.post('/api/work-view/rules/load-in-claude-code', workViewLoopbackOnly, requireWorkViewOrigin, this.wrapHandler(this.loadRulesInClaudeCode));
-    app.post('/api/work-view/refresh', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(z.object({}).strict()), this.wrapHandler((_req, res) => {
-      if (!this.autoRefresh) { res.status(503).json({ error: 'Refresh is unavailable on this worker.' }); return; }
-      const started = this.autoRefresh.runNow({ reason: 'manual' });
-      void started.catch(error => logger.warn('HTTP', 'Could not start a manual work-view refresh', { error: error instanceof Error ? error.message : String(error) }));
-      res.status(202).json({ accepted: true });
-    }));
+    app.post('/api/work-view/refresh', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(z.object({}).strict()), this.wrapHandler(this.startManualRefresh));
     app.post('/api/work-view/usage', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(usageBody), this.wrapHandler(this.recordUsage));
     // Shared focus pages: this worker signs the cmem.ai calls, so the sync credential never reaches the page.
     app.get('/api/work-view/focus/shares', workViewLoopbackOnly, requireWorkViewReadOrigin, this.wrapHandler(this.listFocusShares));
@@ -1172,6 +1169,22 @@ export class WorkViewRoutes extends BaseRouteHandler {
     res.setHeader('Cache-Control', 'no-store');
     res.json(updated);
     this.publish(updated);
+  };
+
+  /** Starts an on-demand refresh and answers before the run ends, which can take many minutes. */
+  private startManualRefresh = async (_req: Request, res: Response): Promise<void> => {
+    if (!this.autoRefresh) { res.status(503).json({ error: 'Refresh is unavailable on this worker.' }); return; }
+    const started = this.autoRefresh.runNow({ reason: 'manual' });
+    // runNow decides before its first await: busy now means a run started, and any other answer is already settled.
+    if (this.autoRefresh.busy) {
+      void started.catch(error => logger.warn('HTTP', 'Manual work-view refresh failed', { error: error instanceof Error ? error.message : String(error) }));
+      res.status(202).json({ state: 'running' });
+      return;
+    }
+    const state = await started;
+    if (state === 'setup-running') { res.status(409).json({ error: 'Refresh is unavailable until setup finishes.' }); return; }
+    if (state === 'closed') { res.status(503).json({ error: 'This worker is shutting down.' }); return; }
+    res.status(state === 'running' ? 202 : 200).json({ state });
   };
 
   /** Adds the MY-RULES.md import to the user-level CLAUDE.md once. Never touches a project's CLAUDE.md or AGENTS.md. */

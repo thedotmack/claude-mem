@@ -333,10 +333,12 @@ export function ManualRefreshButton({ ids, running = false }: { ids: string[]; r
   const refreshWork = useStore((state) => state.refreshWork)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [nothingNew, setNothingNew] = useState(false)
   const start = async () => {
     setPending(true)
     setError(null)
-    try { await refreshWork() }
+    setNothingNew(false)
+    try { setNothingNew((await refreshWork()).state === 'idle') }
     catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
     finally { setPending(false) }
   }
@@ -344,6 +346,7 @@ export function ManualRefreshButton({ ids, running = false }: { ids: string[]; r
     <Req ids={ids}>
       <div className="flex items-center gap-2">
         {error && <span role="alert" className="text-xs text-attention-foreground">{error}</span>}
+        {nothingNew && !running && <span aria-live="polite" className="text-xs text-muted-foreground">Nothing new to refresh</span>}
         <Button variant="outline" size="sm" className="h-11 min-w-11 md:h-8 md:min-w-0" onClick={start} disabled={pending || running}>
           {pending || running ? <Spinner /> : <RefreshCwIcon />}
           Refresh now

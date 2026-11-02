@@ -143,7 +143,7 @@ export const createWorkSlice: SliceCreator<WorkSlice> = (set, get) => {
 
     loadRulesInClaudeCode: async () => { await saving('load the rules from', (to) => to.loadRulesInClaudeCode(), (model) => model) },
 
-    refreshWork: async () => { await activeSource('start a refresh on').refreshWork() },
+    refreshWork: () => activeSource('start a refresh on').refreshWork(),
 
     updateSampleRequest: (id, change) => {
       const load = get().work.load

@@ -146,6 +146,7 @@ export const localSource: WorkDataSource = {
       try { const body = await response.json() as { error?: unknown }; if (typeof body.error === 'string') reason = body.error } catch { /* Keep the status as the reason. */ }
       throw new Error(`Refresh could not start: ${reason}`)
     }
+    return await response.json() as { state: string }
   },
   markAgentFinished: async (agentId) => (await postForWorkModel(WORK_VIEW_MARK_AGENT_FINISHED_URL, { agentGroupId: agentId }, 'Marking the agent finished')).model,
 

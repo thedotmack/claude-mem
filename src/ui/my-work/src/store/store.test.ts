@@ -35,7 +35,7 @@ function fakeSource(overrides: Partial<WorkDataSource> = {}) {
     saveFocusChange: () => Promise.reject(new Error('not used')),
     markAgentFinished: () => Promise.reject(new Error('not used')),
     loadRulesInClaudeCode: () => Promise.reject(new Error('not used')),
-    refreshWork: () => Promise.resolve(),
+    refreshWork: () => Promise.resolve({ state: 'idle' }),
     ...overrides,
   }
   return { source, feed, reads }
@@ -69,9 +69,9 @@ describe('reading work', () => {
   it('starts a manual refresh through the active source', async () => {
     const { store } = testStore()
     let refreshes = 0
-    const { source } = fakeSource({ refreshWork: async () => { refreshes++ } })
+    const { source } = fakeSource({ refreshWork: async () => { refreshes++; return { state: 'running' } } })
     store.getState().startWorkSource(source)
-    await store.getState().refreshWork()
+    assert.deepEqual(await store.getState().refreshWork(), { state: 'running' })
     assert.equal(refreshes, 1)
   })
 
