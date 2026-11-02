@@ -27,7 +27,6 @@ if [[ $EMV_AGENT == codex ]]; then [[ -x $EMV_CODEX_BIN ]] || { echo "codex not 
 elif [[ $EMV_AGENT == hermes ]]; then [[ -x $EMV_HERMES_BIN ]] || { echo "hermes not found (set EMV_HERMES_BIN)" >&2; exit 2; }
 elif [[ $EMV_AGENT == openclaw ]]; then [[ -x $EMV_OPENCLAW_BIN ]] || { echo "openclaw not found (set EMV_OPENCLAW_BIN)" >&2; exit 2; }
 else [[ -x $EMV_CLAUDE_BIN ]] || { echo "claude not found (set EMV_CLAUDE_BIN)" >&2; exit 2; }; fi
-if emv_is_chat_agent && (( ${configs[(I)release]} )); then echo "the release configuration installs the Claude Code plugin; it does not apply to $EMV_AGENT" >&2; exit 2; fi
 if [[ $EMV_AGENT == claude ]] && head -c 2 $EMV_CLAUDE_BIN | grep -q '#!'; then
   echo "warning: $EMV_CLAUDE_BIN is a script; if it rewrites HOME or CLAUDE_CONFIG_DIR the isolation fails. Set EMV_CLAUDE_BIN to the real binary." >&2
 fi
@@ -80,6 +79,10 @@ failed=0; for p in $session_pids; do wait $p || (( failed++ )); done
 say "sessions done ($failed failed)"
 touch $stop; wait $extractor
 cleanup
+# Codex's answers name no provider: settle any the tee could not confirm during the run.
+if [[ $EMV_AGENT == codex && $EMV_MODEL_PROFILE == openrouter-deepseek-flash ]]; then
+  for c in $configs; do zsh $EMV_FORWARD_DIR/verify-generations.sh $EMV_RUN_DIR/stacks/$c/tee-codex 2>&1 | tee -a $L; (( ${pipestatus[1]} == 0 )) || (( failed++ )); done
+fi
 zsh $EMV_FORWARD_DIR/lib/real-configs.sh snapshot $R/real-configs-after-$first.txt
 zsh $EMV_FORWARD_DIR/lib/real-configs.sh compare $R/real-configs-before-$first.txt $R/real-configs-after-$first.txt 2>&1 | tee -a $L
 configs_ok=${pipestatus[1]}

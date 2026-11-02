@@ -25,9 +25,9 @@ EMV_MODEL_PROFILE=openrouter-deepseek-flash EMV_CLAUDE_BIN=~/.local/bin/claude \
   scripts/endless-mode-validation/forward/run.sh <turns> [none off timeline observation release]
 ```
 
-A model profile is required, and full-price models are refused: the `anthropic` profile and Codex run only with
+A model profile is required, and full-price models are refused: the `anthropic` profile runs only with
 `EMV_ALLOW_FULL_PRICE_MODELS=1` (see `forward/lib/model-profile.sh`). `release` is the current published claude-mem,
-installed with `npx claude-mem install` into its own sandbox, with no gateway. `EMV_PROMPTS=forward/prompts500.txt`
+installed with `npx claude-mem install --ide <agent>` into its own sandbox, with no gateway. `EMV_PROMPTS=forward/prompts500.txt`
 runs the 500-turn session (probes in `forward/probe-turns-500.txt`); `EMV_BUDGET_USD` stops every configuration at
 the same turn once the OpenRouter key's spend reaches it.
 
@@ -39,8 +39,9 @@ one provider endpoint, named in the frozen price card (`prices/openrouter-*.card
 field on every agent request and stops the run if any answer comes from elsewhere. It needs an OpenRouter key in
 `OPENROUTER_API_KEY`, or on macOS in the keychain entry `openrouter-endless-mode-tests`.
 
-Hermes Agent and OpenClaw run with `EMV_AGENT=hermes` or `EMV_AGENT=openclaw` (OpenRouter profile only; configurations
-`none off timeline observation`; `EMV_HERMES_BIN`, `EMV_OPENCLAW_BIN`, `EMV_OPENCLAW_NODE_DIR` point at the binaries).
-They send OpenAI chat completions; their side calls (titles, compression summaries) go through the tee and count.
+Hermes Agent, OpenClaw and Codex run with `EMV_AGENT=hermes`, `openclaw` or `codex` (`EMV_HERMES_BIN`, `EMV_OPENCLAW_BIN`,
+`EMV_OPENCLAW_NODE_DIR`, `EMV_CODEX_BIN` point at the binaries; Hermes's `release` needs its `mcp` extra installed). Hermes
+and OpenClaw send OpenAI chat completions, Codex the Responses API; side calls go through the tee and count.
+`forward/cells.py` reads a finished run into per-turn cells: agent at the frozen card plus observer billed.
 
 Tests: `bun test tests/scripts/endless-mode-validation.test.ts`. Typecheck: `bun run typecheck`.

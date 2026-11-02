@@ -4,6 +4,7 @@ import { Database } from 'bun:sqlite';
 import { join, resolve } from 'node:path';
 import { PinVerifier, isInferencePath, providerMatchesPin, readClaudeAccessToken, startTee } from '../../scripts/endless-mode-validation/forward/tee-proxy';
 
+const PIN_ENV = { EMV_PIN_PROVIDER: 'deepinfra/fp8' };
 const REPO_ROOT = resolve(import.meta.dir, '../..');
 const HARNESS = join(REPO_ROOT, 'scripts/endless-mode-validation');
 // Scratch space inside the repo (.scratch is gitignored), removed after the run.
@@ -12,8 +13,8 @@ mkdirSync(scratchRoot, { recursive: true });
 const scratch = mkdtempSync(join(scratchRoot, 'emv-test-'));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
-function python(args: string[]) {
-  const run = Bun.spawnSync(['python3', ...args], { cwd: REPO_ROOT });
+function python(args: string[], env: Record<string, string> = {}) {
+  const run = Bun.spawnSync(['python3', ...args], { cwd: REPO_ROOT, env: { ...process.env, ...env } });
   return { code: run.exitCode, stdout: run.stdout.toString(), stderr: run.stderr.toString() };
 }
 
@@ -174,6 +175,43 @@ describe('forward tee-proxy: endpoint pin', () => {
     }
   });
 
+  it('does not stop a run when a generation record is slow to appear, and lists it for the end-of-run check', async () => {
+    const t = pinnedTee('pin-gen-slow', (request, path) => path === '/v1/generation'
+      ? new Response('not yet', { status: 404 })
+      : new Response(`data: ${JSON.stringify({ type: 'response.completed', response: { id: 'gen-slow', model: PIN.model, usage: {} } })}\n\n`), { generationLookupDelaysMs: [1] });
+    await (await t.post('/v1/responses', { model: PIN.model, input: [] })).text();
+    await Bun.sleep(50);
+    expect(existsSync(join(t.outDir, 'OFF-PIN'))).toBe(false);
+    expect(readFileSync(join(t.outDir, 'generations-to-verify.tsv'), 'utf8')).toBe('0001\tgen-slow\n');
+    t.stop();
+  });
+
+  it('the end-of-run check confirms what the tee could not, and fails loudly on a wrong or missing provider', async () => {
+    const providers: Record<string, string> = { 'gen-good': 'DeepInfra', 'gen-wrong': 'Wafer' };
+    const upstream = Bun.serve({ port: 0, fetch(request) {
+      const provider = providers[new URL(request.url).searchParams.get('id') ?? ''];
+      return provider ? Response.json({ data: { provider_name: provider } }) : new Response('no', { status: 404 });
+    } });
+    const check = async (name: string, ids: string[]) => {
+      const tee = join(scratch, name); mkdirSync(tee, { recursive: true });
+      writeFileSync(join(tee, 'generations-to-verify.tsv'), ids.map((id, i) => `000${i}\t${id}\n`).join(''));
+      const run = Bun.spawn(['zsh', join(HARNESS, 'forward/verify-generations.sh'), tee], { cwd: REPO_ROOT, stdout: 'pipe', stderr: 'pipe', env: harnessEnv({
+        EMV_MODEL_PROFILE: 'openrouter-deepseek-flash', OPENROUTER_API_KEY: 'sk-or-test', ...PIN_ENV, EMV_OPENROUTER_ANTHROPIC_BASE: `http://127.0.0.1:${upstream.port}`, EMV_GENERATION_SWEEP_WAITS: '0 0',
+      }) });
+      return { code: await run.exited, tee, stderr: await new Response(run.stderr).text() };
+    };
+    const good = await check('sweep-good', ['gen-good']);
+    expect(good.code).toBe(0);
+    expect(readFileSync(join(good.tee, 'generation-lookups.tsv'), 'utf8')).toContain('gen-good');
+    const wrong = await check('sweep-wrong', ['gen-good', 'gen-wrong']);
+    expect(wrong.code).toBe(1);
+    expect(readFileSync(join(wrong.tee, 'OFF-PIN'), 'utf8')).toContain('Wafer');
+    const missing = await check('sweep-missing', ['gen-gone']);
+    expect(missing.code).toBe(1);
+    expect(missing.stderr).toContain('1 generation(s) unverified');
+    upstream.stop(true);
+  });
+
   it('retries a 429 with its waits, logs each attempt, and passes it on when they run out', async () => {
     let calls = 0;
     const t = pinnedTee('pin-429', () => (++calls <= 2 ? new Response('slow down', { status: 429 }) : new Response(servedBy('DeepInfra'))), { retry429DelaysMs: [1, 1] });
@@ -293,6 +331,50 @@ describe('forward extract, stats and tables', () => {
   });
 });
 
+describe('forward cells', () => {
+  const CARD = { model: 'm', provider_slug: 'deepinfra/fp8', input: 1, cache_read: 0.1, cache_write_5m: 1, cache_write_1h: 1, output: 2, source: 'openrouter test card' };
+
+  function writeCellStack(run: string, config: string, workerLine: string) {
+    const stack = join(run, 'stacks', config), tee = join(stack, 'tee-anthropic');
+    mkdirSync(tee, { recursive: true }); mkdirSync(join(stack, 'logs')); mkdirSync(join(stack, 'data', 'logs'), { recursive: true });
+    writeFileSync(join(tee, '0001-req.body'), JSON.stringify({ model: 'm', tools: [{ function: { name: 'mcp__claude-mem__dumb_search' } }], messages: [] }));
+    writeFileSync(join(tee, '0001-req.json'), JSON.stringify({ time: '2026-11-02T10:00:02Z', path: '/v1/chat/completions' }));
+    writeFileSync(join(tee, '0001-resp.raw'), `data: ${JSON.stringify({ usage: { prompt_tokens: 1000, completion_tokens: 100, prompt_tokens_details: { cached_tokens: 900 }, cost: 0.00039 } })}\n\n`);
+    writeFileSync(join(tee, 'index.tsv'), '0001\tPOST\t/v1/chat/completions\t200\n');
+    writeFileSync(join(stack, 'logs', 'session.log'), '2026-11-02T10:00:01Z turn 1 start\nrc=0 secs=1 error=False sid=x\n2026-11-02T10:01:00Z turn 1 done; observer wait 10s; status \n');
+    if (workerLine) writeFileSync(join(stack, 'data', 'logs', 'claude-mem.log'), workerLine + '\n');
+    const stop = join(stack, 'stop'); writeFileSync(stop, '');
+    expect(python([join(HARNESS, 'forward/extract.py'), stop, tee]).code).toBe(0);
+  }
+
+  it('adds card-priced agent cost and halved observer cost, reads only finished turns, and marks the observer split', () => {
+    const run = join(scratch, 'cells-run');
+    // Worker logs use local time and the session log UTC; cells.py runs below in UTC-3, so 07:00:30 local is 10:00:30Z.
+    const usage = (fields: string) => `[2026-11-02 07:00:30.000] [INFO ] [SDK   ] OpenRouter API usage {model=m, ${fields}, messagesInContext=2}`;
+    // Cached split measured: (100 uncached x 1 + 900 cached x 0.1 + 50 x 2) / 1e6 = $0.00029, logged doubled.
+    writeCellStack(run, 'timeline', usage('inputTokens=1000, cachedTokens=900, outputTokens=50, totalTokens=1050, costUSD=0.000580'));
+    // Released worker: no cached count, so it is worked out from cost.
+    writeCellStack(run, 'release', usage('inputTokens=1000, outputTokens=50, totalTokens=1050, costUSD=0.000580'));
+    writeCellStack(run, 'none', '');
+    const card = join(scratch, 'cells-card.json'); writeFileSync(card, JSON.stringify(CARD));
+    const out = join(scratch, 'cells.json');
+    const result = python([join(HARNESS, 'forward/cells.py'), run, 'hermes', '--project', 'mathkit', '--card', card, '--turns', '1,2', '--out', out], { TZ: 'Etc/GMT+3' });
+    expect(result.stderr).toBe('');
+    expect(result.code).toBe(0);
+    const records = JSON.parse(readFileSync(out, 'utf8')) as Record<string, any>[];
+    const find = (setup: string, turn: number) => records.find(r => r.setup === setup && r.turn === turn)!;
+    // Agent: (100 x 1 + 900 x 0.1 + 100 x 2) / 1e6 = $0.00039.
+    expect(find('alone', 1)).toMatchObject({ label: 'measured', agent_usd: 0.00039, agent_billed_usd: 0.00039, observer_usd: 0, total_usd: 0.00039 });
+    expect(find('endless', 1)).toMatchObject({ label: 'measured', observer_usd: 0.00029, total_usd: 0.00068 });
+    expect(find('endless', 1).observer_tokens).toMatchObject({ cached: 900, cached_source: 'measured', card_usd: 0.00029 });
+    expect(find('standard', 1).observer_tokens).toMatchObject({ cached: 900, cached_source: 'derived' });
+    expect(find('standard', 2)).toMatchObject({ label: 'not run' });
+    expect(find('standard', 2).total_usd).toBeUndefined();
+    expect(find('alone', 1).health.memory_tools_seen).toEqual(['mcp__claude-mem__dumb_search']);
+    expect(result.stdout).toContain('hermes: billed total');
+  });
+});
+
 describe('backtest validation gate', () => {
   function writeSim(root: string, sessionId: string, simRead: number, simWrite: number) {
     const dir = join(root, sessionId); mkdirSync(dir, { recursive: true });
@@ -333,7 +415,6 @@ function zsh(script: string, env: Record<string, string>) {
   return { code: run.exitCode, stdout: run.stdout.toString(), stderr: run.stderr.toString() };
 }
 const ENV_SH = join(HARNESS, 'forward/lib/env.sh');
-const PIN_ENV = { EMV_PIN_PROVIDER: 'deepinfra/fp8' };
 
 describe('forward model profiles: discount models only', () => {
   it('refuses a run with no profile, the anthropic profile and Codex, with a clear message', () => {
@@ -343,8 +424,10 @@ describe('forward model profiles: discount models only', () => {
     const anthropic = zsh(`source '${ENV_SH}' && emv_check_profile`, { EMV_MODEL_PROFILE: 'anthropic' });
     expect(anthropic.code).toBe(4);
     expect(anthropic.stderr).toContain('refused: EMV_MODEL_PROFILE=anthropic runs Claude models');
-    const codex = zsh(`source '${ENV_SH}' && emv_check_profile`, { EMV_MODEL_PROFILE: 'openrouter-deepseek-flash', EMV_AGENT: 'codex', OPENROUTER_API_KEY: 'sk-or-test', ...PIN_ENV });
+    const codex = zsh(`source '${ENV_SH}' && emv_check_profile`, { EMV_MODEL_PROFILE: 'anthropic', EMV_AGENT: 'codex' });
     expect(codex.code).toBe(4);
+    expect(codex.stderr).toContain('full-price OpenAI model');
+    expect(zsh(`source '${ENV_SH}' && emv_check_profile`, { EMV_MODEL_PROFILE: 'openrouter-deepseek-flash', EMV_AGENT: 'codex', OPENROUTER_API_KEY: 'sk-or-test', ...PIN_ENV }).code).toBe(0);
     expect(zsh(`source '${ENV_SH}' && emv_check_profile`, { EMV_MODEL_PROFILE: 'anthropic', EMV_ALLOW_FULL_PRICE_MODELS: '1' }).code).toBe(0);
     expect(zsh(`source '${ENV_SH}' && emv_check_profile`, { EMV_MODEL_PROFILE: 'openrouter-deepseek-flash', OPENROUTER_API_KEY: 'sk-or-test', ...PIN_ENV }).code).toBe(0);
   });

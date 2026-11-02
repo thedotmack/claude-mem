@@ -26,7 +26,13 @@ fi
 if [[ $EMV_AGENT == codex ]]; then
   if [[ $mode == resume ]]; then set -- exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --json resume --last "$prompt"
   else set -- exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --json "$prompt"; fi
-  $EMV_CODEX_BIN "$@" < /dev/null > $T/$label.jsonl 2> $T/$label.err; rc=$?
+  # `release`: Codex runs a plugin's hooks only once a person has trusted them, and `exec` has nobody to ask, so they would
+  # never fire. This flag is the same decision a user makes at the prompt, in this sandbox only.
+  [[ $EMV_CONFIG == release ]] && set -- --dangerously-bypass-hook-trust "$@"
+  # OpenRouter profile: the key is only in Codex's environment, as EMV_UPSTREAM_KEY (its config names that variable).
+  codex_env=()
+  [[ $EMV_MODEL_PROFILE == openrouter-deepseek-flash ]] && codex_env=(env -u OPENROUTER_API_KEY EMV_UPSTREAM_KEY=$EMV_OPENROUTER_KEY)
+  $codex_env $EMV_CODEX_BIN "$@" < /dev/null > $T/$label.jsonl 2> $T/$label.err; rc=$?
   python3 - $T/$label.jsonl $rc $(( $(date +%s) - start )) $sidfile <<'PY'
 import json, sys
 thread = None; last = None; errs = []; usage = None

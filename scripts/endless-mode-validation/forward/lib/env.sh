@@ -10,11 +10,11 @@
 #   EMV_RUN_DIR         where the run lives [<repo>/.scratch/endless-mode-validation/forward/<run name>] (.scratch is gitignored)
 #   EMV_AGENT           claude | codex | hermes | openclaw [claude]
 #   EMV_MODEL_PROFILE   openrouter-deepseek-flash | anthropic [none: required]; see lib/model-profile.sh. Full-price
-#                       models (the anthropic profile, and Codex) are refused unless EMV_ALLOW_FULL_PRICE_MODELS=1
+#                       models (the anthropic profile) are refused unless EMV_ALLOW_FULL_PRICE_MODELS=1
 #   EMV_RELEASE_VERSION the published claude-mem the `release` configuration installs [npm's `latest`, resolved and
 #                       recorded at setup]
 #   EMV_CLAUDE_MODEL    Claude Code model under the anthropic profile [claude-opus-5-5]
-#   EMV_CODEX_MODEL     Codex model [gpt-6.1-sol]
+#   EMV_CODEX_MODEL     Codex model under the anthropic profile [gpt-6.1-sol]
 #   EMV_CLAUDE_BIN / EMV_CODEX_BIN   the real agent binaries [command -v claude / codex]. Point these past any wrapper
 #                       script that rewrites CLAUDE_CONFIG_DIR or HOME, or the isolation does not hold.
 #   EMV_HERMES_BIN / EMV_OPENCLAW_BIN   those agents' binaries [command -v hermes / openclaw]
@@ -74,6 +74,8 @@ emv_ports() {
 # Switch this shell into configuration $1's sandbox.
 emv_use_stack() {
   emv_ports $1 || return
+  # Nothing from the contributor's own claude-mem may steer the sandboxed worker (environment beats its settings file).
+  local inherited; for inherited in ${(k)parameters[(I)CLAUDE_MEM_*]}; do unset $inherited; done
   export EMV_CONFIG=$1
   export EMV_STACK=$EMV_RUN_DIR/stacks/$1
   export EMV_WORKER_PORT EMV_GATEWAY_PORT EMV_TEE_ANTHROPIC_PORT EMV_TEE_CODEX_PORT
@@ -85,6 +87,14 @@ emv_use_stack() {
   # The sandbox HOME's ~/.local/bin comes before your own PATH: the `release` configuration's hooks run the
   # `claude-mem` launcher its installer put there, never the one in your real ~/.local/bin.
   export PATH=$EMV_STACK/bin:$HOME/.local/bin:$EMV_REAL_PATH
+  if [[ $1 == release ]]; then
+    # The published installers write to homedir()/.codex and homedir()/.openclaw, whatever these variables say. The
+    # agent must look where the installer wrote: still the sandbox HOME.
+    export CODEX_HOME=$HOME/.codex OPENCLAW_STATE_DIR=$HOME/.openclaw OPENCLAW_CONFIG_PATH=$HOME/.openclaw/openclaw.json
+    # The plugins and hooks must reach this stack's worker and never the contributor's own: the environment beats every
+    # settings file they read, and their built-in default is the contributor's own worker's port.
+    export CLAUDE_MEM_WORKER_PORT=$EMV_WORKER_PORT CLAUDE_MEM_WORKER_HOST=127.0.0.1
+  fi
   export DO_NOT_TRACK=1
   # Commits the agents make in the sandbox carry a neutral identity, never one derived from your account or host.
   export GIT_AUTHOR_NAME=harness GIT_AUTHOR_EMAIL=harness@example.invalid GIT_COMMITTER_NAME=harness GIT_COMMITTER_EMAIL=harness@example.invalid

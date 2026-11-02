@@ -27,9 +27,10 @@ export interface EndpointPin { providerSlug: string; model: string }
 // timeout of Bun.serve. Every attempt goes in 429s.tsv, so the count can be reported.
 const RETRY_429_DELAYS_MS = [2_000, 4_000, 8_000, 16_000, 32_000, 60_000];
 // Waits before asking OpenRouter which provider served a /responses answer, which names none in its stream. Reason: the
-// generation record appears a moment after the answer (measured: found 3 s after one on 2026-11-02). Total 15 s. Not
-// found after that is a halt, because an answer that cannot be tied to the pinned endpoint cannot be counted as pinned.
-const GENERATION_LOOKUP_DELAYS_MS = [1_000, 2_000, 4_000, 8_000];
+// generation record appears some time after the answer: most within 15 s, but on 2026-11-02 two of 11 were still missing
+// after these 126 s and present 5 minutes later. So a miss here never stops a run; every id is listed in
+// generations-to-verify.tsv and verify-generations.sh settles what is left when the run ends. A wrong provider stops it.
+const GENERATION_LOOKUP_DELAYS_MS = [2_000, 4_000, 8_000, 16_000, 32_000, 64_000];
 
 const INFERENCE_PATH_SUFFIXES = ['/v1/messages', '/chat/completions', '/responses', '/responses/compact'];
 export const isInferencePath = (pathname: string) => INFERENCE_PATH_SUFFIXES.some(suffix => pathname.endsWith(suffix));
@@ -156,7 +157,7 @@ export function startTee(options: {
       if (!providerMatchesPin(provider, pin!)) halt(n, `served by provider ${provider}, pinned endpoint is ${pin!.providerSlug}`);
       return;
     }
-    halt(n, `no provider found for generation ${generationId} after ${generationLookupDelaysMs.length} lookups`);
+    console.error(`request ${n}: generation ${generationId} not found yet; verify-generations.sh checks it at the end of the run`);
   };
   return Bun.serve({
     hostname: '127.0.0.1',
@@ -243,8 +244,10 @@ export function startTee(options: {
             if (verifier?.violation) { halt(n, verifier.violation); controller.error(new Error(verifier.violation)); return; }
             // Not awaited: the agent should not wait on bookkeeping. A failed lookup still halts later requests.
             if (verifier?.needsGenerationLookup) {
-              if (verifier.generationId) void lookUpGeneration(n, verifier.generationId, authorization);
-              else halt(n, 'the answer names neither a provider nor a generation id');
+              if (verifier.generationId) {
+                appendFileSync(join(outDir, 'generations-to-verify.tsv'), `${n}\t${verifier.generationId}\n`);
+                void lookUpGeneration(n, verifier.generationId, authorization);
+              } else halt(n, 'the answer names neither a provider nor a generation id');
             }
             controller.close();
             return;

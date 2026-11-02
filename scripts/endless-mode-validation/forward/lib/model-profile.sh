@@ -2,7 +2,7 @@
 #
 # There is no default profile, and full-price models are refused. Owner rule, 2026-10-28: no wire gateway experiment
 # runs on Anthropic models; only discount frontier models (e.g. DeepSeek Flash through OpenRouter). So a run with no
-# EMV_MODEL_PROFILE fails, and the `anthropic` profile and Codex (EMV_AGENT=codex, a full-price OpenAI model) fail
+# EMV_MODEL_PROFILE fails, and the `anthropic` profile (Claude Code on Claude, Codex on a full-price OpenAI model) fails
 # too unless EMV_ALLOW_FULL_PRICE_MODELS=1, which only the owner may decide to set. The check runs before anything
 # starts (run.sh, setup-stack.sh, start-stack.sh) and again before every agent turn (agent-turn.sh).
 #
@@ -25,11 +25,12 @@
 #   settings.json: that key is the contributor's own and may have no spending limit. It must be an OpenRouter key
 #   (sk-or-…). A cmem.ai memory key (cm_pro_…) is refused: it works only at cmem.ai, and claude-mem never sends one to
 #   another host. The key goes into the agent's and worker's environment only; it is never printed or written to any file.
-#   Claude Code, Hermes Agent and OpenClaw (Codex is not wired for this profile). Hermes and OpenClaw send OpenAI chat
-#   completions to the same upstream (https://openrouter.ai/api + /v1/chat/completions); see lib/chat-agents.sh.
+#   Claude Code, Hermes Agent, OpenClaw and Codex. Hermes and OpenClaw send OpenAI chat completions to the same upstream
+#   (https://openrouter.ai/api + /v1/chat/completions); see lib/chat-agents.sh. Codex sends Responses API requests
+#   (+ /v1/responses) with an OpenRouter key and no ChatGPT login (OpenRouter's Codex CLI guide).
 
 typeset -g EMV_OPENROUTER_MODEL=${EMV_OPENROUTER_MODEL:-'deepseek/deepseek-v4.1-flash-1017'}
-typeset -g EMV_OPENROUTER_ANTHROPIC_BASE=https://openrouter.ai/api
+typeset -g EMV_OPENROUTER_ANTHROPIC_BASE=${EMV_OPENROUTER_ANTHROPIC_BASE:-https://openrouter.ai/api}
 # The frozen price card: the pinned endpoint's slug and the one price every cell uses.
 export EMV_CARD=${EMV_CARD:-$EMV_FORWARD_DIR/../prices/openrouter-deepseek-v4.1-flash-1017.card.json}
 
@@ -80,8 +81,8 @@ emv_read_openrouter_key() {
 # Profile checks: before anything starts, and before every agent turn.
 emv_check_profile() {
   local rule='owner rule 2026-10-28: wire gateway experiments run on discount models only'
-  if [[ $EMV_AGENT == codex && $EMV_ALLOW_FULL_PRICE_MODELS != 1 ]]; then
-    echo "refused: EMV_AGENT=codex runs a full-price OpenAI model ($rule). Use EMV_AGENT=claude with EMV_MODEL_PROFILE=openrouter-deepseek-flash." >&2; return 4
+  if [[ $EMV_AGENT == codex && $EMV_MODEL_PROFILE == anthropic && $EMV_ALLOW_FULL_PRICE_MODELS != 1 ]]; then
+    echo "refused: EMV_AGENT=codex on the anthropic profile runs a full-price OpenAI model ($rule). Use EMV_MODEL_PROFILE=openrouter-deepseek-flash." >&2; return 4
   fi
   case $EMV_MODEL_PROFILE in
     '') echo "refused: no EMV_MODEL_PROFILE set, and there is no fallback to Claude ($rule). Set EMV_MODEL_PROFILE=openrouter-deepseek-flash and OPENROUTER_API_KEY." >&2; return 4 ;;
@@ -89,7 +90,7 @@ emv_check_profile() {
       [[ $EMV_ALLOW_FULL_PRICE_MODELS == 1 ]] && return 0
       echo "refused: EMV_MODEL_PROFILE=anthropic runs Claude models ($rule). Set EMV_MODEL_PROFILE=openrouter-deepseek-flash and OPENROUTER_API_KEY." >&2; return 4 ;;
     openrouter-deepseek-flash)
-      [[ $EMV_AGENT == (claude|hermes|openclaw) ]] || { echo "openrouter-deepseek-flash supports EMV_AGENT=claude, hermes or openclaw" >&2; return 2; }
+      [[ $EMV_AGENT == (claude|hermes|openclaw|codex) ]] || { echo "openrouter-deepseek-flash supports EMV_AGENT=claude, hermes, openclaw or codex" >&2; return 2; }
       emv_pin_provider >/dev/null || return
       emv_read_openrouter_key ;;
     *) emv_anthropic_upstream ;;

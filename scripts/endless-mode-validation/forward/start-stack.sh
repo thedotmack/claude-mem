@@ -16,7 +16,8 @@ pin=(); [[ $EMV_MODEL_PROFILE == openrouter-deepseek-flash ]] && pin=(--pin-prov
 nohup $EMV_BUN $EMV_FORWARD_DIR/tee-proxy.ts $EMV_TEE_ANTHROPIC_PORT $(emv_anthropic_upstream) $EMV_STACK/tee-anthropic $refresh $pin > $L/tee-anthropic.log 2>&1 &
 print $! >> $pids
 if [[ $EMV_AGENT == codex ]]; then
-  nohup $EMV_BUN $EMV_FORWARD_DIR/tee-proxy.ts $EMV_TEE_CODEX_PORT https://chatgpt.com/backend-api/codex $EMV_STACK/tee-codex > $L/tee-codex.log 2>&1 &
+  codex_upstream=$([[ $EMV_MODEL_PROFILE == openrouter-deepseek-flash ]] && echo $EMV_OPENROUTER_ANTHROPIC_BASE || echo https://chatgpt.com/backend-api/codex)
+  nohup $EMV_BUN $EMV_FORWARD_DIR/tee-proxy.ts $EMV_TEE_CODEX_PORT $codex_upstream $EMV_STACK/tee-codex $pin > $L/tee-codex.log 2>&1 &
   print $! >> $pids
 fi
 
