@@ -88,7 +88,7 @@ interface Fixture {
   obsId: number;
 }
 
-function buildFixture(): Fixture {
+function buildFixture(submoduleName = 'peerless'): Fixture {
   tempRoot = realpathSync(mkdtempSync(path.join(tmpdir(), 'claude-mem-2842-adopt-')));
   const superproject = path.join(tempRoot, 'react');
   const child = path.join(tempRoot, 'peerless-origin');
@@ -99,18 +99,19 @@ function buildFixture(): Fixture {
   initRepo(child);
   execFileSync(
     'git',
-    ['-C', superproject, '-c', 'protocol.file.allow=always', 'submodule', 'add', child, 'peerless'],
+    ['-C', superproject, '-c', 'protocol.file.allow=always', 'submodule', 'add', '--name', 'fixture', child, submoduleName],
     { stdio: 'ignore' }
   );
   git(superproject, 'commit', '-m', 'add submodule');
 
-  const submodule = path.join(superproject, 'peerless');
+  const submodule = path.join(superproject, submoduleName);
+  const project = `react/${submoduleName}`;
   const dbPath = path.join(dataDirectory, 'claude-mem.db');
   const store = new SessionStore(dbPath);
-  const sessionDbId = store.createSDKSession('content-sub', 'react/peerless', 'prompt');
+  const sessionDbId = store.createSDKSession('content-sub', project, 'prompt');
   store.ensureMemorySessionIdRegistered(sessionDbId, 'memory-sub');
   store.setSessionCwd(sessionDbId, submodule);
-  const obsId = seedObservation(store, 'memory-sub', 'react/peerless');
+  const obsId = seedObservation(store, 'memory-sub', project);
   store.close();
 
   return { superproject, submodule, dataDirectory, dbPath, obsId };
@@ -184,4 +185,52 @@ describe('live submodules are not orphans (#2842 + #2864)', () => {
     expect(mergedInto(fx.dbPath, orphanObsId)).toBe('react');
     expect(mergedInto(fx.dbPath, fx.obsId)).toBeNull();
   }, 30_000);
+});
+
+for (const name of ['peer (copy)', 'peer\nless']) {
+  const filesystemIt = process.platform === 'win32' && name.includes('\n') ? it.skip : it;
+  filesystemIt(`preserves live submodule routing for path ${JSON.stringify(name)}`, async () => {
+    const fx = buildFixture(name);
+    const status = execFileSync('git', ['-C', fx.superproject, 'submodule', 'status', '--recursive'], { encoding: 'utf8' });
+    expect(status).toContain(name);
+    const result = await adoptMergedWorktrees({ repoPath: fx.superproject, dataDirectory: fx.dataDirectory });
+    expect(mergedInto(fx.dbPath, fx.obsId)).toBeNull();
+    expect(result.orphanedWorktrees).toEqual([]);
+  }, 30_000);
+}
+
+it('keeps initialized nested submodules separate while their described paths remain live', async () => {
+  const fx = buildFixture();
+  const origin = path.join(tempRoot!, 'nested-origin');
+  initRepo(origin);
+  execFileSync('git', ['-C', fx.submodule, '-c', 'protocol.file.allow=always', 'submodule', 'add', origin, 'nested (main)'], { stdio: 'ignore' });
+  git(fx.submodule, 'config', 'user.email', 'test@example.com');
+  git(fx.submodule, 'config', 'user.name', 'Test');
+  git(fx.submodule, 'commit', '-m', 'add nested module');
+  const nested = path.join(fx.submodule, 'nested (main)');
+  const project = 'react/peerless/nested (main)';
+  const store = new SessionStore(fx.dbPath);
+  const session = store.createSDKSession('content-nested', project, 'prompt');
+  store.ensureMemorySessionIdRegistered(session, 'memory-nested');
+  store.setSessionCwd(session, nested, 'path');
+  const observation = seedObservation(store, 'memory-nested', project);
+  store.close();
+  const status = execFileSync('git', ['-C', fx.superproject, 'submodule', 'status', '--recursive'], { encoding: 'utf8' });
+  expect(status).toContain('peerless/nested (main) (heads/main)');
+
+  const result = await adoptMergedWorktrees({ repoPath: fx.superproject, dataDirectory: fx.dataDirectory });
+  expect(result.orphanedWorktrees).toEqual([]);
+  expect(mergedInto(fx.dbPath, observation)).toBeNull();
+  expect(mergedInto(fx.dbPath, fx.obsId)).toBeNull();
+});
+
+it('still adopts a deinitialized submodule without recursing into its empty checkout', async () => {
+  const fx = buildFixture();
+  git(fx.superproject, 'submodule', 'deinit', '--force', '--', 'peerless');
+  const status = execFileSync('git', ['-C', fx.superproject, 'submodule', 'status'], { encoding: 'utf8' });
+  expect(status.startsWith('-')).toBe(true);
+
+  const result = await adoptMergedWorktrees({ repoPath: fx.superproject, dataDirectory: fx.dataDirectory });
+  expect(mergedInto(fx.dbPath, fx.obsId)).toBe('react');
+  expect(result.orphanedWorktrees).toEqual(['react/peerless']);
 });

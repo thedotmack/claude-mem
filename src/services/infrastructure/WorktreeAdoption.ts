@@ -455,19 +455,26 @@ function wasWrittenUnderRepository(
  * submodule is still adopted (#2842).
  */
 async function listSubmodulePaths(mainRepo: string): Promise<string[]> {
-  const raw = await gitCapture(mainRepo, ['submodule', 'status', '--recursive']);
+  // Gitlinks identify submodules without parsing the human-readable path and
+  // optional describe suffix from `git submodule status`.
+  const raw = await gitCapture(mainRepo, ['ls-files', '--stage', '-z']);
   if (!raw) return [];
 
-  const paths: string[] = [];
-  for (const line of raw.split('\n')) {
-    if (!line.trim()) continue;
-    // ` <sha> <path> (<describe>)`; paths may contain spaces.
-    const match = line.match(/^[\s+\-U]*[0-9a-f]{7,40}\s+(.+?)(?:\s+\([^)]*\))?$/);
-    if (!match) continue;
-    const absolute = path.resolve(mainRepo, match[1]);
-    if (existsSync(absolute)) paths.push(absolute);
+  const paths = new Set<string>();
+  for (const record of raw.split('\0')) {
+    if (!record.startsWith('160000 ')) continue;
+    const separator = record.indexOf('\t');
+    if (separator === -1) continue;
+    const absolute = path.resolve(mainRepo, record.slice(separator + 1));
+    if (!existsSync(absolute) || paths.has(absolute)) continue;
+    paths.add(absolute);
+    // Only initialized submodules have their own Git directory marker. An
+    // empty uninitialized checkout would otherwise rediscover the superproject.
+    if (existsSync(path.join(absolute, '.git'))) {
+      for (const nested of await listSubmodulePaths(absolute)) paths.add(nested);
+    }
   }
-  return paths;
+  return [...paths];
 }
 
 async function resolveCandidateOids(mainRepo: string): Promise<Set<string>> {
