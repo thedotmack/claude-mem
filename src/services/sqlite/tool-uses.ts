@@ -11,7 +11,7 @@
 // Receipt freeze 2026-09-06: this table carries tool IDENTITY only. Dollars
 // live on OpenRouter call-time stamps / the Receipt spend log. `or_generation_id`
 // and `or_session_id` are nullable JOIN keys back to those lines — never a
-// `cost_usd` / micros column here. See reports/tool-sqlite-offload/RECEIPT-JOIN.md.
+// `cost_usd` / micros column here. See docs/receipt-join.md.
 import { Database } from 'bun:sqlite';
 import { createHash } from 'crypto';
 import { logger } from '../../utils/logger.js';
