@@ -386,7 +386,7 @@ function genericMarkerForKeyedValue(key: string, value: string, config: Redactio
 // key paired with the value again. As in text, only the token after `Bearer`
 // is replaced: the same spacing is accepted around `Bearer`, and whatever
 // follows the token (trailing whitespace included) is kept, unanchored.
-const AUTHORIZATION_KEY = /^authorization$/i;
+const AUTHORIZATION_KEY = /^(?:proxy-)?authorization$/i;
 const KEYED_BEARER_VALUE = new RegExp(`^(${BOUNDED_SPACE}Bearer${BOUNDED_SPACE})${GENERIC_VALUE}`, 'i');
 
 function bearerMarkerForKeyedValue(key: string, value: string, config: RedactionConfig): string | null {

@@ -458,6 +458,16 @@ describe('redactSensitive generic built-in patterns', () => {
     expect(redactJsonStrings(event, { enabled: true })).toEqual(event);
   });
 
+  it.each([
+    ['Basic',  'Basic dXNlcjpodW50ZXIy',  "Basic <redacted type='basic_auth'/>"],
+    ['Bearer', 'Bearer abc12345defghi',   "Bearer <redacted type='bearer_token'/>"],
+  ])('redacts the %s credentials of a Proxy-Authorization header object (structured events)', (_scheme, value, expected) => {
+    for (const key of ['Proxy-Authorization', 'proxy-authorization']) {
+      expect(redactJsonStrings({ [key]: value }, cfg)).toEqual({ [key]: expected });
+      expect(redactJsonStrings({ [key]: value }, { enabled: true })).toEqual({ [key]: value });
+    }
+  });
+
   it('leaves non-secret or opted-out Authorization header values alone', () => {
     expect(redactJsonStrings({ Authorization: 'Bearer 12345678' }, cfg)).toEqual({ Authorization: 'Bearer 12345678' });
     expect(redactJsonStrings({ Authorization: 'Basic' }, cfg)).toEqual({ Authorization: 'Basic' });
