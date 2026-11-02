@@ -23,6 +23,7 @@ import {
   adoptMergedWorktreesForAllKnownRepos
 } from '../../../src/services/infrastructure/WorktreeAdoption.js';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
+import { getPathModeProjectContext } from '../../../src/utils/project-name.js';
 
 let tempRoot: string | undefined;
 
@@ -234,3 +235,51 @@ it('still adopts a deinitialized submodule without recursing into its empty chec
   expect(mergedInto(fx.dbPath, fx.obsId)).toBe('react');
   expect(result.orphanedWorktrees).toEqual(['react/peerless']);
 });
+
+it('keeps sessions and observations in distinct ..-prefixed submodule paths', () => {
+  const fx = buildFixture();
+  const origin = path.join(tempRoot!, 'shared-origin');
+  initRepo(origin);
+  const store = new SessionStore(fx.dbPath);
+  try {
+    for (const folder of ['..alpha', '..beta']) {
+      const relative = `${folder}/shared`;
+      execFileSync('git', ['-C', fx.superproject, '-c', 'protocol.file.allow=always', 'submodule', 'add', '--name', folder, origin, relative], { stdio: 'ignore' });
+      const checkout = path.join(fx.superproject, relative);
+      const context = getPathModeProjectContext(checkout);
+      const project = context.primary;
+      expect(context.allProjects).toContain('react/shared');
+      const session = store.createSDKSession(`content-${folder}`, project, 'prompt');
+      const memory = `memory-${folder}`;
+      store.ensureMemorySessionIdRegistered(session, memory);
+      store.setSessionCwd(session, checkout, 'path');
+      seedObservation(store, memory, project);
+    }
+    const rows = store.db.prepare(
+      "SELECT project, COUNT(*) AS count FROM observations WHERE memory_session_id IN ('memory-..alpha', 'memory-..beta') GROUP BY project ORDER BY project"
+    ).all();
+    expect(rows).toEqual([
+      { project: 'react/..alpha/shared', count: 1 },
+      { project: 'react/..beta/shared', count: 1 },
+    ]);
+    const legacySession = store.createSDKSession('content-legacy-collapsed', 'react/shared', 'prompt');
+    store.ensureMemorySessionIdRegistered(legacySession, 'legacy-collapsed');
+    seedObservation(store, 'legacy-collapsed', 'react/shared');
+    for (const folder of ['..alpha', '..beta']) {
+      const keys = getPathModeProjectContext(path.join(fx.superproject, folder, 'shared')).allProjects;
+      const history = store.db.prepare(
+        `SELECT memory_session_id FROM observations WHERE project IN (${keys.map(() => '?').join(',')}) ORDER BY memory_session_id`
+      ).all(...keys) as Array<{ memory_session_id: string }>;
+      expect(history.some(row => row.memory_session_id === 'legacy-collapsed')).toBe(true);
+      expect(history.some(row => row.memory_session_id === `memory-${folder}`)).toBe(true);
+      const other = folder === '..alpha' ? '..beta' : '..alpha';
+      expect(history.some(row => row.memory_session_id === `memory-${other}`)).toBe(false);
+    }
+    const projects = store.db.prepare(
+      "SELECT project FROM sdk_sessions WHERE memory_session_id IN ('memory-..alpha', 'memory-..beta') ORDER BY project"
+    ).all();
+    expect(projects).toEqual([{ project: 'react/..alpha/shared' }, { project: 'react/..beta/shared' }]);
+  } finally {
+    store.close();
+  }
+}, 30_000);
