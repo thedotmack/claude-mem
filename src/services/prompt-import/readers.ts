@@ -245,7 +245,7 @@ export function createCodexReader(): AgentPromptReader {
           if (!isInteractiveSession) return;
           continue;
         }
-        if (!line.replaceAll(' ', '').includes('"role":"user"')) continue;
+        if (!/"role"\s*:\s*"user"/.test(line)) continue;
         const record = parseLine(line);
         const payload = record?.payload ?? {};
         if (record?.type !== 'response_item' || payload.role !== 'user') continue;

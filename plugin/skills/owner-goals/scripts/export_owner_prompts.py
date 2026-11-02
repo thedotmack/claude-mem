@@ -101,7 +101,7 @@ def read_owner_typed_prompts(cutoff_seconds):
     for transcript_path in recent_files(os.path.join(CLAUDE_PROJECTS, "*", "*.jsonl"), cutoff_seconds):
         project_folder = os.path.basename(os.path.dirname(transcript_path))
         for line in open(transcript_path, errors="ignore"):
-            if '"type":"user"' not in line:
+            if not re.search(r'"type"\s*:\s*"user"', line):
                 continue
             try:
                 record = json.loads(line)
@@ -132,7 +132,7 @@ def read_owner_typed_prompts(cutoff_seconds):
                 continue
             project_folder = os.path.basename(meta.get("cwd") or "?")
             for line in session_file:
-                if '"role":"user"' not in line.replace(" ", ""):
+                if not re.search(r'"role"\s*:\s*"user"', line):
                     continue
                 try:
                     record = json.loads(line)
@@ -161,7 +161,7 @@ def read_agent_authored_text(cutoff_seconds):
                     + recent_files(os.path.join(CLAUDE_PROJECTS, "*", "*", "subagents", "*.jsonl"), cutoff_seconds))
     for path in claude_paths:
         for line in open(path, errors="ignore"):
-            if '"type":"assistant"' not in line:
+            if not re.search(r'"type"\s*:\s*"assistant"', line):
                 continue
             try:
                 record = json.loads(line)

@@ -29,7 +29,7 @@ describe('prompt readers on recorded transcript lines', () => {
           if (entry.isDirectory()) rewrite(file);
           else if (entry.name.endsWith('.jsonl')) {
             const lines = readFileSync(file, 'utf8').split('\n').map(line =>
-              line.replace(/"type":/g, '"type" :\t'));
+              line.replace(/"type":/g, '"type" :\t').replace(/"role":/g, '"role" :\t'));
             writeFileSync(file, lines.join('\n'));
           }
         }
