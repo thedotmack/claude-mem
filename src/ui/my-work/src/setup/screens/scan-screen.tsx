@@ -9,13 +9,13 @@ import { PageHeading } from './shared'
 
 /** PROTO savings.js status phrases, one per scan phase. */
 const STATUS: Record<SetupScanPhase, string> = {
-  idle: 'Looking for usage history.',
-  reading: 'Looking for usage history.',
-  checking: 'Checking repeated context.',
-  saving: 'Preparing your usage summary.',
-  'awaiting-consent': 'Scan finished. Nothing has left this computer. Choose what happens next.',
-  uploading: 'Uploading your prompts to cmem.ai to find your goals, work and rules.',
-  done: 'Preparing your usage summary.',
+  idle: 'Finding your recent work.',
+  reading: 'Finding your recent work.',
+  checking: 'Finding the context behind your work.',
+  saving: 'Preparing your overview.',
+  'awaiting-consent': 'Choose the tools to include.',
+  uploading: 'Discovering your work, rules and focus…',
+  done: 'Preparing your overview.',
   failed: 'Setup stopped. Try again when you are ready.',
 }
 
@@ -39,7 +39,7 @@ export function ScanScreen({ scan, onImproveProductChange, onConfirmUpload, cons
   const reducedMotion = useMatchesMedia('(prefers-reduced-motion: reduce)')
   return (
     <section aria-labelledby="scan-title">
-      <PageHeading id="scan-title" title="Checking your AI usage." lead={detected.map((agent) => agent.label).join(' · ') || undefined} />
+      <PageHeading id="scan-title" title={scan.phase === 'awaiting-consent' ? 'Pick up where you left off.' : 'Finding your recent work.'} lead={detected.map((agent) => agent.label).join(' · ') || undefined} />
       <div className="panel is-memory scan-panel">
         {/* Texture behind the panel's content; reduced motion holds the dots still (speedScale 0). */}
         <DottedGlowBackground className="scan-dots" gap={16} radius={1.5} color="rgba(75, 70, 200, 0.5)" glowColor="rgba(91, 87, 230, 0.9)" opacity={0.5} speedScale={reducedMotion ? 0 : 1} />
@@ -51,7 +51,7 @@ export function ScanScreen({ scan, onImproveProductChange, onConfirmUpload, cons
                 <span className="check" aria-hidden="true"><CheckIcon strokeWidth={3} /></span>
                 <AgentMark tool={agentToolFor(agent.id)} className="mark" />
                 <span>{agent.label} <span className="detected">({status.label})</span></span>
-                <span className="count">{agent.prompts.toLocaleString('en-US')} prompts</span>
+                <span className="count">{agent.prompts.toLocaleString('en-US')} messages</span>
                 {status.note && <span className="scan-agent-note">{status.note}</span>}
               </li>
             )
@@ -66,26 +66,31 @@ export function ScanScreen({ scan, onImproveProductChange, onConfirmUpload, cons
           <span>Also share my anonymized setup results to help improve claude-mem (optional)</span>
         </label>
         {scan.phase === 'awaiting-consent' && (
-          <div className="scan-consent" role="group" aria-label="Upload your prompts">
+          <div className="scan-consent" role="group" aria-label="Discover your work">
             <p>
-              To find your goals, work and rules, claude-mem can upload the <strong>full text of the prompts you typed in the last 30 days</strong>,
-              with session IDs, project names, folder paths and timestamps, to cmem.ai. They are processed by a third-party AI model provider.
-              If you skip this, your history stays on this computer.
+              Claude-Mem scans your transcripts to automatically discover your existing work, your preferences, and what you’re focused on.
             </p>
+            <p className="scan-consent-notice">
+              Selected messages are sent to cmem.ai and an AI provider.
+            </p>
+            <details className="scan-consent-details">
+              <summary>What gets uploaded?</summary>
+              <p>The full text of your messages from the last 30 days in the selected tools, with session IDs, project names, folder paths and timestamps.</p>
+            </details>
             <ul className="scan-consent-agents" aria-label="Tools to upload">
               {uploadable.map((agent) => (
                 <li key={agent.id}>
                   <label>
                     <input type="checkbox" checked={!unticked.includes(agent.id)}
                       onChange={(event) => setUnticked(event.target.checked ? unticked.filter((id) => id !== agent.id) : [...unticked, agent.id])} />
-                    <span>{agent.label} ({agent.prompts.toLocaleString('en-US')} prompts)</span>
+                    <span>{agent.label} ({agent.prompts.toLocaleString('en-US')} messages)</span>
                   </label>
                 </li>
               ))}
             </ul>
             <div className="scan-consent-actions">
-              <button type="button" className="secondary" disabled={consentSending} onClick={() => onConfirmUpload(false)}>Keep everything local</button>
-              <button type="button" className="secondary" disabled={chosen.length === 0 || consentSending} onClick={() => onConfirmUpload(true, chosen)}>Upload my prompts to cmem.ai</button>
+              <button type="button" className="primary" disabled={chosen.length === 0 || consentSending} onClick={() => onConfirmUpload(true, chosen)}>Discover My Work, Rules &amp; Focus</button>
+              <button type="button" className="scan-consent-skip" disabled={consentSending} onClick={() => onConfirmUpload(false)}>Skip this step</button>
             </div>
             {consentSending && <p className="scan-status" role="status">Sending your choice…</p>}
             {consentError && <p className="scan-error" role="alert">{consentError}</p>}
@@ -100,3 +105,4 @@ export function ScanScreen({ scan, onImproveProductChange, onConfirmUpload, cons
     </section>
   )
 }
+
