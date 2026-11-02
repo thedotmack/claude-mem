@@ -15,6 +15,9 @@ export interface WorkViewSnapshot extends Record<string, unknown> {
 }
 export class WorkStateSource {
   localDeviceId: string;
+  agentView: WorkViewSnapshot;
+  agentRevision: number;
+  source: WorkViewSnapshot['source'];
   constructor(options?: { databasePath?: string; currentProject?: string; parentProject?: string; titleCachePath?: string | null; ledgerDir?: string | null; pollIntervalMs?: number; localDeviceId?: string });
   read(options?: { maxActivityAgeMs?: number }): { agentView: WorkViewSnapshot; [key: string]: unknown };
   evidence(kind: string, id: number): Record<string, unknown> | null;

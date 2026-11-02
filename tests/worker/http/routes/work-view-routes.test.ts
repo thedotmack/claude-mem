@@ -105,6 +105,28 @@ function seedLinkedEvidence(promptText = 'Build a local work viewer') {
 }
 
 describe('local work view', () => {
+  it('reads the database in its worker thread while the HTTP event loop stays available', async () => {
+    const source = (routes as any).source;
+    const originalRead = source.read;
+    source.read = () => { throw new Error('snapshot read ran on the HTTP thread'); };
+    const reader = (routes as any).sourceReader;
+    const originalWorkerRead = reader.read.bind(reader);
+    reader.read = async (...args: [number, string]) => {
+      await new Promise(resolve => setTimeout(resolve, 30));
+      return originalWorkerRead(...args);
+    };
+    let timerFired = false;
+    try {
+      const responsePromise = fetch(`${origin}/api/work-view`);
+      await new Promise<void>(resolve => setTimeout(() => { timerFired = true; resolve(); }, 0));
+      expect(timerFired).toBe(true);
+      expect((await responsePromise).status).toBe(200);
+    } finally {
+      source.read = originalRead;
+      reader.read = originalWorkerRead;
+    }
+  });
+
   it('serves a work-product file only through the work-state entry that attached it', async () => {
     const image = join(directory, 'hero.png');
     writeFileSync(image, 'png-bytes');

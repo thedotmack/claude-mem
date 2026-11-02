@@ -97,6 +97,11 @@ const CONTEXT_READ_WORKER = {
   source: 'src/services/context/context-read-worker.ts'
 };
 
+const WORK_VIEW_READ_WORKER = {
+  name: 'work-view-read-worker',
+  source: 'src/services/work-view/work-view-read-worker.ts'
+};
+
 const TRANSCRIPT_WATCHER = {
   name: 'transcript-watcher',
   source: 'src/services/transcripts/transcript-watcher-entry.ts'
@@ -690,6 +695,30 @@ async function buildHooks() {
     });
     assertBundleIntegrity(`${hooksDir}/${CONTEXT_READ_WORKER.name}.cjs`);
 
+    await build({
+      entryPoints: [WORK_VIEW_READ_WORKER.source],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      format: 'cjs',
+      outfile: `${hooksDir}/${WORK_VIEW_READ_WORKER.name}.cjs`,
+      minify: true,
+      ...SOURCEMAP_OPTS,
+      logLevel: 'error',
+      external: ['bun:sqlite'],
+      define: {
+        ...DIRNAME_DEFINE,
+        'import.meta.url': '__IMPORT_META_URL__'
+      },
+      banner: {
+        js: [
+          ...DIRNAME_BANNER,
+          'var __IMPORT_META_URL__ = require("node:url").pathToFileURL(__CM_FILENAME__).href;'
+        ].join('\n')
+      }
+    });
+    assertBundleIntegrity(`${hooksDir}/${WORK_VIEW_READ_WORKER.name}.cjs`);
+
     // Advisory only — a sudden jump usually means a heavy server-only dependency
     // (better-auth, kysely, a database driver) leaked into the worker bundle via a
     // transitive import (#2584). Never blocks the build.
@@ -1149,6 +1178,8 @@ async function buildHooks() {
       'plugin/scripts/bun-runner.js',
       'plugin/scripts/context-read-worker.cjs',
       'plugin/scripts/context-read-worker.cjs.map',
+      'plugin/scripts/work-view-read-worker.cjs',
+      'plugin/scripts/work-view-read-worker.cjs.map',
       'plugin/sqlite/SessionStore.js',
       'plugin/sqlite/observations/files.js',
       'plugin/.claude-plugin/plugin.json',
