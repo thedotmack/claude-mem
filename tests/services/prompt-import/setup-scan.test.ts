@@ -160,6 +160,22 @@ describe('setup prompt scan', () => {
     expect(batches).toEqual([[]]);
   });
 
+  it('finishes locally with a notice when hosted extraction is unavailable', async () => {
+    hookRecorded('claude', 'session-budget', 'alpha', 'a prompt', '2026-10-05T09:00:00.000Z');
+    const batches: unknown[][] = [];
+    const scan = setupScan();
+    scan.setExtractor(async prompts => {
+      batches.push(prompts);
+      if (prompts.length) throw Object.assign(new Error('Hosted setup failed (HTTP 503): daily budget reached'), { code: 'hosted-unavailable' });
+    });
+    scan.start();
+    await scan.finished();
+    const done = await scan.confirmUpload(true);
+    expect(done).toMatchObject({ phase: 'done', done: true, error: null });
+    expect(done.hostedNotice).toContain('daily budget reached');
+    expect(batches[1]).toEqual([]);
+  });
+
   it('uses the sharing choice sent with the consent, not a stale stored one', async () => {
     hookRecorded('claude', 'session-share', 'alpha', 'a prompt', '2026-10-05T09:00:00.000Z');
     const flags: boolean[] = [];

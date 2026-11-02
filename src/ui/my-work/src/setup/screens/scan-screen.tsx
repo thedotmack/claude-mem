@@ -98,6 +98,7 @@ export function ScanScreen({ scan, onImproveProductChange, onConfirmUpload, cons
         )}
         <p className="scan-status" role="status" aria-live="polite">{STATUS[scan.phase]}</p>
         {preferenceError && <p className="scan-error" role="alert">{preferenceError}</p>}
+        {scan.hostedNotice && <p className="scan-status" role="status">{scan.hostedNotice}</p>}
         {scan.error && <p className="scan-error" role="alert">{scan.error}</p>}
         {retryError && <p className="scan-error" role="alert">{retryError}</p>}
         {scan.phase === 'failed' && <button type="button" className="scan-retry" onClick={onRetry} disabled={retrying}>{retrying ? 'Starting again…' : 'Try again'}</button>}

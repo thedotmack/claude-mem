@@ -165,6 +165,21 @@ describe('hosted setup extraction', () => {
     await expect(malformed.run.run(prompts, true)).rejects.toThrow('invalid response');
   });
 
+  it('after a 503 budget refusal, stops uploading until the next UTC day', async () => {
+    let calls = 0;
+    let now = at;
+    const { createRun } = fixture((async () => { calls++; return Response.json({ message: 'The daily budget has been reached.' }, { status: 503 }); }) as typeof fetch);
+    const run = createRun();
+    (run as any).options.now = () => now;
+    await expect(run.run(prompts, false)).rejects.toMatchObject({ code: 'hosted-unavailable', message: expect.stringContaining('HTTP 503') });
+    expect(calls).toBe(1);
+    await expect(run.run(prompts, false)).rejects.toMatchObject({ code: 'hosted-unavailable', message: expect.stringContaining('No prompts were uploaded') });
+    expect(calls).toBe(1);
+    now = Math.floor(at / 86_400_000) * 86_400_000 + 86_400_000;
+    await expect(run.run(prompts, false)).rejects.toThrow('HTTP 503');
+    expect(calls).toBe(2);
+  });
+
   it('fails loudly on the uncompressed cap even when the gzip would fit, with no paid request', async () => {
     let calls = 0;
     const { run } = fixture((async () => { calls++; return Response.json(answer()); }) as typeof fetch);

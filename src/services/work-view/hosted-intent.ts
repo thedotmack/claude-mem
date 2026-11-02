@@ -35,6 +35,12 @@ const resultSchema = z.object({
   groups: z.object({ groups: z.array(group), ignored: z.array(z.object({ conversation: text, reason: text })) }),
   cost_usd: z.number().finite().nonnegative(), model: text, dropped_quotes: z.number().int().nonnegative(),
 });
+/** Cloud turned the run down for budget or rate reasons (HTTP 429/503). Setup continues locally; retrying cannot help until `retryAfter`. */
+export class HostedUnavailableError extends Error {
+  readonly code = 'hosted-unavailable';
+  constructor(message: string, readonly retryAfter: number) { super(message); }
+}
+const nextUtcMidnight = (now: number) => Math.floor(now / 86_400_000) * 86_400_000 + 86_400_000;
 export type HostedIntentResult = z.infer<typeof resultSchema>;
 /** Cloud's answer plus what saving it needs, kept until the save finishes. */
 interface PendingSave { result: HostedIntentResult; keys: Array<[string, string]>; offset: number; projects: Array<[string, string | undefined]> }
@@ -130,6 +136,9 @@ function quoteIso(at: string, offset: number): string {
 
 export class HostedIntent {
   private current: HostedIntentState = { state: 'idle', reason: 'setup-scan', step: null, agent: null, startedAt: null, finishedAt: null, error: null };
+  /** After Cloud refuses for budget, no further upload is attempted until then (epoch ms). */
+  private blockedUntil = 0;
+  private blockedReason = '';
   constructor(private options: HostedIntentOptions) {}
   state(): HostedIntentState { return { ...this.current }; }
   private iso(): string { return new Date((this.options.now ?? Date.now)()).toISOString(); }
@@ -154,6 +163,8 @@ export class HostedIntent {
         this.current = { ...this.current, state: 'ok', step: null, finishedAt: this.iso() };
         return;
       }
+      const clock = (this.options.now ?? Date.now)();
+      if (clock < this.blockedUntil) throw new HostedUnavailableError(`${this.blockedReason} No prompts were uploaded.`, this.blockedUntil);
       const { token, userId } = this.options.credentials();
       if (!!token !== !!userId) throw new Error('Hosted setup has incomplete CMEM account credentials. Repair the account connection before retrying.');
       const keys = conversationKeys(ownerPrompts);
@@ -176,6 +187,14 @@ export class HostedIntent {
       if (!response.ok) {
         const failure = answer && typeof answer === 'object' ? answer as { message?: unknown; error?: unknown } : null;
         const reason = typeof failure?.message === 'string' ? failure.message : typeof failure?.error === 'string' ? failure.error : response.statusText;
+        const message = `Hosted setup failed (HTTP ${response.status}): ${reason || 'Cloud did not return a reason.'}`;
+        if (response.status === 429 || response.status === 503) {
+          const header = Number(response.headers?.get?.('retry-after'));
+          const until = Number.isFinite(header) && header > 0 ? clock + header * 1000 : nextUtcMidnight(clock);
+          this.blockedUntil = until;
+          this.blockedReason = message;
+          throw new HostedUnavailableError(message, until);
+        }
         throw new Error(`Hosted setup failed (HTTP ${response.status}): ${reason || 'Cloud did not return a reason.'}`);
       }
       const parsed = resultSchema.safeParse(answer);
@@ -190,6 +209,7 @@ export class HostedIntent {
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       this.current = { ...this.current, state: 'failed', step: null, finishedAt: this.iso(), error: reason };
+      if (error instanceof HostedUnavailableError) throw error;
       throw new Error(reason);
     }
   }

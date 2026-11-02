@@ -60,6 +60,8 @@ export interface SetupScanState {
   usage: SetupTokenUsage | null;
   /** Why the token totals could not be read; the prompt scan itself still finished. */
   usageError: string | null;
+  /** Set when hosted extraction was unavailable (budget/rate limit) and setup finished locally without it. */
+  hostedNotice: string | null;
   /** The owner's newest typed prompts, newest first, quoted as typed (the Reveal shows them while no agent can extract). */
   recentPrompts: SetupRecentPrompt[];
 }
@@ -111,7 +113,7 @@ function idleState(): SetupScanState {
     uploadedAgents: null,
     agents: AGENT_LABELS.map(([id, label]) => ({ id, label, detected: false, prompts: 0, fromMemory: 0, fromTranscripts: 0, canRunSetup: null, cannotRunReason: null })),
     percent: 0, phase: 'idle', done: false, windowStart: null, startedAt: null, finishedAt: null, durationMs: null,
-    added: 0, skippedSources: 0, error: null, usage: null, usageError: null, recentPrompts: [],
+    added: 0, skippedSources: 0, error: null, usage: null, usageError: null, hostedNotice: null, recentPrompts: [],
   };
 }
 
@@ -238,6 +240,15 @@ export class SetupScan {
       await this.extract!(selected, this.current.improveProduct);
       this.finish(pending.summary, pending.startedAt);
     } catch (error) {
+      if ((error as { code?: string } | null)?.code === 'hosted-unavailable') {
+        // Cloud refused before doing any work: finish with local-only memory instead of stalling setup.
+        logger.warn('IMPORT', 'Hosted setup unavailable; continuing locally', { reason: (error as Error).message });
+        try {
+          await this.extract!([], this.current.improveProduct);
+          this.finish({ ...pending.summary, hostedNotice: `${(error as Error).message} Setup finished without hosted extraction; your prompts stayed on this machine.` } as Partial<SetupScanState>, pending.startedAt);
+          return this.state();
+        } catch { /* fall through to the failure below */ }
+      }
       const finishedAt = this.now();
       logger.error('IMPORT', 'Setup prompt upload failed', {}, error as Error);
       this.update({ phase: 'failed', done: true, error: error instanceof Error ? error.message : String(error), finishedAt: new Date(finishedAt).toISOString(), durationMs: finishedAt - pending.startedAt }, true);
