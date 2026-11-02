@@ -4,7 +4,8 @@
 #
 # Usage: scripts/endless-mode-validation/forward/run.sh <turns> [configs...]   (configs default: none off timeline observation; also: release)
 # Env: see lib/env.sh (EMV_RUN_NAME, EMV_PROMPTS [prompts200.txt; prompts500.txt for 500 turns], EMV_AGENT, EMV_MODEL_PROFILE, EMV_CLAUDE_BIN, ...). Also:
-#   EMV_FIRST_TURN  continue an existing run (same EMV_RUN_NAME) from this turn [1]
+#   EMV_FIRST_TURN  continue an existing run (same EMV_RUN_NAME) from this turn [1]; `auto`: each configuration from the turn after
+#                   its own last finished one (a budget stop leaves them at different turns). A continued run clears the old budget stop.
 #   EMV_BUDGET_USD  openrouter-deepseek-flash only: stop every configuration after the slowest one's current turn once the key's total
 #                   OpenRouter spend reaches this many USD (budget-watch.sh) [unset: no stop]
 #   EMV_PRICES      prices file for the tables [by profile: prices/anthropic-claude-opus-5-5.json, prices/openai-gpt-6.1-sol.json,
@@ -32,6 +33,7 @@ if [[ $EMV_AGENT == claude ]] && head -c 2 $EMV_CLAUDE_BIN | grep -q '#!'; then
 fi
 emv_check_profile || exit
 python3 $EMV_FORWARD_DIR/check-prompts.py $EMV_PROMPTS >&2 || { echo "$EMV_PROMPTS refers to turns by number; reword those prompts by content" >&2; exit 2; }
+[[ $first == auto ]] && rm -f $EMV_RUN_DIR/logs/budget-stop-turn
 [[ ! -d $EMV_RUN_DIR/stacks || $first != 1 ]] || { echo "$EMV_RUN_DIR already has stacks; pick a new EMV_RUN_NAME, or set EMV_FIRST_TURN to continue" >&2; exit 2; }
 (( $(emv_free_gb) >= EMV_MIN_FREE_GB )) || { echo "under $EMV_MIN_FREE_GB GB free" >&2; exit 3; }
 
@@ -62,7 +64,15 @@ extractor=$!
 
 say "sessions start"
 session_pids=()
-for c in $configs; do zsh $EMV_FORWARD_DIR/session.sh $c $first $turns > $EMV_RUN_DIR/stacks/$c/logs/session-$first-$turns.out 2>&1 & session_pids+=($!); done
+for c in $configs; do
+  from=$first
+  if [[ $first == auto ]]; then
+    last_done=$(grep -o 'turn [0-9]* done' $EMV_RUN_DIR/stacks/$c/logs/session.log | tail -1 | awk '{print $2}')
+    from=$(( ${last_done:?no finished turn in $c to continue from} + 1 ))
+  fi
+  say "$c: turns $from-$turns"
+  zsh $EMV_FORWARD_DIR/session.sh $c $from $turns > $EMV_RUN_DIR/stacks/$c/logs/session-$from-$turns.out 2>&1 & session_pids+=($!)
+done
 failed=0; for p in $session_pids; do wait $p || (( failed++ )); done
 say "sessions done ($failed failed)"
 touch $stop; wait $extractor

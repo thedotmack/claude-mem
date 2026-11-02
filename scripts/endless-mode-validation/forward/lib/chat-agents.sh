@@ -42,7 +42,8 @@ YAML
 # One turn. Writes $T/<label>.json as {result, session_id} (the shape run.sh's artifacts read), prints agent-turn.sh's
 # one status line and the first 300 characters of the reply. Usage: emv_run_chat_turn <label> <prompt> <first|resume> <turns dir> <sid file>
 emv_run_chat_turn() {
-  local label=$1 prompt=$2 mode=$3 T=$4 sidfile=$5 start=$(date +%s) rc raw=$T/$label.raw
+  local label=$1 prompt=$2 mode=$3 T=$4 sidfile=$5 start=$(date +%s) rc
+  local raw=$T/$label.raw  # on its own line: zsh expands one `local` line's values before assigning any of them
   emv_read_openrouter_key || return
   local -a agent_env=(env -u OPENROUTER_API_KEY -u ANTHROPIC_AUTH_TOKEN EMV_UPSTREAM_KEY=$EMV_OPENROUTER_KEY)
   case $EMV_AGENT in
