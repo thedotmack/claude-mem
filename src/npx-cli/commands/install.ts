@@ -376,17 +376,30 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
 
     case 'devin': {
       return {
-        title: 'Devin: installing hooks',
+        title: 'Devin: installing hooks + MCP',
         task: async (message) => {
           message('Loading Devin installer…');
-          const { installDevinHooks } = await import('../../services/integrations/DevinHooksInstaller.js');
+          const { installDevinHooks, configureDevinMcp } = await import('../../services/integrations/DevinHooksInstaller.js');
           message('Installing Devin hooks…');
           const { result, output } = await bufferConsole(async () => installDevinHooks());
           if (result !== 0) {
             recordFailure('Devin: hook installation failed', output);
             return `Devin: hook installation failed ${styleText('red', 'FAIL')}`;
           }
-          return `Devin: hooks installed ${styleText('green', 'OK')}`;
+          message('Configuring Devin MCP…');
+          const { result: mcpResult, output: mcpOutput } = await bufferConsole(async () => configureDevinMcp());
+          if (mcpResult === 0) {
+            return `Devin: hooks + MCP installed ${styleText('green', 'OK')}`;
+          }
+          installerError(ErrorSeverity.WARN_CONTINUE, {
+            component: 'devin',
+            ide: 'devin',
+            phase: 'ide-install',
+            cause: new Error('Devin hooks installed, but MCP setup failed.'),
+            remediation: 'Fix the problem named above, then run `npx claude-mem devin install`.',
+            details: mcpOutput,
+          }, summary);
+          return `Devin: hooks installed; MCP setup failed — run \`npx claude-mem devin install\` ${styleText('yellow', '!')}`;
         },
       };
     }

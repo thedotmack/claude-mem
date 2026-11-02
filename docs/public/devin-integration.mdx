@@ -6,14 +6,15 @@ icon: terminal
 
 ## Overview
 
-The Devin integration gives claude-mem persistent memory to agents running in Devin CLI, which Devin Desktop also uses. It handles three things:
+The Devin integration gives claude-mem persistent memory to agents running in Devin CLI, which Devin Desktop also uses. It handles four things:
 
 1. **Observation recording** — Captures tool usage from Devin's lifecycle hooks and sends it to the claude-mem worker for AI processing
 2. **Context injection** — Injects the observation timeline at session start through the `SessionStart` hook's `additionalContext`, the same envelope Claude Code uses
 3. **Session summaries** — Summarizes each session from the last assistant message Devin sends on `Stop`
+4. **MCP search tools** — Registers the claude-mem stdio server in `mcp_config.json`, so `mcp__claude-mem__*` memory search tools are available inside Devin
 
 <Info>
-Devin reads user-level hooks from the `"hooks"` key of `~/.config/devin/config.json` (`%APPDATA%\devin\config.json` on Windows). The installer merges claude-mem's hook rules into that key and leaves your other Devin settings and hooks alone.
+Devin reads user-level hooks from the `"hooks"` key of `~/.config/devin/config.json` (`%APPDATA%\devin\config.json` on Windows). The installer merges claude-mem's hook rules into that key and leaves your other Devin settings and hooks alone. It also registers the claude-mem MCP server in `~/.config/devin/mcp_config.json` (`%APPDATA%\devin\mcp_config.json` on Windows), the dedicated file Devin v3000.3+ reads MCP servers from (older versions stored them in `config.json`'s `mcpServers` key and migrate on upgrade).
 </Info>
 
 ## Installation
@@ -30,7 +31,7 @@ npx claude-mem devin status
 npx claude-mem devin uninstall
 ```
 
-Start a new Devin session afterwards and run `/hooks` to confirm the claude-mem hooks loaded.
+Start a new Devin session afterwards and run `/hooks` to confirm the claude-mem hooks loaded, and `/mcp` or `devin mcp list` to see the `claude-mem` server.
 
 ## Event Mapping
 
