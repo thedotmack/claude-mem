@@ -9,6 +9,7 @@ import {
   createAdhocCodesigner,
   ensureDirectoryOnWindowsUserPath,
   ensureLauncherOnPath,
+  launcherSignatureFixHint,
   ensureLocalBinOnShellPath,
   findExecutableOnPath,
   launcherFileEmbedsBundle,
@@ -1389,5 +1390,31 @@ describe.skipIf(!isPosixHost)('plugin/scripts/ensure-launcher.cjs under plain no
     const placedBinaryPath = path.join(binDirectory, 'claude-mem');
     expect(scriptRun.stderr).toContain(`claude-mem launcher installed at ${placedBinaryPath}`);
     expect(spawnSync(placedBinaryPath, ['--version'], { encoding: 'utf-8' }).stdout.trim()).toBe(String(LAUNCHER_PROTOCOL));
+  });
+});
+
+// #5247 (suggestion 2): a rebuild the OS killed must name the Bun upgrade, not
+// another install, which cannot help while Bun is below 1.4.1.
+describe('launcherSignatureFixHint', () => {
+  const killed = { protocol: null, failure: 'killed by SIGKILL', failedToStart: false, signal: 'SIGKILL' } as const;
+  const exited = { protocol: null, failure: 'exited 5', failedToStart: false, signal: null } as const;
+
+  it('names the Bun upgrade when macOS killed the rebuild and Bun is below 1.4.1', () => {
+    const hint = launcherSignatureFixHint('darwin', killed, '1.3.9');
+    expect(hint).toContain('bun upgrade');
+    expect(hint).toContain('1.4.1');
+    expect(hint).toContain('reinstalling cannot fix this');
+  });
+
+  it('says nothing when Bun is new enough to be signed', () => {
+    expect(launcherSignatureFixHint('darwin', killed, '1.4.1')).toBe('');
+    expect(launcherSignatureFixHint('darwin', killed, '1.6.0')).toBe('');
+  });
+
+  it('says nothing for a non-signal failure, another platform, or an unknown Bun version', () => {
+    expect(launcherSignatureFixHint('darwin', exited, '1.3.9')).toBe('');
+    expect(launcherSignatureFixHint('linux', killed, '1.3.9')).toBe('');
+    expect(launcherSignatureFixHint('win32', killed, '1.3.9')).toBe('');
+    expect(launcherSignatureFixHint('darwin', killed, null)).toBe('');
   });
 });

@@ -20,7 +20,7 @@ import { posix as posixPath, win32 as windowsPath } from 'path';
 import { buildSpawnSyncInvocation } from '../shared/spawn.js';
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 import { LAUNCHER_PROTOCOL } from './launcher-protocol.js';
-import { MINIMUM_BUN_VERSION_FOR_BUN_BE_BUN, bunVersionHonoursBunBeBun } from './bun-be-bun-support.js';
+import { MINIMUM_BUN_VERSION_FOR_BUN_BE_BUN, MINIMUM_BUN_VERSION_FOR_SIGNED_LAUNCHER_ON_DARWIN, bunVersionHonoursBunBeBun, bunVersionHonoursMacosSignatureFix } from './bun-be-bun-support.js';
 
 const LAUNCHER_VERSION_PROBE_TIMEOUT_MS = 10_000;
 // Antivirus scans a new .exe on its first launch, which can take longer than
@@ -149,6 +149,25 @@ export function probeLauncherVersion(
     windowsHide: true,
   });
   return interpretVersionProbe(versionProbe, timeoutMs);
+}
+
+/**
+ * The extra fix line for a rebuild the OS killed. macOS 27 SIGKILLs a launcher
+ * whose code signature it rejects, and Bun below 1.4.1 cannot produce a binary
+ * that check accepts, so rebuilding the same way is killed again while every
+ * session start pays for another failed compile (#5247, suggestion 2). Naming
+ * another `npx claude-mem install` would send the user in a loop.
+ *
+ * Exported so the wording is unit-tested on any platform.
+ */
+export function launcherSignatureFixHint(
+  platform: NodeJS.Platform,
+  probe: LauncherVersionProbe,
+  bunVersion: string | null,
+): string {
+  if (platform !== 'darwin' || probe.signal !== 'SIGKILL') return '';
+  if (bunVersion === null || bunVersionHonoursMacosSignatureFix(bunVersion)) return '';
+  return `; Bun ${bunVersion} cannot produce a launcher macOS 27 accepts, so reinstalling cannot fix this: run \`bun upgrade\` (${MINIMUM_BUN_VERSION_FOR_SIGNED_LAUNCHER_ON_DARWIN} or newer), then \`npx claude-mem install\``;
 }
 
 function sleepSync(milliseconds: number): void {
@@ -874,7 +893,8 @@ export function ensureLauncherOnPath(options: {
       // binary (macOS SIGKILLs it on exec), and its stderr is the actionable
       // half: the protocol message alone reads like a broken build.
       const signFailure = codesignFailure ? `; ${codesignFailure}` : '';
-      throw new Error(`compiled launcher printed protocol ${compiledProbe.protocol}, expected ${LAUNCHER_PROTOCOL}${probeFailure}${signFailure}`);
+      const bunSignFix = launcherSignatureFixHint(host.platform, compiledProbe, bunVersion);
+      throw new Error(`compiled launcher printed protocol ${compiledProbe.protocol}, expected ${LAUNCHER_PROTOCOL}${probeFailure}${signFailure}${bunSignFix}`);
     }
     moveCompiledLauncherIntoPlace(temporaryOutfilePath, binaryPath, binDirectory, host.platform);
   } finally {
