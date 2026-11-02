@@ -333,7 +333,12 @@ function reviewList(value, max, label, options) {
   if (list.length <= max) return list;
   if (!options.coerce) throw new TypeError(`${label} has ${list.length} items; it must have at most ${max}. Keep the ${max} that matter most.`);
   options.coercedFields.add(label);
-  return list.slice(0, max);
+  // Amend mode starts from the previous review and adds new entries, so a list at its cap must lose its oldest
+  // entries, not the new one. Dates decide when every entry has one; otherwise the model's order does.
+  const times = list.map(entry => Date.parse(entry?.at));
+  if (times.some(Number.isNaN)) return list.slice(-max);
+  const newestIndexes = new Set(list.map((_, index) => index).sort((a, b) => times[a] - times[b] || a - b).slice(-max));
+  return list.filter((_, index) => newestIndexes.has(index));
 }
 
 // Models sometimes answer one citation as a plain string instead of a list (Oct 25: a review's

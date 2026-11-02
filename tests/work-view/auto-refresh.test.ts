@@ -296,8 +296,8 @@ describe('refresh task', () => {
         summary: 'x'.repeat(292),
         reviewBasis: show.reviewBasis,
         milestones: Array.from({ length: 13 }, (_, index) => ({ at: null, text: `Step ${index}` })),
-        preferences: Array.from({ length: 11 }, (_, index) => ({ kind: 'directive', preference: `Preference ${index}`, quote: index === 0 ? 'q'.repeat(301) : `Quote ${index}`, at: null })),
-        outcome: { regressions: Array.from({ length: 11 }, (_, index) => ({ text: `Regression ${index}`, at: null, fixedBy: index === 0 ? 'x'.repeat(245) : '', evidence: [] })) },
+        preferences: Array.from({ length: 11 }, (_, index) => ({ kind: 'directive', preference: `Preference ${index}`, quote: index === 10 ? 'q'.repeat(301) : `Quote ${index}`, at: null })),
+        outcome: { regressions: Array.from({ length: 11 }, (_, index) => ({ text: `Regression ${index}`, at: null, fixedBy: index === 10 ? 'x'.repeat(245) : '', evidence: [] })) },
       });
       const ask = async (prompt: string, stepModels: unknown) => {
         prompts.push(prompt);
@@ -332,16 +332,17 @@ describe('refresh task', () => {
       expect(review.summary.endsWith('…')).toBe(true);
       expect(review.milestones).toHaveLength(12);
       expect(review.preferences).toHaveLength(10);
-      expect(review.preferences[0].quote).toBe('q'.repeat(300));
+      expect(review.milestones.at(-1).text).toBe('Step 12');
+      expect(review.preferences[9].quote).toBe('q'.repeat(300));
       expect(review.outcome.regressions).toHaveLength(10);
-      expect(review.outcome.regressions[0].fixedBy).toHaveLength(200);
-      expect(review.outcome.regressions[0].fixedBy.endsWith('…')).toBe(true);
+      expect(review.outcome.regressions[9].fixedBy).toHaveLength(200);
+      expect(review.outcome.regressions[9].fixedBy.endsWith('…')).toBe(true);
       expect(review.coercedFields).toEqual([
         'milestones',
         'outcome.regressions',
-        'outcome.regressions[0].fixedBy',
+        'outcome.regressions[9].fixedBy',
         'preferences',
-        'preferences[0].quote',
+        'preferences[9].quote',
         'summary',
       ]);
       expect(ledger.story.narrative).toBe('One request is under way.');
@@ -351,6 +352,50 @@ describe('refresh task', () => {
       expect(STEP_MODELS.focus).toBe(STEP_MODELS.grouping);
       expect(STEP_MODELS.grouping).toEqual({ 'claude-code': { model: 'haiku' }, codex: { model: 'gpt-6-luna', reasoningEffort: 'low' }, gemini: { model: 'flash-lite' } });
       expect(STEP_MODELS.review).toEqual({ 'claude-code': { model: 'sonnet' }, codex: {}, gemini: { model: 'flash' } });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  /** A refresh over one new conversation whose review step answers with `answerReview(show, attempt)`. */
+  const runRefreshWithReviewAnswers = (dir: string, answerReview: (show: any, attempt: number) => unknown) => {
+    const database = fixtureDatabase();
+    const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 1, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
+    let reviewAttempts = 0;
+    return task.run(async (prompt: string) => {
+      if (prompt.includes('Do only section 1')) return JSON.stringify({ groups: [{ title: 'Release cards', conversations: [key('a')] }] });
+      if (prompt.includes('Do only section 2')) {
+        const file = /is in (.+?\.json)/.exec(prompt)?.[1];
+        const [show] = JSON.parse(prompt.split(`--- ${file} ---\n`)[1]);
+        return JSON.stringify({ reviews: [answerReview(show, reviewAttempts++)] });
+      }
+      if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
+      if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'One request is under way.', preferences: [] });
+      throw new Error(`Unexpected prompt: ${prompt.slice(-200)}`);
+    }, 'gemini');
+  };
+
+  it('a review missing reviewBasis is refused once and saved when the retry supplies it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-basis-'));
+    try {
+      const review = (show: any) => ({ groupId: show.groupId, state: 'in-progress', percent: 40, summary: 'Cards are being built.' });
+      const summary = await runRefreshWithReviewAnswers(dir, (show, attempt) => attempt === 0 ? review(show) : { ...review(show), reviewBasis: show.reviewBasis });
+      expect(summary).toBe('1 new conversations grouped, 1 requests reviewed, 1 requests placed, story written.');
+      const [saved] = Object.values(readLedger(dir).progress) as any[];
+      expect(saved.percent).toBe(40);
+      expect(saved.coercedFields).toBeUndefined();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a retry still missing reviewBasis fails the run naming the group and saves no review', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-basis-'));
+    try {
+      let groupId = '';
+      const run = runRefreshWithReviewAnswers(dir, show => {
+        groupId = show.groupId;
+        return { groupId: show.groupId, state: 'in-progress', percent: 40, summary: 'x'.repeat(292) };
+      });
+      const failure: Error = await run.then(() => { throw new Error('the run should have failed'); }, error => error);
+      expect(failure.message).toContain(`${groupId}: reviewBasis must be copied verbatim`);
+      expect(readLedger(dir).progress).toEqual({});
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
