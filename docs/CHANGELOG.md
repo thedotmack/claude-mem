@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [15.8.2] - 2026-11-02
+
+## Fixes
+- Work view: telemetry volume cuts. High-volume events (observer turns, work-state use, context injections, searches, skills) are now one daily rollup per install with a `count`; worker start/stop carry `restart_count`; failures are one event per type per day with `count`.
+- Observer: after a spent cmem.ai allowance, the gateway is probed once a day instead of on every resume.
+- Work view: fixed a runaway "opened" event; hosted viewer reports analytics with `viewer_host='hosted'`.
+- Work view: idle task cards no longer show a spinner (#5266).
+
+Includes #5266, #5269.
+
 ## [15.8.1] - 2026-11-01
 
 Repository cleanup. No changes to how claude-mem runs.
