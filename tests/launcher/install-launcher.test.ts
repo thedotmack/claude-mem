@@ -13,8 +13,10 @@ import {
   findExecutableOnPath,
   probeLauncherVersion,
   removeInstalledLauncher,
+  renameLauncherWithRetry,
   resolveLauncherBinaryPath,
   shellPathSetupMarkerComment,
+  type LauncherPlacementFileOperations,
   type LauncherCodesignRunner,
   type LauncherCompileRunner,
   type LauncherHostEnvironment,
@@ -1300,5 +1302,93 @@ describe.skipIf(!isPosixHost)('plugin/scripts/ensure-launcher.cjs under plain no
     const placedBinaryPath = path.join(binDirectory, 'claude-mem');
     expect(scriptRun.stderr).toContain(`claude-mem launcher installed at ${placedBinaryPath}`);
     expect(spawnSync(placedBinaryPath, ['--version'], { encoding: 'utf-8' }).stdout.trim()).toBe(String(LAUNCHER_PROTOCOL));
+  });
+});
+
+// #5248: antivirus holds the .exe the probe just ran for over 15 s. The rename
+// has to wait that out, and the cleanup in `finally` must not replace its error.
+describe('launcher placement under a Windows file lock (#5248)', () => {
+  function errorWithCode(code: string): NodeJS.ErrnoException {
+    return Object.assign(new Error(`${code}: simulated`), { code });
+  }
+
+  /** Fails the first `failuresBeforeSuccess` renames with `code`, recording renames and sleeps. */
+  function lockedFileOperations(code: string, failuresBeforeSuccess: number) {
+    const sleeps: number[] = [];
+    let renameCalls = 0;
+    const fileOperations: LauncherPlacementFileOperations = {
+      rename: () => {
+        renameCalls++;
+        if (renameCalls <= failuresBeforeSuccess) throw errorWithCode(code);
+      },
+      remove: () => {},
+      sleep: (milliseconds) => sleeps.push(milliseconds),
+    };
+    return { fileOperations, sleeps, renameCount: () => renameCalls };
+  }
+
+  const fromPath = 'C:\\bin\\.claude-mem-1.tmp.exe';
+  const toPath = 'C:\\bin\\claude-mem.exe';
+
+  for (const lockCode of ['EBUSY', 'EPERM', 'EACCES']) {
+    it(`waits out ${lockCode} and then succeeds`, () => {
+      const locked = lockedFileOperations(lockCode, 3);
+      renameLauncherWithRetry(fromPath, toPath, 'win32', locked.fileOperations);
+      expect(locked.renameCount()).toBe(4);
+      expect(locked.sleeps).toEqual([500, 500, 500]);
+    });
+  }
+
+  it('waits longer than the 15 s hold measured in #5248', () => {
+    const locked = lockedFileOperations('EBUSY', 31);
+    renameLauncherWithRetry(fromPath, toPath, 'win32', locked.fileOperations);
+    expect(locked.sleeps.reduce((total, milliseconds) => total + milliseconds, 0)).toBeGreaterThan(15_000);
+  });
+
+  it('names the lock and the directory when the wait runs out, and keeps the code', () => {
+    const locked = lockedFileOperations('EBUSY', Number.MAX_SAFE_INTEGER);
+    let thrownError: NodeJS.ErrnoException | undefined;
+    try {
+      renameLauncherWithRetry(fromPath, toPath, 'win32', locked.fileOperations);
+    } catch (error: unknown) {
+      thrownError = error as NodeJS.ErrnoException;
+    }
+    expect(thrownError?.code).toBe('EBUSY');
+    expect(thrownError?.message).toContain('still EBUSY after waiting 20 s');
+    expect(thrownError?.message).toContain('probably by antivirus');
+    expect(thrownError?.message).toContain('exclude C:\\bin from scanning');
+    expect(locked.renameCount()).toBe(41);
+    expect(locked.sleeps).toHaveLength(40);
+  });
+
+  it('throws another error code at once', () => {
+    const locked = lockedFileOperations('ENOSPC', 1);
+    expect(() => renameLauncherWithRetry(fromPath, toPath, 'win32', locked.fileOperations)).toThrow('ENOSPC');
+    expect(locked.renameCount()).toBe(1);
+    expect(locked.sleeps).toEqual([]);
+  });
+
+  it('does not retry off Windows', () => {
+    for (const platform of ['darwin', 'linux'] as const) {
+      const locked = lockedFileOperations('EBUSY', 1);
+      expect(() => renameLauncherWithRetry('/bin/from', '/bin/to', platform, locked.fileOperations)).toThrow('EBUSY');
+      expect(locked.renameCount()).toBe(1);
+      expect(locked.sleeps).toEqual([]);
+    }
+  });
+
+  it.skipIf(!isPosixHost)('reports the rename error when the cleanup throws too', () => {
+    const scratchHome = makeScratchHome();
+    const logger = recordingLogger();
+    const fileOperations: LauncherPlacementFileOperations = {
+      rename: () => { throw errorWithCode('EBUSY'); },
+      remove: () => { throw errorWithCode('EPERM'); },
+      sleep: () => {},
+    };
+
+    expect(() => ensureLauncherOnPath({
+      pluginRoot, resolveBunPath: () => '/fake/bun', logger, host: posixHost(scratchHome), runCompile: fakeCompile(), runCodesign: codesignNoop, invocationContext: 'npx-installer', placementFileOperations: fileOperations,
+    })).toThrow('EBUSY');
+    expect(logger.lines.some((line) => line.startsWith('warn: Could not remove') && line.includes('EPERM'))).toBe(true);
   });
 });
