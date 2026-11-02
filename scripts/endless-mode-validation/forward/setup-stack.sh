@@ -33,10 +33,12 @@ if [[ $1 == release ]]; then
     || { echo "release: the installer did not enable claude-mem@thedotmack in $CLAUDE_CONFIG_DIR/settings.json" >&2; exit 1; }
 fi
 if [[ $EMV_MODEL_PROFILE == openrouter-deepseek-flash ]]; then
-  # The observer on claude-mem's openrouter provider and the same model; the key is given to the worker in its
-  # environment at start (start-stack.sh), never written here. No quota fallback to a Claude plan.
-  observer_settings=$(jq -n --arg m "$EMV_OPENROUTER_MODEL" '{CLAUDE_MEM_PROVIDER: "openrouter", CLAUDE_MEM_OPENROUTER_MODEL: $m,
-    CLAUDE_MEM_OPENROUTER_BASE_URL: "", CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: "off"}')
+  # The observer on claude-mem's openrouter provider, the same model and the same pinned endpoint; the key is given to
+  # the worker in its environment at start (start-stack.sh), never written here. No quota fallback to a Claude plan.
+  # Not through the tee: a local base URL turns off the observer's openrouter.ai defaults (OpenRouterProvider.ts).
+  observer_settings=$(jq -n --arg m "$EMV_OPENROUTER_MODEL" --arg slug "$(emv_pin_provider)" '{CLAUDE_MEM_PROVIDER: "openrouter", CLAUDE_MEM_OPENROUTER_MODEL: $m,
+    CLAUDE_MEM_OPENROUTER_BASE_URL: "", CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: "off",
+    CLAUDE_MEM_OPENROUTER_EXTRA_BODY: ({provider: {order: [$slug], allow_fallbacks: false}} | tojson)}')
 else
   observer_settings='{"CLAUDE_MEM_PROVIDER": "claude"}'
 fi

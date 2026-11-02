@@ -34,9 +34,10 @@ the same turn once the OpenRouter key's spend reaches it.
 Runs the scripted session (`forward/prompts200.txt`) for `<turns>` turns in each configuration side by side, each
 in its own isolated stack, then writes `results/tables.md` (numbers only) and the judges' artifacts. Continue a run
 with the same `EMV_RUN_NAME` and `EMV_FIRST_TURN`. Settings are listed at the top of `forward/lib/env.sh` and
-`forward/run.sh`. `EMV_MODEL_PROFILE=openrouter-deepseek-flash` runs the agent and the observer on OpenRouter's
-`~deepseek/deepseek-flash-latest` (needs an OpenRouter key in `OPENROUTER_API_KEY`, or on macOS in the keychain
-entry `openrouter-endless-mode-tests`).
+`forward/run.sh`. `EMV_MODEL_PROFILE=openrouter-deepseek-flash` runs the agent and the observer on one exact model and
+one provider endpoint, named in the frozen price card (`prices/openrouter-*.card.json`); the tee sets the `provider`
+field on every agent request and stops the run if any answer comes from elsewhere. It needs an OpenRouter key in
+`OPENROUTER_API_KEY`, or on macOS in the keychain entry `openrouter-endless-mode-tests`.
 
 Hermes Agent and OpenClaw run with `EMV_AGENT=hermes` or `EMV_AGENT=openclaw` (OpenRouter profile only; configurations
 `none off timeline observation`; `EMV_HERMES_BIN`, `EMV_OPENCLAW_BIN`, `EMV_OPENCLAW_NODE_DIR` point at the binaries).

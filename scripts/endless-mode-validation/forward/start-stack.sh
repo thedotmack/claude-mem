@@ -12,7 +12,8 @@ for p in $EMV_WORKER_PORT $EMV_GATEWAY_PORT $EMV_TEE_ANTHROPIC_PORT $EMV_TEE_COD
 done
 
 refresh=(); [[ $EMV_MODEL_PROFILE == anthropic ]] && refresh=(--refresh-claude-token)
-nohup $EMV_BUN $EMV_FORWARD_DIR/tee-proxy.ts $EMV_TEE_ANTHROPIC_PORT $(emv_anthropic_upstream) $EMV_STACK/tee-anthropic $refresh > $L/tee-anthropic.log 2>&1 &
+pin=(); [[ $EMV_MODEL_PROFILE == openrouter-deepseek-flash ]] && pin=(--pin-provider=$(emv_pin_provider) --pin-model=$EMV_OPENROUTER_MODEL)
+nohup $EMV_BUN $EMV_FORWARD_DIR/tee-proxy.ts $EMV_TEE_ANTHROPIC_PORT $(emv_anthropic_upstream) $EMV_STACK/tee-anthropic $refresh $pin > $L/tee-anthropic.log 2>&1 &
 print $! >> $pids
 if [[ $EMV_AGENT == codex ]]; then
   nohup $EMV_BUN $EMV_FORWARD_DIR/tee-proxy.ts $EMV_TEE_CODEX_PORT https://chatgpt.com/backend-api/codex $EMV_STACK/tee-codex > $L/tee-codex.log 2>&1 &

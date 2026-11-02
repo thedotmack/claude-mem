@@ -2,7 +2,7 @@ import { afterAll, describe, expect, it } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { Database } from 'bun:sqlite';
 import { join, resolve } from 'node:path';
-import { readClaudeAccessToken, startTee } from '../../scripts/endless-mode-validation/forward/tee-proxy';
+import { PinVerifier, isInferencePath, providerMatchesPin, readClaudeAccessToken, startTee } from '../../scripts/endless-mode-validation/forward/tee-proxy';
 
 const REPO_ROOT = resolve(import.meta.dir, '../..');
 const HARNESS = join(REPO_ROOT, 'scripts/endless-mode-validation');
@@ -87,6 +87,118 @@ describe('forward tee-proxy', () => {
     // EMV_REAL_HOME points at a home with no keychain, so the macOS lookup finds nothing and the file is used.
     expect(readClaudeAccessToken({ EMV_REAL_HOME: join(scratch, 'no-home'), EMV_REAL_USER: 'nobody', EMV_REAL_CLAUDE_DIR: claudeDir })).toBe('from-file');
     expect(readClaudeAccessToken({ EMV_REAL_CLAUDE_DIR: join(scratch, 'missing') })).toBeNull();
+  });
+});
+
+describe('forward tee-proxy: endpoint pin', () => {
+  const PIN = { providerSlug: 'deepinfra/fp8', model: 'deepseek/deepseek-v4.1-flash-1017' };
+  const PIN_FIELD = { order: ['deepinfra/fp8'], allow_fallbacks: false };
+  const servedBy = (provider: string, model = PIN.model) => `data: ${JSON.stringify({ model, provider, choices: [] })}\n\ndata: [DONE]\n\n`;
+
+  function pinnedTee(name: string, answer: (request: Request, path: string) => Response, extra: Record<string, unknown> = {}) {
+    const received: { path: string; body: Record<string, unknown>; encoding: string | null }[] = [];
+    const upstream = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        const path = new URL(request.url).pathname;
+        const text = await request.text();
+        received.push({ path, encoding: request.headers.get('content-encoding'), body: text ? JSON.parse(text) : {} });
+        return answer(request, path);
+      },
+    });
+    const outDir = join(scratch, name);
+    const tee = startTee({ port: 0, upstream: `http://127.0.0.1:${upstream.port}`, outDir, pin: PIN, ...extra });
+    const post = (path: string, body: object) => fetch(`http://127.0.0.1:${tee.port}${path}`, { method: 'POST', body: JSON.stringify(body) });
+    return { tee, upstream, outDir, received, post, stop() { tee.stop(true); upstream.stop(true); } };
+  }
+
+  it('sets the pin on /v1/messages, /v1/chat/completions and /v1/responses, and leaves other paths alone', async () => {
+    const t = pinnedTee('pin-inject', () => new Response(servedBy('DeepInfra')));
+    for (const path of ['/v1/messages', '/v1/chat/completions', '/v1/responses']) {
+      await (await t.post(path, { model: PIN.model, provider: { order: ['other'] } })).text();
+    }
+    await (await t.post('/v1/messages/count_tokens', { model: 'anything' })).text();
+    expect(t.received.map(r => r.body.provider)).toEqual([PIN_FIELD, PIN_FIELD, PIN_FIELD, undefined]);
+    expect(JSON.parse(readFileSync(join(t.outDir, '0002-req.body'), 'utf8')).provider).toEqual(PIN_FIELD);
+    expect(existsSync(join(t.outDir, 'OFF-PIN'))).toBe(false);
+    t.stop();
+  });
+
+  it('decompresses a zstd body before editing it and drops the header', async () => {
+    const t = pinnedTee('pin-zstd', () => new Response(servedBy('DeepInfra')));
+    const compressed = Bun.zstdCompressSync(new TextEncoder().encode(JSON.stringify({ model: PIN.model, input: [] })));
+    await (await fetch(`http://127.0.0.1:${t.tee.port}/v1/responses`, { method: 'POST', headers: { 'content-encoding': 'zstd' }, body: compressed })).text();
+    expect(t.received[0]!.encoding).toBeNull();
+    expect(t.received[0]!.body.provider).toEqual(PIN_FIELD);
+    t.stop();
+  });
+
+  it('stops on a response from another provider: the marker is written and later requests never go upstream', async () => {
+    const t = pinnedTee('pin-offpin', () => new Response(servedBy('Wafer')));
+    await t.post('/v1/chat/completions', { model: PIN.model }).then(r => r.text()).catch(() => 'stream failed');
+    expect(readFileSync(join(t.outDir, 'OFF-PIN'), 'utf8')).toContain('served by provider Wafer');
+    const next = await t.post('/v1/chat/completions', { model: PIN.model });
+    expect(next.status).toBe(502);
+    expect(await next.text()).toContain('Wafer');
+    expect(t.received.length).toBe(1);
+    t.stop();
+  });
+
+  it('stops on a served model other than the pinned one, in the Anthropic stream shape too', async () => {
+    const t = pinnedTee('pin-offmodel', () => new Response(`event: message_start\ndata: ${JSON.stringify({ type: 'message_start', message: { model: 'other/model', provider: 'DeepInfra' } })}\n\n`));
+    await t.post('/v1/messages', { model: PIN.model }).then(r => r.text()).catch(() => 'stream failed');
+    expect(readFileSync(join(t.outDir, 'OFF-PIN'), 'utf8')).toContain('served by model other/model');
+    t.stop();
+  });
+
+  it('refuses a request for another model without sending it, so no full-price model can run', async () => {
+    const t = pinnedTee('pin-refuse-model', () => new Response(servedBy('DeepInfra')));
+    const refused = await t.post('/v1/messages', { model: 'claude-opus-5-5' });
+    expect(refused.status).toBe(502);
+    expect(t.received.length).toBe(0);
+    expect(readFileSync(join(t.outDir, 'OFF-PIN'), 'utf8')).toContain('claude-opus-5-5');
+    t.stop();
+  });
+
+  it('asks OpenRouter which provider served a /responses answer, which names none, and stops on a wrong one', async () => {
+    const answer = (provider: string) => (request: Request, path: string) => path === '/v1/generation'
+      ? Response.json({ data: { provider_name: provider } })
+      : new Response(`data: ${JSON.stringify({ type: 'response.completed', response: { id: 'gen-1', model: PIN.model, usage: {} } })}\n\n`);
+    for (const [name, provider, offPin] of [['pin-gen-ok', 'DeepInfra', false], ['pin-gen-off', 'Wafer', true]] as const) {
+      const t = pinnedTee(name, answer(provider), { generationLookupDelaysMs: [1] });
+      await (await t.post('/v1/responses', { model: PIN.model, input: [] })).text();
+      await Bun.sleep(50);
+      expect(existsSync(join(t.outDir, 'OFF-PIN'))).toBe(offPin);
+      expect(readFileSync(join(t.outDir, 'generation-lookups.tsv'), 'utf8')).toContain(provider);
+      t.stop();
+    }
+  });
+
+  it('retries a 429 with its waits, logs each attempt, and passes it on when they run out', async () => {
+    let calls = 0;
+    const t = pinnedTee('pin-429', () => (++calls <= 2 ? new Response('slow down', { status: 429 }) : new Response(servedBy('DeepInfra'))), { retry429DelaysMs: [1, 1] });
+    expect((await t.post('/v1/chat/completions', { model: PIN.model })).status).toBe(200);
+    expect(readFileSync(join(t.outDir, '429s.tsv'), 'utf8').trim().split('\n').length).toBe(2);
+    t.stop();
+    const always = pinnedTee('pin-429-out', () => new Response('slow down', { status: 429 }), { retry429DelaysMs: [1] });
+    expect((await always.post('/v1/chat/completions', { model: PIN.model })).status).toBe(429);
+    expect(always.received.length).toBe(2);
+    expect(readFileSync(join(always.outDir, '429s.tsv'), 'utf8')).toContain('gave up');
+    always.stop();
+  });
+
+  it('reads a provider split across chunks and a whole-JSON answer, and matches slugs to provider names', () => {
+    const stream = new PinVerifier(PIN);
+    const text = servedBy('Wafer');
+    stream.feed(text.slice(0, 20)); stream.feed(text.slice(20));
+    expect(stream.violation).toContain('Wafer');
+    const whole = new PinVerifier(PIN);
+    whole.feed(JSON.stringify({ model: PIN.model, provider: 'DeepInfra' })); whole.finish();
+    expect(whole.violation).toBeNull();
+    expect(whole.needsGenerationLookup).toBe(false);
+    expect(providerMatchesPin('InferenceNet', { ...PIN, providerSlug: 'inference-net/fp8' })).toBe(true);
+    expect(providerMatchesPin('DeepInfra', { ...PIN, providerSlug: 'deepinfra/fp8/flex' })).toBe(true);
+    expect(isInferencePath('/v1/messages/count_tokens')).toBe(false);
   });
 });
 
@@ -221,6 +333,7 @@ function zsh(script: string, env: Record<string, string>) {
   return { code: run.exitCode, stdout: run.stdout.toString(), stderr: run.stderr.toString() };
 }
 const ENV_SH = join(HARNESS, 'forward/lib/env.sh');
+const PIN_ENV = { EMV_PIN_PROVIDER: 'deepinfra/fp8' };
 
 describe('forward model profiles: discount models only', () => {
   it('refuses a run with no profile, the anthropic profile and Codex, with a clear message', () => {
@@ -230,10 +343,39 @@ describe('forward model profiles: discount models only', () => {
     const anthropic = zsh(`source '${ENV_SH}' && emv_check_profile`, { EMV_MODEL_PROFILE: 'anthropic' });
     expect(anthropic.code).toBe(4);
     expect(anthropic.stderr).toContain('refused: EMV_MODEL_PROFILE=anthropic runs Claude models');
-    const codex = zsh(`source '${ENV_SH}' && emv_check_profile`, { EMV_MODEL_PROFILE: 'openrouter-deepseek-flash', EMV_AGENT: 'codex', OPENROUTER_API_KEY: 'sk-or-test' });
+    const codex = zsh(`source '${ENV_SH}' && emv_check_profile`, { EMV_MODEL_PROFILE: 'openrouter-deepseek-flash', EMV_AGENT: 'codex', OPENROUTER_API_KEY: 'sk-or-test', ...PIN_ENV });
     expect(codex.code).toBe(4);
     expect(zsh(`source '${ENV_SH}' && emv_check_profile`, { EMV_MODEL_PROFILE: 'anthropic', EMV_ALLOW_FULL_PRICE_MODELS: '1' }).code).toBe(0);
-    expect(zsh(`source '${ENV_SH}' && emv_check_profile`, { EMV_MODEL_PROFILE: 'openrouter-deepseek-flash', OPENROUTER_API_KEY: 'sk-or-test' }).code).toBe(0);
+    expect(zsh(`source '${ENV_SH}' && emv_check_profile`, { EMV_MODEL_PROFILE: 'openrouter-deepseek-flash', OPENROUTER_API_KEY: 'sk-or-test', ...PIN_ENV }).code).toBe(0);
+  });
+
+  it('refuses a key found only in claude-mem settings.json', () => {
+    const home = join(scratch, 'settings-only-home'), memDir = join(home, '.claude-mem');
+    mkdirSync(memDir, { recursive: true });
+    writeFileSync(join(memDir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-or-only-in-settings' }));
+    const refused = zsh(`source '${ENV_SH}' && emv_read_openrouter_key`, {
+      EMV_REAL_HOME: home, EMV_REAL_CLAUDE_MEM_DIR: memDir, EMV_REAL_USER: 'nobody', EMV_OPENROUTER_KEYCHAIN_SERVICE: 'emv-test-no-such-entry',
+    });
+    expect(refused.code).toBe(3);
+    expect(refused.stderr).toContain('no OpenRouter key');
+    expect(refused.stderr + refused.stdout).not.toContain('sk-or-only-in-settings');
+  });
+
+  it('refuses the OpenRouter profile when no endpoint is pinned', () => {
+    const r = zsh(`source '${ENV_SH}' && emv_check_profile`, { EMV_MODEL_PROFILE: 'openrouter-deepseek-flash', OPENROUTER_API_KEY: 'sk-or-test', EMV_CARD: join(scratch, 'no-such-card.json') });
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain('no pinned endpoint');
+  });
+
+  it('stops a session before its next turn once the tee has written OFF-PIN', () => {
+    const runDir = join(scratch, 'off-pin-run');
+    const tee = join(runDir, 'stacks', 'none', 'tee-anthropic');
+    mkdirSync(tee, { recursive: true }); mkdirSync(join(runDir, 'stacks', 'none', 'logs'), { recursive: true });
+    writeFileSync(join(tee, 'OFF-PIN'), '0001\tserved by provider Wafer\n');
+    const r = zsh(`zsh '${join(HARNESS, 'forward/session.sh')}' none 1 1`, { EMV_RUN_DIR: runDir, EMV_MODEL_PROFILE: 'openrouter-deepseek-flash', OPENROUTER_API_KEY: 'sk-or-test', ...PIN_ENV });
+    expect(r.code).toBe(5);
+    expect(r.stdout).toContain('STOP: off-pin response before turn 1');
+    expect(readFileSync(join(runDir, 'stacks', 'none', 'logs', 'session.log'), 'utf8')).not.toContain('turn 1 start');
   });
 
   it('refuses before an agent turn starts, so no turn can run on Claude', () => {
@@ -267,7 +409,7 @@ echo '{"CLAUDE_MEM_PROVIDER":"claude","CLAUDE_MEM_CLAUDE_AUTH_METHOD":"subscript
     chmodSync(join(bin, 'npm'), 0o755); chmodSync(join(bin, 'npx'), 0o755);
     const runDir = join(scratch, 'release-run');
     const setup = zsh(`zsh '${join(HARNESS, 'forward/setup-stack.sh')}' release`, {
-      PATH: `${bin}:${process.env.PATH}`, EMV_RUN_DIR: runDir, EMV_MODEL_PROFILE: 'openrouter-deepseek-flash', OPENROUTER_API_KEY: 'sk-or-test-key',
+      PATH: `${bin}:${process.env.PATH}`, EMV_RUN_DIR: runDir, EMV_MODEL_PROFILE: 'openrouter-deepseek-flash', OPENROUTER_API_KEY: 'sk-or-test-key', ...PIN_ENV,
     });
     expect(setup.stderr).toBe('');
     expect(setup.code).toBe(0);
@@ -277,11 +419,12 @@ echo '{"CLAUDE_MEM_PROVIDER":"claude","CLAUDE_MEM_CLAUDE_AUTH_METHOD":"subscript
     const claudeSettings = JSON.parse(readFileSync(join(stack, 'claude-config', 'settings.json'), 'utf8'));
     expect(claudeSettings.enabledPlugins['claude-mem@thedotmack']).toBe(true);
     expect(claudeSettings.env.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:38142');  // its tee, no gateway
-    expect(claudeSettings.env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('~deepseek/deepseek-flash-latest');
+    expect(claudeSettings.env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('deepseek/deepseek-v4.1-flash-1017');
     const memSettings = JSON.parse(readFileSync(join(stack, 'data', 'settings.json'), 'utf8'));
     expect(memSettings.CLAUDE_MEM_CLAUDE_AUTH_METHOD).toBe('subscription');  // the installer's own setting is kept
     expect(memSettings.CLAUDE_MEM_PROVIDER).toBe('openrouter');  // the observer matches the other claude-mem configs
-    expect(memSettings.CLAUDE_MEM_OPENROUTER_MODEL).toBe('~deepseek/deepseek-flash-latest');
+    expect(memSettings.CLAUDE_MEM_OPENROUTER_MODEL).toBe('deepseek/deepseek-v4.1-flash-1017');
+    expect(JSON.parse(memSettings.CLAUDE_MEM_OPENROUTER_EXTRA_BODY)).toEqual({ provider: { order: ['deepinfra/fp8'], allow_fallbacks: false } });
     expect(memSettings.CLAUDE_MEM_WORKER_PORT).toBe('38140');
     expect(Object.keys(memSettings).filter(k => k.startsWith('CLAUDE_MEM_WIRE_GATEWAY'))).toEqual([]);
     for (const file of [join(stack, 'data', 'settings.json'), join(stack, 'claude-config', 'settings.json')]) {

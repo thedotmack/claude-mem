@@ -9,7 +9,7 @@
 #   EMV_BUDGET_USD  openrouter-deepseek-flash only: stop every configuration after the slowest one's current turn once the key's total
 #                   OpenRouter spend reaches this many USD (budget-watch.sh) [unset: no stop]
 #   EMV_PRICES      prices file for the tables [by profile: prices/anthropic-claude-opus-5-5.json, prices/openai-gpt-6.1-sol.json,
-#                   or OpenRouter's live list for openrouter-deepseek-flash]
+#                   or the frozen card EMV_CARD for openrouter-deepseek-flash]
 # Output: $EMV_RUN_DIR/results/{<config>.json, tables.md, real-configs-before.txt, real-configs-after.txt}
 #         $EMV_RUN_DIR/artifacts/<config>/{turns.jsonl, snapshots/}  (for the blind judges; contains the agent's replies)
 source ${0:A:h}/lib/env.sh || exit
@@ -37,7 +37,7 @@ python3 $EMV_FORWARD_DIR/check-prompts.py $EMV_PROMPTS >&2 || { echo "$EMV_PROMP
 [[ ! -d $EMV_RUN_DIR/stacks || $first != 1 ]] || { echo "$EMV_RUN_DIR already has stacks; pick a new EMV_RUN_NAME, or set EMV_FIRST_TURN to continue" >&2; exit 2; }
 (( $(emv_free_gb) >= EMV_MIN_FREE_GB )) || { echo "under $EMV_MIN_FREE_GB GB free" >&2; exit 3; }
 
-say "run $EMV_RUN_NAME: turns $first-$turns, configs ${configs[*]}, agent $EMV_AGENT, profile $EMV_MODEL_PROFILE, model $([[ $EMV_AGENT == codex ]] && echo $EMV_CODEX_MODEL || emv_claude_model), commit $(git -C $EMV_REPO_ROOT rev-parse --short HEAD)"
+say "run $EMV_RUN_NAME: turns $first-$turns, configs ${configs[*]}, agent $EMV_AGENT, profile $EMV_MODEL_PROFILE, model $([[ $EMV_AGENT == codex && $EMV_MODEL_PROFILE != openrouter-deepseek-flash ]] && echo $EMV_CODEX_MODEL || emv_claude_model), pin $([[ $EMV_MODEL_PROFILE == openrouter-deepseek-flash ]] && emv_pin_provider || echo none), commit $(git -C $EMV_REPO_ROOT rev-parse --short HEAD)"
 zsh $EMV_FORWARD_DIR/lib/real-configs.sh snapshot $R/real-configs-before-$first.txt
 
 stop=$EMV_RUN_DIR/logs/stop-$first; rm -f $stop
@@ -72,6 +72,9 @@ for c in $configs; do
   fi
   say "$c: turns $from-$turns"
   zsh $EMV_FORWARD_DIR/session.sh $c $from $turns > $EMV_RUN_DIR/stacks/$c/logs/session-$from-$turns.out 2>&1 & session_pids+=($!)
+  # Staggered starts. Reason: pinning removes provider fallback, so sessions that fire their first requests together on
+  # one endpoint are the likeliest source of 429s. 20 s spreads three configurations across about one rate-limit minute.
+  sleep ${EMV_STACK_STAGGER_SECONDS:-20}
 done
 failed=0; for p in $session_pids; do wait $p || (( failed++ )); done
 say "sessions done ($failed failed)"
@@ -83,8 +86,7 @@ configs_ok=${pipestatus[1]}
 
 # Prices, stats, tables.
 if [[ -n $EMV_PRICES ]]; then prices=$EMV_PRICES
-elif [[ $EMV_MODEL_PROFILE == openrouter-deepseek-flash ]]; then
-  prices=$R/prices-openrouter.json; python3 $EMV_FORWARD_DIR/../fetch-openrouter-prices.py "$EMV_OPENROUTER_MODEL" $prices | tee -a $L || exit 1
+elif [[ $EMV_MODEL_PROFILE == openrouter-deepseek-flash ]]; then prices=$EMV_CARD
 elif [[ $EMV_AGENT == codex ]]; then prices=$EMV_FORWARD_DIR/../prices/openai-gpt-6.1-sol.json
 else prices=$EMV_FORWARD_DIR/../prices/anthropic-claude-opus-5-5.json
   [[ $EMV_CLAUDE_MODEL == claude-opus-5-5 ]] || echo "warning: prices are for claude-opus-5-5; set EMV_PRICES for $EMV_CLAUDE_MODEL" | tee -a $L

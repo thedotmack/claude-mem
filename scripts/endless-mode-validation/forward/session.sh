@@ -13,7 +13,15 @@ first=$2; last=$3; log=$EMV_STACK/logs/session.log
 prompts=("${(@f)$(<$EMV_PROMPTS)}")
 (( last <= ${#prompts} )) || { echo "only ${#prompts} prompts in $EMV_PROMPTS" >&2; exit 2; }
 [[ $first == 1 ]] && $EMV_FORWARD_DIR/seed-project.sh $EMV_STACK/proj
+# A response from outside the pin (tee-proxy.ts wrote OFF-PIN) ends the run: its numbers would not be comparable.
+off_pin_stop() {
+  local marker
+  for marker in $EMV_STACK/tee-*/OFF-PIN(N); do
+    echo "$(date -u +%FT%TZ) STOP: off-pin response before turn $1: $(<$marker)" | tee -a $log; exit 5
+  done
+}
 for i in {$first..$last}; do
+  off_pin_stop $i
   free_gb=$(emv_free_gb)
   if (( free_gb < EMV_MIN_FREE_GB )); then echo "$(date -u +%FT%TZ) STOP: ${free_gb} GB free before turn $i" | tee -a $log; exit 3; fi
   if [[ -n $EMV_HEADER_EDIT_TURN && $i == $EMV_HEADER_EDIT_TURN ]]; then
@@ -43,4 +51,5 @@ for i in {$first..$last}; do
     sleep 5; (( waited += 5 ))
   done
   echo "$(date -u +%FT%TZ) turn $i done; observer wait ${waited}s; status $st" | tee -a $log
+  off_pin_stop $((i + 1))
 done
