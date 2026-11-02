@@ -525,6 +525,23 @@ describe('reasoning budget exhaustion', () => {
     expect(isUnknownReasoningParameter('Reasoning is mandatory for this endpoint and cannot be disabled.')).toBe(false);
   });
 
+  it('treats every wording of the mandatory-reasoning refusal the same way', () => {
+    for (const wording of [
+      'This endpoint cannot disable reasoning.',
+      'Reasoning is required for this model.',
+      'This model requires reasoning.',
+      'Reasoning effort does not support none.',
+    ]) {
+      expect(isReasoningDisabledRejection(wording)).toBe(true);
+      expect(isUnknownReasoningParameter(wording)).toBe(false);
+    }
+  });
+
+  it('does not take a refusal about another field for the reasoning refusal', () => {
+    expect(isReasoningDisabledRejection('Streaming cannot be disabled for this endpoint.')).toBe(false);
+    expect(isReasoningDisabledRejection('The messages field is mandatory.')).toBe(false);
+  });
+
   it('retries an OpenRouter 400 that says reasoning cannot be disabled, once, without the field', async () => {
     const seen: Body[] = [];
     const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {

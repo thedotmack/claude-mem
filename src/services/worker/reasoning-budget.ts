@@ -150,7 +150,7 @@ export function isUnknownReasoningParameter(text: string): boolean {
  */
 export function isReasoningDisabledRejection(text: string): boolean {
   const lower = text.toLowerCase();
-  return lower.includes('reasoning is mandatory') || lower.includes('cannot be disabled');
+  return lower.includes('reasoning') && isMandatoryReasoningRejection(lower);
 }
 
 export function reasoningBudgetRetryMessage(label: string): string {
