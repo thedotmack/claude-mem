@@ -10,7 +10,7 @@ import { MARKETPLACE_ROOT, DATA_DIR, resolveDataDir } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { isWorkerAutostartDisabled } from "./worker-autostart.js";
 import { viewerBaseUrl } from "./viewer-url.js";
-import { formatHostForUrl } from "./worker-url.js";
+import { formatHostForUrl, normalizeWorkerBaseUrl } from "./worker-url.js";
 import { WorkerRequestTimeoutError } from "./worker-request-timeout-error.js";
 import { readOwnedWorkerPidInfo } from "../supervisor/index.js";
 import { emitDiagnostic } from "./hook-io.js";
@@ -479,6 +479,8 @@ function boundedByBudget(stepTimeoutMs: number, deadlineAt: number | null): numb
 export { formatHostForUrl } from "./worker-url.js";
 
 export function buildWorkerUrl(apiPath: string): string {
+  const workerBaseUrl = normalizeWorkerBaseUrl(getWorkerSettings().CLAUDE_MEM_WORKER_URL);
+  if (workerBaseUrl) return `${workerBaseUrl}${apiPath.startsWith('/') ? apiPath : `/${apiPath}`}`;
   return `http://${formatHostForUrl(getWorkerHost())}:${getWorkerPort()}${apiPath}`;
 }
 

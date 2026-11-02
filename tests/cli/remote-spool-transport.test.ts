@@ -74,7 +74,7 @@ afterEach(async () => {
   rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
 });
 
-async function child(action: 'observation' | 'stop' | 'flush' | 'poison' | 'post_run_command' | 'post_cascade_response', token: string = 'test-ingest-token') {
+async function child(action: 'observation' | 'stop' | 'flush' | 'poison' | 'post_run_command' | 'post_cascade_response', token: string = 'test-ingest-token', workerUrl = '', transport = 'http') {
   const source = `
     const { spyOn } = await import('bun:test');
     const childProcess = await import('child_process');
@@ -113,7 +113,8 @@ async function child(action: 'observation' | 'stop' | 'flush' | 'poison' | 'post
     cwd: root,
     env: { ...process.env, CLAUDE_MEM_DATA_DIR: join(directory, 'client'),
       CLAUDE_MEM_WORKER_HOST: '127.0.0.1', CLAUDE_MEM_WORKER_PORT: String(port),
-      CLAUDE_MEM_WORKER_AUTOSTART: 'false', CLAUDE_MEM_HOOK_SPOOL_TRANSPORT: 'http',
+      CLAUDE_MEM_WORKER_URL: workerUrl,
+      CLAUDE_MEM_WORKER_AUTOSTART: 'false', CLAUDE_MEM_HOOK_SPOOL_TRANSPORT: transport,
       CLAUDE_MEM_WORKER_INGEST_TOKEN: token, CLAUDE_MEM_RUNTIME: 'worker', CLAUDE_MEM_TELEMETRY: '0' },
     stdout: 'pipe', stderr: 'pipe',
   });
@@ -148,6 +149,18 @@ describe('remote hook spool forwarding', () => {
     expect(spool.entries()).toHaveLength(1);
     expect(spool.entries()[0].payload).toMatchObject({ toolUseId: 'client-tool-1', toolResponse: 'client routing rule' });
     expect(requestPaths).toEqual(['/api/spool/ingest']);
+  });
+
+  it('uses an explicit loopback worker URL for HTTP spool delivery in auto mode', async () => {
+    expect((await child('observation', 'test-ingest-token', `http://127.0.0.1:${port}`, 'auto')).entries).toEqual([]);
+    expect(spool.entries()).toHaveLength(1);
+    expect(requestPaths).toEqual(['/api/spool/ingest']);
+  });
+
+  it('keeps the event queued for an insecure worker URL instead of falling back to host and port', async () => {
+    const result = await child('observation', 'test-ingest-token', 'http://worker.example:37777', 'auto');
+    expect(result.entries).toHaveLength(1);
+    expect(requestPaths).toEqual([]);
   });
 
   it('coalesces Stop events without stranding the summary or session end', async () => {
