@@ -247,6 +247,7 @@ text after`;
       'sk-short',                                  // openai_key too short
       'AKIA12345',                                 // aws_access_key too short
       'ghp_short',                                 // github_pat too short
+      'whsec_xxx',                                 // stripe_key webhook placeholder under the 32-char floor
       'eyJhbGciOiJIUzI1NiJ9 some text',            // jwt missing 2nd/3rd segment
       '-----BEGIN PUBLIC KEY-----\nfoo\n-----END PUBLIC KEY-----',  // PEM but not PRIVATE
     ];
