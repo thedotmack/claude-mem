@@ -25,7 +25,7 @@ export function sharedFocusPageFrom(snapshot: WorkViewSnapshot, focusAreaId: str
 export interface FocusSharePublisherOptions {
   shares: Pick<FocusShares, 'connected' | 'list' | 'publish' | 'stop'>;
   /** The work view as My Work would read it. */
-  snapshot: () => WorkViewSnapshot;
+  snapshot: () => WorkViewSnapshot | Promise<WorkViewSnapshot>;
   everyMs?: number;
   now?: () => number;
 }
@@ -36,6 +36,7 @@ export class FocusSharePublisher {
   /** Why the last publish of an area failed, by area id. */
   private readonly errors = new Map<string, string>();
   private readonly now: () => number;
+  private readonly ownerRequestsDone = new Map<string, Promise<unknown>>();
 
   constructor(private readonly options: FocusSharePublisherOptions) {
     this.now = options.now ?? Date.now;
@@ -58,17 +59,38 @@ export class FocusSharePublisher {
   }
 
   /** Shares an area (first call) or publishes its page now, built from the current work view. */
-  async publishArea(focusAreaId: string): Promise<{ entry: FocusShareEntry; sent: boolean }> {
-    const page = sharedFocusPageFrom(this.readSnapshot(), focusAreaId, this.now());
-    if (!page) throw new FocusShareError(NOT_SHAREABLE, 409);
-    try {
-      const published = await this.options.shares.publish(focusAreaId, page);
-      this.errors.delete(focusAreaId);
-      return published;
-    } catch (error) {
-      this.remember(focusAreaId, error);
-      throw error;
-    }
+  publishArea(focusAreaId: string): Promise<{ entry: FocusShareEntry; sent: boolean }> {
+    return this.inOwnerOrder(focusAreaId, async () => {
+      const page = sharedFocusPageFrom(await this.readSnapshot(), focusAreaId, this.now());
+      if (!page) throw new FocusShareError(NOT_SHAREABLE, 409);
+      try {
+        const published = await this.options.shares.publish(focusAreaId, page);
+        this.errors.delete(focusAreaId);
+        return published;
+      } catch (error) {
+        this.remember(focusAreaId, error);
+        throw error;
+      }
+    });
+  }
+
+  /** Stops a share after any share the owner asked for before it. */
+  stopArea(focusAreaId: string): Promise<void> {
+    return this.inOwnerOrder(focusAreaId, () => this.options.shares.stop(focusAreaId));
+  }
+
+  /**
+   * A share reads the work view before it publishes, and a stop sent during that read must not finish first: the
+   * share would then create a new public link after the owner was told sharing had stopped. Per area, so stopping one
+   * link never waits on another area's share.
+   */
+  private inOwnerOrder<T>(focusAreaId: string, request: () => Promise<T>): Promise<T> {
+    const result = (this.ownerRequestsDone.get(focusAreaId) ?? Promise.resolve()).then(request);
+    const settled = result.catch(() => undefined).finally(() => {
+      if (this.ownerRequestsDone.get(focusAreaId) === settled) this.ownerRequestsDone.delete(focusAreaId);
+    });
+    this.ownerRequestsDone.set(focusAreaId, settled);
+    return result;
   }
 
   /** One round over every shared area. A round already running is joined, not doubled. */
@@ -83,7 +105,7 @@ export class FocusSharePublisher {
     if (!ids.length || !shares.connected()) return;
     let snapshot: WorkViewSnapshot;
     try {
-      snapshot = this.readSnapshot();
+      snapshot = await this.readSnapshot();
     } catch {
       for (const id of ids) this.errors.set(id, LOCAL_WORK_UNAVAILABLE);
       return;
@@ -104,7 +126,7 @@ export class FocusSharePublisher {
         // Earlier areas' updates may have taken a while, so the owner could have undone a merge meanwhile: decide
         // again on a fresh read before ending the link for everyone.
         if (areas.some(area => area.focusAreaId === id)) {
-          if (!this.stillUnshareable(id)) continue;
+          if (!(await this.stillUnshareable(id))) continue;
           try { await shares.stop(id); this.errors.delete(id); } catch (error) { this.remember(id, error); }
         } else {
           this.errors.set(id, `${NOT_SHAREABLE} The page shows what it had before.`);
@@ -122,9 +144,9 @@ export class FocusSharePublisher {
   }
 
   /** True only when a fresh read still lists the area and it still cannot be shared. */
-  private stillUnshareable(focusAreaId: string): boolean {
+  private async stillUnshareable(focusAreaId: string): Promise<boolean> {
     try {
-      const snapshot = this.readSnapshot();
+      const snapshot = await this.readSnapshot();
       const listed = Array.isArray(snapshot.focusAreas) && (snapshot.focusAreas as Array<{ focusAreaId?: unknown }>).some(area => area.focusAreaId === focusAreaId);
       return listed && sharedFocusPageFrom(snapshot, focusAreaId, this.now()) === null;
     } catch {
@@ -132,8 +154,8 @@ export class FocusSharePublisher {
     }
   }
 
-  private readSnapshot(): WorkViewSnapshot {
-    const snapshot = this.options.snapshot();
+  private async readSnapshot(): Promise<WorkViewSnapshot> {
+    const snapshot = await this.options.snapshot();
     if (snapshot.source?.connected !== true) throw new FocusShareError(LOCAL_WORK_UNAVAILABLE, 503);
     return snapshot;
   }

@@ -74,24 +74,30 @@ afterEach(async () => {
   rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
 });
 
-async function child(action: 'observation' | 'stop' | 'flush' | 'poison' | 'post_run_command' | 'post_cascade_response', token: string = 'test-ingest-token') {
+async function child(action: 'observation' | 'nudged_observation' | 'stop' | 'flush' | 'poison' | 'post_run_command' | 'post_cascade_response', token: string = 'test-ingest-token', workerUrl = '', transport = 'http', hostAndPortFallback: string = String(port)) {
   const source = `
     const { spyOn } = await import('bun:test');
     const childProcess = await import('child_process');
     const { EventEmitter } = await import('events');
-    spyOn(childProcess, 'spawn').mockImplementation(() => {
+    const spawnedArguments = [];
+    spyOn(childProcess, 'spawn').mockImplementation((_command, args) => {
+      spawnedArguments.push(args);
       const child = new EventEmitter();
       child.unref = () => child;
       return child;
     });
-    const { uploadRemoteHookSpool, settleHookSpoolNudges } = await import(${JSON.stringify(moduleUrl('src/cli/spool-hook-event.ts'))});
+    const { uploadRemoteHookSpool, nudgeWorkerToDrainHookSpool, settleHookSpoolNudges } = await import(${JSON.stringify(moduleUrl('src/cli/spool-hook-event.ts'))});
     const { HookSpool } = await import(${JSON.stringify(moduleUrl('src/shared/hook-spool.ts'))});
     const common = { contentSessionId: 'remote-client', platformSource: 'codex', cwd: '/project' };
     const started = performance.now();
     if (${JSON.stringify(action)} === 'poison') {
       new HookSpool().enqueue('observation', { ...common, toolName: 'exec_command', toolInput: {}, toolResponse: 'rejected capture', toolUseId: 'x'.repeat(2049) });
     }
-    if (${JSON.stringify(action)} === 'observation' || ${JSON.stringify(action)} === 'poison') {
+    if (${JSON.stringify(action)} === 'nudged_observation') {
+      new HookSpool().enqueue('observation', { ...common, toolName: 'exec_command', toolInput: { cmd: 'read fixture' }, toolResponse: 'client routing rule', toolUseId: 'client-tool-1' });
+      await nudgeWorkerToDrainHookSpool();
+      await settleHookSpoolNudges();
+    } else if (${JSON.stringify(action)} === 'observation' || ${JSON.stringify(action)} === 'poison') {
       new HookSpool().enqueue('observation', { ...common, toolName: 'exec_command', toolInput: { cmd: 'read fixture' }, toolResponse: 'client routing rule', toolUseId: 'client-tool-1' });
     } else if (${JSON.stringify(action)} === 'stop') {
       new HookSpool().enqueue('advisor_calls', { ...common, calls: [{ toolUseId: 'advisor-1', advice: 'keep the queued event', occurredAtEpoch: Date.now() }] });
@@ -107,13 +113,15 @@ async function child(action: 'observation' | 'stop' | 'flush' | 'poison' | 'post
       await settleHookSpoolNudges();
     }
     await uploadRemoteHookSpool();
-    console.log(JSON.stringify({ elapsedMs: performance.now() - started, entries: new HookSpool().entries() }));
+    console.log(JSON.stringify({ elapsedMs: performance.now() - started, entries: new HookSpool().entries(), spawnedArguments }));
   `;
   const proc = Bun.spawn([process.execPath, '-e', source], {
     cwd: root,
     env: { ...process.env, CLAUDE_MEM_DATA_DIR: join(directory, 'client'),
-      CLAUDE_MEM_WORKER_HOST: '127.0.0.1', CLAUDE_MEM_WORKER_PORT: String(port),
-      CLAUDE_MEM_WORKER_AUTOSTART: 'false', CLAUDE_MEM_HOOK_SPOOL_TRANSPORT: 'http',
+      CLAUDE_MEM_WORKER_HOST: '127.0.0.1', CLAUDE_MEM_WORKER_PORT: hostAndPortFallback,
+      CLAUDE_PLUGIN_ROOT: join(root, 'plugin'),
+      CLAUDE_MEM_WORKER_URL: workerUrl,
+      CLAUDE_MEM_WORKER_AUTOSTART: 'false', CLAUDE_MEM_HOOK_SPOOL_TRANSPORT: transport,
       CLAUDE_MEM_WORKER_INGEST_TOKEN: token, CLAUDE_MEM_RUNTIME: 'worker', CLAUDE_MEM_TELEMETRY: '0' },
     stdout: 'pipe', stderr: 'pipe',
   });
@@ -121,7 +129,7 @@ async function child(action: 'observation' | 'stop' | 'flush' | 'poison' | 'post
     new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited,
   ]);
   if (exit !== 0) throw new Error(`client exited ${exit}: ${stderr}`);
-  return JSON.parse(stdout.trim().split('\n').pop()!) as { elapsedMs: number; entries: unknown[] };
+  return JSON.parse(stdout.trim().split('\n').pop()!) as { elapsedMs: number; entries: unknown[]; spawnedArguments: string[][] };
 }
 
 describe('remote hook spool forwarding', () => {
@@ -148,6 +156,27 @@ describe('remote hook spool forwarding', () => {
     expect(spool.entries()).toHaveLength(1);
     expect(spool.entries()[0].payload).toMatchObject({ toolUseId: 'client-tool-1', toolResponse: 'client routing rule' });
     expect(requestPaths).toEqual(['/api/spool/ingest']);
+  });
+
+  it('schedules the uploader for a worker URL in auto mode and delivers to the URL, not host and port', async () => {
+    // Port 1 is the host-and-port fallback: nothing listens there, so a client that ignores the URL fails to deliver.
+    const result = await child('nudged_observation', 'test-ingest-token', `http://127.0.0.1:${port}`, 'auto', '1');
+    expect(result.spawnedArguments).toHaveLength(1);
+    expect(result.spawnedArguments[0].at(-1)).toBe('upload-spool');
+    expect(result.entries).toEqual([]);
+    expect(spool.entries()).toHaveLength(1);
+    expect(requestPaths).toEqual(['/api/spool/ingest']);
+  });
+
+  it('does not schedule the uploader in auto mode for a loopback worker with no URL', async () => {
+    const result = await child('nudged_observation', 'test-ingest-token', '', 'auto');
+    expect(result.spawnedArguments).toEqual([]);
+  });
+
+  it('keeps the event queued for an insecure worker URL instead of falling back to host and port', async () => {
+    const result = await child('observation', 'test-ingest-token', 'http://worker.example:37777', 'auto');
+    expect(result.entries).toHaveLength(1);
+    expect(requestPaths).toEqual([]);
   });
 
   it('coalesces Stop events without stranding the summary or session end', async () => {

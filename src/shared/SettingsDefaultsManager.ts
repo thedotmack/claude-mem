@@ -215,6 +215,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CONTEXT_PROJECTS: string;
   CLAUDE_MEM_WORKER_PORT: string;
   CLAUDE_MEM_WORKER_HOST: string;
+  CLAUDE_MEM_WORKER_URL: string;
   CLAUDE_MEM_WORKER_INGEST_TOKEN: string;
   CLAUDE_MEM_WORKER_INGEST_MAX_BYTES: string;
   CLAUDE_MEM_HOOK_SPOOL_TRANSPORT: string;
@@ -397,6 +398,9 @@ export interface SettingsDefaults {
   CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH: string;
   CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: string;
   CLAUDE_MEM_WORK_VIEW_COPY_MODEL: string;
+  CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL: string;
+  CLAUDE_MEM_WORK_VIEW_CODEX_MODEL: string;
+  CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL: string;
   // Automatic local DB snapshots (BackupManager). Opt-in via ENABLED.
   CLAUDE_MEM_BACKUP_ENABLED: string;
   CLAUDE_MEM_BACKUP_INTERVAL_HOURS: string;
@@ -480,6 +484,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CONTEXT_PROJECTS: 'current', // 'current' = this checkout only; 'all' = SessionStart context spans every project
     CLAUDE_MEM_WORKER_PORT: String(37700 + ((process.getuid?.() ?? 77) % 100)),
     CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
+    CLAUDE_MEM_WORKER_URL: '',
     CLAUDE_MEM_WORKER_INGEST_TOKEN: '',
     CLAUDE_MEM_WORKER_INGEST_MAX_BYTES: '5242880',
     CLAUDE_MEM_HOOK_SPOOL_TRANSPORT: 'auto',
@@ -599,7 +604,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_REDACT_DISABLED_BUILTINS: '',              // CSV of built-in pattern names to disable, e.g. 'jwt,slack_token'
     CLAUDE_MEM_REDACT_CUSTOM_PATTERNS: '[]',              // JSON array of { name, regex } objects
     CLAUDE_MEM_REDACT_LOG_MATCHES: 'false',               // Log pattern,count per invocation (no payload)
-    CLAUDE_MEM_REDACT_GENERIC_ENABLED: 'false',           // #4745 — opt-in: also redact un-prefixed credentials (password=, *_TOKEN=, *_SECRET=, *_API_KEY=, Authorization: Bearer)
+    CLAUDE_MEM_REDACT_GENERIC_ENABLED: 'false',           // #4745 — opt-in: also redact un-prefixed credentials (password=, *_TOKEN=, *_SECRET=, *_API_KEY=, Authorization: Bearer, Authorization: Basic)
     CLAUDE_MEM_EXCLUDED_PROJECTS: '',  // Comma-separated glob patterns for excluded project paths
     CLAUDE_MEM_PROJECT_ENVIRONMENTS: '[]',  // JSON array of {"name","patterns","inherit"?}: directories matching an environment's globs share one project named after it; an explicit inherit list replaces the derived read keys ([] reads only the environment)
     CLAUDE_MEM_FOLDER_MD_EXCLUDE: '[]',  // JSON array of folder paths to exclude from CLAUDE.md generation
@@ -690,6 +695,9 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH: 'true', // 'false' = My Work never runs owner-goals / request-progress on its own (refresh.json in ~/.claude-mem/work-view)
     CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: '', // '' uses OpenRouter only when it is the primary provider; openrouter/openai-compatible explicitly select that provider; off disables generated My Work copy
     CLAUDE_MEM_WORK_VIEW_COPY_MODEL: '', // Optional model override for generated My Work copy; empty uses the selected provider's configured model
+    CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL: '', // #5164 — model for every My Work refresh step on Claude Code (an alias like 'haiku'); empty keeps haiku/sonnet per step
+    CLAUDE_MEM_WORK_VIEW_CODEX_MODEL: '',  // #5164 — same for Codex; empty keeps the per-step table
+    CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL: '', // #5164 — same for Gemini; empty keeps flash-lite/flash per step
     // Automatic local DB snapshots (BackupManager). Off by default; opt-in.
     CLAUDE_MEM_BACKUP_ENABLED: 'false',
     CLAUDE_MEM_BACKUP_INTERVAL_HOURS: '24',   // Snapshot cadence in hours

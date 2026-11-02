@@ -189,6 +189,30 @@ describe('ClaudeProvider discovery-token correction from the result usage (#3664
     expect(session.cumulativeCacheReadTokens).toBe(50);
   });
 
+  // A repeated Stop updates the turn's summary in place (#5225). The result's
+  // usage must still reach that row; updateDiscoveryTokens keeps the larger count.
+  it('corrects a summary a repeated stop reused when the gateway reports input only in the result (#5225)', async () => {
+    const session = createSession();
+    const harness = createHarness(session);
+    harness.storeObservations.mockImplementation((() => ({
+      observationIds: [41],
+      mergedIntoExisting: [false],
+      insertedObservationIds: [41],
+      summaryId: 7,
+      summaryUpdated: true,
+      createdAtEpoch: 1700000000000,
+    })) as never);
+
+    scriptedMessages = [
+      assistantFrame({ input_tokens: 0, output_tokens: 1 }),
+      resultFrame({ input_tokens: 900, output_tokens: 40 }),
+    ];
+
+    await harness.provider.startSession(session);
+
+    expect(harness.updateDiscoveryTokens).toHaveBeenCalledWith([41], 7, 900 + 40);
+  });
+
   // A turn the gateway streams back as several assistant frames, each with
   // zero input: every row the turn stored gets the turn's cost, and the
   // missed input is counted once, not once per frame.

@@ -28,7 +28,7 @@ import { spawnSync } from 'node:child_process';
 
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 // Keep in step with cowork/.claude-plugin/plugin.json "version"; every request sends it.
-const PLUGIN_HEADER = 'claude-mem-cowork/0.1.5';
+const PLUGIN_HEADER = 'claude-mem-cowork/0.1.6';
 // per-user, 0600 — never a shared world-readable temp dir (payloads may hold tool output)
 const SPOOL_DIR = join(homedir(), '.claude-mem');
 const SPOOL = join(SPOOL_DIR, 'cowork-spool.jsonl');
@@ -624,12 +624,26 @@ function contextBlock(text, cwd) {
 
 // ---------- event handlers ----------
 
+// When the hooks can't reach cmem.ai, a connected Claude-Mem connector usually
+// still can (it goes through the host's own connector path, not this
+// container's network). Point the session at it so recall keeps working, and
+// so durable notes land there when the connector offers a save tool.
+function connectorFallback(project) {
+  return [
+    '',
+    'Recall still works through the Claude-Mem connector if it is connected here (its memory_search, timeline and get_observations tools).',
+    `Before relying on earlier context, search there: try project ${project} first, then without a project filter.`,
+    'If that connector offers save_memory, save durable decisions and handoffs there (project: ' + project + '), since this session\'s hooks cannot.'
+  ];
+}
+
 function emptyNotice(project) {
   if (CLOUD_REACHED === false) {
     return [
       `Claude-Mem is installed here but can't reach cmem.ai from this session, so notes from this session are not being saved yet (project: ${project}).`,
       'Notes wait in a local queue and are lost if this container is recycled.',
-      'If the user asks about memory, tell them exactly this: do not say notes are being saved.'
+      'If the user asks about memory, tell them exactly this: do not say notes are being saved.',
+      ...connectorFallback(project)
     ].join('\n');
   }
   return [

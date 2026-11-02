@@ -17,6 +17,7 @@ import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync, existsS
 import { dirname, join } from 'path';
 import { resolveDataDir } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
+import { isErrorTelemetryEnabled } from './consent.js';
 
 export const TELEMETRY_DAILY_FILENAME = 'telemetry-daily.json';
 export const WORK_VIEW_OPEN_INTERVAL_MS = 60_000;
@@ -250,7 +251,8 @@ export function observeTelemetryVolume(
   let closed: PendingTelemetryEvent[] = [];
   let dayRolled = false;
   if (state.day !== today) {
-    closed = closedEvents(state);
+    // Checked at send time, for the worker and the CLI alike: the row may have been saved before the person opted out.
+    closed = closedEvents(state).filter(item => item.event !== '$exception' || isErrorTelemetryEnabled(process.env));
     const openedAt = { ...state.openedAt };
     const fresh = emptyState(today, openedAt);
     state.day = fresh.day;

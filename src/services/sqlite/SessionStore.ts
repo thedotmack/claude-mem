@@ -18,7 +18,7 @@ import {
 } from '../../types/database.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
 import { computeObservationContentHash, hasStorableTitle } from './observations/store.js';
-import { replaceObservationFileIndex } from './observations/files.js';
+import { parseFileList, replaceObservationFileIndex } from './observations/files.js';
 import { seedReinforcement, reinforceObservation } from '../reinforcement/persist.js';
 import {
   createToolUsesSchema,
@@ -4088,6 +4088,7 @@ export class SessionStore {
     insertedObservationIds: number[];
     summaryId: number | null;
     createdAtEpoch: number;
+    summaryUpdated?: boolean;
   } {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
@@ -4211,37 +4212,112 @@ export class SessionStore {
       }
 
       let summaryId: number | null = null;
+      let summaryUpdated = false;
       if (summary) {
         const rolledUp = rollupObservationFileLists(observations);
         const filesRead = summary.files_read ?? rolledUp.files_read;
         const filesEdited = summary.files_edited ?? rolledUp.files_edited;
-        const summaryStmt = this.db.prepare(`
-          INSERT INTO session_summaries
-          (memory_session_id, project, request, investigated, learned, completed,
-           next_steps, files_read, files_edited, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `);
 
-        const result = summaryStmt.run(
-          memorySessionId,
-          project,
-          summary.request,
-          summary.investigated,
-          summary.learned,
-          summary.completed,
-          summary.next_steps,
-          JSON.stringify(filesRead),
-          JSON.stringify(filesEdited),
-          summary.notes,
-          promptNumber || null,
-          discoveryTokens,
-          timestampIso,
-          timestampEpoch
-        );
-        summaryId = Number(result.lastInsertRowid);
+        const existingSummary = promptNumber
+          ? (this.db.prepare(
+              `SELECT id, request, investigated, learned, completed, next_steps,
+                      files_read, files_edited, notes, discovery_tokens, sync_rev
+               FROM session_summaries
+               WHERE memory_session_id = ? AND prompt_number = ? AND origin_device_id IS NULL
+               ORDER BY id DESC LIMIT 1`
+            ).get(memorySessionId, promptNumber) as {
+              id: number;
+              request: string | null;
+              investigated: string | null;
+              learned: string | null;
+              completed: string | null;
+              next_steps: string | null;
+              files_read: string | null;
+              files_edited: string | null;
+              notes: string | null;
+              discovery_tokens: number | null;
+              sync_rev: string | null;
+            } | undefined)
+          : undefined;
+
+        if (existingSummary) {
+          const mergedRequest = (summary.request && summary.request.trim()) ? summary.request : (existingSummary.request ?? '');
+          const mergedInvestigated = (summary.investigated && summary.investigated.trim()) ? summary.investigated : (existingSummary.investigated ?? '');
+          const mergedLearned = (summary.learned && summary.learned.trim()) ? summary.learned : (existingSummary.learned ?? '');
+          const mergedCompleted = (summary.completed && summary.completed.trim()) ? summary.completed : (existingSummary.completed ?? '');
+          // next_steps describes what is left as of this stop, so the latest value wins even when empty.
+          const mergedNextSteps = summary.next_steps ?? '';
+          const mergedNotes = (summary.notes && summary.notes.trim()) ? summary.notes : existingSummary.notes;
+
+          const mergedFilesRead = [...new Set([...parseFileList(existingSummary.files_read), ...filesRead])];
+          const mergedFilesEdited = [...new Set([...parseFileList(existingSummary.files_edited), ...filesEdited])];
+
+          const mergedTokens = Math.max(existingSummary.discovery_tokens ?? 0, discoveryTokens);
+          const nextRev = incrementCanonicalDecimal(existingSummary.sync_rev || '0');
+
+          this.db.prepare(`
+            UPDATE session_summaries SET
+              request = ?, investigated = ?, learned = ?, completed = ?, next_steps = ?,
+              files_read = ?, files_edited = ?, notes = ?, discovery_tokens = ?,
+              created_at = ?, created_at_epoch = ?,
+              sync_rev = ?, synced_at = NULL
+            WHERE id = ?
+          `).run(
+            mergedRequest,
+            mergedInvestigated,
+            mergedLearned,
+            mergedCompleted,
+            mergedNextSteps,
+            JSON.stringify(mergedFilesRead),
+            JSON.stringify(mergedFilesEdited),
+            mergedNotes,
+            mergedTokens,
+            timestampIso,
+            timestampEpoch,
+            nextRev,
+            existingSummary.id
+          );
+
+          summary.request = mergedRequest;
+          summary.investigated = mergedInvestigated;
+          summary.learned = mergedLearned;
+          summary.completed = mergedCompleted;
+          summary.next_steps = mergedNextSteps;
+          summary.notes = mergedNotes;
+          summary.files_read = mergedFilesRead;
+          summary.files_edited = mergedFilesEdited;
+
+          summaryId = existingSummary.id;
+          summaryUpdated = true;
+        } else {
+          const summaryStmt = this.db.prepare(`
+            INSERT INTO session_summaries
+            (memory_session_id, project, request, investigated, learned, completed,
+             next_steps, files_read, files_edited, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `);
+
+          const result = summaryStmt.run(
+            memorySessionId,
+            project,
+            summary.request,
+            summary.investigated,
+            summary.learned,
+            summary.completed,
+            summary.next_steps,
+            JSON.stringify(filesRead),
+            JSON.stringify(filesEdited),
+            summary.notes,
+            promptNumber || null,
+            discoveryTokens,
+            timestampIso,
+            timestampEpoch
+          );
+          summaryId = Number(result.lastInsertRowid);
+        }
       }
 
-      return { observationIds, mergedIntoExisting, insertedObservationIds, summaryId, createdAtEpoch: timestampEpoch };
+      return { observationIds, mergedIntoExisting, insertedObservationIds, summaryId, createdAtEpoch: timestampEpoch, summaryUpdated };
     });
 
     const stored = storeTx();
@@ -4262,7 +4338,7 @@ export class SessionStore {
       const observationStmt = this.db.prepare('UPDATE observations SET discovery_tokens = ? WHERE id = ?');
       for (const id of observationIds) observationStmt.run(discoveryTokens, id);
       if (summaryId !== null) {
-        this.db.prepare('UPDATE session_summaries SET discovery_tokens = ? WHERE id = ?').run(discoveryTokens, summaryId);
+        this.db.prepare('UPDATE session_summaries SET discovery_tokens = MAX(COALESCE(discovery_tokens, 0), ?) WHERE id = ?').run(discoveryTokens, summaryId);
       }
     })();
   }

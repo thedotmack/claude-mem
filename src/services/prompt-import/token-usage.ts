@@ -27,6 +27,7 @@
  */
 
 import { Database } from 'bun:sqlite';
+import { createHash } from 'crypto';
 import { readFileSync } from 'fs';
 import { homedir } from 'os';
 import { basename, dirname, join } from 'path';
@@ -133,7 +134,7 @@ function claudeCodeUsage(excludedFolders: Set<string>): UsageReader {
         if (excludedFolders.has(projectFolder)) continue;
         try {
           for await (const line of readLines(source.path)) {
-            if (!line.includes('"usage"') || !line.includes('"type":"assistant"')) continue;
+            if (!line.includes('"usage"') || !/"type"\s*:\s*"assistant"/.test(line)) continue;
             const record = parseLine(line);
             const message = record?.message;
             if (record?.type !== 'assistant' || !message?.usage) continue;
@@ -175,14 +176,25 @@ const geminiCliUsage: UsageReader = {
     const seenMessages = new Set<string>();
     for (const source of sources) {
       try {
-        const { messages } = await readGeminiChat(source.path);
+        const { header, messages } = await readGeminiChat(source.path);
+        const sessionKey = typeof header.sessionId === 'string' && header.sessionId
+          ? header.sessionId : source.path.replace(/\.jsonl?$/, '');
         for (const message of messages) {
           if (message?.type !== 'gemini' || !message.tokens) continue;
-          const key = typeof message.id === 'string' && message.id ? message.id : `${source.path}\u0000${message.timestamp}`;
+          const at = isoToEpochMs(message.timestamp);
+          if (at === null) continue;
+          // A resumed session can keep both JSON and JSONL copies. Native IDs
+          // retain their global identity; legacy records use the shared session,
+          // timestamp and payload rather than the storage extension. Hashing
+          // keeps large response text out of the scan's identity set.
+          const identity = typeof message.id === 'string' && message.id
+            ? ['native', message.id]
+            : ['legacy', sessionKey, at, message.content ?? null, message.toolCalls ?? null];
+          const key = createHash('sha256').update(JSON.stringify(identity)).digest('hex');
           if (seenMessages.has(key)) continue;
           seenMessages.add(key);
           const { total, input, output, thoughts, tool } = message.tokens;
-          tally(usage, isoToEpochMs(message.timestamp), typeof total === 'number' ? count(total) : count(input) + count(output) + count(thoughts) + count(tool), sinceEpochMs);
+          tally(usage, at, typeof total === 'number' ? count(total) : count(input) + count(output) + count(thoughts) + count(tool), sinceEpochMs);
         }
       } catch (error) { skip(source, error); }
     }
@@ -262,8 +274,11 @@ export function summarizeTokenUsage(
   const measured = scan.agents.filter(agent => agent.detected && agent.recordsTokens);
   const totalTokens = measured.reduce((sum, agent) => sum + agent.tokens, 0);
   const shortRetention = measured.some(agent => agent.retentionShorterThanWindow && agent.firstRecordAt !== null);
+  // Successfully read history can establish the window start, but it cannot
+  // make the totals complete when another supported source failed to read.
+  const hasReadFailures = measured.some(agent => agent.skippedSources > 0);
   const coverage: UsageCoverage = totalTokens === 0 ? 'none'
-    : !shortRetention && scan.windowDays === PROMPT_SCAN_WINDOW_DAYS && measured.some(agent => agent.historyStartsBeforeWindow) ? 'complete'
+    : !shortRetention && !hasReadFailures && scan.windowDays === PROMPT_SCAN_WINDOW_DAYS && measured.some(agent => agent.historyStartsBeforeWindow) ? 'complete'
       : 'partial';
   const hasHistory = !!economics && economics.totalObservations > 0 && economics.totalDiscoveryTokens > 0 && economics.savingsPercent > 0;
   return {

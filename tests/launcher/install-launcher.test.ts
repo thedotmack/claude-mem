@@ -9,12 +9,16 @@ import {
   createAdhocCodesigner,
   ensureDirectoryOnWindowsUserPath,
   ensureLauncherOnPath,
+  launcherSignatureFixHint,
   ensureLocalBinOnShellPath,
   findExecutableOnPath,
+  launcherFileEmbedsBundle,
   probeLauncherVersion,
   removeInstalledLauncher,
+  renameLauncherWithRetry,
   resolveLauncherBinaryPath,
   shellPathSetupMarkerComment,
+  type LauncherPlacementFileOperations,
   type LauncherCodesignRunner,
   type LauncherCompileRunner,
   type LauncherHostEnvironment,
@@ -61,6 +65,20 @@ function recordingLogger(): LauncherInstallLogger & { lines: string[] } {
 function writeFakeLauncher(binaryPath: string, printedVersion: string): void {
   mkdirSync(path.dirname(binaryPath), { recursive: true });
   writeFileSync(binaryPath, `#!/bin/sh\necho ${printedVersion}\n`);
+  chmodSync(binaryPath, 0o755);
+}
+
+/**
+ * A launcher stand-in whose --version is killed before it can print, the way
+ * macOS 27 SIGKILLs a launcher whose code signature it rejects (#5247). The
+ * comment lines carry the bundle markers a real compiled launcher embeds.
+ */
+function writeKilledLauncher(binaryPath: string, { withBundleMarkers = true } = {}): void {
+  mkdirSync(path.dirname(binaryPath), { recursive: true });
+  const markerLines = withBundleMarkers
+    ? ['# usage: claude-mem hook <platform> <event>', '# continuing without memory']
+    : [];
+  writeFileSync(binaryPath, ['#!/bin/sh', 'kill -KILL $$', ...markerLines, ''].join('\n'));
   chmodSync(binaryPath, 0o755);
 }
 
@@ -233,6 +251,42 @@ describe('launcher bin dir and compile arguments per platform', () => {
   });
 });
 
+describe('launcherFileEmbedsBundle (#5247)', () => {
+  const usageLineMarker = 'usage: claude-mem hook <platform> <event>';
+  const failOpenMarker = 'continuing without memory';
+
+  it('finds both bundle markers a compiled launcher embeds', () => {
+    const launcherPath = path.join(makeScratchHome(), 'claude-mem');
+    writeFileSync(launcherPath, `\0binary${usageLineMarker}\0more${failOpenMarker}\0tail`);
+    expect(launcherFileEmbedsBundle(launcherPath)).toBe(true);
+  });
+
+  it('rejects a file that carries only one of the markers', () => {
+    const launcherPath = path.join(makeScratchHome(), 'claude-mem');
+    writeFileSync(launcherPath, `\0binary${usageLineMarker}\0tail`);
+    expect(launcherFileEmbedsBundle(launcherPath)).toBe(false);
+  });
+
+  it('finds a marker that straddles a scan-chunk boundary', () => {
+    const launcherPath = path.join(makeScratchHome(), 'claude-mem');
+    // A compiled launcher is scanned in chunks; put the marker across a chunk
+    // boundary (1 MiB is a whole number of 64 KiB chunks) to prove the overlap.
+    const prefix = 'x'.repeat((1 << 20) - 8);
+    writeFileSync(launcherPath, `${prefix}${usageLineMarker}${'x'.repeat(64)}${failOpenMarker}`);
+    expect(launcherFileEmbedsBundle(launcherPath)).toBe(true);
+  });
+
+  it('finds every marker in the committed launcher bundle', () => {
+    // Drift guard: the markers are copied from claude-mem-launcher.ts, so a
+    // rewording there must not silently stop the rebuild detection (#5247).
+    expect(launcherFileEmbedsBundle(path.join(pluginRoot, 'scripts', 'claude-mem-launcher.cjs'))).toBe(true);
+  });
+
+  it('answers false for a file that does not exist', () => {
+    expect(launcherFileEmbedsBundle(path.join(makeScratchHome(), 'no-such-file'))).toBe(false);
+  });
+});
+
 describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
   it('compiles into ~/.local/bin, renames into place and adds ~/.local/bin to the zsh rc', () => {
     const scratchHome = makeScratchHome();
@@ -331,6 +385,42 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
     expect(ensureResult).toEqual({ status: 'foreign-binary-kept', binaryPath, pathSetupOutcome: null });
     expect(logger.lines).toEqual([`warn: ${binaryPath} exists and is not the claude-mem hook launcher (--version printed "13.28.0" instead of a protocol number); not replacing`]);
     expect(readFileSync(binaryPath, 'utf-8')).toContain('13.28.0');
+  });
+
+  // #5247: macOS 27 SIGKILLs a launcher whose code signature it rejects, so
+  // `--version` never prints. That copy is ours to rebuild; classing it foreign
+  // left users deleting the file by hand.
+  it('rebuilds a killed launcher that embeds the claude-mem bundle, in both contexts (#5247)', () => {
+    for (const invocationContext of ['npx-installer', 'session-start-self-heal'] as const) {
+      const scratchHome = makeScratchHome();
+      const host = posixHost(scratchHome);
+      const binaryPath = resolveLauncherBinaryPath(host);
+      writeKilledLauncher(binaryPath);
+      const compile = fakeCompile();
+      const logger = recordingLogger();
+
+      const ensureResult = ensureLauncherOnPath({
+        pluginRoot, resolveBunPath: () => '/fake/bun', logger, host, runCompile: compile, runCodesign: codesignNoop, invocationContext,
+      });
+
+      expect(compile.calls).toHaveLength(1);
+      expect(ensureResult.status).toBe('installed');
+      expect(logger.lines.some((line) => line.includes('is the claude-mem launcher, but --version was killed by SIGKILL'))).toBe(true);
+      expect(spawnSync(binaryPath, ['--version'], { encoding: 'utf-8' }).stdout.trim()).toBe(String(LAUNCHER_PROTOCOL));
+    }
+  });
+
+  it('still keeps a killed binary that does not embed the claude-mem bundle (#5247)', () => {
+    const scratchHome = makeScratchHome();
+    const host = posixHost(scratchHome);
+    const binaryPath = resolveLauncherBinaryPath(host);
+    writeKilledLauncher(binaryPath, { withBundleMarkers: false });
+
+    const ensureResult = ensureLauncherOnPath({
+      pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host, runCompile: compileMustNotRun, invocationContext: 'npx-installer',
+    });
+
+    expect(ensureResult).toEqual({ status: 'foreign-binary-kept', binaryPath, pathSetupOutcome: null });
   });
 
   it('never replaces a symlink, even one pointing at a launcher', () => {
@@ -731,16 +821,18 @@ describe.skipIf(!isPosixHost)('probeLauncherVersion says why no protocol came ba
   }
 
   it('returns the protocol and no failure for the launcher', () => {
-    expect(probeLauncherVersion(writeScript(`echo ${LAUNCHER_PROTOCOL}`))).toEqual({ protocol: LAUNCHER_PROTOCOL, failure: null, failedToStart: false });
+    expect(probeLauncherVersion(writeScript(`echo ${LAUNCHER_PROTOCOL}`))).toEqual({ protocol: LAUNCHER_PROTOCOL, failure: null, failedToStart: false, signal: null });
   });
 
   it('reports a non-zero exit with the last stderr line', () => {
     expect(probeLauncherVersion(writeScript('echo first >&2\necho "access denied" >&2\nexit 3')))
-      .toEqual({ protocol: null, failure: 'exited 3: access denied', failedToStart: false });
+      .toEqual({ protocol: null, failure: 'exited 3: access denied', failedToStart: false, signal: null });
   });
 
   it('reports a kill signal', () => {
-    expect(probeLauncherVersion(writeScript('kill -KILL $$')).failure).toBe('killed by SIGKILL');
+    const versionProbe = probeLauncherVersion(writeScript('kill -KILL $$'));
+    expect(versionProbe.failure).toBe('killed by SIGKILL');
+    expect(versionProbe.signal).toBe('SIGKILL');
   });
 
   it('reports a timeout', () => {
@@ -1300,5 +1392,119 @@ describe.skipIf(!isPosixHost)('plugin/scripts/ensure-launcher.cjs under plain no
     const placedBinaryPath = path.join(binDirectory, 'claude-mem');
     expect(scriptRun.stderr).toContain(`claude-mem launcher installed at ${placedBinaryPath}`);
     expect(spawnSync(placedBinaryPath, ['--version'], { encoding: 'utf-8' }).stdout.trim()).toBe(String(LAUNCHER_PROTOCOL));
+  });
+});
+
+// #5248: antivirus holds the .exe the probe just ran for over 15 s. The rename
+// has to wait that out, and the cleanup in `finally` must not replace its error.
+describe('launcher placement under a Windows file lock (#5248)', () => {
+  function errorWithCode(code: string): NodeJS.ErrnoException {
+    return Object.assign(new Error(`${code}: simulated`), { code });
+  }
+
+  /** Fails the first `failuresBeforeSuccess` renames with `code`, recording renames and sleeps. */
+  function lockedFileOperations(code: string, failuresBeforeSuccess: number) {
+    const sleeps: number[] = [];
+    let renameCalls = 0;
+    const fileOperations: LauncherPlacementFileOperations = {
+      rename: () => {
+        renameCalls++;
+        if (renameCalls <= failuresBeforeSuccess) throw errorWithCode(code);
+      },
+      remove: () => {},
+      sleep: (milliseconds) => sleeps.push(milliseconds),
+    };
+    return { fileOperations, sleeps, renameCount: () => renameCalls };
+  }
+
+  const fromPath = 'C:\\bin\\.claude-mem-1.tmp.exe';
+  const toPath = 'C:\\bin\\claude-mem.exe';
+
+  for (const lockCode of ['EBUSY', 'EPERM', 'EACCES']) {
+    it(`waits out ${lockCode} and then succeeds`, () => {
+      const locked = lockedFileOperations(lockCode, 3);
+      renameLauncherWithRetry(fromPath, toPath, 'win32', locked.fileOperations);
+      expect(locked.renameCount()).toBe(4);
+      expect(locked.sleeps).toEqual([500, 500, 500]);
+    });
+  }
+
+  it('waits longer than the 15 s hold measured in #5248', () => {
+    const locked = lockedFileOperations('EBUSY', 31);
+    renameLauncherWithRetry(fromPath, toPath, 'win32', locked.fileOperations);
+    expect(locked.sleeps.reduce((total, milliseconds) => total + milliseconds, 0)).toBeGreaterThan(15_000);
+  });
+
+  it('names the lock and the directory when the wait runs out, and keeps the code', () => {
+    const locked = lockedFileOperations('EBUSY', Number.MAX_SAFE_INTEGER);
+    let thrownError: NodeJS.ErrnoException | undefined;
+    try {
+      renameLauncherWithRetry(fromPath, toPath, 'win32', locked.fileOperations);
+    } catch (error: unknown) {
+      thrownError = error as NodeJS.ErrnoException;
+    }
+    expect(thrownError?.code).toBe('EBUSY');
+    expect(thrownError?.message).toContain('still EBUSY after waiting 20 s');
+    expect(thrownError?.message).toContain('probably by antivirus');
+    expect(thrownError?.message).toContain('exclude C:\\bin from scanning');
+    expect(locked.renameCount()).toBe(41);
+    expect(locked.sleeps).toHaveLength(40);
+  });
+
+  it('throws another error code at once', () => {
+    const locked = lockedFileOperations('ENOSPC', 1);
+    expect(() => renameLauncherWithRetry(fromPath, toPath, 'win32', locked.fileOperations)).toThrow('ENOSPC');
+    expect(locked.renameCount()).toBe(1);
+    expect(locked.sleeps).toEqual([]);
+  });
+
+  it('does not retry off Windows', () => {
+    for (const platform of ['darwin', 'linux'] as const) {
+      const locked = lockedFileOperations('EBUSY', 1);
+      expect(() => renameLauncherWithRetry('/bin/from', '/bin/to', platform, locked.fileOperations)).toThrow('EBUSY');
+      expect(locked.renameCount()).toBe(1);
+      expect(locked.sleeps).toEqual([]);
+    }
+  });
+
+  it.skipIf(!isPosixHost)('reports the rename error when the cleanup throws too', () => {
+    const scratchHome = makeScratchHome();
+    const logger = recordingLogger();
+    const fileOperations: LauncherPlacementFileOperations = {
+      rename: () => { throw errorWithCode('EBUSY'); },
+      remove: () => { throw errorWithCode('EPERM'); },
+      sleep: () => {},
+    };
+
+    expect(() => ensureLauncherOnPath({
+      pluginRoot, resolveBunPath: () => '/fake/bun', logger, host: posixHost(scratchHome), runCompile: fakeCompile(), runCodesign: codesignNoop, invocationContext: 'npx-installer', placementFileOperations: fileOperations,
+    })).toThrow('EBUSY');
+    expect(logger.lines.some((line) => line.startsWith('warn: Could not remove') && line.includes('EPERM'))).toBe(true);
+  });
+});
+
+// #5247 (suggestion 2): a rebuild the OS killed must name the Bun upgrade, not
+// another install, which cannot help while Bun is below 1.4.1.
+describe('launcherSignatureFixHint', () => {
+  const killed = { protocol: null, failure: 'killed by SIGKILL', failedToStart: false, signal: 'SIGKILL' } as const;
+  const exited = { protocol: null, failure: 'exited 5', failedToStart: false, signal: null } as const;
+
+  it('names the Bun upgrade when macOS killed the rebuild and Bun is below 1.4.1', () => {
+    const hint = launcherSignatureFixHint('darwin', killed, '1.3.9');
+    expect(hint).toContain('bun upgrade');
+    expect(hint).toContain('1.4.1');
+    expect(hint).toContain('reinstalling cannot fix this');
+  });
+
+  it('says nothing when Bun is new enough to be signed', () => {
+    expect(launcherSignatureFixHint('darwin', killed, '1.4.1')).toBe('');
+    expect(launcherSignatureFixHint('darwin', killed, '1.6.0')).toBe('');
+  });
+
+  it('says nothing for a non-signal failure, another platform, or an unknown Bun version', () => {
+    expect(launcherSignatureFixHint('darwin', exited, '1.3.9')).toBe('');
+    expect(launcherSignatureFixHint('linux', killed, '1.3.9')).toBe('');
+    expect(launcherSignatureFixHint('win32', killed, '1.3.9')).toBe('');
+    expect(launcherSignatureFixHint('darwin', killed, null)).toBe('');
   });
 });

@@ -27,6 +27,9 @@ export async function uploadRemoteHookSpool(): Promise<void> {
     logger.warn('HOOK', 'Remote hook capture is queued locally; configure CLAUDE_MEM_WORKER_INGEST_TOKEN on the client and worker');
     return;
   }
+  if (!settings.CLAUDE_MEM_WORKER_URL.trim() && usesRemoteHookSpool(getWorkerHost())) {
+    logger.warn('HOOK', 'Remote hook capture sends event content and the ingest token over plain HTTP; set an https CLAUDE_MEM_WORKER_URL unless this network is trusted');
+  }
   let deadline: number | null = null;
   let attempted = 0;
   let failed = false;
@@ -154,7 +157,7 @@ function startRemoteHookSpoolUpload(): void {
  */
 export function nudgeWorkerToDrainHookSpool(): Promise<void> {
   const settings = loadFromFileOnce();
-  if (usesRemoteHookSpool(getWorkerHost(), settings.CLAUDE_MEM_HOOK_SPOOL_TRANSPORT)) {
+  if (usesRemoteHookSpool(getWorkerHost(), settings.CLAUDE_MEM_HOOK_SPOOL_TRANSPORT, settings.CLAUDE_MEM_WORKER_URL)) {
     remoteUploadRequested = true;
     return scheduleRemoteHookSpoolUpload();
   }
@@ -182,7 +185,7 @@ export function nudgeWorkerToDrainHookSpool(): Promise<void> {
 export async function settleHookSpoolNudges(): Promise<void> {
   if (!pendingNudge && !remoteUploadRequested && selectRuntime() === 'worker') {
     const settings = loadFromFileOnce();
-    if (usesRemoteHookSpool(getWorkerHost(), settings.CLAUDE_MEM_HOOK_SPOOL_TRANSPORT)
+    if (usesRemoteHookSpool(getWorkerHost(), settings.CLAUDE_MEM_HOOK_SPOOL_TRANSPORT, settings.CLAUDE_MEM_WORKER_URL)
       && new HookSpool().hasEntries()) {
       void nudgeWorkerToDrainHookSpool();
     }

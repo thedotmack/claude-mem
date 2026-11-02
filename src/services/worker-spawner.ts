@@ -26,6 +26,7 @@ import { acquireSpawnLock, releaseSpawnLock } from '../shared/worker-spawn-gate.
 import { isPidAlive } from '../supervisor/process-registry.js';
 import { reclaimGhostListeningPort } from '../shared/port-reclaim.js';
 import { isWorkerAutostartDisabled } from '../shared/worker-autostart.js';
+import { InvalidWorkerUrlError, normalizeWorkerBaseUrl } from '../shared/worker-url.js';
 
 /**
  * Windows spawn cooldown, keyed to evidence rather than time (plan-15 step 7,
@@ -199,10 +200,25 @@ export async function ensureWorkerStarted(
   // on it, but never launch, kill or reclaim anything (and leave its PID file
   // alone). Read fresh: this runs in long-lived processes (the MCP server).
   const settingsPath = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
-  if (isWorkerAutostartDisabled(SettingsDefaultsManager.loadFromFile(settingsPath))) {
-    if (await waitForHealth(port, 1000)) {
-      const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
+  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+  if (isWorkerAutostartDisabled(settings)) {
+    let explicitWorkerOrigin: string | undefined;
+    try {
+      explicitWorkerOrigin = normalizeWorkerBaseUrl(settings.CLAUDE_MEM_WORKER_URL) || undefined;
+    } catch (error: unknown) {
+      if (!(error instanceof InvalidWorkerUrlError)) throw error;
+      logger.error('SYSTEM', 'Invalid worker URL; not probing or launching a worker', {}, error);
+      lastWorkerBootFailure = error.message;
+      return 'dead';
+    }
+    if (await waitForHealth(port, 1000, explicitWorkerOrigin)) {
+      const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT), explicitWorkerOrigin);
       return ready ? 'ready' : 'warming';
+    }
+    if (explicitWorkerOrigin) {
+      logger.info('SYSTEM', 'No worker answered at CLAUDE_MEM_WORKER_URL — not launching one');
+      lastWorkerBootFailure = `no worker answered at ${explicitWorkerOrigin}`;
+      return 'dead';
     }
     logger.info('SYSTEM', 'CLAUDE_MEM_WORKER_AUTOSTART=false and no worker is running — not launching one');
     return 'dead';

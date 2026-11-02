@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import {
@@ -89,6 +89,15 @@ describe('installKimiHooks', () => {
     expect(installKimiHooks()).toBe(0);
     const again = readFileSync(path.join(home, 'config.toml'), 'utf-8');
     expect(again.split(KIMI_MARKER_BEGIN)).toHaveLength(2);
+  });
+
+  test.skipIf(process.platform === 'win32')('writes the backup owner-only, even from a readable config', () => {
+    const home = makeScratchHome();
+    writeFileSync(path.join(home, 'config.toml'), 'default_model = "kimi-code/k3"\n');
+    chmodSync(path.join(home, 'config.toml'), 0o644);
+    expect(installKimiHooks()).toBe(0);
+    const backup = readdirSync(home).find((name) => name.startsWith('config.toml.bak-'));
+    expect(statSync(path.join(home, backup!)).mode & 0o777).toBe(0o600);
   });
 
   test('status reports installed state; uninstall removes the block', () => {

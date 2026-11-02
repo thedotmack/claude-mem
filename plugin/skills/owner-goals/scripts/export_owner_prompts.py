@@ -101,7 +101,7 @@ def read_owner_typed_prompts(cutoff_seconds):
     for transcript_path in recent_files(os.path.join(CLAUDE_PROJECTS, "*", "*.jsonl"), cutoff_seconds):
         project_folder = os.path.basename(os.path.dirname(transcript_path))
         for line in open(transcript_path, errors="ignore"):
-            if '"type":"user"' not in line:
+            if not re.search(r'"type"\s*:\s*"user"', line):
                 continue
             try:
                 record = json.loads(line)
@@ -132,7 +132,7 @@ def read_owner_typed_prompts(cutoff_seconds):
                 continue
             project_folder = os.path.basename(meta.get("cwd") or "?")
             for line in session_file:
-                if '"role":"user"' not in line.replace(" ", ""):
+                if not re.search(r'"role"\s*:\s*"user"', line):
                     continue
                 try:
                     record = json.loads(line)
@@ -145,7 +145,8 @@ def read_owner_typed_prompts(cutoff_seconds):
                 timestamp = record.get("timestamp", "")
                 if not text or text.startswith(CODEX_INJECTED_PREFIXES) or not timestamp or iso_to_epoch(timestamp) < cutoff_seconds:
                     continue
-                dedupe_key = (meta.get("id"), timestamp, text[:200])
+                native_prompt_id = payload.get("id")
+                dedupe_key = (meta.get("id") or session_path, native_prompt_id if isinstance(native_prompt_id, str) and native_prompt_id else None, timestamp, text)
                 if dedupe_key in seen_keys:
                     continue
                 seen_keys.add(dedupe_key)
@@ -160,7 +161,7 @@ def read_agent_authored_text(cutoff_seconds):
                     + recent_files(os.path.join(CLAUDE_PROJECTS, "*", "*", "subagents", "*.jsonl"), cutoff_seconds))
     for path in claude_paths:
         for line in open(path, errors="ignore"):
-            if '"type":"assistant"' not in line:
+            if not re.search(r'"type"\s*:\s*"assistant"', line):
                 continue
             try:
                 record = json.loads(line)
