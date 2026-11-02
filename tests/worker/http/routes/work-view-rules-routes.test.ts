@@ -68,6 +68,37 @@ function saveRule(body: unknown) {
 const ruleById = (view: any, id: string) => view.rules.find((rule: any) => rule.ruleId === id);
 
 describe('My Rules routes', () => {
+  it('a read already running before a save never answers it or rewrites the rules file with old rules', async () => {
+    const reader = (routes as any).sourceReader;
+    const realRead = reader.read.bind(reader);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let posted = false;
+    reader.read = (...args: [number, string]) => {
+      reader.read = realRead;
+      posted = true;
+      return realRead(...args).then(async (view: unknown) => { await gate; return view; });
+    };
+    const before = snapshot();
+    while (!posted) await Bun.sleep(1);
+    const saved = await saveRule({ action: 'add', rule: { scopeTier: 'everywhere', scopeName: 'Everywhere', when: '', then: 'Say what is left.' } });
+    expect(saved.status).toBe(200);
+    const view = await saved.json();
+    expect(ruleById(view, view.savedRuleId).then).toBe('Say what is left.');
+    expect(readFileSync(rulesFilePath, 'utf8')).toContain('Say what is left.');
+    release();
+    await before;
+    expect(readFileSync(rulesFilePath, 'utf8')).toContain('Say what is left.');
+  });
+
+  it('a rebuild reading while a save is in flight cannot put the old rules back', async () => {
+    const saved = saveRule({ action: 'add', rule: { scopeTier: 'everywhere', scopeName: 'Everywhere', when: '', then: 'Say what is left.' } });
+    const rebuilt = routes.rebuildRulesFileFromSavedRules();
+    expect((await saved).status).toBe(200);
+    await rebuilt;
+    expect(readFileSync(rulesFilePath, 'utf8')).toContain('Say what is left.');
+  });
+
   it('suggests rules from the build story and reports the rules file', async () => {
     const view = await snapshot();
     expect(ruleById(view, SUGGESTED_ID)).toMatchObject({ status: 'suggested', setBy: 'learned', when: '', then: PREFERENCE, timesSeen: 2, scopeId: 'everywhere' });

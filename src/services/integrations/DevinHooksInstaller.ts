@@ -17,7 +17,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
 import { parseJsonWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.js';
-import { getBunAbsolutePath, getWorkerServiceAbsolutePath } from './install-paths.js';
+import { getBunAbsolutePath, getMcpServerAbsolutePath, getWorkerServiceAbsolutePath } from './install-paths.js';
+import { buildMcpServerEntry } from './McpIntegrations.js';
 
 interface DevinHookCommand {
   type: string;
@@ -45,6 +46,19 @@ export function devinConfigPath(platform: NodeJS.Platform = process.platform, en
     return path.win32.join(appData, 'devin', 'config.json');
   }
   return path.join(homedir(), '.config', 'devin', 'config.json');
+}
+
+/**
+ * Devin v3000.3+ keeps MCP servers in a dedicated mcp_config.json next to
+ * config.json (older versions read `mcpServers` from config.json and migrate
+ * them automatically — docs.devin.ai cli/extensibility/mcp/configuration).
+ */
+export function devinMcpConfigPath(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): string {
+  if (platform === 'win32') {
+    const appData = env.APPDATA || path.join(homedir(), 'AppData', 'Roaming');
+    return path.win32.join(appData, 'devin', 'mcp_config.json');
+  }
+  return path.join(homedir(), '.config', 'devin', 'mcp_config.json');
 }
 
 /** The Claude Code hook surface Devin has: the same handlers, minus PreToolUse. */
@@ -152,28 +166,99 @@ export function installDevinHooks(configPath: string = devinConfigPath()): numbe
   }
 }
 
+interface DevinMcpConfig {
+  mcpServers?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+/**
+ * mcp_config.json is a small JSON object shared with the user's other MCP
+ * servers: a corrupt file is refused rather than overwritten (same rule as
+ * readDevinConfig), a missing one is created.
+ */
+function readDevinMcpConfig(mcpConfigPath: string): DevinMcpConfig {
+  if (!existsSync(mcpConfigPath)) return {};
+  const parsed: unknown = parseJsonWithBom(readFileSync(mcpConfigPath, 'utf-8'));
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`${mcpConfigPath} is not a JSON object; refusing to overwrite it`);
+  }
+  const config = parsed as DevinMcpConfig;
+  if (config.mcpServers !== undefined && (config.mcpServers === null || typeof config.mcpServers !== 'object' || Array.isArray(config.mcpServers))) {
+    throw new Error(`"mcpServers" in ${mcpConfigPath} is not an object; refusing to overwrite it`);
+  }
+  return config;
+}
+
+/** Register the claude-mem MCP search server (`mcp__claude-mem__*` tools) with Devin. */
+export function configureDevinMcp(mcpConfigPath: string = devinMcpConfigPath()): number {
+  const mcpServerPath = getMcpServerAbsolutePath();
+  if (!mcpServerPath) {
+    console.error('Could not find mcp-server.cjs (expected under the installed plugin scripts/ directory)');
+    return 1;
+  }
+  try {
+    const config = readDevinMcpConfig(mcpConfigPath);
+    mkdirSync(path.dirname(mcpConfigPath), { recursive: true });
+    config.mcpServers = { ...config.mcpServers, 'claude-mem': buildMcpServerEntry(mcpServerPath) };
+    writeJsonFileAtomic(mcpConfigPath, config);
+    console.log(`  Configured MCP server in ${mcpConfigPath}`);
+    console.log(`    Server path: ${mcpServerPath}`);
+    return 0;
+  } catch (error) {
+    console.error(`Failed to configure Devin MCP in ${mcpConfigPath}: ${(error as Error).message}`);
+    return 1;
+  }
+}
+
+/**
+ * Remove only the `claude-mem` server entry — the name is ours, so anything
+ * under it was written by configureDevinMcp. Other servers stay untouched.
+ * Returns true when an entry was removed.
+ */
+export function removeDevinMcpServer(mcpConfigPath: string = devinMcpConfigPath()): boolean {
+  if (!existsSync(mcpConfigPath)) return false;
+  const config = readDevinMcpConfig(mcpConfigPath);
+  if (!config.mcpServers || !('claude-mem' in config.mcpServers)) return false;
+  delete config.mcpServers['claude-mem'];
+  writeJsonFileAtomic(mcpConfigPath, config);
+  console.log(`  Removed claude-mem entry from ${mcpConfigPath}`);
+  return true;
+}
+
 export function uninstallDevinHooks(configPath: string = devinConfigPath()): number {
+  // mcp_config.json sits next to config.json, so a caller-scoped configPath
+  // scopes the MCP file the same way (tests never touch the real one).
+  // A broken MCP file must not leave the hooks capturing after the user asked
+  // to remove them, so carry on and report the failure in the exit code.
+  let mcpRemovalFailed = false;
+  try {
+    removeDevinMcpServer(path.join(path.dirname(configPath), 'mcp_config.json'));
+  } catch (error) {
+    console.error(`Failed to remove the Devin MCP server: ${(error as Error).message}`);
+    mcpRemovalFailed = true;
+  }
+  const exitCodeAfterHooks = mcpRemovalFailed ? 1 : 0;
   if (!existsSync(configPath)) {
     console.log('  No Devin config.json found; nothing to uninstall');
-    return 0;
+    return exitCodeAfterHooks;
   }
   try {
     const config = readDevinConfig(configPath);
     if (!config.hooks) {
       console.log('  No claude-mem hooks found in Devin config.json');
-      return 0;
+      return exitCodeAfterHooks;
     }
     const next = removeDevinHooks(config.hooks);
     if (JSON.stringify(next) === JSON.stringify(config.hooks)) {
       console.log('  No claude-mem hooks found in Devin config.json');
-      return 0;
+      return exitCodeAfterHooks;
     }
     backupOnce(configPath);
     if (Object.keys(next).length > 0) config.hooks = next;
     else delete config.hooks;
     writeDevinConfig(configPath, config);
     console.log(`  Removed claude-mem hooks from ${configPath}`);
-    return 0;
+    return exitCodeAfterHooks;
   } catch (error) {
     console.error(`Failed to uninstall Devin hooks: ${(error as Error).message}`);
     return 1;
@@ -199,8 +284,11 @@ export function checkDevinHooksStatus(configPath: string = devinConfigPath()): n
 
 export async function handleDevinCommand(subcommand: string | undefined, _args: string[]): Promise<number> {
   switch (subcommand) {
-    case 'install':
-      return installDevinHooks();
+    case 'install': {
+      const hooks = installDevinHooks();
+      const mcp = configureDevinMcp();
+      return hooks === 0 && mcp === 0 ? 0 : 1;
+    }
     case 'uninstall':
       return uninstallDevinHooks();
     case 'status':

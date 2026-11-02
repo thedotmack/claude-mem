@@ -9,7 +9,8 @@ import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'f
 import { isAbsolute, join, posix as posixPath, win32 as windowsPath } from 'path';
 import { styleText } from 'node:util';
 import { IS_WINDOWS, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
-import { formatHostForUrl, getWorkerHost, getWorkerPort, resolvePluginRoot, type PluginRootResolution } from '../../shared/worker-utils.js';
+import { getWorkerBaseUrl, resolvePluginRoot, type PluginRootResolution } from '../../shared/worker-utils.js';
+import { InvalidWorkerUrlError } from '../../shared/worker-url.js';
 import { getBunVersion, getUvVersion, isInstallCurrent } from '../install/setup-runtime.js';
 import { treeSitterCliBinaryPath } from '../../services/smart-file-read/tree-sitter-cli-provision.js';
 import { checkTreeSitterCliLoadable, resolveTreeSitterBinPathFor, TREE_SITTER_CLI_PATH_WORKAROUND } from '../../services/smart-file-read/tree-sitter-bin-path.js';
@@ -79,12 +80,11 @@ function probeVersion(bin: 'bun' | 'uv'): string | null {
   }
 }
 
-async function probeWorkerHealth(workerHost: string, workerPort: string): Promise<{
+async function probeWorkerHealth(workerUrl: string): Promise<{
   status: CheckStatus;
   detail: string;
   workerUrl: string;
 }> {
-  const workerUrl = `http://${formatHostForUrl(workerHost)}:${workerPort}`;
   const res = await fetch(`${workerUrl}/api/health`, {
     signal: AbortSignal.timeout(3000),
   });
@@ -506,19 +506,20 @@ export async function runDoctorCommand(): Promise<void> {
   checks.push(marketplaceManifestCheck(marketplaceDir));
 
   // 5. Worker health.
-  // The address the worker binds: settings.json, with env vars overriding it.
-  const workerHost = getWorkerHost({ readOnly: true });
-  const workerPort = String(getWorkerPort({ readOnly: true }));
+  // Where this client reaches the worker: settings.json, with env vars overriding it.
   let workerStatus: CheckStatus = 'fail';
-  let workerDetail = `no response at http://${formatHostForUrl(workerHost)}:${workerPort} — start with \`npx claude-mem start\``;
+  let workerDetail = '';
   let chromaChecks: CheckResult[] = [];
   try {
-    const worker = await probeWorkerHealth(workerHost, workerPort);
+    const workerUrl = getWorkerBaseUrl({ readOnly: true });
+    workerDetail = `no response at ${workerUrl} — start with \`npx claude-mem start\``;
+    const worker = await probeWorkerHealth(workerUrl);
     workerStatus = worker.status;
     workerDetail = worker.detail;
     chromaChecks = await probeChromaDiagnostics(worker.workerUrl);
-  } catch {
-    // leave as fail
+  } catch (error: unknown) {
+    if (error instanceof InvalidWorkerUrlError) workerDetail = error.message;
+    // otherwise leave as fail
   }
   checks.push({
     name: 'Worker daemon',

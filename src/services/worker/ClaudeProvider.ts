@@ -837,6 +837,21 @@ export class ClaudeProvider {
           const resultSubtype = (message as any).subtype as string | undefined;
           const resultIsError = (message as any).is_error === true || resultSubtype !== 'success';
 
+          // the result frame is authoritative for this turn's usage. keep the
+          // fields flat so the info logger prints every count, and skip the
+          // synthetic init prompt because it is not an observer response.
+          if (resultUsage && session.lastGeneratorSource !== 'init') {
+            logger.info('SDK', 'Observer turn usage', {
+              sessionId: session.sessionDbId,
+              promptNumber: activeResponseContext.current?.promptNumber ?? session.lastPromptNumber,
+              inputTokens: resultUsage.input_tokens ?? 0,
+              cacheCreationInputTokens: resultUsage.cache_creation_input_tokens ?? 0,
+              cacheReadInputTokens: resultUsage.cache_read_input_tokens ?? 0,
+              fullContextTokens: computeFullContextTokens(resultUsage),
+              outputTokens: resultUsage.output_tokens ?? 0,
+            });
+          }
+
           // The turn is over and the model never emitted text. Only a
           // successful turn means the model read the batch — forward its empty
           // answer once, and ResponseProcessor holds it to the skip contract

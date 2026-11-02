@@ -252,10 +252,10 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       return path;
     };
     const localDeviceId = options.localDeviceId();
-    const cli = (argv: string[], input?: unknown) => {
+    const cli = (argv: string[], input?: unknown, cliOptions: { coerceProgress?: boolean } = {}) => {
       let output: any;
       const database = openDatabase();
-      try { runCli(input === undefined ? argv : [...argv, writeInput(argv[0], input)], { dir: ledgerDir, database, now: now(), print: value => { output = value; }, localDeviceId }); }
+      try { runCli(input === undefined ? argv : [...argv, writeInput(argv[0], input)], { dir: ledgerDir, database, now: now(), print: value => { output = value; }, localDeviceId, ...cliOptions }); }
       finally { database.close(); }
       return output;
     };
@@ -403,12 +403,14 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
 
       const due: Array<{ groupId: string }> = cli(['pending', '--days', '14', '--limit', '1000000']).groups;
       let reviewed = 0;
+      const coercedReviewFields = new Set<string>();
       /** One batch of reviews. Like step(), but a refusal re-asks only for the groups that were refused. */
       const reviewBatch = async (groups: Array<{ groupId: string }>) => {
         let shows = groups.map(group => cli(['show', group.groupId]));
         let refusals: string[] = [];
         let rejectedReviews: Array<{ groupId?: string }> = [];
         for (let attempt = 0; attempt < 2 && shows.length; attempt++) {
+          const retryGroupIds = new Set(shows.map(show => show.groupId));
           const text = await ask([
             requestProgress, '---', readOnly,
             `Do only section 2's review for the groups whose \`show\` output is in ${writeInput('show', shows)}: decide each one from the evidence as the reviewer task describes (amend the previous review for a group in "amend" mode). Reply with only {"reviews": [<one record-progress input per group, with reviewBasis copied verbatim from its show output>]}.`,
@@ -421,7 +423,13 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
           rejectedReviews = [];
           const recorded = new Set<string>();
           for (const review of reviews) {
-            try { cli(['record-progress'], review); recorded.add(String(review.groupId)); reviewed++; }
+            try {
+              // Keep the first pass strict so the model can correct an oversized answer itself. If that same group
+              // still exceeds a review cap on its one retry, bound generated fields and save the partial review.
+              const saved = cli(['record-progress'], review, { coerceProgress: attempt > 0 && retryGroupIds.has(String(review.groupId)) });
+              for (const field of saved?.coercedFields ?? []) coercedReviewFields.add(`${review.groupId}:${field}`);
+              recorded.add(String(review.groupId)); reviewed++;
+            }
             catch (error) { rejectedReviews.push(review); refusals.push(`${review.groupId}: ${error instanceof Error ? error.message : String(error)}`); }
           }
           shows = shows.filter(show => !recorded.has(show.groupId));
@@ -445,7 +453,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       await Promise.all(Array.from({ length: Math.min(reviewConcurrency(dataDir), batches.length) }, lane));
       const failed = outcomes.filter(outcome => outcome.status === 'rejected');
       if (failed.length) throw (failed[0] as PromiseRejectedResult).reason;
-      if (reviewed) done.push(`${reviewed} requests reviewed`);
+      if (reviewed) done.push(`${reviewed} requests reviewed${coercedReviewFields.size ? ` (${coercedReviewFields.size} oversized fields trimmed after retry)` : ''}`);
 
       // Focus: place the requests not placed yet (changed since, or whose area is gone) in batches, each saved before the
       // next is read, then propose areas from Other when the router-placed Other requests changed since the last pass.

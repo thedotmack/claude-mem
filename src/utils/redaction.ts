@@ -51,6 +51,16 @@ function genericBuiltinRegex(lookbehind: string): RegExp {
   return new RegExp(`${lookbehind}${GENERIC_VALUE}`, 'gi');
 }
 
+// A webhook host, matched in any letter case (DNS names are case-insensitive)
+// and only where a host can start: after `//`, after userinfo `@`, or after a
+// character that cannot be part of a URL path. `host` is a regex source whose
+// letters are made case-insensitive one by one, so the rest of the pattern
+// keeps its case-sensitive path checks.
+function webhookHost(host: string): string {
+  const ci = host.replace(/\\.|[a-z]/g, (c) => (c.length === 1 ? `[${c}${c.toUpperCase()}]` : c));
+  return String.raw`(?:^|\/\/|@|[^\w.\/@%-])${ci}`;
+}
+
 /** `key=value`, `key: value`, `"key": "value"`, with JSON-escaped quotes too. */
 function keyedLookbehind(key: string): string {
   return `(?<=${key}${OPTIONAL_QUOTE}${BOUNDED_SPACE}[=:]${BOUNDED_SPACE}${OPTIONAL_QUOTE})`;
@@ -154,6 +164,17 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   // starts `AgE` (pypi.org and test.pypi.org alike), printed by `twine`,
   // `uv publish` and `~/.pypirc` dumps. Real tokens run past 150 characters.
   { name: 'pypi_token',      regex: /\bpypi-AgE[A-Za-z0-9_-]{50,}(?!\w)/g },
+  // Incoming webhook URLs carry their secret in the path, so anyone holding
+  // one can post to the channel: Slack (`hooks.slack.com/services/T…/B…/…`,
+  // plus workflow and trigger URLs) and Discord (`discord.com/api/webhooks/
+  // <id>/<token>`, discordapp.com and the ptb/canary hosts too), as printed by
+  // `.env` dumps, CI configs and `curl -X POST` commands. Only the last path
+  // segment is replaced, so the host and the workspace/channel ids stay
+  // readable. The host must start the URL's host part (after `//`, `@`, or a
+  // non-URL character), so `example.com/hooks.slack.com/…` keeps its path, and
+  // it matches in any letter case, as DNS does; the path stays case-sensitive.
+  { name: 'slack_webhook',   regex: new RegExp(String.raw`(?<=${webhookHost(String.raw`hooks\.slack\.com`)}\/(?:services|workflows|triggers)\/T[A-Z0-9]+\/[A-Z0-9]+\/(?:[0-9]+\/)?)[A-Za-z0-9]{20,}(?!\w)`, 'g') },
+  { name: 'discord_webhook', regex: new RegExp(String.raw`(?<=${webhookHost(String.raw`(?:(?:ptb|canary)\.)?discord(?:app)?\.com`)}\/api\/(?:v\d+\/)?webhooks\/[0-9]{17,20}\/)[A-Za-z0-9_-]{60,}(?![\w-])`, 'g') },
   // claude-mem's own credentials: server API keys (`cmem_` + 43 base64url
   // chars, server-bootstrap.ts createRawApiKey) and cmem.ai Pro memory keys.
   { name: 'claude_mem_key',  regex: /\bcmem_[A-Za-z0-9_-]{32,}|\bcm_pro_[A-Za-z0-9_-]{8,}/g },

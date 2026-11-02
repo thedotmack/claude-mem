@@ -50,6 +50,41 @@ describe('FocusSharePublisher', () => {
     expect(fake.sent[1].page.requests.map((request: { id: string }) => request.id).sort()).toEqual([second, third].sort());
   });
 
+  it('a stop sent while a share is still reading the work view takes effect after that share', async () => {
+    let release!: (view: WorkViewSnapshot) => void;
+    const reading = new Promise<WorkViewSnapshot>(resolve => { release = resolve; });
+    const fake = shares([]);
+    const publisher = new FocusSharePublisher({ shares: fake, snapshot: () => reading, now: () => NOW, everyMs: 0 });
+    const order: string[] = [];
+    const shared = publisher.publishArea('launch').then(() => { order.push(`shared after ${fake.stopped.length} stops`); });
+    const stopped = publisher.stopArea('launch').then(() => { order.push(`stopped after ${fake.sent.length} shares`); });
+    await Promise.resolve();
+    release(snapshot({ [first]: 'launch' }));
+    await Promise.all([shared, stopped]);
+    expect(order).toEqual(['shared after 0 stops', 'stopped after 1 shares']);
+  });
+
+  it('stopping one area does not wait on another area still sharing', async () => {
+    let release!: (view: WorkViewSnapshot) => void;
+    const reading = new Promise<WorkViewSnapshot>(resolve => { release = resolve; });
+    const fake = shares([]);
+    const publisher = new FocusSharePublisher({ shares: fake, snapshot: () => reading, now: () => NOW, everyMs: 0 });
+    const shared = publisher.publishArea('launch');
+    await publisher.stopArea('docs');
+    expect(fake.stopped).toEqual(['docs']);
+    expect(fake.sent).toHaveLength(0);
+    release(snapshot({ [first]: 'launch' }));
+    await shared;
+  });
+
+  it('a failed share does not stop a later stop', async () => {
+    const fake = shares([]);
+    const publisher = new FocusSharePublisher({ shares: fake, snapshot: () => snapshot({}), now: () => NOW, everyMs: 0 });
+    await expect(publisher.publishArea('idea')).rejects.toThrow(NOT_SHAREABLE);
+    await publisher.stopArea('idea');
+    expect(fake.stopped).toEqual(['idea']);
+  });
+
   it('stops the link of an area merged away, dismissed or handed back to suggestions', async () => {
     const fake = shares(['idea', 'docs']);
     const merged = snapshot({});
