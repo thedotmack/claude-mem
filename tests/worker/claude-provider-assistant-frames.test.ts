@@ -544,4 +544,19 @@ describe('ClaudeProvider per-turn usage visibility (#5023)', () => {
     });
     expect(JSON.stringify(usageCalls[0])).not.toContain(promptText);
   });
+
+  it('does not log usage for the synthetic init result', async () => {
+    const session = createSession();
+    session.lastGeneratorSource = 'init';
+    const harness = createHarness(session);
+
+    scriptedMessages = [
+      assistantFrame([{ type: 'text', text: OBSERVATION_XML }]),
+      resultFrame(),
+    ];
+
+    await harness.provider.startSession(session);
+
+    expect(infoSpy.mock.calls.filter(call => call[1] === 'Observer turn usage')).toHaveLength(0);
+  });
 });
