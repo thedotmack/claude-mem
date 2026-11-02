@@ -508,6 +508,39 @@ describe('resolveClaudeCredentialProfile (#4149)', () => {
  * host OS and never touches the real keychain.
  */
 describe('readMacOsKeychain with an injected execImpl (#2753)', () => {
+  it('searches the login keychain directly when the default search list misses the item', async () => {
+    const futureExpiresAt = Date.now() + 60 * 60 * 1000;
+    const payload = JSON.stringify({
+      claudeAiOauth: { accessToken: 'sk-ant-oat01-login-keychain-token', expiresAt: futureExpiresAt },
+    });
+    const calls: string[][] = [];
+    const fakeExecImpl = mock(async (_cmd: string, args: readonly string[]) => {
+      calls.push([...args]);
+      if (calls.length === 1) {
+        throw Object.assign(new Error('item not found in default keychain search list'), {
+          code: 44,
+          stderr: 'The specified item could not be found in the keychain.',
+        });
+      }
+      return { stdout: payload, stderr: '' };
+    }) as any;
+
+    const result = await readMacOsKeychain('Claude Code-credentials', fakeExecImpl, 'kirat');
+
+    expect(result.kind).toBe('present');
+    if (result.kind === 'present') {
+      expect(result.token).toBe('sk-ant-oat01-login-keychain-token');
+      expect(result.source).toBe('keychain');
+      expect(result.expiresAt).toBe(futureExpiresAt);
+    }
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toEqual(['find-generic-password', '-s', 'Claude Code-credentials', '-a', 'kirat', '-w']);
+    expect(calls[1]).toEqual([
+      ...calls[0],
+      join(homedir(), 'Library', 'Keychains', 'login.keychain-db'),
+    ]);
+  });
+
   it('logs the security command code, signal, and stderr when a Keychain lookup fails', async () => {
     const stderr = 'User interaction is not allowed.';
     const error = Object.assign(new Error('Command failed: security find-generic-password'), {
@@ -567,7 +600,7 @@ describe('readMacOsKeychain with an injected execImpl (#2753)', () => {
       expect(instanceResult.expiresAt).toBe(futureExpiresAt);
     }
 
-    expect(fakeExecImpl).toHaveBeenCalledTimes(2);
+    expect(fakeExecImpl).toHaveBeenCalledTimes(3);
   });
 });
 
