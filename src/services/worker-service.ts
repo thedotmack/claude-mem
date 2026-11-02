@@ -6,7 +6,8 @@ import { pathToFileURL } from 'url';
 import type { Database } from 'bun:sqlite';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { formatHostForUrl, getWorkerPort, getWorkerHost, fetchWithTimeout, resolveWorkerScriptPath } from '../shared/worker-utils.js';
+import { buildWorkerUrl, getWorkerPort, getWorkerHost, fetchWithTimeout, resolveWorkerScriptPath } from '../shared/worker-utils.js';
+import { InvalidWorkerUrlError, normalizeWorkerBaseUrl } from '../shared/worker-url.js';
 import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js';
 import { runShutdownSequence, WORKER_GRACEFUL_SHUTDOWN_DEADLINE_BASE_MS, type WorkerShutdownReason } from './worker-shutdown.js';
 import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensureDir, paths } from '../shared/paths.js';
@@ -1658,6 +1659,16 @@ async function main() {
     process.exit(0);
   }
 
+  function explicitWorkerUrlOrExit(): string {
+    try {
+      return normalizeWorkerBaseUrl(SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_URL);
+    } catch (error: unknown) {
+      if (!(error instanceof InvalidWorkerUrlError)) throw error;
+      console.error(error.message);
+      process.exit(1);
+    }
+  }
+
   switch (command) {
     case 'upload-spool': {
       const { uploadRemoteHookSpool } = await import('../cli/spool-hook-event.js');
@@ -1709,6 +1720,13 @@ async function main() {
     }
 
     case 'restart': {
+      // A local worker here would share this client's data directory and drain
+      // the outbox that belongs to the worker at the URL, so never start one.
+      const remoteWorkerUrl = explicitWorkerUrlOrExit();
+      if (remoteWorkerUrl) {
+        console.error(`CLAUDE_MEM_WORKER_URL is set, so the worker runs at ${remoteWorkerUrl}. Restart it from whatever manages it.`);
+        process.exit(1);
+      }
       logger.info('SYSTEM', 'Restarting worker');
       // Capture the old worker's pid BEFORE shutdown so we can later prove
       // the worker answering health checks is a NEW process, not the corpse.
@@ -1821,11 +1839,12 @@ async function main() {
       // either direction (a clobbered file reporting a healthy worker as
       // down, or a stale file reporting a dead worker as up). Exit code is 0
       // on every branch, matching the historical behavior.
-      const health = await fetchWorkerHealth(port, getPlatformTimeout(3000));
+      const explicitWorkerUrl = explicitWorkerUrlOrExit();
+      const health = await fetchWorkerHealth(getPlatformTimeout(3000));
       if (health && typeof health.pid === 'number') {
         console.log('Worker is running');
         console.log(`  PID: ${health.pid}`);
-        console.log(`  Port: ${port}`);
+        console.log(explicitWorkerUrl ? `  URL: ${explicitWorkerUrl}` : `  Port: ${port}`);
         if (typeof health.version === 'string') {
           console.log(`  Version: ${health.version}`);
         }
@@ -1840,6 +1859,10 @@ async function main() {
           console.log(dependencyHint);
         }
         printQueueStatusIfBullMq(health);
+        process.exit(0);
+      }
+      if (explicitWorkerUrl) {
+        console.log(`Worker is not reachable at ${explicitWorkerUrl}`);
         process.exit(0);
       }
       if (await isPortInUse(port)) {
@@ -2221,9 +2244,9 @@ export function formatDependencyHealthHint(health: WorkerHealthSnapshot): string
  * pid/version/uptime — a degraded worker is still a RUNNING worker, so both
  * 200 and 503 payloads are returned as-is.
  */
-async function fetchWorkerHealth(port: number, timeoutMs: number): Promise<WorkerHealthSnapshot | null> {
+async function fetchWorkerHealth(timeoutMs: number): Promise<WorkerHealthSnapshot | null> {
   try {
-    const response = await fetchWithTimeout(`http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`, {}, timeoutMs);
+    const response = await fetchWithTimeout(buildWorkerUrl('/api/health'), {}, timeoutMs);
     return await response.json() as WorkerHealthSnapshot;
   } catch {
     // [ANTI-PATTERN IGNORED]: health probe — connection refused/timeout IS the "worker not running" answer, polled on every status check; logging would spam. null is the documented recovery value the callers branch on.

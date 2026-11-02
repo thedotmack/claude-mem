@@ -4,7 +4,7 @@ import { homedir } from 'os';
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, renameSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
-import { formatHostForUrl, getWorkerHost, getWorkerPort } from '../../shared/worker-utils.js';
+import { getWorkerBaseUrl } from '../../shared/worker-utils.js';
 import { parseJsonWithBom } from '../../shared/atomic-json.js';
 import { DATA_DIR } from '../../shared/paths.js';
 import { getBunAbsolutePath as findBunPath, getWorkerServiceAbsolutePath as findWorkerServicePath } from './install-paths.js';
@@ -227,14 +227,13 @@ Next steps:
 }
 
 async function setupWindsurfProjectContext(workspaceRoot: string): Promise<void> {
-  const port = getWorkerPort();
   const projectName = getProjectContext(workspaceRoot).primary;
   let contextGenerated = false;
 
   console.log(`  Generating initial context...`);
 
   try {
-    contextGenerated = await fetchWindsurfContextFromWorker(port, projectName, workspaceRoot);
+    contextGenerated = await fetchWindsurfContextFromWorker(projectName, workspaceRoot);
   } catch (error) {
     if (error instanceof Error) {
       logger.debug('WORKER', 'Worker not running during install', {}, error);
@@ -262,11 +261,10 @@ Use claude-mem's MCP search tools for manual memory queries.
 }
 
 async function fetchWindsurfContextFromWorker(
-  port: number,
   projectName: string,
   workspaceRoot: string,
 ): Promise<boolean> {
-  const workerUrl = `http://${formatHostForUrl(getWorkerHost())}:${port}`;
+  const workerUrl = getWorkerBaseUrl();
   const healthResponse = await fetch(`${workerUrl}/api/readiness`);
   if (!healthResponse.ok) return false;
 
