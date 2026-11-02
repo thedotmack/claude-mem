@@ -162,6 +162,7 @@ export const sampleSource: WorkDataSource = {
   },
   // The sample file is always loaded; there is no CLAUDE.md to change.
   loadRulesInClaudeCode: loadSampleWorkModel,
+  refreshWork: async () => ({ state: 'idle' }),
   // Sample agents are fixtures with no recorded state to change.
   markAgentFinished: () => Promise.reject(new Error('Sample agents have no recorded state to change.')),
 

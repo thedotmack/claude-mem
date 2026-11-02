@@ -541,6 +541,39 @@ describe('readMacOsKeychain with an injected execImpl (#2753)', () => {
     ]);
   });
 
+  it('logs both attempts when the login keychain also fails after the search list misses the item', async () => {
+    const searchListStderr = 'The specified item could not be found in the keychain.';
+    const loginKeychainStderr = 'User interaction is not allowed.';
+    const loginKeychainError = Object.assign(new Error('Command failed: security find-generic-password'), {
+      code: 36, stderr: loginKeychainStderr,
+    });
+    const fakeExecImpl = mock(async (_cmd: string, args: readonly string[]) => {
+      if (args.length === 6) {
+        throw Object.assign(new Error('Command failed: security find-generic-password'), {
+          code: 44, stderr: searchListStderr,
+        });
+      }
+      throw loginKeychainError;
+    }) as any;
+    const warning = spyOn(logger, 'warn').mockImplementation(() => {});
+
+    try {
+      const result = await readMacOsKeychain('Claude Code-credentials', fakeExecImpl, 'kirat');
+
+      expect(result.kind).toBe('absent');
+      expect(fakeExecImpl).toHaveBeenCalledTimes(2);
+      expect(warning).toHaveBeenCalledTimes(1);
+      expect(warning).toHaveBeenCalledWith('OAUTH', 'macOS keychain lookup failed', expect.objectContaining({
+        exitCode: 36,
+        stderr: loginKeychainStderr,
+        searchListExitCode: 44,
+        searchListStderr,
+      }), loginKeychainError);
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
   it('logs the security command code, signal, and stderr when a Keychain lookup fails', async () => {
     const stderr = 'User interaction is not allowed.';
     const error = Object.assign(new Error('Command failed: security find-generic-password'), {

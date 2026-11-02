@@ -19,6 +19,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
       - uses: actions/checkout@v4
         with:
           repository: Osmantic/ODS
@@ -31,6 +35,8 @@ jobs:
         env:
           ODS_TEST_REPO: ${{ github.workspace }}/fixtures/ods
         run: node --test ods/test/native.test.mjs ods/test/install.test.mjs
+      - name: ODS worker smoke test
+        run: node --test ods/test/worker-smoke.mjs
       - name: Prepare native ODS sources
         run: node ods/install.mjs --ods-dir fixtures/ods
       - name: ODS ingress capture, recall and replay

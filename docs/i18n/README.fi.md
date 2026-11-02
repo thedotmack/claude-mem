@@ -390,7 +390,6 @@ Katso [LICENSE](LICENSE)-tiedosto täysistä yksityiskohdista. Katso [docs/licen
 ja [docs/ip-boundary.md](docs/ip-boundary.md) lisenssoinnin laajuudesta ja
 avoimen/kaupallisen rajan osalta.
 
-**Huomio Ragtimesta**: `ragtime/`-hakemisto on lisensoitu **Apache License 2.0** -lisenssillä. Katso [ragtime/LICENSE](ragtime/LICENSE) lisätietoja varten.
 
 ---
 

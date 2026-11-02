@@ -65,7 +65,8 @@ function keyedLookbehind(key: string): string {
 // - an env/shell or query assignment with no spaces around `=`, at the start
 //   or after whitespace, `?` or `&` (`api_key=…`, `export secret=…`,
 //   `?token=…`), whose value is not a call (`token=getAuthToken()`);
-// - a CLI flag (`--token=…`, `--api-key …`);
+// - a CLI flag (`--token=…`, `--api-key …`), prefixed ones too
+//   (`--auth-token …`, `--client-secret=…`, `--hf-token …`);
 // - a yaml line (`token: …` at a line start, raw or JSON-escaped `\n`) whose
 //   value runs to the end of the line, which a typed field (`token: T;`) doesn't.
 // The worker scans tool output as `JSON.stringify(response)`, so a JSON
@@ -81,7 +82,7 @@ const GENERIC_TOKEN_REGEX = new RegExp([
   `${keyedLookbehind(String.raw`\b\w*_${BARE_TOKEN_KEY}`)}${GENERIC_VALUE}`,
   `(?<=${ESCAPED_QUOTE}${BARE_TOKEN_KEY}${ESCAPED_QUOTE}${BOUNDED_SPACE}:${BOUNDED_SPACE}${ESCAPED_QUOTE})${GENERIC_VALUE}`,
   `(?<=${ASSIGNMENT_START}${BARE_TOKEN_KEY}=${OPTIONAL_QUOTE})${GENERIC_VALUE}(?!\\(|${GENERIC_VALUE_CLASS})`,
-  String.raw`(?<=--(?:token|secret|api[-_]key)(?:=|[ \t]{1,8})${OPTIONAL_QUOTE})${GENERIC_VALUE}`,
+  String.raw`(?<=--(?:[a-z0-9]+[-_])*(?:token|secret|api[-_]key)(?:=|[ \t]{1,8})${OPTIONAL_QUOTE})${GENERIC_VALUE}`,
   `(?<=${LINE_START}${BARE_TOKEN_KEY}:[ \\t]{1,8}${OPTIONAL_QUOTE})${GENERIC_VALUE}(?=${LINE_END})`,
 ].join('|'), 'gi');
 
@@ -127,16 +128,32 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   // A PGP secret key is armored as `PRIVATE KEY BLOCK`, and an encrypted
   // PKCS#8 key as `ENCRYPTED PRIVATE KEY`.
   { name: 'private_key_pem', regex: /-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END (?:RSA |DSA |EC |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----/g },
-  { name: 'stripe_key',      regex: /\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{24,}\b/g },
+  // API keys (`sk_`/`pk_`/`rk_`) and webhook signing secrets (`whsec_`, what
+  // `stripe listen` prints and STRIPE_WEBHOOK_SECRET holds), which forge events.
+  { name: 'stripe_key',      regex: /\b(?:(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{24,}|whsec_[A-Za-z0-9]{32,})\b/g },
   { name: 'google_api_key',  regex: /\bAIza[0-9A-Za-z_-]{35}(?!\w)/g },
-  // GitLab personal/project/group access tokens (`glpat-` + 20 chars; newer
-  // routable tokens add dot-separated segments), Hugging Face user access
-  // tokens (`hf_` + 34 chars) and npm access tokens (`npm_` + 36 chars): the
-  // credentials `glab`, `huggingface-cli` and `npm` print in config and
-  // `.npmrc`/`.env` dumps.
-  { name: 'gitlab_token',    regex: /\bglpat-[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)*(?!\w)/g },
+  // GitLab personal/project/group access tokens (`glpat-`), deploy tokens (`gldt-`),
+  // and runner authentication tokens (`glrt-` + 20 chars; newer routable tokens
+  // add dot-separated segments), Hugging Face user access tokens (`hf_` + 34 chars),
+  // npm access tokens (`npm_` + 36 chars) and Docker Hub personal access tokens
+  // (`dckr_pat_` + 27 chars): credentials printed in config files, CLI commands
+  // (`glab`, `huggingface-cli`, `npm`, `docker login`), and env dumps.
+  { name: 'gitlab_token',    regex: /\bgl(?:pat|dt|rt)-[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)*(?!\w)/g },
   { name: 'huggingface_token', regex: /\bhf_[A-Za-z0-9]{30,}\b/g },
   { name: 'npm_token',       regex: /\bnpm_[A-Za-z0-9]{36}\b/g },
+  { name: 'docker_pat',     regex: /\bdckr_pat_[A-Za-z0-9_-]{27,}(?!\w)/g },
+  // SendGrid API keys (`SG.` + 22 + `.` + 43 base64url chars), DigitalOcean
+  // personal access, OAuth and refresh tokens (`dop_v1_`/`doo_v1_`/`dor_v1_` +
+  // 64 hex) and Shopify Admin API, app and shared-secret tokens (`shpat_`,
+  // `shpca_`, `shppa_`, `shpss_` + 32 hex): what `doctl`, the Shopify CLI and
+  // `.env` dumps print.
+  { name: 'sendgrid_key',    regex: /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}(?![\w-])/g },
+  { name: 'digitalocean_token', regex: /\bdo[opr]_v1_[a-f0-9]{64}\b/g },
+  { name: 'shopify_token',   regex: /\bshp(?:at|ca|pa|ss)_[a-fA-F0-9]{32}\b/g },
+  // PyPI API tokens: `pypi-` + a base64url macaroon whose header always
+  // starts `AgE` (pypi.org and test.pypi.org alike), printed by `twine`,
+  // `uv publish` and `~/.pypirc` dumps. Real tokens run past 150 characters.
+  { name: 'pypi_token',      regex: /\bpypi-AgE[A-Za-z0-9_-]{50,}(?!\w)/g },
   // claude-mem's own credentials: server API keys (`cmem_` + 43 base64url
   // chars, server-bootstrap.ts createRawApiKey) and cmem.ai Pro memory keys.
   { name: 'claude_mem_key',  regex: /\bcmem_[A-Za-z0-9_-]{32,}|\bcm_pro_[A-Za-z0-9_-]{8,}/g },
@@ -154,6 +171,9 @@ export const GENERIC_REDACTION_PATTERNS: RedactionPattern[] = [
   { name: 'generic_password', regex: genericBuiltinRegex(keyedLookbehind(String.raw`\b(?:\w*_?(?:password|passwd)|\w+_pwd)`)) },
   { name: 'generic_token',    regex: GENERIC_TOKEN_REGEX },
   { name: 'bearer_token',     regex: genericBuiltinRegex(`(?<=\\bAuthorization${OPTIONAL_QUOTE}${BOUNDED_SPACE}:${BOUNDED_SPACE}${OPTIONAL_QUOTE}Bearer${BOUNDED_SPACE})`) },
+  // `Authorization: Basic …` carries base64(user:password), a password anyone
+  // can decode, as in `curl -H "Authorization: Basic dXNlcjpodW50ZXIy"`.
+  { name: 'basic_auth',       regex: genericBuiltinRegex(`(?<=\\bAuthorization${OPTIONAL_QUOTE}${BOUNDED_SPACE}:${BOUNDED_SPACE}${OPTIONAL_QUOTE}Basic${BOUNDED_SPACE})`) },
 ];
 
 // Measured in UTF-16 code units (string.length). Bounds the regex work per
@@ -383,7 +403,7 @@ function genericMarkerForKeyedValue(key: string, value: string, config: Redactio
 // key paired with the value again. As in text, only the token after `Bearer`
 // is replaced: the same spacing is accepted around `Bearer`, and whatever
 // follows the token (trailing whitespace included) is kept, unanchored.
-const AUTHORIZATION_KEY = /^authorization$/i;
+const AUTHORIZATION_KEY = /^(?:proxy-)?authorization$/i;
 const KEYED_BEARER_VALUE = new RegExp(`^(${BOUNDED_SPACE}Bearer${BOUNDED_SPACE})${GENERIC_VALUE}`, 'i');
 
 function bearerMarkerForKeyedValue(key: string, value: string, config: RedactionConfig): string | null {
@@ -391,6 +411,16 @@ function bearerMarkerForKeyedValue(key: string, value: string, config: Redaction
   if (!AUTHORIZATION_KEY.test(key)) return null;
   const match = KEYED_BEARER_VALUE.exec(value);
   return match ? `${match[1]}<redacted type='bearer_token'/>${value.slice(match[0].length)}` : null;
+}
+
+// The same pairing for the credentials of `{"Authorization": "Basic …"}`.
+const KEYED_BASIC_VALUE = new RegExp(`^(${BOUNDED_SPACE}Basic${BOUNDED_SPACE})${GENERIC_VALUE}`, 'i');
+
+function basicMarkerForKeyedValue(key: string, value: string, config: RedactionConfig): string | null {
+  if (!config.genericEnabled || config.disabledBuiltinPatterns?.includes('basic_auth')) return null;
+  if (!AUTHORIZATION_KEY.test(key)) return null;
+  const match = KEYED_BASIC_VALUE.exec(value);
+  return match ? `${match[1]}<redacted type='basic_auth'/>${value.slice(match[0].length)}` : null;
 }
 
 // The aws_session_token built-in anchors on `SessionToken: …`, so a payload
@@ -431,6 +461,7 @@ export function redactJsonStrings<T>(value: T, config: RedactionConfig = getReda
       return awsSessionTokenMarkerForKeyedValue(key, node, config)
         ?? awsSecretKeyMarkerForKeyedValue(key, node, config)
         ?? bearerMarkerForKeyedValue(key, node, config)
+        ?? basicMarkerForKeyedValue(key, node, config)
         ?? genericMarkerForKeyedValue(key, node, config)
         ?? result.redacted;
     }

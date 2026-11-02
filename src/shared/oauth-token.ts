@@ -299,7 +299,7 @@ function getSecurityCommandDiagnostic(error: unknown): {
     exitCode: typeof commandError.code === 'number' ? commandError.code : null,
     errorCode: typeof commandError.code === 'string' ? commandError.code : null,
     signal: typeof commandError.signal === 'string' ? commandError.signal : null,
-    stderr: stderr.trim().slice(-1000) || null,
+    stderr: stderr.trim() || null,
   };
 }
 
