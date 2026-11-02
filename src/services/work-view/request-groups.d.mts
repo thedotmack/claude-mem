@@ -38,6 +38,8 @@ export function runCli(argv: string[], options?: {
   saveFocus?: ((body: import('./my-focus.mjs').RouterFocusBody) => { placed: number; focusAreaIds: string[] } | Promise<{ placed: number; focusAreaIds: string[] }>) | null;
   /** `judge`: the Jev judge for the `judge` command (undefined: from the install's settings; null: code links only). That command answers with a promise. */
   judge?: import('./request-judge.mjs').RequestJudge | null;
+  /** After one rejected automatic progress review, bound its generated fields instead of rejecting the same group again. */
+  coerceProgress?: boolean;
 }): void | Promise<void>;
 export interface FocusRequestRecord {
   anchor: string; groupId: string; title: string; firstAsk: string | null; state: string | null; summary: string | null; repo: string | null;
