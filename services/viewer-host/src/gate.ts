@@ -17,6 +17,7 @@
  *     and cookies removed.
  */
 import { signToken, verifyToken } from './token.js';
+import { anonymousDistinctId, anonCookie, hostedUsageEvent, requestHostname, sendPostHogEvent, VIEWER_USAGE_PATH } from './usage.js';
 
 export const SESSION_COOKIE = 'cmem_viewer_session';
 const SESSION_SECONDS = 7 * 24 * 60 * 60;
@@ -58,6 +59,11 @@ export interface GateOptions {
   signInUrl: string;
   fetchImpl?: typeof fetch;
   now?: () => number;
+  /** Ingestion POST. Defaults to fetch. Tests pass a stub so nothing leaves the process. */
+  posthogFetch?: typeof fetch;
+  /** Random anonymous id minted when the browser has none. Tests pin it. */
+  mintAnonymousId?: () => string;
+  env?: NodeJS.ProcessEnv;
 }
 
 function readCookie(request: Request, name: string): string | null {
@@ -163,6 +169,31 @@ export function createGate(options: GateOptions): (request: Request) => Promise<
     if (!sessionOwner(request)) {
       if (wantsHtml(request)) return Response.redirect(options.signInUrl, 302);
       return json(401, { error: 'Sign in at cmem.ai to open your viewer.' });
+    }
+
+    if (request.method === 'POST' && url.pathname === VIEWER_USAGE_PATH) {
+      if (request.headers.get('origin') !== publicOrigin || request.headers.get('sec-fetch-site') === 'cross-site') {
+        return json(403, { error: 'Changes must come from your viewer page.' });
+      }
+      let body: unknown;
+      try { body = await request.json(); } catch { return json(400, { error: 'Usage report must be JSON.' }); }
+      const hostname = requestHostname(request);
+      const pageUrl = `${publicOrigin}/`;
+      const parsed = hostedUsageEvent(body, hostname, pageUrl);
+      if (!parsed) return json(400, { error: 'Unknown usage report.' });
+      const anon = anonymousDistinctId(request.headers.get('cookie'), (options.mintAnonymousId ?? crypto.randomUUID)());
+      const headers: Record<string, string> = { 'Cache-Control': 'no-store' };
+      if (anon.setCookie) headers['Set-Cookie'] = anonCookie(anon.id, secure);
+      try {
+        await sendPostHogEvent(
+          { event: parsed.event, distinctId: anon.id, properties: parsed.properties },
+          options.env ?? process.env,
+          options.posthogFetch ?? fetch,
+        );
+      } catch {
+        // The page does not retry on a failed ingest; answering 204 keeps the viewer quiet.
+      }
+      return new Response(null, { status: 204, headers });
     }
 
     if (!isAllowed(request.method, url.pathname)) {

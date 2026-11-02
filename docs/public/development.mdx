@@ -668,12 +668,12 @@ changelog:
 ```bash
 gh release create vNEW_VERSION --title "vNEW_VERSION" --notes "..."
 npm run changelog:generate
-git add CHANGELOG.md
+git add docs/CHANGELOG.md
 git commit -m "docs: regenerate changelog for vNEW_VERSION"
 git push origin main
 ```
 
-Do not hand-edit `CHANGELOG.md`; it is generated from GitHub releases.
+Do not hand-edit `docs/CHANGELOG.md`; it is generated from GitHub releases.
 
 ## Contributing
 
@@ -694,7 +694,7 @@ Do not hand-edit `CHANGELOG.md`; it is generated from GitHub releases.
 - **Description**: Explain why the change is needed
 - **Tests**: Include tests for new features
 - **Documentation**: Update docs as needed
-- **Changelog**: Do not hand-edit `CHANGELOG.md`; it is generated during release
+- **Changelog**: Do not hand-edit `docs/CHANGELOG.md`; it is generated during release
 - **Commits**: Use clear, descriptive commit messages
 
 ### Code Review Process

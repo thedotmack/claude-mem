@@ -390,7 +390,6 @@ Zie het [LICENSE](LICENSE) bestand voor volledige details. Zie [docs/license.md]
 en [docs/ip-boundary.md](docs/ip-boundary.md) voor de licentiescope en de
 grens tussen open en commercieel gebruik.
 
-**Opmerking over Ragtime**: De `ragtime/` map is gelicenseerd onder de **Apache License 2.0**. Zie [ragtime/LICENSE](ragtime/LICENSE) voor details.
 
 ---
 

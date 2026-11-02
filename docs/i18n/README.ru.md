@@ -390,7 +390,6 @@ Claude-Mem распространяется под лицензией Apache Lic
 и [docs/ip-boundary.md](docs/ip-boundary.md) для описания области действия лицензии и
 границы между открытым и коммерческим использованием.
 
-**Примечание о Ragtime**: Директория `ragtime/` лицензирована под **Apache License 2.0**. Подробности см. в [ragtime/LICENSE](ragtime/LICENSE).
 
 ---
 

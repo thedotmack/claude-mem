@@ -280,6 +280,7 @@ export interface SetupWorkItem { groupId: string; title: string; platform: strin
 const SETUP_WORK_SHOWN = 5;
 
 const setupScanBody = z.object({ improveProduct: z.boolean().optional() }).strict();
+const setupScanConsentBody = z.object({ upload: z.boolean(), agents: z.array(z.enum(['claude-code', 'codex', 'gemini-cli', 'antigravity-cli', 'opencode'])).optional(), improveProduct: z.boolean().optional() }).strict();
 const setupScanPreferencesBody = z.object({ improveProduct: z.boolean() }).strict();
 // On The Go is always CMEM Pro: standalone Cloud Sync on your own tokens has no price yet (gap G1).
 const setupChoiceBody = z.object({
@@ -506,7 +507,9 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private setupIsActive(): boolean {
     const statePath = this.setupStatePath ?? setupStatePath();
     const scanPhase = this.setupScan?.state().phase ?? 'idle';
-    if (!['idle', 'done', 'failed'].includes(scanPhase)) return true;
+    // Waiting for the upload answer is not active: a closed tab never answers, and that must not hold local work
+    // paused. The installer's session below still covers a setup in progress; reopening the page rejoins the question.
+    if (!['idle', 'done', 'failed', 'awaiting-consent'].includes(scanPhase)) return true;
     return readSetupState(statePath).status !== 'complete' && hasActiveSetupSession(statePath);
   }
 
@@ -621,6 +624,13 @@ export class WorkViewRoutes extends BaseRouteHandler {
       if (!this.setupScan) { res.status(503).json({ error: 'The prompt scan is unavailable on this worker.' }); return; }
       res.setHeader('Cache-Control', 'no-store');
       res.status(202).json(this.setupScan.start(req.body.improveProduct));
+    }));
+    app.post('/api/setup/scan/consent', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupScanConsentBody), this.wrapHandler(async (req, res) => {
+      if (!this.setupScan) { res.status(503).json({ error: 'The prompt scan is unavailable on this worker.' }); return; }
+      res.setHeader('Cache-Control', 'no-store');
+      try { res.json(await this.setupScan.confirmUpload(req.body.upload, req.body.agents, req.body.improveProduct)); } catch (error) {
+        res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
+      }
     }));
     app.post('/api/setup/scan/preferences', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupScanPreferencesBody), this.wrapHandler((req, res) => {
       if (!this.setupScan) { res.status(503).json({ error: 'The prompt scan is unavailable on this worker.' }); return; }
@@ -1047,10 +1057,16 @@ export class WorkViewRoutes extends BaseRouteHandler {
    */
   /** Counts the viewer opening on a page, or switching page, through the worker's own consent-gated, whitelist-scrubbed
    * telemetry (telemetry.ts), so the page loads no analytics SDK. The report names the page only — never what it showed. */
+  private viewerHostname(req: Request): string {
+    const host = (req.hostname || '').trim().toLowerCase();
+    return /^[a-z0-9.-]{1,253}$/.test(host) ? host : 'unknown';
+  }
+
   private recordUsage = (req: Request, res: Response): void => {
     const report = req.body as z.infer<typeof usageBody>;
-    if (report.event === 'opened') captureEvent('work_view_opened', { view: report.view });
-    else captureEvent('work_view_switched', { view: report.view, previous_view: report.previousView });
+    const where = { viewer_host: 'local', hostname: this.viewerHostname(req) };
+    if (report.event === 'opened') captureEvent('work_view_opened', { view: report.view, ...where });
+    else captureEvent('work_view_switched', { view: report.view, previous_view: report.previousView, ...where });
     res.status(204).end();
   };
 
