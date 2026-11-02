@@ -133,7 +133,7 @@ function claudeCodeUsage(excludedFolders: Set<string>): UsageReader {
         if (excludedFolders.has(projectFolder)) continue;
         try {
           for await (const line of readLines(source.path)) {
-            if (!line.includes('"usage"') || !line.includes('"type":"assistant"')) continue;
+            if (!line.includes('"usage"') || !/"type"\s*:\s*"assistant"/.test(line)) continue;
             const record = parseLine(line);
             const message = record?.message;
             if (record?.type !== 'assistant' || !message?.usage) continue;
