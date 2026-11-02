@@ -374,3 +374,13 @@ for (const state of ['unavailable', 'current']) {
     assert.equal(model.requests[0].summary, raw.progress!.summary)
   })
 }
+
+test('a group title that repeats the prompt is marked, even past the part the card quotes', () => {
+  const long = `${'Context. '.repeat(60)}\nGOAL: Move billing to the new processor`
+  const raw: WorkViewHumanRequest = { ...syntheticRequest(), titleSource: 'request-group', title: 'Move billing to the new processor', original: { text: long, atEpoch: Date.UTC(2026, 9, 18) } }
+  const [copied] = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z')).requests
+  assert.equal(copied.titleRepeatsPrompt, true)
+  assert.ok(!copied.prompts[0].quote.includes('billing'), 'the card quote alone would have missed it')
+  const [written] = toWorkModel(snapshotWith([{ ...raw, title: 'Billing moves processors' }]), Date.parse('2026-10-22T12:00:00Z')).requests
+  assert.equal(written.titleRepeatsPrompt, undefined)
+})

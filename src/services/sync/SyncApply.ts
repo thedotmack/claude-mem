@@ -1,6 +1,6 @@
 // SyncApply — the client-side apply path for the two-lane sync hub
 // (plan Phase 2, tasks 2-3). Pulled ops from the per-user SyncHub log
-// (workers/sync-hub/src/do/SyncHub.ts) are applied to the local SQLite in ONE
+// (services/sync-hub/src/do/SyncHub.ts) are applied to the local SQLite in ONE
 // transaction per batch, with the pull cursor advanced in that SAME
 // transaction — crash-safe exactly-once: either a batch's rows AND its cursor
 // land together, or neither does. Application is idempotent (re-applying any

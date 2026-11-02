@@ -1097,6 +1097,8 @@ var init_SettingsDefaultsManager = __esm({
         // Human-readable label for the cmem.ai Devices panel
         CLAUDE_MEM_CLOUD_SYNC_WS: "true",
         // Live updates (Supabase Realtime `advance` broadcasts). 'false' disables live updates — sync stays fully correct, just poll-latency (prime directive #2)
+        CLAUDE_MEM_CLOUD_SYNC_KEEP_PULLING: "false",
+        // 'true' keeps pulling with no sessions running instead of suspending after an hour (the cloud viewer replica, which runs no hooks)
         CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: "40",
         // Drain page size; 200-op content pushes timed out under hub projection_busy
         CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS: "90000",

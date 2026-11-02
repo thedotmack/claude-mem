@@ -100,12 +100,14 @@ describe('setup scan endpoints', () => {
     await start(setupScan);
     expect((await postScan(undefined, '{"improveProduct":false}')).status).toBe(202);
     await setupScan.finished();
+    await setupScan.confirmUpload(true);
     const failed = await (await fetch(`${origin}/api/setup/scan`)).json();
     expect(failed).toMatchObject({ phase: 'failed', done: true, error: message });
     expect(attempts).toEqual([false]);
 
     expect((await postScan()).status).toBe(202);
     await setupScan.finished();
+    await setupScan.confirmUpload(true);
     const retried = await (await fetch(`${origin}/api/setup/scan`)).json();
     expect(retried).toMatchObject({ phase: 'done', done: true, error: null, improveProduct: false, added: 0 });
     expect(attempts).toEqual([false, false]);
