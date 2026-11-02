@@ -19,6 +19,7 @@ const WORK_VIEW_REVIEW_URL = '/api/work-view/review'
 const WORK_VIEW_RULES_URL = '/api/work-view/rules'
 const WORK_VIEW_FOCUS_URL = '/api/work-view/focus'
 const WORK_VIEW_LOAD_RULES_URL = '/api/work-view/rules/load-in-claude-code'
+const WORK_VIEW_REFRESH_URL = '/api/work-view/refresh'
 const WORK_VIEW_MARK_AGENT_FINISHED_URL = '/api/work-view/agents/mark-finished'
 const CONTENT_FINGERPRINT_PATTERN = /^[a-f0-9]{64}$/
 const CONNECTION_TICK_MS = 1000
@@ -138,6 +139,15 @@ export const localSource: WorkDataSource = {
   saveRuleChange: (change) => postForWorkModel(WORK_VIEW_RULES_URL, change, 'The rule change'),
   saveFocusChange: async (change) => (await postForWorkModel(WORK_VIEW_FOCUS_URL, change, 'The focus change')).model,
   loadRulesInClaudeCode: async () => (await postForWorkModel(WORK_VIEW_LOAD_RULES_URL, {}, 'Loading your rules into Claude Code')).model,
+  async refreshWork() {
+    const response = await fetch(WORK_VIEW_REFRESH_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+    if (!response.ok) {
+      let reason = `the worker answered ${response.status}`
+      try { const body = await response.json() as { error?: unknown }; if (typeof body.error === 'string') reason = body.error } catch { /* Keep the status as the reason. */ }
+      throw new Error(`Refresh could not start: ${reason}`)
+    }
+    return await response.json() as { state: string }
+  },
   markAgentFinished: async (agentId) => (await postForWorkModel(WORK_VIEW_MARK_AGENT_FINISHED_URL, { agentGroupId: agentId }, 'Marking the agent finished')).model,
 
   subscribeToLiveUpdates(onWorkModel, onConnectionChange) {

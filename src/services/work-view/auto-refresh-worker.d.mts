@@ -11,7 +11,8 @@ export interface RefreshStatus {
   finishedAt?: string;
   checkedAt?: string;
   nextAt?: string | null;
-  needs?: RefreshNeeds;
+  /** null when the run failed before it could read what was due. */
+  needs?: RefreshNeeds | null;
   result?: string | null;
   error?: string | null;
   steps?: RefreshStepTiming[];
@@ -25,15 +26,18 @@ export class AutoRefreshWorker {
     openDatabase: () => LedgerDatabase & { close(): void };
     runJob: (job: { needs: RefreshNeeds; reason: string }) => Promise<RefreshJobOutcome>;
     enabled?: () => boolean;
+    setupRunning?: () => boolean;
     checkMs?: number;
     now?: () => number;
     log?: (level: 'info' | 'warn', message: string, data?: Record<string, unknown>) => void;
     /** The worker's sync device id ('' when cloud sync never started), so my-focus rows replay in its order. */
     localDeviceId: () => string;
   });
+  /** True from the moment a run starts until it finishes. */
+  readonly busy: boolean;
   status(): RefreshStatus | null;
   start(): void;
   close(): void;
   check(): Promise<'closed' | 'disabled' | 'running' | 'backing-off' | 'idle' | RefreshJobOutcome['state']>;
-  runNow(options: { reason: string }): Promise<'closed' | 'running' | 'idle' | RefreshJobOutcome['state']>;
+  runNow(options: { reason: string }): Promise<'closed' | 'setup-running' | 'running' | 'idle' | RefreshJobOutcome['state']>;
 }
