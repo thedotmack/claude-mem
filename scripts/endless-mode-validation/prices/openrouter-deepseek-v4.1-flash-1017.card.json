@@ -1,0 +1,15 @@
+{
+ "model": "deepseek/deepseek-v4.1-flash-1017",
+ "provider_slug": "deepinfra/fp8/flex",
+ "provider_name": "DeepInfra",
+ "unit": "USD per million tokens",
+ "input": 0.0784,
+ "cache_read": 0.002352,
+ "cache_write_5m": 0.0784,
+ "cache_write_1h": 0.0784,
+ "output": 0.2352,
+ "listed_discount": 0.51,
+ "frozen_on": "2026-11-02",
+ "source": "https://openrouter.ai/api/v1/models/deepseek/deepseek-v4.1-flash-1017/endpoints, fetched 2026-11-02; no cache-write price listed, priced as input",
+ "chosen_by": "Step 3 bake-off, 2026-11-02: Hermes alone to turn 20 on deepinfra/fp8 ($0.0283), deepinfra/fp8/flex ($0.0175), baidu/fp8 ($0.0351). Lowest cost, no errors, cache hit 95.5%, all 3 protocols served. deepseek is refused for this account (training guardrail). Flex turns were slower: 871 s of agent time against 476 s and 323 s."
+}
