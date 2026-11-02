@@ -88,6 +88,19 @@ const CODEX_PROTOCOL_REFUSAL = /RPC error -3260[0-2]\b|unexpected argument|unrec
  */
 const CODEX_SERVER_FAULT = /RPC error -(?:32603|32700)\b/;
 
+/**
+ * The close handler's own prefix when the child was stopped by a signal.
+ * `signal null` is an ordinary exit and still goes through the text classifier.
+ * The worker's version-mismatch recycle SIGKILLs this child.
+ */
+const CODEX_SIGNALED_EXIT = /^Codex app-server exited with code \S+ signal (?!null\b)\S+/;
+
+function isCodexSignaledExit(cause: unknown, message: string): boolean {
+  const exitSignal = (cause as { exitSignal?: unknown } | null)?.exitSignal;
+  if (typeof exitSignal === 'string' && exitSignal.length > 0 && exitSignal !== 'null') return true;
+  return CODEX_SIGNALED_EXIT.test(message);
+}
+
 /** Sessions whose run of app-server faults is tracked at once (oldest dropped). */
 const MAX_TRACKED_FAULT_SESSIONS = 256;
 
@@ -131,6 +144,11 @@ export function classifyCodexError(cause: unknown): ClassifiedProviderError {
     action = CODEX_ISOLATION_REMEDY;
   } else if (structuredKind && structuredKind !== CODEX_REFUSED_REQUEST) {
     kind = structuredKind;
+  } else if (isCodexSignaledExit(cause, message)) {
+    // A signal stops the child (a version-mismatch recycle is SIGKILL). The
+    // close error quotes the lifetime stderr tail, so an earlier 401 line in
+    // that tail must not arm the auth cooldown. The replacement worker retries.
+    kind = 'transient';
   } else if (CODEX_SERVER_FAULT.test(message)) {
     // Whatever its text quotes (a usage limit, a login, a parser), a fault of
     // the app-server neither arms the account breaker nor holds capture
