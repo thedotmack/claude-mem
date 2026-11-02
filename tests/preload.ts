@@ -26,10 +26,16 @@ process.env.CLAUDE_MEM_TELEMETRY_IMMEDIATE = '1';
 
 // The cmem cap probe (src/shared/cmem-cap-probe.ts) is a file in the data dir.
 // One test's allowance_exhausted must not withhold gateway sends in the next.
-beforeEach(() => {
-  const dataDir = process.env.CLAUDE_MEM_DATA_DIR;
-  if (dataDir) rmSync(join(dataDir, 'cmem-cap-probe.json'), { force: true });
-});
+// Subprocesses spawned by tests load this preload outside the test runner,
+// where beforeEach throws; only the runner needs the hook.
+try {
+  beforeEach(() => {
+    const dataDir = process.env.CLAUDE_MEM_DATA_DIR;
+    if (dataDir) rmSync(join(dataDir, 'cmem-cap-probe.json'), { force: true });
+  });
+} catch {
+  // not under `bun test`
+}
 
 /**
  * Global posthog-node mock, registered via bunfig.toml [test].preload BEFORE
