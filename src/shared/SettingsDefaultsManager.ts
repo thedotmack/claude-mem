@@ -345,7 +345,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_SEARCH_RECENCY_DAYS: string;        // Implicit 90-day recency window on date-less semantic searches (#4770); 0 = no window
   // Worker-native cloud sync. Active ⇔ TOKEN, USER_ID, and HUB_URL are all
   // non-empty — there is no separate enabled flag. HUB_URL points at the
-  // two-lane sync hub (workers/sync-hub); while it is empty, sync is OFF
+  // two-lane sync hub (services/sync-hub); while it is empty, sync is OFF
   // entirely (the old per-kind cmem.ai lane was deleted in the hub cutover).
   CLAUDE_MEM_CLOUD_SYNC_TOKEN: string;
   CLAUDE_MEM_CLOUD_SYNC_USER_ID: string;

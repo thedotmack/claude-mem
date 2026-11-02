@@ -389,7 +389,6 @@ Claude-Mem 根据 Apache License 2.0 授权。
 完整详情请参阅 [LICENSE](LICENSE) 文件。授权范围及开源/商业边界
 请参阅 [docs/license.md](docs/license.md) 和 [docs/ip-boundary.md](docs/ip-boundary.md)。
 
-**关于 Ragtime 的说明**:`ragtime/` 目录根据 **Apache License 2.0** 授权。详情请参阅 [ragtime/LICENSE](ragtime/LICENSE)。
 
 ---
 

@@ -33,8 +33,7 @@
  *
  * The V2 bus is `ctx.event.subscribe()`; see REAL_OPENCODE_V2_EVENT_TYPES.
  *
- * V1 hook names (authoritative source: plans/08-opencode-integration.md "Fix
- * sequence" step 1, cross-checked against OpenCode's documented plugin API):
+ * V1 hook names (from OpenCode's documented plugin API):
  *
  *   - `tool.execute.after`            (input, output) — fires after every tool run
  *   - `chat.message`                  ({}, output)    — fires on each chat message
