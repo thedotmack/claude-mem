@@ -173,6 +173,7 @@ describe('setup prompt scan', () => {
     const done = await scan.confirmUpload(true);
     expect(done).toMatchObject({ phase: 'done', done: true, error: null });
     expect(done.hostedNotice).toContain('daily budget reached');
+    expect(done.hostedNotice).not.toContain('stayed on this machine');
     expect(batches[1]).toEqual([]);
   });
 

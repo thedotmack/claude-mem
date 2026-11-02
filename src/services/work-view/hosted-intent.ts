@@ -38,7 +38,16 @@ const resultSchema = z.object({
 /** Cloud turned the run down for budget or rate reasons (HTTP 429/503). Setup continues locally; retrying cannot help until `retryAfter`. */
 export class HostedUnavailableError extends Error {
   readonly code = 'hosted-unavailable';
-  constructor(message: string, readonly retryAfter: number) { super(message); }
+  /** `sent` is true when this call's request body reached Cloud; false when the cooldown stopped it before any upload. */
+  constructor(message: string, readonly retryAfter: number, readonly sent = true) { super(message); }
+}
+/** Retry-After is either delay-seconds or an HTTP date. Returns an epoch ms deadline, or null when absent or unreadable. */
+function retryDeadline(header: string | null | undefined, now: number): number | null {
+  const value = header?.trim();
+  if (!value) return null;
+  if (/^\d+$/.test(value)) return Number(value) > 0 ? now + Number(value) * 1000 : null;
+  const date = Date.parse(value);
+  return Number.isFinite(date) && date > now ? date : null;
 }
 const nextUtcMidnight = (now: number) => Math.floor(now / 86_400_000) * 86_400_000 + 86_400_000;
 export type HostedIntentResult = z.infer<typeof resultSchema>;
@@ -164,7 +173,7 @@ export class HostedIntent {
         return;
       }
       const clock = (this.options.now ?? Date.now)();
-      if (clock < this.blockedUntil) throw new HostedUnavailableError(`${this.blockedReason} No prompts were uploaded.`, this.blockedUntil);
+      if (clock < this.blockedUntil) throw new HostedUnavailableError(`${this.blockedReason} No prompts were uploaded.`, this.blockedUntil, false);
       const { token, userId } = this.options.credentials();
       if (!!token !== !!userId) throw new Error('Hosted setup has incomplete CMEM account credentials. Repair the account connection before retrying.');
       const keys = conversationKeys(ownerPrompts);
@@ -189,8 +198,7 @@ export class HostedIntent {
         const reason = typeof failure?.message === 'string' ? failure.message : typeof failure?.error === 'string' ? failure.error : response.statusText;
         const message = `Hosted setup failed (HTTP ${response.status}): ${reason || 'Cloud did not return a reason.'}`;
         if (response.status === 429 || response.status === 503) {
-          const header = Number(response.headers?.get?.('retry-after'));
-          const until = Number.isFinite(header) && header > 0 ? clock + header * 1000 : nextUtcMidnight(clock);
+          const until = retryDeadline(response.headers?.get?.('retry-after'), clock) ?? nextUtcMidnight(clock);
           this.blockedUntil = until;
           this.blockedReason = message;
           throw new HostedUnavailableError(message, until);

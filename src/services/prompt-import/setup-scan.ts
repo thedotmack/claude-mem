@@ -245,7 +245,10 @@ export class SetupScan {
         logger.warn('IMPORT', 'Hosted setup unavailable; continuing locally', { reason: (error as Error).message });
         try {
           await this.extract!([], this.current.improveProduct);
-          this.finish({ ...pending.summary, hostedNotice: `${(error as Error).message} Setup finished without hosted extraction; your prompts stayed on this machine.` } as Partial<SetupScanState>, pending.startedAt);
+          // The first refusal arrives after the request was sent; only a cooldown-blocked call sent nothing.
+          const sent = (error as { sent?: boolean }).sent !== false;
+          const tail = sent ? 'Setup finished without hosted extraction.' : 'Setup finished without hosted extraction; nothing was uploaded this time.';
+          this.finish({ ...pending.summary, hostedNotice: `${(error as Error).message} ${tail}` } as Partial<SetupScanState>, pending.startedAt);
           return this.state();
         } catch { /* fall through to the failure below */ }
       }

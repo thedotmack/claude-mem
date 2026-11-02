@@ -180,6 +180,15 @@ describe('hosted setup extraction', () => {
     expect(calls).toBe(2);
   });
 
+  it('honors an HTTP-date Retry-After and marks cooldown-blocked calls as not sent', async () => {
+    let calls = 0;
+    const until = at + 2 * 3_600_000;
+    const { run } = fixture((async () => { calls++; return Response.json({ message: 'busy' }, { status: 503, headers: { 'Retry-After': new Date(until).toUTCString() } }); }) as typeof fetch);
+    await expect(run.run(prompts, false)).rejects.toMatchObject({ code: 'hosted-unavailable', sent: true, retryAfter: until });
+    await expect(run.run(prompts, false)).rejects.toMatchObject({ code: 'hosted-unavailable', sent: false });
+    expect(calls).toBe(1);
+  });
+
   it('fails loudly on the uncompressed cap even when the gzip would fit, with no paid request', async () => {
     let calls = 0;
     const { run } = fixture((async () => { calls++; return Response.json(answer()); }) as typeof fetch);
