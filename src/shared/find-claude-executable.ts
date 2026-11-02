@@ -25,7 +25,7 @@
 import { execSync, execFileSync } from 'child_process';
 import { existsSync, realpathSync } from 'fs';
 import { homedir } from 'os';
-import { extname, join } from 'path';
+import { join } from 'path';
 import { isCurrentDirectoryCandidate, isWindowsNativeExecutable, windowsWhereExecutablePath } from './spawn.js';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, expandTilde } from './paths.js';
@@ -301,18 +301,9 @@ function discoverCandidates(): string[] {
         // non-ASCII profile folder name arrives as U+FFFD and the reported
         // path does not exist (#4694, #3865). Keep only lines that resolve on
         // disk — a garbled candidate would only die at the probe with ENOENT.
-        // `where claude` also lists the extensionless POSIX sh shim that
-        // `npm install -g` writes next to claude.cmd/claude.ps1, first. The
-        // SDK spawns the resolved path directly and cannot launch a shebang
-        // script on Windows, so when a probe still answers the file (an
-        // installed sh resolves it), the shim wins by PATH order and every
-        // agent spawn dies with it (#5163). Drop extensionless hits here: the
-        // .cmd shim keeps its native-first preference below, and the known
-        // paths added after this loop already end in .exe.
         candidates.push(
           ...output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
             .filter((line) => !isCurrentDirectoryCandidate(line))
-            .filter((line) => extname(line) !== '')
             .filter((line) => _internals.existsSync(line)),
         );
       } catch {
