@@ -1157,9 +1157,9 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   private stopFocusShare = async (req: Request, res: Response): Promise<void> => {
     const { focusAreaId } = req.body as z.infer<typeof focusShareAreaBody>;
-    if (!this.focusShares) { res.status(503).json({ error: 'Sharing is unavailable on this worker.' }); return; }
+    if (!this.focusSharePublisher) { res.status(503).json({ error: 'Sharing is unavailable on this worker.' }); return; }
     try {
-      await this.focusShares.stop(focusAreaId);
+      await this.focusSharePublisher.stopArea(focusAreaId);
       res.json({ stopped: true });
     } catch (error) { this.focusShareRefusal(res, error); }
   };

@@ -36,6 +36,7 @@ export class FocusSharePublisher {
   /** Why the last publish of an area failed, by area id. */
   private readonly errors = new Map<string, string>();
   private readonly now: () => number;
+  private ownerRequestsDone: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly options: FocusSharePublisherOptions) {
     this.now = options.now ?? Date.now;
@@ -58,17 +59,34 @@ export class FocusSharePublisher {
   }
 
   /** Shares an area (first call) or publishes its page now, built from the current work view. */
-  async publishArea(focusAreaId: string): Promise<{ entry: FocusShareEntry; sent: boolean }> {
-    const page = sharedFocusPageFrom(await this.readSnapshot(), focusAreaId, this.now());
-    if (!page) throw new FocusShareError(NOT_SHAREABLE, 409);
-    try {
-      const published = await this.options.shares.publish(focusAreaId, page);
-      this.errors.delete(focusAreaId);
-      return published;
-    } catch (error) {
-      this.remember(focusAreaId, error);
-      throw error;
-    }
+  publishArea(focusAreaId: string): Promise<{ entry: FocusShareEntry; sent: boolean }> {
+    return this.inOwnerOrder(async () => {
+      const page = sharedFocusPageFrom(await this.readSnapshot(), focusAreaId, this.now());
+      if (!page) throw new FocusShareError(NOT_SHAREABLE, 409);
+      try {
+        const published = await this.options.shares.publish(focusAreaId, page);
+        this.errors.delete(focusAreaId);
+        return published;
+      } catch (error) {
+        this.remember(focusAreaId, error);
+        throw error;
+      }
+    });
+  }
+
+  /** Stops a share after any share the owner asked for before it. */
+  stopArea(focusAreaId: string): Promise<void> {
+    return this.inOwnerOrder(() => this.options.shares.stop(focusAreaId));
+  }
+
+  /**
+   * A share reads the work view before it publishes, and a stop sent during that read must not finish first: the
+   * share would then create a new public link after the owner was told sharing had stopped.
+   */
+  private inOwnerOrder<T>(request: () => Promise<T>): Promise<T> {
+    const result = this.ownerRequestsDone.then(request);
+    this.ownerRequestsDone = result.catch(() => undefined);
+    return result;
   }
 
   /** One round over every shared area. A round already running is joined, not doubled. */
