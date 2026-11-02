@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { formatHostForUrl, normalizeWorkerBaseUrl } from '../../src/shared/worker-url';
+import { formatHostForUrl, InvalidWorkerUrlError, normalizeWorkerBaseUrl } from '../../src/shared/worker-url';
 
 describe('formatHostForUrl', () => {
   it('brackets a bare IPv6 address', () => {
@@ -31,6 +31,11 @@ describe('normalizeWorkerBaseUrl', () => {
     expect(() => normalizeWorkerBaseUrl('worker.example:37777')).toThrow('use http or https');
     expect(() => normalizeWorkerBaseUrl('http://[broken')).toThrow('absolute http(s) URL');
     expect(() => normalizeWorkerBaseUrl('file:///tmp/worker')).toThrow('use http or https');
+  });
+
+  it('throws a named error, so callers can tell it from an unreachable worker', () => {
+    expect(() => normalizeWorkerBaseUrl('http://worker.example')).toThrow(InvalidWorkerUrlError);
+    expect(() => normalizeWorkerBaseUrl('not a url')).toThrow(InvalidWorkerUrlError);
   });
 
   it('requires HTTPS for a non-loopback worker', () => {

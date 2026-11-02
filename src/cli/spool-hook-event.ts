@@ -27,6 +27,9 @@ export async function uploadRemoteHookSpool(): Promise<void> {
     logger.warn('HOOK', 'Remote hook capture is queued locally; configure CLAUDE_MEM_WORKER_INGEST_TOKEN on the client and worker');
     return;
   }
+  if (!settings.CLAUDE_MEM_WORKER_URL.trim() && usesRemoteHookSpool(getWorkerHost())) {
+    logger.warn('HOOK', 'Remote hook capture sends event content and the ingest token over plain HTTP; set an https CLAUDE_MEM_WORKER_URL unless this network is trusted');
+  }
   let deadline: number | null = null;
   let attempted = 0;
   let failed = false;

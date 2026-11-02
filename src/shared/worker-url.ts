@@ -11,6 +11,11 @@ export function formatHostForUrl(host: string): string {
   return host.includes(':') ? `[${host}]` : host;
 }
 
+/** CLAUDE_MEM_WORKER_URL is set but unusable. Never falls back to host and port. */
+export class InvalidWorkerUrlError extends Error {
+  override name = 'InvalidWorkerUrlError';
+}
+
 /**
  * Validate an explicit client URL for the worker API. Remote worker requests
  * carry hook data and, for spool ingestion, a bearer token, so plain HTTP is
@@ -24,17 +29,17 @@ export function normalizeWorkerBaseUrl(raw: string): string {
   try {
     url = new URL(value);
   } catch {
-    throw new Error('CLAUDE_MEM_WORKER_URL must be an absolute http(s) URL');
+    throw new InvalidWorkerUrlError('CLAUDE_MEM_WORKER_URL must be an absolute http(s) URL');
   }
 
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error('CLAUDE_MEM_WORKER_URL must use http or https');
+    throw new InvalidWorkerUrlError('CLAUDE_MEM_WORKER_URL must use http or https');
   }
   if (url.username || url.password || url.search || url.hash) {
-    throw new Error('CLAUDE_MEM_WORKER_URL cannot include credentials, a query, or a fragment');
+    throw new InvalidWorkerUrlError('CLAUDE_MEM_WORKER_URL cannot include credentials, a query, or a fragment');
   }
   if (url.protocol === 'http:' && !isLoopbackHostname(url.hostname)) {
-    throw new Error('CLAUDE_MEM_WORKER_URL must use https for non-loopback workers');
+    throw new InvalidWorkerUrlError('CLAUDE_MEM_WORKER_URL must use https for non-loopback workers');
   }
 
   return url.toString().replace(/\/+$/, '');
