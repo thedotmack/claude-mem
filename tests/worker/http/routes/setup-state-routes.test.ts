@@ -234,10 +234,13 @@ describe('setup state endpoints', () => {
     const controller = new AbortController();
     const response = await fetch(`${origin}/api/work-view/events`, { signal: controller.signal });
     const reader = response.body!.getReader();
-    await post('/api/setup/installer', { stage: 'waiting-for-choice' });
     const decoder = new TextDecoder();
     let buffer = '';
-    const setupStates = () => buffer.split('\n\n').filter(block => block.startsWith('event: setup-state\n')).map(block => JSON.parse(block.split('\ndata: ')[1]));
+    // Whole blocks only: a read can end partway through one.
+    const setupStates = () => buffer.split('\n\n').slice(0, -1).filter(block => block.startsWith('event: setup-state\n')).map(block => JSON.parse(block.split('\ndata: ')[1]));
+    // A stream's first view is read off the HTTP thread, so wait for it before changing anything.
+    while (!setupStates().length) buffer += decoder.decode((await reader.read()).value, { stream: true });
+    await post('/api/setup/installer', { stage: 'waiting-for-choice' });
     while (!setupStates().some(view => view.installer?.stage === 'waiting-for-choice')) buffer += decoder.decode((await reader.read()).value, { stream: true });
     controller.abort();
     expect(setupStates()[0].installer).toBeNull();

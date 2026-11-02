@@ -91,6 +91,46 @@ const ownerRows = () => (source.prepare("SELECT project, fields FROM work_state_
   .map(row => ({ project: row.project, fields: JSON.parse(row.fields) }));
 
 describe('My Focus routes', () => {
+  it('a read already running before an edit never answers that edit', async () => {
+    const reader = (routes as any).sourceReader;
+    const realRead = reader.read.bind(reader);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let posted = false;
+    reader.read = (...args: [number, string]) => {
+      reader.read = realRead;
+      posted = true;
+      return realRead(...args).then(async (view: unknown) => { await gate; return view; });
+    };
+    const before = snapshot();
+    while (!posted) await Bun.sleep(1);
+    const saved = await saveFocus({ action: 'rename', focusAreaId: 'fa_viewer', name: 'The viewer' });
+    expect(saved.status).toBe(200);
+    expect(areaById(await saved.json(), 'fa_viewer').name).toBe('The viewer');
+    release();
+    expect(areaById(await before, 'fa_viewer').name).toBe('Viewer');
+  });
+
+  it('two merges of the same pair cannot both save', async () => {
+    const answers = await Promise.all([
+      saveFocus({ action: 'merge', focusAreaId: 'fa_viewer', intoFocusAreaId: 'fa_endless' }),
+      saveFocus({ action: 'merge', focusAreaId: 'fa_endless', intoFocusAreaId: 'fa_viewer' }),
+    ]);
+    expect(answers.map(answer => answer.status)).toEqual([200, 409]);
+    const view = await snapshot();
+    expect(areaById(view, 'fa_viewer').mergedInto).toBe('fa_endless');
+    expect(areaById(view, 'fa_endless').mergedInto).toBeFalsy();
+  });
+
+  it('a rename and a goal edit sent together both survive', async () => {
+    const answers = await Promise.all([
+      saveFocus({ action: 'rename', focusAreaId: 'fa_viewer', name: 'The viewer' }),
+      saveFocus({ action: 'edit-goal', focusAreaId: 'fa_viewer', goal: 'Show the work plainly.' }),
+    ]);
+    expect(answers.map(answer => answer.status)).toEqual([200, 200]);
+    expect(areaById(await snapshot(), 'fa_viewer')).toMatchObject({ name: 'The viewer', goal: 'Show the work plainly.' });
+  });
+
   it('shows the areas in priority order and the request as not sorted yet', async () => {
     const view = await snapshot();
     expect(view.focusAreas.map((area: any) => area.name)).toEqual(['Viewer', 'Endless Mode', 'Community']);

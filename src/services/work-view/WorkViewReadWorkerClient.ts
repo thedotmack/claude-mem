@@ -2,10 +2,14 @@ import { existsSync } from 'node:fs';
 import { Worker } from 'node:worker_threads';
 import type { WorkViewReadRequest, WorkViewReadResponse, WorkViewReadResult } from './WorkViewReadProtocol.js';
 
-const MAX_PENDING_READS = 8;
 type Pending = { resolve(value: WorkViewReadResult): void; reject(error: Error): void };
 
-/** Runs SQLite-backed work-view projection reads away from the worker HTTP event loop. */
+/**
+ * Runs SQLite-backed work-view projection reads away from the worker HTTP event loop, one at a time and answered in the
+ * order they were asked (WorkViewRoutes relies on that). The queue has no cap of its own: each read belongs to an open
+ * HTTP request or to one of the routes' collapsed background reads, and refusing one after a saved edit would fail
+ * a request whose write already landed.
+ */
 export class WorkViewReadWorkerClient {
   private worker: Worker | null = null;
   private readonly pending = new Map<number, Pending>();
@@ -15,7 +19,6 @@ export class WorkViewReadWorkerClient {
   constructor(private readonly workerData: { databasePath: string; ledgerDir: string | null; pollIntervalMs: number }) {}
 
   read(maxActivityAgeMs: number, localDeviceId: string): Promise<WorkViewReadResult> {
-    if (this.pending.size >= MAX_PENDING_READS) return Promise.reject(new Error('Work view reader queue is full'));
     let worker: Worker;
     try { worker = this.getWorker(); }
     catch (error) { return Promise.reject(error); }

@@ -412,7 +412,10 @@ const ACTIVITY_REFRESH_WINDOW_MS = 120_000;
 export class WorkViewRoutes extends BaseRouteHandler {
   private source: WorkStateSource;
   private sourceReader: WorkViewReadWorkerClient;
-  private pendingSnapshots = new Map<number, Promise<WorkViewSnapshot>>();
+  private pendingBackgroundSnapshot: Promise<WorkViewSnapshot> | null = null;
+  private ownerEditsDone: Promise<unknown> = Promise.resolve();
+  private freshPublishReading = false;
+  private freshPublishWanted = false;
   private reviews: LocalReviewStore;
   private clients = new Set<Response>();
   private poll: ReturnType<typeof setInterval> | null = null;
@@ -540,16 +543,33 @@ export class WorkViewRoutes extends BaseRouteHandler {
   }
 
   /** Rewrites MY-RULES.md when the saved rules render differently. Never from an unreadable source, which reads as no rules. */
-  async rebuildRulesFileFromSavedRules(): Promise<boolean> {
-    const view = (await this.sourceReader.read(0, this.getLocalDeviceId())).agentView;
-    if (!view.source.connected) return false;
-    const markdown = renderRulesFile((view.rules ?? []) as SavedRule[]).markdown;
-    let current: string | null = null;
-    try { current = readFileSync(this.rulesFilePath, 'utf8'); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-    if (current === markdown) return false;
-    this.writeRulesFile((view.rules ?? []) as SavedRule[]);
-    return true;
+  rebuildRulesFileFromSavedRules(): Promise<boolean> {
+    return this.inOwnerEditOrder(async () => {
+      const view = (await this.sourceReader.read(0, this.getLocalDeviceId())).agentView;
+      if (!view.source.connected) return false;
+      const markdown = renderRulesFile((view.rules ?? []) as SavedRule[]).markdown;
+      let current: string | null = null;
+      try { current = readFileSync(this.rulesFilePath, 'utf8'); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      if (current === markdown) return false;
+      this.writeRulesFile((view.rules ?? []) as SavedRule[]);
+      return true;
+    });
+  }
+
+  /**
+   * Runs a read-check-write of the owner's state after every edit before it. The read now happens off this thread, so
+   * without this two edits could both check the same view and both save (A merged into B and B into A), or a read from
+   * before a save could rewrite MY-RULES.md after it. A failed edit does not stop the next one.
+   */
+  private inOwnerEditOrder<T>(edit: () => T | Promise<T>): Promise<T> {
+    const result = this.ownerEditsDone.then(edit);
+    this.ownerEditsDone = result.catch(() => undefined);
+    return result;
+  }
+
+  private ownerEdit(handler: (req: Request, res: Response) => Promise<void>) {
+    return (req: Request, res: Response) => this.inOwnerEditOrder(() => handler(req, res));
   }
 
   setupRoutes(app: express.Application): void {
@@ -609,20 +629,20 @@ export class WorkViewRoutes extends BaseRouteHandler {
       res.sendFile(deliverable.path, { dotfiles: 'allow' });
     }));
     app.post('/api/work-view/review', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(reviewBody), this.wrapHandler(this.review));
-    app.post('/api/work-view/rules', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(ruleBody), this.wrapHandler(this.saveRule));
-    app.post('/api/work-view/focus', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(focusBody), this.wrapHandler(this.saveFocus));
+    app.post('/api/work-view/rules', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(ruleBody), this.wrapHandler(this.ownerEdit(this.saveRule)));
+    app.post('/api/work-view/focus', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(focusBody), this.wrapHandler(this.ownerEdit(this.saveFocus)));
     // System-written suggestions only: every row is decided_by system, status suggested, under a new id, so
     // nothing posted here can stand in for an owner decision or change an area the owner decided.
-    app.post('/api/work-view/focus/owner-goals', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(ownerGoalsFocusBody), this.wrapHandler(this.suggestOwnerGoalsAreas));
+    app.post('/api/work-view/focus/owner-goals', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(ownerGoalsFocusBody), this.wrapHandler(this.ownerEdit(this.suggestOwnerGoalsAreas)));
     // The focus step's answer (request-groups.mjs record-focus run by the request-progress skill): router placements
     // and suggested areas only, so nothing posted here can stand in for an owner decision.
     app.post('/api/work-view/focus/router', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(routerFocusBody), this.wrapHandler(this.saveRouterFocus));
     // The one-time seed and its undo: system rows only (suggested seed areas, router placements, system withdrawals and
     // cleared router placements), so nothing posted here can stand in for or change an owner decision.
-    app.post('/api/work-view/focus/seed', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(seedFocusBody), this.wrapHandler(this.saveSeedFocus));
+    app.post('/api/work-view/focus/seed', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(seedFocusBody), this.wrapHandler(this.ownerEdit(this.saveSeedFocus)));
     app.post('/api/work-view/agents/mark-finished', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(markAgentFinishedBody), this.wrapHandler(this.markAgentFinished));
     app.post('/api/work-view/suggestions', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(suggestionBody), this.wrapHandler(this.answerSuggestion));
-    app.post('/api/work-view/rules/load-in-claude-code', workViewLoopbackOnly, requireWorkViewOrigin, this.wrapHandler(this.loadRulesInClaudeCode));
+    app.post('/api/work-view/rules/load-in-claude-code', workViewLoopbackOnly, requireWorkViewOrigin, this.wrapHandler(this.ownerEdit(this.loadRulesInClaudeCode)));
     app.post('/api/work-view/refresh', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(z.object({}).strict()), this.wrapHandler(this.startManualRefresh));
     app.post('/api/work-view/usage', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(usageBody), this.wrapHandler(this.recordUsage));
     // Shared focus pages: this worker signs the cmem.ai calls, so the sync credential never reaches the page.
@@ -778,23 +798,20 @@ export class WorkViewRoutes extends BaseRouteHandler {
     return this.snapshot(ACTIVITY_REFRESH_WINDOW_MS);
   }
 
-  private async snapshot(maxActivityAgeMs = 0): Promise<WorkViewSnapshot> {
-    const pending = this.pendingSnapshots.get(maxActivityAgeMs);
-    if (pending) return pending;
-    const build = this.buildSnapshot(maxActivityAgeMs);
-    this.pendingSnapshots.set(maxActivityAgeMs, build);
-    void build.then(
-      () => { if (this.pendingSnapshots.get(maxActivityAgeMs) === build) this.pendingSnapshots.delete(maxActivityAgeMs); },
-      () => { if (this.pendingSnapshots.get(maxActivityAgeMs) === build) this.pendingSnapshots.delete(maxActivityAgeMs); },
-    );
-    return build;
+  /**
+   * The event stream's tick and heartbeat, the only reads that may share a result: nothing they send promises to show
+   * a write. Every other read posts its own request, so it starts after any write that came before it (the reader
+   * answers strictly in order). That order also means a tick's older read can never arrive after a newer publish.
+   */
+  private backgroundSnapshot(): Promise<WorkViewSnapshot> {
+    this.pendingBackgroundSnapshot ??= this.snapshot(ACTIVITY_REFRESH_WINDOW_MS)
+      .finally(() => { this.pendingBackgroundSnapshot = null; });
+    return this.pendingBackgroundSnapshot;
   }
 
-  private async buildSnapshot(maxActivityAgeMs: number): Promise<WorkViewSnapshot> {
+  private async snapshot(maxActivityAgeMs = 0): Promise<WorkViewSnapshot> {
     const read = await this.sourceReader.read(maxActivityAgeMs, this.getLocalDeviceId());
-    this.source.agentView = read.agentView;
     this.source.agentRevision = read.agentRevision;
-    this.source.source = read.agentView.source;
     const snapshot = read.agentView;
     for (const request of snapshot.humanRequests) {
       request.contentFingerprint = contentFingerprint(request);
@@ -1030,7 +1047,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
    * whole answer is checked against the saved areas before the first row is written, so a refusal (TypeError)
    * writes nothing. The automatic refresh calls this in-process; the skill's CLI reaches it through saveRouterFocus.
    */
-  recordRouterFocus = async (body: RouterFocusBody): Promise<{ placed: number; focusAreaIds: string[] }> => {
+  recordRouterFocus = (body: RouterFocusBody): Promise<{ placed: number; focusAreaIds: string[] }> => this.inOwnerEditOrder(async () => {
     if (!this.appendWorkStateEntry) throw new Error('Saving focus areas is unavailable on this worker.');
     const snapshot = await this.ownerStateSnapshot();
     if (!snapshot.source.connected) throw new Error('Local work is unavailable. Reconnect before placing requests.');
@@ -1051,7 +1068,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     logger.debug('HTTP', 'Focus step saved', { placed: planned.placed, proposed: planned.focusAreaIds.length });
     if (planned.rows.length) this.publish();
     return { placed: planned.placed, focusAreaIds: planned.focusAreaIds };
-  };
+  });
 
   private saveRouterFocus = async (req: Request, res: Response): Promise<void> => {
     let saved: { placed: number; focusAreaIds: string[] };
@@ -1287,7 +1304,15 @@ export class WorkViewRoutes extends BaseRouteHandler {
     res.on('close', cleanup);
     socket?.on('close', cleanup);
     res.on('error', () => { cleanup(); res.destroy(); });
-    const initial = await this.snapshot();
+    let initial: WorkViewSnapshot;
+    try { initial = await this.snapshot(); }
+    catch (error) {
+      // An open stream with no first view would look connected forever. Ending it makes the page reconnect.
+      logger.warn('HTTP', 'Could not read work view for a new event stream', { error: error instanceof Error ? error.message : String(error) });
+      cleanup();
+      res.end();
+      return;
+    }
     if (!this.clients.has(res) || res.destroyed || res.writableEnded) return;
     this.send(res, 'work-view', initial);
     const scan: SetupScanState | undefined = this.setupScan?.state();
@@ -1302,9 +1327,12 @@ export class WorkViewRoutes extends BaseRouteHandler {
     }
     // Activity can change on every observer write. Coalesce these rebuilds;
     // work-state, title-cache and ledger changes still appear on the next tick.
-    if (!this.poll) this.poll = setInterval(() => { void this.publish(undefined, ACTIVITY_REFRESH_WINDOW_MS); }, this.pollIntervalMs);
+    if (!this.poll) this.poll = setInterval(() => {
+      void this.backgroundSnapshot().then(snapshot => this.publish(snapshot))
+        .catch(error => logger.warn('HTTP', 'Could not read work view for event stream', { error: error instanceof Error ? error.message : String(error) }));
+    }, this.pollIntervalMs);
     if (!this.heartbeat) this.heartbeat = setInterval(() => {
-      void this.snapshot(ACTIVITY_REFRESH_WINDOW_MS).then(snapshot => {
+      void this.backgroundSnapshot().then(snapshot => {
         for (const client of this.clients) this.send(client, 'heartbeat', { at: new Date().toISOString(), source: snapshot.source });
       }).catch(error => logger.warn('HTTP', 'Could not read work view for heartbeat', { error: error instanceof Error ? error.message : String(error) }));
     }, 15000);
@@ -1319,20 +1347,33 @@ export class WorkViewRoutes extends BaseRouteHandler {
     catch { this.clients.delete(res); res.destroy(); }
   }
 
-  private async publish(snapshot?: WorkViewSnapshot, maxActivityAgeMs = 0): Promise<void> {
+  private publish(snapshot?: WorkViewSnapshot): void {
     // With no event stream open there is no one to send to: skip the rebuild. A stream that opens later
     // gets a fresh snapshot first, before any publish.
     if (this.closed || !this.clients.size) return;
-    try { snapshot ??= await this.snapshot(maxActivityAgeMs); }
-    catch (error) {
-      logger.warn('HTTP', 'Could not read work view for event stream', { error: error instanceof Error ? error.message : String(error) });
-      return;
-    }
+    if (!snapshot) { this.publishFreshRead(); return; }
     // rulesFile changes without a new revision when the rules are loaded in Claude Code; other tabs must still see it.
     const signature = JSON.stringify([snapshot.revision, snapshot.source.connected, snapshot.source.error, snapshot.setup, snapshot.rulesFile]);
     if (signature === this.signature) return;
     this.signature = signature;
     for (const client of this.clients) this.send(client, 'work-view', snapshot);
+  }
+
+  /**
+   * Publishes from a read that starts after this call. A setup scan asks every 200 ms and a read on a large database
+   * can take longer, so while one read is out, further asks collapse into one more read after it.
+   */
+  private publishFreshRead(): void {
+    if (this.freshPublishReading) { this.freshPublishWanted = true; return; }
+    this.freshPublishReading = true;
+    void this.snapshot().then(snapshot => this.publish(snapshot))
+      .catch(error => logger.warn('HTTP', 'Could not read work view for event stream', { error: error instanceof Error ? error.message : String(error) }))
+      .finally(() => {
+        this.freshPublishReading = false;
+        if (!this.freshPublishWanted) return;
+        this.freshPublishWanted = false;
+        this.publish();
+      });
   }
 
   private stopTimers(): void {
