@@ -281,7 +281,7 @@ describe('refresh task', () => {
     expect(JSON.stringify(task)).not.toMatch(/bypass|dangerous/i);
   });
 
-  it('every backend (read-only): the worker groups, reviews and retells from the agent\'s JSON through the validators', async () => {
+  it('the automatic review retry bounds repeated oversized output and keeps the request moving', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-inline-'));
     try {
       const database = fixtureDatabase();
@@ -289,6 +289,16 @@ describe('refresh task', () => {
       const prompts: string[] = [];
       const models: unknown[] = [];
       let reviewAnswers = 0;
+      const oversizedReview = (show: any) => ({
+        groupId: show.groupId,
+        state: 'in-progress',
+        percent: 40,
+        summary: 'x'.repeat(292),
+        reviewBasis: show.reviewBasis,
+        milestones: Array.from({ length: 13 }, (_, index) => ({ at: null, text: `Step ${index}` })),
+        preferences: Array.from({ length: 11 }, (_, index) => ({ kind: 'directive', preference: `Preference ${index}`, quote: index === 0 ? 'q'.repeat(301) : `Quote ${index}`, at: null })),
+        outcome: { regressions: Array.from({ length: 11 }, (_, index) => ({ text: `Regression ${index}`, at: null, fixedBy: index === 0 ? 'x'.repeat(245) : '', evidence: [] })) },
+      });
       const ask = async (prompt: string, stepModels: unknown) => {
         prompts.push(prompt);
         models.push(stepModels);
@@ -303,19 +313,29 @@ describe('refresh task', () => {
           const supplied = prompt.split(`--- ${file} ---\n`)[1];
           expect(supplied).toBeDefined();
           const [show] = JSON.parse(supplied);
-          // The first answer forgets reviewBasis; the refusal is sent back and fixed.
-          if (reviewAnswers++ === 0) return JSON.stringify({ reviews: [{ groupId: show.groupId, state: 'in-progress', percent: 40, summary: 'Cards are being built.' }] });
+          // The model repeats the same over-limit summary after the strict first pass rejects it.
+          if (reviewAnswers++ === 0) return JSON.stringify({ reviews: [oversizedReview(show)] });
           expect(prompt).toMatch(/refused for these groups/);
-          return JSON.stringify({ reviews: [{ groupId: show.groupId, state: 'in-progress', percent: 40, summary: 'Cards are being built.', reviewBasis: show.reviewBasis }] });
+          expect(prompt).toMatch(/milestones has 13 items/);
+          return JSON.stringify({ reviews: [oversizedReview(show)] });
         }
         if (prompt.includes('Do only section 3')) return everyRequestInOther(prompt);
         if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'One request is under way.', preferences: [] });
         throw new Error(`Unexpected prompt: ${prompt.slice(-200)}`);
       };
-      expect(await task.run(ask, 'gemini')).toBe('1 new conversations grouped, 1 requests reviewed, 1 requests placed, story written.');
+      expect(await task.run(ask, 'gemini')).toBe('1 new conversations grouped, 1 requests reviewed (6 oversized fields trimmed after retry), 1 requests placed, story written.');
       const ledger = readLedger(dir);
       expect(Object.values(ledger.groups.groups).map((group: any) => group.title)).toEqual(['Release cards']);
-      expect(Object.values(ledger.progress).map((review: any) => review.percent)).toEqual([40]);
+      const [review] = Object.values(ledger.progress) as any[];
+      expect(review.percent).toBe(40);
+      expect(review.summary).toHaveLength(280);
+      expect(review.summary.endsWith('…')).toBe(true);
+      expect(review.milestones).toHaveLength(12);
+      expect(review.preferences).toHaveLength(10);
+      expect(review.preferences[0].quote).toBe('q'.repeat(300));
+      expect(review.outcome.regressions).toHaveLength(10);
+      expect(review.outcome.regressions[0].fixedBy).toHaveLength(200);
+      expect(review.outcome.regressions[0].fixedBy.endsWith('…')).toBe(true);
       expect(ledger.story.narrative).toBe('One request is under way.');
       // Grouping and the focus step run on the light models; reviews and the story on the careful ones.
       // The focus step asks twice: place the request, then propose from Other (where it landed).
