@@ -14,6 +14,7 @@ import { SSEBroadcaster } from '../../SSEBroadcaster.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
+import { integerArrayLike } from '../middleware/integerArrayLike.js';
 import { requireLocalhost } from '../middleware.js';
 import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { mergeProjectInto } from '../../../infrastructure/ProjectMerge.js';
@@ -36,20 +37,6 @@ const CHROMA_DOC_TYPES: Record<IndexedRowKind, string> = {
   prompt: 'user_prompt',
 };
 import { withObservationMedia } from '../../../media/feed.js';
-
-const integerArrayLike = z.preprocess((value) => {
-  if (Array.isArray(value)) return value;
-  if (typeof value === 'string') {
-    try {
-      const parsed = JSON.parse(value);
-      if (Array.isArray(parsed)) return parsed;
-    } catch {
-      // not JSON, fall through to comma split
-    }
-    return value.split(',').map((part) => Number(part.trim()));
-  }
-  return value;
-}, z.array(z.number().int()));
 
 const stringArrayLike = z.preprocess((value) => {
   if (Array.isArray(value)) return value;

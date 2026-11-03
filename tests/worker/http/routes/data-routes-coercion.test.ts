@@ -124,6 +124,16 @@ describe('DataRoutes Type Coercion', () => {
       expect(jsonSpy).toHaveBeenCalled();
     });
 
+    for (const ids of [['56390', '56391'], '["56390", "56391"]', [56390, ' 56391 ']]) {
+      it(`should normalize decimal-string ids in ${JSON.stringify(ids)}`, () => {
+        const { req, res, jsonSpy } = createMockReqRes({ ids });
+        handler(req as Request, res as Response);
+
+        expect(mockGetObservationsByIds).toHaveBeenCalledWith([56390, 56391], expect.anything());
+        expect(jsonSpy).toHaveBeenCalled();
+      });
+    }
+
     it('should coerce a JSON-encoded string array "[1,2,3]" to native array', () => {
       const { req, res, jsonSpy } = createMockReqRes({ ids: '[1,2,3]' });
       handler(req as Request, res as Response);
