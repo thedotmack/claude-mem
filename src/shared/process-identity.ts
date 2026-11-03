@@ -79,6 +79,74 @@ export function startTokenFromSpawnResult(
   return trimmed.length > 0 ? trimmed : null;
 }
 
+/**
+ * Spawn env for every start-token probe (and the process-name probes, so the
+ * spawn-env discipline stays one rule): locale-pinned as before, and now
+ * time-zone-pinned too. Exported so the pin is asserted by test instead of
+ * trusted across every call site (#5311).
+ *
+ * On Windows the TZ entry is inert — .NET's CIM conversion follows the system
+ * zone, not the env — so the Windows token shape is unchanged by this helper.
+ * The pin carries the darwin/BSD `ps lstart` reads, where the calling
+ * process's zone used to leak straight into the token.
+ */
+export function startTokenProbeEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return { ...base, LC_ALL: 'C', LANG: 'C', TZ: 'UTC' };
+}
+
+/**
+ * Prefix stamped on every darwin/BSD `ps lstart` token captured since the TZ
+ * pin, and the discriminator for migrating records written before it (#5311).
+ *
+ * `ps` prints `lstart` in the time zone of the calling process. The spawn env
+ * used to pin only the locale (LC_ALL/LANG), so a worker and a later check
+ * running under different zones captured different strings for the same
+ * process. The ownership check then misread the skew as PID reuse, the PID
+ * file resolved to null, and the version-mismatch recycle refused to kill the
+ * stale worker — forever, because only that recycle could replace it.
+ *
+ * Pinning TZ going forward cannot repair records already on disk: they hold
+ * local-time strings in the very same `EEE MMM d HH:mm:ss yyyy` shape,
+ * indistinguishable from a UTC-pinned read. The prefix separates the eras, so
+ * comparisons can tell a genuine reuse verdict (two pinned tokens that
+ * differ) from an unprovable cross-era mismatch (degrades to "proceed",
+ * exactly like a token that could not be captured at all).
+ *
+ * Linux needs none of this — its token is the numeric /proc starttime,
+ * already zone-independent — and Windows keeps its CIM format untouched, so
+ * both stay unprefixed and keep comparing byte-for-byte across the upgrade.
+ */
+export const UTC_START_TOKEN_PREFIX = 'utc:';
+
+/** True when `token` was captured under the TZ pin (see UTC_START_TOKEN_PREFIX). */
+export function isUtcPinnedStartToken(token: string): boolean {
+  return token.startsWith(UTC_START_TOKEN_PREFIX);
+}
+
+/** Stamps a raw `ps lstart` read with the UTC-pin prefix. */
+export function withUtcStartTokenPrefix(rawToken: string): string {
+  return `${UTC_START_TOKEN_PREFIX}${rawToken}`;
+}
+
+/**
+ * The ownership verdict for two captured start tokens.
+ *
+ * Fallback semantics match isSameProcess: only evidence can refuse, so an
+ * unreadable token (null) on either side proceeds, and so does a mismatch we
+ * cannot attribute. The one attributable mismatch is two UTC-pinned tokens
+ * that differ — the same read, under the same pin, naming another process.
+ * A mismatch against a token WITHOUT the prefix is a record written before
+ * the pin: a local-time string that a UTC read can never reproduce, even for
+ * the same live process. Treating it as reuse would strand exactly the stale
+ * workers this prefix exists to retire (#5311), so it proceeds instead.
+ */
+export function isSameProcessStartToken(currentToken: string | null, recordedToken: string | null): boolean {
+  if (currentToken === null || recordedToken === null) return true;
+  if (currentToken === recordedToken) return true;
+  if (isUtcPinnedStartToken(currentToken) !== isUtcPinnedStartToken(recordedToken)) return true;
+  return false;
+}
+
 function queryWindowsCreationDate(pid: number): string | null {
   // CreationDate is a CIM DATETIME (yyyyMMddHHmmss.ffffff±UTCoffset) that is
   // unique-enough per (pid, boot) to detect PID reuse. `-NoProfile` keeps it
@@ -96,7 +164,7 @@ function queryWindowsCreationDate(pid: number): string | null {
       encoding: 'utf-8',
       timeout: 5000,
       windowsHide: true,
-      env: { ...sanitizeEnv(process.env), LC_ALL: 'C', LANG: 'C' }
+      env: startTokenProbeEnv(sanitizeEnv(process.env))
     }
   );
   return startTokenFromSpawnResult('powershell-cim', pid, result);
@@ -164,9 +232,13 @@ function readStartToken(pid: number, bypassCache: boolean): string | null {
       timeout: 2000,
       // Uniform spawn-env discipline: sanitize even for read-only system
       // binaries so the spawn-env CI check stays a single rule (#2357/#2375).
-      env: { ...sanitizeEnv(process.env), LC_ALL: 'C', LANG: 'C' }
+      // The TZ pin keeps the token off our time zone (#5311); the prefix
+      // marks the pinned era so pre-pin records compare safely (see
+      // isSameProcessStartToken).
+      env: startTokenProbeEnv(sanitizeEnv(process.env))
     });
-    return startTokenFromSpawnResult('ps-lstart', pid, result);
+    const token = startTokenFromSpawnResult('ps-lstart', pid, result);
+    return token === null ? null : withUtcStartTokenPrefix(token);
   } catch (error: unknown) {
     logger.debug('SYSTEM', 'captureProcessStartToken: ps exec failed', {
       pid,
@@ -183,7 +255,9 @@ function readStartToken(pid: number, bypassCache: boolean): string | null {
  * strictly NARROWER than killing, or a token we simply could not read would
  * strand a live orphan and resurrect #2313. So only a token that was captured
  * successfully AND now differs proves reuse; an uncapturable token on either
- * side means "proceed".
+ * side means "proceed". The comparison itself runs through
+ * isSameProcessStartToken, which additionally declines to call a mismatch
+ * against a pre-UTC-pin token a reuse verdict (#5311).
  *
  * Windows caveat: captureProcessStartToken caches per-pid for 5s, so when the
  * snapshot and the revalidation fall inside one TTL this re-reads the cached
@@ -225,12 +299,12 @@ export function captureProcessName(pid: number): string | null {
       ? spawnSync(
           'powershell.exe',
           ['-NoProfile', '-NonInteractive', '-Command', `(Get-Process -Id ${pid} -ErrorAction Stop).ProcessName`],
-          { encoding: 'utf-8', timeout: 5000, windowsHide: true, env: { ...sanitizeEnv(process.env), LC_ALL: 'C', LANG: 'C' } }
+          { encoding: 'utf-8', timeout: 5000, windowsHide: true, env: startTokenProbeEnv(sanitizeEnv(process.env)) }
         )
       : spawnSync('ps', ['-p', String(pid), '-o', 'comm='], {
           encoding: 'utf-8',
           timeout: 2000,
-          env: { ...sanitizeEnv(process.env), LC_ALL: 'C', LANG: 'C' }
+          env: startTokenProbeEnv(sanitizeEnv(process.env))
         });
     if (result.status !== 0) return null;
     const name = normalizeProcessName(result.stdout.trim());
@@ -284,10 +358,19 @@ export function isSameProcess(pid: number, snapshotToken: string | null): boolea
   // below, not a raw probe that could be used where caching is wanted.
   const currentToken = readStartToken(pid, true);
   if (currentToken === null) return true;
-  return currentToken === snapshotToken;
+  return isSameProcessStartToken(currentToken, snapshotToken);
 }
 
-/** A fail-closed identity check for test cleanup of already snapshotted children. */
+/**
+ * A fail-closed identity check for test cleanup of already snapshotted
+ * children. Unlike isSameProcess, an uncapturable current token fails the
+ * match (nothing to certify), while a mismatch against a pre-pin token is
+ * tolerated like everywhere else (#5311) — snapshots never outlive the
+ * process that captured them, so the legacy branch is dead code here, kept
+ * only so every token comparison runs through one rule.
+ */
 export function hasMatchingProcessStartToken(pid: number, snapshotToken: string): boolean {
-  return readStartToken(pid, true) === snapshotToken;
+  const currentToken = readStartToken(pid, true);
+  if (currentToken === null) return false;
+  return isSameProcessStartToken(currentToken, snapshotToken);
 }

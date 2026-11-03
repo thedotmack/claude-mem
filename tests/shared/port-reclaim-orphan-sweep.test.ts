@@ -217,10 +217,13 @@ describe('process-table readers', () => {
     ].join('\n');
     const rows = parseMacProcessTable(stdout);
     expect(rows).toHaveLength(2);
-    expect(rows[0]).toMatchObject({ pid: 812, ppid: 1, uid: 501, startToken: 'Mon Oct  5 09:03:07 2026' });
+    // The raw lstart string is preserved verbatim under the utc: pin prefix
+    // (#5311) — the same prefix captureProcessStartToken stamps, so the
+    // table-side token still byte-matches the later single-PID revalidation.
+    expect(rows[0]).toMatchObject({ pid: 812, ppid: 1, uid: 501, startToken: 'utc:Mon Oct  5 09:03:07 2026' });
     expect(rows[0].cmdline).toBe('/Users/A B/.local/bin/uvx --from chroma-mcp chroma-mcp --data-dir "/Users/A B/.claude-mem/chroma"');
     expect(chromaCmdlineNamesExactDataDir(rows[0].cmdline, '/Users/A B/.claude-mem/chroma', 'darwin')).toBe(true);
-    expect(rows[1]).toMatchObject({ pid: 91234, ppid: 812, uid: 501, startToken: 'Sun Oct 12 14:22:01 2026' });
+    expect(rows[1]).toMatchObject({ pid: 91234, ppid: 812, uid: 501, startToken: 'utc:Sun Oct 12 14:22:01 2026' });
   });
 
   it('Linux: reads ppid and starttime after the LAST paren, so comm may hold spaces and parens', () => {
