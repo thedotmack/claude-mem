@@ -20,6 +20,7 @@ off_pin_stop() {
     echo "$(date -u +%FT%TZ) STOP: off-pin response before turn $1: $(<$marker)" | tee -a $log; exit 5
   done
 }
+failed_in_a_row=0
 for i in {$first..$last}; do
   off_pin_stop $i
   free_gb=$(emv_free_gb)
@@ -40,6 +41,10 @@ for i in {$first..$last}; do
   mode=$([[ $i == 1 ]] && echo first || echo resume)
   out=$(zsh $EMV_FORWARD_DIR/agent-turn.sh $1-t$i "${prompts[$i]}" $mode)
   echo "$out" | tee -a $log
+  # Three failed turns in a row end the run. Reason: the plan's limit; in 500 turns spoiled turns never ran consecutively,
+  # and on 2026-11-03 a Hermes stack whose gateway dropped ran 88 dead turns that looked like finished ones.
+  if [[ $out == *'error=True'* ]]; then (( failed_in_a_row += 1 )); else failed_in_a_row=0; fi
+  if (( failed_in_a_row >= 3 )); then echo "$(date -u +%FT%TZ) STOP: 3 failed turns in a row, ending at turn $i" | tee -a $log; exit 6; fi
   # For the judges: the project the moment the turn's agent exited, every EMV_SNAPSHOT_EVERY turns and at the end.
   if (( i % ${EMV_SNAPSHOT_EVERY:-10} == 0 || i == last )); then
     mkdir -p $EMV_STACK/snapshots; tar -czf $EMV_STACK/snapshots/turn-$(printf %03d $i).tar.gz -C $EMV_STACK proj

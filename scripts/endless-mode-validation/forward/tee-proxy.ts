@@ -14,7 +14,7 @@
 // stops the run when it finds the OFF-PIN file. Same flags turn on the 429 retry (RETRY_429_DELAYS_MS).
 //
 // Usage: bun tee-proxy.ts <port> <upstream> <outDir> [--refresh-claude-token] [--pin-provider=<slug> --pin-model=<model>]
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readdirSync, appendFileSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 export type AccessTokenReader = () => string | null;
@@ -132,7 +132,9 @@ export function startTee(options: {
   const retry429DelaysMs = options.retry429DelaysMs ?? RETRY_429_DELAYS_MS;
   const generationLookupDelaysMs = options.generationLookupDelaysMs ?? GENERATION_LOOKUP_DELAYS_MS;
   mkdirSync(outDir, { recursive: true });
-  let counter = 0;
+  // Continue after the highest saved request: a continued run (EMV_FIRST_TURN) starts a new tee on the same folder, and
+  // restarting at 1 overwrote the earlier turns' saved requests and responses.
+  let counter = readdirSync(outDir).reduce((highest, name) => Math.max(highest, Number(/^(\d+)-/.exec(name)?.[1] ?? 0)), 0);
   let haltReason: string | null = null;
   // The first off-pin sign stops this stack: later requests are refused, and session.sh stops at the OFF-PIN file.
   const halt = (n: string, reason: string) => {

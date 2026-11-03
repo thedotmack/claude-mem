@@ -84,6 +84,14 @@ def stack_records(run_dir, config, args, card):
     stack = os.path.join(run_dir, 'stacks', config)
     log = open(os.path.join(stack, 'logs', 'session.log')).read()
     stats = json.loads(subprocess.run([sys.executable, os.path.join(HERE, 'stats.py'), stack, args.card], check=True, capture_output=True, text=True).stdout)
+    # A run continued before the tee kept its numbering overwrote the earlier turns' saved files, so those turns come from
+    # the results saved before continuing. Later turns are read live; each request is placed by its time.
+    saved = os.path.join(run_dir, 'results-t100', f'{config}.json')
+    if os.path.exists(saved):
+        stats['per_turn'] = {**{k: v for k, v in json.load(open(saved))['per_turn'].items() if int(k) <= 100},
+                             **{k: v for k, v in stats['per_turn'].items() if int(k) > 100}}
+        stats['measured_cost_usd'] = sum(r['measured'] for r in stats['per_turn'].values())
+        stats['total_cost_usd'] = sum((r['uncached'] * card['input'] + r['cached'] * card['cache_read'] + r['output'] * card['output']) / 1e6 for r in stats['per_turn'].values())
     calls = observer_calls(stack); done = done_times(log)
     agent_billed = stats['measured_cost_usd'] or 0
     health = dict(errors=len(stats['errors']), spoiled_turns=sorted(map(int, stats['spoiled_turns'])), observer_wait_capped_turns=stats['observer_wait_capped_turns'],

@@ -19,6 +19,18 @@ function python(args: string[], env: Record<string, string> = {}) {
 }
 
 describe('forward tee-proxy', () => {
+  it('a new tee on the same folder continues the numbering, so a continued run keeps the earlier files', async () => {
+    const upstream = Bun.serve({ port: 0, fetch: () => new Response('{}', { status: 200 }) });
+    const outDir = join(scratch, 'tee-continue');
+    for (const expected of ['0001-req.json', '0002-req.json']) {
+      const tee = startTee({ port: 0, upstream: `http://127.0.0.1:${upstream.port}`, outDir });
+      await (await fetch(`http://127.0.0.1:${tee.port}/v1/messages`, { method: 'POST', body: '{}' })).text();
+      tee.stop(true);
+      expect(existsSync(join(outDir, expected))).toBe(true);
+    }
+    upstream.stop(true);
+  });
+
   it('retries a 401 once with the re-read claude.ai token, logs the retry, and never writes a token', async () => {
     const seen: string[] = [];
     const upstream = Bun.serve({
