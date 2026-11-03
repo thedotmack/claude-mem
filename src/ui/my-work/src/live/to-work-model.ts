@@ -174,7 +174,9 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
     agentId,
     startedAt: started ? formatDateTime(started) : 'Start not recorded',
     startedAtIso: started ? new Date(started).toISOString() : undefined,
+    startedEpoch: started || undefined,
     runningFor: started ? formatDuration((completedEpoch ?? now) - started) : 'Not recorded',
+    runningForMs: started ? (completedEpoch ?? now) - started : undefined,
     stage,
     state,
     closed: status === 'closed' || undefined,
@@ -183,8 +185,10 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
       percent: status === 'shipped' ? 100 : review ? review.percent : null,
       readings: review ? Math.max(1, readings.length) : 0,
       reviewedAt: Number.isFinite(reviewedAt) ? formatRecordTime(reviewedAt, now) : 'Not reviewed yet',
+      reviewedAtEpoch: Number.isFinite(reviewedAt) ? reviewedAt : undefined,
       history: readingsStopShort ? undefined : readings.map((reading) => reading.percent),
       completedAt: status === 'shipped' && completedEpoch ? formatDateTime(completedEpoch) : undefined,
+      completedEpoch: completedEpoch || undefined,
     },
     estimate: measuredEstimate(readings, status === 'shipped'),
     next: { who, text: nextTextFor(status, recordedNext) },
@@ -450,5 +454,6 @@ export function toWorkModel(snapshot: WorkViewSnapshot, now: number): MappedWork
     buildStory: toBuildStory(snapshot.story?.story ?? null, now),
     lastRuns: { goals: goalsRun, progress: progressRun },
     refresh: toAutoRefresh(snapshot.refresh ?? null),
+    language: snapshot.language,
   }
 }

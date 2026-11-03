@@ -711,7 +711,12 @@ export class WorkViewRoutes extends BaseRouteHandler {
     const reviewRevision = createHash('sha256').update(JSON.stringify(snapshot.humanRequests.map(request => [request.id, request.contentFingerprint, request.review]))).digest('hex').slice(0, 16);
     // Generated wording is display only: it never changes what was reviewed.
     const view = this.humanCopy ? this.humanCopy.observe(snapshot) as WorkViewSnapshot : snapshot;
-    return { ...view, rulesFile: this.rulesFileStatus(snapshot), setup: this.setupView(view), revision: `${snapshot.revision}:${reviewRevision}:${this.humanCopy?.revision ?? 0}` };
+    const settings = SettingsDefaultsManager.loadFromFile(this.settingsPath, true, { readOnly: true });
+    const configuredLanguage = settings.CLAUDE_MEM_WORK_VIEW_LANGUAGE
+      || (settings as Record<string, unknown>)['workView.language']
+      || ((settings as Record<string, unknown>).workView as Record<string, unknown> | undefined)?.language;
+    const language = typeof configuredLanguage === 'string' && configuredLanguage.trim() ? configuredLanguage.trim() : undefined;
+    return { ...view, rulesFile: this.rulesFileStatus(snapshot), setup: this.setupView(view), revision: `${snapshot.revision}:${reviewRevision}:${this.humanCopy?.revision ?? 0}`, ...(language ? { language } : {}) };
   }
 
   /**

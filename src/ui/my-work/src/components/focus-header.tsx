@@ -19,19 +19,20 @@ import { useWorkModel } from '@/store'
 import { formatPromptDay, formatPromptTime, promptDayKey, shipDayKey } from '@/lib/prompt-time'
 import { navWordIn } from '../../../../services/work-view/nav-words.mjs'
 import { AreaEditDialog, type AreaEdit, type FocusChanges } from './focus-changes'
+import { useTranslation } from '@/i18n/use-translation'
 
 const requestTitle = (request: Request) => request.title ?? 'New request, title being written'
 const isReviewed = (request: Request) => request.progress.readings > 0
 
 /** Where an area stands, from the requests in it. The dot uses the same state tokens as My Work; the text stays plain. */
 type AreaStatus = 'nothing' | 'your-move' | 'moving' | 'asked-again' | 'shipped' | 'stalled'
-const AREA_STATUS: Record<AreaStatus, { label: string; dot: string; text: string; meter: string }> = {
-  nothing: { label: 'Nothing on it', dot: 'bg-attention-foreground', text: 'text-attention-foreground', meter: '' },
-  'your-move': { label: 'Waiting on you', dot: 'bg-attention-foreground', text: 'text-attention-foreground', meter: '[&_[data-slot=progress-indicator]]:bg-attention-foreground/75' },
-  moving: { label: 'Moving', dot: 'bg-working-foreground', text: 'text-working-foreground', meter: '[&_[data-slot=progress-indicator]]:bg-working-foreground/75' },
-  'asked-again': { label: 'Asked again after ship', dot: 'bg-review-foreground', text: 'text-review-foreground', meter: '[&_[data-slot=progress-indicator]]:bg-review-foreground/75' },
-  shipped: { label: 'Shipped', dot: 'bg-shipped-foreground', text: 'text-shipped-foreground', meter: '[&_[data-slot=progress-indicator]]:bg-shipped-foreground/75' },
-  stalled: { label: 'Stalled', dot: 'bg-idle-foreground', text: 'text-muted-foreground', meter: '[&_[data-slot=progress-indicator]]:bg-idle-foreground/75' },
+const AREA_STATUS_CONFIG: Record<AreaStatus, { labelKey: string; dot: string; text: string; meter: string }> = {
+  nothing: { labelKey: 'focus.areaStatusNothing', dot: 'bg-attention-foreground', text: 'text-attention-foreground', meter: '' },
+  'your-move': { labelKey: 'focus.areaStatusYourMove', dot: 'bg-attention-foreground', text: 'text-attention-foreground', meter: '[&_[data-slot=progress-indicator]]:bg-attention-foreground/75' },
+  moving: { labelKey: 'focus.areaStatusMoving', dot: 'bg-working-foreground', text: 'text-working-foreground', meter: '[&_[data-slot=progress-indicator]]:bg-working-foreground/75' },
+  'asked-again': { labelKey: 'focus.areaStatusAskedAgain', dot: 'bg-review-foreground', text: 'text-review-foreground', meter: '[&_[data-slot=progress-indicator]]:bg-review-foreground/75' },
+  shipped: { labelKey: 'focus.areaStatusShipped', dot: 'bg-shipped-foreground', text: 'text-shipped-foreground', meter: '[&_[data-slot=progress-indicator]]:bg-shipped-foreground/75' },
+  stalled: { labelKey: 'focus.areaStatusStalled', dot: 'bg-idle-foreground', text: 'text-muted-foreground', meter: '[&_[data-slot=progress-indicator]]:bg-idle-foreground/75' },
 }
 
 const lastShip = (requests: Request[]) => requests.map((request) => request.progress.completedAt).filter(Boolean).sort((a, b) => shipDayKey(b!) - shipDayKey(a!))[0]
@@ -55,21 +56,25 @@ function statusOf(latestAt: string | null, requests: Request[]): AreaStatus {
  * The percentage always says how much of the area it covers, and names what it leaves out.
  */
 function Rollup({ status, requests, className }: { status: AreaStatus; requests: Request[]; className?: string }) {
+  const { t } = useTranslation()
   const reviewed = requests.filter(isReviewed)
   const unreviewed = requests.filter((request) => !isReviewed(request))
   if (requests.length === 0) {
-    return <Req ids={['R12.1', 'R5.11']}><p className={cn('text-xs text-muted-foreground', className)}>No requests, so no progress to measure</p></Req>
+    return <Req ids={['R12.1', 'R5.11']}><p className={cn('text-xs text-muted-foreground', className)}>{t('focus.noRequests')}</p></Req>
   }
   const percent = reviewed.length ? Math.round(reviewed.reduce((sum, request) => sum + (request.progress.percent ?? 0), 0) / reviewed.length) : 0
+  const progressLabel = reviewed.length
+    ? t('focus.reviewedProgress', { percent, reviewed: reviewed.length, total: requests.length })
+    : t('focus.notReviewedCount', { total: requests.length })
   return (
     <Req ids={['R16.2', 'R5.11', 'R12.1']}>
       <div className={cn('space-y-1', className)}>
-        <Progress value={percent} className={cn('h-1.5 bg-muted', AREA_STATUS[status].meter)} aria-label={`${percent}% from ${reviewed.length} of ${requests.length} requests reviewed`} />
+        <Progress value={percent} className={cn('h-1.5 bg-muted', AREA_STATUS_CONFIG[status].meter)} aria-label={`${percent}% from ${reviewed.length} of ${requests.length} requests reviewed`} />
         <p className="text-xs text-muted-foreground">
-          {reviewed.length ? <><span className="font-medium text-foreground tabular-nums">{percent}%</span> · {reviewed.length} of {plural(requests.length, 'request')} reviewed</> : <>Not reviewed yet · 0 of {plural(requests.length, 'request')}</>}
+          {reviewed.length ? <><span className="font-medium text-foreground tabular-nums">{percent}%</span> · {progressLabel.replace(`${percent}% · `, '')}</> : progressLabel}
         </p>
         {unreviewed.length > 0 && reviewed.length > 0 && (
-          <p className="truncate text-xs text-muted-foreground">Not counted: {unreviewed.map(requestTitle).join(', ')}</p>
+          <p className="truncate text-xs text-muted-foreground">{t('focus.notCounted', { names: unreviewed.map(requestTitle).join(', ') })}</p>
         )}
       </div>
     </Req>
@@ -78,12 +83,13 @@ function Rollup({ status, requests, className }: { status: AreaStatus; requests:
 
 /** The owner's words, dated to the minute they typed them. */
 export function Quotes({ quotes }: { quotes: Quote[] }) {
+  const { language } = useTranslation()
   return (
     <Req ids={['R16.2', 'R5.11']}>
       <div className="space-y-2">
         {quotes.map((quote) => (
           <InlineCitationQuote key={quote.at + quote.quote} className="border-border text-foreground/80 not-italic">
-            “{quote.quote}” <time className="ml-1 text-xs whitespace-nowrap text-muted-foreground">{formatPromptTime(quote.at)}</time>
+            “{quote.quote}” <time className="ml-1 text-xs whitespace-nowrap text-muted-foreground">{formatPromptTime(quote.at, language)}</time>
           </InlineCitationQuote>
         ))}
       </div>
@@ -93,11 +99,13 @@ export function Quotes({ quotes }: { quotes: Quote[] }) {
 
 /** Every quote is kept, behind one disclosure, so the requests come first (§3). */
 function WhyItsHere({ quotes }: { quotes: Quote[] }) {
+  const { t } = useTranslation()
+  const label = quotes.length === 1 ? t('focus.whyItsHereSingle', { count: quotes.length }) : t('focus.whyItsHere', { count: quotes.length })
   return (
     <Req ids={['R16.2']}>
       <Collapsible>
         <CollapsibleTrigger className="group flex min-h-11 items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
-          <ChevronDownIcon className="size-4 transition-transform group-data-[state=open]:rotate-180" />Why it’s here · {plural(quotes.length, 'quote')}
+          <ChevronDownIcon className="size-4 transition-transform group-data-[state=open]:rotate-180" />{label}
         </CollapsibleTrigger>
         <CollapsibleContent className="pt-1 pb-1"><Quotes quotes={quotes} /></CollapsibleContent>
       </Collapsible>
@@ -110,13 +118,14 @@ function WhyItsHere({ quotes }: { quotes: Quote[] }) {
 // Three asks keep the header under about a third of a 1000px window with the requests showing below it.
 const ASKS_SHOWN_FIRST = 3
 function NotStartedAsks({ asks }: { asks: FocusAsk[] }) {
+  const { language } = useTranslation()
   const [showAll, setShowAll] = useState(false)
   if (asks.length === 0) return null
   const shown = showAll ? asks : asks.slice(0, ASKS_SHOWN_FIRST)
   return (
     <Req ids={['R16.2', 'R6.3', 'R12.2']}>
       <div className="space-y-1.5">
-        <h3 className="text-xs font-medium text-muted-foreground">Not started · {asks.length}</h3>
+        <h3 className="text-xs font-medium text-muted-foreground">{language === 'zh-CN' ? '未开始' : 'Not started'} · {asks.length}</h3>
         {/* Dashed and unfilled: asked for, but nothing is working on it yet. The heading names the state once. */}
         <ul className="divide-y divide-dashed rounded-lg border border-dashed">
           {shown.map((ask) => (
@@ -125,11 +134,13 @@ function NotStartedAsks({ asks }: { asks: FocusAsk[] }) {
                 <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
                   <p className="flex min-w-0 flex-1 basis-64 items-start gap-2 text-sm leading-snug font-medium"><CircleDashedIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />{ask.title}</p>
                   <p className="flex items-center gap-1.5 pl-5.5 text-xs text-muted-foreground sm:pl-0">
-                    {timesLabel(ask.timesAsked).replace(/^a/, 'A')}, last {formatPromptDay(ask.latestAt)}
+                    {language === 'zh-CN'
+                      ? `${ask.timesAsked === 1 ? '提过 1 次' : `提过 ${ask.timesAsked} 次`}，最近于 ${formatPromptDay(ask.latestAt, language)}`
+                      : `${timesLabel(ask.timesAsked).replace(/^a/, 'A')}, last ${formatPromptDay(ask.latestAt, language)}`}
                     {ask.quotes.length > 0 && <>
                       <span aria-hidden="true">·</span>
                       <CollapsibleTrigger className="group inline-flex min-h-11 items-center gap-0.5 hover:text-foreground sm:min-h-0">
-                        {plural(ask.quotes.length, 'quote')}<ChevronDownIcon className="size-3.5 transition-transform group-data-[state=open]:rotate-180" />
+                        {language === 'zh-CN' ? `${ask.quotes.length} 条引用` : plural(ask.quotes.length, 'quote')}<ChevronDownIcon className="size-3.5 transition-transform group-data-[state=open]:rotate-180" />
                       </CollapsibleTrigger>
                     </>}
                   </p>
@@ -141,7 +152,7 @@ function NotStartedAsks({ asks }: { asks: FocusAsk[] }) {
         </ul>
         {asks.length > ASKS_SHOWN_FIRST && (
           <Button variant="ghost" size="sm" className="-ml-2 h-11 text-xs text-muted-foreground sm:h-8" onClick={() => setShowAll(!showAll)}>
-            {showAll ? 'Show fewer' : `Show ${asks.length - ASKS_SHOWN_FIRST} more`}
+            {showAll ? (language === 'zh-CN' ? '收起' : 'Show fewer') : (language === 'zh-CN' ? `显示另外 ${asks.length - ASKS_SHOWN_FIRST} 项` : `Show ${asks.length - ASKS_SHOWN_FIRST} more`)}
           </Button>
         )}
       </div>
@@ -152,6 +163,7 @@ function NotStartedAsks({ asks }: { asks: FocusAsk[] }) {
 /** Rename, Edit goal, Merge into…, Move up / down (the owner's order), and Done or back in focus. */
 function AreaMenu({ area, changes, onEdit }: { area: FocusArea; changes: FocusChanges; onEdit: (edit: AreaEdit) => void }) {
   const { focusAreas } = useWorkModel()
+  const { t, language } = useTranslation()
   // The owner's order covers kept areas only (the worker refuses anything else), all of them at once, as the rail shows them.
   const order = focusAreas.filter((entry) => entry.status === 'kept' && !entry.mergedInto).map((entry) => entry.id)
   const at = order.indexOf(area.id)
@@ -162,18 +174,18 @@ function AreaMenu({ area, changes, onEdit }: { area: FocusArea; changes: FocusCh
         <Button variant="ghost" size="sm" className="h-11 w-11 shrink-0 sm:h-8 sm:w-8" aria-label={`Change ${area.name}`} disabled={changes.saving}><MoreHorizontalIcon /></Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        <DropdownMenuItem onSelect={() => onEdit({ kind: 'rename', area })}><PencilIcon />Rename</DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => onEdit({ kind: 'edit-goal', area })}><PencilIcon />Edit goal</DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => onEdit({ kind: 'merge', area })}><MergeIcon />Merge into…</DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => onEdit({ kind: 'rename', area })}><PencilIcon />{t('suggested.rename')}</DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => onEdit({ kind: 'edit-goal', area })}><PencilIcon />{language === 'zh-CN' ? '编辑目标' : 'Edit goal'}</DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => onEdit({ kind: 'merge', area })}><MergeIcon />{t('dialog.mergeInto')}…</DropdownMenuItem>
         {at >= 0 && <>
           <DropdownMenuSeparator />
-          <DropdownMenuItem disabled={at === 0} onSelect={() => swap(at - 1)}><ArrowUpIcon />Move up</DropdownMenuItem>
-          <DropdownMenuItem disabled={at === order.length - 1} onSelect={() => swap(at + 1)}><ArrowDownIcon />Move down</DropdownMenuItem>
+          <DropdownMenuItem disabled={at === 0} onSelect={() => swap(at - 1)}><ArrowUpIcon />{language === 'zh-CN' ? '上移' : 'Move up'}</DropdownMenuItem>
+          <DropdownMenuItem disabled={at === order.length - 1} onSelect={() => swap(at + 1)}><ArrowDownIcon />{language === 'zh-CN' ? '下移' : 'Move down'}</DropdownMenuItem>
         </>}
         <DropdownMenuSeparator />
         {area.status === 'done'
-          ? <DropdownMenuItem onSelect={() => changes.apply({ action: 'keep', focusAreaId: area.id })}><CheckIcon />Back in focus</DropdownMenuItem>
-          : <DropdownMenuItem onSelect={() => changes.apply({ action: 'done', focusAreaId: area.id })}><CheckIcon />Done</DropdownMenuItem>}
+          ? <DropdownMenuItem onSelect={() => changes.apply({ action: 'keep', focusAreaId: area.id })}><CheckIcon />{language === 'zh-CN' ? '恢复重点' : 'Back in focus'}</DropdownMenuItem>
+          : <DropdownMenuItem onSelect={() => changes.apply({ action: 'done', focusAreaId: area.id })}><CheckIcon />{t('pastFocus.done')}</DropdownMenuItem>}
       </DropdownMenuContent>
     </DropdownMenu>
   )
@@ -195,6 +207,7 @@ function AreaName({ name }: { name: string }) {
 /** One focus area, on top of its requests. `requests` are all of them, closed ones too, as the combined progress counts them. */
 export function FocusHeader({ area, requests, changes }: { area: FocusArea; requests: Request[]; changes: FocusChanges }) {
   const [edit, setEdit] = useState<AreaEdit | null>(null)
+  const { t, language } = useTranslation()
   const navWord = navWordIn(area.name)
   const status = statusOf(area.latestAt, requests)
   const shipped = requests.filter((request) => request.state === 'shipped').length
@@ -206,12 +219,12 @@ export function FocusHeader({ area, requests, changes }: { area: FocusArea; requ
           <div className="min-w-0 flex-1 space-y-1">
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-lg leading-snug font-semibold tracking-tight"><AreaName name={area.name} /></h2>
-              {area.status === 'suggested' && <Badge variant="outline" className="font-normal">Suggested</Badge>}
-              {area.status === 'done' && <Badge variant="outline" className="border-shipped-border font-normal text-shipped-foreground">Done</Badge>}
+              {area.status === 'suggested' && <Badge variant="outline" className="font-normal">{t('rules.statusSuggested')}</Badge>}
+              {area.status === 'done' && <Badge variant="outline" className="border-shipped-border font-normal text-shipped-foreground">{t('pastFocus.done')}</Badge>}
             </div>
-            {area.goal ? <p className="text-[0.95rem] leading-snug">{area.goal}</p> : <p className="text-sm text-muted-foreground italic">Write one sentence saying what this area is for (Edit goal).</p>}
+            {area.goal ? <p className="text-[0.95rem] leading-snug">{area.goal}</p> : <p className="text-sm text-muted-foreground italic">{language === 'zh-CN' ? '用一句话说明此领域的用途（编辑目标）。' : 'Write one sentence saying what this area is for (Edit goal).'}</p>}
             {/* The area's own evidence sits with its goal, so it can't be read as belonging to the asks below. */}
-            {area.quotes.length > 0 ? <WhyItsHere quotes={area.quotes} /> : area.evidence && <p className="text-xs text-muted-foreground">Why it’s here: {area.evidence}</p>}
+            {area.quotes.length > 0 ? <WhyItsHere quotes={area.quotes} /> : area.evidence && <p className="text-xs text-muted-foreground">{t('suggested.whySuggested')}{area.evidence}</p>}
           </div>
           <AreaMenu area={area} changes={changes} onEdit={setEdit} />
         </div>
@@ -219,18 +232,18 @@ export function FocusHeader({ area, requests, changes }: { area: FocusArea; requ
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
           <Rollup status={status} requests={requests} />
           <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-            <span className={cn('inline-flex items-center gap-1.5 font-medium', AREA_STATUS[status].text)}><span className={cn('size-1.5 rounded-full', AREA_STATUS[status].dot)} />{AREA_STATUS[status].label}</span>
-            <span><span className="font-medium text-foreground tabular-nums">{shipped}</span> shipped</span>
-            {area.timesAsked !== null && area.latestAt && <span>{timesLabel(area.timesAsked)}, last {formatPromptDay(area.latestAt)}</span>}
+            <span className={cn('inline-flex items-center gap-1.5 font-medium', AREA_STATUS_CONFIG[status].text)}><span className={cn('size-1.5 rounded-full', AREA_STATUS_CONFIG[status].dot)} />{t(AREA_STATUS_CONFIG[status].labelKey)}</span>
+            <span><span className="font-medium text-foreground tabular-nums">{shipped}</span> {language === 'zh-CN' ? '已交付' : 'shipped'}</span>
+            {area.timesAsked !== null && area.latestAt && <span>{language === 'zh-CN' ? `提过 ${area.timesAsked} 次，最近于 ${formatPromptDay(area.latestAt, language)}` : `${timesLabel(area.timesAsked)}, last ${formatPromptDay(area.latestAt, language)}`}</span>}
           </p>
         </div>
-        {shippedBefore && <p className="text-xs text-review-foreground">You asked again on {formatPromptDay(area.latestAt!)}, after the last ship on {shippedBefore}. What shipped doesn’t cover it yet.</p>}
+        {shippedBefore && <p className="text-xs text-review-foreground">You asked again on {formatPromptDay(area.latestAt!, language)}, after the last ship on {shippedBefore}. What shipped doesn’t cover it yet.</p>}
         <NotStartedAsks asks={area.asks} />
         {area.status === 'suggested' && (
           <Req ids={['R16.4']}>
             <div className="flex flex-wrap gap-2 border-t pt-3">
-              <Button size="sm" className="h-11 sm:h-8" disabled={changes.saving} onClick={() => changes.apply({ action: 'keep', focusAreaId: area.id })}><CheckIcon />Keep</Button>
-              <Button size="sm" variant="ghost" className="h-11 sm:h-8" disabled={changes.saving} onClick={() => changes.apply({ action: 'dismiss', focusAreaId: area.id })}><XIcon />Dismiss</Button>
+              <Button size="sm" className="h-11 sm:h-8" disabled={changes.saving} onClick={() => changes.apply({ action: 'keep', focusAreaId: area.id })}><CheckIcon />{t('suggested.keep')}</Button>
+              <Button size="sm" variant="ghost" className="h-11 sm:h-8" disabled={changes.saving} onClick={() => changes.apply({ action: 'dismiss', focusAreaId: area.id })}><XIcon />{t('suggested.dismiss')}</Button>
             </div>
           </Req>
         )}
@@ -243,16 +256,17 @@ export function FocusHeader({ area, requests, changes }: { area: FocusArea; requ
 /** Other: the permanent bucket for requests that fit no area, and asks the run placed in none. */
 export function OtherHeader({ requests }: { requests: Request[] }) {
   const { otherAsks } = useWorkModel()
+  const { t, language } = useTranslation()
   const shipped = requests.filter((request) => request.state === 'shipped').length
   return (
     <Req ids={['R16.3', 'R12.3']}>
       <HeaderFrame>
         <div className="space-y-1">
-          <h2 className="text-lg leading-snug font-semibold tracking-tight">Other</h2>
-          <p className="text-sm text-muted-foreground">Requests that fit none of your focus areas. A refresh suggests a new area when several of these turn out to be steps of something larger.</p>
+          <h2 className="text-lg leading-snug font-semibold tracking-tight">{t('nav.other')}</h2>
+          <p className="text-sm text-muted-foreground">{language === 'zh-CN' ? '不属于任何重点领域的任务。当其中几项任务显现出共同目标时，刷新后会建议创建新领域。' : 'Requests that fit none of your focus areas. A refresh suggests a new area when several of these turn out to be steps of something larger.'}</p>
         </div>
         <Rollup status={statusOf(null, requests)} requests={requests} />
-        <p className="text-xs text-muted-foreground"><span className="font-medium text-foreground tabular-nums">{shipped}</span> shipped</p>
+        <p className="text-xs text-muted-foreground"><span className="font-medium text-foreground tabular-nums">{shipped}</span> {language === 'zh-CN' ? '已交付' : 'shipped'}</p>
         <NotStartedAsks asks={otherAsks} />
       </HeaderFrame>
     </Req>

@@ -36,7 +36,9 @@ export interface Request {
   startedAt: string
   /** Sortable start time. The List sorts on this, never on the display string. */
   startedAtIso?: string
+  startedEpoch?: number
   runningFor: string
+  runningForMs?: number
   stage: Stage
   state: LiveState
   progress: {
@@ -44,7 +46,9 @@ export interface Request {
     percent: number | null
     readings: number
     reviewedAt: string
+    reviewedAtEpoch?: number
     completedAt?: string
+    completedEpoch?: number
     /** Each memory review's percent, oldest first. The ship estimate needs two of them, moving forward (decision 3). */
     history?: number[]
     /** How much of the request the last review could assess (§15.1: a percentage shows its coverage). */

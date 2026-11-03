@@ -16,6 +16,7 @@ import { Req } from '@/spec/req'
 import type { Request } from '@/data'
 import { requestById, useFreshlyUpdated, useStore, useWorkspace } from '@/store'
 import { AgentIcon, FocusAreaChip, NextMove, ProductLink, ProgressMeter, StateBadge } from './bits'
+import { useTranslation } from '@/i18n/use-translation'
 
 /**
  * Decision 5: while a request has only agent data, the card shows the agent's own lines as a terminal,
@@ -56,7 +57,8 @@ function useAgentViewTransform(request: Request) {
 
 function ActivitySpinner({ word, settled }: { word: string; settled: boolean }) {
   const { mode } = useWorkspace()
-  const label = settled ? 'Just updated' : mode === 'web' && word !== 'Translating' ? 'Working' : word
+  const { t } = useTranslation()
+  const label = settled ? t('card.justUpdated') : mode === 'web' && word !== 'Translating' ? t('state.working') : (word === 'Translating' ? t('card.translating') : word)
   return (
     <Req ids={['D5']}>
       <Tooltip>
@@ -75,6 +77,7 @@ function ActivitySpinner({ word, settled }: { word: string; settled: boolean }) 
 
 /** After ship (decision 4): the open Docs, Promo and Other follow-ups, each one actionable. Nothing renders when none are open. */
 export function OpenFollowUps({ request, limit }: { request: Request; limit?: number }) {
+  const { t } = useTranslation()
   const open = request.followUps.filter((followUp) => !followUp.done)
   if (request.state !== 'shipped' || open.length === 0) return null
   const inStore = requestById(request.id) !== null
@@ -87,13 +90,13 @@ export function OpenFollowUps({ request, limit }: { request: Request; limit?: nu
   return (
     <Req ids={['R5.7']}>
       <div className="space-y-1">
-        <p className="section-label">Open after ship · {open.length}</p>
+        <p className="section-label">{t('card.openAfterShip', { count: open.length })}</p>
         <ul className="divide-y divide-border/70">
           {open.slice(0, limit).map((followUp) => (
             <li key={followUp.text} className="flex min-h-11 items-center gap-2 text-sm md:min-h-9">
               <span className="w-12 shrink-0 text-[11px] font-medium text-muted-foreground uppercase">{followUp.tag}</span>
               <span className="min-w-0 flex-1 truncate">{followUp.text}</span>
-              {inStore && <SaveButton className={cn(buttonVariants({ variant: 'ghost', size: 'sm' }), 'h-11 shrink-0 text-xs md:h-7')} onClick={() => finish(followUp.text)}><CheckIcon />Done</SaveButton>}
+              {inStore && <SaveButton className={cn(buttonVariants({ variant: 'ghost', size: 'sm' }), 'h-11 shrink-0 text-xs md:h-7')} onClick={() => finish(followUp.text)}><CheckIcon />{t('card.done')}</SaveButton>}
             </li>
           ))}
         </ul>
@@ -112,6 +115,7 @@ const CARD_DELIVERABLES = 3
  * commits and branches.
  */
 export function Deliverables({ request, onOpen }: { request: Request; onOpen: () => void }) {
+  const { t } = useTranslation()
   const products = request.workProduct.filter(isCardDeliverable)
   if (products.length === 0) return null
   const shown = products.slice(0, CARD_DELIVERABLES)
@@ -119,7 +123,7 @@ export function Deliverables({ request, onOpen }: { request: Request; onOpen: ()
   return (
     <Req ids={['R5.12', 'R5.10']}>
       <div className="space-y-1">
-        <p className="section-label">Deliverables · {products.length}</p>
+        <p className="section-label">{t('card.deliverables', { count: products.length })}</p>
         <ul className="flex flex-wrap gap-1.5">
           {shown.map((product, index) => {
             const Icon = PRODUCT_ICON[product.kind]
@@ -134,7 +138,7 @@ export function Deliverables({ request, onOpen }: { request: Request; onOpen: ()
           })}
           {hidden > 0 && (
             <li>
-              <Button variant="ghost" size="sm" className="h-8 px-2 text-xs" onClick={onOpen} aria-label={`Open the request to see ${hidden} more deliverables`}>+{hidden} more</Button>
+              <Button variant="ghost" size="sm" className="h-8 px-2 text-xs" onClick={onOpen} aria-label={t('card.openDeliverablesAria', { count: hidden })}>{t('card.moreDeliverables', { count: hidden })}</Button>
             </li>
           )}
         </ul>
@@ -145,6 +149,7 @@ export function Deliverables({ request, onOpen }: { request: Request; onOpen: ()
 
 export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request; onOpen: () => void; onOpenFocus: (focusAreaId: string) => void }) {
   const { team } = useWorkspace()
+  const { t, formatRecordTime, formatDuration } = useTranslation()
   const { phase, text, word } = useAgentViewTransform(request)
   const fresh = phase === 'fresh'
   const reduceMotion = useReducedMotion()
@@ -152,6 +157,12 @@ export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request
   const contentJustUpdated = useFreshlyUpdated(request.id)
   // Only a card that needs you gets the edge glow that follows the pointer, so it reads as "this one" (R10.2).
   const waitingOnYou = request.state === 'your-move' || request.state === 'needs-check'
+  const startedAt = request.startedEpoch
+    ? formatRecordTime(request.startedEpoch)
+    : request.startedAt === 'Not recorded' ? t('card.notRecorded') : request.startedAt
+  const runningFor = request.runningForMs !== undefined
+    ? formatDuration(request.runningForMs)
+    : request.runningFor === 'Not recorded' ? t('card.notRecorded') : request.runningFor
   return (
     <Req ids={['R1.1', 'R2.1', 'R4.1', 'R3.3', 'R10.2']}>
       <div className="relative h-full rounded-xl">
@@ -161,7 +172,7 @@ export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request
           <div className="flex min-w-0 items-center gap-2">
             <AgentIcon agentId={request.agentId} />
             <Req ids={['R5.2', 'R9.3']}>
-              <span className={cn('truncate text-xs text-muted-foreground', !team && 'sr-only')}>asked by {request.askedBy}</span>
+              <span className={cn('truncate text-xs text-muted-foreground', !team && 'sr-only')}>{t('card.askedBy', { name: request.askedBy })}</span>
             </Req>
           </div>
           <div className="flex items-center gap-1.5">
@@ -186,7 +197,7 @@ export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request
                 <Terminal output={request.terminal.join('\n')} isStreaming className="border-dashed border-terminal-border bg-terminal text-terminal-foreground">
                   <TerminalContent className="max-h-28 p-3.5 text-[11px] leading-relaxed">
                     <pre className="whitespace-pre-wrap text-terminal-foreground">{request.terminal.slice(-4).join('\n')}</pre>
-                    {phase === 'translating' && <Shimmer as="span" className="text-[11px] [--color-background:var(--foreground)] [--color-muted-foreground:var(--terminal-foreground)]">Writing the human title…</Shimmer>}
+                    {phase === 'translating' && <Shimmer as="span" className="text-[11px] [--color-background:var(--foreground)] [--color-muted-foreground:var(--terminal-foreground)]">{t('card.writingTitle')}</Shimmer>}
                   </TerminalContent>
                 </Terminal>
               </button>
@@ -203,9 +214,9 @@ export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request
             <FocusAreaChip focusAreaId={request.focusAreaId} onOpen={onOpenFocus} />
             <Req ids={['R5.3', 'R5.4', 'R5.5']}>
               <dl className="grid grid-cols-3 gap-2 text-xs">
-                <div><dt className="text-muted-foreground">Stage</dt><dd className="mt-0.5 font-medium" title={request.stageNote}>{request.stage}</dd></div>
-                <div><dt className="text-muted-foreground">Started</dt><dd className="mt-0.5">{request.startedAt}</dd></div>
-                <div><dt className="text-muted-foreground">Running</dt><dd className="mt-0.5">{request.runningFor}</dd></div>
+                <div><dt className="text-muted-foreground">{t('card.stage')}</dt><dd className="mt-0.5 font-medium" title={request.stageNote}>{request.stage}</dd></div>
+                <div><dt className="text-muted-foreground">{t('card.started')}</dt><dd className="mt-0.5">{startedAt}</dd></div>
+                <div><dt className="text-muted-foreground">{t('card.running')}</dt><dd className="mt-0.5">{runningFor}</dd></div>
               </dl>
             </Req>
             <ProgressMeter request={request} />

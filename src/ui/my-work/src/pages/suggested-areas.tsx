@@ -15,11 +15,11 @@ import { AreaEditDialog, FocusChangeBar, useFocusChanges, type AreaEdit } from '
 import { Quotes } from '@/components/focus-header'
 import { useIsPhone, swipeToDecide } from '@/lib/swipe-to-decide'
 import { cn } from '@/lib/utils'
-import { plural } from '@/lib/words'
 import { Req } from '@/spec/req'
 import { type FocusArea, type Request } from '@/data'
 import { useWorkModel } from '@/store'
 import { resolveFocusAreaId, suggestionEditDecision } from '@/live/to-focus-model'
+import { useTranslation } from '@/i18n/use-translation'
 
 type Decision = 'kept' | 'merged' | 'dismissed'
 /** Why the system suggested an area, when it recorded no evidence of its own. */
@@ -28,16 +28,36 @@ const SOURCE_TEXT: Record<FocusArea['source'], string> = {
   promotion: 'one request held several separate asks', seed: 'it was set up from how your requests were sorted before', owner: 'you wrote it',
 }
 
+const getSourceText = (source: FocusArea['source'], language: string) => {
+  if (language === 'zh-CN') {
+    switch (source) {
+      case 'owner-goals': return 'owner-goals 在你的提示中发现了它'
+      case 'clustering': return '多项“其他”任务看似属于该领域的步骤'
+      case 'promotion': return '某项任务包含多个独立的要求'
+      case 'seed': return '根据之前的任务分类初始化生成'
+      case 'owner': return '由你编写'
+    }
+  }
+  return `${SOURCE_TEXT[source]}.`
+}
+
 /** One suggested area: its name and goal, Keep / Rename / Merge / Dismiss first, then its evidence on demand. */
 function SuggestionCard({ area, requests, decision, saving, onKeep, onDismiss, onEdit, onUndo, onShow }: {
   area: FocusArea; requests: Request[]; decision: Decision | undefined; saving: boolean
   onKeep: () => void; onDismiss: () => void; onEdit: (edit: AreaEdit) => void; onUndo: () => void; onShow: () => void
 }) {
   const { focusAreas } = useWorkModel()
+  const { t, language } = useTranslation()
   const reduceMotion = useReducedMotion()
   const approval = (decision ? { id: area.id, approved: decision !== 'dismissed' } : { id: area.id }) as ConfirmationProps['approval']
   const [first, ...more] = area.quotes
   const mergedInto = area.mergedInto ? focusAreas.find((entry) => entry.id === area.mergedInto)?.name : null
+  const requestsPlacedText = requests.length === 1
+    ? t('suggested.requestsPlacedSingle', { count: requests.length })
+    : requests.length > 1 ? t('suggested.requestsPlaced', { count: requests.length }) : t('suggested.noRequestsPlaced')
+  const asksNotStartedText = area.asks.length === 1
+    ? t('suggested.asksNotStartedSingle', { count: area.asks.length })
+    : area.asks.length > 1 ? t('suggested.asksNotStarted', { count: area.asks.length }) : ''
   return (
     <Req ids={['R16.4']}>
       <Confirmation id={`suggested-${area.id}`} approval={approval} state={decision ? 'approval-responded' : 'approval-requested'}
@@ -45,16 +65,16 @@ function SuggestionCard({ area, requests, decision, saving, onKeep, onDismiss, o
         <div className={cn('space-y-1', decision === 'dismissed' && 'line-through opacity-60')}>
           <p className="text-[15px] leading-snug font-semibold">{area.name}</p>
           {area.goal && <p className="text-sm text-foreground/85">{area.goal}</p>}
-          <p className="text-xs text-muted-foreground">{requests.length ? `${plural(requests.length, 'request')} placed in it` : 'No requests placed in it yet'}{area.asks.length ? ` · ${plural(area.asks.length, 'ask')} not started` : ''}</p>
+          <p className="text-xs text-muted-foreground">{requestsPlacedText}{asksNotStartedText}</p>
         </div>
 
         <ConfirmationRequest>
           <Req ids={['R11.1']}>
             <ConfirmationActions className="grid w-full grid-cols-2 gap-2 self-stretch sm:flex sm:w-auto sm:self-start">
-              <ConfirmationAction className="h-11 sm:h-9" disabled={saving} onClick={onKeep}><CheckIcon />Keep</ConfirmationAction>
-              <ConfirmationAction variant="outline" className="h-11 sm:h-9" disabled={saving} onClick={() => onEdit({ kind: 'rename', area })}><PencilIcon />Rename</ConfirmationAction>
-              <ConfirmationAction variant="outline" className="h-11 sm:h-9" disabled={saving} onClick={() => onEdit({ kind: 'merge', area })}><MergeIcon />Merge</ConfirmationAction>
-              <ConfirmationAction variant="ghost" className="h-11 sm:h-9" disabled={saving} onClick={onDismiss}><XIcon />Dismiss</ConfirmationAction>
+              <ConfirmationAction className="h-11 sm:h-9" disabled={saving} onClick={onKeep}><CheckIcon />{t('suggested.keep')}</ConfirmationAction>
+              <ConfirmationAction variant="outline" className="h-11 sm:h-9" disabled={saving} onClick={() => onEdit({ kind: 'rename', area })}><PencilIcon />{t('suggested.rename')}</ConfirmationAction>
+              <ConfirmationAction variant="outline" className="h-11 sm:h-9" disabled={saving} onClick={() => onEdit({ kind: 'merge', area })}><MergeIcon />{t('suggested.merge')}</ConfirmationAction>
+              <ConfirmationAction variant="ghost" className="h-11 sm:h-9" disabled={saving} onClick={onDismiss}><XIcon />{t('suggested.dismiss')}</ConfirmationAction>
             </ConfirmationActions>
           </Req>
         </ConfirmationRequest>
@@ -62,29 +82,31 @@ function SuggestionCard({ area, requests, decision, saving, onKeep, onDismiss, o
           <div className="relative flex flex-wrap items-center justify-between gap-x-3">
             {/* Keeping an area is a choice of focus, so it gets the launch screen's sparkles; a merge or dismissal doesn't. */}
             {decision === 'kept' && !reduceMotion && <SparklesCore className="kept-sparkles" background="transparent" particleColor="#D86441" minSize={0.4} maxSize={1.2} particleDensity={60} speed={2} />}
-            <ConfirmationTitle className="relative text-sm text-shipped-foreground">{decision === 'merged' ? `Merged into ${mergedInto ?? 'another area'}. Its requests show there now.` : 'Kept. It’s in My focus now.'}</ConfirmationTitle>
+            <ConfirmationTitle className="relative text-sm text-shipped-foreground">{decision === 'merged' ? t('suggested.mergedInto', { name: mergedInto ?? (language === 'zh-CN' ? '另一个领域' : 'another area') }) : t('suggested.keptInFocus')}</ConfirmationTitle>
             <div className="relative flex">
-              <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" onClick={onShow}>Show it</Button>
-              <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" disabled={saving} onClick={onUndo}>Undo</Button>
+              <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" onClick={onShow}>{t('suggested.showIt')}</Button>
+              <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" disabled={saving} onClick={onUndo}>{t('detail.undo')}</Button>
             </div>
           </div>
         </ConfirmationAccepted>
         <ConfirmationRejected>
           <div className="flex flex-wrap items-center justify-between gap-x-3">
-            <ConfirmationTitle className="text-sm text-muted-foreground">Dismissed. It won’t be suggested again, and its requests are sorted again.</ConfirmationTitle>
-            <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" disabled={saving} onClick={onUndo}>Undo</Button>
+            <ConfirmationTitle className="text-sm text-muted-foreground">{t('suggested.dismissedNotice')}</ConfirmationTitle>
+            <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" disabled={saving} onClick={onUndo}>{t('detail.undo')}</Button>
           </div>
         </ConfirmationRejected>
 
         {!decision && (
           <div className="space-y-2 border-t pt-3">
-            <p className="text-xs text-muted-foreground">Why it’s suggested: {area.quotes.length === 0 && area.evidence ? area.evidence : `${SOURCE_TEXT[area.source]}.`}</p>
+            <p className="text-xs text-muted-foreground">{t('suggested.whySuggested')}{area.quotes.length === 0 && area.evidence ? area.evidence : getSourceText(area.source, language)}</p>
             {first && <Quotes quotes={[first]} />}
             {more.length > 0 && (
               <Collapsible>
                 <CollapsibleContent className="pb-1"><Quotes quotes={more} /></CollapsibleContent>
                 <CollapsibleTrigger className="group flex min-h-11 items-center gap-1 text-xs text-muted-foreground hover:text-foreground sm:min-h-8">
-                  <ChevronDownIcon className="size-3.5 transition-transform group-data-[state=open]:rotate-180" /><span className="group-data-[state=open]:hidden">{more.length} more {more.length === 1 ? 'quote' : 'quotes'}</span><span className="hidden group-data-[state=open]:inline">Fewer quotes</span>
+                  <ChevronDownIcon className="size-3.5 transition-transform group-data-[state=open]:rotate-180" />
+                  <span className="group-data-[state=open]:hidden">{more.length === 1 ? t('suggested.moreQuotesSingle', { count: more.length }) : t('suggested.moreQuotes', { count: more.length })}</span>
+                  <span className="hidden group-data-[state=open]:inline">{t('suggested.fewerQuotes')}</span>
                 </CollapsibleTrigger>
               </Collapsible>
             )}
@@ -97,6 +119,7 @@ function SuggestionCard({ area, requests, decision, saving, onKeep, onDismiss, o
 
 export function SuggestedAreas({ onOpenFocus }: { onOpenFocus: (focusAreaId: string) => void }) {
   const { focusAreas, requests } = useWorkModel()
+  const { language } = useTranslation()
   const changes = useFocusChanges()
   const isPhone = useIsPhone()
   // Decisions made on this page stay in the queue (with Undo) until you leave; the saved rows are the truth.
@@ -116,20 +139,20 @@ export function SuggestedAreas({ onOpenFocus }: { onOpenFocus: (focusAreaId: str
       <section className="space-y-4">
         <div className="space-y-1">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-            <h2 className="text-base font-semibold">Suggested focus areas</h2>
+            <h2 className="text-base font-semibold">{language === 'zh-CN' ? '建议重点领域' : 'Suggested focus areas'}</h2>
             {waiting > 0 && <StateBadge state="your-move" />}
-            <span className="text-xs text-muted-foreground">{suggestions.length - waiting} of {suggestions.length} decided</span>
+            <span className="text-xs text-muted-foreground">{language === 'zh-CN' ? `已决定 ${suggestions.length - waiting} / ${suggestions.length}` : `${suggestions.length - waiting} of ${suggestions.length} decided`}</span>
           </div>
-          <p className="text-sm text-muted-foreground">claude-mem suggests areas from your prompts and your requests. Keep the ones you’d ask for things inside of. A refresh never changes an area you decided.</p>
+          <p className="text-sm text-muted-foreground">{language === 'zh-CN' ? 'claude-mem 从你的提示和任务中建议领域。保留你愿意归入任务的领域。刷新绝不会覆盖你已决定的领域。' : 'claude-mem suggests areas from your prompts and your requests. Keep the ones you’d ask for things inside of. A refresh never changes an area you decided.'}</p>
         </div>
         <FocusChangeBar changes={changes} />
         {suggestions.length === 0 ? (
           <Req ids={['R12.1']}>
-            <p className="text-sm text-muted-foreground">Nothing waiting. New suggestions show up here after the next refresh.</p>
+            <p className="text-sm text-muted-foreground">{language === 'zh-CN' ? '暂无待处理建议。下次刷新后新建议将显示在此处。' : 'Nothing waiting. New suggestions show up here after the next refresh.'}</p>
           </Req>
         ) : (
           <DraggableCardContainer className="space-y-3">
-            {isPhone && waiting > 0 && <p className="text-xs text-muted-foreground">Swipe a card right to keep it, left to dismiss it.</p>}
+            {isPhone && waiting > 0 && <p className="text-xs text-muted-foreground">{language === 'zh-CN' ? '向右轻扫卡片保留，向左轻扫忽略。' : 'Swipe a card right to keep it, left to dismiss it.'}</p>}
             {suggestions.map((area) => {
               const card = <SuggestionCard area={area} requests={inArea(area)} decision={decisions[area.id]} saving={changes.saving}
                 onKeep={() => decide(area, 'kept')} onDismiss={() => decide(area, 'dismissed')} onEdit={setEdit} onUndo={() => undo(area)}

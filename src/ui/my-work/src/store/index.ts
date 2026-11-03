@@ -39,6 +39,7 @@ const useStoreBase = createBoundStore({
   href: () => window.location.href,
   writeUrl: (url, replace) => replace ? window.history.replaceState(null, '', url) : window.history.pushState(null, '', url),
   prefersDark: window.matchMedia('(prefers-color-scheme: dark)').matches,
+  browserLanguage: typeof navigator !== 'undefined' ? navigator.language : undefined,
   storage: browserStorage(),
   reportsUsage: ACTIVE_SOURCE === localSource,
   sendUsage: sendUsageReport,
