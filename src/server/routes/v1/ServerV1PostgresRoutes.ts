@@ -2029,7 +2029,22 @@ interface JobListRow {
 
 const SOURCE_TYPE_VALUES = new Set(['agent_event', 'session_summary', 'observation_reindex']);
 
-function parseGenericJobListingQuery(req: Request): {
+export const JOB_LIST_STATUS_VALUES = new Set(['queued', 'processing', 'completed', 'failed', 'cancelled']);
+export const JOB_LIST_DEFAULT_LIMIT = 50;
+export const JOB_LIST_MAX_LIMIT = 200;
+/**
+ * Upper bound on the listing `offset`. `limit` is already capped, but offset was
+ * not: Postgres still walks and discards every skipped row, so
+ * `?offset=9007199254740991` turned one cheap authenticated request into an
+ * arbitrarily expensive scan of observation_generation_jobs. The worker's own
+ * list routes bound both sides (DataRoutes.parsePaginationParams clamps limit to
+ * [1, 100]), and #4787 did the same for the search surface; the Server Beta job
+ * routes were missed. 10k is far past any real page walk and keeps the query
+ * cost flat.
+ */
+export const JOB_LIST_MAX_OFFSET = 10_000;
+
+export function parseGenericJobListingQuery(req: Request): {
   status: string | null;
   sourceType: string | null;
   limit: number;
@@ -2041,7 +2056,7 @@ function parseGenericJobListingQuery(req: Request): {
   const sourceTypeRaw = typeof req.query.source_type === 'string' ? req.query.source_type.trim() : '';
   const sourceType = sourceTypeRaw && SOURCE_TYPE_VALUES.has(sourceTypeRaw) ? sourceTypeRaw : null;
   const limit = clampInt(req.query.limit, JOB_LIST_DEFAULT_LIMIT, 1, JOB_LIST_MAX_LIMIT);
-  const offset = clampInt(req.query.offset, 0, 0, Number.MAX_SAFE_INTEGER);
+  const offset = clampInt(req.query.offset, 0, 0, JOB_LIST_MAX_OFFSET);
   const sinceRaw = typeof req.query.since === 'string' ? req.query.since.trim() : '';
   let since: Date | null = null;
   if (sinceRaw) {
@@ -2060,11 +2075,7 @@ function extractRetriedCount(payload: Record<string, unknown> | null | undefined
   return 0;
 }
 
-const JOB_LIST_STATUS_VALUES = new Set(['queued', 'processing', 'completed', 'failed', 'cancelled']);
-const JOB_LIST_DEFAULT_LIMIT = 50;
-const JOB_LIST_MAX_LIMIT = 200;
-
-function parseJobListingQuery(req: Request): {
+export function parseJobListingQuery(req: Request): {
   status: string | null;
   limit: number;
   offset: number;
@@ -2072,7 +2083,7 @@ function parseJobListingQuery(req: Request): {
   const statusRaw = typeof req.query.status === 'string' ? req.query.status.trim() : '';
   const status = statusRaw && JOB_LIST_STATUS_VALUES.has(statusRaw) ? statusRaw : null;
   const limit = clampInt(req.query.limit, JOB_LIST_DEFAULT_LIMIT, 1, JOB_LIST_MAX_LIMIT);
-  const offset = clampInt(req.query.offset, 0, 0, Number.MAX_SAFE_INTEGER);
+  const offset = clampInt(req.query.offset, 0, 0, JOB_LIST_MAX_OFFSET);
   return { status, limit, offset };
 }
 
