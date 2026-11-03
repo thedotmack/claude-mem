@@ -84,6 +84,12 @@ export interface WireRewriteContext {
    * that failed. A stage left behind past its budget can record nothing more.
    */
   ledger: WireConversationLedgerView | null;
+  /**
+   * A compaction request's conversation, read-only (its `ledger` is null, so
+   * only a stage that asks for this takes part): Endless Mode, so the summary
+   * is asked for over the history the model has been answering.
+   */
+  compactionLedger?: WireConversationLedgerView | null;
   protocol: WireProtocol;
   /** The gateway's settings (settings.json with env overrides), for stages that read their own keys. */
   settings: Readonly<Record<string, string>>;

@@ -669,6 +669,7 @@ describe('Endless Mode: one growing timeline, per protocol', () => {
     const OPENCLAW_SUMMARY = 'The conversation history before this point was compacted into the following summary:\n\n<summary>\nwork so far\n</summary>';
     const HERMES_SUMMARY = '[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below.';
     const CODEX_SUMMARY = 'Another language model started to solve this problem and produced a summary of its thinking process. Here it is.';
+    const SUMMARIZE_ASK = 'Your task is to create a detailed summary of the conversation so far, paying attention to the user\'s requests.';
     const timelineBlocksIn = (body: string) => body.split(TIMELINE_OPEN_TAG).length - 1;
     const restartsOf = (agentId: string, session: string) => ledgerEntriesOf(agentId, session).filter(entry => entry.type === 'timelineRestart');
 
@@ -684,6 +685,32 @@ describe('Endless Mode: one growing timeline, per protocol', () => {
       expect(await send(protocolCase, conversation.body(), session)).toContain(`#${observationId} `);
       return conversation;
     }
+
+    it('the summarizing request goes with the timeline, not the raw history, and records nothing', async () => {
+      fetcherMode = 'table';
+      const tag = 'summarize-folded';
+      const session = nextSession(tag);
+      const conversation = await foldedConversation(anthropicCase, tag, session, 501);
+      const entriesBefore = ledgerEntriesOf(anthropicCase.agentId, session).length;
+      const raw = conversation.body();
+      const lastWire = await send(anthropicCase, raw, session);
+      const summarizing = anthropicCase.body([...conversation.items, ...anthropicCase.user(SUMMARIZE_ASK)]);
+      const wire = await send(anthropicCase, summarizing, session);
+      expect(wire).toContain('#501 ');
+      expect(wire).toContain(SUMMARIZE_ASK);
+      expect(wire).not.toContain(`call_${tag}_old`);
+      expect(wire.length).toBeLessThan(summarizing.length);
+      // What the model has been answering, byte for byte, then the ask.
+      const lastWireMessages = JSON.parse(lastWire).messages as unknown[];
+      expect((JSON.parse(wire).messages as unknown[]).slice(0, lastWireMessages.length)).toEqual(lastWireMessages);
+      expect(ledgerEntriesOf(anthropicCase.agentId, session).length).toBe(entriesBefore);
+    });
+
+    it('a summarizing request of a conversation with no ledger goes as it came', async () => {
+      fetcherMode = 'table';
+      const body = anthropicCase.body(anthropicCase.user(SUMMARIZE_ASK));
+      expect(await send(anthropicCase, body, nextSession('summarize-unknown'))).toBe(body);
+    });
 
     for (const protocolCase of protocolCases.filter(candidate => candidate.protocol !== 'gemini')) {
       it(`${protocolCase.protocol}: the timeline restarts behind the summary and keeps folding, through a second compaction`, async () => {

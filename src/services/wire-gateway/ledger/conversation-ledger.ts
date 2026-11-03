@@ -376,6 +376,24 @@ export class WireConversationLedger {
     return this.viewOf(conversationKey, conversation);
   }
 
+  /**
+   * What a compaction request may read of the conversation it summarizes: its
+   * existing ledger, read-only. The summary is the agent's side call, so it
+   * changes nothing; it goes with the history the model has been answering.
+   */
+  openForCompaction(identity: Pick<WireIdentity, 'agentId' | 'sessionId' | 'subagent' | 'kind'>): WireConversationLedgerView | null {
+    if (identity.kind !== 'compaction') return null;
+    const view = this.openExisting({ ...identity, kind: 'turn' });
+    if (!view) return null;
+    return {
+      conversationKey: view.conversationKey,
+      status: view.status,
+      get: view.get,
+      entries: view.entries,
+      record: () => { throw new Error('a compaction request records nothing in its conversation\'s ledger'); },
+    };
+  }
+
   /** Delete ledgers untouched for longer than the retention. Returns how many went. */
   pruneExpired(): number {
     let names: string[];

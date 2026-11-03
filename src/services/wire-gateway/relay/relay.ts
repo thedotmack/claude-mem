@@ -451,8 +451,9 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
       };
       try {
         const ledger = openConversationLedger(options.conversationLedger, identity, parsedRequest, routeId);
+        const compactionLedger = options.conversationLedger?.openForCompaction(identity) ?? null;
         rewriteRun = rewriteSeam.begin({
-          routeId, route, identity, ledger, protocol, settings: rewriteSettings, requestOf,
+          routeId, route, identity, ledger, compactionLedger, protocol, settings: rewriteSettings, requestOf,
         });
         if (rewriteRun) {
           const staged = await rewriteRun.runRequestStages(decodedBody);

@@ -78,6 +78,10 @@
 //   the parser merges the summary into the turn after it). Keeping the old rows would not do: an agent that counts the wire's
 //   usage against its window (Claude Code) would compact ever sooner, and every
 //   request once the rows alone pass its threshold.
+// - The agent's summarizing request is a side call: it goes as the request
+//   before it went, with the timeline in force and nothing recorded, never as
+//   the raw history the agent holds (664,377 tokens where the turn before was
+//   165,545, page-claude request 0711).
 // - Any failure leaves the bytes as they came (the seam fails open, D7.7);
 //   the relay's pairing check is the last guard.
 
@@ -477,6 +481,37 @@ function laidOutRequest(
   return rewritten;
 }
 
+/**
+ * The agent's summarizing request with the timeline it has been sent: the
+ * newest recorded fold its history holds, nothing folded or recorded. Goes as
+ * it came (logged) when its history is not this timeline's.
+ */
+function summarizingRequestWithTimeline(context: WireRewriteContext, body: Uint8Array): Uint8Array | undefined {
+  const ledger = context.compactionLedger as WireConversationLedgerView;
+  const request = context.requestOf(body);
+  const conversationArraySpan = conversationArraySpanOf(request);
+  const turns = userTurnsOf(request);
+  const latestTurn = turns[turns.length - 1];
+  const recordedFolds = foldsOfCurrentTimeline(ledger);
+  if (!conversationArraySpan || !latestTurn || recordedFolds.length === 0) return undefined;
+  const asItCame = (reason: string) => {
+    logger.warn('WIRE', 'Endless Mode sent a compaction request as it came, with the whole history', { conversationKey: ledger.conversationKey, reason });
+    return undefined;
+  };
+  if (compactionSummaryHashOf(request) !== (latestTimelineRestart(ledger)?.summaryHash ?? null)) return asItCame('it opens with a summary this timeline was not started on');
+  const conversationElements = [...arrayElements(body, conversationArraySpan)];
+  const latestAssistantIndex = latestAssistantIndexOf(request, latestTurn);
+  let foldsInForceCount = recordedFolds.length;
+  while (foldsInForceCount > 1 && typeof foldRegionOf(request, conversationElements, turns, frontierOf(recordedFolds[foldsInForceCount - 1]), latestAssistantIndex) === 'string') {
+    foldsInForceCount--;
+  }
+  if (foldsInForceCount <= 1 && recordedFolds.length > 1) return asItCame('its history holds no recorded fold');
+  const folds = recordedFolds.slice(0, foldsInForceCount);
+  const cutUntilTurnOrdinal = request.protocol === 'anthropic' ? thinkingCutInForce(ledger) : null;
+  const rewritten = laidOutRequest(context, ledger, body, request, folds, frontierOf(folds.at(-1)), cutUntilTurnOrdinal);
+  return rewritten ?? asItCame('the protocol leaves the timeline no place');
+}
+
 export interface EndlessModeStageOptions {
   observationLookup: WireObservationLookup;
   /** CONTEXT_TIMEOUT_MS: how long a turn-start request waits for the observations of earlier turns' work. */
@@ -511,7 +546,11 @@ export function createEndlessModeStage(options: EndlessModeStageOptions): WireRe
     enabledFor: endlessModeEnabledFor,
     // A conversation whose timeline once went missing (the stage was off for one of its requests) is never
     // given one again: the model has answered the original history since, so putting it back would rewrite it.
-    appliesTo: context => context.ledger?.status === 'born' && context.ledger.get(SUSPENDED_ENTRY_ID) === undefined,
+    appliesTo: context => {
+      // A compaction request has no ledger of its own; it reads its conversation's.
+      const ledger = context.identity.kind === 'compaction' ? context.compactionLedger : context.ledger;
+      return ledger?.status === 'born' && ledger.get(SUSPENDED_ENTRY_ID) === undefined;
+    },
 
     whileOff(ledger) {
       if (ledger.status !== 'born' || ledger.get(SUSPENDED_ENTRY_ID)) return;
@@ -526,6 +565,7 @@ export function createEndlessModeStage(options: EndlessModeStageOptions): WireRe
     },
 
     async onRequest(context: WireRewriteContext, body: Uint8Array) {
+      if (context.identity.kind === 'compaction') return summarizingRequestWithTimeline(context, body);
       const ledger = context.ledger as WireConversationLedgerView;
       if (ledger.entries().some(entry => entry.type === 'swap' || entry.type === 'thinkingDrop' || entry.type === 'cull')) {
         // Endless Mode v1's swaps, or the earlier per-turn cull layout: neither is put back, so the conversation is left alone for good.
