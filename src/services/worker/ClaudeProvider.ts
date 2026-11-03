@@ -251,6 +251,8 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
     typeof errAny.status !== 'number' &&
     (errAny.error?.type === 'invalid_request_error' ||
       /\bthe provided model identifier is invalid\b/i.test(message) ||
+      /\bunrecognized_model\b/i.test(message) ||
+      /\bthere's an issue with the selected model\b/i.test(message) ||
       /\binvalid_request_error\b/i.test(message))
   ) {
     return new ClassifiedProviderError(message, { kind: 'unrecoverable', cause: err });
