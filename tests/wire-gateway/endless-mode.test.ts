@@ -664,23 +664,157 @@ describe('Endless Mode: one growing timeline, per protocol', () => {
     }
   });
 
-  it('a recorded fold the history no longer matches (a compaction, a rewind) suspends the conversation', async () => {
-    fetcherMode = 'table';
-    const tag = 'history-changed';
-    const session = nextSession(tag);
-    const call = { id: `call_${tag}` };
-    observe(call.id, 296);
-    const conversation = new Conversation(anthropicCase).add(anthropicCase.user(`${tag}: one`));
-    await sendAndSettle(anthropicCase, conversation.body(), session);
-    conversation.add(anthropicCase.calls([call], false)).add(anthropicCase.results([call]));
-    await sendAndSettle(anthropicCase, conversation.body(), session);
-    conversation.add(anthropicCase.final('done', false)).add(anthropicCase.user(`${tag}: two`));
-    expect(await send(anthropicCase, conversation.body(), session)).toContain('#296');
-    // The agent compacted: turn 1 is gone, and so is the turn the fold went through.
-    const compacted = anthropicCase.body([...anthropicCase.user(`${tag}: two`)]);
-    expect(await send(anthropicCase, compacted, session)).toBe(compacted);
-    expect(ledgerEntriesOf(anthropicCase.agentId, session).filter(entry => entry.type === 'suspended').map(entry => entry.stage)).toEqual(['endless-mode']);
-    expect(await send(anthropicCase, conversation.body(), session)).toBe(conversation.body());
+  describe('after the agent compacts', () => {
+    const CLAUDE_SUMMARY = 'This session is being continued from a previous conversation that ran out of context. The summary below covers it.';
+    const OPENCLAW_SUMMARY = 'The conversation history before this point was compacted into the following summary:\n\n<summary>\nwork so far\n</summary>';
+    const HERMES_SUMMARY = '[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below.';
+    const CODEX_SUMMARY = 'Another language model started to solve this problem and produced a summary of its thinking process. Here it is.';
+    const timelineBlocksIn = (body: string) => body.split(TIMELINE_OPEN_TAG).length - 1;
+    const restartsOf = (agentId: string, session: string) => ledgerEntriesOf(agentId, session).filter(entry => entry.type === 'timelineRestart');
+
+    /** A conversation of one finished turn, folded into the timeline by the request that starts turn two. */
+    async function foldedConversation(protocolCase: ProtocolCase, tag: string, session: string, observationId: number): Promise<Conversation> {
+      const call = { id: `call_${tag}_old` };
+      observe(call.id, observationId);
+      const conversation = new Conversation(protocolCase).add(protocolCase.user(`${tag}: one`));
+      await sendAndSettle(protocolCase, conversation.body(), session);
+      conversation.add(protocolCase.calls([call], false)).add(protocolCase.results([call]));
+      await sendAndSettle(protocolCase, conversation.body(), session);
+      conversation.add(protocolCase.final('done', false)).add(protocolCase.user(`${tag}: two`));
+      expect(await send(protocolCase, conversation.body(), session)).toContain(`#${observationId} `);
+      return conversation;
+    }
+
+    for (const protocolCase of protocolCases.filter(candidate => candidate.protocol !== 'gemini')) {
+      it(`${protocolCase.protocol}: the timeline restarts behind the summary and keeps folding, through a second compaction`, async () => {
+        fetcherMode = 'table';
+        const tag = `restart-${protocolCase.protocol}`;
+        const session = nextSession(tag);
+        await foldedConversation(protocolCase, tag, session, 510);
+
+        // The first request after compacting: the summary leads, a new timeline follows, the old rows are gone.
+        const afterCompaction = new Conversation(protocolCase).add(protocolCase.user(CLAUDE_SUMMARY)).add(protocolCase.user(`${tag}: three`));
+        const firstWire = await sendAndSettle(protocolCase, afterCompaction.body(), session);
+        expect(firstWire).not.toBe(afterCompaction.body());
+        expect(timelineBlocksIn(firstWire)).toBe(1);
+        expect(firstWire).not.toContain('#510 ');
+        expect(firstWire).toContain(CLAUDE_SUMMARY);
+        // The Responses parser merges consecutive user items into one message, so there the summary follows the timeline.
+        if (protocolCase.protocol !== 'openai-responses') expect(firstWire.indexOf(CLAUDE_SUMMARY)).toBeLessThan(firstWire.indexOf(TIMELINE_OPEN_TAG));
+        expect(firstWire).toContain(`${tag}: three`);
+        expect(restartsOf(protocolCase.agentId, session).length).toBe(1);
+        expect(ledgerEntriesOf(protocolCase.agentId, session).some(entry => entry.type === 'suspended')).toBe(false);
+        // The same request again: the same bytes, no second restart.
+        expect(await send(protocolCase, afterCompaction.body(), session)).toBe(firstWire);
+        expect(restartsOf(protocolCase.agentId, session).length).toBe(1);
+
+        // Work after the compaction folds into the new timeline; only the summary and what is new remain raw.
+        const call = { id: `call_${tag}_new` };
+        observe(call.id, 511);
+        afterCompaction.add(protocolCase.calls([call], false)).add(protocolCase.results([call]));
+        await sendAndSettle(protocolCase, afterCompaction.body(), session);
+        afterCompaction.add(protocolCase.final('done too', false)).add(protocolCase.user(`${tag}: four`));
+        const foldedWire = await send(protocolCase, afterCompaction.body(), session);
+        expect(foldedWire).toContain('#511 ');
+        expect(foldedWire).not.toContain(call.id);
+        expect(foldedWire).not.toContain('#510 ');
+        expect(foldedWire).toContain(CLAUDE_SUMMARY);
+
+        // Sequences stay unique across the restart, so nothing written after it was lost to first-write-wins.
+        const sequences = ledgerEntriesOf(protocolCase.agentId, session).flatMap(entry => (entry.type === 'timelineFold' ? [entry.sequence] : []));
+        expect(new Set(sequences).size).toBe(sequences.length);
+
+        // A second compaction: a different summary, another restart.
+        const secondSummary = `${CLAUDE_SUMMARY} And the second part.`;
+        const second = new Conversation(protocolCase).add(protocolCase.user(secondSummary)).add(protocolCase.user(`${tag}: five`));
+        const secondWire = await send(protocolCase, second.body(), session);
+        expect(restartsOf(protocolCase.agentId, session).length).toBe(2);
+        expect(timelineBlocksIn(secondWire)).toBe(1);
+        expect(secondWire).not.toContain('#511 ');
+
+        // The ledger as written reads back after a restart of the gateway.
+        const reread = new WireConversationLedger({ directory: ledgerDirectory }).openExisting({ agentId: protocolCase.agentId, sessionId: session, kind: 'turn' });
+        expect(reread?.status).toBe('born');
+      });
+    }
+
+    it('a compaction that keeps old turns (Hermes keeps the first prompt and the tail) restarts; it is not read as a retry', async () => {
+      fetcherMode = 'table';
+      const chatCase = protocolCases.find(candidate => candidate.protocol === 'openai-chat')!;
+      const tag = 'keeps-turns';
+      const session = nextSession(tag);
+      await foldedConversation(chatCase, tag, session, 520);
+      // Turn one survives, so the first fold's frontier still parses against this history.
+      const kept = new Conversation(chatCase).add(chatCase.user(`${tag}: one`)).add(chatCase.final('first answer kept', false))
+        .add(chatCase.user(HERMES_SUMMARY)).add(chatCase.final('understood', false)).add(chatCase.user(`${tag}: three`));
+      const wire = await send(chatCase, kept.body(), session);
+      expect(restartsOf(chatCase.agentId, session).length).toBe(1);
+      expect(wire).toContain('understood');
+      expect(wire).toContain(HERMES_SUMMARY);
+      expect(wire).not.toContain('#520 ');
+    });
+
+    it('a compaction with no summary we know still restarts once no recorded fold matches', async () => {
+      fetcherMode = 'table';
+      const tag = 'unknown-summary';
+      const session = nextSession(tag);
+      await foldedConversation(anthropicCase, tag, session, 530);
+      const wire = await send(anthropicCase, anthropicCase.body(anthropicCase.user(`${tag}: three`)), session);
+      expect(restartsOf(anthropicCase.agentId, session).map(entry => entry.type === 'timelineRestart' && entry.summaryHash)).toEqual([null]);
+      expect(timelineBlocksIn(wire)).toBe(1);
+      expect(wire).not.toContain('#530 ');
+    });
+
+    it('turn ordinals start again: a thinking cut of the old numbering does not reach the new history', async () => {
+      fetcherMode = 'table';
+      const tag = 'cut-numbering';
+      const session = nextSession(tag);
+      const old = new Conversation(anthropicCase).add(anthropicCase.user(`${tag}: one`));
+      await sendAndSettle(anthropicCase, old.body(), session);
+      const oldCall = { id: `call_${tag}_old` };
+      observe(oldCall.id, 540);
+      old.add(anthropicCase.calls([oldCall], true)).add(anthropicCase.results([oldCall])).add(anthropicCase.final('done', true)).add(anthropicCase.user(`${tag}: two`));
+      await sendAndSettle(anthropicCase, old.body(), session);
+      await send(anthropicCase, old.body(), session);
+      expect(ledgerEntriesOf(anthropicCase.agentId, session).some(entry => entry.type === 'thinkingCut')).toBe(true);
+
+      const newCall = { id: `call_${tag}_new` };
+      const after = new Conversation(anthropicCase).add(anthropicCase.user(CLAUDE_SUMMARY)).add(anthropicCase.user(`${tag}: a`))
+        .add(anthropicCase.calls([newCall], true)).add(anthropicCase.results([newCall])).add(anthropicCase.final('fine', true)).add(anthropicCase.user(`${tag}: b`));
+      expect(await send(anthropicCase, after.body(), session)).toContain(`thinking before ${newCall.id}`);
+    });
+
+    it('Claude Code\'s real shape after compacting (summary beside a reminder, system notes, a kept tool run) keeps the summary and kept run in front of the timeline', async () => {
+      // Copied from page-claude's first request after its first compaction (Claude Code 2.1.316, transcript api-request blobs).
+      fetcherMode = 'table';
+      const tag = 'claude-shape';
+      const session = nextSession(tag);
+      await foldedConversation(anthropicCase, tag, session, 550);
+      const kept = { id: `call_${tag}_kept` };
+      const items = [
+        { role: 'user', content: [{ type: 'text', text: '<system-reminder>\nAs you answer the user\'s questions.\n</system-reminder>' }, { type: 'text', text: CLAUDE_SUMMARY }] },
+        { role: 'system', content: 'Today\'s date is 2026-11-02.' },
+        ...anthropicCase.calls([kept], true),
+        ...anthropicCase.results([kept]),
+        { role: 'system', content: [{ type: 'text', text: 'Note: a file was modified.' }] },
+      ];
+      // Still inside the turn that compacted: no user turn yet, so it goes as it comes and starts no timeline.
+      const midTurn = anthropicCase.body(items);
+      expect(await send(anthropicCase, midTurn, session)).toBe(midTurn);
+      expect(restartsOf(anthropicCase.agentId, session).length).toBe(0);
+      // The next prompt: restart, with everything the agent kept in front of a new timeline.
+      const nextTurn = anthropicCase.body([...items, ...anthropicCase.final('finished', true), ...anthropicCase.user(`${tag}: next`)]);
+      const wire = await send(anthropicCase, nextTurn, session);
+      expect(restartsOf(anthropicCase.agentId, session).length).toBe(1);
+      expect(wire.indexOf(CLAUDE_SUMMARY)).toBeLessThan(wire.indexOf(TIMELINE_OPEN_TAG));
+      expect(wire.indexOf(kept.id)).toBeLessThan(wire.indexOf(TIMELINE_OPEN_TAG));
+      expect(wire.indexOf(TIMELINE_OPEN_TAG)).toBeLessThan(wire.indexOf(`${tag}: next`));
+      expect(wire).not.toContain('#550 ');
+    });
+
+    it('a summary is never the user\'s words: it starts no turn', () => {
+      for (const summary of [CLAUDE_SUMMARY, OPENCLAW_SUMMARY, HERMES_SUMMARY, CODEX_SUMMARY]) expect(userWordsInText(summary)).toBe('');
+    });
   });
 
   it('never folds in a conversation it first saw mid-way', async () => {

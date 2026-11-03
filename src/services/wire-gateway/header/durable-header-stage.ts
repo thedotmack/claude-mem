@@ -40,7 +40,7 @@ import { fetchDurableHeaderFromWorker, type DurableHeaderAnswer, type DurableHea
 import { estimateTextTokens } from '../metrics/context-buckets.js';
 import type { WireGatewayRoute } from '../routes.js';
 import { STAGE_BUDGET_MARGIN_MS, type WireRewriteContext, type WireRewriteStage } from '../rewrite/rewrite-stage.js';
-import { thinkingCutInForce, thinkingCutSplices } from '../rewrite/thinking-drop.js';
+import { recordThinkingCut, thinkingCutInForce, thinkingCutSplices } from '../rewrite/thinking-drop.js';
 
 export const DURABLE_HEADER_STAGE_NAME = 'durable-header';
 
@@ -144,7 +144,7 @@ export function createDurableHeaderStage(options: DurableHeaderStageOptions = {}
           const text = answer.text ? durableHeaderBlock(answer.text) : null;
           if (request.protocol === 'anthropic' && text !== header.text && (cutUntilTurnOrdinal === null || turnOrdinal > cutUntilTurnOrdinal)) {
             // Recorded before the header that needs it: held writes commit in order.
-            ledger.record({ type: 'thinkingCut', untilTurnOrdinal: turnOrdinal });
+            recordThinkingCut(ledger, turnOrdinal);
             cutUntilTurnOrdinal = turnOrdinal;
           }
           header = ledger.record({ type: 'header', text, hash: answer.hash, sequence: header.sequence + 1, turnOrdinal }) as HeaderEntry;

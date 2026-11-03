@@ -21,7 +21,7 @@ import type { WireRequest } from '../ir/types.js';
 import type { ByteSplice } from '../json/byte-splices.js';
 import { scanDocument } from '../json/scanner.js';
 import { arrayItemRemovalSplices } from '../json/splice.js';
-import type { WireConversationLedgerView } from '../ledger/conversation-ledger.js';
+import { latestTimelineRestart, type WireConversationLedgerView } from '../ledger/conversation-ledger.js';
 
 const THINKING_BLOCK_TYPES = new Set(['thinking', 'redacted_thinking']);
 
@@ -39,10 +39,17 @@ function thinkingDropSplicesOfMessage(request: WireRequest, messageIndex: number
   return splices.length > 0 && kept === 0 ? null : splices;
 }
 
-/** The turn the ledger's thinking cut reaches (the largest `untilTurnOrdinal`); null when there is none. */
+/** Record a cut up to `untilTurnOrdinal`, in the turn numbering since the latest timeline restart. */
+export function recordThinkingCut(ledger: WireConversationLedgerView, untilTurnOrdinal: number): void {
+  const restartSequence = latestTimelineRestart(ledger)?.sequence;
+  ledger.record(restartSequence === undefined ? { type: 'thinkingCut', untilTurnOrdinal } : { type: 'thinkingCut', untilTurnOrdinal, restartSequence });
+}
+
+/** The turn the ledger's thinking cut reaches (the largest `untilTurnOrdinal` since the latest timeline restart: turn ordinals start again there); null when there is none. */
 export function thinkingCutInForce(ledger: WireConversationLedgerView): number | null {
   let untilTurnOrdinal: number | null = null;
   for (const entry of ledger.entries()) {
+    if (entry.type === 'timelineRestart') untilTurnOrdinal = null;
     if (entry.type === 'thinkingCut' && (untilTurnOrdinal === null || entry.untilTurnOrdinal > untilTurnOrdinal)) untilTurnOrdinal = entry.untilTurnOrdinal;
   }
   return untilTurnOrdinal;

@@ -7,6 +7,7 @@
 // `firstWords` (internal/gateway/rules.go:122-153) and the session readers'
 // context rule `textPart` (internal/sessions/content.go:204-210).
 
+import { createHash } from 'crypto';
 import { removeTagBlocks } from '../../../utils/tag-stripping.js';
 import type { WireMessage, WireRequest } from '../ir/types.js';
 
@@ -80,6 +81,22 @@ const CODEX_APP_MY_REQUEST_PATTERN = /^## My request(?: for Codex)?:[ \t]*\n?/gm
 const AGENTS_FILE_INSTRUCTIONS_PATTERN = /^# \S+\.md instructions(?: for \S[^\n\r\u2028\u2029]*|[ \t]*)\n/;
 
 /**
+ * How the summary an agent leaves after compacting its conversation begins,
+ * each read from the agent's own source or binary: Claude Code 2.1.316's
+ * continuation message (seen on the wire), Codex 0.164.0's summary_prefix,
+ * OpenClaw's COMPACTION_SUMMARY_PREFIX (its pi agent core), Hermes's
+ * SUMMARY_PREFIX and its older form. Never the user's words: such a message
+ * starts no turn and names no session.
+ */
+export const AGENT_COMPACTION_SUMMARY_PREFIXES: readonly string[] = [
+  'This session is being continued from a previous conversation that ran out of context.',
+  'Another language model started to solve this problem and produced a summary of its thinking process.',
+  'The conversation history before this point was compacted into the following summary:',
+  '[CONTEXT COMPACTION',
+  '[CONTEXT SUMMARY]',
+];
+
+/**
  * How a text the agent put in as the user begins (magpie `injected`, verbatim):
  * Codex's and the Codex app's context, Claude Code's and ZCode's notices,
  * plugin metadata, agent lists and todo nudges.
@@ -98,7 +115,7 @@ export const AGENT_INJECTED_TEXT_PREFIXES: readonly string[] = [
   '<local-command-caveat>', '<command-name>', '<local-command-stdout>', '<local-command-stderr>',
   // What Claude Code puts beside the tool results of a turn the user stopped.
   '[Request interrupted by user',
-  'This session is being continued from a previous conversation that ran out of context.',
+  ...AGENT_COMPACTION_SUMMARY_PREFIXES,
 ];
 
 /**
@@ -134,6 +151,27 @@ export function userWordsInMessage(message: WireMessage): string {
     if (words !== '') said.push(words);
   }
   return said.join('\n');
+}
+
+/** Whether a text is an agent's compaction summary. */
+export function isCompactionSummaryText(text: string): boolean {
+  const trimmed = text.trimStart();
+  return AGENT_COMPACTION_SUMMARY_PREFIXES.some(prefix => trimmed.startsWith(prefix));
+}
+
+/**
+ * Which compaction the request's history comes after: the hash of the first
+ * text that opens with an agent's compaction summary; null when it holds none.
+ * A new hash means the agent compacted again.
+ */
+export function compactionSummaryHashOf(request: WireRequest): string | null {
+  for (const message of request.messages) {
+    for (const part of message.parts) {
+      if (part.kind !== 'text') continue;
+      if (isCompactionSummaryText(part.text ?? '')) return createHash('sha256').update((part.text ?? '').trimStart()).digest('hex');
+    }
+  }
+  return null;
 }
 
 /**

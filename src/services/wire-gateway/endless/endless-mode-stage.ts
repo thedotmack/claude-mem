@@ -70,8 +70,14 @@
 //   after the timeline, and the fold goes on around it.
 // - A conversation the v1 swap stage changed, or one the earlier per-turn
 //   cull layout changed, is suspended: never folded, sent as it comes.
-// - A recorded fold the history no longer matches (a compaction, a rewind)
-//   suspends the conversation: it goes as the agent sends it from then on.
+// - The agent compacting its conversation (a summary it opens with that this
+//   timeline was not started on, or no recorded fold matching the history any
+//   more) restarts the timeline: its turn ordinals start again, the old rows
+//   leave the wire (the summary was asked for over them; they stay in memory),
+//   and the agent's summary stays, in front of a new timeline (after it where
+//   the parser merges the summary into the turn after it). Keeping the old rows would not do: an agent that counts the wire's
+//   usage against its window (Claude Code) would compact ever sooner, and every
+//   request once the rows alone pass its threshold.
 // - Any failure leaves the bytes as they came (the seam fails open, D7.7);
 //   the relay's pairing check is the last guard.
 
@@ -80,18 +86,18 @@ import { renderAgentAssistantMessageRow, renderAgentUserPromptRow } from '../../
 import { endlessTimelineRowFormatOf } from '../../../shared/endless-timeline-row-format.js';
 import { GEMINI_REQUEST_POSITIONAL_CALL_ID_PATTERN, contentSessionIdOf } from '../capture/capture-assembler.js';
 import { startsUserTurn } from '../identity/turn-start.js';
-import { TIMELINE_CLOSE_TAG, TIMELINE_OPEN_TAG, userWordsInMessage } from '../identity/user-words.js';
+import { TIMELINE_CLOSE_TAG, TIMELINE_OPEN_TAG, compactionSummaryHashOf, isCompactionSummaryText, userWordsInMessage } from '../identity/user-words.js';
 import { ScannedObject } from '../ir/scanned-object.js';
 import type { WireRequest } from '../ir/types.js';
 import { applyByteSplices } from '../json/byte-splices.js';
 import { arrayElements, objectMembers, rawText, scanDocument, type JsonSpan } from '../json/scanner.js';
 import { encodeJsonString, replaceSpan } from '../json/splice.js';
-import type { WireConversationLedgerView, WireLedgerEntry } from '../ledger/conversation-ledger.js';
+import { latestTimelineRestart, type WireConversationLedgerView, type WireLedgerEntry } from '../ledger/conversation-ledger.js';
 import { DEFAULT_CONTEXT_TIMEOUT_MS } from '../memory/memory-injection-stage.js';
 import { estimateTextTokens } from '../metrics/context-buckets.js';
 import { cacheControlJsonOf, cacheControlTtlsIn, gatewayBreakpointTtl, type CacheTtl } from '../header/head-cache-breakpoint-stage.js';
 import { STAGE_BUDGET_MARGIN_MS, type WireRewriteContext, type WireRewriteStage } from '../rewrite/rewrite-stage.js';
-import { thinkingCutInForce, thinkingCutSplices } from '../rewrite/thinking-drop.js';
+import { recordThinkingCut, thinkingCutInForce, thinkingCutSplices } from '../rewrite/thinking-drop.js';
 import { ENDLESS_ROW_FORMAT_SETTING, endlessModeEnabledFor } from './endless-mode-setting.js';
 import type { WireObservationLookup, WireToolObservation } from './observation-lookup.js';
 import { toolUseIdsByCallIdOf } from './tool-use-ids.js';
@@ -299,8 +305,9 @@ function foldRegionOf(
     const parts = removedOverlaps.flatMap(({ message, messageIndex }) => message.parts
       .filter(part => spansOverlap(part.span, element)).map(part => ({ part, message, messageIndex })));
     // A context item (a developer note Codex sends again before a prompt, a web search, a compaction) is the
-    // agent's, not tool work: it stays, in order, after the timeline, and the fold goes on around it.
-    if (parts.length > 0 && parts.every(({ part }) => part.kind === 'context')) {
+    // agent's, not tool work: it stays, in order, after the timeline, and the fold goes on around it. So does the
+    // agent's compaction summary when its parser merges it into the turn after it (Responses): no row replaces it.
+    if (parts.length > 0 && parts.every(({ part }) => part.kind === 'context' || (part.kind === 'text' && isCompactionSummaryText(part.text ?? '')))) {
       tailElements.push(element);
       continue;
     }
@@ -418,6 +425,58 @@ function withTimeline(request: WireRequest, conversationArraySpan: JsonSpan, reg
   return replaceSpan(body, conversationArraySpan, `[${[...items, ...tail].join(',')}]`);
 }
 
+/** The in-flight loop's latest assistant message: it and what follows are never folded. The request's length when the turn has none. */
+function latestAssistantIndexOf(request: WireRequest, latestTurn: UserTurn): number {
+  for (let messageIndex = request.messages.length - 1; messageIndex > latestTurn.startIndex; messageIndex--) {
+    if (request.messages[messageIndex].role === 'assistant') return messageIndex;
+  }
+  return request.messages.length;
+}
+
+/** The folds since the latest timeline restart, by sequence. */
+function foldsOfCurrentTimeline(ledger: WireConversationLedgerView): FoldEntry[] {
+  const entries = ledger.entries();
+  const restartAt = entries.reduce((latest, entry, index) => (entry.type === 'timelineRestart' ? index : latest), -1);
+  return entries.slice(restartAt + 1).filter((entry): entry is FoldEntry => entry.type === 'timelineFold').sort((first, second) => first.sequence - second.sequence);
+}
+
+function frontierOf(fold: FoldEntry | undefined): Frontier {
+  return fold ? { turnOrdinal: fold.throughTurnOrdinal, throughCallId: fold.throughCallId } : { turnOrdinal: 0, throughCallId: null };
+}
+
+/**
+ * The request with the folds in force laid out, thinking cut first (on the
+ * agent's bytes; the layout goes on the cut request, positions being ordinals
+ * and call ids); null when the protocol leaves the timeline no place. Throws
+ * when the fold does not apply to the cut request.
+ */
+function laidOutRequest(
+  context: WireRewriteContext,
+  ledger: WireConversationLedgerView,
+  body: Uint8Array,
+  request: WireRequest,
+  folds: FoldEntry[],
+  frontierInForce: Frontier,
+  cutUntilTurnOrdinal: number | null,
+): Uint8Array | null {
+  let cutRequest = request;
+  if (cutUntilTurnOrdinal !== null) {
+    const cutSplices = thinkingCutSplices(request, cutUntilTurnOrdinal);
+    if (cutSplices.length > 0) cutRequest = context.requestOf(applyByteSplices(body, cutSplices));
+  }
+  const cutArraySpan = conversationArraySpanOf(cutRequest) as JsonSpan;
+  const cutTurns = userTurnsOf(cutRequest);
+  const cutLatestAssistantIndex = latestAssistantIndexOf(cutRequest, cutTurns[cutTurns.length - 1]);
+  const region = foldRegionOf(cutRequest, [...arrayElements(cutRequest.body, cutArraySpan)], cutTurns, frontierInForce, cutLatestAssistantIndex);
+  if (typeof region === 'string') throw new Error(`the fold in force does not apply to the cut request: ${region}`);
+  const injection = ledger.get('injection');
+  const sessionStartText = injection?.type === 'injection' && injection.placement === 'timeline' ? injection.text : null;
+  const blockTexts = timelineBlockTextsOf(sessionStartText, folds.map(fold => fold.rows));
+  const rewritten = withTimeline(cutRequest, cutArraySpan, region, blockTexts);
+  if (rewritten !== null && sessionStartText) context.estimates.injectedTokens += estimateTextTokens(sessionStartText);
+  return rewritten;
+}
+
 export interface EndlessModeStageOptions {
   observationLookup: WireObservationLookup;
   /** CONTEXT_TIMEOUT_MS: how long a turn-start request waits for the observations of earlier turns' work. */
@@ -439,6 +498,10 @@ export function createEndlessModeStage(options: EndlessModeStageOptions): WireRe
   const now = options.now ?? Date.now;
   const contextTimeoutMs = options.contextTimeoutMs ?? DEFAULT_CONTEXT_TIMEOUT_MS;
   const suspend = (ledger: WireConversationLedgerView) => ledger.record({ type: 'suspended', stage: ENDLESS_MODE_STAGE_NAME, at: new Date(now()).toISOString() });
+  const restartTimeline = (ledger: WireConversationLedgerView, summaryHash: string | null, reason: string) => {
+    ledger.record({ type: 'timelineRestart', sequence: (latestTimelineRestart(ledger)?.sequence ?? -1) + 1, summaryHash, at: new Date(now()).toISOString() });
+    logger.warn('WIRE', 'Endless Mode restarted a conversation\'s timeline: the agent compacted it', { conversationKey: ledger.conversationKey, reason });
+  };
 
   return {
     name: ENDLESS_MODE_STAGE_NAME,
@@ -487,34 +550,30 @@ export function createEndlessModeStage(options: EndlessModeStageOptions): WireRe
       });
 
       // The in-flight loop's latest assistant message, and what follows it, is never folded.
-      let latestAssistantIndex = request.messages.length;
-      for (let messageIndex = request.messages.length - 1; messageIndex > latestTurn.startIndex; messageIndex--) {
-        if (request.messages[messageIndex].role === 'assistant') {
-          latestAssistantIndex = messageIndex;
-          break;
-        }
-      }
+      const latestAssistantIndex = latestAssistantIndexOf(request, latestTurn);
 
-      const recordedFolds = ledger.entries().filter((entry): entry is FoldEntry => entry.type === 'timelineFold').sort((first, second) => first.sequence - second.sequence);
-      const frontierOf = (fold: FoldEntry | undefined): Frontier => fold
-        ? { turnOrdinal: fold.throughTurnOrdinal, throughCallId: fold.throughCallId }
-        : { turnOrdinal: 0, throughCallId: null };
+      // A summary this timeline was not started on: the agent compacted, whatever turns of the old history it kept.
+      const summaryHash = compactionSummaryHashOf(request);
+      if (summaryHash !== null && summaryHash !== (latestTimelineRestart(ledger)?.summaryHash ?? null)) {
+        restartTimeline(ledger, summaryHash, 'its history opens with a new compaction summary');
+      }
+      let recordedFolds = foldsOfCurrentTimeline(ledger);
+      // Sequences never repeat in a ledger (first write wins): they go on across restarts.
+      const lastFoldSequence = ledger.entries().reduce((latest, entry) => (entry.type === 'timelineFold' ? Math.max(latest, entry.sequence) : latest), -1);
       // The newest fold this request's history holds. An older one when the agent sent an earlier request again
       // (a retry): it gets the timeline it had then, and nothing new is folded on it.
       let foldsInForceCount = recordedFolds.length;
       while (foldsInForceCount > 1 && typeof foldRegionOf(request, conversationElements, turns, frontierOf(recordedFolds[foldsInForceCount - 1]), latestAssistantIndex) === 'string') {
         foldsInForceCount--;
       }
-      const isRetry = foldsInForceCount < recordedFolds.length;
+      let isRetry = foldsInForceCount < recordedFolds.length;
       if (isRetry && foldsInForceCount <= 1) {
-        // Not even the first fold matches: the agent changed the folded history (compaction, rewind), and the
-        // frozen timeline no longer describes it.
-        suspend(ledger);
-        logger.warn('WIRE', 'Endless Mode suspended a conversation: its folded history no longer matches the request', {
-          conversationKey: ledger.conversationKey,
-          reason: foldRegionOf(request, conversationElements, turns, frontierOf(recordedFolds.at(-1)), latestAssistantIndex),
-        });
-        return undefined;
+        // Not even the first fold matches: the agent changed the folded history with no summary we know
+        // (a compaction, a rewind past it), and the frozen timeline no longer describes it.
+        restartTimeline(ledger, summaryHash, String(foldRegionOf(request, conversationElements, turns, frontierOf(recordedFolds.at(-1)), latestAssistantIndex)));
+        recordedFolds = [];
+        foldsInForceCount = 0;
+        isRetry = false;
       }
       const folds = recordedFolds.slice(0, foldsInForceCount);
       const recordedFrontier = frontierOf(folds.at(-1));
@@ -617,7 +676,7 @@ export function createEndlessModeStage(options: EndlessModeStageOptions): WireRe
         const removedTokens = after.removedElements.filter(element => !wasRemoved.has(element.start))
           .reduce((sum, element) => sum + estimateTextTokens(rawText(body, element)), 0);
         newFold = {
-          type: 'timelineFold', sequence: (recordedFolds.at(-1)?.sequence ?? 0) + 1,
+          type: 'timelineFold', sequence: lastFoldSequence + (recordedFolds.length === 0 ? 2 : 1),
           throughTurnOrdinal: newFrontier.turnOrdinal, throughCallId: newFrontier.throughCallId,
           rows, observationIds, culledTokensEst: Math.max(0, removedTokens - estimateTextTokens(timelineRowsBlockText(rows))),
         };
@@ -625,7 +684,7 @@ export function createEndlessModeStage(options: EndlessModeStageOptions): WireRe
 
       // Opened on the first request the stage applies to; recorded before the cut and the fold that build on it.
       if (folds.length === 0) {
-        const opener: FoldEntry = { type: 'timelineFold', sequence: 0, throughTurnOrdinal: 0, throughCallId: null, rows: [], observationIds: [], culledTokensEst: 0 };
+        const opener: FoldEntry = { type: 'timelineFold', sequence: lastFoldSequence + 1, throughTurnOrdinal: 0, throughCallId: null, rows: [], observationIds: [], culledTokensEst: 0 };
         folds.push(ledger.record(opener) as FoldEntry);
       }
       // Only a fold changes the history above the tail, so only a fold cuts: recorded before it (held writes commit
@@ -633,7 +692,7 @@ export function createEndlessModeStage(options: EndlessModeStageOptions): WireRe
       let cutUntilTurnOrdinal = request.protocol === 'anthropic' ? thinkingCutInForce(ledger) : null;
       if (newFold !== null && request.protocol === 'anthropic'
         && (cutUntilTurnOrdinal === null || cutUntilTurnOrdinal < latestTurn.ordinal)) {
-        ledger.record({ type: 'thinkingCut', untilTurnOrdinal: latestTurn.ordinal });
+        recordThinkingCut(ledger, latestTurn.ordinal);
         cutUntilTurnOrdinal = latestTurn.ordinal;
       }
       let frontierInForce = recordedFrontier;
@@ -660,27 +719,7 @@ export function createEndlessModeStage(options: EndlessModeStageOptions): WireRe
       const toolUseIdsToLookUp = [...toolUseIdByCallId].filter(([callId]) => !foldedCallIds.has(callId)).map(([, toolUseId]) => toolUseId);
       if (toolUseIdsToLookUp.length > 0) void options.observationLookup.requestRefresh(ledger.conversationKey, lookupQuery(toolUseIdsToLookUp));
 
-      // The thinking cut first, on the agent's bytes; then the layout, on the cut request (positions are ordinals and call ids).
-      let cutRequest = request;
-      if (cutUntilTurnOrdinal !== null) {
-        const cutSplices = thinkingCutSplices(request, cutUntilTurnOrdinal);
-        if (cutSplices.length > 0) cutRequest = context.requestOf(applyByteSplices(body, cutSplices));
-      }
-      const cutArraySpan = conversationArraySpanOf(cutRequest) as JsonSpan;
-      const cutTurns = userTurnsOf(cutRequest);
-      let cutLatestAssistantIndex = cutRequest.messages.length;
-      for (let messageIndex = cutRequest.messages.length - 1; messageIndex > cutTurns[cutTurns.length - 1].startIndex; messageIndex--) {
-        if (cutRequest.messages[messageIndex].role === 'assistant') {
-          cutLatestAssistantIndex = messageIndex;
-          break;
-        }
-      }
-      const region = foldRegionOf(cutRequest, [...arrayElements(cutRequest.body, cutArraySpan)], cutTurns, frontierInForce, cutLatestAssistantIndex);
-      if (typeof region === 'string') throw new Error(`the fold in force does not apply to the cut request: ${region}`);
-      const injection = ledger.get('injection');
-      const sessionStartText = injection?.type === 'injection' && injection.placement === 'timeline' ? injection.text : null;
-      const blockTexts = timelineBlockTextsOf(sessionStartText, folds.map(fold => fold.rows));
-      const rewritten = withTimeline(cutRequest, cutArraySpan, region, blockTexts);
+      const rewritten = laidOutRequest(context, ledger, body, request, folds, frontierInForce, cutUntilTurnOrdinal);
       if (rewritten === null) {
         // Without a place for the timeline the frozen layout cannot be put back; failing open on every request
         // would send the original history, so the conversation goes as it comes from now on.
@@ -688,7 +727,6 @@ export function createEndlessModeStage(options: EndlessModeStageOptions): WireRe
         logger.warn('WIRE', 'Endless Mode suspended a conversation: its timeline has no place in the request', { conversationKey: ledger.conversationKey });
         return undefined;
       }
-      if (sessionStartText) context.estimates.injectedTokens += estimateTextTokens(sessionStartText);
       return rewritten;
     },
   };

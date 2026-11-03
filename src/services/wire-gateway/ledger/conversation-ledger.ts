@@ -56,9 +56,17 @@ export type WireLedgerEntry =
    * Anthropic: every thinking and redacted_thinking block is removed from the
    * assistant messages before the user message that starts turn
    * `untilTurnOrdinal` (an assistant message left empty goes whole). The one
-   * applied has the largest `untilTurnOrdinal`.
+   * applied has the largest `untilTurnOrdinal` since the latest
+   * `timelineRestart`, whose `sequence` it carries as `restartSequence`.
    */
-  | { type: 'thinkingCut'; untilTurnOrdinal: number }
+  | { type: 'thinkingCut'; untilTurnOrdinal: number; restartSequence?: number }
+  /**
+   * The agent compacted its conversation (the `sequence`-th time, 0 first):
+   * its turn ordinals start again, so the timeline does too. Timeline folds and
+   * thinking cuts written before this line no longer apply. `summaryHash` names
+   * the summary the new history opens with; null when none was recognized.
+   */
+  | { type: 'timelineRestart'; sequence: number; summaryHash: string | null; at: string }
   /**
    * Endless Mode's timeline grew (the `sequence`-th time, 0 first, recorded
    * when the timeline was opened, with no rows): the conversation is folded
@@ -136,7 +144,9 @@ export function ledgerEntryIdOf(entry: WireLedgerEntry): string {
     case 'header':
       return `header:${entry.sequence}`;
     case 'thinkingCut':
-      return `thinkingCut:${entry.untilTurnOrdinal}`;
+      return entry.restartSequence === undefined ? `thinkingCut:${entry.untilTurnOrdinal}` : `thinkingCut:${entry.restartSequence}:${entry.untilTurnOrdinal}`;
+    case 'timelineRestart':
+      return `timelineRestart:${entry.sequence}`;
     case 'cull':
       return `cull:${entry.turnOrdinal}:${entry.throughCallId}`;
     case 'timelineFold':
@@ -200,7 +210,15 @@ function ledgerEntryFromLine(line: string): WireLedgerEntry | null {
         ? { type: 'header', text: record.text as string | null, hash: record.hash, sequence: record.sequence, turnOrdinal: record.turnOrdinal }
         : null;
     case 'thinkingCut':
-      return isNonNegativeInteger(record.untilTurnOrdinal) ? { type: 'thinkingCut', untilTurnOrdinal: record.untilTurnOrdinal } : null;
+      if (!isNonNegativeInteger(record.untilTurnOrdinal)) return null;
+      if (record.restartSequence === undefined) return { type: 'thinkingCut', untilTurnOrdinal: record.untilTurnOrdinal };
+      return isNonNegativeInteger(record.restartSequence)
+        ? { type: 'thinkingCut', untilTurnOrdinal: record.untilTurnOrdinal, restartSequence: record.restartSequence }
+        : null;
+    case 'timelineRestart':
+      return isNonNegativeInteger(record.sequence) && (isString(record.summaryHash) || record.summaryHash === null) && isString(record.at)
+        ? { type: 'timelineRestart', sequence: record.sequence, summaryHash: record.summaryHash as string | null, at: record.at }
+        : null;
     case 'cull':
       // One line per observation.
       return isNonNegativeInteger(record.turnOrdinal) && isString(record.throughCallId) && record.throughCallId !== ''
@@ -261,6 +279,13 @@ export interface WireConversationLedgerView {
 /** A request is born-shaped when it holds exactly one user turn and no assistant turn. */
 export function requestStartsConversation(request: WireRequest, userTurnOrdinal: number): boolean {
   return userTurnOrdinal === 1 && request.messages.every(message => message.role !== 'assistant');
+}
+
+type TimelineRestartEntry = Extract<WireLedgerEntry, { type: 'timelineRestart' }>;
+
+/** The latest timelineRestart, when the conversation has had one. */
+export function latestTimelineRestart(ledger: Pick<WireConversationLedgerView, 'entries'>): TimelineRestartEntry | undefined {
+  return ledger.entries().filter((entry): entry is TimelineRestartEntry => entry.type === 'timelineRestart').at(-1);
 }
 
 /** Only the conversation's own requests have a ledger: a helper's or a compaction's body is another conversation. */
