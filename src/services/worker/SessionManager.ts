@@ -472,7 +472,7 @@ export class SessionManager {
    * so ingest can record the hook-spool hand-off before any await (and before
    * the generator kick) — see HookSpool.drain.
    */
-  queueObservation(sessionDbId: number, data: ObservationData, enqueuedAtEpochMs?: number): void {
+  queueObservation(sessionDbId: number, data: ObservationData, enqueuedAtEpochMs?: number): number {
     let session = this.sessions.get(sessionDbId);
     if (!session) {
       session = this.initializeSession(sessionDbId);
@@ -498,7 +498,7 @@ export class SessionManager {
     const queueDepth = this.buffer.getPendingCount(sessionDbId);
     const toolSummary = redactForLog(logger.formatTool(data.tool_name, data.tool_input));
     if (messageId === 0) {
-      logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=observation | tool=${toolSummary} | toolUseId=${data.toolUseId ?? 'null'} | depth=${queueDepth}`, {
+      logger.debug('QUEUE', `SKIPPED_DUPLICATE_OR_LIMIT | sessionDbId=${sessionDbId} | type=observation | tool=${toolSummary} | toolUseId=${data.toolUseId ?? 'null'} | depth=${queueDepth}`, {
         sessionId: sessionDbId
       });
     } else {
@@ -506,6 +506,7 @@ export class SessionManager {
         sessionId: sessionDbId
       });
     }
+    return messageId;
   }
 
   /** Synchronous on purpose — see queueObservation. */
@@ -514,7 +515,7 @@ export class SessionManager {
     lastAssistantMessage?: string,
     promptNumber?: number,
     enqueuedAtEpochMs?: number,
-  ): void {
+  ): number {
     let session = this.sessions.get(sessionDbId);
     if (!session) {
       session = this.initializeSession(sessionDbId);
@@ -529,7 +530,7 @@ export class SessionManager {
     const messageId = this.buffer.enqueue(sessionDbId, message, enqueuedAtEpochMs);
     const queueDepth = this.buffer.getPendingCount(sessionDbId);
     if (messageId === 0) {
-      logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=summarize | depth=${queueDepth}`, {
+      logger.debug('QUEUE', `SKIPPED_DUPLICATE_OR_LIMIT | sessionDbId=${sessionDbId} | type=summarize | depth=${queueDepth}`, {
         sessionId: sessionDbId
       });
     } else {
@@ -537,6 +538,7 @@ export class SessionManager {
         sessionId: sessionDbId
       });
     }
+    return messageId;
   }
 
   async clearPendingForSession(sessionDbId: number): Promise<number> {
@@ -783,8 +785,9 @@ export class SessionManager {
 
   /**
    * Snapshot paused in-memory work without loading sessions or changing the buffer.
-   * The automatic sweep resumes only pauses that time heals, each paced or
-   * capped where it is armed. A rate-limit pause is retried like a quota pause:
+   * Quota/auth failures have no pending work. The automatic sweep resumes
+   * only short-lived transitions that time heals, each paced or
+   * capped where it is armed. A short rate-limit pause may be retried:
    * the breaker it armed paces it. The sweep leaves a session to a resume it
    * scheduled for itself, too: a rate limit must not be retried before its
    * Retry-After. With memory on the cmem gateway, a session whose unattended
@@ -801,7 +804,7 @@ export class SessionManager {
    *    the sweep repeated every cooldown, forever.
    */
   getResumableSessionIds(includeOperatorOnly: boolean = false): number[] {
-    const automaticallyRetryable = new Set([null, undefined, 'quota', 'rate_limit', 'overflow', 'provider_switch', 'response_stall']);
+    const automaticallyRetryable = new Set([null, undefined, 'rate_limit', 'overflow', 'provider_switch', 'response_stall']);
     const memoryOnCmemGateway = !includeOperatorOnly && canCmemGatewayServe();
     return Array.from(this.sessions.values())
       .filter(session => !session.generatorPromise

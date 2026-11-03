@@ -58,13 +58,14 @@ function makeDeps() {
   const sessionManager = {
     getMessageBuffer: mock(() => messageBuffer),
     removeSessionImmediate: mock(() => {}),
+    clearPendingForSession: mock(async () => 2),
   };
   const completionHandler = { finalizeSession: mock(() => Promise.resolve()) };
   return { sessionManager, completionHandler, messageBuffer };
 }
 
 describe('handleGeneratorExit reason branching (#2756)', () => {
-  it('quota: skips finalize/removeSessionImmediate, preserving the buffered queue', async () => {
+  it('quota: keeps session identity but discards the pending inputs', async () => {
     const session = makeSession(910001);
     const { sessionManager, completionHandler } = makeDeps();
 
@@ -75,11 +76,13 @@ describe('handleGeneratorExit reason branching (#2756)', () => {
 
     expect(session.generatorPromise).toBeNull();
     expect(session.currentProvider).toBeNull();
+    expect(sessionManager.clearPendingForSession).toHaveBeenCalledWith(910001);
+    expect(session.claimedMessageIds).toEqual([]);
     expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
     expect(sessionManager.removeSessionImmediate).not.toHaveBeenCalled();
   });
 
-  it('provider_switch: behaves exactly like quota — skips finalize/removeSessionImmediate (#2756 requirement: preserve the queue across a switch)', async () => {
+  it('provider_switch preserves the live buffer across a switch', async () => {
     const session = makeSession(910002);
     const { sessionManager, completionHandler } = makeDeps();
 

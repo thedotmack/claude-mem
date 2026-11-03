@@ -113,6 +113,7 @@ function makeSessionManager() {
     getMessageBuffer: () => ({ getPendingCount: () => 1 }),
     resetProcessingToPending: async () => 0,
     removeSessionImmediate: mock(() => {}),
+    clearPendingForSession: mock(async () => 1),
   };
 }
 
@@ -179,10 +180,13 @@ describe('every HTTP generator start opens a new generation (#3479)', () => {
         });
       }
 
-      // The session and its queue survived every pause...
+      // The session identity survives; quota/auth inputs are discarded.
       expect(finalizeSession).not.toHaveBeenCalled();
       expect(sessionManager.removeSessionImmediate).not.toHaveBeenCalled();
-      // ...and the history holds the last attempt only: one init prompt, not 1,000.
+      if (exitCategory === 'quota' || exitCategory === 'auth') {
+        expect(sessionManager.clearPendingForSession).toHaveBeenCalledTimes(RESTARTS);
+      }
+      // The history holds the last attempt only: one init prompt, not 1,000.
       expect(session.conversationHistory.map(message => message.role)).toEqual(EXPECTED_ROLES[failurePoint]);
       expect(session.conversationHistory.filter(message => message.content.includes('<user_request>'))).toHaveLength(1);
     }, 30_000);

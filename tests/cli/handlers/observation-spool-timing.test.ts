@@ -115,18 +115,18 @@ afterEach(async () => {
 });
 
 describe('observation hook wall time with the worker unavailable', () => {
-  it(`returns in < ${HOOK_WALL_TIME_BUDGET_MS}ms when the worker port refuses connections, and the event is spooled`, async () => {
+  it(`returns in < ${HOOK_WALL_TIME_BUDGET_MS}ms when the worker port refuses connections, and the event is skipped`, async () => {
     const timing = await timeObservationHookInChild(await closedPort());
 
     expect(timing.handlerMs).toBeLessThan(HOOK_WALL_TIME_BUDGET_MS);
-    expect(timing.spooledToolUseIds).toEqual(['toolu_timing_1']);
+    expect(timing.spooledToolUseIds).toEqual([]);
   });
 
   it(`returns in < ${HOOK_WALL_TIME_BUDGET_MS}ms when the worker accepts but never answers (wedged)`, async () => {
     const timing = await timeObservationHookInChild(await blackHolePort());
 
     expect(timing.handlerMs).toBeLessThan(HOOK_WALL_TIME_BUDGET_MS);
-    expect(timing.spooledToolUseIds).toEqual(['toolu_timing_1']);
+    expect(timing.spooledToolUseIds).toEqual([]);
   });
 
   it(`settles the nudge before exit in < ${HOOK_WALL_TIME_BUDGET_MS}ms when refused and < ${HOOK_EXIT_WORST_CASE_BUDGET_MS}ms when wedged`, async () => {

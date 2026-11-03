@@ -159,66 +159,33 @@ describe('paused in-memory session recovery', () => {
     expect(routes.resumePendingSessions('periodic-resume')).toBe(0);
   });
 
-  it('schedules nothing during quota cooldown and one recovery probe after expiry', async () => {
-    const { routes, manager, buffer, db, mutate, agent } = fixture();
-    buffer.enqueue(3, { type: 'summarize' });
-    mutate.mockClear();
-    const now = Date.now();
-    spyOn(Date, 'now').mockReturnValue(now);
-    recordQuotaExhausted('openrouter', 'Quota exhausted');
-    const ensure = spyOn(routes, 'ensureGeneratorRunning');
-    expect(routes.resumePendingSessions('periodic-resume')).toBe(0);
-    await flushStarts();
-    expect(ensure).not.toHaveBeenCalled();
-    expect(agent.startSession).not.toHaveBeenCalled();
-    expect(manager.getResumableSessionIds()).toEqual([1, 3]);
-    spyOn(Date, 'now').mockReturnValue(now + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1);
-    expect(routes.resumePendingSessions('periodic-resume')).toBe(1);
-    await flushStarts();
-    expect(agent.startSession).toHaveBeenCalledTimes(1);
-    expect(manager.getResumableSessionIds()).toEqual([3]);
-    expect(manager.getTotalQueueDepth()).toBe(3);
-    expect(mutate).not.toHaveBeenCalled();
-    expect(db.getSessionById).not.toHaveBeenCalled();
-    expect(db.getSessionStore).not.toHaveBeenCalled();
-  });
-
-  it('resumes the remaining sessions once the recovery probe clears the breaker', async () => {
+  it('does not replay stale queues after a quota window expires', async () => {
     const { routes, manager, buffer, agent } = fixture();
     buffer.enqueue(3, { type: 'summarize' });
     const now = Date.now();
-    spyOn(Date, 'now').mockReturnValue(now);
+    const clock = spyOn(Date, 'now').mockReturnValue(now);
     recordQuotaExhausted('openrouter', 'Quota exhausted');
-    spyOn(Date, 'now').mockReturnValue(now + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1);
-    expect(routes.resumePendingSessions('periodic-resume')).toBe(1);
-    await flushStarts();
-    expect(manager.getResumableSessionIds()).toEqual([3]);
-
-    clearQuotaCooldown('openrouter'); // the probe generated successfully
-    expect(routes.resumePendingSessions('periodic-resume')).toBe(1);
-    await flushStarts();
-    expect(agent.startSession).toHaveBeenCalledTimes(2);
-    expect(manager.getResumableSessionIds()).toEqual([]);
-  });
-
-  it('retries a provider-switch pause after the replacement provider cooldown expires', async () => {
-    const { routes, manager, buffer, agent } = fixture();
-    manager.getSession(1)!.pausedReason = 'provider_switch';
-    const pending = buffer.getPendingCount(1);
-    const now = Date.now();
-    spyOn(Date, 'now').mockReturnValue(now);
-    recordQuotaExhausted('openrouter', 'Quota exhausted');
-
+    expect(routes.resumePendingSessions('periodic-resume')).toBe(0);
+    clock.mockReturnValue(now + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1);
+    expect(routes.resumePendingSessions('periodic-resume')).toBe(0);
+    clearQuotaCooldown('openrouter');
     expect(routes.resumePendingSessions('periodic-resume')).toBe(0);
     await flushStarts();
     expect(agent.startSession).not.toHaveBeenCalled();
-    expect(buffer.getPendingCount(1)).toBe(pending);
+    expect(manager.getTotalQueueDepth()).toBe(0);
+  });
 
-    spyOn(Date, 'now').mockReturnValue(now + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1);
-    expect(routes.resumePendingSessions('periodic-resume')).toBe(1);
-    await flushStarts();
+  it('drops newly arriving inputs while a quota breaker holds and admits fresh work after reset', async () => {
+    const { routes, manager, buffer, agent } = fixture();
+    recordQuotaExhausted('openrouter', 'Quota exhausted');
+    await routes.ensureGeneratorRunning(1, 'observation');
+    expect(buffer.getPendingCount(1)).toBe(0);
+    expect(agent.startSession).not.toHaveBeenCalled();
+    clearQuotaCooldown('openrouter');
+    buffer.enqueue(1, { type: 'observation', tool_name: 'Write', toolUseId: 'fresh' });
+    await routes.ensureGeneratorRunning(1, 'observation');
     expect(agent.startSession).toHaveBeenCalledTimes(1);
-    expect(buffer.getPendingCount(1)).toBe(pending);
+    expect(buffer.peekTypes(1)).toEqual([{ message_type: 'observation', tool_name: 'Write' }]);
   });
 
   it('retries a rate-limit pause once the breaker it armed lets a probe through', async () => {
@@ -270,7 +237,7 @@ describe('paused in-memory session recovery', () => {
     }
   });
 
-  it('retries a stalled response after its timer fires during quota cooldown', async () => {
+  it('expires a stalled response before a long quota cooldown ends', async () => {
     const { routes, manager, agent } = fixture();
     const session = manager.getSession(1)!;
     session.pausedReason = 'response_stall';
@@ -289,9 +256,9 @@ describe('paused in-memory session recovery', () => {
     expect(session.pausedReason).toBe('response_stall');
 
     spyOn(Date, 'now').mockReturnValue(now + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1);
-    expect(routes.resumePendingSessions('periodic-resume')).toBe(1);
+    expect(routes.resumePendingSessions('periodic-resume')).toBe(0);
     await flushStarts();
-    expect(agent.startSession).toHaveBeenCalledTimes(1);
+    expect(agent.startSession).not.toHaveBeenCalled();
   });
 
   it('lets an operator retry a stalled response before its automatic timer fires', async () => {
