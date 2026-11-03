@@ -20,6 +20,7 @@ import { join } from 'path';
 import { WIRE_GATEWAY_DIR_MODE, WIRE_GATEWAY_FILE_MODE, wireGatewaySubdirPath } from '../../../shared/paths.js';
 import { logger } from '../../../utils/logger.js';
 import type { WireIdentity } from '../identity/resolve-identity.js';
+import { compactionSummaryHashOf } from '../identity/user-words.js';
 import type { WireRequest } from '../ir/types.js';
 
 export const CONVERSATION_LEDGER_RETENTION_DAYS = 30;
@@ -276,9 +277,15 @@ export interface WireConversationLedgerView {
   record(entry: WireLedgerEntry): WireLedgerEntry;
 }
 
-/** A request is born-shaped when it holds exactly one user turn and no assistant turn. */
+/**
+ * A request is born-shaped when it holds exactly one user turn and no
+ * assistant turn, or when it continues from the agent's compaction summary:
+ * an agent named only by its first words (OpenClaw, Hermes) gets a new session
+ * id when compaction replaces them, and that history is all the model has.
+ */
 export function requestStartsConversation(request: WireRequest, userTurnOrdinal: number): boolean {
-  return userTurnOrdinal === 1 && request.messages.every(message => message.role !== 'assistant');
+  return (userTurnOrdinal === 1 && request.messages.every(message => message.role !== 'assistant'))
+    || compactionSummaryHashOf(request) !== null;
 }
 
 type TimelineRestartEntry = Extract<WireLedgerEntry, { type: 'timelineRestart' }>;

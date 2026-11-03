@@ -811,6 +811,27 @@ describe('Endless Mode: one growing timeline, per protocol', () => {
       expect(await send(anthropicCase, after.body(), session)).toContain(`thinking before ${newCall.id}`);
     });
 
+    for (const [name, agentCaseOf, summary] of [
+      ['OpenClaw', (candidate: ProtocolCase) => candidate.protocol === 'openai-chat', OPENCLAW_SUMMARY],
+      ['Hermes', (candidate: ProtocolCase) => candidate.protocol === 'openai-chat', HERMES_SUMMARY],
+      ['Codex', (candidate: ProtocolCase) => candidate.protocol === 'openai-responses', CODEX_SUMMARY],
+    ] as const) {
+      it(`${name}: first seen continuing from its summary (a first-words session id changed), the conversation is born and gets a timeline`, async () => {
+        fetcherMode = 'table';
+        const protocolCase = protocolCases.find(agentCaseOf)!;
+        const tag = `continued-${name}`;
+        const session = nextSession(tag);
+        const kept = { id: `call_${tag}_kept` };
+        const conversation = new Conversation(protocolCase).add(protocolCase.user(summary))
+          .add(protocolCase.calls([kept], false)).add(protocolCase.results([kept])).add(protocolCase.final('kept', false))
+          .add(protocolCase.user(`${tag}: next`));
+        const wire = await send(protocolCase, conversation.body(), session);
+        expect(timelineBlocksIn(wire)).toBe(1);
+        expect(wire.indexOf(kept.id)).toBeLessThan(wire.indexOf(TIMELINE_OPEN_TAG));
+        expect(ledgerEntriesOf(protocolCase.agentId, session)[0]?.type).toBe('born');
+      });
+    }
+
     it('Claude Code\'s real shape after compacting (summary beside a reminder, system notes, a kept tool run) keeps the summary and kept run in front of the timeline', async () => {
       // Copied from page-claude's first request after its first compaction (Claude Code 2.1.316, transcript api-request blobs).
       fetcherMode = 'table';
