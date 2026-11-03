@@ -138,7 +138,12 @@ const WARP_CONFIG: McpInstallerConfig = {
   contextPath: path.join(process.cwd(), 'WARP.md'),
 };
 
-function getGooseConfigPath(): string {
+/** Goose reads config.yaml from %APPDATA%\Block\goose\config on Windows and ~/.config/goose on macOS and Linux (crates/goose/src/config/paths.rs). */
+export function getGooseConfigPath(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): string {
+  if (platform === 'win32') {
+    const appData = env.APPDATA || path.join(homedir(), 'AppData', 'Roaming');
+    return path.win32.join(appData, 'Block', 'goose', 'config', 'config.yaml');
+  }
   return path.join(homedir(), '.config', 'goose', 'config.yaml');
 }
 
