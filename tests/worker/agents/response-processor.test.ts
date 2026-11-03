@@ -132,6 +132,7 @@ let claimedMessages: Array<{
   type: 'observation' | 'summarize';
   tool_name?: string;
   tool_input?: unknown;
+  toolUseId?: string;
 }> = [];
 let mockGetClaimedMessages: ReturnType<typeof mock>;
 
@@ -250,11 +251,55 @@ describe('ResponseProcessor', () => {
     } as ActiveSession;
   }
 
+  it('passes claimed tool identities into the observation commit', async () => {
+    claimedMessages = [{
+      type: 'observation', tool_name: 'Bash', toolUseId: 'toolu_claimed_1',
+    }];
+    await processAgentResponse(
+      '<observation><type>discovery</type><title>Stored</title><narrative>Result</narrative></observation>',
+      createMockSession({ platformSource: 'codex' }),
+      mockDbManager, mockSessionManager, mockWorker, 100, null, 'TestAgent',
+    );
+    expect(mockStoreObservations).toHaveBeenCalledTimes(1);
+    expect(mockStoreObservations.mock.calls[0][8]).toMatchObject({
+      committedToolUses: {
+        platformSource: 'codex', contentSessionId: 'content-session-123',
+        toolUseIds: ['toolu_claimed_1'],
+      },
+    });
+  });
+
+  it('commits a real claimed tool identity with its stored observation', async () => {
+    const store = new SessionStore(':memory:');
+    const sessionDbId = store.createSDKSession('content-session-123', 'test-project', 'prompt', undefined, 'codex');
+    store.ensureMemorySessionIdRegistered(sessionDbId, 'memory-session-456');
+    mockDbManager = { ...mockDbManager, getSessionStore: () => store } as unknown as DatabaseManager;
+    claimedMessages = [{ type: 'observation', tool_name: 'Bash', toolUseId: 'toolu_real_1' }];
+    try {
+      await processAgentResponse(
+        '<observation><type>discovery</type><title>Stored</title><narrative>Result</narrative></observation>',
+        createMockSession({ sessionDbId, platformSource: 'codex' }),
+        mockDbManager, mockSessionManager, mockWorker, 100, null, 'TestAgent',
+      );
+      expect(store.hasCommittedToolUse('codex', 'content-session-123', 'toolu_real_1')).toBe(true);
+      expect(store.hasCommittedToolUse('claude', 'content-session-123', 'toolu_real_1')).toBe(false);
+    } finally {
+      store.close();
+    }
+  });
+
   describe('reply cut off at the output-token cap', () => {
     const complete = '<observation><type>discovery</type><title>Kept</title><narrative>Whole block</narrative></observation>';
     const cut = `${complete}\n<observation><type>change</type><title>Unfinished`;
     const cutOffErrors = () => (loggerSpies[3] as ReturnType<typeof spyOn>).mock.calls
       .filter(call => String(call[1]).includes('reply was cut off'));
+
+    it('keeps a truncated claimed tool use eligible for source replay', async () => {
+      claimedMessages = [{ type: 'observation', tool_name: 'Bash', toolUseId: 'toolu_cut_1' }];
+      await processAgentResponse(cut, createMockSession({ lastFinishReason: 'length' }),
+        mockDbManager, mockSessionManager, mockWorker, 100, null, 'TestAgent');
+      expect(mockStoreObservations.mock.calls[0][8]).toMatchObject({ committedToolUses: undefined });
+    });
 
     it('stores the complete blocks and reports the lost tail when finish_reason is length', async () => {
       const session = createMockSession({ lastFinishReason: 'length' } as Partial<ActiveSession>);
@@ -1862,6 +1907,26 @@ describe('ResponseProcessor', () => {
       expect(mockStoreObservations).not.toHaveBeenCalled();
       expect(session.lastSummaryStored).toBe(false);
       expect(session.earliestPendingTimestamp).toBeNull();
+    });
+
+    it('commits a skip marker before confirming claimed work without a memory session id', async () => {
+      const store = new SessionStore(':memory:');
+      const sessionDbId = store.createSDKSession('content-session-123', 'test-project', 'prompt', undefined, 'claude');
+      const { confirmClaimedMessages } = sessionManagerWithSpies();
+      mockSessionManager = {
+        ...mockSessionManager,
+        getClaimedMessages: mock(() => [{ type: 'observation', toolUseId: 'toolu_skip_1' }]),
+      } as unknown as SessionManager;
+      mockDbManager = { ...mockDbManager, getSessionStore: () => store } as unknown as DatabaseManager;
+      try {
+        await processAgentResponse('<skip_summary reason="noise" />',
+          createMockSession({ sessionDbId, memorySessionId: null }),
+          mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent');
+        expect(store.hasCommittedToolUse('claude', 'content-session-123', 'toolu_skip_1')).toBe(true);
+        expect(confirmClaimedMessages).toHaveBeenCalledWith(sessionDbId);
+      } finally {
+        store.close();
+      }
     });
 
     it('still defers an observation until the id arrives', async () => {

@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
+import { SessionMessageBuffer } from '../../src/services/worker/SessionMessageBuffer.js';
 import * as ingestShared from '../../src/services/worker/http/shared.js';
 import { setIngestContext } from '../../src/services/worker/http/shared.js';
 import { drainHookSpool, HookSpoolDrainer } from '../../src/services/worker/hook-spool-drain.js';
@@ -70,6 +71,42 @@ afterEach(() => {
 });
 
 describe('drainHookSpool', () => {
+  it('retires delayed observation and advisor entries after explicit session deletion', async () => {
+    const spool = new HookSpool(join(spoolDir, 'spool'));
+    const sessionDbId = store.createSDKSession('deleted-session', 'project', '', undefined, 'claude');
+    store.markSessionDeleted('claude', 'deleted-session');
+    store.db.prepare('DELETE FROM sdk_sessions WHERE id = ?').run(sessionDbId);
+    spool.enqueue('observation', {
+      contentSessionId: 'deleted-session', platformSource: 'claude', toolName: 'Bash',
+      toolInput: { command: 'pwd' }, toolResponse: { stdout: '/repo' }, cwd: '/repo', toolUseId: 'toolu_deleted_1',
+    });
+    spool.enqueue('advisor_calls', {
+      contentSessionId: 'deleted-session', platformSource: 'claude', cwd: '/repo',
+      calls: [{ toolUseId: 'srvtoolu_deleted_1', advice: 'old advice', occurredAtEpoch: 1 }],
+    });
+    spool.enqueue('summarize', {
+      contentSessionId: 'deleted-session', platformSource: 'claude', lastAssistantMessage: 'old summary',
+    });
+    spool.enqueue('session_end', { contentSessionId: 'deleted-session', platformSource: 'claude' });
+    const bucketDir = resolveDeliverableBucketDir('repo');
+    mkdirSync(bucketDir, { recursive: true });
+    const bucketPath = join(bucketDir, 'old-abcdef12.html');
+    writeFileSync(bucketPath, '<h1>old</h1>');
+    spool.enqueue('deliverables', {
+      contentSessionId: 'deleted-session', platformSource: 'claude', cwd: '/repo', project: 'repo',
+      files: [{ sourcePath: '/repo/old.html', bucketPath, title: 'old.html', kind: 'page', bytes: 12, sha256: 'a'.repeat(64), declared: false, occurredAtEpoch: 1 }],
+      errors: [],
+    });
+
+    expect(await drainHookSpool(spool)).toEqual({ drained: 5, retained: 0, quarantined: 0, expired: 0 });
+    expect(store.findSessionDbIdByContentSessionId('deleted-session', 'claude')).toBeNull();
+    expect(sessionManager.queueObservation).not.toHaveBeenCalled();
+    expect(sessionManager.queueSummarize).not.toHaveBeenCalled();
+    expect(sessionManager.requestSessionWrapup).not.toHaveBeenCalled();
+    expect(store.getAdvisorCalls(0, 10).items).toEqual([]);
+    expect(store.getDeliverable(1)).toBeNull();
+  });
+
   it('routes every kind through the same ingest function its HTTP route uses', async () => {
     const spool = new HookSpool(join(spoolDir, 'spool'));
     const spies = {
@@ -341,6 +378,84 @@ describe('drainHookSpool exactly-once hand-off across restarts', () => {
     expect(sessionManager.queueObservation).toHaveBeenCalledTimes(1);
     expect(ensureGeneratorRunning).toHaveBeenCalledTimes(1);
     expect(store.db.prepare('SELECT COUNT(*) AS n FROM hook_spool_consumed').get()).toEqual({ n: 0 });
+  });
+
+  it('a completed spool replay is suppressed only until the worker buffer is replaced', async () => {
+    store.createSDKSession('crash-session', 'project', 'prompt', undefined, 'claude');
+    const spool = new HookSpool(spoolDirectory());
+    let buffer = new SessionMessageBuffer();
+    const messageIds: number[] = [];
+    sessionManager.queueObservation.mockImplementation((sessionDbId: number, data: { toolUseId?: string }, enqueuedAt?: number) => {
+      messageIds.push(buffer.enqueue(sessionDbId, { type: 'observation', toolUseId: data.toolUseId }, enqueuedAt));
+    });
+
+    spool.enqueue('observation', crashObservation);
+    expect(await drainHookSpool(spool)).toMatchObject({ drained: 1 });
+    expect(store.isHookSpoolEntryConsumed(ENTRY_KEY)).toBe(false);
+
+    // The source transcript may replay after the spool file was removed.
+    spool.enqueue('observation', crashObservation);
+    expect(await drainHookSpool(spool)).toMatchObject({ drained: 1 });
+
+    // A fresh worker loses the in-memory toolUseId set, but keeps the same DB.
+    buffer = new SessionMessageBuffer();
+    spool.enqueue('observation', crashObservation);
+    expect(await drainHookSpool(spool)).toMatchObject({ drained: 1 });
+    expect(messageIds).toEqual([1, 0, 1]);
+  });
+
+  it('does not requeue a tool use after its observation result commits', async () => {
+    const sessionDbId = store.createSDKSession('crash-session', 'project', 'prompt', undefined, 'claude');
+    store.updateMemorySessionId(sessionDbId, 'mem-crash-session');
+    const spool = new HookSpool(spoolDirectory());
+    let buffer = new SessionMessageBuffer();
+    const messageIds: number[] = [];
+    sessionManager.queueObservation.mockImplementation((id: number, data: { toolUseId?: string }, enqueuedAt?: number) => {
+      messageIds.push(buffer.enqueue(id, { type: 'observation', toolUseId: data.toolUseId }, enqueuedAt));
+    });
+
+    spool.enqueue('observation', crashObservation);
+    expect(await drainHookSpool(spool)).toMatchObject({ drained: 1 });
+    store.storeObservations('mem-crash-session', 'project', [{
+      type: 'discovery', title: 'Stored result', subtitle: null, facts: ['done'],
+      narrative: 'The result was stored.', concepts: [], files_read: [], files_modified: [],
+    }], null, undefined, 0, undefined, undefined, {
+      committedToolUses: { platformSource: 'claude', contentSessionId: 'crash-session', toolUseIds: ['toolu_crash_1'] },
+    });
+
+    // A source replay after worker restart must observe the durable result.
+    buffer = new SessionMessageBuffer();
+    spool.enqueue('observation', crashObservation);
+    expect(await drainHookSpool(spool)).toMatchObject({ drained: 1 });
+    expect(messageIds).toEqual([1]);
+  });
+
+  it('does not mistake another platform or a failed lookup for a committed result', async () => {
+    store.createSDKSession('crash-session', 'project', 'prompt', undefined, 'claude');
+    store.markCommittedToolUses({
+      platformSource: 'codex', contentSessionId: 'crash-session', toolUseIds: ['toolu_crash_1'],
+    });
+    const spool = new HookSpool(spoolDirectory());
+    spool.enqueue('observation', crashObservation);
+    expect(await drainHookSpool(spool)).toMatchObject({ drained: 1 });
+    expect(sessionManager.queueObservation).toHaveBeenCalledTimes(1);
+
+    spyOn(store, 'hasCommittedToolUse').mockImplementation(() => { throw new Error('lookup unavailable'); });
+    spool.enqueue('observation', { ...crashObservation, toolUseId: 'toolu_crash_2' });
+    expect(await drainHookSpool(spool)).toMatchObject({ drained: 1 });
+    expect(sessionManager.queueObservation).toHaveBeenCalledTimes(2);
+  });
+
+  it('checks the terminal ledger even when the raw tool backup write fails', async () => {
+    store.createSDKSession('crash-session', 'project', 'prompt', undefined, 'claude');
+    store.markCommittedToolUses({
+      platformSource: 'claude', contentSessionId: 'crash-session', toolUseIds: ['toolu_crash_1'],
+    });
+    spyOn(store, 'upsertToolUse').mockImplementation(() => { throw new Error('backup unavailable'); });
+    const spool = new HookSpool(spoolDirectory());
+    spool.enqueue('observation', crashObservation);
+    expect(await drainHookSpool(spool)).toMatchObject({ drained: 1 });
+    expect(sessionManager.queueObservation).not.toHaveBeenCalled();
   });
 
   it('a declined entry keeps no marker, so the next drain retries it', async () => {

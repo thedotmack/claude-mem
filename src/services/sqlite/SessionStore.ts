@@ -307,6 +307,7 @@ export class SessionStore {
     this.normalizeConceptTags();
     this.ensureSDKSessionsObservedColumns();
     this.ensureToolUsesTable();
+    this.ensureCommittedToolUsesTable();
     this.ensureTelegramWrapupsTable();
     this.addDedupTables();
     this.refreshUnicodeTitleNormKeys();
@@ -2158,6 +2159,114 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(62, new Date().toISOString());
   }
 
+  // v72: terminal capture and explicit deletion must both survive transcript replay.
+  private ensureCommittedToolUsesTable(): void {
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS committed_observation_tool_uses (
+        platform_source TEXT NOT NULL,
+        content_session_id TEXT NOT NULL,
+        tool_use_id TEXT NOT NULL,
+        committed_at_epoch_ms INTEGER NOT NULL,
+        PRIMARY KEY (platform_source, content_session_id, tool_use_id)
+      )
+    `);
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS deleted_content_sessions (
+        platform_source TEXT NOT NULL,
+        content_session_id TEXT NOT NULL,
+        deleted_at_epoch_ms INTEGER NOT NULL,
+        PRIMARY KEY (platform_source, content_session_id)
+      )
+    `);
+    // Memory IDs are globally unique in sdk_sessions and sync row payloads can
+    // arrive with only this identity, without the original content session ID.
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS deleted_memory_sessions (
+        memory_session_id TEXT PRIMARY KEY,
+        deleted_at_epoch_ms INTEGER NOT NULL
+      )
+    `);
+    // The trigger closes the race between the caller's preflight and INSERT on
+    // another SQLite connection. A delayed transcript must never undo deletion.
+    this.db.run(`
+      CREATE TRIGGER IF NOT EXISTS prevent_deleted_sdk_session_insert
+      BEFORE INSERT ON sdk_sessions
+      WHEN EXISTS (
+        SELECT 1 FROM deleted_content_sessions
+        WHERE platform_source = NEW.platform_source
+          AND content_session_id = NEW.content_session_id
+      ) OR EXISTS (
+        SELECT 1 FROM deleted_memory_sessions
+        WHERE memory_session_id = NEW.memory_session_id
+      )
+      BEGIN SELECT RAISE(ABORT, 'session_deleted'); END
+    `);
+    this.db.run(`
+      CREATE TRIGGER IF NOT EXISTS prevent_deleted_sdk_session_update
+      BEFORE UPDATE OF memory_session_id, content_session_id, platform_source ON sdk_sessions
+      WHEN EXISTS (
+        SELECT 1 FROM deleted_content_sessions
+        WHERE platform_source = NEW.platform_source
+          AND content_session_id = NEW.content_session_id
+      ) OR EXISTS (
+        SELECT 1 FROM deleted_memory_sessions
+        WHERE memory_session_id = NEW.memory_session_id
+      )
+      BEGIN SELECT RAISE(ABORT, 'session_deleted'); END
+    `);
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(72, new Date().toISOString());
+  }
+
+  hasCommittedToolUse(platformSource: string, contentSessionId: string, toolUseId: string): boolean {
+    if (!contentSessionId || !toolUseId) return false;
+    return this.db.prepare(`
+      SELECT 1 FROM committed_observation_tool_uses
+      WHERE platform_source = ? AND content_session_id = ? AND tool_use_id = ?
+    `).get(normalizePlatformSource(platformSource), contentSessionId, toolUseId) != null;
+  }
+
+  markSessionDeleted(platformSource: string, contentSessionId: string, memorySessionId?: string | null): void {
+    this.db.prepare(`
+      INSERT OR IGNORE INTO deleted_content_sessions
+        (platform_source, content_session_id, deleted_at_epoch_ms)
+      VALUES (?, ?, ?)
+    `).run(normalizePlatformSource(platformSource), contentSessionId, Date.now());
+    if (memorySessionId) {
+      this.db.prepare(`
+        INSERT OR IGNORE INTO deleted_memory_sessions
+          (memory_session_id, deleted_at_epoch_ms)
+        VALUES (?, ?)
+      `).run(memorySessionId, Date.now());
+    }
+  }
+
+  isSessionDeleted(platformSource: string, contentSessionId: string): boolean {
+    return this.db.prepare(`
+      SELECT 1 FROM deleted_content_sessions
+      WHERE platform_source = ? AND content_session_id = ?
+    `).get(normalizePlatformSource(platformSource), contentSessionId) != null;
+  }
+
+  /** Call inside the result transaction; failure must roll back the result too. */
+  markCommittedToolUses(input: {
+    platformSource: string;
+    contentSessionId: string;
+    toolUseIds: string[];
+  }): void {
+    if (!input.contentSessionId) throw new Error('Committed tool uses require a content session');
+    const insert = this.db.prepare(`
+      INSERT OR IGNORE INTO committed_observation_tool_uses
+      (platform_source, content_session_id, tool_use_id, committed_at_epoch_ms)
+      VALUES (?, ?, ?, ?)
+    `);
+    const platformSource = normalizePlatformSource(input.platformSource);
+    const now = Date.now();
+    for (const toolUseId of new Set(input.toolUseIds)) {
+      if (!toolUseId) continue;
+      insert.run(platformSource, input.contentSessionId, toolUseId, now);
+    }
+  }
+
   isHookSpoolEntryConsumed(entryKey: string): boolean {
     return this.db.prepare('SELECT 1 FROM hook_spool_consumed WHERE entry_key = ?').get(entryKey) != null;
   }
@@ -3601,6 +3710,9 @@ export class SessionStore {
     const now = new Date();
     const nowEpoch = now.getTime();
     const normalizedPlatformSource = platformSource ? normalizePlatformSource(platformSource) : DEFAULT_PLATFORM_SOURCE;
+    if (this.isSessionDeleted(normalizedPlatformSource, contentSessionId)) {
+      throw new Error('session_deleted');
+    }
     const storedUserPrompt = normalizeStoredPromptText(userPrompt);
     if (customTitle) {
       this.validateSetTitleMutation(contentSessionId, normalizedPlatformSource, customTitle);
@@ -3966,7 +4078,10 @@ export class SessionStore {
     discoveryTokens: number = 0,
     overrideTimestampEpoch?: number,
     generatedByModel?: string,
-    options: { skipTitleDedup?: boolean } = {}
+    options: {
+      skipTitleDedup?: boolean;
+      committedToolUses?: { platformSource: string; contentSessionId: string; toolUseIds: string[] };
+    } = {}
   ): { id: number; createdAtEpoch: number; mergedIntoExisting: boolean } {
     // storeObservations skips empty-title rows, which would leave no id to return here.
     // This wrapper stores exactly one observation, so require a title up front rather than
@@ -4075,7 +4190,10 @@ export class SessionStore {
     discoveryTokens: number = 0,
     overrideTimestampEpoch?: number,
     generatedByModel?: string,
-    options: { skipTitleDedup?: boolean } = {}
+    options: {
+      skipTitleDedup?: boolean;
+      committedToolUses?: { platformSource: string; contentSessionId: string; toolUseIds: string[] };
+    } = {}
   ): {
     observationIds: number[];
     /** Parallel to observationIds: true where a Tier-0 merge reused an existing row (nothing new was stored). */
@@ -4317,6 +4435,9 @@ export class SessionStore {
         }
       }
 
+      if (options.committedToolUses?.toolUseIds.length) {
+        this.markCommittedToolUses(options.committedToolUses);
+      }
       return { observationIds, mergedIntoExisting, insertedObservationIds, summaryId, createdAtEpoch: timestampEpoch, summaryUpdated };
     });
 

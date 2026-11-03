@@ -811,6 +811,19 @@ export async function processAgentResponse(
     if (parsed.summary?.skipped) {
       session.lastSummaryStored = false;
       recordSkippedMediaEvents(dbManager, turnMediaEventKeys(context, sessionManager, session.sessionDbId));
+      const skippedToolUseIds = Array.from(new Set(
+        sessionManager.getClaimedMessages(session.sessionDbId)
+          .map(message => message.toolUseId)
+          .filter((id): id is string => typeof id === 'string' && id.length > 0)
+      ));
+      if (skippedToolUseIds.length > 0 && !isOutputCapFinishReason(finishReason) && !hasUnfinishedBlock) {
+        const store = dbManager.getSessionStore();
+        store.db.transaction(() => store.markCommittedToolUses({
+          platformSource: session.platformSource,
+          contentSessionId: session.contentSessionId,
+          toolUseIds: skippedToolUseIds,
+        }))();
+      }
       await sessionManager.confirmClaimedMessages(session.sessionDbId);
       session.earliestPendingTimestamp = null;
       worker?.broadcastProcessingStatus?.();
@@ -828,6 +841,11 @@ export async function processAgentResponse(
 
   const { observations, summary } = parsed;
   const claimedMessages = sessionManager.getClaimedMessages(session.sessionDbId);
+  const claimedToolUseIds = Array.from(new Set(
+    claimedMessages
+      .map(message => message.toolUseId)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0)
+  ));
   const fileEvidence = extractObservationFileEvidence(claimedMessages);
   const sanitizedObservations = sanitizeObservationFiles(observations, fileEvidence);
   // Include claimed-message file evidence even for summary-only responses
@@ -894,7 +912,12 @@ export async function processAgentResponse(
       context.promptNumber,
       discoveryTokens,
       originalTimestamp ?? undefined,
-      modelId
+      modelId,
+      {
+        committedToolUses: !isOutputCapFinishReason(finishReason) && !hasUnfinishedBlock && claimedToolUseIds.length > 0
+          ? { platformSource: session.platformSource, contentSessionId: session.contentSessionId, toolUseIds: claimedToolUseIds }
+          : undefined,
+      }
     );
     if (!hasMediaEvents(mediaEventKeys)) {
       result = storeTurn();
@@ -967,11 +990,6 @@ export async function processAgentResponse(
   // per-call join stays (content_session_id, tool_use_id).
   //
   // Never fatal: a failed link costs a back-reference, not an observation.
-  const claimedToolUseIds = Array.from(new Set(
-    claimedMessages
-      .map(message => message.toolUseId)
-      .filter((id): id is string => typeof id === 'string' && id.length > 0)
-  ));
   const linkObservationId = firstStoredObservationId(result);
   if (claimedToolUseIds.length > 0 && linkObservationId !== undefined) {
     try {
