@@ -18,6 +18,7 @@ import { isHttpUrl } from '../../../../shared/openrouter-base-url.js';
 import { parseContextCountValue } from '../../../../shared/context-count.js';
 import { OPENROUTER_REASONING_EFFORTS, parseOpenRouterReasoningEffort } from '../../OpenRouterProvider.js';
 import { parseOpenAICompatReasoning } from '../../reasoning-budget.js';
+import { parseProviderBySource } from '../../../../shared/provider-by-source.js';
 import { CODEX_REASONING_EFFORTS, isCodexReasoningEffort } from '../../CodexProvider.js';
 import { emitContextInvalidation, noteUserSettingsSaved } from '../../../../shared/context-invalidation.js';
 
@@ -247,6 +248,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_WORKER_PORT',
       'CLAUDE_MEM_WORKER_HOST',
       'CLAUDE_MEM_PROVIDER',
+      'CLAUDE_MEM_PROVIDER_BY_SOURCE',
       'CLAUDE_MEM_CODEX_MODEL',
       'CLAUDE_MEM_CODEX_REASONING_EFFORT',
       'CLAUDE_MEM_CLAUDE_AUTH_METHOD',
@@ -376,6 +378,11 @@ export class SettingsRoutes extends BaseRouteHandler {
         valid: false,
         error: `CLAUDE_MEM_CODEX_REASONING_EFFORT must be empty (Codex's default) or one of: ${CODEX_REASONING_EFFORTS.join(', ')}`,
       };
+    }
+
+    if (settings.CLAUDE_MEM_PROVIDER_BY_SOURCE !== undefined) {
+      const bySource = parseProviderBySource(settings.CLAUDE_MEM_PROVIDER_BY_SOURCE);
+      if (!bySource.ok) return { valid: false, error: bySource.error };
     }
 
     if (settings.CLAUDE_MEM_PROVIDER) {
