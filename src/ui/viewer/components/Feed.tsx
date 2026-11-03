@@ -1,4 +1,6 @@
 import React, { useRef, useEffect } from 'react';
+import { useI18n } from '../../i18n';
+import { translateViewerError } from '../../i18n/errors';
 import { FeedItem } from '../types';
 import type { DeletableItemType } from '../utils/feed-deletion';
 import { ObservationCard } from './ObservationCard';
@@ -20,6 +22,7 @@ interface FeedProps {
 }
 
 export function Feed({ items, header, onLoadMore, onDeleted, isLoading, hasMore, loadError }: FeedProps) {
+  const { t } = useI18n();
   const loadMoreRef = useRef<HTMLDivElement>(null);
   const feedRef = useRef<HTMLDivElement>(null);
   const onLoadMoreRef = useRef(onLoadMore);
@@ -57,7 +60,7 @@ export function Feed({ items, header, onLoadMore, onDeleted, isLoading, hasMore,
   }, [hasMore, isLoading, loadError]);
 
   return (
-    <main className="feed" ref={feedRef} aria-label="Memory timeline">
+    <main className="feed" ref={feedRef} aria-label={t('Memory timeline')}>
       <ScrollToTop targetRef={feedRef} />
       <div className="feed-content">
         {header}
@@ -73,20 +76,20 @@ export function Feed({ items, header, onLoadMore, onDeleted, isLoading, hasMore,
         })}
         {items.length === 0 && !isLoading && !loadError && (
           <div className="memory-empty-state">
-            <h3>No memories to show</h3>
-            <p>Memories appear here as you work. If a filter is selected, try another project or category.</p>
+            <h3>{t('No memories to show')}</h3>
+            <p>{t('Memories appear here as you work. If a filter is selected, try another project or category.')}</p>
           </div>
         )}
         {isLoading && (
           <div style={{ textAlign: 'center', padding: '20px', color: 'var(--color-text-muted)' }}>
             <div className="spinner" style={{ display: 'inline-block', marginRight: '10px' }}></div>
-            Loading more...
+            {t('Loading more...')}
           </div>
         )}
         {loadError && !isLoading && (
           <div role="alert" style={{ textAlign: 'center', padding: '20px' }}>
-            <p>{loadError}</p>
-            <button onClick={onLoadMore}>Retry</button>
+            <p>{translateViewerError(loadError, t)}</p>
+            <button onClick={onLoadMore}>{t('Retry')}</button>
           </div>
         )}
         {hasMore && !isLoading && !loadError && (
@@ -94,7 +97,7 @@ export function Feed({ items, header, onLoadMore, onDeleted, isLoading, hasMore,
         )}
         {!hasMore && items.length > 0 && (
           <div style={{ textAlign: 'center', padding: '20px', color: 'var(--color-text-muted)', fontSize: '14px' }}>
-            No more items to load
+            {t('No more items to load')}
           </div>
         )}
       </div>

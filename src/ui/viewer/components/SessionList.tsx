@@ -1,4 +1,6 @@
 import React, { useEffect, useRef } from 'react';
+import { useI18n } from '../../i18n';
+import { translateViewerError } from '../../i18n/errors';
 import { SessionCatalogEntry } from '../types';
 import { SessionCard } from './SessionCard';
 import { catalogEntryRef, sessionKey, type SessionRef } from '../utils/sessions';
@@ -17,6 +19,7 @@ interface SessionListProps {
 }
 
 export function SessionList({ header, sessions, isLoading, hasMore, loadError, onOpen, onDelete, onLoadMore }: SessionListProps) {
+  const { t } = useI18n();
   const loadMoreRef = useRef<HTMLDivElement>(null);
   const onLoadMoreRef = useRef(onLoadMore);
 
@@ -41,12 +44,12 @@ export function SessionList({ header, sessions, isLoading, hasMore, loadError, o
   }, [hasMore, isLoading, loadError]);
 
   return (
-    <main className="session-list" aria-label="Saved sessions">
+    <main className="session-list" aria-label={t('Saved sessions')}>
       <div className="session-list-content">
         {header}
         {loadError && <div className="card-delete-error" role="alert">
-          {loadError}
-          {!isLoading && <button onClick={onLoadMore}>Retry</button>}
+          {translateViewerError(loadError, t)}
+          {!isLoading && <button onClick={onLoadMore}>{t('Retry')}</button>}
         </div>}
         {sessions.map(session => {
           const ref = catalogEntryRef(session);
@@ -61,11 +64,11 @@ export function SessionList({ header, sessions, isLoading, hasMore, loadError, o
         })}
         {sessions.length === 0 && !loadError && (
           <div className="session-list-empty">
-            {isLoading ? 'Loading sessions…' : <><h3>No sessions to show</h3><p>Sessions appear as work is captured. Try another project if a filter is selected.</p></>}
+            {isLoading ? t('Loading sessions…') : <><h3>{t('No sessions to show')}</h3><p>{t('Sessions appear as work is captured. Try another project if a filter is selected.')}</p></>}
           </div>
         )}
         {isLoading && sessions.length > 0 && (
-          <div className="session-list-empty">Loading older sessions…</div>
+          <div className="session-list-empty">{t('Loading older sessions…')}</div>
         )}
         {hasMore && !isLoading && !loadError && sessions.length > 0 && (
           <div ref={loadMoreRef} style={{ height: '20px', margin: '10px 0' }} />

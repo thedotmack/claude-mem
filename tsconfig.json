@@ -28,6 +28,7 @@
     "dist",
     "tests",
     "src/ui/viewer",
-    "src/ui/my-work"
+    "src/ui/my-work",
+    "src/ui/i18n"
   ]
 }

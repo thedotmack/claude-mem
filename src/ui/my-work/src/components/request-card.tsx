@@ -1,6 +1,8 @@
+import { displayTime } from '@/lib/display-time'
 import { useEffect, useState } from 'react'
 import { CheckIcon } from 'lucide-react'
 import { useReducedMotion } from 'motion/react'
+import { interpolate, useI18n } from '../../../i18n'
 import { Shimmer } from '@/components/ai-elements/shimmer'
 import { Terminal, TerminalContent } from '@/components/ai-elements/terminal'
 import { EncryptedText } from '@/components/aceternity/encrypted-text'
@@ -55,8 +57,9 @@ function useAgentViewTransform(request: Request) {
 }
 
 function ActivitySpinner({ word, settled }: { word: string; settled: boolean }) {
+  const { t } = useI18n()
   const { mode } = useWorkspace()
-  const label = settled ? 'Just updated' : mode === 'web' && word !== 'Translating' ? 'Working' : word
+  const label = settled ? t('Just updated') : mode === 'web' && word !== 'Translating' ? t('Working') : word === 'Translating' ? t('Translating') : word
   return (
     <Req ids={['D5']}>
       <Tooltip>
@@ -75,6 +78,7 @@ function ActivitySpinner({ word, settled }: { word: string; settled: boolean }) 
 
 /** After ship (decision 4): the open Docs, Promo and Other follow-ups, each one actionable. Nothing renders when none are open. */
 export function OpenFollowUps({ request, limit }: { request: Request; limit?: number }) {
+  const { t } = useI18n()
   const open = request.followUps.filter((followUp) => !followUp.done)
   if (request.state !== 'shipped' || open.length === 0) return null
   const inStore = requestById(request.id) !== null
@@ -82,18 +86,18 @@ export function OpenFollowUps({ request, limit }: { request: Request; limit?: nu
   const finish = (text: string) => useStore.getState().updateSampleRequest(request.id, (current) => {
     const followUps = current.followUps.map((followUp) => followUp.text === text ? { ...followUp, done: true } : followUp)
     const stillOpen = followUps.find((followUp) => !followUp.done)
-    return { ...current, followUps, next: stillOpen ? { who: 'human', text: stillOpen.text } : { who: 'bot', text: 'Nothing left after ship' } }
+    return { ...current, followUps, next: stillOpen ? { who: 'human', text: stillOpen.text } : { who: 'bot', text: t('Nothing left after ship') } }
   })
   return (
     <Req ids={['R5.7']}>
       <div className="space-y-1">
-        <p className="section-label">Open after ship · {open.length}</p>
+        <p className="section-label">{interpolate(t('Open after ship · {count}'), { count: open.length })}</p>
         <ul className="divide-y divide-border/70">
           {open.slice(0, limit).map((followUp) => (
             <li key={followUp.text} className="flex min-h-11 items-center gap-2 text-sm md:min-h-9">
               <span className="w-12 shrink-0 text-[11px] font-medium text-muted-foreground uppercase">{followUp.tag}</span>
               <span className="min-w-0 flex-1 truncate">{followUp.text}</span>
-              {inStore && <SaveButton className={cn(buttonVariants({ variant: 'ghost', size: 'sm' }), 'h-11 shrink-0 text-xs md:h-7')} onClick={() => finish(followUp.text)}><CheckIcon />Done</SaveButton>}
+              {inStore && <SaveButton className={cn(buttonVariants({ variant: 'ghost', size: 'sm' }), 'h-11 shrink-0 text-xs md:h-7')} onClick={() => finish(followUp.text)}><CheckIcon />{t('Done')}</SaveButton>}
             </li>
           ))}
         </ul>
@@ -112,6 +116,7 @@ const CARD_DELIVERABLES = 3
  * commits and branches.
  */
 export function Deliverables({ request, onOpen }: { request: Request; onOpen: () => void }) {
+  const { t } = useI18n()
   const products = request.workProduct.filter(isCardDeliverable)
   if (products.length === 0) return null
   const shown = products.slice(0, CARD_DELIVERABLES)
@@ -119,7 +124,7 @@ export function Deliverables({ request, onOpen }: { request: Request; onOpen: ()
   return (
     <Req ids={['R5.12', 'R5.10']}>
       <div className="space-y-1">
-        <p className="section-label">Deliverables · {products.length}</p>
+        <p className="section-label">{interpolate(t('Deliverables · {count}'), { count: products.length })}</p>
         <ul className="flex flex-wrap gap-1.5">
           {shown.map((product, index) => {
             const Icon = PRODUCT_ICON[product.kind]
@@ -134,7 +139,7 @@ export function Deliverables({ request, onOpen }: { request: Request; onOpen: ()
           })}
           {hidden > 0 && (
             <li>
-              <Button variant="ghost" size="sm" className="h-8 px-2 text-xs" onClick={onOpen} aria-label={`Open the request to see ${hidden} more deliverables`}>+{hidden} more</Button>
+              <Button variant="ghost" size="sm" className="h-8 px-2 text-xs" onClick={onOpen} aria-label={interpolate(t('Open the request to see {count} more deliverables'), { count: hidden })}>{interpolate(t('+{count} more'), { count: hidden })}</Button>
             </li>
           )}
         </ul>
@@ -144,6 +149,7 @@ export function Deliverables({ request, onOpen }: { request: Request; onOpen: ()
 }
 
 export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request; onOpen: () => void; onOpenFocus: (focusAreaId: string) => void }) {
+  const { t } = useI18n()
   const { team } = useWorkspace()
   const { phase, text, word } = useAgentViewTransform(request)
   // The spinner means an agent is on it: an idle card still waiting on its title (or one whose title writer
@@ -163,7 +169,7 @@ export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request
           <div className="flex min-w-0 items-center gap-2">
             <AgentIcon agentId={request.agentId} />
             <Req ids={['R5.2', 'R9.3']}>
-              <span className={cn('truncate text-xs text-muted-foreground', !team && 'sr-only')}>asked by {request.askedBy}</span>
+              <span className={cn('truncate text-xs text-muted-foreground', !team && 'sr-only')}>{interpolate(t('asked by {askedBy}'), { askedBy: request.askedBy })}</span>
             </Req>
           </div>
           <div className="flex items-center gap-1.5">
@@ -184,11 +190,11 @@ export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request
             </button>
           ) : (
             <Req ids={['D5']}>
-              <button type="button" onClick={onOpen} className="text-left" aria-label="Open this request; its title is still being written">
+              <button type="button" onClick={onOpen} className="text-left" aria-label={t('Open this request; its title is still being written')}>
                 <Terminal output={request.terminal.join('\n')} isStreaming className="border-dashed border-terminal-border bg-terminal text-terminal-foreground">
                   <TerminalContent className="max-h-28 p-3.5 text-[11px] leading-relaxed">
                     <pre className="whitespace-pre-wrap text-terminal-foreground">{request.terminal.slice(-4).join('\n')}</pre>
-                    {phase === 'translating' && <Shimmer as="span" className="text-[11px] [--color-background:var(--foreground)] [--color-muted-foreground:var(--terminal-foreground)]">Writing the human title…</Shimmer>}
+                    {phase === 'translating' && <Shimmer as="span" className="text-[11px] [--color-background:var(--foreground)] [--color-muted-foreground:var(--terminal-foreground)]">{t('Writing the human title…')}</Shimmer>}
                   </TerminalContent>
                 </Terminal>
               </button>
@@ -205,9 +211,9 @@ export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request
             <FocusAreaChip focusAreaId={request.focusAreaId} onOpen={onOpenFocus} />
             <Req ids={['R5.3', 'R5.4', 'R5.5']}>
               <dl className="grid grid-cols-3 gap-2 text-xs">
-                <div><dt className="text-muted-foreground">Stage</dt><dd className="mt-0.5 font-medium" title={request.stageNote}>{request.stage}</dd></div>
-                <div><dt className="text-muted-foreground">Started</dt><dd className="mt-0.5">{request.startedAt}</dd></div>
-                <div><dt className="text-muted-foreground">Running</dt><dd className="mt-0.5">{request.runningFor}</dd></div>
+                <div><dt className="text-muted-foreground">{t('Stage')}</dt><dd className="mt-0.5 font-medium" title={request.stageNote}>{t(request.stage)}</dd></div>
+                <div><dt className="text-muted-foreground">{t('Started')}</dt><dd className="mt-0.5">{displayTime(request.startedAt)}</dd></div>
+                <div><dt className="text-muted-foreground">{t('Running')}</dt><dd className="mt-0.5">{request.runningFor}</dd></div>
               </dl>
             </Req>
             <ProgressMeter request={request} />

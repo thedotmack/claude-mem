@@ -4,6 +4,7 @@
 import { CheckIcon } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { CmemMark } from '@/components/brand'
+import { interpolate, useI18n } from '../../../i18n'
 import { EMPTY_SETUP_DATA, localSetupSource, SETUP_TOOLS, type SetupData, type SetupSource } from './setup-data'
 import { choiceLocked, guardStep, initialFlowState, nextAfterSavings, progressItemFor, type MemoryBranch, type SetupFlowState, type SetupStep } from './setup-flow'
 import { CheckoutScreen } from './screens/checkout-screen'
@@ -33,12 +34,13 @@ function useSetupSource(): SetupSource | null {
 }
 
 function ProgressBar({ step, branch, showCheckout }: { step: SetupStep; branch: MemoryBranch; showCheckout: boolean }) {
+  const { t } = useI18n()
   const current = progressItemFor(step)
   if (!current) return null
-  const items = [['memory', 'Memory'], ['savings', 'Token Savings'], ...(branch === 'go' && showCheckout ? [['checkout', 'Checkout']] : []), ['finish', 'Finish Setup']]
+  const items = [['memory', t('Memory')], ['savings', t('Token Savings')], ...(branch === 'go' && showCheckout ? [['checkout', t('Checkout')]] : []), ['finish', t('Finish Setup')]]
   const currentIndex = items.findIndex(([id]) => id === current)
   return (
-    <nav aria-label="Setup progress">
+    <nav aria-label={t('Setup progress')}>
       <ol className="progress">
         {items.map(([id, label], index) => (
           <li key={id} className={index < currentIndex ? 'is-done' : index === currentIndex ? 'is-current' : undefined} aria-current={index === currentIndex ? 'step' : undefined}>
@@ -52,6 +54,7 @@ function ProgressBar({ step, branch, showCheckout }: { step: SetupStep; branch: 
 }
 
 export default function SetupPage({ onComplete }: { onComplete: () => void }) {
+  const { t, locale, setLocale } = useI18n()
   const source = useSetupSource()
   const [data, setData] = useState<SetupData>(EMPTY_SETUP_DATA)
   useEffect(() => source?.subscribe(setData), [source])
@@ -68,7 +71,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
     try { await source.setImproveProduct(checked) } catch (error) {
       if (revision !== preferenceRevision.current) return
       setImproveProduct(null)
-      setPreferenceError(`Could not save this choice: ${error instanceof Error ? error.message : String(error)}`)
+      setPreferenceError(interpolate(t('Could not save this choice: {error}'), { error: error instanceof Error ? error.message : String(error) }))
     }
   }
 
@@ -84,7 +87,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
       // The sharing choice travels with the consent, so a queued preference request cannot lose a race with the upload.
       await source.confirmUpload(upload, agents, improveProduct ?? data.scan.improveProduct)
     } catch (error) {
-      setConsentError(`Could not confirm your choice: ${error instanceof Error ? error.message : String(error)}. If you chose to upload, your prompts may already have been uploaded; reload this page to check.`)
+      setConsentError(interpolate(t('Could not confirm your choice: {error}. If you chose to upload, your prompts may already have been uploaded; reload this page to check.'), { error: error instanceof Error ? error.message : String(error) }))
     } finally { consentPending.current = false; setConsentSending(false) }
   }
 
@@ -201,14 +204,32 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
 
   return (
     <div className="cmem-setup" data-step={step}>
-      <a className="skip" href="#setup-main">Skip to content</a>
+      <a className="skip" href="#setup-main">{t('Skip to content')}</a>
       <header className="setup-header">
         <span className="brand" role="img" aria-label="CMEM"><CmemMark /></span>
         <ProgressBar step={step} branch={flow.branch} showCheckout={!flow.alreadyPro} />
+        <div className="setup-header-actions">
+          <select
+            aria-label={t('Language')}
+            value={locale}
+            onChange={(e) => setLocale(e.target.value as 'en' | 'zh-CN')}
+            className="setup-lang-select"
+          >
+            <option value="en">English</option>
+            <option value="zh-CN">简体中文</option>
+          </select>
+        </div>
       </header>
       <main id="setup-main" ref={main} tabIndex={-1} className={`setup-main step-${step}${['scan', 'reveal', 'choice', 'savings', 'workspace'].includes(step) ? ' is-centered' : ''}`}>
         {handOffError && <p className="scan-error" role="alert">{handOffError}</p>}
-        {installerFailed && <p className="scan-error" role="alert">Setup stopped in the terminal: {data.installer?.error ?? 'the installer did not say why.'} Run <code>npx claude-mem install</code> again to restart setup.</p>}
+        {installerFailed && (
+          <p className="scan-error" role="alert">
+            {interpolate(t('Setup stopped in the terminal: {error} Run {command} again to restart setup.'), {
+              error: data.installer?.error ?? t('the installer did not say why.'),
+              command: 'npx claude-mem install',
+            })}
+          </p>
+        )}
         {screens[step]()}
       </main>
     </div>

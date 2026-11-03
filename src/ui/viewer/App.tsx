@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect } from 'react';
+import { useI18n } from '../i18n';
 import { Header } from './components/Header';
 import { Feed } from './components/Feed';
 import { ViewTabs, type ViewTab } from './components/ViewTabs';
@@ -52,6 +53,7 @@ function navigate(hash: string): void {
 }
 
 export function App() {
+  const { t } = useI18n();
   const [currentFilter, setCurrentFilter] = useState('');
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
   const [logsModalOpen, setLogsModalOpen] = useState(false);
@@ -298,13 +300,13 @@ export function App() {
     <>
       <div className="memory-page-heading">
         <div>
-          <p className="memory-eyebrow">Your saved context</p>
-          <h2>{route.view === 'timeline' ? 'Memory timeline' : route.view === 'sessions' ? 'Sessions' : 'Session memory'}</h2>
+          <p className="memory-eyebrow">{t('Your saved context')}</p>
+          <h2>{route.view === 'timeline' ? t('Memory timeline') : route.view === 'sessions' ? t('Sessions') : t('Session memory')}</h2>
           <p>{route.view === 'timeline'
-            ? 'Browse observations, summaries, and prompts from your work.'
+            ? t('Browse observations, summaries, and prompts from your work.')
             : route.view === 'sessions'
-              ? 'Open a session to revisit what happened and what was learned.'
-              : 'Review the context captured during this session.'}</p>
+              ? t('Open a session to revisit what happened and what was learned.')
+              : t('Review the context captured during this session.')}</p>
         </div>
         <ViewTabs
           active={activeTab}
@@ -338,7 +340,7 @@ export function App() {
         items={feedItems}
         isLoading={isLoading}
         hasMore={hasMore}
-        loadError={feedLoadError}
+        loadError={feedLoadError ? t(feedLoadError) : null}
         onLoadMore={handleLoadMore}
         onDeleted={removeDeletedItem}
         onBack={() => navigate(sessionsHash())}
@@ -353,7 +355,7 @@ export function App() {
         onDeleted={removeDeletedItem}
         isLoading={isLoading}
         hasMore={hasMore}
-        loadError={feedLoadError}
+        loadError={feedLoadError ? t(feedLoadError) : null}
       />
     );
   }
@@ -397,8 +399,8 @@ export function App() {
       <button
         className="console-toggle-btn"
         onClick={toggleLogsModal}
-        title="Open memory logs"
-        aria-label={logsModalOpen ? 'Close memory logs' : 'Open memory logs'}
+        title={t('Open memory logs')}
+        aria-label={logsModalOpen ? t('Close memory logs') : t('Open memory logs')}
         aria-expanded={logsModalOpen}
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
