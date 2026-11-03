@@ -152,6 +152,13 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   { name: 'huggingface_token', regex: /\bhf_[A-Za-z0-9]{30,}\b/g },
   { name: 'npm_token',       regex: /\bnpm_[A-Za-z0-9]{36}\b/g },
   { name: 'docker_pat',     regex: /\bdckr_pat_[A-Za-z0-9_-]{27,}(?!\w)/g },
+  // Linear personal API keys (`lin_api_` + 40 alphanumerics) and Notion
+  // integration tokens (`ntn_` + 46 alphanumerics, and the older `secret_` +
+  // 43): what `LINEAR_API_KEY=…` / `NOTION_TOKEN=…` lines, MCP server configs
+  // and `curl -H "Authorization: …"` commands print. Fixed lengths keep
+  // `secret_` words and short look-alikes out.
+  { name: 'linear_key',      regex: /\blin_api_[A-Za-z0-9]{40}(?!\w)/g },
+  { name: 'notion_token',    regex: /\b(?:ntn_[A-Za-z0-9]{46}|secret_[A-Za-z0-9]{43})(?!\w)/g },
   // SendGrid API keys (`SG.` + 22 + `.` + 43 base64url chars), DigitalOcean
   // personal access, OAuth and refresh tokens (`dop_v1_`/`doo_v1_`/`dor_v1_` +
   // 64 hex) and Shopify Admin API, app and shared-secret tokens (`shpat_`,
