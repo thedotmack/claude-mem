@@ -31,7 +31,8 @@ def shell_reads(cmd):
 
 
 def timeline_of(items, content_key):
-    for it in items[:20]:
+    # Every item: after a compaction the agent's leading context (its summary, the messages it kept) comes first, at any length.
+    for it in items:
         parts = it.get(content_key) if isinstance(it, dict) else None
         if not isinstance(parts, list): continue
         texts = [p.get('text', '') for p in parts if isinstance(p, dict)]
