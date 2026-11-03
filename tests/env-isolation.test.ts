@@ -376,6 +376,90 @@ describe('Issue #2357: CLAUDE_CODE_EFFORT_* env-var isolation', () => {
 });
 
 /**
+ * Issue #5315: When Claude Code is configured with a custom gateway in
+ * ~/.claude/settings.json (or parent shell), variables like ANTHROPIC_MODEL,
+ * ANTHROPIC_DEFAULT_HAIKU_MODEL, etc. point to gateway-only models (e.g. "auto").
+ * For direct Anthropic API auth, ANTHROPIC_BASE_URL is stripped; leaking these
+ * gateway model variables causes Claude Code to send invalid model names to
+ * api.anthropic.com, causing unrecognized_model errors.
+ */
+describe('Issue #5315: ANTHROPIC_*_MODEL gateway env-var isolation', () => {
+  const GATEWAY_VARS = [
+    'ANTHROPIC_MODEL',
+    'ANTHROPIC_DEFAULT_MODEL',
+    'ANTHROPIC_DEFAULT_OPUS_MODEL',
+    'ANTHROPIC_DEFAULT_SONNET_MODEL',
+    'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+    'ANTHROPIC_DEFAULT_FABLE_MODEL',
+    'ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME',
+    'ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION',
+    'ANTHROPIC_SMALL_FAST_MODEL',
+    'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY',
+  ];
+
+  const savedEnv: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    for (const v of GATEWAY_VARS) {
+      savedEnv[v] = process.env[v];
+    }
+  });
+
+  afterEach(() => {
+    for (const v of GATEWAY_VARS) {
+      if (savedEnv[v] === undefined) delete process.env[v];
+      else process.env[v] = savedEnv[v];
+    }
+  });
+
+  it('buildIsolatedEnv strips gateway model variables via BLOCKED_ENV_VARS (layer 1)', () => {
+    process.env.ANTHROPIC_MODEL = 'auto';
+    process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = 'auto';
+    process.env.ANTHROPIC_DEFAULT_SONNET_MODEL = 'custom-router';
+    process.env.ANTHROPIC_DEFAULT_OPUS_MODEL = 'custom-router';
+    process.env.ANTHROPIC_DEFAULT_MODEL = 'auto';
+    process.env.ANTHROPIC_DEFAULT_FABLE_MODEL = 'auto';
+    process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME = 'Custom Haiku';
+    process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION = 'Local Router';
+    process.env.ANTHROPIC_SMALL_FAST_MODEL = 'auto';
+    process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY = '1';
+
+    const result = buildIsolatedEnv();
+
+    for (const v of GATEWAY_VARS) {
+      expect(result[v]).toBeUndefined();
+    }
+  });
+
+  it('sanitizeEnv(buildIsolatedEnv()) strips gateway model variables (both layers)', () => {
+    process.env.ANTHROPIC_MODEL = 'auto';
+    process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = 'auto';
+
+    const result = sanitizeEnv(buildIsolatedEnv());
+
+    expect(result.ANTHROPIC_MODEL).toBeUndefined();
+    expect(result.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBeUndefined();
+  });
+
+  it('sanitizeEnv alone strips gateway model variables (layer 2)', () => {
+    const input: NodeJS.ProcessEnv = {
+      ANTHROPIC_MODEL: 'auto',
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: 'auto',
+      ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: 'Custom Router',
+      CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: '1',
+      PATH: '/usr/bin',
+    };
+    const result = sanitizeEnv(input);
+
+    expect(result.ANTHROPIC_MODEL).toBeUndefined();
+    expect(result.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBeUndefined();
+    expect(result.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME).toBeUndefined();
+    expect(result.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY).toBeUndefined();
+    expect(result.PATH).toBe('/usr/bin');
+  });
+});
+
+/**
  * Spawn-env discipline (plan 06 Phase 7): every env-bearing subprocess spawn in
  * src/ must sanitize process.env before handing it to the child. This test runs
  * the CI grep check inside the suite so a regression fails `bun test`, not just

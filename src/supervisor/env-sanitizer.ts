@@ -9,6 +9,14 @@ export const ENV_EXACT_MATCHES = new Set([
   'CLAUDE_CODE_SESSION',
   'CLAUDE_CODE_ENTRYPOINT',
   'MCP_SESSION_ID',
+  // Issue #5315 (layer 2): Gateway model selection variables
+  'ANTHROPIC_MODEL',
+  'ANTHROPIC_DEFAULT_MODEL',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  'ANTHROPIC_DEFAULT_FABLE_MODEL',
+  'ANTHROPIC_SMALL_FAST_MODEL',
 ]);
 
 export const ENV_PROXY_VARS = new Set([
@@ -65,6 +73,7 @@ export function sanitizeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.Proces
     if (ENV_PRESERVE.has(key)) { sanitized[key] = value; continue; }
     if (ENV_EXACT_MATCHES.has(key)) continue;
     if (ENV_PREFIXES.some(prefix => key.startsWith(prefix))) continue;
+    if (/^ANTHROPIC_DEFAULT_.*_MODEL(?:_|$)/.test(key)) continue;
     sanitized[key] = value;
   }
 

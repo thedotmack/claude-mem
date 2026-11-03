@@ -81,7 +81,29 @@ const BLOCKED_ENV_VARS = [
   // chain sanitizeEnv.
   'CLAUDE_CODE_EFFORT_LEVEL',
   'CLAUDE_CODE_ALWAYS_ENABLE_EFFORT',
+  // Issue #5315: Gateway model variables from the parent shell or Claude Code's
+  // ~/.claude/settings.json must not leak into the SDK subprocess. When a user
+  // configures a custom gateway for Claude Code, variables like
+  // ANTHROPIC_DEFAULT_HAIKU_MODEL, ANTHROPIC_MODEL, etc. point to gateway-only
+  // models (e.g. "auto"). Because ANTHROPIC_BASE_URL is stripped above for
+  // direct Anthropic API / subscription auth, leaking these model variables
+  // causes the CLI to send gateway model names to api.anthropic.com, which
+  // rejects them with unrecognized_model / HTTP 400.
+  'ANTHROPIC_MODEL',
+  'ANTHROPIC_DEFAULT_MODEL',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  'ANTHROPIC_DEFAULT_FABLE_MODEL',
+  'ANTHROPIC_SMALL_FAST_MODEL',
+  'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY',
 ];
+
+export function isBlockedEnvVar(key: string): boolean {
+  if (BLOCKED_ENV_VARS.includes(key)) return true;
+  if (/^ANTHROPIC_DEFAULT_.*_MODEL(?:_|$)/.test(key)) return true;
+  return false;
+}
 
 export interface ClaudeMemEnv {
   ANTHROPIC_API_KEY?: string;
@@ -230,7 +252,7 @@ export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
 export function buildIsolatedEnv(includeCredentials: boolean = true): Record<string, string> {
   const isolatedEnv: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined && !BLOCKED_ENV_VARS.includes(key)) {
+    if (value !== undefined && !isBlockedEnvVar(key)) {
       isolatedEnv[key] = value;
     }
   }
