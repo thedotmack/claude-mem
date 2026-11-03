@@ -90,7 +90,8 @@ const CODEX_SERVER_FAULT = /RPC error -(?:32603|32700)\b/;
 
 /**
  * The close handler's own prefix when the child was stopped by a signal.
- * `signal null` is an ordinary exit and still goes through the text classifier.
+ * `signal null` is an ordinary exit. Auth text on that exit is read only from
+ * the recent stderr lines (CODEX_EXIT_AUTH_TAIL_LINES), not the whole tail.
  * The worker's version-mismatch recycle SIGKILLs this child.
  */
 const CODEX_SIGNALED_EXIT = /^Codex app-server exited with code \S+ signal (?!null\b)\S+/;
@@ -99,6 +100,51 @@ function isCodexSignaledExit(cause: unknown, message: string): boolean {
   const exitSignal = (cause as { exitSignal?: unknown } | null)?.exitSignal;
   if (typeof exitSignal === 'string' && exitSignal.length > 0 && exitSignal !== 'null') return true;
   return CODEX_SIGNALED_EXIT.test(message);
+}
+
+/**
+ * Auth-looking text. Structured CodexErrorInfo (unauthorized, HTTP 401/403)
+ * is decided before this runs. On an app-server exit the close error quotes
+ * the retained stderr tail, up to 64 KiB, so a stale line must not decide it:
+ * only the trailing lines, the ones that can still describe this exit, are read.
+ * Any other error is short-lived text and is read whole.
+ */
+const CODEX_AUTH_TEXT = /not logged in|codex login|unauthorized|authentication|ChatGPT auth|requires Codex CLI|\b40[13]\b/i;
+
+/** Trailing stderr lines of an app-server exit that may still explain that exit. */
+export const CODEX_EXIT_AUTH_TAIL_LINES = 16;
+
+const CODEX_APP_SERVER_EXIT = /^Codex app-server exited with code \S+ signal \S+/;
+
+/** Causes already logged for a text-heuristic auth verdict (classify runs twice per failure). */
+const loggedCodexAuthTextCauses = new WeakSet<object>();
+
+function codexAuthScanText(message: string): string {
+  if (!CODEX_APP_SERVER_EXIT.test(message)) return message;
+  return message.split(/\r?\n/).slice(-CODEX_EXIT_AUTH_TAIL_LINES).join('\n');
+}
+
+/** The auth-looking line inside the text the heuristic is allowed to read, if any. */
+function codexAuthTextHit(message: string): { match: string; line: string } | null {
+  for (const raw of codexAuthScanText(message).split(/\r?\n/)) {
+    const found = raw.match(CODEX_AUTH_TEXT);
+    if (!found || found.index === undefined) continue;
+    const start = Math.max(0, found.index - 120);
+    const end = Math.min(raw.length, found.index + found[0].length + 120);
+    return { match: found[0], line: raw.slice(start, end).trim().slice(0, 300) };
+  }
+  return null;
+}
+
+function logCodexAuthTextHit(cause: unknown, hit: { match: string; line: string }): void {
+  if (typeof cause === 'object' && cause !== null) {
+    if (loggedCodexAuthTextCauses.has(cause)) return;
+    loggedCodexAuthTextCauses.add(cause);
+  }
+  logger.warn('SDK', 'Codex auth_invalid classified from text heuristic', {
+    match: hit.match,
+    line: hit.line,
+  });
 }
 
 /** Sessions whose run of app-server faults is tracked at once (oldest dropped). */
@@ -157,20 +203,27 @@ export function classifyCodexError(cause: unknown): ClassifiedProviderError {
   } else if (code === CODEX_SETUP_REQUIRED_CODE || code === 'ENOENT' || /executable not found|command not found|ENOENT/i.test(message)) {
     // Fixed on this machine (install the CLI, `codex login`), never by retrying.
     kind = 'setup_required';
-  } else if (/not logged in|codex login|unauthorized|authentication|ChatGPT auth|requires Codex CLI|\b40[13]\b/i.test(message)) {
-    kind = 'auth_invalid';
-  } else if (/usage limit|quota|insufficient credits|plan limit|billing/i.test(message)) {
-    kind = 'quota_exhausted';
-  } else if (/rate limit|\b429\b/i.test(message)) {
-    kind = 'rate_limit';
-  } else if (/context (length|window)|prompt (is )?too long/i.test(message)) {
-    kind = 'context_overflow';
-  } else if (structuredKind === CODEX_REFUSED_REQUEST || CODEX_PROTOCOL_REFUSAL.test(message)) {
-    // Refused the same way until the settings or the CLI change: a setup
-    // failure, held behind the codex_cli gate and shown at SessionStart,
-    // never a transport blip resumed forever.
-    kind = 'setup_required';
-    action = CODEX_REQUEST_REMEDY;
+  } else {
+    const authTextHit = codexAuthTextHit(message);
+    if (authTextHit) {
+      kind = 'auth_invalid';
+      // The stored message keeps only the first 500 characters, which is the
+      // oldest part of a long stderr tail. The match itself is what a false
+      // auth cooldown has to be checked against.
+      logCodexAuthTextHit(cause, authTextHit);
+    } else if (/usage limit|quota|insufficient credits|plan limit|billing/i.test(message)) {
+      kind = 'quota_exhausted';
+    } else if (/rate limit|\b429\b/i.test(message)) {
+      kind = 'rate_limit';
+    } else if (/context (length|window)|prompt (is )?too long/i.test(message)) {
+      kind = 'context_overflow';
+    } else if (structuredKind === CODEX_REFUSED_REQUEST || CODEX_PROTOCOL_REFUSAL.test(message)) {
+      // Refused the same way until the settings or the CLI change: a setup
+      // failure, held behind the codex_cli gate and shown at SessionStart,
+      // never a transport blip resumed forever.
+      kind = 'setup_required';
+      action = CODEX_REQUEST_REMEDY;
+    }
   }
   return new ClassifiedProviderError(`Codex: ${message.slice(0, 500)}`, { kind, cause, ...(action ? { action } : {}) });
 }

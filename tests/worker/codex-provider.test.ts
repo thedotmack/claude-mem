@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
-import { CodexProvider, classifyCodexError } from '../../src/services/worker/CodexProvider.js';
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import { CodexProvider, classifyCodexError, CODEX_EXIT_AUTH_TAIL_LINES } from '../../src/services/worker/CodexProvider.js';
+import { logger } from '../../src/utils/logger.js';
 import { CODEX_SETUP_REQUIRED_CODE } from '../../src/services/worker/CodexAppServerClient.js';
 import { SessionRoutes } from '../../src/services/worker/http/routes/SessionRoutes.js';
 import { SettingsRoutes } from '../../src/services/worker/http/routes/SettingsRoutes.js';
@@ -578,6 +579,117 @@ describe('Codex provider integration', () => {
       { exitCode: 1, exitSignal: null },
     );
     expect(classifyCodexError(error).kind).toBe('auth_invalid');
+  });
+
+  // #5275 follow-up: an ordinary exit still quotes the lifetime stderr tail.
+  // A 401 that is no longer in the trailing lines did not stop this process.
+  describe('ordinary app-server exits read auth text only from the recent stderr tail', () => {
+    const staleAuthLine = '2026-11-02T07:14:14.708504Z ERROR codex_api::endpoint::responses_websocket: authentication failed with 401 unauthorized';
+    const benign = (index: number) =>
+      `2026-11-02T07:20:${String(index % 60).padStart(2, '0')}Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: Connection reset by peer (os error 54)`;
+
+    function ordinaryExit(lines: string[]): Error {
+      return Object.assign(
+        new Error(`Codex app-server exited with code 1 signal null: ${lines.join('\n')}`),
+        { exitCode: 1, exitSignal: null },
+      );
+    }
+
+    function authHeuristicLogs(warn: ReturnType<typeof spyOn>): Array<unknown[]> {
+      return warn.mock.calls.filter((call: unknown[]) => String(call[1]).includes('text heuristic'));
+    }
+
+    it('is not auth_invalid when the only 401 is above the recent tail', () => {
+      const lines = [staleAuthLine, ...Array.from({ length: CODEX_EXIT_AUTH_TAIL_LINES }, (_, i) => benign(i))];
+      const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+      try {
+        expect(classifyCodexError(ordinaryExit(lines)).kind).toBe('transient');
+        expect(authHeuristicLogs(warn)).toHaveLength(0);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('is auth_invalid when a recent stderr line is an auth error, and logs that line', () => {
+      const lines = [
+        ...Array.from({ length: CODEX_EXIT_AUTH_TAIL_LINES + 8 }, (_, i) => benign(i)),
+        'not logged in',
+        benign(0),
+        benign(1),
+      ];
+      const error = ordinaryExit(lines);
+      const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+      try {
+        expect(classifyCodexError(error).kind).toBe('auth_invalid');
+        // The close path classifies once to arm the breaker and again to throw.
+        expect(classifyCodexError(error).kind).toBe('auth_invalid');
+        const logs = authHeuristicLogs(warn);
+        expect(logs).toHaveLength(1);
+        expect(logs[0]?.[2]).toMatchObject({ match: 'not logged in', line: 'not logged in' });
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('is auth_invalid for a 401 on the last stderr line of an ordinary exit', () => {
+      const lines = [
+        ...Array.from({ length: CODEX_EXIT_AUTH_TAIL_LINES + 4 }, (_, i) => benign(i)),
+        staleAuthLine,
+      ];
+      expect(classifyCodexError(ordinaryExit(lines)).kind).toBe('auth_invalid');
+    });
+
+    it('stays transient for a signaled exit even when the recent stderr line is a 401', () => {
+      const message = `Codex app-server exited with code null signal SIGKILL: ${[...Array.from({ length: 4 }, (_, i) => benign(i)), staleAuthLine].join('\n')}`;
+      const error = Object.assign(new Error(message), { exitCode: null, exitSignal: 'SIGKILL' });
+      const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+      try {
+        expect(classifyCodexError(error).kind).toBe('transient');
+        expect(authHeuristicLogs(warn)).toHaveLength(0);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('prefers a structured HTTP 403 over an ordinary exit with no recent auth line', () => {
+      const error = Object.assign(ordinaryExit(Array.from({ length: 4 }, (_, i) => benign(i))), {
+        codexErrorInfo: { responseStreamConnectionFailed: { httpStatusCode: 403 } },
+      });
+      const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+      try {
+        expect(classifyCodexError(error).kind).toBe('auth_invalid');
+        expect(authHeuristicLogs(warn)).toHaveLength(0);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('still reads auth text anywhere in a non-exit error', () => {
+      const lines = ['HTTP 401 unauthorized', ...Array.from({ length: CODEX_EXIT_AUTH_TAIL_LINES }, (_, i) => benign(i))];
+      const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+      try {
+        expect(classifyCodexError(new Error(lines.join('\n'))).kind).toBe('auth_invalid');
+        const logs = authHeuristicLogs(warn);
+        expect(logs).toHaveLength(1);
+        expect(logs[0]?.[2]).toMatchObject({ match: '401' });
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('does not arm an auth cooldown when an ordinary exit only quotes a stale 401', async () => {
+      const provider = new CodexProvider(null as any, null as any) as any;
+      const failure = ordinaryExit([
+        staleAuthLine,
+        ...Array.from({ length: CODEX_EXIT_AUTH_TAIL_LINES }, (_, i) => benign(i)),
+      ]);
+      for (const client of provider.appServer.clients) client.runTurn = async (options: any) => {
+        options.onFailure(failure);
+        throw failure;
+      };
+      await expect(provider.query([], config)).rejects.toMatchObject({ kind: 'transient' });
+      expect(getQuotaCooldown('codex')).toBeNull();
+    });
   });
 
   it('does not arm an auth cooldown when a recycle SIGKILL quotes a stale 401', async () => {
