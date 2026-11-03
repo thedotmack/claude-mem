@@ -138,6 +138,25 @@ describe('redactSensitive built-in patterns', () => {
     expect(Object.keys(result.counts)).toEqual([name]);
   });
 
+  // Google OAuth 2.0 access tokens (`ya29.`), what `gcloud auth
+  // print-access-token` and the metadata server print. Split for push
+  // protection like the fixtures above.
+  it.each([
+    ['$ gcloud auth print-access-token\n' + 'ya' + '29.a0AfB_byC1x2Y3z4-W5v6U7t8S9r0QpOnMlKjIhGfEdCbA tail'],
+    ['curl -H "Authorization: Bearer ' + 'ya' + '29.a0AfB_byC1x2Y3z4-W5v6U7t8S9r0QpOnMlKjIhGfEdCbA" tail'],
+    ['{"access_token":"' + 'ya' + '29.c.Elt0BxAbCdEfGhIjKlMnOpQrStUvWxYz0123456789","expires_in":3599} tail'],
+  ])('redacts a google_oauth_token in %s', (input) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain("<redacted type='google_oauth_token'/>");
+    expect(result.redacted).toMatch(/ tail$/);
+    expect(result.redacted).not.toMatch(/a0AfB_|Elt0Bx/);
+    expect(Object.keys(result.counts)).toEqual(['google_oauth_token']);
+  });
+
+  it.each(['ya29.short', 'the ya29. prefix'])('leaves %s alone', (input) => {
+    expect(redactSensitive(input, cfg).redacted).toBe(input);
+  });
+
   it.each(['SG.short.key', 'dop_v1_short', 'shpat_short', 'the shpat_ prefix'])(
     'leaves %s alone',
     (input) => {

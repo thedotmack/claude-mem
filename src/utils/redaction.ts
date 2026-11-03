@@ -142,6 +142,11 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   // `stripe listen` prints and STRIPE_WEBHOOK_SECRET holds), which forge events.
   { name: 'stripe_key',      regex: /\b(?:(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{24,}|whsec_[A-Za-z0-9]{32,})\b/g },
   { name: 'google_api_key',  regex: /\bAIza[0-9A-Za-z_-]{35}(?!\w)/g },
+  // Google OAuth 2.0 access tokens: `ya29.` + a base64url body, plus the
+  // `ya29.c.` form the GCE metadata server hands out. `gcloud auth
+  // print-access-token`, `curl -H "Authorization: Bearer …"` lines and token
+  // JSON print them; each grants an hour of the account's API access.
+  { name: 'google_oauth_token', regex: /\bya29\.(?:c\.)?[0-9A-Za-z_-]{20,}(?!\w)/g },
   // GitLab personal/project/group access tokens (`glpat-`), deploy tokens (`gldt-`),
   // and runner authentication tokens (`glrt-` + 20 chars; newer routable tokens
   // add dot-separated segments), Hugging Face user access tokens (`hf_` + 34 chars),
