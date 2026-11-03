@@ -124,27 +124,26 @@ function codexAuthScanText(message: string): string {
   return message.split(/\r?\n/).slice(-CODEX_EXIT_AUTH_TAIL_LINES).join('\n');
 }
 
-/** The auth-looking line inside the text the heuristic is allowed to read, if any. */
-function codexAuthTextHit(message: string): { match: string; line: string } | null {
+/**
+ * The auth category inside the text the heuristic is allowed to read, if any.
+ * Only that category is returned. The surrounding stderr is arbitrary and can
+ * carry a credential (a Bearer token next to "401 Unauthorized"); it is not
+ * retained and must not be logged.
+ */
+function codexAuthTextHit(message: string): string | null {
   for (const raw of codexAuthScanText(message).split(/\r?\n/)) {
     const found = raw.match(CODEX_AUTH_TEXT);
-    if (!found || found.index === undefined) continue;
-    const start = Math.max(0, found.index - 120);
-    const end = Math.min(raw.length, found.index + found[0].length + 120);
-    return { match: found[0], line: raw.slice(start, end).trim().slice(0, 300) };
+    if (found) return found[0];
   }
   return null;
 }
 
-function logCodexAuthTextHit(cause: unknown, hit: { match: string; line: string }): void {
+function logCodexAuthTextHit(cause: unknown, match: string): void {
   if (typeof cause === 'object' && cause !== null) {
     if (loggedCodexAuthTextCauses.has(cause)) return;
     loggedCodexAuthTextCauses.add(cause);
   }
-  logger.warn('SDK', 'Codex auth_invalid classified from text heuristic', {
-    match: hit.match,
-    line: hit.line,
-  });
+  logger.warn('SDK', 'Codex auth_invalid classified from text heuristic', { match });
 }
 
 /** Sessions whose run of app-server faults is tracked at once (oldest dropped). */
@@ -204,13 +203,13 @@ export function classifyCodexError(cause: unknown): ClassifiedProviderError {
     // Fixed on this machine (install the CLI, `codex login`), never by retrying.
     kind = 'setup_required';
   } else {
-    const authTextHit = codexAuthTextHit(message);
-    if (authTextHit) {
+    const authMatch = codexAuthTextHit(message);
+    if (authMatch) {
       kind = 'auth_invalid';
       // The stored message keeps only the first 500 characters, which is the
-      // oldest part of a long stderr tail. The match itself is what a false
-      // auth cooldown has to be checked against.
-      logCodexAuthTextHit(cause, authTextHit);
+      // oldest part of a long stderr tail. The matched category is what a
+      // false auth cooldown has to be checked against.
+      logCodexAuthTextHit(cause, authMatch);
     } else if (/usage limit|quota|insufficient credits|plan limit|billing/i.test(message)) {
       kind = 'quota_exhausted';
     } else if (/rate limit|\b429\b/i.test(message)) {

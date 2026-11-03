@@ -610,7 +610,7 @@ describe('Codex provider integration', () => {
       }
     });
 
-    it('is auth_invalid when a recent stderr line is an auth error, and logs that line', () => {
+    it('is auth_invalid when a recent stderr line is an auth error, and logs the matched category', () => {
       const lines = [
         ...Array.from({ length: CODEX_EXIT_AUTH_TAIL_LINES + 8 }, (_, i) => benign(i)),
         'not logged in',
@@ -625,7 +625,25 @@ describe('Codex provider integration', () => {
         expect(classifyCodexError(error).kind).toBe('auth_invalid');
         const logs = authHeuristicLogs(warn);
         expect(logs).toHaveLength(1);
-        expect(logs[0]?.[2]).toMatchObject({ match: 'not logged in', line: 'not logged in' });
+        expect(logs[0]?.[2]).toEqual({ match: 'not logged in' });
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('does not log a bearer token adjacent to a 401', () => {
+      const token = 'cm-synthetic-bearer-7f3a9c2e1b';
+      const lines = [
+        ...Array.from({ length: 4 }, (_, i) => benign(i)),
+        `401 Unauthorized Authorization: Bearer ${token}`,
+      ];
+      const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+      try {
+        expect(classifyCodexError(ordinaryExit(lines)).kind).toBe('auth_invalid');
+        const logs = authHeuristicLogs(warn);
+        expect(logs).toHaveLength(1);
+        expect(logs[0]?.[2]).toEqual({ match: '401' });
+        expect(JSON.stringify(warn.mock.calls)).not.toContain(token);
       } finally {
         warn.mockRestore();
       }
@@ -671,7 +689,7 @@ describe('Codex provider integration', () => {
         expect(classifyCodexError(new Error(lines.join('\n'))).kind).toBe('auth_invalid');
         const logs = authHeuristicLogs(warn);
         expect(logs).toHaveLength(1);
-        expect(logs[0]?.[2]).toMatchObject({ match: '401' });
+        expect(logs[0]?.[2]).toEqual({ match: '401' });
       } finally {
         warn.mockRestore();
       }
