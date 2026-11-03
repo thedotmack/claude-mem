@@ -5,6 +5,7 @@ import { CheckIcon } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { CmemMark } from '@/components/brand'
 import { interpolate, useI18n } from '../../../i18n'
+import { uiMessage, renderUiMessage, type UiMessage } from '../../../ui-message'
 import { EMPTY_SETUP_DATA, localSetupSource, SETUP_TOOLS, type SetupData, type SetupSource } from './setup-data'
 import { choiceLocked, guardStep, initialFlowState, nextAfterSavings, progressItemFor, type MemoryBranch, type SetupFlowState, type SetupStep } from './setup-flow'
 import { CheckoutScreen } from './screens/checkout-screen'
@@ -60,7 +61,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
   useEffect(() => source?.subscribe(setData), [source])
 
   const [improveProduct, setImproveProduct] = useState<boolean | null>(null)
-  const [preferenceError, setPreferenceError] = useState<string | null>(null)
+  const [preferenceError, setPreferenceError] = useState<UiMessage | null>(null)
   const preferenceRevision = useRef(0)
   const changeImproveProduct = async (checked: boolean) => {
     if (!source) return
@@ -71,11 +72,11 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
     try { await source.setImproveProduct(checked) } catch (error) {
       if (revision !== preferenceRevision.current) return
       setImproveProduct(null)
-      setPreferenceError(interpolate(t('Could not save this choice: {error}'), { error: error instanceof Error ? error.message : String(error) }))
+      setPreferenceError(uiMessage('Could not save this choice: {error}', { error: error instanceof Error ? error.message : String(error) }))
     }
   }
 
-  const [consentError, setConsentError] = useState<string | null>(null)
+  const [consentError, setConsentError] = useState<UiMessage | null>(null)
   const consentPending = useRef(false)
   const [consentSending, setConsentSending] = useState(false)
   const confirmUpload = async (upload: boolean, agents?: string[]) => {
@@ -87,7 +88,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
       // The sharing choice travels with the consent, so a queued preference request cannot lose a race with the upload.
       await source.confirmUpload(upload, agents, improveProduct ?? data.scan.improveProduct)
     } catch (error) {
-      setConsentError(interpolate(t('Could not confirm your choice: {error}. If you chose to upload, your prompts may already have been uploaded; reload this page to check.'), { error: error instanceof Error ? error.message : String(error) }))
+      setConsentError(uiMessage('Could not confirm your choice: {error}. If you chose to upload, your prompts may already have been uploaded; reload this page to check.', { error: error instanceof Error ? error.message : String(error) }))
     } finally { consentPending.current = false; setConsentSending(false) }
   }
 
@@ -178,7 +179,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
   const installerFailed = data.installer?.stage === 'failed'
 
   const screens: Record<SetupStep, () => ReactNode> = {
-    scan: () => <ScanScreen scan={{ ...data.scan, improveProduct: improveProduct ?? data.scan.improveProduct }} onImproveProductChange={(checked) => void changeImproveProduct(checked)} onConfirmUpload={(upload, agents) => void confirmUpload(upload, agents)} consentError={consentError} consentSending={consentSending} preferenceError={preferenceError} onRetry={() => void retryScan()} retrying={retrying} retryError={retryError} />,
+    scan: () => <ScanScreen scan={{ ...data.scan, improveProduct: improveProduct ?? data.scan.improveProduct }} onImproveProductChange={(checked) => void changeImproveProduct(checked)} onConfirmUpload={(upload, agents) => void confirmUpload(upload, agents)} consentError={consentError && renderUiMessage(consentError, t)} consentSending={consentSending} preferenceError={preferenceError && renderUiMessage(preferenceError, t)} onRetry={() => void retryScan()} retrying={retrying} retryError={retryError} />,
     reveal: () => <RevealScreen agents={data.scan.agents} reveal={data.reveal} extraction={data.extraction} uploadedAgents={data.scan.uploadedAgents} recentPrompts={data.recentPrompts} onContinue={() => update({ revealContinued: true }, 'choice')} />,
     choice: () => <ChoiceScreen branch={flow.branch} onChoose={(branch) => update({ branch, memoryBilling: branch === 'go' ? 'hosted' : 'existing', choiceContinued: true, savingsComplete: false, checkoutReviewed: false, setupComplete: false, finishTools: [] }, 'savings')} />,
     savings: () => (

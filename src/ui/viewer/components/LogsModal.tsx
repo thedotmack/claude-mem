@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useI18n, interpolate } from '../../i18n';
+import { uiMessage, renderUiMessage, type UiMessage } from '../../ui-message';
 
 type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
 type LogComponent = 'HOOK' | 'WORKER' | 'SDK' | 'PARSER' | 'DB' | 'SYSTEM' | 'HTTP' | 'SESSION' | 'CHROMA' | 'OTHER';
@@ -75,7 +76,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
   const { t } = useI18n();
   const [logs, setLogs] = useState<string>('');
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<UiMessage | string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [height, setHeight] = useState(350);
   const [isResizing, setIsResizing] = useState(false);
@@ -144,12 +145,13 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
     try {
       const response = await fetch('/api/logs');
       if (!response.ok) {
-        throw new Error(interpolate(t('Failed to fetch logs: {reason}'), { reason: response.statusText }));
+        if (request === requestSeqRef.current) setError(uiMessage('Failed to fetch logs: {reason}', { reason: response.statusText }));
+        return;
       }
       const data = await response.json();
       if (request === requestSeqRef.current) setLogs(data.logs || '');
     } catch (err) {
-      if (request === requestSeqRef.current) setError(err instanceof Error ? err.message : t('Unknown error'));
+      if (request === requestSeqRef.current) setError(err instanceof Error ? err.message : uiMessage('Unknown error'));
     } finally {
       if (request === requestSeqRef.current) setIsLoading(false);
     }
@@ -172,7 +174,8 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
     try {
       const response = await fetch('/api/logs/clear', { method: 'POST', signal: controller.signal });
       if (!response.ok) {
-        throw new Error(interpolate(t('Failed to clear logs: {reason}'), { reason: response.statusText }));
+        if (request === requestSeqRef.current) setError(uiMessage('Failed to clear logs: {reason}', { reason: response.statusText }));
+        return;
       }
       if (request === requestSeqRef.current) setLogs('');
     } catch (err) {
@@ -188,24 +191,24 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
           const data = await response.json();
           if (request === requestSeqRef.current) {
             setLogs(data.logs || '');
-            setError(t('Clear request timed out; its outcome is unknown. Displaying current logs.'));
+            setError(uiMessage('Clear request timed out; its outcome is unknown. Displaying current logs.'));
           }
         } catch {
           if (request === requestSeqRef.current) {
-            setError(t('Clear request timed out; its outcome is unknown and current logs could not be refreshed. Try Refresh.'));
+            setError(uiMessage('Clear request timed out; its outcome is unknown and current logs could not be refreshed. Try Refresh.'));
           }
         } finally {
           clearTimeout(reconciliationTimeout);
         }
       } else if (request === requestSeqRef.current) {
-        setError(err instanceof Error ? err.message : t('Unknown error'));
+        setError(err instanceof Error ? err.message : uiMessage('Unknown error'));
       }
     } finally {
       clearTimeout(timeout);
       clearingRef.current = false;
       if (request === requestSeqRef.current) setIsLoading(false);
     }
-  }, []);
+  }, [t]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -504,7 +507,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
 
       {error && (
         <div className="console-error">
-          ⚠ {error}
+          ⚠ {renderUiMessage(error, t)}
         </div>
       )}
 

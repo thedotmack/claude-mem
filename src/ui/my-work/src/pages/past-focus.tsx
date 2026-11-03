@@ -1,4 +1,4 @@
-import { t, useI18n } from '../../../i18n'
+import { t, useI18n, interpolate } from '../../../i18n'
 // Past focus: areas you marked done, and what you asked for most, month by month (MonthByMonth, moved from the
 // retired goals page). A month closing archives its asks; it doesn't mean they were done.
 import { useState } from 'react'
@@ -10,7 +10,7 @@ import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '
 import { ManualRefreshButton, RefreshButton, RefreshStatus } from '@/components/bits'
 import { Quotes } from '@/components/focus-header'
 import { cn } from '@/lib/utils'
-import { plural, timesLabel } from '@/lib/words'
+import { timesLabel } from '@/lib/words'
 import { Req } from '@/spec/req'
 import { SAMPLE_RUNS, type PastPeriod } from '@/data'
 import { useWorkModel } from '@/store'
@@ -39,7 +39,7 @@ function DoneAreas({ onOpenFocus }: { onOpenFocus: (focusAreaId: string) => void
                     <span className="block text-[15px] leading-snug font-semibold">{area.name}</span>
                     {area.goal && <span className="line-clamp-2 block text-xs text-muted-foreground">{area.goal}</span>}
                   </span>
-                  <span className="flex items-center justify-between text-xs text-muted-foreground"><span>{t('{count} shipped').replace('{count}', String(shippedIn(area.id)))}</span><ChevronRightIcon className="size-4" /></span>
+                  <span className="flex items-center justify-between text-xs text-muted-foreground"><span>{interpolate(t('{count} shipped'), { count: shippedIn(area.id) })}</span><ChevronRightIcon className="size-4" /></span>
                 </span>
               </GlareCard>
             </button>
@@ -61,7 +61,7 @@ function PastMonth({ period }: { period: PastPeriod }) {
     <Collapsible open={open} onOpenChange={setOpen} className="rounded-xl border bg-card shadow-panel">
       <CollapsibleTrigger className="group grid w-full grid-cols-[minmax(0,1fr)_1rem] items-start gap-3 p-4 text-left">
         <span className="min-w-0 space-y-1">
-          <span className="block text-xs text-muted-foreground">{t('Archived · {count} prompts · {areas}').replace('{count}', String(period.promptCount)).replace('{areas}', plural(period.areas.length, 'area'))}</span>
+          <span className="block text-xs text-muted-foreground">{interpolate(t('Archived · {count} prompts · {areas}'), { count: period.promptCount, areas: interpolate(t(period.areas.length === 1 ? '{count} area' : '{count} areas'), { count: period.areas.length }) })}</span>
           {top && <span className="block text-sm font-medium">{top.title}</span>}
           <span className={cn('block text-sm text-foreground/85', !open && 'line-clamp-2')}>{period.headline}</span>
         </span>
@@ -73,7 +73,7 @@ function PastMonth({ period }: { period: PastPeriod }) {
             <li key={entry.title} className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
               <span className="flex size-6 items-center justify-center rounded-md bg-muted text-xs text-muted-foreground tabular-nums">{index + 1}</span>
               <p className="text-sm font-medium">{entry.title}</p>
-              <p className="col-start-2 text-xs text-muted-foreground">{entry.label} · {timesLabel(entry.timesAsked)}</p>
+              <p className="col-start-2 text-xs text-muted-foreground">{entry.label} · {entry.timesAsked === 1 ? t(timesLabel(1)) : interpolate(t('asked {times}×'), { times: entry.timesAsked })}</p>
               {entry.quote && <div className="col-start-2"><Quotes quotes={[entry.quote]} /></div>}
             </li>
           ))}
@@ -98,7 +98,7 @@ function MonthByMonth({ onOpenFocus }: { onOpenFocus: (focusAreaId: string) => v
       // This month is still open: it names your first kept area today, not a saved month's top area.
       <button type="button" disabled={!topArea} onClick={() => topArea && onOpenFocus(topArea.id)} className="grid w-full grid-cols-[minmax(0,1fr)_1rem] items-center gap-3 rounded-xl border bg-card p-4 text-left shadow-panel enabled:hover:bg-surface-cool">
         <span className="flex min-w-0 flex-col gap-1">
-          <span className="text-xs font-medium text-muted-foreground">{t('Current · {count} prompts · open this month').replace('{count}', String(currentPeriod.promptCount))}</span>
+          <span className="text-xs font-medium text-muted-foreground">{interpolate(t('Current · {count} prompts · open this month'), { count: currentPeriod.promptCount })}</span>
           <span className="text-sm font-medium">{topArea ? <>{topArea.name} <span className="text-xs font-normal text-muted-foreground">{t("· first in your focus today")}</span></> : t("No area kept yet")}</span>
         </span>
         {topArea && <ChevronRightIcon className="size-4 text-muted-foreground" />}
@@ -137,7 +137,7 @@ export function PastFocus({ onOpenFocus }: { onOpenFocus: (focusAreaId: string) 
             <EmptyHeader>
               <EmptyTitle>{goalsReadError ? t("Can’t read your past months right now") : t("Nothing here yet")}</EmptyTitle>
               <EmptyDescription>
-                {goalsReadError ? <>{goalsReadError}. claude-mem rewrites them on its next automatic refresh.</> : <>{t("claude-mem reads your recent prompts and fills this in automatically.")}</>}
+                {goalsReadError ? interpolate(t('{error}. claude-mem rewrites them on its next automatic refresh.'), { error: goalsReadError }) : <>{t("claude-mem reads your recent prompts and fills this in automatically.")}</>}
               </EmptyDescription>
             </EmptyHeader>
             <EmptyContent><RefreshStatus refresh={refresh} run={null} ids={['R16.7']} /></EmptyContent>

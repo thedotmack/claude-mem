@@ -10,9 +10,11 @@ export { interpolate } from './locale';
 const messages: Record<string, string> = { ...viewerZh, ...myworkZh, ...setupZh, ...settingsZh };
 const listeners = new Set<() => void>();
 let sessionLocale: Locale = 'en';
+let hasUnpersistedChoice = false;
 
 export function getLocale(): Locale {
   if (typeof window === 'undefined') return 'en';
+  if (hasUnpersistedChoice) return sessionLocale;
   // Storage may be denied by browser privacy settings. Language selection still
   // works for this page; persisting it is optional, rendering the UI is not.
   try {
@@ -32,8 +34,10 @@ export function setLocale(locale: Locale): void {
   sessionLocale = locale;
   try {
     window.localStorage.setItem(LANGUAGE_STORAGE_KEY, locale);
+    hasUnpersistedChoice = false;
   } catch {
-    // Use the in-memory preference for browsers without local storage access.
+    // A readable but full/read-only store must not overwrite this page's choice.
+    hasUnpersistedChoice = true;
   }
   notify();
 }

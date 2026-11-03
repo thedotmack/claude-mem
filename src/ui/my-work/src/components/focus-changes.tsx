@@ -11,64 +11,25 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Req } from '@/spec/req'
-import { OTHER_FOCUS_AREA_ID, type FocusArea, type FocusChange, type Request } from '@/data'
-import { useStore, useWorkModel, type FocusChangeRecord } from '@/store'
-import { focusAreaLabel, isPlaceableFocusArea, resolveFocusAreaId } from '@/live/to-focus-model'
+import { type FocusArea, type FocusChange } from '@/data'
+import { useStore, useWorkModel } from '@/store'
+import { isPlaceableFocusArea } from '@/live/to-focus-model'
+import { describeFocusChange, renderFocusChange } from './focus-change-message'
 import { navWordIn } from '../../../../services/work-view/nav-words.mjs'
 
 /** The worker's body bounds (WorkViewRoutes focusBody). */
 const MAX_AREA_NAME_CHARS = 80
 const MAX_AREA_GOAL_CHARS = 300
 
-/** The changes that return an area to the status it had, or null when the worker allows none. */
-function backTo(area: FocusArea): FocusChange[] | null {
-  if (area.status === 'suggested') return area.source === 'owner' ? null : [{ action: 'restore-suggestion', focusAreaId: area.id }]
-  return [{ action: STATUS_ACTION[area.status], focusAreaId: area.id }]
-}
-const STATUS_ACTION = { kept: 'keep', done: 'done', dismissed: 'dismiss' } as const
-
-/** What one change says in the saved note, and how to undo it, read from the areas as they were before it. */
-function describeFocusChange(change: FocusChange, areas: FocusArea[], requests: Request[], t?: (s: string) => string): FocusChangeRecord {
-  const tr = t ?? ((s: string) => s)
-  const area = areas.find((entry) => entry.id === change.focusAreaId)
-  const name = area?.name || tr('the area')
-  switch (change.action) {
-    case 'keep': return { text: interpolate(tr('Kept “{name}”'), { name }), undo: area ? backTo(area) : null }
-    case 'dismiss': return { text: interpolate(tr('Dismissed “{name}”'), { name }), undo: area ? backTo(area) : null }
-    case 'done': return { text: interpolate(tr('Marked “{name}” done'), { name }), undo: area ? backTo(area) : null }
-    case 'rename': return { text: interpolate(tr('Renamed “{name}” to “{newName}”'), { name, newName: change.name?.trim() ?? '' }), undo: area ? [{ action: 'rename', focusAreaId: area.id, name: area.name }] : null }
-    case 'edit-goal': return { text: interpolate(tr('Changed the goal of “{name}”'), { name }), undo: area?.goal ? [{ action: 'edit-goal', focusAreaId: area.id, goal: area.goal }] : null }
-    case 'merge': {
-      const into = areas.find((entry) => entry.id === change.intoFocusAreaId)?.name ?? tr('another area')
-      // Only restore-suggestion clears a merge; a kept or done area is then decided again as it was.
-      const undo = area && area.source !== 'owner' ? [{ action: 'restore-suggestion' as const, focusAreaId: area.id }, ...(area.status === 'suggested' ? [] : backTo(area) ?? [])] : null
-      return { text: interpolate(tr('Merged “{name}” into “{into}”'), { name, into }), undo }
-    }
-    case 'reorder': {
-      const before = areas.filter((entry) => entry.status === 'kept' && !entry.mergedInto).map((entry) => entry.id)
-      return { text: tr('Changed the order of your focus areas'), undo: [{ action: 'reorder', focusAreaIds: before }] }
-    }
-    case 'move-request': {
-      const request = requests.find((entry) => entry.id === change.requestId)
-      const from = request ? resolveFocusAreaId(request.focusAreaId, areas) : null
-      const toLabel = focusAreaLabel(change.focusAreaId, areas)
-      const toArea = resolveFocusAreaId(change.focusAreaId, areas) === OTHER_FOCUS_AREA_ID ? tr('Other') : toLabel
-      return { text: interpolate(tr('Moved “{title}” to {area}'), { title: request?.title ?? tr('the request'), area: toArea }), undo: request && from ? [{ action: 'move-request', requestId: request.id, focusAreaId: from }] : null }
-    }
-    case 'restore-suggestion': return { text: interpolate(tr('Put “{name}” back in Suggested'), { name }), undo: null }
-  }
-}
-
 export type FocusChanges = ReturnType<typeof useFocusChanges>
 
 /** My Focus saves from the store, with each change described for the saved note while the screen still shows it. */
 export function useFocusChanges() {
-  const { t } = useI18n()
   const { focusAreas, requests } = useWorkModel()
   const { history, saving, error } = useStore.use.focus()
   const { applyFocusChange, undoLastFocusChange } = useStore.getState()
   /** `record: false` when the screen shows its own Undo for it (a decided suggestion card). Resolves true when saved. */
-  const apply = (change: FocusChange, { record = true } = {}) => applyFocusChange(change, record ? describeFocusChange(change, focusAreas, requests, t) : null)
+  const apply = (change: FocusChange, { record = true } = {}) => applyFocusChange(change, record ? describeFocusChange(change, focusAreas, requests) : null)
   return { last: history.at(-1) ?? null, apply, undoLast: undoLastFocusChange, error, saving }
 }
 
@@ -83,7 +44,7 @@ export function FocusChangeBar({ changes }: { changes: FocusChanges }) {
       {last && (
         <Req ids={['R16.2', 'R13.7']}>
           <div role="status" className="space-y-1 border-l-2 border-shipped-border py-1 pl-3 text-xs">
-            <p className="flex items-start gap-1.5 font-medium text-shipped-foreground"><CheckIcon className="mt-px size-3.5 shrink-0" />{last.text}.</p>
+            <p className="flex items-start gap-1.5 font-medium text-shipped-foreground"><CheckIcon className="mt-px size-3.5 shrink-0" />{renderFocusChange(last, t)}.</p>
             <p className="text-muted-foreground">{sourceKind === 'sample' ? t('Wireframe: kept on this page only, not actually written.') : sourceKind === 'cloud' ? t('Saved in your cloud viewer; it syncs to your computers. A refresh never overrides it.') : t('Saved on this computer; it syncs to your other machines. A refresh never overrides it.')}</p>
             <div className="-ml-2 flex flex-wrap items-center gap-x-2">
               <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" onClick={undoLast} disabled={!last.undo || saving}>{t('Undo')}</Button>

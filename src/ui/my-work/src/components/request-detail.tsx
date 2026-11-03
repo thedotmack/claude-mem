@@ -118,7 +118,7 @@ function CheckAction({ request }: { request: Request }) {
   return (
     <Req ids={['R6.2', 'R13.7']}>
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-surface p-4 text-sm">
-        <span role="status">{notice?.tone === 'saved' ? t(notice.message) : interpolate(t('Checked {checkedAt}.'), { checkedAt: request.checkedAt })}{t(' Shipping is still your call. ')}<span className="text-muted-foreground">{savedWhere}</span></span>
+        <span role="status">{interpolate(t('{checked} Shipping is still your call. '), { checked: notice?.tone === 'saved' ? t(notice.message) : interpolate(t('Checked {checkedAt}.'), { checkedAt: request.checkedAt }) })}<span className="text-muted-foreground">{savedWhere}</span></span>
         <SaveButton className={cn(buttonVariants({ variant: 'ghost' }), 'h-11 md:h-9')} onClick={() => save(false)} disabled={saving}><Undo2Icon />{t("Undo")}</SaveButton>
         {notice?.tone === 'problem' && noticeLine}
       </div>
@@ -182,7 +182,7 @@ export function RequestDetail({ request, onClose, onOpenFocus }: { request: Requ
               <FocusAreaChip focusAreaId={request.focusAreaId} onOpen={onOpenFocus} />
               {/* Sample fixtures change in memory; live requests save as my-focus rows. */}
               <MoveTo request={request} />
-              <span>{t("Asked by")}{request.askedBy} · started {displayTime(request.startedAt)} · {request.runningFor} · {t(request.stage)}</span>
+              <span>{interpolate(t('Asked by {name} · started {time} · {duration} · {stage}'), { name: request.askedBy, time: displayTime(request.startedAt), duration: request.runningFor, stage: t(request.stage) })}</span>
             </div>
           </div>
 

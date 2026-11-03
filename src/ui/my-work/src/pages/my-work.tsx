@@ -1,5 +1,5 @@
 import { displayTime } from '@/lib/display-time'
-import { t, useI18n } from '../../../i18n'
+import { t, useI18n, interpolate } from '../../../i18n'
 import { useMemo, useRef, useState, type ReactNode } from 'react'
 import { useReducedMotion } from 'motion/react'
 import { ArrowRightIcon, ArrowUpDownIcon, ImageIcon, InboxIcon, PlugIcon, TriangleAlertIcon } from 'lucide-react'
@@ -75,7 +75,7 @@ function Summary({ requests, onOpen, onShowNeedsYou }: { requests: Request[]; on
         <p className="flex flex-wrap items-center gap-x-2 text-[0.95rem] leading-snug md:text-base">
           {first ? (
             <>
-              <span className="font-semibold">{waiting === 1 ? t("One thing needs you:") : t('{count} need you. First:').replace('{count}', String(waiting))}</span>
+              <span className="font-semibold">{waiting === 1 ? t("One thing needs you:") : interpolate(t('{count} need you. First:'), { count: waiting })}</span>
               <button type="button" onClick={() => onOpen(first)} className="inline-flex min-h-11 items-center gap-1 text-left font-semibold text-attention-foreground underline decoration-attention-border underline-offset-4 hover:decoration-current md:min-h-8">
                 {reduceMotion ? first.next.text : <PointerHighlight rectangleClassName="rounded-sm border-attention-border" pointerClassName="text-attention-foreground">{first.next.text}</PointerHighlight>}<ArrowRightIcon className="size-4 shrink-0" />
               </button>
@@ -83,8 +83,8 @@ function Summary({ requests, onOpen, onShowNeedsYou }: { requests: Request[]; on
           ) : <span className="font-semibold">{t("Nothing needs you right now.")}</span>}
         </p>
         <p className="flex flex-wrap items-center gap-x-1.5 text-sm text-muted-foreground">
-          <span>{t('{count} working').replace('{count}', String(working))}{toCheck.length ? t(' · {count} waiting for your check').replace('{count}', String(toCheck.length)) : ''}</span>
-          {waiting > 1 && <>·<button type="button" onClick={onShowNeedsYou} className="min-h-11 underline underline-offset-4 hover:text-foreground md:min-h-6">{t('Show all {count}').replace('{count}', String(waiting))}</button></>}
+          <span>{interpolate(t('{count} working'), { count: working })}{toCheck.length ? interpolate(t(' · {count} waiting for your check'), { count: toCheck.length }) : ''}</span>
+          {waiting > 1 && <>·<button type="button" onClick={onShowNeedsYou} className="min-h-11 underline underline-offset-4 hover:text-foreground md:min-h-6">{interpolate(t('Show all {count}'), { count: waiting })}</button></>}
         </p>
       </div>
     </Req>
@@ -106,7 +106,7 @@ function TodayPanel({ story, onOpenStory }: { story: BuildStory; onOpenStory: ()
       <div className="min-w-0 space-y-3">
         <Req ids={['R7.1', 'R7.2']}>
           <div className="space-y-1">
-            <p className="section-label">{story.writtenAt ? `Build story · ${displayTime(story.writtenAt)}` : t("Build story")}</p>
+            <p className="section-label">{story.writtenAt ? interpolate(t('Build story · {writtenAt}'), { writtenAt: displayTime(story.writtenAt) }) : t("Build story")}</p>
             <p className="text-sm">{story.recap}</p>
             <Button variant="link" className="h-11 p-0 text-sm text-accent-foreground md:h-auto" onClick={onOpenStory}>{t("Read the build story")}</Button>
           </div>
@@ -139,12 +139,12 @@ function StorySheet({ open, story, requests, onClose, onOpenRules }: { open: boo
       <SheetContent ref={scrollRef} className="overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-lg">
         <SheetHeader>
           <SheetTitle>{t("Build story")}</SheetTitle>
-          <SheetDescription>{t('From request-progress, reviewed from memory{writtenAt}.').replace('{writtenAt}', story.writtenAt ? `, ${t('written {date}').replace('{date}', displayTime(story.writtenAt))}` : '')}</SheetDescription>
+          <SheetDescription>{interpolate(t('From request-progress, reviewed from memory{writtenAt}.'), { writtenAt: story.writtenAt ? `, ${interpolate(t('written {date}'), { date: displayTime(story.writtenAt) })}` : '' })}</SheetDescription>
         </SheetHeader>
         <TracingBeam scrollContainer={scrollRef} className="pr-4 pb-6 pl-10">
         <div className="space-y-6">
           <Req ids={['R7.1']}>
-            <p className="text-sm">{t(shipped === 1 ? '{shipped} request shipped and {waiting} waiting on you.' : '{shipped} requests shipped and {waiting} waiting on you.').replace('{shipped}', String(shipped)).replace('{waiting}', String(waiting))}</p>
+            <p className="text-sm">{interpolate(t(shipped === 1 ? '{shipped} request shipped and {waiting} waiting on you.' : '{shipped} requests shipped and {waiting} waiting on you.'), { shipped: shipped, waiting: waiting })}</p>
           </Req>
           <Req ids={['R7.2']}>
             <div className="space-y-3">{story.paragraphs.map((paragraph, index) => <p key={index} className="text-sm text-muted-foreground">{paragraph}</p>)}</div>
@@ -156,7 +156,7 @@ function StorySheet({ open, story, requests, onClose, onOpenRules }: { open: boo
               <ul className="space-y-2">
                 {learned.map((rule) => (
                   <li key={rule.id} className="text-sm">
-                    {rule.when ? <>{t("When")}{rule.when}: {rule.then}</> : rule.then}
+                    {rule.when ? interpolate(t('When {when}: {then}'), { when: rule.when, then: rule.then }) : rule.then}
                     {rule.status === 'suggested' && <span className="ml-1.5 text-xs text-muted-foreground">{t("· suggested, not approved yet")}</span>}
                   </li>
                 ))}
@@ -307,7 +307,7 @@ function ByAgentView({ requests, onOpen }: { requests: Request[]; onOpen: (reque
             <HoverCell key={agent.id}>
             <Agent className="min-w-0">
               <AgentHeader name={agent.name} role={agent.role} icon={<AgentMark tool={agent.tool} className="size-5" />}
-                model={`${device.name} · ${device.syncedMinutesAgo === 0 ? t("this machine") : t('synced {minutes} min ago').replace('{minutes}', String(device.syncedMinutesAgo))}`} />
+                model={`${device.name} · ${device.syncedMinutesAgo === 0 ? t("this machine") : interpolate(t('synced {minutes} min ago'), { minutes: device.syncedMinutesAgo })}`} />
               <AgentContent className="space-y-0 px-2 pb-2">
                 <SubagentStatus agent={agent} />
                 {theirs.length === 0 && <p className="px-3 pb-3 text-sm text-muted-foreground">{t("Nothing on it in this view.")}</p>}
@@ -367,7 +367,7 @@ function RequestReadErrorCard({ readError }: { readError: RequestReadError }) {
     <Req ids={['R12.1']}>
       <Alert className="h-full border-attention-border bg-card">
         <TriangleAlertIcon />
-        <AlertTitle className="line-clamp-none">{t("Couldn't read this request: {reason}").replace('{reason}', readError.reason)}</AlertTitle>
+        <AlertTitle className="line-clamp-none">{interpolate(t("Couldn't read this request: {reason}"), { reason: readError.reason })}</AlertTitle>
         <AlertDescription>
           {readError.title && <p>{readError.title}</p>}
           {readError.evidenceHref && <a href={readError.evidenceHref} target="_blank" rel="noreferrer" className="underline underline-offset-4 hover:text-foreground">{t("Open the prompt it came from")}</a>}
@@ -499,7 +499,7 @@ export function MyWork({ focusAreaId, onOpen, onOpenFocus, onOpenRules }: { focu
         </div>
       )}
       {unlinkedWorkCount > 0 && (
-        <p className="text-xs text-muted-foreground">{unlinkedWorkCount} work record{unlinkedWorkCount === 1 ? " isn't" : "s aren't"} linked to a request yet.</p>
+        <p className="text-xs text-muted-foreground">{interpolate(t(unlinkedWorkCount === 1 ? "{count} work record isn't linked to a request yet." : "{count} work records aren't linked to a request yet."), { count: unlinkedWorkCount })}</p>
       )}
 
       {/* The recap and the build story are written by request-progress; with no story, both are hidden. */}

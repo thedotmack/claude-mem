@@ -173,7 +173,12 @@
   // Follow the same explicit preference as My Work and the classic viewer.
   const languageKey = ['claude', 'mem', 'ui', 'language'].join('-');
   function applyLanguage() {
-    const zh = localStorage.getItem(languageKey) === 'zh-CN';
+    let zh = false;
+    try {
+      zh = localStorage.getItem(languageKey) === 'zh-CN';
+    } catch {
+      // Privacy settings can deny storage; TV playback must still start.
+    }
     document.documentElement.lang = zh ? 'zh-CN' : 'en';
     document.title = zh ? 'claude-mem · 观察电视墙' : 'claude-mem · Observation TV';
     els.idle.textContent = zh ? '等待观察记录' : 'waiting for observations';

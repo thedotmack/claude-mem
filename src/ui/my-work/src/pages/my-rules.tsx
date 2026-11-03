@@ -1,5 +1,6 @@
 import { displayTime } from '@/lib/display-time'
 import { t, useI18n, interpolate } from '../../../i18n'
+import { uiMessage, renderUiMessage, type UiMessage } from '../../../ui-message'
 import { useMemo, useState, type ReactNode } from 'react'
 import { ArrowUpIcon, CheckIcon, ChevronDownIcon, FileTextIcon, HistoryIcon, PencilIcon, PlusIcon, SparklesIcon, XIcon } from 'lucide-react'
 import { Artifact, ArtifactDescription, ArtifactHeader, ArtifactTitle } from '@/components/ai-elements/artifact'
@@ -34,18 +35,27 @@ function useRuleScope(scopeId: string): RuleScope {
   if (!scope) throw new Error(`No rule scope ${scopeId}`)
   return scope
 }
-const scopeHeading = (scope: RuleScope) => scope.tier === 'project' ? `In ${scope.name}` : scope.name
-const displayScope = (scope: RuleScope) => scope.tier === 'everywhere' ? t('Everywhere') : scope.tier === 'project' ? t('In {name}').replace('{name}', scope.name) : scope.name
+const scopeHeading = (scope: RuleScope) => scope.tier === 'everywhere' ? 'Everywhere' : scope.tier === 'project' ? `In ${scope.name}` : scope.name
+const displayScope = (scope: RuleScope) => scope.tier === 'everywhere' ? t('Everywhere') : scope.tier === 'project' ? interpolate(t('In {name}'), { name: scope.name }) : scope.name
 
 /** Strength (§14): times seen × how recent. Shown in words, never as a raw score. */
 const strengthScore = (rule: OwnerRule) => rule.timesSeen / (1 + rule.latestDaysAgo / 7)
 const strengthLevel = (rule: OwnerRule) => { const score = strengthScore(rule); return score >= 4 ? 3 : score >= 1.5 ? 2 : 1 }
 const STRENGTH_WORD = ['', 'Light', 'Steady', 'Strong']
 const byStrength = (a: OwnerRule, b: OwnerRule) => strengthScore(b) - strengthScore(a)
-const setByText = (rule: OwnerRule) => rule.setBy === 'owner' ? t("Set by you") : rule.setBy === 'approved' ? `Learned, approved by you` : t("Learned, not approved yet")
-const sourceText = (rule: OwnerRule) => rule.source === 'you' ? t("From your own instructions.") : `Found by ${rule.source}.`
+const setByText = (rule: OwnerRule) => t(rule.setBy === 'owner' ? 'Set by you' : rule.setBy === 'approved' ? 'Learned, approved by you' : 'Learned, not approved yet')
+const sourceText = (rule: OwnerRule) => rule.source === 'you' ? t('From your own instructions.') : interpolate(t('Found by {source}.'), { source: rule.source })
 const lowerFirst = (text: string) => text.charAt(0).toLowerCase() + text.slice(1)
 const scrollToId = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' })
+
+function ruleReceipt(source: string, values: UiMessage['values']) {
+  const message = uiMessage(source, values)
+  return { text: renderUiMessage(message, source => source), message }
+}
+
+function renderRuleReceipt(record: Pick<RuleChangeRecord, 'text'> & { message?: UiMessage }) {
+  return record.message ? renderUiMessage(record.message, t) : record.text
+}
 
 // ---------- Small pieces ----------
 
@@ -95,7 +105,7 @@ function Strength({ rule }: { rule: OwnerRule }) {
         <span className="flex items-end gap-0.5" aria-hidden>
           {[1, 2, 3].map((step) => <span key={step} className={cn('w-1 rounded-full', step === 1 ? 'h-1.5' : step === 2 ? 'h-2' : 'h-2.5', step <= level ? 'bg-current' : 'bg-idle-border')} />)}
         </span>
-        <span>{t(rule.timesSeen === 1 ? '{strength} · said {timesSeen} time, latest {latestAt}' : '{strength} · said {timesSeen} times, latest {latestAt}').replace('{strength}', t(STRENGTH_WORD[level])).replace('{timesSeen}', String(rule.timesSeen)).replace('{latestAt}', displayTime(rule.latestAt))}</span>
+        <span>{interpolate(t(rule.timesSeen === 1 ? '{strength} · said {timesSeen} time, latest {latestAt}' : '{strength} · said {timesSeen} times, latest {latestAt}'), { strength: t(STRENGTH_WORD[level]), timesSeen: rule.timesSeen, latestAt: displayTime(rule.latestAt) })}</span>
       </span>
     </Req>
   )
@@ -111,7 +121,7 @@ function Quote({ quote, rule }: { quote: RuleQuote; rule: OwnerRule }) {
           <InlineCitationCard>
             <InlineCitationCardTrigger sources={[displayTime(quote.at)]} className="font-normal" />
             <InlineCitationCardBody className="space-y-1.5 p-3 text-xs">
-              <p className="font-medium capitalize">{quote.kind} · {quote.where === 'prompt' ? t("typed by you") : t("your instructions file")}</p>
+              <p className="font-medium capitalize">{t(quote.kind)} · {quote.where === 'prompt' ? t("typed by you") : t("your instructions file")}</p>
               {rule.records.map((record) => <p key={record.label} className="text-muted-foreground">{t(record.kind)}: {record.label} · {displayTime(record.at)}</p>)}
             </InlineCitationCardBody>
           </InlineCitationCard>
@@ -142,11 +152,11 @@ const OTHER_MACHINES = SAMPLE_DEVICES.filter((device) => device.id !== HERE.id).
 /** Says where a change is written and how it reaches the other machines. Never claims more than that. */
 const savedWhere = (mode: 'home' | 'web', sample: boolean) => !sample
   ? mode === 'web'
-    ? 'Saved in your cloud viewer as a work-state record. It syncs to your computers, and each rebuilds MY-RULES.md when it pulls it'
-    : 'Saved on this computer as a work-state record. MY-RULES.md is rebuilt here, and the record syncs with the rest of your work state'
+    ? t('Saved in your cloud viewer as a work-state record. It syncs to your computers, and each rebuilds MY-RULES.md when it pulls it')
+    : t('Saved on this computer as a work-state record. MY-RULES.md is rebuilt here, and the record syncs with the rest of your work state')
   : mode === 'web'
-    ? `Saved from the web as a “web” device record. ${SAMPLE_DEVICES.map((device) => device.name).join(', ')} pull it on their next sync and rebuild MY-RULES.md`
-    : `Saved on ${HERE.name}. MY-RULES.md is rebuilt here, and the change syncs to ${OTHER_MACHINES}`
+    ? interpolate(t('Saved from the web as a “web” device record. {machines} pull it on their next sync and rebuild MY-RULES.md'), { machines: SAMPLE_DEVICES.map((device) => device.name).join(', ') })
+    : interpolate(t('Saved on {name}. MY-RULES.md is rebuilt here, and the change syncs to {machines}'), { name: HERE.name, machines: OTHER_MACHINES })
 
 // ---------- Rule blocks ----------
 
@@ -183,11 +193,11 @@ function RuleBlock({ rule, replaces, justApproved, highlighted, actions }: { rul
           <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 pl-[3.25rem] text-xs text-muted-foreground max-sm:pl-0">
             <RuleStatusBadge rule={rule} justApproved={justApproved} />
             <Strength rule={rule} />
-            <span>{t(setByText(rule))}</span>
+            <span>{setByText(rule)}</span>
             {replaces.length > 0 && (
               <Req ids={['R14.4']}>
                 <button type="button" onClick={() => actions.onJump(replaces[0].id)} className="inline-flex min-h-11 items-center gap-1 hover:text-foreground sm:min-h-0">
-                  <HistoryIcon className="size-3.5" />{t("Replaced")}{replaces.length} earlier {replaces.length === 1 ? 'rule' : 'rules'}
+                  <HistoryIcon className="size-3.5" />{interpolate(t(replaces.length === 1 ? 'Replaced {count} earlier rule' : 'Replaced {count} earlier rules'), { count: replaces.length })}
                 </button>
               </Req>
             )}
@@ -207,14 +217,14 @@ function RuleBlock({ rule, replaces, justApproved, highlighted, actions }: { rul
                   <p className="text-xs font-medium text-muted-foreground">{t("Earlier versions it replaced")}</p>
                   {replaces.map((earlier) => (
                     <button key={earlier.id} type="button" onClick={() => actions.onJump(earlier.id)} className="block min-h-11 w-full text-left text-xs text-muted-foreground hover:text-foreground sm:min-h-0">
-                      <span className="line-through">{lowerFirst(earlier.then)}</span> · until {earlier.replacedBy!.at}
+                      <span className="line-through">{lowerFirst(earlier.then)}</span> · {interpolate(t('until {time}'), { time: displayTime(earlier.replacedBy!.at) })}
                     </button>
                   ))}
                 </div>
               </Req>
             )}
             <SourceRecords rule={rule} />
-            <p className="text-xs text-muted-foreground">{t(sourceText(rule))}</p>
+            <p className="text-xs text-muted-foreground">{sourceText(rule)}</p>
           </CollapsibleContent>
         </article>
       </Collapsible>
@@ -230,7 +240,7 @@ function ReplacedRow({ rule, replacement, onJump }: { rule: OwnerRule; replaceme
         <div className="opacity-70"><RuleSentence rule={rule} struck /></div>
         <p className="flex flex-wrap items-center gap-x-1.5 pl-[3.25rem] text-xs max-sm:pl-0">
           <RuleStatusBadge rule={rule} />
-          <span>on {rule.replacedBy!.at} by</span>
+          <span>{interpolate(t('on {at} by'), { at: displayTime(rule.replacedBy!.at) })}</span>
           {replacement && <button type="button" onClick={() => onJump(replacement.id)} className="min-h-11 text-left font-medium text-foreground underline underline-offset-2 sm:min-h-0">“{replacement.then}”</button>}
         </p>
       </div>
@@ -245,12 +255,12 @@ function SuggestedPointer({ waiting, rejected }: { waiting: OwnerRule[]; rejecte
       <div className="flex flex-wrap gap-x-4">
         {waiting.length > 0 && (
           <button type="button" onClick={() => scrollToId(`decide-${waiting[0].id}`)} className="inline-flex min-h-11 items-center gap-1.5 text-sm font-medium text-review-foreground hover:underline">
-            <ArrowUpIcon className="size-4" />{waiting.length} suggested · review above
+            <ArrowUpIcon className="size-4" />{interpolate(t('{count} suggested · review above'), { count: waiting.length })}
           </button>
         )}
         {rejected.length > 0 && (
           <button type="button" onClick={() => scrollToId(`decide-${rejected[0].id}`)} className="inline-flex min-h-11 items-center gap-1.5 text-sm text-muted-foreground hover:underline">
-            <ArrowUpIcon className="size-4" />{rejected.length} rejected · undo above
+            <ArrowUpIcon className="size-4" />{interpolate(t('{count} rejected · undo above'), { count: rejected.length })}
           </button>
         )}
       </div>
@@ -286,7 +296,7 @@ function SuggestionCard({ rule, decision, saving, onDecide, onEdit, onUndo, onSh
         </ConfirmationRequest>
         <ConfirmationAccepted>
           <div className="flex flex-wrap items-center justify-between gap-x-3">
-            <ConfirmationTitle className="text-sm text-shipped-foreground">{t('Approved. It’s now under {scope} and in MY-RULES.md.').replace('{scope}', displayScope(scope))}</ConfirmationTitle>
+            <ConfirmationTitle className="text-sm text-shipped-foreground">{interpolate(t('Approved. It’s now under {scope} and in MY-RULES.md.'), { scope: displayScope(scope) })}</ConfirmationTitle>
             <div className="flex">
               <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" onClick={onShow}>{t("Show it")}</Button>
               <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" onClick={onUndo} disabled={saving}>{t("Undo")}</Button>
@@ -302,13 +312,13 @@ function SuggestionCard({ rule, decision, saving, onDecide, onEdit, onUndo, onSh
 
         {!decision && (
           <div className="space-y-2 border-t pt-3">
-            <p className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground"><Strength rule={rule} /><span>{t('learned by {source}').replace('{source}', rule.source)}</span></p>
+            <p className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground"><Strength rule={rule} /><span>{interpolate(t('learned by {source}'), { source: rule.source })}</span></p>
             {first && <Quote quote={first} rule={rule} />}
             {more.length > 0 && (
               <Collapsible>
                 <CollapsibleContent className="space-y-2 pb-1">{more.map((quote) => <Quote key={quote.quote} quote={quote} rule={rule} />)}</CollapsibleContent>
                 <CollapsibleTrigger className="group flex min-h-11 items-center gap-1 text-xs text-muted-foreground hover:text-foreground sm:min-h-8">
-                  <ChevronDownIcon className="size-3.5 transition-transform group-data-[state=open]:rotate-180" /><span className="group-data-[state=open]:hidden">{t(more.length === 1 ? '{count} more quote' : '{count} more quotes').replace('{count}', String(more.length))}</span><span className="hidden group-data-[state=open]:inline">{t("Fewer quotes")}</span>
+                  <ChevronDownIcon className="size-3.5 transition-transform group-data-[state=open]:rotate-180" /><span className="group-data-[state=open]:hidden">{interpolate(t(more.length === 1 ? '{count} more quote' : '{count} more quotes'), { count: more.length })}</span><span className="hidden group-data-[state=open]:inline">{t("Fewer quotes")}</span>
                 </CollapsibleTrigger>
               </Collapsible>
             )}
@@ -328,7 +338,7 @@ function DecisionQueue({ suggestions, decisions, saving, onDecide, onEdit, onUnd
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <h2 className="text-base font-semibold">{t("Needs your decision")}</h2>
           {waiting > 0 && <StateBadge state="your-move" />}
-          <span className="text-xs text-muted-foreground">{t('{decided} of {total} decided').replace('{decided}', String(suggestions.length - waiting)).replace('{total}', String(suggestions.length))}</span>
+          <span className="text-xs text-muted-foreground">{interpolate(t('{decided} of {total} decided'), { decided: suggestions.length - waiting, total: suggestions.length })}</span>
         </div>
         {suggestions.length === 0 ? (
           <Req ids={['R12.1']}>
@@ -373,7 +383,7 @@ function ScopeSection({ scope, rules, counts, approvedNow, highlighted, actions 
             {scope.tier !== 'everywhere' && <p className="text-xs text-muted-foreground">{t(tierLabel)}</p>}
             <h2 className="text-base font-semibold">{displayScope(scope)}</h2>
           </div>
-          <p className="text-xs text-muted-foreground">{counts.on} on{counts.off ? ` · ${counts.off} off` : ''}{counts.suggested ? ` · ${counts.suggested} suggested` : ''}</p>
+          <p className="text-xs text-muted-foreground">{interpolate(t('{count} on'), { count: counts.on })}{counts.off ? interpolate(t(' · {count} off'), { count: counts.off }) : ''}{counts.suggested ? interpolate(t(' · {count} suggested'), { count: counts.suggested }) : ''}</p>
         </header>
 
         {yours.length > 0 && (
@@ -456,7 +466,7 @@ function ScopeChips({ countsByScope, waiting }: { countsByScope: Map<string, Sco
     <Req ids={['R14.5', 'R11.1']} className="lg:hidden">
       {/* top-[76px]: just under the floating header pill (20px drop + 56px tall). */}
       <nav aria-label={t("Scopes")} className="sticky top-[76px] z-20 -mx-4 flex gap-2 overflow-x-auto border-b bg-background/95 px-4 py-2 backdrop-blur [scrollbar-width:none] lg:hidden">
-        {waiting > 0 && <button type="button" onClick={() => scrollToId('decide')} className="h-11 shrink-0 rounded-full border border-attention-border px-4 text-sm font-medium text-attention-foreground">Decide · {waiting}</button>}
+        {waiting > 0 && <button type="button" onClick={() => scrollToId('decide')} className="h-11 shrink-0 rounded-full border border-attention-border px-4 text-sm font-medium text-attention-foreground">{interpolate(t('Decide · {count}'), { count: waiting })}</button>}
         {ruleScopes.map((scope) => (
           <button key={scope.id} type="button" onClick={() => scrollToId(`scope-${scope.id}`)} className="h-11 shrink-0 rounded-full border bg-card px-4 text-sm">
             {scope.tier === 'everywhere' ? t('Everywhere') : scope.name} <span className="text-muted-foreground">{countsByScope.get(scope.id)!.on}</span>
@@ -471,11 +481,19 @@ const SET_BY_ORDER: Record<OwnerRule['setBy'], number> = { owner: 0, approved: 1
 
 /** The rules file as claude-mem writes it (my-rules.mjs renderRulesFile): approved rules that are on, by scope, set by you first, then strength. */
 function rulesFileLines(rules: OwnerRule[], scopes: RuleScope[]) {
-  const loaded = rules.filter((rule) => rule.status === 'on' && rule.setBy !== 'learned')
-  return [{ text: '# My Rules', ruleId: null as string | null }, ...scopes.flatMap((scope) => {
-    const inScope = loaded.filter((rule) => rule.scopeId === scope.id).sort((a, b) => SET_BY_ORDER[a.setBy] - SET_BY_ORDER[b.setBy] || byStrength(a, b))
-    return inScope.length ? [{ text: '', ruleId: null }, { text: `## ${displayScope(scope)}`, ruleId: null }, ...inScope.map((rule) => ({ text: rule.when ? `- When ${rule.when}: ${lowerFirst(rule.then)}` : `- ${rule.then}`, ruleId: rule.id }))] : []
-  })]
+  const loaded = rules.filter((rule) => rule.status === 'on' && (rule.setBy === 'owner' || rule.setBy === 'approved'))
+  // The file is agent input, not UI chrome: keep its headings and whitespace verbatim.
+  const ordered = [...scopes].sort((a, b) => RULE_TIERS.findIndex(({ tier }) => tier === a.tier) - RULE_TIERS.findIndex(({ tier }) => tier === b.tier) || a.name.localeCompare(b.name))
+  return [
+    { text: '# My Rules', ruleId: null as string | null },
+    { text: '', ruleId: null },
+    { text: 'How I want agents to work. Written by claude-mem from the rules I set or approved in My Rules (localhost:37777).', ruleId: null },
+    ...ordered.flatMap((scope) => {
+      // The mapped model has only whole-day recency; sub-day ordering needs the original timestamps.
+      const inScope = loaded.filter((rule) => rule.scopeId === scope.id).sort((a, b) => SET_BY_ORDER[a.setBy] - SET_BY_ORDER[b.setBy] || byStrength(a, b))
+      return inScope.length ? [{ text: '', ruleId: null }, { text: `## ${scopeHeading(scope)}`, ruleId: null }, { text: '', ruleId: null }, ...inScope.map((rule) => ({ text: rule.when ? `- When ${rule.when}: ${lowerFirst(rule.then)}` : `- ${rule.then}`, ruleId: rule.id }))] : []
+    }),
+  ]
 }
 
 /** The Markdown file agents load (decision 7): approved rules only, user-level files only. Changes this session are marked. */
@@ -492,16 +510,16 @@ function AgentFile({ rules, changed, open, onOpenChange }: { rules: OwnerRule[];
       <Artifact>
         <ArtifactHeader className="flex-col items-start gap-2 bg-card">
           <ArtifactTitle className="flex items-center gap-1.5 font-mono text-xs"><FileTextIcon className="size-3.5" />{path}</ArtifactTitle>
-          <ArtifactDescription className="text-xs">{t(loaded === 1 ? '{count} rule you set or approved. claude-mem writes this file and loads it with your user-level instructions, never a project’s files.' : '{count} rules you set or approved. claude-mem writes this file and loads it with your user-level instructions, never a project’s files.').replace('{count}', String(loaded))}</ArtifactDescription>
-          <Button variant="outline" size="sm" className="h-11 text-xs sm:h-8" onClick={() => onOpenChange(true)}>{t("Preview file")}{changed.size > 0 && ` · ${changed.size} changed`}</Button>
+          <ArtifactDescription className="text-xs">{interpolate(t(loaded === 1 ? '{count} rule you set or approved. claude-mem writes this file and loads it with your user-level instructions, never a project’s files.' : '{count} rules you set or approved. claude-mem writes this file and loads it with your user-level instructions, never a project’s files.'), { count: loaded })}</ArtifactDescription>
+          <Button variant="outline" size="sm" className="h-11 text-xs sm:h-8" onClick={() => onOpenChange(true)}>{t("Preview file")}{changed.size > 0 && interpolate(t(' · {count} changed'), { count: changed.size })}</Button>
           {rulesFile && !rulesFile.loadedInClaudeCode && sourceKind !== 'cloud' && (
             <div className="space-y-1.5 border-t pt-2">
               <Button size="sm" className="h-11 text-xs sm:h-8" onClick={load}>{t("Load my rules into Claude Code")}</Button>
-              <p className="text-xs text-muted-foreground">{t('Only rules you approved are loaded. Adds one line to {path}.').replace('{path}', rulesFile.instructionsPath ?? '~/.claude/CLAUDE.md')}</p>
+              <p className="text-xs text-muted-foreground">{interpolate(t('Only rules you approved are loaded. Adds one line to {path}.'), { path: rulesFile.instructionsPath ?? '~/.claude/CLAUDE.md' })}</p>
               {loadError && <p role="alert" className="text-xs text-attention-foreground">{loadError}</p>}
             </div>
           )}
-          {rulesFile?.loadedInClaudeCode && sourceKind !== 'sample' && <p className="text-xs text-muted-foreground">{t('Loaded in Claude Code from {path}.').replace('{path}', rulesFile.instructionsPath ?? '~/.claude/CLAUDE.md')}</p>}
+          {rulesFile?.loadedInClaudeCode && sourceKind !== 'sample' && <p className="text-xs text-muted-foreground">{interpolate(t('Loaded in Claude Code from {path}.'), { path: rulesFile.instructionsPath ?? '~/.claude/CLAUDE.md' })}</p>}
         </ArtifactHeader>
       </Artifact>
       <Dialog open={open} onOpenChange={onOpenChange}>
@@ -509,12 +527,12 @@ function AgentFile({ rules, changed, open, onOpenChange }: { rules: OwnerRule[];
           <DialogHeader>
             <DialogTitle className="font-mono text-sm">{path}</DialogTitle>
             <DialogDescription>
-              {t('Rebuilt from the synced rule records, so every machine gets the same file{mode}. Claude Code imports it from {path}. Suggested rules are not in it until you approve them.').replace('{mode}', mode === 'web' ? t(' once it pulls your web changes') : '').replace('{path}', rulesFile?.instructionsPath ?? '~/.claude/CLAUDE.md')}
+              {interpolate(t('Rebuilt from the synced rule records, so every machine gets the same file{mode}. Claude Code imports it from {path}. Suggested rules are not in it until you approve them.'), { mode: mode === 'web' ? t(' once it pulls your web changes') : '', path: rulesFile?.instructionsPath ?? '~/.claude/CLAUDE.md' })}
             </DialogDescription>
           </DialogHeader>
           <pre className="max-h-[60svh] overflow-auto rounded-lg border border-terminal-border bg-terminal p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-terminal-foreground">
             {lines.map((line, index) => (
-              <span key={index} className={cn('block', line.ruleId && changed.has(line.ruleId) && 'bg-shipped/30')}>{line.text || ' '}{line.ruleId && changed.has(line.ruleId) && <span className="opacity-60">  ← changed just now</span>}</span>
+              <span key={index} title={line.ruleId && changed.has(line.ruleId) ? t('Changed just now') : undefined} className={cn(line.ruleId && changed.has(line.ruleId) && 'bg-shipped/30')}>{line.text}{'\n'}</span>
             ))}
           </pre>
           {sourceKind === 'sample' && <p className="text-xs text-muted-foreground">{t("Wireframe: this preview is built from the page’s sample state; nothing is written to disk.")}</p>}
@@ -544,13 +562,13 @@ function WhereEditsGo() {
   return (
     <Req ids={['R13.7', 'R13.8', 'R13.1']}>
       <div className="space-y-1.5 text-xs">
-        <p className="font-medium">{mode === 'web' ? t('Your edits save from the web') : t('Your edits save on {name}').replace('{name}', HERE.name)}</p>
+        <p className="font-medium">{mode === 'web' ? t('Your edits save from the web') : interpolate(t('Your edits save on {name}'), { name: HERE.name })}</p>
         <p className="text-muted-foreground">{mode === 'web' ? t("Written as a “web” device record. Every machine pulls it down on its next sync and rebuilds MY-RULES.md.") : t("MY-RULES.md is rebuilt here, then the change syncs to your other machines.")}</p>
         <ul className="space-y-0.5 text-muted-foreground">
           {SAMPLE_DEVICES.filter((device) => mode === 'web' || device.id !== HERE.id).map((device) => (
             <li key={device.id} className="flex items-center gap-1.5">
               <span className={cn('size-1.5 rounded-full', device.online ? 'bg-shipped-foreground' : 'bg-idle-foreground')} />
-              {device.name}<span className="ml-auto">{device.syncedMinutesAgo === 0 ? t("synced now") : `synced ${device.syncedMinutesAgo} min ago`}</span>
+              {device.name}<span className="ml-auto">{device.syncedMinutesAgo === 0 ? t("synced now") : interpolate(t('synced {minutes} min ago'), { minutes: device.syncedMinutesAgo })}</span>
             </li>
           ))}
         </ul>
@@ -629,7 +647,7 @@ function RuleEditor({ draft, error, saving, onChange, onClose, onSave }: { draft
                 </Select>
               </div>
               {newTier && <div className="grid gap-1.5"><Label htmlFor="rule-scope-name">{newTier === 'project' ? t("Repo") : t("Situation")}</Label><Input id="rule-scope-name" value={draft.newScopeName} placeholder={scopeNamePlaceholder} onChange={(event) => onChange({ ...draft, newScopeName: event.target.value })} /></div>}
-              <div className="grid gap-1.5"><Label htmlFor="rule-when">{t("When")}<span className="font-normal text-muted-foreground">(optional)</span></Label><Input id="rule-when" value={draft.when} placeholder={whenPlaceholder} onChange={(event) => onChange({ ...draft, when: event.target.value })} /></div>
+              <div className="grid gap-1.5"><Label htmlFor="rule-when">{t('When (optional)')}</Label><Input id="rule-when" value={draft.when} placeholder={whenPlaceholder} onChange={(event) => onChange({ ...draft, when: event.target.value })} /></div>
               <div className="grid gap-1.5"><Label htmlFor="rule-then">{t("Then")}</Label>
                 {draft.id === null ? (
                   // Adding: the rule's text vanishes into the list on Enter, and the placeholder cycles through your own rules.
@@ -642,7 +660,7 @@ function RuleEditor({ draft, error, saving, onChange, onClose, onSave }: { draft
               {error && <p role="alert" className="text-xs text-attention-foreground">{error}</p>}
             </fieldset>
             <DialogFooter className="items-center gap-3 sm:justify-between">
-              <p className="text-xs text-muted-foreground">{sourceKind === 'cloud' ? t("Saves in your cloud viewer as a work-state record; it syncs to your computers.") : sourceKind !== 'sample' ? t("Saves on this computer as a work-state record.") : mode === 'web' ? t("Saves from the web; every machine pulls it down.") : `Saves on ${HERE.name} and syncs to your other machines.`}</p>
+              <p className="text-xs text-muted-foreground">{sourceKind === 'cloud' ? t("Saves in your cloud viewer as a work-state record; it syncs to your computers.") : sourceKind !== 'sample' ? t("Saves on this computer as a work-state record.") : mode === 'web' ? t("Saves from the web; every machine pulls it down.") : interpolate(t('Saves on {name} and syncs to your other machines.'), { name: HERE.name })}</p>
               <Button className="h-11 sm:h-9" onClick={onSave} disabled={saving || !canSave}>{saving ? t("Saving…") : draft.approving ? t("Save and approve") : t("Save rule")}</Button>
             </DialogFooter>
           </DialogContent>
@@ -711,24 +729,24 @@ export function MyRules() {
     setTimeout(() => setHighlighted(null), 1800)
   }
   const ruleName = (rule: Pick<OwnerRule, 'then'>) => `“${lowerFirst(rule.then).replace(/\.$/, '')}”`
-  const headingFor = (scopeId: string, scopes: RuleScope[]) => { const scope = scopes.find((entry) => entry.id === scopeId); return scope ? scopeHeading(scope) : 'its scope' }
+  const headingFor = (scopeId: string, scopes: RuleScope[]) => { const scope = scopes.find((entry) => entry.id === scopeId); return scope ? scope.tier === 'everywhere' ? uiMessage('Everywhere') : scope.name : uiMessage('its scope') }
   const savedRule = (saved: RuleSaveResult, rule: OwnerRule) => saved.model.rules.find((entry) => entry.id === rule.id) ?? rule
 
   const decide = (rule: OwnerRule, decision: Decision) => save({ action: decision === 'approved' ? 'approve' : 'dismiss', ruleId: rule.id }, (saved) => {
     const named = savedRule(saved, rule)
     return {
       decision: { ruleId: rule.id, decision },
-      change: { text: decision === 'approved' ? `Approved ${ruleName(named)} under ${headingFor(named.scopeId, saved.model.ruleScopes)}` : `Rejected ${ruleName(named)}`, ruleId: rule.id, undo: { action: 'restore-suggestion', ruleId: rule.id } },
+      change: { ...ruleReceipt(decision === 'approved' ? 'Approved {name} under {scope}' : 'Rejected {name}', { name: ruleName(named), ...(decision === 'approved' ? { scope: headingFor(named.scopeId, saved.model.ruleScopes) } : {}) }), ruleId: rule.id, undo: { action: 'restore-suggestion', ruleId: rule.id } },
     }
   })
   const undoDecision = (rule: OwnerRule) => save({ action: 'restore-suggestion', ruleId: rule.id }, (saved) => ({
     decision: { ruleId: rule.id, decision: null },
-    change: { text: `Put ${ruleName(savedRule(saved, rule))} back in Needs your decision`, ruleId: rule.id, undo: null },
+    change: { ...ruleReceipt('Put {name} back in Needs your decision', { name: ruleName(savedRule(saved, rule)) }), ruleId: rule.id, undo: null },
   }))
   const actions: RuleActions = {
     saving,
     onToggle: (rule, on) => save({ action: on ? 'turn-on' : 'turn-off', ruleId: rule.id },
-      (saved) => ({ change: { text: `Turned ${on ? 'on' : 'off'} ${ruleName(savedRule(saved, rule))}`, ruleId: rule.id, undo: { action: on ? 'turn-off' : 'turn-on', ruleId: rule.id } } })),
+      (saved) => ({ change: { ...ruleReceipt(on ? 'Turned on {name}' : 'Turned off {name}', { name: ruleName(savedRule(saved, rule)) }), ruleId: rule.id, undo: { action: on ? 'turn-off' : 'turn-on', ruleId: rule.id } } })),
     onEdit: (rule) => { setDraftError(null); setDraft({ id: rule.id, scopeId: rule.scopeId, newScopeName: '', when: rule.when, then: rule.then, approving: false }) },
     onJump: jump,
   }
@@ -743,14 +761,14 @@ export function MyRules() {
     const describe = (saved: RuleSaveResult): RuleSaveOutcome => {
       if (draft.id) {
         const named = saved.model.rules.find((entry) => entry.id === draft.id) ?? rule
-        const done: Omit<RuleChangeRecord, 'expectedVersion'> = { text: `${draft.approving ? 'Edited and approved' : 'Edited'} ${ruleName(named)}`, ruleId: draft.id, undo: draft.approving ? { action: 'restore-suggestion', ruleId: draft.id } : { action: 'edit', ruleId: draft.id, rule: previousRule } }
+        const done: Omit<RuleChangeRecord, 'expectedVersion'> = { ...ruleReceipt(draft.approving ? 'Edited and approved {name}' : 'Edited {name}', { name: ruleName(named) }), ruleId: draft.id, undo: draft.approving ? { action: 'restore-suggestion', ruleId: draft.id } : { action: 'edit', ruleId: draft.id, rule: previousRule } }
         return draft.approving ? { change: done, decision: { ruleId: draft.id, decision: 'approved' } } : { change: done }
       }
       // The worker names the rule it saved; an older one leaves only a unique match to go on, never the first new row.
       const added = addedRuleFromSave(saved.model, rules, rule, saved.savedRuleId ?? undefined)
       return { change: added
-        ? { text: `Added ${ruleName(added)} under ${headingFor(added.scopeId, saved.model.ruleScopes)}`, ruleId: added.id, undo: { action: 'dismiss', ruleId: added.id } }
-        : { text: `Saved ${ruleName(rule)}`, ruleId: null, undo: null } }
+        ? { ...ruleReceipt('Added {name} under {scope}', { name: ruleName(added), scope: headingFor(added.scopeId, saved.model.ruleScopes) }), ruleId: added.id, undo: { action: 'dismiss', ruleId: added.id } }
+        : { ...ruleReceipt('Saved {name}', { name: ruleName(rule) }), ruleId: null, undo: null } }
     }
     try {
       if (await runRuleSave(change, describe)) setDraft(null)
@@ -776,10 +794,10 @@ export function MyRules() {
           <Req ids={['R12.3', 'R12.2', 'D7']}>
             <div className="max-w-2xl space-y-1">
               <p className="text-base leading-snug font-medium">
-                {waiting > 0 ? t(waiting === 1 ? '{waiting} learned rule is waiting for you. ' : '{waiting} learned rules are waiting for you. ').replace('{waiting}', String(waiting)) : t('Nothing is waiting for you. ')}
-                {t(onCount === 1 ? '{onCount} rule is on.' : '{onCount} rules are on.').replace('{onCount}', String(onCount))}
+                {waiting > 0 ? interpolate(t(waiting === 1 ? '{waiting} learned rule is waiting for you.' : '{waiting} learned rules are waiting for you.'), { waiting }) : t('Nothing is waiting for you.')}{' '}
+                {interpolate(t(onCount === 1 ? '{onCount} rule is on.' : '{onCount} rules are on.'), { onCount })}
               </p>
-              <p className="text-sm text-muted-foreground"><span className="hidden sm:inline">{t('How you like to work, as if-then rules. ')}</span>{t("Rules you set or approve go in MY-RULES.md, loaded with your user-level instructions. Learned ones wait here until you decide.")}</p>
+              <p className="text-sm text-muted-foreground"><span className="hidden sm:inline">{t('How you like to work, as if-then rules.')}{' '}</span>{t("Rules you set or approve go in MY-RULES.md, loaded with your user-level instructions. Learned ones wait here until you decide.")}</p>
             </div>
           </Req>
           <div className="flex flex-wrap items-center gap-2">
@@ -792,8 +810,8 @@ export function MyRules() {
         {lastChange && (
           <Req ids={['R13.7', 'D7']}>
             <div role="status" className="space-y-1 border-l-2 border-shipped-border py-1 pl-3 text-xs">
-              <p className="flex items-start gap-1.5 font-medium text-shipped-foreground"><CheckIcon className="mt-px size-3.5 shrink-0" />{lastChange.text}.</p>
-              <p className="text-muted-foreground">{savedWhere(mode, sample)}.{sample && <span className="italic"> Wireframe: not actually written.</span>}</p>
+              <p className="flex items-start gap-1.5 font-medium text-shipped-foreground"><CheckIcon className="mt-px size-3.5 shrink-0" />{renderRuleReceipt(lastChange)}.</p>
+              <p className="text-muted-foreground">{savedWhere(mode, sample)}.{sample && <span className="italic">{' '}{t('Wireframe: not actually written.')}</span>}</p>
               <div className="-ml-2 flex flex-wrap">
                 <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" onClick={() => setFileOpen(true)}>{t("View in MY-RULES.md")}</Button>
                 {rules.some((rule) => rule.id === lastChange.ruleId && (rule.status === 'on' || rule.status === 'off')) && <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" onClick={() => jump(lastChange.ruleId!)}>{t("Show the rule")}</Button>}

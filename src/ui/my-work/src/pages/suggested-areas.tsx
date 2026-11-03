@@ -1,4 +1,4 @@
-import { t, useI18n } from '../../../i18n'
+import { t, useI18n, interpolate } from '../../../i18n'
 // Suggested focus areas: the decision queue from My Rules (DecisionQueue / SuggestionCard), with Keep, Rename, Merge
 // and Dismiss. A decided card stays (with Undo, through restore-suggestion) until you leave the page; a rename leaves
 // the card undecided and shows in the change bar, with Undo back to the old name. On phones an undecided card
@@ -45,7 +45,7 @@ function SuggestionCard({ area, requests, decision, saving, onKeep, onDismiss, o
         <div className={cn('space-y-1', decision === 'dismissed' && 'line-through opacity-60')}>
           <p className="text-[15px] leading-snug font-semibold">{area.name}</p>
           {area.goal && <p className="text-sm text-foreground/85">{area.goal}</p>}
-          <p className="text-xs text-muted-foreground">{requests.length ? t('{count} placed in it').replace('{count}', String(requests.length)) : t("No requests placed in it yet")}{area.asks.length ? t(' · {count} not started').replace('{count}', String(area.asks.length)) : ''}</p>
+          <p className="text-xs text-muted-foreground">{requests.length ? interpolate(t('{count} placed in it'), { count: requests.length }) : t("No requests placed in it yet")}{area.asks.length ? interpolate(t(' · {count} not started'), { count: area.asks.length }) : ''}</p>
         </div>
 
         <ConfirmationRequest>
@@ -62,7 +62,7 @@ function SuggestionCard({ area, requests, decision, saving, onKeep, onDismiss, o
           <div className="relative flex flex-wrap items-center justify-between gap-x-3">
             {/* Keeping an area is a choice of focus, so it gets the launch screen's sparkles; a merge or dismissal doesn't. */}
             {decision === 'kept' && !reduceMotion && <SparklesCore className="kept-sparkles" background="transparent" particleColor="#D86441" minSize={0.4} maxSize={1.2} particleDensity={60} speed={2} />}
-            <ConfirmationTitle className="relative text-sm text-shipped-foreground">{decision === 'merged' ? t('Merged into {name}. Its requests show there now.').replace('{name}', mergedInto ?? t('another area')) : t("Kept. It’s in My focus now.")}</ConfirmationTitle>
+            <ConfirmationTitle className="relative text-sm text-shipped-foreground">{decision === 'merged' ? interpolate(t('Merged into {name}. Its requests show there now.'), { name: mergedInto ?? t('another area') }) : t("Kept. It’s in My focus now.")}</ConfirmationTitle>
             <div className="relative flex">
               <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" onClick={onShow}>{t("Show it")}</Button>
               <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" disabled={saving} onClick={onUndo}>{t("Undo")}</Button>
@@ -78,13 +78,13 @@ function SuggestionCard({ area, requests, decision, saving, onKeep, onDismiss, o
 
         {!decision && (
           <div className="space-y-2 border-t pt-3">
-            <p className="text-xs text-muted-foreground">{t('Why it’s suggested: ')}{area.quotes.length === 0 && area.evidence ? area.evidence : `${t(SOURCE_TEXT[area.source])}.`}</p>
+            <p className="text-xs text-muted-foreground">{interpolate(t('Why it’s suggested: {reason}'), { reason: area.quotes.length === 0 && area.evidence ? area.evidence : `${t(SOURCE_TEXT[area.source])}.` })}</p>
             {first && <Quotes quotes={[first]} />}
             {more.length > 0 && (
               <Collapsible>
                 <CollapsibleContent className="pb-1"><Quotes quotes={more} /></CollapsibleContent>
                 <CollapsibleTrigger className="group flex min-h-11 items-center gap-1 text-xs text-muted-foreground hover:text-foreground sm:min-h-8">
-                  <ChevronDownIcon className="size-3.5 transition-transform group-data-[state=open]:rotate-180" /><span className="group-data-[state=open]:hidden">{more.length} more {more.length === 1 ? 'quote' : 'quotes'}</span><span className="hidden group-data-[state=open]:inline">{t("Fewer quotes")}</span>
+                  <ChevronDownIcon className="size-3.5 transition-transform group-data-[state=open]:rotate-180" /><span className="group-data-[state=open]:hidden">{interpolate(t(more.length === 1 ? '{count} more quote' : '{count} more quotes'), { count: more.length })}</span><span className="hidden group-data-[state=open]:inline">{t("Fewer quotes")}</span>
                 </CollapsibleTrigger>
               </Collapsible>
             )}
@@ -119,7 +119,7 @@ export function SuggestedAreas({ onOpenFocus }: { onOpenFocus: (focusAreaId: str
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
             <h2 className="text-base font-semibold">{t("Suggested focus areas")}</h2>
             {waiting > 0 && <StateBadge state="your-move" />}
-            <span className="text-xs text-muted-foreground">{t('{decided} of {total} decided').replace('{decided}', String(suggestions.length - waiting)).replace('{total}', String(suggestions.length))}</span>
+            <span className="text-xs text-muted-foreground">{interpolate(t('{decided} of {total} decided'), { decided: suggestions.length - waiting, total: suggestions.length })}</span>
           </div>
           <p className="text-sm text-muted-foreground">{t("claude-mem suggests areas from your prompts and your requests. Keep the ones you’d ask for things inside of. A refresh never changes an area you decided.")}</p>
         </div>
