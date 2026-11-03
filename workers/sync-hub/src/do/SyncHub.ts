@@ -21,7 +21,6 @@ import {
 	projectionRequestBytes,
 } from "../projection-protocol";
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_PAGE = 500;
 const ADVANCE_MAX_OPS = 100;
 const ADVANCE_MAX_FRAME_BYTES = 262_144;
@@ -240,8 +239,8 @@ export class SyncHub extends DurableObject<Env> {
 				value,
 			);
 		}
-		const scheduled = await storage.getAlarm();
-		if (scheduled === null) await storage.setAlarm(Date.now() + DAY_MS);
+		// No daily alarm: the hub is retired to FORWARD_ORIGIN (Fly) and the
+		// no-op alarm only spent Durable Object operations.
 	}
 
 	/**
@@ -800,10 +799,9 @@ export class SyncHub extends DurableObject<Env> {
 	// ---------------------------------------------------------------------
 
 	async alarm(): Promise<void> {
-		// A cursor-0 device has no snapshot/reset bootstrap yet, so every
-		// canonical operation remains replayable. Keep the alarm surface for
-		// deployed-object compatibility, but deliberately delete zero rows.
-		await this.ctx.storage.setAlarm(Date.now() + DAY_MS);
+		// The hub now lives on Fly (FORWARD_ORIGIN). The daily no-op alarm only
+		// burned Durable Object operations, so clear it and do no storage work.
+		await this.ctx.storage.deleteAlarm();
 	}
 
 	private headSeq(): string { return this.meta("head_seq"); }
