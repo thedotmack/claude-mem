@@ -217,9 +217,12 @@ export async function resolveSessionStartProjects(
 
 export const contextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
+    // Devin runs this on PostCompaction too, and drops a reply whose
+    // hookEventName is not the event that fired.
+    const hookEventName = input.hookEventName === 'PostCompaction' ? 'PostCompaction' : 'SessionStart';
     const emptyResult: HookResult = {
       workStateTelemetry: 'measure',
-      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+      hookSpecificOutput: { hookEventName, additionalContext: '' },
       exitCode: HOOK_EXIT_CODES.SUCCESS,
     };
 
@@ -469,7 +472,7 @@ export const contextHandler: EventHandler = {
     return {
       workStateTelemetry: 'measure',
       hookSpecificOutput: {
-        hookEventName: 'SessionStart',
+        hookEventName,
         additionalContext
       },
       systemMessage
