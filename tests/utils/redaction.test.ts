@@ -104,6 +104,26 @@ describe('redactSensitive built-in patterns', () => {
     expect(Object.keys(result.counts)).toEqual(['pypi_token']);
   });
 
+  // Two providers claude-mem's own OpenAI-compatible presets onboard users for
+  // (src/shared/openai-compat-presets.ts): the NVIDIA NIM hint says the key
+  // starts with `nvapi-`, Runcrate's says `rc_live_`. Neither prefix was
+  // claimed by openai_key (`sk-`), so such a key pasted into a session was
+  // stored verbatim. Fixtures are split for push protection too.
+  const NVAPI_BODY = 'aBcDeFgHiJkLmNoPqRsTuVwXyZ' + '0123456789aBcDeFgHiJkLmNoP';
+  const RUNCRATE_BODY = 'aBcDeFgHiJkLmNoPqRsTuVwXyZ' + '0123456789aBcDeF';
+  it.each([
+    ['nvidia_nim_key', 'CLAUDE_MEM_OPENAI_COMPAT_API_KEY=' + 'nva' + 'pi-' + NVAPI_BODY + ' tail'],
+    ['nvidia_nim_key', 'curl -H "Authorization: Bearer ' + 'nva' + 'pi-' + NVAPI_BODY + '" tail'],
+    ['runcrate_key', 'OPENAI_COMPAT_API_KEY=' + 'rc_' + 'live_' + RUNCRATE_BODY + ' tail'],
+    ['runcrate_key', '{"apiKey":"' + 'rc_' + 'live_' + RUNCRATE_BODY + '"} tail'],
+  ])('redacts a %s', (name, input) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain(`<redacted type='${name}'/>`);
+    expect(result.redacted).toMatch(/ tail$/);
+    expect(result.redacted).not.toContain('aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789');
+    expect(Object.keys(result.counts)).toEqual([name]);
+  });
+
   it.each([
     'glpat-short',
     'gldt-short',
