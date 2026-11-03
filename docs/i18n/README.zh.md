@@ -50,7 +50,7 @@
   <a href="README.no.md">🇳🇴 Norsk</a>
 </p>
 
-<h4 align="center">为 <a href="https:// target="_blank">[CC]</a> 构建的持久化记忆压缩系统。</h4>
+<h4 align="center">为 <a href="https://claude.com/claude-code" target="_blank">Claude Code</a> 构建的持久化记忆压缩系统。</h4>
 
 <p align="center">
   <a href="../../LICENSE">
@@ -63,7 +63,7 @@
     <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg" alt="Node">
   </a>
   <a href="https://github.com/thedotmack/awesome-claude-code">
-    <img src="https://awesome.re/mentioned-badge.svg" alt="Mentioned in Awesome [CC]">
+    <img src="https://awesome.re/mentioned-badge.svg" alt="Mentioned in Awesome Claude Code">
   </a>
 </p>
 
@@ -97,11 +97,11 @@
           />
           <source
             media="(prefers-color-scheme: light)"
-            srcset="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&theme=dark&legend=top-left"
+            srcset="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&legend=top-left"
           />
           <img
             alt="Star History Chart"
-            src="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&theme=dark&legend=top-left"
+            src="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&legend=top-left"
             width="500"
           />
         </picture>
@@ -156,7 +156,7 @@ npx claude-mem install --ide opencode
 
 适用于 OpenCode 1.3.4 及更高版本,包括 OpenCode 2。安装后请重启 OpenCode。
 
-或为 **T3 Code**(Codex 与 [CC] 提供商)安装:
+或为 **T3 Code**(Codex 与 Claude Code 提供商)安装:
 
 ```bash
 npx claude-mem install --ide t3code
@@ -176,16 +176,16 @@ npx claude-mem install --ide antigravity
 npx claude-mem install --ide omp
 ```
 
-或安装原生 Pi 扩展或 [DSH] 插件:
+或安装原生 Pi 扩展或 DeepSeek Harness 插件:
 
 ```bash
 npx claude-mem install --ide pi
 npx claude-mem install --ide dsh --dsh-profile tui
 ```
 
-Pi 与 [DSH] 使用 worker 运行时。捕获、召回与故障排除请参阅[原生 harness 设置](../native-harness-integrations.md)。
+Pi 与 DeepSeek Harness 使用 worker 运行时。捕获、召回与故障排除请参阅[原生 harness 设置](../native-harness-integrations.md)。
 
-或在 [CC] 内部从插件市场安装:
+或在 Claude Code 内部从插件市场安装:
 
 ```bash
 /plugin marketplace add thedotmack/claude-mem
@@ -193,7 +193,7 @@ Pi 与 [DSH] 使用 worker 运行时。捕获、召回与故障排除请参阅[�
 /plugin install claude-mem
 ```
 
-重启 [CC]。来自先前会话的上下文将自动出现在新会话中。
+重启 Claude Code。来自先前会话的上下文将自动出现在新会话中。
 
 > **注意:** Claude-Mem 也已发布到 npm,但 `npm install -g claude-mem` 仅安装 **SDK/库本身** —— 它不会注册插件钩子,也不会设置 worker 服务。请始终通过 `npx claude-mem install` 或上述 `/plugin` 命令进行安装。
 
@@ -314,7 +314,7 @@ get_observations(ids=[123, 456])
 ## 系统要求
 
 - **Node.js**: 20.0.0 或更高版本
-- **[CC]**: 支持插件的最新版本
+- **Claude Code**: 支持插件的最新版本
 - **Bun**: JavaScript 运行时和进程管理器(如缺失会自动安装)
 - **uv**: 用于向量搜索的 Python 包管理器(如缺失会自动安装)
 - **SQLite 3**: 用于持久化存储(已内置)
@@ -330,7 +330,7 @@ npm : The term 'npm' is not recognized as the name of a cmdlet
 
 请确保 Node.js 和 npm 已安装并已添加到您的 PATH 中。请从 https://nodejs.org 下载最新的 Node.js 安装程序,并在安装后重启终端。
 
-[CC] 钩子不需要 Git Bash。每个钩子都直接运行 `claude-mem`,而 `npx claude-mem install` 会将该启动器放在 `%LOCALAPPDATA%\claude-mem\bin\claude-mem.exe` 并把该目录加入用户 Path。之后请重启终端或 IDE,让 [CC] 识别新的 Path。如果钩子报告 `Executable not found in $PATH: "claude-mem"`,请运行 `npx claude-mem doctor` 并参阅[故障排除](https://docs.claude-mem.ai/troubleshooting#claude-mem-command-not-found-in-hooks)。
+Claude Code 钩子不需要 Git Bash。每个钩子都直接运行 `claude-mem`,而 `npx claude-mem install` 会将该启动器放在 `%LOCALAPPDATA%\claude-mem\bin\claude-mem.exe` 并把该目录加入用户 Path。之后请重启终端或 IDE,让 Claude Code 识别新的 Path。如果钩子报告 `Executable not found in $PATH: "claude-mem"`,请运行 `npx claude-mem doctor` 并参阅[故障排除](https://docs.claude-mem.ai/troubleshooting#claude-mem-command-not-found-in-hooks)。
 
 ---
 
@@ -338,7 +338,7 @@ npm : The term 'npm' is not recognized as the name of a cmdlet
 
 设置在 `~/.claude-mem/settings.json` 中管理(首次运行时自动创建默认设置)。可配置 AI 模型、worker 端口、数据目录、日志级别和上下文注入设置。
 
-要在 [CC] 与 Codex 的 SessionStart 上下文中纳入来自所有 harness 的观察,可在该文件中设置 `"CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES": "true"`,或在查看器设置中启用 **Include all sources at session start**。默认值为 `"false"`,即启动上下文仅限当前 harness。所选来源仍受观察数量上限约束。
+要在 Claude Code 与 Codex 的 SessionStart 上下文中纳入来自所有 harness 的观察,可在该文件中设置 `"CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES": "true"`,或在查看器设置中启用 **Include all sources at session start**。默认值为 `"false"`,即启动上下文仅限当前 harness。所选来源仍受观察数量上限约束。
 
 详见 **[配置指南](https://docs.claude-mem.ai/configuration)** 了解所有可用设置和示例。
 
@@ -380,7 +380,7 @@ ls ~/.claude/plugins/marketplaces/thedotmack/plugin/modes/
 
 #### 更改模式后
 
-重启 [CC] 以应用新的模式配置。
+重启 Claude Code 以应用新的模式配置。
 ---
 
 ## 开发
@@ -447,7 +447,7 @@ Claude-Mem 根据 Apache License 2.0 授权。
 
 ---
 
-**使用 Claude Agent SDK 构建** | **兼容 [CC]** | **使用 TypeScript 制作**
+**使用 Claude Agent SDK 构建** | **兼容 Claude Code** | **使用 TypeScript 制作**
 
 ---
 
