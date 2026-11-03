@@ -348,6 +348,34 @@ class ProviderTest(unittest.TestCase):
         self.assertEqual(self.fake.requests[0]["body"]["cwd"], other)
 
 
+class TagScanTest(unittest.TestCase):
+    """The tag scanner visits each character once: the old `<name[^>]*>` tail
+    rescanned the rest of the text for every unfinished `<name` candidate."""
+
+    def test_a_long_attribute_list_still_hides_its_content(self):
+        # Bounding the attribute tail (`{0,512}`, as PR #5152 did) would stop
+        # this opener from matching and let the private text reach the worker.
+        attributes = " " + "k=v " * 500
+        text = "keep <private" + attributes + ">secret</private> done"
+        self.assertEqual(client_module._strip_text(text), "keep  done")
+
+    def test_a_tag_ends_at_the_first_greater_than(self):
+        self.assertEqual(client_module._strip_text("a<private b>c</private>d"), "ad")
+        self.assertEqual(client_module._strip_text("a<private b<c>d</private>e"), "ae")
+
+    def test_matching_stays_case_insensitive(self):
+        self.assertEqual(client_module._strip_text("a<PRIVATE>s</Private>b"), "ab")
+
+    def test_an_unclosed_section_still_runs_to_the_end(self):
+        self.assertEqual(client_module._strip_text("keep <private>secret"), "keep ")
+
+    def test_an_unfinished_opener_is_not_rescanned_per_candidate(self):
+        payload = "<private" * 45000  # ~351 KB with no '>' anywhere
+        started = time.monotonic()
+        self.assertEqual(client_module.strip_tags(payload), payload)
+        self.assertLess(time.monotonic() - started, 0.5)
+
+
 class FailSoftTest(unittest.TestCase):
     def test_a_stopped_worker_never_raises_and_never_stalls(self):
         config = client_module.Config("http://127.0.0.1:%d" % unused_port())
