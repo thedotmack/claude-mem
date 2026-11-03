@@ -35,11 +35,28 @@ const resultSchema = z.object({
   groups: z.object({ groups: z.array(group), ignored: z.array(z.object({ conversation: text, reason: text })) }),
   cost_usd: z.number().finite().nonnegative(), model: text, dropped_quotes: z.number().int().nonnegative(),
 });
+/** Cloud turned the run down for budget or rate reasons (HTTP 429/503). Setup continues locally; retrying cannot help until `retryAfter`. */
+export class HostedUnavailableError extends Error {
+  readonly code = 'hosted-unavailable';
+  /** `sent` is true when this call's request body reached Cloud; false when the cooldown stopped it before any upload. */
+  constructor(message: string, readonly retryAfter: number, readonly sent = true) { super(message); }
+}
+/** Retry-After is either delay-seconds or an HTTP date. Returns an epoch ms deadline, or null when absent or unreadable. */
+function retryDeadline(header: string | null | undefined, now: number): number | null {
+  const value = header?.trim();
+  if (!value) return null;
+  if (/^\d+$/.test(value)) return Number(value) > 0 ? now + Number(value) * 1000 : null;
+  const date = Date.parse(value);
+  return Number.isFinite(date) && date > now ? date : null;
+}
+const nextUtcMidnight = (now: number) => Math.floor(now / 86_400_000) * 86_400_000 + 86_400_000;
 export type HostedIntentResult = z.infer<typeof resultSchema>;
 /** Cloud's answer plus what saving it needs, kept until the save finishes. */
 interface PendingSave { result: HostedIntentResult; keys: Array<[string, string]>; offset: number; projects: Array<[string, string | undefined]> }
 const COMPLETE_FILE = 'hosted-intent.json';
 const PENDING_FILE = 'hosted-intent-pending.json';
+const COOLDOWN_FILE = 'hosted-intent-cooldown.json';
+interface HostedCooldown { scope: string; until: number; message: string }
 export interface HostedIntentState {
   state: 'idle' | 'running' | 'ok' | 'failed';
   reason: 'setup-scan'; step: 'goals' | null; agent: null;
@@ -130,6 +147,7 @@ function quoteIso(at: string, offset: number): string {
 
 export class HostedIntent {
   private current: HostedIntentState = { state: 'idle', reason: 'setup-scan', step: null, agent: null, startedAt: null, finishedAt: null, error: null };
+  private cooldown: HostedCooldown | null = null;
   constructor(private options: HostedIntentOptions) {}
   state(): HostedIntentState { return { ...this.current }; }
   private iso(): string { return new Date((this.options.now ?? Date.now)()).toISOString(); }
@@ -167,17 +185,22 @@ export class HostedIntent {
       // Existing signed-in installations without an install credential retain their account-only path.
       const install = token ? readIntentCredentials(this.options.intentConfigPath)
         : await getOrCreateIntentCredentials({ origin, fetch: this.options.fetch, configPath: this.options.intentConfigPath });
+      // A sign-in or a different Cloud origin has its own admission rules.
+      // Persist only a scope hash and retry metadata, never credentials or prompts.
+      const scope = createHash('sha256').update(JSON.stringify([origin, userId || install?.install_id])).digest('hex');
+      this.checkCooldown(scope);
+      const headers = { ...intentCredentialHeaders(install), ...(token ? { Authorization: `Bearer ${token}`, 'X-User-Id': userId } : {}) };
+      const preflight = await (this.options.fetch ?? fetch)(`${origin}/api/pro/intent`, { method: 'GET', headers, cache: 'no-store' });
+      const availability = await this.readResponse(preflight, false, scope);
+      if (!availability || typeof availability !== 'object' || (availability as { available?: unknown }).available !== true) {
+        throw new Error('Automatic organization could not check availability. No transcripts were uploaded.');
+      }
       // No client retry: a lost response may already have spent this install/account's subsidized run.
       const response = await (this.options.fetch ?? fetch)(`${origin}/api/pro/intent`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Encoding': 'gzip',
-          ...intentCredentialHeaders(install), ...(token ? { Authorization: `Bearer ${token}`, 'X-User-Id': userId } : {}) }, body,
+          ...headers }, body,
       });
-      const answer = await response.json().catch(() => null);
-      if (!response.ok) {
-        const failure = answer && typeof answer === 'object' ? answer as { message?: unknown; error?: unknown } : null;
-        const reason = typeof failure?.message === 'string' ? failure.message : typeof failure?.error === 'string' ? failure.error : response.statusText;
-        throw new Error(`Hosted setup failed (HTTP ${response.status}): ${reason || 'Cloud did not return a reason.'}`);
-      }
+      const answer = await this.readResponse(response, true, scope);
       const parsed = resultSchema.safeParse(answer);
       if (!parsed.success) throw new Error(`Hosted setup returned an invalid response: ${parsed.error.message}`);
       // Keep Cloud's answer before writing anything from it, so a save that is cut off can be replayed.
@@ -190,8 +213,46 @@ export class HostedIntent {
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       this.current = { ...this.current, state: 'failed', step: null, finishedAt: this.iso(), error: reason };
+      if (error instanceof HostedUnavailableError) throw error;
       throw new Error(reason);
     }
+  }
+
+  private checkCooldown(scope: string): void {
+    const path = join(this.options.ledgerDir, COOLDOWN_FILE);
+    if (!this.cooldown && existsSync(path)) {
+      const saved = JSON.parse(readFileSync(path, 'utf8')) as HostedCooldown;
+      if (typeof saved.scope !== 'string' || !Number.isFinite(saved.until) || typeof saved.message !== 'string') {
+        throw new Error('The saved automatic-organization retry state is invalid. No transcripts were uploaded.');
+      }
+      this.cooldown = saved;
+    }
+    const now = (this.options.now ?? Date.now)();
+    if (this.cooldown?.scope === scope && now < this.cooldown.until) {
+      throw new HostedUnavailableError(`${this.cooldown.message} No prompts were uploaded.`, this.cooldown.until, false);
+    }
+    if (this.cooldown && now >= this.cooldown.until) {
+      this.cooldown = null;
+      rmSync(path, { force: true });
+    }
+  }
+
+  private async readResponse(response: Response, sent: boolean, scope: string): Promise<unknown> {
+    const answer: unknown = await response.json().catch(() => null);
+    if (response.ok) return answer;
+    const failure = answer && typeof answer === 'object' ? answer as { message?: unknown; error?: unknown } : null;
+    const reason = typeof failure?.message === 'string' ? failure.message : typeof failure?.error === 'string' ? failure.error : response.statusText;
+    const message = `Hosted setup failed (HTTP ${response.status}): ${reason || 'Cloud did not return a reason.'}`;
+    if (response.status === 429 || response.status === 503) {
+      // Retry-After delay starts when the response arrives, after any slow upload.
+      const refusedAt = (this.options.now ?? Date.now)();
+      const until = retryDeadline(response.headers.get('retry-after'), refusedAt) ?? nextUtcMidnight(refusedAt);
+      this.cooldown = { scope, until, message };
+      mkdirSync(this.options.ledgerDir, { recursive: true });
+      writeJsonAtomic(join(this.options.ledgerDir, COOLDOWN_FILE), this.cooldown);
+      throw new HostedUnavailableError(message, until, sent);
+    }
+    throw new Error(message);
   }
 
   /** The earlier run's result once every write finished (hosted-intent.json is written last). Invalid files fail loudly. */
