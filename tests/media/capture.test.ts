@@ -339,6 +339,34 @@ describe('durable identity, replay and restart', () => {
 });
 
 describe('interruption, deletion and cleanup', () => {
+  it('does not restore raw tool data or queue an observation after deletion during media conversion', async () => {
+    let entered!: () => void;
+    let release!: () => void;
+    const converting = new Promise<void>(resolve => { entered = resolve; });
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const paused = new MediaStore(db, join(dir, 'data'), async (bytes, mimeType, recipe) => {
+      entered();
+      await blocked;
+      return convertMedia(bytes, mimeType, recipe);
+    });
+    wire(sessions, paused);
+
+    const pending = ingest(anthropic());
+    await converting;
+    const session = db.prepare(`
+      SELECT id, memory_session_id FROM sdk_sessions WHERE content_session_id = 'media-session'
+    `).get() as { id: number; memory_session_id: string };
+    db.transaction(() => {
+      sessions.markSessionDeleted('claude', 'media-session', session.memory_session_id);
+      db.prepare('DELETE FROM sdk_sessions WHERE id = ?').run(session.id);
+    }).immediate();
+    release();
+    await pending;
+
+    expect(count("SELECT COUNT(*) n FROM tool_uses WHERE content_session_id = 'media-session'")).toBe(0);
+    expect(queued).toHaveLength(0);
+  });
+
   it('an interrupted conversion is reconciled, its temporary files removed, then replay succeeds with the same ID', async () => {
     let release!: () => void;
     const hung = new MediaStore(db, join(dir, 'data'), async () => {

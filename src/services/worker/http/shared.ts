@@ -317,6 +317,11 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
     toolResponse: payload.toolResponse,
     cwd,
   }, mediaCaptureEnabled ? dbManager.getMediaStore() : undefined);
+  // Explicit DELETE may commit while media conversion yields. Do not restore
+  // its raw tool-use side index or put the stale observation into RAM.
+  if (store.isSessionDeleted(platformSource, payload.contentSessionId)) {
+    return { ok: true, status: 'skipped', reason: 'session_deleted' };
+  }
   const cleanedToolInput = media.toolInput !== undefined
     ? stripMemoryTags(JSON.stringify(media.toolInput))
     : '{}';
@@ -352,6 +357,11 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
         orSessionId: typeof payload.orSessionId === 'string' ? payload.orSessionId : null,
       });
     } catch (error) {
+      // A concurrent SQLite connection can delete the session after the
+      // post-capture check. The write trigger closes that final DB race.
+      if (error instanceof Error && error.message === 'session_deleted') {
+        return { ok: true, status: 'skipped', reason: 'session_deleted' };
+      }
       logger.warn('INGEST', 'tool_uses backup write failed (observation still queued)', {
         sessionId: sessionDbId,
         toolName: payload.toolName,

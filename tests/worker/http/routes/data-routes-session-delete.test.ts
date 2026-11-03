@@ -149,6 +149,13 @@ describe('DELETE /api/sessions/:platformSource/:contentSessionId', () => {
     expect(count(db, 'observations')).toBe(1);
     expect(count(db, 'tool_uses')).toBe(1);
     expect(count(db, 'committed_observation_tool_uses')).toBe(1);
+    expect(() => db.prepare("UPDATE tool_uses SET platform_source = 'codex' WHERE content_session_id = 'shared-id'").run())
+      .toThrow('session_deleted');
+    expect(store.upsertToolUse({
+      toolUseId: 'late-claude', contentSessionId: 'shared-id', platformSource: 'claude',
+      project: 'proj', toolName: 'Read', toolInput: '{}',
+    })).toBeNumber();
+    expect(count(db, 'tool_uses')).toBe(2);
   });
 
   it('prevents a delayed transcript replay from recreating a deleted session', () => {
@@ -163,6 +170,12 @@ describe('DELETE /api/sessions/:platformSource/:contentSessionId', () => {
     `).run()).toThrow('session_deleted');
     expect(count(db, 'sdk_sessions')).toBe(0);
     expect(count(db, 'deleted_memory_sessions')).toBe(1);
+    expect(() => db.prepare(`
+      INSERT INTO tool_uses
+        (tool_use_id, content_session_id, project, platform_source, tool_name, tool_input, created_at, created_at_epoch)
+      VALUES ('late-tool', 'content-replay', 'proj', 'claude', 'Read', '{"secret":"late"}', '2026-07-20T00:00:00.000Z', 1752969600000)
+    `).run()).toThrow('session_deleted');
+    expect(count(db, 'tool_uses')).toBe(0);
     const otherId = store.createSDKSession('other-session', 'proj', '', undefined, 'claude');
     expect(() => db.prepare(`UPDATE sdk_sessions SET memory_session_id = 'memory-replay' WHERE id = ?`).run(otherId))
       .toThrow('session_deleted');

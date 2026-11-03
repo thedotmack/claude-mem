@@ -2214,6 +2214,29 @@ export class SessionStore {
       )
       BEGIN SELECT RAISE(ABORT, 'session_deleted'); END
     `);
+    // Media conversion can yield after session resolution. Guard the raw side
+    // index at the write boundary as well as at ingest so another connection's
+    // completed DELETE cannot be undone between a preflight and this INSERT.
+    this.db.run(`
+      CREATE TRIGGER IF NOT EXISTS prevent_deleted_tool_use_insert
+      BEFORE INSERT ON tool_uses
+      WHEN EXISTS (
+        SELECT 1 FROM deleted_content_sessions
+        WHERE platform_source = NEW.platform_source
+          AND content_session_id = NEW.content_session_id
+      )
+      BEGIN SELECT RAISE(ABORT, 'session_deleted'); END
+    `);
+    this.db.run(`
+      CREATE TRIGGER IF NOT EXISTS prevent_deleted_tool_use_update
+      BEFORE UPDATE ON tool_uses
+      WHEN EXISTS (
+        SELECT 1 FROM deleted_content_sessions
+        WHERE platform_source = NEW.platform_source
+          AND content_session_id = NEW.content_session_id
+      )
+      BEGIN SELECT RAISE(ABORT, 'session_deleted'); END
+    `);
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(72, new Date().toISOString());
   }
 
