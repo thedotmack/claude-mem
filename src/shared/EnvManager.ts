@@ -431,7 +431,7 @@ export async function buildIsolatedEnvWithFreshOAuth(
   const configuredToken = loadClaudeMemEnv().CLAUDE_CODE_OAUTH_TOKEN;
   if (configuredToken) {
     const expiresAt = decodeJwtExpMs(configuredToken);
-    if (expiresAt === undefined || expiresAt > Date.now()) {
+    if (!isPastExpiry(expiresAt)) {
       isolatedEnv.CLAUDE_CODE_OAUTH_TOKEN = configuredToken;
       logger.info('OAUTH', 'Injected CLAUDE_CODE_OAUTH_TOKEN from ~/.claude-mem/.env at spawn-time', {
         source: 'claude-mem-env',
@@ -508,10 +508,20 @@ export function hasAnthropicAuthToken(): boolean {
   return !!env.ANTHROPIC_AUTH_TOKEN;
 }
 
-/** Whether ~/.claude-mem/.env holds a long-lived CLAUDE_CODE_OAUTH_TOKEN (never one inherited from the shell). */
+/** Whether a JWT `exp` (ms) has passed. An opaque `claude setup-token` token has none and never counts as expired. */
+function isPastExpiry(expiresAt: number | undefined): boolean {
+  return expiresAt !== undefined && expiresAt <= Date.now();
+}
+
+/**
+ * Whether ~/.claude-mem/.env holds a CLAUDE_CODE_OAUTH_TOKEN the next spawn
+ * would use (never one inherited from the shell). A JWT past its `exp` doesn't
+ * count: buildIsolatedEnvWithFreshOAuth skips it, so agent detection and the
+ * quota fallback go on to the stored login instead of starting a doomed run.
+ */
 export function hasConfiguredClaudeOAuthToken(): boolean {
-  const env = loadClaudeMemEnv();
-  return !!env.CLAUDE_CODE_OAUTH_TOKEN;
+  const token = loadClaudeMemEnv().CLAUDE_CODE_OAUTH_TOKEN;
+  return !!token && !isPastExpiry(decodeJwtExpMs(token));
 }
 
 export function getAuthMethodDescription(): string {

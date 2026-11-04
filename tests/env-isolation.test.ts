@@ -714,9 +714,16 @@ describe('plan-19: long-lived CLAUDE_CODE_OAUTH_TOKEN from ~/.claude-mem/.env', 
     }
   });
 
+  it('a JWT token past its exp claim does not count as configured, so readiness checks match the spawn', () => {
+    fs.writeFileSync(TEST_ENV_FILE, `CLAUDE_CODE_OAUTH_TOKEN=${jwtExpiringAt(Date.now() - 60_000)}\n`, { mode: 0o600 });
+    expect(hasConfiguredClaudeOAuthToken()).toBe(false);
+    expect(getAuthMethodDescription()).not.toContain('Long-lived CLAUDE_CODE_OAUTH_TOKEN');
+  });
+
   it('a JWT token still inside its exp claim is used', async () => {
     const live = jwtExpiringAt(Date.now() + 3_600_000);
     fs.writeFileSync(TEST_ENV_FILE, `CLAUDE_CODE_OAUTH_TOKEN=${live}\n`, { mode: 0o600 });
+    expect(hasConfiguredClaudeOAuthToken()).toBe(true);
     const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken').mockResolvedValue(storeToken);
     try {
       expect((await buildIsolatedEnvWithFreshOAuth()).CLAUDE_CODE_OAUTH_TOKEN).toBe(live);
