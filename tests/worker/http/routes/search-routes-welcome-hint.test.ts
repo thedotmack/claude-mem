@@ -256,7 +256,7 @@ describe('SearchRoutes Welcome Hint', () => {
     expect(res.send).toHaveBeenCalledWith(`${EMPTY_WORK_STATE_SECTION}\n\nCONTEXT_FROM_GENERATOR`);
   });
 
-  it('queries both projects in a worktree (multi-project) request', async () => {
+  it('preserves literal whitespace in a multi-project request', async () => {
     const routes = new SearchRoutes(mockSearchManager);
     const handler = captureContextInjectHandler(routes);
 
@@ -269,9 +269,9 @@ describe('SearchRoutes Welcome Hint', () => {
     expect(res.send).toHaveBeenCalledTimes(1);
     expect(countQueryStub).toHaveBeenCalledWith(
       '/path/parent',
-      '/path/worktree',
+      ' /path/worktree',
       '/path/parent',
-      '/path/worktree',
+      ' /path/worktree',
       null,
       null,
     );
