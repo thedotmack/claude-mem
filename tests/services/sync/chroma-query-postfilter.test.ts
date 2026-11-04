@@ -98,7 +98,7 @@ mock.module('../../../src/utils/logger.js', () => ({
   logger: { info: () => {}, debug: () => {}, warn: () => {}, error: () => {}, failure: () => {} },
 }));
 
-import { ChromaSync, type ChromaQueryProgress } from '../../../src/services/sync/ChromaSync.js';
+import { ChromaSync, stripDocTypeClause, type ChromaQueryProgress } from '../../../src/services/sync/ChromaSync.js';
 
 afterAll(() => {
   mock.module('../../../src/services/sync/ChromaMcpManager.js', () => realChromaMcpManagerSnapshot);
@@ -458,29 +458,29 @@ describe('ChromaSync.queryChroma narrowed filtered fallback (#5091)', () => {
     expect(some.exhausted).toBe(false);
   });
 
-  it('sends the plain where when the window is too thin to prove the top matches', async () => {
+  it('sends the plain where without broad doc_type when the window is too thin to prove the top matches (#5354)', async () => {
     // Limit 2 asks for 40 candidates, and the 40 shared-id documents rank first.
     const out = await sync.queryChroma('anything', 2, tinyObservations, undefined, () => TINY_IDS);
 
-    expect(queryCalls().map(q => q.args.where)).toEqual([undefined, narrowed, tinyObservations]);
+    expect(queryCalls().map(q => q.args.where)).toEqual([undefined, narrowed, dualProject('tiny')]);
     expect(out.ids).toEqual(exactIds(tinyObservations, 2));
   });
 
-  it('sends the plain where when the scope has too many rows to list', async () => {
+  it('sends the plain where without broad doc_type when the scope has too many rows to list (#5354)', async () => {
     const rowIds = mock((_maxIds: number) => null);
     await sync.queryChroma('anything', 100, tinyObservations, undefined, rowIds);
 
     expect(rowIds).toHaveBeenCalledTimes(1);
     expect(rowIds.mock.calls[0][0]).toBeGreaterThan(0);
-    expect(queryCalls().map(q => q.args.where)).toEqual([undefined, tinyObservations]);
+    expect(queryCalls().map(q => q.args.where)).toEqual([undefined, dualProject('tiny')]);
   });
 
-  it('sends the plain where when listing the rows fails', async () => {
+  it('sends the plain where without broad doc_type when listing the rows fails (#5354)', async () => {
     await sync.queryChroma('anything', 100, tinyObservations, undefined, () => {
       throw new Error('database is closed');
     });
 
-    expect(queryCalls().map(q => q.args.where)).toEqual([undefined, tinyObservations]);
+    expect(queryCalls().map(q => q.args.where)).toEqual([undefined, dualProject('tiny')]);
   });
 
   it('answers an empty scope without a second chroma query', async () => {
@@ -506,5 +506,135 @@ describe('ChromaSync.queryChroma narrowed filtered fallback (#5091)', () => {
 
     expect(rowIds).not.toHaveBeenCalled();
     expect(queryCalls().map(q => q.args.where)).toEqual([where]);
+  });
+});
+
+describe('stripDocTypeClause helper (#5354)', () => {
+  it('returns undefined or non-objects unchanged', () => {
+    expect(stripDocTypeClause(undefined)).toBeUndefined();
+    expect(stripDocTypeClause(null as any)).toBeNull();
+    expect(stripDocTypeClause([] as any)).toEqual([]);
+  });
+
+  it('strips a solitary doc_type clause to undefined', () => {
+    expect(stripDocTypeClause({ doc_type: 'observation' })).toBeUndefined();
+    expect(stripDocTypeClause({ doc_type: { $in: ['observation', 'session_summary'] } })).toBeUndefined();
+  });
+
+  it('unwraps a two-clause $and to the single remaining clause', () => {
+    expect(stripDocTypeClause({
+      $and: [{ doc_type: 'observation' }, { project: 'alpha' }]
+    })).toEqual({ project: 'alpha' });
+
+    expect(stripDocTypeClause({
+      $and: [{ doc_type: 'observation' }, { $or: [{ project: 'alpha' }, { merged_into_project: 'alpha' }] }]
+    })).toEqual({ $or: [{ project: 'alpha' }, { merged_into_project: 'alpha' }] });
+  });
+
+  it('preserves multi-clause $and without the doc_type clause', () => {
+    expect(stripDocTypeClause({
+      $and: [
+        { doc_type: 'observation' },
+        { project: 'alpha' },
+        { platform_source: 'claude' }
+      ]
+    })).toEqual({
+      $and: [{ project: 'alpha' }, { platform_source: 'claude' }]
+    });
+  });
+
+  it('returns undefined if $and only contained doc_type', () => {
+    expect(stripDocTypeClause({
+      $and: [{ doc_type: 'observation' }]
+    })).toBeUndefined();
+  });
+
+  it('returns filters without doc_type unchanged by reference', () => {
+    const proj = { project: 'alpha' };
+    expect(stripDocTypeClause(proj)).toBe(proj);
+
+    const andFilter = { $and: [{ project: 'alpha' }, { platform_source: 'claude' }] };
+    expect(stripDocTypeClause(andFilter)).toBe(andFilter);
+
+    const orFilter = { $or: [{ project: 'alpha' }, { project: 'beta' }] };
+    expect(stripDocTypeClause(orFilter)).toBe(orFilter);
+  });
+
+  it('returns multi-key or invalid filter shapes unchanged', () => {
+    const multiKey = { doc_type: 'observation', project: 'alpha' };
+    expect(stripDocTypeClause(multiKey)).toBe(multiKey);
+  });
+});
+
+describe('ChromaSync.queryChroma doc_type stripping in fallback (#5354)', () => {
+  beforeEach(() => {
+    calls = [];
+    sync = new ChromaSync('claude-mem');
+  });
+
+  it('strips doc_type from $and filter on fallback so Chroma only evaluates selective clauses', async () => {
+    const where = {
+      $and: [{ doc_type: 'observation' }, { project: 'tiny' }]
+    };
+
+    // 'tiny' is selective (1-in-50 in CORPUS), over-fetch of 100 cannot fill 100
+    const out = await sync.queryChroma('search term', 100, where);
+
+    const qs = queryCalls();
+    expect(qs.length).toBe(2);
+    expect(qs[0].args.where).toBeUndefined(); // fast path overfetch
+    expect(qs[1].args.where).toEqual({ project: 'tiny' }); // fallback with stripped doc_type!
+    expect(out.ids.length).toBeGreaterThan(0);
+    expect(out.metadatas.every((m: any) => m.doc_type === 'observation' && m.project === 'tiny')).toBe(true);
+  });
+
+  it('filters sibling doc types client-side when Chroma returns mixed types', async () => {
+    // In CORPUS, i % 10 === 9 are 'session_summary' and others are 'observation'.
+    // If we request only observations for 'big', fallback prunes the session_summaries.
+    const where = {
+      $and: [{ doc_type: 'session_summary' }, { project: 'tiny' }]
+    };
+
+    const out = await sync.queryChroma('query', 50, where);
+
+    const qs = queryCalls();
+    expect(qs[1].args.where).toEqual({ project: 'tiny' });
+    expect(out.metadatas.every((m: any) => m.doc_type === 'session_summary' && m.project === 'tiny')).toBe(true);
+  });
+
+  it('preserves multi-clause $and when stripping doc_type in fallback', async () => {
+    const where = {
+      $and: [
+        { doc_type: 'observation' },
+        { project: 'tiny' },
+        { platform_source: 'claude' }
+      ]
+    };
+
+    const out = await sync.queryChroma('query', 50, where);
+
+    const qs = queryCalls();
+    expect(qs.length).toBe(2);
+    expect(qs[0].args.where).toBeUndefined();
+    expect(qs[1].args.where).toEqual({
+      $and: [{ project: 'tiny' }, { platform_source: 'claude' }]
+    });
+    expect(out.metadatas.every((m: any) =>
+      m.doc_type === 'observation' && m.project === 'tiny' && m.platform_source === 'claude'
+    )).toBe(true);
+  });
+
+  it('does not strip doc_type when filter contains unsupported operators', async () => {
+    // buildClientSidePredicate cannot evaluate $ne, so predicate is null.
+    // doc_type must NOT be stripped or client-side filtering would be impossible.
+    const where = {
+      $and: [{ doc_type: 'observation' }, { project: { $ne: 'big' } }]
+    };
+
+    await sync.queryChroma('query', 10, where);
+
+    const qs = queryCalls();
+    expect(qs.length).toBe(1);
+    expect(qs[0].args.where).toEqual(where);
   });
 });
