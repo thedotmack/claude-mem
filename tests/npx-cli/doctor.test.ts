@@ -3,7 +3,14 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync }
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { hookLauncherCheck, probeChromaDiagnostics, treeSitterCliCheck } from '../../src/npx-cli/commands/doctor.js';
+import {
+  hookLauncherCheck,
+  observerProviderCheck,
+  probeChromaDiagnostics,
+  probeWorkerDependencies,
+  treeSitterCliCheck,
+  workerDependencyChecks,
+} from '../../src/npx-cli/commands/doctor.js';
 import { LAUNCHER_PROTOCOL } from '../../src/launcher/launcher-protocol.js';
 
 // `npx claude-mem doctor` reads the worker's /api/admin/doctor `health.chroma`
@@ -20,6 +27,13 @@ function workerReportingChroma(chroma: unknown, status = 200): void {
   fetchSpy?.mockImplementation(async (input: RequestInfo | URL) => {
     requestedUrls.push(String(input));
     return new Response(JSON.stringify({ health: { chroma } }), { status });
+  });
+}
+
+function workerReportingDependencies(dependencies: unknown, status = 200): void {
+  fetchSpy?.mockImplementation(async (input: RequestInfo | URL) => {
+    requestedUrls.push(String(input));
+    return new Response(JSON.stringify({ health: { dependencies } }), { status });
   });
 }
 
@@ -257,9 +271,212 @@ describe.skipIf(process.platform === 'win32')('npx doctor hook launcher', () => 
     expect(result.detail).toContain(join(globalBin, 'claude-mem'));
   });
 
-  it('reports a missing launcher when the only claude-mem on PATH is itself', () => {
+    it('reports a missing launcher when the only claude-mem on PATH is itself', () => {
     const result = hookLauncherCheck(host(`${npxBin}:/usr/bin:/bin`), runningCli);
     expect(result.status).toBe('fail');
     expect(result.detail).toContain('not on PATH');
+  });
+});
+
+describe('npx doctor observerProviderCheck (#5359)', () => {
+  it('passes when configured for claude and Claude CLI is detected', () => {
+    const res = observerProviderCheck({
+      provider: 'claude',
+      claudeDetected: true,
+      detectedClaudeVersion: '2.1.316',
+      codexDetected: false,
+    });
+    expect(res).toMatchObject({
+      name: 'Observer provider',
+      status: 'ok',
+      required: false,
+    });
+    expect(res.detail).toContain('claude (Claude Code v2.1.316)');
+  });
+
+  it('warns when configured for claude and Claude CLI is missing but Codex CLI is detected', () => {
+    const res = observerProviderCheck({
+      provider: 'claude',
+      claudeDetected: false,
+      codexDetected: true,
+    });
+    expect(res).toMatchObject({
+      name: 'Observer provider',
+      status: 'warn',
+      required: false,
+    });
+    expect(res.detail).toContain('Claude CLI not found on PATH');
+    expect(res.detail).toContain('Codex CLI is available — set CLAUDE_MEM_PROVIDER to codex');
+  });
+
+  it('warns when configured for claude and neither Claude nor Codex is detected', () => {
+    const res = observerProviderCheck({
+      provider: 'claude',
+      claudeDetected: false,
+      codexDetected: false,
+    });
+    expect(res).toMatchObject({
+      name: 'Observer provider',
+      status: 'warn',
+      required: false,
+    });
+    expect(res.detail).toContain('Claude CLI not found on PATH or at CLAUDE_CODE_PATH');
+  });
+
+  it('passes when configured for codex and Codex CLI is detected', () => {
+    const res = observerProviderCheck({
+      provider: 'codex',
+      claudeDetected: false,
+      codexDetected: true,
+    });
+    expect(res).toMatchObject({
+      name: 'Observer provider',
+      status: 'ok',
+      required: false,
+    });
+    expect(res.detail).toContain('codex (Codex CLI available)');
+  });
+
+  it('warns when configured for codex and Codex CLI is missing', () => {
+    const res = observerProviderCheck({
+      provider: 'codex',
+      claudeDetected: false,
+      codexDetected: false,
+    });
+    expect(res).toMatchObject({
+      name: 'Observer provider',
+      status: 'warn',
+      required: false,
+    });
+    expect(res.detail).toContain('codex configured, but Codex CLI not found on PATH or at CLAUDE_MEM_CODEX_PATH');
+  });
+
+  it('validates openrouter provider with and without API key', () => {
+    const withKey = observerProviderCheck({
+      provider: 'openrouter',
+      claudeDetected: false,
+      codexDetected: false,
+      hasOpenRouterKey: true,
+    });
+    expect(withKey.status).toBe('ok');
+    expect(withKey.detail).toContain('API key configured');
+
+    const withoutKey = observerProviderCheck({
+      provider: 'openrouter',
+      claudeDetected: false,
+      codexDetected: false,
+      hasOpenRouterKey: false,
+    });
+    expect(withoutKey.status).toBe('warn');
+    expect(withoutKey.detail).toContain('CLAUDE_MEM_OPENROUTER_API_KEY is not set');
+  });
+
+  it('validates gemini provider with and without API key', () => {
+    const withKey = observerProviderCheck({
+      provider: 'gemini',
+      claudeDetected: false,
+      codexDetected: false,
+      hasGeminiKey: true,
+    });
+    expect(withKey.status).toBe('ok');
+    expect(withKey.detail).toContain('API key configured');
+
+    const withoutKey = observerProviderCheck({
+      provider: 'gemini',
+      claudeDetected: false,
+      codexDetected: false,
+      hasGeminiKey: false,
+    });
+    expect(withoutKey.status).toBe('warn');
+    expect(withoutKey.detail).toContain('CLAUDE_MEM_GEMINI_API_KEY is not set');
+  });
+});
+
+describe('npx doctor probeWorkerDependencies (#5359)', () => {
+  beforeEach(() => {
+    requestedUrls = [];
+    fetchSpy = spyOn(globalThis, 'fetch');
+  });
+
+  afterEach(() => {
+    fetchSpy?.mockRestore();
+    fetchSpy = null;
+  });
+
+  it('surfaces worker claude_cli setup_required with Codex alternative when codex is installed', async () => {
+    workerReportingDependencies({
+      degraded: true,
+      statuses: [
+        {
+          dependency: 'claude_cli',
+          kind: 'setup_required',
+          message: 'Claude executable not found',
+          remediation: 'Install Claude Code CLI',
+        },
+      ],
+    });
+
+    const rows = await probeWorkerDependencies(WORKER_URL, true);
+
+    expect(requestedUrls).toEqual([`${WORKER_URL}/api/admin/doctor`]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      name: 'Claude CLI setup',
+      status: 'warn',
+      required: false,
+    });
+    expect(rows[0].detail).toContain('Claude executable not found');
+    expect(rows[0].detail).toContain('Codex CLI is installed; you can switch by setting CLAUDE_MEM_PROVIDER to codex');
+    expect(rows[0].detail).toContain('Install Claude Code CLI');
+  });
+
+  it('surfaces worker claude_cli setup_required without Codex alternative when codex is not installed', async () => {
+    workerReportingDependencies({
+      degraded: true,
+      statuses: [
+        {
+          dependency: 'claude_cli',
+          kind: 'setup_required',
+          message: 'Claude executable not found',
+          remediation: 'Install Claude Code CLI',
+        },
+      ],
+    });
+
+    const rows = await probeWorkerDependencies(WORKER_URL, false);
+    expect(rows[0].detail).toContain('Claude executable not found');
+    expect(rows[0].detail).not.toContain('Codex CLI is installed');
+  });
+
+  it('surfaces codex_cli, uvx, and chroma degraded statuses', () => {
+    const statuses = [
+      { dependency: 'codex_cli', kind: 'setup_required', message: 'Codex CLI missing', remediation: 'codex login' },
+      { dependency: 'uvx', kind: 'vector_search_unavailable', message: 'uvx not on PATH', remediation: 'brew install uv' },
+      { dependency: 'chroma', kind: 'vector_search_unavailable', message: 'port in use', remediation: 'stop worker' },
+      { dependency: 'observer_dir', kind: 'setup_required', message: 'directory not writable', remediation: 'chmod' },
+    ];
+
+    const rows = workerDependencyChecks(statuses);
+    expect(rows).toHaveLength(4);
+    expect(rows.map(r => r.name)).toEqual([
+      'Codex CLI setup',
+      'uvx (vector search)',
+      'Chroma vector search',
+      'Observer data directory',
+    ]);
+    expect(rows.every(r => r.status === 'warn' && !r.required)).toBe(true);
+  });
+
+  it('returns no checks when worker dependencies are healthy', async () => {
+    workerReportingDependencies({ degraded: false, statuses: [] });
+    expect(await probeWorkerDependencies(WORKER_URL, true)).toEqual([]);
+  });
+
+  it('returns no checks when worker endpoint errors or fails', async () => {
+    workerReportingDependencies({}, 500);
+    expect(await probeWorkerDependencies(WORKER_URL, true)).toEqual([]);
+
+    fetchSpy?.mockImplementation(async () => { throw new Error('network down'); });
+    expect(await probeWorkerDependencies(WORKER_URL, true)).toEqual([]);
   });
 });
