@@ -235,6 +235,15 @@ interface MemoryVerdict {
 /** Per-isolate positive verdicts. Avoids a KV write on every miss this isolate can already serve. */
 const verdictMemory = new Map<string, MemoryVerdict>();
 
+/**
+ * Cap on the per-isolate memo. An isolate is short-lived compared with
+ * sync-api's Bun process, but a warm one that keeps serving still accumulates
+ * one entry per distinct (user, token) pair, and an entry is only reclaimed
+ * when the same key is read again. Eviction costs that key one more upstream
+ * verification, never a refusal.
+ */
+export const VERDICT_MEMORY_MAX_ENTRIES = 10_000;
+
 /** Brief memo after a KV hit so a burst does not re-read KV or extend the 15–60m window. */
 const MEMORY_KV_HINT_SECONDS = 60;
 
@@ -249,6 +258,13 @@ function readVerdictMemory(cacheKey: string, nowMs = Date.now()): boolean {
 }
 
 function writeVerdictMemory(cacheKey: string, ttlSeconds: number, nowMs = Date.now()): void {
+	// Re-inserting moves the key to the end, so the FIFO eviction below drops
+	// the verdict that has gone longest without a refresh.
+	verdictMemory.delete(cacheKey);
+	if (verdictMemory.size >= VERDICT_MEMORY_MAX_ENTRIES) {
+		const oldestKey = verdictMemory.keys().next().value;
+		if (oldestKey !== undefined) verdictMemory.delete(oldestKey);
+	}
 	verdictMemory.set(cacheKey, { expiresAtMs: nowMs + ttlSeconds * 1_000 });
 }
 
@@ -260,6 +276,14 @@ function deleteVerdictMemory(cacheKey: string): void {
 export function __resetAuthVerdictMemoryForTests(): void {
 	verdictMemory.clear();
 }
+
+/** Tests only: how many verdicts the isolate is currently holding. */
+export function __verdictMemorySizeForTests(): number {
+	return verdictMemory.size;
+}
+
+/** Tests only: exercise the memo's write/read paths without a KV binding. */
+export { writeVerdictMemory, readVerdictMemory };
 
 export function defaultAuthDependencies(env: Env): AuthDependencies {
 	return {
