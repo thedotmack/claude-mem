@@ -10,7 +10,8 @@
 import { Database } from 'bun:sqlite';
 import { createHash } from 'crypto';
 import { createReadStream, existsSync, readdirSync, readFileSync, statSync } from 'fs';
-import { basename, join } from 'path';
+import { basename, join, resolve } from 'path';
+import { homedir } from 'os';
 import { logger } from '../../utils/logger.js';
 
 export type PromptAgentId = 'claude-code' | 'codex' | 'gemini-cli' | 'antigravity-cli' | 'opencode';
@@ -110,6 +111,12 @@ function listDirectory(path: string): string[] {
   }
 }
 
+/** Native environment overrides belong to the current profile, not an explicitly different home. */
+function nativeProfileDirectory(homeDirectory: string, variable: string, ...fallback: string[]): string {
+  const configured = resolve(homeDirectory) === resolve(homedir()) ? process.env[variable] : undefined;
+  return configured ? resolve(configured) : join(homeDirectory, ...fallback);
+}
+
 function source(path: string, holdsPrompts = true): TranscriptSource | null {
   try {
     const stats = statSync(path);
@@ -165,7 +172,7 @@ export function createClaudeCodeReader(): AgentPromptReader {
     async readPrompts(transcript, sink, sinceEpochMs) {
       sink.session(basename(transcript.path, '.jsonl'));
       for await (const line of readLines(transcript.path)) {
-        if (!line.includes('"type":"user"')) continue;
+        if (!/"type"\s*:\s*"user"/.test(line)) continue;
         const record = parseLine(line);
         if (!record || typeof record !== 'object') continue;
         if (typeof record.sessionId === 'string') sink.session(record.sessionId);
@@ -192,7 +199,7 @@ export function createClaudeCodeReader(): AgentPromptReader {
     },
     async readAgentText(transcript, add) {
       for await (const line of readLines(transcript.path)) {
-        if (!line.includes('"type":"assistant"')) continue;
+        if (!/"type"\s*:\s*"assistant"/.test(line)) continue;
         const record = parseLine(line);
         const content = record?.message?.content;
         const pieces: string[] = [];
@@ -220,7 +227,7 @@ export function createCodexReader(): AgentPromptReader {
     label: 'Codex',
     platformSource: 'codex',
     locate(homeDirectory) {
-      const sessions = join(homeDirectory, '.codex', 'sessions');
+      const sessions = join(nativeProfileDirectory(homeDirectory, 'CODEX_HOME', '.codex'), 'sessions');
       const sources: Array<TranscriptSource | null> = [];
       for (const year of listDirectory(sessions)) {
         for (const month of listDirectory(join(sessions, year))) {
@@ -245,20 +252,22 @@ export function createCodexReader(): AgentPromptReader {
           if (!isInteractiveSession) return;
           continue;
         }
-        if (!line.replaceAll(' ', '').includes('"role":"user"')) continue;
+        if (!/"role"\s*:\s*"user"/.test(line)) continue;
         const record = parseLine(line);
         const payload = record?.payload ?? {};
         if (record?.type !== 'response_item' || payload.role !== 'user') continue;
         const text = textOf(payload.content, ['input_text']).trim();
         const at = isoToEpochMs(record.timestamp);
         if (!text || CODEX_INJECTED_PREFIXES.some(prefix => text.startsWith(prefix)) || at === null || at < sinceEpochMs) continue;
-        const dedupeKey = `${meta.id}\u0000${record.timestamp}\u0000${text.slice(0, 200)}`;
+        const sessionId = String(meta.id ?? basename(transcript.path, '.jsonl'));
+        const nativePromptId = typeof payload.id === 'string' && payload.id ? payload.id : fallbackId(String(meta.id), record.timestamp, text);
+        const dedupeKey = fallbackId(sessionId, nativePromptId, String(at), text);
         if (seenKeys.has(dedupeKey)) continue;
         seenKeys.add(dedupeKey);
         sink.prompt({
           agent: 'codex',
-          sessionId: String(meta.id ?? basename(transcript.path, '.jsonl')),
-          nativePromptId: typeof payload.id === 'string' && payload.id ? payload.id : fallbackId(String(meta.id), record.timestamp, text),
+          sessionId,
+          nativePromptId,
           at,
           cwd: typeof meta.cwd === 'string' ? meta.cwd : null,
           text,
@@ -479,7 +488,8 @@ export function createOpenCodeReader(): AgentPromptReader {
     label: 'OpenCode',
     platformSource: 'opencode',
     locate(homeDirectory) {
-      const database = source(join(homeDirectory, '.local', 'share', 'opencode', 'opencode.db'));
+      const data = nativeProfileDirectory(homeDirectory, 'XDG_DATA_HOME', '.local', 'share');
+      const database = source(join(data, 'opencode', 'opencode.db'));
       // SQLite commits can update only the WAL until the next checkpoint.
       const wal = database ? source(`${database.path}-wal`) : null;
       if (database && wal) database.mtimeMs = Math.max(database.mtimeMs, wal.mtimeMs);

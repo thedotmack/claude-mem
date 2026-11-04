@@ -40,6 +40,7 @@ mock.module('../../src/cli/handlers/session-init.js', () => ({
 }));
 
 mock.module('../../src/services/worker/http/shared.js', () => ({
+  ingestSummarize: async () => ({ status: 'accepted' }),
   ingestObservation: async (payload: { contentSessionId: string }) => {
     observationSessionIds.push(payload.contentSessionId);
     return { ok: true };

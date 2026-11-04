@@ -519,6 +519,47 @@ class CheckoutProjectTest(unittest.TestCase):
         os.makedirs(plain)
         self.assertEqual(client_module.checkout_project(plain), "notes")
 
+    def test_the_cache_serves_the_key_it_already_derived_within_the_ttl(self):
+        client_module._PROJECT_KEYS.clear()
+        root = tempfile.mkdtemp(prefix="hermes-ttl-")
+        repo = os.path.join(root, "nested")
+        os.makedirs(os.path.join(repo, "sub"))
+        self.git("init", "-q", repo)
+        self.git("-C", repo, "-c", "user.email=t@example.invalid", "-c", "user.name=t", "commit", "-q",
+                 "--allow-empty", "-m", "init")
+        cwd = os.path.join(repo, "sub")
+        # The git root is `nested`, so the key is the root folder name.
+        self.assertEqual(client_module.checkout_project(cwd), "nested")
+        # A nested repository under the same path changes the git root, but the
+        # entry is still inside its TTL, so the key it already derived is served.
+        self.git("init", "-q", cwd)
+        self.assertEqual(client_module.checkout_project(cwd), "nested")
+
+    def test_a_cache_entry_expires_at_its_original_deadline(self):
+        client_module._PROJECT_KEYS.clear()
+        ttl = client_module._PROJECT_KEY_TTL_S
+        start = 1000.0
+        clock = [start]
+        original_time = client_module.time
+        client_module.time = types.SimpleNamespace(monotonic=lambda: clock[0])
+        try:
+            root = tempfile.mkdtemp(prefix="hermes-ttl-")
+            repo = os.path.join(root, "nested")
+            os.makedirs(os.path.join(repo, "sub"))
+            self.git("init", "-q", repo)
+            self.git("-C", repo, "-c", "user.email=t@example.invalid", "-c", "user.name=t", "commit", "-q",
+                     "--allow-empty", "-m", "init")
+            cwd = os.path.join(repo, "sub")
+            self.assertEqual(client_module.checkout_project(cwd), "nested")
+            self.git("init", "-q", cwd)
+            # A hit near the end of the window must not extend the deadline.
+            clock[0] = start + ttl - 1
+            self.assertEqual(client_module.checkout_project(cwd), "nested")
+            clock[0] = start + ttl + 1
+            self.assertEqual(client_module.checkout_project(cwd), "sub")
+        finally:
+            client_module.time = original_time
+
 
 class RecallPrivacyTest(unittest.TestCase):
     def test_protected_sections_never_leave_either_recall_runtime(self):

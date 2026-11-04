@@ -843,6 +843,7 @@ var init_SettingsDefaultsManager = __esm({
         // 'current' = this checkout only; 'all' = SessionStart context spans every project
         CLAUDE_MEM_WORKER_PORT: String(37700 + (process.getuid?.() ?? 77) % 100),
         CLAUDE_MEM_WORKER_HOST: "127.0.0.1",
+        CLAUDE_MEM_WORKER_URL: "",
         CLAUDE_MEM_WORKER_INGEST_TOKEN: "",
         CLAUDE_MEM_WORKER_INGEST_MAX_BYTES: "5242880",
         CLAUDE_MEM_HOOK_SPOOL_TRANSPORT: "auto",
@@ -1016,7 +1017,7 @@ var init_SettingsDefaultsManager = __esm({
         CLAUDE_MEM_REDACT_LOG_MATCHES: "false",
         // Log pattern,count per invocation (no payload)
         CLAUDE_MEM_REDACT_GENERIC_ENABLED: "false",
-        // #4745 — opt-in: also redact un-prefixed credentials (password=, *_TOKEN=, *_SECRET=, *_API_KEY=, Authorization: Bearer)
+        // #4745 — opt-in: also redact un-prefixed credentials (password=, *_TOKEN=, *_SECRET=, *_API_KEY=, Authorization: Bearer, Authorization: Basic)
         CLAUDE_MEM_EXCLUDED_PROJECTS: "",
         // Comma-separated glob patterns for excluded project paths
         CLAUDE_MEM_PROJECT_ENVIRONMENTS: "[]",
@@ -1153,6 +1154,12 @@ var init_SettingsDefaultsManager = __esm({
         // '' uses OpenRouter only when it is the primary provider; openrouter/openai-compatible explicitly select that provider; off disables generated My Work copy
         CLAUDE_MEM_WORK_VIEW_COPY_MODEL: "",
         // Optional model override for generated My Work copy; empty uses the selected provider's configured model
+        CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL: "",
+        // #5164 — model for every My Work refresh step on Claude Code (an alias like 'haiku'); empty keeps haiku/sonnet per step
+        CLAUDE_MEM_WORK_VIEW_CODEX_MODEL: "",
+        // #5164 — same for Codex; empty keeps the per-step table
+        CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL: "",
+        // #5164 — same for Gemini; empty keeps flash-lite/flash per step
         // Automatic local DB snapshots (BackupManager). Off by default; opt-in.
         CLAUDE_MEM_BACKUP_ENABLED: "false",
         CLAUDE_MEM_BACKUP_INTERVAL_HOURS: "24",
@@ -3170,44 +3177,97 @@ function applyGroupDecisions(stored, decisions, now = Date.now(), { projectOf = 
 function boundedText(value, max, label, optional = false) {
   if (optional && (value == null || value === "")) return "";
   if (typeof value !== "string" || !value.trim()) throw new TypeError(`${label} must be 1\u2013${max} characters.`);
-  if (value.length > max) throw new TypeError(`${label} is ${value.length} characters; it must be 1\u2013${max}. Cut at least ${value.length - max} characters.`);
+  if (value.length > max) {
+    const target = textTarget(max);
+    throw new TypeError(`${label} is ${value.length} characters; it must be 1\u2013${max}. Bring it to about ${target} characters (cut at least ${value.length - target}).`);
+  }
   return value.trim();
 }
-function validateOutcome(outcome) {
+function boundedQuote(value, max, label) {
+  if (typeof value === "string" && value.length > max) {
+    throw new TypeError(`${label} is ${value.length} characters; it must be 1\u2013${max}. Quote a shorter part of it word for word, about ${textTarget(max)} characters; never reword a quote.`);
+  }
+  return boundedText(value, max, label);
+}
+function boundedList(value, max, label) {
+  const list = value ?? [];
+  if (!Array.isArray(list)) throw new TypeError(`${label} must be an array of at most ${max}.`);
+  if (list.length > max) throw new TypeError(`${label} has ${list.length} items; it must have at most ${max}. Keep the ${max} that matter most.`);
+  return list;
+}
+function reviewText(value, max, label, options) {
+  if (!options.coerce) return boundedText(value, max, label, options.optional);
+  if (options.optional && (value == null || value === "")) return "";
+  if (typeof value !== "string" || !value.trim()) throw new TypeError(`${label} must be 1\u2013${max} characters.`);
+  const text2 = value.trim();
+  if (text2.length <= max) return text2;
+  options.coercedFields.add(label);
+  const suffix = "\u2026";
+  let prefix = text2.slice(0, max - suffix.length);
+  if (/[\uD800-\uDBFF]$/.test(prefix)) prefix = prefix.slice(0, -1);
+  const boundary = prefix.lastIndexOf(" ");
+  if (boundary >= prefix.length - 40) prefix = prefix.slice(0, boundary);
+  return `${prefix.trimEnd()}${suffix}`;
+}
+function reviewQuote(value, max, label, options) {
+  if (!options.coerce || typeof value !== "string" || !value.trim()) return boundedQuote(value, max, label);
+  const text2 = value.trim();
+  if (text2.length <= max) return text2;
+  options.coercedFields.add(label);
+  let quote = text2.slice(0, max);
+  if (/[\uD800-\uDBFF]$/.test(quote)) quote = quote.slice(0, -1);
+  const boundary = quote.lastIndexOf(" ");
+  if (boundary >= quote.length - 40) quote = quote.slice(0, boundary);
+  return quote.trimEnd();
+}
+function reviewList(value, max, label, options) {
+  const list = value ?? [];
+  if (!Array.isArray(list)) throw new TypeError(`${label} must be an array of at most ${max}.`);
+  if (list.length <= max) return list;
+  if (!options.coerce) throw new TypeError(`${label} has ${list.length} items; it must have at most ${max}. Keep the ${max} that matter most.`);
+  options.coercedFields.add(label);
+  const times = list.map((entry) => Date.parse(entry?.at));
+  if (times.some(Number.isNaN)) return list.slice(-max);
+  const newestIndexes = new Set(list.map((_, index) => index).sort((a, b) => times[a] - times[b] || a - b).slice(-max));
+  return list.filter((_, index) => newestIndexes.has(index));
+}
+function validateOutcome(outcome, options = {}) {
   if (outcome == null) return null;
   if (typeof outcome !== "object" || Array.isArray(outcome)) throw new TypeError("outcome must be an object.");
+  options = { coerce: false, coercedFields: /* @__PURE__ */ new Set(), ...options };
+  const text2 = (value, max, label, optional = false) => reviewText(value, max, label, { ...options, optional });
   const leveled = (entry, levels, label) => {
     if (entry == null) return null;
     if (!levels.includes(entry.level)) throw new TypeError(`${label}.level must be one of ${levels.join(", ")}.`);
-    return { level: entry.level, text: boundedText(entry.text, 400, `${label}.text`), evidence: evidenceList(entry.evidence) };
+    return { level: entry.level, text: text2(entry.text, 400, `${label}.text`), evidence: evidenceList(entry.evidence) };
   };
-  const regressions = outcome.regressions ?? [], changes = outcome.changes ?? [];
-  if (!Array.isArray(regressions) || regressions.length > 10) throw new TypeError("outcome.regressions must be an array of at most 10.");
-  if (!Array.isArray(changes) || changes.length > 12) throw new TypeError("outcome.changes must be an array of at most 12.");
+  const regressions = reviewList(outcome.regressions, 10, "outcome.regressions", options), changes = reviewList(outcome.changes, 12, "outcome.changes", options);
   const dated = (value, label) => {
     if (!isIsoOrNull(value ?? null)) throw new TypeError(`${label} must be an ISO date or null.`);
     return value ?? null;
   };
   return {
-    landed: outcome.landed == null ? null : { text: boundedText(outcome.landed.text, 400, "outcome.landed.text"), at: dated(outcome.landed.at, "outcome.landed.at"), evidence: evidenceList(outcome.landed.evidence) },
+    landed: outcome.landed == null ? null : { text: text2(outcome.landed.text, 400, "outcome.landed.text"), at: dated(outcome.landed.at, "outcome.landed.at"), evidence: evidenceList(outcome.landed.evidence) },
     usage: leveled(outcome.usage, USAGE_LEVELS, "outcome.usage"),
     value: leveled(outcome.value, VALUE_LEVELS, "outcome.value"),
     regressions: regressions.map((regression, index) => ({
-      text: boundedText(regression.text, 300, `outcome.regressions[${index}].text`),
+      text: text2(regression.text, 300, `outcome.regressions[${index}].text`),
       at: dated(regression.at, `outcome.regressions[${index}].at`),
-      fixedBy: boundedText(regression.fixedBy, 200, `outcome.regressions[${index}].fixedBy`, true) || null,
+      fixedBy: text2(regression.fixedBy, 200, `outcome.regressions[${index}].fixedBy`, true) || null,
       evidence: evidenceList(regression.evidence)
     })),
     changes: changes.map((change, index) => ({
-      what: boundedText(change.what, 200, `outcome.changes[${index}].what`),
-      why: boundedText(change.why, 400, `outcome.changes[${index}].why`),
+      what: text2(change.what, 200, `outcome.changes[${index}].what`),
+      why: text2(change.why, 400, `outcome.changes[${index}].why`),
       at: dated(change.at, `outcome.changes[${index}].at`),
       evidence: evidenceList(change.evidence)
     }))
   };
 }
-function validateProgress(entry, knownGroups) {
+function validateProgress(entry, knownGroups, options = {}) {
   if (!entry || typeof entry !== "object") throw new TypeError("Progress must be an object.");
+  options = { coerce: false, coercedFields: /* @__PURE__ */ new Set(), ...options };
+  const text2 = (value, max, label, optional = false) => reviewText(value, max, label, { ...options, optional });
   if (!knownGroups[entry.groupId]) throw new TypeError(`Unknown group ${entry.groupId}.`);
   const basis = entry.reviewBasis;
   if (!basis || typeof basis.checkedThrough !== "string" || !Number.isFinite(Date.parse(basis.checkedThrough)) || !Array.isArray(basis.conversations) || !basis.conversations.length || !basis.conversations.every(isConversationKey)) {
@@ -3218,9 +3278,7 @@ function validateProgress(entry, knownGroups) {
   for (const field of ["startedAt", "shippedAt", "lastActivityAt"]) if (!isIsoOrNull(entry[field] ?? null)) throw new TypeError(`${field} must be an ISO date or null.`);
   if (entry.state === "shipped" && (entry.percent !== 100 || !entry.shippedAt)) throw new TypeError("A shipped request needs percent 100 and shippedAt.");
   if (entry.state !== "shipped" && entry.shippedAt) throw new TypeError("Only a shipped request has shippedAt.");
-  const milestones = entry.milestones ?? [], preferences = entry.preferences ?? [];
-  if (!Array.isArray(milestones) || milestones.length > 12) throw new TypeError("milestones must be an array of at most 12.");
-  if (!Array.isArray(preferences) || preferences.length > 10) throw new TypeError("preferences must be an array of at most 10.");
+  const milestones = reviewList(entry.milestones, 12, "milestones", options), preferences = reviewList(entry.preferences, 10, "preferences", options);
   return {
     groupId: entry.groupId,
     state: entry.state,
@@ -3228,22 +3286,23 @@ function validateProgress(entry, knownGroups) {
     startedAt: entry.startedAt ?? null,
     shippedAt: entry.shippedAt ?? null,
     lastActivityAt: entry.lastActivityAt ?? null,
-    summary: boundedText(entry.summary, 280, "summary"),
-    narrative: boundedText(entry.narrative, 1200, "narrative", true),
+    summary: text2(entry.summary, 280, "summary"),
+    narrative: text2(entry.narrative, 1200, "narrative", true),
     milestones: milestones.map((milestone, index) => {
       if (!isIsoOrNull(milestone.at ?? null)) throw new TypeError(`milestones[${index}].at must be an ISO date or null.`);
-      return { at: milestone.at ?? null, text: boundedText(milestone.text, 200, `milestones[${index}].text`), evidence: evidenceList(milestone.evidence, 6) };
+      return { at: milestone.at ?? null, text: text2(milestone.text, 200, `milestones[${index}].text`), evidence: evidenceList(milestone.evidence, 6) };
     }),
     preferences: preferences.map((preference, index) => {
       if (!PREFERENCE_KINDS.includes(preference.kind)) throw new TypeError(`preferences[${index}].kind must be one of ${PREFERENCE_KINDS.join(", ")}.`);
       if (!isIsoOrNull(preference.at ?? null)) throw new TypeError(`preferences[${index}].at must be an ISO date or null.`);
-      return { kind: preference.kind, preference: boundedText(preference.preference, 200, `preferences[${index}].preference`), quote: boundedText(preference.quote, 300, `preferences[${index}].quote`), at: preference.at ?? null };
+      return { kind: preference.kind, preference: text2(preference.preference, 200, `preferences[${index}].preference`), quote: reviewQuote(preference.quote, 300, `preferences[${index}].quote`, options), at: preference.at ?? null };
     }),
-    outcome: validateOutcome(entry.outcome),
+    outcome: validateOutcome(entry.outcome, options),
     evidence: evidenceList(entry.evidence, 20),
     // What the reviewer actually saw: later activity or membership changes make it due again.
     reviewedThrough: new Date(Date.parse(basis.checkedThrough)).toISOString(),
-    reviewedConversations: [...new Set(basis.conversations)].sort()
+    reviewedConversations: [...new Set(basis.conversations)].sort(),
+    ...options.coerce && options.coercedFields.size ? { coercedFields: [...options.coercedFields].sort() } : {}
   };
 }
 function storyFacts(review) {
@@ -3299,8 +3358,7 @@ function storyParts(narrative) {
   });
 }
 function validateStory(story) {
-  const preferences = story?.preferences ?? [];
-  if (!Array.isArray(preferences) || preferences.length > 30) throw new TypeError("preferences must be an array of at most 30.");
+  const preferences = boundedList(story?.preferences, 30, "preferences");
   const narrativeChars = typeof story?.narrative === "string" ? story.narrative.length : 0;
   if (narrativeChars > STORY_NARRATIVE_MAX) {
     const over = storyParts(story.narrative).filter((part) => part.overBudgetChars > 0).sort((a, b) => b.overBudgetChars - a.overBudgetChars);
@@ -3320,7 +3378,7 @@ function validateStory(story) {
       preference: boundedText(preference.preference, 200, `preferences[${index}].preference`),
       kind: PREFERENCE_KINDS.includes(preference.kind) ? preference.kind : "directive",
       supportCount: Number.isInteger(preference.supportCount) && preference.supportCount > 0 ? preference.supportCount : 1,
-      quotes: (preference.quotes ?? []).slice(0, 3).map((quote, quoteIndex) => ({ quote: boundedText(quote.quote, 300, `preferences[${index}].quotes[${quoteIndex}]`), at: isIsoOrNull(quote.at ?? null) ? quote.at ?? null : null }))
+      quotes: (preference.quotes ?? []).slice(0, 3).map((quote, quoteIndex) => ({ quote: boundedQuote(quote.quote, 300, `preferences[${index}].quotes[${quoteIndex}]`), at: isIsoOrNull(quote.at ?? null) ? quote.at ?? null : null }))
     }))
   };
 }
@@ -3583,7 +3641,7 @@ function applyDecisions(stored, decisions, { database, now = Date.now(), exclude
   for (const group of Object.values(next.groups)) if (!group.anchorAsk && anchors.has(group.anchor)) group.anchorAsk = anchors.get(group.anchor);
   return next;
 }
-function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), print: print2 = (value) => console.log(JSON.stringify(value, null, 2)), localDeviceId: localDeviceId2, saveFocus: saveFocus2 = null, judge = void 0 } = {}) {
+function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), print: print2 = (value) => console.log(JSON.stringify(value, null, 2)), localDeviceId: localDeviceId2, saveFocus: saveFocus2 = null, judge = void 0, coerceProgress = false } = {}) {
   const [command, ...args] = argv;
   const db = () => database ?? openDatabase();
   const since = () => now - option(args, "days", 14) * DAY_MS2;
@@ -3639,13 +3697,14 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
   }
   if (command === "record-progress") {
     const ledger = readLedger(dir);
-    const reviewed = validateProgress(readInput(args[0] ?? "-"), ledger.groups.groups);
+    const coercedFields = /* @__PURE__ */ new Set();
+    const reviewed = validateProgress(readInput(args[0] ?? "-"), ledger.groups.groups, { coerce: coerceProgress, coercedFields });
     const checkedAt = iso3(now);
     const previous = ledger.progress[reviewed.groupId];
     const unchanged = previous && JSON.stringify(storyFacts(previous)) === JSON.stringify(storyFacts(reviewed));
     const entry = { ...reviewed, checkedAt, changedAt: unchanged ? previous.changedAt ?? previous.checkedAt : checkedAt, readings: appendReading(ledger.progress[reviewed.groupId], { at: checkedAt, percent: reviewed.percent }) };
     writeJsonAtomic(join9(dir, "progress", `${entry.groupId}.json`), entry);
-    return print2({ recorded: entry.groupId, state: entry.state, percent: entry.percent, readings: entry.readings.length });
+    return print2({ recorded: entry.groupId, state: entry.state, percent: entry.percent, readings: entry.readings.length, ...coercedFields.size ? { coercedFields: [...coercedFields] } : {} });
   }
   if (command === "story-input") {
     const { groups, progress, story } = readLedger(dir);
@@ -3692,7 +3751,7 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
   if (command === "refresh-needs") return print2(refreshNeeds({ dir, database: db(), now, days: option(args, "days", 14), localDeviceId: localDeviceId2 }));
   throw new TypeError("Usage: request-groups.mjs candidates|grouping-input|judge|apply|pending|show|record-progress|story-input|record-story|focus-input|record-focus|refresh-needs (see file header).");
 }
-var DATA_DIR2, LEDGER_DIR, AGENT_WRITTEN_PROMPTS_FILE, DAY_MS2, GOALS_STALE_MS, MAX_CONVERSATIONS_PER_LINKING_LIST, PROGRESS_STATES, PREFERENCE_KINDS, USAGE_LEVELS, VALUE_LEVELS, LINK_KINDS, MAX_READINGS, iso3, groupIdFor, emptyGroups, isIsoOrNull, evidenceList, STORY_NARRATIVE_MAX, STORY_NARRATIVE_TARGET, STORY_RECAP_BUDGET, STORY_CHAPTER_MIN_BUDGET, STORY_CHARS_PER_WORD, STORY_REFUSAL_PARTS, FOCUS_ASK_CHARS, CONVERSATIONS_PER_QUERY, groupConversations, records, otherPassHash, focusAreaRecord, AREA_NAME_MAX, AREA_SENTENCE_MAX, requireDeviceId, GROUPING_BATCH, FOCUS_BATCH, CLOSED_STATES;
+var DATA_DIR2, LEDGER_DIR, AGENT_WRITTEN_PROMPTS_FILE, DAY_MS2, GOALS_STALE_MS, MAX_CONVERSATIONS_PER_LINKING_LIST, PROGRESS_STATES, PREFERENCE_KINDS, USAGE_LEVELS, VALUE_LEVELS, LINK_KINDS, MAX_READINGS, iso3, groupIdFor, emptyGroups, isIsoOrNull, textTarget, evidenceList, STORY_NARRATIVE_MAX, STORY_NARRATIVE_TARGET, STORY_RECAP_BUDGET, STORY_CHAPTER_MIN_BUDGET, STORY_CHARS_PER_WORD, STORY_REFUSAL_PARTS, FOCUS_ASK_CHARS, CONVERSATIONS_PER_QUERY, groupConversations, records, otherPassHash, focusAreaRecord, AREA_NAME_MAX, AREA_SENTENCE_MAX, requireDeviceId, GROUPING_BATCH, FOCUS_BATCH, CLOSED_STATES;
 var init_request_groups = __esm({
   "src/services/work-view/request-groups.mjs"() {
     "use strict";
@@ -3716,6 +3775,7 @@ var init_request_groups = __esm({
     groupIdFor = (anchorConversationKey) => `g_${createHash("sha256").update(anchorConversationKey).digest("hex").slice(0, 12)}`;
     emptyGroups = () => ({ version: 1, updatedAt: null, conversations: {}, groups: {}, ignored: {} });
     isIsoOrNull = (value) => value === null || typeof value === "string" && Number.isFinite(Date.parse(value));
+    textTarget = (max) => Math.floor(max * 0.75 / 10) * 10;
     evidenceList = (value, limit = 8) => (Array.isArray(value) ? value : typeof value === "string" && value.trim() ? [value] : []).map(String).slice(0, limit);
     STORY_NARRATIVE_MAX = 12e3;
     STORY_NARRATIVE_TARGET = 8e3;

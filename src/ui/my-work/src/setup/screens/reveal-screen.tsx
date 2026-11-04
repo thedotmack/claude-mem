@@ -36,14 +36,14 @@ function PromptsOnly({ agents, recentPrompts }: { agents: SetupScanAgent[]; rece
   return (
     <div className="reveal-sets">
       <section className="reveal-set is-landed" aria-labelledby="reveal-prompts">
-        <h2 id="reveal-prompts">Prompts</h2>
+        <h2 id="reveal-prompts">Conversations</h2>
         <ol>
           {agents.map((agent) => (
             <li key={agent.id} className="reveal-card">
               <span className="lead-icon" aria-hidden="true"><AgentMark tool={agentToolFor(agent.id)} /></span>
               <div>
                 <p className="title">{agent.label}</p>
-                <p className="meta">{agent.prompts.toLocaleString('en-US')} prompts</p>
+                <p className="meta">{agent.prompts.toLocaleString('en-US')} messages</p>
               </div>
             </li>
           ))}
@@ -83,8 +83,8 @@ export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recen
   if (keptLocal) {
     return (
       <section aria-labelledby="reveal-title">
-        <PageHeading id="reveal-title" title="Your prompts stayed on this computer."
-          lead="Nothing was uploaded, so there are no goals, work or rules to show yet. You can continue setting up claude-mem." />
+        <PageHeading id="reveal-title" title="Continue setup."
+          lead="You skipped this step. Continue setting up Claude-Mem." />
         <div className="actions is-centered">
           <button type="button" className="primary" onClick={onContinue}>Continue <ArrowRightIcon aria-hidden="true" /></button>
         </div>
@@ -94,7 +94,7 @@ export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recen
   return (
     <section aria-labelledby="reveal-title">
       <PageHeading id="reveal-title" title="Claude-Mem already knows your work."
-        lead={promptCount > 0 ? `From ${promptCount.toLocaleString('en-US')} prompts across ${joinNames(withPrompts.map((agent) => agent.label))}: what you’re working on, what you’re after, and how you like things done.` : undefined} />
+        lead={promptCount > 0 ? `From ${promptCount.toLocaleString('en-US')} messages across ${joinNames(withPrompts.map((agent) => agent.label))}: what you’re working on, what you’re after, and how you like things done.` : undefined} />
       {promptsOnly ? <PromptsOnly agents={withPrompts} recentPrompts={recentPrompts} /> : <div className="reveal-sets">
         <RevealSet title="Work" items={reveal.work} render={(work) => (
           <li key={work.id} className="reveal-card">
@@ -131,3 +131,4 @@ export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recen
     </section>
   )
 }
+
