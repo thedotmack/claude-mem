@@ -104,6 +104,31 @@ describe('redactSensitive built-in patterns', () => {
     expect(Object.keys(result.counts)).toEqual(['pypi_token']);
   });
 
+  // Groq and xAI API keys; split for push protection too.
+  const GROQ_BODY = 'aBcDeFgHiJkLmNoPqRsTuVwXyZ' + '0123456789aBcDeFgHiJkLmNoP';
+  const XAI_BODY = 'aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789aBcD' + 'eFgHiJkLmNoPqRsTuVwXyZ0123456789aBcDeFgH';
+  it.each([
+    ['groq_key', 'export GROQ_API_KEY=' + 'gs' + 'k_' + GROQ_BODY + ' tail'],
+    ['groq_key', 'curl -H "Authorization: Bearer ' + 'gs' + 'k_' + GROQ_BODY + '" tail'],
+    ['xai_key', 'XAI_API_KEY=' + 'xa' + 'i-' + XAI_BODY + ' tail'],
+    ['xai_key', '{"apiKey":"' + 'xa' + 'i-' + XAI_BODY + '"} tail'],
+  ])('redacts a %s in %s', (name, input) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain(`<redacted type='${name}'/>`);
+    expect(result.redacted).toMatch(/ tail$/);
+    expect(result.redacted).not.toContain('aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789');
+    expect(Object.keys(result.counts)).toEqual([name]);
+  });
+
+  it.each([
+    'gsk_short',
+    'xai-short',
+    'the xai-sdk package',
+    'gsk_' + 'aBcDeFgHiJkLmNoPqRsTuVwXyZ',
+  ])('leaves %s alone', (input) => {
+    expect(redactSensitive(input, cfg).redacted).toBe(input);
+  });
+
   it.each([
     'glpat-short',
     'gldt-short',
