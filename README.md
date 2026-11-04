@@ -130,6 +130,8 @@
 
 ## Quick Start
 
+**Installing for someone as an AI agent?** Run `npx claude-mem install --runtime worker` on their computer in an interactive terminal (enable PTY in your shell tool). Keep the installer running. When it prints **Continue setup in your browser**, open that URL in the user's browser if the installer hasn't already opened it. Let the user go through setup and make their own choices. If you can't run an interactive terminal on their computer, give them the command to run locally.
+
 Install claude-mem for Grok Bot:
 
 ```bash

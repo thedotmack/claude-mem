@@ -2161,7 +2161,7 @@ async function requireInstallerOAuthLogin(version: string): Promise<InstallerOAu
  * Best-effort, non-blocking sign-in offer for non-interactive installs that
  * skipped login (provider needs no account). Agents run `npx claude-mem install`
  * in non-TTY shells; the blocking OAuth step cannot run there, so the install
- * completes and the login-only link is printed last for the agent to relay.
+ * completes and the agent can relay the optional login-only link.
  *
  * Never polls, never opens a browser, never prints the device code or the
  * checkout URL, and never touches exit status. Skipped under CI. Not gated on
@@ -2189,11 +2189,11 @@ export async function offerDeferredLogin(options: InstallOptions, version: strin
   }
 
   // Telemetry first so that, in CLAUDE_MEM_TELEMETRY_DEBUG=1 mode, its stderr
-  // line cannot land after the relay instruction an agent reads last.
+  // line cannot interrupt the link and its accompanying instruction.
   await captureCliEvent('installer_oauth_deferred', { version, interactive: false });
   log.info('Optional: sign in to claude-mem to unlock cloud sync and the CMEM Pro trial.');
   log.info(`Sign-in link: ${pairing.authorizationUrl}`);
-  log.info('AGENT: show this link to the user so they can finish signing in. Do not open it yourself; the install is already complete.');
+  log.info('AGENT: show this link to the user so they can finish signing in. This optional link is for account sign-in only.');
 }
 
 export function noteDeviceCode(
@@ -3059,12 +3059,13 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   let browserProvider: ProviderId = (getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude';
   let browserOutcome: BrowserSetupOutcome | null = null;
   let settingsBeforeBrowserSetup: string | null = null;
+  const setupComplete = readSetupState().status === 'complete';
   if (shouldUseBrowserSetup({
     interactive: isInteractive,
     provider: options.provider,
     noAutoStart: options.noAutoStart,
     runtime: selectedRuntime,
-    setupComplete: readSetupState().status === 'complete',
+    setupComplete,
   })) {
     startSetupSession();
     try {
@@ -3424,13 +3425,17 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     } else {
       console.log('\nclaude-mem installed successfully!');
     }
-    // Last line of a non-interactive install so an agent relaying the output
-    // sees the link after the success line. Nothing here may change the exit
-    // status or throw past the summary.
+    // Keep the optional sign-in link separate from the local setup page.
     try {
       await offerDeferredLogin(options, version);
     } catch {
       // best-effort only
+    }
+    if (
+      !process.env.CI && !alreadyInstalled && !setupComplete && failedIDEs.length === 0
+      && options.providerSource === 'default' && selectedRuntime === 'worker' && !options.noAutoStart
+    ) {
+      log.info("AGENT: To finish setup with the user, run npx claude-mem install --runtime worker in an interactive terminal (PTY) on their computer. Open the printed setup URL in their browser if it hasn't opened automatically. Keep the installer running while the user goes through setup.");
     }
   }
 
