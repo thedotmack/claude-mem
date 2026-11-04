@@ -3,6 +3,7 @@
 import type { Application, Request, RequestHandler, Response } from 'express';
 import { z, type ZodTypeAny } from 'zod';
 import type { RouteHandler } from '../../../services/server/Server.js';
+import { AppError } from '../../../services/server/ErrorHandler.js';
 import { CreateAgentEventSchema } from '../../../core/schemas/agent-event.js';
 import type { PostgresPool } from '../../../storage/postgres/pool.js';
 import {
@@ -2033,14 +2034,13 @@ export const JOB_LIST_STATUS_VALUES = new Set(['queued', 'processing', 'complete
 export const JOB_LIST_DEFAULT_LIMIT = 50;
 export const JOB_LIST_MAX_LIMIT = 200;
 /**
- * Upper bound on the listing `offset`. `limit` is already capped, but offset was
- * not: Postgres still walks and discards every skipped row, so
- * `?offset=9007199254740991` turned one cheap authenticated request into an
- * arbitrarily expensive scan of observation_generation_jobs. The worker's own
- * list routes bound both sides (DataRoutes.parsePaginationParams clamps limit to
- * [1, 100]), and #4787 did the same for the search surface; the Server Beta job
- * routes were missed. 10k is far past any real page walk and keeps the query
- * cost flat.
+ * Upper bound on the listing `offset`, as abuse protection: it caps how many
+ * rows one request can make Postgres read and discard. 10,000 rows is 50 pages
+ * at JOB_LIST_MAX_LIMIT. The cost of OFFSET stops at the end of the caller's
+ * matching rows, so this is a per-request cap and not a fix for an unbounded
+ * scan. A request above it answers 400 rather than a page it did not ask for.
+ * Rows past this point are unreachable on these routes unless a filter narrows
+ * the listing; reaching them would take a keyset cursor, which does not exist.
  */
 export const JOB_LIST_MAX_OFFSET = 10_000;
 
@@ -2056,7 +2056,7 @@ export function parseGenericJobListingQuery(req: Request): {
   const sourceTypeRaw = typeof req.query.source_type === 'string' ? req.query.source_type.trim() : '';
   const sourceType = sourceTypeRaw && SOURCE_TYPE_VALUES.has(sourceTypeRaw) ? sourceTypeRaw : null;
   const limit = clampInt(req.query.limit, JOB_LIST_DEFAULT_LIMIT, 1, JOB_LIST_MAX_LIMIT);
-  const offset = clampInt(req.query.offset, 0, 0, JOB_LIST_MAX_OFFSET);
+  const offset = parseJobListOffset(req.query.offset);
   const sinceRaw = typeof req.query.since === 'string' ? req.query.since.trim() : '';
   let since: Date | null = null;
   if (sinceRaw) {
@@ -2083,8 +2083,20 @@ export function parseJobListingQuery(req: Request): {
   const statusRaw = typeof req.query.status === 'string' ? req.query.status.trim() : '';
   const status = statusRaw && JOB_LIST_STATUS_VALUES.has(statusRaw) ? statusRaw : null;
   const limit = clampInt(req.query.limit, JOB_LIST_DEFAULT_LIMIT, 1, JOB_LIST_MAX_LIMIT);
-  const offset = clampInt(req.query.offset, 0, 0, JOB_LIST_MAX_OFFSET);
+  const offset = parseJobListOffset(req.query.offset);
   return { status, limit, offset };
+}
+
+function parseJobListOffset(value: unknown): number {
+  const offset = clampInt(value, 0, 0, Number.MAX_SAFE_INTEGER);
+  if (offset > JOB_LIST_MAX_OFFSET) {
+    throw new AppError(
+      `offset must be at most ${JOB_LIST_MAX_OFFSET}; narrow the listing with filters to reach older rows`,
+      400,
+      'INVALID_PAGINATION',
+    );
+  }
+  return offset;
 }
 
 function clampInt(value: unknown, fallback: number, min: number, max: number): number {

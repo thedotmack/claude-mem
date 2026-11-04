@@ -7,9 +7,22 @@ import {
   JOB_LIST_DEFAULT_LIMIT,
   JOB_LIST_MAX_LIMIT,
 } from '../../../src/server/routes/v1/ServerV1PostgresRoutes.js';
+import { AppError } from '../../../src/services/server/ErrorHandler.js';
 
 function mockReq(query: Record<string, string | undefined>): Request {
   return { query } as unknown as Request;
+}
+
+function expectInvalidPagination(parse: () => unknown): void {
+  let thrown: unknown;
+  try {
+    parse();
+  } catch (error) {
+    thrown = error;
+  }
+  expect(thrown).toBeInstanceOf(AppError);
+  expect((thrown as AppError).statusCode).toBe(400);
+  expect((thrown as AppError).code).toBe('INVALID_PAGINATION');
 }
 
 describe('job listing query pagination bounds', () => {
@@ -26,10 +39,14 @@ describe('job listing query pagination bounds', () => {
       expect(parsed.offset).toBe(0);
     });
 
-    it('clamps large offset to JOB_LIST_MAX_OFFSET', () => {
-      const parsed = parseJobListingQuery(mockReq({ offset: '9007199254740991' }));
-      expect(parsed.offset).toBe(JOB_LIST_MAX_OFFSET);
+    it('keeps an offset at JOB_LIST_MAX_OFFSET', () => {
+      const parsed = parseJobListingQuery(mockReq({ offset: String(JOB_LIST_MAX_OFFSET) }));
       expect(parsed.offset).toBe(10_000);
+    });
+
+    it('rejects an offset above JOB_LIST_MAX_OFFSET instead of clamping it', () => {
+      expectInvalidPagination(() => parseJobListingQuery(mockReq({ offset: '10001' })));
+      expectInvalidPagination(() => parseJobListingQuery(mockReq({ offset: '9007199254740991' })));
     });
 
     it('preserves a valid offset within range', () => {
@@ -44,10 +61,14 @@ describe('job listing query pagination bounds', () => {
   });
 
   describe('parseGenericJobListingQuery', () => {
-    it('clamps large offset to JOB_LIST_MAX_OFFSET', () => {
-      const parsed = parseGenericJobListingQuery(mockReq({ offset: '999999999999' }));
-      expect(parsed.offset).toBe(JOB_LIST_MAX_OFFSET);
+    it('keeps an offset at JOB_LIST_MAX_OFFSET', () => {
+      const parsed = parseGenericJobListingQuery(mockReq({ offset: String(JOB_LIST_MAX_OFFSET) }));
       expect(parsed.offset).toBe(10_000);
+    });
+
+    it('rejects an offset above JOB_LIST_MAX_OFFSET instead of clamping it', () => {
+      expectInvalidPagination(() => parseGenericJobListingQuery(mockReq({ offset: '10001' })));
+      expectInvalidPagination(() => parseGenericJobListingQuery(mockReq({ offset: '999999999999' })));
     });
 
     it('clamps negative offset to 0', () => {
