@@ -375,6 +375,30 @@ describe('Issue #2357: CLAUDE_CODE_EFFORT_* env-var isolation', () => {
   });
 });
 
+describe('Issue #5346: Observer beta opt-out propagation', () => {
+  const ORIGINAL_BETA_OPT_OUT = process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS;
+  const ORIGINAL_UNRELATED = process.env.CLAUDE_CODE_RANDOM_OTHER;
+
+  afterEach(() => {
+    if (ORIGINAL_BETA_OPT_OUT === undefined) delete process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS;
+    else process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS = ORIGINAL_BETA_OPT_OUT;
+    if (ORIGINAL_UNRELATED === undefined) delete process.env.CLAUDE_CODE_RANDOM_OTHER;
+    else process.env.CLAUDE_CODE_RANDOM_OTHER = ORIGINAL_UNRELATED;
+  });
+
+  it('carries the documented opt-out through the isolated Observer env without widening CLAUDE_CODE_* access', () => {
+    process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS = '1';
+    process.env.CLAUDE_CODE_RANDOM_OTHER = 'must-not-reach-observer';
+
+    const result = sanitizeEnv(buildIsolatedEnv(false));
+
+    expect(result.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe('1');
+    expect(result.CLAUDE_CODE_RANDOM_OTHER).toBeUndefined();
+    expect(result.CLAUDE_CODE_ENTRYPOINT).toBeUndefined();
+    expect(result.CLAUDE_MEM_INTERNAL).toBe('1');
+  });
+});
+
 /**
  * Issue #5315: When Claude Code is configured with a custom gateway in
  * ~/.claude/settings.json (or parent shell), variables like ANTHROPIC_MODEL,

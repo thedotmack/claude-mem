@@ -81,29 +81,9 @@ const BLOCKED_ENV_VARS = [
   // chain sanitizeEnv.
   'CLAUDE_CODE_EFFORT_LEVEL',
   'CLAUDE_CODE_ALWAYS_ENABLE_EFFORT',
-  // Issue #5315: Gateway model variables from the parent shell or Claude Code's
-  // ~/.claude/settings.json must not leak into the SDK subprocess. When a user
-  // configures a custom gateway for Claude Code, variables like
-  // ANTHROPIC_DEFAULT_HAIKU_MODEL, ANTHROPIC_MODEL, etc. point to gateway-only
-  // models (e.g. "auto"). Because ANTHROPIC_BASE_URL is stripped above for
-  // direct Anthropic API / subscription auth, leaking these model variables
-  // causes the CLI to send gateway model names to api.anthropic.com, which
-  // rejects them with unrecognized_model / HTTP 400.
-  'ANTHROPIC_MODEL',
-  'ANTHROPIC_DEFAULT_MODEL',
-  'ANTHROPIC_DEFAULT_OPUS_MODEL',
-  'ANTHROPIC_DEFAULT_SONNET_MODEL',
-  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
-  'ANTHROPIC_DEFAULT_FABLE_MODEL',
-  'ANTHROPIC_SMALL_FAST_MODEL',
-  'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY',
 ];
 
-export function isBlockedEnvVar(key: string): boolean {
-  if (BLOCKED_ENV_VARS.includes(key)) return true;
-  if (/^ANTHROPIC_DEFAULT_.*_MODEL(?:_|$)/.test(key)) return true;
-  return false;
-}
+const MODEL_OVERRIDE_ENV_VAR = /^ANTHROPIC_(?:MODEL|SMALL_FAST_MODEL|DEFAULT_(?:[A-Z0-9]+_)?MODEL)(?:_(?:NAME|DESCRIPTION|SUPPORTED_CAPABILITIES))?$/;
 
 export interface ClaudeMemEnv {
   ANTHROPIC_API_KEY?: string;
@@ -252,7 +232,7 @@ export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
 export function buildIsolatedEnv(includeCredentials: boolean = true): Record<string, string> {
   const isolatedEnv: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined && !isBlockedEnvVar(key)) {
+    if (value !== undefined && !BLOCKED_ENV_VARS.includes(key)) {
       isolatedEnv[key] = value;
     }
   }
@@ -334,6 +314,21 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
     // sync path cannot model — copying a parent-process token captured
     // at startup means injecting a stale token days later (issue #2215).
     // Use buildIsolatedEnvWithFreshOAuth() for spawn-time injection.
+  }
+
+  // #5315: without the parent gateway, its model aliases are invalid at the
+  // Anthropic API. Explicit gateways and cloud backends retain their mappings.
+  const usesCloudBackend = ['CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY']
+    .some(key => {
+      const value = isolatedEnv[key]?.trim().toLowerCase();
+      return !!value && value !== '0' && value !== 'false';
+    });
+  if (!isolatedEnv.ANTHROPIC_BASE_URL && !usesCloudBackend) {
+    for (const key of Object.keys(isolatedEnv)) {
+      if (MODEL_OVERRIDE_ENV_VAR.test(key) || key === 'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY') {
+        delete isolatedEnv[key];
+      }
+    }
   }
 
   return isolatedEnv;

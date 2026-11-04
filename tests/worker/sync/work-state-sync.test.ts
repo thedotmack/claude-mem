@@ -182,9 +182,11 @@ describe('work_state cloud sync', () => {
 
     // A row pulled later from another device carries an earlier write clock.
     store.appendWorkStateEntry({ project: 'proj-x', listName: 'release', fields: { task: 'publish', status: 'doing' }, createdAtEpoch: 2_000 });
+    // Plain 1000 in the SQL: digit separators need SQLite 3.46+, and Bun on
+    // macOS uses the system SQLite (3.43 on macOS 15).
     db.prepare(`
       INSERT INTO work_state_entries (project, list_name, fields, created_at, created_at_epoch, synced_at, origin_device_id, origin_local_id)
-      VALUES ('proj-x', 'release', '{"task":"publish","status":"todo"}', ?, 1_000, 5, ?, '9')
+      VALUES ('proj-x', 'release', '{"task":"publish","status":"todo"}', ?, 1000, 5, ?, '9')
     `).run(new Date(1_000).toISOString(), REMOTE);
     const entries = store.getWorkStateEntries(['proj-x']);
     expect(entries.map(entry => entry.created_at_epoch)).toEqual([1_000, 2_000]);
