@@ -110,7 +110,16 @@
 .scan-consent-agents { list-style: none; margin: 16px 0 0; padding: 0; display: grid; gap: 8px; }
 .scan-consent-agents label { display: flex; align-items: baseline; gap: 8px; cursor: pointer; }
 .scan-consent-agents input { flex: none; accent-color: var(--violet); }
-.scan-consent-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 20px; }
+.scan-consent-notice { margin-top: 12px !important; color: var(--muted); font-size: 15px; }
+.scan-consent-details { margin-top: 12px; color: var(--muted); font-size: 14px; }
+.scan-consent-details summary { width: fit-content; cursor: pointer; text-underline-offset: 3px; }
+.scan-consent-details summary:hover { color: var(--ink); }
+.scan-consent-details p { margin-top: 8px; }
+.scan-consent-actions { display: flex; flex-direction: column; align-items: center; gap: 8px; margin-top: 24px; }
+.scan-consent-actions .primary { width: 100%; }
+.scan-consent-skip { min-height: 44px; padding: 8px 12px; border: 0; background: none; color: var(--muted); font-size: 14px; text-decoration: underline; text-underline-offset: 3px; }
+.scan-consent-skip:hover:not(:disabled) { color: var(--ink); }
+.scan-consent-skip:disabled { opacity: .5; cursor: default; }
 .scan-status { margin-top: 24px !important; color: var(--muted); font-size: 20px; }
 .scan-error { margin-top: 18px !important; color: #922837; font-size: 16px; }
 .scan-retry { margin-top: 20px; padding: 10px 24px; border: 0; border-radius: 999px; background: #1c2030; color: #fff !important; font-weight: 600; }
@@ -466,3 +475,4 @@
 @media (prefers-reduced-motion: reduce) {
   .cmem-setup *, .cmem-setup *::before, .cmem-setup *::after { scroll-behavior: auto !important; }
 }
+

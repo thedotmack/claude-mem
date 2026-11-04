@@ -86,6 +86,17 @@ describe("token verification (real path)", () => {
 		expect(res.status).toBe(401);
 	});
 
+	it("passes a lapsed subscription through as 403 subscription_inactive (402)", async () => {
+		// The Pro verifier answers 402 for a lapsed, cancelled or unpaid plan.
+		// That is an entitlement decision, not an outage: the Hub must answer it
+		// terminally so the client pauses sync with the "renew at cmem.ai/pro"
+		// message instead of retrying a 503 forever.
+		const res = await getStatus("denied-402", "user-auth-402");
+		expect(res.status).toBe(403);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.code).toBe("subscription_inactive");
+	});
+
 	it("503s fail-closed when the verify endpoint is unreachable", async () => {
 		const res = await getStatus("network-error", "user-auth-6");
 		expect(res.status).toBe(503);
@@ -343,6 +354,36 @@ describe("token-verdict cache behavior", () => {
 		expect(rejected.response.status).toBe(401);
 		expect(invalidated).toHaveLength(1);
 		expect(invalidated[0]).toMatch(/^verdict:[0-9a-f]{64}$/);
+	});
+
+	it("invalidates the cached verdict and answers 403 when verify reports an inactive subscription (402)", async () => {
+		// Without this, a lapsed subscriber's positive verdict stays in KV for the
+		// whole AUTH_CACHE_TTL window (default 15m, max 60m) and the client only
+		// sees a retryable 503, so it never reaches the "renew your plan" state.
+		const invalidated: string[] = [];
+		const dependencies: AuthDependencies = {
+			async readCachedVerdict() {
+				return null;
+			},
+			async cacheVerifiedVerdict() {},
+			async invalidateCachedVerdict(cacheKey) {
+				invalidated.push(cacheKey);
+			},
+			async verifyToken() {
+				return Response.json(
+					{ error: "Subscription not active", code: "subscription_inactive", status: "past_due" },
+					{ status: 402 },
+				);
+			},
+			logCacheFailure() {},
+		};
+
+		const rejected = await authenticateRequest(request, authEnv, dependencies);
+		expect(rejected.ok).toBe(false);
+		if (rejected.ok) throw new Error("lapsed subscription unexpectedly authenticated");
+		expect(rejected.response.status).toBe(403);
+		expect(await rejected.response.json()).toMatchObject({ code: "subscription_inactive" });
+		expect(invalidated).toHaveLength(1);
 	});
 });
 

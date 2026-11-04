@@ -72,41 +72,48 @@ describe('hosted setup scan control', () => {
     expect(initial).toContain('Also share my anonymized setup results to help improve claude-mem (optional)');
     expect(initial.indexOf('<progress')).toBeLessThan(initial.indexOf(checkbox));
     expect(app.renderScan(scan({ phase: 'reading', improveProduct: true }))).toContain('checked=""');
-    expect(initial).not.toContain('Upload my prompts to cmem.ai');
+    expect(initial).not.toContain('Discover My Work, Rules &amp; Focus');
     const consent = app.renderScan(scan({ phase: 'awaiting-consent' }));
-    expect(consent).toContain('Upload my prompts to cmem.ai');
-    expect(consent).toContain('Keep everything local');
+    expect(consent).toContain('Discover My Work, Rules &amp; Focus');
+    expect(consent).toContain('Skip this step');
     const undetected = app.renderScan(scan({ phase: 'awaiting-consent', agents: [{ id: 'claude-code', label: 'Claude Code', detected: false, prompts: 2, canRunSetup: null, cannotRunReason: null }] }));
-    expect(undetected).toContain('Claude Code (2 prompts)');
-    expect(undetected).not.toMatch(/<button[^>]*disabled[^>]*>Upload my prompts/);
+    expect(undetected).toContain('Claude Code (2 messages)');
+    expect(undetected).not.toMatch(/<button[^>]*disabled[^>]*>Discover My Work, Rules &amp; Focus/);
     const sending = app.renderScan(scan({ phase: 'awaiting-consent', agents: [{ id: 'codex', label: 'Codex', detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null }] }), null, false, null, null, true);
     expect(sending).toContain('Sending your choice');
-    expect(sending).toMatch(/<button[^>]*disabled[^>]*>Upload my prompts/);
+    expect(sending).toMatch(/<button[^>]*disabled[^>]*>Discover My Work, Rules &amp; Focus/);
     expect(app.renderScan(scan({ phase: 'awaiting-consent' }), null, false, null, 'Could not send your choice')).toContain('class="scan-error" role="alert">Could not send your choice');
-    expect(app.renderScan(scan({ phase: 'awaiting-consent', agents: [{ id: 'codex', label: 'Codex', detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null }] }))).toContain('Codex (3 prompts)');
-    expect(consent).toContain('full text of the prompts you typed in the last 30 days');
+    expect(app.renderScan(scan({ phase: 'awaiting-consent', agents: [{ id: 'codex', label: 'Codex', detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null }] }))).toContain('Codex (3 messages)');
+    const visibleConsent = consent.replace(/<details\b[^>]*>[\s\S]*?<\/details>/g, '');
+    expect(visibleConsent).toContain('Claude-Mem scans your transcripts to automatically discover your existing work, your preferences, and what you’re focused on.');
+    expect(visibleConsent).toContain('Selected messages are sent to cmem.ai and an AI provider.');
+    expect(visibleConsent).not.toContain('session IDs');
+    expect(visibleConsent).not.toContain('timestamps');
+    expect(consent).toContain('What gets uploaded?');
+    expect(consent).toContain('The full text of your messages from the last 30 days in the selected tools');
+    expect(consent).toContain('session IDs, project names, folder paths and timestamps');
     expect(app.renderScan(scan({ phase: 'saving' }))).not.toContain('disabled=""');
     expect(app.renderScan(scan({ phase: 'uploading' }))).toContain('disabled=""');
   });
 
-  it('gives both consent buttons the same weight, local first', () => {
+  it('leads with discovering existing work and keeps skip available underneath', () => {
     const app = fixture();
     const html = app.renderScan(scan({ phase: 'awaiting-consent', agents: [{ id: 'codex', label: 'Codex', detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null }] }));
-    const buttons = [...html.matchAll(/<button[^>]*class="([^"]*)"[^>]*>(Keep everything local|Upload my prompts to cmem.ai)</g)];
-    expect(buttons.map(match => match[2])).toEqual(['Keep everything local', 'Upload my prompts to cmem.ai']);
-    expect(buttons[0][1]).toBe(buttons[1][1]);
+    const buttons = [...html.matchAll(/<button[^>]*class="([^"]*)"[^>]*>(Skip this step|Discover My Work, Rules &amp; Focus)</g)];
+    expect(buttons.map(match => match[2])).toEqual(['Discover My Work, Rules &amp; Focus', 'Skip this step']);
+    expect(buttons.map(match => match[1])).toEqual(['primary', 'scan-consent-skip']);
   });
 
-  it('says prompts stayed local only when the person actually kept them local', () => {
+  it('shows the skipped-step message only when the person actually skipped', () => {
     const app = fixture();
     const agents = [{ id: 'codex', label: 'Codex', detected: true, prompts: 3, canRunSetup: null, cannotRunReason: null }];
     const empty = { goals: [], work: [], rules: [] };
     const local = app.renderReveal(agents, empty, { state: 'ok', step: null }, []);
-    expect(local).toContain('Your prompts stayed on this computer.');
+    expect(local).toContain('You skipped this step.');
     expect(local).not.toContain('already knows your work');
     // An upload that came back with nothing must never be described as "nothing was uploaded".
     const uploadedEmpty = app.renderReveal(agents, empty, { state: 'ok', step: null }, ['codex']);
-    expect(uploadedEmpty).not.toContain('stayed on this computer');
+    expect(uploadedEmpty).not.toContain('You skipped this step.');
     expect(uploadedEmpty).not.toContain('Nothing was uploaded');
     expect(app.renderReveal(agents, { goals: null, work: null, rules: null }, { state: 'running', step: 'goals' }, ['codex'])).toContain('already knows your work');
   });
@@ -118,7 +125,7 @@ describe('hosted setup scan control', () => {
       { id: 'claude-code', label: 'Claude Code', detected: true, prompts: 7, canRunSetup: null, cannotRunReason: null },
     ];
     const html = app.renderReveal(agents, { goals: null, work: null, rules: null }, { state: 'running', step: 'goals' }, ['codex']);
-    expect(html).toContain('From 3 prompts across Codex');
+    expect(html).toContain('From 3 messages across Codex');
     expect(html).not.toContain('Claude Code');
   });
 
@@ -366,3 +373,4 @@ describe('hosted setup scan control', () => {
     stop();
   });
 });
+ 

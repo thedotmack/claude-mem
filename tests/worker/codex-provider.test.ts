@@ -554,6 +554,46 @@ describe('Codex provider integration', () => {
     });
   }
 
+  it('classifies a recycle SIGKILL as transient when the stderr tail quotes a stale 401', () => {
+    const staleAuthStderr = 'failed to connect to websocket: IO error: Connection reset by peer (os error 54), url: wss://chatgpt.com/backend-api/codex/responses\n'
+      + '2026-11-02T07:14:11.006948Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: Connection reset by peer (os error 54)\n'
+      + '2026-11-02T07:14:14.708504Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: authentication failed with 401 unauthorized';
+    const message = `Codex app-server exited with code null signal SIGKILL: ${staleAuthStderr}`;
+    expect(classifyCodexError(new Error(message)).kind).toBe('transient');
+    const withSignal = Object.assign(new Error(message), { exitCode: null, exitSignal: 'SIGKILL' });
+    expect(classifyCodexError(withSignal).kind).toBe('transient');
+  });
+
+  it('classifies SIGTERM exit as transient', () => {
+    const error = Object.assign(
+      new Error('Codex app-server exited with code null signal SIGTERM: graceful shutdown'),
+      { exitCode: null, exitSignal: 'SIGTERM' },
+    );
+    expect(classifyCodexError(error).kind).toBe('transient');
+  });
+
+  it('classifies a 401 on an ordinary exit as auth_invalid', () => {
+    const error = Object.assign(
+      new Error('Codex app-server exited with code 1 signal null: authentication failed with 401 unauthorized'),
+      { exitCode: 1, exitSignal: null },
+    );
+    expect(classifyCodexError(error).kind).toBe('auth_invalid');
+  });
+
+  it('does not arm an auth cooldown when a recycle SIGKILL quotes a stale 401', async () => {
+    const provider = new CodexProvider(null as any, null as any) as any;
+    const failure = Object.assign(
+      new Error('Codex app-server exited with code null signal SIGKILL: authentication failed with 401 unauthorized'),
+      { exitCode: null, exitSignal: 'SIGKILL' },
+    );
+    for (const client of provider.appServer.clients) client.runTurn = async (options: any) => {
+      options.onFailure(failure);
+      throw failure;
+    };
+    await expect(provider.query([], config)).rejects.toMatchObject({ kind: 'transient' });
+    expect(getQuotaCooldown('codex')).toBeNull();
+  });
+
   for (const [info, kind] of [
     ['usageLimitExceeded', 'quota_exhausted'], ['unauthorized', 'auth_invalid'],
     ['rateLimitExceeded', 'rate_limit'], ['contextWindowExceeded', 'context_overflow'],
