@@ -139,9 +139,14 @@ export const createWorkSlice: SliceCreator<WorkSlice> = (set, get) => {
       set((state) => { state.work.connection = connection })
     },
 
-    setRequestChecked: (requestId, checked, expectedFingerprint) =>
+    setRequestChecked: (requestId, checked, expectedFingerprint, expectedReviewHash) =>
       // Sample fixtures carry no fingerprint and the sample source ignores it; the local source refuses an empty one.
-      saving('save the check to', (to) => to.setRequestChecked(requestId, expectedFingerprint ?? '', checked), (result) => 'model' in result ? result.model : null),
+      saving('save the check to', (to) => to.setRequestChecked(requestId, expectedFingerprint ?? '', checked, expectedReviewHash), (result) => 'model' in result ? result.model : null),
+
+    answerRequestSuggestion: (suggestion, action) => saving('answer the suggestion in', (to) => {
+      if (!to.answerRequestSuggestion) throw new Error('Request suggestions are unavailable in this viewer.')
+      return to.answerRequestSuggestion(suggestion, action)
+    }, (result) => result.model),
 
     saveRuleChange: (change) => saving('save the rule change to', (to) => to.saveRuleChange(change), (result) => result.model),
 

@@ -879,6 +879,9 @@ export class WorkerService implements WorkerRef {
         ...(settings.CLAUDE_MEM_WORK_VIEW_SHARED_STATE === 'true' ? {
           persistSharedCopy: (requestId: string, entry: { fingerprint: string; copy: unknown; generatedAt: number }) => this.sharedWorkSync!.persistCopy(requestId, entry),
           saveSharedLedgerFile: (name: string, value: unknown) => this.sharedWorkSync!.saveFile(name, value),
+          saveSharedReview: input => this.sharedWorkSync!.saveReview(input),
+          prepareSharedOwnerAction: () => this.sharedWorkSync!.prepareOwnerAction(),
+          answerSharedSuggestion: (conversationKey, action, expectedHash) => this.sharedWorkSync!.answerSuggestion(conversationKey, action, expectedHash),
         } : {}),
         getSharedStatus: () => this.sharedWorkSync?.status() ?? { enabled: false },
         getSyncStatus: () => this.viewerSync.getSnapshot(),

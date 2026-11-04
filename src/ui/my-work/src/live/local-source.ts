@@ -8,7 +8,7 @@
 // EventSource handlers, the 1s connection timer and the 60s aging timer). The check copies app.js:125-138 (`saveReview`).
 import { getConnectionStatus, type ConnectionStatus } from './connection-status.ts'
 import { isServedFromCloud } from './served-from.ts'
-import { conflictReason, readReviewResponse, type ReviewResult } from './review-response.ts'
+import { conflictReason, readReviewResponse, readSaveReceipt, type ReviewResult } from './review-response.ts'
 import { toWorkModel } from './to-work-model.ts'
 import type { MappedWorkModel, RuleSaveResult, WorkDataSource, WorkModel } from './work-data-source.ts'
 import { SaveRefusedError } from '../data.ts'
@@ -39,6 +39,7 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
   const WORK_VIEW_OVERVIEW_URL = '/api/work-view/overview'
   const WORK_VIEW_EVENTS_URL = '/api/work-view/events'
   const WORK_VIEW_REVIEW_URL = '/api/work-view/review'
+  const WORK_VIEW_SUGGESTIONS_URL = '/api/work-view/suggestions'
   const WORK_VIEW_RULES_URL = '/api/work-view/rules'
   const WORK_VIEW_FOCUS_URL = '/api/work-view/focus'
   const WORK_VIEW_LOAD_RULES_URL = '/api/work-view/rules/load-in-claude-code'
@@ -218,7 +219,8 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
       ? withConnection(latestModel) : acceptSnapshot(answer, false, syncBeforeSave)
     lastDeliveredSignature = modelSignature(model)
     const { savedRuleId } = answer as { savedRuleId?: unknown }
-    return { model, savedRuleId: typeof savedRuleId === 'string' ? savedRuleId : null }
+    const save = readSaveReceipt(answer)
+    return { model, savedRuleId: typeof savedRuleId === 'string' ? savedRuleId : null, ...(save ? { save } : {}) }
   }
 
   const localSource: WorkDataSource = {
@@ -314,7 +316,7 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
      * app.js `saveReview`: POST the version on screen. 409 → read the latest model (the worker refused a stale or
      * incomplete version); 200 → the worker's snapshot after the save; 503 → the worker's reason. Anything else throws.
      */
-    async setRequestChecked(requestId, expectedFingerprint, checked): Promise<ReviewResult> {
+    async setRequestChecked(requestId, expectedFingerprint, checked, expectedReviewHash): Promise<ReviewResult> {
       if (!CONTENT_FINGERPRINT_PATTERN.test(expectedFingerprint)) throw new Error(`Can't check ${requestId}: its recorded version (content fingerprint) is missing`)
       const versionBeforeSave = modelVersion
       const syncBeforeSave = syncVersion
@@ -322,24 +324,34 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
       const response = await fetchImpl(WORK_VIEW_REVIEW_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ requestId, expectedFingerprint, checked }),
+        body: JSON.stringify({ requestId, expectedFingerprint, checked, expectedReviewHash }),
       })
       let body: unknown = null
       try { body = await response.json() } catch { /* A body that isn't JSON leaves only the status to report. */ }
       const answer = readReviewResponse(response.status, body)
       if (answer.kind === 'unavailable') return { outcome: 'unavailable', serverMessage: answer.serverMessage }
       if (answer.kind === 'conflict') {
-        const latest = await localSource.loadWorkModel()
+        const latest = isWorkViewSnapshot(answer.snapshot)
+          ? latestModel && (modelVersion !== versionBeforeSave || generation !== streamGeneration)
+            ? withConnection(latestModel) : acceptSnapshot(answer.snapshot, false, syncBeforeSave)
+          : await localSource.loadWorkModel()
         const latestFingerprint = latest.requests.find((request) => request.id === requestId)?.contentFingerprint
         return conflictReason(expectedFingerprint, latestFingerprint) === 'refused'
           ? { outcome: 'refused', serverMessage: answer.serverMessage, model: latest }
-          : { outcome: 'changed-while-reading', model: latest }
+          : { outcome: 'changed-while-reading', model: latest, serverMessage: answer.serverMessage }
       }
       if (!isWorkViewSnapshot(answer.snapshot)) throw new Error('The local review was saved, but the worker sent back something that is not a work snapshot. Reload to see it.')
       const model = latestModel && (modelVersion !== versionBeforeSave || generation !== streamGeneration)
         ? withConnection(latestModel) : acceptSnapshot(answer.snapshot, false, syncBeforeSave)
       lastDeliveredSignature = modelSignature(model)
-      return { outcome: 'saved', model }
+      return { outcome: 'saved', model, ...(answer.save ? { save: answer.save } : {}) }
+    },
+
+    async answerRequestSuggestion(suggestion, action) {
+      const { model, save } = await postForWorkModel(WORK_VIEW_SUGGESTIONS_URL, {
+        conversationKey: suggestion.conversationKey, action, expectedSuggestionHash: suggestion.expectedSuggestionHash,
+      }, 'The suggestion decision')
+      return { model, ...(save ? { save } : {}) }
     },
 
     saveRuleChange: (change) => postForWorkModel(WORK_VIEW_RULES_URL, change, 'The rule change'),

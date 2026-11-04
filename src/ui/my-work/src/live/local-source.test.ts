@@ -53,6 +53,60 @@ function harness(fetcher: typeof fetch, bootstrapTimeoutMs = 100) {
 }
 
 describe('compact local source', () => {
+  it('posts the clicked review hash, preserves its receipt, and keeps old workers compatible', async () => {
+    const bodies: unknown[] = []
+    const { local } = harness(async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)))
+      return json({ ...snapshot(), save: { scope: 'shared', state: 'queued' } })
+    })
+    const result = await local.setRequestChecked('request-a', FIRST, true, null)
+    assert.deepEqual(bodies[0], { requestId: 'request-a', expectedFingerprint: FIRST, checked: true, expectedReviewHash: null })
+    assert.deepEqual(result.outcome === 'saved' && result.save, { scope: 'shared', state: 'queued' })
+    await local.setRequestChecked('request-a', FIRST, false, 'review-version-read')
+    assert.equal((bodies[1] as { expectedReviewHash: string }).expectedReviewHash, 'review-version-read')
+    await local.setRequestChecked('request-a', FIRST, false)
+    assert.equal(Object.hasOwn(bodies[2] as object, 'expectedReviewHash'), false)
+    const legacy = harness(async () => json(snapshot())).local
+    const oldResult = await legacy.setRequestChecked('request-a', FIRST, true)
+    assert.equal(oldResult.outcome, 'saved')
+    assert.equal(oldResult.outcome === 'saved' && oldResult.save, undefined)
+  })
+
+  it('keeps a shared review conflict explicit even when its evidence fingerprint did not change', async () => {
+    const updated = snapshot()
+    updated.humanRequests[0].review = { checked: false, checkedAtEpoch: null, available: true, mode: 'shared', hash: SECOND, conflict: true }
+    const { local } = harness(async () => json({ error: 'Concurrent review decisions need a fresh choice.', snapshot: updated }, 409))
+    const result = await local.setRequestChecked('request-a', FIRST, true, FIRST)
+    assert.equal(result.outcome, 'refused')
+    assert.equal(result.outcome === 'refused' && result.serverMessage, 'Concurrent review decisions need a fresh choice.')
+    assert.equal('model' in result && result.model.requests[0].review?.hash, SECOND)
+  })
+
+  it('posts the clicked suggestion version, surfaces conflicts, and fences a late receipt behind newer events', async () => {
+    const held = deferred<Response>()
+    const bodies: unknown[] = []
+    const { local, streams } = harness(async (_url, init) => { bodies.push(JSON.parse(String(init?.body))); return held.promise })
+    const stop = local.subscribeToLiveUpdates(() => {}, () => {})
+    streams[0].emit('work-view-overview', overview())
+    const suggestion = { conversationKey: 'conversation-a', requestId: 'group-a', requestTitle: 'A', evidence: 'Related work', expectedSuggestionHash: 'read-hash' }
+    const saving = local.answerRequestSuggestion!(suggestion, 'join')
+    streams[0].emit('work-view-overview', overview(THIRD))
+    held.resolve(json({ ...snapshot(SECOND), save: { scope: 'shared', state: 'queued' } }))
+    const result = await saving
+    assert.deepEqual(bodies, [{ conversationKey: 'conversation-a', action: 'join', expectedSuggestionHash: 'read-hash' }])
+    assert.equal(result.model.requests[0].contentFingerprint, THIRD)
+    assert.deepEqual(result.save, { scope: 'shared', state: 'queued' })
+    stop()
+    const conflicting = harness(async () => json({ error: 'Suggestion has a concurrent decision.', snapshot: snapshot(SECOND) }, 409)).local
+    await assert.rejects(conflicting.answerRequestSuggestion!(suggestion, 'not-this'), (error: unknown) =>
+      error instanceof SaveRefusedError && /concurrent decision/.test(error.message) && error.model.requests[0].contentFingerprint === SECOND)
+    const legacy = harness(async (_url, init) => {
+      assert.equal(Object.hasOwn(JSON.parse(String(init?.body)), 'expectedSuggestionHash'), false)
+      return json(snapshot())
+    }).local
+    assert.equal((await legacy.answerRequestSuggestion!({ ...suggestion, expectedSuggestionHash: undefined }, 'not-this')).save, undefined)
+  })
+
   it('only local visible pages announce activity and stopping withdraws the lease', () => {
     class Visibility extends EventTarget { visibilityState = 'visible' }
     const activityDocument = new Visibility()
@@ -190,12 +244,16 @@ describe('compact local source', () => {
 
   it('expands omitted wire-only detail arrays without inventing loaded evidence', async () => {
     const compact = overview()
-    for (const key of ['workstreams', 'granular', 'conversations', 'prompts', 'story', 'evidence'] as const) delete compact.model.requests[0][key]
+    for (const key of ['workstreams', 'granular', 'conversations', 'prompts', 'story', 'evidence', 'terminal', 'followUps'] as const) delete compact.model.requests[0][key]
+    compact.model.requests[0].review = { mode: 'shared', hash: null, available: false }
     const { local } = harness(async () => json(compact))
     const request = (await local.loadWorkModel()).requests[0]
     assert.equal(request.detailLoaded, false)
     assert.deepEqual(request.granular, [])
     assert.deepEqual(request.workstreams, [])
+    assert.deepEqual(request.terminal, [])
+    assert.deepEqual(request.followUps, [])
+    assert.deepEqual(request.review, { mode: 'shared', hash: null, available: false, conflict: false, pending: false, legacy: false })
     assert.equal(request.contentFingerprint, FIRST)
   })
 

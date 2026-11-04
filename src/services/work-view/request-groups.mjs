@@ -918,13 +918,13 @@ export function validateGroupingAnswer(answer, input) {
  * project read from the database and each new group's first ask kept in the ledger (so a card's start
  * never moves forward when the anchor conversation ages out of My Work's reads). Returns the next
  * ledger without writing it. */
-export function applyDecisions(stored, decisions, { database, now = Date.now(), excludedPromptIds = null }) {
+export function applyDecisions(stored, decisions, { database, now = Date.now(), excludedPromptIds = null, enrichGroupIds = null }) {
   // Every conversation the decisions touch, and the members their groups already hold, by project.
   const touched = (decisions?.groups ?? []).flatMap((group) => Array.isArray(group?.conversations) ? group.conversations : []).filter(isConversationKey);
   const touchedGroups = new Set(touched.map((key) => groupIdFor(key)));
   const existing = Object.entries(stored?.conversations ?? {}).filter(([, id]) => touchedGroups.has(id)).map(([key]) => key);
   const next = applyGroupDecisions(stored, decisions, now, { projectOf: readConversationProjects(database, [...touched, ...existing]) });
-  const missing = Object.values(next.groups).filter((group) => !group.anchorAsk).map((group) => group.anchor);
+  const missing = Object.entries(next.groups).filter(([id, group]) => !group.anchorAsk && (enrichGroupIds === null || enrichGroupIds.includes(id))).map(([, group]) => group.anchor);
   const anchors = new Map(readCandidates(database, { conversationKeys: missing, excludedPromptIds }).map((candidate) => [candidate.conversationKey, candidate.original]));
   for (const group of Object.values(next.groups)) if (!group.anchorAsk && anchors.has(group.anchor)) group.anchorAsk = anchors.get(group.anchor);
   return next;

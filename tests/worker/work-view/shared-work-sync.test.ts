@@ -7,6 +7,9 @@ import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { SharedWorkSync } from '../../../src/services/work-view/SharedWorkSync.js';
 import { readSharedRecords } from '../../../src/services/work-view/shared-record-store.mjs';
 import { groupIdFor, writeJsonAtomic } from '../../../src/services/work-view/request-groups.mjs';
+import { getSharedReviews, sharedSuggestionDescriptor } from '../../../src/services/work-view/shared-reviews.mjs';
+import { publishSharedRecords } from '../../../src/services/work-view/shared-record-store.mjs';
+import { isSharedProjectionValue } from '../../../src/services/work-view/shared-projection.mjs';
 
 const disposals: Array<() => void> = [];
 afterEach(() => { for (const dispose of disposals.splice(0).reverse()) dispose(); });
@@ -36,6 +39,28 @@ test('disabled runtime leaves legacy file writers active and does not capture sh
   expect(readSharedRecords(f.store.db, { deviceId: f.options.deviceId }).records.size).toBe(0);
   expect((f.store.db.query('SELECT COUNT(*) AS count FROM work_state_entries').get() as any).count).toBe(0);
   expect(f.store.db.query("SELECT name FROM sqlite_master WHERE name='my_work_file_state'").all()).toEqual([]);
+});
+
+test('suggestion decisions settle delayed materialization and reject stale canonical group bases', async () => {
+  const f = fixture(), sync = createSync(f);
+  const a = Object.keys(f.group.groups)[0], c = JSON.stringify(['conversation', 'claude', 'candidate']), own = groupIdFor(c);
+  const groups: any = structuredClone(f.group);
+  groups.groups[own] = { title: 'Candidate', anchor: c };
+  groups.conversations[c] = own;
+  groups.suggestions[c] = { requestId: a, confidence: .7, evidence: 'Earlier evidence', status: 'open' };
+  sync.saveFile('request-groups.json', groups);
+  const oldHash = sharedSuggestionDescriptor(getSharedReviews(f.store.db, f.options.deviceId), c).hash;
+  const record = [...getSharedReviews(f.store.db, f.options.deviceId).records.values()].find(record => record.kind === 'group' && record.key === a)!;
+  const newer: any = structuredClone(record.value); newer.suggestions[c].evidence = 'New canonical evidence';
+  publishSharedRecords(f.store.db, { deviceId: f.options.deviceId, project: '__my_work__', validateValue: isSharedProjectionValue,
+    updates: [{ kind: 'group', key: a, value: newer, expectedHash: record.hash }] });
+  expect(readFileSync(join(f.ledger, 'request-groups.json'), 'utf8')).toContain('Earlier evidence');
+  await sync.prepareOwnerAction();
+  expect(readFileSync(join(f.ledger, 'request-groups.json'), 'utf8')).toContain('New canonical evidence');
+  expect(() => sync.answerSuggestion(c, 'not-this', oldHash)).toThrow('changed since read');
+  const fresh = sharedSuggestionDescriptor(getSharedReviews(f.store.db, f.options.deviceId), c).hash;
+  expect(sync.answerSuggestion(c, 'not-this', fresh)).toMatchObject({ status: 'declined' });
+  expect(() => sync.answerSuggestion(c, 'join', fresh)).toThrow('changed since read');
 });
 
 test('runtime imports through the actual background worker and unregisters the direct writer at close', async () => {

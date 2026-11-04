@@ -14,6 +14,7 @@ import { applySharedProjection, buildSharedProjectionUpdates, decorateSharedView
 import { createHumanCopyInput, humanCopyFingerprint } from '../../../src/services/work-view/human-copy.mjs';
 import { HumanCopyWorker } from '../../../src/services/work-view/human-copy-worker.mjs';
 import { WorkStateSource } from '../../../src/services/work-view/data-source.mjs';
+import { sharedReviewDescriptor } from '../../../src/services/work-view/shared-reviews.mjs';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -105,6 +106,10 @@ test('canonical shared records preserve grouping, progress, attribution and safe
   const input = createHumanCopyInput(view.humanRequests[0]);
   const replicaInput = createHumanCopyInput(replicaWithPrompts.humanRequests[0]);
   expect(replicaInput).toEqual(input);
+  const reviewA = sharedReviewDescriptor(a.db, view.humanRequests[0], { deviceId: 'a', sharedState: readSharedRecords(a.db, { deviceId: 'a', validateValue: isSharedProjectionValue }) });
+  const reviewB = sharedReviewDescriptor(b.db, replicaWithPrompts.humanRequests[0], { deviceId: 'b', sharedState: shared });
+  expect(reviewA.complete).toBe(true);
+  expect(reviewB).toEqual(reviewA);
   const copy = { title: 'Release cards', summary: 'The shared card work is underway.', next: '', workstreams: input.workstreams.map((stream: any) => ({ id: stream.id, title: 'Cards', summary: 'The layout is underway.' })) };
   publishSharedRecords(a.db, { deviceId: 'a', project: 'repo', validateValue: isSharedProjectionValue, updates: [{ kind: 'copy', key: view.humanRequests[0].id, value: { fingerprint: humanCopyFingerprint(input), copy, generatedAt: NOW } }] });
   transferRows(a, b, "list_name LIKE '__my_work_v1:%'");

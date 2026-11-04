@@ -7,14 +7,16 @@ import { assertSharedMetadataRedactionSafe, readSharedRedactionReceipts, redactS
 const compareText = (a, b) => a === b ? 0 : a < b ? -1 : 1;
 
 /** Read only. Incomplete/invalid batches never displace an earlier complete value. */
-export function readSharedRecords(db, { deviceId, validateValue, rows: suppliedRows }) {
+export function readSharedRecords(db, { deviceId, validateValue, rows: suppliedRows, includeHistory = false }) {
   const records = new Map();
+  const heads = new Map();
+  const history = includeHistory ? new Map() : undefined;
   const diagnostics = { pending: 0, invalid: 0, unsupported: 0, conflicts: [] };
   let rows;
   try {
     rows = suppliedRows ?? db.prepare("SELECT id, list_name, fields, origin_device_id, origin_local_id, sync_rev FROM work_state_entries WHERE list_name GLOB '__my_work_v[0-9]*:*'").all();
   } catch (error) {
-    if (/no such (table|column)/i.test(String(error.message))) return { records, revision: sha256Base64Url('[]'), diagnostics };
+    if (/no such (table|column)/i.test(String(error.message))) return { records, heads, ...(history ? { history } : {}), revision: sha256Base64Url('[]'), diagnostics };
     throw error;
   }
   const batches = new Map();
@@ -82,6 +84,11 @@ export function readSharedRecords(db, { deviceId, validateValue, rows: suppliedR
       || compareText(a.writer, b.writer) || compareText(a.batch, b.batch));
     const latest = entries.at(-1);
     const sameRevision = entries.filter(entry => entry.revision === latest.revision);
+    const recordOf = entry => ({ kind: entry.kind, key: entry.key, value: entry.value, deleted: entry.deleted,
+      revision: entry.revision, writer: entry.writer, hash: entry.hash, batchId: entry.batch, base: entry.base,
+      valueHash: sharedValueHash(entry.kind, entry.key, entry.value, entry.deleted) });
+    heads.set(identity, sameRevision.map(recordOf));
+    if (history && latest.kind === 'group') history.set(identity, entries.map(recordOf));
     if (new Set(sameRevision.map(entry => entry.hash)).size > 1) {
       diagnostics.conflicts.push({ kind: latest.kind, key: latest.key, revision: latest.revision,
         writers: [...new Set(sameRevision.map(entry => entry.writer))].sort() });
@@ -92,8 +99,9 @@ export function readSharedRecords(db, { deviceId, validateValue, rows: suppliedR
   }
   diagnostics.conflicts.sort((a, b) => compareText(sharedRecordKey(a.kind, a.key), sharedRecordKey(b.kind, b.key)));
   const revision = sha256Base64Url(canonicalJson([...records].sort(([a], [b]) => compareText(a, b))
-    .map(([key, record]) => [key, record.revision, record.writer, record.hash, record.valueHash])));
-  return { records, revision, diagnostics };
+    .map(([key, record]) => [key, record.revision, record.writer, record.hash, record.valueHash,
+      heads.get(key).map(head => [head.hash, head.valueHash]).sort((a, b) => compareText(canonicalJson(a), canonicalJson(b)))])));
+  return { records, heads, ...(history ? { history } : {}), revision, diagnostics };
 }
 
 /** Atomic local commit; callers emit notifications only after this returns. */
@@ -115,10 +123,10 @@ export function publishSharedRecords(db, { deviceId, project, updates, now = Dat
       const deleted = update.deleted === true;
       const value = deleted ? null : redactSharedValue(update.value);
       if (validateValue && validateValue(update.kind, update.key, value, deleted, deviceId) !== true) throw new TypeError('Shared My Work: invalid object value');
-      if ((previous?.valueHash ?? previous?.hash) === sharedValueHash(update.kind, update.key, value, deleted)) continue;
+      const conflicted = state.diagnostics.conflicts.some(conflict => sharedRecordKey(conflict.kind, conflict.key) === identity);
+      if (!conflicted && (previous?.valueHash ?? previous?.hash) === sharedValueHash(update.kind, update.key, value, deleted)) continue;
       if (!previous && deleted) continue;
-      if (state.diagnostics.conflicts.some(conflict => sharedRecordKey(conflict.kind, conflict.key) === identity)
-        && !Object.hasOwn(update, 'expectedHash')) throw new Error('Shared My Work: unresolved conflict requires expectedHash');
+      if (conflicted && !Object.hasOwn(update, 'expectedHash')) throw new Error('Shared My Work: unresolved conflict requires expectedHash');
       entries.push(createSharedEntry({ batchId, writer: deviceId, kind: update.kind, key: update.key,
         revision: incrementCanonicalDecimal(previous?.revision ?? '0'), base: previous?.hash ?? null, value, deleted }));
     }

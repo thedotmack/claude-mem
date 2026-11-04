@@ -2,7 +2,10 @@ export interface WorkViewRequest extends Record<string, unknown> {
   id: string;
   lifecycle?: { explicit?: boolean; complete?: boolean; status?: string } | null;
   contentFingerprint?: string;
-  review?: { checked: boolean; checkedAtEpoch: number | null; actor: 'local-user' | null; available: boolean };
+  legacyContentFingerprint?: string;
+  review?: { checked: boolean; checkedAtEpoch: number | null; actor: 'local-user' | 'shared-user' | null; available: boolean; mode?: 'local' | 'shared'; hash?: string | null; version?: number; conflict?: boolean; legacy?: boolean; pending?: boolean; message?: string };
+  sharedReviewDescriptor?: import('./shared-reviews.mjs').SharedReviewDescriptor;
+  sharedReview?: import('./shared-reviews.mjs').SharedReviewState;
   /** The conversation its my-focus placement is keyed by (my-focus.mjs placeRequests). */
   anchorConversationKey?: string | null;
 }
@@ -21,7 +24,7 @@ export class WorkStateSource {
   readRules(): { rules: import('./my-rules.mjs').SavedRule[]; source: { connected: boolean; error: string | null; lastCheckedAt: string } };
   invalidateActivity(workState?: boolean): void;
   evidence(kind: string, id: number): Record<string, unknown> | null;
-  file(kind: string, id: number, index: number): string | null;
+  file(kind: string, id: number, index: number, localDeviceId?: string): string | null;
   /** The bucket copy a deliverables row names, while it exists: its path, title and kind; null otherwise. */
   deliverable(id: number): { id: number; title: string; kind: string; path: string } | null;
   close(): void;

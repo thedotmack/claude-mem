@@ -2,7 +2,7 @@ import type { Request } from '../data.ts'
 import type { MappedWorkModel } from './work-data-source.ts'
 import type { WorkViewSource } from './work-view-api-types.ts'
 
-type DetailArray = 'workstreams' | 'granular' | 'conversations' | 'prompts' | 'story' | 'evidence'
+type DetailArray = 'workstreams' | 'granular' | 'conversations' | 'prompts' | 'story' | 'evidence' | 'terminal' | 'followUps'
 export type WorkViewOverviewRequest = Omit<Request, DetailArray> & Partial<Pick<Request, DetailArray>>
 export type WorkViewOverviewModel = Omit<MappedWorkModel, 'requests'> & { requests: WorkViewOverviewRequest[] }
 
@@ -22,6 +22,8 @@ export function expandWorkViewOverview(overview: WorkViewOverview): MappedWorkMo
     ...request, workstreams: request.workstreams ?? [], granular: request.granular ?? [],
     conversations: request.conversations ?? [], prompts: request.prompts ?? [],
     story: request.story ?? [], evidence: request.evidence ?? [],
+    terminal: request.terminal ?? [], followUps: request.followUps ?? [],
+    ...(request.review ? { review: { conflict: false, pending: false, legacy: false, ...request.review } } : {}),
   })) }
 }
 

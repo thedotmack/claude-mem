@@ -1,9 +1,11 @@
 // Portable facts for My Work. Shared records carry stable origin/conversation
 // identities; SQLite row numbers and local file locations stay on their device.
 import { conversationKey, requestText } from './request-projection.mjs';
-import { productsFromToolUse, productsFromObservation, safeWebUrl } from './work-product.mjs';
+import { productsFromToolUse, productsFromObservation, productsFromDeliverable, mergeProducts, safeWebUrl, localProductId, servableFile, bucketFileAvailable, copyCoversSource } from './work-product.mjs';
 import { createHumanCopyInput, humanCopyFingerprint, validateHumanCopy } from './human-copy.mjs';
 import { isIP } from 'node:net';
+import { basename } from 'node:path';
+import { isSharedReviewValue } from './shared-review-value.mjs';
 
 const TABLES = { observation: 'observations', summary: 'session_summaries', prompt: 'user_prompts', 'work-state': 'work_state_entries' };
 const SOURCE_KINDS = { 'user-prompt': 'prompt', 'session-summary-request': 'summary', 'session-summary': 'summary', 'session-initial-request': 'session', 'work-state': 'work-state', observation: 'observation' };
@@ -83,8 +85,19 @@ const outcome = value => object(value)
   && ['landed', 'usage', 'value'].every(key => optional(value[key], item => object(item) && string(item.text, 4000) && optional(item.evidence, evidence)))
   && ['regressions', 'changes'].every(key => optional(value[key], items => list(items, item => object(item) && optional(item.text, text => string(text, 4000)) && optional(item.what, text => string(text, 4000)) && optional(item.why, text => string(text, 4000)), 100)));
 
+const gitSha = value => typeof value === 'string' && /^[a-f0-9]{7,64}$/i.test(value);
+const gitBranch = value => string(value, 1024) && value.length > 0 && !value.startsWith('/') && !/[\s\\\x00-\x1f\x7f~^:?*\[]|\.\.|@\{/.test(value);
+const gitRepo = value => string(value, 256) && /^[\w.-]+\/[\w.-]+$/.test(value) && !value.split('/').some(part => part === '.' || part === '..');
+const sharedProduct = value => object(value) && string(value.kind, 80) && string(value.title, 2000) && optional(value.atEpoch, epoch)
+  && optional(value.sha, gitSha) && optional(value.branch, gitBranch) && optional(value.repo, gitRepo)
+  && optional(value.heads, heads => list(heads, gitSha, 100))
+  && (value.availability === 'origin-only'
+    ? /^local_[a-f0-9]{64}$/.test(value.productId ?? '') && string(value.originDeviceId, 2000) && value.originDeviceId.length > 0 && value.url == null && value.fileUrl == null
+    : value.availability == null && Boolean(sharedPublishedUrl(value.url)));
+
 /** Invalid domain values reject the complete batch before it becomes visible. */
 export function isSharedProjectionValue(kind, key, value, deleted = false, writer = undefined) {
+  if (kind === 'review') return isSharedReviewValue(kind, key, value, deleted);
   const groupKey = /^g_[a-f0-9]{12}$/.test(key);
   const knownKey = kind === 'group' || kind === 'progress' ? groupKey
     : kind === 'story' ? key === 'current' : ['ignored', 'provenance'].includes(kind) ? conversation(key)
@@ -141,7 +154,7 @@ export function isSharedProjectionValue(kind, key, value, deleted = false, write
     && list(value.attributions, item => object(item) && originRef(item.work) && item.work.kind === 'work-state'
       && optional(item.agentId, id => string(id, 256)) && optional(item.agentType, type => string(type, 256))
       && optional(item.promptNumber, number => Number.isInteger(number) && number >= 0) && optional(item.atEpoch, epoch))
-    && list(value.products, item => object(item) && string(item.kind, 80) && string(item.title, 2000) && Boolean(sharedPublishedUrl(item.url)) && optional(item.atEpoch, epoch))
+    && list(value.products, item => sharedProduct(item) && (item.availability !== 'origin-only' || writer === undefined || item.originDeviceId === writer))
     && list(value.launches, item => object(item) && string(item.agent_id, 256) && optional(item.status, status => string(status, 80))
       && optional(item.is_async, flag => typeof flag === 'boolean' || flag === 0 || flag === 1) && optional(item.description, text => string(text, 160)) && optional(item.created_at_epoch, epoch))
     && list(value.activity, item => object(item) && optional(item.agent_id, id => string(id, 256)) && optional(item.last_epoch, epoch));
@@ -193,6 +206,28 @@ export function resolveEvidenceRef(database, ref, deviceId) {
     if (local) return local.id;
   }
   return get(database, `SELECT id FROM ${table} WHERE origin_device_id = ? AND origin_local_id = ?`, [ref.device, ref.row])?.id ?? null;
+}
+
+function fileProductIdentity(database, product, deviceId) {
+  if (!database) return null;
+  const source = product.sourceRef;
+  if (!source || !Number.isSafeInteger(source.id) || source.id < 1) return null;
+  // Deliverable rows are deliberately local-only; other source rows already
+  // have a canonical origin identity independent of the receiving row number.
+  const ref = source.kind === 'deliverable' ? { kind: source.kind, device: deviceId, row: String(source.id) }
+    : stableEvidenceRef(database, source.kind, source.id, deviceId);
+  const productId = ref && localProductId({ ...ref, index: source.index ?? 0 });
+  return productId ? { productId, originDeviceId: ref.device } : null;
+}
+
+function localFileMetadata(database, product, deviceId) {
+  if (!product.path && !product.bucketPath) return null;
+  const identity = fileProductIdentity(database, product, deviceId);
+  if (!identity) return null;
+  return {
+    kind: product.kind, title: basename(product.path ?? product.bucketPath),
+    ...identity, availability: 'origin-only', atEpoch: product.atEpoch ?? null,
+  };
 }
 
 /** Recursively preserve content while replacing only typed evidence locations. */
@@ -280,6 +315,12 @@ export function buildSharedProjectionUpdates(database, { ledger, records = {}, v
   }
 
   const sessions = new Map((records.sessions ?? []).map(row => [row.id, row]));
+  // A copied deliverable carries its conversation even when no recent memory
+  // happened to load the native session into this bounded projection.
+  for (const row of records.productDeliverables ?? []) {
+    const key = conversationKey(row);
+    if (key && ![...sessions.values()].some(session => conversationKey(session) === key)) sessions.set(`deliverable:${key}`, { ...row, id: `deliverable:${key}` });
+  }
   const work = (view.agents ?? []).flatMap(agent => agent.work ?? []);
   for (const session of sessions.values()) {
     const key = conversationKey(session);
@@ -288,7 +329,8 @@ export function buildSharedProjectionUpdates(database, { ledger, records = {}, v
     const prompts = (records.prompts ?? []).filter(prompt => prompt.session_db_id === session.id);
     const ownsPrompt = prompts.some(prompt => stableEvidenceRef(database, 'prompt', prompt.id, deviceId)?.device === deviceId);
     const ownsObservation = [...(records.observations ?? []), ...(records.productObservations ?? [])].some(row => row.memory_session_id === session.memory_session_id && stableEvidenceRef(database, 'observation', row.id, deviceId)?.device === deviceId);
-    const ownsProduct = (records.productCalls ?? []).some(call => call.session_db_id === session.id);
+    const ownsProduct = (records.productCalls ?? []).some(call => call.session_db_id === session.id)
+      || (records.productDeliverables ?? []).some(row => conversationKey(row) === key);
     if (!calls.length && !ownsPrompt && !ownsObservation && !ownsProduct) continue; // A replica never re-owns imported facts.
     const attributions = work.filter(item => item.attribution?.sessionId === session.id && item.attribution?.linkedEntryId != null).flatMap(item => {
       const attribution = item.attribution;
@@ -296,10 +338,25 @@ export function buildSharedProjectionUpdates(database, { ledger, records = {}, v
       const ref = stableEvidenceRef(database, 'work-state', attribution.linkedEntryId, deviceId);
       return call && ref?.device === deviceId ? [{ work: ref, agentId: call.agent_id ?? null, agentType: call.agent_type ?? null, promptNumber: call.prompt_number ?? null, atEpoch: call.created_at_epoch }] : [];
     });
-    const products = [
+    const productCandidates = [
       ...(records.productCalls ?? []).filter(call => call.session_db_id === session.id).flatMap(productsFromToolUse),
       ...(records.productObservations ?? []).filter(row => row.memory_session_id === session.memory_session_id && stableEvidenceRef(database, 'observation', row.id, deviceId)?.device === deviceId).flatMap(productsFromObservation),
-    ].filter(product => sharedPublishedUrl(product.url)).map(product => ({ kind: product.kind, title: product.title, url: sharedPublishedUrl(product.url), atEpoch: product.atEpoch ?? null }));
+      ...(records.productDeliverables ?? []).filter(row => conversationKey(row) === key).flatMap(productsFromDeliverable),
+      ...work.filter(item => item.attribution?.sessionId === session.id).flatMap(item => item.workProduct ?? []),
+    ];
+    const productsByIdentity = new Map();
+    const copies = productCandidates.filter(product => product.deliverable && product.sourcePath);
+    for (const product of mergeProducts([productCandidates], productCandidates.length)) {
+      if (product.path && copies.some(copy => copy.sourcePath === product.path && copyCoversSource(copy, product.path))) continue;
+      const url = sharedPublishedUrl(product.url);
+      if (url) productsByIdentity.set(url, { kind: product.kind, title: product.title, url, atEpoch: product.atEpoch ?? null,
+        ...Object.fromEntries(['sha', 'branch', 'repo', 'heads'].filter(key => product[key] != null).map(key => [key, product[key]])) });
+      else if (product.path ? servableFile(product) : product.bucketPath ? bucketFileAvailable(product) : false) {
+        const metadata = localFileMetadata(database, product, deviceId);
+        if (metadata?.originDeviceId === deviceId) productsByIdentity.set(metadata.productId, metadata);
+      }
+    }
+    const products = [...productsByIdentity.values()];
     const launches = (records.agentLaunches ?? []).filter(row => row.content_session_id === session.content_session_id && typeof row.agent_id === 'string').map(row => ({ agent_id: row.agent_id, status: row.status ?? null, is_async: row.is_async ?? null, description: typeof row.description === 'string' ? row.description.slice(0, 160) : null, created_at_epoch: row.created_at_epoch ?? null }));
     const activity = (records.agentToolActivity ?? []).filter(row => row.content_session_id === session.content_session_id).map(row => ({ agent_id: row.agent_id, last_epoch: row.last_epoch }));
     const sessionValue = Object.fromEntries(sessionFields.map(field => [field, clean(session[field])]));
@@ -398,7 +455,8 @@ export function applySharedProjection(database, shared, { ledger = null, records
         const id = resolveEvidenceRef(database, attribution.work, deviceId);
         if (id != null) merged.sharedAttributions.set(id, { ...attribution, session_db_id: session.id, memory_session_id: session.memory_session_id, content_session_id: session.content_session_id, agent_id: attribution.agentId, agent_type: attribution.agentType, prompt_number: attribution.promptNumber, created_at_epoch: attribution.atEpoch, shared: true });
       }
-      merged.sharedProducts.push({ conversationKey: key, products: (value.products ?? []).filter(product => sharedPublishedUrl(product.url)) });
+      merged.sharedProducts.push({ conversationKey: key, products: (value.products ?? []).filter(product => sharedProduct(product)
+        && (product.availability !== 'origin-only' || product.originDeviceId === record.writer)) });
       for (const launch of value.launches ?? []) if (!merged.agentLaunches.some(row => row.content_session_id === session.content_session_id && row.agent_id === launch.agent_id)) merged.agentLaunches.push({ ...launch, content_session_id: session.content_session_id, shared: true });
       for (const activity of value.activity ?? []) if (!merged.agentToolActivity.some(row => row.content_session_id === session.content_session_id && row.agent_id === activity.agent_id)) merged.agentToolActivity.push({ ...activity, content_session_id: session.content_session_id });
     }
@@ -420,6 +478,22 @@ export function decorateSharedView(view, { database = null, deviceId = '', recor
     value.stableIdentity = value.sourceIdentity ?? value.identity ?? stableEvidenceRef(database, kind, value.sourceId ?? value.id, deviceId);
   };
   for (const request of view.humanRequests ?? []) {
+    const products = new Map();
+    for (const product of request.workProduct ?? []) {
+      let next = product;
+      if (product.path || product.bucketPath) {
+        const metadata = localFileMetadata(database, product, deviceId);
+        if (metadata) next = metadata.originDeviceId === deviceId
+          ? { ...product, productId: metadata.productId, originDeviceId: deviceId }
+          : { ...metadata, available: false };
+      } else if (product.availability === 'origin-only') next = { ...product, url: undefined, fileUrl: undefined, available: false };
+      const key = next.productId ?? next.url ?? next.path ?? `${next.kind}:${next.title}`;
+      const previous = products.get(key);
+      // The origin's actual local row remains openable; the shared placeholder
+      // is only a declaration that another computer cannot serve that file.
+      if (!previous || previous.availability === 'origin-only' && next.availability !== 'origin-only') products.set(key, next);
+    }
+    request.workProduct = [...products.values()];
     identity(request.original);
     for (const update of request.scopeUpdates ?? []) identity(Object.assign(update, { source: 'user-prompt' }));
     for (const stream of request.workstreams ?? []) {

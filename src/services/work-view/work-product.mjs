@@ -4,6 +4,7 @@
 // files_modified list, or a work-state field) and keeps a reference to it.
 import { statSync } from 'node:fs';
 import { basename, extname, isAbsolute } from 'node:path';
+import { createHash } from 'node:crypto';
 
 // Files a person opens, not source code. Anything else stays in the work history.
 const FILE_KINDS = {
@@ -279,7 +280,15 @@ export function productsFromFields(fields, { atEpoch = null, sourceRef = null } 
 
 // A commit is one entry per sha, a branch one per name, anything else one per link or file.
 const productKey = (product) => product.kind === 'commit' && product.sha ? `commit:${product.sha.slice(0, 7)}`
-  : product.kind === 'branch' && product.branch ? `branch:${product.branch}` : product.url ?? product.path;
+  : product.kind === 'branch' && product.branch ? `branch:${product.branch}` : product.productId ?? product.url ?? product.path;
+
+/** Opaque identity for a recorded local file. The path never enters the shared identity. */
+export function localProductId(ref) {
+  if (!ref || !['observation', 'work-state', 'deliverable'].includes(ref.kind)
+    || typeof ref.device !== 'string' || !ref.device || !/^\d+$/.test(String(ref.row ?? ''))
+    || (ref.index !== undefined && (!Number.isSafeInteger(ref.index) || ref.index < 0))) return null;
+  return `local_${createHash('sha256').update(JSON.stringify([ref.kind, ref.device, String(ref.row), ref.index ?? 0])).digest('hex')}`;
+}
 
 /** Newest first, one entry per commit, branch, link or file. A commit or
  * branch links to GitHub when a push in the same lists sent it there: its
@@ -447,15 +456,26 @@ export function readProductRecords(read, sinceEpoch, limit = 2000, { database } 
 }
 
 /** The local file one record names at `index`, re-read from that record. */
-export function recordedFile(read, kind, id, index) {
+export function recordedFile(read, kind, id, index, localDeviceId = '') {
   if (!Number.isSafeInteger(id) || id < 1 || !Number.isSafeInteger(index) || index < 0) return null;
   let products = [];
   if (kind === 'observation') {
+    if (!recordedHere(read, 'observations', id, localDeviceId)) return null;
     const row = read('SELECT id, files_modified, created_at_epoch FROM observations WHERE id = ?', [id])[0];
     products = row ? productsFromObservation(row) : [];
   } else if (kind === 'work-state') {
+    if (!recordedHere(read, 'work_state_entries', id, localDeviceId)) return null;
     const row = read('SELECT id, fields FROM work_state_entries WHERE id = ?', [id])[0];
     products = row ? productsFromFields(parse(row.fields), { sourceRef: { kind, id } }) : [];
   }
   return servableFile(products.find((product) => product.sourceRef?.index === index)) ?? null;
+}
+
+/** A replicated path names the origin's disk, even when that path happens to exist here. */
+function recordedHere(read, table, id, localDeviceId) {
+  const columns = read(`PRAGMA table_info(${table})`, []);
+  // Pre-sync databases have only native rows. Keep their local-file behavior.
+  if (!columns.some(column => column.name === 'origin_device_id')) return true;
+  const row = read(`SELECT origin_device_id FROM ${table} WHERE id = ?`, [id])[0];
+  return !!row && (row.origin_device_id == null || row.origin_device_id === localDeviceId);
 }

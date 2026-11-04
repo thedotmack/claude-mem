@@ -121,6 +121,23 @@ const snapshotWith = (humanRequests: WorkViewHumanRequest[], extra: Partial<Work
   source: { kind: 'test', connected: true, error: null, lastCheckedAt: null }, ...extra,
 })
 
+test('maps shared decision versions and keeps an origin-only file visible without a link', () => {
+  const raw = syntheticRequest()
+  raw.review = { checked: false, checkedAtEpoch: null, actor: 'shared-user', available: true, mode: 'shared', hash: 'review-hash', version: 2, conflict: true, pending: true, message: 'Choose the current review.' }
+  raw.suggestion = { conversationKey: 'c', requestId: 'r', requestTitle: 'Related request', evidence: 'The same change', confidence: 0.8, judge: 'test', at: null, expectedSuggestionHash: 'suggestion-hash', sharedConflict: true }
+  raw.workProduct = [
+    { kind: 'document', title: 'report.pdf', availability: 'origin-only', available: false, fileUrl: '/wrong/download', url: 'https://example.com/wrong' },
+    { kind: 'pull-request', title: 'Published PR', url: 'https://github.com/example/repo/pull/1' },
+  ]
+  const mapped = toWorkModel(snapshotWith([raw]), Date.now()).requests[0]
+  assert.deepEqual(mapped.review, { mode: 'shared', hash: 'review-hash', available: true, version: 2, conflict: true, legacy: undefined, pending: true, message: 'Choose the current review.' })
+  assert.equal(mapped.suggestion?.expectedSuggestionHash, 'suggestion-hash')
+  assert.equal(mapped.suggestion?.sharedConflict, true)
+  assert.equal(mapped.workProduct[0].availability, 'origin-only')
+  assert.equal(mapped.workProduct[0].href, undefined)
+  assert.equal(mapped.workProduct[1].href, 'https://github.com/example/repo/pull/1')
+})
+
 test('a reviewed request shows the review percent, its readings, the measured ETA and its milestones', () => {
   const raw = { ...syntheticRequest(), progress: {
     state: 'in-progress' as const, percent: 60, summary: 'Under way.', narrative: 'Cards built first, then spacing.', checkedAt: '2026-10-21T12:00:00Z',

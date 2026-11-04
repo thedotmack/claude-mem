@@ -11,6 +11,7 @@ import { recordedFile, bucketFileAvailable } from './work-product.mjs';
 import { buildRules, MY_RULES_LIST } from './my-rules.mjs';
 import { readSharedRecords } from './shared-record-store.mjs';
 import { applySharedProjection, decorateSharedView, isSharedProjectionValue } from './shared-projection.mjs';
+import { sharedReviewDescriptor, readSharedReview, sharedSuggestionDescriptor, sharedConflictSuggestions } from './shared-reviews.mjs';
 
 // reduceWorkState lives in work-state-reduce.mjs so my-focus.mjs can replay rows without importing this module.
 export { reduceWorkState } from './work-state-reduce.mjs';
@@ -146,6 +147,7 @@ export class WorkStateSource {
           // Hash full linked evidence without sending its potentially large raw
           // text in every snapshot. A review covers the source disclosure too.
           const evidenceHashes = new Map();
+          const evidenceRows = new Map();
           for (const request of this.agentView.humanRequests) {
             const refs = new Map();
             const add = ref => {
@@ -170,10 +172,16 @@ export class WorkStateSource {
             for (const activity of [...request.activity, ...request.workstreams.flatMap(stream => stream.activity)]) add(activity.sourceRef);
             request.sourceContentHashes = [...refs].sort(([a], [b]) => a.localeCompare(b)).map(([key, ref]) => {
               if (!evidenceHashes.has(key)) {
-                evidenceHashes.set(key, createHash('sha256').update(JSON.stringify(readEvidence(database, ref.kind, ref.id))).digest('hex'));
+                const evidence = readEvidence(database, ref.kind, ref.id);
+                evidenceRows.set(key, evidence);
+                evidenceHashes.set(key, createHash('sha256').update(JSON.stringify(evidence)).digest('hex'));
               }
               return { ...ref, hash: evidenceHashes.get(key) };
             });
+            if (this.localDeviceId) {
+              request.sharedReviewDescriptor = sharedReviewDescriptor(database, request, { deviceId: this.localDeviceId, sharedState: this.sharedState, evidenceRows });
+              request.sharedReview = readSharedReview(this.sharedState, request.sharedReviewDescriptor);
+            }
           }
           this.signature = signature;
           this.activitySignature = activity;
@@ -263,9 +271,15 @@ export class WorkStateSource {
     const now = Date.now();
     // The judge's suggestions ("Looks like part of <request>"), each on the card of the conversation it is about.
     const ledger = this.projectedLedger ?? this.ledger;
-    const suggestions = openSuggestions(ledger);
+    const suggestionMap = new Map(openSuggestions(ledger).map(suggestion => [suggestion.conversationKey, suggestion]));
+    for (const suggestion of sharedConflictSuggestions(this.sharedState)) suggestionMap.set(suggestion.conversationKey, suggestion);
+    const suggestions = [...suggestionMap.values()].map(suggestion => {
+      if (!this.localDeviceId) return suggestion;
+      const descriptor = sharedSuggestionDescriptor(this.sharedState, suggestion.conversationKey);
+      return { ...suggestion, expectedSuggestionHash: descriptor.hash, sharedConflict: descriptor.conflict };
+    });
     const humanRequests = (this.agentView.humanRequests ?? []).map((request) => {
-      const suggestion = suggestions.find((entry) => entry.requestId !== request.groupId && (request.conversationKeys ?? []).includes(entry.conversationKey));
+      const suggestion = suggestions.find((entry) => (entry.sharedConflict || entry.requestId !== request.groupId) && (request.conversationKeys ?? []).includes(entry.conversationKey));
       return suggestion ? { ...request, suggestion } : request;
     });
     return {
@@ -295,8 +309,8 @@ export class WorkStateSource {
   }
 
   /** The local file a recorded work product names, or null. */
-  file(kind, id, index) {
-    try { return recordedFile((sql, params) => this.openDatabase().prepare(sql).all(...params), kind, id, index); }
+  file(kind, id, index, localDeviceId = this.localDeviceId) {
+    try { return recordedFile((sql, params) => this.openDatabase().prepare(sql).all(...params), kind, id, index, localDeviceId); }
     catch { return null; }
   }
 

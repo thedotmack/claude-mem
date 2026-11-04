@@ -10,8 +10,9 @@
  *     here once for an HttpOnly session cookie. Only VIEWER_OWNER_USER_ID gets in.
  *   - Reads pass, except the routes that expose settings, logs, backups or
  *     setup on the machine. Writes pass only for the My Work actions that save
- *     work state (review, rules, focus, suggestions, agent finished, usage);
- *     the worker syncs those rows back to the owner's other devices.
+ *     reviews, rules, focus, suggestions, agent-finished and usage actions.
+ *     The worker owns persistence and reports whether a save is local or
+ *     queued for sync; this gate never claims another replica applied it.
  *   - A write must come from this origin. The request then goes to the worker
  *     as if made on that machine: loopback Host and Origin, proxy headers
  *     and cookies removed.
@@ -25,7 +26,7 @@ const SESSION_SECONDS = 7 * 24 * 60 * 60;
 /** Read routes that would show the cloud machine's own configuration. */
 const BLOCKED_READ_PREFIXES = ['/api/settings', '/api/logs', '/api/admin', '/api/backup', '/api/setup', '/restart'];
 
-/** The My Work actions that save work state. Everything else that writes stays on the owner's own computer. */
+/** Narrow owner actions. Persistence scope is determined by the worker and its writer setting. */
 const ALLOWED_WRITES = new Set([
   '/api/work-view/review',
   '/api/work-view/rules',

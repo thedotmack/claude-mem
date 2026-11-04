@@ -66,6 +66,24 @@ function testStore(options: { href?: string; storage?: ReturnType<typeof memoryS
 const settle = () => new Promise((resolve) => setImmediate(resolve))
 
 describe('reading work', () => {
+  it('forwards clicked review and suggestion versions with their durable receipts', async () => {
+    const { store } = testStore()
+    const calls: unknown[][] = []
+    const receipt = { scope: 'shared' as const, state: 'queued' as const }
+    const { source } = fakeSource({
+      setRequestChecked: async (...args) => { calls.push(args); return { outcome: 'saved', model: LOCAL_MODEL, save: receipt } },
+      answerRequestSuggestion: async (...args) => { calls.push(args); return { model: LOCAL_MODEL, save: receipt } },
+    })
+    const stop = store.getState().startWorkSource(source)
+    const result = await store.getState().setRequestChecked('request-a', true, 'evidence', null)
+    assert.deepEqual(calls[0], ['request-a', 'evidence', true, null])
+    assert.deepEqual(result.outcome === 'saved' && result.save, receipt)
+    const suggestion = { conversationKey: 'c', requestId: 'r', requestTitle: 'Related', evidence: 'Same work', expectedSuggestionHash: 'read-hash' }
+    assert.deepEqual((await store.getState().answerRequestSuggestion(suggestion, 'not-this')).save, receipt)
+    assert.deepEqual(calls[1], [suggestion, 'not-this'])
+    stop()
+  })
+
   it('loads only compact request detail and keeps the full-source compatibility path', async () => {
     const { store } = testStore()
     const full = LOCAL_MODEL.requests[0]

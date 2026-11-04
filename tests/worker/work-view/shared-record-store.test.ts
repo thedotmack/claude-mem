@@ -157,6 +157,20 @@ describe('shared My Work records', () => {
     expect(read(a).records.get(sharedRecordKey('progress', 'g'))?.value).toBe(50);
   });
 
+  test('an explicit current-winner conflict choice publishes a new revision while ordinary equal writes remain no-ops', () => {
+    const a = fixture('device-a'), b = fixture('device-b');
+    publishSharedRecords(a.db, { deviceId: a.deviceId, project: 'repo', updates: [{ kind: 'group', key: 'g', value: 'A' }] });
+    publishSharedRecords(b.db, { deviceId: b.deviceId, project: 'repo', updates: [{ kind: 'group', key: 'g', value: 'B' }] });
+    applyWires(a, wireRows(b));
+    const current = read(a).records.get(sharedRecordKey('group', 'g'))!;
+    expect(read(a).diagnostics.conflicts).toHaveLength(1);
+    expect(() => publishSharedRecords(a.db, { deviceId: a.deviceId, project: 'repo', updates: [{ kind: 'group', key: 'g', value: current.value }] })).toThrow('unresolved conflict');
+    expect(publishSharedRecords(a.db, { deviceId: a.deviceId, project: 'repo', updates: [{ kind: 'group', key: 'g', value: current.value, expectedHash: current.hash }] }).changed).toBe(1);
+    expect(read(a).records.get(sharedRecordKey('group', 'g'))?.revision).toBe('2');
+    expect(read(a).diagnostics.conflicts).toEqual([]);
+    expect(publishSharedRecords(a.db, { deviceId: a.deviceId, project: 'repo', updates: [{ kind: 'group', key: 'g', value: current.value }] }).changed).toBe(0);
+  });
+
   test('a corrupted newer batch cannot activate or remove previous complete content', () => {
     const a = fixture('device-a');
     publishSharedRecords(a.db, { deviceId: a.deviceId, project: 'repo', updates: [{ kind: 'story', key: 'main', value: 'old' }] });

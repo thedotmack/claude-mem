@@ -56,7 +56,12 @@ export interface WorkViewLifecycle {
 
 export interface WorkViewPrompt { text: string; atEpoch?: number; url?: string }
 
-export interface WorkViewReview { checked: boolean; checkedAtEpoch: number | null; available: boolean }
+export interface WorkViewReview {
+  actor?: 'local-user' | 'shared-user' | null
+  checked: boolean; checkedAtEpoch: number | null; available: boolean
+  mode?: 'local' | 'shared'; hash?: string | null; version?: number; conflict?: boolean
+  legacy?: boolean; pending?: boolean; message?: string
+}
 
 /** A request-progress memory review of one overall request (request-groups.mjs `record-progress`). */
 export interface WorkViewProgress {
@@ -81,6 +86,8 @@ export interface WorkViewWorkProduct {
   url?: string
   fileUrl?: string | null
   available?: boolean
+  /** Metadata for an origin-local file; never an implied hosted download. */
+  availability?: 'origin-only'
   sha?: string
   branch?: string | null
   /** A copy the Stop hook put in the project's deliverables bucket (~/.claude-mem/deliverables/<project>/); `url` opens it. Older workers leave it out. */
@@ -94,6 +101,8 @@ export interface WorkViewBuildStory { narrative: string; writtenAt: string | nul
 /** The judge's "Looks like part of <request>" for one conversation (request-judge.mjs), waiting for the owner's
  * Join / Not this (POST /api/work-view/suggestions `{ conversationKey, action: 'join' | 'not-this' }`). */
 export interface WorkViewRequestSuggestion {
+  expectedSuggestionHash?: string | null
+  sharedConflict?: boolean
   conversationKey: string
   /** The suggested request's group id and title. */
   requestId: string

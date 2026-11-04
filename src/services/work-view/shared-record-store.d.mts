@@ -6,6 +6,9 @@ export interface SharedRecord {
 }
 export interface SharedRecordState {
   records: Map<string, SharedRecord>;
+  /** All complete highest-revision candidates, including losing concurrent heads. */
+  heads: Map<string, SharedRecord[]>;
+  history?: Map<string, SharedRecord[]>;
   revision: string;
   diagnostics: { pending: number; invalid: number; unsupported: number; conflicts: Array<{ kind: string; key: string; revision: string; writers: string[] }> };
 }
@@ -14,7 +17,7 @@ export interface SharedWorkRow {
   list_name: string; fields: string | Record<string, unknown>; origin_device_id?: string | null;
   origin_local_id?: string | number | null; id?: string | number;
 }
-export function readSharedRecords(db: Database, options: { deviceId: string; validateValue?: SharedValueValidator; rows?: SharedWorkRow[] }): SharedRecordState;
+export function readSharedRecords(db: Database, options: { deviceId: string; validateValue?: SharedValueValidator; rows?: SharedWorkRow[]; includeHistory?: boolean }): SharedRecordState;
 export function publishSharedRecords(db: Database, options: {
   deviceId: string; project: string;
   updates: Array<{ kind: string; key: string; value?: unknown; deleted?: boolean; expectedHash?: string | null }>;

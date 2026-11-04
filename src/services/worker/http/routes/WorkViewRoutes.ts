@@ -88,6 +88,7 @@ const DELIVERABLE_CONTENT_TYPES: Readonly<Record<string, string>> = {
 const reviewBody = z.object({
   requestId: z.string().min(1).max(2000),
   expectedFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  expectedReviewHash: z.string().min(1).max(128).nullable().optional(),
   checked: z.boolean(),
 }).strict();
 
@@ -224,6 +225,7 @@ const focusShareCommentBody = z.object({ focusAreaId: focusAreaIdField, body: z.
 const suggestionBody = z.object({
   conversationKey: z.string().min(1).max(2000),
   action: z.enum(['join', 'not-this']),
+  expectedSuggestionHash: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(),
 }).strict();
 
 // The viewer's page ids (src/ui/my-work/src/live/usage.ts `UsageView`: setup plus App.tsx `View`): a closed list, so a
@@ -246,6 +248,9 @@ export function myRulesImportLine(rulesFilePath: string): string {
 interface WorkStateWrite { project: string; listName: string; fields: Record<string, string | number | boolean | null> }
 
 interface WorkViewOptions {
+  saveSharedReview?: (input: { descriptor: import('../../../work-view/shared-reviews.mjs').SharedReviewDescriptor; checked: boolean; expectedHash: string | null }) => { changed: number };
+  prepareSharedOwnerAction?: () => Promise<void>;
+  answerSharedSuggestion?: (conversationKey: string, action: 'join' | 'not-this', expectedHash: string | null) => unknown;
   persistSharedCopy?: (requestId: string, entry: { fingerprint: string; copy: unknown; generatedAt: number }) => void;
   saveSharedLedgerFile?: (name: string, value: unknown) => void;
   getSharedStatus?: () => Record<string, unknown>;
@@ -418,6 +423,9 @@ export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTIN
 const ACTIVITY_REFRESH_WINDOW_MS = 120_000;
 
 export class WorkViewRoutes extends BaseRouteHandler {
+  private readonly saveSharedReview: WorkViewOptions['saveSharedReview'];
+  private readonly prepareSharedOwnerAction: WorkViewOptions['prepareSharedOwnerAction'];
+  private readonly answerSharedSuggestion: WorkViewOptions['answerSharedSuggestion'];
   private saveSharedLedgerFile: WorkViewOptions['saveSharedLedgerFile'];
   private readonly getSharedStatus: WorkViewOptions['getSharedStatus'];
   private readonly getSyncStatus: (() => ViewerSyncStatus) | undefined;
@@ -464,6 +472,9 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   constructor(options: WorkViewOptions = {}) {
     super();
+    this.saveSharedReview = options.saveSharedReview;
+    this.prepareSharedOwnerAction = options.prepareSharedOwnerAction;
+    this.answerSharedSuggestion = options.answerSharedSuggestion;
     this.saveSharedLedgerFile = options.saveSharedLedgerFile;
     this.getSharedStatus = options.getSharedStatus;
     this.getSyncStatus = options.getSyncStatus;
@@ -938,9 +949,20 @@ export class WorkViewRoutes extends BaseRouteHandler {
     // A coalesced bootstrap may have multiple consumers. Enrichment must never
     // mutate the reader's cached or shared raw projection.
     const snapshot = structuredClone(read.agentView);
+    const sharedEnabled = this.getSharedStatus?.().enabled === true;
     for (const request of snapshot.humanRequests) {
-      request.contentFingerprint = contentFingerprint(request);
-      request.review = this.reviews.read(request.id, request.contentFingerprint);
+      const legacyFingerprint = contentFingerprint(request);
+      request.legacyContentFingerprint = legacyFingerprint;
+      request.contentFingerprint = request.sharedReviewDescriptor?.complete ? request.sharedReviewDescriptor.fingerprint : legacyFingerprint;
+      const shared = request.sharedReview;
+      if (sharedEnabled) {
+        request.review = shared ?? { checked: false, checkedAtEpoch: null, actor: null, available: false, mode: 'shared' };
+      } else {
+        const override = this.reviews.readOverride(request.id, request.contentFingerprint, shared?.hash ?? null);
+        const legacy = this.reviews.read(request.id, legacyFingerprint);
+        const accepted = override ?? (shared?.matches || shared?.conflict ? shared : legacy);
+        request.review = { ...accepted, mode: 'local', legacy: !override && accepted === legacy && legacy.checked };
+      }
     }
     const reviewRevision = createHash('sha256').update(JSON.stringify(snapshot.humanRequests.map(request => [request.id, request.contentFingerprint, request.review]))).digest('hex').slice(0, 16);
     // Generated wording is display only: it never changes what was reviewed.
@@ -1344,16 +1366,33 @@ export class WorkViewRoutes extends BaseRouteHandler {
    * database is only read: projects and first asks for the decision.
    */
   private answerSuggestion = async (req: Request, res: Response): Promise<void> => {
-    const { conversationKey, action } = req.body as z.infer<typeof suggestionBody>;
+    const { conversationKey, action, expectedSuggestionHash } = req.body as z.infer<typeof suggestionBody>;
     if (!this.ledgerDir) { res.status(503).json({ error: 'Request suggestions are unavailable on this worker.' }); return; }
     if (!existsSync(this.databasePath)) { res.status(503).json({ error: 'Local work is unavailable. Reconnect before answering a suggestion.' }); return; }
+    if (this.getSharedStatus?.().enabled === true) {
+      if (!this.answerSharedSuggestion || !this.prepareSharedOwnerAction) { res.status(503).json({ error: 'Shared suggestions are unavailable on this worker.' }); return; }
+      if (!Object.hasOwn(req.body, 'expectedSuggestionHash')) { res.status(409).json({ error: 'Reload this suggestion before answering it.' }); return; }
+      let pendingLocalMaterialization = false;
+      try {
+        await this.prepareSharedOwnerAction();
+        const outcome = this.answerSharedSuggestion(conversationKey, action, expectedSuggestionHash ?? null);
+        if (!outcome) { res.status(409).json({ error: 'This suggestion changed. Read its latest state before answering it.', snapshot: await this.snapshot() }); return; }
+        pendingLocalMaterialization = (outcome as { materialization?: string }).materialization === 'pending';
+      } catch (error) {
+        if (!/changed since read|conflict|SQLITE_BUSY/i.test(String(error))) throw error;
+        res.status(409).json({ error: 'This suggestion changed or has a concurrent decision. Read its latest state before answering it.', snapshot: await this.snapshot() }); return;
+      }
+      const updated = { ...await this.snapshot(), save: { scope: 'shared', state: 'queued',
+        ...(pendingLocalMaterialization ? { localMaterialization: 'pending' } : {}) } };
+      res.setHeader('Cache-Control', 'no-store'); res.json(updated); this.publish(updated); return;
+    }
     const database = new Database(this.databasePath, { readonly: true, create: false });
     let outcome: ReturnType<typeof decideSuggestion>;
     try { outcome = decideSuggestion({ dir: this.ledgerDir, database, conversationKey, action, now: Date.now() }); }
     finally { database.close(); }
     if (!outcome) { this.notFound(res, 'That suggestion is not waiting for an answer.'); return; }
     logger.debug('HTTP', 'Request suggestion answered', { action, status: outcome.status });
-    const updated = await this.snapshot();
+    const updated = { ...await this.snapshot(), save: { scope: 'local', state: 'saved' } };
     res.setHeader('Cache-Control', 'no-store');
     res.json(updated);
     this.publish(updated);
@@ -1396,20 +1435,47 @@ export class WorkViewRoutes extends BaseRouteHandler {
   };
 
   private review = async (req: Request, res: Response): Promise<void> => {
-    const { requestId, expectedFingerprint, checked } = req.body as z.infer<typeof reviewBody>;
+    const { requestId, expectedFingerprint, expectedReviewHash, checked } = req.body as z.infer<typeof reviewBody>;
+    const sharedEnabled = this.getSharedStatus?.().enabled === true;
+    if (sharedEnabled) {
+      try { await this.prepareSharedOwnerAction?.(); }
+      catch (error) {
+        if (!/changed since read|conflict|SQLITE_BUSY/i.test(String(error))) throw error;
+        res.status(409).json({ error: 'The shared state has a conflicting change. Reload before reviewing.', snapshot: await this.snapshot() }); return;
+      }
+    }
     const snapshot = await this.snapshot();
     if (!snapshot.source.connected) { res.status(503).json({ error: 'Local work is unavailable. Reconnect before reviewing.' }); return; }
     const request = snapshot.humanRequests.find(item => item.id === requestId);
     if (!request) { this.notFound(res, 'Request is outside the loaded work.'); return; }
-    if (request.review?.available === false) { res.status(503).json({ error: 'Local review storage is unavailable. Your source work is unchanged.' }); return; }
+    if (request.review?.available === false) { res.status(503).json({ error: sharedEnabled ? 'Complete shared review evidence is unavailable. Reload after syncing.' : 'Local review storage is unavailable. Your source work is unchanged.' }); return; }
     if (request.contentFingerprint !== expectedFingerprint) {
       res.status(409).json({ error: 'This work changed. Read the latest result before checking it.', snapshot });
       return;
     }
     if (checked && !isReportedReadyForCheck(request)) { res.status(409).json({ error: 'This request has not been reported complete.', snapshot }); return; }
-    this.reviews.set(requestId, expectedFingerprint, checked);
-    logger.debug('HTTP', 'Local work review updated', { checked });
-    const updated = await this.snapshot();
+    let save: { scope: 'local' | 'shared'; state: 'saved' | 'queued' | 'unchanged' };
+    if (sharedEnabled) {
+      if (!this.saveSharedReview || !request.sharedReviewDescriptor?.complete) { res.status(503).json({ error: 'Shared review persistence is unavailable.' }); return; }
+      if (!Object.hasOwn(req.body, 'expectedReviewHash') || expectedReviewHash !== request.sharedReview?.hash) {
+        res.status(409).json({ error: 'This review changed. Reload before saving a decision.', snapshot }); return;
+      }
+      try {
+        const result = this.saveSharedReview({ descriptor: request.sharedReviewDescriptor, checked, expectedHash: expectedReviewHash ?? null });
+        save = { scope: 'shared', state: result.changed ? 'queued' : 'unchanged' };
+      } catch (error) {
+        if (!/changed since read|conflict|SQLITE_BUSY/i.test(String(error))) throw error;
+        res.status(409).json({ error: 'This review changed or has a concurrent decision. Reload before saving.', snapshot: await this.snapshot() }); return;
+      }
+    } else {
+      this.reviews.setOverride(requestId, expectedFingerprint, checked, request.sharedReview?.hash ?? null);
+      // Keep the exact legacy sidecar behavior for older readers without ever
+      // exporting their acknowledgements to shared state.
+      this.reviews.set(requestId, request.legacyContentFingerprint ?? expectedFingerprint, checked);
+      save = { scope: 'local', state: 'saved' };
+    }
+    logger.debug('HTTP', 'Work review updated', { checked, scope: save.scope });
+    const updated = { ...await this.snapshot(), save };
     res.setHeader('Cache-Control', 'no-store');
     res.json(updated);
     this.publish(updated);

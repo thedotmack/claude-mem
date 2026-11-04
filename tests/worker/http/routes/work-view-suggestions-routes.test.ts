@@ -82,6 +82,17 @@ function answer(body: unknown, headers: Record<string, string> = {}) {
 const cardOf = (view: any, conversationKey: string) => view.humanRequests.find((request: any) => request.conversationKeys.includes(conversationKey));
 
 describe('request suggestions', () => {
+  it('acknowledges durable shared intent when the local compatibility file is still pending', async () => {
+    Object.assign(routes, {
+      getSharedStatus: () => ({ enabled: true, pendingLocalMaterialization: true }),
+      prepareSharedOwnerAction: async () => {},
+      answerSharedSuggestion: () => ({ status: 'declined', materialization: 'pending' }),
+    });
+    const response = await answer({ conversationKey: C, action: 'not-this', expectedSuggestionHash: 'a'.repeat(64) });
+    expect(response.status).toBe(200);
+    expect((await response.json()).save).toEqual({ scope: 'shared', state: 'queued', localMaterialization: 'pending' });
+  });
+
   it('does not reuse a pending overview after an external ledger writer finishes', async () => {
     const held = holdEnrichedOverview(routes);
     const old = fetch(`${origin}/api/work-view/overview`).then(response => response.json());

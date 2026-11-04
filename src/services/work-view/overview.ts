@@ -10,12 +10,22 @@ import type { WorkViewSnapshot } from './data-source.mjs';
 function compactRequest(request: WorkRequest): WorkViewOverviewRequest {
   const products = request.workProduct.filter(isCardDeliverable);
   const { workstreams: _workstreams, granular: _granular, conversations: _conversations,
-    prompts: _prompts, story: _story, evidence: _evidence, storyNarrative: _storyNarrative, ...card } = request;
+    prompts: _prompts, story: _story, evidence: _evidence, storyNarrative: _storyNarrative,
+    terminal: _terminal, followUps: _followUps, review: _review, ...card } = request;
+  const terminal = request.title ? [] : request.terminal.slice(-4);
+  // Optional flags default to false. Keep action versions, availability and
+  // explanations verbatim while avoiding repeated no-op review metadata.
+  const review = request.review && (() => {
+    const { conflict, pending, legacy, ...state } = request.review;
+    return { ...state, ...(conflict ? { conflict } : {}), ...(pending ? { pending } : {}), ...(legacy ? { legacy } : {}) };
+  })();
   return {
     ...card,
+    ...(review ? { review } : {}),
     detailLoaded: false,
     detailCounts: { workProduct: products.length },
-    terminal: request.title ? [] : request.terminal.slice(-4),
+    ...(terminal.length ? { terminal } : {}),
+    ...(request.followUps.length ? { followUps: request.followUps } : {}),
     workProduct: products.slice(0, 3),
   };
 }

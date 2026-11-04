@@ -28,13 +28,14 @@ const WORK_PRODUCT_KIND: Record<string, WorkProductKind> = {
   deck: 'Deck', document: 'Doc', documentation: 'Doc', image: 'File', video: 'File', spreadsheet: 'File', file: 'File',
 }
 
-/** Recorded work product the drawer can show. A local file that is gone is left out; a bucket copy keeps its deliverable mark for the card's front. */
+/** Origin-only metadata stays visible without an href; unavailable local files remain hidden. */
 function mapWorkProduct(products: WorkViewWorkProduct[] | undefined): Request['workProduct'] {
-  return (products ?? []).filter((product) => product.available !== false).map((product) => ({
+  return (products ?? []).filter((product) => product.available !== false || product.availability === 'origin-only').map((product) => ({
     kind: WORK_PRODUCT_KIND[product.kind] ?? 'Link',
     label: cleanText(product.title, 140) || product.kind,
-    href: product.url ?? product.fileUrl ?? undefined,
+    href: product.availability === 'origin-only' ? undefined : product.url ?? product.fileUrl ?? undefined,
     ...(product.deliverable === true ? { deliverable: true as const } : {}),
+    ...(product.availability === 'origin-only' ? { availability: 'origin-only' as const } : {}),
   }))
 }
 const EVIDENCE_KIND_LABEL: Record<string, string> = { 'work-state': 'Work state', observation: 'Observation', prompt: 'Your prompt', summary: 'Session summary', session: 'Session' }
@@ -225,6 +226,13 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
     storyNarrative: review?.narrative?.trim() || undefined,
     evidence,
     checkedAt: raw.review?.checked && raw.review.checkedAtEpoch ? formatDateTime(raw.review.checkedAtEpoch) : undefined,
+    ...(raw.review?.mode ? { review: { mode: raw.review.mode, hash: raw.review.hash ?? null,
+      available: raw.review.available, version: raw.review.version, conflict: raw.review.conflict,
+      legacy: raw.review.legacy, pending: raw.review.pending, message: raw.review.message } } : {}),
+    ...(raw.suggestion ? { suggestion: { conversationKey: raw.suggestion.conversationKey,
+      requestId: raw.suggestion.requestId, requestTitle: cleanText(raw.suggestion.requestTitle, 200),
+      evidence: cleanText(raw.suggestion.evidence, 500), expectedSuggestionHash: raw.suggestion.expectedSuggestionHash,
+      sharedConflict: raw.suggestion.sharedConflict } } : {}),
   })
 }
 

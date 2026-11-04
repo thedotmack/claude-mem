@@ -62,6 +62,10 @@ export class SharedLedgerAdapter {
     return row ? { ...row, bases: JSON.parse(row.bases), keys: JSON.parse(row.keys_json) } : { observed_hash: null, bases: {}, keys: [], pending_json: null };
   }
 
+  pendingMaterialization() {
+    return this.db.prepare('SELECT COUNT(*) AS count FROM my_work_file_state WHERE pending_json IS NOT NULL').get().count;
+  }
+
   shared() { return readSharedRecords(this.db, { deviceId: this.deviceId, validateValue: isSharedProjectionValue }); }
 
   tombstoneKeys(name, shared) {
@@ -135,26 +139,50 @@ export class SharedLedgerAdapter {
       .filter(update => kinds.includes(update.kind) && (kinds[0] !== 'progress' || update.key === name.slice(9, -5)));
   }
 
-  /** Called before a known writer replaces its file; the returned finalizer follows rename. */
-  beforeWrite(name, value) {
+  /** Stage canonical rows and their recovery intent without touching files or notifying observers. */
+  stageFile(name, value, { resolveKeys = [], resolutionBaseline } = {}) {
     if (!fileKinds(name).length) return null;
     value = redactJsonStrings(value);
     const updates = this.updatesForFile(name, value);
+    let changed = null;
     this.db.transaction(() => {
       const prior = this.state(name);
       const shared = this.shared();
       const diagnostics = applySharedProjection(this.db, shared, { ledger: this.localLedger(), deviceId: this.deviceId }).diagnostics;
       const conflicted = new Set(diagnostics.conflicts.flatMap(entry => entry.kind === 'group-membership'
         ? entry.groups.map(group => sharedRecordKey('group', group)) : [sharedRecordKey(entry.kind, entry.key)]));
+      const resolving = new Set(resolveKeys.map(key => sharedRecordKey('group', key)));
+      if (resolving.size && name !== 'request-groups.json') throw new TypeError('Only explicit grouping decisions can resolve group conflicts');
+      if (resolving.size) {
+        if (!resolutionBaseline) throw new TypeError('Explicit grouping resolution requires its canonical baseline');
+        const baseline = new Map(this.updatesForFile(name, resolutionBaseline).filter(update => update.kind === 'group')
+          .map(update => [sharedRecordKey(update.kind, update.key), sharedValueHash(update.kind, update.key, update.value, update.deleted)]));
+        const desired = new Map(updates.filter(update => update.kind === 'group')
+          .map(update => [sharedRecordKey(update.kind, update.key), sharedValueHash(update.kind, update.key, update.value, update.deleted)]));
+        for (const key of new Set([...baseline.keys(), ...desired.keys()])) {
+          if (!resolving.has(key) && baseline.get(key) !== desired.get(key)) throw new Error('Shared My Work: resolution changed an unrelated group');
+        }
+      }
       const nextKeys = new Set(updates.map(update => sharedRecordKey(update.kind, update.key)));
-      const changes = updates.map(update => {
+      const changes = updates.flatMap(update => {
         const key = sharedRecordKey(update.kind, update.key);
-        if (conflicted.has(key)) throw new Error('Shared My Work has a conflicting decision; retained the local file');
-        return { ...update, expectedHash: prior.bases[key] ?? null };
-      });
-      for (const key of prior.keys) if (!nextKeys.has(key)) {
+        if (resolving.size && update.kind === 'group' && !resolving.has(key)) return [];
         const existing = shared.records.get(key);
-        if (existing) changes.push({ kind: existing.kind, key: existing.key, deleted: true, expectedHash: prior.bases[key] ?? null });
+        if (conflicted.has(key) && !resolving.has(key)) {
+          throw new Error('Shared My Work has a conflicting decision; retained the local file');
+        }
+        return [{ ...update, expectedHash: resolving.has(key) ? existing?.hash ?? null : prior.bases[key] ?? null }];
+      });
+      for (const key of new Set([...prior.keys, ...resolving])) if (!nextKeys.has(key)) {
+        const existing = shared.records.get(key);
+        if (existing) {
+          if (resolving.size && existing.kind === 'group' && !resolving.has(key)) continue;
+          if (conflicted.has(key) && !resolving.has(key)) {
+            if (existing.deleted) continue;
+            throw new Error('Shared My Work has a conflicting decision; retained the local file');
+          }
+          changes.push({ kind: existing.kind, key: existing.key, deleted: true, expectedHash: resolving.has(key) ? existing.hash : prior.bases[key] ?? null });
+        }
       }
       // A first encounter with a materialized equal value is safe; a different
       // pre-existing value needs an explicit conflict choice, not an overwrite.
@@ -166,16 +194,53 @@ export class SharedLedgerAdapter {
       }
       const result = publishSharedRecords(this.db, { deviceId: this.deviceId, project: this.project, updates: changes, validateValue: isSharedProjectionValue });
       this.remember(name, value, updates, this.shared(), true, value === null);
-      if (result.changed) this.changed = { rules: changes.some(change => change.kind === 'story') };
+      if (result.changed) changed = { rules: changes.some(change => change.kind === 'story') };
     })();
-    this.lastSignature = null;
-    if (this.changed) { const changed = this.changed; this.changed = false; this.notify(changed); }
-    return Object.assign(() => this.remember(name, value, updates, this.shared(), false), { value });
+    return { name, value, updates, changed, notified: false };
   }
 
-  saveFile(name, value) {
+  notifyCommitted(stage) {
+    if (this.db.inTransaction) throw new Error('Shared My Work: the outer transaction has not committed');
+    this.lastSignature = null;
+    if (!stage?.changed || stage.notified) return;
+    stage.notified = true;
+    // A notification failure cannot undo a durable decision. The normal poll
+    // still sees the committed canonical rows and pending materialization.
+    try { this.notify(stage.changed); }
+    catch { this.lastDiagnostic = null; }
+  }
+
+  /** After the owning transaction commits, materialize its durable recovery intent. */
+  materializeFile(stage) {
+    this.notifyCommitted(stage);
+    if (!stage) return { materialization: 'complete' };
+    const { name, value, updates } = stage;
+    try {
+      // A later writer may have replaced this intent after our commit. Never
+      // overwrite that newer intent with the earlier compatibility bytes.
+      if (this.state(name).pending_json !== JSON.stringify(value)) return { materialization: 'pending' };
+      rawWrite(join(this.directory, name), value);
+      this.remember(name, value, updates, this.shared(), false);
+      return { materialization: 'complete' };
+    } catch {
+      // The canonical action is already durable. Keep pending_json for the
+      // normal reconciler and report a saved action, not a failed intention.
+      return { materialization: 'pending' };
+    }
+  }
+
+  /** Called before an external writer replaces its file; finalization follows rename. */
+  beforeWrite(name, value, options) {
+    if (this.db.inTransaction) throw new Error('Shared My Work: stage file writes until the outer transaction commits');
+    const stage = this.stageFile(name, value, options);
+    if (!stage) return null;
+    this.notifyCommitted(stage);
+    return Object.assign(() => this.remember(name, stage.value, stage.updates, this.shared(), false), { value: stage.value });
+  }
+
+  saveFile(name, value, options) {
     if (!fileKinds(name).length) throw new TypeError('Unsupported shared My Work file');
-    const finish = this.beforeWrite(name, value);
+    const finish = this.beforeWrite(name, value, options);
     rawWrite(join(this.directory, name), finish && Object.hasOwn(finish, 'value') ? finish.value : value);
     finish?.();
   }
