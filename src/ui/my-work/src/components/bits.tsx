@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { motion } from 'motion/react'
-import { BotIcon, CloudAlertIcon, CloudCheckIcon, CloudIcon, CornerLeftUpIcon, MessageSquareIcon, RefreshCwIcon, StarIcon, UserIcon } from 'lucide-react'
+import { BotIcon, CloudAlertIcon, CloudCheckIcon, CloudIcon, CloudOffIcon, CornerLeftUpIcon, MessageSquareIcon, RefreshCwIcon, StarIcon, UserIcon } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card'
@@ -13,6 +13,7 @@ import { isSampleHref, measuredEstimate, SAMPLE_DEVICES, type Device, type LiveS
 import { agentById, deviceById, useConnection, useStore, useWorkModel, useWorkspace } from '@/store'
 import type { AutoRefresh } from '@/live/work-data-source'
 import { focusAreaLabel, resolveFocusAreaId } from '@/live/to-focus-model'
+import { presentSharedState } from '@/live/shared-state-presentation'
 import { AgentMark } from './brand'
 
 /**
@@ -174,7 +175,8 @@ export function ProductLink({ href, children, className }: { href?: string; chil
  */
 export function LiveIndicator() {
   const { mode } = useWorkspace()
-  const { sourceKind } = useWorkModel()
+  const { sourceKind, sharedState } = useWorkModel()
+  const shared = sourceKind === 'sample' ? null : presentSharedState(sharedState)
   const connection = useConnection()
   const demonstration = sourceKind === 'sample'
   const live = demonstration || connection.isLive
@@ -197,12 +199,16 @@ export function LiveIndicator() {
                 <span className="sr-only sm:not-sr-only">{connection.sync.label}</span>
               </span>
             )}
+            {shared && <span role="status" aria-label={`${shared.label}. ${shared.detail}`} data-shared-state={shared.state} className={cn('inline-flex items-center border-l pl-2', shared.attention && 'text-attention-foreground')}>
+              {shared.attention ? <CloudAlertIcon aria-hidden="true" className="size-4 sm:hidden" /> : shared.state === 'disabled' ? <CloudOffIcon aria-hidden="true" className="size-4 sm:hidden" /> : <CloudIcon aria-hidden="true" className="size-4 sm:hidden" />}
+              <span className="sr-only sm:not-sr-only">{shared.label}</span>
+            </span>}
           </span>
         </TooltipTrigger>
         <TooltipContent className="max-w-72">
           {demonstration
             ? mode === 'home' ? 'Streams from the local worker, localhost:37777 (demonstration)' : 'Checks cmem.ai for new sync changes every few seconds (demonstration)'
-            : <>{connection.detail} {connection.tooltip} {connection.sync?.detail}</>}
+            : <>{connection.detail} {connection.tooltip} {connection.sync?.detail} {shared?.detail}</>}
         </TooltipContent>
       </Tooltip>
     </Req>

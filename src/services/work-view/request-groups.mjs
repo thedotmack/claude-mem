@@ -29,6 +29,7 @@ import { conversationKey, isConversationKey, isHumanActionRequest, originalFor, 
 import { GOAL_KINDS, goalKindOf, OWNER_GOALS_LIST } from './owner-goals.mjs';
 import { NO_PROJECT, projectRoot, upgradedGroupRoot, withDerivedProjects } from './session-project.mjs';
 import { isOwnerDismissedArea, isPlaceableArea, OTHER_FOCUS_AREA_ID, PROPOSAL_KINDS, readFocus } from './my-focus.mjs';
+import { beforeSharedFileWrite } from './shared-file-hooks.mjs';
 
 const DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
 export const LEDGER_DIR = join(DATA_DIR, 'work-view');
@@ -186,10 +187,13 @@ function readJson(path, fallback) {
 }
 
 export function writeJsonAtomic(path, value) {
+  const finish = beforeSharedFileWrite(path, value);
   mkdirSync(join(path, '..'), { recursive: true });
   const temp = `${path}.tmp`;
-  writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  const stored = finish && Object.hasOwn(finish, 'value') ? finish.value : value;
+  writeFileSync(temp, `${JSON.stringify(stored, null, 2)}\n`, { mode: 0o600 });
   renameSync(temp, path);
+  finish?.();
 }
 
 const emptyGroups = () => ({ version: 1, updatedAt: null, conversations: {}, groups: {}, ignored: {} });

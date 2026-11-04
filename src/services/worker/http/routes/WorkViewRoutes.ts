@@ -246,6 +246,9 @@ export function myRulesImportLine(rulesFilePath: string): string {
 interface WorkStateWrite { project: string; listName: string; fields: Record<string, string | number | boolean | null> }
 
 interface WorkViewOptions {
+  persistSharedCopy?: (requestId: string, entry: { fingerprint: string; copy: unknown; generatedAt: number }) => void;
+  saveSharedLedgerFile?: (name: string, value: unknown) => void;
+  getSharedStatus?: () => Record<string, unknown>;
   getSyncStatus?: () => ViewerSyncStatus;
   updateViewerActivity?: (viewerId: string, visible: boolean, sequence: number) => boolean;
   databasePath?: string;
@@ -415,6 +418,8 @@ export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTIN
 const ACTIVITY_REFRESH_WINDOW_MS = 120_000;
 
 export class WorkViewRoutes extends BaseRouteHandler {
+  private saveSharedLedgerFile: WorkViewOptions['saveSharedLedgerFile'];
+  private readonly getSharedStatus: WorkViewOptions['getSharedStatus'];
   private readonly getSyncStatus: (() => ViewerSyncStatus) | undefined;
   private readonly updateViewerActivity: WorkViewOptions['updateViewerActivity'];
   private source: WorkStateSource;
@@ -459,6 +464,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   constructor(options: WorkViewOptions = {}) {
     super();
+    this.saveSharedLedgerFile = options.saveSharedLedgerFile;
+    this.getSharedStatus = options.getSharedStatus;
     this.getSyncStatus = options.getSyncStatus;
     this.updateViewerActivity = options.updateViewerActivity;
     this.pollIntervalMs = options.pollIntervalMs ?? 1000;
@@ -474,7 +481,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     this.sourceReader = new WorkViewReadWorkerClient({ databasePath: options.databasePath ?? DB_PATH, ledgerDir, pollIntervalMs: this.pollIntervalMs });
     this.reviews = new LocalReviewStore(options.reviewPath ?? join(DATA_DIR, 'work-view-reviews.db'));
     this.humanCopy = options.humanCopy === undefined
-      ? new HumanCopyWorker({ provider: configuredHumanCopyProvider(), cachePath: join(DATA_DIR, 'work-view', 'human-copy.json'),
+      ? new HumanCopyWorker({ provider: configuredHumanCopyProvider(), cachePath: join(DATA_DIR, 'work-view', 'human-copy.json'), persistSharedCopy: options.persistSharedCopy,
         warn: message => logger.warn('WORKER', message) })
       : options.humanCopy;
     this.humanCopy?.pauseWhile(() => this.setupIsActive());
@@ -620,6 +627,15 @@ export class WorkViewRoutes extends BaseRouteHandler {
   }
 
   setupRoutes(app: express.Application): void {
+    // The owner-goals script already writes through this loopback worker. Its
+    // story update commits shared facts before the compatibility file changes.
+    app.post('/api/work-view/shared-ledger', workViewLoopbackOnly, requireWorkViewOrigin,
+      validateBody(z.object({ file: z.literal('story.json'), value: z.record(z.string(), z.unknown()) }).strict()),
+      this.wrapHandler(this.ownerEdit(async (req, res) => {
+        if (!this.saveSharedLedgerFile) { res.status(503).json({ error: 'Shared work persistence is unavailable.' }); return; }
+        this.saveSharedLedgerFile(req.body.file, req.body.value);
+        res.json({ saved: true });
+      })));
     app.post('/api/work-view/activity', workViewLoopbackOnly, requireWorkViewOrigin,
       validateBody(z.object({ viewerId: z.string().min(1).max(128), visible: z.boolean(), sequence: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER) }).strict()),
       this.wrapHandler((req, res) => {
@@ -929,7 +945,11 @@ export class WorkViewRoutes extends BaseRouteHandler {
     const reviewRevision = createHash('sha256').update(JSON.stringify(snapshot.humanRequests.map(request => [request.id, request.contentFingerprint, request.review]))).digest('hex').slice(0, 16);
     // Generated wording is display only: it never changes what was reviewed.
     const view = this.humanCopy ? this.humanCopy.observe(snapshot) as WorkViewSnapshot : snapshot;
-    const result = { ...view, rulesFile: this.rulesFileStatus(snapshot), setup: this.setupView(view), revision: `${snapshot.revision}:${reviewRevision}:${this.humanCopy?.revision ?? 0}` };
+    const result = { ...view,
+      sharedState: { ...((view.sharedState && typeof view.sharedState === 'object') ? view.sharedState : {}),
+        ...(this.getSharedStatus?.() ?? { enabled: false }) },
+      ...(this.saveSharedLedgerFile ? { sharedPersistenceVersion: 1 } : {}),
+      rulesFile: this.rulesFileStatus(snapshot), setup: this.setupView(view), revision: `${snapshot.revision}:${reviewRevision}:${this.humanCopy?.revision ?? 0}` };
     this.lastSnapshotDiagnostic = { purpose, postprocessMs: boundedDurationMs(Number(process.hrtime.bigint() - startedAt) / 1e6) };
     return this.getSyncStatus ? { ...result, sync: this.getSyncStatus() } : result;
   }

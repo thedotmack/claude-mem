@@ -4,7 +4,8 @@ export function fitGeneratedCopy(output: unknown): unknown;
 export class HumanCopyWorker {
   revision: number;
   provider: HumanCopyProvider | null | undefined;
-  constructor(options?: { provider?: HumanCopyProvider | null; cachePath?: string | null; concurrency?: number; quietMs?: number; maxWaitMs?: number; minIntervalMs?: number; retryMs?: number; maxRetryMs?: number; now?: () => number; warn?: (message: string) => void });
+  persistSharedCopy: ((requestId: string, entry: { fingerprint: string; copy: unknown; generatedAt: number }) => unknown | Promise<unknown>) | null;
+  constructor(options?: { provider?: HumanCopyProvider | null; cachePath?: string | null; persistSharedCopy?: ((requestId: string, entry: { fingerprint: string; copy: unknown; generatedAt: number }) => unknown | Promise<unknown>) | null; concurrency?: number; quietMs?: number; maxWaitMs?: number; minIntervalMs?: number; retryMs?: number; maxRetryMs?: number; now?: () => number; warn?: (message: string) => void });
   load(): Promise<void>;
   start(): void;
   close(): void;

@@ -9,6 +9,8 @@ import { activitySignature, buildAgentView, readAgentRecords, readEvidence } fro
 import { ledgerSignature, openSuggestions, readLedger } from './request-groups.mjs';
 import { recordedFile, bucketFileAvailable } from './work-product.mjs';
 import { buildRules, MY_RULES_LIST } from './my-rules.mjs';
+import { readSharedRecords } from './shared-record-store.mjs';
+import { applySharedProjection, decorateSharedView, isSharedProjectionValue } from './shared-projection.mjs';
 
 // reduceWorkState lives in work-state-reduce.mjs so my-focus.mjs can replay rows without importing this module.
 export { reduceWorkState } from './work-state-reduce.mjs';
@@ -72,6 +74,7 @@ export class WorkStateSource {
     this.activitySignature = null;
     this.activityCheckedAt = null;
     this.signature = null;
+    this.sharedState = null;
     this.source = {
       kind: 'claude-mem-work-state', mode: 'read-only-sqlite', connected: false,
       pollIntervalMs, lastCheckedAt: null, lastUpdatedAt: null, error: null,
@@ -90,6 +93,7 @@ export class WorkStateSource {
       this.columns = new Set(this.database.prepare('PRAGMA table_info(work_state_entries)').all().map(column => column.name));
       this.databaseIdentity = identity;
       this.signature = null;
+      this.sharedState = null;
       this.activitySignature = null;
       this.activityCheckedAt = null;
     }
@@ -106,6 +110,7 @@ export class WorkStateSource {
       const previousLedger = this.ledgerSignature;
       this.readTitleCache();
       this.readLedger();
+      if (!this.sharedState || signature !== this.signature) this.sharedState = readSharedRecords(database, { deviceId: this.localDeviceId, validateValue: isSharedProjectionValue });
       const now = Date.now();
       // Only background polling opts into this window. Direct reads (including
       // review writes) must still notice evidence edits that retain row IDs.
@@ -119,6 +124,10 @@ export class WorkStateSource {
       if (signature !== this.signature || activity !== this.activitySignature || !this.source.connected) {
         database.exec('BEGIN');
         try {
+          // Resolve shared evidence only when rebuilding. A cached poll needs
+          // no per-object lookup; each fresh build resolves again so a prompt
+          // or work-state row arriving after its shared reference is visible.
+          const sharedLedger = applySharedProjection(database, this.sharedState, { ledger: this.ledger, deviceId: this.localDeviceId }).ledger;
           if (signature !== this.signature || !this.source.connected) {
             const originColumns = ['origin_device_id', 'origin_local_id'].filter(column => this.columns.has(column));
             const entries = database.prepare(`SELECT id, project, list_name, fields, created_at_epoch${originColumns.length ? `, ${originColumns.join(', ')}` : ''} FROM work_state_entries`).all();
@@ -129,7 +138,11 @@ export class WorkStateSource {
             this.cachedState = reduceWorkState(scopedEntries, { currentProject: this.currentProject, currentProjectScope, localDeviceId: this.localDeviceId });
           }
           this.agentRevision++;
-          this.agentView = { ...buildAgentView(this.cachedState, readAgentRecords(database, { workState: this.cachedState, ledger: this.ledger }), { titleCache: this.titleCache, ledger: this.ledger }), revision: this.agentRevision };
+          const records = readAgentRecords(database, { workState: this.cachedState, ledger: sharedLedger });
+          const shared = applySharedProjection(database, this.sharedState, { ledger: this.ledger, records, deviceId: this.localDeviceId });
+          this.agentView = { ...decorateSharedView(buildAgentView(this.cachedState, shared.records, { titleCache: this.titleCache, ledger: shared.ledger }), { ...shared, database, deviceId: this.localDeviceId }), revision: this.agentRevision };
+          this.projectedLedger = shared.ledger;
+          this.agentView.sharedState = { revision: this.sharedState.revision, ...shared.diagnostics };
           // Hash full linked evidence without sending its potentially large raw
           // text in every snapshot. A review covers the source disclosure too.
           const evidenceHashes = new Map();
@@ -189,14 +202,18 @@ export class WorkStateSource {
     const checkedAt = new Date().toISOString();
     try {
       const database = this.openDatabase();
-      const originColumns = ['origin_device_id', 'origin_local_id'].filter(column => this.columns.has(column));
+      const originColumns = ['origin_device_id', 'origin_local_id', 'sync_rev'].filter(column => this.columns.has(column));
       const entries = database.prepare(`SELECT id, project, list_name, fields, created_at_epoch${originColumns.length ? `, ${originColumns.join(', ')}` : ''}
-        FROM work_state_entries WHERE list_name = ?`).all(MY_RULES_LIST);
+        FROM work_state_entries WHERE list_name = ? OR list_name GLOB '__my_work_v[0-9]*:*'`).all(MY_RULES_LIST);
       let story = null;
+      let storyError = null;
       if (this.ledgerDir) {
         try { story = JSON.parse(readFileSync(join(this.ledgerDir, 'story.json'), 'utf8')); }
-        catch (error) { if (error.code !== 'ENOENT') throw error; }
+        catch (error) { if (error.code !== 'ENOENT') storyError = error; }
       }
+      const shared = readSharedRecords(database, { deviceId: this.localDeviceId, validateValue: isSharedProjectionValue, rows: entries });
+      if (storyError && ![...shared.records.values()].some(record => record.kind === 'story' && record.key === 'current')) throw storyError;
+      story = applySharedProjection(database, shared, { ledger: { story }, deviceId: this.localDeviceId }).ledger.story;
       const state = reduceWorkState(entries, { localDeviceId: this.localDeviceId });
       return { ...buildRules(state, { story }), source: { connected: true, error: null, lastCheckedAt: checkedAt } };
     } catch {
@@ -245,7 +262,8 @@ export class WorkStateSource {
   agentsSnapshot() {
     const now = Date.now();
     // The judge's suggestions ("Looks like part of <request>"), each on the card of the conversation it is about.
-    const suggestions = openSuggestions(this.ledger);
+    const ledger = this.projectedLedger ?? this.ledger;
+    const suggestions = openSuggestions(ledger);
     const humanRequests = (this.agentView.humanRequests ?? []).map((request) => {
       const suggestion = suggestions.find((entry) => entry.requestId !== request.groupId && (request.conversationKeys ?? []).includes(entry.conversationKey));
       return suggestion ? { ...request, suggestion } : request;
@@ -257,9 +275,9 @@ export class WorkStateSource {
       teamMode: process.env.WORK_STATE_TEAM_MODE === '1',
       // Progress reviews and the build story come from the request-progress
       // skill; they are assessments, separate from recorded lifecycle.
-      story: this.ledger ? { reviews: Object.values(this.ledger.progress), story: this.ledger.story, groups: Object.keys(this.ledger.groups.groups).length } : null,
+      story: ledger ? { reviews: Object.values(ledger.progress), story: ledger.story, groups: Object.keys(ledger.groups.groups).length } : null,
       // The automatic refresh's last run (refresh.json): running, ok, failed or waiting-for-agent.
-      refresh: this.ledger?.refresh ?? null,
+      refresh: ledger?.refresh ?? null,
       // Age labels change with the clock without declaring a task or session
       // live. Stored session status remains separate from recent activity.
       agents: this.agentView.agents.map((agent) => ({ ...agent, presence: {

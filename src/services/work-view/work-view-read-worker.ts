@@ -2,12 +2,29 @@ import { parentPort, workerData } from 'node:worker_threads';
 import { WorkStateSource } from './data-source.mjs';
 import { boundedDurationMs, type WorkViewReaderMessage, type WorkViewReadResponse, type WorkViewReadStarted } from './WorkViewReadProtocol.js';
 import { readHistoricalSyncScope } from '../sync/read-history-scope.js';
+import { Database } from 'bun:sqlite';
+import { SharedLedgerAdapter } from './shared-ledger-adapter.mjs';
 
 if (!parentPort) throw new Error('Work view reader requires a worker thread');
 
 // This role always runs in a separate worker instance. A historical scan can
 // neither stall HTTP nor sit ahead of a requested work-view projection.
-if (workerData.kind === 'sync-history-scope') {
+if (workerData.kind === 'shared-work-sync') {
+  const db = new Database(workerData.databasePath, { readwrite: true, create: false });
+  db.exec('PRAGMA busy_timeout = 1000');
+  let changed = false;
+  let rulesChanged = false;
+  const adapter = new SharedLedgerAdapter(db, { directory: workerData.directory, deviceId: workerData.deviceId,
+    notify: change => { changed = true; rulesChanged ||= change?.rules === true; } });
+  parentPort.on('message', () => {
+    changed = false;
+    rulesChanged = false;
+    let diagnostic: unknown;
+    try { diagnostic = adapter.reconcile(); }
+    catch { diagnostic = { error: 'Shared work could not be refreshed; retrying.' }; }
+    parentPort!.postMessage({ changed, rulesChanged, diagnostic });
+  });
+} else if (workerData.kind === 'sync-history-scope') {
   parentPort.on('message', () => {
     let count: number | null = null;
     try { count = readHistoricalSyncScope(workerData.databasePath); } catch { /* Scope is unknown on read failure. */ }

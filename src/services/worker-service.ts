@@ -154,6 +154,7 @@ import { SyncClient, keepPullingOptions } from './sync/SyncClient.js';
 import { ViewerRoutes } from './worker/http/routes/ViewerRoutes.js';
 import { SetupScan } from './prompt-import/setup-scan.js';
 import { AGENT_WRITTEN_PROMPTS_FILE, writeJsonAtomic } from './work-view/request-groups.mjs';
+import { SharedWorkSync } from './work-view/SharedWorkSync.js';
 import { HistoryImport } from './setup/history-import.js';
 import { cmemProOrigin } from '../shared/cmem-gateway.js';
 import { Database as BunDatabase } from 'bun:sqlite';
@@ -320,6 +321,7 @@ export class WorkerService implements WorkerRef {
 
   private searchRoutes: SearchRoutes | null = null;
   private workViewRoutes: WorkViewRoutes | null = null;
+  private sharedWorkSync: SharedWorkSync | null = null;
 
   private chromaMcpManager: ChromaMcpManager | null = null;
   private transcriptWatcher: TranscriptWatcher | null = null;
@@ -866,10 +868,22 @@ export class WorkerService implements WorkerRef {
 
       // Work View starts background refresh in its constructor. Keep every
       // read-only handle behind successful schema checks and migrations (#5127).
+      this.sharedWorkSync = new SharedWorkSync(this.dbManager.getConnection(), {
+        databasePath: DB_PATH, directory: path.join(DATA_DIR, 'work-view'),
+        deviceId: this.dbManager.getSessionStore().getLocalSyncDeviceId(),
+        notify: () => this.dbManager.getCloudSync()?.notify(),
+        enabled: settings.CLAUDE_MEM_WORK_VIEW_SHARED_STATE === 'true',
+      });
+      this.sharedWorkSync.start();
       this.workViewRoutes = new WorkViewRoutes({
+        ...(settings.CLAUDE_MEM_WORK_VIEW_SHARED_STATE === 'true' ? {
+          persistSharedCopy: (requestId: string, entry: { fingerprint: string; copy: unknown; generatedAt: number }) => this.sharedWorkSync!.persistCopy(requestId, entry),
+          saveSharedLedgerFile: (name: string, value: unknown) => this.sharedWorkSync!.saveFile(name, value),
+        } : {}),
+        getSharedStatus: () => this.sharedWorkSync?.status() ?? { enabled: false },
         getSyncStatus: () => this.viewerSync.getSnapshot(),
         updateViewerActivity: (id, visible, sequence) => this.viewerActivity.update(id, visible, sequence),
-        getLocalDeviceId: () => this.dbManager.getCloudSync()?.status().deviceId ?? '',
+        getLocalDeviceId: () => this.dbManager.getSessionStore().getLocalSyncDeviceId(),
         // My Rules saves as work-state rows, so a rule change syncs like any other write.
         appendWorkStateEntry: (entry) => {
           this.dbManager.getSessionStore().appendWorkStateEntry(entry);
@@ -1313,6 +1327,8 @@ export class WorkerService implements WorkerRef {
         this.memoryFeedInvalidation.close();
         this.workViewRoutes?.close();
         this.workViewRoutes = null;
+        this.sharedWorkSync?.close();
+        this.sharedWorkSync = null;
         this.stopPendingSessionResume();
         this.stopLogRetention();
         this.hookSpoolDrainer.stop();

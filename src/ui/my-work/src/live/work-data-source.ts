@@ -50,6 +50,7 @@ export interface WorkModel {
   refresh: AutoRefresh | null
   /** The backend's own health. `connected: false` means it answered but could not read saved work. */
   sourceHealth: { connected: boolean; error: string | null }
+  sharedState?: import('./work-view-api-types.ts').WorkViewSharedState
   /** The live feed's health (getConnectionStatus). Only SSE messages renew "live"; an HTTP read never does. */
   connection: ConnectionStatus
 }

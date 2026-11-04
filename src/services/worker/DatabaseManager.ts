@@ -18,6 +18,7 @@ import { purgeUndrainableSyncOutbox } from '../sync/outbox-purge.js';
 import { purgeLinkedToolUses } from '../sqlite/tool-uses.js';
 import { parseRetentionDays } from '../../shared/retention-days.js';
 import type { DBSession } from '../worker-types.js';
+import { ensureLocalDeviceIdentity } from '../sync/local-device-identity.js';
 
 export class DatabaseManager {
   private db: Database | null = null;
@@ -38,6 +39,9 @@ export class DatabaseManager {
     this.db = openGuardedSqliteDatabase(DB_PATH);
 
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    // Shared local work has an origin before credentials exist. Later cloud
+    // configuration reuses this identity rather than orphaning its records.
+    settings.CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID = ensureLocalDeviceIdentity(this.db, USER_SETTINGS_PATH, settings.CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID);
 
     // Cloud sync is active iff token, user id, and Hub URL are all non-empty
     // (CloudSync.isConfigured's exact predicate). Evaluated once here and

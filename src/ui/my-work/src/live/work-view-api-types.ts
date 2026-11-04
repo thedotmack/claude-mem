@@ -263,6 +263,7 @@ export interface WorkViewSnapshot {
   source: WorkViewSource
   revision: string
   sync?: import('../../../viewer/utils/sync-presentation.js').SyncStatusForDisplay
+  sharedState?: WorkViewSharedState
   /** The current owner-goals run; null until the owner-goals skill has run. Older workers leave it out. */
   goals?: WorkViewGoalList | null
   /** Saved past months, newest first. */
@@ -280,6 +281,17 @@ export interface WorkViewSnapshot {
   refresh?: WorkViewRefresh | null
   /** Every open judge suggestion; each is also on its conversation's request as `suggestion`. Older workers leave it out. */
   suggestions?: WorkViewRequestSuggestion[]
+}
+
+/** Shared display facts are readable before this installation enables new writes. */
+export interface WorkViewSharedState {
+  enabled: boolean
+  pending?: number
+  invalid?: number
+  unsupported?: number
+  conflicts?: unknown[]
+  files?: Array<{ file: string; message: string }>
+  error?: string
 }
 
 /** refresh.json, written by the worker's automatic refresh (auto-refresh-worker.mjs). */

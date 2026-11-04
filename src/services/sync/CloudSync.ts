@@ -480,6 +480,7 @@ const KINDS: KindSpec[] = [
         project, list_name, fields, created_at, created_at_epoch
       FROM work_state_entries
       WHERE synced_at IS NULL AND origin_device_id IS NULL
+        AND (? = 1 OR COALESCE(list_name, '') NOT GLOB '__my_work_v[0-9]*:*')
       ORDER BY id LIMIT ?`,
     selectOneSql: `
       SELECT CAST(id AS TEXT) AS id, CAST(sync_rev AS TEXT) AS sync_rev,
@@ -505,6 +506,7 @@ export type CloudSyncSettingKeys = Pick<SettingsDefaults,
 > & Partial<Pick<SettingsDefaults,
   | 'CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE'
   | 'CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS'
+  | 'CLAUDE_MEM_WORK_VIEW_SHARED_STATE'
 >>;
 
 export interface CloudSyncOptions {
@@ -582,6 +584,7 @@ export class CloudSync {
   private readonly userId: string;
   private readonly hubUrl: string;
   private readonly deviceName: string;
+  private readonly sharedWorkWritesEnabled: boolean;
   private readonly fetchImpl: typeof fetch;
   private readonly settingsPath: string;
   private readonly debounceMs: number;
@@ -654,6 +657,7 @@ export class CloudSync {
     this.hubUrl = (settings.CLAUDE_MEM_CLOUD_SYNC_HUB_URL ?? '').trim().replace(/\/+$/, '');
     // Human-readable device label for the dashboard's Devices panel.
     this.deviceName = (settings.CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME || hostname() || '').slice(0, 80);
+    this.sharedWorkWritesEnabled = settings.CLAUDE_MEM_WORK_VIEW_SHARED_STATE === 'true';
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
     this.settingsPath = options.settingsPath ?? USER_SETTINGS_PATH;
     this.debounceMs = options.debounceMs ?? 1_500;
@@ -996,7 +1000,13 @@ export class CloudSync {
   /** work_state rows not yet acked, or saved work_state snapshots still in the outbox. */
   private hasPendingWorkState(): boolean {
     return this.countPending('work_state_entries') > 0
-      || this.db.prepare("SELECT 1 FROM sync_content_outbox WHERE kind = 'work_state' LIMIT 1").get() !== null;
+      || this.db.prepare(`SELECT 1 FROM sync_content_outbox WHERE kind = 'work_state'
+        AND ${this.sharedWorkAllowedSql("json_extract(body, '$.payload.list_name')")} LIMIT 1`).get() !== null;
+  }
+
+  /** Consumer-first rollout: keep previously queued internal records durable but unsent while disabled. */
+  private sharedWorkAllowedSql(listExpression: string): string {
+    return this.sharedWorkWritesEnabled ? '1' : `COALESCE(${listExpression}, '') NOT GLOB '__my_work_v[0-9]*:*'`;
   }
 
   /**
@@ -1232,7 +1242,7 @@ export class CloudSync {
       if (this.stopped) return;
       const rows = this.db.prepare(`
         SELECT body, operation_sha256 FROM sync_content_outbox
-        WHERE kind != 'work_state' OR ? = 1
+        WHERE kind != 'work_state' OR (? = 1 AND ${this.sharedWorkAllowedSql("json_extract(body, '$.payload.list_name')")})
         ORDER BY deleted DESC, id LIMIT ?
       `).all(this.hubAcceptsKind('work_state') ? 1 : 0, this.contentBatchSize) as Array<CanonicalWireOp>;
       if (rows.length === 0) return;
@@ -1358,7 +1368,8 @@ export class CloudSync {
     // change a retry's body/hash; ack reconciliation queues a higher revision.
     for (;;) {
       if (this.stopped) return;
-      const rows = this.db.prepare(kind.selectSql).all(this.contentBatchSize) as LocalRow[];
+      const rows = this.db.prepare(kind.selectSql).all(...(kind.kind === 'work_state'
+        ? [Number(this.sharedWorkWritesEnabled), this.contentBatchSize] : [this.contentBatchSize])) as LocalRow[];
       if (rows.length === 0) break;
       for (const r of rows) {
         this.snapshotContentRow(kind, r);
@@ -2061,7 +2072,8 @@ export class CloudSync {
 
   private countPending(table: string): number {
     const row = this.db.prepare(
-      `SELECT COUNT(*) AS n FROM ${table} WHERE synced_at IS NULL AND origin_device_id IS NULL`
+      `SELECT COUNT(*) AS n FROM ${table} WHERE synced_at IS NULL AND origin_device_id IS NULL
+      ${table === 'work_state_entries' ? `AND ${this.sharedWorkAllowedSql('list_name')}` : ''}`
     ).get() as { n: number };
     return row.n;
   }

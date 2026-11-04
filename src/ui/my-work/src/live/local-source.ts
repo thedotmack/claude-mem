@@ -16,8 +16,8 @@ import type { Request as WorkRequest } from '../data.ts'
 import type { WorkViewSnapshot, WorkViewSource } from './work-view-api-types.ts'
 import { expandWorkViewOverview, type WorkViewOverview, type WorkViewRequestDetail } from './work-view-overview.ts'
 import { mergeRequestDetail } from './request-detail-state.ts'
-import { isSyncStatus, type SyncStatusForDisplay } from '../../../viewer/utils/sync-presentation.js'
-import { startViewerActivity, type ViewerActivityOptions } from '../../../viewer/utils/viewer-activity.js'
+import { isSyncStatus, type SyncStatusForDisplay } from '../../../viewer/utils/sync-presentation.ts'
+import { startViewerActivity, type ViewerActivityOptions } from '../../../viewer/utils/viewer-activity.ts'
 
 export interface LocalSourceOptions {
   hostname?: string

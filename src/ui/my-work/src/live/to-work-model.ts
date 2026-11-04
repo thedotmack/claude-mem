@@ -448,6 +448,7 @@ export function toWorkModel(snapshot: WorkViewSnapshot, now: number): MappedWork
     people: [...new Set(requests.map((request) => request.askedBy))],
     unlinkedWorkCount: Array.isArray(snapshot.unlinkedWork) ? snapshot.unlinkedWork.length : 0,
     sourceHealth: { connected: snapshot.source.connected, error: snapshot.source.error },
+    ...(snapshot.sharedState ? { sharedState: snapshot.sharedState } : {}),
     ...goalsModel,
     focusAreas,
     otherAsks,
