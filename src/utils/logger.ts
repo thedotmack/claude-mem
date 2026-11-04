@@ -93,11 +93,23 @@ let errorSink: ErrorSink | null = null;
  * timestamp (CWE-117 log forging). Escaping keeps the value readable and inside
  * the record it belongs to.
  *
- * Only the structural breaks the logger itself emits stay raw: a stack trace or
- * a DEBUG payload dump, which are added as whole lines by design.
+ * Only the structural breaks the logger itself emits stay raw: the frames of a
+ * stack trace (escapeStackText) and a DEBUG payload dump, whose JSON already
+ * escapes line breaks inside its strings.
  */
 function escapeLineBreaks(value: string): string {
   return value.replace(/\r/g, '\\r').replace(/\n/g, '\\n');
+}
+
+/**
+ * Keep a stack's frames on their own lines, and nothing else. Its first line
+ * repeats the error message, which is data and can carry tool text, so any line
+ * that is not a frame stays inside the line before it. The leading indent means
+ * no line of the stack can start with the `[timestamp]` of a record, even when
+ * the stack starts with the message itself.
+ */
+function escapeStackText(stack: string): string {
+  return '  ' + stack.replace(/\r/g, '\\r').replace(/\n(?![ \t]+at )/g, '\\n');
 }
 
 
@@ -393,9 +405,13 @@ class Logger {
     let dataStr = '';
     if (data !== undefined && data !== null) {
       if (data instanceof Error) {
-        dataStr = this.getLevel() === LogLevel.DEBUG
-          ? `\n${data.message}\n${data.stack}`
-          : ` ${escapeLineBreaks(data.message)}`;
+        // The message stays on the record's own line at every level: on a line of
+        // its own, a message that merely starts with a `[timestamp] [LEVEL]
+        // [COMPONENT]` prefix would be a record, with no line break to escape.
+        dataStr = ` ${escapeLineBreaks(data.message)}`;
+        if (this.getLevel() === LogLevel.DEBUG && data.stack) {
+          dataStr += `\n${escapeStackText(data.stack)}`;
+        }
       } else if (this.getLevel() === LogLevel.DEBUG && typeof data === 'object') {
         // Depth-guarded: a deeply nested or self-referential payload would make
         // a plain JSON.stringify overflow the stack (RangeError), crashing the
@@ -416,7 +432,7 @@ class Logger {
             return `${escapeLineBreaks(k)}=${escapeLineBreaks(String(v))}`;
           }
           // safeStringify never throws: cycles, BigInt and deep nesting render as markers.
-          return `${escapeLineBreaks(k)}=${Array.isArray(v) ? this.safeStringify(v) : this.formatData(v)}`;
+          return `${escapeLineBreaks(k)}=${escapeLineBreaks(Array.isArray(v) ? this.safeStringify(v) : this.formatData(v))}`;
         });
         contextStr = ` {${pairs.join(', ')}}`;
       }
