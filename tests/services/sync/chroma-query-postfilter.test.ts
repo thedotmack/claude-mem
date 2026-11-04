@@ -458,29 +458,31 @@ describe('ChromaSync.queryChroma narrowed filtered fallback (#5091)', () => {
     expect(some.exhausted).toBe(false);
   });
 
-  it('sends the plain where when the window is too thin to prove the top matches', async () => {
+  it('falls back without the doc_type clause when the window is too thin to prove the top matches', async () => {
     // Limit 2 asks for 40 candidates, and the 40 shared-id documents rank first.
+    // The fallback after the narrowed window drops `doc_type` (#5354) and
+    // filters it client-side; the rows are the plain filter's top matches.
     const out = await sync.queryChroma('anything', 2, tinyObservations, undefined, () => TINY_IDS);
 
-    expect(queryCalls().map(q => q.args.where)).toEqual([undefined, narrowed, tinyObservations]);
+    expect(queryCalls().map(q => q.args.where)).toEqual([undefined, narrowed, dualProject('tiny')]);
     expect(out.ids).toEqual(exactIds(tinyObservations, 2));
   });
 
-  it('sends the plain where when the scope has too many rows to list', async () => {
+  it('sends the fallback without the doc_type clause when the scope has too many rows to list', async () => {
     const rowIds = mock((_maxIds: number) => null);
     await sync.queryChroma('anything', 100, tinyObservations, undefined, rowIds);
 
     expect(rowIds).toHaveBeenCalledTimes(1);
     expect(rowIds.mock.calls[0][0]).toBeGreaterThan(0);
-    expect(queryCalls().map(q => q.args.where)).toEqual([undefined, tinyObservations]);
+    expect(queryCalls().map(q => q.args.where)).toEqual([undefined, dualProject('tiny')]);
   });
 
-  it('sends the plain where when listing the rows fails', async () => {
+  it('sends the fallback without the doc_type clause when listing the rows fails', async () => {
     await sync.queryChroma('anything', 100, tinyObservations, undefined, () => {
       throw new Error('database is closed');
     });
 
-    expect(queryCalls().map(q => q.args.where)).toEqual([undefined, tinyObservations]);
+    expect(queryCalls().map(q => q.args.where)).toEqual([undefined, dualProject('tiny')]);
   });
 
   it('answers an empty scope without a second chroma query', async () => {
@@ -506,5 +508,76 @@ describe('ChromaSync.queryChroma narrowed filtered fallback (#5091)', () => {
 
     expect(rowIds).not.toHaveBeenCalled();
     expect(queryCalls().map(q => q.args.where)).toEqual([where]);
+  });
+});
+
+/**
+ * The doc_type-free filtered fallback (#5354). When the narrowed row-id
+ * fallback cannot run -- the scope has more rows than the cap, the listing
+ * fails, or the caller passes no listing at all -- the plain fallback used to
+ * send the caller's whole `where`, and its `doc_type` member matches most of
+ * the collection (2.85M of 3.09M documents in the report), which blocks
+ * chroma-mcp for minutes. The fallback now leaves `doc_type` out of the
+ * clause it sends and applies the full clause client-side instead, the same
+ * split #4682 uses for fragment lookups. The remaining clauses (the project
+ * scoping, a platform clause) still go to chroma: they match only the rows of
+ * one project or platform.
+ */
+describe('ChromaSync.queryChroma doc_type-free filtered fallback (#5354)', () => {
+  const tinyObservations = { $and: [{ doc_type: 'observation' }, dualProject('tiny')] };
+  const exactIds = (where: any, limit: number) =>
+    CORPUS.filter(d => matches(where, d)).slice(0, limit).map(d => Number(d.id.split('_')[1]));
+  const wheresSent = () => queryCalls().map(q => q.args.where);
+  const noDocTypeSent = () =>
+    queryCalls().every(q => !JSON.stringify(q.args.where ?? {}).includes('doc_type'));
+
+  beforeEach(() => {
+    calls = [];
+    sync = new ChromaSync('claude-mem');
+  });
+
+  it('does not send doc_type to chroma when the scope is too large to narrow by row ids', async () => {
+    // The listing returns null past the row-id cap: the report's shape, a
+    // project with more rows than the narrowed fallback can list.
+    const out = await sync.queryChroma('anything', 100, tinyObservations, undefined, () => null);
+
+    expect(wheresSent()).toEqual([undefined, dualProject('tiny')]);
+    expect(noDocTypeSent()).toBe(true);
+    expect(out.ids).toEqual(exactIds(tinyObservations, 100));
+    expect(out.metadatas.every((m: any) => m.doc_type === 'observation' && m.project === 'tiny')).toBe(true);
+  });
+
+  it('keeps the project and platform clauses server-side while doc_type moves client-side', async () => {
+    const where = {
+      $and: [{ doc_type: 'observation' }, dualProject('tiny'), { platform_source: 'claude' }],
+    };
+    const out = await sync.queryChroma('anything', 100, where, undefined, () => null);
+
+    expect(wheresSent()).toEqual([
+      undefined,
+      { $and: [dualProject('tiny'), { platform_source: 'claude' }] },
+    ]);
+    expect(noDocTypeSent()).toBe(true);
+    expect(out.ids).toEqual(exactIds(where, 100));
+    expect(out.metadatas.every((m: any) => m.platform_source === 'claude')).toBe(true);
+  });
+
+  it('filters a doc_type-only fallback client-side instead of sending the clause', async () => {
+    const where = { doc_type: 'session_summary' };
+    const out = await sync.queryChroma('anything', 101, where);
+
+    expect(wheresSent()).toEqual([undefined, undefined]);
+    expect(out.ids).toEqual(exactIds(where, 101));
+    expect(out.metadatas.every((m: any) => m.doc_type === 'session_summary')).toBe(true);
+  });
+
+  it('still sends the plain where when doc_type sits under an $or', async () => {
+    // Dropping one side of an $or would change what the clause matches, so
+    // this shape keeps the exact server-side query rather than guessing.
+    const where = { $or: [{ doc_type: 'observation' }, { project: 'tiny' }] };
+    const out = await sync.queryChroma('anything', 950, where);
+
+    expect(wheresSent()).toEqual([undefined, where]);
+    expect(out.ids).toEqual(exactIds(where, 950));
   });
 });
