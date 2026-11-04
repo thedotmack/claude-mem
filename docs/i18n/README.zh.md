@@ -9,11 +9,15 @@
       <img src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp" alt="Claude-Mem" width="400">
     </picture>
   </a>
-  <br>
-  <a href="https://vercel.com/open-source-program">
-    <img alt="Vercel OSS Program" src="https://vercel.com/oss/program-badge-2026.svg" />
-  </a>
 </h1>
+
+<p align="center">
+  <img alt="Vercel OSS Program" src="https://vercel.com/oss/program-badge-2026.svg" height="24" />
+  &nbsp;&nbsp;&nbsp;
+  <img alt="Greptile" src="../public/greptile-wordmark-green.svg" height="24" />
+  &nbsp;&nbsp;&nbsp;
+  <img alt="SerpApi" src="../public/serpapi-logo-with-wordmark-gradient.svg" height="24" />
+</p>
 
 <p align="center">
   <a href="README.zh.md">🇨🇳 中文</a> •
@@ -371,16 +375,19 @@ ls ~/.claude/plugins/marketplaces/thedotmack/plugin/modes/
 | 模式 | 描述 |
 |------------|-------------------------|
 | `code` | 默认英文模式 |
-| `code--zh` | 简体中文模式 |
-| `code--ja` | 日文模式 |
+| `code--chill` | 记录更少的观察,只保留日后重新发现会很费力的内容 |
+| `code--[lang]` | 与 `code` 相同,但观察和摘要用另一种语言撰写 |
 
-特定语言模式遵循 `code--[lang]` 的模式,其中 `[lang]` 是 ISO 639-1 语言代码(例如中文为 `zh`,日语为 `ja`,西班牙语为 `es`)。
+内置语言代码:`ar`, `bn`, `cs`, `da`, `de`, `el`, `es`, `fi`, `fr`, `he`, `hi`, `hu`, `id`, `it`, `ja`, `ko`, `nl`, `no`, `pl`, `pt-br`, `ro`, `ru`, `sv`, `th`, `tr`, `uk`, `ur`, `vi`, `zh`。例如,`code--ko` 会用韩语写入记忆。
 
-> 注意:`code--zh`(简体中文)已内置 —— 无需额外安装或更新插件。
+各语言的名称、电子邮件调查模式和自定义模式,请参阅[模式文档](https://docs.claude-mem.ai/modes)。
+
+> 注意:以上模式均已内置,无需额外安装或更新插件。
 
 #### 更改模式后
 
 重启 Claude Code 以应用新的模式配置。
+
 ---
 
 ## 开发
