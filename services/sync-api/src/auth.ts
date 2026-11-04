@@ -47,6 +47,17 @@ interface MemoryVerdict {
 	expiresAtMs: number;
 }
 
+/**
+ * Cap on the per-isolate positive-verdict memo. Each entry lives for the whole
+ * AUTH_CACHE_TTL window (default 900s, max 3600s) and is only reclaimed when
+ * the same key is read again, so without a bound a long-lived process grows one
+ * entry per distinct (user, token) pair for its whole life. Eviction costs that
+ * key one more upstream verification, never a refusal — the same trade the
+ * Server Beta key cache makes (src/server/middleware/postgres-auth.ts,
+ * VERIFIED_KEY_CACHE_MAX_ENTRIES).
+ */
+export const VERDICT_MEMORY_MAX_ENTRIES = 10_000;
+
 const verdictMemory = new Map<string, MemoryVerdict>();
 const MEMORY_KV_HINT_SECONDS = 60;
 
@@ -61,6 +72,14 @@ function readVerdictMemory(cacheKey: string, nowMs = Date.now()): boolean {
 }
 
 function writeVerdictMemory(cacheKey: string, ttlSeconds: number, nowMs = Date.now()): void {
+	// Re-inserting moves the key to the end, which is what makes the FIFO
+	// eviction below behave like "oldest verdict first" for the entries that
+	// were not refreshed.
+	verdictMemory.delete(cacheKey);
+	if (verdictMemory.size >= VERDICT_MEMORY_MAX_ENTRIES) {
+		const oldestKey = verdictMemory.keys().next().value;
+		if (oldestKey !== undefined) verdictMemory.delete(oldestKey);
+	}
 	verdictMemory.set(cacheKey, { expiresAtMs: nowMs + ttlSeconds * 1_000 });
 }
 
@@ -70,6 +89,11 @@ function deleteVerdictMemory(cacheKey: string): void {
 
 export function __resetAuthVerdictMemoryForTests(): void {
 	verdictMemory.clear();
+}
+
+/** Tests only: how many verdicts the isolate is currently holding. */
+export function __verdictMemorySizeForTests(): number {
+	return verdictMemory.size;
 }
 
 export function defaultAuthDependencies(_env: SyncApiEnv): AuthDependencies {

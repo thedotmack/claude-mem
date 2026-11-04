@@ -445,6 +445,59 @@ describe('ClaudeProvider invalid API key detection (#4253)', () => {
   });
 });
 
+describe('ClaudeProvider model refusal detection (#5315)', () => {
+  const REFUSAL = "There's an issue with the selected model (auto). It may not exist or you may not have access to it. Run --model to pick a different model.";
+
+  beforeEach(() => {
+    scriptedMessages = [];
+  });
+
+  it.each([
+    ['the structured error', { error: 'model_not_found' }],
+    ['the whole status line, from a CLI without the field', {}],
+  ])('stops on %s without parsing the reply as prose', async (_name, extra) => {
+    const session = createSession();
+    const harness = createHarness(session);
+
+    scriptedMessages = [
+      { ...assistantFrame([{ type: 'text', text: REFUSAL }]), ...extra },
+      resultFrame({ is_error: true }),
+    ];
+
+    const failure = await harness.provider.startSession(session).then(() => null, error => error);
+    expect(failure).toMatchObject({ kind: 'unrecoverable', code: 'model_unavailable', message: REFUSAL });
+    expect(failure.action).toContain('CLAUDE_MEM_MODEL');
+    expect(harness.storeObservations).not.toHaveBeenCalled();
+    expect(harness.confirmClaimedMessages).not.toHaveBeenCalled();
+  });
+
+  it('stores an observation that quotes the refusal', async () => {
+    const session = createSession();
+    const harness = createHarness(session);
+
+    scriptedMessages = [
+      assistantFrame([{ type: 'text', text: OBSERVATION_XML.replace('The queued batch reached the parser.', REFUSAL) }]),
+      resultFrame(),
+    ];
+
+    await harness.provider.startSession(session);
+
+    expect(harness.storeObservations).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not stop on narrative that opens with the same words', async () => {
+    const session = createSession();
+    const harness = createHarness(session);
+
+    scriptedMessages = [
+      assistantFrame([{ type: 'text', text: "There's an issue with the selected model (auto) in the settings test, which now passes." }]),
+      resultFrame(),
+    ];
+
+    await expect(harness.provider.startSession(session)).resolves.toBeUndefined();
+  });
+});
+
 describe('ClaudeProvider MEMORY_ID_CAPTURED spawn-health line (#4150)', () => {
   let infoSpy: ReturnType<typeof spyOn>;
 

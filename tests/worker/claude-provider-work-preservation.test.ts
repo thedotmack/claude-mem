@@ -852,6 +852,55 @@ describe('work preservation — a generator that throws, seen from the runner', 
     }
   });
 
+  it('a model refusal is booked as a model outage, not dropped as prose (#5315)', async () => {
+    const booked: unknown[][] = [];
+    const { routes, session } = await buildRoutesWithRealProvider(6191);
+    liveSessions.push(session);
+    const recordFailure = spyOn(observerHealth, 'recordObserverFailure').mockImplementation((...args: unknown[]) => {
+      booked.push(args);
+    });
+    const healthDir = mkdtempSync(join(tmpdir(), 'claude-mem-model-refusal-'));
+    try {
+      await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+      await sdkStarted();
+      await sdk().until(() => sdk().prompts.length >= 1, 'init prompt');
+      sdk().answer(SKIP_REPLY);
+      await sdk().until(() => sdk().prompts.length >= 2, 'first observation');
+
+      // The frame Claude Code 2.1.318 sends for ANTHROPIC_DEFAULT_HAIKU_MODEL=auto.
+      sdk().frame({
+        type: 'assistant',
+        error: 'model_not_found',
+        message: {
+          model: '<synthetic>',
+          content: [{ type: 'text', text: "There's an issue with the selected model (auto). It may not exist or you may not have access to it. Run --model to pick a different model." }],
+          usage: {},
+        },
+      });
+      await withTimeout(session.generatorPromise ?? Promise.resolve(), 'generator chain after model refusal');
+      await settle(5);
+
+      expect(booked).toHaveLength(1);
+      expect(booked[0][0]).toBe('claude');
+      const detail = booked[0][1] as { kind: string; code: string; action: string; message: string };
+      expect(detail.kind).toBe('unrecoverable');
+      expect(detail.code).toBe('model_unavailable');
+      expect(detail.message).not.toContain('prose');
+
+      recordFailure.mockRestore();
+      const healthPath = join(healthDir, 'observer-health.json');
+      observerHealth.recordObserverFailure('claude', detail, healthPath);
+      const warning = observerHealth.renderObserverHealthWarning(observerHealth.readObserverHealth(healthPath)!);
+      expect(warning).toContain('Latest error: There\'s an issue with the selected model (auto)');
+      expect(warning).toContain('What to do: Set CLAUDE_MEM_MODEL in ~/.claude-mem/settings.json');
+      expect(warning).toContain('Restarting will NOT help here');
+      expect(warning).not.toContain('Click to restart');
+    } finally {
+      recordFailure.mockRestore();
+      rmSync(healthDir, { recursive: true, force: true });
+    }
+  });
+
   it('preserves a queued batch and records the Anthropic verification remedy (#5251)', async () => {
     const cleanUp = useCredentialFallback('api-key');
     const booked: unknown[][] = [];
