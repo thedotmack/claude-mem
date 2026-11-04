@@ -420,17 +420,15 @@ interface SessionStartContextArgs {
 function normalizeProjectsArg(args: SessionStartContextArgs): string[] {
   if (Array.isArray(args.projects)) {
     return args.projects
-      .map(project => typeof project === 'string' ? project.trim() : '')
-      .filter(Boolean);
+      .filter((project): project is string => typeof project === 'string' && project.trim().length > 0);
   }
   if (typeof args.projects === 'string') {
     return args.projects
       .split(',')
-      .map(project => project.trim())
-      .filter(Boolean);
+      .filter(project => project.trim().length > 0);
   }
   if (typeof args.project === 'string' && args.project.trim().length > 0) {
-    return [args.project.trim()];
+    return [args.project];
   }
   return [];
 }

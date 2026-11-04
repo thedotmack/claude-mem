@@ -419,7 +419,7 @@ export class SearchRoutes extends BaseRouteHandler {
       return;
     }
 
-    const projects = projectsParam.split(',').map(p => p.trim()).filter(Boolean);
+    const projects = projectsParam.split(',').filter(p => p.trim().length > 0);
 
     if (projects.length === 0) {
       this.badRequest(res, 'At least one project is required');
