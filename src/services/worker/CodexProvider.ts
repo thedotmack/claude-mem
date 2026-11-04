@@ -10,7 +10,7 @@ import {
   type CodexAppServerTurnResult,
 } from './CodexAppServerClient.js';
 import { CodexAppServerPool, boundedInteger } from './CodexAppServerPool.js';
-import { ClassifiedProviderError, CODEX_COOLDOWN_REFUSAL_CODE, isClassified } from './provider-errors.js';
+import { ClassifiedProviderError, CODEX_AUTH_FROM_EXIT_TEXT_CODE, CODEX_COOLDOWN_REFUSAL_CODE, isClassified } from './provider-errors.js';
 import type { PaidSendBudget } from './paid-send-budget.js';
 import { resolveLlmTimeoutMs, withRetry } from './retry.js';
 import {
@@ -90,8 +90,8 @@ const CODEX_SERVER_FAULT = /RPC error -(?:32603|32700)\b/;
 
 /**
  * The close handler's own prefix when the child was stopped by a signal.
- * `signal null` is an ordinary exit. Auth text on that exit is read only from
- * the recent stderr lines (CODEX_EXIT_AUTH_TAIL_LINES), not the whole tail.
+ * `signal null` is an ordinary exit. Text on that exit is read only from the
+ * recent stderr lines (CODEX_EXIT_REPORT_LINES), not the whole tail.
  * The worker's version-mismatch recycle SIGKILLs this child.
  */
 const CODEX_SIGNALED_EXIT = /^Codex app-server exited with code \S+ signal (?!null\b)\S+/;
@@ -102,40 +102,26 @@ function isCodexSignaledExit(cause: unknown, message: string): boolean {
   return CODEX_SIGNALED_EXIT.test(message);
 }
 
-/**
- * Auth-looking text. Structured CodexErrorInfo (unauthorized, HTTP 401/403)
- * is decided before this runs. On an app-server exit the close error quotes
- * the retained stderr tail, up to 64 KiB, so a stale line must not decide it:
- * only the trailing lines, the ones that can still describe this exit, are read.
- * Any other error is short-lived text and is read whole.
- */
 const CODEX_AUTH_TEXT = /not logged in|codex login|unauthorized|authentication|ChatGPT auth|requires Codex CLI|\b40[13]\b/i;
 
-/** Trailing stderr lines of an app-server exit that may still explain that exit. */
-export const CODEX_EXIT_AUTH_TAIL_LINES = 16;
+/**
+ * Trailing stderr lines of an app-server exit that can describe that exit. The
+ * close error quotes the retained tail, up to 64 KiB, so an older line must not
+ * decide the verdict. Measured on codex-cli 0.164.0: its longest refusal is an
+ * unknown flag with a tip, 7 lines with the error itself on the first, so the
+ * final line alone would miss it.
+ */
+export const CODEX_EXIT_REPORT_LINES = 7;
 
 const CODEX_APP_SERVER_EXIT = /^Codex app-server exited with code \S+ signal \S+/;
 
 /** Causes already logged for a text-heuristic auth verdict (classify runs twice per failure). */
 const loggedCodexAuthTextCauses = new WeakSet<object>();
 
-function codexAuthScanText(message: string): string {
+/** The text the classifier may read: an exit's recent stderr, or any other error whole. */
+function codexDecidingText(message: string): string {
   if (!CODEX_APP_SERVER_EXIT.test(message)) return message;
-  return message.split(/\r?\n/).slice(-CODEX_EXIT_AUTH_TAIL_LINES).join('\n');
-}
-
-/**
- * The auth category inside the text the heuristic is allowed to read, if any.
- * Only that category is returned. The surrounding stderr is arbitrary and can
- * carry a credential (a Bearer token next to "401 Unauthorized"); it is not
- * retained and must not be logged.
- */
-function codexAuthTextHit(message: string): string | null {
-  for (const raw of codexAuthScanText(message).split(/\r?\n/)) {
-    const found = raw.match(CODEX_AUTH_TEXT);
-    if (found) return found[0];
-  }
-  return null;
+  return message.split(/\r?\n/).slice(-CODEX_EXIT_REPORT_LINES).join('\n');
 }
 
 function logCodexAuthTextHit(cause: unknown, match: string): void {
@@ -177,6 +163,8 @@ export function classifyCodexError(cause: unknown): ClassifiedProviderError {
   const structuredKind = classifyCodexErrorInfo((cause as { codexErrorInfo?: unknown } | null)?.codexErrorInfo);
   let kind: CodexErrorKind = 'transient';
   let action: string | undefined;
+  let verdictCode: string | undefined;
+  const decidingText = codexDecidingText(message);
   if (code === CODEX_NO_AGENT_MESSAGE_CODE || code === CODEX_MALFORMED_OUTPUT_CODE) {
     // A completed, billed turn whose output was missing or malformed: an
     // output failure, never resent. Decided by code, so its diagnostic counts
@@ -194,29 +182,34 @@ export function classifyCodexError(cause: unknown): ClassifiedProviderError {
     // close error quotes the lifetime stderr tail, so an earlier 401 line in
     // that tail must not arm the auth cooldown. The replacement worker retries.
     kind = 'transient';
-  } else if (CODEX_SERVER_FAULT.test(message)) {
+  } else if (CODEX_SERVER_FAULT.test(decidingText)) {
     // Whatever its text quotes (a usage limit, a login, a parser), a fault of
     // the app-server neither arms the account breaker nor holds capture
     // behind the setup gate.
     kind = 'transient';
-  } else if (code === CODEX_SETUP_REQUIRED_CODE || code === 'ENOENT' || /executable not found|command not found|ENOENT/i.test(message)) {
+  } else if (code === CODEX_SETUP_REQUIRED_CODE || code === 'ENOENT' || /executable not found|command not found|ENOENT/i.test(decidingText)) {
     // Fixed on this machine (install the CLI, `codex login`), never by retrying.
     kind = 'setup_required';
   } else {
-    const authMatch = codexAuthTextHit(message);
+    // Only the matched category is kept. The surrounding stderr is arbitrary
+    // and can carry a credential (a Bearer token next to "401 Unauthorized").
+    const authMatch = decidingText.match(CODEX_AUTH_TEXT)?.[0];
     if (authMatch) {
       kind = 'auth_invalid';
       // The stored message keeps only the first 500 characters, which is the
       // oldest part of a long stderr tail. The matched category is what a
       // false auth cooldown has to be checked against.
       logCodexAuthTextHit(cause, authMatch);
-    } else if (/usage limit|quota|insufficient credits|plan limit|billing/i.test(message)) {
+      // An exit's stderr is our reading, not the provider's reply: the
+      // session-start warning must not state it as a refusal.
+      if (CODEX_APP_SERVER_EXIT.test(message)) verdictCode = CODEX_AUTH_FROM_EXIT_TEXT_CODE;
+    } else if (/usage limit|quota|insufficient credits|plan limit|billing/i.test(decidingText)) {
       kind = 'quota_exhausted';
-    } else if (/rate limit|\b429\b/i.test(message)) {
+    } else if (/rate limit|\b429\b/i.test(decidingText)) {
       kind = 'rate_limit';
-    } else if (/context (length|window)|prompt (is )?too long/i.test(message)) {
+    } else if (/context (length|window)|prompt (is )?too long/i.test(decidingText)) {
       kind = 'context_overflow';
-    } else if (structuredKind === CODEX_REFUSED_REQUEST || CODEX_PROTOCOL_REFUSAL.test(message)) {
+    } else if (structuredKind === CODEX_REFUSED_REQUEST || CODEX_PROTOCOL_REFUSAL.test(decidingText)) {
       // Refused the same way until the settings or the CLI change: a setup
       // failure, held behind the codex_cli gate and shown at SessionStart,
       // never a transport blip resumed forever.
@@ -224,7 +217,9 @@ export function classifyCodexError(cause: unknown): ClassifiedProviderError {
       action = CODEX_REQUEST_REMEDY;
     }
   }
-  return new ClassifiedProviderError(`Codex: ${message.slice(0, 500)}`, { kind, cause, ...(action ? { action } : {}) });
+  return new ClassifiedProviderError(`Codex: ${message.slice(0, 500)}`, {
+    kind, cause, ...(action ? { action } : {}), ...(verdictCode ? { code: verdictCode } : {}),
+  });
 }
 
 /**

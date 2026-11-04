@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
-import { CodexProvider, classifyCodexError, CODEX_EXIT_AUTH_TAIL_LINES } from '../../src/services/worker/CodexProvider.js';
+import { CodexProvider, classifyCodexError, CODEX_EXIT_REPORT_LINES } from '../../src/services/worker/CodexProvider.js';
 import { logger } from '../../src/utils/logger.js';
 import { CODEX_SETUP_REQUIRED_CODE } from '../../src/services/worker/CodexAppServerClient.js';
 import { SessionRoutes } from '../../src/services/worker/http/routes/SessionRoutes.js';
@@ -600,7 +600,7 @@ describe('Codex provider integration', () => {
     }
 
     it('is not auth_invalid when the only 401 is above the recent tail', () => {
-      const lines = [staleAuthLine, ...Array.from({ length: CODEX_EXIT_AUTH_TAIL_LINES }, (_, i) => benign(i))];
+      const lines = [staleAuthLine, ...Array.from({ length: CODEX_EXIT_REPORT_LINES }, (_, i) => benign(i))];
       const warn = spyOn(logger, 'warn').mockImplementation(() => {});
       try {
         expect(classifyCodexError(ordinaryExit(lines)).kind).toBe('transient');
@@ -612,7 +612,7 @@ describe('Codex provider integration', () => {
 
     it('is auth_invalid when a recent stderr line is an auth error, and logs the matched category', () => {
       const lines = [
-        ...Array.from({ length: CODEX_EXIT_AUTH_TAIL_LINES + 8 }, (_, i) => benign(i)),
+        ...Array.from({ length: CODEX_EXIT_REPORT_LINES + 8 }, (_, i) => benign(i)),
         'not logged in',
         benign(0),
         benign(1),
@@ -651,7 +651,7 @@ describe('Codex provider integration', () => {
 
     it('is auth_invalid for a 401 on the last stderr line of an ordinary exit', () => {
       const lines = [
-        ...Array.from({ length: CODEX_EXIT_AUTH_TAIL_LINES + 4 }, (_, i) => benign(i)),
+        ...Array.from({ length: CODEX_EXIT_REPORT_LINES + 4 }, (_, i) => benign(i)),
         staleAuthLine,
       ];
       expect(classifyCodexError(ordinaryExit(lines)).kind).toBe('auth_invalid');
@@ -683,7 +683,7 @@ describe('Codex provider integration', () => {
     });
 
     it('still reads auth text anywhere in a non-exit error', () => {
-      const lines = ['HTTP 401 unauthorized', ...Array.from({ length: CODEX_EXIT_AUTH_TAIL_LINES }, (_, i) => benign(i))];
+      const lines = ['HTTP 401 unauthorized', ...Array.from({ length: CODEX_EXIT_REPORT_LINES }, (_, i) => benign(i))];
       const warn = spyOn(logger, 'warn').mockImplementation(() => {});
       try {
         expect(classifyCodexError(new Error(lines.join('\n'))).kind).toBe('auth_invalid');
@@ -695,11 +695,66 @@ describe('Codex provider integration', () => {
       }
     });
 
+    it.each([
+      ['usage limit', 'usage limit reached for this plan'],
+      ['billing', 'billing problem on the account'],
+      ['rate limit', 'HTTP 429 rate limit'],
+      ['context overflow', 'context window exceeded'],
+      ['missing command', 'sh: rg: command not found'],
+      ['ENOENT', 'spawn rg ENOENT'],
+      ['protocol refusal', "error: unexpected argument '--strict-config' found"],
+      ['RPC refusal', 'Codex app-server RPC error -32601: Method not found'],
+    ])('stays transient when the only %s line is above the recent tail', (_name, staleLine) => {
+      const lines = [staleLine, ...Array.from({ length: CODEX_EXIT_REPORT_LINES }, (_, i) => benign(i))];
+      expect(classifyCodexError(ordinaryExit(lines)).kind).toBe('transient');
+    });
+
+    it('does not arm a quota cooldown when an ordinary exit only quotes an old usage limit', async () => {
+      const provider = new CodexProvider(null as any, null as any) as any;
+      const failure = ordinaryExit([
+        'usage limit reached for this plan',
+        ...Array.from({ length: CODEX_EXIT_REPORT_LINES }, (_, i) => benign(i)),
+      ]);
+      for (const client of provider.appServer.clients) client.runTurn = async (options: any) => {
+        options.onFailure(failure);
+        throw failure;
+      };
+      await expect(provider.query([], config)).rejects.toMatchObject({ kind: 'transient' });
+      expect(getQuotaCooldown('codex')).toBeNull();
+    });
+
+    it('still reads a real multi-line refusal, whose error is on its first line', () => {
+      // Printed by codex-cli 0.164.0 for an unknown flag.
+      const refusal = [
+        "error: unexpected argument '--strict-confi' found",
+        '',
+        "  tip: a similar argument exists: '--strict-config'",
+        '',
+        'Usage: codex app-server --strict-config',
+        '',
+        "For more information, try '--help'.",
+      ];
+      expect(refusal).toHaveLength(CODEX_EXIT_REPORT_LINES);
+      expect(classifyCodexError(ordinaryExit([staleAuthLine, ...refusal])).kind).toBe('setup_required');
+    });
+
+    it('lets a recent auth line decide when only an older line is a server fault', () => {
+      const lines = ['Codex app-server RPC error -32603: internal error', ...Array.from({ length: CODEX_EXIT_REPORT_LINES }, (_, i) => benign(i)), 'not logged in'];
+      expect(classifyCodexError(ordinaryExit(lines)).kind).toBe('auth_invalid');
+    });
+
+    it('marks only an exit-text auth verdict as read from the exit', () => {
+      expect(classifyCodexError(ordinaryExit(['not logged in'])).code).toBe('codex_auth_from_exit_text');
+      expect(classifyCodexError(new Error('Codex app-server turn failed: 401 Unauthorized')).code).toBeUndefined();
+      const structured = Object.assign(ordinaryExit(['not logged in']), { codexErrorInfo: 'unauthorized' });
+      expect(classifyCodexError(structured).code).toBeUndefined();
+    });
+
     it('does not arm an auth cooldown when an ordinary exit only quotes a stale 401', async () => {
       const provider = new CodexProvider(null as any, null as any) as any;
       const failure = ordinaryExit([
         staleAuthLine,
-        ...Array.from({ length: CODEX_EXIT_AUTH_TAIL_LINES }, (_, i) => benign(i)),
+        ...Array.from({ length: CODEX_EXIT_REPORT_LINES }, (_, i) => benign(i)),
       ]);
       for (const client of provider.appServer.clients) client.runTurn = async (options: any) => {
         options.onFailure(failure);

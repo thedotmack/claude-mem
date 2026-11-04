@@ -841,6 +841,29 @@ describe('renderObserverQuotaCooldownNotice', () => {
   });
 });
 
+describe('auth warning for a verdict read from an exit', () => {
+  const authState = (lastErrorCode: string | null) => unhealthyState({
+    lastErrorProvider: 'codex',
+    lastErrorKind: 'auth_invalid',
+    lastErrorCode,
+  });
+
+  it('does not claim the provider refused the credentials', () => {
+    const warning = renderObserverHealthWarning(authState('codex_auth_from_exit_text'));
+    expect(warning).toContain('looks like a refused login');
+    expect(warning).toContain('may be wrong');
+    expect(warning).toContain('codex login status');
+    expect(warning).not.toContain('credentials have been refused');
+    expect(warning).not.toContain('the provider refused the credentials');
+  });
+
+  it('keeps the plain refusal when the provider said so', () => {
+    const warning = renderObserverHealthWarning(authState(null));
+    expect(warning).toContain('credentials have been refused by codex');
+    expect(warning).toContain('Restarting will NOT help here: the provider refused the credentials');
+  });
+});
+
 describe('describeDuration', () => {
   it('renders minutes, hours, and days at human granularity', () => {
     expect(describeDuration(30_000)).toBe('1 minute');
