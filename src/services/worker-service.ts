@@ -124,6 +124,7 @@ import { notifyGrokBotIndex, watchGrokBotIndexSettings } from './integrations/Gr
 import { DatabaseManager } from './worker/DatabaseManager.js';
 import { SessionManager } from './worker/SessionManager.js';
 import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
+import { MemoryFeedInvalidation } from './worker/MemoryFeedInvalidation.js';
 import { ClaudeProvider, classifyClaudeError } from './worker/ClaudeProvider.js';
 import type { WorkerRef } from './worker/agents/types.js';
 import { GeminiProvider, classifyGeminiError } from './worker/GeminiProvider.js';
@@ -305,6 +306,7 @@ export class WorkerService implements WorkerRef {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
   public sseBroadcaster: SSEBroadcaster;
+  private readonly memoryFeedInvalidation: MemoryFeedInvalidation;
   private sdkAgent: ClaudeProvider;
   private geminiAgent: GeminiProvider;
   private openRouterAgent: OpenRouterProvider;
@@ -355,6 +357,8 @@ export class WorkerService implements WorkerRef {
     this.dbManager = new DatabaseManager();
     this.sessionManager = new SessionManager(this.dbManager);
     this.sseBroadcaster = new SSEBroadcaster();
+    this.memoryFeedInvalidation = new MemoryFeedInvalidation(this.sseBroadcaster);
+    this.memoryFeedInvalidation.start();
     this.sdkAgent = new ClaudeProvider(this.dbManager, this.sessionManager);
     this.geminiAgent = new GeminiProvider(this.dbManager, this.sessionManager);
     this.openRouterAgent = new OpenRouterProvider(this.dbManager, this.sessionManager);
@@ -1306,6 +1310,7 @@ export class WorkerService implements WorkerRef {
       isShuttingDown: () => this.isShuttingDown,
       markShuttingDown: () => { this.isShuttingDown = true; },
       beforeGracefulShutdown: async () => {
+        this.memoryFeedInvalidation.close();
         this.workViewRoutes?.close();
         this.workViewRoutes = null;
         this.stopPendingSessionResume();

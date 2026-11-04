@@ -6,6 +6,9 @@ import { itemDeletedTarget } from '../utils/feed-deletion';
 import { removeSessionRows, sessionDeletedTarget, sessionRefOf, type SessionRef } from '../utils/sessions';
 import { isSyncStatus, presentSync, type SyncStatusForDisplay } from '../utils/sync-presentation';
 import { startViewerActivity } from '../utils/viewer-activity';
+import { retainLiveRow } from '../utils/live-cache';
+
+export interface MemoryChange { kinds?: string[]; projects?: string[]; reconnect?: boolean }
 
 /** A live row as the session catalog sees it. */
 export interface LiveSessionItem {
@@ -21,6 +24,8 @@ export interface StreamHandlers {
   onSessionDeleted: (session: SessionRef) => void;
   /** Every new live observation, summary or prompt, for the session catalog. */
   onLiveItem: (item: LiveSessionItem) => void;
+  /** Authoritative content must be reread; events carry no replay cursor. */
+  onDataChanged?: (change: MemoryChange) => void;
 }
 
 export function useSSE(handlers: StreamHandlers) {
@@ -36,6 +41,34 @@ export function useSSE(handlers: StreamHandlers) {
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
   const handlersRef = useRef(handlers);
   handlersRef.current = handlers;
+  const nextLiveVersionRef = useRef(0);
+  const liveVersionsRef = useRef(new WeakMap<object, number>());
+  const mountedRef = useRef(true);
+  const projectRequestRef = useRef<AbortController | null>(null);
+  const projectAdditionsRef = useRef<Array<{ name: string; version: number }>>([]);
+  const captureLiveVersion = useCallback(() => nextLiveVersionRef.current, []);
+  const clearLiveThrough = useCallback((itemType: FeedItemType, version: number) => {
+    const keep = (row: object) => (liveVersionsRef.current.get(row) ?? 0) > version;
+    if (itemType === 'observation') setObservations(previous => previous.filter(keep));
+    else if (itemType === 'summary') setSummaries(previous => previous.filter(keep));
+    else setPrompts(previous => previous.filter(keep));
+  }, []);
+  const refreshProjects = useCallback(async () => {
+    projectRequestRef.current?.abort();
+    const controller = new AbortController();
+    projectRequestRef.current = controller;
+    const version = nextLiveVersionRef.current;
+    const timeout = setTimeout(() => controller.abort(), 10_000);
+    try {
+      const response = await fetch('/api/projects', { cache: 'no-store', signal: controller.signal });
+      if (!response.ok) return;
+      const data = await response.json();
+      if (!mountedRef.current || controller.signal.aborted || projectRequestRef.current !== controller || !Array.isArray(data.projects)) return;
+      const additions = projectAdditionsRef.current.filter(item => item.version > version).map(item => item.name);
+      setProjects([...new Set<string>([...data.projects.filter((item: unknown) => typeof item === 'string'), ...additions])]);
+    } catch { /* The current project list remains usable through a failed refresh. */ }
+    finally { clearTimeout(timeout); if (projectRequestRef.current === controller) projectRequestRef.current = null; }
+  }, []);
 
   const removeLiveItem = useCallback((itemType: FeedItemType, id: number) => {
     if (itemType === 'observation') {
@@ -54,6 +87,7 @@ export function useSSE(handlers: StreamHandlers) {
   }, []);
 
   const addProjectIfNew = (project: string) => {
+    projectAdditionsRef.current = [...projectAdditionsRef.current, { name: project, version: nextLiveVersionRef.current + 1 }].slice(-200);
     setProjects(prev => prev.includes(project) ? prev : [...prev, project]);
   };
 
@@ -63,6 +97,7 @@ export function useSSE(handlers: StreamHandlers) {
   };
 
   useEffect(() => {
+    mountedRef.current = true;
     let closed = false;
     let processingVersion = 0;
     let statusRequest: AbortController | null = null;
@@ -108,6 +143,7 @@ export function useSSE(handlers: StreamHandlers) {
     };
 
     const connect = () => {
+      if (closed) return;
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
       }
@@ -116,22 +152,25 @@ export function useSSE(handlers: StreamHandlers) {
       eventSourceRef.current = eventSource;
 
       eventSource.onopen = () => {
-        if (closed) return;
+        if (closed || eventSourceRef.current !== eventSource) return;
         setIsConnected(true);
         console.log('[SSE] Connected');
         void refreshProcessingStatus();
+        handlersRef.current.onDataChanged?.({ reconnect: true });
         if (reconnectTimeoutRef.current) {
           clearTimeout(reconnectTimeoutRef.current);
         }
       };
 
       eventSource.onerror = (error) => {
-        if (closed) return;
+        if (closed || eventSourceRef.current !== eventSource) return;
         setIsConnected(false);
         console.error('[SSE] Connection error:', error);
         eventSource.close();
+        eventSourceRef.current = null;
         void refreshProcessingStatus();
 
+        if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
         reconnectTimeoutRef.current = setTimeout(() => {
           reconnectTimeoutRef.current = undefined;
           console.log('[SSE] Attempting to reconnect...');
@@ -140,7 +179,7 @@ export function useSSE(handlers: StreamHandlers) {
       };
 
       eventSource.onmessage = (event) => {
-        if (closed) return;
+        if (closed || eventSourceRef.current !== eventSource) return;
         let data: StreamEvent;
         try { data = JSON.parse(event.data); } catch { return; }
         if (!data || typeof data !== 'object' || typeof data.type !== 'string') return;
@@ -150,6 +189,8 @@ export function useSSE(handlers: StreamHandlers) {
             console.log('[SSE] Initial load:', {
               projects: data.projects?.length || 0
             });
+            projectRequestRef.current?.abort();
+            projectRequestRef.current = null;
             setProjects(data.projects || []);
             acceptSync(data.sync);
             break;
@@ -158,12 +199,19 @@ export function useSSE(handlers: StreamHandlers) {
             acceptSync(data.sync);
             break;
 
+          case 'data_changed': {
+            const strings = (value: unknown): string[] | undefined => Array.isArray(value) && value.every(item => typeof item === 'string') ? value : undefined;
+            handlersRef.current.onDataChanged?.({ kinds: strings(data.kinds), projects: strings(data.projects) });
+            break;
+          }
+
           case 'new_observation':
             if (data.observation) {
               console.log('[SSE] New observation:', data.observation.id);
               addProjectIfNew(data.observation.project);
               reportLiveItem(data.observation);
-              setObservations(prev => [data.observation!, ...prev]);
+              liveVersionsRef.current.set(data.observation, ++nextLiveVersionRef.current);
+              setObservations(prev => retainLiveRow(prev, data.observation!));
             }
             break;
 
@@ -172,7 +220,8 @@ export function useSSE(handlers: StreamHandlers) {
               console.log('[SSE] New summary:', data.summary.id);
               addProjectIfNew(data.summary.project);
               reportLiveItem(data.summary);
-              setSummaries(prev => [data.summary!, ...prev]);
+              liveVersionsRef.current.set(data.summary, ++nextLiveVersionRef.current);
+              setSummaries(prev => retainLiveRow(prev, data.summary!));
             }
             break;
 
@@ -181,7 +230,8 @@ export function useSSE(handlers: StreamHandlers) {
               console.log('[SSE] New prompt:', data.prompt.id);
               addProjectIfNew(data.prompt.project);
               reportLiveItem(data.prompt);
-              setPrompts(prev => [data.prompt!, ...prev]);
+              liveVersionsRef.current.set(data.prompt, ++nextLiveVersionRef.current);
+              setPrompts(prev => retainLiveRow(prev, data.prompt!));
             }
             break;
 
@@ -221,6 +271,8 @@ export function useSSE(handlers: StreamHandlers) {
 
     return () => {
       closed = true;
+      mountedRef.current = false;
+      projectRequestRef.current?.abort();
       clearInterval(statusInterval);
       clearInterval(syncClock);
       stopActivity();
@@ -245,6 +297,9 @@ export function useSSE(handlers: StreamHandlers) {
     queueDepth,
     isConnected,
     syncStatus,
+    captureLiveVersion,
+    clearLiveThrough,
+    refreshProjects,
     removeLiveItem,
     removeLiveSession
   };

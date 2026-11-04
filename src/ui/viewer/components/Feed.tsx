@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import { FeedItem } from '../types';
 import type { DeletableItemType } from '../utils/feed-deletion';
 import { ObservationCard } from './ObservationCard';
@@ -6,6 +6,8 @@ import { SummaryCard } from './SummaryCard';
 import { PromptCard } from './PromptCard';
 import { ScrollToTop } from './ScrollToTop';
 import { UI } from '../constants/ui';
+import { WindowedFeed, feedItemKey } from './WindowedFeed';
+import type { ObservationViewMode } from './ObservationCard';
 
 interface FeedProps {
   /** Newest first; build with buildFeedItems. */
@@ -22,7 +24,21 @@ interface FeedProps {
 export function Feed({ items, header, onLoadMore, onDeleted, isLoading, hasMore, loadError }: FeedProps) {
   const loadMoreRef = useRef<HTMLDivElement>(null);
   const feedRef = useRef<HTMLDivElement>(null);
+  const [observationModes, setObservationModes] = useState<Record<string, ObservationViewMode>>({});
+  const [expandedPrompts, setExpandedPrompts] = useState<Record<string, boolean>>({});
   const onLoadMoreRef = useRef(onLoadMore);
+
+  useEffect(() => {
+    const keys = new Set(items.map(feedItemKey));
+    setObservationModes(previous => {
+      const kept = Object.fromEntries(Object.entries(previous).filter(([key]) => keys.has(key)));
+      return Object.keys(kept).length === Object.keys(previous).length ? previous : kept;
+    });
+    setExpandedPrompts(previous => {
+      const kept = Object.fromEntries(Object.entries(previous).filter(([key]) => keys.has(key)));
+      return Object.keys(kept).length === Object.keys(previous).length ? previous : kept;
+    });
+  }, [items]);
 
   useEffect(() => {
     onLoadMoreRef.current = onLoadMore;
@@ -57,20 +73,20 @@ export function Feed({ items, header, onLoadMore, onDeleted, isLoading, hasMore,
   }, [hasMore, isLoading, loadError]);
 
   return (
-    <main className="feed" ref={feedRef} aria-label="Memory timeline">
+    <main className="feed" ref={feedRef} aria-label="Memory timeline" style={{ overflowAnchor: 'none' }}>
       <ScrollToTop targetRef={feedRef} />
       <div className="feed-content">
         {header}
-        {items.map(item => {
-          const key = `${item.itemType}-${item.id}`;
+        <WindowedFeed items={items} scrollRef={feedRef} renderItem={item => {
+          const key = feedItemKey(item);
           if (item.itemType === 'observation') {
-            return <ObservationCard key={key} observation={item} onDeleted={onDeleted} />;
+            return <ObservationCard observation={item} onDeleted={onDeleted} viewMode={observationModes[key] ?? 'summary'} onViewModeChange={mode => setObservationModes(previous => ({ ...previous, [key]: mode }))} />;
           } else if (item.itemType === 'summary') {
-            return <SummaryCard key={key} summary={item} onDeleted={onDeleted} />;
+            return <SummaryCard summary={item} onDeleted={onDeleted} />;
           } else {
-            return <PromptCard key={key} prompt={item} />;
+            return <PromptCard prompt={item} expanded={expandedPrompts[key] ?? false} onExpandedChange={expanded => setExpandedPrompts(previous => ({ ...previous, [key]: expanded }))} />;
           }
-        })}
+        }} />
         {items.length === 0 && !isLoading && !loadError && (
           <div className="memory-empty-state">
             <h3>No memories to show</h3>
