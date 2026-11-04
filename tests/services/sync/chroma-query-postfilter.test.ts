@@ -580,4 +580,18 @@ describe('ChromaSync.queryChroma doc_type-free filtered fallback (#5354)', () =>
     expect(wheresSent()).toEqual([undefined, where]);
     expect(out.ids).toEqual(exactIds(where, 950));
   });
+
+  it('still sends the plain where when an $or branch is doc_type alone', async () => {
+    // The $and branch holds nothing but doc_type leaves. Stripping them
+    // leaves the branch empty, and dropping an empty branch from an $or
+    // loses every observation outside the other branch's project -- the
+    // branch is one side of the union, so the rewrite is blocked outright.
+    const where = {
+      $or: [{ $and: [{ doc_type: 'observation' }, { doc_type: 'observation' }] }, { project: 'tiny' }],
+    };
+    const out = await sync.queryChroma('anything', 950, where);
+
+    expect(wheresSent()).toEqual([undefined, where]);
+    expect(out.ids).toEqual(exactIds(where, 950));
+  });
 });

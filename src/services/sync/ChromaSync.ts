@@ -338,6 +338,12 @@ function stripDocTypeClause(where: unknown, removable: boolean): DocTypeStripRes
       if (result.blocked) {
         return { clause: where as Record<string, any>, removed: false, blocked: true };
       }
+      if (key === '$or' && result.clause === undefined) {
+        // The branch held `doc_type` alone, so stripping emptied it. An
+        // emptied `$or` branch is still one side of the union: dropping it
+        // would lose the documents it alone matched, so block the rewrite.
+        return { clause: where as Record<string, any>, removed: false, blocked: true };
+      }
       removed = removed || result.removed;
       if (result.clause !== undefined) kept.push(result.clause);
     }
