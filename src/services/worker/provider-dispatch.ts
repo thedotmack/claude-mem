@@ -30,7 +30,7 @@ import { paths } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { PROVIDER_BY_SOURCE_SETTING, parseProviderBySource } from '../../shared/provider-by-source.js';
-import { isCmemGatewayUrl, writeProFallbackAt, type ProFallbackNotice } from '../../shared/cmem-gateway.js';
+import { isCmemGatewayUrl, setSessionProviderResolver, writeProFallbackAt, type ProFallbackNotice } from '../../shared/cmem-gateway.js';
 import { cmemCapProbeAllowed } from '../../shared/cmem-cap-probe.js';
 import { scrubErrorMessage } from '../../shared/observer-health.js';
 import { isGeminiAvailable, isGeminiSelected } from './GeminiProvider.js';
@@ -376,11 +376,13 @@ export function quotaServingProvider(held: QuotaProvider, nowMs: number = Date.n
   if (held === 'claude' && claudeQuotaStandIn()) return 'claude';
   if (readQuotaFallbackProvider() === null) return null;
   // The held provider's own routing when it is a primary here (the global one
-  // or a mapped one); otherwise it is standing in for the global primary.
+  // or a mapped one). Otherwise it is only a fallback, and capture continues
+  // only if every route still has a provider serving: a primary that was
+  // counting on it may now be waiting.
   const primaries = [globalPrimary(), ...readProviderBySource().values()].filter(isProviderConfigured);
-  const serving = routedProviderFor(primaries.includes(held as SelectableProvider) ? held as SelectableProvider : primaries[0]);
-  if (serving === held || isQuotaCooldownHolding(serving, nowMs)) return null;
-  return serving;
+  const routes = (primaries.includes(held as SelectableProvider) ? [held as SelectableProvider] : primaries).map(routedProviderFor);
+  if (routes.some(serving => serving === held || isQuotaCooldownHolding(serving, nowMs))) return null;
+  return routes[0];
 }
 
 // The session-start notice reads the serving provider from the mirrored
@@ -389,6 +391,7 @@ export function quotaServingProvider(held: QuotaProvider, nowMs: number = Date.n
 setQuotaFallbackResolver(quotaServingProvider);
 setUnservableProviderRouter((provider, message, window, profile) =>
   provider === 'cmem-gateway' ? null : routeAroundUnservableProvider(provider, message, window, profile));
+setSessionProviderResolver(configuredProviderForSource);
 
 /**
  * Dispatch for a caller that is about to start a generator, claiming the single
@@ -491,10 +494,15 @@ function readProviderBySource(): ReadonlyMap<string, SelectableProvider> {
   return new Map();
 }
 
+/** The provider mapped to `platformSource` when it is configured, else null: the global provider serves that session. */
+function configuredProviderForSource(platformSource: string | undefined): SelectableProvider | null {
+  const mapped = providerForSource(platformSource);
+  return mapped !== null && isProviderConfigured(mapped) ? mapped : null;
+}
+
 /** The primary for a session of `platformSource`: its mapped provider when configured, else the global one. */
 function primaryFor(platformSource?: string): SelectableProvider {
-  const mapped = providerForSource(platformSource);
-  return mapped !== null && isProviderConfigured(mapped) ? mapped : globalPrimary();
+  return configuredProviderForSource(platformSource) ?? globalPrimary();
 }
 
 /** Test seam: forget the malformed value already logged. */

@@ -18,6 +18,12 @@ export type ProviderBySourceParse =
   | { ok: true; map: Map<string, SelectableProvider> }
   | { ok: false; error: string };
 
+/** Every provider the map names. A malformed value names none, because dispatch ignores it. */
+export function providersMappedBySource(raw: unknown): SelectableProvider[] {
+  const parsed = parseProviderBySource(raw);
+  return parsed.ok ? [...parsed.map.values()] : [];
+}
+
 export function parseProviderBySource(raw: unknown): ProviderBySourceParse {
   const map = new Map<string, SelectableProvider>();
   if (raw === undefined || raw === null) return { ok: true, map };

@@ -331,6 +331,27 @@ describe('provider-dispatch', () => {
       }
     });
 
+    it('does not say capture continues while a mapped route that counted on the held fallback waits', () => {
+      const previous = setClaudeFallbackReadinessForTesting(() => true);
+      try {
+        process.env.CLAUDE_MEM_PROVIDER = 'gemini';
+        process.env.CLAUDE_MEM_GEMINI_API_KEY = 'gemini-test-key';
+        process.env.CLAUDE_MEM_PROVIDER_BY_SOURCE = '{"codex":"codex"}';
+        process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = 'claude';
+
+        // Only the fallback is held: every route still has its own provider.
+        recordQuotaExhausted('claude', 'Weekly limit reached', 'seven_day');
+        expect(quotaServingProvider('claude')).toBe('gemini');
+
+        // Codex is held too, so Codex sessions have nothing serving them.
+        recordQuotaExhausted('codex', 'Allowance spent');
+        expect(selectProviderForGenerator('codex').provider).toBe('codex');
+        expect(quotaServingProvider('claude')).toBeNull();
+      } finally {
+        setClaudeFallbackReadinessForTesting(previous);
+      }
+    });
+
     it('accepts the map as a plain JSON object in settings.json', () => {
       process.env.CLAUDE_MEM_PROVIDER = 'claude';
       const settingsPath = paths.settings();

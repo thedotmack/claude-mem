@@ -656,7 +656,7 @@ function bookClassifiedFailure(
       }
       const plan = error.retryAfterMs !== undefined ? planRateLimitResume(session) : null;
       if (plan?.resume && error.retryAfterMs !== undefined
-        && planUnattendedGatewayResume(session, 'rate-limit', canCmemGatewayServe()).resume) {
+        && planUnattendedGatewayResume(session, 'rate-limit', canCmemGatewayServe(session.platformSource)).resume) {
         resume = {
           afterMs: Math.min(Math.max(error.retryAfterMs, 0), QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS),
           source: 'rate-limit',
