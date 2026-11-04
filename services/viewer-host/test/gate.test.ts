@@ -181,6 +181,22 @@ describe('gate', () => {
     expect(seen).toHaveLength(0);
   });
 
+  it('keeps the worker’s local skill catalog and every file route off the hosted proxy', async () => {
+    seen = [];
+    const ownerGate = gate();
+    for (const [method, path] of [
+      ['GET', '/api/work-view/skills'], ['HEAD', '/api/work-view/skills/'],
+      ['GET', '/API/work-view/%73kills/abcd'], ['HEAD', '/api/work-view/skills/abcd'],
+      ['POST', '/api/work-view/skills/abcd/save'], ['POST', '/api/work-view/skills/abcd/rewrite'],
+    ]) {
+      const response = await ownerGate(new Request(PUBLIC_ORIGIN + path, {
+        method, headers: { Cookie: sessionCookie(), Origin: PUBLIC_ORIGIN },
+      }));
+      expect(response.status).toBe(403);
+    }
+    expect(seen).toHaveLength(0);
+  });
+
   it('passes a My Work save from its own page with a loopback Origin, and refuses one from anywhere else', async () => {
     seen = [];
     const body = JSON.stringify({ requestId: 'r1', expectedFingerprint: 'a'.repeat(64), checked: true });

@@ -13,6 +13,8 @@ import { logger } from '../../../../utils/logger.js';
 import { hasForwardedClientHeaders, hasLoopbackHostHeader, isLocalhost } from '../../../../server/middleware/request-auth-helpers.js';
 import { WorkStateSource, type WorkViewSnapshot } from '../../../work-view/data-source.mjs';
 import { WorkViewReadWorkerClient } from '../../../work-view/WorkViewReadWorkerClient.js';
+import { SkillCatalog, SkillCatalogError } from '../../../skills/catalog.js';
+import { saveSkill } from '../../../skills/save.js';
 import { FILE_CONTENT_TYPES } from '../../../work-view/work-product.mjs';
 import { isInsideDeliverablesDir } from '../../../../shared/deliverables.js';
 import { contentFingerprint, LocalReviewStore } from '../../../work-view/review-store.js';
@@ -88,6 +90,50 @@ const reviewBody = z.object({
   checked: z.boolean(),
 }).strict();
 
+const skillHash = z.string().regex(/^[a-f0-9]{64}$/);
+const skillSaveBody = z.object({ expectedRevision: skillHash, text: z.string() }).strict();
+
+function requireSkillId(req: Request, res: Response, next: NextFunction): void {
+  if (!skillHash.safeParse(req.params.id).success) {
+    res.status(400).json({ error: 'Invalid skill ID.' });
+    return;
+  }
+  next();
+}
+
+function requireSkillOrigin(req: Request, res: Response, next: NextFunction): void {
+  res.set('Cache-Control', 'no-store');
+  // The general viewer guard accepts alternate loopback names on the same port.
+  // Source files are available only to the exact browser origin that serves the editor.
+  const origin = req.get('origin');
+  if (req.get('sec-fetch-site') === 'same-site' || (origin && origin !== req.protocol + '://' + req.get('host'))) {
+    res.status(403).json({ error: 'Open My Skills from the local work viewer.' });
+    return;
+  }
+  requireWorkViewReadOrigin(req, res, next);
+}
+
+/** File errors contain local paths. Only catalog errors carry messages meant for the viewer. */
+async function skillResponse(res: Response, action: () => Promise<unknown>): Promise<void> {
+  try {
+    res.json(await action());
+  } catch (error) {
+    if (error instanceof SkillCatalogError) {
+      res.status(error.status).json({ error: error.message });
+      return;
+    }
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      res.status(404).json({ error: 'This skill is unavailable. Refresh My Skills to find it.' });
+    } else if (['EACCES', 'EPERM', 'EROFS', 'ELOOP'].includes(code ?? '')) {
+      res.status(403).json({ error: 'This skill cannot be accessed at its discovered location.' });
+    } else {
+      logger.warn('WORKER', 'Skill file operation failed', { code });
+      res.status(500).json({ error: 'The worker could not complete this skill file operation.' });
+    }
+  }
+}
+
 // The viewer is local even when another worker surface is explicitly exposed.
 // Match the existing request-auth helpers, including rejecting proxy headers.
 export function workViewLoopbackOnly(req: Request, res: Response, next: NextFunction): void {
@@ -114,7 +160,7 @@ export function requireWorkViewOrigin(req: Request, res: Response, next: NextFun
 // responses, and a cross-origin fetch carries its Origin.
 function requireWorkViewReadOrigin(req: Request, res: Response, next: NextFunction): void {
   if (req.get('sec-fetch-site') === 'cross-site' || isForeignLoopbackBrowserWrite(req)) {
-    res.status(403).json({ error: 'Sharing is available only from the local work viewer.' });
+    res.status(403).json({ error: 'This information is available only from the local work viewer.' });
     return;
   }
   next();
@@ -244,6 +290,7 @@ interface WorkStateWrite { project: string; listName: string; fields: Record<str
 
 interface WorkViewOptions {
   databasePath?: string;
+  skillCatalog?: SkillCatalog;
   reviewPath?: string;
   pollIntervalMs?: number;
   getLocalDeviceId?: () => string;
@@ -410,6 +457,7 @@ export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTIN
 const ACTIVITY_REFRESH_WINDOW_MS = 120_000;
 
 export class WorkViewRoutes extends BaseRouteHandler {
+  private readonly skillCatalog: SkillCatalog;
   private source: WorkStateSource;
   private sourceReader: WorkViewReadWorkerClient;
   private pendingBackgroundSnapshot: Promise<WorkViewSnapshot> | null = null;
@@ -450,6 +498,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     const ledgerDir = options.ledgerDir === undefined ? join(DATA_DIR, 'work-view') : options.ledgerDir;
     this.ledgerDir = ledgerDir;
     this.databasePath = options.databasePath ?? DB_PATH;
+    this.skillCatalog = options.skillCatalog ?? new SkillCatalog({ databasePath: this.databasePath });
     this.source = new WorkStateSource({
       databasePath: options.databasePath ?? DB_PATH,
       pollIntervalMs: this.pollIntervalMs,
@@ -573,6 +622,19 @@ export class WorkViewRoutes extends BaseRouteHandler {
   }
 
   setupRoutes(app: express.Application): void {
+    // The catalog is first scanned when this tab opens. Keep local file paths and source text out of caches.
+    const skills = '/api/work-view/skills';
+    app.use(skills, requireSkillOrigin, workViewLoopbackOnly);
+    app.get(skills, this.wrapHandler((_req, res) => skillResponse(res, () => this.skillCatalog.refresh())));
+    app.get(skills + '/:id', requireSkillId, this.wrapHandler((req, res) => skillResponse(res, async () => {
+      const { entry, text, revision } = await this.skillCatalog.read(String(req.params.id));
+      return { entry, text, revision };
+    })));
+    app.post(skills + '/:id/save', requireWorkViewOrigin, requireSkillId, validateBody(skillSaveBody),
+      this.wrapHandler(this.ownerEdit((req, res) => skillResponse(res, () => {
+        const { text, expectedRevision } = req.body as z.infer<typeof skillSaveBody>;
+        return saveSkill(this.skillCatalog, String(req.params.id), expectedRevision, text);
+      }))));
     app.get('/api/work-view', workViewLoopbackOnly, this.wrapHandler(async (_req, res) => {
       res.setHeader('Cache-Control', 'no-store');
       res.json(await this.snapshot());

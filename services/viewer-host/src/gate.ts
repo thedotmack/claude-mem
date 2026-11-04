@@ -23,7 +23,7 @@ export const SESSION_COOKIE = 'cmem_viewer_session';
 const SESSION_SECONDS = 7 * 24 * 60 * 60;
 
 /** Read routes that would show the cloud machine's own configuration. */
-const BLOCKED_READ_PREFIXES = ['/api/settings', '/api/logs', '/api/admin', '/api/backup', '/api/setup', '/restart'];
+const BLOCKED_READ_PREFIXES = ['/api/settings', '/api/logs', '/api/admin', '/api/backup', '/api/setup', '/api/work-view/skills', '/restart'];
 
 /** The My Work actions that save work state. Everything else that writes stays on the owner's own computer. */
 const ALLOWED_WRITES = new Set([
