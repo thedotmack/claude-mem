@@ -68,7 +68,9 @@ export class PinVerifier {
       if (candidate === null || typeof candidate !== 'object') continue;
       const { provider, model, id } = candidate as Record<string, unknown>;
       if (typeof id === 'string' && id.startsWith('gen-')) this.generationId = id;
-      if (typeof model === 'string') {
+      // A provider that times out before answering sends `message_start` with model "unknown", then an error event (DeepInfra,
+      // 2026-11-04, requests 1289 and 1295). That names no model, so it is not off-pin. The provider below is still checked.
+      if (typeof model === 'string' && model !== 'unknown') {
         this.sawModel = true;
         if (model !== this.pin.model) this.violation ??= `served by model ${model}, pinned model is ${this.pin.model}`;
       }

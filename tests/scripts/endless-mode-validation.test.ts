@@ -164,6 +164,18 @@ describe('forward tee-proxy: endpoint pin', () => {
     t.stop();
   });
 
+  it('does not stop on the pinned provider timing out with model "unknown", and still stops if another provider does', async () => {
+    const timeout = (provider: string) => `event: message_start\ndata: ${JSON.stringify({ type: 'message_start', message: { model: 'unknown', provider } })}\n\nevent: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'A Timeout Occurred' } })}\n\n`;
+    const pinned = pinnedTee('pin-timeout', () => new Response(timeout('DeepInfra')));
+    await pinned.post('/v1/messages', { model: PIN.model }).then(r => r.text()).catch(() => 'stream failed');
+    expect(existsSync(join(pinned.outDir, 'OFF-PIN'))).toBe(false);
+    pinned.stop();
+    const other = pinnedTee('pin-timeout-other', () => new Response(timeout('Wafer')));
+    await other.post('/v1/messages', { model: PIN.model }).then(r => r.text()).catch(() => 'stream failed');
+    expect(readFileSync(join(other.outDir, 'OFF-PIN'), 'utf8')).toContain('served by provider Wafer');
+    other.stop();
+  });
+
   it('refuses a request for another model without sending it, so no full-price model can run', async () => {
     const t = pinnedTee('pin-refuse-model', () => new Response(servedBy('DeepInfra')));
     const refused = await t.post('/v1/messages', { model: 'claude-opus-5-5' });
