@@ -16,7 +16,6 @@ import { findCodexExecutablePath, isCodexOnPath } from '../install/tool-path.js'
 import { getCredential } from '../../shared/EnvManager.js';
 import { buildKeyPool } from '../../shared/api-key-pool.js';
 import { resolveOpenAICompatPreset } from '../../shared/openai-compat-presets.js';
-import { isLocalEndpointUrl } from '../../services/worker/OpenAICompatProvider.js';
 import { treeSitterCliBinaryPath } from '../../services/smart-file-read/tree-sitter-cli-provision.js';
 import { checkTreeSitterCliLoadable, resolveTreeSitterBinPathFor, TREE_SITTER_CLI_PATH_WORKAROUND } from '../../services/smart-file-read/tree-sitter-bin-path.js';
 import { resolveDataDir } from '../../shared/paths.js';
@@ -548,6 +547,23 @@ export function claudeCodeVersionCheck(detectedClaudeCodeVersion: string | undef
       : 'not detected (claude not on PATH)',
     required: false,
   };
+}
+
+function isLocalEndpointUrl(rawUrl: string): boolean {
+  let host: string;
+  try {
+    host = new URL(rawUrl).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  const bare = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+  if (bare === 'localhost' || bare.endsWith('.localhost') || bare.endsWith('.local')) return true;
+  if (bare === '::1' || bare === '0.0.0.0' || bare === '::') return true;
+  if (/^127\./.test(bare)) return true;
+  if (/^10\./.test(bare)) return true;
+  if (/^192\.168\./.test(bare)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(bare)) return true;
+  return false;
 }
 
 export interface OpenAICompatCheckStatus {
