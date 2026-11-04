@@ -784,7 +784,7 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
       '',
       ...(readFromExitText ? [
         'This comes from the exited process\'s output, not a reply from the provider, so it may be wrong.',
-        'Run `codex login status` to check. If the login is fine, claude-mem retries by itself when the cooldown ends.',
+        'Run `codex login status` to check. If the login is fine, the next captured event or an operator retry can trigger another attempt after the cooldown ends.',
       ] : [
         'Restarting will NOT help here: the provider refused the credentials, so nothing is broken to restart.',
       ]),

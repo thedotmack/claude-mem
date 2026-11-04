@@ -853,6 +853,8 @@ describe('auth warning for a verdict read from an exit', () => {
     expect(warning).toContain('looks like a refused login');
     expect(warning).toContain('may be wrong');
     expect(warning).toContain('codex login status');
+    expect(warning).toContain('the next captured event or an operator retry can trigger another attempt after the cooldown ends');
+    expect(warning).not.toContain('retries by itself');
     expect(warning).not.toContain('credentials have been refused');
     expect(warning).not.toContain('the provider refused the credentials');
   });

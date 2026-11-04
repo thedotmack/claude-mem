@@ -599,6 +599,15 @@ describe('Codex provider integration', () => {
       return warn.mock.calls.filter((call: unknown[]) => String(call[1]).includes('text heuristic'));
     }
 
+    /** Logger arguments, including Error.message, which JSON.stringify skips. */
+    function argumentsContain(value: unknown, token: string, seen = new Set<object>()): boolean {
+      if (typeof value === 'string') return value.includes(token);
+      if (typeof value !== 'object' || value === null || seen.has(value)) return false;
+      seen.add(value);
+      if (value instanceof Error && (value.message.includes(token) || (value.stack?.includes(token) ?? false))) return true;
+      return Object.values(value).some(nested => argumentsContain(nested, token, seen));
+    }
+
     it('is not auth_invalid when the only 401 is above the recent tail', () => {
       const lines = [staleAuthLine, ...Array.from({ length: CODEX_EXIT_REPORT_LINES }, (_, i) => benign(i))];
       const warn = spyOn(logger, 'warn').mockImplementation(() => {});
@@ -646,6 +655,46 @@ describe('Codex provider integration', () => {
         expect(JSON.stringify(warn.mock.calls)).not.toContain(token);
       } finally {
         warn.mockRestore();
+      }
+    });
+
+    // The test above pads the token past the 500-character stored slice and
+    // only calls classifyCodexError. A one-line 401 keeps the token inside
+    // that slice, and onFailure stores and logs the classified message.
+    it('does not keep a bearer token from an early auth failure in the message, cooldown, or logs', async () => {
+      const token = 'cm-synthetic-bearer-7f3a9c2e1b';
+      const failure = new Error(`401 Unauthorized Authorization: Bearer ${token}`);
+      expect(failure.message).toContain(token);
+      expect(failure.message.length).toBeLessThan(500);
+      const provider = new CodexProvider(null as any, null as any) as any;
+      const debug = spyOn(logger, 'debug').mockImplementation(() => {});
+      const info = spyOn(logger, 'info').mockImplementation(() => {});
+      const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+      const errorLog = spyOn(logger, 'error').mockImplementation(() => {});
+      try {
+        for (const client of provider.appServer.clients) client.runTurn = async (options: any) => {
+          options.onFailure(failure);
+          throw failure;
+        };
+        const rejected = await provider.query([], config).catch((error: unknown) => error);
+        expect(rejected).toBeInstanceOf(ClassifiedProviderError);
+        const classified = rejected as ClassifiedProviderError;
+        expect(classified.kind).toBe('auth_invalid');
+        expect(classified.message).toContain('401');
+        expect(classified.message).not.toContain(token);
+        const cooldown = getQuotaCooldown('codex');
+        expect(cooldown?.cause).toBe('auth');
+        expect(cooldown?.message ?? '').not.toContain(token);
+        expect(JSON.stringify(cooldown)).not.toContain(token);
+        const calls = [debug, info, warn, errorLog].flatMap(spy => spy.mock.calls);
+        expect(calls.some(call => String(call[1]).includes('pausing Codex requests'))).toBe(true);
+        expect(calls.some(call => argumentsContain(call, token))).toBe(false);
+      } finally {
+        debug.mockRestore();
+        info.mockRestore();
+        warn.mockRestore();
+        errorLog.mockRestore();
+        await provider.close();
       }
     });
 

@@ -143,6 +143,17 @@ const CODEX_ISOLATION_REMEDY =
   'Codex loaded instructions or MCP servers that the memory observer cannot switch off. Remove them from '
   + 'your Codex configuration, update the Codex CLI, or choose another observer provider.';
 
+/**
+ * The stored message is the first 500 characters, and that slice is what the
+ * cooldown and the failure log keep. A one-line `401 Unauthorized
+ * Authorization: Bearer <token>` sits entirely inside it. Drop the credential
+ * the way observer-health's scrubber does, and keep the status.
+ */
+function codexStoredMessage(message: string): string {
+  const scrubbed = message.replace(/\b(Bearer|Basic)\s+[^\s"']+/gi, '$1 …');
+  return `Codex: ${scrubbed.slice(0, 500)}`;
+}
+
 /** Maps the app-server's structured CodexErrorInfo, which is more stable than its display text. */
 function classifyCodexErrorInfo(info: unknown): CodexErrorKind | typeof CODEX_REFUSED_REQUEST | null {
   if (typeof info === 'string') return CODEX_ERROR_INFO_KINDS[info] ?? null;
@@ -169,7 +180,7 @@ export function classifyCodexError(cause: unknown): ClassifiedProviderError {
     // A completed, billed turn whose output was missing or malformed: an
     // output failure, never resent. Decided by code, so its diagnostic counts
     // are never read as an HTTP status.
-    return new ClassifiedProviderError(`Codex: ${message.slice(0, 500)}`, {
+    return new ClassifiedProviderError(codexStoredMessage(message), {
       kind: 'unrecoverable', paidSendOutcome: 'output_failure', cause, code,
     });
   } else if (code === CODEX_ISOLATION_UNATTESTED_CODE) {
@@ -197,8 +208,9 @@ export function classifyCodexError(cause: unknown): ClassifiedProviderError {
     if (authMatch) {
       kind = 'auth_invalid';
       // The stored message keeps only the first 500 characters, which is the
-      // oldest part of a long stderr tail. The matched category is what a
-      // false auth cooldown has to be checked against.
+      // oldest part of a long stderr tail, and a bearer token in that window
+      // is removed before it is stored. The matched category is what a false
+      // auth cooldown has to be checked against.
       logCodexAuthTextHit(cause, authMatch);
       // An exit's stderr is our reading, not the provider's reply: the
       // session-start warning must not state it as a refusal.
@@ -217,7 +229,7 @@ export function classifyCodexError(cause: unknown): ClassifiedProviderError {
       action = CODEX_REQUEST_REMEDY;
     }
   }
-  return new ClassifiedProviderError(`Codex: ${message.slice(0, 500)}`, {
+  return new ClassifiedProviderError(codexStoredMessage(message), {
     kind, cause, ...(action ? { action } : {}), ...(verdictCode ? { code: verdictCode } : {}),
   });
 }
