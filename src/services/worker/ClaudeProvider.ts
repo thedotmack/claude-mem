@@ -135,6 +135,18 @@ function isSpawnFailure(error: unknown): boolean {
  *     Windows .cmd/.bat shim the SDK cannot launch without a shell
  *   - Anthropic-specific message strings ("Invalid API key", "Prompt is too long")
  */
+const CLAUDE_MODEL_REFUSAL_STATUS_LINE = /^There's an issue with the selected model \([^)\n]*\)\. It may not exist or you may not have access to it\.(?: Run --model to pick a different model\.)?$/;
+
+/** model_unavailable is the code the session-start warning reads to say a restart will not help. */
+function claudeModelRefused(message: string, cause: unknown): ClassifiedProviderError {
+  return new ClassifiedProviderError(message, {
+    kind: 'unrecoverable',
+    code: 'model_unavailable',
+    action: 'Set CLAUDE_MEM_MODEL in ~/.claude-mem/settings.json to a model this account or gateway serves. The worker also inherits ANTHROPIC_MODEL and ANTHROPIC_DEFAULT_*_MODEL from the environment it started in, so check those too.',
+    cause,
+  });
+}
+
 export function classifyClaudeError(err: unknown): ClassifiedProviderError {
   const message = err instanceof Error ? err.message : String(err);
   const errAny = err as { name?: string; status?: number; error?: { type?: string }; body?: unknown };
@@ -254,6 +266,15 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
       /\binvalid_request_error\b/i.test(message))
   ) {
     return new ClassifiedProviderError(message, { kind: 'unrecoverable', cause: err });
+  }
+
+  // The same refusal as a thrown error: the SDK raises "Claude Code returned an
+  // error result: There's an issue with the selected model (...)".
+  if (
+    typeof errAny.status !== 'number' &&
+    (/\bunrecognized_model\b/i.test(message) || /\bthere's an issue with the selected model\b/i.test(message))
+  ) {
+    return claudeModelRefused(message, err);
   }
 
   // Server errors → transient.
@@ -713,6 +734,14 @@ export class ClaudeProvider {
             /^Invalid API key(?: · (?:Fix external API key|Please run \/login))?$/.test(textContent.trim())
           ) {
             throw new Error('Invalid API key: check your API key configuration in ~/.claude-mem/settings.json or ~/.claude-mem/.env');
+          }
+
+          // The CLI's own model refusal (#5315). Without this it reaches the
+          // parser as prose and the batch is dropped with restart advice that
+          // cannot help. An observation may quote the phrase (#4253), so only
+          // the structured error or the whole status line counts.
+          if (message.error === 'model_not_found' || CLAUDE_MODEL_REFUSAL_STATUS_LINE.test(textContent.trim())) {
+            throw claudeModelRefused(textContent.trim(), null);
           }
 
           // The frame names the model that served the turn (an alias such as

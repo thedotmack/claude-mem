@@ -125,6 +125,45 @@ function errorResponse(status: number, error: string): Response {
 	return json(status, { error });
 }
 
+const INVALID_TOKEN_MESSAGE =
+	"This sync token is no longer valid. Reconnect at https://cmem.ai (Connect) to resume cloud sync.";
+const SUBSCRIPTION_INACTIVE_MESSAGE =
+	"Your CMEM Pro subscription is not active. Renew at https://cmem.ai/pro to resume cloud sync.";
+
+/**
+ * Map a Pro verify rejection to the same client contract `services/sync-api`
+ * emits. The plugin stops retrying on any 401/403 and shows `message`; `code`
+ * tells a lapsed plan (renew) apart from a revoked/rotated token (reconnect).
+ *
+ * The 402 case is the reason this exists on the Hub too: the verifier answers
+ * 402 Payment Required for a lapsed, cancelled or unpaid plan, and treating it
+ * as a retryable outage would both hide the entitlement decision from the user
+ * and leave a stale positive verdict in KV for the rest of the TTL window.
+ */
+async function authRejection(verifyRes: Response): Promise<Response> {
+	let code: unknown = null;
+	let status: unknown = null;
+	try {
+		const data = (await verifyRes.json()) as Record<string, unknown> | null;
+		if (data && typeof data === "object") {
+			code = data.code;
+			status = data.status;
+			if (code === undefined && data.error === "Subscription not active") code = "subscription_inactive";
+		}
+	} catch {
+		// Non-JSON body: fall through to invalid_token.
+	}
+	if (code === "subscription_inactive") {
+		return json(403, {
+			code: "subscription_inactive",
+			error: "subscription inactive",
+			status: typeof status === "string" ? status : null,
+			message: SUBSCRIPTION_INACTIVE_MESSAGE,
+		});
+	}
+	return json(401, { code: "invalid_token", error: "invalid token", message: INVALID_TOKEN_MESSAGE });
+}
+
 const STORE_RETRY_AFTER_SECONDS = "5";
 
 /**
@@ -196,6 +235,15 @@ interface MemoryVerdict {
 /** Per-isolate positive verdicts. Avoids a KV write on every miss this isolate can already serve. */
 const verdictMemory = new Map<string, MemoryVerdict>();
 
+/**
+ * Cap on the per-isolate memo. An isolate is short-lived compared with
+ * sync-api's Bun process, but a warm one that keeps serving still accumulates
+ * one entry per distinct (user, token) pair, and an entry is only reclaimed
+ * when the same key is read again. Eviction costs that key one more upstream
+ * verification, never a refusal.
+ */
+export const VERDICT_MEMORY_MAX_ENTRIES = 10_000;
+
 /** Brief memo after a KV hit so a burst does not re-read KV or extend the 15–60m window. */
 const MEMORY_KV_HINT_SECONDS = 60;
 
@@ -210,6 +258,13 @@ function readVerdictMemory(cacheKey: string, nowMs = Date.now()): boolean {
 }
 
 function writeVerdictMemory(cacheKey: string, ttlSeconds: number, nowMs = Date.now()): void {
+	// Re-inserting moves the key to the end, so the FIFO eviction below drops
+	// the verdict that has gone longest without a refresh.
+	verdictMemory.delete(cacheKey);
+	if (verdictMemory.size >= VERDICT_MEMORY_MAX_ENTRIES) {
+		const oldestKey = verdictMemory.keys().next().value;
+		if (oldestKey !== undefined) verdictMemory.delete(oldestKey);
+	}
 	verdictMemory.set(cacheKey, { expiresAtMs: nowMs + ttlSeconds * 1_000 });
 }
 
@@ -221,6 +276,14 @@ function deleteVerdictMemory(cacheKey: string): void {
 export function __resetAuthVerdictMemoryForTests(): void {
 	verdictMemory.clear();
 }
+
+/** Tests only: how many verdicts the isolate is currently holding. */
+export function __verdictMemorySizeForTests(): number {
+	return verdictMemory.size;
+}
+
+/** Tests only: exercise the memo's write/read paths without a KV binding. */
+export { writeVerdictMemory, readVerdictMemory };
 
 export function defaultAuthDependencies(env: Env): AuthDependencies {
 	return {
@@ -410,15 +473,18 @@ export async function authenticateRequest(
 		}
 		return { ok: true, userId, deviceId, deviceName };
 	}
-	if (verifyRes.status === 401 || verifyRes.status === 403) {
+	if (verifyRes.status === 401 || verifyRes.status === 403 || verifyRes.status === 402) {
 		// The only revocation signal this Worker sees: upstream rejected the
-		// token. Drop a stale positive so a KV-read outage cannot pin it.
+		// token. Drop a stale positive so a KV-read outage cannot pin it. A 402
+		// belongs here: a lapsed plan is a terminal entitlement decision, and
+		// leaving the positive cached would keep a cancelled account reading and
+		// writing its log until the TTL ran out.
 		try {
 			await dependencies.invalidateCachedVerdict(cacheKey);
 		} catch (error) {
 			dependencies.logCacheFailure("delete", error);
 		}
-		return { ok: false, response: errorResponse(401, "invalid token") };
+		return { ok: false, response: await authRejection(verifyRes) };
 	}
 	return {
 		ok: false,

@@ -104,6 +104,51 @@ describe('redactSensitive built-in patterns', () => {
     expect(Object.keys(result.counts)).toEqual(['pypi_token']);
   });
 
+  // Two providers claude-mem's own OpenAI-compatible presets onboard users for
+  // (src/shared/openai-compat-presets.ts): the NVIDIA NIM hint says the key
+  // starts with `nvapi-`, Runcrate's says `rc_live_`. Neither prefix was
+  // claimed by openai_key (`sk-`), so such a key pasted into a session was
+  // stored verbatim. Fixtures are split for push protection too.
+  const NVAPI_BODY = 'aBcDeFgHiJkLmNoPqRsTuVwXyZ' + '0123456789aBcDeFgHiJkLmNoP';
+  const RUNCRATE_BODY = 'aBcDeFgHiJkLmNoPqRsTuVwXyZ' + '0123456789aBcDeF';
+  it.each([
+    ['nvidia_nim_key', 'CLAUDE_MEM_OPENAI_COMPAT_API_KEY=' + 'nva' + 'pi-' + NVAPI_BODY + ' tail'],
+    ['nvidia_nim_key', 'curl -H "Authorization: Bearer ' + 'nva' + 'pi-' + NVAPI_BODY + '" tail'],
+    ['runcrate_key', 'OPENAI_COMPAT_API_KEY=' + 'rc_' + 'live_' + RUNCRATE_BODY + ' tail'],
+    ['runcrate_key', '{"apiKey":"' + 'rc_' + 'live_' + RUNCRATE_BODY + '"} tail'],
+  ])('redacts a %s', (name, input) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain(`<redacted type='${name}'/>`);
+    expect(result.redacted).toMatch(/ tail$/);
+    expect(result.redacted).not.toContain('aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789');
+    expect(Object.keys(result.counts)).toEqual([name]);
+  });
+
+  // Groq and xAI API keys; split for push protection too.
+  const GROQ_BODY = 'aBcDeFgHiJkLmNoPqRsTuVwXyZ' + '0123456789aBcDeFgHiJkLmNoP';
+  const XAI_BODY = 'aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789aBcD' + 'eFgHiJkLmNoPqRsTuVwXyZ0123456789aBcDeFgH';
+  it.each([
+    ['groq_key', 'export GROQ_API_KEY=' + 'gs' + 'k_' + GROQ_BODY + ' tail'],
+    ['groq_key', 'curl -H "Authorization: Bearer ' + 'gs' + 'k_' + GROQ_BODY + '" tail'],
+    ['xai_key', 'XAI_API_KEY=' + 'xa' + 'i-' + XAI_BODY + ' tail'],
+    ['xai_key', '{"apiKey":"' + 'xa' + 'i-' + XAI_BODY + '"} tail'],
+  ])('redacts a %s in %s', (name, input) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain(`<redacted type='${name}'/>`);
+    expect(result.redacted).toMatch(/ tail$/);
+    expect(result.redacted).not.toContain('aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789');
+    expect(Object.keys(result.counts)).toEqual([name]);
+  });
+
+  it.each([
+    'gsk_short',
+    'xai-short',
+    'the xai-sdk package',
+    'gsk_' + 'aBcDeFgHiJkLmNoPqRsTuVwXyZ',
+  ])('leaves %s alone', (input) => {
+    expect(redactSensitive(input, cfg).redacted).toBe(input);
+  });
+
   it.each([
     'glpat-short',
     'gldt-short',
@@ -136,6 +181,25 @@ describe('redactSensitive built-in patterns', () => {
     expect(result.redacted).toMatch(/^.*'\/> tail$/);
     expect(result.redacted).not.toMatch(/SG\.a|_v1_|shp(?:at|ss)_/);
     expect(Object.keys(result.counts)).toEqual([name]);
+  });
+
+  // Google OAuth 2.0 access tokens (`ya29.`), what `gcloud auth
+  // print-access-token` and the metadata server print. Split for push
+  // protection like the fixtures above.
+  it.each([
+    ['$ gcloud auth print-access-token\n' + 'ya' + '29.a0AfB_byC1x2Y3z4-W5v6U7t8S9r0QpOnMlKjIhGfEdCbA tail'],
+    ['curl -H "Authorization: Bearer ' + 'ya' + '29.a0AfB_byC1x2Y3z4-W5v6U7t8S9r0QpOnMlKjIhGfEdCbA" tail'],
+    ['{"access_token":"' + 'ya' + '29.c.Elt0BxAbCdEfGhIjKlMnOpQrStUvWxYz0123456789","expires_in":3599} tail'],
+  ])('redacts a google_oauth_token in %s', (input) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain("<redacted type='google_oauth_token'/>");
+    expect(result.redacted).toMatch(/ tail$/);
+    expect(result.redacted).not.toMatch(/a0AfB_|Elt0Bx/);
+    expect(Object.keys(result.counts)).toEqual(['google_oauth_token']);
+  });
+
+  it.each(['ya29.short', 'the ya29. prefix'])('leaves %s alone', (input) => {
+    expect(redactSensitive(input, cfg).redacted).toBe(input);
   });
 
   it.each(['SG.short.key', 'dop_v1_short', 'shpat_short', 'the shpat_ prefix'])(

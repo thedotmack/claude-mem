@@ -10,7 +10,8 @@
 import { Database } from 'bun:sqlite';
 import { createHash } from 'crypto';
 import { createReadStream, existsSync, readdirSync, readFileSync, statSync } from 'fs';
-import { basename, join } from 'path';
+import { basename, join, resolve } from 'path';
+import { homedir } from 'os';
 import { logger } from '../../utils/logger.js';
 
 export type PromptAgentId = 'claude-code' | 'codex' | 'gemini-cli' | 'antigravity-cli' | 'opencode';
@@ -108,6 +109,12 @@ function listDirectory(path: string): string[] {
     if (code !== 'ENOENT' && code !== 'ENOTDIR') logger.warn('IMPORT', 'Skipped an unreadable transcript folder', { path, code });
     return [];
   }
+}
+
+/** Native environment overrides belong to the current profile, not an explicitly different home. */
+function nativeProfileDirectory(homeDirectory: string, variable: string, ...fallback: string[]): string {
+  const configured = resolve(homeDirectory) === resolve(homedir()) ? process.env[variable] : undefined;
+  return configured ? resolve(configured) : join(homeDirectory, ...fallback);
 }
 
 function source(path: string, holdsPrompts = true): TranscriptSource | null {
@@ -213,6 +220,15 @@ export function createClaudeCodeReader(): AgentPromptReader {
 
 const CODEX_INJECTED_PREFIXES = ['# AGENTS.md', '<environment_context', '<user_instructions', '<permissions', '<INSTRUCTIONS', '<turn_aborted'];
 
+/** Verified creator protocol: a fork persists its own settings before any child turn.
+ * Resume retains the creation header; older/unknown creators keep their existing interpretation. */
+export function codexForkThreadId(meta: any): string | null {
+  return typeof meta?.id === 'string' && meta.id
+    && typeof meta.forked_from_id === 'string' && meta.forked_from_id
+    && typeof meta.cli_version === 'string' && Bun.semver.satisfies(meta.cli_version, '>=0.154.0')
+    ? meta.id : null;
+}
+
 export function createCodexReader(): AgentPromptReader {
   const seenKeys = new Set<string>();
   return {
@@ -220,7 +236,7 @@ export function createCodexReader(): AgentPromptReader {
     label: 'Codex',
     platformSource: 'codex',
     locate(homeDirectory) {
-      const sessions = join(homeDirectory, '.codex', 'sessions');
+      const sessions = join(nativeProfileDirectory(homeDirectory, 'CODEX_HOME', '.codex'), 'sessions');
       const sources: Array<TranscriptSource | null> = [];
       for (const year of listDirectory(sessions)) {
         for (const month of listDirectory(join(sessions, year))) {
@@ -235,14 +251,24 @@ export function createCodexReader(): AgentPromptReader {
     },
     async readPrompts(transcript, sink, sinceEpochMs) {
       let meta: any = null;
+      let awaitingThreadId: string | null = null;
       for await (const line of readLines(transcript.path)) {
         if (meta === null) {
           const first = parseLine(line);
           if (!first || typeof first !== 'object') return;
           meta = first.payload ?? {};
+          awaitingThreadId = codexForkThreadId(meta);
           if (meta.id) sink.session(String(meta.id));
           const isInteractiveSession = typeof meta.source === 'string' && meta.originator !== 'codex_exec' && meta.source !== 'exec';
           if (!isInteractiveSession) return;
+          continue;
+        }
+        if (awaitingThreadId !== null) {
+          if (line.includes('"thread_settings_applied"')) {
+            const record = parseLine(line);
+            if (record?.type === 'event_msg' && record.payload?.type === 'thread_settings_applied'
+              && record.payload.thread_id === awaitingThreadId) awaitingThreadId = null;
+          }
           continue;
         }
         if (!/"role"\s*:\s*"user"/.test(line)) continue;
@@ -481,7 +507,11 @@ export function createOpenCodeReader(): AgentPromptReader {
     label: 'OpenCode',
     platformSource: 'opencode',
     locate(homeDirectory) {
-      const database = source(join(homeDirectory, '.local', 'share', 'opencode', 'opencode.db'));
+      const data = nativeProfileDirectory(homeDirectory, 'XDG_DATA_HOME', '.local', 'share');
+      const database = source(join(data, 'opencode', 'opencode.db'));
+      // SQLite commits can update only the WAL until the next checkpoint.
+      const wal = database ? source(`${database.path}-wal`) : null;
+      if (database && wal) database.mtimeMs = Math.max(database.mtimeMs, wal.mtimeMs);
       return { detected: database !== null, sources: presentSources([database]) };
     },
     async readPrompts(transcript, sink, sinceEpochMs) {
