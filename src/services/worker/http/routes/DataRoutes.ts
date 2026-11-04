@@ -37,12 +37,17 @@ const CHROMA_DOC_TYPES: Record<IndexedRowKind, string> = {
 };
 import { withObservationMedia } from '../../../media/feed.js';
 
+// The MCP get_observations schema advertises `number | string` ids, so array
+// elements may arrive as numeric strings; non-numeric strings stay invalid.
+const numericStringToNumber = (item: unknown): unknown =>
+  typeof item === 'string' && /^\d+$/.test(item.trim()) ? Number(item.trim()) : item;
+
 const integerArrayLike = z.preprocess((value) => {
-  if (Array.isArray(value)) return value;
+  if (Array.isArray(value)) return value.map(numericStringToNumber);
   if (typeof value === 'string') {
     try {
       const parsed = JSON.parse(value);
-      if (Array.isArray(parsed)) return parsed;
+      if (Array.isArray(parsed)) return parsed.map(numericStringToNumber);
     } catch {
       // not JSON, fall through to comma split
     }

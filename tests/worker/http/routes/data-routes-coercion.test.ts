@@ -140,6 +140,40 @@ describe('DataRoutes Type Coercion', () => {
       expect(jsonSpy).toHaveBeenCalled();
     });
 
+    it('should coerce numeric-string elements of a native array', () => {
+      const { req, res, jsonSpy } = createMockReqRes({ ids: ['1', ' 2 ', 3] });
+      handler(req as Request, res as Response);
+
+      expect(mockGetObservationsByIds).toHaveBeenCalledWith([1, 2, 3], expect.anything());
+      expect(jsonSpy).toHaveBeenCalled();
+    });
+
+    it('should coerce numeric-string elements of a JSON-encoded string array', () => {
+      const { req, res, jsonSpy } = createMockReqRes({ ids: '["1","2"]' });
+      handler(req as Request, res as Response);
+
+      expect(mockGetObservationsByIds).toHaveBeenCalledWith([1, 2], expect.anything());
+      expect(jsonSpy).toHaveBeenCalled();
+    });
+
+    it('should reject non-numeric string elements of a native array', () => {
+      const { req, res, statusSpy } = createMockReqRes({ ids: ['observation:abc', ''] });
+      handler(req as Request, res as Response);
+
+      expect(statusSpy).toHaveBeenCalledWith(400);
+      expect(mockGetObservationsByIds).not.toHaveBeenCalled();
+    });
+
+    for (const invalidElement of [true, null, '1.5', '1e2', ' ']) {
+      it(`should reject ${JSON.stringify(invalidElement)} as an array element`, () => {
+        const { req, res, statusSpy } = createMockReqRes({ ids: [invalidElement] });
+        handler(req as Request, res as Response);
+
+        expect(statusSpy).toHaveBeenCalledWith(400);
+        expect(mockGetObservationsByIds).not.toHaveBeenCalled();
+      });
+    }
+
     it('should reject non-integer values after coercion', () => {
       const { req, res, statusSpy } = createMockReqRes({ ids: 'foo,bar' });
       handler(req as Request, res as Response);

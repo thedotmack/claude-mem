@@ -10,7 +10,8 @@
 import { Database } from 'bun:sqlite';
 import { createHash } from 'crypto';
 import { createReadStream, existsSync, readdirSync, readFileSync, statSync } from 'fs';
-import { basename, join } from 'path';
+import { basename, join, resolve } from 'path';
+import { homedir } from 'os';
 import { logger } from '../../utils/logger.js';
 
 export type PromptAgentId = 'claude-code' | 'codex' | 'gemini-cli' | 'antigravity-cli' | 'opencode';
@@ -108,6 +109,12 @@ function listDirectory(path: string): string[] {
     if (code !== 'ENOENT' && code !== 'ENOTDIR') logger.warn('IMPORT', 'Skipped an unreadable transcript folder', { path, code });
     return [];
   }
+}
+
+/** Native environment overrides belong to the current profile, not an explicitly different home. */
+function nativeProfileDirectory(homeDirectory: string, variable: string, ...fallback: string[]): string {
+  const configured = resolve(homeDirectory) === resolve(homedir()) ? process.env[variable] : undefined;
+  return configured ? resolve(configured) : join(homeDirectory, ...fallback);
 }
 
 function source(path: string, holdsPrompts = true): TranscriptSource | null {
@@ -220,7 +227,7 @@ export function createCodexReader(): AgentPromptReader {
     label: 'Codex',
     platformSource: 'codex',
     locate(homeDirectory) {
-      const sessions = join(homeDirectory, '.codex', 'sessions');
+      const sessions = join(nativeProfileDirectory(homeDirectory, 'CODEX_HOME', '.codex'), 'sessions');
       const sources: Array<TranscriptSource | null> = [];
       for (const year of listDirectory(sessions)) {
         for (const month of listDirectory(join(sessions, year))) {
@@ -481,7 +488,11 @@ export function createOpenCodeReader(): AgentPromptReader {
     label: 'OpenCode',
     platformSource: 'opencode',
     locate(homeDirectory) {
-      const database = source(join(homeDirectory, '.local', 'share', 'opencode', 'opencode.db'));
+      const data = nativeProfileDirectory(homeDirectory, 'XDG_DATA_HOME', '.local', 'share');
+      const database = source(join(data, 'opencode', 'opencode.db'));
+      // SQLite commits can update only the WAL until the next checkpoint.
+      const wal = database ? source(`${database.path}-wal`) : null;
+      if (database && wal) database.mtimeMs = Math.max(database.mtimeMs, wal.mtimeMs);
       return { detected: database !== null, sources: presentSources([database]) };
     },
     async readPrompts(transcript, sink, sinceEpochMs) {

@@ -47,3 +47,18 @@ describe('normalizeWorkerBaseUrl', () => {
     expect(() => normalizeWorkerBaseUrl('https://worker.example?token=secret')).toThrow('cannot include credentials');
   });
 });
+
+
+describe('worker base URL delimiters', () => {
+  for (const suffix of ['?', '#', '?#', '/mem/?', '/mem/#']) {
+    it(`rejects an empty request modifier in ${suffix}`, () => {
+      expect(() => normalizeWorkerBaseUrl(`https://worker.example${suffix}`))
+        .toThrow(InvalidWorkerUrlError);
+    });
+  }
+
+  it('preserves encoded question marks and hashes in a proxy path', () => {
+    expect(normalizeWorkerBaseUrl('https://worker.example/mem%3F%23/'))
+      .toBe('https://worker.example/mem%3F%23');
+  });
+});
