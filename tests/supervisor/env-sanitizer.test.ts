@@ -146,6 +146,20 @@ describe('sanitizeEnv', () => {
     expect(result.HOME).toBe('/home/user');
   });
 
+  it('preserves only the documented experimental-beta opt-out for gateway compatibility (#5346)', () => {
+    const result = sanitizeEnv({
+      CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1',
+      CLAUDE_CODE_EFFORT_LEVEL: 'high',
+      CLAUDE_CODE_RANDOM_OTHER: 'should-be-stripped',
+      PATH: '/usr/bin',
+    });
+
+    expect(result.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe('1');
+    expect(result.CLAUDE_CODE_EFFORT_LEVEL).toBeUndefined();
+    expect(result.CLAUDE_CODE_RANDOM_OTHER).toBeUndefined();
+    expect(result.PATH).toBe('/usr/bin');
+  });
+
   it('preserves CLAUDE_CODE_PATH, the documented env form of the claude-mem setting, across daemon spawns', () => {
     const result = sanitizeEnv({
       CLAUDE_CODE_PATH: 'C:\\Users\\me\\.local\\bin\\claude.exe',
@@ -204,6 +218,7 @@ describe('sanitizeEnv', () => {
     const result = sanitizeEnv({
       CLAUDE_CODE_OAUTH_TOKEN: 'my-oauth-token',
       CLAUDE_CODE_GIT_BASH_PATH: '/usr/bin/bash',
+      CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1',
       CLAUDE_CODE_USE_BEDROCK: '1',
       CLAUDE_CODE_USE_VERTEX: '1',
       CLAUDE_CODE_USE_FOUNDRY: '1',
@@ -219,6 +234,7 @@ describe('sanitizeEnv', () => {
 
     expect(result.CLAUDE_CODE_OAUTH_TOKEN).toBe('my-oauth-token');
     expect(result.CLAUDE_CODE_GIT_BASH_PATH).toBe('/usr/bin/bash');
+    expect(result.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe('1');
     expect(result.CLAUDE_CODE_USE_BEDROCK).toBe('1');
     expect(result.CLAUDE_CODE_USE_VERTEX).toBe('1');
     expect(result.CLAUDE_CODE_USE_FOUNDRY).toBe('1');

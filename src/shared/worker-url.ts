@@ -35,7 +35,7 @@ export function normalizeWorkerBaseUrl(raw: string): string {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new InvalidWorkerUrlError('CLAUDE_MEM_WORKER_URL must use http or https');
   }
-  if (url.username || url.password || url.search || url.hash) {
+  if (url.username || url.password || /[?#]/.test(url.href)) {
     throw new InvalidWorkerUrlError('CLAUDE_MEM_WORKER_URL cannot include credentials, a query, or a fragment');
   }
   if (url.protocol === 'http:' && !isLoopbackHostname(url.hostname)) {

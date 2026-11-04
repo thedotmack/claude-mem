@@ -434,6 +434,10 @@ export async function runUninstallCommand(): Promise<void> {
       const { uninstallGooseMcpIntegration } = await import('../../services/integrations/McpIntegrations.js');
       return uninstallGooseMcpIntegration();
     }},
+    { label: 'Copilot CLI MCP server', fn: async () => {
+      const { uninstallCopilotCliMcpIntegration } = await import('../../services/integrations/McpIntegrations.js');
+      return uninstallCopilotCliMcpIntegration();
+    }},
     { label: 'OpenCode plugin', fn: async () => {
       const { uninstallOpenCodePlugin } = await import('../../services/integrations/OpenCodeInstaller.js');
       return uninstallOpenCodePlugin();
