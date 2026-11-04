@@ -991,9 +991,7 @@ export class SessionSearch {
     for (let start = firstRelativeSegment; start < segments.length; start += 1) {
       const trailing = segments.slice(start);
       patterns.push(`${escape(trailing.join('/') + '/')}%`);
-      if (filePath.includes('\\')) {
-        patterns.push(`${escape(trailing.join('\\') + '\\')}%`);
-      }
+      patterns.push(`${escape(trailing.join('\\') + '\\')}%`);
     }
     return patterns;
   }
