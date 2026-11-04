@@ -164,6 +164,14 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   // starts `AgE` (pypi.org and test.pypi.org alike), printed by `twine`,
   // `uv publish` and `~/.pypirc` dumps. Real tokens run past 150 characters.
   { name: 'pypi_token',      regex: /\bpypi-AgE[A-Za-z0-9_-]{50,}(?!\w)/g },
+  // Two OpenAI-compatible providers this project onboards users for
+  // (src/shared/openai-compat-presets.ts): NVIDIA NIM issues `nvapi-` keys and
+  // Runcrate issues `rc_live_` keys. Both presets tell the user the prefix in
+  // their installer hint, and neither was claimed by openai_key (`sk-`), so a
+  // key pasted into a session (or printed by a `curl`/`.env` dump) was stored
+  // verbatim. 32+ trailing chars keeps short placeholders out.
+  { name: 'nvidia_nim_key',  regex: /\bnvapi-[A-Za-z0-9_-]{32,}(?!\w)/g },
+  { name: 'runcrate_key',    regex: /\brc_live_[A-Za-z0-9_-]{24,}(?!\w)/g },
   // Groq API keys (`gsk_` + 52 alphanumerics) and xAI API keys (`xai-` + 80
   // chars): LLM provider keys that `.env` files, `export GROQ_API_KEY=…` /
   // `XAI_API_KEY=…` lines and `curl -H "Authorization: Bearer …"` commands
