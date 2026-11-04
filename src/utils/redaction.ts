@@ -178,7 +178,7 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   { name: 'pypi_token',      regex: /\bpypi-AgE[A-Za-z0-9_-]{50,}(?!\w)/g },
   // Databricks personal access tokens (`dapi` + 32 hex, sometimes with a
   // `-<digit>` suffix) that DATABRICKS_TOKEN, `~/.databrickscfg` and
-  // `databricks auth token` print, and HashiCorp Vault service and batch
+  // `databricks tokens create` print, and HashiCorp Vault service and batch
   // tokens (`hvs.` + 90-120 and `hvb.` + 138-300 base64url chars) that
   // VAULT_TOKEN, `~/.vault-token` and `vault login` / `vault token create`
   // print.
