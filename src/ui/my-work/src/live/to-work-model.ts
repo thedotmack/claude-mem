@@ -72,7 +72,8 @@ function formatPromptStamp(epoch: number) {
   const two = (value: number) => String(value).padStart(2, '0')
   return `${two(date.getMonth() + 1)}-${two(date.getDate())} ${two(date.getHours())}:${two(date.getMinutes())}`
 }
-function formatDuration(milliseconds: number) {
+/** How long a request has been going, as the card shows it. Exported so the card can keep an open request's time current. */
+export function formatDuration(milliseconds: number) {
   const minutes = Math.max(0, Math.floor(milliseconds / 60000))
   if (minutes < 1) return 'Just started'
   if (minutes < 60) return `${minutes} min`
@@ -180,6 +181,7 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
     startedAt: started ? formatDateTime(started) : 'Start not recorded',
     startedAtIso: started ? new Date(started).toISOString() : undefined,
     runningFor: started ? formatDuration((completedEpoch ?? now) - started) : 'Not recorded',
+    runningLive: started && completedEpoch === null ? true : undefined,
     stage,
     state,
     closed: status === 'closed' || undefined,

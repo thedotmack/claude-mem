@@ -75,6 +75,9 @@ export function useConnection(): ConnectionStatus {
 /** True for a few seconds after this request's recorded content changed. */
 export const useFreshlyUpdated = (requestId: string) => useStore((state) => state.work.freshlyUpdatedIds.has(requestId))
 
+/** What changed in the models this screen showed, newest first (update-queue.ts). */
+export const useRecentChanges = () => useStore((state) => state.work.recentChanges)
+
 /** Where the work is seen: in sample mode the wireframe's switch, otherwise the source (the local worker is at home, cmem.ai on the go). */
 export function useWorkspace(): Workspace {
   return useStore(useShallow((state) => {

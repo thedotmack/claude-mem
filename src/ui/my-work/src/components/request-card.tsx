@@ -5,6 +5,7 @@ import { Shimmer } from '@/components/ai-elements/shimmer'
 import { Terminal, TerminalContent } from '@/components/ai-elements/terminal'
 import { EncryptedText } from '@/components/aceternity/encrypted-text'
 import { GlowingEffect } from '@/components/aceternity/glowing-effect'
+import { RunningFor } from '@/components/live-motion'
 import { SaveButton } from '@/components/save-button'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
@@ -154,20 +155,24 @@ export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request
   const contentJustUpdated = useFreshlyUpdated(request.id)
   // Only a card that needs you gets the edge glow that follows the pointer, so it reads as "this one" (R10.2).
   const waitingOnYou = request.state === 'your-move' || request.state === 'needs-check'
+  const reviewed = request.progress.readings > 0 || !!request.progress.completedAt
   return (
     <Req ids={['R1.1', 'R2.1', 'R4.1', 'R3.3', 'R10.2']}>
       <div className="relative h-full rounded-xl">
       {waitingOnYou && <GlowingEffect spread={40} glow proximity={64} inactiveZone={0.01} borderWidth={2} disabled={!!reduceMotion} />}
-      <Card className="h-full gap-3 py-4 md:py-5">
+      <Card className={cn('h-full gap-3 py-4 transition-[border-color] duration-500 md:py-5', contentJustUpdated && 'just-updated border-primary/50')}>
         <CardHeader className="flex flex-row items-center justify-between gap-2 px-4 md:px-5">
           <div className="flex min-w-0 items-center gap-2">
             <AgentIcon agentId={request.agentId} />
+            {/* Where it belongs, up front beside who is on it. */}
+            <FocusAreaChip focusAreaId={request.focusAreaId} onOpen={onOpenFocus} />
             <Req ids={['R5.2', 'R9.3']}>
               <span className={cn('truncate text-xs text-muted-foreground', !team && 'sr-only')}>asked by {request.askedBy}</span>
             </Req>
           </div>
           <div className="flex items-center gap-1.5">
-            <StateBadge state={request.state} />
+            {/* A status change cross-fades the badge, so the move is seen, not just the result. */}
+            <span key={request.state} className="motion-safe:animate-in motion-safe:fade-in motion-safe:zoom-in-95 motion-safe:duration-500"><StateBadge state={request.state} /></span>
             {((phase !== 'human' && request.state === 'working') || fresh || contentJustUpdated) && <ActivitySpinner word={word} settled={fresh || contentJustUpdated} />}
           </div>
         </CardHeader>
@@ -195,24 +200,28 @@ export function RequestCard({ request, onOpen, onOpenFocus }: { request: Request
             </Req>
           )}
 
-          <Deliverables request={request} onOpen={onOpen} />
-
-          {/* Shipped work's next moves are its open follow-ups, so the card lists those instead of repeating one. */}
+          {/* What happens next comes straight after what it is: the one line most people read a card for. Shipped
+              work's next moves are its open follow-ups, so the card lists those instead of repeating one. */}
           {!(request.state === 'shipped' && request.followUps.some((followUp) => !followUp.done)) && <NextMove next={request.next} />}
+
+          <Deliverables request={request} onOpen={onOpen} />
           <OpenFollowUps request={request} limit={3} />
 
-          <div className="mt-auto space-y-3 border-t border-border/70 pt-3">
-            <FocusAreaChip focusAreaId={request.focusAreaId} onOpen={onOpenFocus} />
-            <Req ids={['R5.3', 'R5.4', 'R5.5']}>
-              <dl className="grid grid-cols-3 gap-2 text-xs">
-                <div><dt className="text-muted-foreground">Stage</dt><dd className="mt-0.5 font-medium" title={request.stageNote}>{request.stage}</dd></div>
-                <div><dt className="text-muted-foreground">Started</dt><dd className="mt-0.5">{request.startedAt}</dd></div>
-                <div><dt className="text-muted-foreground">Running</dt><dd className="mt-0.5">{request.runningFor}</dd></div>
-              </dl>
-            </Req>
-            <ProgressMeter request={request} />
+          <div className="mt-auto space-y-2.5 border-t border-border/70 pt-3">
+            {/* An empty bar says nothing, so an unreviewed request says so in words instead. */}
+            {reviewed ? <ProgressMeter request={request} /> : <Req ids={['R5.9']}><p className="text-xs text-muted-foreground">Not reviewed yet</p></Req>}
+            {/* Stage, start and running time on one quiet line instead of a three-column grid. */}
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+              <Req ids={['R5.3', 'R5.4', 'R5.5']}>
+                <dl className="flex flex-wrap items-center gap-x-2 gap-y-0.5 [&>div+div]:before:mr-1 [&>div+div]:before:content-['·']">
+                  <div className="flex gap-1"><dt className="sr-only">Stage</dt><dd className="font-medium text-foreground/85" title={request.stageNote}>{request.stage}</dd></div>
+                  <div className="flex gap-1"><dt>Started</dt><dd><time dateTime={request.startedAtIso}>{request.startedAt}</time></dd></div>
+                  <div className="flex gap-1"><dt>{request.state === 'shipped' ? 'Took' : 'Running'}</dt><dd className="tabular-nums"><RunningFor request={request} /></dd></div>
+                </dl>
+              </Req>
+            </div>
           </div>
-        </CardContent>
+                </CardContent>
       </Card>
       </div>
     </Req>
