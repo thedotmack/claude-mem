@@ -113,6 +113,47 @@ describe('SessionMessageBuffer (in-RAM observation buffer)', () => {
     expect(Date.now() - start).toBeGreaterThanOrEqual(20);
   });
 
+  test('drain releases the idle slot early while slot waiters are parked (#5376)', async () => {
+    const buffer = new SessionMessageBuffer();
+    const controller = new AbortController();
+    let idleFired = false;
+    const start = Date.now();
+    const iterated: PendingMessageWithId[] = [];
+    for await (const msg of buffer.drain({
+      sessionDbId: 100,
+      signal: controller.signal,
+      idleTimeoutMs: 6000,
+      shouldReleaseIdleSlot: () => true,
+      onIdleTimeout: () => { idleFired = true; controller.abort(); },
+    })) {
+      iterated.push(msg);
+    }
+    expect(idleFired).toBe(true);
+    expect(iterated.length).toBe(0);
+    // Ended on the contention recheck (~1s slices), not the 6s idle timeout.
+    expect(Date.now() - start).toBeLessThan(3000);
+  }, 10000);
+
+  test('drain keeps the full idle timeout while no slot waiters are parked (#5376)', async () => {
+    const buffer = new SessionMessageBuffer();
+    const controller = new AbortController();
+    let idleFired = false;
+    const start = Date.now();
+    const iterated: PendingMessageWithId[] = [];
+    for await (const msg of buffer.drain({
+      sessionDbId: 101,
+      signal: controller.signal,
+      idleTimeoutMs: 300,
+      shouldReleaseIdleSlot: () => false,
+      onIdleTimeout: () => { idleFired = true; controller.abort(); },
+    })) {
+      iterated.push(msg);
+    }
+    expect(idleFired).toBe(true);
+    expect(iterated.length).toBe(0);
+    expect(Date.now() - start).toBeGreaterThanOrEqual(250);
+  });
+
   test('peekTypes reflects buffered message types', () => {
     const buffer = new SessionMessageBuffer();
     buffer.enqueue(1, obs('Read', 'a'));

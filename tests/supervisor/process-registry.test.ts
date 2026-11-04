@@ -706,14 +706,42 @@ describe('waitForSlot / parked waiters (#2756)', () => {
     expect(getParkedSlotWaiterCount()).toBe(0);
   });
 
-  it('rejects immediately when the hard cap is already exceeded, without parking', async () => {
+  it('parks at the hard cap instead of rejecting, and resolves when a process exits (#5376)', async () => {
+    const ids: string[] = [];
     for (let i = 0; i < 10; i++) {
-      registerFakeSdk(`hardcap-${i}`);
+      ids.push(registerFakeSdk(`hardcap-${i}`));
     }
 
-    await expect(waitForSlot(1, undefined, 'sess-hardcap')).rejects.toThrow(/Hard cap exceeded/);
+    // At the cap the caller must park like it does at the configured
+    // limit: rejecting here fails the generator start, and the session
+    // discards its buffered messages (#5376) — even though the entries
+    // filling the registry may already be exiting.
+    const parkedPromise = waitForSlot(10, undefined, 'sess-hardcap');
+    expect(isSessionParkedForSlot('sess-hardcap')).toBe(true);
+    expect(getParkedSlotWaiterCount()).toBe(1);
+
+    registry.unregister(ids[0]);
+
+    grantedReservations.push(await parkedPromise);
     expect(isSessionParkedForSlot('sess-hardcap')).toBe(false);
     expect(getParkedSlotWaiterCount()).toBe(0);
+  });
+
+  it('hard cap still bounds grants when the configured limit is above it (#5376)', async () => {
+    const ids: string[] = [];
+    for (let i = 0; i < 10; i++) {
+      ids.push(registerFakeSdk(`cap-ceiling-${i}`));
+    }
+
+    // A configured limit of 20 must not admit an 11th process: the cap
+    // binds the grant, so this caller parks until the count drops below it.
+    const parkedPromise = waitForSlot(20, undefined, 'sess-cap-ceiling');
+    expect(isSessionParkedForSlot('sess-cap-ceiling')).toBe(true);
+
+    registry.unregister(ids[0]);
+
+    grantedReservations.push(await parkedPromise);
+    expect(isSessionParkedForSlot('sess-cap-ceiling')).toBe(false);
   });
 
   it('resolves immediately (no parking) when the active count is already under the limit', async () => {
