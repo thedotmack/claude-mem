@@ -172,6 +172,12 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   // verbatim. 32+ trailing chars keeps short placeholders out.
   { name: 'nvidia_nim_key',  regex: /\bnvapi-[A-Za-z0-9_-]{32,}(?!\w)/g },
   { name: 'runcrate_key',    regex: /\brc_live_[A-Za-z0-9_-]{24,}(?!\w)/g },
+  // Groq API keys (`gsk_` + 52 alphanumerics) and xAI API keys (`xai-` + 80
+  // chars): LLM provider keys that `.env` files, `export GROQ_API_KEY=…` /
+  // `XAI_API_KEY=…` lines and `curl -H "Authorization: Bearer …"` commands
+  // print. Neither prefix is claimed by openai_key, so they stayed in the text.
+  { name: 'groq_key',        regex: /\bgsk_[A-Za-z0-9]{52}(?!\w)/g },
+  { name: 'xai_key',         regex: /\bxai-[A-Za-z0-9_]{80}(?!\w)/g },
   // Incoming webhook URLs carry their secret in the path, so anyone holding
   // one can post to the channel: Slack (`hooks.slack.com/services/T…/B…/…`,
   // plus workflow and trigger URLs) and Discord (`discord.com/api/webhooks/
