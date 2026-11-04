@@ -9,9 +9,9 @@
 // — no historical/pre-launch backfill, second process, or cursor files.
 // Mutation ops (custom title, prompt→session
 // repair, project remaps) ride the same flush from the `sync_outbox` table
-// (migration v42). Already-frozen content (especially tombstones) drains
-// first; mutations drain before newly materialized row snapshots so title
-// parking still precedes the related first row append.
+// (migration v42). Each kind gets one bounded page per sweep, including its
+// frozen retry backlog. Mutations retain FIFO order; their old affected
+// snapshots precede them and their new affected rows follow their ack.
 //
 // WIRE CONTRACT: POST {hubUrl}/v1/sync/ops with protocol_version 2 and
 // `{body, operation_sha256}` wrappers. `body` is exact canonical JSON: sorted
@@ -56,11 +56,14 @@ import {
   parseCanonicalOperation,
   stableDocumentId,
   type CanonicalWireOp,
+  type CanonicalMutation,
   type ContentKind,
 } from './CanonicalContent.js';
 import { SYNC_CAPABILITIES, SYNC_CAPABILITIES_HEADER } from './sync-capabilities.js';
 import { PROMPT_TEXT_COLUMNS_SQL, clampPromptTextForSync } from './prompt-text-clamp.js';
 import { SyncHistoryScopeReader } from './SyncHistoryScopeReader.js';
+import { SyncQueueEvidenceReader, type SyncQueueEvidenceSnapshot } from './SyncQueueEvidence.js';
+import { affectedByMutationSql, FROZEN_SCOPE, HEAD_MUTATION_SQL, mutationPrerequisiteSql, nativeScope, PENDING_MUTATIONS_SQL, type MutationBlockage } from './SyncScheduling.js';
 import {
   classifySyncAuthFailure,
   friendlySyncError,
@@ -207,6 +210,7 @@ interface MutationOutboxRow {
   body: string;
   canonical_body: string | null;
   operation_sha256: string | null;
+  created_at_epoch: number;
 }
 
 interface ContentOutboxRow {
@@ -541,12 +545,22 @@ export interface CloudSyncOptions {
    * no ledger (tests, out-of-band callers); the worker passes the default.
    */
   healthFilePath?: string | null;
+  /** Phase 8 seam: select at most limit durable native identities, never send here.
+   * Called only after a complete live sweep makes no progress. One selected page
+   * re-enters this same immutable outbox and flush owner before another selection.
+   */
+  selectBackfillPage?: (limit: number) => ReadonlyArray<{ kind: ContentKind; originLocalId: string }>;
 }
 
 export interface CloudSyncStatus {
   configured: boolean;
   deviceId: string;
   pending: { observations: number; summaries: number; prompts: number; workState: number; mutations: number; tombstones: number };
+  queue: SyncQueueEvidenceSnapshot & {
+    blockedMutation: MutationBlockage | null;
+    progress: Record<ContentKind | 'mutation' | 'tombstone', { acknowledged: number; lastAcknowledgedAt: number | null }>;
+    backfill: { configured: boolean; pageBudget: number; selected: number };
+  };
   quarantine: { count: number; latestReason: string | null };
   /** Pulled hub ops this device set aside because they can never apply here. */
   pullQuarantine: { count: number; latestReason: string | null };
@@ -600,6 +614,13 @@ export class CloudSync {
   private historyScopeCache: { at: number; count: number | null } | null = null;
   private historyScopeReader: SyncHistoryScopeReader | null = null;
   private historyScopePending: Promise<number | null> | null = null;
+  private queueEvidenceReader: SyncQueueEvidenceReader | null = null;
+  private blockedMutation: MutationBlockage | null = null;
+  private blockedMutationScope: { mutation: CanonicalMutation; rev: string } | null = null;
+  private readonly selectBackfillPage: CloudSyncOptions['selectBackfillPage'];
+  private backfillSelected = 0;
+  private readonly queueProgress = Object.fromEntries(['observation', 'summary', 'prompt', 'work_state', 'mutation', 'tombstone']
+    .map(kind => [kind, { acknowledged: 0, lastAcknowledgedAt: null }])) as CloudSyncStatus['queue']['progress'];
   private readonly authRetryMs: number;
   private readonly contentKindsReprobeMs: number;
   private readonly healthFilePath: string | null;
@@ -674,6 +695,7 @@ export class CloudSync {
     this.authRetryMs = options.authRetryMs ?? DEFAULT_AUTH_RETRY_MS;
     this.contentKindsReprobeMs = options.contentKindsReprobeMs ?? CONTENT_KINDS_REPROBE_MS;
     this.healthFilePath = options.healthFilePath ?? null;
+    this.selectBackfillPage = options.selectBackfillPage;
     this.nextBackoffMs = this.backoffInitialMs;
 
     if (this.isConfigured()) {
@@ -765,9 +787,9 @@ export class CloudSync {
   }
 
   /**
-   * Drain everything unsynced. Frozen content snapshots go first so a queued
-   * tombstone supersedes older work promptly; mutations then precede newly
-   * materialized row snapshots (set_title parking depends on that ordering).
+   * Drain eligible unsynced work in bounded per-kind turns. Deletes lead their
+   * kind; old affected snapshots precede a mutation and new affected rows wait
+   * for its ack. Unrelated work can advance while that prerequisite drains.
    * Single-flight: a flush arriving while one is running marks a re-run
    * instead of overlapping, so rows written mid-flush are still picked up.
    * Never rejects.
@@ -792,6 +814,7 @@ export class CloudSync {
       }
       this.poisonQuarantinesThisFlush = 0;
       this.dropStaleOriginDeviceIdSnapshots();
+      let backfillPageSelected = false;
       do {
         this.flushAgainRequested = false;
         // One status GET learns which kinds this hub accepts (hubAcceptsKind)
@@ -800,12 +823,20 @@ export class CloudSync {
           await this.probeHubStatus();
           if (this.stopped) return;
         }
-        await this.drainContentOutbox();
-        await this.drainMutations();
-        for (const kind of KINDS) {
-          if (!this.hubAcceptsKind(kind.kind)) continue;
-          await this.drainKind(kind);
-        }
+        let progressed: boolean;
+        do {
+          progressed = await this.drainMutationPage();
+          for (const kind of KINDS) {
+            if (this.stopped) return;
+            if (this.hubAcceptsKind(kind.kind)) progressed = await this.drainContentPage(kind) || progressed;
+          }
+          // Only one historical page may enter the outbox, and only when live
+          // work has yielded. The next sweep always gives every live lane a turn.
+          if (!progressed && !this.blockedMutation && !backfillPageSelected && this.selectBackfillPage) {
+            backfillPageSelected = true;
+            progressed = this.snapshotBackfillPage();
+          }
+        } while (progressed && !this.stopped);
       } while (this.flushAgainRequested && !this.stopped);
       if (this.stopped) return; // shutdown mid-flush — skip success bookkeeping
       this.lastFlushAt = Date.now();
@@ -837,6 +868,7 @@ export class CloudSync {
   }
 
   status(): CloudSyncStatus {
+    this.queueEvidenceReader ??= new SyncQueueEvidenceReader(this.db.filename);
     return {
       configured: this.isConfigured(),
       deviceId: this.deviceId,
@@ -847,6 +879,13 @@ export class CloudSync {
         workState: this.countPending('work_state_entries'),
         mutations: this.countPendingMutations(),
         tombstones: this.countPendingTombstones(),
+      },
+      queue: {
+        ...this.queueEvidenceReader.getSnapshot({ sharedWorkWritesEnabled: this.sharedWorkWritesEnabled,
+          workStateSupported: this.hubAcceptsKind('work_state'), deviceId: this.deviceId }),
+        blockedMutation: this.blockedMutation ? { ...this.blockedMutation } : null,
+        progress: structuredClone(this.queueProgress),
+        backfill: { configured: !!this.selectBackfillPage, pageBudget: this.contentBatchSize, selected: this.backfillSelected },
       },
       quarantine: this.quarantineStatus(),
       pullQuarantine: this.pullQuarantineStatus(),
@@ -1217,6 +1256,7 @@ export class CloudSync {
   stop(): void {
     this.stopped = true;
     this.historyScopeReader?.close();
+    this.queueEvidenceReader?.close();
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
@@ -1237,33 +1277,49 @@ export class CloudSync {
    * row while the hub does not list the kind: sent anyway, a hub that refuses
    * it by name would dead-letter it, and the append-only row with it.
    */
-  private async drainContentOutbox(): Promise<void> {
-    for (;;) {
-      if (this.stopped) return;
-      const rows = this.db.prepare(`
-        SELECT body, operation_sha256 FROM sync_content_outbox
-        WHERE kind != 'work_state' OR (? = 1 AND ${this.sharedWorkAllowedSql("json_extract(body, '$.payload.list_name')")})
-        ORDER BY deleted DESC, id LIMIT ?
-      `).all(this.hubAcceptsKind('work_state') ? 1 : 0, this.contentBatchSize) as Array<CanonicalWireOp>;
-      if (rows.length === 0) return;
-      let batch: WireOp[] = [];
-      let bytes = 0;
-      for (const row of rows) {
-        const size = Buffer.byteLength(JSON.stringify(row), 'utf8');
-        if (batch.length > 0 && (
-          batch.length >= MAX_OPS_PER_PUSH
-          || pushRequestBytes(bytes + size, batch.length + 1) > MAX_BODY_BYTES
-        )) {
-          await this.sendOps(batch);
-          if (this.stopped) return;
-          batch = [];
-          bytes = 0;
-        }
-        batch.push(row);
-        bytes += size;
+  private deviceSql(): string {
+    return `'${this.deviceId.replace(/'/g, "''")}'`;
+  }
+
+  private frozenPage(kind: RowKind): CanonicalWireOp[] {
+    const device = this.deviceSql();
+    // A later snapshot of a repaired entity waits for the mutation; only
+    // older frozen prerequisites may pass it. Other entities remain eligible.
+    const eligible = `(EXISTS (SELECT 1 FROM ${HEAD_MUTATION_SQL} m WHERE ${mutationPrerequisiteSql(FROZEN_SCOPE, device)})
+      OR NOT EXISTS (SELECT 1 FROM ${PENDING_MUTATIONS_SQL} m
+      WHERE ${affectedByMutationSql(FROZEN_SCOPE, device)}
+        AND NOT ${mutationPrerequisiteSql(FROZEN_SCOPE, device)}))`;
+    const prerequisite = this.blockedMutationScope
+      ? `CASE WHEN EXISTS (SELECT 1 FROM (SELECT ? AS mutation, ? AS rev) m
+          WHERE ${mutationPrerequisiteSql(FROZEN_SCOPE, device)}) THEN 0 ELSE 1 END,` : '';
+    return this.db.prepare(`
+      SELECT o.body, o.operation_sha256 FROM sync_content_outbox o
+      WHERE o.kind = ? AND ${eligible}
+        AND (o.kind != 'work_state' OR ${this.sharedWorkAllowedSql("CASE WHEN json_valid(o.body) THEN json_extract(o.body, '$.payload.list_name') END")})
+      ORDER BY o.deleted DESC, ${prerequisite} o.id LIMIT ?
+    `).all(kind, ...(this.blockedMutationScope
+      ? [JSON.stringify(this.blockedMutationScope.mutation), this.blockedMutationScope.rev] : []),
+    this.contentBatchSize) as CanonicalWireOp[];
+  }
+
+  private async sendContentPage(rows: CanonicalWireOp[]): Promise<void> {
+    let batch: WireOp[] = [];
+    let bytes = 0;
+    for (const row of rows) {
+      const size = Buffer.byteLength(JSON.stringify(row), 'utf8');
+      if (batch.length > 0 && (
+        batch.length >= MAX_OPS_PER_PUSH
+        || pushRequestBytes(bytes + size, batch.length + 1) > MAX_BODY_BYTES
+      )) {
+        await this.sendOps(batch);
+        if (this.stopped) return;
+        batch = [];
+        bytes = 0;
       }
-      if (batch.length > 0) await this.sendOps(batch);
+      batch.push(row);
+      bytes += size;
     }
+    if (batch.length > 0) await this.sendOps(batch);
   }
 
   /**
@@ -1273,110 +1329,174 @@ export class CloudSync {
    * device"); the resolved id is substituted here, at push time, keeping
    * device identity single-sourced (SyncApply DEVICE IDENTITY note).
    */
-  private async drainMutations(): Promise<void> {
-    for (;;) {
-      if (this.stopped) return;
-      const rows = this.db.prepare(
-        `SELECT CAST(id AS TEXT) AS id, op_uuid, CAST(rev AS TEXT) AS rev,
-                body, canonical_body, operation_sha256
-         FROM sync_outbox ORDER BY id LIMIT ?`
-      ).all(this.contentBatchSize) as MutationOutboxRow[];
-      if (rows.length === 0) break;
+  private async drainMutationPage(): Promise<boolean> {
+    if (this.stopped) return false;
+    this.blockedMutation = null;
+    this.blockedMutationScope = null;
+    const rows = this.db.prepare(
+      `SELECT CAST(id AS TEXT) AS id, op_uuid, CAST(rev AS TEXT) AS rev,
+              body, canonical_body, operation_sha256, created_at_epoch
+       FROM sync_outbox ORDER BY id LIMIT ?`
+    ).all(this.contentBatchSize) as MutationOutboxRow[];
+    if (rows.length === 0) return false;
+    let progressed = false;
 
-      // Same size-bounded packing as drainKind: mutation bodies are usually
-      // tiny, but every page still stays within the request budget.
-      let buf: WireOp[] = [];
-      let bufBytes = 0;
-      const send = async (): Promise<void> => {
-        if (this.stopped || buf.length === 0) return;
-        await this.sendOps(buf);
-        buf = [];
-        bufBytes = 0;
-      };
-      for (const row of rows) {
-        let op: WireOp;
-        let isProjectRemap = false;
-        try {
-          if (row.canonical_body !== null || row.operation_sha256 !== null) {
-            if (row.canonical_body === null || row.operation_sha256 === null) {
-              throw new Error('partial canonical mutation snapshot');
-            }
-            op = { body: row.canonical_body, operation_sha256: row.operation_sha256 };
-            isProjectRemap = parseCanonicalOperation(op).mutation?.op === 'remap_project';
-          } else {
-            let parsed: unknown;
-            try {
-              parsed = JSON.parse(row.body);
-            } catch {
-              throw new Error('mutation body is not JSON');
-            }
-            if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-              throw new Error('mutation body must be an object');
-            }
-            const body = parsed as OpBody;
-            isProjectRemap = body.op === 'remap_project';
-            if (body.op === 'set_prompt_session' && typeof body.target === 'object' && body.target !== null) {
-              const target = body.target as Record<string, unknown>;
-              if (target.origin_device_id == null) target.origin_device_id = this.deviceId;
-            }
-            op = buildMutationOperation({
-              originDeviceId: this.deviceId,
-              mutationId: row.op_uuid,
-              entityRev: row.rev,
-              mutation: body as unknown as Parameters<typeof buildMutationOperation>[0]['mutation'],
-            });
-            // First accepted serialization is frozen before its first send.
-            this.db.prepare(`
-              UPDATE sync_outbox
-              SET canonical_body = ?, operation_sha256 = ?
-              WHERE id = ? AND canonical_body IS NULL AND operation_sha256 IS NULL
-            `).run(op.body, op.operation_sha256, row.id);
+    // Same size-bounded packing as content pages: mutation bodies are usually
+    // tiny, but every page still stays within the request budget.
+    let buf: WireOp[] = [];
+    let bufBytes = 0;
+    const send = async (): Promise<void> => {
+      if (this.stopped || buf.length === 0) return;
+      await this.sendOps(buf);
+      buf = [];
+      bufBytes = 0;
+    };
+    for (const row of rows) {
+      let op: WireOp;
+      let isProjectRemap = false;
+      let mutation: CanonicalMutation;
+      try {
+        if (row.canonical_body !== null || row.operation_sha256 !== null) {
+          if (row.canonical_body === null || row.operation_sha256 === null) {
+            throw new Error('partial canonical mutation snapshot');
           }
-        } catch (error) {
-          const reason = error instanceof Error ? error.message : String(error);
-          this.quarantineMutation(row, reason);
-          continue;
+          op = { body: row.canonical_body, operation_sha256: row.operation_sha256 };
+          mutation = parseCanonicalOperation(op).mutation!;
+          isProjectRemap = mutation.op === 'remap_project';
+        } else {
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(row.body);
+          } catch {
+            throw new Error('mutation body is not JSON');
+          }
+          if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+            throw new Error('mutation body must be an object');
+          }
+          const body = parsed as OpBody;
+          isProjectRemap = body.op === 'remap_project';
+          if (body.op === 'set_prompt_session' && typeof body.target === 'object' && body.target !== null) {
+            const target = body.target as Record<string, unknown>;
+            if (target.origin_device_id == null) target.origin_device_id = this.deviceId;
+          }
+          op = buildMutationOperation({
+            originDeviceId: this.deviceId,
+            mutationId: row.op_uuid,
+            entityRev: row.rev,
+            mutation: body as unknown as Parameters<typeof buildMutationOperation>[0]['mutation'],
+          });
+          mutation = parseCanonicalOperation(op).mutation!;
+          // First accepted serialization is frozen before its first send.
+          this.db.prepare(`
+            UPDATE sync_outbox
+            SET canonical_body = ?, operation_sha256 = ?
+            WHERE id = ? AND canonical_body IS NULL AND operation_sha256 IS NULL
+          `).run(op.body, op.operation_sha256, row.id);
         }
-        const size = Buffer.byteLength(JSON.stringify(op), 'utf8');
-        // One project remap can rewrite thousands of server rows. Preserve
-        // queue order, but give each remap its own transaction/timeout budget.
-        if (buf.length > 0 && (
-          isProjectRemap
-          || pushRequestBytes(bufBytes + size, buf.length + 1) > MAX_BODY_BYTES
-          || buf.length >= MAX_OPS_PER_PUSH
-        )) {
-          await send();
-          if (this.stopped) return;
-        }
-        buf.push(op);
-        bufBytes += size;
-        if (isProjectRemap) {
-          await send();
-          if (this.stopped) return;
-        }
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        this.quarantineMutation(row, reason);
+        progressed = true;
+        continue;
       }
-      await send();
-      if (this.stopped) return;
-      // Loop re-SELECTs: acked ops were DELETEd (and a page of nothing but
-      // dropped-unparseable rows made progress via those DELETEs).
+      const prerequisites = this.mutationPrerequisites(mutation, row.rev);
+      if (prerequisites) {
+        await send();
+        if (this.stopped) return progressed;
+        this.blockedMutationScope = { mutation, rev: row.rev };
+        this.blockedMutation = { id: row.id, op: mutation.op, pendingPrerequisites: prerequisites.count,
+          oldestPrerequisiteQueuedAt: prerequisites.oldest, queuedAt: row.created_at_epoch, observedAt: Date.now() };
+        return progressed;
+      }
+      const size = Buffer.byteLength(JSON.stringify(op), 'utf8');
+      // One project remap can rewrite thousands of server rows. Preserve
+      // queue order, but give each remap its own transaction/timeout budget.
+      if (buf.length > 0 && (
+        isProjectRemap
+        || pushRequestBytes(bufBytes + size, buf.length + 1) > MAX_BODY_BYTES
+        || buf.length >= MAX_OPS_PER_PUSH
+      )) {
+        await send();
+        if (this.stopped) return progressed;
+      }
+      buf.push(op);
+      progressed = true;
+      bufBytes += size;
+      if (isProjectRemap) {
+        await send();
+        if (this.stopped) return progressed;
+      }
     }
+    await send();
+    return progressed;
   }
 
-  private async drainKind(kind: KindSpec): Promise<void> {
+  private mutationPrerequisites(mutation: CanonicalMutation, rev: string): { count: number; oldest: number | null } | null {
+    // Titles deliberately park before content arrives, so they have no frozen
+    // prerequisite. Never scan an unrelated history backlog for each title.
+    if (mutation.op === 'set_title') return null;
+    let scopeSql: string;
+    const params: string[] = [JSON.stringify(mutation), rev];
+    if (mutation.op === 'set_prompt_session') {
+      if (mutation.target!.origin_device_id !== this.deviceId) return null;
+      // entity_id is the leading column of the existing UNIQUE(entity_id,
+      // entity_rev) index: one prompt repair need not scan all other kinds.
+      scopeSql = 'o.entity_id = ?';
+      params.push(stableDocumentId('prompt', this.deviceId, String(mutation.target!.origin_local_id)));
+    } else {
+      // Prompt payloads matter only for the existing session-project side
+      // effect. Other remaps affect observations/summaries, never work_state.
+      scopeSql = mutation.fields.project !== undefined && mutation.where?.memory_session_id !== undefined
+        ? "o.kind IN ('observation', 'summary', 'prompt')" : "o.kind IN ('observation', 'summary')";
+    }
+    const result = this.db.prepare(`
+      SELECT COUNT(*) AS count, MIN(o.created_at_epoch) AS oldest
+      FROM sync_content_outbox o, (SELECT ? AS mutation, ? AS rev) m
+      WHERE ${scopeSql} AND o.deleted = 0 AND ${mutationPrerequisiteSql(FROZEN_SCOPE, this.deviceSql())}
+    `).get(...params) as { count: number; oldest: number | null };
+    return result.count > 0 ? result : null;
+  }
+
+  private async drainContentPage(kind: KindSpec): Promise<boolean> {
     // Materialize each mutable SQLite row into an immutable canonical outbox
     // snapshot, then send only those stored bytes. Later local writes cannot
     // change a retry's body/hash; ack reconciliation queues a higher revision.
-    for (;;) {
-      if (this.stopped) return;
-      const rows = this.db.prepare(kind.selectSql).all(...(kind.kind === 'work_state'
-        ? [Number(this.sharedWorkWritesEnabled), this.contentBatchSize] : [this.contentBatchSize])) as LocalRow[];
-      if (rows.length === 0) break;
-      for (const r of rows) {
-        this.snapshotContentRow(kind, r);
-      }
-      await this.drainContentOutbox();
-      if (this.stopped) return;
+    if (this.stopped) return false;
+    let frozen = this.frozenPage(kind.kind);
+    if (frozen.length > 0) {
+      await this.sendContentPage(frozen);
+      return true;
     }
+    const scope = nativeScope(kind.kind);
+    const eligible = `NOT EXISTS (SELECT 1 FROM ${PENDING_MUTATIONS_SQL} m
+      WHERE ${affectedByMutationSql(scope, this.deviceSql())})`;
+    const sql = kind.selectSql.replace(/ORDER BY/, `AND ${eligible} ORDER BY`);
+    const rows = this.db.prepare(sql).all(...(kind.kind === 'work_state'
+      ? [Number(this.sharedWorkWritesEnabled), this.contentBatchSize] : [this.contentBatchSize])) as LocalRow[];
+    if (rows.length === 0) return false;
+    for (const r of rows) {
+      this.snapshotContentRow(kind, r);
+    }
+    frozen = this.frozenPage(kind.kind);
+    if (frozen.length > 0) await this.sendContentPage(frozen);
+    return true;
+  }
+
+  private snapshotBackfillPage(): boolean {
+    const selections = this.selectBackfillPage?.(this.contentBatchSize) ?? [];
+    if (selections.length > this.contentBatchSize) throw new Error('backfill page exceeds scheduler budget');
+    let selected = 0;
+    for (const selection of selections) {
+      const kind = KINDS.find(item => item.kind === selection.kind);
+      if (!kind || !this.hubAcceptsKind(kind.kind)) continue;
+      const row = this.db.prepare(kind.selectOneSql).get(assertCanonicalDecimal(selection.originLocalId)) as LocalRow | undefined;
+      if (!row || (kind.kind === 'work_state' && !this.sharedWorkWritesEnabled
+        && /^__my_work_v[0-9].*:/.test(String(row.list_name ?? '')))) continue;
+      this.snapshotContentRow(kind, row);
+      selected++;
+    }
+    this.backfillSelected += selected;
+    return selected > 0;
   }
 
   private snapshotContentRow(kind: KindSpec, row: LocalRow): void {
@@ -1461,6 +1581,19 @@ export class CloudSync {
         if (this.stopped) return;
         this.validatePushResponse(response, remaining);
         this.stampAcked(response.acked, remaining);
+        const acknowledgedAt = Date.now();
+        const deleted = new Set(remaining.filter(op => JSON.parse(op.body).deleted).map(op => JSON.parse(op.body).id));
+        for (const ack of response.acked) {
+          const progress = this.queueProgress[ack.kind as keyof typeof this.queueProgress];
+          if (progress) {
+            progress.acknowledged++;
+            progress.lastAcknowledgedAt = acknowledgedAt;
+          }
+          if (deleted.has(ack.id)) {
+            this.queueProgress.tombstone.acknowledged++;
+            this.queueProgress.tombstone.lastAcknowledgedAt = acknowledgedAt;
+          }
+        }
         this.emitHeadSeq(response.head_seq);
         return;
       } catch (error) {

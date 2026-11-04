@@ -52,6 +52,12 @@ describe('viewer sync evidence', () => {
     expect(composeViewerSyncStatus(null, null, null, 1000).state).toBe('unconfigured');
   });
 
+  it('explains an observed mutation prerequisite without claiming a stalled upload is current', () => {
+    const value = composeViewerSyncStatus(upload({ queue: { blockedMutation: { pendingPrerequisites: 6 } } }), download(), 0, 1000);
+    expect(value.state).toBe('catching-up');
+    expect(value.message).toBe('Some updates are waiting for earlier changes to upload.');
+  });
+
   it('reports read-only pull state and classifies HTML failures without false authentication pause', async () => {
     for (const status of [401, 403]) {
       const { client, apply } = fixture((async () => new Response('<!--'.padEnd(300, ' ') + '--><html>blocked</html>', { status })) as typeof fetch);

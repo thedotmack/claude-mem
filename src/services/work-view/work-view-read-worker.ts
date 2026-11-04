@@ -4,6 +4,7 @@ import { boundedDurationMs, type WorkViewReaderMessage, type WorkViewReadRespons
 import { readHistoricalSyncScope } from '../sync/read-history-scope.js';
 import { Database } from 'bun:sqlite';
 import { SharedLedgerAdapter } from './shared-ledger-adapter.mjs';
+import { readSyncQueueInventory, type SyncQueueFlags } from '../sync/SyncQueueEvidence.js';
 
 if (!parentPort) throw new Error('Work view reader requires a worker thread');
 
@@ -23,6 +24,15 @@ if (workerData.kind === 'shared-work-sync') {
     try { diagnostic = adapter.reconcile(); }
     catch { diagnostic = { error: 'Shared work could not be refreshed; retrying.' }; }
     parentPort!.postMessage({ changed, rulesChanged, diagnostic });
+  });
+} else if (workerData.kind === 'sync-queue-evidence') {
+  // Separate instance from both HTTP projection and history inventory readers.
+  const db = new Database(workerData.databasePath, { readonly: true });
+  db.exec('PRAGMA busy_timeout = 1000');
+  parentPort.on('message', (flags: SyncQueueFlags) => {
+    let inventory = null;
+    try { inventory = readSyncQueueInventory(db, flags); } catch { /* Preserve the last cached observation on failure. */ }
+    parentPort!.postMessage(inventory);
   });
 } else if (workerData.kind === 'sync-history-scope') {
   parentPort.on('message', () => {

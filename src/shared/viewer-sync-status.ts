@@ -37,6 +37,7 @@ export interface SyncUploadEvidence {
   authError: unknown | null;
   quarantine: { count: number };
   pullQuarantine: { count: number };
+  queue?: { blockedMutation: { pendingPrerequisites: number } | null };
   hub: { checkedAt: number | null; reachable: boolean | null; epoch: string | null; headSeq: string | null; projectedSeq: string | null };
 }
 
@@ -66,6 +67,7 @@ export function composeViewerSyncStatus(upload: SyncUploadEvidence | null, downl
   if (download?.lastError || upload?.lastError || hub?.reachable === false) return state('offline', 'Cloud sync could not finish its latest request. Saved work remains on this device.');
   if (!download || download.lastSuccessAt === null || hub?.reachable !== true || remaining === null || projected === null) return state('unknown', 'Cloud freshness has not been confirmed.');
   if (hub.checkedAt === null || now < hub.checkedAt || now - hub.checkedAt > 60_000 || now < download.lastSuccessAt) return state('stale', 'The last cloud freshness check is old.');
+  if (upload?.queue?.blockedMutation) return state('catching-up', 'Some updates are waiting for earlier changes to upload.');
   if (pending > 0 || remaining !== '0' || projected !== '0' || download.inFlight || !download.caughtUp) return state('catching-up', 'Cloud updates are being synchronized.');
   if (value.completeness.pushQuarantine || value.completeness.pullQuarantine) return state('partial', 'Some records need attention before this device is fully synchronized.');
   if (excludedNative === null) return state('unknown', 'Recent updates are current; historical synchronization scope is not yet known.');
