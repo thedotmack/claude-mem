@@ -490,6 +490,9 @@ export function createOpenCodeReader(): AgentPromptReader {
     locate(homeDirectory) {
       const data = nativeProfileDirectory(homeDirectory, 'XDG_DATA_HOME', '.local', 'share');
       const database = source(join(data, 'opencode', 'opencode.db'));
+      // SQLite commits can update only the WAL until the next checkpoint.
+      const wal = database ? source(`${database.path}-wal`) : null;
+      if (database && wal) database.mtimeMs = Math.max(database.mtimeMs, wal.mtimeMs);
       return { detected: database !== null, sources: presentSources([database]) };
     },
     async readPrompts(transcript, sink, sinceEpochMs) {
