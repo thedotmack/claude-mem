@@ -24,6 +24,7 @@ import {
   isInstallCurrent,
   getBunPath,
 } from '../install/setup-runtime.js';
+import { findCodexExecutablePath } from '../install/tool-path.js';
 import { formatUsageSummaryLines, readUsageSummary, type UsageSummary } from '../install/usage-summary.js';
 import { playBanner } from '../banner.js';
 import { normalizeRuntimeFlag } from './server-runtime-setup.js';
@@ -585,6 +586,10 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
           if (result !== 0) {
             recordFailure('Codex CLI: integration setup failed', output);
             return `Codex CLI: integration setup failed ${styleText('red', 'FAIL')}`;
+          }
+          const currentProvider = (getSetting('CLAUDE_MEM_PROVIDER') as string | undefined) || 'claude';
+          if (currentProvider === 'claude' && !detectClaudeCodeVersion()) {
+            log.info("Codex CLI hooks registered. Note: To generate observations using Codex, set CLAUDE_MEM_PROVIDER to 'codex' in ~/.claude-mem/settings.json.");
           }
           return `Codex CLI: hooks marketplace registered ${styleText('green', 'OK')}`;
         },
@@ -1333,6 +1338,16 @@ export async function promptProvider(
 
   if (selectedProvider === 'claude') {
     useSubscriptionAuth();
+    const detected = detectClaudeCodeVersion();
+    if (!detected) {
+      const codexInstalled = Boolean(findCodexExecutablePath());
+      if (codexInstalled) {
+        log.warn('Claude Code CLI not found on PATH, but Codex CLI was detected.');
+        log.warn('To use Codex for memory generation, run with `--provider codex` or set CLAUDE_MEM_PROVIDER to codex in ~/.claude-mem/settings.json.');
+      } else {
+        log.warn('Claude Code CLI not found on PATH. Ensure `claude` is installed before starting the worker, or set CLAUDE_CODE_PATH in settings.json.');
+      }
+    }
     return 'claude';
   }
 
