@@ -7,13 +7,14 @@ import { basename, dirname, extname, join } from 'node:path';
 import { z } from 'zod';
 import { Database } from 'bun:sqlite';
 import { CLAUDE_CONFIG_DIR, DATA_DIR, DB_PATH, getPackageRoot, USER_SETTINGS_PATH } from '../../../../shared/paths.js';
-import { onContextInvalidation } from '../../../../shared/context-invalidation.js';
+import { currentContextGeneration, onContextInvalidation } from '../../../../shared/context-invalidation.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { logger } from '../../../../utils/logger.js';
 import { hasForwardedClientHeaders, hasLoopbackHostHeader, isLocalhost } from '../../../../server/middleware/request-auth-helpers.js';
 import { WorkStateSource, type WorkViewSnapshot } from '../../../work-view/data-source.mjs';
 import { WorkViewReadWorkerClient } from '../../../work-view/WorkViewReadWorkerClient.js';
 import { boundedDurationMs, type WorkViewReadPurpose } from '../../../work-view/WorkViewReadProtocol.js';
+import { workViewOverview, workViewRequestDetail } from '../../../work-view/overview.js';
 import { FILE_CONTENT_TYPES } from '../../../work-view/work-product.mjs';
 import { isInsideDeliverablesDir } from '../../../../shared/deliverables.js';
 import { contentFingerprint, LocalReviewStore } from '../../../work-view/review-store.js';
@@ -421,6 +422,11 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private freshPublishWanted = false;
   private reviews: LocalReviewStore;
   private clients = new Set<Response>();
+  private overviewClients = new Set<Response>();
+  private pendingBootstrap: { fence: string; promise: Promise<WorkViewSnapshot> } | null = null;
+  private ownerReadFence = 0;
+  private ownerEditActive = false;
+  private overviewSignature = '';
   private poll: ReturnType<typeof setInterval> | null = null;
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   private signature = '';
@@ -518,13 +524,26 @@ export class WorkViewRoutes extends BaseRouteHandler {
       this.broadcast('setup-scan', state);
     }) ?? null;
     // Rule rows pulled from another device change what Claude Code should load; rebuild the file then too.
-    this.stopRulesSync = onContextInvalidation(({ reason }) => {
-      if (reason.startsWith('SyncApply.')) this.scheduleRulesFileRebuild();
+    this.stopRulesSync = onContextInvalidation(({ reason, kind, changes }) => {
+      if (kind === 'removal' || reason.startsWith('SyncApply.') || changes?.kinds.some(kind => ['observation', 'summary', 'prompt', 'work_state', 'mutation'].includes(kind))
+        || ['storeObservations', 'storeSummary', 'importObservation', 'importSessionSummary'].includes(reason)) {
+        this.sourceReader.invalidateActivity(kind === 'removal' || (!changes && reason.startsWith('SyncApply.'))
+          || Boolean(changes?.kinds.some(kind => kind === 'work_state' || kind === 'mutation')));
+        if (!this.ownerEditActive) this.publish();
+      }
+      if (!reason.startsWith('SyncApply.')) return;
+      // Older senders have no details, so keep their conservative rebuild. Known
+      // observation/prompt pages cannot change MY-RULES.md.
+      if (!changes || changes.kinds.includes('mutation')
+        || (changes.kinds.includes('work_state') && (!changes.workStateLists || changes.workStateLists.includes(MY_RULES_LIST)))) {
+        this.scheduleRulesFileRebuild();
+      }
     });
   }
 
   private stopRulesSync: () => void;
   private rulesRebuildScheduled = false;
+  private rulesRebuildWanted = false;
 
   private setupIsActive(): boolean {
     const statePath = this.setupStatePath ?? setupStatePath();
@@ -536,19 +555,26 @@ export class WorkViewRoutes extends BaseRouteHandler {
   }
 
   private scheduleRulesFileRebuild(): void {
-    if (this.rulesRebuildScheduled || this.closed) return;
+    if (this.closed) return;
+    if (this.rulesRebuildScheduled) { this.rulesRebuildWanted = true; return; }
     this.rulesRebuildScheduled = true;
     setImmediate(() => {
-      this.rulesRebuildScheduled = false;
-      if (this.closed) return;
-      void this.rebuildRulesFileFromSavedRules().catch(error => logger.warn('HTTP', 'Could not rebuild MY-RULES.md after sync', { error: error instanceof Error ? error.message : String(error) }));
+      if (this.closed) { this.rulesRebuildScheduled = false; return; }
+      void this.rebuildRulesFileFromSavedRules()
+        .catch(error => logger.warn('HTTP', 'Could not rebuild MY-RULES.md after sync', { error: error instanceof Error ? error.message : String(error) }))
+        .finally(() => {
+          this.rulesRebuildScheduled = false;
+          if (!this.rulesRebuildWanted) return;
+          this.rulesRebuildWanted = false;
+          this.scheduleRulesFileRebuild();
+        });
     });
   }
 
   /** Rewrites MY-RULES.md when the saved rules render differently. Never from an unreadable source, which reads as no rules. */
   rebuildRulesFileFromSavedRules(): Promise<boolean> {
     return this.inOwnerEditOrder(async () => {
-      const view = (await this.sourceReader.read(0, this.getLocalDeviceId(), 'rules')).agentView;
+      const view = await this.sourceReader.readRules(this.getLocalDeviceId());
       if (!view.source.connected) return false;
       const markdown = renderRulesFile((view.rules ?? []) as SavedRule[]).markdown;
       let current: string | null = null;
@@ -566,7 +592,18 @@ export class WorkViewRoutes extends BaseRouteHandler {
    * before a save could rewrite MY-RULES.md after it. A failed edit does not stop the next one.
    */
   private inOwnerEditOrder<T>(edit: () => T | Promise<T>): Promise<T> {
-    const result = this.ownerEditsDone.then(edit);
+    this.ownerReadFence++;
+    const result = this.ownerEditsDone.then(async () => {
+      this.ownerEditActive = true;
+      try { return await edit(); }
+      finally {
+        // A bootstrap may start while this asynchronous edit is still reading.
+        // Fence that read again when the edit settles, before the next caller
+        // can reuse a projection from before the write.
+        this.ownerReadFence++;
+        this.ownerEditActive = false;
+      }
+    });
     this.ownerEditsDone = result.catch(() => undefined);
     return result;
   }
@@ -585,6 +622,31 @@ export class WorkViewRoutes extends BaseRouteHandler {
       const bytes = Number(res.getHeader('Content-Length'));
       this.lastResponseDiagnostic = { transport: 'http', writeMs: boundedDurationMs(Number(process.hrtime.bigint() - startedAt) / 1e6),
         bytes: Number.isSafeInteger(bytes) && bytes >= 0 ? bytes : 0 };
+    }));
+    app.get('/api/work-view/overview', workViewLoopbackOnly, this.wrapHandler(async (_req, res) => {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(workViewOverview(await this.bootstrapSnapshot()));
+    }));
+    app.get('/api/work-view/requests/:id', workViewLoopbackOnly, this.wrapHandler(async (req, res) => {
+      res.setHeader('Cache-Control', 'no-store');
+      const id = this.toStringParam(req.params.id);
+      if (Object.keys(req.query).some(key => key !== 'fingerprint' && key !== 'revision')
+        || (req.query.fingerprint !== undefined && typeof req.query.fingerprint !== 'string')
+        || (req.query.revision !== undefined && typeof req.query.revision !== 'string')) {
+        this.badRequest(res, 'Invalid request fingerprint or revision.'); return;
+      }
+      const fingerprint = req.query.fingerprint as string | undefined;
+      const revision = req.query.revision as string | undefined;
+      if (!id || id.length > 2048 || (fingerprint && !/^[a-f0-9]{64}$/.test(fingerprint))) {
+        this.badRequest(res, 'Invalid request identity or fingerprint.'); return;
+      }
+      const snapshot = await this.snapshot(0, 'request-detail');
+      const detail = workViewRequestDetail(snapshot, id);
+      if (!detail) { this.notFound(res, 'That request is no longer available.'); return; }
+      if ((fingerprint && detail.request.contentFingerprint !== fingerprint) || (revision && detail.revision !== revision)) {
+        res.status(409).json({ error: 'That request changed. Read its current version.', overview: workViewOverview(snapshot) }); return;
+      }
+      res.json(detail);
     }));
     app.get('/api/work-view/diagnostics', workViewLoopbackOnly, this.wrapHandler((_req, res) => {
       res.setHeader('Cache-Control', 'no-store');
@@ -641,7 +703,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
       res.type(DELIVERABLE_CONTENT_TYPES[extname(deliverable.path).toLowerCase()] ?? 'application/octet-stream');
       res.sendFile(deliverable.path, { dotfiles: 'allow' });
     }));
-    app.post('/api/work-view/review', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(reviewBody), this.wrapHandler(this.review));
+    app.post('/api/work-view/review', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(reviewBody), this.wrapHandler(this.ownerEdit(this.review)));
     app.post('/api/work-view/rules', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(ruleBody), this.wrapHandler(this.ownerEdit(this.saveRule)));
     app.post('/api/work-view/focus', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(focusBody), this.wrapHandler(this.ownerEdit(this.saveFocus)));
     // System-written suggestions only: every row is decided_by system, status suggested, under a new id, so
@@ -653,8 +715,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
     // The one-time seed and its undo: system rows only (suggested seed areas, router placements, system withdrawals and
     // cleared router placements), so nothing posted here can stand in for or change an owner decision.
     app.post('/api/work-view/focus/seed', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(seedFocusBody), this.wrapHandler(this.ownerEdit(this.saveSeedFocus)));
-    app.post('/api/work-view/agents/mark-finished', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(markAgentFinishedBody), this.wrapHandler(this.markAgentFinished));
-    app.post('/api/work-view/suggestions', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(suggestionBody), this.wrapHandler(this.answerSuggestion));
+    app.post('/api/work-view/agents/mark-finished', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(markAgentFinishedBody), this.wrapHandler(this.ownerEdit(this.markAgentFinished)));
+    app.post('/api/work-view/suggestions', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(suggestionBody), this.wrapHandler(this.ownerEdit(this.answerSuggestion)));
     app.post('/api/work-view/rules/load-in-claude-code', workViewLoopbackOnly, requireWorkViewOrigin, this.wrapHandler(this.ownerEdit(this.loadRulesInClaudeCode)));
     app.post('/api/work-view/refresh', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(z.object({}).strict()), this.wrapHandler(this.startManualRefresh));
     app.post('/api/work-view/usage', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(usageBody), this.wrapHandler(this.recordUsage));
@@ -822,11 +884,30 @@ export class WorkViewRoutes extends BaseRouteHandler {
     return this.pendingBackgroundSnapshot;
   }
 
+  /** Only simultaneous read-only bootstrap callers share this work. Owner edits
+   * and every committed context change fence it off; write responses always use
+   * their own fresh ordered read. No completed snapshot is cached here. */
+  private bootstrapSnapshot(): Promise<WorkViewSnapshot> {
+    // File-writing agents and the copy worker can finish outside an HTTP edit.
+    // Their cheap signatures participate without scanning the source database.
+    const fence = JSON.stringify([currentContextGeneration(), this.ownerReadFence,
+      this.ledgerDir ? ledgerSignature(this.ledgerDir) : null, this.humanCopy?.revision ?? 0]);
+    if (this.pendingBootstrap?.fence === fence) return this.pendingBootstrap.promise;
+    const promise = this.snapshot(0, 'overview');
+    this.pendingBootstrap = { fence, promise };
+    void promise.finally(() => {
+      if (this.pendingBootstrap?.promise === promise) this.pendingBootstrap = null;
+    }).catch(() => undefined);
+    return promise;
+  }
+
   private async snapshot(maxActivityAgeMs = 0, purpose: WorkViewReadPurpose = 'snapshot'): Promise<WorkViewSnapshot> {
     const read = await this.sourceReader.read(maxActivityAgeMs, this.getLocalDeviceId(), purpose);
     const startedAt = process.hrtime.bigint();
     this.source.agentRevision = read.agentRevision;
-    const snapshot = read.agentView;
+    // A coalesced bootstrap may have multiple consumers. Enrichment must never
+    // mutate the reader's cached or shared raw projection.
+    const snapshot = structuredClone(read.agentView);
     for (const request of snapshot.humanRequests) {
       request.contentFingerprint = contentFingerprint(request);
       request.review = this.reviews.read(request.id, request.contentFingerprint);
@@ -1308,9 +1389,12 @@ export class WorkViewRoutes extends BaseRouteHandler {
     res.flushHeaders();
     res.write('retry: 1000\n\n');
     this.clients.add(res);
+    const overview = req.query.view === 'overview';
+    if (overview) this.overviewClients.add(res);
     const socket = res.socket;
     const cleanup = () => {
       this.clients.delete(res);
+      this.overviewClients.delete(res);
       req.off('close', cleanup);
       res.off('close', cleanup);
       socket?.off('close', cleanup);
@@ -1321,7 +1405,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     socket?.on('close', cleanup);
     res.on('error', () => { cleanup(); res.destroy(); });
     let initial: WorkViewSnapshot;
-    try { initial = await this.snapshot(0, 'event-initial'); }
+    try { initial = await (overview ? this.bootstrapSnapshot() : this.snapshot(0, 'event-initial')); }
     catch (error) {
       // An open stream with no first view would look connected forever. Ending it makes the page reconnect.
       logger.warn('HTTP', 'Could not read work view for a new event stream', { error: error instanceof Error ? error.message : String(error) });
@@ -1330,7 +1414,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
       return;
     }
     if (!this.clients.has(res) || res.destroyed || res.writableEnded) return;
-    this.send(res, 'work-view', initial);
+    this.send(res, overview ? 'work-view-overview' : 'work-view', overview ? workViewOverview(initial) : initial);
     const scan: SetupScanState | undefined = this.setupScan?.state();
     if (scan && scan.phase !== 'idle') this.send(res, 'setup-scan', scan);
     // A reconnecting setup page may have missed checkout being paid or an import finishing: send where setup stands.
@@ -1357,7 +1441,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   private send(res: Response, event: string, value: unknown): void {
     if (res.destroyed || res.writableEnded || res.writableLength > 4 * 1024 * 1024) {
-      this.clients.delete(res); res.destroy(); return;
+      this.clients.delete(res); this.overviewClients.delete(res); res.destroy(); return;
     }
     try {
       const startedAt = process.hrtime.bigint();
@@ -1365,7 +1449,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
       res.write(frame);
       this.lastResponseDiagnostic = { transport: 'sse', writeMs: boundedDurationMs(Number(process.hrtime.bigint() - startedAt) / 1e6), bytes: Buffer.byteLength(frame) };
     }
-    catch { this.clients.delete(res); res.destroy(); }
+    catch { this.clients.delete(res); this.overviewClients.delete(res); res.destroy(); }
   }
 
   private publish(snapshot?: WorkViewSnapshot): void {
@@ -1375,9 +1459,18 @@ export class WorkViewRoutes extends BaseRouteHandler {
     if (!snapshot) { this.publishFreshRead(); return; }
     // rulesFile changes without a new revision when the rules are loaded in Claude Code; other tabs must still see it.
     const signature = JSON.stringify([snapshot.revision, snapshot.source.connected, snapshot.source.error, snapshot.setup, snapshot.rulesFile]);
-    if (signature === this.signature) return;
-    this.signature = signature;
-    for (const client of this.clients) this.send(client, 'work-view', snapshot);
+    if (signature !== this.signature) {
+      this.signature = signature;
+      for (const client of this.clients) if (!this.overviewClients.has(client)) this.send(client, 'work-view', snapshot);
+    }
+    // Mapped time labels age once a minute even while the underlying activity
+    // snapshot is cached; this does not renew its source data freshness.
+    const overviewSignature = `${signature}:${Math.floor(Date.now() / 60_000)}`;
+    if (this.overviewClients.size && overviewSignature !== this.overviewSignature) {
+      this.overviewSignature = overviewSignature;
+      const overview = workViewOverview(snapshot);
+      for (const client of this.overviewClients) this.send(client, 'work-view-overview', overview);
+    }
   }
 
   /**
@@ -1414,6 +1507,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     this.focusSharePublisher?.close();
     for (const client of this.clients) client.end();
     this.clients.clear();
+    this.overviewClients.clear();
     this.source.close();
     void this.sourceReader.close();
     this.reviews.close();

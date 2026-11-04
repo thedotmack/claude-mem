@@ -1,11 +1,12 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { CheckIcon, ChevronDownIcon, FileTextIcon, Undo2Icon } from 'lucide-react'
 import { ChainOfThought, ChainOfThoughtContent, ChainOfThoughtHeader, ChainOfThoughtStep } from '@/components/ai-elements/chain-of-thought'
 import { QueueItem, QueueItemContent, QueueItemIndicator, QueueList } from '@/components/ai-elements/queue'
 import { Task, TaskContent, TaskItem, TaskTrigger } from '@/components/ai-elements/task'
 import { SaveButton } from '@/components/save-button'
 import { Badge } from '@/components/ui/badge'
-import { buttonVariants } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
+import { Spinner } from '@/components/ui/spinner'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
@@ -19,6 +20,7 @@ import { cn } from '@/lib/utils'
 import { AgentIcon, FocusAreaChip, NextMove, ProductLink, ProgressMeter, StateBadge } from './bits'
 import { FocusChangeBar, useFocusChanges } from './focus-changes'
 import { OpenFollowUps } from './request-card'
+import { mergeRequestDetail, requestDetailKey } from '@/live/request-detail-state'
 
 const RECENT_RECORDS = 5
 
@@ -153,7 +155,48 @@ function MoveTo({ request }: { request: Request }) {
 
 /** The request page (§3): whose move and what's next first, then outcome, then the layers underneath, collapsed. */
 export function RequestDetail({ request, onClose, onOpenFocus }: { request: Request | null; onClose: () => void; onOpenFocus: (focusAreaId: string) => void }) {
+  const readDetail = useStore((state) => state.loadRequestDetail)
+  const [retry, setRetry] = useState(0)
+  const [detail, setDetail] = useState<{ key: string; request?: Request; error?: string } | null>(null)
+  const key = request ? requestDetailKey(request) : ''
+  const needsDetail = request?.detailLoaded === false
+  const requestRef = useRef(request)
+  requestRef.current = request
+  useEffect(() => {
+    const summary = requestRef.current
+    if (!summary || !needsDetail) return
+    const controller = new AbortController()
+    let active = true
+    setDetail({ key })
+    void readDetail(summary, { signal: controller.signal }).then(
+      (loaded) => { if (active) setDetail({ key, request: loaded }) },
+      (error: unknown) => {
+        if (active && !controller.signal.aborted) setDetail({ key, error: error instanceof Error ? error.message : 'Request detail could not be loaded.' })
+      },
+    )
+    return () => { active = false; controller.abort() }
+    // The detail version changes only when recorded content changes. A new overview object must not restart this read.
+  }, [key, needsDetail, readDetail, retry])
   if (!request) return null
+  if (!needsDetail) return <LoadedRequestDetail request={request} onClose={onClose} onOpenFocus={onOpenFocus} />
+  const current = detail?.key === key ? detail : null
+  if (current?.request) return <LoadedRequestDetail request={mergeRequestDetail(request, current.request)} onClose={onClose} onOpenFocus={onOpenFocus} />
+  return (
+    <Sheet open onOpenChange={(open) => { if (!open) onClose() }}>
+      <SheetContent className="w-full gap-0 overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-xl">
+        <SheetHeader className="gap-3 border-b p-5 md:p-6">
+          <SheetTitle className="pr-8 text-xl leading-snug">{request.title ?? request.resolvesTo?.title ?? 'Untitled request'}</SheetTitle>
+          <SheetDescription>{request.summary ?? request.resolvesTo?.summary ?? 'Request details'}</SheetDescription>
+        </SheetHeader>
+        <div className="space-y-3 p-5 md:p-6" aria-live="polite">
+          {current?.error ? <><p role="alert" className="text-sm text-muted-foreground">{current.error}</p><Button variant="outline" onClick={() => setRetry((value) => value + 1)}>Try again</Button></> : <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Spinner className="size-4" />Loading request detail…</p>}
+        </div>
+      </SheetContent>
+    </Sheet>
+  )
+}
+
+function LoadedRequestDetail({ request, onClose, onOpenFocus }: { request: Request; onClose: () => void; onOpenFocus: (focusAreaId: string) => void }) {
   const title = request.title ?? request.resolvesTo?.title ?? 'Untitled request'
   const recent = request.granular.slice(0, RECENT_RECORDS)
   const earlier = request.granular.slice(RECENT_RECORDS)

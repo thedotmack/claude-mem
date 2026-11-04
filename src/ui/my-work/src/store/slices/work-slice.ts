@@ -122,6 +122,12 @@ export const createWorkSlice: SliceCreator<WorkSlice> = (set, get) => {
       await read()
     },
 
+    loadRequestDetail: (request, options) => {
+      const reading = activeSource('read request detail from')
+      if (request.detailLoaded !== false || !reading.loadRequestDetail) return Promise.resolve(request)
+      return reading.loadRequestDetail(request.id, request.detailRevision ?? request.contentFingerprint, options)
+    },
+
     receiveWorkModel: showModel,
 
     // A heartbeat that changes nothing re-renders nothing.

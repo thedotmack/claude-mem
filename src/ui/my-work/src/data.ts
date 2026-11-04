@@ -25,6 +25,12 @@ export type WorkProductKind = 'PR' | 'Commit' | 'Branch' | 'Page' | 'Deck' | 'Do
 
 export interface Request {
   id: string
+  /** False only for a compact overview; the drawer loads authoritative detail before showing its evidence. */
+  detailLoaded?: boolean
+  /** The content version used to request/cache detail, independent of unrelated snapshot changes. */
+  detailRevision?: string
+  /** Exact card counts when the overview carries only a bounded preview. */
+  detailCounts?: { workProduct: number }
   title: string | null
   /** True when the title repeats the request's own prompts in full text (prompt-echo.ts); a shared page hides it. */
   titleRepeatsPrompt?: boolean

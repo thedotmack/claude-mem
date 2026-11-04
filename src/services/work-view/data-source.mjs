@@ -8,6 +8,7 @@ import { reduceWorkState } from './work-state-reduce.mjs';
 import { activitySignature, buildAgentView, readAgentRecords, readEvidence } from './agent-view.mjs';
 import { ledgerSignature, openSuggestions, readLedger } from './request-groups.mjs';
 import { recordedFile, bucketFileAvailable } from './work-product.mjs';
+import { buildRules, MY_RULES_LIST } from './my-rules.mjs';
 
 // reduceWorkState lives in work-state-reduce.mjs so my-focus.mjs can replay rows without importing this module.
 export { reduceWorkState } from './work-state-reduce.mjs';
@@ -180,6 +181,32 @@ export class WorkStateSource {
       this.close();
     }
     return this.snapshot();
+  }
+
+  /** Rules do not need tool/product discovery or request evidence hashes. */
+  readRules() {
+    const checkedAt = new Date().toISOString();
+    try {
+      const database = this.openDatabase();
+      const originColumns = ['origin_device_id', 'origin_local_id'].filter(column => this.columns.has(column));
+      const entries = database.prepare(`SELECT id, project, list_name, fields, created_at_epoch${originColumns.length ? `, ${originColumns.join(', ')}` : ''}
+        FROM work_state_entries WHERE list_name = ?`).all(MY_RULES_LIST);
+      let story = null;
+      if (this.ledgerDir) {
+        try { story = JSON.parse(readFileSync(join(this.ledgerDir, 'story.json'), 'utf8')); }
+        catch (error) { if (error.code !== 'ENOENT') throw error; }
+      }
+      const state = reduceWorkState(entries, { localDeviceId: this.localDeviceId });
+      return { ...buildRules(state, { story }), source: { connected: true, error: null, lastCheckedAt: checkedAt } };
+    } catch {
+      return { rules: [], source: { connected: false, error: 'Local rules could not be read. Retrying.', lastCheckedAt: checkedAt } };
+    }
+  }
+
+  /** A known content commit invalidates activity; unrelated database writes still use the bounded window. */
+  invalidateActivity(workState = false) {
+    this.activityCheckedAt = null;
+    if (workState) this.signature = null;
   }
 
   snapshot() {

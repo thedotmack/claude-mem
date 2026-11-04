@@ -48,6 +48,14 @@ test('ordinary reads still check current evidence during the polling window', ()
   expect(source.read().agentView.revision).toBe(initial + 1);
 });
 
+test('a known content commit invalidates cached activity before the polling deadline', () => {
+  const initial = source.read(POLL).agentView.revision;
+  writer.exec('INSERT INTO unrelated_activity VALUES (1)');
+  expect(source.read(POLL).agentView.revision).toBe(initial);
+  source.invalidateActivity();
+  expect(source.read(POLL).agentView.revision).toBe(initial + 1);
+});
+
 test('work-state writes bypass the activity window', () => {
   const initial = source.read(POLL).agentView.revision;
   writer.prepare('INSERT INTO work_state_entries VALUES (1, ?, ?, ?, ?)')

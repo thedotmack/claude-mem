@@ -32,6 +32,8 @@ export interface WorkSlice {
   startWorkSource: (source: WorkDataSource) => () => void
   /** Reads the active source again: the Retry after a failed first read. */
   retryWorkRead: () => Promise<void>
+  /** Loads one compact request's complete detail; old/full sources return the supplied request. */
+  loadRequestDetail: (request: Request, options?: { signal?: AbortSignal }) => Promise<Request>
   receiveWorkModel: (model: WorkModel) => void
   receiveConnection: (connection: ConnectionStatus) => void
   /** Checks (or undoes the check of) the version of a request that was on screen. */

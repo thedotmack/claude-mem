@@ -630,6 +630,9 @@ export class SyncApply {
     const setAside: Array<Record<string, unknown>> = [];
     const recovered: Array<Record<string, unknown>> = [];
     let removedOrRemapped = false;
+    const changedKinds = new Set<string>();
+    const changedLists = new Set<string>();
+    let unknownWorkStateList = false;
 
     const tx = this.db.transaction(() => {
       const cursor = this.getCursor();
@@ -689,6 +692,12 @@ export class SyncApply {
         }
         if (attempt.outcome === 'applied') {
           result.applied++;
+          changedKinds.add(op.kind);
+          if (op.kind === 'work_state') {
+            const list = op.deleted ? null : (JSON.parse(op.body) as Record<string, unknown>).list_name;
+            if (!op.deleted && typeof list === 'string') changedLists.add(list);
+            else unknownWorkStateList = true;
+          }
           // A tombstone deletes a row; a mutation can re-key or retitle rows.
           if (op.kind === 'mutation' || op.deleted === true) removedOrRemapped = true;
         } else {
@@ -712,7 +721,9 @@ export class SyncApply {
     // 'removal' when a tombstone or mutation applied: the cached block may show
     // what is now gone, so it must not be served until re-rendered.
     if (result.applied > 0 || recovered.length > 0) {
-      emitContextInvalidation('all', 'SyncApply.applyOps', removedOrRemapped ? 'removal' : 'additive');
+      emitContextInvalidation('all', 'SyncApply.applyOps', removedOrRemapped ? 'removal' : 'additive', recovered.length ? undefined : {
+        kinds: [...changedKinds], ...(!unknownWorkStateList ? { workStateLists: [...changedLists] } : {}),
+      });
     }
 
     // Logged after commit so a batch that later rolls back (and is retried)

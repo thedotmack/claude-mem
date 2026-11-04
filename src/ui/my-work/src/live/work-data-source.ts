@@ -69,6 +69,8 @@ export type MappedWorkModel = Omit<WorkModel, 'connection'>
 export interface WorkDataSource {
   readonly sourceKind: SourceKind
   loadWorkModel(): Promise<WorkModel>
+  /** Optional for compact sources; old workers and sample data already carry complete request detail. */
+  loadRequestDetail?(requestId: string, expectedFingerprint?: string, options?: { signal?: AbortSignal }): Promise<Request>
   /** Streams new models and connection changes until the returned function is called. */
   subscribeToLiveUpdates(onWorkModel: (model: WorkModel) => void, onConnectionChange: (status: ConnectionStatus) => void): () => void
   /**

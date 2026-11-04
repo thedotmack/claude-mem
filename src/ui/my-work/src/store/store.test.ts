@@ -66,6 +66,21 @@ function testStore(options: { href?: string; storage?: ReturnType<typeof memoryS
 const settle = () => new Promise((resolve) => setImmediate(resolve))
 
 describe('reading work', () => {
+  it('loads only compact request detail and keeps the full-source compatibility path', async () => {
+    const { store } = testStore()
+    const full = LOCAL_MODEL.requests[0]
+    const compact = { ...full, detailLoaded: false, detailRevision: 'recorded-version' }
+    const controller = new AbortController()
+    const calls: unknown[][] = []
+    const { source } = fakeSource({ loadRequestDetail: async (...args) => { calls.push(args); return full } })
+    const stop = store.getState().startWorkSource(source)
+    assert.equal(await store.getState().loadRequestDetail(full), full)
+    assert.equal(calls.length, 0)
+    assert.equal(await store.getState().loadRequestDetail(compact, { signal: controller.signal }), full)
+    assert.deepEqual(calls, [[full.id, 'recorded-version', { signal: controller.signal }]])
+    stop()
+  })
+
   it('starts a manual refresh through the active source', async () => {
     const { store } = testStore()
     let refreshes = 0

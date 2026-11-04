@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { Worker } from 'node:worker_threads';
-import { boundedDurationMs, WORK_VIEW_READ_PURPOSES, type WorkViewReadDiagnostic, type WorkViewReadPurpose, type WorkViewReaderDiagnostics, type WorkViewReadRequest, type WorkViewReadResponse, type WorkViewReadResult } from './WorkViewReadProtocol.js';
+import { boundedDurationMs, WORK_VIEW_READ_PURPOSES, type WorkViewReadDiagnostic, type WorkViewReadPurpose, type WorkViewReaderDiagnostics, type WorkViewReadRequest, type WorkViewReadResponse, type WorkViewReadResult, type WorkViewRulesReadResult } from './WorkViewReadProtocol.js';
 
 type Pending = { resolve(value: WorkViewReadResult): void; reject(error: Error): void; enqueuedAtNs: bigint; startedAtNs: bigint | null; purpose: WorkViewReadPurpose; pendingAtEnqueue: number };
 
@@ -23,6 +23,22 @@ export class WorkViewReadWorkerClient {
   constructor(private readonly workerData: { databasePath: string; ledgerDir: string | null; pollIntervalMs: number }) {}
 
   read(maxActivityAgeMs: number, localDeviceId: string, purpose: WorkViewReadPurpose = 'snapshot'): Promise<WorkViewReadResult> {
+    return this.request(maxActivityAgeMs, localDeviceId, purpose, 'view');
+  }
+
+  async readRules(localDeviceId: string): Promise<WorkViewRulesReadResult> {
+    const { agentView } = await this.request(0, localDeviceId, 'rules', 'rules');
+    return { rules: agentView.rules as WorkViewRulesReadResult['rules'], source: agentView.source };
+  }
+
+  invalidateActivity(workState = false): void {
+    const worker = this.worker;
+    if (!worker || this.closed) return; // A new reader has no cached activity.
+    try { worker.postMessage({ kind: 'invalidate-activity', workState }); }
+    catch (error) { this.failWorker(worker, error instanceof Error ? error : new Error(String(error))); }
+  }
+
+  private request(maxActivityAgeMs: number, localDeviceId: string, purpose: WorkViewReadPurpose, kind: 'view' | 'rules'): Promise<WorkViewReadResult> {
     let worker: Worker;
     try { worker = this.getWorker(); }
     catch (error) { return Promise.reject(error); }
@@ -33,7 +49,7 @@ export class WorkViewReadWorkerClient {
       this.pending.set(id, { resolve, reject, enqueuedAtNs, startedAtNs: null, purpose: safePurpose, pendingAtEnqueue: this.pending.size });
       this.maxPendingCount = Math.max(this.maxPendingCount, this.pending.size);
       worker.ref();
-      try { worker.postMessage({ id, maxActivityAgeMs, localDeviceId } satisfies WorkViewReadRequest); }
+      try { worker.postMessage({ id, maxActivityAgeMs, localDeviceId, kind } satisfies WorkViewReadRequest); }
       catch (error) {
         this.recordRead(this.pending.get(id)!, false);
         this.pending.delete(id);

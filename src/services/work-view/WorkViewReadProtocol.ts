@@ -1,7 +1,7 @@
 import type { WorkViewSnapshot } from './data-source.mjs';
 
 /** Fixed labels only: diagnostics must never retain a request, path, or SQL parameter. */
-export const WORK_VIEW_READ_PURPOSES = ['snapshot', 'http', 'event-initial', 'background', 'owner-state', 'owner-edit', 'rules', 'publish', 'shared-focus'] as const;
+export const WORK_VIEW_READ_PURPOSES = ['snapshot', 'http', 'event-initial', 'background', 'owner-state', 'owner-edit', 'rules', 'publish', 'shared-focus', 'overview', 'request-detail'] as const;
 export type WorkViewReadPurpose = typeof WORK_VIEW_READ_PURPOSES[number];
 
 /** Diagnostic durations are bounded, even for a broken clock or malformed worker reply. */
@@ -38,6 +38,13 @@ export interface WorkViewReadRequest {
   id: number;
   maxActivityAgeMs: number;
   localDeviceId: string;
+  kind?: 'view' | 'rules';
+}
+export type WorkViewReaderMessage = WorkViewReadRequest | { kind: 'invalidate-activity'; workState?: boolean };
+
+export interface WorkViewRulesReadResult {
+  rules: import('./my-rules.mjs').SavedRule[];
+  source: { connected: boolean; error?: string | null; [key: string]: unknown };
 }
 
 export interface WorkViewReadStarted {
