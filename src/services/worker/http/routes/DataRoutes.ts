@@ -38,7 +38,14 @@ const CHROMA_DOC_TYPES: Record<IndexedRowKind, string> = {
 import { withObservationMedia } from '../../../media/feed.js';
 
 const integerArrayLike = z.preprocess((value) => {
-  if (Array.isArray(value)) return value;
+  if (Array.isArray(value)) {
+    // LLM callers legitimately emit ids as numeric strings ("56390"): server ids are
+    // strings, worker ids are numbers, and both idioms reach this schema (#5335).
+    // Whole-array and comma-split strings were already normalized (#1172); the
+    // per-element form went straight through and failed validation.
+    return value.map((element) =>
+      typeof element === 'string' && /^-?\d+$/.test(element.trim()) ? Number(element.trim()) : element);
+  }
   if (typeof value === 'string') {
     try {
       const parsed = JSON.parse(value);

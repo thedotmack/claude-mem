@@ -132,6 +132,15 @@ describe('DataRoutes Type Coercion', () => {
       expect(jsonSpy).toHaveBeenCalled();
     });
 
+    it('should coerce numeric strings inside a native array (#5335)', () => {
+      // Server ids are strings, worker ids are numbers — LLM callers mix both idioms.
+      const { req, res, jsonSpy } = createMockReqRes({ ids: ['56390', '56391'] });
+      handler(req as Request, res as Response);
+
+      expect(mockGetObservationsByIds).toHaveBeenCalledWith([56390, 56391], expect.anything());
+      expect(jsonSpy).toHaveBeenCalled();
+    });
+
     it('should coerce a comma-separated string "1,2,3" to native array', () => {
       const { req, res, jsonSpy } = createMockReqRes({ ids: '1,2,3' });
       handler(req as Request, res as Response);
