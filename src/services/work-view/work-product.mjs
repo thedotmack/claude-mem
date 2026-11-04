@@ -406,10 +406,17 @@ function selectiveProductIndexClauses(database, sinceEpoch, limit) {
   // cached: range size and match density are rechecked after new commits.
   if (!(sinceEpoch > 0) || !Number.isSafeInteger(limit) || limit <= 0) return {};
   const sampleSize = Math.min(limit, 128);
+  const indexes = productIndexClauses(database);
   const selected = {};
-  for (const [table, clause] of Object.entries(productIndexClauses(database))) {
-    const predicate = table === 'tool_uses'
-      ? `(${PUBLISHING_PRODUCT_PREDICATE}) OR (${GIT_PRODUCT_PREDICATE})` : FILE_EXTENSION_PATTERN;
+  // Publisher and Git queries have independent limits and match densities;
+  // a dense lane must not hide the other lane's sparse historical ID scan.
+  for (const [lane, table, predicate] of [
+    ['publishing', 'tool_uses', PUBLISHING_PRODUCT_PREDICATE],
+    ['git', 'tool_uses', GIT_PRODUCT_PREDICATE],
+    ['observations', 'observations', FILE_EXTENSION_PATTERN],
+  ]) {
+    const clause = indexes[table];
+    if (!clause) continue;
     const columns = table === 'tool_uses' ? 'tool_name, tool_input, created_at_epoch' : 'files_modified, created_at_epoch';
     let sample;
     try {
@@ -425,11 +432,16 @@ function selectiveProductIndexClauses(database, sinceEpoch, limit) {
     }
     if (sample.matches * 4 >= sample.sampled && sample.sampled > 0) continue;
     const estimatedIdScan = limit * sampleSize / Math.max(1, sample.matches);
-    const budget = Math.min(limit * 4, 8192, Math.floor(estimatedIdScan / 2));
+    // Sparse publishers can have more than four result pages of unrelated
+    // recent activity. An 8K cutoff sent a measured 10.5K-row recent window
+    // back through 226K historical payloads (13 seconds from cold storage).
+    // Count only covering-index entries, up to the cheaper half of the
+    // estimated ID scan; 128K is the maximum estimate for our 2K/128 sample.
+    const budget = Math.min(128_000, Math.floor(estimatedIdScan / 2));
     const candidates = database.prepare(`SELECT COUNT(*) AS count FROM (
       SELECT 1 FROM ${table}${clause} WHERE created_at_epoch >= ? LIMIT ?
     )`).get(sinceEpoch, budget + 1).count;
-    if (candidates <= budget) selected[table] = clause;
+    if (candidates <= budget) selected[lane] = clause;
   }
   return selected;
 }
@@ -440,10 +452,10 @@ function selectiveProductIndexClauses(database, sinceEpoch, limit) {
  * predicates; ID ordering is still applied to the complete matching set. */
 export function readProductRecords(read, sinceEpoch, limit = 2000, { database } = {}) {
   const indexes = selectiveProductIndexClauses(database, sinceEpoch, limit);
-  const publishingCalls = read(`SELECT id, session_db_id, prompt_number, tool_name, tool_input, tool_response, created_at_epoch FROM tool_uses${indexes.tool_uses ?? ''}
+  const publishingCalls = read(`SELECT id, session_db_id, prompt_number, tool_name, tool_input, tool_response, created_at_epoch FROM tool_uses${indexes.publishing ?? ''}
     WHERE created_at_epoch >= ? AND ${PUBLISHING_PRODUCT_PREDICATE}
     ORDER BY id DESC LIMIT ?`, [sinceEpoch, limit]);
-  const gitCalls = read(`SELECT id, session_db_id, prompt_number, tool_name, tool_input, tool_response, created_at_epoch FROM tool_uses${indexes.tool_uses ?? ''}
+  const gitCalls = read(`SELECT id, session_db_id, prompt_number, tool_name, tool_input, tool_response, created_at_epoch FROM tool_uses${indexes.git ?? ''}
     WHERE created_at_epoch >= ? AND ${GIT_PRODUCT_PREDICATE}
     ORDER BY id DESC LIMIT ?`, [sinceEpoch, limit]);
   const productCalls = [...publishingCalls, ...gitCalls];

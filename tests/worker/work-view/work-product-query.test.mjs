@@ -98,12 +98,14 @@ test('unbounded history retains the planner choice instead of forcing a time-ind
 });
 
 for (const rows of [3000, 50_000, 200_000]) {
-  test(`broad positive cutoffs preserve the planner on ${rows} dense rows`, () => {
+  for (const dense of ['publisher', 'git']) test(`broad positive cutoffs preserve the ${dense} planner on ${rows} dense rows`, () => {
     const db = fixture();
     try {
-      const insert = db.prepare(`INSERT INTO tool_uses VALUES (?, 1, 1, 'Artifact', '{}', '{}', 200)`);
+      const toolName = dense === 'publisher' ? 'Artifact' : 'Bash';
+      const toolInput = dense === 'publisher' ? '{}' : '{"command":"git commit"}';
+      const insert = db.prepare(`INSERT INTO tool_uses VALUES (?, 1, 1, ?, ?, '{}', 200)`);
       db.transaction(() => {
-        for (let id = 20_000; id < rows + 20_000; id++) insert.run(id);
+        for (let id = 20_000; id < rows + 20_000; id++) insert.run(id, toolName, toolInput);
       })();
       const statements = [];
       const fetch = (sql, params) => { statements.push(sql); return db.prepare(sql).all(...params); };
@@ -111,8 +113,29 @@ for (const rows of [3000, 50_000, 200_000]) {
       const optimized = readProductRecords(fetch, cutoff, 2000, { database: db });
       const baseline = readProductRecords((sql, params) => db.prepare(sql).all(...params), cutoff, 2000);
       assert.deepEqual(optimized, baseline);
-      assert.ok(statements.filter(sql => sql.includes('FROM tool_uses')).every(sql => !sql.includes('INDEXED BY')));
-      assert.equal(optimized.productCalls.filter(row => row.tool_name === 'Artifact').length, 2000);
+      assert.ok(!statements[dense === 'publisher' ? 0 : 1].includes('INDEXED BY'));
+      assert.equal(optimized.productCalls.filter(row => row.tool_name === toolName).length, 2000);
+    } finally { db.close(); }
+  });
+}
+
+for (const dense of ['publisher', 'git']) {
+  test(`dense ${dense} activity does not disable the other sparse lane's time index`, () => {
+    const db = fixture();
+    try {
+      const insert = db.prepare(`INSERT INTO tool_uses VALUES (?, 1, 1, ?, ?, '{}', 200)`);
+      db.transaction(() => {
+        for (let id = 20_000; id < 20_128; id++) {
+          insert.run(id, dense === 'publisher' ? 'Artifact' : 'Bash', dense === 'publisher' ? '{}' : '{"command":"git commit"}');
+        }
+      })();
+      const denseIndex = dense === 'publisher' ? 0 : 1;
+      const sparseIndex = dense === 'publisher' ? 1 : 0;
+      const result = read(db);
+      assert.deepEqual(result.result, read(db, 2000, false).result);
+      assert.ok(!result.statements[denseIndex].sql.includes('INDEXED BY'));
+      assert.match(result.statements[sparseIndex].sql, /INDEXED BY idx_tool_uses_created_at_epoch/);
+      assert.ok(result.statements[sparseIndex].plan.some(detail => /SEARCH .* USING INDEX .*created.*created_at_epoch>/.test(detail)));
     } finally { db.close(); }
   });
 }
@@ -130,15 +153,34 @@ test('a bounded sparse range larger than the result limit still uses its time in
   } finally { db.close(); }
 });
 
-test('range selectivity is rechecked after writes on the same connection', () => {
+test('sparse recent activity beyond 8192 candidates does not fall back to historical payload scans', () => {
   const db = fixture();
   try {
-    assert.ok(read(db).statements[0].sql.includes('INDEXED BY'));
-    const insert = db.prepare(`INSERT INTO tool_uses VALUES (?, 1, 1, 'Artifact', '{}', '{}', 200)`);
+    const insert = db.prepare(`INSERT INTO tool_uses VALUES (?, 1, 1, 'Read', '{}', '{}', 200)`);
     db.transaction(() => {
-      for (let id = 20_000; id < 22_001; id++) insert.run(id);
+      for (let id = 20_000; id < 32_000; id++) insert.run(id);
     })();
-    assert.ok(!read(db).statements[0].sql.includes('INDEXED BY'));
+    const result = read(db);
+    assert.match(result.statements[0].sql, /INDEXED BY idx_tool_uses_created_at_epoch/);
+    assert.match(result.statements[1].sql, /INDEXED BY idx_tool_uses_created_at_epoch/);
+    assert.deepEqual(result.result, read(db, 2000, false).result);
+  } finally { db.close(); }
+});
+
+for (const dense of ['publisher', 'git']) test(`range selectivity for ${dense} is rechecked after writes on the same connection`, () => {
+  const db = fixture();
+  try {
+    assert.ok(read(db).statements.slice(0, 2).every(query => query.sql.includes('INDEXED BY')));
+    const insert = db.prepare(`INSERT INTO tool_uses VALUES (?, 1, 1, ?, ?, '{}', 200)`);
+    db.transaction(() => {
+      for (let id = 20_000; id < 22_001; id++) {
+        insert.run(id, dense === 'publisher' ? 'Artifact' : 'Bash', dense === 'publisher' ? '{}' : '{"command":"git commit"}');
+      }
+    })();
+    const result = read(db);
+    assert.ok(!result.statements[dense === 'publisher' ? 0 : 1].sql.includes('INDEXED BY'));
+    assert.ok(result.statements[dense === 'publisher' ? 1 : 0].sql.includes('INDEXED BY'));
+    assert.deepEqual(result.result, read(db, 2000, false).result);
   } finally { db.close(); }
 });
 

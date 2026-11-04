@@ -114,7 +114,7 @@ function nextTextFor(status: NormalizedStatus, recordedNext: string) {
 
 /** The review's milestones, oldest first, as build-story steps. Every milestone already happened. */
 function storySteps(progress: WorkViewProgress, now: number): Request['story'] {
-  return [...progress.milestones]
+  return [...(progress.milestones ?? [])]
     .sort((a, b) => (Date.parse(a.at ?? '') || 0) - (Date.parse(b.at ?? '') || 0))
     .map((milestone) => {
       const at = Date.parse(milestone.at ?? '')
@@ -126,7 +126,7 @@ function storySteps(progress: WorkViewProgress, now: number): Request['story'] {
 /** The worker's check route uses the same rule (WorkViewRoutes.ts reviewIsNewerThanLifecycle). */
 function reviewIsNewerThanLifecycle(review: Pick<WorkViewProgress, 'checkedAt'>, lifecycle: WorkViewHumanRequest['lifecycle']): boolean {
   if (!lifecycle?.explicit || !lifecycle.atEpoch) return true
-  const reviewedAt = Date.parse(review.checkedAt)
+  const reviewedAt = Date.parse(review.checkedAt ?? '')
   return Number.isFinite(reviewedAt) && reviewedAt >= lifecycle.atEpoch
 }
 
@@ -153,7 +153,7 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
     || (raw.items.length || raw.activity.length || recordedReview ? NEXT_STEP_NOT_RECORDED : NO_WORK_YET)
   const agentId = agents.some((agent) => agent.id === raw.agentIds[0]) ? raw.agentIds[0] : UNRECORDED_AGENT.id
   const started = raw.startedAtEpoch
-  const reviewedAt = review ? Date.parse(review.checkedAt) : NaN
+  const reviewedAt = review ? Date.parse(review.checkedAt ?? '') : NaN
   const readings = review?.readings ?? []
   // A recorded ship completes the request at 100%; review readings that stopped short of it are not its trace.
   const readingsStopShort = status === 'shipped' && !!review && review.percent < 100
@@ -172,7 +172,7 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
     // Group reviews already contain display copy; their source is independent of the optional human-copy writer.
     title,
     ...(titleRepeatsPrompt ? { titleRepeatsPrompt } : {}),
-    summary: raw.groupId && recordedReview ? (reviewCounts ? recordedReview.summary.trim() || null : null) : copyReady && copy.summary?.trim() ? copy.summary.trim() : null,
+    summary: raw.groupId && recordedReview ? (reviewCounts ? recordedReview.summary?.trim() || null : null) : copyReady && copy.summary?.trim() ? copy.summary.trim() : null,
     stageNote: copy?.stage?.trim() || undefined,
     ...(focusAreaId ? { focusAreaId } : {}),
     canMoveFocus: !!raw.anchorConversationKey,
@@ -189,7 +189,8 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
       percent: status === 'shipped' ? 100 : review ? review.percent : null,
       readings: review ? Math.max(1, readings.length) : 0,
       reviewedAt: Number.isFinite(reviewedAt) ? formatRecordTime(reviewedAt, now) : 'Not reviewed yet',
-      history: readingsStopShort ? undefined : readings.map((reading) => reading.percent),
+      // A current progress record is one assessment, not an invented historical reading.
+      history: readingsStopShort || (review && readings.length === 0) ? undefined : readings.map((reading) => reading.percent),
       completedAt: status === 'shipped' && completedEpoch ? formatDateTime(completedEpoch) : undefined,
     },
     estimate: measuredEstimate(readings, status === 'shipped'),

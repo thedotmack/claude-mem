@@ -67,15 +67,15 @@ export interface WorkViewReview {
 export interface WorkViewProgress {
   state: 'shipped' | 'in-progress' | 'stalled' | 'abandoned' | 'unknown'
   percent: number
-  summary: string
-  narrative: string
-  milestones: { at: string | null; text: string }[]
+  summary?: string
+  narrative?: string
+  milestones?: { at: string | null; text: string }[]
   /** ISO time the review was recorded. */
-  checkedAt: string
+  checkedAt?: string
   /** ISO time the work shipped; set only when state is shipped. */
   shippedAt?: string | null
-  /** Every review's percent, oldest first; files from before readings existed carry one. */
-  readings: { at: string; percent: number }[]
+  /** Recorded history, oldest first; valid older or minimal shared records may omit it. */
+  readings?: { at: string; percent: number }[]
 }
 
 /** One thing a request produced (work-product.mjs). Git kinds carry the sha or branch; `url` is absent when there is

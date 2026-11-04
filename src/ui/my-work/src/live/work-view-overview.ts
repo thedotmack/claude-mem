@@ -23,6 +23,8 @@ export function expandWorkViewOverview(overview: WorkViewOverview): MappedWorkMo
     conversations: request.conversations ?? [], prompts: request.prompts ?? [],
     story: request.story ?? [], evidence: request.evidence ?? [],
     terminal: request.terminal ?? [], followUps: request.followUps ?? [],
+    progress: request.progress.readings === 0 && !request.progress.history
+      ? { ...request.progress, history: [] } : request.progress,
     ...(request.review ? { review: { conflict: false, pending: false, legacy: false, ...request.review } } : {}),
   })) }
 }

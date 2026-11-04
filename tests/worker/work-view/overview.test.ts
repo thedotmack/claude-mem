@@ -8,6 +8,7 @@ import { sharedRecordKey } from '../../../src/services/work-view/shared-records.
 import { toWorkModel } from '../../../src/ui/my-work/src/live/to-work-model.js';
 import { expandWorkViewOverview } from '../../../src/ui/my-work/src/live/work-view-overview.js';
 import type { WorkViewSnapshot } from '../../../src/services/work-view/data-source.mjs';
+import { composeViewerSyncStatus } from '../../../src/shared/viewer-sync-status.js';
 
 const fixture = () => JSON.parse(readFileSync(new URL('../../../src/ui/my-work/test-fixtures/work-view-snapshot.trimmed.json', import.meta.url), 'utf8')) as WorkViewSnapshot;
 
@@ -33,9 +34,11 @@ describe('compact work view transport', () => {
     const original = JSON.stringify(snapshot);
     const overview = workViewOverview(snapshot);
     const summary = overview.model.requests[0];
+    const expanded = expandWorkViewOverview(overview).requests[0];
     const detail = workViewRequestDetail(snapshot, summary.id)!;
     expect(summary).toMatchObject({ id: detail.request.id, contentFingerprint: detail.request.contentFingerprint,
-      state: detail.request.state, progress: detail.request.progress, detailLoaded: false });
+      state: detail.request.state, detailLoaded: false });
+    expect(expanded.progress).toEqual(detail.request.progress);
     expect(summary.granular).toBeUndefined();
     expect(summary.prompts).toBeUndefined();
     expect(summary.workstreams).toBeUndefined();
@@ -60,6 +63,14 @@ describe('compact work view transport', () => {
   it('keeps real shared review enrichment and suggestion action versions within the 140-request budget', () => {
     const snapshot = largeSnapshot();
     snapshot.sharedState = { enabled: true, complete: false, pendingLocalMaterialization: true };
+    snapshot.sync = composeViewerSyncStatus({ configured: true, pending: { observations: 1000 },
+      lastFlushAt: 1_793_491_200_001, lastError: null, authError: null,
+      quarantine: { count: 2 }, pullQuarantine: { count: 3 },
+      hub: { checkedAt: 1_793_491_200_001, reachable: true, epoch: '18446744073709551615', headSeq: '18446744073709551615', projectedSeq: '18446744073709551614' } },
+    { started: true, inFlight: true, suspended: false, authPaused: false, lastAttemptAt: 1_793_491_200_001,
+      lastSuccessAt: 1_793_491_200_001, lastError: null, nextRetryAt: 1_793_491_230_001,
+      epoch: '18446744073709551615', cursor: '18446744073709551613', mode: 'polling', realtimeAvailable: false, socketLive: false, caughtUp: false },
+    108_723, 1_793_491_200_002);
     const database = new Database(':memory:');
     const store = new SessionStore(database);
     try {
@@ -103,8 +114,11 @@ describe('compact work view transport', () => {
       expect(overview.model.sharedState).toMatchObject({ complete: false, pendingLocalMaterialization: true });
       expect(Buffer.byteLength(JSON.stringify(overview))).toBeLessThanOrEqual(300 * 1024);
       const details = new Map(toWorkModel(snapshot as any, 1_793_491_200_002).requests.map(request => [request.id, request]));
+      const expanded = new Map(expandWorkViewOverview(overview).requests.map(request => [request.id, request]));
       for (const summary of overview.model.requests) {
         const detail = details.get(summary.id)!;
+        expect(summary.progress.history).toBeUndefined();
+        expect(expanded.get(summary.id)!.progress).toEqual(detail.progress);
         expect(summary.review).toMatchObject({ mode: 'shared', hash: detail.review!.hash, version: 2, available: true });
         expect(Boolean(summary.review?.conflict)).toBe(Boolean(detail.review?.conflict));
         expect(Boolean(summary.review?.pending)).toBe(Boolean(detail.review?.pending));
@@ -135,5 +149,20 @@ describe('compact work view transport', () => {
       conflict: false, pending: false, legacy: false, message: 'Full evidence is unavailable.' });
     expect(expanded.terminal).toEqual([]);
     expect(expanded.followUps).toEqual([]);
+  });
+
+  it('preserves recorded chart readings in compact and expanded requests', () => {
+    const snapshot = fixture();
+    const request = snapshot.humanRequests[0] as any;
+    request.lifecycle = { explicit: true, complete: false, status: 'in-progress', atEpoch: 1 };
+    request.items = request.items.map((item: any) => ({ ...item, status: 'doing' }));
+    request.progress = { state: 'in-progress', percent: 60, summary: 'Recorded progress', narrative: '', milestones: [],
+      checkedAt: '2027-01-02T00:00:00.000Z', readings: [
+        { at: '2027-01-01T00:00:00.000Z', percent: 40 }, { at: '2027-01-02T00:00:00.000Z', percent: 60 },
+      ] };
+    const overview = workViewOverview(snapshot, Date.parse('2027-01-02T00:01:00.000Z'));
+    expect(overview.model.requests[0].progress.history).toEqual([40, 60]);
+    expect(expandWorkViewOverview(overview).requests[0].progress.history).toEqual([40, 60]);
+    expect(overview.model.requests[0].contentFingerprint).toBe(workViewRequestDetail(snapshot, request.id)!.request.contentFingerprint);
   });
 });

@@ -53,6 +53,25 @@ function harness(fetcher: typeof fetch, bootstrapTimeoutMs = 100) {
 }
 
 describe('compact local source', () => {
+  it('accepts omitted empty chart history without falling back and preserves recorded readings', () => {
+    let gets = 0
+    const { local, streams } = harness(async () => { gets++; return json(snapshot()) })
+    const shown: WorkModel[] = []
+    const stop = local.subscribeToLiveUpdates(model => shown.push(model), () => {})
+    try {
+      const compact = overview()
+      compact.model.requests[0].progress = { percent: null, readings: 0, reviewedAt: 'Not reviewed yet' }
+      streams[0].emit('work-view-overview', compact)
+      assert.deepEqual(shown.at(-1)?.requests[0].progress.history, [])
+      assert.equal(shown.at(-1)?.requests[0].detailLoaded, false)
+      const withReadings = overview(SECOND)
+      withReadings.model.requests[0].progress = { percent: 60, readings: 2, reviewedAt: 'Today', history: [40, 60] }
+      streams[0].emit('work-view-overview', withReadings)
+      assert.deepEqual(shown.at(-1)?.requests[0].progress.history, [40, 60])
+      assert.equal(gets, 0)
+    } finally { stop() }
+  })
+
   it('posts the clicked review hash, preserves its receipt, and keeps old workers compatible', async () => {
     const bodies: unknown[] = []
     const { local } = harness(async (_url, init) => {

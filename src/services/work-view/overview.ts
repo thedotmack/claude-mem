@@ -13,6 +13,7 @@ function compactRequest(request: WorkRequest): WorkViewOverviewRequest {
     prompts: _prompts, story: _story, evidence: _evidence, storyNarrative: _storyNarrative,
     terminal: _terminal, followUps: _followUps, review: _review, ...card } = request;
   const terminal = request.title ? [] : request.terminal.slice(-4);
+  const { history, ...progress } = request.progress;
   // Optional flags default to false. Keep action versions, availability and
   // explanations verbatim while avoiding repeated no-op review metadata.
   const review = request.review && (() => {
@@ -21,6 +22,9 @@ function compactRequest(request: WorkRequest): WorkViewOverviewRequest {
   })();
   return {
     ...card,
+    // No readings has no chart history. The field is already optional on the
+    // wire; readers restore the empty array for the complete UI model.
+    progress: history?.length ? request.progress : progress,
     ...(review ? { review } : {}),
     detailLoaded: false,
     detailCounts: { workProduct: products.length },

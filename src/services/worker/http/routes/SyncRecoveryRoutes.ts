@@ -6,6 +6,7 @@ import { hasForwardedClientHeaders, hasLoopbackHostHeader, isLocalhost } from '.
 import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { SyncRecoveryError } from '../../../sync/SyncConflictRecovery.js';
 import { RecoveryError } from '../../../sync/SyncRecovery.js';
+import { logger } from '../../../../utils/logger.js';
 
 const kind = z.enum(['observation', 'summary', 'prompt', 'work_state']);
 const decimal = z.string().regex(/^(?:0|[1-9][0-9]*)$/).max(20);
@@ -91,7 +92,10 @@ export class SyncRecoveryRoutes {
   private handle(action: (req: Request) => Promise<unknown>) {
     return (req: Request, res: Response): void => {
       void action(req).then(result => res.json(result)).catch((error: unknown) => {
-        if (error instanceof SyncRecoveryError || error instanceof RecoveryError) { res.status(error.status).json({ code: error.code }); return; }
+        if (error instanceof SyncRecoveryError || error instanceof RecoveryError) {
+          logger.debug('CLOUD_SYNC', 'Recovery request refused', { status: error.status });
+          res.status(error.status).json({ code: error.code }); return;
+        }
         // Database/transport failures can contain tokens, native content or filesystem paths.
         // Only fixed diagnostic codes leave this surface.
         const message = error instanceof Error ? error.message : '';
@@ -105,6 +109,7 @@ export class SyncRecoveryRoutes {
           : message.startsWith('recovery_reader_') ? 'recovery_reader_unavailable'
           : 'recovery_failed';
         const status = code === 'recovery_failed' || code === 'recovery_reader_unavailable' ? 503 : 409;
+        logger.debug('CLOUD_SYNC', 'Recovery request failed', { code, status });
         res.status(status).json({ code });
       });
     };

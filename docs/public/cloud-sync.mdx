@@ -57,8 +57,8 @@ not treated as a cloud migration corpus.
 - **Debounced:** write bursts coalesce; the flusher runs ~1.5&nbsp;s after the
   last write (250&nbsp;ms while the speed layer is connected), and only one
   flush runs at a time.
-- **Batched:** content pages contain 40 ops by default, adjustable up to 500,
-  with a 4,000,000 encoded-byte request limit. Each individual canonical body
+- **Batched:** content pages contain 40 ops by default, adjustable
+  up to 500 ops / 4,000,000 encoded bytes per request. Each individual canonical body
   is capped at 256,000 encoded bytes.
 - **Timeboxed:** content pushes have a 90&nbsp;s timeout by default. Pulls and
   status probes also have deadlines, so a dead network cannot hang the worker.
@@ -249,11 +249,16 @@ unknown lag rather than zero. Sequence values stay decimal strings.
   remain local-only unless explicitly selected for a supported migration;
   their exclusion is not repaired by resetting the cursor or reloading a page.
 
-Cloud sync does not currently mean a byte-for-byte copy of every local file.
-Local My Work grouping/progress/story files, review sidecars and arbitrary
-deliverable files are outside the core row protocol. Their absence is distinct
-from a stopped download lane; the viewer's scope and freshness indicators must
-not promise parity for data that has not been replicated.
+Cloud sync does not mean a byte-for-byte copy of every local file. Compatible
+readers can share My Work grouping, progress, story, reviews, decisions and
+published output links when `CLAUDE_MEM_WORK_VIEW_SHARED_STATE=true` and the hub
+supports `work_state`. The setting defaults to `false` for a consumer-first
+rollout: update participating local and hosted readers before enabling writers.
+Local paths, review sidecars and arbitrary deliverable files stay on their
+origin device; the shared state carries bounded semantic records and published
+links. A scope or incomplete-generation warning is distinct from a stopped
+download lane, and neither an empty upload queue nor a connected feed proves
+full parity.
 
 Not configured:
 

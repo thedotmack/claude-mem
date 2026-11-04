@@ -19,6 +19,7 @@ import { createHash } from "node:crypto";
 import {
 	assertCanonicalDecimal,
 	compareCanonicalDecimals,
+	CONTENT_KIND_NAMES,
 	decimalMin,
 	incrementCanonicalDecimal,
 	newEpoch,
@@ -107,6 +108,7 @@ export interface StatusResult {
 	projected_seq: string;
 	op_count: number;
 	device_count: number;
+	content_kinds: readonly string[];
 }
 
 export interface DeviceMetadata {
@@ -687,6 +689,7 @@ export class HubStore {
 			projected_seq: status.projected_seq,
 			op_count: Number(status.head_seq),
 			device_count: status.device_count,
+			content_kinds: CONTENT_KIND_NAMES,
 		};
 	}
 
