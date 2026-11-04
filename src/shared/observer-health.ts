@@ -768,17 +768,27 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
   // rejected the key (or the account), and nothing is wedged. Relay the
   // provider's remedy instead of offering a restart that changes nothing.
   if (isAuthFailure(state)) {
+    // provider-errors' CODEX_AUTH_FROM_EXIT_TEXT_CODE: our reading of an exited
+    // process's stderr, which can be wrong, not a refusal the provider sent.
+    const readFromExitText = state.lastErrorCode === 'codex_auth_from_exit_text';
     return [
       "⚠️ Heads up: claude-mem can't save memories right now.",
       '',
-      `The memory observer's credentials have been refused by ${provider} ${sinceText}.`,
+      readFromExitText
+        ? `The memory observer has been paused ${sinceText}: the ${provider} process exited with output that looks like a refused login.`
+        : `The memory observer's credentials have been refused by ${provider} ${sinceText}.`,
       '',
       ...renderFailureDetailLines(state, action),
       '',
       "Until that's fixed, nothing from this session — or any other — will be remembered.",
       '',
-      'Restarting will NOT help here: the provider refused the credentials, so nothing is broken to restart.',
-      ...(action ? [] : [
+      ...(readFromExitText ? [
+        'This comes from the exited process\'s output, not a reply from the provider, so it may be wrong.',
+        'Run `codex login status` to check. If the login is fine, the next captured event or an operator retry can trigger another attempt after the cooldown ends.',
+      ] : [
+        'Restarting will NOT help here: the provider refused the credentials, so nothing is broken to restart.',
+      ]),
+      ...(action || readFromExitText ? [] : [
         "Check the observer provider's API key in ~/.claude-mem/settings.json, or switch the",
         'observer to another provider there.',
       ]),

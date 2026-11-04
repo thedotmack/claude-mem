@@ -94,13 +94,33 @@ export function cmemGatewayRole(settings: {
 }
 
 /**
- * Whether the cmem.ai gateway can serve observer requests on this setup, as
- * memory's provider or as the opt-in quota fallback — whether or not it is
- * serving right now. Unattended retries are bounded whenever it can, because
- * each one may spend plan tokens.
+ * The provider CLAUDE_MEM_PROVIDER_BY_SOURCE routes a session of `platformSource`
+ * to, or null when the global provider serves it.
+ *
+ * Injected rather than imported: the answer needs the provider credential
+ * checks, and SessionManager, which reads it through canCmemGatewayServe, sits
+ * on the import path of the very providers dispatch imports (see
+ * UnservableProviderRouter in quota-cooldown.ts). provider-dispatch registers
+ * the real answer when it loads; until then every session is on the global provider.
  */
-export function canCmemGatewayServe(settingsPath: string = USER_SETTINGS_PATH): boolean {
-  return cmemGatewayRole(SettingsDefaultsManager.loadFromFile(settingsPath)) !== null;
+export type SessionProviderResolver = (platformSource: string | undefined) => string | null;
+
+let sessionProviderResolver: SessionProviderResolver | null = null;
+
+export function setSessionProviderResolver(resolver: SessionProviderResolver | null): void {
+  sessionProviderResolver = resolver;
+}
+
+/**
+ * Whether the cmem.ai gateway can serve a session of `platformSource`, as its
+ * provider or as the opt-in quota fallback — whether or not it is serving right
+ * now. Unattended retries are bounded whenever it can, because each one may
+ * spend plan tokens.
+ */
+export function canCmemGatewayServe(platformSource?: string): boolean {
+  const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+  const routedProvider = sessionProviderResolver?.(platformSource) ?? null;
+  return cmemGatewayRole(routedProvider === null ? settings : { ...settings, CLAUDE_MEM_PROVIDER: routedProvider }) !== null;
 }
 
 /**

@@ -83,6 +83,8 @@ const BLOCKED_ENV_VARS = [
   'CLAUDE_CODE_ALWAYS_ENABLE_EFFORT',
 ];
 
+const MODEL_OVERRIDE_ENV_VAR = /^ANTHROPIC_(?:MODEL|SMALL_FAST_MODEL|DEFAULT_(?:[A-Z0-9]+_)?MODEL)(?:_(?:NAME|DESCRIPTION|SUPPORTED_CAPABILITIES))?$/;
+
 export interface ClaudeMemEnv {
   ANTHROPIC_API_KEY?: string;
   /** Read by claude-mem only, never passed to the CLI: the key a quota-fallback run uses (CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD=api-key). */
@@ -312,6 +314,21 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
     // sync path cannot model — copying a parent-process token captured
     // at startup means injecting a stale token days later (issue #2215).
     // Use buildIsolatedEnvWithFreshOAuth() for spawn-time injection.
+  }
+
+  // #5315: without the parent gateway, its model aliases are invalid at the
+  // Anthropic API. Explicit gateways and cloud backends retain their mappings.
+  const usesCloudBackend = ['CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY']
+    .some(key => {
+      const value = isolatedEnv[key]?.trim().toLowerCase();
+      return !!value && value !== '0' && value !== 'false';
+    });
+  if (!isolatedEnv.ANTHROPIC_BASE_URL && !usesCloudBackend) {
+    for (const key of Object.keys(isolatedEnv)) {
+      if (MODEL_OVERRIDE_ENV_VAR.test(key) || key === 'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY') {
+        delete isolatedEnv[key];
+      }
+    }
   }
 
   return isolatedEnv;

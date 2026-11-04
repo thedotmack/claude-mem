@@ -220,6 +220,15 @@ export function createClaudeCodeReader(): AgentPromptReader {
 
 const CODEX_INJECTED_PREFIXES = ['# AGENTS.md', '<environment_context', '<user_instructions', '<permissions', '<INSTRUCTIONS', '<turn_aborted'];
 
+/** Verified creator protocol: a fork persists its own settings before any child turn.
+ * Resume retains the creation header; older/unknown creators keep their existing interpretation. */
+export function codexForkThreadId(meta: any): string | null {
+  return typeof meta?.id === 'string' && meta.id
+    && typeof meta.forked_from_id === 'string' && meta.forked_from_id
+    && typeof meta.cli_version === 'string' && Bun.semver.satisfies(meta.cli_version, '>=0.154.0')
+    ? meta.id : null;
+}
+
 export function createCodexReader(): AgentPromptReader {
   const seenKeys = new Set<string>();
   return {
@@ -242,14 +251,24 @@ export function createCodexReader(): AgentPromptReader {
     },
     async readPrompts(transcript, sink, sinceEpochMs) {
       let meta: any = null;
+      let awaitingThreadId: string | null = null;
       for await (const line of readLines(transcript.path)) {
         if (meta === null) {
           const first = parseLine(line);
           if (!first || typeof first !== 'object') return;
           meta = first.payload ?? {};
+          awaitingThreadId = codexForkThreadId(meta);
           if (meta.id) sink.session(String(meta.id));
           const isInteractiveSession = typeof meta.source === 'string' && meta.originator !== 'codex_exec' && meta.source !== 'exec';
           if (!isInteractiveSession) return;
+          continue;
+        }
+        if (awaitingThreadId !== null) {
+          if (line.includes('"thread_settings_applied"')) {
+            const record = parseLine(line);
+            if (record?.type === 'event_msg' && record.payload?.type === 'thread_settings_applied'
+              && record.payload.thread_id === awaitingThreadId) awaitingThreadId = null;
+          }
           continue;
         }
         if (!/"role"\s*:\s*"user"/.test(line)) continue;
@@ -453,25 +472,31 @@ export function createAntigravityCliReader(): AgentPromptReader {
 // ---------------------------------------------------------------------------
 // OpenCode: ~/.local/share/opencode/opencode.db (SQLite, opened read-only).
 // `session` (parent_id set for subagent sessions), `message` (data.role),
-// `part` (data.type "text"; synthetic/ignored parts were not typed).
+// `part` holds typed text (not synthetic/ignored) and model-authored tool inputs.
 
-interface OpenCodeTextPart { messageId: string; sessionId: string; role: string; createdAt: number; directory: string; parentId: string | null; data: string }
+interface OpenCodePart { messageId: string; sessionId: string; role: string; createdAt: number; directory: string; parentId: string | null; data: string }
 
-function readOpenCodeTextParts(path: string, role: 'user' | 'assistant'): OpenCodeTextPart[] {
+function readOpenCodeParts(path: string, role: 'user' | 'assistant'): OpenCodePart[] {
   const database = new Database(path, { readonly: true });
   try {
+    // Tool outputs may be user-authored files; project only model input and its call time.
     return database.prepare(`SELECT p.message_id AS messageId, m.session_id AS sessionId, json_extract(m.data, '$.role') AS role,
-        m.time_created AS createdAt, s.directory, s.parent_id AS parentId, p.data
+        m.time_created AS createdAt, s.directory, s.parent_id AS parentId,
+        CASE WHEN json_extract(p.data, '$.type') = 'tool' THEN json_object(
+          'type', 'tool', 'status', json_extract(p.data, '$.state.status'),
+          'input', json_extract(p.data, '$.state.input'), 'startedAt', json_extract(p.data, '$.state.time.start'))
+          ELSE p.data END AS data
       FROM part p JOIN message m ON m.id = p.message_id JOIN session s ON s.id = m.session_id
-      WHERE json_extract(m.data, '$.role') = ? AND json_extract(p.data, '$.type') = 'text'
-      ORDER BY m.time_created, p.message_id, p.id`).all(role) as OpenCodeTextPart[];
+      WHERE json_extract(m.data, '$.role') = ? AND (json_extract(p.data, '$.type') = 'text'
+        OR (? = 'assistant' AND json_extract(p.data, '$.type') = 'tool'))
+      ORDER BY m.time_created, p.message_id, p.id`).all(role, role) as OpenCodePart[];
   } finally {
     database.close();
   }
 }
 
-function groupOpenCodeMessages(parts: OpenCodeTextPart[], typedOnly: boolean): Array<{ first: OpenCodeTextPart; text: string }> {
-  const messages = new Map<string, { first: OpenCodeTextPart; pieces: string[] }>();
+function groupOpenCodeMessages(parts: OpenCodePart[], typedOnly: boolean): Array<{ first: OpenCodePart; text: string }> {
+  const messages = new Map<string, { first: OpenCodePart; pieces: string[] }>();
   for (const part of parts) {
     const data = parseLine(part.data);
     if (!data || typeof data.text !== 'string' || (typedOnly && (data.synthetic || data.ignored))) continue;
@@ -490,18 +515,29 @@ export function createOpenCodeReader(): AgentPromptReader {
     locate(homeDirectory) {
       const data = nativeProfileDirectory(homeDirectory, 'XDG_DATA_HOME', '.local', 'share');
       const database = source(join(data, 'opencode', 'opencode.db'));
+      // SQLite commits can update only the WAL until the next checkpoint.
+      const wal = database ? source(`${database.path}-wal`) : null;
+      if (database && wal) database.mtimeMs = Math.max(database.mtimeMs, wal.mtimeMs);
       return { detected: database !== null, sources: presentSources([database]) };
     },
     async readPrompts(transcript, sink, sinceEpochMs) {
-      for (const { first, text } of groupOpenCodeMessages(readOpenCodeTextParts(transcript.path, 'user'), true)) {
+      for (const { first, text } of groupOpenCodeMessages(readOpenCodeParts(transcript.path, 'user'), true)) {
         sink.session(first.sessionId);
         if (first.parentId || !text || first.createdAt < sinceEpochMs) continue;
         sink.prompt({ agent: 'opencode', sessionId: first.sessionId, nativePromptId: first.messageId, at: first.createdAt, cwd: first.directory || null, text });
       }
     },
     async readAgentText(transcript, add) {
-      for (const { first, text } of groupOpenCodeMessages(readOpenCodeTextParts(transcript.path, 'assistant'), false)) {
+      const parts = readOpenCodeParts(transcript.path, 'assistant');
+      for (const { first, text } of groupOpenCodeMessages(parts, false)) {
         add(Math.floor(first.createdAt / 1000), text);
+      }
+      for (const part of parts) {
+        const data = parseLine(part.data);
+        if (data?.type !== 'tool' || !['running', 'completed', 'error'].includes(data.status)
+          || typeof data.startedAt !== 'number' || !Number.isFinite(data.startedAt) || data.startedAt < 0
+          || !data.input || typeof data.input !== 'object' || Array.isArray(data.input)) continue;
+        add(Math.floor(data.startedAt / 1000), unescapeJsonText(JSON.stringify(data.input)));
       }
     },
   };

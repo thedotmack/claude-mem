@@ -69,7 +69,7 @@ import { killProcessTree } from './kill-process-tree.js';
 import { isPidAlive, type PidInfo } from '../supervisor/process-registry.js';
 import { readOwnedWorkerPidInfo } from '../supervisor/index.js';
 import { waitForHealth } from '../services/infrastructure/HealthMonitor.js';
-import { captureProcessStartToken, isSameProcess, normalizeProcessName } from './process-identity.js';
+import { captureProcessStartToken, isSameProcess, isSameProcessStartToken, normalizeProcessName, startTokenProbeEnv, withUtcStartTokenPrefix } from './process-identity.js';
 import { readWedgedWorkerUptimeSeconds } from './hook-constants.js';
 import { DATA_DIR, USER_SETTINGS_PATH, paths } from './paths.js';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
@@ -278,7 +278,10 @@ export function parseLinuxProcStat(raw: string): { ppid: number; startToken: str
  * this platform — the same agreement readProcessTablePosix() in
  * kill-process-tree.ts relies on (and asserts by test). LC_ALL/LANG are
  * pinned so a locale-formatted date would not compare unequal on the
- * revalidation.
+ * revalidation, and TZ is pinned with them (#5311): ps prints lstart in the
+ * calling process's zone, and a token that shifts with it misreads every
+ * zone change as PID reuse. The rows carry the same utc: prefix the
+ * single-PID reader stamps, so the byte-identical agreement survives.
  */
 async function readMacProcessTableWithNames(capMs?: number): Promise<WindowsProcessRow[]> {
   let stdout: string;
@@ -286,7 +289,7 @@ async function readMacProcessTableWithNames(capMs?: number): Promise<WindowsProc
     const result = await execFileAsync('ps', ['-eo', 'pid=,ppid=,uid=,lstart=,command='], {
       timeout: cappedTimeoutMs(10_000, capMs),
       maxBuffer: 32 * 1024 * 1024,
-      env: { ...process.env, LC_ALL: 'C', LANG: 'C' },
+      env: startTokenProbeEnv(process.env),
     });
     stdout = result.stdout;
   } catch (error) {
@@ -306,7 +309,8 @@ export function parseMacProcessTable(stdout: string): WindowsProcessRow[] {
   for (const line of stdout.split('\n')) {
     // lstart is `EEE MMM d HH:mm:ss yyyy` — five fields with whatever internal
     // padding ps printed, preserved verbatim so the token byte-matches the
-    // later revalidation read. The command line follows it.
+    // later revalidation read (which stamps the same utc: prefix onto the
+    // same string). The command line follows it.
     const match = line.trim().match(
       /^(\d+)\s+(\d+)\s+(\d+)\s+([A-Za-z]{3}\s+[A-Za-z]{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.*)$/
     );
@@ -317,7 +321,7 @@ export function parseMacProcessTable(stdout: string): WindowsProcessRow[] {
       uid: Number.parseInt(match[3]!, 10),
       name: normalizeProcessName(match[5]!.split(' ')[0] ?? ''),
       cmdline: match[5]!.trim().length > 0 ? match[5]! : null,
-      startToken: match[4]!.trim(),
+      startToken: withUtcStartTokenPrefix(match[4]!.trim()),
     });
   }
   return rows;
@@ -709,9 +713,14 @@ async function reclaimWedgedOwnedWorker(
   }
 
   const identity = await deps.readIdentity(owned.pid);
+  // isSameProcessStartToken, not ===: a PID file written before the UTC pin
+  // (#5311) holds a local-time token no pinned read can reproduce. A skew of a
+  // possible UTC offset must fall through to the command-line check below
+  // instead of refusing as owner-identity-mismatch — which is exactly the
+  // recycle deadlock this module exists to break.
   const tokenMismatch = owned.startToken !== undefined
     && identity.startToken !== null
-    && identity.startToken !== owned.startToken;
+    && !isSameProcessStartToken(identity.startToken, owned.startToken);
   if (tokenMismatch || identity.cmdline === null || !WORKER_CMDLINE_PATTERN.test(identity.cmdline)) {
     return refuse('owner-identity-mismatch', { tokenMismatch, hasCmdline: identity.cmdline !== null });
   }

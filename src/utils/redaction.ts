@@ -142,6 +142,11 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   // `stripe listen` prints and STRIPE_WEBHOOK_SECRET holds), which forge events.
   { name: 'stripe_key',      regex: /\b(?:(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{24,}|whsec_[A-Za-z0-9]{32,})\b/g },
   { name: 'google_api_key',  regex: /\bAIza[0-9A-Za-z_-]{35}(?!\w)/g },
+  // Google OAuth 2.0 access tokens: `ya29.` + a base64url body, plus the
+  // `ya29.c.` form the GCE metadata server hands out. `gcloud auth
+  // print-access-token`, `curl -H "Authorization: Bearer …"` lines and token
+  // JSON print them; each grants an hour of the account's API access.
+  { name: 'google_oauth_token', regex: /\bya29\.(?:c\.)?[0-9A-Za-z_-]{20,}(?!\w)/g },
   // GitLab personal/project/group access tokens (`glpat-`), deploy tokens (`gldt-`),
   // and runner authentication tokens (`glrt-` + 20 chars; newer routable tokens
   // add dot-separated segments), Hugging Face user access tokens (`hf_` + 34 chars),
@@ -152,6 +157,13 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   { name: 'huggingface_token', regex: /\bhf_[A-Za-z0-9]{30,}\b/g },
   { name: 'npm_token',       regex: /\bnpm_[A-Za-z0-9]{36}\b/g },
   { name: 'docker_pat',     regex: /\bdckr_pat_[A-Za-z0-9_-]{27,}(?!\w)/g },
+  // Linear personal API keys (`lin_api_` + 40 alphanumerics) and Notion
+  // integration tokens (`ntn_` + 46 alphanumerics, and the older `secret_` +
+  // 43): what `LINEAR_API_KEY=…` / `NOTION_TOKEN=…` lines, MCP server configs
+  // and `curl -H "Authorization: …"` commands print. Fixed lengths keep
+  // `secret_` words and short look-alikes out.
+  { name: 'linear_key',      regex: /\blin_api_[A-Za-z0-9]{40}(?!\w)/g },
+  { name: 'notion_token',    regex: /\b(?:ntn_[A-Za-z0-9]{46}|secret_[A-Za-z0-9]{43})(?!\w)/g },
   // SendGrid API keys (`SG.` + 22 + `.` + 43 base64url chars), DigitalOcean
   // personal access, OAuth and refresh tokens (`dop_v1_`/`doo_v1_`/`dor_v1_` +
   // 64 hex) and Shopify Admin API, app and shared-secret tokens (`shpat_`,
@@ -164,6 +176,14 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   // starts `AgE` (pypi.org and test.pypi.org alike), printed by `twine`,
   // `uv publish` and `~/.pypirc` dumps. Real tokens run past 150 characters.
   { name: 'pypi_token',      regex: /\bpypi-AgE[A-Za-z0-9_-]{50,}(?!\w)/g },
+  // Two OpenAI-compatible providers this project onboards users for
+  // (src/shared/openai-compat-presets.ts): NVIDIA NIM issues `nvapi-` keys and
+  // Runcrate issues `rc_live_` keys. Both presets tell the user the prefix in
+  // their installer hint, and neither was claimed by openai_key (`sk-`), so a
+  // key pasted into a session (or printed by a `curl`/`.env` dump) was stored
+  // verbatim. 32+ trailing chars keeps short placeholders out.
+  { name: 'nvidia_nim_key',  regex: /\bnvapi-[A-Za-z0-9_-]{32,}(?!\w)/g },
+  { name: 'runcrate_key',    regex: /\brc_live_[A-Za-z0-9_-]{24,}(?!\w)/g },
   // Groq API keys (`gsk_` + 52 alphanumerics) and xAI API keys (`xai-` + 80
   // chars): LLM provider keys that `.env` files, `export GROQ_API_KEY=…` /
   // `XAI_API_KEY=…` lines and `curl -H "Authorization: Bearer …"` commands
