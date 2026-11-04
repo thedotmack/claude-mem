@@ -594,4 +594,60 @@ describe('ChromaSync.queryChroma doc_type-free filtered fallback (#5354)', () =>
     expect(wheresSent()).toEqual([undefined, where]);
     expect(out.ids).toEqual(exactIds(where, 950));
   });
+
+  it('falls through to the plain query when a full stripped window holds too few matches', async () => {
+    // 60 wrong-type candidates fill the stripped query's whole window
+    // (limit 3 over-fetches 60), so the fallback cannot prove the top
+    // matches are inside it and must give up; the real matches sit past
+    // the window, and only the plain query -- doc_type and all -- reaches
+    // them.
+    const added: CorpusDoc[] = [];
+    for (let i = 0; i < 60; i++) {
+      added.push({ id: `obs_${9000 + i}_fact_0`, sqlite_id: 9000 + i, project: 'late', doc_type: 'observation', platform_source: 'claude' });
+    }
+    for (let i = 0; i < 10; i++) {
+      added.push({ id: `obs_${9060 + i}_fact_0`, sqlite_id: 9060 + i, project: 'late', doc_type: 'session_summary', platform_source: 'claude' });
+    }
+    CORPUS.push(...added);
+    try {
+      const where = { $and: [{ doc_type: 'session_summary' }, { project: 'late' }] };
+      const out = await sync.queryChroma('anything', 3, where);
+
+      expect(wheresSent()).toEqual([undefined, { project: 'late' }, where]);
+      expect(out.ids).toEqual([9060, 9061, 9062]);
+      expect(out.metadatas.every((m: any) => m.doc_type === 'session_summary' && m.project === 'late')).toBe(true);
+    } finally {
+      CORPUS.splice(CORPUS.length - added.length);
+    }
+  });
+
+  it('reports progress.exhausted from the stripped window, full and short', async () => {
+    const added: CorpusDoc[] = [];
+    for (let i = 0; i < 60; i++) {
+      added.push({ id: `obs_${9100 + i}_fact_0`, sqlite_id: 9100 + i, project: 'full', doc_type: 'observation', platform_source: 'claude' });
+    }
+    for (let i = 0; i < 2; i++) {
+      added.push({ id: `obs_${9200 + i}_fact_0`, sqlite_id: 9200 + i, project: 'short', doc_type: 'observation', platform_source: 'claude' });
+    }
+    CORPUS.push(...added);
+    try {
+      // Full window and the limit filled: candidates may sit past the
+      // window, so the search is not exhausted.
+      const fullProgress: ChromaQueryProgress = {};
+      const fullOut = await sync.queryChroma('anything', 3,
+        { $and: [{ doc_type: 'observation' }, { project: 'full' }] }, fullProgress);
+      expect(fullOut.ids).toEqual([9100, 9101, 9102]);
+      expect(fullProgress.exhausted).toBe(false);
+
+      // Short window: every candidate came back and the matches ran out
+      // before the limit, so nothing more can be found.
+      const shortProgress: ChromaQueryProgress = {};
+      const shortOut = await sync.queryChroma('anything', 3,
+        { $and: [{ doc_type: 'observation' }, { project: 'short' }] }, shortProgress);
+      expect(shortOut.ids).toEqual([9200, 9201]);
+      expect(shortProgress.exhausted).toBe(true);
+    } finally {
+      CORPUS.splice(CORPUS.length - added.length);
+    }
+  });
 });
