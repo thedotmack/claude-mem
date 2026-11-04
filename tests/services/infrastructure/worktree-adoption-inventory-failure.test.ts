@@ -14,7 +14,6 @@ import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 
 const REPO_ROOT = path.join(import.meta.dir, '..', '..', '..');
 const ADOPTION_MODULE = path.join(REPO_ROOT, 'src', 'services', 'infrastructure', 'WorktreeAdoption.js');
-const REAL_GIT = spawnSync('which', ['git'], { encoding: 'utf8' }).stdout.trim();
 
 let tempRoot: string | undefined;
 
@@ -75,11 +74,12 @@ interface AdoptionOutcome {
 
 /** Run adoption in a child whose `git` exits 129 for any arguments matching a shell case pattern. */
 function adoptWithFailingGit(root: string, repoPath: string, dataDirectory: string, failingArguments: string | null): AdoptionOutcome {
+  const realGit = spawnSync('which', ['git'], { encoding: 'utf8' }).stdout.trim();
   const shimDirectory = path.join(root, 'shim');
   mkdirSync(shimDirectory, { recursive: true });
   const shimPath = path.join(shimDirectory, 'git');
   const failingCase = failingArguments ? `case " $* " in\n  ${failingArguments}) exit 129 ;;\nesac\n` : '';
-  writeFileSync(shimPath, `#!/bin/sh\n${failingCase}exec "${REAL_GIT}" "$@"\n`);
+  writeFileSync(shimPath, `#!/bin/sh\n${failingCase}exec "${realGit}" "$@"\n`);
   chmodSync(shimPath, 0o755);
 
   const childScript = `
