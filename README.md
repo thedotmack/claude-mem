@@ -373,16 +373,19 @@ ls ~/.claude/plugins/marketplaces/thedotmack/plugin/modes/
 | Mode | Description |
 |------------|-------------------------|
 | `code` | Default English mode |
-| `code--zh` | Simplified Chinese mode |
-| `code--ja` | Japanese mode |
+| `code--chill` | Records fewer observations, keeping only what would be painful to rediscover |
+| `code--[lang]` | Same as `code`, with observations and summaries written in another language |
 
-Language-specific modes follow the pattern `code--[lang]` where `[lang]` is the ISO 639-1 language code (e.g., `zh` for Chinese, `ja` for Japanese, `es` for Spanish).
+Built-in language codes: `ar`, `bn`, `cs`, `da`, `de`, `el`, `es`, `fi`, `fr`, `he`, `hi`, `hu`, `id`, `it`, `ja`, `ko`, `nl`, `no`, `pl`, `pt-br`, `ro`, `ru`, `sv`, `th`, `tr`, `uk`, `ur`, `vi`, `zh`. For example, `code--ko` writes memories in Korean.
 
-> Note: `code--zh` (Simplified Chinese) is already built-in — no additional installation or plugin update is required.
+See [Modes](https://docs.claude-mem.ai/modes) for each language's name, the email investigation mode, and custom modes.
+
+> Note: All of these modes are built in. No additional installation or plugin update is required.
 
 #### After Changing Mode
 
 Restart Claude Code to apply the new mode configuration.
+
 ---
 
 ## Development
