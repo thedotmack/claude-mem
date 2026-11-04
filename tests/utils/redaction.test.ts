@@ -104,6 +104,38 @@ describe('redactSensitive built-in patterns', () => {
     expect(Object.keys(result.counts)).toEqual(['pypi_token']);
   });
 
+  // Databricks PATs (`dapi` + 32 hex) and HashiCorp Vault service/batch
+  // tokens (`hvs.` / `hvb.` + base64url). Fixtures are split for push
+  // protection too.
+  const DATABRICKS_HEX = '0123456789abcdef'.repeat(2);
+  const VAULT_SERVICE_BODY = 'CAESIJ' + 'aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789_-'.repeat(2) + 'aBcDeFgHiJkLmNo';
+  const VAULT_BATCH_BODY = 'AAAAAQ' + 'aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789_-'.repeat(4);
+  it.each([
+    ['databricks_token', 'DATABRICKS_TOKEN=' + 'da' + 'pi' + DATABRICKS_HEX + ' tail'],
+    ['databricks_token', 'token = ' + 'da' + 'pi' + DATABRICKS_HEX + '-2 tail'],
+    ['databricks_token', '{"token_value": "' + 'da' + 'pi' + DATABRICKS_HEX + '"} tail'],
+    ['vault_token', 'VAULT_TOKEN=' + 'hv' + 's.' + VAULT_SERVICE_BODY + ' tail'],
+    ['vault_token', 'token                  ' + 'hv' + 's.' + VAULT_SERVICE_BODY + ' tail'],
+    ['vault_token', 'export VAULT_TOKEN=' + 'hv' + 'b.' + VAULT_BATCH_BODY + ' tail'],
+  ])('redacts a %s', (name, input) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain(`<redacted type='${name}'/>`);
+    expect(result.redacted).toMatch(/'\/>(?:"\})? tail$/);
+    expect(result.redacted).not.toMatch(/dapi0123|hv[sb]\.[A-Z]/);
+    expect(Object.keys(result.counts)).toEqual([name]);
+  });
+
+  it.each([
+    'dapi' + 'short',
+    'the dapi' + 'deadbeef helper',
+    'da' + 'pi' + DATABRICKS_HEX + 'ff',
+    'hv' + 's.' + 'short',
+    'hv' + 's.' + VAULT_SERVICE_BODY.repeat(2),
+    'hv' + 'b.' + 'aBcDeFgHiJkLmNo',
+  ])('leaves %s alone', (input) => {
+    expect(redactSensitive(input, cfg).redacted).toBe(input);
+  });
+
   // Two providers claude-mem's own OpenAI-compatible presets onboard users for
   // (src/shared/openai-compat-presets.ts): the NVIDIA NIM hint says the key
   // starts with `nvapi-`, Runcrate's says `rc_live_`. Neither prefix was
