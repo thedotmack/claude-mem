@@ -2,7 +2,7 @@ import { afterAll, describe, expect, it } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { Database } from 'bun:sqlite';
 import { join, resolve } from 'node:path';
-import { PinVerifier, isInferencePath, providerMatchesPin, readClaudeAccessToken, startTee } from '../../scripts/endless-mode-validation/forward/tee-proxy';
+import { PinVerifier, isInferencePath, pinRequestBody, providerMatchesPin, readClaudeAccessToken, startTee } from '../../scripts/endless-mode-validation/forward/tee-proxy';
 
 const PIN_ENV = { EMV_PIN_PROVIDER: 'deepinfra/fp8' };
 const REPO_ROOT = resolve(import.meta.dir, '../..');
@@ -135,6 +135,13 @@ describe('forward tee-proxy: endpoint pin', () => {
     expect(JSON.parse(readFileSync(join(t.outDir, '0002-req.body'), 'utf8')).provider).toEqual(PIN_FIELD);
     expect(existsSync(join(t.outDir, 'OFF-PIN'))).toBe(false);
     t.stop();
+  });
+
+  it('sets max_output_tokens only when asked to', () => {
+    const body = new TextEncoder().encode(JSON.stringify({ model: PIN.model }));
+    const decode = (bytes: Uint8Array) => JSON.parse(new TextDecoder().decode(bytes));
+    expect(decode(pinRequestBody(body, PIN)).max_output_tokens).toBeUndefined();
+    expect(decode(pinRequestBody(body, PIN, 100000)).max_output_tokens).toBe(100000);
   });
 
   it('decompresses a zstd body before editing it and drops the header', async () => {

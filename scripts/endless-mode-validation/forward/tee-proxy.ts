@@ -40,14 +40,18 @@ const providerKey = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, '
 export const providerMatchesPin = (provider: string, pin: EndpointPin) => providerKey(provider) === providerKey(pin.providerSlug.split('/')[0]!);
 
 /** The request body with the pin set. Throws when the body is not a JSON object or names another model. */
-export function pinRequestBody(body: Uint8Array, pin: EndpointPin): Uint8Array<ArrayBuffer> {
+export function pinRequestBody(body: Uint8Array, pin: EndpointPin, maxOutputTokens?: number): Uint8Array<ArrayBuffer> {
   let parsed: unknown;
   try { parsed = JSON.parse(new TextDecoder().decode(body)); }
   catch { throw new Error('request body is not JSON, so the provider pin cannot be set'); }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('request body is not a JSON object, so the provider pin cannot be set');
   const request = parsed as Record<string, unknown>;
   if (request.model !== pin.model) throw new Error(`request names model ${JSON.stringify(request.model)}, pinned model is ${pin.model}`);
-  return new TextEncoder().encode(JSON.stringify({ ...request, provider: { order: [pin.providerSlug], allow_fallbacks: false } }));
+  return new TextEncoder().encode(JSON.stringify({
+    ...request,
+    ...(maxOutputTokens === undefined ? {} : { max_output_tokens: maxOutputTokens }),
+    provider: { order: [pin.providerSlug], allow_fallbacks: false },
+  }));
 }
 
 /** Reads a response as it streams and reports the first sign that it did not come from the pin. */
@@ -129,6 +133,8 @@ export function readClaudeAccessToken(env: NodeJS.ProcessEnv = process.env): str
 export function startTee(options: {
   port: number; upstream: string; outDir: string; refreshToken?: AccessTokenReader; pin?: EndpointPin;
   retry429DelaysMs?: number[]; generationLookupDelaysMs?: number[];
+  /** Sent as max_output_tokens. The provider reserves this from the context window, so a smaller value leaves more room for the prompt. */
+  maxOutputTokens?: number;
 }) {
   const { upstream, outDir, refreshToken, pin } = options;
   const retry429DelaysMs = options.retry429DelaysMs ?? RETRY_429_DELAYS_MS;
@@ -195,7 +201,7 @@ export function startTee(options: {
         const encoding = (request.headers.get('content-encoding') ?? '').toLowerCase();
         const decoded = encoding === 'zstd' ? Bun.zstdDecompressSync(body) : body;
         if (pinned) {
-          try { body = pinRequestBody(decoded, pin); }
+          try { body = pinRequestBody(decoded, pin, options.maxOutputTokens); }
           catch (error) {
             const reason = (error as Error).message;
             halt(n, reason);
@@ -279,6 +285,9 @@ if (import.meta.main) {
   const [portText, upstream, outDir] = args.filter(arg => !arg.startsWith('--'));
   if (!portText || !upstream || !outDir) throw new Error('usage: bun tee-proxy.ts <port> <upstream> <outDir> [--refresh-claude-token] [--pin-provider=<slug> --pin-model=<model>]');
   const pin = providerSlug && pinModel ? { providerSlug, model: pinModel } : undefined;
-  startTee({ port: Number(portText), upstream, outDir, refreshToken: refresh ? () => readClaudeAccessToken() : undefined, pin });
+  const maxOutputTokensText = flag('max-output-tokens');
+  const maxOutputTokens = maxOutputTokensText === undefined ? undefined : Number(maxOutputTokensText);
+  if (maxOutputTokens !== undefined && !(Number.isInteger(maxOutputTokens) && maxOutputTokens > 0)) throw new Error(`--max-output-tokens must be a positive whole number, got ${maxOutputTokensText}`);
+  startTee({ port: Number(portText), upstream, outDir, refreshToken: refresh ? () => readClaudeAccessToken() : undefined, pin, maxOutputTokens });
   console.log(`tee on 127.0.0.1:${portText} -> ${upstream}, saving to ${outDir}${refresh ? ' (re-reads the claude.ai token on 401)' : ''}${pin ? ` (pinned to ${pin.providerSlug}, ${pin.model})` : ''}`);
 }
