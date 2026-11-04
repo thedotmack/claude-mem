@@ -236,7 +236,7 @@ it('still adopts a deinitialized submodule without recursing into its empty chec
   expect(result.orphanedWorktrees).toEqual(['react/peerless']);
 });
 
-it('keeps sessions and observations in distinct ..-prefixed submodule paths', () => {
+it('keeps sessions and observations in distinct ..-prefixed submodule paths', async () => {
   const fx = buildFixture();
   const origin = path.join(tempRoot!, 'shared-origin');
   initRepo(origin);
@@ -264,7 +264,8 @@ it('keeps sessions and observations in distinct ..-prefixed submodule paths', ()
     ]);
     const legacySession = store.createSDKSession('content-legacy-collapsed', 'react/shared', 'prompt');
     store.ensureMemorySessionIdRegistered(legacySession, 'legacy-collapsed');
-    seedObservation(store, 'legacy-collapsed', 'react/shared');
+    store.setSessionCwd(legacySession, path.join(fx.superproject, '..alpha', 'shared'), 'path');
+    const legacyObservation = seedObservation(store, 'legacy-collapsed', 'react/shared');
     for (const folder of ['..alpha', '..beta']) {
       const keys = getPathModeProjectContext(path.join(fx.superproject, folder, 'shared')).allProjects;
       const history = store.db.prepare(
@@ -279,6 +280,12 @@ it('keeps sessions and observations in distinct ..-prefixed submodule paths', ()
       "SELECT project FROM sdk_sessions WHERE memory_session_id IN ('memory-..alpha', 'memory-..beta') ORDER BY project"
     ).all();
     expect(projects).toEqual([{ project: 'react/..alpha/shared' }, { project: 'react/..beta/shared' }]);
+
+    // Both checkouts still read the collapsed key, so the sweep must leave it shared between them.
+    const result = await adoptMergedWorktrees({ repoPath: fx.superproject, dataDirectory: fx.dataDirectory });
+    expect(result.orphanedWorktrees).not.toContain('react/shared');
+    expect(mergedInto(fx.dbPath, legacyObservation)).toBeNull();
+    expect(store.db.prepare("SELECT body FROM sync_outbox WHERE body LIKE '%remap_project%'").all()).toEqual([]);
   } finally {
     store.close();
   }
