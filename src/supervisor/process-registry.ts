@@ -104,11 +104,11 @@ export function verifyPidFileOwnership(info: PidInfo | null): info is PidInfo {
       current: currentToken
     });
   } else if (currentToken !== info.startToken) {
-    // Same era check refused to call this a reuse: the record carries a
-    // pre-UTC-pin local-time token (#5311), which a pinned read can never
-    // reproduce even for the same live process. One-time migration only —
-    // this record is rewritten with a pinned token on the next worker start.
-    logger.debug('SYSTEM', 'verifyPidFileOwnership: pre-UTC-pin start token ignored (time-zone skew, not PID reuse)', {
+    // The record carries a pre-UTC-pin local-time token (#5311) that differs
+    // from the pinned read by a possible UTC offset, so both name one start
+    // instant. One-time migration only — this record is rewritten with a
+    // pinned token on the next worker start.
+    logger.debug('SYSTEM', 'verifyPidFileOwnership: pre-UTC-pin start token accepted (differs by a UTC offset)', {
       pid: info.pid,
       stored: info.startToken,
       current: currentToken

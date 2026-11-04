@@ -903,9 +903,9 @@ export class ChromaMcpManager {
     }
     const currentStartToken = captureProcessStartToken(lock.pid);
     // isSameProcessStartToken, not ===: a lock written before the UTC pin
-    // (#5311) holds a token format the pinned read can never reproduce, and
-    // killing a live writer over a time-zone skew would drop vector sync
-    // until the lock file is deleted by hand.
+    // (#5311) holds a local-time token the pinned read can never reproduce.
+    // It stays live only when the two differ by a possible UTC offset; any
+    // other mismatch is a reused PID, and that lock is stale.
     return isSameProcessStartToken(currentStartToken, lock.startToken);
   }
 

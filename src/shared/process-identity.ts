@@ -108,9 +108,9 @@ export function startTokenProbeEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
  * Pinning TZ going forward cannot repair records already on disk: they hold
  * local-time strings in the very same `EEE MMM d HH:mm:ss yyyy` shape,
  * indistinguishable from a UTC-pinned read. The prefix separates the eras, so
- * comparisons can tell a genuine reuse verdict (two pinned tokens that
- * differ) from an unprovable cross-era mismatch (degrades to "proceed",
- * exactly like a token that could not be captured at all).
+ * comparisons can tell two pinned tokens that differ (PID reuse) from a
+ * cross-era mismatch, which counts as the same process only when the two times
+ * differ by a possible UTC offset (see isSameProcessStartToken).
  *
  * Linux needs none of this — its token is the numeric /proc starttime,
  * already zone-independent — and Windows keeps its CIM format untouched, so
@@ -128,23 +128,52 @@ export function withUtcStartTokenPrefix(rawToken: string): string {
   return `${UTC_START_TOKEN_PREFIX}${rawToken}`;
 }
 
+// Every UTC offset in use today is a whole multiple of 15 minutes (Nepal is +5:45).
+const UTC_OFFSET_STEP_MS = 15 * 60_000;
+// The largest UTC offset in use today is UTC+14 (Line Islands); the most negative is UTC-12.
+const MAX_UTC_OFFSET_MS = 14 * 60 * 60_000;
+const LSTART_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** The wall-clock reading of `EEE MMM d HH:mm:ss yyyy` in ms, or null for any other shape. */
+function parseLstartWallClockMs(rawToken: string): number | null {
+  const match = rawToken.match(/^[A-Za-z]{3}\s+([A-Za-z]{3})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})\s+(\d{4})$/);
+  if (!match) return null;
+  const month = LSTART_MONTHS.indexOf(match[1]!);
+  if (month === -1) return null;
+  return Date.UTC(Number(match[6]), month, Number(match[2]), Number(match[3]), Number(match[4]), Number(match[5]));
+}
+
+/**
+ * True when two tokens from different eras can name one start instant: their
+ * wall-clock readings differ by a possible UTC offset. A reused PID has its own
+ * start time, so it passes only by coincidence (within 14 hours and on the same
+ * second modulo 15 minutes). A token that does not parse is no proof, so it is
+ * a mismatch; that covers Linux and Windows tokens, which never cross eras.
+ */
+function differsOnlyByUtcOffset(firstToken: string, secondToken: string): boolean {
+  const first = parseLstartWallClockMs(firstToken.replace(UTC_START_TOKEN_PREFIX, ''));
+  const second = parseLstartWallClockMs(secondToken.replace(UTC_START_TOKEN_PREFIX, ''));
+  if (first === null || second === null) return false;
+  const skewMs = Math.abs(first - second);
+  return skewMs <= MAX_UTC_OFFSET_MS && skewMs % UTC_OFFSET_STEP_MS === 0;
+}
+
 /**
  * The ownership verdict for two captured start tokens.
  *
- * Fallback semantics match isSameProcess: only evidence can refuse, so an
- * unreadable token (null) on either side proceeds, and so does a mismatch we
- * cannot attribute. The one attributable mismatch is two UTC-pinned tokens
- * that differ — the same read, under the same pin, naming another process.
- * A mismatch against a token WITHOUT the prefix is a record written before
- * the pin: a local-time string that a UTC read can never reproduce, even for
- * the same live process. Treating it as reuse would strand exactly the stale
- * workers this prefix exists to retire (#5311), so it proceeds instead.
+ * Fallback semantics match isSameProcess: an unreadable token (null) on either
+ * side proceeds. Two readable tokens from the same era must be equal. Across
+ * eras, a token without the prefix is a record written before the pin: a
+ * local-time string that a UTC read can never reproduce, even for the same live
+ * process. Calling every such mismatch reuse would strand the stale workers this
+ * prefix exists to retire (#5311), and accepting every one would let a reused
+ * PID pass for the worker, so it must prove it is the same instant.
  */
 export function isSameProcessStartToken(currentToken: string | null, recordedToken: string | null): boolean {
   if (currentToken === null || recordedToken === null) return true;
   if (currentToken === recordedToken) return true;
-  if (isUtcPinnedStartToken(currentToken) !== isUtcPinnedStartToken(recordedToken)) return true;
-  return false;
+  if (isUtcPinnedStartToken(currentToken) === isUtcPinnedStartToken(recordedToken)) return false;
+  return differsOnlyByUtcOffset(currentToken, recordedToken);
 }
 
 function queryWindowsCreationDate(pid: number): string | null {
@@ -256,8 +285,8 @@ function readStartToken(pid: number, bypassCache: boolean): string | null {
  * strand a live orphan and resurrect #2313. So only a token that was captured
  * successfully AND now differs proves reuse; an uncapturable token on either
  * side means "proceed". The comparison itself runs through
- * isSameProcessStartToken, which additionally declines to call a mismatch
- * against a pre-UTC-pin token a reuse verdict (#5311).
+ * isSameProcessStartToken, which accepts a pre-UTC-pin token only when it
+ * differs from the pinned read by a possible UTC offset (#5311).
  *
  * Windows caveat: captureProcessStartToken caches per-pid for 5s, so when the
  * snapshot and the revalidation fall inside one TTL this re-reads the cached
@@ -364,10 +393,8 @@ export function isSameProcess(pid: number, snapshotToken: string | null): boolea
 /**
  * A fail-closed identity check for test cleanup of already snapshotted
  * children. Unlike isSameProcess, an uncapturable current token fails the
- * match (nothing to certify), while a mismatch against a pre-pin token is
- * tolerated like everywhere else (#5311) — snapshots never outlive the
- * process that captured them, so the legacy branch is dead code here, kept
- * only so every token comparison runs through one rule.
+ * match (nothing to certify). Every readable token runs through
+ * isSameProcessStartToken, so all token comparisons share one rule (#5311).
  */
 export function hasMatchingProcessStartToken(pid: number, snapshotToken: string): boolean {
   const currentToken = readStartToken(pid, true);

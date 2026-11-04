@@ -714,10 +714,10 @@ async function reclaimWedgedOwnedWorker(
 
   const identity = await deps.readIdentity(owned.pid);
   // isSameProcessStartToken, not ===: a PID file written before the UTC pin
-  // (#5311) holds a local-time token no pinned read can reproduce, and the
-  // skew must fall through to the command-line check below instead of
-  // refusing as owner-identity-mismatch — which is exactly the recycle
-  // deadlock this module exists to break.
+  // (#5311) holds a local-time token no pinned read can reproduce. A skew of a
+  // possible UTC offset must fall through to the command-line check below
+  // instead of refusing as owner-identity-mismatch — which is exactly the
+  // recycle deadlock this module exists to break.
   const tokenMismatch = owned.startToken !== undefined
     && identity.startToken !== null
     && !isSameProcessStartToken(identity.startToken, owned.startToken);
