@@ -247,6 +247,21 @@ describe('contextHandler SessionStart path', () => {
     expect(calls).toHaveLength(1);
   });
 
+  it('re-injects context after Devin compaction and names PostCompaction in the reply', async () => {
+    calls.length = 0;
+    const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+    const result = await contextHandler.execute({
+      sessionId: 'session-devin-compaction',
+      cwd: '/tmp/repo',
+      platform: 'devin',
+      hookEventName: 'PostCompaction',
+    });
+
+    expect(result.hookSpecificOutput).toMatchObject({ hookEventName: 'PostCompaction', additionalContext: 'context from worker' });
+    const startup = await contextHandler.execute({ sessionId: 'session-devin-startup', cwd: '/tmp/repo', platform: 'devin', hookEventName: 'SessionStart' });
+    expect(startup.hookSpecificOutput?.hookEventName).toBe('SessionStart');
+  });
+
   for (const memoryProvider of ['codex', 'openai-compatible', 'openrouter', 'gemini']) {
     it(`does not request Claude login when memory uses ${memoryProvider} with the fallback turned off`, async () => {
       provider = memoryProvider;
