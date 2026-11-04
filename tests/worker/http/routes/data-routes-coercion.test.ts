@@ -164,6 +164,16 @@ describe('DataRoutes Type Coercion', () => {
       expect(mockGetObservationsByIds).not.toHaveBeenCalled();
     });
 
+    for (const invalidElement of [true, null, '1.5', '1e2', ' ']) {
+      it(`should reject ${JSON.stringify(invalidElement)} as an array element`, () => {
+        const { req, res, statusSpy } = createMockReqRes({ ids: [invalidElement] });
+        handler(req as Request, res as Response);
+
+        expect(statusSpy).toHaveBeenCalledWith(400);
+        expect(mockGetObservationsByIds).not.toHaveBeenCalled();
+      });
+    }
+
     it('should reject non-integer values after coercion', () => {
       const { req, res, statusSpy } = createMockReqRes({ ids: 'foo,bar' });
       handler(req as Request, res as Response);
