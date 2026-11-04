@@ -14,6 +14,7 @@ import { hasForwardedClientHeaders, hasLoopbackHostHeader, isLocalhost } from '.
 import { WorkStateSource, type WorkViewSnapshot } from '../../../work-view/data-source.mjs';
 import { WorkViewReadWorkerClient } from '../../../work-view/WorkViewReadWorkerClient.js';
 import { boundedDurationMs, type WorkViewReadPurpose } from '../../../work-view/WorkViewReadProtocol.js';
+import type { ViewerSyncStatus } from '../../../../shared/viewer-sync-status.js';
 import { workViewOverview, workViewRequestDetail } from '../../../work-view/overview.js';
 import { FILE_CONTENT_TYPES } from '../../../work-view/work-product.mjs';
 import { isInsideDeliverablesDir } from '../../../../shared/deliverables.js';
@@ -245,6 +246,8 @@ export function myRulesImportLine(rulesFilePath: string): string {
 interface WorkStateWrite { project: string; listName: string; fields: Record<string, string | number | boolean | null> }
 
 interface WorkViewOptions {
+  getSyncStatus?: () => ViewerSyncStatus;
+  updateViewerActivity?: (viewerId: string, visible: boolean, sequence: number) => boolean;
   databasePath?: string;
   reviewPath?: string;
   pollIntervalMs?: number;
@@ -412,6 +415,8 @@ export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTIN
 const ACTIVITY_REFRESH_WINDOW_MS = 120_000;
 
 export class WorkViewRoutes extends BaseRouteHandler {
+  private readonly getSyncStatus: (() => ViewerSyncStatus) | undefined;
+  private readonly updateViewerActivity: WorkViewOptions['updateViewerActivity'];
   private source: WorkStateSource;
   private sourceReader: WorkViewReadWorkerClient;
   private lastSnapshotDiagnostic: { purpose: WorkViewReadPurpose; postprocessMs: number } | null = null;
@@ -454,6 +459,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   constructor(options: WorkViewOptions = {}) {
     super();
+    this.getSyncStatus = options.getSyncStatus;
+    this.updateViewerActivity = options.updateViewerActivity;
     this.pollIntervalMs = options.pollIntervalMs ?? 1000;
     this.getLocalDeviceId = options.getLocalDeviceId ?? (() => '');
     const ledgerDir = options.ledgerDir === undefined ? join(DATA_DIR, 'work-view') : options.ledgerDir;
@@ -613,6 +620,13 @@ export class WorkViewRoutes extends BaseRouteHandler {
   }
 
   setupRoutes(app: express.Application): void {
+    app.post('/api/work-view/activity', workViewLoopbackOnly, requireWorkViewOrigin,
+      validateBody(z.object({ viewerId: z.string().min(1).max(128), visible: z.boolean(), sequence: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER) }).strict()),
+      this.wrapHandler((req, res) => {
+        if (!this.updateViewerActivity) { res.status(204).end(); return; }
+        if (!this.updateViewerActivity(req.body.viewerId, req.body.visible, req.body.sequence)) { res.status(429).json({ error: 'Too many active viewer leases.' }); return; }
+        res.status(204).end();
+      }));
     app.get('/api/work-view', workViewLoopbackOnly, this.wrapHandler(async (_req, res) => {
       res.setHeader('Cache-Control', 'no-store');
       const snapshot = await this.snapshot(0, 'http');
@@ -917,7 +931,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     const view = this.humanCopy ? this.humanCopy.observe(snapshot) as WorkViewSnapshot : snapshot;
     const result = { ...view, rulesFile: this.rulesFileStatus(snapshot), setup: this.setupView(view), revision: `${snapshot.revision}:${reviewRevision}:${this.humanCopy?.revision ?? 0}` };
     this.lastSnapshotDiagnostic = { purpose, postprocessMs: boundedDurationMs(Number(process.hrtime.bigint() - startedAt) / 1e6) };
-    return result;
+    return this.getSyncStatus ? { ...result, sync: this.getSyncStatus() } : result;
   }
 
   /**
@@ -1433,7 +1447,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     }, this.pollIntervalMs);
     if (!this.heartbeat) this.heartbeat = setInterval(() => {
       void this.backgroundSnapshot().then(snapshot => {
-        for (const client of this.clients) this.send(client, 'heartbeat', { at: new Date().toISOString(), source: snapshot.source });
+        for (const client of this.clients) this.send(client, 'heartbeat', { at: new Date().toISOString(), source: snapshot.source, ...(this.getSyncStatus ? { sync: this.getSyncStatus() } : {}) });
       }).catch(error => logger.warn('HTTP', 'Could not read work view for heartbeat', { error: error instanceof Error ? error.message : String(error) }));
     }, 15000);
     this.poll?.unref(); this.heartbeat?.unref();
@@ -1497,6 +1511,10 @@ export class WorkViewRoutes extends BaseRouteHandler {
   }
 
   getClientCount(): number { return this.clients.size; }
+
+  publishSyncStatus(sync: ViewerSyncStatus): void {
+    this.broadcast('sync_status', { sync });
+  }
 
   close(): void {
     this.closed = true;

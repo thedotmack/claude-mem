@@ -53,6 +53,95 @@ function harness(fetcher: typeof fetch, bootstrapTimeoutMs = 100) {
 }
 
 describe('compact local source', () => {
+  it('only local visible pages announce activity and stopping withdraws the lease', () => {
+    class Visibility extends EventTarget { visibilityState = 'visible' }
+    const activityDocument = new Visibility()
+    const page = new EventTarget()
+    const writes: Array<{ visible: boolean; sequence: number }> = []
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      writes.push(JSON.parse(String(init?.body)))
+      return new Response(null, { status: 204 })
+    }
+    const create = (hostname: string) => createLocalSource({ hostname, fetchImpl,
+      activityOptions: { document: activityDocument, page, viewerId: 'activity-test' },
+      eventSourceFactory: () => new FakeStream() as unknown as EventSource })
+    const stopCloud = create('viewer.example').subscribeToLiveUpdates(() => {}, () => {})
+    assert.equal(writes.length, 0)
+    stopCloud()
+    const stopLocal = create('localhost').subscribeToLiveUpdates(() => {}, () => {})
+    assert.equal(writes[0].visible, true)
+    activityDocument.visibilityState = 'hidden'
+    activityDocument.dispatchEvent(new Event('visibilitychange'))
+    assert.equal(writes[1].visible, false)
+    stopLocal()
+    assert.equal(writes.length, 2)
+  })
+
+  it('sync-only events update freshness without replacing the accepted work model', async () => {
+    const { local, streams } = harness(async () => json(overview()))
+    const shown: WorkModel[] = []
+    const connectionStates: string[] = []
+    const stop = local.subscribeToLiveUpdates(model => shown.push(model), value => connectionStates.push(value.sync?.state ?? ''))
+    streams[0].emit('work-view-overview', overview())
+    streams[0].emit('sync_status', { sync: { configured: true, state: 'offline', mode: 'polling', observedAt: 100_000,
+      checkedAt: 99_000, message: 'Download unavailable.', download: { lastSuccessAt: 99_000 }, projection: { remaining: null },
+      completeness: { pushQuarantine: 0, pullQuarantine: 0, excludedNative: 0, scope: 'eligible' } } })
+    assert.equal(shown.length, 1)
+    assert.equal(connectionStates.at(-1), 'offline')
+    assert.equal((await local.loadWorkModel()).requests[0].contentFingerprint, FIRST)
+    stop()
+  })
+
+  it('repeated cached sync evidence cannot renew freshness while events keep arriving', () => {
+    const originalNow = performance.now
+    let now = 0
+    performance.now = () => now
+    const states: string[] = []
+    const { local, streams } = harness(async () => json(overview()))
+    const stop = local.subscribeToLiveUpdates(() => {}, value => states.push(value.sync?.state ?? ''))
+    try {
+      const sync = { configured: true, state: 'current', mode: 'polling', observedAt: 100_000, checkedAt: 99_000,
+        message: 'Shared records current.', download: { lastSuccessAt: 99_000 }, projection: { remaining: '0' },
+        completeness: { pushQuarantine: 0, pullQuarantine: 0, excludedNative: 0, scope: 'eligible' } }
+      streams[0].emit('sync_status', { sync })
+      assert.equal(states.at(-1), 'current')
+      now = 59_001
+      streams[0].emit('sync_status', { sync })
+      assert.equal(states.at(-1), 'stale')
+    } finally { stop(); performance.now = originalNow }
+  })
+
+  it('accepts newer stream status after a server clock rollback', () => {
+    const { local, streams } = harness(async () => json(overview()))
+    const states: string[] = []
+    const stop = local.subscribeToLiveUpdates(() => {}, value => states.push(value.sync?.state ?? ''))
+    const sync = { configured: true, state: 'offline', mode: 'polling', observedAt: 100_000, checkedAt: 99_000,
+      message: 'Download failed.', download: { lastSuccessAt: 99_000 }, projection: { remaining: '0' },
+      completeness: { pushQuarantine: 0, pullQuarantine: 0, excludedNative: 0, scope: 'eligible' } }
+    try {
+      streams[0].emit('sync_status', { sync })
+      assert.equal(states.at(-1), 'offline')
+      streams[0].emit('sync_status', { sync: { ...sync, state: 'current', observedAt: 50_000, checkedAt: 49_000,
+        download: { lastSuccessAt: 49_000 }, message: 'Current.' } })
+      assert.equal(states.at(-1), 'current')
+    } finally { stop() }
+  })
+
+  it('late HTTP status metadata cannot overwrite a newer sync-only event', async () => {
+    const held = deferred<Response>()
+    const { local, streams } = harness(async () => held.promise)
+    const reading = local.loadWorkModel()
+    const stop = local.subscribeToLiveUpdates(() => {}, () => {})
+    const sync = { configured: true, state: 'offline', mode: 'polling', observedAt: 100_000, checkedAt: 99_000,
+      message: 'Download failed.', download: { lastSuccessAt: 99_000 }, projection: { remaining: '0' },
+      completeness: { pushQuarantine: 0, pullQuarantine: 0, excludedNative: 0, scope: 'eligible' } }
+    streams[0].emit('sync_status', { sync })
+    const older = overview()
+    older.sync = { ...sync, state: 'current', message: 'Old successful check.' } as NonNullable<WorkViewOverview['sync']>
+    held.resolve(json(older))
+    assert.equal((await reading).connection.sync?.state, 'offline')
+    stop()
+  })
   it('joins the first overview event instead of duplicating its initial GET', async () => {
     let fetches = 0
     const { local, streams, urls } = harness(async () => { fetches++; return json(overview()) })

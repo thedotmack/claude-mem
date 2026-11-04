@@ -4,6 +4,13 @@ import { boundedDurationMs, WORK_VIEW_READ_PURPOSES, type WorkViewReadDiagnostic
 
 type Pending = { resolve(value: WorkViewReadResult): void; reject(error: Error): void; enqueuedAtNs: bigint; startedAtNs: bigint | null; purpose: WorkViewReadPurpose; pendingAtEnqueue: number };
 
+/** Same packaged entrypoint, independent worker and queue for each reader. */
+export function createWorkViewReadWorker(workerData: object): Worker {
+  const candidates = ['work-view-read-worker.ts', 'work-view-read-worker.cjs'].map(name => new URL(name, import.meta.url));
+  const entry = candidates.find(candidate => existsSync(candidate)) ?? new URL('./work-view-read-worker.js', import.meta.url);
+  return new Worker(entry, { workerData });
+}
+
 /**
  * Runs SQLite-backed work-view projection reads away from the worker HTTP event loop, one at a time and answered in the
  * order they were asked (WorkViewRoutes relies on that). The queue has no cap of its own: each read belongs to an open
@@ -76,9 +83,7 @@ export class WorkViewReadWorkerClient {
   private getWorker(): Worker {
     if (this.closed) throw new Error('Work view reader closed');
     if (this.worker) return this.worker;
-    const candidates = ['work-view-read-worker.ts', 'work-view-read-worker.cjs'].map(name => new URL(name, import.meta.url));
-    const entry = candidates.find(candidate => existsSync(candidate)) ?? new URL('./work-view-read-worker.js', import.meta.url);
-    const worker = new Worker(entry, { workerData: this.workerData });
+    const worker = createWorkViewReadWorker(this.workerData);
     this.worker = worker;
     worker.on('message', (response: WorkViewReadResponse) => {
       const pending = this.pending.get(response.id);

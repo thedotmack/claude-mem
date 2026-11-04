@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { motion } from 'motion/react'
-import { BotIcon, CornerLeftUpIcon, MessageSquareIcon, RefreshCwIcon, StarIcon, UserIcon } from 'lucide-react'
+import { BotIcon, CloudAlertIcon, CloudCheckIcon, CloudIcon, CornerLeftUpIcon, MessageSquareIcon, RefreshCwIcon, StarIcon, UserIcon } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card'
@@ -187,14 +187,22 @@ export function LiveIndicator() {
               {live && <span className="absolute inline-flex size-full rounded-full bg-shipped-foreground/40 motion-safe:animate-ping" />}
               <span className={cn('relative inline-flex size-2 rounded-full', live ? 'bg-shipped-foreground' : connection.tone === 'warning' ? 'bg-attention-foreground' : 'bg-idle-foreground')} />
             </span>
-            {/* Phone: the dot alone (its colour carries the state, the tooltip the words) so the page title keeps whole words. */}
+            {/* Keep transport and cloud freshness distinct on phones as well as wider screens. */}
             <span className="sr-only sm:not-sr-only">{demonstration ? 'Live' : connection.label}</span>
+            {!demonstration && connection.sync && (
+              <span role="status" aria-label={`${connection.sync.label}. ${connection.sync.detail}`} data-sync-state={connection.sync.state} className={cn('inline-flex items-center border-l pl-2', connection.sync.tone === 'warning' ? 'text-attention-foreground' : 'text-muted-foreground')}>
+                {connection.sync.tone === 'warning' ? <CloudAlertIcon aria-hidden="true" className="size-4 shrink-0 sm:hidden" />
+                  : connection.sync.isCurrent ? <CloudCheckIcon aria-hidden="true" className="size-4 shrink-0 sm:hidden" />
+                    : <CloudIcon aria-hidden="true" className="size-4 shrink-0 sm:hidden" />}
+                <span className="sr-only sm:not-sr-only">{connection.sync.label}</span>
+              </span>
+            )}
           </span>
         </TooltipTrigger>
         <TooltipContent className="max-w-72">
           {demonstration
             ? mode === 'home' ? 'Streams from the local worker, localhost:37777 (demonstration)' : 'Checks cmem.ai for new sync changes every few seconds (demonstration)'
-            : <>{connection.detail} {connection.tooltip}</>}
+            : <>{connection.detail} {connection.tooltip} {connection.sync?.detail}</>}
         </TooltipContent>
       </Tooltip>
     </Req>

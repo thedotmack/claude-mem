@@ -155,6 +155,8 @@ export interface WorkViewSource {
   connected: boolean
   error: string | null
   lastCheckedAt: string | null
+  /** Last actual activity inspection; lightweight cache checks do not renew it. */
+  activityCheckedAt?: string | null
 }
 
 /** What one owner-goals item is (owner-goals.mjs GOAL_KINDS). Rows saved as priorities or open asks are read as these. */
@@ -260,6 +262,7 @@ export interface WorkViewSnapshot {
   unlinkedWork: unknown[]
   source: WorkViewSource
   revision: string
+  sync?: import('../../../viewer/utils/sync-presentation.js').SyncStatusForDisplay
   /** The current owner-goals run; null until the owner-goals skill has run. Older workers leave it out. */
   goals?: WorkViewGoalList | null
   /** Saved past months, newest first. */

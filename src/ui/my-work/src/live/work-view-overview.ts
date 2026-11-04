@@ -12,6 +12,7 @@ export interface WorkViewOverview {
   revision: string
   generatedAt: string
   source: WorkViewSource
+  sync?: import('../../../viewer/utils/sync-presentation.js').SyncStatusForDisplay
   model: WorkViewOverviewModel
 }
 

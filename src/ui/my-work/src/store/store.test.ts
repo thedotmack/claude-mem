@@ -140,6 +140,19 @@ describe('reading work', () => {
     assert.equal(store.getState().work.connection?.label, 'Reconnecting')
     assert.equal(store.getState().work.load, before.work.load)
   })
+  it('updates sync-only evidence without replacing the loaded work', () => {
+    const { store } = testStore()
+    const { source, feed } = fakeSource()
+    const stop = store.getState().startWorkSource(source)
+    feed.onModel(LOCAL_MODEL)
+    const loaded = store.getState().work.load
+    feed.onConnection({ ...LOCAL_MODEL.connection, sync: {
+      state: 'offline', label: 'Cloud sync unavailable', detail: 'Download failed.', tone: 'warning', isCurrent: false,
+    } })
+    assert.equal(store.getState().work.connection?.sync?.state, 'offline')
+    assert.equal(store.getState().work.load, loaded)
+    stop()
+  })
 })
 
 describe('saving work', () => {

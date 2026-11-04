@@ -81,7 +81,7 @@ export function App() {
   const feedVersion = feedVisit.version;
 
   const catalog = useSessionCatalog();
-  const { observations, summaries, prompts, projects, isProcessing, queueDepth, removeLiveItem, removeLiveSession } = useSSE({
+  const { observations, summaries, prompts, projects, isProcessing, queueDepth, isConnected, syncStatus, removeLiveItem, removeLiveSession } = useSSE({
     onItemDeleted: removeDeletedItem,
     onSessionDeleted: removeDeletedSession,
     onLiveItem: item => {
@@ -366,6 +366,8 @@ export function App() {
         onFilterChange={setCurrentFilter}
         isProcessing={isProcessing}
         queueDepth={queueDepth}
+        isConnected={isConnected}
+        syncStatus={syncStatus}
         themePreference={preference}
         onThemeChange={setThemePreference}
         onContextPreviewToggle={toggleContextPreview}

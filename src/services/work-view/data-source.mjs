@@ -171,6 +171,7 @@ export class WorkStateSource {
         }
       }
       if (!reuseActivity) this.activityCheckedAt = now;
+      this.source.activityCheckedAt = this.activityCheckedAt === null ? null : new Date(this.activityCheckedAt).toISOString();
       this.source.connected = true;
       this.source.error = null;
       this.source.lastUpdatedAt = this.cachedState.lastUpdatedAt;

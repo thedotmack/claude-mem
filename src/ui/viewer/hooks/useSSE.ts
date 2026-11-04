@@ -4,6 +4,8 @@ import { API_ENDPOINTS } from '../constants/api';
 import { TIMING } from '../constants/timing';
 import { itemDeletedTarget } from '../utils/feed-deletion';
 import { removeSessionRows, sessionDeletedTarget, sessionRefOf, type SessionRef } from '../utils/sessions';
+import { isSyncStatus, presentSync, type SyncStatusForDisplay } from '../utils/sync-presentation';
+import { startViewerActivity } from '../utils/viewer-activity';
 
 /** A live row as the session catalog sees it. */
 export interface LiveSessionItem {
@@ -28,6 +30,8 @@ export function useSSE(handlers: StreamHandlers) {
   const [projects, setProjects] = useState<string[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [queueDepth, setQueueDepth] = useState(0);
+  const [isConnected, setIsConnected] = useState(false);
+  const [syncStatus, setSyncStatus] = useState(() => presentSync(null, null, performance.now()));
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
   const handlersRef = useRef(handlers);
@@ -62,6 +66,19 @@ export function useSSE(handlers: StreamHandlers) {
     let closed = false;
     let processingVersion = 0;
     let statusRequest: AbortController | null = null;
+    const syncEvidence: { value: SyncStatusForDisplay | null; receivedAt: number | null } = { value: null, receivedAt: null };
+    const refreshSync = () => {
+      const next = presentSync(syncEvidence.value, syncEvidence.receivedAt, performance.now());
+      setSyncStatus(previous => previous.state === next.state && previous.label === next.label && previous.detail === next.detail ? previous : next);
+    };
+    const acceptSync = (value: unknown) => {
+      if (!isSyncStatus(value) || (syncEvidence.value && JSON.stringify(value) === JSON.stringify(syncEvidence.value))) return;
+      syncEvidence.value = value;
+      syncEvidence.receivedAt = performance.now();
+      refreshSync();
+    };
+    const host = window.location.hostname;
+    const stopActivity = startViewerActivity({ enabled: host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1' });
 
     // A quiet or disconnected stream can leave an old queue count on screen.
     // Reconcile with the worker, but never overwrite a newer stream event.
@@ -99,6 +116,8 @@ export function useSSE(handlers: StreamHandlers) {
       eventSourceRef.current = eventSource;
 
       eventSource.onopen = () => {
+        if (closed) return;
+        setIsConnected(true);
         console.log('[SSE] Connected');
         void refreshProcessingStatus();
         if (reconnectTimeoutRef.current) {
@@ -107,6 +126,8 @@ export function useSSE(handlers: StreamHandlers) {
       };
 
       eventSource.onerror = (error) => {
+        if (closed) return;
+        setIsConnected(false);
         console.error('[SSE] Connection error:', error);
         eventSource.close();
         void refreshProcessingStatus();
@@ -119,7 +140,10 @@ export function useSSE(handlers: StreamHandlers) {
       };
 
       eventSource.onmessage = (event) => {
-        const data: StreamEvent = JSON.parse(event.data);
+        if (closed) return;
+        let data: StreamEvent;
+        try { data = JSON.parse(event.data); } catch { return; }
+        if (!data || typeof data !== 'object' || typeof data.type !== 'string') return;
 
         switch (data.type) {
           case 'initial_load':
@@ -127,6 +151,11 @@ export function useSSE(handlers: StreamHandlers) {
               projects: data.projects?.length || 0
             });
             setProjects(data.projects || []);
+            acceptSync(data.sync);
+            break;
+
+          case 'sync_status':
+            acceptSync(data.sync);
             break;
 
           case 'new_observation':
@@ -186,12 +215,15 @@ export function useSSE(handlers: StreamHandlers) {
     // (WorkViewRoutes sends one every 15 s): one cheap status read per beat
     // while visible; hidden tabs skip it (see refreshProcessingStatus).
     const statusInterval = setInterval(refreshProcessingStatus, 15000);
+    const syncClock = setInterval(refreshSync, 1000);
     window.addEventListener('focus', refreshProcessingStatus);
     document.addEventListener('visibilitychange', refreshProcessingStatus);
 
     return () => {
       closed = true;
       clearInterval(statusInterval);
+      clearInterval(syncClock);
+      stopActivity();
       statusRequest?.abort();
       window.removeEventListener('focus', refreshProcessingStatus);
       document.removeEventListener('visibilitychange', refreshProcessingStatus);
@@ -211,6 +243,8 @@ export function useSSE(handlers: StreamHandlers) {
     projects,
     isProcessing,
     queueDepth,
+    isConnected,
+    syncStatus,
     removeLiveItem,
     removeLiveSession
   };

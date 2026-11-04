@@ -133,7 +133,9 @@ export const createWorkSlice: SliceCreator<WorkSlice> = (set, get) => {
     // A heartbeat that changes nothing re-renders nothing.
     receiveConnection: (connection) => {
       const shown = get().work.connection
-      if (shown && shown.state === connection.state && shown.label === connection.label && shown.detail === connection.detail && shown.tooltip === connection.tooltip) return
+      const sameSync = shown?.sync?.state === connection.sync?.state && shown?.sync?.label === connection.sync?.label
+        && shown?.sync?.detail === connection.sync?.detail && shown?.sync?.tone === connection.sync?.tone
+      if (shown && sameSync && shown.state === connection.state && shown.label === connection.label && shown.detail === connection.detail && shown.tooltip === connection.tooltip) return
       set((state) => { state.work.connection = connection })
     },
 

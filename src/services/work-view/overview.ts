@@ -1,3 +1,4 @@
+import type { ViewerSyncStatus } from '../../shared/viewer-sync-status.js';
 import { toWorkModel } from '../../ui/my-work/src/live/to-work-model.js';
 import { isCardDeliverable } from '../../ui/my-work/src/lib/deliverables.js';
 import type { Request as WorkRequest } from '../../ui/my-work/src/data.js';
@@ -23,6 +24,7 @@ export function workViewOverview(snapshot: WorkViewSnapshot, now = Date.now()): 
   const model = toWorkModel(snapshot as unknown as ApiSnapshot, now);
   return {
     version: 1,
+    ...(snapshot.sync ? { sync: snapshot.sync as ViewerSyncStatus } : {}),
     revision: String(snapshot.revision),
     generatedAt: new Date(now).toISOString(),
     source: {

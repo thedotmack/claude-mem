@@ -106,7 +106,8 @@ export type FeedItem =
 export type FeedItemType = 'observation' | 'summary' | 'prompt';
 
 export interface StreamEvent {
-  type: 'initial_load' | 'new_observation' | 'new_summary' | 'new_prompt' | 'processing_status' | 'item_deleted' | 'session_deleted';
+  type: 'initial_load' | 'new_observation' | 'new_summary' | 'new_prompt' | 'processing_status' | 'item_deleted' | 'session_deleted' | 'sync_status';
+  sync?: import('./utils/sync-presentation').SyncStatusForDisplay;
   observations?: Observation[];
   summaries?: Summary[];
   prompts?: UserPrompt[];

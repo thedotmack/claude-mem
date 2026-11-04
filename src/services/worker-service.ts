@@ -148,7 +148,7 @@ import { SyncApply } from './sync/SyncApply.js';
 import { ContextCacheService } from './worker/ContextCacheService.js';
 import { getContextReadWorker, closeContextReadWorker } from './context/ContextReadWorkerClient.js';
 import { emitContextInvalidation } from '../shared/context-invalidation.js';
-import { SyncClient } from './sync/SyncClient.js';
+import { SyncClient, keepPullingOptions } from './sync/SyncClient.js';
 
 import { ViewerRoutes } from './worker/http/routes/ViewerRoutes.js';
 import { SetupScan } from './prompt-import/setup-scan.js';
@@ -174,6 +174,7 @@ import { DedupRoutes } from './worker/http/routes/DedupRoutes.js';
 import { CorpusRoutes } from './worker/http/routes/CorpusRoutes.js';
 import { ChromaRoutes } from './worker/http/routes/ChromaRoutes.js';
 import { CloudSyncRoutes } from './worker/http/routes/CloudSyncRoutes.js';
+import { ViewerSyncService, ViewerActivity } from './sync/ViewerSyncService.js';
 import { TeamBrainRoutes } from './worker/http/routes/TeamBrainRoutes.js';
 import { BackupRoutes } from './worker/http/routes/BackupRoutes.js';
 import { applyPendingRestore } from './backup/restore-swap.js';
@@ -322,6 +323,15 @@ export class WorkerService implements WorkerRef {
   private transcriptWatcher: TranscriptWatcher | null = null;
   private memoryFileWatcher: MemoryFileWatcher | null = null;
   private syncClient: SyncClient | null = null;
+  private readonly viewerActivity = new ViewerActivity(active => this.syncClient?.setViewerActive(active));
+  private readonly viewerSync = new ViewerSyncService({
+    cloud: () => this.dbManager.getCloudSync(), pull: () => this.syncClient,
+    hasViewers: () => this.sseBroadcaster.getClientCount() + (this.workViewRoutes?.getClientCount() ?? 0) > 0,
+    onChange: sync => {
+      this.sseBroadcaster.broadcast({ type: 'sync_status', sync });
+      this.workViewRoutes?.publishSyncStatus(sync);
+    },
+  });
   private contextCacheService: ContextCacheService | null = null;
   private idleExitMonitor: IdleExitMonitor | null = null;
   private initializationComplete: Promise<void>;
@@ -853,6 +863,8 @@ export class WorkerService implements WorkerRef {
       // Work View starts background refresh in its constructor. Keep every
       // read-only handle behind successful schema checks and migrations (#5127).
       this.workViewRoutes = new WorkViewRoutes({
+        getSyncStatus: () => this.viewerSync.getSnapshot(),
+        updateViewerActivity: (id, visible, sequence) => this.viewerActivity.update(id, visible, sequence),
         getLocalDeviceId: () => this.dbManager.getCloudSync()?.status().deviceId ?? '',
         // My Rules saves as work-state rows, so a rule change syncs like any other write.
         appendWorkStateEntry: (entry) => {
@@ -933,9 +945,9 @@ export class WorkerService implements WorkerRef {
           deviceId: pullDeviceId,
           deviceName: settings.CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME,
           isSessionActive: () => this.sessionManager.getActiveSessionCount() > 0,
-          // A replica with no sessions of its own (services/viewer-host) still
-          // has to follow the owner's other devices: never suspend there.
-          suspendAfterMs: settings.CLAUDE_MEM_CLOUD_SYNC_KEEP_PULLING === 'true' ? Number.POSITIVE_INFINITY : undefined,
+          // Replica-only workers have no sessions to select the active tier.
+          // Keep their HTTP safety poll at 30s as well as disabling suspension.
+          ...keepPullingOptions(settings.CLAUDE_MEM_CLOUD_SYNC_KEEP_PULLING === 'true'),
           // Advisory WebSocket (plan Phase 4): enabled by default alongside
           // the hub URL; CLAUDE_MEM_CLOUD_SYNC_WS='false' pins HTTP-only.
           wsEnabled: settings.CLAUDE_MEM_CLOUD_SYNC_WS !== 'false',
@@ -1002,8 +1014,9 @@ export class WorkerService implements WorkerRef {
       // because it reads dbManager.getCloudSync(), which exists only after
       // dbManager.initialize() above — and unconditionally, so an
       // unconfigured install answers {configured: false} instead of 404.
-      this.server.registerRoutes(new CloudSyncRoutes(this.dbManager));
+      this.server.registerRoutes(new CloudSyncRoutes(this.dbManager, this.viewerSync));
       logger.info('WORKER', 'CloudSyncRoutes registered');
+      this.viewerSync.start();
       // TeamBrain proxy for the team_* MCP tools, beside cloud sync because it
       // signs with the same credentials. Settings are read per request, so a
       // join or leave applies without a restart.
@@ -1319,6 +1332,8 @@ export class WorkerService implements WorkerRef {
 
         // Stop the pull loop before the DB starts closing: stop() clears the
         // timer and makes any in-flight cycle bail before its next DB touch.
+        this.viewerActivity.close();
+        this.viewerSync.close();
         if (this.syncClient) {
           this.syncClient.stop();
           this.syncClient = null;

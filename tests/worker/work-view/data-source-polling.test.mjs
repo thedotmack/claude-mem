@@ -97,3 +97,14 @@ test('a clock rollback does not extend cached activity freshness', () => {
   setSystemTime(START - 1000);
   expect(source.read(POLL).agentView.revision).toBe(initial + 1);
 });
+
+test('activity freshness is not renewed by a cached database-read heartbeat', () => {
+  const first = source.read(POLL).agentView.source;
+  expect(first.activityCheckedAt).toBe(new Date(START).toISOString());
+  setSystemTime(START + 30_000);
+  const cached = source.read(POLL).agentView.source;
+  expect(cached.lastCheckedAt).toBe(new Date(START + 30_000).toISOString());
+  expect(cached.activityCheckedAt).toBe(first.activityCheckedAt);
+  setSystemTime(START + 120_000);
+  expect(source.read(POLL).agentView.source.activityCheckedAt).toBe(new Date(START + 120_000).toISOString());
+});

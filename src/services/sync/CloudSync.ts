@@ -60,6 +60,7 @@ import {
 } from './CanonicalContent.js';
 import { SYNC_CAPABILITIES, SYNC_CAPABILITIES_HEADER } from './sync-capabilities.js';
 import { PROMPT_TEXT_COLUMNS_SQL, clampPromptTextForSync } from './prompt-text-clamp.js';
+import { SyncHistoryScopeReader } from './SyncHistoryScopeReader.js';
 import {
   classifySyncAuthFailure,
   friendlySyncError,
@@ -591,6 +592,11 @@ export class CloudSync {
   private readonly requestTimeoutMs: number;
   private readonly statusTimeoutMs: number;
   private statusProbePromise: Promise<void> | null = null;
+  private statusProbeAuthFailure: SyncAuthFailure | null = null;
+  private statusProbeSyncMode: string | null = null;
+  private historyScopeCache: { at: number; count: number | null } | null = null;
+  private historyScopeReader: SyncHistoryScopeReader | null = null;
+  private historyScopePending: Promise<number | null> | null = null;
   private readonly authRetryMs: number;
   private readonly contentKindsReprobeMs: number;
   private readonly healthFilePath: string | null;
@@ -958,7 +964,7 @@ export class CloudSync {
    */
   async statusWithHubProbe(): Promise<CloudSyncStatus> {
     if (!this.stopped && this.isActive()) {
-      await this.probeHubStatus();
+      await this.probeHubStatus(false);
     }
     return this.status();
   }
@@ -1017,17 +1023,41 @@ export class CloudSync {
     this.debounceTimer = timer;
   }
 
-  private probeHubStatus(): Promise<void> {
+  private async probeHubStatus(recover = true): Promise<void> {
     if (!this.statusProbePromise) {
       this.statusProbePromise = this.runHubStatusProbe().finally(() => {
         this.statusProbePromise = null;
       });
     }
-    return this.statusProbePromise;
+    await this.statusProbePromise;
+    // The public status route is observational. Lifecycle callers own recovery.
+    if (recover) {
+      if (this.statusProbeSyncMode !== null || this.hubStatus.reachable) this.emitSyncMode(this.statusProbeSyncMode);
+      if (this.hubStatus.reachable) this.exitAuthPause();
+      else if (this.statusProbeAuthFailure) {
+        this.enterAuthPause(this.statusProbeAuthFailure);
+        if (!this.retryTimer) this.scheduleRetry(this.authRetryMs);
+      }
+    }
+  }
+
+  /** Historical eligibility only; no row is marked or queued by this cached inventory. */
+  historicalExcludedCount(now = Date.now()): Promise<number | null> {
+    if (this.stopped) return Promise.resolve(null);
+    if (this.historyScopeCache && now >= this.historyScopeCache.at && now - this.historyScopeCache.at < 300_000) return Promise.resolve(this.historyScopeCache.count);
+    if (this.historyScopePending) return this.historyScopePending;
+    this.historyScopeReader ??= new SyncHistoryScopeReader(this.db.filename);
+    this.historyScopePending = this.historyScopeReader.read().then(count => {
+      if (!this.stopped) this.historyScopeCache = { at: now, count };
+      return count;
+    }).finally(() => { this.historyScopePending = null; });
+    return this.historyScopePending;
   }
 
   private async runHubStatusProbe(): Promise<void> {
     let checkedAt = Date.now();
+    this.statusProbeAuthFailure = null;
+    this.statusProbeSyncMode = null;
     try {
       const signal = AbortSignal.timeout(this.statusTimeoutMs);
       const response = await this.fetchImpl(`${this.hubUrl}/v1/sync/status`, {
@@ -1042,8 +1072,7 @@ export class CloudSync {
         signal,
       });
       checkedAt = Date.now();
-      const syncMode = response.headers.get('X-Sync-Mode');
-      if (syncMode !== null || response.ok) this.emitSyncMode(syncMode);
+      this.statusProbeSyncMode = response.headers.get('X-Sync-Mode');
       if (!response.ok) {
         const rawBody = await response.text().catch(() => '');
         const body = rawBody.slice(0, 200);
@@ -1096,12 +1125,8 @@ export class CloudSync {
         contentKinds,
         error: null,
       };
-      this.exitAuthPause();
     } catch (error) {
-      if (error instanceof HubHttpError && error.authFailure) {
-        this.enterAuthPause(error.authFailure, error);
-        if (!this.retryTimer) this.scheduleRetry(this.authRetryMs);
-      }
+      if (error instanceof HubHttpError && error.authFailure) this.statusProbeAuthFailure = error.authFailure;
       const raw = error instanceof Error ? friendlySyncError(error.message) : String(error);
       const safe = this.token === '' ? raw : raw.split(this.token).join('[REDACTED]');
       this.hubStatus = {
@@ -1181,6 +1206,7 @@ export class CloudSync {
    */
   stop(): void {
     this.stopped = true;
+    this.historyScopeReader?.close();
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
