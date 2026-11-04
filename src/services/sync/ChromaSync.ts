@@ -293,6 +293,63 @@ function isMetadataScalar(value: unknown): value is string | number | boolean {
   return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
 }
 
+/**
+ * Strip the broad `doc_type` clause from a Chroma filter so Chroma never
+ * evaluates it server-side (#5354). On chromadb 1.5.9, `doc_type = observation`
+ * matches nearly the entire corpus (e.g. 2.85M of 3M rows), forcing SQLite to
+ * perform ~1M unindexed table lookups across scattered leaf pages before
+ * intersecting with the selective project clause, blocking chroma-mcp for
+ * minutes (#4682, #5354).
+ *
+ * When the doc_type clause is stripped, the caller filters the returned
+ * metadata client-side using the original predicate. Returns undefined if
+ * doc_type was the only clause, the unnested single remaining clause if an
+ * $and had two clauses, or the narrowed $and if multiple clauses remain.
+ * If doc_type was not present or the filter is not an object, returns the
+ * original where unchanged.
+ */
+export function stripDocTypeClause(where: Record<string, any> | undefined): Record<string, any> | undefined {
+  if (!where || typeof where !== 'object' || Array.isArray(where)) {
+    return where;
+  }
+
+  // Top-level doc_type clause: { doc_type: 'observation' } or { doc_type: { $in: [...] } }
+  if ('doc_type' in where && Object.keys(where).length === 1) {
+    return undefined;
+  }
+
+  // Top-level $and containing a doc_type clause
+  if (Array.isArray(where.$and) && Object.keys(where).length === 1) {
+    const remaining = where.$and.filter(
+      (clause: unknown) =>
+        !(
+          clause &&
+          typeof clause === 'object' &&
+          !Array.isArray(clause) &&
+          'doc_type' in clause &&
+          Object.keys(clause).length === 1
+        )
+    );
+
+    if (remaining.length === where.$and.length) {
+      return where;
+    }
+
+    if (remaining.length === 0) {
+      return undefined;
+    }
+
+    if (remaining.length === 1) {
+      // Chroma rejects an $and with fewer than two clauses, so unwrap it.
+      return remaining[0] as Record<string, any>;
+    }
+
+    return { $and: remaining };
+  }
+
+  return where;
+}
+
 // One `IN (...)` per chunk keeps a large pending list under SQLite's bound
 // parameter limit (#4818).
 const PENDING_ID_QUERY_CHUNK_SIZE = 500;
@@ -1991,6 +2048,45 @@ export class ChromaSync {
 
       // The fallback consumes the same row metadata and distances as the fast
       // path; document text is never read, even for large corpus budgets.
+      // Strip doc_type from Chroma's where clause (#5354): evaluating doc_type
+      // on a large collection (e.g. 2.85M observations) stalls Chroma for minutes
+      // while it scans unindexed leaf pages (#4682, #5354). Sibling doc types
+      // are filtered client-side via predicate.
+      const strippedWhere = predicate ? stripDocTypeClause(whereFilter) : whereFilter;
+      const docTypeStripped = strippedWhere !== whereFilter;
+
+      if (docTypeStripped && predicate) {
+        const queryLimit = Math.max(
+          limit,
+          Math.min(limit * CHROMA_OVERFETCH_FACTOR, CHROMA_OVERFETCH_CAP)
+        );
+        const raw: any = await runQuery(queryLimit, strippedWhere, ['metadatas', 'distances']);
+        const rawIds = raw?.ids?.[0] || [];
+        const rawMetadatas = raw?.metadatas?.[0] || [];
+        const rawDistances = raw?.distances?.[0] || [];
+
+        const keptIds: string[] = [];
+        const keptMetadatas: any[] = [];
+        const keptDistances: number[] = [];
+        for (let i = 0; i < rawIds.length; i++) {
+          if (!predicate(rawMetadatas[i] ?? {})) continue;
+          keptIds.push(rawIds[i]);
+          keptMetadatas.push(rawMetadatas[i]);
+          keptDistances.push(rawDistances[i]);
+        }
+
+        const filtered = this.deduplicateQueryResults({
+          ids: [keptIds], metadatas: [keptMetadatas], distances: [keptDistances]
+        });
+
+        if (progress) progress.exhausted = rawIds.length < queryLimit && filtered.ids.length <= limit;
+        return {
+          ids: filtered.ids.slice(0, limit),
+          distances: filtered.distances.slice(0, limit),
+          metadatas: filtered.metadatas.slice(0, limit)
+        };
+      }
+
       results = await runQuery(limit, whereFilter, ['metadatas', 'distances']);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
