@@ -29,6 +29,14 @@ export const MAX_DEVICES_PER_USER = 64;
 export const DEVICE_LIMIT_ERROR = "device_limit_exceeded";
 /** 45s Hub abort < 60s Pro platform ceiling < 90s fencing lease. */
 export const PROJECTION_LEASE_MS = 90_000;
+/**
+ * Close code for an advisory socket whose cached auth verdict has lapsed.
+ * 4401 mirrors HTTP 401 in the application close-code range; clients already
+ * reconnect on any close, and reconnecting re-authenticates.
+ */
+export const AUTH_EXPIRED_CLOSE_CODE = 4401;
+/** Worker → DO header carrying the socket's auth deadline (epoch ms). */
+export const SOCKET_AUTH_DEADLINE_HEADER = "X-Sync-Auth-Expires-At";
 const encoder = new TextEncoder();
 
 export type PushOp = CanonicalWireOp;
@@ -180,6 +188,37 @@ function toChange(row: {
 	};
 }
 
+/**
+ * Hibernation-safe per-socket state. `auth_expires_at_ms` is the expiry of the
+ * cached verdict that authorized the upgrade; a socket past it may no longer
+ * receive committed content.
+ */
+interface SocketAttachment {
+	device_id: string;
+	auth_expires_at_ms: number;
+}
+
+function readSocketAttachment(socket: WebSocket): Record<string, unknown> | null {
+	try {
+		const attachment = socket.deserializeAttachment() as Record<string, unknown> | null;
+		return typeof attachment === "object" && attachment !== null ? attachment : null;
+	} catch {
+		return null;
+	}
+}
+
+function socketAuthDeadlineMs(socket: WebSocket): number | null {
+	const expiresAt = readSocketAttachment(socket)?.auth_expires_at_ms;
+	return typeof expiresAt === "number" && Number.isSafeInteger(expiresAt) ? expiresAt : null;
+}
+
+/** Parse the Worker-supplied deadline; anything malformed is refused, never guessed. */
+function parseAuthDeadlineHeader(raw: string | null): number | null {
+	if (raw === null || !/^[1-9][0-9]*$/.test(raw)) return null;
+	const value = Number(raw);
+	return Number.isSafeInteger(value) ? value : null;
+}
+
 export class SyncHub extends DurableObject<Env> {
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
@@ -286,6 +325,14 @@ export class SyncHub extends DurableObject<Env> {
 		if (request.headers.get("Upgrade") !== "websocket") {
 			return new Response("SyncHub expected Upgrade: websocket", { status: 426 });
 		}
+		const authExpiresAtMs = parseAuthDeadlineHeader(
+			request.headers.get(SOCKET_AUTH_DEADLINE_HEADER),
+		);
+		if (authExpiresAtMs === null) {
+			// No deadline means no way to stop feeding the socket after its token
+			// lapses, so refuse the upgrade instead of accepting an unbounded one.
+			return new Response(`missing ${SOCKET_AUTH_DEADLINE_HEADER} header`, { status: 400 });
+		}
 		const deviceId = (request.headers.get("X-Device-Id") ?? "").trim();
 		if (deviceId.length === 0) return new Response("missing X-Device-Id header", { status: 400 });
 		const deviceName = normalizeDeviceName(request.headers.get("X-Device-Name"));
@@ -302,7 +349,15 @@ export class SyncHub extends DurableObject<Env> {
 		}
 		const [client, server] = Object.values(new WebSocketPair());
 		this.ctx.acceptWebSocket(server);
-		server.serializeAttachment({ device_id: deviceId });
+		const attachment: SocketAttachment = { device_id: deviceId, auth_expires_at_ms: authExpiresAtMs };
+		server.serializeAttachment(attachment);
+		// A hibernated socket cannot hold a timer, so the alarm is the only way to
+		// close it while the log is quiet. Move the daily no-op earlier when this
+		// socket lapses first.
+		const scheduled = await this.ctx.storage.getAlarm();
+		if (scheduled === null || authExpiresAtMs < scheduled) {
+			await this.ctx.storage.setAlarm(authExpiresAtMs);
+		}
 		return new Response(null, { status: 101, webSocket: client });
 	}
 
@@ -347,13 +402,21 @@ export class SyncHub extends DurableObject<Env> {
 					frame = JSON.stringify({ type: "advance", epoch, head_seq: head });
 				}
 			}
+			const now = Date.now();
 			for (const ws of sockets) {
-				let attachedDevice: string | null = null;
+				let attachment: Record<string, unknown> | null = null;
 				try {
-					const attachment = ws.deserializeAttachment() as { device_id?: unknown } | null;
-					attachedDevice = typeof attachment?.device_id === "string" ? attachment.device_id : null;
+					attachment = ws.deserializeAttachment() as Record<string, unknown> | null;
 				} catch {}
-				if (attachedDevice === originDeviceId) continue;
+				const deadline = attachment?.auth_expires_at_ms;
+				if (typeof deadline !== "number" || !Number.isSafeInteger(deadline) || deadline <= now) {
+					// Never feed committed content to a socket whose verdict has
+					// lapsed (or which predates deadlines): close it so the client
+					// re-handshakes and re-authenticates instead.
+					try { ws.close(AUTH_EXPIRED_CLOSE_CODE, "auth expired"); } catch {}
+					continue;
+				}
+				if (attachment?.device_id === originDeviceId) continue;
 				try { ws.send(frame); } catch {}
 			}
 		} catch (error) {
@@ -567,11 +630,14 @@ export class SyncHub extends DurableObject<Env> {
 		const head = this.headSeq();
 		const projected = this.projectedSeq();
 		const connected = new Set<string>();
+		const now = Date.now();
 		for (const socket of this.ctx.getWebSockets()) {
-			try {
-				const attachment = socket.deserializeAttachment() as { device_id?: unknown } | null;
-				if (typeof attachment?.device_id === "string") connected.add(attachment.device_id);
-			} catch {}
+			const attachment = readSocketAttachment(socket);
+			const deadline = attachment?.auth_expires_at_ms;
+			if (typeof attachment?.device_id !== "string") continue;
+			// A socket past its verdict is no longer a live reader.
+			if (typeof deadline !== "number" || deadline <= now) continue;
+			connected.add(attachment.device_id);
 		}
 		const devices = this.ctx.storage.sql.exec<{
 			device_id: string;
@@ -803,7 +869,27 @@ export class SyncHub extends DurableObject<Env> {
 		// A cursor-0 device has no snapshot/reset bootstrap yet, so every
 		// canonical operation remains replayable. Keep the alarm surface for
 		// deployed-object compatibility, but deliberately delete zero rows.
-		await this.ctx.storage.setAlarm(Date.now() + DAY_MS);
+		//
+		// The same alarm closes sockets whose auth verdict lapsed while the log
+		// was quiet: a hibernated DO cannot hold a timer, so the alarm is re-armed
+		// to the earliest pending deadline (or the daily no-op, whichever is
+		// sooner).
+		const now = Date.now();
+		let next = now + DAY_MS;
+		for (const ws of this.ctx.getWebSockets()) {
+			const deadline = socketAuthDeadlineMs(ws);
+			if (deadline === null) {
+				// A socket that predates deadlines cannot be bounded; drop it.
+				try { ws.close(AUTH_EXPIRED_CLOSE_CODE, "auth expired"); } catch {}
+				continue;
+			}
+			if (deadline <= now) {
+				try { ws.close(AUTH_EXPIRED_CLOSE_CODE, "auth expired"); } catch {}
+			} else if (deadline < next) {
+				next = deadline;
+			}
+		}
+		await this.ctx.storage.setAlarm(next);
 	}
 
 	private headSeq(): string { return this.meta("head_seq"); }
