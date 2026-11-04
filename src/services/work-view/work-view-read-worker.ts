@@ -5,6 +5,10 @@ import { readHistoricalSyncScope } from '../sync/read-history-scope.js';
 import { Database } from 'bun:sqlite';
 import { SharedLedgerAdapter } from './shared-ledger-adapter.mjs';
 import { readSyncQueueInventory, type SyncQueueFlags } from '../sync/SyncQueueEvidence.js';
+import { RecoveryError, SyncRecovery, type RecoveryScope } from '../sync/SyncRecovery.js';
+import { getNativeContentOperation } from '../sync/CloudSync.js';
+import { listConflictEvidence, readLocalConflictEvidence, SyncRecoveryError } from '../sync/SyncConflictEvidence.js';
+import type { ContentKind } from '../sync/CanonicalContent.js';
 
 if (!parentPort) throw new Error('Work view reader requires a worker thread');
 
@@ -24,6 +28,26 @@ if (workerData.kind === 'shared-work-sync') {
     try { diagnostic = adapter.reconcile(); }
     catch { diagnostic = { error: 'Shared work could not be refreshed; retrying.' }; }
     parentPort!.postMessage({ changed, rulesChanged, diagnostic });
+  });
+} else if (workerData.kind === 'sync-recovery') {
+  const db = new Database(workerData.databasePath, { readonly: true });
+  db.exec('PRAGMA busy_timeout = 1000');
+  parentPort.on('message', (request: { id: number; kind: 'inventory' | 'preview' | 'conflict-evidence' | 'conflict-list'; scope: RecoveryScope; flags: SyncQueueFlags; contentKind: ContentKind; originLocalId: string; limit: number }) => {
+    try {
+      const recovery = new SyncRecovery(db, workerData.deviceId, {
+        snapshotNative: (kind, id) => getNativeContentOperation(db, kind, id, workerData.deviceId),
+        flags: () => request.flags,
+      });
+      const result = request.kind === 'inventory' ? recovery.inventory()
+        : request.kind === 'conflict-list' ? listConflictEvidence(db, request.limit)
+        : request.kind === 'conflict-evidence' ? readLocalConflictEvidence(db, workerData.deviceId, request.contentKind, request.originLocalId)
+        : recovery.preview(request.scope);
+      parentPort!.postMessage({ id: request.id, ok: true, result });
+    } catch (error) {
+      parentPort!.postMessage({ id: request.id, ok: false,
+        code: error instanceof RecoveryError || error instanceof SyncRecoveryError ? error.code : 'recovery_read_failed',
+        status: error instanceof RecoveryError || error instanceof SyncRecoveryError ? error.status : 503 });
+    }
   });
 } else if (workerData.kind === 'sync-queue-evidence') {
   // Separate instance from both HTTP projection and history inventory readers.

@@ -41,7 +41,7 @@ After catch-up, two replicas with different SQLite IDs must agree on shared grou
 | Auth errors | Reuse [`classifySyncAuthFailure`](../../src/shared/sync-health.ts): an HTML proxy/WAF 401/403 is a retryable transport failure, not necessarily invalid credentials. Pull currently classifies by error text and needs the same structured distinction. |
 | Apply and notifications | [`SyncApply`](../../src/services/sync/SyncApply.ts) commits applied rows and cursor together, then emits context invalidation. Feed notifications must follow that commit and remain cheap. Existing invalidation metadata has no affected lists/revisions. |
 | Upload fairness | Preserve immutable outbox bytes, one flush owner, required mutation order and higher-revision rules. Fair turns must include both native-row drains and already-frozen `sync_content_outbox` entries. |
-| History and conflicts | No public selective backfill or arbitrary conflict-repair API exists. Preserve exclusions/heads/cursors. Preview selected native history and use resumable jobs. A repair needs authorized origin ownership and a revision/precondition checked against current authoritative hub and replica state; local revision knowledge alone is insufficient. |
+| History and conflicts | Phase 8 adds guarded local selected-history jobs and origin-only conditional repair. Preserve exclusions/heads/cursors. Preview and review a concrete scope before creating/resuming a job. A repair needs the current authoritative hub head plus local native/head/outbox/conflict evidence; local revision knowledge alone is insufficient. |
 | Hosted writes and files | [`viewer gate`](../../services/viewer-host/src/gate.ts) broadly permits authenticated reads except blocked prefixes, but write routes are explicitly allowed and origin checked. Keep generic state/path uploads blocked. Replicate safe published URL metadata; label local files origin-only. The media attachment resolver is not generic file storage. |
 
 The source checks above were repeated for Phase 0. In particular, the status-probe side effect, realtime mismatch, disabled-copy display behavior, and missing review owner wrapper are baseline facts, not regressions introduced by this work.
@@ -343,3 +343,60 @@ Dependency discovery now accepts only object-shaped mutation candidates with the
 Titles skip prerequisite SQL entirely because they intentionally have no frozen dependency. A targeted prompt repair uses the existing unique `entity_id,entity_rev` index; remap aggregates remain restricted to applicable, nondeleted content kinds and retain exact blocked count/oldest-time evidence. Other selection checks use bounded pages or `EXISTS`, and inventory aggregates remain off-thread.
 
 The post-review core sweep passed **218 tests / 1,590 assertions across eight files**, including 30 fairness tests. A synthetic 40-title page with 50,002 frozen rows took 4.29 ms in the recorded local probe after removing the unnecessary aggregate, versus the reviewer’s approximately 462 ms before; an earlier fixed run was 5.35 ms. These are isolated local mutation-page samples with a mock acknowledgement, not network latency or p95 claims. The regression asserts zero prerequisite aggregate queries for 40 titles over a 2,048-row backlog. The prompt query plan uses `SEARCH o USING INDEX sqlite_autoindex_sync_content_outbox_1 (entity_id=?)`.
+
+## Phase 8 selected history and conflict recovery
+
+Recovery is an explicit operator workflow. Installing this code does not select or upload historical rows. `SyncRecovery` keeps the launch exclusion ledger and baseline intact. Its inventory separately reports eligible/held queue revisions, extant excluded native revisions, historical exclusion ledger entries, pull quarantine operations and distinct identities, and push dead letters. Exclusion is not proof that an entity is absent from the cloud. Historical coverage remains `selected_history`, including after a selected job finishes.
+
+The local worker exposes `/api/sync/recovery`. All recovery routes require a loopback client and Host, reject forwarded-client headers and foreign browser origins, and return `Cache-Control: no-store`. POST requires JSON with exact supported fields. Inventory, historical preview and conflict evidence/grouping reads run in a dedicated read-only worker/connection, independently of HTTP and My Work projection reads. Their responses contain identities, revisions, hashes, counts and estimated canonical bytes, never content samples. Reads do not create schema, a job, an outbox row, an upload or a cursor update. Additive recovery tables are initialized during normal worker startup.
+
+| Local route | Request / result |
+| --- | --- |
+| `GET /inventory` | Current queue, exclusion and quarantine inventory. |
+| `POST /preview` | `{project,from,to,kinds,maxItems?}`. Explicit project (up to 512 characters), ISO timestamps with offsets, inclusive `from`/exclusive `to`, and distinct kinds. At most 1,000 items. An oversized selection is refused and must be narrowed. Returns `scope`, `previewToken`, `epoch`, ownership, counts/bytes and exact revision identities. |
+| `POST /jobs` | `{scope,previewToken}`. Recomputes the exact preview off-thread, checks its selected members atomically, refuses changes, and creates an idempotent **paused** durable job. New rows arriving after that read stay outside its exact manifest. |
+| `GET /jobs`, `GET /jobs/:id` | Bounded job summaries or the selected manifest and per-revision progress. |
+| `POST /jobs/:id/transition` | `{action:"resume",expectedEpoch}` or `{action:"pause"}` / `{action:"cancel"}`. Resume requires the current local epoch (a decimal string, or explicit null before an epoch is known). At most 100 jobs may run at once; paused and historical jobs remain retained. |
+| `GET /conflicts` | Bounded metadata for quarantined identities. Original diagnostics remain retained. |
+| `POST /conflicts/preview` | `{kind,originLocalId,choice:"local_current"}`. Reads exact authenticated hub and local evidence; returns hashes/revisions and an expiring review token without writing either database. |
+| `POST /conflicts/apply` | `{previewToken}`. Applies only the previously reviewed origin-native correction using exact head/epoch preconditions; returns verified or an explicit incomplete state. |
+
+All paths in the table are relative to `/api/sync/recovery`. There is no endpoint for arbitrary SQL, arbitrary canonical bodies, foreign-origin impersonation, quarantine replay, global baseline removal or account reset.
+
+An operator can save and review results using the source CLI. These are usage examples, not actions performed during implementation:
+
+```sh
+rtk bun scripts/sync-recovery.ts inventory
+rtk bun scripts/sync-recovery.ts preview --scope /tmp/recovery-scope.json > /tmp/recovery-preview.json
+rtk bun scripts/sync-recovery.ts create --preview /tmp/recovery-preview.json
+rtk bun scripts/sync-recovery.ts job JOB_UUID
+rtk bun scripts/sync-recovery.ts resume JOB_UUID --epoch EPOCH_FROM_CURRENT_INVENTORY
+rtk bun scripts/sync-recovery.ts pause JOB_UUID
+rtk bun scripts/sync-recovery.ts cancel JOB_UUID
+```
+
+For example, a reviewed scope file can contain `{"project":"example-project","from":"2026-01-01T00:00:00Z","to":"2026-02-01T00:00:00Z","kinds":["observation","summary"],"maxItems":100}`. Substitute the exact project, dates and kinds the owner authorized. The CLI defaults to `http://127.0.0.1:37777`; an optional leading `--worker http://127.0.0.1:PORT` selects another local worker. External URLs, credentials, URL paths and HTTP redirects are refused; reviewed scopes and tokens cannot be forwarded to a redirect destination.
+
+Backfill records selected revisions durably, then enters only the existing low-priority idle scheduling lane, at most one bounded page per flush. A successful page with more selected work schedules another live-first flush after one second; held-only jobs do not poll. It uses the normal immutable outbox, byte limits, exact acknowledgements, mutation ordering, unsupported-kind/shared-writer holds, backoff and single flush owner. A newer native revision supersedes the old selection; deletion prevents stale resurrection. Pause/cancel stop future selection. Already frozen or in-flight operations can still be acknowledged, and their receipts remain truthful after cancellation. Epoch changes require an explicit resume against the new epoch; prior selection and receipt history remain available. No job expands its project/date/type scope automatically.
+
+Pause and cancel do not change the proof epoch. Each queued item records its own epoch, and resume checks individual queued/acknowledged epochs even if older job metadata was rewritten. Unknown legacy queued proofs are revalidated. Selected historical work-state participates in capability discovery after restart; unsupported or disabled kinds do not consume another eligible kind's page budget.
+
+Conflict repair currently supports an explicit choice of the actual local native row. Imported/foreign rows, shared reserved work-state, arbitrary payload selection and tombstone sources are refused. The tool compares the authoritative hub head and all relevant local entity heads, frozen outbox revisions and quarantined conflicting revisions, and proposes a decimal revision strictly above their maximum. It retains exact selected source evidence privately for review/retry; response diagnostics expose hashes and bounded metadata. It never treats redacted quarantine bodies as canonical input. Choosing another source needs a separately implemented authority workflow.
+
+Per-entity evidence admission is limited to 1,024 retained metadata rows and 4,000,000 bytes of frozen canonical bodies. Exceeding either bound returns HTTP 409 with `repair_evidence_too_large`; evidence is not truncated to invent a maximum revision. Off-thread reads validate retained canonical bodies against their stored hashes; corrupt evidence returns `repair_evidence_corrupt`. An additive per-entity outbox change counter tracks inserts, updates and deletes, including body-only changes. The bounded atomic writer checks that proof without rehashing body history on the HTTP thread.
+
+A retained quarantine or dead-letter revision that is null, malformed or outside the canonical range cannot establish an ordering. Preview/apply then refuse before sending with `repair_evidence_revision_unknown`, preserving the diagnostic. If such evidence arrives after remote acceptance, the exact acknowledgement is retained as `accepted_unresolved_evidence`; no native/head stamping or verified claim occurs. Retry reports that incomplete state until the evidence is investigated, without replaying the repair or inventing a revision for the diagnostic.
+
+Before repair leaves the machine, its chosen revision is durably reserved alongside the exact retry evidence. Native snapshot and deletion allocation include that reservation even if the server accepted the repair but its reply was lost. Restarted apply can recover the receipt when the native row has since been deleted; it preserves or queues a strictly higher tombstone. Old-epoch acknowledgements remain historical receipts and cannot stamp the new epoch's native row or heads. Verification compares the complete current head/outbox/revision proof; matching native bytes alone cannot establish convergence.
+
+The new sync-api capability is `origin-repair-v1`: authenticated `POST /v1/sync/repair/head` accepts `{entity_id}` and reads its exact head/canonical wrapper; `POST /v1/sync/repair` accepts `{repair_id,expected_epoch,expected_head,op}`. `expected_head` is null or the exact `{entity_rev,operation_sha256,seq}` read earlier. The operation origin must match the request's configured `X-Device-Id` under the existing account-token authentication model. The head comparison, strictly higher revision, append and durable repair receipt share the normal per-user Postgres transaction/lock. Concurrent head or epoch changes return conflict and require a new review. Exact retry after a lost response uses the receipt and retained log; the old operation and quarantine evidence are not erased. Servers without this capability fail closed; the legacy hub has no fallback repair write.
+
+```sh
+rtk bun scripts/sync-recovery.ts conflicts
+rtk bun scripts/sync-recovery.ts conflict-preview --kind observation --id NATIVE_ORIGIN_ID --choice local_current > /tmp/conflict-review.json
+rtk bun scripts/sync-recovery.ts conflict-apply --review /tmp/conflict-review.json
+```
+
+Repair marks verification only after the hub projection covers the exact correction and a fresh head/local check still matches. Edits/deletes during HTTP are preserved and left at a higher native/tombstone revision for ordinary synchronization; accepted remote correction alone is not reported as convergence. The original diagnostics and both canonical copies remain evidence. No live backfill, authority choice, conflict repair, installed worker change or deployment was performed in this phase. Actual deployed capability/cursor and an authorized canary remain Phase 9 acceptance work.
+
+Implementation evidence includes an 80-test integrated recovery/baseline/fairness/interface run, a later 134-test uploader/baseline sweep, the final 16-test recovery suite, and 78 real Postgres service tests. These overlap. Local HTTP/CLI/packaged read-worker tests pass, including zero-write preview and responsive HTTP while SQLite is held. Root/classic TypeScript and test-lane classification pass. Exact commands, counts, temporary Postgres details and carried limitations are recorded in the execution checkpoint; independent phase approval and deployed acceptance are still required.

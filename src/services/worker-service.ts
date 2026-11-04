@@ -176,6 +176,7 @@ import { DedupRoutes } from './worker/http/routes/DedupRoutes.js';
 import { CorpusRoutes } from './worker/http/routes/CorpusRoutes.js';
 import { ChromaRoutes } from './worker/http/routes/ChromaRoutes.js';
 import { CloudSyncRoutes } from './worker/http/routes/CloudSyncRoutes.js';
+import { SyncRecoveryRoutes } from './worker/http/routes/SyncRecoveryRoutes.js';
 import { ViewerSyncService, ViewerActivity } from './sync/ViewerSyncService.js';
 import { TeamBrainRoutes } from './worker/http/routes/TeamBrainRoutes.js';
 import { BackupRoutes } from './worker/http/routes/BackupRoutes.js';
@@ -1036,6 +1037,7 @@ export class WorkerService implements WorkerRef {
       // dbManager.initialize() above — and unconditionally, so an
       // unconfigured install answers {configured: false} instead of 404.
       this.server.registerRoutes(new CloudSyncRoutes(this.dbManager, this.viewerSync));
+      this.server.registerRoutes(new SyncRecoveryRoutes(this.dbManager));
       logger.info('WORKER', 'CloudSyncRoutes registered');
       this.viewerSync.start();
       // TeamBrain proxy for the team_* MCP tools, beside cloud sync because it

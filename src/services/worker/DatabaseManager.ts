@@ -19,6 +19,8 @@ import { purgeLinkedToolUses } from '../sqlite/tool-uses.js';
 import { parseRetentionDays } from '../../shared/retention-days.js';
 import type { DBSession } from '../worker-types.js';
 import { ensureLocalDeviceIdentity } from '../sync/local-device-identity.js';
+import { SyncRecoveryReader } from '../sync/SyncRecoveryReader.js';
+import { initializeConflictRecoverySchema, SyncConflictRecovery } from '../sync/SyncConflictRecovery.js';
 
 export class DatabaseManager {
   private db: Database | null = null;
@@ -26,6 +28,8 @@ export class DatabaseManager {
   private sessionSearch: SessionSearch | null = null;
   private chromaSync: ChromaSync | null = null;
   private cloudSync: CloudSync | null = null;
+  private syncRecoveryReader: SyncRecoveryReader | null = null;
+  private syncConflictRecovery: SyncConflictRecovery | null = null;
   private backupManager: BackupManager | null = null;
   private mediaStore: MediaStore | null = null;
   private mediaCleanupTimer: ReturnType<typeof setInterval> | null = null;
@@ -95,6 +99,15 @@ export class DatabaseManager {
     // nudges are free no-ops.
     if (cloudSyncConfigured) {
       this.cloudSync = new CloudSync(this.db, settings, { healthFilePath: defaultSyncHealthFilePath() });
+      const deviceId = this.cloudSync.status().deviceId;
+      this.syncRecoveryReader = new SyncRecoveryReader(DB_PATH, deviceId, () => this.cloudSync!.recoveryFlags());
+      initializeConflictRecoverySchema(this.db);
+      this.syncConflictRecovery = new SyncConflictRecovery(this.db, {
+        deviceId, userId: settings.CLAUDE_MEM_CLOUD_SYNC_USER_ID,
+        hubUrl: settings.CLAUDE_MEM_CLOUD_SYNC_HUB_URL, authToken: settings.CLAUDE_MEM_CLOUD_SYNC_TOKEN,
+        readEvidence: (kind, originLocalId) => this.syncRecoveryReader!.conflictEvidence(kind, originLocalId),
+        listEvidence: limit => this.syncRecoveryReader!.conflicts(limit),
+      });
     } else {
       // Sync is off: no banner for a feature not in use, and no queue that
       // nothing will ever drain (#4228).
@@ -127,6 +140,9 @@ export class DatabaseManager {
 
     this.cloudSync?.stop();
     this.cloudSync = null;
+    this.syncRecoveryReader?.close();
+    this.syncRecoveryReader = null;
+    this.syncConflictRecovery = null;
 
     this.backupManager?.stop();
     this.backupManager = null;
@@ -173,6 +189,9 @@ export class DatabaseManager {
   getCloudSync(): CloudSync | null {
     return this.cloudSync;
   }
+
+  getSyncRecoveryReader(): SyncRecoveryReader | null { return this.syncRecoveryReader; }
+  getSyncConflictRecovery(): SyncConflictRecovery | null { return this.syncConflictRecovery; }
 
   getBackupManager(): BackupManager | null {
     return this.backupManager;

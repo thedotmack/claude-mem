@@ -61,6 +61,7 @@ import { applySqliteConnectionPragmas, assertSchemaWriterCompatible, claimSchema
 import { streamRows } from './stream-rows.js';
 import { ensureMediaSchema } from './media.js';
 import { OBSERVATIONS_FTS_TRIGGERS_SQL, SESSION_SUMMARIES_FTS_TRIGGERS_SQL } from './SessionSearch.js';
+import { ensureSyncRecoverySchema } from '../sync/SyncRecovery.js';
 import {
   assertCanonicalDecimal,
   incrementCanonicalDecimal,
@@ -997,6 +998,7 @@ export class SessionStore {
    * decimal TEXT so a remote value is never rounded through a JS number.
    */
   private ensureSyncEntityLedger(): void {
+    ensureSyncRecoverySchema(this.db);
     this.db.run(SYNC_ENTITY_HEADS_DDL);
     this.widenSyncKindCheck('sync_entity_heads', SYNC_ENTITY_HEADS_DDL);
     this.db.run(SYNC_CONTENT_OUTBOX_DDL);
