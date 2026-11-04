@@ -65,3 +65,21 @@ export function getToolPath(command: string, commonPaths: string[]): string | nu
 export function findBunExecutablePath(): string | null {
   return getToolPath('bun', bunCommonPaths());
 }
+
+/** Common locations for the Codex CLI executable across macOS and Windows. */
+export function codexCommonPaths(): string[] {
+  if (IS_WINDOWS) {
+    return [];
+  }
+  return [
+    '/Applications/ChatGPT.app/Contents/Resources/codex',
+    '/Applications/Codex.app/Contents/Resources/codex',
+    '/usr/local/bin/codex',
+    '/opt/homebrew/bin/codex',
+  ];
+}
+
+/** PATH first (proven by `codex --version`), then well-known install locations. */
+export function findCodexExecutablePath(): string | null {
+  return getToolPath('codex', codexCommonPaths());
+}

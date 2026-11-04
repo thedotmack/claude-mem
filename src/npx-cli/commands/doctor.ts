@@ -12,6 +12,7 @@ import { IS_WINDOWS, marketplaceDirectory, readPluginVersion } from '../utils/pa
 import { getWorkerBaseUrl, resolvePluginRoot, type PluginRootResolution } from '../../shared/worker-utils.js';
 import { InvalidWorkerUrlError } from '../../shared/worker-url.js';
 import { getBunVersion, getUvVersion, isInstallCurrent } from '../install/setup-runtime.js';
+import { findCodexExecutablePath } from '../install/tool-path.js';
 import { treeSitterCliBinaryPath } from '../../services/smart-file-read/tree-sitter-cli-provision.js';
 import { checkTreeSitterCliLoadable, resolveTreeSitterBinPathFor, TREE_SITTER_CLI_PATH_WORKAROUND } from '../../services/smart-file-read/tree-sitter-bin-path.js';
 import { resolveDataDir } from '../../shared/paths.js';
@@ -173,6 +174,114 @@ function chromaDiagnosticChecks(chroma: ChromaCrashState): CheckResult[] {
       detail: `${drop.collection} had a corrupt HNSW segment and was dropped at ${drop.droppedAt} (${drop.documentCount ?? 'unknown'} documents); it is being rebuilt from SQLite, so semantic search results are incomplete until that finishes`,
       required: false,
     });
+  }
+  return checks;
+}
+
+export interface WorkerDependencyStatusPayload {
+  dependency: string;
+  kind: string;
+  message: string;
+  remediation?: string;
+  recordedAtMs?: number;
+}
+
+export interface WorkerDependencyHealthPayload {
+  degraded?: boolean;
+  statuses?: WorkerDependencyStatusPayload[];
+}
+
+/**
+ * Warn rows from the worker's /api/admin/doctor `health.dependencies` block (#5359).
+ * Reports degraded observation generator dependencies (such as missing Claude CLI
+ * when CLAUDE_MEM_PROVIDER is claude, or missing Codex CLI) and offers installed
+ * alternatives.
+ */
+export async function probeWorkerDependencies(
+  workerUrl: string,
+  codexDetected: boolean = false,
+): Promise<CheckResult[]> {
+  try {
+    const response = await fetch(`${workerUrl}/api/admin/doctor`, {
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!response.ok) {
+      return [];
+    }
+    const diagnostics = await response.json() as {
+      health?: { dependencies?: WorkerDependencyHealthPayload };
+    };
+    const deps = diagnostics?.health?.dependencies;
+    if (!deps?.degraded || !Array.isArray(deps.statuses)) {
+      return [];
+    }
+
+    return workerDependencyChecks(deps.statuses, codexDetected);
+  } catch {
+    return [];
+  }
+}
+
+export function workerDependencyChecks(
+  statuses: WorkerDependencyStatusPayload[],
+  codexDetected: boolean = false,
+): CheckResult[] {
+  const checks: CheckResult[] = [];
+  for (const status of statuses) {
+    if (status.dependency === 'claude_cli' && status.kind === 'setup_required') {
+      const codexHint = codexDetected
+        ? ' (Codex CLI is installed; you can switch by setting CLAUDE_MEM_PROVIDER to codex in ~/.claude-mem/settings.json)'
+        : '';
+      const detail = status.remediation
+        ? `${status.message}${codexHint} — ${status.remediation}`
+        : `${status.message}${codexHint}`;
+      checks.push({
+        name: 'Claude CLI setup',
+        status: 'warn',
+        detail,
+        required: false,
+      });
+    } else if (status.dependency === 'codex_cli' && status.kind === 'setup_required') {
+      const detail = status.remediation
+        ? `${status.message} — ${status.remediation}`
+        : status.message;
+      checks.push({
+        name: 'Codex CLI setup',
+        status: 'warn',
+        detail,
+        required: false,
+      });
+    } else if (status.dependency === 'uvx' && status.kind === 'vector_search_unavailable') {
+      const detail = status.remediation
+        ? `${status.message} — ${status.remediation}`
+        : status.message;
+      checks.push({
+        name: 'uvx (vector search)',
+        status: 'warn',
+        detail,
+        required: false,
+      });
+    } else if (status.dependency === 'chroma' && status.kind === 'vector_search_unavailable') {
+      const detail = status.remediation
+        ? `${status.message} — ${status.remediation}`
+        : status.message;
+      checks.push({
+        name: 'Chroma vector search',
+        status: 'warn',
+        detail,
+        required: false,
+      });
+    } else if (status.dependency === 'observer_dir' && status.kind === 'setup_required') {
+      const detail = status.remediation
+        ? `${status.message} — ${status.remediation}`
+        : status.message;
+      checks.push({
+        name: 'Observer data directory',
+        status: 'warn',
+        detail,
+        required: false,
+      });
+    }
   }
   return checks;
 }
@@ -430,6 +539,112 @@ export function claudeCodeVersionCheck(detectedClaudeCodeVersion: string | undef
   };
 }
 
+export interface ObserverProviderCheckOptions {
+  provider?: string;
+  claudeDetected: boolean;
+  detectedClaudeVersion?: string;
+  codexDetected: boolean;
+  hasOpenRouterKey?: boolean;
+  hasGeminiKey?: boolean;
+}
+
+/**
+ * Validates that the configured observer provider has its required CLI executable
+ * or API credentials available (#5359). When the default or configured provider
+ * is `claude` but Claude CLI is missing while Codex CLI is installed, informs the
+ * user that switching to `codex` is available so memory generation works.
+ */
+export function observerProviderCheck(options: ObserverProviderCheckOptions): CheckResult {
+  const name = 'Observer provider';
+  const provider = (options.provider?.trim() || 'claude').toLowerCase();
+
+  if (provider === 'claude') {
+    if (options.claudeDetected) {
+      const versionInfo = options.detectedClaudeVersion ? ` (Claude Code v${options.detectedClaudeVersion})` : '';
+      return {
+        name,
+        status: 'ok',
+        detail: `claude${versionInfo}`,
+        required: false,
+      };
+    }
+
+    if (options.codexDetected) {
+      return {
+        name,
+        status: 'warn',
+        detail: `claude configured, but Claude CLI not found on PATH. Codex CLI is available — set CLAUDE_MEM_PROVIDER to codex in ~/.claude-mem/settings.json to enable observation generation`,
+        required: false,
+      };
+    }
+
+    return {
+      name,
+      status: 'warn',
+      detail: `claude configured, but Claude CLI not found on PATH or at CLAUDE_CODE_PATH; observation generation will be paused until installed`,
+      required: false,
+    };
+  }
+
+  if (provider === 'codex') {
+    if (options.codexDetected) {
+      return {
+        name,
+        status: 'ok',
+        detail: 'codex (Codex CLI available)',
+        required: false,
+      };
+    }
+    return {
+      name,
+      status: 'warn',
+      detail: `codex configured, but Codex CLI not found on PATH or at CLAUDE_MEM_CODEX_PATH; observation generation will be paused until installed`,
+      required: false,
+    };
+  }
+
+  if (provider === 'openrouter') {
+    if (options.hasOpenRouterKey) {
+      return {
+        name,
+        status: 'ok',
+        detail: 'openrouter (API key configured)',
+        required: false,
+      };
+    }
+    return {
+      name,
+      status: 'warn',
+      detail: 'openrouter configured, but CLAUDE_MEM_OPENROUTER_API_KEY is not set in settings.json',
+      required: false,
+    };
+  }
+
+  if (provider === 'gemini') {
+    if (options.hasGeminiKey) {
+      return {
+        name,
+        status: 'ok',
+        detail: 'gemini (API key configured)',
+        required: false,
+      };
+    }
+    return {
+      name,
+      status: 'warn',
+      detail: 'gemini configured, but CLAUDE_MEM_GEMINI_API_KEY is not set in settings.json',
+      required: false,
+    };
+  }
+
+  return {
+    name,
+    status: 'ok',
+    detail: provider,
+    required: false,
+  };
+}
+
 export async function runDoctorCommand(): Promise<void> {
   const checks: CheckResult[] = [];
   const dataDir = resolveDataDir();
@@ -510,6 +725,8 @@ export async function runDoctorCommand(): Promise<void> {
   let workerStatus: CheckStatus = 'fail';
   let workerDetail = '';
   let chromaChecks: CheckResult[] = [];
+  let dependencyChecks: CheckResult[] = [];
+  const codexAvailable = Boolean(findCodexExecutablePath());
   try {
     const workerUrl = getWorkerBaseUrl({ readOnly: true });
     workerDetail = `no response at ${workerUrl} — start with \`npx claude-mem start\``;
@@ -517,6 +734,7 @@ export async function runDoctorCommand(): Promise<void> {
     workerStatus = worker.status;
     workerDetail = worker.detail;
     chromaChecks = await probeChromaDiagnostics(worker.workerUrl);
+    dependencyChecks = await probeWorkerDependencies(worker.workerUrl, codexAvailable);
   } catch (error: unknown) {
     if (error instanceof InvalidWorkerUrlError) workerDetail = error.message;
     // otherwise leave as fail
@@ -528,9 +746,22 @@ export async function runDoctorCommand(): Promise<void> {
     required: false, // worker can be intentionally stopped; don't hard-fail
   });
   checks.push(...chromaChecks);
+  checks.push(...dependencyChecks);
 
-  // 5b. Claude Code version: the exec-form hooks need `args` support.
-  checks.push(claudeCodeVersionCheck(detectClaudeCodeVersion()));
+  // 5b. Observer provider and CLI reachability (#5359).
+  const doctorSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, true, { readOnly: true });
+  const detectedClaudeCode = detectClaudeCodeVersion();
+  checks.push(observerProviderCheck({
+    provider: doctorSettings.CLAUDE_MEM_PROVIDER,
+    claudeDetected: Boolean(detectedClaudeCode),
+    detectedClaudeVersion: detectedClaudeCode,
+    codexDetected: codexAvailable,
+    hasOpenRouterKey: Boolean(doctorSettings.CLAUDE_MEM_OPENROUTER_API_KEY?.trim()),
+    hasGeminiKey: Boolean(doctorSettings.CLAUDE_MEM_GEMINI_API_KEY?.trim()),
+  }));
+
+  // 5c. Claude Code version: the exec-form hooks need `args` support.
+  checks.push(claudeCodeVersionCheck(detectedClaudeCode));
 
   // 6. Windows Git Bash reachability. Runtime hooks run the launcher with no
   // shell; only the Setup hook (`claude --init` / `--maintenance`) still uses
