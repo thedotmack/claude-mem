@@ -12,7 +12,7 @@ import {
   resetQuotaCooldownsForTesting,
 } from '../../src/shared/quota-cooldown.js';
 import { resetDependencyStatusesForTesting } from '../../src/shared/dependency-health.js';
-import { claudeQuotaStandIn, setClaudeFallbackReadinessForTesting } from '../../src/shared/claude-fallback-readiness.js';
+import { claudeQuotaStandIn, hasClaudeSubscriptionLogin, setClaudeFallbackReadinessForTesting } from '../../src/shared/claude-fallback-readiness.js';
 import { SessionManager } from '../../src/services/worker/SessionManager.js';
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import { ClassifiedProviderError } from '../../src/services/worker/provider-errors.js';
@@ -360,6 +360,12 @@ describe('Claude credential fallback: readiness', () => {
     process.env.CLAUDE_CODE_OAUTH_TOKEN = 'oauth-from-env';
     recordQuotaExhausted('claude', SPENT_KEY, undefined, undefined, undefined, 'api-key');
     expect(claudeQuotaStandIn()).toBe('subscription');
+  });
+
+  it('counts a long-lived CLAUDE_CODE_OAUTH_TOKEN in ~/.claude-mem/.env (no login files) as a subscription login', () => {
+    expect(hasClaudeSubscriptionLogin()).toBe(false);
+    writeFileSync(join(tempDir, '.env'), 'CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-long-lived\n', { mode: 0o600 });
+    expect(hasClaudeSubscriptionLogin()).toBe(true);
   });
 });
 
