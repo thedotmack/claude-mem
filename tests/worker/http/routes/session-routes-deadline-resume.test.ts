@@ -420,6 +420,108 @@ describe('deadline-paused observer resumes without a new hook (#4204)', () => {
     });
   });
 
+  describe('unattended resume cap with CLAUDE_MEM_PROVIDER_BY_SOURCE', () => {
+    const GATEWAY_URL = 'https://cmem.ai/api/inference/v1';
+    const ENV_KEYS = [
+      'CLAUDE_MEM_PROVIDER', 'CLAUDE_MEM_OPENROUTER_BASE_URL', 'CMEM_PRO_ORIGIN', 'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER',
+      'CLAUDE_MEM_PROVIDER_BY_SOURCE', 'CLAUDE_MEM_OPENROUTER_API_KEY', 'CLAUDE_MEM_GEMINI_API_KEY',
+    ] as const;
+    let savedEnv: Record<string, string | undefined>;
+
+    beforeEach(() => {
+      savedEnv = {};
+      for (const key of ENV_KEYS) {
+        savedEnv[key] = process.env[key];
+        delete process.env[key];
+      }
+      process.env.CLAUDE_MEM_OPENROUTER_BASE_URL = GATEWAY_URL;
+      process.env.CLAUDE_MEM_OPENROUTER_API_KEY = 'cm_pro_test';
+      process.env.CLAUDE_MEM_GEMINI_API_KEY = '';
+      // Off, so a rate limit takes the Retry-After path rather than moving the work.
+      process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = 'off';
+    });
+
+    afterEach(() => {
+      for (const key of ENV_KEYS) {
+        if (savedEnv[key] === undefined) delete process.env[key];
+        else process.env[key] = savedEnv[key];
+      }
+    });
+
+    /** Whether each of the three unattended paths would resume a session whose budget is spent. */
+    async function spentSessionResumes(platformSource: string) {
+      const harness = makeHarness(0);
+      const sessionDbId = harness.session.sessionDbId;
+      harness.session.platformSource = platformSource;
+      harness.session.pausedReason = 'quota';
+      harness.session.consecutiveUnattendedGatewayResumes = MAX_UNATTENDED_GATEWAY_RESUMES;
+      const sweep = harness.sessionManager.getResumableSessionIds().includes(sessionDbId);
+
+      harness.sessionManager.scheduleTransportResume(sessionDbId);
+      const transport = scheduled.length > 0;
+      harness.sessionManager.clearTransportResume(sessionDbId);
+
+      await startGeneratorWithProvider(harness.session, 'openrouter', 'observation', null, null, {
+        sessionManager: harness.sessionManager,
+        sdkAgent: {} as any,
+        geminiAgent: {} as any,
+        openRouterAgent: {
+          startSession: async (current: ActiveSession) => {
+            current.abortReason = 'rate_limit:rate_limit';
+            current.abortController.abort();
+            throw new ClassifiedProviderError('Rate limited', { kind: 'rate_limit', retryAfterMs: 60_000 });
+          },
+        } as any,
+        workerService: {} as any,
+        completionHandler: { finalizeSession: async () => {} } as any,
+        ensureGeneratorRunning: (id, source) => harness.routes.ensureGeneratorRunning(id, source),
+        maybeSelfHealStaleClaudeSpawn: () => false,
+      });
+      await harness.session.generatorPromise;
+      const rateLimit = harness.session.scheduledResumeTimer !== undefined;
+      clearTimeout(harness.session.scheduledResumeTimer);
+      harness.session.scheduledResumeTimer = undefined;
+      return { sweep, transport, rateLimit };
+    }
+
+    it('keeps resuming a session mapped off a global gateway, which never spends its budget', async () => {
+      process.env.CLAUDE_MEM_PROVIDER = 'openrouter';
+      process.env.CLAUDE_MEM_PROVIDER_BY_SOURCE = '{"codex":"codex"}';
+      expect(await spentSessionResumes('codex')).toEqual({ sweep: true, transport: true, rateLimit: true });
+    });
+
+    it('still caps the sessions that stay on the global gateway', async () => {
+      process.env.CLAUDE_MEM_PROVIDER = 'openrouter';
+      process.env.CLAUDE_MEM_PROVIDER_BY_SOURCE = '{"codex":"codex"}';
+      expect(await spentSessionResumes('claude')).toEqual({ sweep: false, transport: false, rateLimit: false });
+    });
+
+    it('caps a session mapped onto the gateway though the global provider is not on it', async () => {
+      process.env.CLAUDE_MEM_PROVIDER = 'claude';
+      process.env.CLAUDE_MEM_PROVIDER_BY_SOURCE = '{"codex":"openrouter"}';
+      expect(await spentSessionResumes('codex')).toEqual({ sweep: false, transport: false, rateLimit: false });
+    });
+
+    it('does not cap a session the gateway cannot reach when only another source is mapped onto it', async () => {
+      process.env.CLAUDE_MEM_PROVIDER = 'claude';
+      process.env.CLAUDE_MEM_PROVIDER_BY_SOURCE = '{"codex":"openrouter"}';
+      expect(await spentSessionResumes('claude')).toEqual({ sweep: true, transport: true, rateLimit: true });
+    });
+
+    it('caps a session whose mapped provider is not configured, because dispatch sends it to the global gateway', async () => {
+      process.env.CLAUDE_MEM_PROVIDER = 'openrouter';
+      process.env.CLAUDE_MEM_PROVIDER_BY_SOURCE = '{"codex":"gemini"}';
+      expect(await spentSessionResumes('codex')).toEqual({ sweep: false, transport: false, rateLimit: false });
+    });
+
+    it('caps a mapped session whose quota fallback is the gateway', async () => {
+      process.env.CLAUDE_MEM_PROVIDER = 'claude';
+      process.env.CLAUDE_MEM_PROVIDER_BY_SOURCE = '{"codex":"codex"}';
+      process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = 'openrouter';
+      expect(await spentSessionResumes('codex')).toMatchObject({ sweep: false, transport: false });
+    });
+  });
+
   describe('which pauses resume on the transport backoff', () => {
     function exitWith(reason: string) {
       const calls: string[] = [];

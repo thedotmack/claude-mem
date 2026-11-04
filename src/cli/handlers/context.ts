@@ -21,6 +21,7 @@ import { isProjectExcluded } from '../../utils/project-filter.js';
 import { readStaleMarker } from '../../shared/oauth-token.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { proTrialLine } from '../../shared/pro-promo.js';
+import { providersMappedBySource } from '../../shared/provider-by-source.js';
 import { memoryInstructionsForRuntime } from '../../shared/memory-instructions.js';
 import {
   cmemGatewayRole,
@@ -370,10 +371,17 @@ export const contextHandler: EventHandler = {
     // a previous worker spawn detected an expired keychain entry.
     // Other observer providers do not use Claude credentials. Keep the hint
     // for a configured Claude route, including the gateway's active fallback.
-    const gatewayRole = cmemGatewayRole(settings);
+    // Any source can be mapped to its own provider, so a mapped route counts
+    // like the global one: a mapped gateway is memory's provider for its
+    // sessions, and its expiry notice below must still reach the user.
+    const mappedProviders = providersMappedBySource(settings.CLAUDE_MEM_PROVIDER_BY_SOURCE);
+    const gatewayRole = cmemGatewayRole(
+      mappedProviders.includes('openrouter') ? { ...settings, CLAUDE_MEM_PROVIDER: 'openrouter' } : settings,
+    );
     // Empty is the default fallback, the Anthropic plan (provider-dispatch's readQuotaFallbackProvider).
     const fallbackSetting = String(settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER ?? '').trim();
     const usesClaudeCredentials = (settings.CLAUDE_MEM_PROVIDER || 'claude') === 'claude'
+      || mappedProviders.includes('claude')
       || fallbackSetting === 'claude' || fallbackSetting === ''
       || (gatewayRole === 'primary' && Boolean(settings.CLAUDE_MEM_PRO_FALLBACK_AT));
     const staleReason = usesClaudeCredentials ? readStaleMarker() : null;
