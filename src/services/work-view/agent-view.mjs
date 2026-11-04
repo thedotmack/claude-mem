@@ -86,7 +86,7 @@ export function readAgentRecords(database, { observationLimit = 300, summaryLimi
     FROM observations ORDER BY created_at_epoch DESC, id DESC LIMIT ?`, [observationLimit]);
   const summaries = safeRead(database, `SELECT id, project, memory_session_id, prompt_number, request, completed, next_steps, created_at_epoch
     FROM session_summaries ORDER BY created_at_epoch DESC, id DESC LIMIT ?`, [summaryLimit]);
-  const { productCalls, productObservations, productDeliverables } = readProductRecords((sql, params) => safeRead(database, sql, params), workSinceEpoch);
+  const { productCalls, productObservations, productDeliverables } = readProductRecords((sql, params) => safeRead(database, sql, params), workSinceEpoch, 2000, { database });
   const ids = [...new Set([...calls, ...productCalls].map((call) => call.session_db_id).filter((id) => id != null))];
   const memoryIds = [...new Set([...observations, ...summaries, ...productObservations].map((row) => row.memory_session_id).filter(Boolean))];
   const predicates = [], args = [];

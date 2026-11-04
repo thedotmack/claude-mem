@@ -13,6 +13,7 @@ import { logger } from '../../../../utils/logger.js';
 import { hasForwardedClientHeaders, hasLoopbackHostHeader, isLocalhost } from '../../../../server/middleware/request-auth-helpers.js';
 import { WorkStateSource, type WorkViewSnapshot } from '../../../work-view/data-source.mjs';
 import { WorkViewReadWorkerClient } from '../../../work-view/WorkViewReadWorkerClient.js';
+import { boundedDurationMs, type WorkViewReadPurpose } from '../../../work-view/WorkViewReadProtocol.js';
 import { FILE_CONTENT_TYPES } from '../../../work-view/work-product.mjs';
 import { isInsideDeliverablesDir } from '../../../../shared/deliverables.js';
 import { contentFingerprint, LocalReviewStore } from '../../../work-view/review-store.js';
@@ -412,6 +413,8 @@ const ACTIVITY_REFRESH_WINDOW_MS = 120_000;
 export class WorkViewRoutes extends BaseRouteHandler {
   private source: WorkStateSource;
   private sourceReader: WorkViewReadWorkerClient;
+  private lastSnapshotDiagnostic: { purpose: WorkViewReadPurpose; postprocessMs: number } | null = null;
+  private lastResponseDiagnostic: { transport: 'http' | 'sse'; writeMs: number; bytes: number } | null = null;
   private pendingBackgroundSnapshot: Promise<WorkViewSnapshot> | null = null;
   private ownerEditsDone: Promise<unknown> = Promise.resolve();
   private freshPublishReading = false;
@@ -504,7 +507,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
       : options.focusShares;
     // Shared pages keep updating with My Work closed (R17.3): the worker publishes them on its own timer.
     this.focusSharePublisher = this.focusShares
-      ? new FocusSharePublisher({ shares: this.focusShares, snapshot: () => this.snapshot(), everyMs: options.focusSharePublishEveryMs })
+      ? new FocusSharePublisher({ shares: this.focusShares, snapshot: () => this.snapshot(0, 'shared-focus'), everyMs: options.focusSharePublishEveryMs })
       : null;
     this.focusSharePublisher?.start();
     if (this.hostedIntent) this.setupScan?.setExtractor((prompts, improveProduct) => this.hostedIntent!.run(prompts, improveProduct));
@@ -545,7 +548,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
   /** Rewrites MY-RULES.md when the saved rules render differently. Never from an unreadable source, which reads as no rules. */
   rebuildRulesFileFromSavedRules(): Promise<boolean> {
     return this.inOwnerEditOrder(async () => {
-      const view = (await this.sourceReader.read(0, this.getLocalDeviceId())).agentView;
+      const view = (await this.sourceReader.read(0, this.getLocalDeviceId(), 'rules')).agentView;
       if (!view.source.connected) return false;
       const markdown = renderRulesFile((view.rules ?? []) as SavedRule[]).markdown;
       let current: string | null = null;
@@ -575,7 +578,17 @@ export class WorkViewRoutes extends BaseRouteHandler {
   setupRoutes(app: express.Application): void {
     app.get('/api/work-view', workViewLoopbackOnly, this.wrapHandler(async (_req, res) => {
       res.setHeader('Cache-Control', 'no-store');
-      res.json(await this.snapshot());
+      const snapshot = await this.snapshot(0, 'http');
+      const startedAt = process.hrtime.bigint();
+      res.json(snapshot);
+      // Measure the existing serialization/send, not a second JSON pass for diagnostics.
+      const bytes = Number(res.getHeader('Content-Length'));
+      this.lastResponseDiagnostic = { transport: 'http', writeMs: boundedDurationMs(Number(process.hrtime.bigint() - startedAt) / 1e6),
+        bytes: Number.isSafeInteger(bytes) && bytes >= 0 ? bytes : 0 };
+    }));
+    app.get('/api/work-view/diagnostics', workViewLoopbackOnly, this.wrapHandler((_req, res) => {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ reader: this.sourceReader.getDiagnostics(), snapshot: this.lastSnapshotDiagnostic, response: this.lastResponseDiagnostic });
     }));
     app.get('/api/work-view/events', workViewLoopbackOnly, this.wrapHandler(this.events));
     app.get('/api/work-view/evidence/:kind/:id', workViewLoopbackOnly, this.wrapHandler((req, res) => {
@@ -795,7 +808,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
    * Not for checks against requests, agents or evidence (move-request, mark-finished, review): those read fresh.
    */
   private ownerStateSnapshot(): Promise<WorkViewSnapshot> {
-    return this.snapshot(ACTIVITY_REFRESH_WINDOW_MS);
+    return this.snapshot(ACTIVITY_REFRESH_WINDOW_MS, 'owner-state');
   }
 
   /**
@@ -804,13 +817,14 @@ export class WorkViewRoutes extends BaseRouteHandler {
    * answers strictly in order). That order also means a tick's older read can never arrive after a newer publish.
    */
   private backgroundSnapshot(): Promise<WorkViewSnapshot> {
-    this.pendingBackgroundSnapshot ??= this.snapshot(ACTIVITY_REFRESH_WINDOW_MS)
+    this.pendingBackgroundSnapshot ??= this.snapshot(ACTIVITY_REFRESH_WINDOW_MS, 'background')
       .finally(() => { this.pendingBackgroundSnapshot = null; });
     return this.pendingBackgroundSnapshot;
   }
 
-  private async snapshot(maxActivityAgeMs = 0): Promise<WorkViewSnapshot> {
-    const read = await this.sourceReader.read(maxActivityAgeMs, this.getLocalDeviceId());
+  private async snapshot(maxActivityAgeMs = 0, purpose: WorkViewReadPurpose = 'snapshot'): Promise<WorkViewSnapshot> {
+    const read = await this.sourceReader.read(maxActivityAgeMs, this.getLocalDeviceId(), purpose);
+    const startedAt = process.hrtime.bigint();
     this.source.agentRevision = read.agentRevision;
     const snapshot = read.agentView;
     for (const request of snapshot.humanRequests) {
@@ -820,7 +834,9 @@ export class WorkViewRoutes extends BaseRouteHandler {
     const reviewRevision = createHash('sha256').update(JSON.stringify(snapshot.humanRequests.map(request => [request.id, request.contentFingerprint, request.review]))).digest('hex').slice(0, 16);
     // Generated wording is display only: it never changes what was reviewed.
     const view = this.humanCopy ? this.humanCopy.observe(snapshot) as WorkViewSnapshot : snapshot;
-    return { ...view, rulesFile: this.rulesFileStatus(snapshot), setup: this.setupView(view), revision: `${snapshot.revision}:${reviewRevision}:${this.humanCopy?.revision ?? 0}` };
+    const result = { ...view, rulesFile: this.rulesFileStatus(snapshot), setup: this.setupView(view), revision: `${snapshot.revision}:${reviewRevision}:${this.humanCopy?.revision ?? 0}` };
+    this.lastSnapshotDiagnostic = { purpose, postprocessMs: boundedDurationMs(Number(process.hrtime.bigint() - startedAt) / 1e6) };
+    return result;
   }
 
   /**
@@ -1305,7 +1321,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     socket?.on('close', cleanup);
     res.on('error', () => { cleanup(); res.destroy(); });
     let initial: WorkViewSnapshot;
-    try { initial = await this.snapshot(); }
+    try { initial = await this.snapshot(0, 'event-initial'); }
     catch (error) {
       // An open stream with no first view would look connected forever. Ending it makes the page reconnect.
       logger.warn('HTTP', 'Could not read work view for a new event stream', { error: error instanceof Error ? error.message : String(error) });
@@ -1343,7 +1359,12 @@ export class WorkViewRoutes extends BaseRouteHandler {
     if (res.destroyed || res.writableEnded || res.writableLength > 4 * 1024 * 1024) {
       this.clients.delete(res); res.destroy(); return;
     }
-    try { res.write(`event: ${event}\ndata: ${JSON.stringify(value)}\n\n`); }
+    try {
+      const startedAt = process.hrtime.bigint();
+      const frame = `event: ${event}\ndata: ${JSON.stringify(value)}\n\n`;
+      res.write(frame);
+      this.lastResponseDiagnostic = { transport: 'sse', writeMs: boundedDurationMs(Number(process.hrtime.bigint() - startedAt) / 1e6), bytes: Buffer.byteLength(frame) };
+    }
     catch { this.clients.delete(res); res.destroy(); }
   }
 
@@ -1366,7 +1387,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private publishFreshRead(): void {
     if (this.freshPublishReading) { this.freshPublishWanted = true; return; }
     this.freshPublishReading = true;
-    void this.snapshot().then(snapshot => this.publish(snapshot))
+    void this.snapshot(0, 'publish').then(snapshot => this.publish(snapshot))
       .catch(error => logger.warn('HTTP', 'Could not read work view for event stream', { error: error instanceof Error ? error.message : String(error) }))
       .finally(() => {
         this.freshPublishReading = false;

@@ -362,21 +362,83 @@ export function fileUrl(product) {
 }
 
 const FILE_EXTENSION_PATTERN = Object.keys(FILE_KINDS).map((extension) => `files_modified LIKE '%${extension}"%'`).join(' OR ');
+const PUBLISHING_PRODUCT_PREDICATE = `(tool_name IN ('Artifact', 'mcp__claude_ai_Notion__notion-create-pages', 'mcp__claude_ai_Claude_Docs__batch', 'mcp__claude_ai_Claude_Docs__create')
+  OR tool_name LIKE '%chatgpt_space__create_page' OR tool_name LIKE '%sites__save_version_and_deploy%'
+  OR (tool_name = 'Bash' AND tool_input LIKE '%gh pr create%'))`;
+const GIT_PRODUCT_PREDICATE = `tool_name = 'Bash' AND tool_input LIKE '%git%' AND tool_input NOT LIKE '%gh pr create%'
+  AND (tool_input LIKE '%commit%' OR tool_input LIKE '%push%' OR tool_input LIKE '%checkout -b%' OR tool_input LIKE '%switch -c%')`;
+
+const productIndexes = new WeakMap();
+
+function productIndexClauses(database) {
+  if (!database) return {};
+  let clauses = productIndexes.get(database);
+  if (clauses) return clauses;
+  clauses = {};
+  // These indexes are created by sqlite/tool-uses.ts and SessionStore. Older
+  // databases and small fixtures omit them. Inspect once per reader connection;
+  // an index on a different column (or a partial index) cannot serve this read.
+  for (const [table, index] of [['tool_uses', 'idx_tool_uses_created_at_epoch'], ['observations', 'idx_observations_created']]) {
+    const found = database.prepare(`PRAGMA index_list('${table}')`).all()
+      .find(row => row.name === index && row.partial === 0);
+    if (found && database.prepare(`PRAGMA index_info('${index}')`).all()[0]?.name === 'created_at_epoch') {
+      clauses[table] = ` INDEXED BY ${index}`;
+    }
+  }
+  productIndexes.set(database, clauses);
+  return clauses;
+}
+
+function selectiveProductIndexClauses(database, sinceEpoch, limit) {
+  // A broad positive cutoff can be as expensive as an unbounded read: forcing
+  // its time index scans/sorts all candidates instead of stopping at LIMIT.
+  // Keep the planner when recent IDs are rich in matches. Otherwise compare a
+  // bounded time range with the sampled ID scan cost. Only index metadata is
+  // cached: range size and match density are rechecked after new commits.
+  if (!(sinceEpoch > 0) || !Number.isSafeInteger(limit) || limit <= 0) return {};
+  const sampleSize = Math.min(limit, 128);
+  const selected = {};
+  for (const [table, clause] of Object.entries(productIndexClauses(database))) {
+    const predicate = table === 'tool_uses'
+      ? `(${PUBLISHING_PRODUCT_PREDICATE}) OR (${GIT_PRODUCT_PREDICATE})` : FILE_EXTENSION_PATTERN;
+    const columns = table === 'tool_uses' ? 'tool_name, tool_input, created_at_epoch' : 'files_modified, created_at_epoch';
+    let sample;
+    try {
+      sample = database.prepare(`SELECT COUNT(*) AS sampled,
+        COALESCE(SUM(CASE WHEN created_at_epoch >= ? AND (${predicate}) THEN 1 ELSE 0 END), 0) AS matches
+        FROM (SELECT ${columns} FROM ${table} ORDER BY id DESC LIMIT ?)
+      `).get(sinceEpoch, sampleSize);
+    } catch (error) {
+      // Match agent-view's safeRead support for older/minimal schemas. The
+      // normal read callback still decides how missing content is represented.
+      if (/no such (table|column)/i.test(String(error.message))) continue;
+      throw error;
+    }
+    if (sample.matches * 4 >= sample.sampled && sample.sampled > 0) continue;
+    const estimatedIdScan = limit * sampleSize / Math.max(1, sample.matches);
+    const budget = Math.min(limit * 4, 8192, Math.floor(estimatedIdScan / 2));
+    const candidates = database.prepare(`SELECT COUNT(*) AS count FROM (
+      SELECT 1 FROM ${table}${clause} WHERE created_at_epoch >= ? LIMIT ?
+    )`).get(sinceEpoch, budget + 1).count;
+    if (candidates <= budget) selected[table] = clause;
+  }
+  return selected;
+}
 
 /** Recorded calls and observations that may hold work product since `sinceEpoch`.
- * Git commands are read separately so their volume never crowds out publishers. */
-export function readProductRecords(read, sinceEpoch, limit = 2000) {
-  const publishingCalls = read(`SELECT id, session_db_id, prompt_number, tool_name, tool_input, tool_response, created_at_epoch FROM tool_uses
-    WHERE created_at_epoch >= ? AND (tool_name IN ('Artifact', 'mcp__claude_ai_Notion__notion-create-pages', 'mcp__claude_ai_Claude_Docs__batch', 'mcp__claude_ai_Claude_Docs__create')
-      OR tool_name LIKE '%chatgpt_space__create_page' OR tool_name LIKE '%sites__save_version_and_deploy%'
-      OR (tool_name = 'Bash' AND tool_input LIKE '%gh pr create%'))
+ * Git commands are read separately so their volume never crowds out publishers.
+ * Pass the reader's database to use its existing time indexes before payload
+ * predicates; ID ordering is still applied to the complete matching set. */
+export function readProductRecords(read, sinceEpoch, limit = 2000, { database } = {}) {
+  const indexes = selectiveProductIndexClauses(database, sinceEpoch, limit);
+  const publishingCalls = read(`SELECT id, session_db_id, prompt_number, tool_name, tool_input, tool_response, created_at_epoch FROM tool_uses${indexes.tool_uses ?? ''}
+    WHERE created_at_epoch >= ? AND ${PUBLISHING_PRODUCT_PREDICATE}
     ORDER BY id DESC LIMIT ?`, [sinceEpoch, limit]);
-  const gitCalls = read(`SELECT id, session_db_id, prompt_number, tool_name, tool_input, tool_response, created_at_epoch FROM tool_uses
-    WHERE created_at_epoch >= ? AND tool_name = 'Bash' AND tool_input LIKE '%git%' AND tool_input NOT LIKE '%gh pr create%'
-      AND (tool_input LIKE '%commit%' OR tool_input LIKE '%push%' OR tool_input LIKE '%checkout -b%' OR tool_input LIKE '%switch -c%')
+  const gitCalls = read(`SELECT id, session_db_id, prompt_number, tool_name, tool_input, tool_response, created_at_epoch FROM tool_uses${indexes.tool_uses ?? ''}
+    WHERE created_at_epoch >= ? AND ${GIT_PRODUCT_PREDICATE}
     ORDER BY id DESC LIMIT ?`, [sinceEpoch, limit]);
   const productCalls = [...publishingCalls, ...gitCalls];
-  const productObservations = read(`SELECT id, memory_session_id, prompt_number, files_modified, created_at_epoch FROM observations
+  const productObservations = read(`SELECT id, memory_session_id, prompt_number, files_modified, created_at_epoch FROM observations${indexes.observations ?? ''}
     WHERE created_at_epoch >= ? AND (${FILE_EXTENSION_PATTERN}) ORDER BY id DESC LIMIT ?`, [sinceEpoch, limit]);
   // Bucket copies the Stop hook made; a database from before the table existed has none (safeRead answers []).
   const productDeliverables = read(`SELECT id, project, content_session_id, platform_source, title, kind, source_path, bucket_path, created_at_epoch

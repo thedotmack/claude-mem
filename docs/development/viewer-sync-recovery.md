@@ -107,3 +107,34 @@ rtk npm run build -- --outDir ../../../reports/phase0-my-work-build
 On the initial recovery checkout, root typecheck and an isolated My Work production build pass after installing dependencies. Service frozen installs pass with task-local Bun 1.4.0; system Bun 1.3.9 rejects lockfile version 2. The normal root install fails on native tree-sitter compilation with the local SDK/toolchain, while an explicit scripts-disabled install supplies the viewer/sync JavaScript dependencies. Native integration readiness remains a separately recorded limitation.
 
 Authenticated hosted inspection is still unavailable without a Fly access token. This does not block local implementation or synthetic verification, but actual deployed routing, cursor/head, keep-pulling configuration and canary parity remain mandatory Phase 9 checks. Per-command baseline results and subsequent phase completion are recorded in the ignored `reports/viewer-sync-execution.md` handoff, not inferred from this contract.
+
+## Phase 1 implementation
+
+The following APIs supersede their Phase 0 baseline descriptions above. Scheduling, freshness and returned projection content are unchanged.
+
+- `readProductRecords(read, sinceEpoch, limit = 2000, { database } = {})` accepts an optional reader database. It caches only verified non-partial timestamp-index definitions per connection. A positive cutoff is not enough to force an index: each read samples at most 128 latest IDs for product density, then probes a bounded timestamp range for sparse candidates. Dense matches or broad ranges retain SQLite's planner choice, as do zero cutoffs and missing/incompatible indexes. Result order remains ID descending, with independent publisher/Git limits.
+- `WorkViewReadWorkerClient.read(maxActivityAgeMs, localDeviceId, purpose = 'snapshot')` adds an optional fixed-purpose label. Runtime values outside the fixed set become `snapshot`. `getDiagnostics()` returns current/high-water pending counts, completed/failed counts and one copied last-read sample; it retains no unbounded history, source content, paths, row IDs or errors.
+- `GET /api/work-view/diagnostics` uses the existing loopback guard and `Cache-Control: no-store`. It reports the reader sample, latest snapshot postprocessing duration and latest HTTP/SSE write duration/bytes. The endpoint itself does not read SQLite or change read counts. HTTP write duration includes the existing JSON serialization/send; SSE byte size includes framing and can describe a heartbeat rather than a full snapshot.
+- Queue wait is the client-side interval from enqueue to receipt of the worker's started notification, including startup/dispatch. Worker-local read duration and client round-trip duration use their own monotonic clocks; the measurements can overlap slightly and are not an exact sum. This avoids comparing Bun's realm-local `hrtime` origins. Duration values are clamped to finite values between zero and one day. No second JSON serialization is performed just to collect payload size.
+
+The maintained benchmark defaults to a temporary synthetic database and reports aggregate timing, counts, plans, and row/order equality only:
+
+```sh
+rtk npm exec --yes --package=bun@1.4.0 -- bun scripts/benchmark-work-view.ts --output reports/work-view-benchmark.json
+```
+
+Its defaults are 100,000 historical rows per table, 256-byte payloads, 140 recent requests, three new-reader trials and ten warm trials. The recorded Phase 1 fixture was approximately 77 MB, not the approximately 3 GB acceptance workload. Increase `--rows`, `--payload-bytes`, `--cold-runs` and `--warm-runs` for representative verification. Explicit `--db PATH` selects a real database read-only; `--ledger PATH` is optional. The report output cannot overwrite the database, its sidecars or their existing filesystem aliases.
+
+The synthetic result confirms query behavior, not the production latency targets: positive-cutoff publisher/Git/file-query median times fell from about 12.76/20.03/12.75 ms to 0.19/0.20/0.24 ms with identical rows/order. The new-reader sample had p95 82.93 ms and warm p95 6.22 ms on that small fixture; full large-data/browser acceptance remains Phase 9 work. The all-history comparison retained the original plans.
+
+Phase 1 combined verification passed 93 tests across eight files, plus root/viewer typechecking. Adjacent CJS reader packaging passed. The previously recorded standalone executable baseline failure was not rerun or declared fixed; live data, the installed worker, manifests and lockfiles were untouched.
+
+### Query selectivity correction after independent review
+
+Review found that forcing the time index for every positive cutoff made dense broad reads slower. The corrected selection uses the actual range and a bounded recent-ID sample on each read, not a cached workload decision. If at least one quarter of sampled recent rows match the product predicates, it retains the normal plan. Otherwise it considers at most four requested pages (capped at 8,192 candidate rows), additionally bounded by half the sample-estimated ID scan. The limited index count stops at the budget plus one; it never counts the whole history. Missing product columns use the existing legacy fallback, while unrelated database errors still propagate.
+
+The benchmark now derives its work window exactly as `readAgentRecords` does: the oldest of the latest 240 list/task update times minus five seconds. It reports bounded candidate counts, total discovery time including the policy probes, and optional dense positive-cutoff workloads (`--dense-rows N`). Output-path protection is independently verified before opt-in read-only database runs.
+
+On the original approximately 3 GB database, a read-only sample with 6,653 candidate tool rows and 2,531 candidate observations preserved full results/order and reduced median total product discovery from 927.09 ms to 26.74 ms including selection. Individual query medians were publisher 537.04 → 9.38 ms, Git 270.87 → 13.65 ms, and modified files 167.16 → 3.65 ms. One new-reader sample took 694.19 ms; this single sample does not establish the p95 target.
+
+Dense positive-cutoff synthetic cases retained the original query plans: 50,000 rows measured 1.40 → 1.45 ms median total discovery, and 200,000 rows measured 2.04 → 1.46 ms, including bounded probes. These paired samples have runtime noise; the important regression guarantee is unchanged SQL plan/result ordering rather than a wall-clock assertion. Tests also cover a dense 3,000-row bounded range and a sparse 6,000-row range above the result limit.
