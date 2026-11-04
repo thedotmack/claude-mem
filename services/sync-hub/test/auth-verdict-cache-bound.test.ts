@@ -40,12 +40,32 @@ describe("per-isolate verdict memo is bounded", () => {
 		expect(__verdictMemorySizeForTests()).toBe(VERDICT_MEMORY_MAX_ENTRIES);
 	});
 
-	it("re-writing an existing key does not evict anything", () => {
+	// A refresh must not cost another key its verdict. The refreshed key is not
+	// the oldest one here, so dropping the pre-insert delete in writeVerdictMemory
+	// would evict verdict:0 and fail this test.
+	it("refreshing a non-oldest key at capacity keeps every other key", () => {
+		for (let i = 0; i < VERDICT_MEMORY_MAX_ENTRIES; i++) {
+			writeVerdictMemory(`verdict:${i}`, 900);
+		}
+		writeVerdictMemory("verdict:5", 900);
+		expect(__verdictMemorySizeForTests()).toBe(VERDICT_MEMORY_MAX_ENTRIES);
+		for (let i = 0; i < VERDICT_MEMORY_MAX_ENTRIES; i++) {
+			expect(readVerdictMemory(`verdict:${i}`)).toBe(true);
+		}
+	});
+
+	// A refresh must also move the key to the newest position. Updating it in
+	// place would leave verdict:0 first in line and fail this test.
+	it("refreshing the oldest key makes the next-oldest key the one evicted", () => {
 		for (let i = 0; i < VERDICT_MEMORY_MAX_ENTRIES; i++) {
 			writeVerdictMemory(`verdict:${i}`, 900);
 		}
 		writeVerdictMemory("verdict:0", 900);
+		writeVerdictMemory("verdict:new", 900);
 		expect(__verdictMemorySizeForTests()).toBe(VERDICT_MEMORY_MAX_ENTRIES);
+		expect(readVerdictMemory("verdict:1")).toBe(false);
 		expect(readVerdictMemory("verdict:0")).toBe(true);
+		expect(readVerdictMemory("verdict:2")).toBe(true);
+		expect(readVerdictMemory("verdict:new")).toBe(true);
 	});
 });
