@@ -13,6 +13,9 @@ import { planUnattendedGatewayResume, unattendedGatewayResumesSpent } from './se
 import { PROVIDER_SWITCH_BOUNDARY_ABORT_REASON } from './session/abort-reason.js';
 import { isSimpleTierMessage } from './session/tier-routing.js';
 import { claudeStandInStillServes } from '../../shared/claude-fallback-readiness.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { isObserverCaptureEnabled } from '../../shared/observer-capture.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 
 export const SESSION_END_WRAPUP_GRACE_MS = 5_000;
 
@@ -540,6 +543,11 @@ export class SessionManager {
   }
 
   async clearPendingForSession(sessionDbId: number): Promise<number> {
+    const session = this.sessions.get(sessionDbId);
+    if (session) {
+      session.claimedMessageIds = [];
+      session.earliestPendingTimestamp = null;
+    }
     return this.buffer.clear(sessionDbId);
   }
 
@@ -854,6 +862,19 @@ export class SessionManager {
         session.abortController.abort();
       }
     })) {
+      // Re-check at every message boundary so a settings-file edit made while
+      // a generator is already alive takes effect after its current request.
+      // Clear the RAM-only queue: transcript replay remains the durable
+      // recovery path if capture is enabled again later.
+      if (!isObserverCaptureEnabled(SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH))) {
+        const discarded = await this.clearPendingForSession(sessionDbId);
+        logger.info('SESSION', 'Observer capture disabled at message boundary; discarding buffered work', {
+          sessionId: sessionDbId,
+          discarded,
+        });
+        return;
+      }
+
       // The previous request is answered, so nothing is in flight: end this
       // generator before it sends on the old provider. The next generator
       // releases this claim when it starts.
