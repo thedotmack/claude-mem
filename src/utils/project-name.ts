@@ -351,7 +351,7 @@ export function buildWorktreeProjectKey(parentProjectName: string, worktreeName:
 function submoduleLeaf(info: WorktreeInfo, repoRoot: string): string | null {
   if (!info.isSubmodule || !info.parentRepoPath) return null;
   const relative = path.relative(info.parentRepoPath, repoRoot);
-  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return null;
+  if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
   return relative.split(path.sep).join('/');
 }
 
@@ -439,8 +439,14 @@ function getPathProjectContext(cwd: string, expandedCwd: string, repoRoot: strin
     let primary: string;
     let legacyKeys: string[];
     if (worktreeInfo.isSubmodule) {
-      primary = `${parent}/${submoduleLeaf(worktreeInfo, checkoutRoot) ?? cwdProjectName}`;
+      const leaf = submoduleLeaf(worktreeInfo, checkoutRoot);
+      primary = `${parent}/${leaf ?? cwdProjectName}`;
       legacyKeys = cwdProjectName !== parent ? [cwdProjectName] : [];
+      // The former raw '..' prefix check collapsed these nested paths to
+      // the basename. Keep that shared historical key readable.
+      if (leaf?.startsWith('..') && leaf !== cwdProjectName) {
+        legacyKeys.push(`${parent}/${cwdProjectName}`);
+      }
     } else {
       primary = buildWorktreeProjectKey(parent, cwdProjectName);
       legacyKeys = primary === parent ? [`${parent}/${cwdProjectName}`] : [];
