@@ -66,6 +66,27 @@ export function findBunExecutablePath(): string | null {
   return getToolPath('bun', bunCommonPaths());
 }
 
+function expandHome(path: string): string {
+  if (path === '~' || path.startsWith('~/') || path.startsWith('~\\')) {
+    return path.replace(/^~(?=$|[/\\])/, homedir());
+  }
+  return path;
+}
+
+/** Returns true when the Codex CLI is directly runnable from PATH. */
+export function isCodexOnPath(): boolean {
+  const pathCommand = IS_WINDOWS ? lookupWindowsCommand('codex') : 'codex';
+  try {
+    if (pathCommand) {
+      const result = spawnVersionProbe(pathCommand, ['--version']);
+      if (result.status === 0) return true;
+    }
+  } catch {
+    // Not in PATH
+  }
+  return false;
+}
+
 /** Common locations for the Codex CLI executable across macOS and Windows. */
 export function codexCommonPaths(): string[] {
   if (IS_WINDOWS) {
@@ -79,7 +100,23 @@ export function codexCommonPaths(): string[] {
   ];
 }
 
-/** PATH first (proven by `codex --version`), then well-known install locations. */
-export function findCodexExecutablePath(): string | null {
+/**
+ * PATH first (proven by `codex --version`), then explicit configured path if valid,
+ * then well-known install locations.
+ */
+export function findCodexExecutablePath(configuredPath?: string): string | null {
+  const explicit = (configuredPath?.trim() || process.env.CLAUDE_MEM_CODEX_PATH?.trim());
+  if (explicit && explicit !== 'codex') {
+    const candidate = expandHome(explicit);
+    const resolved = IS_WINDOWS ? (lookupWindowsCommand(candidate) ?? candidate) : candidate;
+    try {
+      if (existsSync(resolved)) return resolved;
+      const result = spawnVersionProbe(resolved, ['--version']);
+      if (result.status === 0) return resolved;
+    } catch {
+      // Configured path failed
+    }
+    return null;
+  }
   return getToolPath('codex', codexCommonPaths());
 }

@@ -3,6 +3,7 @@
  * exec-form hooks need.
  */
 
+import { homedir } from 'os';
 import { spawnSync } from 'child_process';
 import { buildSpawnSyncInvocation, lookupWindowsCommand } from '../../shared/spawn.js';
 
@@ -15,15 +16,25 @@ import { buildSpawnSyncInvocation, lookupWindowsCommand } from '../../shared/spa
  */
 export const MINIMUM_CLAUDE_CODE_VERSION_FOR_EXEC_FORM_HOOKS = '2.1.139';
 
+function expandHome(path: string): string {
+  if (path === '~' || path.startsWith('~/') || path.startsWith('~\\')) {
+    return path.replace(/^~(?=$|[/\\])/, homedir());
+  }
+  return path;
+}
+
 /**
  * Claude Code CLI version, best effort. Hook/plugin behavior differs across
  * Claude Code releases, so this is key for diagnosing installs whose worker
  * never starts. Missing binary or timeout → undefined.
  */
-function readClaudeCodeVersionOutput(): string | undefined {
-  const command = process.platform === 'win32'
-    ? (lookupWindowsCommand('claude') ?? 'claude.cmd')
-    : 'claude';
+function readClaudeCodeVersionOutput(configuredPath?: string): string | undefined {
+  const explicit = (configuredPath?.trim() || process.env.CLAUDE_CODE_PATH?.trim());
+  const command = explicit
+    ? expandHome(explicit)
+    : (process.platform === 'win32'
+      ? (lookupWindowsCommand('claude') ?? 'claude.cmd')
+      : 'claude');
   const invocation = buildSpawnSyncInvocation(command, ['--version'], {
     timeout: 5000,
     encoding: 'utf-8',
@@ -35,9 +46,9 @@ function readClaudeCodeVersionOutput(): string | undefined {
   return output.split(/\s+/)[0].slice(0, 40) || undefined;
 }
 
-export function detectClaudeCodeVersion(): string | undefined {
+export function detectClaudeCodeVersion(configuredPath?: string): string | undefined {
   try {
-    return readClaudeCodeVersionOutput();
+    return readClaudeCodeVersionOutput(configuredPath);
   } catch (error: unknown) {
     const err = error instanceof Error ? error : new Error(String(error));
     console.warn('[install] Could not detect Claude Code version:', err);

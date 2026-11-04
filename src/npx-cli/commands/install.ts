@@ -588,7 +588,8 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
             return `Codex CLI: integration setup failed ${styleText('red', 'FAIL')}`;
           }
           const currentProvider = (getSetting('CLAUDE_MEM_PROVIDER') as string | undefined) || 'claude';
-          if (currentProvider === 'claude' && !detectClaudeCodeVersion()) {
+          const configuredClaude = (getSetting('CLAUDE_CODE_PATH') as string | undefined) || process.env.CLAUDE_CODE_PATH;
+          if (currentProvider === 'claude' && !detectClaudeCodeVersion(configuredClaude)) {
             log.info("Codex CLI hooks registered. Note: To generate observations using Codex, set CLAUDE_MEM_PROVIDER to 'codex' in ~/.claude-mem/settings.json.");
           }
           return `Codex CLI: hooks marketplace registered ${styleText('green', 'OK')}`;
@@ -1338,14 +1339,16 @@ export async function promptProvider(
 
   if (selectedProvider === 'claude') {
     useSubscriptionAuth();
-    const detected = detectClaudeCodeVersion();
+    const configuredClaude = (getSetting('CLAUDE_CODE_PATH') as string | undefined) || process.env.CLAUDE_CODE_PATH;
+    const detected = detectClaudeCodeVersion(configuredClaude);
     if (!detected) {
-      const codexInstalled = Boolean(findCodexExecutablePath());
-      if (codexInstalled) {
-        log.warn('Claude Code CLI not found on PATH, but Codex CLI was detected.');
+      const configuredCodex = (getSetting('CLAUDE_MEM_CODEX_PATH') as string | undefined) || process.env.CLAUDE_MEM_CODEX_PATH;
+      const codexPath = findCodexExecutablePath(configuredCodex);
+      if (codexPath) {
+        log.warn('Claude Code CLI not found on PATH or at CLAUDE_CODE_PATH, but Codex CLI was detected.');
         log.warn('To use Codex for memory generation, run with `--provider codex` or set CLAUDE_MEM_PROVIDER to codex in ~/.claude-mem/settings.json.');
       } else {
-        log.warn('Claude Code CLI not found on PATH. Ensure `claude` is installed before starting the worker, or set CLAUDE_CODE_PATH in settings.json.');
+        log.warn('Claude Code CLI not found on PATH or at CLAUDE_CODE_PATH. Ensure `claude` is installed before starting the worker, or set CLAUDE_CODE_PATH in settings.json.');
       }
     }
     return 'claude';

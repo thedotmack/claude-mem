@@ -12,7 +12,11 @@ import { IS_WINDOWS, marketplaceDirectory, readPluginVersion } from '../utils/pa
 import { getWorkerBaseUrl, resolvePluginRoot, type PluginRootResolution } from '../../shared/worker-utils.js';
 import { InvalidWorkerUrlError } from '../../shared/worker-url.js';
 import { getBunVersion, getUvVersion, isInstallCurrent } from '../install/setup-runtime.js';
-import { findCodexExecutablePath } from '../install/tool-path.js';
+import { findCodexExecutablePath, isCodexOnPath } from '../install/tool-path.js';
+import { getCredential } from '../../shared/EnvManager.js';
+import { buildKeyPool } from '../../shared/api-key-pool.js';
+import { resolveOpenAICompatPreset } from '../../shared/openai-compat-presets.js';
+import { isLocalEndpointUrl } from '../../services/worker/OpenAICompatProvider.js';
 import { treeSitterCliBinaryPath } from '../../services/smart-file-read/tree-sitter-cli-provision.js';
 import { checkTreeSitterCliLoadable, resolveTreeSitterBinPathFor, TREE_SITTER_CLI_PATH_WORKAROUND } from '../../services/smart-file-read/tree-sitter-bin-path.js';
 import { resolveDataDir } from '../../shared/paths.js';
@@ -200,6 +204,8 @@ export interface WorkerDependencyHealthPayload {
 export async function probeWorkerDependencies(
   workerUrl: string,
   codexDetected: boolean = false,
+  codexOnPath: boolean = false,
+  codexPath?: string | null,
 ): Promise<CheckResult[]> {
   try {
     const response = await fetch(`${workerUrl}/api/admin/doctor`, {
@@ -216,7 +222,7 @@ export async function probeWorkerDependencies(
       return [];
     }
 
-    return workerDependencyChecks(deps.statuses, codexDetected);
+    return workerDependencyChecks(deps.statuses, codexDetected, codexOnPath, codexPath);
   } catch {
     return [];
   }
@@ -225,13 +231,18 @@ export async function probeWorkerDependencies(
 export function workerDependencyChecks(
   statuses: WorkerDependencyStatusPayload[],
   codexDetected: boolean = false,
+  codexOnPath: boolean = false,
+  codexPath?: string | null,
 ): CheckResult[] {
   const checks: CheckResult[] = [];
   for (const status of statuses) {
     if (status.dependency === 'claude_cli' && status.kind === 'setup_required') {
-      const codexHint = codexDetected
-        ? ' (Codex CLI is installed; you can switch by setting CLAUDE_MEM_PROVIDER to codex in ~/.claude-mem/settings.json)'
-        : '';
+      let codexHint = '';
+      if (codexDetected) {
+        codexHint = codexOnPath || !codexPath
+          ? ' (Codex CLI is installed; you can switch by setting CLAUDE_MEM_PROVIDER to codex in ~/.claude-mem/settings.json)'
+          : ` (Codex CLI is installed at ${codexPath}; you can switch by setting CLAUDE_MEM_PROVIDER to codex and CLAUDE_MEM_CODEX_PATH to "${codexPath}" in ~/.claude-mem/settings.json)`;
+      }
       const detail = status.remediation
         ? `${status.message}${codexHint} — ${status.remediation}`
         : `${status.message}${codexHint}`;
@@ -539,13 +550,27 @@ export function claudeCodeVersionCheck(detectedClaudeCodeVersion: string | undef
   };
 }
 
+export interface OpenAICompatCheckStatus {
+  hasEndpoint: boolean;
+  hasModel: boolean;
+  hasKey: boolean;
+  requiresKey: boolean;
+  endpointUrl?: string;
+  model?: string;
+}
+
 export interface ObserverProviderCheckOptions {
   provider?: string;
   claudeDetected: boolean;
   detectedClaudeVersion?: string;
+  configuredClaudePath?: string;
   codexDetected: boolean;
+  codexOnPath?: boolean;
+  codexPath?: string | null;
+  configuredCodexPath?: string;
   hasOpenRouterKey?: boolean;
   hasGeminiKey?: boolean;
+  openaiCompat?: OpenAICompatCheckStatus;
 }
 
 /**
@@ -570,10 +595,13 @@ export function observerProviderCheck(options: ObserverProviderCheckOptions): Ch
     }
 
     if (options.codexDetected) {
+      const switchHint = options.codexOnPath || !options.codexPath
+        ? 'set CLAUDE_MEM_PROVIDER to codex in ~/.claude-mem/settings.json'
+        : `set CLAUDE_MEM_PROVIDER to codex and CLAUDE_MEM_CODEX_PATH to "${options.codexPath}" in ~/.claude-mem/settings.json`;
       return {
         name,
         status: 'warn',
-        detail: `claude configured, but Claude CLI not found on PATH. Codex CLI is available — set CLAUDE_MEM_PROVIDER to codex in ~/.claude-mem/settings.json to enable observation generation`,
+        detail: `claude configured, but Claude CLI not found on PATH or at CLAUDE_CODE_PATH. Codex CLI is available — ${switchHint} to enable observation generation`,
         required: false,
       };
     }
@@ -587,7 +615,25 @@ export function observerProviderCheck(options: ObserverProviderCheckOptions): Ch
   }
 
   if (provider === 'codex') {
-    if (options.codexDetected) {
+    const isCustomPath = Boolean(options.configuredCodexPath && options.configuredCodexPath !== 'codex');
+    if (isCustomPath) {
+      if (options.codexDetected) {
+        return {
+          name,
+          status: 'ok',
+          detail: `codex (${options.codexPath || options.configuredCodexPath})`,
+          required: false,
+        };
+      }
+      return {
+        name,
+        status: 'warn',
+        detail: `codex configured, but CLAUDE_MEM_CODEX_PATH "${options.configuredCodexPath}" does not exist; observation generation will be paused until installed`,
+        required: false,
+      };
+    }
+
+    if (options.codexOnPath) {
       return {
         name,
         status: 'ok',
@@ -595,6 +641,16 @@ export function observerProviderCheck(options: ObserverProviderCheckOptions): Ch
         required: false,
       };
     }
+
+    if (options.codexDetected && options.codexPath) {
+      return {
+        name,
+        status: 'warn',
+        detail: `codex configured, but codex is not on PATH. Found at ${options.codexPath} — set CLAUDE_MEM_CODEX_PATH to "${options.codexPath}" in ~/.claude-mem/settings.json`,
+        required: false,
+      };
+    }
+
     return {
       name,
       status: 'warn',
@@ -615,7 +671,7 @@ export function observerProviderCheck(options: ObserverProviderCheckOptions): Ch
     return {
       name,
       status: 'warn',
-      detail: 'openrouter configured, but CLAUDE_MEM_OPENROUTER_API_KEY is not set in settings.json',
+      detail: 'openrouter configured, but no API key configured (set CLAUDE_MEM_OPENROUTER_API_KEY in settings.json or OPENROUTER_API_KEY in .env)',
       required: false,
     };
   }
@@ -632,15 +688,58 @@ export function observerProviderCheck(options: ObserverProviderCheckOptions): Ch
     return {
       name,
       status: 'warn',
-      detail: 'gemini configured, but CLAUDE_MEM_GEMINI_API_KEY is not set in settings.json',
+      detail: 'gemini configured, but no API key configured (set CLAUDE_MEM_GEMINI_API_KEY in settings.json or GEMINI_API_KEY in .env)',
+      required: false,
+    };
+  }
+
+  if (provider === 'openai-compatible') {
+    const compat = options.openaiCompat;
+    if (!compat || !compat.hasEndpoint) {
+      return {
+        name,
+        status: 'warn',
+        detail: 'openai-compatible configured, but no endpoint URL or preset is set (set CLAUDE_MEM_OPENAI_COMPAT_BASE_URL or CLAUDE_MEM_OPENAI_COMPAT_PRESET in settings.json)',
+        required: false,
+      };
+    }
+    if (!compat.hasModel) {
+      return {
+        name,
+        status: 'warn',
+        detail: 'openai-compatible configured, but no model is configured (set CLAUDE_MEM_OPENAI_COMPAT_MODEL in settings.json)',
+        required: false,
+      };
+    }
+    if (compat.requiresKey && !compat.hasKey) {
+      return {
+        name,
+        status: 'warn',
+        detail: 'openai-compatible configured, but required API key is missing (set CLAUDE_MEM_OPENAI_COMPAT_API_KEY in settings.json or OPENAI_COMPAT_API_KEY in .env)',
+        required: false,
+      };
+    }
+    return {
+      name,
+      status: 'ok',
+      detail: `openai-compatible (${compat.model} via ${compat.endpointUrl || 'configured endpoint'})`,
+      required: false,
+    };
+  }
+
+  if (provider === 'host') {
+    return {
+      name,
+      status: 'ok',
+      detail: 'host',
       required: false,
     };
   }
 
   return {
     name,
-    status: 'ok',
-    detail: provider,
+    status: 'warn',
+    detail: `Unknown provider "${provider}". Supported providers: claude, codex, openrouter, gemini, openai-compatible, host`,
     required: false,
   };
 }
@@ -722,11 +821,19 @@ export async function runDoctorCommand(): Promise<void> {
 
   // 5. Worker health.
   // Where this client reaches the worker: settings.json, with env vars overriding it.
+  const doctorSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, true, { readOnly: true });
+  const configuredClaudePath = doctorSettings.CLAUDE_CODE_PATH?.trim() || process.env.CLAUDE_CODE_PATH?.trim() || undefined;
+  const detectedClaudeCode = detectClaudeCodeVersion(configuredClaudePath);
+
+  const configuredCodexPath = doctorSettings.CLAUDE_MEM_CODEX_PATH?.trim() || process.env.CLAUDE_MEM_CODEX_PATH?.trim() || undefined;
+  const codexPath = findCodexExecutablePath(configuredCodexPath);
+  const codexAvailable = codexPath !== null;
+  const codexOnPath = isCodexOnPath();
+
   let workerStatus: CheckStatus = 'fail';
   let workerDetail = '';
   let chromaChecks: CheckResult[] = [];
   let dependencyChecks: CheckResult[] = [];
-  const codexAvailable = Boolean(findCodexExecutablePath());
   try {
     const workerUrl = getWorkerBaseUrl({ readOnly: true });
     workerDetail = `no response at ${workerUrl} — start with \`npx claude-mem start\``;
@@ -734,7 +841,7 @@ export async function runDoctorCommand(): Promise<void> {
     workerStatus = worker.status;
     workerDetail = worker.detail;
     chromaChecks = await probeChromaDiagnostics(worker.workerUrl);
-    dependencyChecks = await probeWorkerDependencies(worker.workerUrl, codexAvailable);
+    dependencyChecks = await probeWorkerDependencies(worker.workerUrl, codexAvailable, codexOnPath, codexPath);
   } catch (error: unknown) {
     if (error instanceof InvalidWorkerUrlError) workerDetail = error.message;
     // otherwise leave as fail
@@ -749,15 +856,47 @@ export async function runDoctorCommand(): Promise<void> {
   checks.push(...dependencyChecks);
 
   // 5b. Observer provider and CLI reachability (#5359).
-  const doctorSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, true, { readOnly: true });
-  const detectedClaudeCode = detectClaudeCodeVersion();
+  const openRouterKeys = buildKeyPool(
+    doctorSettings.CLAUDE_MEM_OPENROUTER_API_KEY || getCredential('OPENROUTER_API_KEY') || '',
+    doctorSettings.CLAUDE_MEM_OPENROUTER_API_KEYS || getCredential('OPENROUTER_API_KEYS') || '',
+  );
+  const geminiKeys = buildKeyPool(
+    doctorSettings.CLAUDE_MEM_GEMINI_API_KEY || getCredential('GEMINI_API_KEY') || '',
+    doctorSettings.CLAUDE_MEM_GEMINI_API_KEYS || getCredential('GEMINI_API_KEYS') || '',
+  );
+
+  const compatPreset = resolveOpenAICompatPreset(doctorSettings.CLAUDE_MEM_OPENAI_COMPAT_PRESET);
+  const compatConfiguredBaseUrl = (doctorSettings.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL ?? '').trim();
+  const compatBaseUrl = compatConfiguredBaseUrl || compatPreset.baseUrl;
+  const compatConfiguredModel = (doctorSettings.CLAUDE_MEM_OPENAI_COMPAT_MODEL ?? '').trim();
+  const compatModel = compatConfiguredModel || compatPreset.defaultModel;
+  const compatRequiresApiKey = compatConfiguredBaseUrl
+    ? !isLocalEndpointUrl(compatConfiguredBaseUrl)
+    : compatPreset.requiresApiKey;
+  const compatKeys = buildKeyPool(
+    doctorSettings.CLAUDE_MEM_OPENAI_COMPAT_API_KEY || getCredential('OPENAI_COMPAT_API_KEY') || '',
+    doctorSettings.CLAUDE_MEM_OPENAI_COMPAT_API_KEYS || getCredential('OPENAI_COMPAT_API_KEYS') || '',
+  );
+
   checks.push(observerProviderCheck({
     provider: doctorSettings.CLAUDE_MEM_PROVIDER,
     claudeDetected: Boolean(detectedClaudeCode),
     detectedClaudeVersion: detectedClaudeCode,
+    configuredClaudePath,
     codexDetected: codexAvailable,
-    hasOpenRouterKey: Boolean(doctorSettings.CLAUDE_MEM_OPENROUTER_API_KEY?.trim()),
-    hasGeminiKey: Boolean(doctorSettings.CLAUDE_MEM_GEMINI_API_KEY?.trim()),
+    codexOnPath,
+    codexPath,
+    configuredCodexPath,
+    hasOpenRouterKey: openRouterKeys.length > 0,
+    hasGeminiKey: geminiKeys.length > 0,
+    openaiCompat: {
+      hasEndpoint: Boolean(compatBaseUrl),
+      hasModel: Boolean(compatModel),
+      hasKey: compatKeys.length > 0,
+      requiresKey: compatRequiresApiKey,
+      endpointUrl: compatBaseUrl,
+      model: compatModel,
+    },
   }));
 
   // 5c. Claude Code version: the exec-form hooks need `args` support.
