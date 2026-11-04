@@ -342,8 +342,6 @@ Settings are managed in `~/.claude-mem/settings.json` (auto-created with default
 
 To include observations from every harness in Claude Code and Codex SessionStart context, set `"CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES": "true"` in that file, or enable **Include all sources at session start** in the viewer settings. The default is `"false"`, which limits startup context to the current harness. The observation count limit still applies across the selected sources.
 
-To pick the observer provider per harness, set `CLAUDE_MEM_PROVIDER_BY_SOURCE` to a JSON object that maps a session's source to a provider, for example `"{\"codex\":\"codex\",\"claude\":\"claude\"}"`. Codex sessions then run on the Codex provider and Claude Code sessions on Claude, whatever `CLAUDE_MEM_PROVIDER` says. Sources without an entry use `CLAUDE_MEM_PROVIDER`, and so does an entry whose provider is not configured (for example Gemini without a key). The default is empty, which uses `CLAUDE_MEM_PROVIDER` for every session. The value can be a JSON string or, when you edit `settings.json` by hand, a plain JSON object. The Claude CLI is checked at worker boot when any source maps to `claude`.
-
 See the **[Configuration Guide](https://docs.claude-mem.ai/configuration)** for all available settings and examples.
 
 ### Mode & Language Configuration
