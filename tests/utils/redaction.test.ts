@@ -124,6 +124,34 @@ describe('redactSensitive built-in patterns', () => {
     expect(Object.keys(result.counts)).toEqual([name]);
   });
 
+  // Linear and Notion keys; split for push protection too.
+  const LINEAR_BODY = 'aBcDeFgHiJkLmNoPqRsT' + 'uVwXyZ0123456789aBcD';
+  const NOTION_BODY = '1234567890aBcDeFgHiJkLmNoPqRsT' + 'uVwXyZ0123456789';
+  const NOTION_LEGACY_BODY = 'aBcDeFgHiJkLmNoPqRsTuVw' + 'XyZ0123456789aBcDeFg';
+  it.each([
+    ['linear_key', 'export LINEAR_API_KEY=' + 'lin_' + 'api_' + LINEAR_BODY + ' tail', LINEAR_BODY],
+    ['linear_key', 'curl -H "Authorization: ' + 'lin_' + 'api_' + LINEAR_BODY + '" tail', LINEAR_BODY],
+    ['notion_token', 'NOTION_TOKEN=' + 'nt' + 'n_' + NOTION_BODY + ' tail', NOTION_BODY],
+    ['notion_token', '{"OPENAPI_MCP_HEADERS":"Bearer ' + 'nt' + 'n_' + NOTION_BODY + '"} tail', NOTION_BODY],
+    ['notion_token', 'NOTION_API_KEY=' + 'sec' + 'ret_' + NOTION_LEGACY_BODY + ' tail', NOTION_LEGACY_BODY],
+  ])('redacts a %s in %s', (name, input, body) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain(`<redacted type='${name}'/>`);
+    expect(result.redacted).toMatch(/ tail$/);
+    expect(result.redacted).not.toContain(body);
+    expect(Object.keys(result.counts)).toEqual([name]);
+  });
+
+  it.each([
+    'lin_api_short',
+    'ntn_short',
+    'secret_sauce',
+    'the secret_key_base setting',
+    'lin_api_' + 'aBcDeFgHiJkLmNoPqRsTuVwXyZ',
+  ])('leaves %s alone', (input) => {
+    expect(redactSensitive(input, cfg).redacted).toBe(input);
+  });
+
   // Groq and xAI API keys; split for push protection too.
   const GROQ_BODY = 'aBcDeFgHiJkLmNoPqRsTuVwXyZ' + '0123456789aBcDeFgHiJkLmNoP';
   const XAI_BODY = 'aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789aBcD' + 'eFgHiJkLmNoPqRsTuVwXyZ0123456789aBcDeFgH';
