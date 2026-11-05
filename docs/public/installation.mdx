@@ -12,8 +12,15 @@ description: "Install Claude-Mem plugin for persistent memory across sessions"
 ### When an AI agent installs for a user
 
 1. On the user's computer, run `npx claude-mem install --runtime worker` in an interactive terminal. Enable PTY if your shell tool offers it. Leave `--provider` and `--no-auto-start` unset so first-time setup can open in the browser.
-2. Keep that terminal running. When it prints **Continue setup in your browser**, open the printed URL in the user's browser if the page hasn't opened automatically. If you can't open their browser, give them that exact URL to open on the same computer.
-3. Hand control to the user. They choose how to use memory and complete any sign-in themselves. Wait for the installer to report the outcome before confirming setup.
+2. Before the browser opens, the installer asks in the terminal:
+   - **Overwrite existing installation?**, only when claude-mem is already installed.
+   - **Which agents to set up.** Pass `--ide <id>` (for example `--ide claude-code`) to skip this question.
+   - **Disable Claude Code auto-memory?**, only when Claude Code is one of the agents. Passing `--disable-auto-memory` answers "disable" and skips it; there is no flag for "leave enabled", so ask the user.
+
+   Relay each question to the user and type the answer they give.
+3. Keep that terminal running. When it prints **Continue setup in your browser**, open the printed URL in the user's browser if the page hasn't opened automatically. If you can't open their browser, give them that exact URL to open on the same computer.
+4. At the end, the installer may ask in the terminal whether to share anonymized usage data. Relay that question too. It is skipped when `CI` or `DO_NOT_TRACK` is set, or when the user already answered it.
+5. Hand control to the user. They choose how to use memory and complete any sign-in themselves. Wait for the installer to report the outcome before confirming setup.
 
 If you only have a remote sandbox or can't allocate a local PTY, give the user the same command to run in their own terminal.
 

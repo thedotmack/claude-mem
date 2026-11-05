@@ -60,7 +60,7 @@ import { parseTeamBrainTeamRef, type TeamBrainTeamRef } from '../../shared/teamb
 import { relayedLine } from '../../shared/relayed-text.js';
 import { endSetupSession, INITIAL_SETUP_STATE, readSetupState, startSetupSession, writeSetupState } from '../../shared/setup-state.js';
 import { intentCredentialHeaders, readIntentCredentials } from '../../shared/intent-credentials.js';
-import { runBrowserSetup, settingsChangesNeedingRestart, shouldUseBrowserSetup, waitForBackgroundWorkToFinish, type BrowserSetupOutcome } from '../install/browser-setup.js';
+import { AGENT_BROWSER_SETUP_HINT, runBrowserSetup, settingsChangesNeedingRestart, shouldPrintAgentBrowserSetupHint, shouldUseBrowserSetup, waitForBackgroundWorkToFinish, type BrowserSetupOutcome } from '../install/browser-setup.js';
 
 function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[K] {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)[key];
@@ -3431,11 +3431,16 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     } catch {
       // best-effort only
     }
-    if (
-      !process.env.CI && !alreadyInstalled && !setupComplete && failedIDEs.length === 0
-      && options.providerSource === 'default' && selectedRuntime === 'worker' && !options.noAutoStart
-    ) {
-      log.info("AGENT: To finish setup with the user, run npx claude-mem install --runtime worker in an interactive terminal (PTY) on their computer. Open the printed setup URL in their browser if it hasn't opened automatically. Keep the installer running while the user goes through setup.");
+    if (shouldPrintAgentBrowserSetupHint({
+      ci: Boolean(process.env.CI),
+      alreadyInstalled,
+      setupComplete,
+      failedIdeCount: failedIDEs.length,
+      providerSource: options.providerSource,
+      runtime: selectedRuntime,
+      noAutoStart: options.noAutoStart,
+    })) {
+      log.info(AGENT_BROWSER_SETUP_HINT);
     }
   }
 
