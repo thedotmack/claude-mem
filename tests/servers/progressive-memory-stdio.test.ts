@@ -213,6 +213,9 @@ describe('built local MCP Dumb search stdio integration', () => {
         expect(denied.isError).toBe(true);
       }
       expect(localReads).toBe(0);
+      // Not advertised on the server runtime; a direct call still explains why.
+      const serverListing = await client.listTools();
+      expect(serverListing.tools.some(tool => tool.name === 'dumb_search')).toBe(false);
       const unavailable = await client.callTool({ name: 'dumb_search', arguments: { query: 'decision' } }) as CallToolResult;
       expect(unavailable.isError).toBe(true);
       expect(modelText(unavailable)).toContain('hosted claude-mem MCP');
