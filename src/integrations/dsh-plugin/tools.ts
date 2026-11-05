@@ -236,9 +236,9 @@ function applyTimelineTool(ctx: Context, worker: WorkerClient, timeoutMs: number
 function applyGetObservationsTool(ctx: Context, worker: WorkerClient, timeoutMs: number): void {
   ctx.tools.register(defineTool<FullQueryOutput>({
     name: 'mem_get_observations',
-    description: 'Fetch full details for memory observations by id. Returns every field the worker reports (narrative, facts, concepts, files, metadata and timestamps) for parity with the raw API.',
+    description: 'Fetch full details for memory observations by id. Returns every field the worker reports (narrative, facts, concepts, files, metadata and timestamps) for parity with the raw API. At most 100 ids per call; split larger selections.',
     parameters: {
-      ids: { type: 'array', required: true, items: { type: 'integer' }, description: 'Observation ids (required).' },
+      ids: { type: 'array', required: true, items: { type: 'integer' }, description: 'Observation ids (required, at most 100; split larger selections).' },
       project: { type: 'string', description: 'Filter by project name.' },
     },
     output: {

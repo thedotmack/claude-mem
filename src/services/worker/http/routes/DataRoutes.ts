@@ -70,8 +70,16 @@ const stringArrayLike = z.preprocess((value) => {
   return value;
 }, z.array(z.string()));
 
+// Layer 3 of progressive disclosure: selected records by explicit id. The id
+// array is bounded because every id is a full row (narrative, facts, concepts,
+// file lists) on the way back — an unbounded list is a way to page the whole
+// table in one request. 100 matches the ceiling the adapters already advertise
+// (`pi-extension` maxItems, `recall-mcp-server` maxItems) and the server
+// `/v1/observations/batch` schema.
+const OBSERVATIONS_BATCH_MAX_IDS = 100;
+
 const observationsBatchSchema = z.object({
-  ids: integerArrayLike,
+  ids: integerArrayLike.pipe(z.array(z.number().int()).max(OBSERVATIONS_BATCH_MAX_IDS)),
   orderBy: z.enum(['date_desc', 'date_asc']).optional(),
   limit: z.number().int().positive().optional(),
   project: z.string().optional(),
