@@ -170,8 +170,8 @@ describe('DataRoutes tool_uses (progressive disclosure layer 4)', () => {
       expect(mockGetToolUsesByIds).not.toHaveBeenCalled();
     });
 
-    // `limit` only trims what comes back; it does not bound the fetch, and a
-    // caller that omits it gets every row the ids name. Cap the array instead.
+    // `limit` only trims what comes back; it does not bound the number of ids
+    // the query looks up. Cap the array as well.
     it('rejects more than 100 ids', () => {
       const ids = Array.from({ length: 101 }, (_, i) => i + 1);
       const { req, res, statusSpy } = createMockReqRes({ ids });

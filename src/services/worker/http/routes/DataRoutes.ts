@@ -99,10 +99,10 @@ const sdkSessionsBatchSchema = z.object({
 // observation ref the latter). Required and non-empty on purpose — this route
 // must never be a way to page the whole table of raw payloads.
 //
-// The array is capped for the same reason: `limit` only trims the rows that
-// come back, it does not bound the fetch, and a caller that omits `limit`
-// entirely gets every row the ids name. 100 matches the observation batch
-// ceiling and the adapters' advertised `maxItems`.
+// The array is capped for the same reason: each id is a separate lookup, and
+// `limit` only trims the rows that come back (`getToolUsesByIds` applies its own
+// default when `limit` is omitted). 100 matches the observation batch ceiling
+// and the adapters' advertised `maxItems`.
 const TOOL_USES_BATCH_MAX_IDS = 100;
 
 const toolUsesBatchSchema = z.object({
