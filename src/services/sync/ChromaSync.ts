@@ -388,6 +388,14 @@ export class ChromaSync {
    */
   private selectiveFilters = new Map<string, number>();
   private static readonly SELECTIVE_FILTER_MEMO_CAP = 256;
+  /**
+   * Matches found in full doc_type-free windows that held too few, keyed by
+   * query, clause and window size. Search widens its limit in steps, and past
+   * the over-fetch cap each step asks the same window, so without this every
+   * step pays for a window already known to fall short (#5354). Shares the
+   * selective-filter memo's bound.
+   */
+  private thinDocTypeFreeWindows = new Map<string, number>();
   private collectionCreation: Promise<void> | null = null;
   private readonly BATCH_SIZE = 100;
   // How many rows in a row may fail to write before a backfill run gives up
@@ -2066,7 +2074,7 @@ export class ChromaSync {
         const stripped = stripDocTypeClause(whereFilter, true);
         if (!stripped.blocked && stripped.removed) {
           const fallback = await this.queryDocTypeFreeFallback(
-            runQuery, limit, predicate, stripped.clause, progress
+            runQuery, query, limit, predicate, stripped.clause, progress
           );
           if (fallback) return fallback;
         }
@@ -2177,12 +2185,17 @@ export class ChromaSync {
    */
   private async queryDocTypeFreeFallback(
     runQuery: (nResults: number, where: Record<string, any> | undefined, include: string[]) => Promise<any>,
+    query: string,
     limit: number,
     predicate: MetadataPredicate,
     where: Record<string, any> | undefined,
     progress?: ChromaQueryProgress
   ): Promise<{ ids: number[]; distances: number[]; metadatas: any[] } | null> {
     const nResults = Math.max(limit, Math.min(limit * CHROMA_OVERFETCH_FACTOR, CHROMA_OVERFETCH_CAP));
+    const windowKey = JSON.stringify([query, where, nResults]);
+    const knownMatches = this.thinDocTypeFreeWindows.get(windowKey);
+    if (knownMatches !== undefined && knownMatches < limit) return null;
+
     const raw: any = await runQuery(nResults, where, ['metadatas', 'distances']);
     const rawIds = raw?.ids?.[0] || [];
     const rawMetadatas = raw?.metadatas?.[0] || [];
@@ -2218,6 +2231,10 @@ export class ChromaSync {
       return filtered;
     }
 
+    if (this.thinDocTypeFreeWindows.size >= ChromaSync.SELECTIVE_FILTER_MEMO_CAP) {
+      this.thinDocTypeFreeWindows.clear();
+    }
+    this.thinDocTypeFreeWindows.set(windowKey, filtered.ids.length);
     return null;
   }
 

@@ -621,6 +621,37 @@ describe('ChromaSync.queryChroma doc_type-free filtered fallback (#5354)', () =>
     }
   });
 
+  it('does not ask the same full stripped window twice for one query and filter', async () => {
+    // Search widens its limit in steps, and past the over-fetch cap every step
+    // asks the same window. A window that held too few matches cannot hold
+    // more on the next step, so it must not cost a second query.
+    const added: CorpusDoc[] = [];
+    for (let i = 0; i < 60; i++) {
+      added.push({ id: `obs_${9300 + i}_fact_0`, sqlite_id: 9300 + i, project: 'repeat', doc_type: 'observation', platform_source: 'claude' });
+    }
+    for (let i = 0; i < 10; i++) {
+      added.push({ id: `obs_${9360 + i}_fact_0`, sqlite_id: 9360 + i, project: 'repeat', doc_type: 'session_summary', platform_source: 'claude' });
+    }
+    CORPUS.push(...added);
+    try {
+      const where = { $and: [{ doc_type: 'session_summary' }, { project: 'repeat' }] };
+      await sync.queryChroma('anything', 3, where);
+      expect(wheresSent()).toEqual([undefined, { project: 'repeat' }, where]);
+
+      calls = [];
+      const repeated = await sync.queryChroma('anything', 3, where);
+      expect(wheresSent()).toEqual([where]);
+      expect(repeated.ids).toEqual([9360, 9361, 9362]);
+
+      // Another query ranks another window, so what this one learned does not apply.
+      calls = [];
+      await sync.queryChroma('something else', 3, where);
+      expect(wheresSent()).toEqual([{ project: 'repeat' }, where]);
+    } finally {
+      CORPUS.splice(CORPUS.length - added.length);
+    }
+  });
+
   it('reports progress.exhausted from the stripped window, full and short', async () => {
     const added: CorpusDoc[] = [];
     for (let i = 0; i < 60; i++) {
