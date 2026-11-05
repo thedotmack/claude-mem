@@ -90,29 +90,58 @@ describe('observer-health ledger', () => {
   });
 
   it('re-pins failingSinceAt when the failure kind changes mid-streak (#5378)', () => {
+    const base = Date.now();
+    const realNow = Date.now;
+    const advance = (ms: number) => {
+      Date.now = () => base + ms;
+      return () => {
+        Date.now = realNow;
+      };
+    };
+    const restoreQuota = advance(0);
     recordObserverFailure('openrouter', { message: 'quota spent', kind: 'quota_exhausted' }, healthPath);
     const quotaStart = readObserverHealth(healthPath)!.failingSinceAt;
+    restoreQuota();
     // Quota pause + worker downtime: no success or failure is recorded in
     // between, so the count survives — but the next failure is an auth one.
+    const restoreAuth = advance(3_600_000);
     recordObserverFailure('openrouter', { message: '401 Unauthorized', kind: 'auth' }, healthPath);
+    restoreAuth();
     const after = readObserverHealth(healthPath)!;
     expect(after.consecutiveFailures).toBe(2);
     expect(after.lastErrorKind).toBe('auth');
-    expect(after.failingSinceAt).toBe(after.lastErrorAt);
+    expect(after.failingSinceAt).toBe(base + 3_600_000);
     expect(after.failingSinceAt).toBeGreaterThan(quotaStart);
   });
 
   it('keeps failingSinceAt across same-kind failures, including unclassified ones on old ledgers', () => {
+    const base = Date.now();
+    const realNow = Date.now;
+    const advance = (ms: number) => {
+      Date.now = () => base + ms;
+      return () => {
+        Date.now = realNow;
+      };
+    };
+    const restoreFirst = advance(0);
     recordObserverFailure('openrouter', { message: '401 one', kind: 'auth' }, healthPath);
     const first = readObserverHealth(healthPath)!;
+    restoreFirst();
+    const restoreSecond = advance(60_000);
     recordObserverFailure('openrouter', { message: '401 two', kind: 'auth' }, healthPath);
+    restoreSecond();
+    // A controlled clock makes the equality meaningful: a kind match must
+    // keep the first timestamp rather than re-pinning to the later one.
     expect(readObserverHealth(healthPath)!.failingSinceAt).toBe(first.failingSinceAt);
+    expect(readObserverHealth(healthPath)!.lastErrorAt).toBe(base + 60_000);
 
     // A ledger written before the kind field existed (undefined) still keeps
     // its start when an unclassified string failure follows.
     const legacy = readObserverHealth(healthPath)!;
     writeFileSync(healthPath, JSON.stringify({ ...legacy, lastErrorKind: undefined }));
+    const restoreThird = advance(120_000);
     recordObserverFailure('openrouter', 'plain failure', healthPath);
+    restoreThird();
     expect(readObserverHealth(healthPath)!.failingSinceAt).toBe(first.failingSinceAt);
   });
 
