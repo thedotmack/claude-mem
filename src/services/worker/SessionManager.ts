@@ -618,6 +618,16 @@ export class SessionManager {
         session.respawnTimer = undefined;
       }
 
+      if (session.stallResumeTimer) {
+        clearTimeout(session.stallResumeTimer);
+        session.stallResumeTimer = undefined;
+      }
+
+      if (session.scheduledResumeTimer) {
+        clearTimeout(session.scheduledResumeTimer);
+        session.scheduledResumeTimer = undefined;
+      }
+
       session.abortReason = 'shutdown';
       session.abortController.abort();
 
@@ -710,6 +720,16 @@ export class SessionManager {
     if (session.respawnTimer) {
       clearTimeout(session.respawnTimer);
       session.respawnTimer = undefined;
+    }
+
+    if (session.stallResumeTimer) {
+      clearTimeout(session.stallResumeTimer);
+      session.stallResumeTimer = undefined;
+    }
+
+    if (session.scheduledResumeTimer) {
+      clearTimeout(session.scheduledResumeTimer);
+      session.scheduledResumeTimer = undefined;
     }
 
     if (this.takeRequestedSessionWrapup(session)) {

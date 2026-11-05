@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, afterAll } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
 import type { ActiveSession } from '../../src/services/worker-types.js';
 import { getQuotaCooldown, resetQuotaCooldownsForTesting } from '../../src/shared/quota-cooldown.js';
 import { resetDependencyStatusesForTesting } from '../../src/shared/dependency-health.js';
@@ -6,6 +6,7 @@ import { globalRateLimitStore } from '../../src/services/worker/RateLimitStore.j
 import * as observerHealth from '../../src/shared/observer-health.js';
 
 const { SessionRoutes } = await import('../../src/services/worker/http/routes/SessionRoutes.js');
+const { SessionManager } = await import('../../src/services/worker/SessionManager.js');
 const { OBSERVER_TEXT_QUOTA_MESSAGE, quotaPauseForExit } = await import('../../src/services/worker/session/GeneratorRunner.js');
 const {
   MAX_CONSECUTIVE_STALL_RESUMES,
@@ -311,6 +312,20 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
       globalThis.setTimeout = realSetTimeout;
     });
 
+    // Run the stall backoff delays (multiples of the fixed delay) immediately
+    // too, recording each one asked for. Backoff tests install this on top of
+    // the fixed-delay interception above.
+    function fastForwardBackoffDelays(requested: number[]): void {
+      const inner = globalThis.setTimeout;
+      globalThis.setTimeout = ((fn: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+        if (ms !== undefined && ms > RESPONSE_STALL_RESUME_DELAY_MS && ms <= RESPONSE_STALL_RESUME_DELAY_MS * 8) {
+          requested.push(ms);
+          return inner(fn, 0, ...args);
+        }
+        return inner(fn, ms, ...args);
+      }) as typeof setTimeout;
+    }
+
     it('resumes the preserved backlog after a delay', async () => {
       const session = makeSession();
       let starts = 0;
@@ -344,9 +359,97 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
       expect(stats().finalizeCalls).toBe(0);
     });
 
-    it('stops resuming once the consecutive stall cap is reached', async () => {
+    it('resumes on a growing backoff timer once the fixed-delay stall resumes are spent (#5405)', async () => {
+      // The failure this guards: the content session has already ended, so no
+      // captured event ever comes, and parking at the fixed-delay cap strands
+      // the preserved backlog in memory until the worker restarts. The backoff
+      // timer retries it anyway, a bounded number of times, with the delay
+      // doubling each time.
       const session = makeSession();
       session.consecutiveResponseStalls = MAX_CONSECUTIVE_STALL_RESUMES;
+      const requestedBackoffDelays: number[] = [];
+      fastForwardBackoffDelays(requestedBackoffDelays);
+      let starts = 0;
+
+      const { routes, stats } = buildRoutes(session, async () => {
+        starts += 1;
+        if (starts <= 3) {
+          session.abortReason = 'transport:response_stall';
+          return;
+        }
+        // The backoff-resumed generation stays alive and works the backlog.
+        await new Promise<void>(() => {});
+      });
+
+      await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+      await session.generatorPromise;
+      for (let i = 0; i < 20 && starts < 4; i++) await nextTick();
+      await nextTick();
+
+      // No fixed-delay resumes were left; all three retries rode the backoff.
+      expect(requestedDelays).toEqual([]);
+      expect(requestedBackoffDelays).toEqual([
+        RESPONSE_STALL_RESUME_DELAY_MS * 2,
+        RESPONSE_STALL_RESUME_DELAY_MS * 4,
+        RESPONSE_STALL_RESUME_DELAY_MS * 8,
+      ]);
+      expect(starts).toBe(4);
+      expect(session.consecutiveResponseStalls).toBe(MAX_CONSECUTIVE_STALL_RESUMES + 3);
+      expect((session as any).consecutiveStallBackoffResumes).toBe(3);
+      expect(stats().finalizeCalls).toBe(0);
+      expect(stats().active).toBe(session);
+    });
+
+    it('a generator start cancels a pending backoff resume (#5405)', async () => {
+      const session = makeSession();
+      session.consecutiveResponseStalls = MAX_CONSECUTIVE_STALL_RESUMES;
+      // Capture the backoff callback instead of running it: a captured event
+      // gets to the session first.
+      let capturedBackoff: (() => void) | undefined;
+      const inner = globalThis.setTimeout;
+      globalThis.setTimeout = ((fn: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+        if (ms === RESPONSE_STALL_RESUME_DELAY_MS * 2) {
+          capturedBackoff = fn as () => void;
+          return inner(() => {}, 60_000, ...args);
+        }
+        return inner(fn, ms, ...args);
+      }) as typeof setTimeout;
+      let starts = 0;
+
+      const { routes } = buildRoutes(session, async () => {
+        starts += 1;
+        if (starts === 1) {
+          session.abortReason = 'transport:response_stall';
+          return;
+        }
+        await new Promise<void>(() => {});
+      });
+
+      await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+      await session.generatorPromise;
+      await nextTick();
+
+      expect(capturedBackoff).toBeDefined();
+      expect(session.stallResumeTimer).not.toBeUndefined();
+
+      // The next captured event starts a generator; starting cancels the timer.
+      await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+      expect(starts).toBe(2);
+      expect(session.stallResumeTimer).toBeUndefined();
+
+      // Even a callback that escaped cancellation cannot double-start: a
+      // generator is already running for the session.
+      capturedBackoff!();
+      await nextTick();
+      expect(starts).toBe(2);
+    });
+
+    it('stops resuming once the stall and backoff caps are both reached', async () => {
+      const session = makeSession();
+      session.consecutiveResponseStalls = MAX_CONSECUTIVE_STALL_RESUMES;
+      (session as any).consecutiveStallBackoffResumes = 3;
+      const requestedBackoffDelays: number[] = [];
+      fastForwardBackoffDelays(requestedBackoffDelays);
       let starts = 0;
 
       const { routes, stats } = buildRoutes(session, async () => {
@@ -359,6 +462,7 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
       await nextTick();
 
       expect(requestedDelays).toEqual([]);
+      expect(requestedBackoffDelays).toEqual([]);
       expect(starts).toBe(1);
       expect(session.pausedReason).toBe('transport');
       // Still preserved for the next hook event rather than finalized.
@@ -371,6 +475,10 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
     it('clears the exhausted-stall mark when the next generator starts (#5405)', async () => {
       const session = makeSession();
       session.consecutiveResponseStalls = MAX_CONSECUTIVE_STALL_RESUMES;
+      // The mark is set only once the backoff budget is spent too: with the
+      // backoff still available, a stall resumes on a backoff timer instead
+      // of parking, so the session is not exhausted yet.
+      (session as any).consecutiveStallBackoffResumes = 3;
       let starts = 0;
 
       const { routes } = buildRoutes(session, async () => {
@@ -395,5 +503,32 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
       expect(session.stallResumesExhaustedAt).toBeUndefined();
       expect(session.consecutiveResponseStalls).toBeGreaterThan(MAX_CONSECUTIVE_STALL_RESUMES);
     });
+  });
+});
+
+describe('session teardown cancels a pending stall resume (#5405)', () => {
+  it('removeSessionImmediate clears the stall and scheduled resume timers', async () => {
+    const db = {
+      getSessionById: mock((id: number) => ({
+        content_session_id: `content-${id}`, project: 'test', user_prompt: 'original prompt',
+      })),
+      getSessionStore: mock(() => { throw new Error('Teardown must not access the session store'); }),
+    };
+    const manager = new SessionManager(db as any);
+    const session = manager.initializeSession(1, 'original prompt', 1);
+
+    let stallFired = false;
+    let scheduledFired = false;
+    session.stallResumeTimer = setTimeout(() => { stallFired = true; }, 5);
+    session.scheduledResumeTimer = setTimeout(() => { scheduledFired = true; }, 5);
+
+    manager.removeSessionImmediate(1);
+
+    expect(session.stallResumeTimer).toBeUndefined();
+    expect(session.scheduledResumeTimer).toBeUndefined();
+    expect(manager.getSession(1)).toBeUndefined();
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(stallFired).toBe(false);
+    expect(scheduledFired).toBe(false);
   });
 });

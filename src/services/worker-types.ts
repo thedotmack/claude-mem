@@ -106,6 +106,13 @@ export interface ActiveSession {
    */
   stallResumesExhaustedAt?: number;
   /**
+   * Consecutive backoff resumes scheduled after the fixed-delay stall
+   * resumes ran out (#5405). Bounds the timer-driven retries before the
+   * session parks for its next captured event; reset when a queued-work
+   * turn is answered, with consecutiveResponseStalls.
+   */
+  consecutiveStallBackoffResumes?: number;
+  /**
    * Consecutive Claude generations whose SDK stream ended or broke without a
    * result ('transport:sdk_eof' / 'transport:sdk_stream'). Reported in
    * observer health once it reaches MAX_CONSECUTIVE_SDK_STREAM_EXITS; reset
@@ -142,8 +149,10 @@ export interface ActiveSession {
    */
   paidSendBudget?: PaidSendBudget;
   /**
-   * The delayed resume a response stall scheduled. Any generator start cancels
-   * it, so a stale timer never restarts a session a newer generation paused.
+   * The delayed resume a response stall scheduled — the fixed-delay retry,
+   * or a backoff retry once those are spent (#5405). Any generator start
+   * cancels it and session teardown clears it, so a stale timer never
+   * restarts a session a newer generation paused, or one that is gone.
    */
   stallResumeTimer?: ReturnType<typeof setTimeout>;
   /**
