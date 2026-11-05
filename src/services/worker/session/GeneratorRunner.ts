@@ -159,6 +159,7 @@ export async function startGeneratorWithProvider(
   // too, its exit records a fresh reason. Without this, one auth pause would
   // keep the session out of every automatic sweep for good.
   session.pausedReason = null;
+  session.pausedAtMs = null;
   session.providerSwitchPending = false;
 
   if (session.abortController.signal.aborted) {

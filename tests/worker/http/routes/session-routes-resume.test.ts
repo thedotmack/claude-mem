@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import type { Request, Response, NextFunction } from 'express';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { recordObserverSuccess } from '../../../../src/shared/observer-health.js';
 import { SessionManager } from '../../../../src/services/worker/SessionManager.js';
 import { SessionRoutes } from '../../../../src/services/worker/http/routes/SessionRoutes.js';
 import * as providerDispatch from '../../../../src/services/worker/provider-dispatch.js';
@@ -332,6 +336,45 @@ describe('paused in-memory session recovery', () => {
     expect(manager.getResumableSessionIds(true)).toEqual([1, 3]);
     expect(routes.resumePendingSessions('periodic-resume')).toBe(0);
     expect(routes.resumePendingSessions('processing-api', true)).toBe(2);
+  });
+
+  it('resumes an auth pause once the ledger holds a success newer than the pause (#5377)', () => {
+    const { manager } = fixture();
+    const saved = process.env.CLAUDE_MEM_DATA_DIR;
+    const dir = mkdtempSync(join(tmpdir(), 'cm-resume-health-'));
+    process.env.CLAUDE_MEM_DATA_DIR = dir;
+    try {
+      const session = manager.getSession(1)!;
+      session.pausedReason = 'auth';
+      session.pausedAtMs = Date.now() - 5_000;
+      // A successful store after the pause proves the credential works again.
+      recordObserverSuccess();
+      expect(manager.getResumableSessionIds()).toEqual([1]);
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+      else process.env.CLAUDE_MEM_DATA_DIR = saved;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps an auth pause parked while the newest ledger success predates the pause (#5377)', () => {
+    const { manager } = fixture();
+    const saved = process.env.CLAUDE_MEM_DATA_DIR;
+    const dir = mkdtempSync(join(tmpdir(), 'cm-resume-health-'));
+    process.env.CLAUDE_MEM_DATA_DIR = dir;
+    try {
+      // A success from before the pause proves nothing about the credential now.
+      recordObserverSuccess();
+      const session = manager.getSession(1)!;
+      session.pausedReason = 'auth';
+      session.pausedAtMs = Date.now() + 60_000;
+      expect(manager.getResumableSessionIds()).toEqual([]);
+      expect(manager.getResumableSessionIds(true)).toEqual([1]);
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+      else process.env.CLAUDE_MEM_DATA_DIR = saved;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('clears the pause reason when a generator starts, so later pauses are swept again', async () => {

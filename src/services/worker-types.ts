@@ -163,6 +163,13 @@ export interface ActiveSession {
   /** Why buffered work was last parked after a generator exit. */
   pausedReason?: string | null;
   /**
+   * When buffered work was last parked (the pausedReason moment, server
+   * clock). The resume sweep uses it as the before-side of a recovery proof:
+   * an observer store that succeeded after this moment proves an auth pause's
+   * cause is gone (#5377). Cleared together with pausedReason.
+   */
+  pausedAtMs?: number | null;
+  /**
    * Set when dispatch selects a provider other than the one the running
    * generator uses (the primary is back after a fallback, or settings
    * changed). The generator ends at its next message boundary, before it

@@ -96,6 +96,7 @@ export async function handleGeneratorExit(
   }
   if (PRESERVED_ABORT_CATEGORIES.has(abortCategory)) {
     session.pausedReason = abortCategory;
+    session.pausedAtMs = Date.now();
     logger.warn('SESSION', `Generator paused for ${abortCategory}; preserving buffered work`, {
       sessionId: sessionDbId,
       pendingCount: sessionManager.getMessageBuffer().getPendingCount(sessionDbId),

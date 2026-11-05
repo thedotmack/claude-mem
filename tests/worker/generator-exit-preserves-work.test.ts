@@ -46,6 +46,9 @@ describe('handleGeneratorExit — reasons that preserve claimed work', () => {
       expect(finalizeSession).not.toHaveBeenCalled();
       expect(removeSessionImmediate).not.toHaveBeenCalled();
       expect(session.pausedReason).toBe(reason.split(':')[0]);
+      // The pause moment is the recovery proof's before-side (#5377): the sweep
+      // resumes an auth pause only on a ledger success recorded after it.
+      expect(session.pausedAtMs).toBeNumber();
     });
   }
 
