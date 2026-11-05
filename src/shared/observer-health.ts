@@ -26,7 +26,13 @@ import { sleepSync } from './atomic-json.js';
 export interface ObserverHealthState {
   /** Failures since the last successful store. */
   consecutiveFailures: number;
-  /** Epoch ms of the first failure in the current streak. */
+  /**
+   * Epoch ms of the first failure since the kind last changed — the outage the
+   * warning names. It is not "the first failure in the streak": a quota pause that
+   * later becomes a refused credential is two outages, and dating the refusal
+   * from the pause told one reader the credentials had been refused for three
+   * days when the log showed an auth failure 21 hours old (#5378).
+   */
   failingSinceAt: number | null;
   /** Epoch ms of the most recent failure. */
   lastErrorAt: number | null;

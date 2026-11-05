@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach, mock, spyOn } from 'bun:test';
+import { describe, expect, it, beforeEach, afterEach, mock, setSystemTime, spyOn } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -150,6 +150,46 @@ describe('observer-health ledger', () => {
     expect(state.lastErrorAt).toBe(2000);
     expect(state.lastErrorKind).toBeNull();
     expect(state.consecutiveFailures).toBe(OBSERVER_UNHEALTHY_FAILURE_THRESHOLD + 1);
+  });
+
+  // #5378: a quota pause that later became a refused credential was announced
+  // as an auth outage three days old. The banner paired the newest kind with
+  // the oldest start; the log's first refusal was 22 hours old at the time.
+  it('dates the warning from the failure it names, not from a pause of another kind', () => {
+    const refusalAt = Date.now();
+    const pauseAt = refusalAt - 44 * 60 * 60_000;
+    try {
+      setSystemTime(new Date(pauseAt));
+      recordObserverFailure('claude', {
+        kind: 'quota_guard',
+        message: 'Memory capture paused: weekly Claude usage is 95.0%, at or above the 95% pause threshold.',
+      }, healthPath);
+
+      setSystemTime(new Date(refusalAt));
+      recordObserverFailure('claude', {
+        kind: 'auth_invalid',
+        message: 'Failed to authenticate. API Error: 401 {"type":"error","error":{"type":"authentication_error"}}',
+      }, healthPath);
+      const refused = readObserverHealth(healthPath)!;
+      // The streak still counts the pause: nothing succeeded in between.
+      expect(refused.consecutiveFailures).toBe(2);
+      expect(refused.failingSinceAt).toBe(refusalAt);
+
+      recordObserverFailure('claude', {
+        kind: 'auth_invalid',
+        message: 'Failed to authenticate. API Error: 401',
+      }, healthPath);
+      const stillRefused = readObserverHealth(healthPath)!;
+      expect(stillRefused.consecutiveFailures).toBe(3);
+      expect(stillRefused.failingSinceAt).toBe(refusalAt);
+
+      const warning = renderObserverHealthWarning(stillRefused, refusalAt + 22 * 60 * 60_000);
+      expect(warning).toContain('credentials have been refused by claude for about 22 hours');
+      expect(warning).toContain(new Date(refusalAt).toISOString());
+      expect(warning).not.toContain('about 3 days');
+    } finally {
+      setSystemTime();
+    }
   });
 
   it('success resets the streak but keeps last error details for diagnostics', () => {
