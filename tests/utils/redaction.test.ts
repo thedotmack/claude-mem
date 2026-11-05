@@ -224,6 +224,20 @@ describe('redactSensitive built-in patterns', () => {
     expect(Object.keys(result.counts)).toEqual([name]);
   });
 
+  // The worker scans JSON.stringify(toolResponse), so a newline right before
+  // the key arrives as the two characters `\n`; the `n` is a word character,
+  // so a bare `\b` cannot match there and the key survived redaction.
+  it('redacts a perplexity_key printed right after a newline (worker capture path)', () => {
+    const output = `Deployment ready.\n${'ppl' + 'x-' + PPLX_BODY}`;
+    for (const text of [output, JSON.stringify({ stdout: output })]) {
+      const result = redactSensitive(text, cfg);
+      expect(result.counts.perplexity_key).toBe(1);
+      expect(result.redacted).not.toContain(PPLX_BODY);
+    }
+    const stored = redactSensitive(JSON.stringify({ stdout: output }), cfg).redacted;
+    expect(JSON.parse(stored).stdout).toBe(`Deployment ready.\n<redacted type='perplexity_key'/>`);
+  });
+
   // Perplexity model ids share the `pplx-` prefix; their `-`/`.` separators
   // and short bodies keep them out of the 48-alphanumeric key pattern.
   it.each([
