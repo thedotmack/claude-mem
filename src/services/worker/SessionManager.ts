@@ -3,7 +3,7 @@ import { logger } from '../../utils/logger.js';
 import { redactForLog } from '../../utils/redaction.js';
 import type { ActiveSession, PendingMessage, PendingMessageWithId, ObservationData } from '../worker-types.js';
 import { SessionMessageBuffer } from './SessionMessageBuffer.js';
-import { getSdkProcessForSession, ensureSdkProcessExit } from '../../supervisor/process-registry.js';
+import { getSdkProcessForSession, ensureSdkProcessExit, getParkedSlotWaiterCount } from '../../supervisor/process-registry.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
 import { deliverSessionWrapup, type TelegramWrapupFormatter } from '../integrations/TelegramWrapupNotifier.js';
@@ -847,6 +847,9 @@ export class SessionManager {
     for await (const message of this.buffer.drain({
       sessionDbId,
       signal: session.abortController.signal,
+      // An idle generator must not hold its slot for the full idle
+      // timeout while other sessions are parked waiting for one (#5376).
+      shouldReleaseIdleSlot: () => getParkedSlotWaiterCount() > 0,
       onIdleTimeout: () => {
         logger.info('SESSION', 'Triggering abort due to idle timeout to kill subprocess', { sessionDbId });
         session.idleTimedOut = true;

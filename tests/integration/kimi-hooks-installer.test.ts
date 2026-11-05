@@ -166,4 +166,37 @@ describe('buildKimiHooksBlock', () => {
     expect(userPromptSubmitMatch![0]).toContain('hook kimi session-init-context');
     expect(userPromptSubmitMatch![0]).not.toContain('&&');
   });
+
+  test('keeps the command a single valid TOML string when a path contains a quote', () => {
+    // A path with both an apostrophe and backslashes exercises TOML escaping and
+    // quoting at the same time: backslashes must be escaped inside a basic
+    // string, and the apostrophe must not terminate a literal string.
+    const BS = '\\\\';
+    const bunPath = `C:${BS}Users${BS}o'brien${BS}.bun${BS}bin${BS}bun.exe`;
+  const workerPath = `C:${BS}Users${BS}o'brien${BS}cli${BS}worker-service.cjs`;
+  const block = buildKimiHooksBlock(bunPath, workerPath);
+  const commandLines = block.split('\n').filter((line) => line.startsWith('command = '));
+  expect(commandLines).toHaveLength(7);
+
+  // Every emitted line must parse as TOML and decode to the exact command.
+  const decoded = commandLines.map((line) => Bun.TOML.parse(line).command as string);
+
+  const expected = [
+    'start',
+    'hook kimi session-init-context',
+    'hook kimi observation',
+    'hook kimi observation',
+    'hook kimi file-context',
+    'hook kimi summarize',
+    'hook kimi summarize',
+  ].map((suffix) => `"${bunPath}" "${workerPath}" ${suffix}`);
+
+  expect(decoded).toEqual(expected);
 });
+
+test('still uses the escape-free literal form for ordinary paths', () => {
+    const block = buildKimiHooksBlock('/home/u/.bun/bin/bun', '/x/w.cjs');
+    expect(block).toContain("command = '\"/home/u/.bun/bin/bun\" \"/x/w.cjs\"");
+  });
+});
+

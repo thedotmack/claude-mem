@@ -174,7 +174,13 @@ describe("token-verdict cache behavior", () => {
 		};
 
 		const result = await authenticateRequest(request, authEnv, dependencies);
-		expect(result).toEqual({ ok: true, userId, deviceId: "dev-auth", deviceName: null });
+		expect(result).toEqual({
+			ok: true,
+			userId,
+			deviceId: "dev-auth",
+			deviceName: null,
+			authExpiresAtMs: expect.any(Number),
+		});
 		expect(verifyCalls).toBe(1);
 		expect(putCalls).toBe(1);
 		expect(logged).toEqual(["get"]);
@@ -201,7 +207,13 @@ describe("token-verdict cache behavior", () => {
 		};
 
 		const result = await authenticateRequest(request, authEnv, dependencies);
-		expect(result).toEqual({ ok: true, userId, deviceId: "dev-auth", deviceName: null });
+		expect(result).toEqual({
+			ok: true,
+			userId,
+			deviceId: "dev-auth",
+			deviceName: null,
+			authExpiresAtMs: expect.any(Number),
+		});
 		expect(verifyCalls).toBe(1);
 		expect(logged).toEqual(["put"]);
 	});
@@ -215,7 +227,9 @@ describe("token-verdict cache behavior", () => {
 		const invalidated: string[] = [];
 		const dependencies: AuthDependencies = {
 			async readCachedVerdict() {
-				return nowMs < cachedUntilMs ? "1" : null;
+				return nowMs < cachedUntilMs
+					? String(Date.now() + (cachedUntilMs - nowMs))
+					: null;
 			},
 			async cacheVerifiedVerdict(_cacheKey, ttlSeconds) {
 				ttlWrites.push(ttlSeconds);
@@ -239,6 +253,7 @@ describe("token-verdict cache behavior", () => {
 			userId,
 			deviceId: "dev-auth",
 			deviceName: null,
+			authExpiresAtMs: expect.any(Number),
 		});
 		expect(ttlWrites).toEqual([300]);
 		revoked = true;
@@ -263,7 +278,9 @@ describe("token-verdict cache behavior", () => {
 		let verifyCalls = 0;
 		const dependencies: AuthDependencies = {
 			async readCachedVerdict() {
-				return nowMs < cachedUntilMs ? "1" : null;
+				return nowMs < cachedUntilMs
+					? String(Date.now() + (cachedUntilMs - nowMs))
+					: null;
 			},
 			async cacheVerifiedVerdict(_cacheKey, ttlSeconds) {
 				expect(ttlSeconds).toBeLessThanOrEqual(AUTH_CACHE_TTL_MAX_SECONDS);
@@ -469,7 +486,10 @@ describe("token-verdict isolate memory (default KV adapter)", () => {
 		await dependencies.cacheVerifiedVerdict("verdict:demo", AUTH_CACHE_TTL_DEFAULT_SECONDS);
 		await dependencies.cacheVerifiedVerdict("verdict:demo", AUTH_CACHE_TTL_DEFAULT_SECONDS);
 		expect(kv.puts).toBe(1);
-		expect(await dependencies.readCachedVerdict("verdict:demo")).toBe("1");
+		// A memory hit answers with the verdict's own expiry, so a caller can
+		// bound a socket by it without a fresh TTL.
+		const memoExpiry = await dependencies.readCachedVerdict("verdict:demo");
+		expect(Number(memoExpiry)).toBeGreaterThan(Date.now());
 		expect(kv.gets).toBe(0);
 	});
 
@@ -480,5 +500,102 @@ describe("token-verdict isolate memory (default KV adapter)", () => {
 		await dependencies.invalidateCachedVerdict("verdict:demo");
 		expect(kv.deletes).toBe(1);
 		expect(await dependencies.readCachedVerdict("verdict:demo")).toBeNull();
+	});
+
+	it("stores the verdict's own expiry in KV and reads it back after memory is lost", async () => {
+		const kv = fakeKvEnv();
+		const dependencies = defaultAuthDependencies(kv.env);
+		await dependencies.cacheVerifiedVerdict("verdict:expiry", 300);
+		const stored = await kv.env.AUTH_CACHE.get("verdict:expiry");
+		expect(Number(stored)).toBeGreaterThan(Date.now());
+
+		// A different isolate has no memo, so the KV hit must carry the deadline.
+		__resetAuthVerdictMemoryForTests();
+		expect(await dependencies.readCachedVerdict("verdict:expiry")).toBe(String(Number(stored)));
+	});
+
+	it("keeps a KV verdict's own expiry when the short re-read memo serves it", async () => {
+		const kv = fakeKvEnv();
+		const dependencies = defaultAuthDependencies(kv.env);
+		const verdictExpiryMs = Date.now() + 300_000;
+		await kv.env.AUTH_CACHE.put("verdict:long", String(verdictExpiryMs));
+
+		// The first read comes from KV, the second from the 60s memo; both must
+		// hand back the verdict's expiry, never the memo's shorter refresh point.
+		expect(await dependencies.readCachedVerdict("verdict:long")).toBe(String(verdictExpiryMs));
+		expect(await dependencies.readCachedVerdict("verdict:long")).toBe(String(verdictExpiryMs));
+	});
+
+	it("drops a legacy unversioned verdict instead of trusting it without an expiry", async () => {
+		const kv = fakeKvEnv();
+		const dependencies = defaultAuthDependencies(kv.env);
+		await kv.env.AUTH_CACHE.put("verdict:legacy", "1");
+		expect(await dependencies.readCachedVerdict("verdict:legacy")).toBeNull();
+		expect(await kv.env.AUTH_CACHE.get("verdict:legacy")).toBeNull();
+	});
+});
+
+/**
+ * The advisory socket outlives the HTTP request that opened it, so the upgrade
+ * needs a deadline that comes from the verdict which authorized it. A fresh
+ * verdict uses the TTL that was just cached; a cached one uses the cache
+ * entry's own expiry, so a socket can never outlive the verdict it rides on.
+ */
+describe("socket auth deadline", () => {
+	const userId = "user-auth-deadline";
+	const request = new Request(`${base}/v1/sync/status`, {
+		headers: headers(`valid-for:${userId}`, userId),
+	});
+	const authEnv = {
+		TOKEN_VERIFY_URL: "https://cmem.ai/api/pro/sync/verify",
+		AUTH_CACHE_TTL_SECONDS: "300",
+	} as unknown as Env;
+
+	it("brand-new verdict: the deadline is the TTL that was just cached", async () => {
+		let cachedTtl = 0;
+		const dependencies: AuthDependencies = {
+			async readCachedVerdict() {
+				return null;
+			},
+			async cacheVerifiedVerdict(_cacheKey, ttlSeconds) {
+				cachedTtl = ttlSeconds;
+			},
+			...unusedInvalidate(),
+			async verifyToken() {
+				return Response.json({ userId });
+			},
+			logCacheFailure() {},
+		};
+
+		const before = Date.now();
+		const result = await authenticateRequest(request, authEnv, dependencies);
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(cachedTtl).toBe(300);
+		expect(result.authExpiresAtMs).toBeGreaterThanOrEqual(before + 300_000);
+		expect(result.authExpiresAtMs).toBeLessThanOrEqual(Date.now() + 300_000);
+	});
+
+	it("cached verdict: the deadline is the cache entry's own expiry, not a fresh TTL", async () => {
+		const cachedExpiry = Date.now() + 1_000;
+		let verifyCalls = 0;
+		const dependencies: AuthDependencies = {
+			async readCachedVerdict() {
+				return String(cachedExpiry);
+			},
+			async cacheVerifiedVerdict() {},
+			...unusedInvalidate(),
+			async verifyToken() {
+				verifyCalls += 1;
+				return Response.json({ userId });
+			},
+			logCacheFailure() {},
+		};
+
+		const result = await authenticateRequest(request, authEnv, dependencies);
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.authExpiresAtMs).toBe(cachedExpiry);
+		expect(verifyCalls).toBe(0);
 	});
 });
