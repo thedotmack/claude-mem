@@ -14,9 +14,10 @@ interface SessionListProps {
   onDelete: (session: SessionRef) => Promise<void>;
   /** Loads the next (older) page of sessions; the list asks when its end scrolls into view. */
   onLoadMore: () => void;
+  onRefreshLatest?: () => void;
 }
 
-export function SessionList({ header, sessions, isLoading, hasMore, loadError, onOpen, onDelete, onLoadMore }: SessionListProps) {
+export function SessionList({ header, sessions, isLoading, hasMore, loadError, onOpen, onDelete, onLoadMore, onRefreshLatest }: SessionListProps) {
   const loadMoreRef = useRef<HTMLDivElement>(null);
   const onLoadMoreRef = useRef(onLoadMore);
 
@@ -47,6 +48,7 @@ export function SessionList({ header, sessions, isLoading, hasMore, loadError, o
         {loadError && <div className="card-delete-error" role="alert">
           {loadError}
           {!isLoading && <button onClick={onLoadMore}>Retry</button>}
+          {!isLoading && onRefreshLatest && <button onClick={onRefreshLatest}>Refresh latest sessions</button>}
         </div>}
         {sessions.map(session => {
           const ref = catalogEntryRef(session);

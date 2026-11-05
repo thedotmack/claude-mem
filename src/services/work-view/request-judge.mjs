@@ -306,12 +306,19 @@ export async function routeUndecided({ dir = LEDGER_DIR, database, judge = null,
 /** The owner's answer to a suggestion. `join` moves the conversation into the suggested request through
  * the same decisions `apply` takes; `not-this` keeps (or makes) it a request of its own and records that
  * the owner declined. Null when no open suggestion exists for the conversation. */
-export function decideSuggestion({ dir, database, conversationKey, action, now = Date.now() }) {
+export function decideSuggestion({ dir, database, conversationKey, action, now = Date.now(), writeGroups, ledger: suppliedLedger, resolution }) {
   if (!['join', 'not-this'].includes(action)) throw new TypeError(`action must be join or not-this, got ${action}.`);
-  const ledger = readLedger(dir);
+  const ledger = suppliedLedger ?? readLedger(dir);
   const groups = ledger.groups;
-  const suggestion = groups.suggestions?.[conversationKey];
-  if (!suggestion || suggestion.status !== 'open') return null;
+  const suggestion = resolution?.suggestion ?? groups.suggestions?.[conversationKey];
+  if (!suggestion || (!resolution && suggestion.status !== 'open')) return null;
+  if (resolution) {
+    groups.suggestions ??= {};
+    groups.suggestions[conversationKey] = { ...suggestion, status: 'open' };
+    // Not-this is an explicit fresh placement decision even when the selected
+    // concurrent head had already joined this conversation into the target.
+    if (action === 'not-this' && groups.conversations[conversationKey] === suggestion.requestId) delete groups.conversations[conversationKey];
+  }
   const request = groups.groups[suggestion.requestId];
   let next;
   if (action === 'join') {
@@ -328,7 +335,7 @@ export function decideSuggestion({ dir, database, conversationKey, action, now =
       title: request.title, conversations: [request.anchor, conversationKey, ...brought],
       links: [{ kind: 'judge', conversations: [request.anchor, conversationKey], evidence: `Owner joined on the judge's suggestion. ${suggestion.evidence}` }, ...broughtLinks],
       ...(typeof request.projectRoot === 'string' && request.projectRoot ? { projectRoot: request.projectRoot } : {}),
-    }] }, { database, now, excludedPromptIds: ledger.agentWrittenPromptIds });
+    }] }, { database, now, excludedPromptIds: ledger.agentWrittenPromptIds, enrichGroupIds: resolution?.groupKeys ?? null });
     next.suggestions[conversationKey] = { ...suggestion, status: 'joined', resolvedAt: iso(now) };
     // Open suggestions aimed at the request this Join absorbed now point at the request that holds it.
     if (ownId && !next.groups[ownId]) for (const [other, entry] of Object.entries(next.suggestions)) {
@@ -338,11 +345,12 @@ export function decideSuggestion({ dir, database, conversationKey, action, now =
     if (groups.conversations[conversationKey]) next = structuredClone(groups);
     else {
       const [candidate] = readCandidates(database, { conversationKeys: [conversationKey], excludedPromptIds: ledger.agentWrittenPromptIds });
-      next = applyDecisions(groups, { groups: [{ title: ownTitle(candidate?.firstAsk ?? ''), conversations: [conversationKey] }] }, { database, now, excludedPromptIds: ledger.agentWrittenPromptIds });
+      next = applyDecisions(groups, { groups: [{ title: ownTitle(candidate?.firstAsk ?? ''), conversations: [conversationKey] }] }, { database, now, excludedPromptIds: ledger.agentWrittenPromptIds, enrichGroupIds: resolution?.groupKeys ?? null });
     }
     next.suggestions = { ...(next.suggestions ?? {}), [conversationKey]: { ...suggestion, status: 'declined', resolvedAt: iso(now), evidence: `Owner declined: not part of "${request?.title ?? suggestion.requestId}". ${suggestion.evidence}` } };
     next.updatedAt = iso(now);
   }
-  writeJsonAtomic(join(dir, 'request-groups.json'), next);
+  if (writeGroups) writeGroups(next);
+  else writeJsonAtomic(join(dir, 'request-groups.json'), next);
   return { status: next.suggestions[conversationKey].status, requestId: next.conversations[conversationKey] ?? null };
 }
