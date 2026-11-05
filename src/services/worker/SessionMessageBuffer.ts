@@ -4,6 +4,13 @@ import { logger } from '../../utils/logger.js';
 
 export const IDLE_TIMEOUT_MS = 3 * 60 * 1000;
 
+/**
+ * While a drain is idle it waits in slices of at most this length, so a
+ * shouldReleaseIdleSlot check (see DrainOptions) is re-evaluated at this
+ * cadence instead of only after the full idle timeout (#5376).
+ */
+const IDLE_WAIT_SLICE_MS = 1_000;
+
 interface BufferedMessage {
   id: number;
   message: PendingMessage;
@@ -25,6 +32,14 @@ export interface DrainOptions {
   signal: AbortSignal;
   onIdleTimeout?: () => void;
   idleTimeoutMs?: number;
+  /**
+   * Checked each time an idle drain finishes a wait slice: return true to
+   * end the drain early through the onIdleTimeout path. The production
+   * caller passes "another session is parked waiting for a concurrency
+   * slot" — an idle generator otherwise holds its slot for the full
+   * IDLE_TIMEOUT_MS while parked sessions starve (#5376).
+   */
+  shouldReleaseIdleSlot?: () => boolean;
 }
 
 /**
@@ -229,20 +244,32 @@ export class SessionMessageBuffer {
     while (!signal.aborted) {
       const claimed = this.claimNext(sessionDbId);
       if (claimed) {
-        lastActivityTime = Date.now();
         yield {
           ...claimed.message,
           _persistentId: claimed.id,
           _originalTimestamp: claimed.enqueuedAt
         };
+        // The idle clock starts when the consumer comes back for the next
+        // message, so the time it spends answering this one does not eat
+        // into the idle window.
+        lastActivityTime = Date.now();
         continue;
       }
 
-      const received = await this.waitForMessage(sessionDbId, signal, idleTimeoutMs);
+      const received = await this.waitForMessage(sessionDbId, signal, Math.min(idleTimeoutMs, IDLE_WAIT_SLICE_MS));
       if (!received && !signal.aborted) {
         const idleDuration = Date.now() - lastActivityTime;
         if (idleDuration >= idleTimeoutMs) {
           logger.info('SESSION', 'Idle timeout reached, triggering abort to kill subprocess', {
+            sessionDbId,
+            idleDurationMs: idleDuration,
+            thresholdMs: idleTimeoutMs
+          });
+          onIdleTimeout?.();
+          return;
+        }
+        if (options.shouldReleaseIdleSlot?.()) {
+          logger.info('SESSION', 'Releasing idle slot early: other sessions are waiting for a slot', {
             sessionDbId,
             idleDurationMs: idleDuration,
             thresholdMs: idleTimeoutMs
