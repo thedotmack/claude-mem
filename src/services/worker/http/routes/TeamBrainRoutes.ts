@@ -15,6 +15,7 @@ import {
   type TeamBrainSettings,
 } from '../../../../shared/teambrain.js';
 import { workViewLoopbackOnly } from './WorkViewRoutes.js';
+import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 
 /** An agent's tool call can wait longer than SessionStart's 2 s, but not indefinitely. */
 export const TEAMBRAIN_PROXY_TIMEOUT_MS = 10_000;
@@ -88,6 +89,14 @@ export class TeamBrainRoutes extends BaseRouteHandler {
   });
 
   private handleSearch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    // A search spends this install's cloud sync token on an upstream call and
+    // hands the answer back, so another localhost page must not drive it. This
+    // is the same guard every other mutating POST route carries; Origin-less
+    // callers (the team_search MCP tool, curl) keep the loopback-trust model.
+    if (isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({ error: 'TeamBrain searches from a different localhost origin are not allowed' });
+      return;
+    }
     const { query, limit } = req.body as z.infer<typeof teamSearchSchema>;
     const connection = this.connectionOrRefuse(res);
     if (!connection) return;
