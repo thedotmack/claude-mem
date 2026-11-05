@@ -15,6 +15,7 @@ import { WorkStateSource, type WorkViewSnapshot } from '../../../work-view/data-
 import { WorkViewReadWorkerClient } from '../../../work-view/WorkViewReadWorkerClient.js';
 import { SkillCatalog, SkillCatalogError } from '../../../skills/catalog.js';
 import { saveSkill } from '../../../skills/save.js';
+import { createClaudeRewriteRunner, rewriteSkill, type SkillRewriteRunner } from '../../../skills/rewrite.js';
 import { FILE_CONTENT_TYPES } from '../../../work-view/work-product.mjs';
 import { isInsideDeliverablesDir } from '../../../../shared/deliverables.js';
 import { contentFingerprint, LocalReviewStore } from '../../../work-view/review-store.js';
@@ -92,6 +93,10 @@ const reviewBody = z.object({
 
 const skillHash = z.string().regex(/^[a-f0-9]{64}$/);
 const skillSaveBody = z.object({ expectedRevision: skillHash, text: z.string() }).strict();
+const skillRewriteBody = z.object({
+  stamp: z.enum(['human', 'einstein']), text: z.string(),
+  firstIndex: z.number().int().nonnegative(), lastIndex: z.number().int().nonnegative(),
+}).strict();
 
 function requireSkillId(req: Request, res: Response, next: NextFunction): void {
   if (!skillHash.safeParse(req.params.id).success) {
@@ -291,6 +296,7 @@ interface WorkStateWrite { project: string; listName: string; fields: Record<str
 interface WorkViewOptions {
   databasePath?: string;
   skillCatalog?: SkillCatalog;
+  skillRewriteRunner?: SkillRewriteRunner;
   reviewPath?: string;
   pollIntervalMs?: number;
   getLocalDeviceId?: () => string;
@@ -458,6 +464,7 @@ const ACTIVITY_REFRESH_WINDOW_MS = 120_000;
 
 export class WorkViewRoutes extends BaseRouteHandler {
   private readonly skillCatalog: SkillCatalog;
+  private readonly skillRewriteRunner: SkillRewriteRunner;
   private source: WorkStateSource;
   private sourceReader: WorkViewReadWorkerClient;
   private pendingBackgroundSnapshot: Promise<WorkViewSnapshot> | null = null;
@@ -499,6 +506,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     this.ledgerDir = ledgerDir;
     this.databasePath = options.databasePath ?? DB_PATH;
     this.skillCatalog = options.skillCatalog ?? new SkillCatalog({ databasePath: this.databasePath });
+    this.skillRewriteRunner = options.skillRewriteRunner ?? createClaudeRewriteRunner();
     this.source = new WorkStateSource({
       databasePath: options.databasePath ?? DB_PATH,
       pollIntervalMs: this.pollIntervalMs,
@@ -635,6 +643,16 @@ export class WorkViewRoutes extends BaseRouteHandler {
         const { text, expectedRevision } = req.body as z.infer<typeof skillSaveBody>;
         return saveSkill(this.skillCatalog, String(req.params.id), expectedRevision, text);
       }))));
+    app.post(skills + '/:id/rewrite', requireWorkViewOrigin, requireSkillId, validateBody(skillRewriteBody),
+      this.wrapHandler(async (req, res) => {
+        const controller = new AbortController();
+        const cancel = () => controller.abort();
+        res.once('close', cancel);
+        if (res.destroyed) cancel();
+        try {
+          await skillResponse(res, () => rewriteSkill(this.skillCatalog, String(req.params.id), req.body, this.skillRewriteRunner, controller.signal));
+        } finally { res.off('close', cancel); }
+      }));
     app.get('/api/work-view', workViewLoopbackOnly, this.wrapHandler(async (_req, res) => {
       res.setHeader('Cache-Control', 'no-store');
       res.json(await this.snapshot());

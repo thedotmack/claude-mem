@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { changeDraft, editTextareaValue, newDraft, undoDraft } from './skill-draft.ts'
+import { applyDraftStroke, changeDraft, editTextareaValue, newDraft, undoDraft } from './skill-draft.ts'
 import { getSkillSource } from './skill-source.ts'
 
 test('editing one textarea paragraph preserves BOM, comments, future fields, mixed line endings and the final newline', () => {
@@ -35,4 +35,14 @@ test('sample saves are isolated from fetch and keep a usable newer document afte
   assert.equal((await source.open(opened.entry.id)).text, next)
   await assert.rejects(source.save(opened.entry.id, opened.revision, 'Other change'), {status:409})
   await source.save(opened.entry.id, receipt.revision, opened.text)
+})
+
+test('a delayed rewrite cannot apply after Edit and Undo return to the exact starting text', () => {
+  const original = newDraft('# Original', 'hash')
+  const different = changeDraft(original, '# Edited', 'typing', 10)
+  const back = undoDraft(different)
+  assert.equal(back.text, original.text)
+  assert.strictEqual(applyDraftStroke(back, '# Stale rewrite', original.version), back)
+  const applied = applyDraftStroke(back, '# New rewrite', back.version)
+  assert.equal(undoDraft(applied).text, original.text)
 })

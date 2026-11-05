@@ -1,11 +1,15 @@
 import { skillMetadata, type SkillEntry, type SkillListing } from '../../../../shared/skill-document.ts'
-import type { SourceKind } from '../live/work-data-source'
+import type { SourceKind } from '../live/work-data-source.ts'
 
 export type { SkillEntry, SkillListing }
+export type AiStamp = 'human' | 'einstein'
+export type RewritePassage = (id: string, stamp: AiStamp, text: string, firstIndex: number, lastIndex: number, signal: AbortSignal) => Promise<string>
+
 export interface SavedSkill { entry: SkillEntry; revision: string }
 export interface OpenSkill extends SavedSkill { text: string }
 
 export interface SkillSource {
+  rewrite?: RewritePassage
   list(): Promise<SkillListing>
   open(id: string): Promise<OpenSkill>
   save(id: string, expectedRevision: string, text: string): Promise<SavedSkill>
@@ -20,9 +24,11 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { cache: 'no-store', ...init })
   if (!response.ok) {
     const detail = await response.json().catch(() => null)
-    throw new SkillRequestError(response.status, typeof detail?.error === 'string' ? detail.error : `The skill request failed (HTTP ${response.status}).`)
+    const message = detail && typeof detail === 'object' && 'error' in detail && typeof detail.error === 'string'
+      ? detail.error : `The skill request failed (HTTP ${response.status}).`
+    throw new SkillRequestError(response.status, message)
   }
-  return response.json()
+  return response.json() as Promise<T>
 }
 
 function httpSource(base: string): SkillSource {
@@ -68,6 +74,13 @@ const sample: SkillSource = {
 }
 
 const local = httpSource('/api/work-view/skills')
+local.rewrite = async (id, stamp, text, firstIndex, lastIndex, signal) => {
+  const result = await request<{ replacementMarkdown: string }>('/api/work-view/skills/' + encodeURIComponent(id) + '/rewrite', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, signal,
+    body: JSON.stringify({ stamp, text, firstIndex, lastIndex }),
+  })
+  return result.replacementMarkdown
+}
 const account = httpSource('/api/account/skills')
 
 export function getSkillSource(kind: SourceKind): SkillSource {

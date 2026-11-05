@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { registerSkillLeaveGuard } from '../live/skill-navigation'
-import { changeDraft, newDraft, undoDraft, type EditKind, type SkillDraft } from './skill-draft'
+import { applyDraftStroke, changeDraft, newDraft, undoDraft, type EditKind, type SkillDraft } from './skill-draft'
 import { SkillRequestError, type OpenSkill, type SkillEntry, type SkillListing, type SkillSource } from './skill-source'
 
 interface Editor extends SkillDraft {
@@ -94,6 +94,12 @@ export function useSkillLibrary(source: SkillSource) {
 
   const change = (id: string, next: string, kind: EditKind) =>
     update(id, draft => ({ ...draft, ...changeDraft(draft, next, kind), saved: false, error: null }))
+  const applyStroke = (id: string, next: string, expectedVersion: number) =>
+    update(id, draft => {
+      if (draft.saving || !draft.entry.editable) return draft
+      const updated = applyDraftStroke(draft, next, expectedVersion)
+      return updated === draft ? draft : { ...draft, ...updated, saved: false, error: null }
+    })
   const undo = (id: string) =>
     update(id, draft => ({ ...draft, ...undoDraft(draft), saved: false, error: null }))
   const endTyping = (id: string) => update(id, draft => ({ ...draft, lastTypedAt: null }))
@@ -134,5 +140,5 @@ export function useSkillLibrary(source: SkillSource) {
     })
   }
 
-  return { listing, listError, refreshing, refresh, selected, select, editors, opening, openError, change, undo, endTyping, save, resolveConflict }
+  return { listing, listError, refreshing, refresh, selected, select, editors, opening, openError, change, applyStroke, undo, endTyping, save, resolveConflict }
 }

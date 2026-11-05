@@ -29,26 +29,32 @@ export interface SkillDraft {
   text: string
   baseText: string
   revision: string
+  version: number
   history: string[]
   lastTypedAt: number | null
 }
 
 export function newDraft(text: string, revision: string): SkillDraft {
-  return { text, baseText: text, revision, history: [], lastTypedAt: null }
+  return { text, baseText: text, revision, version: 0, history: [], lastTypedAt: null }
 }
 
 export function changeDraft(draft: SkillDraft, text: string, kind: EditKind, now = Date.now()): SkillDraft {
   if (draft.text === text) return draft
   const continuing = kind === 'typing' && draft.lastTypedAt !== null && now - draft.lastTypedAt < 750
   return {
-    ...draft, text,
+    ...draft, text, version: draft.version + 1,
     history: continuing ? draft.history : [...draft.history.slice(-39), draft.text],
     lastTypedAt: kind === 'typing' ? now : null,
   }
 }
 
+// Equal source text can reappear after Undo. A stroke belongs to a particular edit, not just its bytes.
+export function applyDraftStroke(draft: SkillDraft, nextText: string, expectedVersion: number): SkillDraft {
+  return draft.version === expectedVersion ? changeDraft(draft, nextText, 'stroke') : draft
+}
+
 export function undoDraft(draft: SkillDraft): SkillDraft {
   const previous = draft.history.at(-1)
   if (previous === undefined) return draft
-  return { ...draft, text: previous, history: draft.history.slice(0, -1), lastTypedAt: null }
+  return { ...draft, text: previous, version: draft.version + 1, history: draft.history.slice(0, -1), lastTypedAt: null }
 }

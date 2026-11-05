@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeftIcon, CheckIcon, FileTextIcon, FolderIcon, PaintbrushIcon, PencilIcon, RefreshCwIcon, SearchIcon, Undo2Icon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
@@ -12,6 +12,8 @@ import { skillMetadata } from '../../../../shared/skill-document'
 import { editTextareaValue, type SkillMode } from '@/skills/skill-draft'
 import { getSkillSource, type SkillEntry } from '@/skills/skill-source'
 import { useSkillLibrary } from '@/skills/use-skill-library'
+
+const SkillPaintEditor = lazy(() => import('@/skills/paint-editor').then(module => ({ default: module.SkillPaintEditor })))
 
 function SkillListRow({ skill, active, dirty, select }: { skill: SkillEntry; active: boolean; dirty: boolean; select: () => void }) {
   return (
@@ -38,7 +40,8 @@ export function MySkills() {
 }
 
 function SkillsPage({ kind }: { kind: SourceKind }) {
-  const library = useSkillLibrary(getSkillSource(kind))
+  const source = getSkillSource(kind)
+  const library = useSkillLibrary(source)
   const { listing, selected, select, editors, opening, openError } = library
   const draft = selected ? editors[selected] : null
   const entry = draft?.entry ?? listing?.skills.find(skill => skill.id === selected)
@@ -115,7 +118,7 @@ function SkillsPage({ kind }: { kind: SourceKind }) {
                 <ToggleGroup type="single" value={mode} aria-label="Editing mode" size="sm" variant="outline" spacing={0}
                   onValueChange={value => { if (value === 'edit' || value === 'paint') { library.endTyping(selected); setMode(value) } }}>
                   <ToggleGroupItem value="edit"><PencilIcon />Edit</ToggleGroupItem>
-                  <ToggleGroupItem value="paint" disabled title={problem ?? 'Paint editor'}><PaintbrushIcon />Paint</ToggleGroupItem>
+                  <ToggleGroupItem value="paint" disabled={!!problem} title={problem ?? 'Paint editor'}><PaintbrushIcon />Paint</ToggleGroupItem>
                 </ToggleGroup>
                 <div className="ml-auto flex gap-2">
                   <Button variant="outline" size="sm" onClick={() => library.undo(selected)} disabled={!draft.history.length || draft.saving || !draft.entry.editable}><Undo2Icon />Undo</Button>
@@ -137,7 +140,10 @@ function SkillsPage({ kind }: { kind: SourceKind }) {
                   <Button size="sm" variant="ghost" onClick={() => { if (window.confirm('Discard your draft and use the newer saved version?')) library.resolveConflict(selected,'use-latest') }}>Use saved version</Button>
                 </div>
               </div>}
-              <label className="block"><span className="sr-only">Skill Markdown</span>
+              {mode === 'paint' && !problem ? <Suspense fallback={<p role="status" className="text-sm text-muted-foreground">Opening Paint…</p>}>
+                <SkillPaintEditor key={selected} skillId={selected} text={draft.text} version={draft.version} editable={draft.entry.editable && !draft.saving}
+                  rewrite={source.rewrite} onChange={(text, version) => library.applyStroke(selected, text, version)} />
+              </Suspense> : <label className="block"><span className="sr-only">Skill Markdown</span>
                 <Textarea aria-invalid={!!problem} readOnly={!draft.entry.editable || draft.saving} spellCheck={false} value={draft.text}
                   onChange={event => library.change(selected, editTextareaValue(draft.text, event.currentTarget.value), 'typing')}
                   onBlur={() => library.endTyping(selected)}
@@ -147,7 +153,7 @@ function SkillsPage({ kind }: { kind: SourceKind }) {
                     if (event.key.toLowerCase() === 'z' && !event.shiftKey && draft.entry.editable && !draft.saving) { event.preventDefault(); library.undo(selected) }
                   }}
                   className="field-sizing-fixed min-h-[42svh] resize-y font-mono text-[0.88rem] leading-relaxed md:min-h-96" />
-              </label>
+              </label>}
               <p role="status" className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 {draft.saved && !dirty && <CheckIcon className="size-3.5" />}
                 {draft.saving ? 'Saving…' : dirty ? 'Unsaved changes' : !draft.entry.editable ? 'Read-only' : draft.saved ? kind === 'sample' ? 'Saved in this sample' : kind === 'cloud' ? 'Saved to your account' : 'Saved on this device' : null}

@@ -25,6 +25,7 @@
     "embla-carousel-react": "^8.6.0",
     "immer": "^10.2.0",
     "lucide-react": "^1.60.0",
+    "marked": "^18.1.1",
     "motion": "^14.4.0",
     "radix-ui": "^1.8.1",
     "react": "^19.3.1",
@@ -33,8 +34,8 @@
     "tailwindcss": "^4.3.3",
     "tokenlens": "^1.3.1",
     "tw-animate-css": "^1.4.0",
-    "zustand": "^5.0.16",
-    "yaml": "^2.9.1"
+    "yaml": "^2.9.1",
+    "zustand": "^5.0.16"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
