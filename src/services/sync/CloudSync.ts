@@ -1657,6 +1657,17 @@ export class CloudSync {
             this.queueProgress.tombstone.lastAcknowledgedAt = acknowledgedAt;
           }
         }
+        // A long catch-up drain can keep running for minutes after transport
+        // recovers. Its validated, committed page is current connection
+        // evidence even though lastFlushAt still waits for the whole drain.
+        // Keep poison accounting and the retry ladder unchanged, and never
+        // let an in-flight response clear an independent auth pause.
+        if (!this.authFailure && this.consecutiveFailures > 0) {
+          this.lastError = null;
+          this.consecutiveFailures = 0;
+          this.failingSinceAt = null;
+          this.writeHealth(true);
+        }
         this.emitHeadSeq(response.head_seq);
         return;
       } catch (error) {
