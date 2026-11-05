@@ -169,7 +169,7 @@ function serializeEnvFile(env: Record<string, string>): string {
  * exclusively from the file.
  *
  * The whitelist is enforced by the CREDENTIAL_KEYS copy loop below — only the
- * five named keys are ever copied out (see CREDENTIAL_KEYS for why this must
+ * keys it names are ever copied out (see CREDENTIAL_KEYS for why this must
  * not become Object.assign(result, parsed)).
  */
 export function loadClaudeMemEnv(): ClaudeMemEnv {

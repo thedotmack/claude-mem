@@ -232,6 +232,8 @@ To run the observer without that dependency, create a long-lived token and give 
 
 Replace the token when it expires (`claude setup-token` again). If the token is a JWT whose expiry has passed, the observer logs a warning and falls back to the credential store.
 
+The token applies to every Claude profile. If you set `CLAUDE_MEM_CLAUDE_CONFIG_DIR`, the observer bills the token's account rather than that profile's stored login, but it still tracks quota pauses per profile. Changing the setting therefore starts a fresh quota view even though the account stays the same.
+
 ### Claude Gateway Settings
 
 Gateway credentials live in `~/.claude-mem/.env`, not `settings.json`.

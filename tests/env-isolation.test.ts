@@ -10,11 +10,13 @@ import {
   saveClaudeMemEnv,
   getAuthMethodDescription,
   hasConfiguredClaudeOAuthToken,
+  resolveConfigDirProfileKey,
 } from '../src/shared/EnvManager.js';
 import { sanitizeEnv } from '../src/supervisor/env-sanitizer.js';
 import * as oauthToken from '../src/shared/oauth-token.js';
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
 import { paths, CLAUDE_CONFIG_DIR, DEFAULT_CLAUDE_CONFIG_DIR, MARKETPLACE_ROOT } from '../src/shared/paths.js';
+import { logger } from '../src/utils/logger.js';
 // CJS interop: the check is a .cjs module exporting findViolations.
 import { createRequire } from 'module';
 const requireCjs = createRequire(import.meta.url);
@@ -729,6 +731,42 @@ describe('plan-19: long-lived CLAUDE_CODE_OAUTH_TOKEN from ~/.claude-mem/.env', 
       expect((await buildIsolatedEnvWithFreshOAuth()).CLAUDE_CODE_OAUTH_TOKEN).toBe(live);
     } finally {
       oauthSpy.mockRestore();
+    }
+  });
+
+  it('overrides the stored login of a configured profile, which keeps labelling the run', async () => {
+    fs.writeFileSync(TEST_ENV_FILE, `CLAUDE_CODE_OAUTH_TOKEN=${LONG_LIVED}\n`, { mode: 0o600 });
+    const settingsSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(
+      () => ({ ...SettingsDefaultsManager.getAllDefaults(), CLAUDE_MEM_CLAUDE_CONFIG_DIR: '/tmp/work-profile' }) as any,
+    );
+    const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken').mockResolvedValue(storeToken);
+    try {
+      const result = await buildIsolatedEnvWithFreshOAuth();
+      expect(result.CLAUDE_CODE_OAUTH_TOKEN).toBe(LONG_LIVED);
+      expect(result.CLAUDE_CONFIG_DIR).toBe('/tmp/work-profile');
+      expect(oauthSpy).not.toHaveBeenCalled();
+      expect(resolveConfigDirProfileKey()).toContain('work-profile');
+    } finally {
+      oauthSpy.mockRestore();
+      settingsSpy.mockRestore();
+    }
+  });
+
+  it('never writes the token to the log, whether it is injected or skipped as expired', async () => {
+    const expired = jwtExpiringAt(Date.now() - 60_000);
+    const logSpies = (['debug', 'info', 'warn', 'error'] as const).map(level => spyOn(logger, level));
+    const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken').mockResolvedValue(storeToken);
+    try {
+      for (const token of [LONG_LIVED, expired]) {
+        fs.writeFileSync(TEST_ENV_FILE, `CLAUDE_CODE_OAUTH_TOKEN=${token}\n`, { mode: 0o600 });
+        await buildIsolatedEnvWithFreshOAuth();
+        const logged = JSON.stringify(logSpies.flatMap(spy => spy.mock.calls));
+        expect(logged).toContain('CLAUDE_CODE_OAUTH_TOKEN');
+        expect(logged).not.toContain(token);
+      }
+    } finally {
+      oauthSpy.mockRestore();
+      logSpies.forEach(spy => spy.mockRestore());
     }
   });
 
