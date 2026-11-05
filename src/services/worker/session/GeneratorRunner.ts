@@ -155,6 +155,8 @@ export async function startGeneratorWithProvider(
     clearTimeout(session.scheduledResumeTimer);
     session.scheduledResumeTimer = undefined;
   }
+  // A running generator is not an abandoned stall, whatever its counter says.
+  session.stallResumesExhaustedAt = undefined;
   // The last pause no longer describes this session; if this run pauses
   // too, its exit records a fresh reason. Without this, one auth pause would
   // keep the session out of every automatic sweep for good.
@@ -576,10 +578,12 @@ export async function startGeneratorWithProvider(
       if (reason === 'transport:response_stall' && !nothingLeftAfterParking) {
         const { resume, attempts } = planResponseStallResume(session);
         if (!resume) {
+          session.stallResumesExhaustedAt = Date.now();
           logger.error('SESSION', `Observer went unanswered ${attempts} times in a row — not resuming until the next captured event`, {
             sessionId: session.sessionDbId,
             consecutiveStalls: attempts,
             maxResumes: MAX_CONSECUTIVE_STALL_RESUMES,
+            pendingCount: sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId),
           });
         } else {
           // The delayed retry may hit a quota cooldown and return without

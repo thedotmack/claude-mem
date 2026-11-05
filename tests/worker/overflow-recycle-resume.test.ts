@@ -364,6 +364,36 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
       // Still preserved for the next hook event rather than finalized.
       expect(stats().finalizeCalls).toBe(0);
       expect(stats().active).toBe(session);
+      // #5405: the exhaust branch marks the session so /api/processing-status can report it.
+      expect(typeof session.stallResumesExhaustedAt).toBe('number');
+    });
+
+    it('clears the exhausted-stall mark when the next generator starts (#5405)', async () => {
+      const session = makeSession();
+      session.consecutiveResponseStalls = MAX_CONSECUTIVE_STALL_RESUMES;
+      let starts = 0;
+
+      const { routes } = buildRoutes(session, async () => {
+        starts += 1;
+        if (starts === 1) {
+          session.abortReason = 'transport:response_stall';
+          return;
+        }
+        await new Promise<void>(() => {});
+      });
+
+      await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+      await session.generatorPromise;
+      await nextTick();
+      expect(typeof session.stallResumesExhaustedAt).toBe('number');
+
+      // The next captured event restarts the observer: the mark goes, even
+      // though the stall counter stays above the cap until a turn is answered.
+      void routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+      await nextTick();
+      expect(starts).toBe(2);
+      expect(session.stallResumesExhaustedAt).toBeUndefined();
+      expect(session.consecutiveResponseStalls).toBeGreaterThan(MAX_CONSECUTIVE_STALL_RESUMES);
     });
   });
 });
