@@ -94,6 +94,26 @@ describe('SessionMessageBuffer (in-RAM observation buffer)', () => {
     expect(buffer.enqueue(1, obs('Read', 'a'))).toBeGreaterThan(0); // not suppressed
   });
 
+  test('clearUnclaimed preserves in-flight evidence and drops only unsent work', async () => {
+    const buffer = new SessionMessageBuffer();
+    const confirmedId = buffer.enqueue(1, obs('Read', 'confirmed'));
+    expect(buffer.confirm(confirmedId)).toBe(1);
+    const claimedId = buffer.enqueue(1, obs('Read', 'claimed'));
+    buffer.enqueue(1, obs('Write', 'unsent'));
+    const controller = new AbortController();
+    const iterator = buffer.drain({ sessionDbId: 1, signal: controller.signal });
+
+    expect((await iterator.next()).value?._persistentId).toBe(claimedId);
+    expect(buffer.clearUnclaimed(1)).toBe(1);
+    expect(buffer.getMessagesByIds(1, [claimedId])).toHaveLength(1);
+    expect(buffer.enqueue(1, obs('Read', 'confirmed'))).toBe(0);
+    expect(buffer.enqueue(1, obs('Read', 'claimed'))).toBe(0);
+    expect(buffer.enqueue(1, obs('Write', 'unsent'))).toBeGreaterThan(0);
+
+    controller.abort();
+    await iterator.return?.(undefined);
+  });
+
   test('drain ends via idle timeout when no work arrives', async () => {
     const buffer = new SessionMessageBuffer();
     const controller = new AbortController();

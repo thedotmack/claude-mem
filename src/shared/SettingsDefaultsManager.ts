@@ -232,6 +232,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_DELIVERABLES_ENABLED: string;        // Stop hook copies the turn's deliverables into ~/.claude-mem/deliverables/<project>/ and My Work links them
   CLAUDE_MEM_PROVIDER: string;
   CLAUDE_MEM_PROVIDER_BY_SOURCE: string;          // JSON object mapping a platform source to a provider, e.g. {"codex":"codex"}; empty = off, global provider for every source
+  CLAUDE_MEM_OBSERVER_ENABLED: string;
   CLAUDE_MEM_MEDIA_CAPTURE_ENABLED: string;
   CLAUDE_MEM_MEDIA_INFERENCE_ENABLED: string;
   CLAUDE_MEM_CODEX_MODEL: string;
@@ -516,6 +517,7 @@ export class SettingsDefaultsManager {
     // default stays 'claude'.
     CLAUDE_MEM_PROVIDER: 'claude',
     CLAUDE_MEM_PROVIDER_BY_SOURCE: '',
+    CLAUDE_MEM_OBSERVER_ENABLED: 'true',  // 'false' disables new observation and session-summary capture calls
     CLAUDE_MEM_MEDIA_CAPTURE_ENABLED: 'false',
     CLAUDE_MEM_MEDIA_INFERENCE_ENABLED: 'false',
     CLAUDE_MEM_CODEX_MODEL: '', // Empty uses the Codex default model.

@@ -164,6 +164,35 @@ export class SessionMessageBuffer {
     return cleared;
   }
 
+  /**
+   * Drop work that has not been handed to a provider yet, preserving messages
+   * claimed by the request currently in flight so its response can still join
+   * file evidence and other source metadata.
+   */
+  clearUnclaimed(sessionDbId: number): number {
+    const list = this.buffers.get(sessionDbId);
+    if (!list) return 0;
+    const kept = list.filter(message => message.claimed);
+    const removed = list.filter(message => !message.claimed);
+    const cleared = removed.length;
+    if (cleared === 0) return 0;
+
+    if (kept.length === 0) {
+      this.buffers.delete(sessionDbId);
+    } else {
+      this.buffers.set(sessionDbId, kept);
+    }
+    // Let discarded work re-enter through transcript replay without forgetting
+    // IDs already confirmed earlier in this process.
+    const seen = this.seenToolUseIds.get(sessionDbId);
+    for (const message of removed) {
+      if (message.message.toolUseId) seen?.delete(message.message.toolUseId);
+    }
+    if (seen?.size === 0) this.seenToolUseIds.delete(sessionDbId);
+    this.onMutate?.();
+    return cleared;
+  }
+
   /** Forget a session entirely (buffer, dedup set, event emitter). */
   dispose(sessionDbId: number): void {
     this.buffers.delete(sessionDbId);
