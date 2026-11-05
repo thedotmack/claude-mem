@@ -778,3 +778,181 @@ describe('plan-19: long-lived CLAUDE_CODE_OAUTH_TOKEN from ~/.claude-mem/.env', 
     expect(description).not.toContain(LONG_LIVED);
   });
 });
+
+/**
+ * #5400 — the detached worker does not inherit proxy variables that Claude
+ * Code only applies from `<CLAUDE_CONFIG_DIR or ~/.claude>/settings.json`
+ * `env`. The observer child is spawned with settingSources: [] and would
+ * otherwise connect directly. buildIsolatedEnv fills the missing proxy keys
+ * from that file and leaves every other key alone.
+ */
+describe('Issue #5400: observer spawn inherits proxy env from Claude settings', () => {
+  const configDir = fs.mkdtempSync(join(tmpdir(), 'claude-mem-proxy-settings-'));
+  const settingsPath = join(configDir, 'settings.json');
+  const dotenvPath = join(configDir, '.env');
+  const originalConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  const originalDotenv = process.env.CLAUDE_MEM_ENV_FILE;
+  const PROXY_KEYS = [
+    'HTTP_PROXY',
+    'HTTPS_PROXY',
+    'ALL_PROXY',
+    'NO_PROXY',
+    'http_proxy',
+    'https_proxy',
+    'all_proxy',
+    'no_proxy',
+    'npm_config_proxy',
+    'npm_config_https_proxy',
+    'npm_config_noproxy',
+    'NODE_USE_ENV_PROXY',
+    'node_use_env_proxy',
+  ] as const;
+  const originalProxy = new Map<string, string | undefined>(
+    PROXY_KEYS.map(key => [key, process.env[key]]),
+  );
+
+  function writeSettings(body: unknown): void {
+    fs.writeFileSync(settingsPath, typeof body === 'string' ? body : JSON.stringify(body));
+  }
+
+  function restoreProxyEnv(): void {
+    for (const [key, value] of originalProxy) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+
+  beforeEach(() => {
+    process.env.CLAUDE_CONFIG_DIR = configDir;
+    for (const key of PROXY_KEYS) delete process.env[key];
+    fs.rmSync(settingsPath, { force: true });
+    fs.rmSync(dotenvPath, { force: true });
+  });
+
+  afterEach(() => {
+    if (originalConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = originalConfigDir;
+    if (originalDotenv === undefined) delete process.env.CLAUDE_MEM_ENV_FILE;
+    else process.env.CLAUDE_MEM_ENV_FILE = originalDotenv;
+    restoreProxyEnv();
+  });
+
+  afterAll(() => {
+    fs.rmSync(configDir, { recursive: true, force: true });
+  });
+
+  it('fills missing proxy keys from CLAUDE_CONFIG_DIR/settings.json, and sanitizeEnv keeps them', () => {
+    writeSettings({
+      env: {
+        HTTP_PROXY: 'http://proxy.example:3128',
+        HTTPS_PROXY: 'http://proxy.example:3128',
+        ALL_PROXY: 'socks5://proxy.example:1080',
+        NO_PROXY: 'localhost,127.0.0.1,::1',
+        http_proxy: 'http://proxy.example:3128',
+        https_proxy: 'http://proxy.example:3128',
+        all_proxy: 'socks5://proxy.example:1080',
+        no_proxy: 'localhost,127.0.0.1,::1',
+        npm_config_https_proxy: 'http://proxy.example:3128',
+        NODE_USE_ENV_PROXY: '1',
+        node_use_env_proxy: '1',
+      },
+    });
+
+    const result = sanitizeEnv(buildIsolatedEnv());
+
+    expect(result.HTTP_PROXY).toBe('http://proxy.example:3128');
+    expect(result.HTTPS_PROXY).toBe('http://proxy.example:3128');
+    expect(result.ALL_PROXY).toBe('socks5://proxy.example:1080');
+    expect(result.NO_PROXY).toBe('localhost,127.0.0.1,::1');
+    expect(result.http_proxy).toBe('http://proxy.example:3128');
+    expect(result.https_proxy).toBe('http://proxy.example:3128');
+    expect(result.all_proxy).toBe('socks5://proxy.example:1080');
+    expect(result.no_proxy).toBe('localhost,127.0.0.1,::1');
+    expect(result.npm_config_https_proxy).toBe('http://proxy.example:3128');
+    expect(result.NODE_USE_ENV_PROXY).toBe('1');
+    expect(result.node_use_env_proxy).toBe('1');
+    expect(result.CLAUDE_CODE_ENTRYPOINT).toBeUndefined();
+    expect(result.CLAUDE_MEM_INTERNAL).toBe('1');
+  });
+
+  it('reads the configured directory, not a different one, including a BOM-prefixed file', () => {
+    const otherDir = fs.mkdtempSync(join(tmpdir(), 'claude-mem-proxy-other-'));
+    try {
+      fs.writeFileSync(
+        join(otherDir, 'settings.json'),
+        JSON.stringify({ env: { HTTPS_PROXY: 'http://other.example:1' } }),
+      );
+      fs.writeFileSync(
+        settingsPath,
+        `\uFEFF${JSON.stringify({ env: { HTTPS_PROXY: '  http://chosen.example:9  ' } })}`,
+      );
+
+      expect(buildIsolatedEnv().HTTPS_PROXY).toBe('http://chosen.example:9');
+    } finally {
+      fs.rmSync(otherDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not override a proxy the worker already has, including an explicit empty value', () => {
+    process.env.HTTPS_PROXY = 'http://from-worker:1';
+    process.env.NO_PROXY = '';
+    writeSettings({
+      env: {
+        HTTPS_PROXY: 'http://from-settings:2',
+        HTTP_PROXY: 'http://from-settings:2',
+        NO_PROXY: 'localhost',
+        NODE_USE_ENV_PROXY: '1',
+      },
+    });
+
+    const result = buildIsolatedEnv();
+
+    expect(result.HTTPS_PROXY).toBe('http://from-worker:1');
+    expect(result.NO_PROXY).toBe('');
+    expect(result.HTTP_PROXY).toBe('http://from-settings:2');
+    expect(result.NODE_USE_ENV_PROXY).toBe('1');
+  });
+
+  it('copies proxy keys only: secrets, CLAUDE_CODE_*, blanks, and non-strings stay out', () => {
+    writeSettings({
+      env: {
+        HTTPS_PROXY: '   ',
+        HTTP_PROXY: 1,
+        NO_PROXY: 'localhost',
+        ANTHROPIC_API_KEY: 'sk-ant-secret',
+        CLAUDE_CODE_EFFORT_LEVEL: 'max',
+        CLAUDE_CODE_OAUTH_TOKEN: 'should-not-leak',
+        PATH: '/from-settings',
+      },
+    });
+
+    const result = buildIsolatedEnv();
+
+    expect(result.HTTPS_PROXY).toBeUndefined();
+    expect(result.HTTP_PROXY).toBeUndefined();
+    expect(result.NO_PROXY).toBe('localhost');
+    expect(result.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(result.CLAUDE_CODE_EFFORT_LEVEL).toBeUndefined();
+    expect(result.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    expect(result.PATH).not.toBe('/from-settings');
+  });
+
+  it('ignores a missing file, invalid JSON, a non-object env block, and proxy keys in ~/.claude-mem/.env', () => {
+    expect(buildIsolatedEnv().HTTPS_PROXY).toBeUndefined();
+
+    writeSettings('{ not json');
+    expect(buildIsolatedEnv().HTTPS_PROXY).toBeUndefined();
+
+    writeSettings({ env: ['HTTPS_PROXY=http://nope'] });
+    expect(buildIsolatedEnv().HTTPS_PROXY).toBeUndefined();
+
+    writeSettings({ enabledPlugins: { 'claude-mem@thedotmack': true } });
+    expect(buildIsolatedEnv().HTTPS_PROXY).toBeUndefined();
+
+    fs.writeFileSync(dotenvPath, 'HTTPS_PROXY=http://from-dotenv:1\nANTHROPIC_API_KEY=sk-ant-key\n', { mode: 0o600 });
+    process.env.CLAUDE_MEM_ENV_FILE = dotenvPath;
+    const fromDotenv = buildIsolatedEnv();
+    expect(fromDotenv.HTTPS_PROXY).toBeUndefined();
+    expect(fromDotenv.ANTHROPIC_API_KEY).toBe('sk-ant-key');
+  });
+});

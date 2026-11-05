@@ -2,10 +2,13 @@
 import { createHash } from 'crypto';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs';
 import { parseEnv } from 'util';
-import { basename } from 'path';
+import { homedir } from 'os';
+import { basename, join } from 'path';
+import { ENV_PROXY_VARS } from '../supervisor/env-sanitizer.js';
 import { logger } from '../utils/logger.js';
 import { paths } from './paths.js';
-import { stripUtf8Bom } from './atomic-json.js';
+import { readJsonFileWithBom, stripUtf8Bom } from './atomic-json.js';
+import { expandHome } from './expand-home.js';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import type { ClaudeCredential } from './quota-cooldown.js';
 import {
@@ -234,6 +237,54 @@ export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
   }
 }
 
+/**
+ * Directory whose `settings.json` Claude Code would apply to an interactive
+ * session: `CLAUDE_CONFIG_DIR` when it is set, otherwise `~/.claude`.
+ * A leading `~` is expanded; a shell-exported value is already expanded.
+ */
+function claudeUserConfigDir(): string {
+  const configured = process.env.CLAUDE_CONFIG_DIR?.trim();
+  return configured ? expandHome(configured) : join(homedir(), '.claude');
+}
+
+/**
+ * #5400 — Claude Code applies the `env` block of
+ * `<CLAUDE_CONFIG_DIR or ~/.claude>/settings.json` to its own process only.
+ * The worker is started detached, so those variables are absent from
+ * process.env, and the observer CLI is spawned with `settingSources: []`, so
+ * it never reads the file either and connects directly (ECONNREFUSED).
+ *
+ * Copy proxy keys the worker does not already have. An empty string already
+ * in the worker env is left alone. Anything else in that block (API keys,
+ * CLAUDE_CODE_*) stays out: this is not a general settings-env passthrough.
+ * A missing or unreadable file is the common case and changes nothing.
+ */
+function applyMissingProxyEnvFromClaudeSettings(isolatedEnv: Record<string, string>): void {
+  const settingsPath = join(claudeUserConfigDir(), 'settings.json');
+  if (!existsSync(settingsPath)) return;
+
+  let parsed: unknown;
+  try {
+    parsed = readJsonFileWithBom(settingsPath);
+  } catch {
+    return;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return;
+
+  const settingsEnv = (parsed as { env?: unknown }).env;
+  if (settingsEnv === null || typeof settingsEnv !== 'object' || Array.isArray(settingsEnv)) return;
+
+  const source = settingsEnv as Record<string, unknown>;
+  for (const key of ENV_PROXY_VARS) {
+    if (isolatedEnv[key] !== undefined) continue;
+    const value = source[key];
+    if (typeof value !== 'string') continue;
+    const trimmed = value.trim();
+    if (!trimmed) continue;
+    isolatedEnv[key] = trimmed;
+  }
+}
+
 export function buildIsolatedEnv(includeCredentials: boolean = true): Record<string, string> {
   const isolatedEnv: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
@@ -241,6 +292,9 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
       isolatedEnv[key] = value;
     }
   }
+
+  // After the process.env copy, so a proxy the worker already has wins.
+  applyMissingProxyEnvFromClaudeSettings(isolatedEnv);
 
   isolatedEnv.CLAUDE_CODE_ENTRYPOINT = 'sdk-ts';
 
