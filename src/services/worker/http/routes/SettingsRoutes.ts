@@ -288,6 +288,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
+      'CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT',
       'CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES',
       'CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS',
       'CLAUDE_MEM_CONTEXT_FULL_COUNT',
@@ -297,6 +298,8 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
       'CLAUDE_MEM_FILE_READ_GATE_ENABLED',
       'CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY',
+      'CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED',
+      'CLAUDE_MEM_WELCOME_HINT_ENABLED',
       'CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED',
       'CLAUDE_MEM_BACKUP_ENABLED',
       'CLAUDE_MEM_BACKUP_INTERVAL_HOURS',
@@ -422,8 +425,8 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     if (settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS !== undefined) {
       const obsCount = parseContextCountValue(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS);
-      if (obsCount === undefined || obsCount < 1 || obsCount > 200) {
-        return { valid: false, error: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 1 and 200' };
+      if (obsCount === undefined || obsCount < 0 || obsCount > 200) {
+        return { valid: false, error: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 0 and 200' };
       }
     }
 
@@ -515,8 +518,11 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
+      'CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
+      'CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED',
+      'CLAUDE_MEM_WELCOME_HINT_ENABLED',
       'CLAUDE_MEM_FILE_READ_GATE_ENABLED',
       'CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY',
       'CLAUDE_MEM_BACKUP_ENABLED',
@@ -537,8 +543,8 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     if (settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT !== undefined) {
       const count = parseContextCountValue(settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT);
-      if (count === undefined || count < 1 || count > 50) {
-        return { valid: false, error: 'CLAUDE_MEM_CONTEXT_SESSION_COUNT must be between 1 and 50' };
+      if (count === undefined || count < 0 || count > 50) {
+        return { valid: false, error: 'CLAUDE_MEM_CONTEXT_SESSION_COUNT must be between 0 and 50' };
       }
     }
 
