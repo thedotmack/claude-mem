@@ -1,3 +1,9 @@
+/**
+ * Builds the context a new session starts with: a compact index of the
+ * observations and summaries that matter for this project, fitted to the
+ * delivery limit. The same rows render two ways: terse for the agent, and a
+ * readable preview for the person (forHuman).
+ */
 
 import path from 'path';
 import { homedir } from 'os';

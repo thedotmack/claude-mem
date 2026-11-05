@@ -94,7 +94,7 @@ const SETTINGS_CACHE_TTL_MS = 5000;
 
 const WELCOME_HINT_TEMPLATE = `# claude-mem status
 
-This project has no memory yet. The current session will seed it; subsequent sessions will receive auto-injected context for relevant past work.
+This project has no memory yet. This session will seed it.
 
 Memory injection starts on your second session in a project.
 
