@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from 'bun:test';
+import { describe, expect, it, beforeEach, afterEach, mock, spyOn } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -41,6 +41,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  mock.restore();
   rmSync(dataDir, { recursive: true, force: true });
 });
 
@@ -90,6 +91,7 @@ describe('observer-health ledger', () => {
   });
 
   it('restarts failingSinceAt when the failure kind changes (#5378)', () => {
+    const clock = spyOn(Date, 'now').mockReturnValue(1000);
     // The reported scenario: a quota pause records a failure, the worker goes down,
     // and auth refusals follow a day later. The auth warning must not carry the
     // quota era's start time.
@@ -100,6 +102,7 @@ describe('observer-health ledger', () => {
     const quota = readObserverHealth(healthPath)!;
     const quotaSince = quota.failingSinceAt;
 
+    clock.mockReturnValue(2000);
     recordObserverFailure('claude', {
       message: 'Failed to authenticate',
       kind: 'auth_invalid',
@@ -109,15 +112,18 @@ describe('observer-health ledger', () => {
     expect(auth.lastErrorKind).toBe('auth_invalid');
     expect(auth.failingSinceAt).toBe(auth.lastErrorAt); // but the clock restarts with the new kind
     expect(auth.failingSinceAt).not.toBe(quotaSince);
+    expect(auth.failingSinceAt).toBe(2000);
   });
 
   it('keeps failingSinceAt across consecutive failures of the same kind', () => {
+    const clock = spyOn(Date, 'now').mockReturnValue(1000);
     recordObserverFailure('claude', {
       message: 'Failed to authenticate',
       kind: 'auth_invalid',
     }, healthPath);
     const first = readObserverHealth(healthPath)!;
 
+    clock.mockReturnValue(2000);
     recordObserverFailure('claude', {
       message: 'Failed to authenticate again',
       kind: 'auth_invalid',
@@ -125,6 +131,25 @@ describe('observer-health ledger', () => {
     const second = readObserverHealth(healthPath)!;
     expect(second.consecutiveFailures).toBe(2);
     expect(second.failingSinceAt).toBe(first.failingSinceAt);
+    expect(second.failingSinceAt).toBe(1000);
+    expect(second.lastErrorAt).toBe(2000);
+  });
+
+  it('preserves an unclassified outage from a ledger without lastErrorKind', () => {
+    spyOn(Date, 'now').mockReturnValue(2000);
+    writeFileSync(healthPath, JSON.stringify(unhealthyState({
+      failingSinceAt: 1000,
+      lastErrorAt: 1500,
+      lastErrorKind: undefined,
+    })));
+
+    recordObserverFailure('openrouter', 'unclassified failure again', healthPath);
+
+    const state = readObserverHealth(healthPath)!;
+    expect(state.failingSinceAt).toBe(1000);
+    expect(state.lastErrorAt).toBe(2000);
+    expect(state.lastErrorKind).toBeNull();
+    expect(state.consecutiveFailures).toBe(OBSERVER_UNHEALTHY_FAILURE_THRESHOLD + 1);
   });
 
   it('success resets the streak but keeps last error details for diagnostics', () => {

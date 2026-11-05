@@ -289,7 +289,7 @@ export function recordObserverFailure(
       // era's timestamp. A kind change (classified → unclassified included) restarts
       // the clock; only the streak itself waits for a success.
       failingSinceAt:
-        prior.consecutiveFailures > 0 && prior.lastErrorKind === nextKind
+        prior.consecutiveFailures > 0 && (prior.lastErrorKind ?? null) === nextKind
           ? prior.failingSinceAt
           : now,
       lastErrorAt: now,
