@@ -282,6 +282,31 @@ describe('hosted setup extraction', () => {
     expect(existsSync(join(dir, 'work-view', 'hosted-intent-cooldown.json'))).toBe(false);
   });
 
+  it('measures a Retry-After delay from the response headers, not the end of a slow body', async () => {
+    let now = at;
+    const refusal = Response.json({ message: 'busy' }, { status: 503, headers: { 'Retry-After': '10' } });
+    const readBody = refusal.json.bind(refusal);
+    refusal.json = async () => { now += 30_000; return readBody(); };
+    const { run } = fixture((async () => refusal) as typeof fetch);
+    (run as any).options.now = () => now;
+    await expect(run.run(prompts, false)).rejects.toMatchObject({ retryAfter: at + 10_000 });
+  });
+
+  it('ignores a preflight refusal that arrives after the deadline', async () => {
+    let lateAnswerRead: () => void;
+    const lateAnswer = new Promise<void>(resolve => { lateAnswerRead = resolve; });
+    const refusal = Response.json({ message: 'busy' }, { status: 503, headers: { 'Retry-After': '600' } });
+    const readBody = refusal.json.bind(refusal);
+    refusal.json = async () => { const body = await readBody(); lateAnswerRead(); return body; };
+    const { run, dir } = fixture(undefined, { token: 'setup-token', userId: 'owner' },
+      (async () => { await new Promise(resolve => setTimeout(resolve, 40)); return refusal; }) as typeof fetch);
+    (run as any).options.preflightTimeoutMs = 20;
+    await expect(run.run(prompts, false)).rejects.toMatchObject({ code: 'hosted-unavailable', sent: false, message: expect.stringContaining('did not answer in time') });
+    await lateAnswer;
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(existsSync(join(dir, 'work-view', 'hosted-intent-cooldown.json'))).toBe(false);
+  });
+
   it('fails loudly on the uncompressed cap even when the gzip would fit, with no paid request', async () => {
     let calls = 0;
     const { run } = fixture((async () => { calls++; return Response.json(answer()); }) as typeof fetch);

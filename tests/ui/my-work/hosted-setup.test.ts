@@ -132,6 +132,17 @@ describe('hosted setup scan control', () => {
     }
   });
 
+  it('does not credit saved results to messages when this upload was refused', () => {
+    const app = fixture();
+    const agents = [{ id: 'codex', label: 'Codex', detected: true, prompts: 3 }];
+    const notice = 'Automatic organization is temporarily unavailable. You can continue setting up Claude-Mem.';
+    const saved = { goals: null, work: null, rules: [{ id: 'saved', text: 'Test the change.', quote: 'an earlier quote', quotedAt: '2026-10-01T00:00:00.000Z' }] };
+    const html = app.renderReveal(agents, saved, { state: 'ok', step: null }, ['codex'], notice);
+    expect(html).toContain(notice);
+    expect(html).toContain('an earlier quote');
+    expect(html).not.toContain('From 3 messages');
+  });
+
   it('credits the results only to the tools that were uploaded', () => {
     const app = fixture();
     const agents = [

@@ -241,7 +241,7 @@ export class HostedIntent {
     });
     const check = async () => {
       const preflight = await (this.options.fetch ?? fetch)(`${origin}/api/pro/intent`, { method: 'GET', headers, cache: 'no-store', signal: abort.signal });
-      return this.readResponse(preflight, false, scope);
+      return this.readResponse(preflight, false, scope, abort.signal);
     };
     try { return await Promise.race([check(), deadline]); } finally { clearTimeout(timer); }
   }
@@ -265,15 +265,17 @@ export class HostedIntent {
     }
   }
 
-  private async readResponse(response: Response, sent: boolean, scope: string): Promise<unknown> {
+  private async readResponse(response: Response, sent: boolean, scope: string, abandoned?: AbortSignal): Promise<unknown> {
+    // Retry-After delay starts when the response arrives, after any slow upload and before any slow body.
+    const refusedAt = (this.options.now ?? Date.now)();
     const answer: unknown = await response.json().catch(() => null);
+    // An answer that lost the preflight deadline must not leave a cooldown behind.
+    abandoned?.throwIfAborted();
     if (response.ok) return answer;
     const failure = answer && typeof answer === 'object' ? answer as { message?: unknown; error?: unknown } : null;
     const reason = typeof failure?.message === 'string' ? failure.message : typeof failure?.error === 'string' ? failure.error : response.statusText;
     const message = `Hosted setup failed (HTTP ${response.status}): ${reason || 'Cloud did not return a reason.'}`;
     if (response.status === 429 || response.status === 503) {
-      // Retry-After delay starts when the response arrives, after any slow upload.
-      const refusedAt = (this.options.now ?? Date.now)();
       const until = retryDeadline(response.headers.get('retry-after'), refusedAt) ?? nextUtcMidnight(refusedAt);
       if (until > refusedAt) {
         this.cooldown = { scope, until, message };

@@ -95,7 +95,7 @@ export function RevealScreen({ agents, reveal, extraction, uploadedAgents, recen
   return (
     <section aria-labelledby="reveal-title">
       <PageHeading id="reveal-title" title={hostedNotice ? 'Continue setup.' : 'Claude-Mem already knows your work.'}
-        lead={promptCount > 0 ? `From ${promptCount.toLocaleString('en-US')} messages across ${joinNames(withPrompts.map((agent) => agent.label))}: what you’re working on, what you’re after, and how you like things done.` : undefined} />
+        lead={!hostedNotice && promptCount > 0 ? `From ${promptCount.toLocaleString('en-US')} messages across ${joinNames(withPrompts.map((agent) => agent.label))}: what you’re working on, what you’re after, and how you like things done.` : undefined} />
       {hostedNotice && <p className="scan-status" role="status">{hostedNotice}</p>}
       {promptsOnly ? <PromptsOnly agents={withPrompts} recentPrompts={recentPrompts} /> : <div className="reveal-sets">
         <RevealSet title="Work" items={reveal.work} render={(work) => (
