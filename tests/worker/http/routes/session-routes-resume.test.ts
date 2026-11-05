@@ -492,4 +492,37 @@ describe('paused in-memory session recovery', () => {
     expect(sweep).not.toHaveBeenCalled();
     expect(agent.startSession).not.toHaveBeenCalled();
   });
+
+  it('lists a session the stall pacer abandoned, with the messages it holds (#5405)', () => {
+    // Four unanswered observer prompts spend the bounded retries; with the
+    // content session already ended, nothing resumes this until the operator
+    // does. Reporting it is what makes a stuck-looking queue legible.
+    const { manager } = fixture();
+    const session = manager.getSession(1)!;
+    session.pausedReason = 'transport';
+    session.consecutiveResponseStalls = 4; // MAX_CONSECUTIVE_STALL_RESUMES (3) spent
+    expect(manager.getAbandonedStallSessions()).toEqual([{ sessionDbId: 1, pendingCount: 1 }]);
+  });
+
+  it('does not count stall pauses inside their retry budget or with a timer pending (#5405)', () => {
+    const { manager } = fixture();
+    const session = manager.getSession(1)!;
+    session.pausedReason = 'response_stall';
+    session.consecutiveResponseStalls = 3; // still resumable: the next plan says resume
+    expect(manager.getAbandonedStallSessions()).toEqual([]);
+
+    // A pending stall-resume timer owns the session until it fires.
+    session.consecutiveResponseStalls = 4;
+    session.stallResumeTimer = setTimeout(() => {}, 60_000);
+    try {
+      expect(manager.getAbandonedStallSessions()).toEqual([]);
+    } finally {
+      clearTimeout(session.stallResumeTimer);
+    }
+
+    // Nothing buffered: nothing is stranded, so nothing to report.
+    session.stallResumeTimer = undefined;
+    manager.getMessageBuffer().clear(1);
+    expect(manager.getAbandonedStallSessions()).toEqual([]);
+  });
 });

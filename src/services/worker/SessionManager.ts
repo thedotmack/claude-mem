@@ -9,7 +9,7 @@ import { telemetryBuffer } from '../telemetry/buffer.js';
 import { deliverSessionWrapup, type TelegramWrapupFormatter } from '../integrations/TelegramWrapupNotifier.js';
 import { MAX_LLM_TIMEOUT_MS, resolveLlmTimeoutMs } from './retry.js';
 import { canCmemGatewayServe } from '../../shared/cmem-gateway.js';
-import { planUnattendedGatewayResume, unattendedGatewayResumesSpent } from './session/response-pacer.js';
+import { MAX_CONSECUTIVE_STALL_RESUMES, planUnattendedGatewayResume, unattendedGatewayResumesSpent } from './session/response-pacer.js';
 import { PROVIDER_SWITCH_BOUNDARY_ABORT_REASON } from './session/abort-reason.js';
 import { isSimpleTierMessage } from './session/tier-routing.js';
 import { claudeStandInStillServes } from '../../shared/claude-fallback-readiness.js';
@@ -840,6 +840,24 @@ export class SessionManager {
     if (session.pausedReason !== 'auth' || !session.pausedAtMs || !session.pausedAuthScope) return false;
     const health = readObserverHealth();
     return (health?.authRecoverySuccesses?.[session.pausedAuthScope] ?? 0) > session.pausedAtMs;
+  }
+
+  /**
+   * Sessions the response-stall pacer gave up on (#5405): the stall counter is
+   * spent (attempts exceed MAX_CONSECUTIVE_STALL_RESUMES), no stall-resume
+   * timer is pending, no generator is running, and buffered messages remain.
+   * Such a session waits for its next captured event or an operator retry —
+   * for an ended content session that may never come, which makes the queue
+   * look stuck while every active session is being served. Reporting is all
+   * this does: nothing here resumes or discards them.
+   */
+  getAbandonedStallSessions(): Array<{ sessionDbId: number; pendingCount: number }> {
+    return Array.from(this.sessions.values())
+      .filter(session => !session.generatorPromise
+        && !session.stallResumeTimer
+        && (session.consecutiveResponseStalls ?? 0) > MAX_CONSECUTIVE_STALL_RESUMES
+        && this.buffer.getPendingCount(session.sessionDbId) > 0)
+      .map(session => ({ sessionDbId: session.sessionDbId, pendingCount: this.buffer.getPendingCount(session.sessionDbId) }));
   }
 
   getTotalQueueDepth(): number {
