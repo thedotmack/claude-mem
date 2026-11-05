@@ -17,5 +17,5 @@ export function withCheckoutProjects<T extends { project?: unknown; projects?: u
   if (!project.trim() || project.toLowerCase() !== checkout.primary.toLowerCase() || checkout.allProjects.length < 2) {
     return args;
   }
-  return { ...args, projects: checkout.allProjects.join(',') };
+  return { ...args, projects: checkout.allProjects };
 }
