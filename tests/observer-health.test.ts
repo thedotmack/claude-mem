@@ -94,6 +94,7 @@ describe('observer-health ledger', () => {
   // the oldest start; the log's first refusal was 22 hours old at the time.
   it('dates the warning from the failure it names, not from a pause of another kind', () => {
     const refusalAt = Date.now();
+    const secondRefusalAt = refusalAt + 5 * 60_000;
     const pauseAt = refusalAt - 44 * 60 * 60_000;
     try {
       setSystemTime(new Date(pauseAt));
@@ -112,6 +113,9 @@ describe('observer-health ledger', () => {
       expect(refused.consecutiveFailures).toBe(2);
       expect(refused.failingSinceAt).toBe(refusalAt);
 
+      // Same kind again, later: the streak grows but the outage still started
+      // at the first refusal, so a rule that re-dated every failure fails here.
+      setSystemTime(new Date(secondRefusalAt));
       recordObserverFailure('claude', {
         kind: 'auth_invalid',
         message: 'Failed to authenticate. API Error: 401',
@@ -120,7 +124,7 @@ describe('observer-health ledger', () => {
       expect(stillRefused.consecutiveFailures).toBe(3);
       expect(stillRefused.failingSinceAt).toBe(refusalAt);
 
-      const warning = renderObserverHealthWarning(stillRefused, refusalAt + 22 * 60 * 60_000);
+      const warning = renderObserverHealthWarning(stillRefused, secondRefusalAt + 22 * 60 * 60_000);
       expect(warning).toContain('credentials have been refused by claude for about 22 hours');
       expect(warning).toContain(new Date(refusalAt).toISOString());
       expect(warning).not.toContain('about 3 days');
