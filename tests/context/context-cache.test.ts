@@ -113,7 +113,7 @@ describe('readContextCache', () => {
     writeContextCache(keys, 'AGENT', 1_000);
     expect(readContextCache(contextCacheKeys(['cache-read-parent', 'cache-read-repo'], 'claude', true), 1_000)).toBeNull();
     expect(readContextCache(contextCacheKeys(['cache-read-parent', 'cache-read-repo'], undefined, false), 1_000)).toBeNull();
-    expect(readContextCache(contextCacheKeys([' cache-read-parent', 'cache-read-repo '], 'claude', false), 1_000)?.body).toBe('AGENT');
+    expect(readContextCache(contextCacheKeys([' cache-read-parent', 'cache-read-repo '], 'claude', false), 1_000)).toBeNull();
   });
 });
 

@@ -52,6 +52,7 @@ import { proTrialLine } from '../../../../shared/pro-promo.js';
 import { teamBriefReserveChars } from '../../../../shared/teambrain.js';
 import { ProgressiveMemorySearch } from '../../ProgressiveMemorySearch.js';
 import { progressiveSearchToolResult, progressiveSearchToolError, type ProgressiveSearchInput } from '../../../../shared/progressive-search.js';
+import { parseProjectList } from '../../../../shared/project-list.js';
 
 const ONBOARDING_EXPLAINER_PATH: string = path.resolve(__dirname, '../skills/how-it-works/onboarding-explainer.md');
 
@@ -385,7 +386,7 @@ export class SearchRoutes extends BaseRouteHandler {
   });
 
   private handleContextInject = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    let projectsParam = (req.query.projects as string) || (req.query.project as string);
+    let projectsParam: unknown = req.query.projects || req.query.project;
     const hostCwd = typeof req.query.cwd === 'string' ? req.query.cwd : '';
     // "Include last message" picks the prior session's reply by excluding the
     // session that asks, so only then is its id used, and that answer stays live.
@@ -408,7 +409,7 @@ export class SearchRoutes extends BaseRouteHandler {
       const resolvedProjects = this.contextReader
         ? await this.contextReader.projectsForCwd(hostCwd)
         : getProjectContext(hostCwd).allProjects;
-      projectsParam = resolvedProjects.join(',');
+      projectsParam = resolvedProjects.length > 0 ? resolvedProjects : undefined;
     }
     const forHuman = req.query.colors === 'true';
     const full = req.query.full === 'true';
@@ -419,7 +420,7 @@ export class SearchRoutes extends BaseRouteHandler {
       return;
     }
 
-    const projects = projectsParam.split(',').map(p => p.trim()).filter(Boolean);
+    const projects = parseProjectList(projectsParam);
 
     if (projects.length === 0) {
       this.badRequest(res, 'At least one project is required');
@@ -767,7 +768,7 @@ export class SearchRoutes extends BaseRouteHandler {
         'INVALID_PROJECTS'
       );
     }
-    return scopedProjects({ projects: entries.flatMap(entry => entry.split(',')) });
+    return scopedProjects({ projects: parseProjectList(entries) });
   }
 
   private handleOnboardingExplainer = this.wrapHandler((_req: Request, res: Response): void => {

@@ -8,7 +8,7 @@ import type { Database } from 'bun:sqlite';
  */
 export function scopedProjects(filters: { project?: string; projects?: string[] }): string[] {
   const requested = filters.projects?.length ? filters.projects : filters.project ? [filters.project] : [];
-  return [...new Set(requested.map(project => project.trim()).filter(Boolean))];
+  return [...new Set(requested.filter(project => project.trim().length > 0))];
 }
 
 /**

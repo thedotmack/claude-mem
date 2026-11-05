@@ -9,6 +9,9 @@ import { resolveRuntimeContext, logServerFallback } from '../../services/hooks/r
 import { isServerClientError, type ServerRecordEventRequest } from '../../services/hooks/server-client.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { isToolSkipped } from '../../shared/is-tool-skipped.js';
+import { isObserverCaptureEnabled } from '../../shared/observer-capture.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 
 /** The tool name a file edit is captured under, in both runtimes. */
 const FILE_EDIT_TOOL_NAME = 'write_file';
@@ -17,6 +20,13 @@ export const fileEditHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     const { sessionId, cwd, filePath, edits } = input;
     const platformSource = normalizePlatformSource(input.platform);
+
+    // Read fresh, not loadFromFileOnce: the long-lived transcript watcher calls
+    // this handler too, and its cached settings would miss a change to the toggle.
+    if (!isObserverCaptureEnabled(SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH))) {
+      logger.debug('HOOK', 'Observer capture disabled, skipping file edit', { filePath });
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
 
     if (!filePath) {
       throw new Error('fileEditHandler requires filePath');
