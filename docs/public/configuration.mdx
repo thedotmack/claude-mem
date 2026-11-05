@@ -214,6 +214,27 @@ If the provider still rejects a request as too long for the model's window, the 
 
 For these HTTP providers, the observer's instructions and output format are sent as the system message, and the user's request as the first user message. A reply cut off at the output-token cap is logged as a warning that names the cap.
 
+### Long-Lived Claude Token
+
+With subscription auth, the observer normally reads your Claude Code login from the credential store at every spawn. That login's access token lasts about 8 hours, and the stored login itself has an end date (`claude auth status --json` shows it as `loginExpiresAt`). When it lapses, memory capture stops until you run `claude auth login` again.
+
+To run the observer without that dependency, create a long-lived token and give it to claude-mem:
+
+1. Run `claude setup-token` and finish the sign-in. It prints a token tied to your Claude subscription.
+2. Add it to `~/.claude-mem/.env`:
+
+   ```bash
+   CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
+   ```
+
+| Env var | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_CODE_OAUTH_TOKEN` | none | Long-lived token from `claude setup-token`. Every Claude spawn uses it ahead of the credential store, so no child ever has to refresh a stored login. Not sent to an `ANTHROPIC_BASE_URL` gateway, and an `ANTHROPIC_API_KEY` in the same file still takes precedence. A token inherited from the shell is never used; only this file counts |
+
+Replace the token when it expires (`claude setup-token` again). If the token is a JWT whose expiry has passed, the observer logs a warning and falls back to the credential store.
+
+The token applies to every Claude profile. If you set `CLAUDE_MEM_CLAUDE_CONFIG_DIR`, the observer bills the token's account rather than that profile's stored login, but it still tracks quota pauses per profile. Changing the setting therefore starts a fresh quota view even though the account stays the same.
+
 ### Claude Gateway Settings
 
 Gateway credentials live in `~/.claude-mem/.env`, not `settings.json`.
