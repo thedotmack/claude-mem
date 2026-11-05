@@ -250,7 +250,7 @@ export class SetupScan {
         logger.warn('IMPORT', 'Hosted setup unavailable; continuing locally', { reason: (error as Error).message });
         try {
           await this.extract!([], this.current.improveProduct);
-          // The first refusal arrives after the request was sent; only a cooldown-blocked call sent nothing.
+          // A refusal of the upload itself arrives after the request was sent; a preflight or cooldown refusal sent nothing.
           const sent = (error as { sent?: boolean }).sent !== false;
           if (!sent) this.current = { ...this.current, uploadedAgents: [] };
           this.finish({ ...pending.summary, hostedNotice: 'Automatic organization is temporarily unavailable. You can continue setting up Claude-Mem.' }, pending.startedAt);
@@ -259,7 +259,8 @@ export class SetupScan {
       }
       const finishedAt = this.now();
       logger.error('IMPORT', 'Setup prompt upload failed', {}, error as Error);
-      this.update({ phase: 'failed', done: true, error: error instanceof Error ? error.message : String(error), finishedAt: new Date(finishedAt).toISOString(), durationMs: finishedAt - pending.startedAt }, true);
+      const nothingSent = (error as { sent?: boolean } | null)?.sent === false;
+      this.update({ phase: 'failed', done: true, error: error instanceof Error ? error.message : String(error), finishedAt: new Date(finishedAt).toISOString(), durationMs: finishedAt - pending.startedAt, ...(nothingSent ? { uploadedAgents: [] } : {}) }, true);
     }
     return this.state();
   }

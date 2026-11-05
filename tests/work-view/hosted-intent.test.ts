@@ -229,6 +229,59 @@ describe('hosted setup extraction', () => {
     expect(uploads).toBe(0);
   });
 
+  it.each(['0', 'PAST_DATE'])('an already-elapsed Retry-After (%s) sets no cooldown', async header => {
+    let calls = 0;
+    const retryAfter = header === 'PAST_DATE' ? new Date(at - 3_600_000).toUTCString() : header;
+    const { run, dir } = fixture((async () => { calls++; return Response.json({ message: 'busy' }, { status: 503, headers: { 'Retry-After': retryAfter } }); }) as typeof fetch);
+    await expect(run.run(prompts, false)).rejects.toMatchObject({ code: 'hosted-unavailable', sent: true, retryAfter: at });
+    expect(existsSync(join(dir, 'work-view', 'hosted-intent-cooldown.json'))).toBe(false);
+    await expect(run.run(prompts, false)).rejects.toMatchObject({ sent: true });
+    expect(calls).toBe(2);
+  });
+
+  it.each(['soon', '-5'])('an invalid Retry-After (%s) falls back to the next UTC day', async header => {
+    const { run } = fixture((async () => Response.json({ message: 'busy' }, { status: 503, headers: { 'Retry-After': header } })) as typeof fetch);
+    await expect(run.run(prompts, false)).rejects.toMatchObject({ retryAfter: Math.floor(at / 86_400_000) * 86_400_000 + 86_400_000 });
+  });
+
+  it.each([
+    ['401', async () => Response.json({ message: 'bad token' }, { status: 401 })],
+    ['500', async () => new Response('oops', { status: 500 })],
+    ['a malformed body', async () => new Response('not json')],
+    ['a failed request', async () => { throw new Error('getaddrinfo ENOTFOUND'); }],
+  ] as Array<[string, typeof fetch]>)('reports nothing sent when the preflight gets %s', async (_name, preflight) => {
+    let uploads = 0;
+    const { run } = fixture((async () => { uploads++; return Response.json(answer()); }) as typeof fetch, { token: 'setup-token', userId: 'owner' }, preflight);
+    await expect(run.run(prompts, false)).rejects.toMatchObject({ sent: false });
+    expect(uploads).toBe(0);
+  });
+
+  it('reports nothing sent when incomplete credentials stop the run before any request', async () => {
+    const { run } = fixture(undefined, { token: 'setup-token', userId: '' });
+    await expect(run.run(prompts, false)).rejects.toMatchObject({ sent: false });
+  });
+
+  it('reports a failure after the upload started as sent', async () => {
+    const { run } = fixture((async () => new Response('oops', { status: 500 })) as typeof fetch);
+    await expect(run.run(prompts, false)).rejects.toMatchObject({ sent: true });
+  });
+
+  it.each([
+    ['never answers', () => new Promise<Response>(() => {})],
+    ['stalls while sending its body', async () => new Response(new ReadableStream({ start() {} }))],
+  ] as Array<[string, () => Promise<Response>]>)('stops waiting for a preflight that %s and uploads nothing', async (_name, stalled) => {
+    let uploads = 0;
+    let signal: AbortSignal | null | undefined;
+    const { run, dir } = fixture((async () => { uploads++; return Response.json(answer()); }) as typeof fetch, { token: 'setup-token', userId: 'owner' },
+      ((_url, init) => { signal = init?.signal; return stalled(); }) as typeof fetch);
+    (run as any).options.preflightTimeoutMs = 20;
+    await expect(run.run(prompts, false)).rejects.toMatchObject({ code: 'hosted-unavailable', sent: false, message: expect.stringContaining('No transcripts were uploaded') });
+    expect(signal?.aborted).toBe(true);
+    expect(uploads).toBe(0);
+    // A stall says nothing about Cloud's budget, so the next attempt is free to try again.
+    expect(existsSync(join(dir, 'work-view', 'hosted-intent-cooldown.json'))).toBe(false);
+  });
+
   it('fails loudly on the uncompressed cap even when the gzip would fit, with no paid request', async () => {
     let calls = 0;
     const { run } = fixture((async () => { calls++; return Response.json(answer()); }) as typeof fetch);

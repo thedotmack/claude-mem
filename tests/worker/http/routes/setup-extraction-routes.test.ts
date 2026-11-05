@@ -162,6 +162,7 @@ describe('setup extraction', () => {
           requests.push(String(url));
           if (String(url).endsWith('/api/installer/intent')) return Response.json(install);
           expect(init!.headers).toMatchObject({ 'X-Intent-Install-Id': install.install_id, 'X-Intent-Token': install.intent_token });
+          if (init!.method === 'GET') return Response.json({ available: true });
           const input = JSON.parse(gunzipSync(init!.body as Uint8Array).toString());
           const ids = [...new Set(input.ownerPrompts.map((prompt: { sessionId: string }) => prompt.sessionId))];
           return Response.json({
@@ -180,7 +181,7 @@ describe('setup extraction', () => {
       await scan.finished();
       expect(requests).toEqual([]);
       await scan.confirmUpload(true);
-      expect(requests).toEqual(['https://cloud.example/api/installer/intent', 'https://cloud.example/api/pro/intent']);
+      expect(requests).toEqual(['https://cloud.example/api/installer/intent', 'https://cloud.example/api/pro/intent', 'https://cloud.example/api/pro/intent']);
       const view = await snapshot();
       expect(view.setup.scan).toMatchObject({ phase: 'done', done: true });
       expect(view.setup.extraction.state).toBe('ok');

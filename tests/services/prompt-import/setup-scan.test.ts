@@ -190,6 +190,30 @@ describe('setup prompt scan', () => {
     expect(done.hostedNotice).toContain('You can continue');
   });
 
+  it('fails with no tools marked uploaded when the run stopped before sending anything', async () => {
+    hookRecorded('claude', 'session-unsent', 'alpha', 'a prompt', '2026-10-05T09:00:00.000Z');
+    const scan = setupScan();
+    scan.setExtractor(async prompts => {
+      if (prompts.length) throw Object.assign(new Error('Hosted setup failed (HTTP 500): oops'), { sent: false });
+    });
+    scan.start();
+    await scan.finished();
+    const done = await scan.confirmUpload(true);
+    expect(done).toMatchObject({ phase: 'failed', uploadedAgents: [], error: 'Hosted setup failed (HTTP 500): oops' });
+  });
+
+  it('keeps the selected tools marked uploaded when the failure came after sending', async () => {
+    hookRecorded('claude', 'session-sent', 'alpha', 'a prompt', '2026-10-05T09:00:00.000Z');
+    const scan = setupScan();
+    scan.setExtractor(async prompts => {
+      if (prompts.length) throw Object.assign(new Error('Hosted setup failed (HTTP 500): oops'), { sent: true });
+    });
+    scan.start();
+    await scan.finished();
+    const done = await scan.confirmUpload(true, ['claude-code']);
+    expect(done).toMatchObject({ phase: 'failed', uploadedAgents: ['claude-code'] });
+  });
+
   it('uses the sharing choice sent with the consent, not a stale stored one', async () => {
     hookRecorded('claude', 'session-share', 'alpha', 'a prompt', '2026-10-05T09:00:00.000Z');
     const flags: boolean[] = [];
