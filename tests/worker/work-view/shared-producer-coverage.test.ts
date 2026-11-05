@@ -118,7 +118,7 @@ test('real hosted extraction preserves its grouping product, full ignore reason 
   const hosted = new HostedIntent({ ledgerDir: f.directory, localDeviceId: () => 'device-a', homeProject: () => 'org/repo',
     origin: () => 'https://cloud.example/', credentials: () => ({ token: 'fixture', userId: 'fixture' }),
     openDatabase: () => new Database(f.path, { readonly: true }), appendWorkStateEntry: entry => { f.store.appendWorkStateEntry(entry); },
-    now: () => NOW, timezoneOffsetMinutes: () => 0, fetch: (async () => Response.json(answer)) as typeof fetch });
+    now: () => NOW, timezoneOffsetMinutes: () => 0, fetch: (async (_url, init) => Response.json(init?.method === 'GET' ? { available: true } : answer)) as typeof fetch });
   await hosted.run(['hosted-a', 'hosted-b', 'hosted-c'].map(sessionId => ({ agent: 'codex', platformSource: 'codex', sessionId, nativePromptId: `${sessionId}-1`, at: NOW, cwd: '/private/work', project: 'org/repo', text: 'Build the cards and keep every quote.' })), false);
   expect(hosted.state().state).toBe('ok');
   expect(f.value('group', groupIdFor(key('hosted-a', 'codex'))).group).toMatchObject({ title: 'Release cards', product: 'org/repo' });
