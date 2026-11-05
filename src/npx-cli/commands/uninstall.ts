@@ -251,26 +251,32 @@ export function uninstallShutdownNotice(result: ShutdownResult): { level: 'info'
   }
 }
 
+/** PowerShell ends a single-quoted string at any of these; doubling one keeps it. */
+const POWERSHELL_SINGLE_QUOTES = /['‘’‚‛]/g;
+
 /**
  * Where the data directory that uninstall keeps is, and a command that removes
  * it. The directory honors CLAUDE_MEM_DATA_DIR. Windows shells have no
  * `rm -rf`: PowerShell reads `-rf` as an unknown parameter and cmd has no `rm`.
- * `powershell -c` runs the same from cmd, PowerShell and Git Bash. Exported
- * for tests.
+ * Windows gets a PowerShell command with the path in single quotes, where
+ * PowerShell expands nothing. Wrapping it in `powershell -c "…"` would let the
+ * shell it is pasted into expand `$name` or `$(…)` in the path, and a
+ * `…\$archive` directory would then remove its parent. Exported for tests.
  */
 export function preservedDataDirectoryHint(
   dataDirectory: string = resolveDataDir(),
   platform: NodeJS.Platform = process.platform,
   home: string = homedir(),
-): { location: string; removeCommand: string } {
+): { location: string; removeCommand: string; shell: 'PowerShell' | 'sh' } {
   if (platform === 'win32') {
-    const quoted = `'${dataDirectory.replaceAll("'", "''")}'`;
-    return { location: dataDirectory, removeCommand: `powershell -c "Remove-Item -LiteralPath ${quoted} -Recurse -Force"` };
+    const quoted = `'${dataDirectory.replace(POWERSHELL_SINGLE_QUOTES, (quote) => quote + quote)}'`;
+    return { location: dataDirectory, removeCommand: `Remove-Item -LiteralPath ${quoted} -Recurse -Force`, shell: 'PowerShell' };
   }
   if (dataDirectory === posix.join(home, '.claude-mem')) {
-    return { location: '~/.claude-mem', removeCommand: 'rm -rf ~/.claude-mem' };
+    return { location: '~/.claude-mem', removeCommand: 'rm -rf ~/.claude-mem', shell: 'sh' };
   }
-  return { location: dataDirectory, removeCommand: `rm -rf '${dataDirectory.replaceAll("'", "'\\''")}'` };
+  // `--` because a relative CLAUDE_MEM_DATA_DIR such as `-memory` would otherwise be read as options.
+  return { location: dataDirectory, removeCommand: `rm -rf -- '${dataDirectory.replaceAll("'", "'\\''")}'`, shell: 'sh' };
 }
 
 export async function runUninstallCommand(): Promise<void> {
@@ -509,7 +515,9 @@ export async function runUninstallCommand(): Promise<void> {
   p.note(
     [
       `Your data directory at ${styleText('cyan', dataDirectory.location)} was preserved.`,
-      `To remove it manually: ${dataDirectory.removeCommand}`,
+      dataDirectory.shell === 'PowerShell'
+        ? `To remove it manually, in PowerShell: ${dataDirectory.removeCommand}`
+        : `To remove it manually: ${dataDirectory.removeCommand}`,
     ].join('\n'),
     'Note',
   );
