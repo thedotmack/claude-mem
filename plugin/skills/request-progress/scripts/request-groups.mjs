@@ -952,6 +952,8 @@ var init_SettingsDefaultsManager = __esm({
         // default stays 'claude'.
         CLAUDE_MEM_PROVIDER: "claude",
         CLAUDE_MEM_PROVIDER_BY_SOURCE: "",
+        CLAUDE_MEM_OBSERVER_ENABLED: "true",
+        // 'false' disables new observation and session-summary capture calls
         CLAUDE_MEM_MEDIA_CAPTURE_ENABLED: "false",
         CLAUDE_MEM_MEDIA_INFERENCE_ENABLED: "false",
         CLAUDE_MEM_CODEX_MODEL: "",
@@ -1937,12 +1939,12 @@ function detectWorktree(cwd) {
     logger.warn("GIT", "Failed to read .git file", { error: error instanceof Error ? error.message : String(error) });
     return NOT_A_WORKTREE;
   }
-  const match = content.match(/^gitdir:\s*(.+)$/);
+  const match = content.match(/^gitdir:\s*(.+)$/s);
   if (!match) {
     return NOT_A_WORKTREE;
   }
   const gitdirPath = path.resolve(path.dirname(gitPath), match[1]);
-  const worktreesMatch = gitdirPath.match(/^(.+)[/\\]\.git[/\\]worktrees[/\\]([^/\\]+)$/);
+  const worktreesMatch = gitdirPath.match(/^(.+)[/\\]\.git[/\\]worktrees[/\\]([^/\\]+)$/s);
   if (worktreesMatch) {
     const parentRepoPath = worktreesMatch[1];
     return {
@@ -1953,7 +1955,7 @@ function detectWorktree(cwd) {
       parentProjectName: path.basename(parentRepoPath)
     };
   }
-  const submoduleMatch = gitdirPath.match(/^(.+)[/\\]\.git[/\\]modules[/\\](.+)$/);
+  const submoduleMatch = gitdirPath.match(/^(.+)[/\\]\.git[/\\]modules[/\\](.+)$/s);
   if (submoduleMatch) {
     const parentRepoPath = submoduleMatch[1];
     return {
@@ -1964,7 +1966,7 @@ function detectWorktree(cwd) {
       parentProjectName: path.basename(parentRepoPath)
     };
   }
-  const bareWorktreeMatch = gitdirPath.match(/^(.+)[/\\]worktrees[/\\]([^/\\]+)$/);
+  const bareWorktreeMatch = gitdirPath.match(/^(.+)[/\\]worktrees[/\\]([^/\\]+)$/s);
   if (bareWorktreeMatch && existsSync7(path.join(gitdirPath, "commondir"))) {
     const parentRepoPath = bareWorktreeMatch[1];
     const parentProjectName = bareRepositoryProjectName(parentRepoPath);
@@ -2121,7 +2123,7 @@ function findGitRepoRoot(dir) {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
       windowsHide: true
-    }).trim();
+    }).replace(/\n$/, "");
     return root || null;
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
@@ -3133,6 +3135,14 @@ var init_redaction = __esm({
       // starts `AgE` (pypi.org and test.pypi.org alike), printed by `twine`,
       // `uv publish` and `~/.pypirc` dumps. Real tokens run past 150 characters.
       { name: "pypi_token", regex: /\bpypi-AgE[A-Za-z0-9_-]{50,}(?!\w)/g },
+      // Databricks personal access tokens (`dapi` + 32 hex, sometimes with a
+      // `-<digit>` suffix) that DATABRICKS_TOKEN, `~/.databrickscfg` and
+      // `databricks tokens create` print, and HashiCorp Vault service and batch
+      // tokens (`hvs.` + 90-120 and `hvb.` + 138-300 base64url chars) that
+      // VAULT_TOKEN, `~/.vault-token` and `vault login` / `vault token create`
+      // print.
+      { name: "databricks_token", regex: /\bdapi[a-f0-9]{32}(?:-\d)?(?!\w)/g },
+      { name: "vault_token", regex: /\b(?:hvs\.[\w-]{90,120}|hvb\.[\w-]{138,300})(?![\w-])/g },
       // Two OpenAI-compatible providers this project onboards users for
       // (src/shared/openai-compat-presets.ts): NVIDIA NIM issues `nvapi-` keys and
       // Runcrate issues `rc_live_` keys. Both presets tell the user the prefix in
@@ -3147,6 +3157,13 @@ var init_redaction = __esm({
       // print. Neither prefix is claimed by openai_key, so they stayed in the text.
       { name: "groq_key", regex: /\bgsk_[A-Za-z0-9]{52}(?!\w)/g },
       { name: "xai_key", regex: /\bxai-[A-Za-z0-9_]{80}(?!\w)/g },
+      // Supabase personal access tokens (`sbp_` + 40 hex, what `supabase login`
+      // stores and SUPABASE_ACCESS_TOKEN holds) and Sentry auth tokens: personal
+      // ones (`sntryu_` + 64 hex) and organization ones (`sntrys_` + a base64
+      // payload + `_` + a 43-char base64 secret), which SENTRY_AUTH_TOKEN lines,
+      // `.sentryclirc` dumps and source-map upload commands print.
+      { name: "supabase_token", regex: /\bsbp_[a-f0-9]{40}(?!\w)/g },
+      { name: "sentry_token", regex: /\b(?:sntryu_[a-f0-9]{64}(?!\w)|sntrys_[A-Za-z0-9+\/]{20,}={0,2}_[A-Za-z0-9+\/]{43}(?![\w+\/]))/g },
       // Incoming webhook URLs carry their secret in the path, so anyone holding
       // one can post to the channel: Slack (`hooks.slack.com/services/T…/B…/…`,
       // plus workflow and trigger URLs) and Discord (`discord.com/api/webhooks/
@@ -3921,7 +3938,8 @@ var init_EnvManager = __esm({
       "OPENROUTER_API_KEY",
       "OPENROUTER_API_KEYS",
       "OPENAI_COMPAT_API_KEY",
-      "OPENAI_COMPAT_API_KEYS"
+      "OPENAI_COMPAT_API_KEYS",
+      "CLAUDE_CODE_OAUTH_TOKEN"
     ];
   }
 });
