@@ -2,6 +2,7 @@ import { query, type SDKMessage, type SDKResultMessage } from "@anthropic-ai/cla
 import * as fs from "fs/promises";
 import * as path from "path";
 import { createHash } from "crypto";
+import { rewriteRelativeLinks } from "./links";
 
 interface TranslationCache {
   sourceHash: string;
@@ -322,7 +323,7 @@ export async function translateReadme(
         existingTranslation,
       });
 
-      await fs.writeFile(outputPath, translation, "utf-8");
+      await fs.writeFile(outputPath, rewriteRelativeLinks(translation, path.dirname(sourcePath), outDir), "utf-8");
 
       if (verbose) {
         console.log(`   ✅ Saved to ${outputFilename} ($${costUsd.toFixed(4)})`);
