@@ -45,10 +45,9 @@ import {
 } from '../../shared/observer-recycle.js';
 import { resolveContextWindowTokens, observationFieldMaxChars } from './context-window.js';
 import { recycleObserverConversation, loadSessionStartContext, openObserverGeneration, observesBarePrompts } from './session/recycle-conversation.js';
-import { MAX_CONSECUTIVE_SDK_STREAM_EXITS, ObserverResponsePacer } from './session/response-pacer.js';
+import { MAX_CONSECUTIVE_SDK_STREAM_EXITS, RESPONSE_STALL_MS, ObserverResponsePacer } from './session/response-pacer.js';
 import { recordObserverFailure } from '../../shared/observer-health.js';
 import type { ClaudeCredential } from '../../shared/quota-cooldown.js';
-import { IDLE_TIMEOUT_MS } from './SessionMessageBuffer.js';
 import { optimizeObservationFields, buildFieldCompressionPrompt, type CompressedField, type FieldCompressor } from './field-optimizer.js';
 import { resolveFieldOptimizeTimeoutMs } from './retry.js';
 import { buildTelegramWrapupPrompt, type TelegramWrapupFormatterInput } from '../integrations/TelegramWrapupNotifier.js';
@@ -339,7 +338,7 @@ export class ClaudeProvider {
 
   /** How long an unanswered prompt may go without SDK activity (#4066). */
   private responseStallMs(): number {
-    return IDLE_TIMEOUT_MS;
+    return RESPONSE_STALL_MS;
   }
 
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
