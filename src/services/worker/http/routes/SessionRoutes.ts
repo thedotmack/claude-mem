@@ -23,6 +23,7 @@ import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js
 import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
 import { MEDIA_PROMPT_PLACEHOLDER } from '../../../sqlite/prompt-storage.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
+import { isObserverCaptureEnabled } from '../../../../shared/observer-capture.js';
 import { USER_SETTINGS_PATH, ensureObserverSessionsDir } from '../../../../shared/paths.js';
 import { getProjectContext, isProjectKeySource } from '../../../../utils/project-name.js';
 import { isProjectExcluded } from '../../../../utils/project-filter.js';
@@ -265,6 +266,21 @@ export class SessionRoutes extends BaseRouteHandler {
   private async ensureGeneratorRunningLocked(sessionDbId: number, source: string): Promise<void> {
     const session = this.sessionManager.getSession(sessionDbId);
     if (!session) return;
+
+    if (!isObserverCaptureEnabled(SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH))) {
+      // A request already in flight still needs its claimed messages to join
+      // file evidence when the response returns. Drop only work that has not
+      // been handed to a provider.
+      const discarded = this.sessionManager.getMessageBuffer().clearUnclaimed(sessionDbId);
+      if (discarded > 0) {
+        logger.info('SESSION', 'Observer capture disabled; discarding buffered work without starting a provider', {
+          sessionId: sessionDbId,
+          source,
+          discarded,
+        });
+      }
+      return;
+    }
 
     // Nothing is buffered, so a generator would only open with its INIT turn
     // and idle out: one paid request per user prompt, including prompts that

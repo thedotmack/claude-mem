@@ -4,6 +4,7 @@ import { relativeTimePlaceholder } from '../../../shared/context-cache.js';
 import { isOwnerGoalsList } from '../../work-view/owner-goals.mjs';
 import { isMyRulesList } from '../../work-view/my-rules.mjs';
 import { isMyFocusList } from '../../work-view/my-focus.mjs';
+import { isSharedWorkList } from '../../work-view/shared-records.mjs';
 
 /**
  * When "updated N ago" is measured from: an epoch, or 'placeholders' to leave
@@ -104,6 +105,7 @@ export function renderWorkStateList(
 
 /** Lines for every list in `entries`, the most recently written list first. */
 export function renderWorkStateLines(entries: WorkStateEntry[], nowEpoch: WorkStateClock, includeClosed: boolean = false): string[] {
+  entries = entries.filter(entry => !isSharedWorkList(entry.list_name));
   const entriesByList = new Map<string, WorkStateEntry[]>();
   const listProjectCounts = new Map<string, number>();
   /** Position of each list's latest entry in `entries`, which arrive in write order. */

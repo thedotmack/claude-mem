@@ -88,9 +88,12 @@ export async function* readSseEvents(
   options: ReadSseEventsOptions = {}
 ): AsyncGenerator<SseEvent> {
   const maxEventBytes = options.maxEventBytes ?? DEFAULT_SSE_MAX_EVENT_BYTES;
-  const decoder = new TextDecoder();
+  const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
   let pendingLineParts: Uint8Array[] = [];
   let pendingLineBytes = 0;
+  let pendingLinePrefix: number[] = [];
+  let pendingComment = false;
+  let firstLine = true;
   let skipLeadingLF = false;
   let eventBytes = 0;
   let eventName: string | null = null;
@@ -102,30 +105,48 @@ export async function* readSseEvents(
     if (eventBytes + extraBytes > maxEventBytes) throw new SseEventTooLargeError(maxEventBytes);
   };
 
+  // Classify a comment from at most four bytes (a stream BOM plus ':'). Once
+  // classified, discard its payload: keep-alives do not consume the event cap.
+  const appendLinePart = (part: Uint8Array, copy: boolean) => {
+    if (part.length === 0 || pendingComment) return;
+    if (pendingLinePrefix.length < 4) {
+      pendingLinePrefix.push(...part.subarray(0, 4 - pendingLinePrefix.length));
+    }
+    const hasBom = firstLine && pendingLinePrefix[0] === 0xef
+      && pendingLinePrefix[1] === 0xbb && pendingLinePrefix[2] === 0xbf;
+    if (pendingLinePrefix[hasBom ? 3 : 0] === COLON) {
+      pendingComment = true;
+      pendingLineParts = [];
+      pendingLineBytes = 0;
+      return;
+    }
+    const total = pendingLineBytes + part.length;
+    assertWithinCap(total);
+    pendingLineParts.push(copy ? part.slice() : part);
+    pendingLineBytes = total;
+  };
+
   /** Returns a dispatched event on a blank line, otherwise null. */
   const handleLine = (lineBytes: Uint8Array): SseEvent | null => {
-    if (lineBytes.length === 0) {
+    let line = decoder.decode(lineBytes);
+    if (firstLine && line.startsWith('\ufeff')) line = line.slice(1);
+    if (line.length === 0) {
       const hasEvent = eventName !== null || dataLines !== null;
       const dispatched: SseEvent | null = hasEvent
         ? { event: eventName || 'message', data: (dataLines ?? []).join('\n'), ...(eventId !== undefined ? { id: eventId } : {}) }
         : null;
-      eventName = null; eventId = undefined; dataLines = null; eventBytes = 0;
+      eventName = null; dataLines = null; eventBytes = 0;
       return dispatched;
-    }
-    if (lineBytes[0] === COLON) {
-      options.onActivity?.();
-      return null;
     }
     assertWithinCap(lineBytes.length);
     eventBytes += lineBytes.length;
-    const line = decoder.decode(lineBytes);
     const colonIndex = line.indexOf(':');
     const field = colonIndex === -1 ? line : line.slice(0, colonIndex);
     let value = colonIndex === -1 ? '' : line.slice(colonIndex + 1);
     if (value.startsWith(' ')) value = value.slice(1);
     if (field === 'event') eventName = value;
     else if (field === 'data') (dataLines ??= []).push(value);
-    else if (field === 'id') eventId = value;
+    else if (field === 'id' && !value.includes('\0')) eventId = value;
     return null;
   };
 
@@ -138,11 +159,15 @@ export async function* readSseEvents(
         if (byte === LF) { lineStart = index + 1; continue; }
       }
       if (byte !== CR && byte !== LF) continue;
-      pendingLineParts.push(chunk.subarray(lineStart, index));
-      const lineBytes = concatBytes(pendingLineParts, pendingLineBytes + (index - lineStart));
+      appendLinePart(chunk.subarray(lineStart, index), false);
+      const dispatched = pendingComment
+        ? (options.onActivity?.(), null)
+        : handleLine(concatBytes(pendingLineParts, pendingLineBytes));
       pendingLineParts = [];
       pendingLineBytes = 0;
-      const dispatched = handleLine(lineBytes);
+      pendingLinePrefix = [];
+      pendingComment = false;
+      firstLine = false;
       if (dispatched) {
         if (options.terminalEventNames?.includes(dispatched.event)) sawTerminalEvent = true;
         yield dispatched;
@@ -151,10 +176,7 @@ export async function* readSseEvents(
       lineStart = index + 1;
     }
     if (lineStart < chunk.length) {
-      const tail = chunk.slice(lineStart);
-      pendingLineParts.push(tail);
-      pendingLineBytes += tail.length;
-      assertWithinCap(pendingLineBytes);
+      appendLinePart(chunk.subarray(lineStart), true);
     }
   }
 

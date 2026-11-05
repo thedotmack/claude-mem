@@ -1,7 +1,10 @@
+import { presentSync, type SyncPresentation, type SyncStatusForDisplay } from '../../../viewer/utils/sync-presentation.ts'
+
 // Typed copy of claude-mem v15.0.1 plugin/ui/work-view/live-status.js (getConnectionStatus).
 // Connection freshness is measured on the browser's monotonic clock. Server
 // wall time is displayed as evidence, never used as an agent-presence signal.
 export const LOCAL_FEED_STALE_AFTER_MS = 35_000 // Two 15-second heartbeats + margin.
+const ACTIVITY_STALE_AFTER_MS = 125_000 // WorkViewRoutes' 120-second activity cache plus one check margin.
 
 export type ConnectionState = 'connecting' | 'reconnecting' | 'stale' | 'unavailable' | 'live'
 export type ConnectionTone = 'neutral' | 'warning' | 'positive'
@@ -18,6 +21,11 @@ export interface ConnectionStatusInput {
   staleAfterMs?: number
   /** Where the page is served: the worker on this computer, or the cloud viewer that pulls your synced devices. */
   where?: 'local' | 'cloud'
+  sync?: SyncStatusForDisplay | null
+  syncReceivedAt?: number | null
+  activityCheckedAt?: string | null
+  activityAgeAtReceipt?: number | null
+  activityReceivedAt?: number | null
 }
 
 export interface ConnectionStatus {
@@ -32,6 +40,8 @@ export interface ConnectionStatus {
   clockSkew: boolean
   staleAfterMs: number
   tooltip: string
+  /** Separately measured upstream synchronization; feed liveness does not imply this is current. */
+  sync?: SyncPresentation
 }
 
 function age(now: number, at: number | null): number | null {
@@ -64,6 +74,11 @@ export function getConnectionStatus({
   wallNow = null,
   staleAfterMs = LOCAL_FEED_STALE_AFTER_MS,
   where = 'local',
+  sync = null,
+  syncReceivedAt = null,
+  activityCheckedAt = null,
+  activityAgeAtReceipt = null,
+  activityReceivedAt = null,
 }: ConnectionStatusInput): ConnectionStatus {
   const cloud = where === 'cloud'
   const feed = cloud ? 'cloud feed' : 'local feed'
@@ -102,14 +117,25 @@ export function getConnectionStatus({
     } else {
       state = 'live'; label = 'Live updates'; tone = 'positive'
       detail = cloud
-        ? 'Updates are arriving as your computers sync. Each card shows when its work was last updated.'
+        ? 'Connected to the cloud viewer. Incoming synchronization is reported separately.'
         : 'Updates are arriving from this computer. Each card shows when its work was last updated.'
     }
   }
 
+  const activityElapsed = age(now, activityReceivedAt)
+  const activityAge = activityAgeAtReceipt === null || activityElapsed === null ? null : activityAgeAtReceipt + activityElapsed
+  if (state === 'live' && activityCheckedAt !== null && (activityAge === null || activityAge < 0 || !Number.isFinite(activityAge))) {
+    state = 'stale'; label = 'Activity freshness unknown'; tone = 'warning'
+    detail = 'The feed is connected, but the age of its saved activity could not be confirmed.'
+  } else if (state === 'live' && activityAge !== null && activityAge > ACTIVITY_STALE_AFTER_MS) {
+    state = 'stale'; label = 'Saved activity stale'; tone = 'warning'
+    detail = 'The feed is connected, but its activity projection has not been refreshed. Showing the last received work.'
+  }
   const tooltip = `Last successful ${cloud ? 'cloud' : 'local'} check: ${successfulCheckAt ?? 'not yet confirmed'}. `
+    + (activityCheckedAt ? `Activity last inspected: ${activityCheckedAt}. ` : '')
     + (clockSkew ? 'Source and browser clocks differ; freshness uses received heartbeats. ' : '')
     + 'Connection status does not indicate an agent is running.'
   return { state, label, detail, tone, isLive: state === 'live', eventAgeMs, sourceAgeMs,
-    lastSuccessfulCheckAt: successfulCheckAt, clockSkew, staleAfterMs: threshold, tooltip }
+    lastSuccessfulCheckAt: successfulCheckAt, clockSkew, staleAfterMs: threshold, tooltip,
+    sync: presentSync(sync, syncReceivedAt, now) }
 }

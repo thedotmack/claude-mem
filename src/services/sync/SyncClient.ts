@@ -58,6 +58,8 @@
 // timeout.
 
 import { logger } from '../../utils/logger.js';
+import { classifySyncAuthFailure, friendlySyncError, type SyncAuthFailure } from '../../shared/sync-health.js';
+import type { SyncDownloadStatus } from '../../shared/viewer-sync-status.js';
 import type { SyncApply, SyncOp, UndecodableOp } from './SyncApply.js';
 import { SYNC_CAPABILITIES, SYNC_CAPABILITIES_HEADER } from './sync-capabilities.js';
 import {
@@ -161,11 +163,14 @@ interface RealtimeGrant {
   channelTopic: string;
 }
 
-class RealtimeTokenError extends Error {
-  constructor(readonly status: number, message: string) {
-    super(message);
+class SyncRequestError extends Error {
+  readonly authFailure: SyncAuthFailure | null;
+  constructor(readonly status: number, label: string, body: string) {
+    super(friendlySyncError(`${label} ${status}: ${body}`).slice(0, 500));
+    this.authFailure = classifySyncAuthFailure(status, body);
   }
 }
+class RealtimeTokenError extends SyncRequestError {}
 
 /** Phoenix vsn 1.0.0 frame (object form). */
 interface PhoenixFrame {
@@ -262,6 +267,11 @@ export interface SyncClientOptions {
   realtimeUnavailableRetryMs?: number;
 }
 
+/** Replica-only workers have no active sessions, so their safety poll must still be prompt. */
+export function keepPullingOptions(enabled: boolean): Pick<SyncClientOptions, 'idlePollMs' | 'suspendAfterMs'> {
+  return enabled ? { idlePollMs: 30_000, suspendAfterMs: Number.POSITIVE_INFINITY } : {};
+}
+
 interface ChangesPage {
   protocol_version?: unknown;
   epoch?: unknown;
@@ -312,6 +322,12 @@ export class SyncClient {
   private pulling = false;
   private lastActiveAt = 0;
   private lastPullFinishedAt = 0;
+  private lastAttemptAt: number | null = null;
+  private lastSuccessAt: number | null = null;
+  private lastPullError: string | null = null;
+  private nextScheduledAt: number | null = null;
+  private viewerActive = false;
+  private httpCaughtUp = false;
   /** 0 = healthy; doubles per consecutive failed cycle. */
   private backoffMs = 0;
   /** Hints and socket recovery must wait for the failed HTTP pull's retry. */
@@ -406,6 +422,37 @@ export class SyncClient {
     this.realtimeUnavailableRetryMs = options.realtimeUnavailableRetryMs ?? 3_600_000;
   }
 
+  /** Pure status evidence: never schedules work or changes the cursor. */
+  status(): SyncDownloadStatus {
+    const next = Math.max(this.authPausedUntil, this.transientRetryAt, this.nextScheduledAt ?? 0);
+    return {
+      started: this.started && !this.stopped, inFlight: this.pulling, suspended: this.suspended,
+      authPaused: this.authPausedUntil > this.now(), lastAttemptAt: this.lastAttemptAt,
+      lastSuccessAt: this.lastSuccessAt, lastError: this.lastPullError,
+      nextRetryAt: next > this.now() ? next : null,
+      epoch: this.apply.getEpoch(), cursor: this.apply.getCursor(),
+      mode: this.socketLive ? 'realtime' : 'polling',
+      realtimeAvailable: !this.wsEnabled || this.realtimeUnavailable ? false : this.realtimeGrant ? true : null,
+      socketLive: this.socketLive, caughtUp: this.httpCaughtUp && !this.isAnnouncedHeadAheadOfCursor(),
+    };
+  }
+
+  /** One aggregate visibility transition; leases are owned by ViewerActivity. */
+  setViewerActive(active: boolean): void {
+    if (this.viewerActive === active) return;
+    this.viewerActive = active;
+    if (this.stopped || !this.started) return;
+    if (active) {
+      this.lastActiveAt = this.now();
+      this.resumeIfSuspended();
+      const delay = Math.max(0, this.authPausedUntil - this.now(), this.transientRetryAt - this.now(), this.lastPullFinishedAt + this.minPullGapMs - this.now());
+      this.schedule(delay);
+    } else {
+      const delay = this.currentDelay();
+      if (delay !== null) this.schedule(Math.max(delay, this.authPausedUntil - this.now(), this.transientRetryAt - this.now()));
+    }
+  }
+
   /** Kick an immediate catch-up pull, then run the cadence loop. */
   start(): void {
     if (this.started || this.stopped) return;
@@ -433,6 +480,7 @@ export class SyncClient {
 
   stop(): void {
     this.stopped = true;
+    this.nextScheduledAt = null;
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
@@ -476,9 +524,16 @@ export class SyncClient {
       if (this.stopped || !this.started) return;
       // head_seq only arrives from a SUCCESSFUL push: the server accepts
       // these credentials again, so lift a pull-side auth pause now.
+      const wasAuthPaused = this.authPausedUntil !== 0;
       this.clearAuthPause();
       const head = assertCanonicalDecimal(headSeq);
-      if (compareCanonicalDecimals(head, this.apply.getCursor()) <= 0) return;
+      if (compareCanonicalDecimals(head, this.apply.getCursor()) <= 0) {
+        // A successful push can restore credentials without advancing the log.
+        // Do not leave the old hour-long auth retry as the next health check.
+        if (wasAuthPaused) this.schedule(Math.max(0, this.transientRetryAt - this.now(), this.lastPullFinishedAt + this.minPullGapMs - this.now()));
+        return;
+      }
+      this.httpCaughtUp = false;
       this.resumeIfSuspended(); // socket back up alongside the loop
       this.schedule(Math.max(0, this.transientRetryAt - this.now()));
     } catch (error) {
@@ -539,8 +594,10 @@ export class SyncClient {
   private schedule(delayMs: number): void {
     if (this.stopped) return;
     if (this.timer) clearTimeout(this.timer);
+    this.nextScheduledAt = this.now() + delayMs;
     const timer = setTimeout(() => {
       this.timer = null;
+      this.nextScheduledAt = null;
       void this.tick();
     }, delayMs);
     (timer as { unref?: () => void }).unref?.(); // never hold the process open
@@ -606,7 +663,7 @@ export class SyncClient {
     const now = this.now();
     let active = false;
     try {
-      active = this.isSessionActive?.() ?? false;
+      active = this.viewerActive || (this.isSessionActive?.() ?? false);
     } catch (error) {
       active = false;
       try {
@@ -641,6 +698,7 @@ export class SyncClient {
     // session-start pulls — the same credentials cannot succeed sooner.
     if (this.authPausedUntil > this.now()) return;
     this.pulling = true;
+    this.lastAttemptAt = this.now();
     // Catch-up accounting: only a cycle that began after the current join
     // can prove the gap since the socket was down is closed.
     const liveGenerationAtStart = this.socketLive ? this.liveGeneration : null;
@@ -665,8 +723,8 @@ export class SyncClient {
           }
         );
         if (!res.ok) {
-          const body = (await res.text().catch(() => '')).slice(0, 200);
-          throw new Error(`sync hub pull ${res.status}: ${body}`);
+          const body = await res.text().catch(() => '');
+          throw new SyncRequestError(res.status, 'sync hub pull', body);
         }
         const page = await res.json() as ChangesPage | null;
         if (!page || page.protocol_version !== 2 || !Array.isArray(page.ops)) {
@@ -695,7 +753,9 @@ export class SyncClient {
           continue;
         }
 
-        // A page applied — the pipeline is healthy.
+        // A validated page applied — even an empty page proves HTTP progress.
+        this.lastSuccessAt = this.now();
+        this.lastPullError = null;
         this.failStreak = 0;
         this.failCursor = null;
         this.backoffMs = 0;
@@ -718,6 +778,7 @@ export class SyncClient {
     } finally {
       this.pulling = false;
       this.lastPullFinishedAt = this.now();
+      this.httpCaughtUp = succeeded && reachedHead;
       this.settleRealtimeCatchUp(liveGenerationAtStart, succeeded, reachedHead, hitPageCap);
     }
   }
@@ -878,8 +939,8 @@ export class SyncClient {
       signal: AbortSignal.timeout(this.requestTimeoutMs),
     });
     if (!res.ok) {
-      const body = (await res.text().catch(() => '')).slice(0, 200);
-      throw new RealtimeTokenError(res.status, `sync realtime-token ${res.status}: ${body}`);
+      const body = await res.text().catch(() => '');
+      throw new RealtimeTokenError(res.status, 'sync realtime-token', body);
     }
     const json = await res.json() as Record<string, unknown> | null;
     const accessToken = json?.access_token;
@@ -922,7 +983,8 @@ export class SyncClient {
       this.scheduleReconnect(this.realtimeUnavailableRetryMs);
       return;
     }
-    if (status === 401 || status === 403) {
+    if (error instanceof RealtimeTokenError && error.authFailure) {
+      this.lastPullError = error.authFailure.message;
       this.enterAuthPause(err);
       return;
     }
@@ -1262,6 +1324,8 @@ export class SyncClient {
    */
   private recordFailure(error: unknown): void {
     const err = error instanceof Error ? error : new Error(String(error));
+    this.httpCaughtUp = false;
+    this.lastPullError = friendlySyncError(err.message).split(this.token || '\0').join('[REDACTED]');
     let cursor: string | null = null;
     try {
       cursor = this.apply.getCursor();
@@ -1272,7 +1336,8 @@ export class SyncClient {
       this.failCursor = cursor;
       this.failStreak = 1;
     }
-    if (/^sync hub pull 40[13]:/.test(err.message)) {
+    if (error instanceof SyncRequestError && error.authFailure) {
+      this.lastPullError = error.authFailure.message;
       this.enterAuthPause(err);
       return;
     }

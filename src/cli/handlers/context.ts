@@ -35,6 +35,7 @@ import type { ContextInput } from '../../services/context/types.js';
 import { serverSessionStartBudgetMs } from '../../shared/host-hook-limits.js';
 import { contextCacheKeys, fillContextPlaceholders, readContextCache } from '../../shared/context-cache.js';
 import { clearTimelinePending } from '../../shared/codex-compaction-gate.js';
+import { projectsQueryString } from '../../shared/project-list.js';
 import { CONTEXT_OUTPUT_LIMIT } from '../../services/context/ContextBudget.js';
 import {
   fetchTeamBrief,
@@ -280,7 +281,7 @@ export const contextHandler: EventHandler = {
     const serverRuntime = runtime.runtime === 'server' ? runtime : null;
 
     const scopeProjects = await resolveSessionStartProjects(settings, context.allProjects, runtime.runtime);
-    const projectsParam = scopeProjects.join(',');
+    const projectsQuery = projectsQueryString(scopeProjects);
     const normalizedPlatformSource = input.platform
       ? normalizePlatformSource(input.platform)
       : undefined;
@@ -293,7 +294,7 @@ export const contextHandler: EventHandler = {
     // one, so the worker gets the session id and SessionStart is answered live.
     const showLastMessage = settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE === 'true';
     const sessionParam = showLastMessage && input.sessionId ? `&sessionId=${encodeURIComponent(input.sessionId)}` : '';
-    const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}${platformSourceParam}&cwd=${encodeURIComponent(cwd)}${sessionParam}`;
+    const apiPath = `/api/context/inject?${projectsQuery}${platformSourceParam}&cwd=${encodeURIComponent(cwd)}${sessionParam}`;
     const colorApiPath = input.platform === 'claude-code' ? `${apiPath}&colors=true` : apiPath;
 
     const serverRender = serverRuntime

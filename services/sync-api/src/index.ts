@@ -3,7 +3,13 @@
  * Routes and shapes match services/sync-hub. Storage is Postgres.
  */
 import postgres from "postgres";
-import { authenticateRequest, errorResponse, json } from "./auth";
+import {
+	authenticateRequest,
+	defaultAuthDependencies,
+	errorResponse,
+	json,
+	type AuthDependencies,
+} from "./auth";
 import type { SyncApiEnv } from "./env";
 import { formatHostForUrl, loadEnv } from "./env";
 import { startForwardProxy } from "./forward";
@@ -14,7 +20,7 @@ import {
 	REPAIR_DRAIN_MAX_PAGES,
 } from "./projection";
 import { applyMigrations } from "./schema";
-import { SocketRegistry, type RegisteredSocket } from "./sockets";
+import { AUTH_EXPIRED_CLOSE_CODE, SocketRegistry, type RegisteredSocket } from "./sockets";
 import {
 	DEFAULT_USER_TURN_MAX_WAIT_MS,
 	DEVICE_LIMIT_ERROR,
@@ -22,6 +28,7 @@ import {
 	INVALID_OPS_PREFIX,
 	PROJECTION_ERROR_PREFIX,
 	type PushOp,
+	type RepairRequest,
 } from "./store";
 import { CLIENT_CLOSED_REQUEST_ERROR, SYNC_HUB_BUSY_ERROR } from "./user-queue";
 
@@ -145,7 +152,10 @@ export interface SyncApiApp {
 interface SocketData {
 	userId: string;
 	deviceId: string;
+	/** Expiry of the verdict that authorized the upgrade (epoch ms). */
+	authExpiresAtMs: number;
 	registered: RegisteredSocket | null;
+	timer: ReturnType<typeof setTimeout> | null;
 }
 
 async function handlePushOps(
@@ -210,6 +220,31 @@ async function handlePushOps(
 	} catch (e) {
 		return mapHubError(e);
 	}
+}
+
+/** Narrow origin repair protocol. Preview reads never touch cursors/devices. */
+async function handleOriginRepair(request: Request, app: { env: SyncApiEnv; store: HubStore },
+	userId: string, deviceId: string, deviceName: string | null, preview: boolean): Promise<Response> {
+	const raw = await request.text();
+	if (encoder.encode(raw).length > 520_000) return errorResponse(413, "repair request too large");
+	let body: Record<string, unknown>;
+	try { body = JSON.parse(raw); } catch { return errorResponse(400, "invalid repair JSON"); }
+	if (!body || typeof body !== "object" || Array.isArray(body)) return errorResponse(400, "invalid repair request");
+	try {
+		if (preview) {
+			if (!exactKeys(body, ["entity_id"]) || typeof body.entity_id !== "string") return errorResponse(400, "expected entity_id");
+			return json(200, await app.store.getRepairHead(userId, deviceId, body.entity_id));
+		}
+		if (!exactKeys(body, ["expected_epoch", "expected_head", "op", "repair_id"])) return errorResponse(400, "invalid repair fields");
+		const result = await app.store.repairContent(userId, deviceId, body as unknown as RepairRequest, deviceName, request.signal);
+		if ("refused" in result) return errorResponse(result.error.includes("repair_origin_required") ? 403 : 409, result.error);
+		const projection = await drainProjection(app.env, app.store, userId, result.head_seq);
+		if (projection.ok) {
+			const state = await app.store.getRepairHead(userId, deviceId, JSON.parse((body.op as { body: string }).body).id);
+			return json(200, { protocol_version: 1, capability: "origin-repair-v1", epoch: state.epoch, ...result, projected_seq: projection.projectedSeq });
+		}
+		return json(projection.httpStatus, { error: projection.error, durable: true, retryable: projection.retryable });
+	} catch (error) { return mapHubError(error); }
 }
 
 async function handleGetChanges(
@@ -381,6 +416,9 @@ async function handleRepairDrain(request: Request, app: { env: SyncApiEnv; store
 export async function startSyncApi(
 	env: SyncApiEnv = loadEnv(),
 	timeouts: SyncApiTimeouts = DEFAULT_SYNC_API_TIMEOUTS,
+	// Tests inject verdicts with a near expiry so a socket's deadline timer can
+	// be observed without waiting a real cache TTL.
+	authDependencies: AuthDependencies = defaultAuthDependencies(env),
 ): Promise<SyncApiApp> {
 	if (env.FORWARD_ORIGIN) {
 		throw new Error("FORWARD_ORIGIN is set: start the forward proxy (startForwardProxy), not the hub");
@@ -450,13 +488,20 @@ export async function startSyncApi(
 				pathname !== "/v1/sync/ops" &&
 				pathname !== "/v1/sync/changes" &&
 				pathname !== "/v1/sync/status" &&
+				pathname !== "/v1/sync/repair/head" &&
+				pathname !== "/v1/sync/repair" &&
 				pathname !== "/v1/sync/ws"
 			) {
 				return errorResponse(404, "not found");
 			}
 
-			const auth = await authenticateRequest(request, env);
+			const auth = await authenticateRequest(request, env, authDependencies);
 			if (!auth.ok) return auth.response;
+			if (pathname === "/v1/sync/repair/head" || pathname === "/v1/sync/repair") {
+				if (request.method !== "POST") return errorResponse(405, "use POST");
+				if (!auth.deviceId) return errorResponse(400, "missing X-Device-Id header");
+				return handleOriginRepair(request, ctx, auth.userId, auth.deviceId, auth.deviceName, pathname.endsWith("/head"));
+			}
 
 			if (pathname === "/v1/sync/ws") {
 				if (request.method !== "GET") return errorResponse(405, "use GET");
@@ -475,7 +520,13 @@ export async function startSyncApi(
 					return retryableStoreUnavailable("websocket upgrade", error);
 				}
 				const upgraded = server.upgrade(request, {
-					data: { userId: auth.userId, deviceId: auth.deviceId, registered: null },
+					data: {
+						userId: auth.userId,
+						deviceId: auth.deviceId,
+						authExpiresAtMs: auth.authExpiresAtMs,
+						registered: null,
+						timer: null,
+					},
 				});
 				if (!upgraded) return errorResponse(426, "expected Upgrade: websocket");
 				return undefined as unknown as Response;
@@ -499,11 +550,18 @@ export async function startSyncApi(
 				const registered: RegisteredSocket = {
 					userId: ws.data.userId,
 					deviceId: ws.data.deviceId,
+					authExpiresAtMs: ws.data.authExpiresAtMs,
 					send: (data) => { ws.send(data); },
 					close: (code, reason) => { ws.close(code, reason); },
 				};
 				ws.data.registered = registered;
 				sockets.add(registered);
+				// A quiet socket would otherwise never notice that the verdict
+				// behind it lapsed. Liveness gates every send, and this timer closes
+				// the socket (4401) at the deadline so a revoked token stops reading.
+				ws.data.timer = setTimeout(() => {
+					try { ws.close(AUTH_EXPIRED_CLOSE_CODE, "auth expired"); } catch { /* closed */ }
+				}, Math.max(0, ws.data.authExpiresAtMs - Date.now()));
 			},
 			message(ws, message) {
 				const text = typeof message === "string" ? message : new TextDecoder().decode(message);
@@ -512,6 +570,10 @@ export async function startSyncApi(
 				}
 			},
 			close(ws) {
+				if (ws.data.timer !== null) {
+					clearTimeout(ws.data.timer);
+					ws.data.timer = null;
+				}
 				if (ws.data.registered) sockets.remove(ws.data.registered);
 			},
 		},

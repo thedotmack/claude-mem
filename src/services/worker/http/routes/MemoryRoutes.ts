@@ -40,7 +40,7 @@ export class MemoryRoutes extends BaseRouteHandler {
       return;
     }
     const { cwd, ...input } = req.body as z.infer<typeof saveMemorySchema>;
-    const checkout = cwd?.trim();
+    const checkout = cwd?.trim() ? cwd : undefined;
     if (checkout) {
       const excluded = process.env.CLAUDE_MEM_EXCLUDED_PROJECTS
         ?? SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_EXCLUDED_PROJECTS;

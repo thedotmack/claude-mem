@@ -79,7 +79,11 @@ describe('policy', () => {
     expect(isAllowed('GET', '/api/logs')).toBe(false);
     expect(isAllowed('GET', '/api/setup/state')).toBe(false);
     expect(isAllowed('GET', '/restart')).toBe(false);
+    for (const path of ['inventory', 'jobs', 'jobs/some-job', 'conflicts']) {
+      expect(isAllowed('GET', `/api/sync/recovery/${path}`)).toBe(false);
+    }
     expect(isAllowed('POST', '/api/work-view/review')).toBe(true);
+    expect(isAllowed('POST', '/api/work-view/suggestions')).toBe(true);
     expect(isAllowed('POST', '/api/work-view/focus')).toBe(true);
     expect(isAllowed('POST', '/api/work-view/rules/load-in-claude-code')).toBe(false);
     expect(isAllowed('POST', '/api/settings')).toBe(false);
@@ -93,6 +97,9 @@ describe('policy', () => {
     expect(isAllowed('GET', '//127.0.0.1:37777/api/settings')).toBe(false);
     expect(isAllowed('GET', '/api/work-view/%2e%2e/settings')).toBe(false);
     expect(isAllowed('POST', '/API/WORK-VIEW/REVIEW')).toBe(true);
+    for (const path of ['/api/work-state', '/api/work-view/shared-ledger', '/api/work-view/shared-state', '/api/work-view/file/work-state/1/0', '/api/work-view/deliverables']) {
+      expect(isAllowed('POST', path)).toBe(false);
+    }
   });
 });
 
@@ -215,6 +222,22 @@ describe('gate', () => {
     const response = await gate()(new Request(`${PUBLIC_ORIGIN}/api/work-view/events`, { headers: { Cookie: sessionCookie() } }));
     expect(response.headers.get('Content-Type')).toBe('text/event-stream');
     expect(await response.text()).toContain('event: heartbeat');
+  });
+
+  it('preserves shared save acknowledgements and refuses generic writes and other owners', async () => {
+    const forwarded: string[] = [];
+    const g = createGate({ ownerUserId: OWNER, secret: SECRET, upstreamOrigin: 'http://127.0.0.1:37777', publicOrigin: PUBLIC_ORIGIN, signInUrl: SIGN_IN,
+      fetchImpl: async (input, init) => { forwarded.push(String(input)); return Response.json({ save: { scope: 'shared', state: 'queued', localMaterialization: 'pending' } }); } });
+    const headers = { Cookie: sessionCookie(), Origin: PUBLIC_ORIGIN, 'Content-Type': 'application/json' };
+    for (const path of ['/api/work-view/review', '/api/work-view/suggestions']) {
+      const response = await g(new Request(`${PUBLIC_ORIGIN}${path}`, { method: 'POST', headers, body: '{}' }));
+      expect(await response.json()).toEqual({ save: { scope: 'shared', state: 'queued', localMaterialization: 'pending' } });
+    }
+    for (const path of ['/api/work-state', '/api/work-view/shared-ledger', '/api/work-view/shared-state', '/api/work-view/file/work-state/1/0']) {
+      expect((await g(new Request(`${PUBLIC_ORIGIN}${path}`, { method: 'POST', headers, body: '{}' }))).status).toBe(403);
+    }
+    expect((await g(new Request(`${PUBLIC_ORIGIN}/api/work-view/suggestions`, { method: 'POST', headers: { ...headers, Cookie: sessionCookie('another-owner') }, body: '{}' }))).status).toBe(401);
+    expect(forwarded).toHaveLength(2);
   });
 
   it('reports health from the worker without a session', async () => {

@@ -20,7 +20,7 @@ import { notifyGrokBotBrainbeat } from '../../integrations/GrokBotBrainbeat.js';
 import { notifyGrokBotIndex } from '../../integrations/GrokBotIndexWriter.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
-import { recordObserverFailure, recordObserverSuccess } from '../../../shared/observer-health.js';
+import { observerAuthScope, recordObserverFailure, recordObserverSuccess } from '../../../shared/observer-health.js';
 import { clearQuotaCooldown, routeAroundUnservableProviderIfLoaded } from '../../../shared/quota-cooldown.js';
 import { recycleObserverConversation } from '../session/recycle-conversation.js';
 import { clearRejectedOutput, recordRejectedOutput } from '../session/OutputRecovery.js';
@@ -999,7 +999,7 @@ export async function processAgentResponse(
   // in query using the admitted cooldown identity: storing an earlier response
   // here must not erase a newer failure from a concurrent pool slot.
   if (result.observationIds.length > 0 || result.summaryId !== null) {
-    recordObserverSuccess();
+    recordObserverSuccess(undefined, observerAuthScope(session.currentProvider, session.observerProfile, session.observerAuth));
     // A quota-fallback run proves its own credential works, not the spent primary one.
     if (session.currentProvider && session.currentProvider !== 'codex' && !session.claudeAuthOverride) {
       clearQuotaCooldown(session.currentProvider);

@@ -104,6 +104,38 @@ describe('redactSensitive built-in patterns', () => {
     expect(Object.keys(result.counts)).toEqual(['pypi_token']);
   });
 
+  // Databricks PATs (`dapi` + 32 hex) and HashiCorp Vault service/batch
+  // tokens (`hvs.` / `hvb.` + base64url). Fixtures are split for push
+  // protection too.
+  const DATABRICKS_HEX = '0123456789abcdef'.repeat(2);
+  const VAULT_SERVICE_BODY = 'CAESIJ' + 'aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789_-'.repeat(2) + 'aBcDeFgHiJkLmNo';
+  const VAULT_BATCH_BODY = 'AAAAAQ' + 'aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789_-'.repeat(4);
+  it.each([
+    ['databricks_token', 'DATABRICKS_TOKEN=' + 'da' + 'pi' + DATABRICKS_HEX + ' tail'],
+    ['databricks_token', 'token = ' + 'da' + 'pi' + DATABRICKS_HEX + '-2 tail'],
+    ['databricks_token', '{"token_value": "' + 'da' + 'pi' + DATABRICKS_HEX + '"} tail'],
+    ['vault_token', 'VAULT_TOKEN=' + 'hv' + 's.' + VAULT_SERVICE_BODY + ' tail'],
+    ['vault_token', 'token                  ' + 'hv' + 's.' + VAULT_SERVICE_BODY + ' tail'],
+    ['vault_token', 'export VAULT_TOKEN=' + 'hv' + 'b.' + VAULT_BATCH_BODY + ' tail'],
+  ])('redacts a %s', (name, input) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain(`<redacted type='${name}'/>`);
+    expect(result.redacted).toMatch(/'\/>(?:"\})? tail$/);
+    expect(result.redacted).not.toMatch(/dapi0123|hv[sb]\.[A-Z]/);
+    expect(Object.keys(result.counts)).toEqual([name]);
+  });
+
+  it.each([
+    'dapi' + 'short',
+    'the dapi' + 'deadbeef helper',
+    'da' + 'pi' + DATABRICKS_HEX + 'ff',
+    'hv' + 's.' + 'short',
+    'hv' + 's.' + VAULT_SERVICE_BODY.repeat(2),
+    'hv' + 'b.' + 'aBcDeFgHiJkLmNo',
+  ])('leaves %s alone', (input) => {
+    expect(redactSensitive(input, cfg).redacted).toBe(input);
+  });
+
   // Two providers claude-mem's own OpenAI-compatible presets onboard users for
   // (src/shared/openai-compat-presets.ts): the NVIDIA NIM hint says the key
   // starts with `nvapi-`, Runcrate's says `rc_live_`. Neither prefix was
@@ -173,6 +205,36 @@ describe('redactSensitive built-in patterns', () => {
     'xai-short',
     'the xai-sdk package',
     'gsk_' + 'aBcDeFgHiJkLmNoPqRsTuVwXyZ',
+  ])('leaves %s alone', (input) => {
+    expect(redactSensitive(input, cfg).redacted).toBe(input);
+  });
+
+  // Supabase and Sentry tokens; split for push protection too.
+  const SUPABASE_BODY = '0123456789abcdef0123' + '456789abcdef01234567';
+  const SENTRY_USER_BODY = '0123456789abcdef0123456789abcdef' + '0123456789abcdef0123456789abcdef';
+  const SENTRY_ORG_PAYLOAD = 'eyJpYXQiOjE3MDAwMDAwMDAuMDAwMDAwLCJ1cmwiOiJodHRwczovL3NlbnRyeS5pbyIs' + 'Im9yZyI6ImV4YW1wbGUtb3JnIn0=';
+  const SENTRY_ORG_SECRET = 'aBcDeFgHiJkLmNoPqRsTuVwXy' + 'Z0123456789+/aBcDe';
+  it.each([
+    ['supabase_token', 'export SUPABASE_ACCESS_TOKEN=' + 'sb' + 'p_' + SUPABASE_BODY + ' tail', SUPABASE_BODY],
+    ['supabase_token', '{"env":{"SUPABASE_ACCESS_TOKEN":"' + 'sb' + 'p_' + SUPABASE_BODY + '"}} tail', SUPABASE_BODY],
+    ['sentry_token', 'SENTRY_AUTH_TOKEN=' + 'sntr' + 'yu_' + SENTRY_USER_BODY + ' tail', SENTRY_USER_BODY],
+    ['sentry_token', 'sentry-cli sourcemaps upload --auth-token ' + 'sntr' + 'ys_' + SENTRY_ORG_PAYLOAD + '_' + SENTRY_ORG_SECRET + ' tail', SENTRY_ORG_SECRET],
+    ['sentry_token', '[auth]\ntoken=' + 'sntr' + 'ys_' + SENTRY_ORG_PAYLOAD + '_' + SENTRY_ORG_SECRET + ' tail', SENTRY_ORG_PAYLOAD],
+  ])('redacts a %s in %s', (name, input, body) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain(`<redacted type='${name}'/>`);
+    expect(result.redacted).toMatch(/ tail$/);
+    expect(result.redacted).not.toContain(body);
+    expect(Object.keys(result.counts)).toEqual([name]);
+  });
+
+  it.each([
+    'sbp_short',
+    'sntryu_short',
+    'sntrys_short_token',
+    'sbp_' + '0123456789abcdef0123456789abcdef',
+    'sntryu_' + '0123456789abcdef0123456789abcdef',
+    'the sntrys_ prefix',
   ])('leaves %s alone', (input) => {
     expect(redactSensitive(input, cfg).redacted).toBe(input);
   });

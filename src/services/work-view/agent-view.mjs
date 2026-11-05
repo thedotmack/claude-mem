@@ -86,7 +86,7 @@ export function readAgentRecords(database, { observationLimit = 300, summaryLimi
     FROM observations ORDER BY created_at_epoch DESC, id DESC LIMIT ?`, [observationLimit]);
   const summaries = safeRead(database, `SELECT id, project, memory_session_id, prompt_number, request, completed, next_steps, created_at_epoch
     FROM session_summaries ORDER BY created_at_epoch DESC, id DESC LIMIT ?`, [summaryLimit]);
-  const { productCalls, productObservations, productDeliverables } = readProductRecords((sql, params) => safeRead(database, sql, params), workSinceEpoch);
+  const { productCalls, productObservations, productDeliverables } = readProductRecords((sql, params) => safeRead(database, sql, params), workSinceEpoch, 2000, { database });
   const ids = [...new Set([...calls, ...productCalls].map((call) => call.session_db_id).filter((id) => id != null))];
   const memoryIds = [...new Set([...observations, ...summaries, ...productObservations].map((row) => row.memory_session_id).filter(Boolean))];
   const predicates = [], args = [];
@@ -143,6 +143,7 @@ export function readAgentLaunches(rows) {
     const isAsync = row.is_async === 1 || row.is_async === true || row.status === 'async_launched';
     launches.set(key, {
       toolUseId: row.id, promptNumber: row.prompt_number ?? null, launchedAtEpoch: row.created_at_epoch,
+      shared: row.shared === true,
       isAsync, returnedAtEpoch: !isAsync && row.status === 'completed' ? row.created_at_epoch : null,
       description: compactText(row.description, 160), prompt: compactText(row.prompt, 500),
     });
@@ -153,7 +154,7 @@ export function readAgentLaunches(rows) {
 function launchRequest(launch) {
   if (!launch) return null;
   const text = launch.description ?? launch.prompt;
-  return text ? { text, source: 'agent-launch', sourceId: launch.toolUseId, url: `/api/work-view/evidence/tool-use/${launch.toolUseId}` } : null;
+  return text ? { text, source: 'agent-launch', sourceId: launch.shared ? null : launch.toolUseId, url: launch.shared ? null : `/api/work-view/evidence/tool-use/${launch.toolUseId}` } : null;
 }
 
 export function buildAgentView(state, records, { now = Date.now(), workLimit = 240, activityLimit = 160, recentMs = 15 * 60 * 1000, titleCache = {}, ledger = null } = {}) {
@@ -273,7 +274,7 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
     const original = prompt ? { source: 'user-prompt', sourceId: prompt.id, url: `/api/work-view/evidence/prompt/${prompt.id}` } : null;
     if (summary && readableRequest(summary.request)) return { key, text: readableRequest(summary.request), source: 'session-summary-request', sourceId: summary.id, url: `/api/work-view/evidence/summary/${summary.id}`, original };
     if (prompt && readableRequest(prompt.prompt_text)) return { key, text: readableRequest(prompt.prompt_text), ...original };
-    if ((number == null || number <= 1) && readableRequest(session.user_prompt)) return { key, text: readableRequest(session.user_prompt), source: 'session-initial-request', sourceId: session.id, url: `/api/work-view/evidence/session/${session.id}` };
+    if ((number == null || number <= 1) && readableRequest(session.user_prompt)) return { key, text: readableRequest(session.user_prompt), source: 'session-initial-request', sourceId: session.sharedOnly ? null : session.id, url: session.sharedOnly ? null : `/api/work-view/evidence/session/${session.id}` };
     return null;
   }
 
@@ -292,7 +293,7 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
     const matches = (callsByKey.get(callKey(event.originProject ?? event.project, event.listName, event.fields)) ?? [])
       .filter((call) => Math.abs(call.created_at_epoch - event.atEpoch) <= 5000);
     // Repeated identical writes are deliberately left unlinked when ambiguous.
-    return matches.length === 1 ? matches[0] : null;
+    return matches.length === 1 ? matches[0] : records.sharedAttributions?.get(event.id) ?? null;
   }
   const eventsByItem = new Map();
   for (const event of state.events) {
@@ -331,8 +332,8 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
       requestComplete: typeof (item.fields.request_complete ?? item.list.fields.request_complete) === 'boolean' ? (item.fields.request_complete ?? item.list.fields.request_complete) : null,
       ...metadataFor(item),
       lastUpdateAt: stamp(item.updatedAtEpoch), lastUpdateEpoch: item.updatedAtEpoch,
-      attribution: session ? { source: 'captured-work-state-call', toolUseId: call.id, sessionId: session.id, agentId: call.agent_id ?? null, meaning: linkedEvent.id === event?.id ? 'update-author' : 'latest-linked-update-author', linkedEntryId: linkedEvent.id, match: 'unique-project-list-fields-within-5s' } : { source: owner ? 'explicit-owner-field' : 'unavailable', meaning: owner ? 'recorded-assignee' : 'unknown' },
-      sourceRefs: [{ kind: 'work-state', id: event?.id ?? item.latestEntryId }, ...(call ? [{ kind: 'tool-use', id: call.id }] : [])],
+      attribution: session ? { source: call.shared ? 'synced-work-state-provenance' : 'captured-work-state-call', toolUseId: call.shared ? null : call.id, sessionId: session.id, agentId: call.agent_id ?? null, meaning: linkedEvent.id === event?.id ? 'update-author' : 'latest-linked-update-author', linkedEntryId: linkedEvent.id, match: call.shared ? 'stable-origin-entry' : 'unique-project-list-fields-within-5s' } : { source: owner ? 'explicit-owner-field' : 'unavailable', meaning: owner ? 'recorded-assignee' : 'unknown' },
+      sourceRefs: [{ kind: 'work-state', id: event?.id ?? item.latestEntryId }, ...(call && !call.shared ? [{ kind: 'tool-use', id: call.id }] : [])],
       url: `/api/work-view/evidence/work-state/${event?.id ?? item.latestEntryId}`,
     };
     group.work.push(entry);
@@ -402,7 +403,7 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
     const evidence = [];
     const stop = agentStopFor(stops, group.platformSource, group.contentSessionId, group.agentId);
     if (stop) evidence.push({ evidence: stop.source, atEpoch: stop.stoppedAtEpoch, sourceRef: { kind: 'work-state', id: stop.entryId } });
-    if (group.launch?.returnedAtEpoch) evidence.push({ evidence: 'agent-call-returned', atEpoch: group.launch.returnedAtEpoch, sourceRef: { kind: 'tool-use', id: group.launch.toolUseId } });
+    if (group.launch?.returnedAtEpoch) evidence.push({ evidence: 'agent-call-returned', atEpoch: group.launch.returnedAtEpoch, sourceRef: group.launch.shared ? null : { kind: 'tool-use', id: group.launch.toolUseId } });
     return evidence.filter((entry) => entry.atEpoch >= lastActive).sort((a, b) => b.atEpoch - a.atEpoch)[0] ?? null;
   }
 

@@ -17,7 +17,7 @@ import { join } from 'path';
 import { paths } from './paths.js';
 import { parseJsonWithBom } from './atomic-json.js';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
-import { getCredential, hasAnthropicApiKey, hasAnthropicAuthToken } from './EnvManager.js';
+import { getCredential, hasAnthropicApiKey, hasAnthropicAuthToken, hasConfiguredClaudeOAuthToken } from './EnvManager.js';
 import { cooldownAppliesToCurrentAccount, getQuotaCooldown, isQuotaCooldownHolding, type ClaudeCredential } from './quota-cooldown.js';
 import { resolveClaudeCredentialProfile } from './oauth-token.js';
 import {
@@ -50,6 +50,8 @@ export function hasClaudeCredentials(): boolean {
 export function hasClaudeSubscriptionLogin(): boolean {
   // A headless login: readClaudeOAuthToken serves this token too ('env-fallback').
   if (process.env.CLAUDE_CODE_OAUTH_TOKEN) return true;
+  // A long-lived `claude setup-token` token in ~/.claude-mem/.env (plan-19).
+  if (hasConfiguredClaudeOAuthToken()) return true;
   const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
   const profile = resolveClaudeCredentialProfile(settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR);
   // Linux and Windows keep the login in the profile's credentials file; macOS
