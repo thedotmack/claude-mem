@@ -32,6 +32,11 @@
       "stop_hook_active": false,
       "last_assistant_message": "The login redirect now keeps the original query string."
     },
+    "PostCompaction": {
+      "hook_event_name": "PostCompaction",
+      "session_id": "devin-session-1",
+      "summary": "Fixed the login redirect; the query string is now kept."
+    },
     "SessionEnd": {
       "hook_event_name": "SessionEnd",
       "session_id": "devin-session-1",

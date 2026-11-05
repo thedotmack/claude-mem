@@ -120,7 +120,7 @@ export class SessionManager {
     // shares its budget with rate-limit and fallback resumes. Spent, the pause
     // keeps its backoff position without a timer, and the next hook-driven
     // start still drains the buffer.
-    if (!planUnattendedGatewayResume(session, 'transport-resume', canCmemGatewayServe()).resume) {
+    if (!planUnattendedGatewayResume(session, 'transport-resume', canCmemGatewayServe(session.platformSource)).resume) {
       this.transportResumes.set(sessionDbId, { pauses });
       return;
     }
@@ -802,14 +802,13 @@ export class SessionManager {
    */
   getResumableSessionIds(includeOperatorOnly: boolean = false): number[] {
     const automaticallyRetryable = new Set([null, undefined, 'quota', 'rate_limit', 'overflow', 'provider_switch', 'response_stall']);
-    const memoryOnCmemGateway = !includeOperatorOnly && canCmemGatewayServe();
     return Array.from(this.sessions.values())
       .filter(session => !session.generatorPromise
         && this.buffer.getPendingCount(session.sessionDbId) > 0
         && (includeOperatorOnly || !(session.pausedReason === 'response_stall' && session.stallResumeTimer !== undefined))
         && (includeOperatorOnly || session.overflowPausedUntilMs === undefined)
         && (includeOperatorOnly || session.scheduledResumeTimer === undefined)
-        && (includeOperatorOnly || !(memoryOnCmemGateway && unattendedGatewayResumesSpent(session)))
+        && (includeOperatorOnly || !(unattendedGatewayResumesSpent(session) && canCmemGatewayServe(session.platformSource)))
         && (includeOperatorOnly || automaticallyRetryable.has(session.pausedReason)))
       .map(session => session.sessionDbId);
   }

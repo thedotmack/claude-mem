@@ -36,27 +36,21 @@ export class ModeManager {
     return ModeManager.instance;
   }
 
+  /**
+   * Split a mode ID into its parent and the override files layered on it, in
+   * order. Each `--` segment names one `parent--segment` file, so
+   * `code--chill--ko` loads code.json, then code--chill.json, then
+   * code--ko.json. Overrides never stack on each other's IDs: every file ID
+   * this returns is a single `parent--override` pair.
+   */
   private parseInheritance(modeId: string): {
-    hasParent: boolean;
     parentId: string;
-    overrideId: string;
+    overrideIds: string[];
   } {
-    const parts = modeId.split('--');
-
-    if (parts.length === 1) {
-      return { hasParent: false, parentId: '', overrideId: '' };
-    }
-
-    if (parts.length > 2) {
-      throw new Error(
-        `Invalid mode inheritance: ${modeId}. Only one level of inheritance supported (parent--override)`
-      );
-    }
-
+    const [parentId, ...segments] = modeId.split('--');
     return {
-      hasParent: true,
-      parentId: parts[0],
-      overrideId: modeId 
+      parentId,
+      overrideIds: segments.map(segment => `${parentId}--${segment}`),
     };
   }
 
@@ -131,15 +125,16 @@ export class ModeManager {
   loadMode(modeId: string): ModeConfig {
     let mode: ModeConfig;
     try {
-      const inheritance = this.parseInheritance(modeId);
-      if (inheritance.hasParent) {
-        const parent = this.loadModeFile(inheritance.parentId);
-        const override = this.loadModeFile(inheritance.overrideId);
-        if (!this.isPlainObject(parent.mode) || !this.isPlainObject(override.mode)) {
-          throw new InvalidModeError(`Invalid mode (${parent.path}, ${override.path}): parent and override must be JSON objects`);
+      const { parentId, overrideIds } = this.parseInheritance(modeId);
+      if (overrideIds.length > 0) {
+        const parent = this.loadModeFile(parentId);
+        const overrides = overrideIds.map(overrideId => this.loadModeFile(overrideId));
+        const modePaths = [parent.path, ...overrides.map(override => override.path)];
+        if (![parent, ...overrides].every(file => this.isPlainObject(file.mode))) {
+          throw new InvalidModeError(`Invalid mode (${modePaths.join(', ')}): parent and override must be JSON objects`);
         }
-        mode = this.deepMerge(parent.mode, override.mode);
-        this.validateMode(mode, [parent.path, override.path]);
+        mode = overrides.reduce((merged, override) => this.deepMerge(merged, override.mode), parent.mode);
+        this.validateMode(mode, modePaths);
       } else {
         const loaded = this.loadModeFile(modeId);
         mode = loaded.mode;
