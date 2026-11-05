@@ -9,13 +9,22 @@ const MAX_PENDING_READS = 64;
 
 /**
  * A read with no reply by this deadline is a hung context reader (#5374).
- * Cold keyword search has been measured around 42s (#4938) and SQLite busy
- * waits are 5s, so the budget sits above both. It is still short enough that
- * one stuck thread cannot stall every observer session that shares it.
+ * The number is a margin over a measurement, not a provider limit: the slowest
+ * read measured on a large database is a cold timeline query at 42 s (#4938).
+ * The reader answers one message at a time and this clock starts when a read
+ * is queued, so 120 s covers this read plus one as slow ahead of it, with margin.
+ * SQLite's busy wait (SQLITE_BUSY_TIMEOUT_MS, 5 s) fits well inside it.
  */
 export const CONTEXT_READ_REQUEST_TIMEOUT_MS = 120_000;
 
-/** close() and hung-reader retirement stop waiting for terminate() after this. */
+/**
+ * close() and hung-reader retirement stop waiting for terminate() after this.
+ * A healthy reader closed in 15 ms at most (measured: 20 open-read-close cycles
+ * on Bun 1.4.4), while one stuck in native SQLite code may never finish (#5374).
+ * Shutdown runs this before closing the database, all inside the 10 s base
+ * WORKER_GRACEFUL_SHUTDOWN_DEADLINE_BASE_MS, so a stuck reader takes at most a
+ * fifth of that deadline.
+ */
 export const CONTEXT_READ_TERMINATE_TIMEOUT_MS = 2_000;
 
 type PendingRead = {
