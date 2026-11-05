@@ -5,6 +5,14 @@ import type { SSEEvent, SSEClient } from '../worker-types.js';
 
 // SSE is a live feed, not a durable queue. Disconnect a stalled consumer
 // rather than retaining an unbounded history; EventSource can reconnect.
+// Why 1 MiB: the largest frames this broadcaster sends are a single
+// new_observation and initial_load (the project catalog). Measured on a
+// 3 GB database (223,722 observations, 743 projects) on 2026-11-05, the
+// largest observation's text fields total about 48 K characters and the
+// catalog's project names about 41 K, so 1 MiB holds roughly 20 of the largest
+// frames before a consumer that stopped reading is cut off. A frame
+// larger than the whole budget is still written when the client is not
+// blocked; the cap only applies to frames queued behind backpressure.
 const MAX_PENDING_BYTES = 1024 * 1024;
 
 interface ClientQueue {
@@ -97,6 +105,12 @@ export class SSEBroadcaster {
     if (queue.blocked) {
       const bytes = Buffer.byteLength(data, 'utf8');
       if (queue.bytes + bytes > MAX_PENDING_BYTES) {
+        logger.warn('WORKER', 'SSE client stopped reading; disconnecting it and dropping its queued frames (it can reconnect)', {
+          pendingBytes: queue.bytes,
+          pendingFrames: queue.frames.length,
+          nextFrameBytes: bytes,
+          maxPendingBytes: MAX_PENDING_BYTES,
+        });
         this.disconnectFailedClient(res);
         return;
       }
