@@ -94,10 +94,10 @@ function queryOptions(input: ProgressiveSearchInput): SearchOptions {
   }
   let project: string | undefined;
   if (input.project !== undefined) {
-    if (typeof input.project !== "string" || !input.project.trim() || utf8Length(input.project.trim()) > 256) {
+    if (typeof input.project !== "string" || !input.project.trim() || utf8Length(input.project) > 256) {
       fail("invalid_input", "project must be nonempty and at most 256 UTF-8 bytes.");
     }
-    project = input.project.trim();
+    project = input.project;
   }
   return {
     query, ...(project === undefined ? {} : { project }),

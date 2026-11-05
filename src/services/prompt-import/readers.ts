@@ -93,8 +93,20 @@ function textOf(content: unknown, textTypes: string[]): string {
     .join('\n');
 }
 
-function unescapeJsonText(text: string): string {
-  return text.replaceAll('\\n', '\n').replaceAll('\\"', '"');
+/** Decode complete JSON string tokens, not their container or the contents of decoded strings. */
+function addJsonStringText(text: string, add: (text: string) => void): void {
+  for (let start = 0; start < text.length; start++) {
+    if (text[start] !== '"') continue;
+    let end = start + 1;
+    for (; end < text.length; end++) {
+      if (text[end] === '\\') { end++; continue; }
+      if (text[end] === '"') break;
+    }
+    if (end >= text.length) break; // An incomplete value stays raw evidence only.
+    const decoded = parseLine(text.slice(start, end + 1));
+    if (typeof decoded === 'string') add(decoded);
+    start = end;
+  }
 }
 
 function fallbackId(...parts: string[]): string {
@@ -202,14 +214,19 @@ export function createClaudeCodeReader(): AgentPromptReader {
         if (!/"type"\s*:\s*"assistant"/.test(line)) continue;
         const record = parseLine(line);
         const content = record?.message?.content;
+        const at = isoToEpochMs(record?.timestamp);
+        if (at === null) continue;
         const pieces: string[] = [];
         for (const block of Array.isArray(content) ? content : []) {
           if (!block || typeof block !== 'object') continue;
           if (block.type === 'text') pieces.push(typeof block.text === 'string' ? block.text : '');
-          else if (block.type === 'tool_use') pieces.push(unescapeJsonText(JSON.stringify(block.input ?? {})));
+          else if (block.type === 'tool_use') {
+            const raw = JSON.stringify(block.input ?? {});
+            pieces.push(raw);
+            addJsonStringText(raw, text => add(Math.floor(at / 1000), text));
+          }
         }
-        const at = isoToEpochMs(record?.timestamp);
-        if (pieces.length && at !== null) add(Math.floor(at / 1000), pieces.join(' '));
+        if (pieces.length) add(Math.floor(at / 1000), pieces.join(' '));
       }
     },
   };
@@ -308,7 +325,8 @@ export function createCodexReader(): AgentPromptReader {
             .join(' ');
         } else if (payload.type === 'function_call' || payload.type === 'custom_tool_call') {
           const value = payload.arguments || payload.input || '';
-          text = unescapeJsonText(typeof value === 'string' ? value : JSON.stringify(value));
+          text = typeof value === 'string' ? value : JSON.stringify(value);
+          if (payload.type === 'function_call') addJsonStringText(text, value => add(Math.floor(at / 1000), value));
         } else continue;
         add(Math.floor(at / 1000), text);
       }
@@ -424,7 +442,11 @@ export function createGeminiCliReader(): AgentPromptReader {
         const at = isoToEpochMs(message.timestamp);
         if (message.type !== 'gemini' || at === null) continue;
         const pieces = [typeof message.content === 'string' ? message.content : textOf(message.content, ['text'])];
-        for (const call of Array.isArray(message.toolCalls) ? message.toolCalls : []) pieces.push(unescapeJsonText(JSON.stringify(call?.args ?? {})));
+        for (const call of Array.isArray(message.toolCalls) ? message.toolCalls : []) {
+          const raw = JSON.stringify(call?.args ?? {});
+          pieces.push(raw);
+          addJsonStringText(raw, text => add(Math.floor(at / 1000), text));
+        }
         add(Math.floor(at / 1000), pieces.join(' '));
       }
     },
@@ -537,7 +559,9 @@ export function createOpenCodeReader(): AgentPromptReader {
         if (data?.type !== 'tool' || !['running', 'completed', 'error'].includes(data.status)
           || typeof data.startedAt !== 'number' || !Number.isFinite(data.startedAt) || data.startedAt < 0
           || !data.input || typeof data.input !== 'object' || Array.isArray(data.input)) continue;
-        add(Math.floor(data.startedAt / 1000), unescapeJsonText(JSON.stringify(data.input)));
+        const raw = JSON.stringify(data.input);
+        add(Math.floor(data.startedAt / 1000), raw);
+        addJsonStringText(raw, text => add(Math.floor(data.startedAt / 1000), text));
       }
     },
   };

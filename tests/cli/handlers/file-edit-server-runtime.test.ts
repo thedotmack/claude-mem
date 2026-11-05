@@ -55,6 +55,7 @@ mock.module('../../../src/services/hooks/runtime-selector.js', () => ({
 }));
 
 import { logger } from '../../../src/utils/logger.js';
+import { SettingsDefaultsManager } from '../../../src/shared/SettingsDefaultsManager.js';
 import { ServerClient, ServerClientError } from '../../../src/services/hooks/server-client.js';
 import { spooledEntries, useTempHookSpoolDataDir } from '../../helpers/temp-hook-spool.js';
 
@@ -94,6 +95,49 @@ const cursorInput = () => ({
   platform: 'Cursor',
   filePath: '/tmp/file-edit-server-project/a.ts',
   edits: [{ oldText: 'before', newText: 'after' }],
+});
+
+describe('fileEditHandler — observer capture off', () => {
+  let settingsSpy: ReturnType<typeof spyOn>;
+  beforeEach(() => {
+    settingsSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
+      ...SettingsDefaultsManager.getAllDefaults(),
+      CLAUDE_MEM_OBSERVER_ENABLED: 'false',
+    }));
+  });
+  afterEach(() => settingsSpy.mockRestore());
+
+  it('sends nothing to the server', async () => {
+    mockRuntime = serverRuntime();
+    const { fileEditHandler } = await import('../../../src/cli/handlers/file-edit.js');
+
+    const result = await fileEditHandler.execute(cursorInput());
+
+    expect(result.continue).toBe(true);
+    expect(recordEventLog).toEqual([]);
+    expect(spooledEntries()).toEqual([]);
+  });
+
+  it('spools nothing for the worker', async () => {
+    const { fileEditHandler } = await import('../../../src/cli/handlers/file-edit.js');
+
+    const result = await fileEditHandler.execute(cursorInput());
+
+    expect(result.continue).toBe(true);
+    expect(spooledEntries()).toEqual([]);
+    expect(nudgeLog).toEqual([]);
+  });
+
+  it('sees the toggle change in a long-lived process such as the transcript watcher', async () => {
+    const { fileEditHandler } = await import('../../../src/cli/handlers/file-edit.js');
+
+    await fileEditHandler.execute(cursorInput());
+    expect(spooledEntries()).toEqual([]);
+
+    settingsSpy.mockImplementation(() => SettingsDefaultsManager.getAllDefaults());
+    await fileEditHandler.execute(cursorInput());
+    expect(spooledEntries()).toHaveLength(1);
+  });
 });
 
 describe('fileEditHandler — server runtime (data-loss fix)', () => {

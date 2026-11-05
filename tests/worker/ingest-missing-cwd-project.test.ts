@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:te
 import { Database } from 'bun:sqlite';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
-import { ingestAdvisorCalls, ingestObservation, setIngestContext } from '../../src/services/worker/http/shared.js';
+import { ingestAdvisorCalls, ingestObservation, ingestSummarize, setIngestContext } from '../../src/services/worker/http/shared.js';
 import { logger } from '../../src/utils/logger.js';
 
 let store: SessionStore;
@@ -187,6 +187,45 @@ describe('ingest without a cwd registers the project as unknown (#4772)', () => 
     store.createSDKSession('unknown-with-cwd', '/different/project', '');
 
     expect(projectOf('unknown-with-cwd')).toBe('unknown');
+  });
+});
+
+describe('observer capture hard disable (#4965)', () => {
+  beforeEach(() => {
+    settingsSpies[0].mockImplementation(() => ({
+      ...SettingsDefaultsManager.getAllDefaults(),
+      CLAUDE_MEM_OBSERVER_ENABLED: 'false',
+    }));
+  });
+
+  it('skips observation ingest before creating a session, queueing work, or starting a provider', async () => {
+    const result = await ingestObservation({
+      contentSessionId: 'disabled-observation',
+      platformSource: 'claude',
+      toolName: 'Bash',
+      toolInput: { command: 'ls' },
+      toolResponse: { stdout: 'x' },
+      toolUseId: 'toolu_disabled',
+    });
+
+    expect(result).toEqual({ ok: true, status: 'skipped', reason: 'observer_disabled' });
+    expect(projectOf('disabled-observation')).toBeUndefined();
+    expect(sessionManager.queueObservation).not.toHaveBeenCalled();
+    expect(ensureGeneratorRunning).not.toHaveBeenCalled();
+  });
+
+  it('skips summaries before queueing work or starting a provider', async () => {
+    store.createSDKSession('disabled-summary', '/project', 'prompt', undefined, 'claude');
+
+    const result = await ingestSummarize({
+      contentSessionId: 'disabled-summary',
+      platformSource: 'claude',
+      lastAssistantMessage: 'answer',
+    });
+
+    expect(result).toEqual({ status: 'skipped', reason: 'observer_disabled' });
+    expect(sessionManager.queueSummarize).not.toHaveBeenCalled();
+    expect(ensureGeneratorRunning).not.toHaveBeenCalled();
   });
 });
 

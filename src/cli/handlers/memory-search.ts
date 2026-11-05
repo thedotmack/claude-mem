@@ -9,6 +9,7 @@ import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
+import { projectsQueryValues } from '../../shared/project-list.js';
 import { expandMemoryPath, isWithinMemoryRoot, parseMemoryWatchRoots } from '../../services/memory/config.js';
 import { logger } from '../../utils/logger.js';
 import { formatMcpPayload } from '../../servers/mcp-text-format.js';
@@ -151,8 +152,13 @@ export const memorySearchHandler: EventHandler = {
       // reads the folder. Prefer the most specific explicit mapping for nested roots.
       const mappedRoot = lookup.memoryPath ? configuredRoots.filter(root => isWithinMemoryRoot(lookup.memoryPath!, root.path)).sort((a, b) => b.path.length - a.path.length)[0] : undefined;
       const project = mappedRoot?.project ?? checkout.primary;
-      const projects = mappedRoot ? mappedRoot.project : checkout.allProjects.join(',');
-      const params = new URLSearchParams({ query: lookup.query, project, projects, limit: '8', type: 'observations', format: 'json' });
+      const params = new URLSearchParams({ query: lookup.query, project });
+      for (const value of projectsQueryValues(mappedRoot ? [mappedRoot.project] : checkout.allProjects)) {
+        params.append('projects', value);
+      }
+      params.set('limit', '8');
+      params.set('type', 'observations');
+      params.set('format', 'json');
       const result = await executeWithWorkerFallback<unknown>(`/api/search?${params}`, 'GET', undefined, { timeoutMs: 3_000, workerStartupTimeoutMs: 1_000 });
       if (isWorkerFallback(result) || !result) return {};
       const r = result as { isError?: boolean; observations?: unknown[] };

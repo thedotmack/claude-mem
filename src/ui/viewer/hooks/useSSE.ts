@@ -12,6 +12,26 @@ export interface LiveSessionItem {
   createdAtEpoch: number;
 }
 
+/**
+ * Decode one SSE frame, or null when it is not a usable event.
+ *
+ * Every producer on this stream writes `data: ${JSON.stringify(...)}`, so a
+ * non-JSON frame is not something the worker sends today. It becomes possible
+ * with a future producer or a rewriting proxy. React error boundaries do not
+ * catch errors in `onmessage`; a throw ends that call, but later frames still
+ * reach the handler. Drop the bad frame without an uncaught error instead.
+ */
+export function parseStreamFrame(raw: string): StreamEvent | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  return parsed as StreamEvent;
+}
+
 export interface StreamHandlers {
   /** Every `item_deleted` event (a row deleted in this tab or any other); the caller owns removal. */
   onItemDeleted: (itemType: FeedItemType, id: number) => void;
@@ -119,7 +139,11 @@ export function useSSE(handlers: StreamHandlers) {
       };
 
       eventSource.onmessage = (event) => {
-        const data: StreamEvent = JSON.parse(event.data);
+        const data = parseStreamFrame(event.data);
+        if (!data) {
+          console.warn('[SSE] Ignoring an unparseable frame');
+          return;
+        }
 
         switch (data.type) {
           case 'initial_load':
