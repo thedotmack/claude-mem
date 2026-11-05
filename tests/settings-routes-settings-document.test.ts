@@ -223,6 +223,19 @@ describe('SettingsRoutes SessionStart block settings', () => {
     expect(json.error).toBe('CLAUDE_MEM_WELCOME_HINT_ENABLED must be "true" or "false"');
   });
 
+  // Falsy values are posted values too: readers only honor the strings
+  // "true"/"false", so saving 0 verbatim would report success while
+  // leaving the toggle on.
+  it('rejects falsy non-boolean values for a SessionStart toggle instead of saving them', async () => {
+    for (const value of [0, '', null, false]) {
+      const { status, json, written } = await postSettings({ CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: value });
+
+      expect(status).toBe(400);
+      expect(json.error).toBe('CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED must be "true" or "false"');
+      expect(written.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED).toBeUndefined();
+    }
+  });
+
   // The renderer accepts 0 for both counts (parseContextCountValue allows
   // >= 0), so the API must accept it too: 0 observations / 0 sessions is
   // how the block is emptied.

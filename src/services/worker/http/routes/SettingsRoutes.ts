@@ -529,7 +529,10 @@ export class SettingsRoutes extends BaseRouteHandler {
     ];
 
     for (const key of booleanSettings) {
-      if (settings[key] && !['true', 'false'].includes(settings[key])) {
+      // Presence, not truthiness: a falsy value (0, "", null) is still a
+      // posted value, and readers only honor the strings "true"/"false",
+      // so saving one verbatim would report success and change nothing.
+      if (settings[key] !== undefined && !['true', 'false'].includes(settings[key])) {
         return { valid: false, error: `${key} must be "true" or "false"` };
       }
     }
