@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import type { Request, Response, NextFunction } from 'express';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { paths } from '../../../../src/shared/paths.js';
+import { recordObserverSuccess } from '../../../../src/shared/observer-health.js';
 import { SessionManager } from '../../../../src/services/worker/SessionManager.js';
 import { SessionRoutes } from '../../../../src/services/worker/http/routes/SessionRoutes.js';
 import * as providerDispatch from '../../../../src/services/worker/provider-dispatch.js';
@@ -334,16 +339,117 @@ describe('paused in-memory session recovery', () => {
     expect(routes.resumePendingSessions('processing-api', true)).toBe(2);
   });
 
+  it('resumes an auth pause once the ledger holds a success newer than the pause (#5377)', () => {
+    const { manager } = fixture();
+    const saved = process.env.CLAUDE_MEM_DATA_DIR;
+    const dir = mkdtempSync(join(tmpdir(), 'cm-resume-health-'));
+    process.env.CLAUDE_MEM_DATA_DIR = dir;
+    spyOn(paths, 'dataDir').mockReturnValue(dir);
+    try {
+      const session = manager.getSession(1)!;
+      session.pausedReason = 'auth';
+      session.pausedAtMs = Date.now() - 5_000;
+      session.pausedAuthScope = JSON.stringify(['claude', 'account-a', 'subscription']);
+      // A successful store after the pause proves the credential works again.
+      recordObserverSuccess(undefined, session.pausedAuthScope);
+      expect(manager.getResumableSessionIds()).toEqual([1]);
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+      else process.env.CLAUDE_MEM_DATA_DIR = saved;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps an auth pause parked while the newest ledger success predates the pause (#5377)', () => {
+    const { manager } = fixture();
+    const saved = process.env.CLAUDE_MEM_DATA_DIR;
+    const dir = mkdtempSync(join(tmpdir(), 'cm-resume-health-'));
+    process.env.CLAUDE_MEM_DATA_DIR = dir;
+    spyOn(paths, 'dataDir').mockReturnValue(dir);
+    try {
+      // A success from before the pause proves nothing about the credential now.
+      const scope = JSON.stringify(['claude', 'account-a', 'subscription']);
+      recordObserverSuccess(undefined, scope);
+      const session = manager.getSession(1)!;
+      session.pausedReason = 'auth';
+      session.pausedAtMs = Date.now() + 60_000;
+      session.pausedAuthScope = scope;
+      expect(manager.getResumableSessionIds()).toEqual([]);
+      expect(manager.getResumableSessionIds(true)).toEqual([1]);
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+      else process.env.CLAUDE_MEM_DATA_DIR = saved;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  for (const [label, scope] of [
+    ['unscoped legacy success', null],
+    ['another provider', JSON.stringify(['openrouter', 'account-a', 'subscription'])],
+    ['another account', JSON.stringify(['claude', 'account-b', 'subscription'])],
+    ['another credential', JSON.stringify(['claude', 'account-a', 'api-key'])],
+  ] as const) {
+    it(`keeps an auth pause parked after ${label}`, () => {
+      const { manager } = fixture();
+      const saved = process.env.CLAUDE_MEM_DATA_DIR;
+      const dir = mkdtempSync(join(tmpdir(), 'cm-resume-health-'));
+      process.env.CLAUDE_MEM_DATA_DIR = dir;
+      spyOn(paths, 'dataDir').mockReturnValue(dir);
+      try {
+        const session = manager.getSession(1)!;
+        session.pausedReason = 'auth';
+        session.pausedAtMs = Date.now() - 5_000;
+        session.pausedAuthScope = JSON.stringify(['claude', 'account-a', 'subscription']);
+        recordObserverSuccess(undefined, scope);
+        expect(manager.getResumableSessionIds()).toEqual([]);
+        expect(manager.getResumableSessionIds(true)).toEqual([1]);
+      } finally {
+        if (saved === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+        else process.env.CLAUDE_MEM_DATA_DIR = saved;
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it('keeps sessions without a credential identity parked after any success', () => {
+    const { manager } = fixture();
+    const saved = process.env.CLAUDE_MEM_DATA_DIR;
+    const dir = mkdtempSync(join(tmpdir(), 'cm-resume-health-'));
+    process.env.CLAUDE_MEM_DATA_DIR = dir;
+    spyOn(paths, 'dataDir').mockReturnValue(dir);
+    try {
+      const session = manager.getSession(1)!;
+      session.pausedReason = 'auth';
+      session.pausedAtMs = Date.now() - 5_000;
+      recordObserverSuccess(undefined, JSON.stringify(['claude', 'account-a', 'subscription']));
+      expect(manager.getResumableSessionIds()).toEqual([]);
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+      else process.env.CLAUDE_MEM_DATA_DIR = saved;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('clears the pause reason when a generator starts, so later pauses are swept again', async () => {
     const { routes, manager } = fixture();
     const session = manager.getSession(1)!;
     session.pausedReason = 'auth';
+    session.pausedAtMs = Date.now();
+    session.pausedAuthScope = JSON.stringify(['claude', 'account-a', 'subscription']);
+    // The previous run's identity: a run that fails before it spawns must not
+    // pause under an account it never used.
+    session.observerProfile = 'account-a';
+    session.observerAuth = 'subscription';
     expect(manager.getResumableSessionIds()).toEqual([]);
 
     await postProcessing(routes, { isProcessing: false });
     await flushStarts();
     expect(session.generatorPromise).toBeDefined();
     expect(session.pausedReason).toBeNull();
+    expect(session.pausedAtMs).toBeNull();
+    expect(session.pausedAuthScope).toBeNull();
+    expect(session.observerProfile).toBeUndefined();
+    expect(session.observerAuth).toBeUndefined();
 
     // The run ends without a new pause reason: the automatic sweep may retry it.
     session.generatorPromise = null;

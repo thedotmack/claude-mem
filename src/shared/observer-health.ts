@@ -42,6 +42,8 @@ export interface ObserverHealthState {
   lastErrorProvider: string | null;
   /** Epoch ms of the most recent successful observation/summary store. */
   lastSuccessAt: number | null;
+  /** Epoch ms of the last successful store, per known provider, account and credential type. */
+  authRecoverySuccesses?: Record<string, number>;
   /**
    * Structured detail from a classified provider error (the gateway's taxonomy
    * envelope `{ code, message, action, url, request_id }`), carried so the
@@ -312,14 +314,22 @@ export function recordObserverFailure(
   });
 }
 
-export function recordObserverSuccess(filePath: string = defaultHealthFilePath()): void {
+/** Returns null without a reliable credential identity, so no automatic recovery proof is recorded. */
+export function observerAuthScope(provider: string | null, profile?: string, auth?: string): string | null {
+  if (provider !== 'claude' || !profile || (auth !== 'api-key' && auth !== 'subscription')) return null;
+  return JSON.stringify([provider, profile, auth]);
+}
+
+export function recordObserverSuccess(filePath: string = defaultHealthFilePath(), authScope?: string | null): void {
   withLedgerLock(filePath, () => {
     const prior = readObserverHealth(filePath) ?? EMPTY_STATE;
+    const now = Date.now();
     writeObserverHealth({
       ...prior,
       consecutiveFailures: 0,
       failingSinceAt: null,
-      lastSuccessAt: Date.now(),
+      lastSuccessAt: now,
+      ...(authScope ? { authRecoverySuccesses: { ...prior.authRecoverySuccesses, [authScope]: now } } : {}),
     }, filePath, prior);
   });
 }
