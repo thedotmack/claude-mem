@@ -127,6 +127,14 @@ poison.
 > container. The startup validator refuses to boot with this combination
 > and returns a non-zero exit code.
 
+### Viewer
+
+The server serves the viewer at `/`. Its read endpoints (`/stream`,
+`/api/projects`, `/api/observations`, `/api/summaries`, `/api/sessions`,
+`/api/processing-status`, `/api/logs`) need a `memories:read` key and return
+only that key's team, or its project for a project-bound key. Clearing the
+log (`POST /api/logs/clear`) needs a `memories:write` key.
+
 ## Compose stack
 
 `docker-compose.yml` ships four services:
