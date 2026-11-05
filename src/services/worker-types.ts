@@ -169,7 +169,7 @@ export interface ActiveSession {
    * cause is gone (#5377). Cleared together with pausedReason.
    */
   pausedAtMs?: number | null;
-  /** auth 暂停前捕获的 provider、账号和凭据类型，未知时为 null。 */
+  /** The provider, account and credential type captured before an auth pause; null when unknown. */
   pausedAuthScope?: string | null;
   /**
    * Set when dispatch selects a provider other than the one the running

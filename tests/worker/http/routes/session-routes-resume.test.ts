@@ -434,12 +434,22 @@ describe('paused in-memory session recovery', () => {
     const { routes, manager } = fixture();
     const session = manager.getSession(1)!;
     session.pausedReason = 'auth';
+    session.pausedAtMs = Date.now();
+    session.pausedAuthScope = JSON.stringify(['claude', 'account-a', 'subscription']);
+    // The previous run's identity: a run that fails before it spawns must not
+    // pause under an account it never used.
+    session.observerProfile = 'account-a';
+    session.observerAuth = 'subscription';
     expect(manager.getResumableSessionIds()).toEqual([]);
 
     await postProcessing(routes, { isProcessing: false });
     await flushStarts();
     expect(session.generatorPromise).toBeDefined();
     expect(session.pausedReason).toBeNull();
+    expect(session.pausedAtMs).toBeNull();
+    expect(session.pausedAuthScope).toBeNull();
+    expect(session.observerProfile).toBeUndefined();
+    expect(session.observerAuth).toBeUndefined();
 
     // The run ends without a new pause reason: the automatic sweep may retry it.
     session.generatorPromise = null;

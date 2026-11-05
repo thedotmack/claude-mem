@@ -36,7 +36,7 @@ export interface ObserverHealthState {
   lastErrorProvider: string | null;
   /** Epoch ms of the most recent successful observation/summary store. */
   lastSuccessAt: number | null;
-  /** 按已知 provider、账号和凭据类型保存成功证明。 */
+  /** Epoch ms of the last successful store, per known provider, account and credential type. */
   authRecoverySuccesses?: Record<string, number>;
   /**
    * Structured detail from a classified provider error (the gateway's taxonomy
@@ -300,7 +300,7 @@ export function recordObserverFailure(
   });
 }
 
-/** 缺少可靠的凭据身份时，不建立自动恢复证明。 */
+/** Returns null without a reliable credential identity, so no automatic recovery proof is recorded. */
 export function observerAuthScope(provider: string | null, profile?: string, auth?: string): string | null {
   if (provider !== 'claude' || !profile || (auth !== 'api-key' && auth !== 'subscription')) return null;
   return JSON.stringify([provider, profile, auth]);

@@ -824,10 +824,9 @@ export class SessionManager {
   /**
    * An auth pause waits for proof the credential works again, not a timer
    * (#5377): a successful store for the same provider, account and credential
-   * type after this session paused is that proof. Unknown identities, old
-   * unscoped ledgers, or a success older than the pause,
-   * and the session stays parked for its next captured event or an operator
-   * retry, exactly as before.
+   * type after this session paused is that proof. With an unknown identity, an
+   * old unscoped ledger, or a success older than the pause, the session stays
+   * parked for its next captured event or an operator retry, exactly as before.
    */
   private authPauseProvenRecovered(session: ActiveSession): boolean {
     if (session.pausedReason !== 'auth' || !session.pausedAtMs || !session.pausedAuthScope) return false;
