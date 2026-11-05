@@ -62,6 +62,23 @@ CREATE TABLE IF NOT EXISTS sync_devices (
 );
 CREATE INDEX IF NOT EXISTS sync_devices_user_seen
   ON sync_devices (user_id, last_seen DESC NULLS LAST, device_id);
+
+-- Origin-only conditional repairs retain their original precondition and exact
+-- accepted operation. A retry can recover its receipt without replaying a
+-- stale precondition or deleting either side of the conflict from sync_ops.
+CREATE TABLE IF NOT EXISTS sync_repair_receipts (
+  user_id TEXT NOT NULL,
+  repair_id TEXT NOT NULL,
+  request_digest TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  entity_rev TEXT NOT NULL,
+  operation_sha256 TEXT NOT NULL,
+  seq TEXT NOT NULL,
+  epoch TEXT NOT NULL,
+  expected_head JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, repair_id)
+);
 `;
 
 export async function applyMigrations(sql: import("postgres").Sql): Promise<void> {

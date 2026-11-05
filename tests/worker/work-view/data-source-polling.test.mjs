@@ -48,6 +48,14 @@ test('ordinary reads still check current evidence during the polling window', ()
   expect(source.read().agentView.revision).toBe(initial + 1);
 });
 
+test('a known content commit invalidates cached activity before the polling deadline', () => {
+  const initial = source.read(POLL).agentView.revision;
+  writer.exec('INSERT INTO unrelated_activity VALUES (1)');
+  expect(source.read(POLL).agentView.revision).toBe(initial);
+  source.invalidateActivity();
+  expect(source.read(POLL).agentView.revision).toBe(initial + 1);
+});
+
 test('work-state writes bypass the activity window', () => {
   const initial = source.read(POLL).agentView.revision;
   writer.prepare('INSERT INTO work_state_entries VALUES (1, ?, ?, ?, ?)')
@@ -88,4 +96,15 @@ test('a clock rollback does not extend cached activity freshness', () => {
   writer.exec('INSERT INTO unrelated_activity VALUES (1)');
   setSystemTime(START - 1000);
   expect(source.read(POLL).agentView.revision).toBe(initial + 1);
+});
+
+test('activity freshness is not renewed by a cached database-read heartbeat', () => {
+  const first = source.read(POLL).agentView.source;
+  expect(first.activityCheckedAt).toBe(new Date(START).toISOString());
+  setSystemTime(START + 30_000);
+  const cached = source.read(POLL).agentView.source;
+  expect(cached.lastCheckedAt).toBe(new Date(START + 30_000).toISOString());
+  expect(cached.activityCheckedAt).toBe(first.activityCheckedAt);
+  setSystemTime(START + 120_000);
+  expect(source.read(POLL).agentView.source.activityCheckedAt).toBe(new Date(START + 120_000).toISOString());
 });

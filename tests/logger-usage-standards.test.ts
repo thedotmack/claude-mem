@@ -58,6 +58,18 @@ const EXCLUDED_PATTERNS = [
   /servers\/checkout-search-scope\.ts$/,  // Pure MCP search-args transform; no side effects or error paths
   /sync\/sync-capabilities\.ts$/,  // Two header constants shared by CloudSync and SyncClient; no code to log
   /sync\/prompt-text-clamp\.ts$/,  // Pure prompt_text bound (SQL column fragment + clamp); CloudSync logs and quarantines at the drain (#3537)
+  /sync\/SyncScheduling\.ts$/,  // Pure upload-selection/dependency SQL builders; CloudSync owns scheduling diagnostics
+  /sync\/diagnostic-redaction\.ts$/,  // Pure privacy transform; importing logging here risks logging the value being redacted
+  /sync\/local-device-identity\.ts$/,  // Identity persistence primitive; failures propagate to the worker startup boundary
+  /sync\/SyncRepairReservation\.ts$/,  // Transaction-local revision-floor SQL; callers own recovery/upload error reporting
+  /sync\/SyncConflictEvidence\.ts$/,  // Read-only bounded evidence primitive shared with the read worker; returns content-free proof or throws
+  /sync\/SyncQueueEvidence\.ts$/,  // Read-only queue inventory shared with the read worker; returns bounded status or throws
+  /sync\/read-history-scope\.ts$/,  // Read-only inventory primitive shared with the read worker; never logs selected private scope
+  /sync\/SyncHistoryScopeReader\.ts$/,  // Worker bridge reports unavailable inventory to ViewerSyncService; no private request logging
+  /sync\/SyncRecoveryReader\.ts$/,  // Worker bridge rejects to SyncRecoveryRoutes, which logs fixed failure categories
+  /sync\/SyncRecovery\.ts$/,  // Durable recovery primitive; SyncRecoveryRoutes/CloudSync own fixed-code diagnostics, not scope/body logging
+  /sync\/SyncConflictRecovery\.ts$/,  // Durable repair primitive; SyncRecoveryRoutes owns fixed-code failures without logging authority evidence
+  /sync\/ViewerSyncService\.ts$/,  // Observational status composer exposes unavailable/stale evidence; CloudSync/SyncClient log transport failures
   /worker\/paid-send-budget\.ts$/,  // Pure per-batch paid-send counter; spends and exhaustion are logged at the provider call sites
   /servers\/corpus-worker-stream\.ts$/,  // MCP SSE transport; every failure throws to callWorker in mcp-server.ts, which logs it
   /servers\/worker-restart\.ts$/,  // MCP refused-connection retry; the restart is logged by ensureWorkerConnection and failures by callWorker in mcp-server.ts

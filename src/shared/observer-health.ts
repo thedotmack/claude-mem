@@ -26,7 +26,13 @@ import { sleepSync } from './atomic-json.js';
 export interface ObserverHealthState {
   /** Failures since the last successful store. */
   consecutiveFailures: number;
-  /** Epoch ms of the first failure in the current streak. */
+  /**
+   * Epoch ms of the first failure since the kind last changed — the outage the
+   * warning names. It is not "the first failure in the streak": a quota pause that
+   * later becomes a refused credential is two outages, and dating the refusal
+   * from the pause told one reader the credentials had been refused for three
+   * days when the log showed an auth failure 21 hours old (#5378).
+   */
   failingSinceAt: number | null;
   /** Epoch ms of the most recent failure. */
   lastErrorAt: number | null;
@@ -36,6 +42,8 @@ export interface ObserverHealthState {
   lastErrorProvider: string | null;
   /** Epoch ms of the most recent successful observation/summary store. */
   lastSuccessAt: number | null;
+  /** Epoch ms of the last successful store, per known provider, account and credential type. */
+  authRecoverySuccesses?: Record<string, number>;
   /**
    * Structured detail from a classified provider error (the gateway's taxonomy
    * envelope `{ code, message, action, url, request_id }`), carried so the
@@ -277,20 +285,28 @@ export function recordObserverFailure(
   filePath: string = defaultHealthFilePath(),
 ): void {
   const detail: ObserverFailureDetail = typeof error === 'string' ? { message: error } : error;
+  const nextKind = detail.kind ?? null;
   withLedgerLock(filePath, () => {
     const prior = readObserverHealth(filePath) ?? EMPTY_STATE;
     const now = Date.now();
     writeObserverHealth({
       ...prior,
       consecutiveFailures: prior.consecutiveFailures + 1,
-      failingSinceAt: prior.consecutiveFailures > 0 ? prior.failingSinceAt : now,
+      // The streak's start belongs to the current failure kind (#5378): a quota pause
+      // followed by auth refusals must not describe the auth warning with the quota
+      // era's timestamp. A kind change (classified → unclassified included) restarts
+      // the clock; only the streak itself waits for a success.
+      failingSinceAt:
+        prior.consecutiveFailures > 0 && (prior.lastErrorKind ?? null) === nextKind
+          ? prior.failingSinceAt
+          : now,
       lastErrorAt: now,
       lastErrorMessage: scrubErrorMessage(detail.message),
       lastErrorProvider: provider,
       // Always overwrite (never inherit from `prior`): a string-form failure
       // after a classified one must not keep the stale action/link/request id.
       lastErrorCode: detail.code ?? null,
-      lastErrorKind: detail.kind ?? null,
+      lastErrorKind: nextKind,
       lastErrorAction: detail.action ? scrubErrorMessage(detail.action) : null,
       lastErrorUrl: detail.url ?? null,
       lastErrorRequestId: detail.requestId ?? null,
@@ -298,14 +314,22 @@ export function recordObserverFailure(
   });
 }
 
-export function recordObserverSuccess(filePath: string = defaultHealthFilePath()): void {
+/** Returns null without a reliable credential identity, so no automatic recovery proof is recorded. */
+export function observerAuthScope(provider: string | null, profile?: string, auth?: string): string | null {
+  if (provider !== 'claude' || !profile || (auth !== 'api-key' && auth !== 'subscription')) return null;
+  return JSON.stringify([provider, profile, auth]);
+}
+
+export function recordObserverSuccess(filePath: string = defaultHealthFilePath(), authScope?: string | null): void {
   withLedgerLock(filePath, () => {
     const prior = readObserverHealth(filePath) ?? EMPTY_STATE;
+    const now = Date.now();
     writeObserverHealth({
       ...prior,
       consecutiveFailures: 0,
       failingSinceAt: null,
-      lastSuccessAt: Date.now(),
+      lastSuccessAt: now,
+      ...(authScope ? { authRecoverySuccesses: { ...prior.authRecoverySuccesses, [authScope]: now } } : {}),
     }, filePath, prior);
   });
 }

@@ -3,7 +3,7 @@ import { logger } from '../../utils/logger.js';
 import { redactForLog } from '../../utils/redaction.js';
 import type { ActiveSession, PendingMessage, PendingMessageWithId, ObservationData } from '../worker-types.js';
 import { SessionMessageBuffer } from './SessionMessageBuffer.js';
-import { getSdkProcessForSession, ensureSdkProcessExit } from '../../supervisor/process-registry.js';
+import { getSdkProcessForSession, ensureSdkProcessExit, getParkedSlotWaiterCount } from '../../supervisor/process-registry.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
 import { deliverSessionWrapup, type TelegramWrapupFormatter } from '../integrations/TelegramWrapupNotifier.js';
@@ -13,6 +13,10 @@ import { planUnattendedGatewayResume, unattendedGatewayResumesSpent } from './se
 import { PROVIDER_SWITCH_BOUNDARY_ABORT_REASON } from './session/abort-reason.js';
 import { isSimpleTierMessage } from './session/tier-routing.js';
 import { claudeStandInStillServes } from '../../shared/claude-fallback-readiness.js';
+import { readObserverHealth } from '../../shared/observer-health.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { isObserverCaptureEnabled } from '../../shared/observer-capture.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 
 export const SESSION_END_WRAPUP_GRACE_MS = 5_000;
 
@@ -540,6 +544,11 @@ export class SessionManager {
   }
 
   async clearPendingForSession(sessionDbId: number): Promise<number> {
+    const session = this.sessions.get(sessionDbId);
+    if (session) {
+      session.claimedMessageIds = [];
+      session.earliestPendingTimestamp = null;
+    }
     return this.buffer.clear(sessionDbId);
   }
 
@@ -799,6 +808,12 @@ export class SessionManager {
    *  - an observer that spent its overflow recycles (`overflowPausedUntilMs`):
    *    a message that fits no generation aborts again on every retry, which
    *    the sweep repeated every cooldown, forever.
+   *
+   * An auth pause is the one timer-less case that can still join the sweep:
+   * a store under the same captured credential scope after the session
+   * paused is proof the credential works again (#5377), so that session is
+   * retried within the same pacing as any other — its provider's breaker
+   * still gates it.
    */
   getResumableSessionIds(includeOperatorOnly: boolean = false): number[] {
     const automaticallyRetryable = new Set([null, undefined, 'quota', 'rate_limit', 'overflow', 'provider_switch', 'response_stall']);
@@ -809,8 +824,22 @@ export class SessionManager {
         && (includeOperatorOnly || session.overflowPausedUntilMs === undefined)
         && (includeOperatorOnly || session.scheduledResumeTimer === undefined)
         && (includeOperatorOnly || !(unattendedGatewayResumesSpent(session) && canCmemGatewayServe(session.platformSource)))
-        && (includeOperatorOnly || automaticallyRetryable.has(session.pausedReason)))
+        && (includeOperatorOnly || automaticallyRetryable.has(session.pausedReason)
+          || this.authPauseProvenRecovered(session)))
       .map(session => session.sessionDbId);
+  }
+
+  /**
+   * An auth pause waits for proof the credential works again, not a timer
+   * (#5377): a successful store for the same provider, account and credential
+   * type after this session paused is that proof. With an unknown identity, an
+   * old unscoped ledger, or a success older than the pause, the session stays
+   * parked for its next captured event or an operator retry, exactly as before.
+   */
+  private authPauseProvenRecovered(session: ActiveSession): boolean {
+    if (session.pausedReason !== 'auth' || !session.pausedAtMs || !session.pausedAuthScope) return false;
+    const health = readObserverHealth();
+    return (health?.authRecoverySuccesses?.[session.pausedAuthScope] ?? 0) > session.pausedAtMs;
   }
 
   getTotalQueueDepth(): number {
@@ -847,6 +876,9 @@ export class SessionManager {
     for await (const message of this.buffer.drain({
       sessionDbId,
       signal: session.abortController.signal,
+      // An idle generator must not hold its slot for the full idle
+      // timeout while other sessions are parked waiting for one (#5376).
+      shouldReleaseIdleSlot: () => getParkedSlotWaiterCount() > 0,
       onIdleTimeout: () => {
         logger.info('SESSION', 'Triggering abort due to idle timeout to kill subprocess', { sessionDbId });
         session.idleTimedOut = true;
@@ -854,6 +886,19 @@ export class SessionManager {
         session.abortController.abort();
       }
     })) {
+      // Re-check at every message boundary so a settings-file edit made while
+      // a generator is already alive takes effect after its current request.
+      // Clear the RAM-only queue: transcript replay remains the durable
+      // recovery path if capture is enabled again later.
+      if (!isObserverCaptureEnabled(SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH))) {
+        const discarded = await this.clearPendingForSession(sessionDbId);
+        logger.info('SESSION', 'Observer capture disabled at message boundary; discarding buffered work', {
+          sessionId: sessionDbId,
+          discarded,
+        });
+        return;
+      }
+
       // The previous request is answered, so nothing is in flight: end this
       // generator before it sends on the old provider. The next generator
       // releases this claim when it starts.

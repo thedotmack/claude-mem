@@ -94,6 +94,26 @@ describe('SessionMessageBuffer (in-RAM observation buffer)', () => {
     expect(buffer.enqueue(1, obs('Read', 'a'))).toBeGreaterThan(0); // not suppressed
   });
 
+  test('clearUnclaimed preserves in-flight evidence and drops only unsent work', async () => {
+    const buffer = new SessionMessageBuffer();
+    const confirmedId = buffer.enqueue(1, obs('Read', 'confirmed'));
+    expect(buffer.confirm(confirmedId)).toBe(1);
+    const claimedId = buffer.enqueue(1, obs('Read', 'claimed'));
+    buffer.enqueue(1, obs('Write', 'unsent'));
+    const controller = new AbortController();
+    const iterator = buffer.drain({ sessionDbId: 1, signal: controller.signal });
+
+    expect((await iterator.next()).value?._persistentId).toBe(claimedId);
+    expect(buffer.clearUnclaimed(1)).toBe(1);
+    expect(buffer.getMessagesByIds(1, [claimedId])).toHaveLength(1);
+    expect(buffer.enqueue(1, obs('Read', 'confirmed'))).toBe(0);
+    expect(buffer.enqueue(1, obs('Read', 'claimed'))).toBe(0);
+    expect(buffer.enqueue(1, obs('Write', 'unsent'))).toBeGreaterThan(0);
+
+    controller.abort();
+    await iterator.return?.(undefined);
+  });
+
   test('drain ends via idle timeout when no work arrives', async () => {
     const buffer = new SessionMessageBuffer();
     const controller = new AbortController();
@@ -112,6 +132,75 @@ describe('SessionMessageBuffer (in-RAM observation buffer)', () => {
     expect(iterated.length).toBe(0);
     expect(Date.now() - start).toBeGreaterThanOrEqual(20);
   });
+
+  test('drain releases the idle slot early while slot waiters are parked (#5376)', async () => {
+    const buffer = new SessionMessageBuffer();
+    const controller = new AbortController();
+    let idleFired = false;
+    const start = Date.now();
+    const iterated: PendingMessageWithId[] = [];
+    for await (const msg of buffer.drain({
+      sessionDbId: 100,
+      signal: controller.signal,
+      idleTimeoutMs: 6000,
+      shouldReleaseIdleSlot: () => true,
+      onIdleTimeout: () => { idleFired = true; controller.abort(); },
+    })) {
+      iterated.push(msg);
+    }
+    expect(idleFired).toBe(true);
+    expect(iterated.length).toBe(0);
+    // Ended on the contention recheck (~1s slices), not the 6s idle timeout.
+    expect(Date.now() - start).toBeLessThan(3000);
+  }, 10000);
+
+  test('drain keeps the full idle timeout while no slot waiters are parked (#5376)', async () => {
+    const buffer = new SessionMessageBuffer();
+    const controller = new AbortController();
+    let idleFired = false;
+    const start = Date.now();
+    const iterated: PendingMessageWithId[] = [];
+    for await (const msg of buffer.drain({
+      sessionDbId: 101,
+      signal: controller.signal,
+      idleTimeoutMs: 300,
+      shouldReleaseIdleSlot: () => false,
+      onIdleTimeout: () => { idleFired = true; controller.abort(); },
+    })) {
+      iterated.push(msg);
+    }
+    expect(idleFired).toBe(true);
+    expect(iterated.length).toBe(0);
+    expect(Date.now() - start).toBeGreaterThanOrEqual(250);
+  });
+
+  test('drain starts the idle clock when the consumer returns, not when a message is claimed (#5376)', async () => {
+    const buffer = new SessionMessageBuffer();
+    buffer.enqueue(102, obs('Read', 'a'));
+    const controller = new AbortController();
+    let idleFiredAt: number | null = null;
+    const iterator = buffer.drain({
+      sessionDbId: 102,
+      signal: controller.signal,
+      idleTimeoutMs: 1500,
+      onIdleTimeout: () => { idleFiredAt = Date.now(); },
+    });
+    const first = await iterator.next();
+    expect(first.done).toBe(false);
+    // Simulate a slow reply: the consumer holds the message for 1.2s before
+    // asking for the next one.
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    const returnedAt = Date.now();
+    const second = await iterator.next();
+    expect(second.done).toBe(true);
+    expect(idleFiredAt).not.toBeNull();
+    // The full 1.5s idle window runs from the consumer's return. Waits are
+    // sliced at 1s, so it fires on the second slice (~2s after the return).
+    // A clock stamped at claim time would already fire on the first slice
+    // (~1s after the return), its 1.2s of processing having counted as idle.
+    expect(idleFiredAt! - returnedAt).toBeGreaterThanOrEqual(1800);
+    controller.abort();
+  }, 10000);
 
   test('peekTypes reflects buffered message types', () => {
     const buffer = new SessionMessageBuffer();

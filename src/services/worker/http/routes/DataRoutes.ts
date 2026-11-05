@@ -25,6 +25,7 @@ import { getUptimeSeconds } from '../../../../shared/uptime.js';
 import { assertCanonicalDecimal, type ContentKind } from '../../../sync/CanonicalContent.js';
 import type { CloudSync } from '../../../sync/CloudSync.js';
 import { emitContextInvalidation } from '../../../../shared/context-invalidation.js';
+import { parseProjectList } from '../../../../shared/project-list.js';
 import { projectReadKeysFor } from '../../search/project-where-filter.js';
 
 // Chroma doc_type per content kind. Observation and summary id spaces overlap,
@@ -70,8 +71,16 @@ const stringArrayLike = z.preprocess((value) => {
   return value;
 }, z.array(z.string()));
 
+// Layer 3 of progressive disclosure: selected records by explicit id. The id
+// array is bounded because every id is a full row (narrative, facts, concepts,
+// file lists) on the way back — an unbounded list is a way to page the whole
+// table in one request. 100 matches the ceiling the adapters already advertise
+// (`pi-extension` maxItems, `recall-mcp-server` maxItems) and the server
+// `/v1/observations/batch` schema.
+const OBSERVATIONS_BATCH_MAX_IDS = 100;
+
 const observationsBatchSchema = z.object({
-  ids: integerArrayLike,
+  ids: integerArrayLike.pipe(z.array(z.number().int()).max(OBSERVATIONS_BATCH_MAX_IDS)),
   orderBy: z.enum(['date_desc', 'date_asc']).optional(),
   limit: z.number().int().positive().optional(),
   project: z.string().optional(),
@@ -90,6 +99,13 @@ const sdkSessionsBatchSchema = z.object({
 // caller may hold either (search/list hands back the former, a transcript or an
 // observation ref the latter). Required and non-empty on purpose — this route
 // must never be a way to page the whole table of raw payloads.
+//
+// The array is capped for the same reason: each id is a separate lookup, and
+// `limit` only trims the rows that come back (`getToolUsesByIds` applies its own
+// default when `limit` is omitted). 100 matches the observation batch ceiling
+// and the adapters' advertised `maxItems`.
+const TOOL_USES_BATCH_MAX_IDS = 100;
+
 const toolUsesBatchSchema = z.object({
   ids: z.preprocess((value) => {
     if (Array.isArray(value)) return value;
@@ -103,7 +119,7 @@ const toolUsesBatchSchema = z.object({
       return value.split(',').map((part) => part.trim()).filter(Boolean);
     }
     return value;
-  }, z.array(z.union([z.number().int(), z.string()]))),
+  }, z.array(z.union([z.number().int(), z.string()])).max(TOOL_USES_BATCH_MAX_IDS)),
   limit: z.number().int().positive().max(200).optional(),
   project: z.string().optional(),
   contentSessionId: z.string().optional(),
@@ -290,8 +306,8 @@ export class DataRoutes extends BaseRouteHandler {
       return;
     }
 
-    const projectsParam = req.query.projects as string | undefined;
-    const projects = projectsParam ? projectsParam.split(',').filter(Boolean) : undefined;
+    const listedProjects = parseProjectList(req.query.projects);
+    const projects = listedProjects.length > 0 ? listedProjects : undefined;
     const parsedLimit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
     const limit = Number.isFinite(parsedLimit) && parsedLimit! > 0 ? parsedLimit : undefined;
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
