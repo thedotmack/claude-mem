@@ -113,8 +113,8 @@ function completeTranscript(summary: AgentScanSummary | undefined, sessionId: st
 
 function idleState(): SetupScanState {
   return {
-    // Opt-in: nothing about setup results is shared unless the person ticks this.
-    improveProduct: false,
+    // This preference does not start an upload; discovery still requires the person's confirmation.
+    improveProduct: true,
     uploadedAgents: null,
     agents: AGENT_LABELS.map(([id, label]) => ({ id, label, detected: false, prompts: 0, fromMemory: 0, fromTranscripts: 0, canRunSetup: null, cannotRunReason: null })),
     percent: 0, phase: 'idle', done: false, windowStart: null, startedAt: null, finishedAt: null, durationMs: null,

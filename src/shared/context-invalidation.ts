@@ -24,11 +24,17 @@ export interface ContextInvalidation {
   /** Which write, for logs: 'storeObservations', 'observer-health', ... */
   reason: string;
   kind: ContextInvalidationKind;
+  /** Committed content types/lists, when the writer can identify them. Omitted means unknown. */
+  changes?: { kinds: string[]; workStateLists?: string[] };
 }
 
 type ContextInvalidationListener = (invalidation: ContextInvalidation) => void;
 
 const listeners = new Set<ContextInvalidationListener>();
+let generation = 0;
+
+/** A cheap process-local fence for coalescing reads; never a persisted data revision. */
+export function currentContextGeneration(): number { return generation; }
 
 export function onContextInvalidation(listener: ContextInvalidationListener): () => void {
   listeners.add(listener);
@@ -41,9 +47,11 @@ export function emitContextInvalidation(
   scope: ContextInvalidationScope,
   reason: string,
   kind: ContextInvalidationKind = 'additive',
+  changes?: ContextInvalidation['changes'],
 ): void {
+  generation++;
   for (const listener of listeners) {
-    listener({ scope, reason, kind });
+    listener({ scope, reason, kind, ...(changes ? { changes } : {}) });
   }
 }
 

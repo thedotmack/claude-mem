@@ -121,6 +121,23 @@ const snapshotWith = (humanRequests: WorkViewHumanRequest[], extra: Partial<Work
   source: { kind: 'test', connected: true, error: null, lastCheckedAt: null }, ...extra,
 })
 
+test('maps shared decision versions and keeps an origin-only file visible without a link', () => {
+  const raw = syntheticRequest()
+  raw.review = { checked: false, checkedAtEpoch: null, actor: 'shared-user', available: true, mode: 'shared', hash: 'review-hash', version: 2, conflict: true, pending: true, message: 'Choose the current review.' }
+  raw.suggestion = { conversationKey: 'c', requestId: 'r', requestTitle: 'Related request', evidence: 'The same change', confidence: 0.8, judge: 'test', at: null, expectedSuggestionHash: 'suggestion-hash', sharedConflict: true }
+  raw.workProduct = [
+    { kind: 'document', title: 'report.pdf', availability: 'origin-only', available: false, fileUrl: '/wrong/download', url: 'https://example.com/wrong' },
+    { kind: 'pull-request', title: 'Published PR', url: 'https://github.com/example/repo/pull/1' },
+  ]
+  const mapped = toWorkModel(snapshotWith([raw]), Date.now()).requests[0]
+  assert.deepEqual(mapped.review, { mode: 'shared', hash: 'review-hash', available: true, version: 2, conflict: true, legacy: undefined, pending: true, message: 'Choose the current review.' })
+  assert.equal(mapped.suggestion?.expectedSuggestionHash, 'suggestion-hash')
+  assert.equal(mapped.suggestion?.sharedConflict, true)
+  assert.equal(mapped.workProduct[0].availability, 'origin-only')
+  assert.equal(mapped.workProduct[0].href, undefined)
+  assert.equal(mapped.workProduct[1].href, 'https://github.com/example/repo/pull/1')
+})
+
 test('a reviewed request shows the review percent, its readings, the measured ETA and its milestones', () => {
   const raw = { ...syntheticRequest(), progress: {
     state: 'in-progress' as const, percent: 60, summary: 'Under way.', narrative: 'Cards built first, then spacing.', checkedAt: '2026-10-21T12:00:00Z',
@@ -383,4 +400,32 @@ test('a group title that repeats the prompt is marked, even past the part the ca
   assert.ok(!copied.prompts[0].quote.includes('billing'), 'the card quote alone would have missed it')
   const [written] = toWorkModel(snapshotWith([{ ...raw, title: 'Billing moves processors' }]), Date.parse('2026-10-22T12:00:00Z')).requests
   assert.equal(written.titleRepeatsPrompt, undefined)
+})
+
+
+test('canonical minimal shared progress stays visible without inventing a history or milestones', () => {
+  const raw = { ...syntheticRequest(), groupId: 'g_000000000001', titleSource: 'request-group' as const,
+    progress: { state: 'in-progress' as const, percent: 60 } }
+  const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))
+  assert.deepEqual(model.requestReadErrors, [])
+  assert.equal(model.requests.length, 1)
+  const request = model.requests[0]
+  assert.equal(request.title, 'Cards')
+  assert.equal(request.progress.percent, 60)
+  assert.equal(request.progress.readings, 1, 'the current progress record is one assessment')
+  assert.equal(request.progress.history, undefined, 'no historical readings were supplied')
+  assert.deepEqual(request.story, [])
+  assert.equal(request.summary, null)
+  assert.equal(request.estimate, null)
+})
+
+test('minimal shipped progress retains its date and survives mapping without optional detail', () => {
+  const raw = { ...syntheticRequest(), groupId: 'g_000000000001', titleSource: 'request-group' as const,
+    progress: { state: 'shipped' as const, percent: 100, shippedAt: '2026-10-21T12:00:00Z' } }
+  const model = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z'))
+  assert.deepEqual(model.requestReadErrors, [])
+  assert.equal(model.requests[0].progress.percent, 100)
+  assert.ok(model.requests[0].progress.completedAt)
+  assert.deepEqual(model.requests[0].story, [])
+  assert.equal(model.requests[0].progress.history, undefined)
 })
