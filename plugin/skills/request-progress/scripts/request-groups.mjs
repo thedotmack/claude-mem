@@ -353,6 +353,12 @@ var init_paths = __esm({
 // src/utils/logger.ts
 import { closeSync as closeSync2, existsSync as existsSync4, fstatSync, mkdirSync as mkdirSync3, openSync as openSync2, statSync as statSync2, writeSync as writeSync2 } from "fs";
 import { dirname as dirname3, join as join5 } from "path";
+function escapeLineBreaks(value) {
+  return value.replace(/\r/g, "\\r").replace(/\n/g, "\\n");
+}
+function escapeStackText(stack) {
+  return "  " + stack.replace(/\r/g, "\\r").replace(/\n(?![ \t]+at )/g, "\\n");
+}
 var LogLevel, errorSink, Logger, logger;
 var init_logger = __esm({
   "src/utils/logger.ts"() {
@@ -598,20 +604,22 @@ ${data.stack}` : data.message;
         const componentStr = component.padEnd(6);
         let correlationStr = "";
         if (context?.correlationId) {
-          correlationStr = `[${context.correlationId}] `;
+          correlationStr = `[${escapeLineBreaks(String(context.correlationId))}] `;
         } else if (context?.sessionId) {
-          correlationStr = `[session-${context.sessionId}] `;
+          correlationStr = `[session-${escapeLineBreaks(String(context.sessionId))}] `;
         }
         let dataStr = "";
         if (data !== void 0 && data !== null) {
           if (data instanceof Error) {
-            dataStr = this.getLevel() === 0 /* DEBUG */ ? `
-${data.message}
-${data.stack}` : ` ${data.message}`;
+            dataStr = ` ${escapeLineBreaks(data.message)}`;
+            if (this.getLevel() === 0 /* DEBUG */ && data.stack) {
+              dataStr += `
+${escapeStackText(data.stack)}`;
+            }
           } else if (this.getLevel() === 0 /* DEBUG */ && typeof data === "object") {
             dataStr = "\n" + this.safeStringify(data, 2);
           } else {
-            dataStr = " " + this.formatData(data);
+            dataStr = " " + escapeLineBreaks(this.formatData(data));
           }
         }
         let contextStr = "";
@@ -619,13 +627,15 @@ ${data.stack}` : ` ${data.message}`;
           const { sessionId, memorySessionId, correlationId, ...rest } = context;
           if (Object.keys(rest).length > 0) {
             const pairs = Object.entries(rest).map(([k, v]) => {
-              if (typeof v !== "object" || v === null || v instanceof Error || v instanceof Date) return `${k}=${v}`;
-              return `${k}=${Array.isArray(v) ? this.safeStringify(v) : this.formatData(v)}`;
+              if (typeof v !== "object" || v === null || v instanceof Error || v instanceof Date) {
+                return `${escapeLineBreaks(k)}=${escapeLineBreaks(String(v))}`;
+              }
+              return `${escapeLineBreaks(k)}=${escapeLineBreaks(Array.isArray(v) ? this.safeStringify(v) : this.formatData(v))}`;
             });
             contextStr = ` {${pairs.join(", ")}}`;
           }
         }
-        const logLine = `[${timestamp}] [${levelStr}] [${componentStr}] ${correlationStr}${message}${contextStr}${dataStr}`;
+        const logLine = `[${timestamp}] [${levelStr}] [${componentStr}] ${correlationStr}${escapeLineBreaks(message)}${contextStr}${dataStr}`;
         if (this.logFilePath) {
           try {
             this.appendLine(this.logFilePath, logLine + "\n");
@@ -881,6 +891,7 @@ var init_SettingsDefaultsManager = __esm({
         // installs land here — no delivered key exists headlessly, so the settings
         // default stays 'claude'.
         CLAUDE_MEM_PROVIDER: "claude",
+        CLAUDE_MEM_PROVIDER_BY_SOURCE: "",
         CLAUDE_MEM_MEDIA_CAPTURE_ENABLED: "false",
         CLAUDE_MEM_MEDIA_INFERENCE_ENABLED: "false",
         CLAUDE_MEM_CODEX_MODEL: "",
@@ -1855,7 +1866,7 @@ function buildWorktreeProjectKey(parentProjectName, worktreeName) {
 function submoduleLeaf(info, repoRoot) {
   if (!info.isSubmodule || !info.parentRepoPath) return null;
   const relative = path2.relative(info.parentRepoPath, repoRoot);
-  if (!relative || relative.startsWith("..") || path2.isAbsolute(relative)) return null;
+  if (!relative || relative === ".." || relative.startsWith(`..${path2.sep}`) || path2.isAbsolute(relative)) return null;
   return relative.split(path2.sep).join("/");
 }
 function getProjectContext(cwd, platform = process.platform) {
@@ -1891,8 +1902,12 @@ function getPathProjectContext(cwd, expandedCwd, repoRoot) {
     let primary;
     let legacyKeys;
     if (worktreeInfo.isSubmodule) {
-      primary = `${parent}/${submoduleLeaf(worktreeInfo, checkoutRoot) ?? cwdProjectName}`;
+      const leaf = submoduleLeaf(worktreeInfo, checkoutRoot);
+      primary = `${parent}/${leaf ?? cwdProjectName}`;
       legacyKeys = cwdProjectName !== parent ? [cwdProjectName] : [];
+      if (leaf?.startsWith("..") && leaf !== cwdProjectName) {
+        legacyKeys.push(`${parent}/${cwdProjectName}`);
+      }
     } else {
       primary = buildWorktreeProjectKey(parent, cwdProjectName);
       legacyKeys = primary === parent ? [`${parent}/${cwdProjectName}`] : [];

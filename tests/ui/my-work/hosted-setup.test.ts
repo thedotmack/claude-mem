@@ -63,15 +63,16 @@ function useNetwork(handle: (url: string, init: RequestInit) => Promise<Response
 }
 
 describe('hosted setup scan control', () => {
-  it('renders the optional checkbox unchecked under the progress meter, and locks it only for upload', () => {
+  it('prechecks usage statistics under the progress meter, and locks it only for upload', () => {
     const app = fixture();
     const initial = app.renderScan(app.EMPTY_SETUP_DATA.scan);
     const checkbox = initial.match(/<input[^>]+type="checkbox"[^>]*>/)?.[0] ?? '';
-    expect(checkbox).not.toContain('checked=""');
+    expect(checkbox).toContain('checked=""');
     expect(checkbox).not.toContain('disabled');
-    expect(initial).toContain('Also share my anonymized setup results to help improve claude-mem (optional)');
+    expect(initial).toContain('Share anonymous usage statistics to help improve your Claude-mem experience');
     expect(initial.indexOf('<progress')).toBeLessThan(initial.indexOf(checkbox));
     expect(app.renderScan(scan({ phase: 'reading', improveProduct: true }))).toContain('checked=""');
+    expect(app.renderScan(scan({ phase: 'reading', improveProduct: false }))).not.toContain('checked=""');
     expect(initial).not.toContain('Discover My Work, Rules &amp; Focus');
     const consent = app.renderScan(scan({ phase: 'awaiting-consent' }));
     expect(consent).toContain('Discover My Work, Rules &amp; Focus');

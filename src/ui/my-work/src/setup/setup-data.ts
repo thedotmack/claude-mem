@@ -90,7 +90,7 @@ export interface SetupSource {
 }
 
 export const EMPTY_SETUP_DATA: SetupData = {
-  scan: { agents: [], percent: 0, phase: 'idle', done: false, error: null, improveProduct: false, uploadedAgents: null },
+  scan: { agents: [], percent: 0, phase: 'idle', done: false, error: null, improveProduct: true, uploadedAgents: null },
   reveal: { goals: null, work: null, rules: null },
   extraction: null,
   recentPrompts: [],
@@ -149,7 +149,7 @@ const toScanView = (scan: WorkerScanState): SetupScanView => ({
     // Agent login is irrelevant to hosted setup; the transcript scan only reports which tools were found.
     id, label, detected, prompts, canRunSetup: null, cannotRunReason: null,
   })),
-  percent: scan.percent, phase: scan.phase, done: scan.done, error: scan.error, improveProduct: scan.improveProduct ?? false,
+  percent: scan.percent, phase: scan.phase, done: scan.done, error: scan.error, improveProduct: scan.improveProduct ?? true,
   uploadedAgents: scan.uploadedAgents ?? null,
 })
 
@@ -176,7 +176,7 @@ export const localSetupSource: SetupSource = {
     const publish = (changes: Partial<SetupData>) => { if (closed) return; data = { ...data, ...changes }; onData(data) }
     const applyScan = (scan: WorkerScanState) => {
       scanRevision++
-      appliedImproveProduct = scan.improveProduct ?? false
+      appliedImproveProduct = scan.improveProduct ?? true
       publish({
         scan: toScanView(scan),
         usage: scan.usage ? toSetupUsage(scan.usage) : null,
