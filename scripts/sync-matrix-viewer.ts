@@ -170,7 +170,8 @@ export async function runViewerBrowsers(local: MatrixViewer, hosted: MatrixViewe
     for (const [viewer, suffix] of [[local, '/'], [hosted, '/'], [hosted, '/viewer']] as const) {
       const url = `${viewer.origin}${suffix}`;
       const browser = launchChrome('about:blank', { remoteDebugging: true, extraFlags: UNTHROTTLED_TIMER_FLAGS });
-      const page = await connectToPage(browser, 'about:blank'); opened.push({ chrome: browser, page });
+      const page = await connectToPage(browser, 'about:blank').catch(async error => { await browser.close(); throw error; });
+      opened.push({ chrome: browser, page });
       if (viewer.cookie) {
         const [name, value] = viewer.cookie.split('=');
         await page.send('Network.setCookie', { name, value, url: viewer.origin, path: '/', httpOnly: true });

@@ -949,5 +949,7 @@ async function main(): Promise<void> {
 
 await main().catch(error => {
   console.error('Matrix harness error:', error);
-  process.exitCode = 1;
+  // A scenario that failed midway leaves its viewers and browsers open, and
+  // they would keep this process alive until the CI job times out.
+  process.exit(1);
 });
