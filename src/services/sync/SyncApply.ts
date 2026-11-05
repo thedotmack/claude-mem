@@ -188,6 +188,9 @@ import {
 } from './CanonicalContent.js';
 import { parseStringListField } from './string-list-field.js';
 import { getRedactionConfig, redactJsonStrings, redactSensitive, type RedactionConfig } from '../../utils/redaction.js';
+import { redactSyncDiagnostic } from './diagnostic-redaction.js';
+import { isSharedWorkList } from '../work-view/shared-records.mjs';
+import { redactSharedInboundRow, saveSharedRedactionReceipt } from '../work-view/shared-redaction.mjs';
 
 /** sync_state key: replaySetAsideWorkState has run on this database. */
 const WORK_STATE_REPLAY_MARKER = 'work_state_set_aside_replayed';
@@ -204,14 +207,6 @@ const OBSERVATION_JSON_FIELDS = ['facts', 'concepts', 'metadata'] as const;
 const SUMMARY_TEXT_FIELDS = ['request', 'investigated', 'learned', 'completed', 'next_steps', 'notes'] as const;
 const PROMPT_TEXT_FIELDS = ['prompt_text'] as const;
 const WORK_STATE_JSON_FIELDS = ['fields'] as const;
-
-const ALL_INBOUND_TEXT_FIELDS = [
-  ...OBSERVATION_TEXT_FIELDS,
-  ...SUMMARY_TEXT_FIELDS,
-  ...PROMPT_TEXT_FIELDS,
-  'custom_title',
-] as const;
-const ALL_INBOUND_JSON_FIELDS = [...OBSERVATION_JSON_FIELDS, ...WORK_STATE_JSON_FIELDS] as const;
 
 /**
  * Apply this device's redaction policy to a body pulled from a peer.
@@ -274,33 +269,6 @@ function redactJsonText(value: string, config: RedactionConfig): string {
   } catch {
     return redactSensitive(value, config).redacted;
   }
-}
-
-/**
- * A quarantined op's body is stored verbatim for diagnosis; redact the same
- * fields before it lands, or a failed apply would leave the credential in
- * `sync_pull_quarantine.raw_body`.
- */
-function redactQuarantineBody(rawBody: string, kind: string | null): string {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(rawBody);
-  } catch {
-    return rawBody;
-  }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return rawBody;
-  const config = getRedactionConfig();
-  if (!config.enabled) return rawBody;
-  const body = parsed as Record<string, unknown>;
-  const textFields: readonly string[] = kind === 'observation' ? OBSERVATION_TEXT_FIELDS
-    : kind === 'summary' ? SUMMARY_TEXT_FIELDS
-    : kind === 'prompt' ? PROMPT_TEXT_FIELDS
-    : ALL_INBOUND_TEXT_FIELDS;
-  const jsonFields: readonly string[] = kind === 'observation' ? OBSERVATION_JSON_FIELDS
-    : kind === 'work_state' ? WORK_STATE_JSON_FIELDS
-    : ALL_INBOUND_JSON_FIELDS;
-  const redacted = redactFields(body, config, textFields, jsonFields);
-  return redacted === body ? rawBody : JSON.stringify(redacted);
 }
 
 /**
@@ -444,7 +412,7 @@ type ChromaJob = () => Promise<void>;
 export class SyncApplyInvalidOpError extends Error {}
 
 function invalidOp(op: SyncOp, message: string): SyncApplyInvalidOpError {
-  return new SyncApplyInvalidOpError(`SyncApply: invalid op seq=${op.seq} kind=${op.kind} origin=${op.origin_device}/${op.origin_id}: ${message}`);
+  return new SyncApplyInvalidOpError(redactSyncDiagnostic(`SyncApply: invalid op seq=${op.seq} kind=${op.kind} origin=${op.origin_device}/${op.origin_id}: ${message}`));
 }
 
 /** A violated constraint depends on local rows, so a later retry can succeed. */
@@ -630,6 +598,9 @@ export class SyncApply {
     const setAside: Array<Record<string, unknown>> = [];
     const recovered: Array<Record<string, unknown>> = [];
     let removedOrRemapped = false;
+    const changedKinds = new Set<string>();
+    const changedLists = new Set<string>();
+    let unknownWorkStateList = false;
 
     const tx = this.db.transaction(() => {
       const cursor = this.getCursor();
@@ -689,6 +660,12 @@ export class SyncApply {
         }
         if (attempt.outcome === 'applied') {
           result.applied++;
+          changedKinds.add(op.kind);
+          if (op.kind === 'work_state') {
+            const list = op.deleted ? null : (JSON.parse(op.body) as Record<string, unknown>).list_name;
+            if (!op.deleted && typeof list === 'string') changedLists.add(list);
+            else unknownWorkStateList = true;
+          }
           // A tombstone deletes a row; a mutation can re-key or retitle rows.
           if (op.kind === 'mutation' || op.deleted === true) removedOrRemapped = true;
         } else {
@@ -712,7 +689,9 @@ export class SyncApply {
     // 'removal' when a tombstone or mutation applied: the cached block may show
     // what is now gone, so it must not be served until re-rendered.
     if (result.applied > 0 || recovered.length > 0) {
-      emitContextInvalidation('all', 'SyncApply.applyOps', removedOrRemapped ? 'removal' : 'additive');
+      emitContextInvalidation('all', 'SyncApply.applyOps', removedOrRemapped ? 'removal' : 'additive', recovered.length ? undefined : {
+        kinds: [...changedKinds], ...(!unknownWorkStateList ? { workStateLists: [...changedLists] } : {}),
+      });
     }
 
     // Logged after commit so a batch that later rolls back (and is retried)
@@ -787,14 +766,26 @@ export class SyncApply {
    */
   private retrySetAside(chromaJobs: ChromaJob[], recovered: Array<Record<string, unknown>>): void {
     const rows = this.db.prepare(`
-      SELECT id, seq, kind, entity_id, origin_device_id, origin_local_id,
-             entity_rev, operation_sha256, raw_body
+      SELECT id, epoch, seq, kind, entity_id, origin_device_id, origin_local_id,
+             entity_rev, operation_sha256, raw_body, reason
       FROM sync_pull_quarantine WHERE retryable = 1 ORDER BY id
     `).all() as Array<{
-      id: number; seq: string; kind: SyncOp['kind']; entity_id: string; origin_device_id: string;
-      origin_local_id: string; entity_rev: string; operation_sha256: string; raw_body: string;
+      id: number; epoch: string; seq: string; kind: SyncOp['kind']; entity_id: string; origin_device_id: string;
+      origin_local_id: string; entity_rev: string; operation_sha256: string; raw_body: string; reason: string;
     }>;
     for (const row of rows) {
+      const safe = redactSyncDiagnostic(row);
+      if (JSON.stringify(safe) !== JSON.stringify(row)) {
+        const replaySafe = safe.epoch === row.epoch && safe.seq === row.seq && safe.kind === row.kind
+          && safe.entity_id === row.entity_id && safe.origin_device_id === row.origin_device_id
+          && safe.origin_local_id === row.origin_local_id && safe.entity_rev === row.entity_rev
+          && safe.operation_sha256 === row.operation_sha256 && safe.raw_body === row.raw_body;
+        this.db.prepare(`UPDATE sync_pull_quarantine SET epoch=?, seq=?, kind=?, entity_id=?,
+          origin_device_id=?, origin_local_id=?, entity_rev=?, operation_sha256=?, raw_body=?, reason=?, retryable=? WHERE id=?`)
+          .run(safe.epoch, safe.seq, safe.kind, safe.entity_id, safe.origin_device_id, safe.origin_local_id,
+            safe.entity_rev, safe.operation_sha256, safe.raw_body, safe.reason, Number(replaySafe), row.id);
+        if (!replaySafe) continue;
+      }
       const op: SyncOp = {
         seq: row.seq,
         kind: row.kind,
@@ -817,7 +808,7 @@ export class SyncApply {
       }
       if ('unapplicable' in attempt) continue;
       this.db.prepare('DELETE FROM sync_pull_quarantine WHERE id = ?').run(row.id);
-      recovered.push({ seq: row.seq, entityId: row.entity_id, outcome: attempt.outcome });
+      recovered.push(redactSyncDiagnostic({ seq: row.seq, entityId: row.entity_id, outcome: attempt.outcome }));
     }
   }
 
@@ -835,22 +826,40 @@ export class SyncApply {
     let applied = 0;
     const tx = this.db.transaction(() => {
       const rows = this.db.prepare(
-        'SELECT id, raw_body FROM sync_pull_quarantine WHERE kind IS NULL ORDER BY id'
-      ).all() as Array<{ id: number; raw_body: string }>;
+        'SELECT id, epoch, seq, entity_id, origin_device_id, origin_local_id, entity_rev, operation_sha256, reason, raw_body FROM sync_pull_quarantine WHERE kind IS NULL ORDER BY id'
+      ).all() as Array<{ id: number; epoch: string; seq: string; entity_id: string | null; origin_device_id: string | null;
+        origin_local_id: string | null; entity_rev: string | null; operation_sha256: string | null; reason: string; raw_body: string }>;
       for (const row of rows) {
-        const [op] = decode([JSON.parse(row.raw_body)]);
-        if ('undecodable' in op || op.kind !== 'work_state') continue;
+        const safe = redactSyncDiagnostic(row);
+        const replaySafe = safe.epoch === row.epoch && safe.seq === row.seq
+          && safe.entity_id === row.entity_id && safe.origin_device_id === row.origin_device_id
+          && safe.origin_local_id === row.origin_local_id && safe.entity_rev === row.entity_rev
+          && safe.operation_sha256 === row.operation_sha256 && safe.raw_body === row.raw_body;
+        if (JSON.stringify(safe) !== JSON.stringify(row)) this.db.prepare(`UPDATE sync_pull_quarantine
+          SET epoch=?, seq=?, entity_id=?, origin_device_id=?, origin_local_id=?, entity_rev=?, operation_sha256=?, reason=?, raw_body=?, retryable=0 WHERE id=?`)
+          .run(safe.epoch, safe.seq, safe.entity_id, safe.origin_device_id, safe.origin_local_id,
+            safe.entity_rev, safe.operation_sha256, safe.reason, safe.raw_body, row.id);
+        // A sanitized wrapper is diagnostic evidence, not an operation with
+        // the same authenticated bytes. Never decode its original raw form.
+        if (!replaySafe) continue;
+        let op: SyncOp | UndecodableOp | undefined;
+        try { [op] = decode([JSON.parse(safe.raw_body)]); }
+        catch { continue; } // A redacted/invalid diagnostic is never a replay source.
+        if (!op || 'undecodable' in op || op.kind !== 'work_state') continue;
         if (op.origin_device !== this.deviceId) {
           const attempt = this.applyInSavepoint(chromaJobs, () => this.applyCanonicalRowOp(op, chromaJobs));
           if ('unapplicable' in attempt) {
             const reason = attempt.unapplicable instanceof Error ? attempt.unapplicable.message : String(attempt.unapplicable);
+            const diagnostic = redactSyncDiagnostic({ kind: op.kind, entityId: op.entity_id ?? null,
+              originDevice: op.origin_device, originId: op.origin_id, entityRev: op.entity_rev ?? op.rev,
+              operationHash: op.operation_sha256 ?? null, reason });
             this.db.prepare(`
               UPDATE sync_pull_quarantine
               SET kind = ?, entity_id = ?, origin_device_id = ?, origin_local_id = ?,
                   entity_rev = ?, operation_sha256 = ?, reason = ?
               WHERE id = ?
-            `).run(op.kind, op.entity_id ?? null, op.origin_device, op.origin_id,
-              op.entity_rev ?? op.rev, op.operation_sha256 ?? null, reason, row.id);
+            `).run(diagnostic.kind, diagnostic.entityId, diagnostic.originDevice, diagnostic.originId,
+              diagnostic.entityRev, diagnostic.operationHash, diagnostic.reason, row.id);
             continue;
           }
           if (attempt.outcome === 'applied') applied++;
@@ -881,23 +890,37 @@ export class SyncApply {
     rawBody: string,
     retryable = false,
   ): Record<string, unknown> {
-    rawBody = redactQuarantineBody(rawBody, op?.kind ?? null);
+    const diagnostic = redactSyncDiagnostic({
+      epoch, seq, kind: op?.kind ?? null, entityId: op?.entity_id ?? null,
+      originDevice: op?.origin_device ?? null, originId: op?.origin_id ?? null,
+      entityRev: op?.entity_rev ?? op?.rev ?? null, operationHash: op?.operation_sha256 ?? null,
+      reason, rawBody,
+    });
+    // A transformed body or identity is diagnostic evidence, not a replayable
+    // operation. Keep safe hashes/sequence facts but never fabricate a retry.
+    retryable = retryable && diagnostic.rawBody === rawBody
+      && diagnostic.epoch === epoch && diagnostic.seq === seq && diagnostic.kind === (op?.kind ?? null)
+      && diagnostic.entityId === (op?.entity_id ?? null)
+      && diagnostic.originDevice === (op?.origin_device ?? null)
+      && diagnostic.originId === (op?.origin_id ?? null)
+      && diagnostic.entityRev === (op?.entity_rev ?? op?.rev ?? null)
+      && diagnostic.operationHash === (op?.operation_sha256 ?? null);
     this.db.prepare(`
       INSERT OR IGNORE INTO sync_pull_quarantine
         (epoch, seq, kind, entity_id, origin_device_id, origin_local_id,
          entity_rev, operation_sha256, reason, raw_body, retryable, created_at_epoch)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      epoch, seq, op?.kind ?? null, op?.entity_id ?? null, op?.origin_device ?? null,
-      op?.origin_id ?? null, op?.entity_rev ?? op?.rev ?? null, op?.operation_sha256 ?? null,
-      reason, rawBody, retryable ? 1 : 0, this.now(),
+      diagnostic.epoch, diagnostic.seq, diagnostic.kind, diagnostic.entityId, diagnostic.originDevice,
+      diagnostic.originId, diagnostic.entityRev, diagnostic.operationHash,
+      diagnostic.reason, diagnostic.rawBody, retryable ? 1 : 0, this.now(),
     );
     return {
-      seq,
-      kind: op?.kind ?? null,
-      entityId: op?.entity_id ?? null,
-      origin: op ? `${op.origin_device}/${op.origin_id}` : null,
-      reason,
+      seq: diagnostic.seq,
+      kind: diagnostic.kind,
+      entityId: diagnostic.entityId,
+      origin: op ? `${diagnostic.originDevice}/${diagnostic.originId}` : null,
+      reason: diagnostic.reason,
       retryable,
     };
   }
@@ -1010,7 +1033,12 @@ export class SyncApply {
    * copy, so nothing else is created for it.
    */
   private applyWorkState(op: SyncOp, body: Record<string, unknown>): 'applied' | 'stale' {
-    body = redactInboundFields(body, [], WORK_STATE_JSON_FIELDS);
+    let shared: ReturnType<typeof redactSharedInboundRow> = null;
+    if (typeof body.list_name === 'string' && isSharedWorkList(body.list_name)) {
+      try { shared = redactSharedInboundRow({ project: typeof body.project === 'string' ? body.project : undefined, list_name: body.list_name, fields: String(body.fields), origin_device_id: op.origin_device }, this.deviceId); }
+      catch (error) { throw invalidOp(op, error instanceof Error ? error.message : 'invalid shared record'); }
+    }
+    body = shared ? { ...body, fields: shared.fields } : redactInboundFields(body, [], WORK_STATE_JSON_FIELDS);
     const project = fieldString(op, body, 'project');
     const listName = fieldString(op, body, 'list_name');
     const fields = fieldString(op, body, 'fields');
@@ -1038,15 +1066,17 @@ export class SyncApply {
           sync_rev = ?, synced_at = ?
         WHERE id = ?
       `).run(project, listName, fields, createdAt, createdAtEpoch, op.rev, this.now(), existing.id);
+      if (shared) saveSharedRedactionReceipt(this.db, { id: existing.id, origin_device_id: op.origin_device, origin_local_id: op.origin_id, sync_rev: op.rev }, shared.receipt);
       return 'applied';
     }
     // synced_at pre-stamped: the push drain's WHERE synced_at IS NULL never selects it.
-    this.db.prepare(`
+    const inserted = this.db.prepare(`
       INSERT INTO work_state_entries
         (project, list_name, fields, created_at, created_at_epoch,
          synced_at, origin_device_id, origin_local_id, sync_rev)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(project, listName, fields, createdAt, createdAtEpoch, this.now(), op.origin_device, op.origin_id, op.rev);
+    if (shared) saveSharedRedactionReceipt(this.db, { id: String(inserted.lastInsertRowid), origin_device_id: op.origin_device, origin_local_id: op.origin_id, sync_rev: op.rev }, shared.receipt);
     return 'applied';
   }
 

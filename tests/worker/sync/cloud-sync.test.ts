@@ -328,9 +328,9 @@ describe('CloudSync', () => {
       VALUES (?, 'observation', 'device-fixture', '1', '1', ?, 0, 1)
     `).run(priorBody.id, prior.operation_sha256);
 
-    // Content snapshots drain first, so this mutation is also provably
-    // untouched when the content response fails validation.
-    store.createSDKSession('ack-proof-session', 'proj-x', 'prompt', 'queued title', 'claude');
+    // Keep this fixture a two-operation frozen content page. Mutation pages
+    // now have an independent fair turn; their own invalid-ack case below
+    // checks that a frozen mutation remains intact on rejection.
   }
 
   function ackDurabilityState(): Record<string, unknown> {
