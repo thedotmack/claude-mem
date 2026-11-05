@@ -5,7 +5,7 @@
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
-import { parseJsonArray, formatTime, formatDate, formatHeaderDateTime } from '../../shared/timeline-formatting.js';
+import { parseJsonArray, formatTime, formatDate, formatHeaderDateTime, compactTime } from '../../shared/timeline-formatting.js';
 import { closeSync, openSync, readSync, statSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
@@ -56,9 +56,6 @@ const TYPE_ICONS: Record<string, string> = {
   change: '\u2705',
 };
 
-function compactTime(timeStr: string): string {
-  return timeStr.toLowerCase().replace(' am', 'a').replace(' pm', 'p');
-}
 
 interface ObservationRow {
   id: number;
