@@ -209,6 +209,36 @@ describe('redactSensitive built-in patterns', () => {
     expect(redactSensitive(input, cfg).redacted).toBe(input);
   });
 
+  // Supabase and Sentry tokens; split for push protection too.
+  const SUPABASE_BODY = '0123456789abcdef0123' + '456789abcdef01234567';
+  const SENTRY_USER_BODY = '0123456789abcdef0123456789abcdef' + '0123456789abcdef0123456789abcdef';
+  const SENTRY_ORG_PAYLOAD = 'eyJpYXQiOjE3MDAwMDAwMDAuMDAwMDAwLCJ1cmwiOiJodHRwczovL3NlbnRyeS5pbyIs' + 'Im9yZyI6ImV4YW1wbGUtb3JnIn0=';
+  const SENTRY_ORG_SECRET = 'aBcDeFgHiJkLmNoPqRsTuVwXy' + 'Z0123456789+/aBcDe';
+  it.each([
+    ['supabase_token', 'export SUPABASE_ACCESS_TOKEN=' + 'sb' + 'p_' + SUPABASE_BODY + ' tail', SUPABASE_BODY],
+    ['supabase_token', '{"env":{"SUPABASE_ACCESS_TOKEN":"' + 'sb' + 'p_' + SUPABASE_BODY + '"}} tail', SUPABASE_BODY],
+    ['sentry_token', 'SENTRY_AUTH_TOKEN=' + 'sntr' + 'yu_' + SENTRY_USER_BODY + ' tail', SENTRY_USER_BODY],
+    ['sentry_token', 'sentry-cli sourcemaps upload --auth-token ' + 'sntr' + 'ys_' + SENTRY_ORG_PAYLOAD + '_' + SENTRY_ORG_SECRET + ' tail', SENTRY_ORG_SECRET],
+    ['sentry_token', '[auth]\ntoken=' + 'sntr' + 'ys_' + SENTRY_ORG_PAYLOAD + '_' + SENTRY_ORG_SECRET + ' tail', SENTRY_ORG_PAYLOAD],
+  ])('redacts a %s in %s', (name, input, body) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain(`<redacted type='${name}'/>`);
+    expect(result.redacted).toMatch(/ tail$/);
+    expect(result.redacted).not.toContain(body);
+    expect(Object.keys(result.counts)).toEqual([name]);
+  });
+
+  it.each([
+    'sbp_short',
+    'sntryu_short',
+    'sntrys_short_token',
+    'sbp_' + '0123456789abcdef0123456789abcdef',
+    'sntryu_' + '0123456789abcdef0123456789abcdef',
+    'the sntrys_ prefix',
+  ])('leaves %s alone', (input) => {
+    expect(redactSensitive(input, cfg).redacted).toBe(input);
+  });
+
   it.each([
     'glpat-short',
     'gldt-short',
