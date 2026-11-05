@@ -89,6 +89,45 @@ describe('observer-health ledger', () => {
     expect(second.lastErrorMessage).toBe('boom two');
   });
 
+  it('starts a new failingSinceAt when the failure kind changes, and keeps the streak', () => {
+    writeFileSync(healthPath, JSON.stringify({
+      consecutiveFailures: 3,
+      failingSinceAt: 1_000,
+      lastErrorAt: 2_000,
+      lastErrorMessage: 'quota guard',
+      lastErrorKind: 'quota_guard',
+    }));
+    recordObserverFailure('claude', { message: 'refused', kind: 'auth_invalid' }, healthPath);
+    const state = readObserverHealth(healthPath)!;
+    expect(state.consecutiveFailures).toBe(4);
+    expect(state.failingSinceAt).toBe(state.lastErrorAt);
+    expect(state.lastErrorKind).toBe('auth_invalid');
+  });
+
+  it('keeps failingSinceAt across repeats of one failure kind', () => {
+    writeFileSync(healthPath, JSON.stringify({
+      consecutiveFailures: 1,
+      failingSinceAt: 1_000,
+      lastErrorAt: 1_000,
+      lastErrorMessage: 'refused',
+      lastErrorKind: 'auth_invalid',
+    }));
+    recordObserverFailure('claude', { message: 'refused', kind: 'auth_invalid' }, healthPath);
+    expect(readObserverHealth(healthPath)!.failingSinceAt).toBe(1_000);
+  });
+
+  it('treats a quota guard pause and a quota refusal as one outage', () => {
+    writeFileSync(healthPath, JSON.stringify({
+      consecutiveFailures: 1,
+      failingSinceAt: 1_000,
+      lastErrorAt: 1_000,
+      lastErrorMessage: 'quota guard',
+      lastErrorKind: 'quota_guard',
+    }));
+    recordObserverFailure('claude', { message: 'spent', kind: 'quota_exhausted' }, healthPath);
+    expect(readObserverHealth(healthPath)!.failingSinceAt).toBe(1_000);
+  });
+
   it('success resets the streak but keeps last error details for diagnostics', () => {
     recordObserverFailure('openrouter', 'boom', healthPath);
     recordObserverSuccess(healthPath);

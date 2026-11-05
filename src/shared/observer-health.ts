@@ -271,6 +271,15 @@ function withLedgerLock<T>(filePath: string, mutate: () => T): T {
   }
 }
 
+/**
+ * Groups failure kinds that describe one outage. A guard pause and a provider
+ * refusal both mean a spent allowance, so moving between them keeps the clock.
+ */
+function failureFamily(kind: string | null | undefined): string | null {
+  if (kind === 'quota_guard' || kind === 'quota_exhausted') return 'quota';
+  return kind ?? null;
+}
+
 export function recordObserverFailure(
   provider: string,
   error: string | ObserverFailureDetail,
@@ -280,10 +289,14 @@ export function recordObserverFailure(
   withLedgerLock(filePath, () => {
     const prior = readObserverHealth(filePath) ?? EMPTY_STATE;
     const now = Date.now();
+    // The warning states this time as the start of the failure it names, so a
+    // new kind of failure starts a new clock. The streak count still carries on.
+    const sameOutage = prior.consecutiveFailures > 0
+      && failureFamily(prior.lastErrorKind) === failureFamily(detail.kind);
     writeObserverHealth({
       ...prior,
       consecutiveFailures: prior.consecutiveFailures + 1,
-      failingSinceAt: prior.consecutiveFailures > 0 ? prior.failingSinceAt : now,
+      failingSinceAt: sameOutage ? prior.failingSinceAt : now,
       lastErrorAt: now,
       lastErrorMessage: scrubErrorMessage(detail.message),
       lastErrorProvider: provider,
