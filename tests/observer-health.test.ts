@@ -89,6 +89,44 @@ describe('observer-health ledger', () => {
     expect(second.lastErrorMessage).toBe('boom two');
   });
 
+  it('restarts failingSinceAt when the failure kind changes (#5378)', () => {
+    // The reported scenario: a quota pause records a failure, the worker goes down,
+    // and auth refusals follow a day later. The auth warning must not carry the
+    // quota era's start time.
+    recordObserverFailure('claude', {
+      message: 'quota pause recorded',
+      kind: 'quota_guard',
+    }, healthPath);
+    const quota = readObserverHealth(healthPath)!;
+    const quotaSince = quota.failingSinceAt;
+
+    recordObserverFailure('claude', {
+      message: 'Failed to authenticate',
+      kind: 'auth_invalid',
+    }, healthPath);
+    const auth = readObserverHealth(healthPath)!;
+    expect(auth.consecutiveFailures).toBe(2);          // streak continues across the kind change
+    expect(auth.lastErrorKind).toBe('auth_invalid');
+    expect(auth.failingSinceAt).toBe(auth.lastErrorAt); // but the clock restarts with the new kind
+    expect(auth.failingSinceAt).not.toBe(quotaSince);
+  });
+
+  it('keeps failingSinceAt across consecutive failures of the same kind', () => {
+    recordObserverFailure('claude', {
+      message: 'Failed to authenticate',
+      kind: 'auth_invalid',
+    }, healthPath);
+    const first = readObserverHealth(healthPath)!;
+
+    recordObserverFailure('claude', {
+      message: 'Failed to authenticate again',
+      kind: 'auth_invalid',
+    }, healthPath);
+    const second = readObserverHealth(healthPath)!;
+    expect(second.consecutiveFailures).toBe(2);
+    expect(second.failingSinceAt).toBe(first.failingSinceAt);
+  });
+
   it('success resets the streak but keeps last error details for diagnostics', () => {
     recordObserverFailure('openrouter', 'boom', healthPath);
     recordObserverSuccess(healthPath);

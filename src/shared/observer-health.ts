@@ -277,20 +277,28 @@ export function recordObserverFailure(
   filePath: string = defaultHealthFilePath(),
 ): void {
   const detail: ObserverFailureDetail = typeof error === 'string' ? { message: error } : error;
+  const nextKind = detail.kind ?? null;
   withLedgerLock(filePath, () => {
     const prior = readObserverHealth(filePath) ?? EMPTY_STATE;
     const now = Date.now();
     writeObserverHealth({
       ...prior,
       consecutiveFailures: prior.consecutiveFailures + 1,
-      failingSinceAt: prior.consecutiveFailures > 0 ? prior.failingSinceAt : now,
+      // The streak's start belongs to the current failure kind (#5378): a quota pause
+      // followed by auth refusals must not describe the auth warning with the quota
+      // era's timestamp. A kind change (classified → unclassified included) restarts
+      // the clock; only the streak itself waits for a success.
+      failingSinceAt:
+        prior.consecutiveFailures > 0 && prior.lastErrorKind === nextKind
+          ? prior.failingSinceAt
+          : now,
       lastErrorAt: now,
       lastErrorMessage: scrubErrorMessage(detail.message),
       lastErrorProvider: provider,
       // Always overwrite (never inherit from `prior`): a string-form failure
       // after a classified one must not keep the stale action/link/request id.
       lastErrorCode: detail.code ?? null,
-      lastErrorKind: detail.kind ?? null,
+      lastErrorKind: nextKind,
       lastErrorAction: detail.action ? scrubErrorMessage(detail.action) : null,
       lastErrorUrl: detail.url ?? null,
       lastErrorRequestId: detail.requestId ?? null,
