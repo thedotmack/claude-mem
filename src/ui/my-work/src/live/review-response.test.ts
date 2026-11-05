@@ -16,7 +16,19 @@ test('200 without a snapshot fails loudly instead of pretending the screen is cu
 })
 
 test('409 is a conflict and keeps the worker message', () => {
-  assert.deepEqual(readReviewResponse(409, { error: 'This request has not been reported complete.', snapshot: {} }), { kind: 'conflict', serverMessage: 'This request has not been reported complete.' })
+  assert.deepEqual(readReviewResponse(409, { error: 'This request has not been reported complete.', snapshot: {} }), { kind: 'conflict', serverMessage: 'This request has not been reported complete.', snapshot: {} })
+})
+
+test('a durable shared receipt preserves queued state without claiming replication is complete', () => {
+  const body = { humanRequests: [], source: { connected: true }, save: { scope: 'shared', state: 'queued' } }
+  assert.deepEqual(readReviewResponse(200, body), { kind: 'saved', snapshot: body, save: body.save })
+  const malformed = { ...body, save: { scope: 'shared', state: 'globally-current' } }
+  assert.deepEqual(readReviewResponse(200, malformed), { kind: 'saved', snapshot: malformed })
+})
+
+test('a committed shared save retains pending local materialization separately from sync', () => {
+  const body = { humanRequests: [], save: { scope: 'shared', state: 'queued', localMaterialization: 'pending' } }
+  assert.deepEqual(readReviewResponse(200, body), { kind: 'saved', snapshot: body, save: body.save })
 })
 
 test('503 shows the worker error text', () => {
