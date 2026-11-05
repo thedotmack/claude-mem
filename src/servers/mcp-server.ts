@@ -55,6 +55,7 @@ import { teamBrainConnection } from '../shared/teambrain.js';
 import { isWorkStateEnabled } from '../shared/work-state-setting.js';
 import { getProjectContext, type ProjectContext } from '../utils/project-name.js';
 import { withCheckoutProjects } from './checkout-search-scope.js';
+import { parseProjectList, projectsQueryValues } from '../shared/project-list.js';
 import { postCorpusRequestOverSse } from './corpus-worker-stream.js';
 import { withWorkerRestartOnRefusedConnection } from './worker-restart.js';
 import { ProgressiveSearchError, progressiveSearchToolError } from '../shared/progressive-search.js';
@@ -164,7 +165,9 @@ async function requestWorker(endpoint: string, opts: WorkerCallOptions): Promise
     const searchParams = new URLSearchParams();
     for (const [key, value] of Object.entries(opts.query ?? {})) {
       if (value !== undefined && value !== null) {
-        searchParams.append(key, String(value));
+        for (const entry of Array.isArray(value) ? value : [value]) {
+          searchParams.append(key, String(entry));
+        }
       }
     }
     response = await workerHttpRequest(`${endpoint}?${searchParams}`);
@@ -418,19 +421,11 @@ interface SessionStartContextArgs {
 }
 
 function normalizeProjectsArg(args: SessionStartContextArgs): string[] {
-  if (Array.isArray(args.projects)) {
-    return args.projects
-      .map(project => typeof project === 'string' ? project.trim() : '')
-      .filter(Boolean);
-  }
-  if (typeof args.projects === 'string') {
-    return args.projects
-      .split(',')
-      .map(project => project.trim())
-      .filter(Boolean);
+  if (args.projects !== undefined) {
+    return parseProjectList(args.projects);
   }
   if (typeof args.project === 'string' && args.project.trim().length > 0) {
-    return [args.project.trim()];
+    return [args.project];
   }
   return [];
 }
@@ -451,7 +446,7 @@ async function handleSessionStartContext(
 
   return callWorker('/api/context/inject', {
     query: {
-      projects: projects.join(','),
+      projects: projectsQueryValues(projects),
       ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
       ...(args.full !== undefined ? { full: args.full } : {}),
       ...(args.colors !== undefined ? { colors: args.colors } : {}),

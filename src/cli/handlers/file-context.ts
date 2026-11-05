@@ -11,6 +11,7 @@ import { homedir } from 'os';
 import path from 'path';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
+import { projectsQueryValues } from '../../shared/project-list.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { detectLanguage } from '../../services/smart-file-read/language-map.js';
 import { checkTreeSitterCliLoadable } from '../../services/smart-file-read/tree-sitter-bin-path.js';
@@ -498,7 +499,9 @@ async function lookupFileObservationHistory(
     queryParams.append('path', candidate);
   }
   if (context.allProjects.length > 0) {
-    queryParams.set('projects', context.allProjects.join(','));
+    for (const value of projectsQueryValues(context.allProjects)) {
+      queryParams.append('projects', value);
+    }
   }
   queryParams.set('limit', String(FETCH_LOOKAHEAD_LIMIT));
 

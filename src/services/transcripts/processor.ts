@@ -10,6 +10,7 @@ import { getValueByPath, resolveFieldSpec, resolveFields, matchesRule } from './
 import { expandHomePath, shouldSuppressNativeCodexAgentsContext } from './config.js';
 import type { TranscriptSchema, WatchTarget, SchemaEvent } from './types.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { projectsQueryString } from '../../shared/project-list.js';
 import { spoolHookEvent } from '../../cli/spool-hook-event.js';
 import { ingestObservation, ingestSummarize } from '../worker/http/shared.js';
 
@@ -731,9 +732,9 @@ export class TranscriptEventProcessor {
     if (!cwd) return;
 
     const context = getProjectContext(cwd);
-    const projectsParam = context.allProjects.join(',');
+    const projectsQuery = projectsQueryString(context.allProjects);
 
-    const contextUrl = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}&platformSource=${encodeURIComponent(session.platformSource)}`;
+    const contextUrl = `/api/context/inject?${projectsQuery}&platformSource=${encodeURIComponent(session.platformSource)}`;
     const agentsPath = expandHomePath(watch.context.path ?? `${cwd}/AGENTS.md`);
 
     const resolvedAgentsPath = path.resolve(agentsPath);

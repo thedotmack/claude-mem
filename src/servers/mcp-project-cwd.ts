@@ -16,8 +16,8 @@ export interface McpCwdResolution {
 /** A usable directory from an absolute path or file:// URI, or null. */
 export function normalizeCwd(value: string | undefined | null): string | null {
   if (typeof value !== 'string') return null;
-  let candidate = value.trim();
-  if (candidate.length === 0 || candidate.includes('\0')) return null;
+  let candidate = value;
+  if (candidate.trim().length === 0 || candidate.includes('\0')) return null;
   if (candidate.startsWith('file://')) {
     try {
       candidate = fileURLToPath(candidate);

@@ -21,8 +21,8 @@ const UNKNOWN_PROJECT_NAME = 'unknown-project';
  * authoritative cwd (worker, transcript, worktree) must not route through this.
  */
 export function resolveHookProjectPath(cwd: string | null | undefined): string | null {
-  const claudeProjectDir = process.env[CLAUDE_PROJECT_DIR_ENV]?.trim();
-  if (claudeProjectDir) {
+  const claudeProjectDir = process.env[CLAUDE_PROJECT_DIR_ENV];
+  if (claudeProjectDir?.trim()) {
     return claudeProjectDir;
   }
   if (!cwd || cwd.trim() === '') {
@@ -45,7 +45,10 @@ function findGitRepoRoot(dir: string): string | null {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
-    }).trim();
+    }).replace(/\n$/, '');
+    // Git adds one LF. Whitespace before it belongs to the checkout path:
+    // trim() collapses distinct repositories and can point worktree detection
+    // at a different checkout (for example `topic ` versus `topic`).
     return root || null;
   } catch (error: unknown) {
     const err = error instanceof Error ? error : new Error(String(error));
