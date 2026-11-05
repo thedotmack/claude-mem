@@ -18,7 +18,7 @@
       { "matcher": "Read|Grep|Task", "command": "npx -y claude-mem hook cursor observation" }
     ],
     "postToolUseFailure": [
-      { "command": "npx -y claude-mem hook cursor observation" }
+      { "matcher": "Read|Grep|Task|Write", "command": "npx -y claude-mem hook cursor observation" }
     ],
     "stop": [
       { "command": "npx -y claude-mem hook cursor summarize" }

@@ -172,8 +172,13 @@ export async function installCursorHooks(target: CursorInstallTarget): Promise<n
       // Denied, failed and timed-out calls. Their payload carries error_message
       // instead of a result; the adapter turns that into an is_error response,
       // so the worker does not read the attempted paths as completed work.
+      // Matched to the tools postToolUse and afterFileEdit cover (Cursor's
+      // file-edit tool is `Write`). Shell and MCP calls stay on
+      // afterShellExecution / afterMCPExecution: Cursor's hooks reference does
+      // not say whether those fire for failed calls, so an unmatched
+      // postToolUseFailure could record one call twice.
       postToolUseFailure: [
-        { command: makeHookCommand('observation') }
+        { matcher: 'Read|Grep|Task|Write', command: makeHookCommand('observation') }
       ],
       stop: [
         { command: makeHookCommand('summarize') }

@@ -97,13 +97,14 @@ export function extractObservationFileEvidence(messages: ReadonlyArray<Observati
   };
 }
 
-/** True when a tool response is marked as an error rather than a result. */
+/**
+ * True when a tool response is marked as an error rather than a result.
+ * Pending messages store tool_response as text (ingest JSON.stringify()s it),
+ * so a JSON-string response is parsed the same way tool_input is.
+ */
 function toolResponseIndicatesError(toolResponse: unknown): boolean {
-  if (!toolResponse || typeof toolResponse !== 'object' || Array.isArray(toolResponse)) {
-    return false;
-  }
-  const record = toolResponse as Record<string, unknown>;
-  return record.is_error === true || record.isError === true;
+  const record = maybeParseObject(toolResponse);
+  return record !== null && (record.is_error === true || record.isError === true);
 }
 
 function pushUnique(seen: Set<string>, output: string[], filePath: string): void {
