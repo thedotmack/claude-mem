@@ -255,6 +255,82 @@ describe('CloudSync failure handling', () => {
     sync.stop();
   });
 
+  it('clears a recovered transport failure after a validated page while the rest of the drain is pending', async () => {
+    let mode: 'fail' | 'accept' = 'fail';
+    let seq = 0;
+    let acceptedPages = 0;
+    let releasePage!: () => void;
+    let enteredPage!: () => void;
+    const secondPage = new Promise<void>(resolve => { enteredPage = resolve; });
+    const heldPage = new Promise<void>(resolve => { releasePage = resolve; });
+    const impl = (async (input: any, init?: any) => {
+      if (String(input).endsWith('/v1/sync/status')) {
+        return Response.json({ protocol_version: 2, epoch: '1', head_seq: String(seq), projected_seq: String(seq) });
+      }
+      if (mode === 'fail') return new Response('{"error":"sync_hub_unavailable"}', { status: 503 });
+      if (++acceptedPages === 2) { enteredPage(); await heldPage; }
+      const result = ackAll(String(init?.body ?? ''), seq);
+      seq = result.seq;
+      return result.response;
+    }) as typeof fetch;
+    const sync = makeSync(impl, { contentBatchSize: 1, backoffInitialMs: 10_000 });
+    let drain: Promise<void> | undefined;
+    try {
+      seedObservation('one'); seedObservation('two'); seedObservation('three');
+      await sync.flush();
+      expect(sync.status().health.state).toBe('failing');
+      // A successful observational GET does not establish push recovery.
+      await sync.statusWithHubProbe();
+      expect(sync.status().health.state).toBe('failing');
+
+      mode = 'accept';
+      drain = sync.flush();
+      await Promise.race([secondPage, sleep(2_000).then(() => { throw new Error('second page did not start'); })]);
+      const status = sync.status();
+      expect(status.pending.observations).toBe(2);
+      expect(status.lastFlushAt).toBeNull();
+      expect(status.lastError).toBeNull();
+      expect(status.health).toEqual({ state: 'ok', message: null, consecutiveFailures: 0, failingSinceAt: null });
+      expect(readSyncHealth(healthPath)?.state).toBe('ok');
+      expect(status.queue.progress.observation.acknowledged).toBe(1);
+      releasePage();
+      await drain;
+      expect(sync.status().lastFlushAt).toBeNumber();
+      expect(pendingObservations()).toBe(0);
+    } finally {
+      releasePage();
+      if (drain) await drain;
+      sync.stop();
+    }
+  });
+
+  it('keeps a protocol failure when a 200 response does not acknowledge the page', async () => {
+    let invalid = false;
+    const impl = (async (input: any) => {
+      if (String(input).endsWith('/v1/sync/status')) {
+        return Response.json({ protocol_version: 2, epoch: '1', head_seq: '0', projected_seq: '0' });
+      }
+      return invalid
+        ? Response.json({ acked: [], head_seq: '0', projected_seq: '0' })
+        : new Response('{"error":"sync_hub_unavailable"}', { status: 503 });
+    }) as typeof fetch;
+    const sync = makeSync(impl, { backoffInitialMs: 10_000 });
+    try {
+      seedObservation('one');
+      await sync.flush();
+      invalid = true;
+      await sync.flush();
+      await sync.statusWithHubProbe();
+      expect(sync.status().health.state).toBe('failing');
+      expect(sync.status().lastError).toContain('acknowledgment multiplicity mismatch');
+      expect(sync.status().lastFlushAt).toBeNull();
+      expect(sync.status().queue.progress.observation.acknowledged).toBe(0);
+      expect(pendingObservations()).toBe(1);
+    } finally {
+      sync.stop();
+    }
+  });
+
   it('quarantines a poison op after repeated named rejections and drains the rest (#4086)', async () => {
     seedObservation('poison');
     seedObservation('healthy');

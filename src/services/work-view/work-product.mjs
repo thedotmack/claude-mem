@@ -4,6 +4,7 @@
 // files_modified list, or a work-state field) and keeps a reference to it.
 import { statSync } from 'node:fs';
 import { basename, extname, isAbsolute } from 'node:path';
+import { createHash } from 'node:crypto';
 
 // Files a person opens, not source code. Anything else stays in the work history.
 const FILE_KINDS = {
@@ -279,7 +280,15 @@ export function productsFromFields(fields, { atEpoch = null, sourceRef = null } 
 
 // A commit is one entry per sha, a branch one per name, anything else one per link or file.
 const productKey = (product) => product.kind === 'commit' && product.sha ? `commit:${product.sha.slice(0, 7)}`
-  : product.kind === 'branch' && product.branch ? `branch:${product.branch}` : product.url ?? product.path;
+  : product.kind === 'branch' && product.branch ? `branch:${product.branch}` : product.productId ?? product.url ?? product.path;
+
+/** Opaque identity for a recorded local file. The path never enters the shared identity. */
+export function localProductId(ref) {
+  if (!ref || !['observation', 'work-state', 'deliverable'].includes(ref.kind)
+    || typeof ref.device !== 'string' || !ref.device || !/^\d+$/.test(String(ref.row ?? ''))
+    || (ref.index !== undefined && (!Number.isSafeInteger(ref.index) || ref.index < 0))) return null;
+  return `local_${createHash('sha256').update(JSON.stringify([ref.kind, ref.device, String(ref.row), ref.index ?? 0])).digest('hex')}`;
+}
 
 /** Newest first, one entry per commit, branch, link or file. A commit or
  * branch links to GitHub when a push in the same lists sent it there: its
@@ -362,21 +371,95 @@ export function fileUrl(product) {
 }
 
 const FILE_EXTENSION_PATTERN = Object.keys(FILE_KINDS).map((extension) => `files_modified LIKE '%${extension}"%'`).join(' OR ');
+const PUBLISHING_PRODUCT_PREDICATE = `(tool_name IN ('Artifact', 'mcp__claude_ai_Notion__notion-create-pages', 'mcp__claude_ai_Claude_Docs__batch', 'mcp__claude_ai_Claude_Docs__create')
+  OR tool_name LIKE '%chatgpt_space__create_page' OR tool_name LIKE '%sites__save_version_and_deploy%'
+  OR (tool_name = 'Bash' AND tool_input LIKE '%gh pr create%'))`;
+const GIT_PRODUCT_PREDICATE = `tool_name = 'Bash' AND tool_input LIKE '%git%' AND tool_input NOT LIKE '%gh pr create%'
+  AND (tool_input LIKE '%commit%' OR tool_input LIKE '%push%' OR tool_input LIKE '%checkout -b%' OR tool_input LIKE '%switch -c%')`;
+
+const productIndexes = new WeakMap();
+
+function productIndexClauses(database) {
+  if (!database) return {};
+  let clauses = productIndexes.get(database);
+  if (clauses) return clauses;
+  clauses = {};
+  // These indexes are created by sqlite/tool-uses.ts and SessionStore. Older
+  // databases and small fixtures omit them. Inspect once per reader connection;
+  // an index on a different column (or a partial index) cannot serve this read.
+  for (const [table, index] of [['tool_uses', 'idx_tool_uses_created_at_epoch'], ['observations', 'idx_observations_created']]) {
+    const found = database.prepare(`PRAGMA index_list('${table}')`).all()
+      .find(row => row.name === index && row.partial === 0);
+    if (found && database.prepare(`PRAGMA index_info('${index}')`).all()[0]?.name === 'created_at_epoch') {
+      clauses[table] = ` INDEXED BY ${index}`;
+    }
+  }
+  productIndexes.set(database, clauses);
+  return clauses;
+}
+
+function selectiveProductIndexClauses(database, sinceEpoch, limit) {
+  // A broad positive cutoff can be as expensive as an unbounded read: forcing
+  // its time index scans/sorts all candidates instead of stopping at LIMIT.
+  // Keep the planner when recent IDs are rich in matches. Otherwise compare a
+  // bounded time range with the sampled ID scan cost. Only index metadata is
+  // cached: range size and match density are rechecked after new commits.
+  if (!(sinceEpoch > 0) || !Number.isSafeInteger(limit) || limit <= 0) return {};
+  const sampleSize = Math.min(limit, 128);
+  const indexes = productIndexClauses(database);
+  const selected = {};
+  // Publisher and Git queries have independent limits and match densities;
+  // a dense lane must not hide the other lane's sparse historical ID scan.
+  for (const [lane, table, predicate] of [
+    ['publishing', 'tool_uses', PUBLISHING_PRODUCT_PREDICATE],
+    ['git', 'tool_uses', GIT_PRODUCT_PREDICATE],
+    ['observations', 'observations', FILE_EXTENSION_PATTERN],
+  ]) {
+    const clause = indexes[table];
+    if (!clause) continue;
+    const columns = table === 'tool_uses' ? 'tool_name, tool_input, created_at_epoch' : 'files_modified, created_at_epoch';
+    let sample;
+    try {
+      sample = database.prepare(`SELECT COUNT(*) AS sampled,
+        COALESCE(SUM(CASE WHEN created_at_epoch >= ? AND (${predicate}) THEN 1 ELSE 0 END), 0) AS matches
+        FROM (SELECT ${columns} FROM ${table} ORDER BY id DESC LIMIT ?)
+      `).get(sinceEpoch, sampleSize);
+    } catch (error) {
+      // Match agent-view's safeRead support for older/minimal schemas. The
+      // normal read callback still decides how missing content is represented.
+      if (/no such (table|column)/i.test(String(error.message))) continue;
+      throw error;
+    }
+    if (sample.matches * 4 >= sample.sampled && sample.sampled > 0) continue;
+    const estimatedIdScan = limit * sampleSize / Math.max(1, sample.matches);
+    // Sparse publishers can have more than four result pages of unrelated
+    // recent activity. An 8K cutoff sent a measured 10.5K-row recent window
+    // back through 226K historical payloads (13 seconds from cold storage).
+    // Count only covering-index entries, up to the cheaper half of the
+    // estimated ID scan; 128K is the maximum estimate for our 2K/128 sample.
+    const budget = Math.min(128_000, Math.floor(estimatedIdScan / 2));
+    const candidates = database.prepare(`SELECT COUNT(*) AS count FROM (
+      SELECT 1 FROM ${table}${clause} WHERE created_at_epoch >= ? LIMIT ?
+    )`).get(sinceEpoch, budget + 1).count;
+    if (candidates <= budget) selected[lane] = clause;
+  }
+  return selected;
+}
 
 /** Recorded calls and observations that may hold work product since `sinceEpoch`.
- * Git commands are read separately so their volume never crowds out publishers. */
-export function readProductRecords(read, sinceEpoch, limit = 2000) {
-  const publishingCalls = read(`SELECT id, session_db_id, prompt_number, tool_name, tool_input, tool_response, created_at_epoch FROM tool_uses
-    WHERE created_at_epoch >= ? AND (tool_name IN ('Artifact', 'mcp__claude_ai_Notion__notion-create-pages', 'mcp__claude_ai_Claude_Docs__batch', 'mcp__claude_ai_Claude_Docs__create')
-      OR tool_name LIKE '%chatgpt_space__create_page' OR tool_name LIKE '%sites__save_version_and_deploy%'
-      OR (tool_name = 'Bash' AND tool_input LIKE '%gh pr create%'))
+ * Git commands are read separately so their volume never crowds out publishers.
+ * Pass the reader's database to use its existing time indexes before payload
+ * predicates; ID ordering is still applied to the complete matching set. */
+export function readProductRecords(read, sinceEpoch, limit = 2000, { database } = {}) {
+  const indexes = selectiveProductIndexClauses(database, sinceEpoch, limit);
+  const publishingCalls = read(`SELECT id, session_db_id, prompt_number, tool_name, tool_input, tool_response, created_at_epoch FROM tool_uses${indexes.publishing ?? ''}
+    WHERE created_at_epoch >= ? AND ${PUBLISHING_PRODUCT_PREDICATE}
     ORDER BY id DESC LIMIT ?`, [sinceEpoch, limit]);
-  const gitCalls = read(`SELECT id, session_db_id, prompt_number, tool_name, tool_input, tool_response, created_at_epoch FROM tool_uses
-    WHERE created_at_epoch >= ? AND tool_name = 'Bash' AND tool_input LIKE '%git%' AND tool_input NOT LIKE '%gh pr create%'
-      AND (tool_input LIKE '%commit%' OR tool_input LIKE '%push%' OR tool_input LIKE '%checkout -b%' OR tool_input LIKE '%switch -c%')
+  const gitCalls = read(`SELECT id, session_db_id, prompt_number, tool_name, tool_input, tool_response, created_at_epoch FROM tool_uses${indexes.git ?? ''}
+    WHERE created_at_epoch >= ? AND ${GIT_PRODUCT_PREDICATE}
     ORDER BY id DESC LIMIT ?`, [sinceEpoch, limit]);
   const productCalls = [...publishingCalls, ...gitCalls];
-  const productObservations = read(`SELECT id, memory_session_id, prompt_number, files_modified, created_at_epoch FROM observations
+  const productObservations = read(`SELECT id, memory_session_id, prompt_number, files_modified, created_at_epoch FROM observations${indexes.observations ?? ''}
     WHERE created_at_epoch >= ? AND (${FILE_EXTENSION_PATTERN}) ORDER BY id DESC LIMIT ?`, [sinceEpoch, limit]);
   // Bucket copies the Stop hook made; a database from before the table existed has none (safeRead answers []).
   const productDeliverables = read(`SELECT id, project, content_session_id, platform_source, title, kind, source_path, bucket_path, created_at_epoch
@@ -385,15 +468,26 @@ export function readProductRecords(read, sinceEpoch, limit = 2000) {
 }
 
 /** The local file one record names at `index`, re-read from that record. */
-export function recordedFile(read, kind, id, index) {
+export function recordedFile(read, kind, id, index, localDeviceId = '') {
   if (!Number.isSafeInteger(id) || id < 1 || !Number.isSafeInteger(index) || index < 0) return null;
   let products = [];
   if (kind === 'observation') {
+    if (!recordedHere(read, 'observations', id, localDeviceId)) return null;
     const row = read('SELECT id, files_modified, created_at_epoch FROM observations WHERE id = ?', [id])[0];
     products = row ? productsFromObservation(row) : [];
   } else if (kind === 'work-state') {
+    if (!recordedHere(read, 'work_state_entries', id, localDeviceId)) return null;
     const row = read('SELECT id, fields FROM work_state_entries WHERE id = ?', [id])[0];
     products = row ? productsFromFields(parse(row.fields), { sourceRef: { kind, id } }) : [];
   }
   return servableFile(products.find((product) => product.sourceRef?.index === index)) ?? null;
+}
+
+/** A replicated path names the origin's disk, even when that path happens to exist here. */
+function recordedHere(read, table, id, localDeviceId) {
+  const columns = read(`PRAGMA table_info(${table})`, []);
+  // Pre-sync databases have only native rows. Keep their local-file behavior.
+  if (!columns.some(column => column.name === 'origin_device_id')) return true;
+  const row = read(`SELECT origin_device_id FROM ${table} WHERE id = ?`, [id])[0];
+  return !!row && (row.origin_device_id == null || row.origin_device_id === localDeviceId);
 }

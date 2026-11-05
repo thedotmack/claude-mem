@@ -61,6 +61,7 @@ import { applySqliteConnectionPragmas, assertSchemaWriterCompatible, claimSchema
 import { streamRows } from './stream-rows.js';
 import { ensureMediaSchema } from './media.js';
 import { OBSERVATIONS_FTS_TRIGGERS_SQL, SESSION_SUMMARIES_FTS_TRIGGERS_SQL } from './SessionSearch.js';
+import { ensureSyncRecoverySchema } from '../sync/SyncRecovery.js';
 import {
   assertCanonicalDecimal,
   incrementCanonicalDecimal,
@@ -997,6 +998,7 @@ export class SessionStore {
    * decimal TEXT so a remote value is never rounded through a JS number.
    */
   private ensureSyncEntityLedger(): void {
+    ensureSyncRecoverySchema(this.db);
     this.db.run(SYNC_ENTITY_HEADS_DDL);
     this.widenSyncKindCheck('sync_entity_heads', SYNC_ENTITY_HEADS_DDL);
     this.db.run(SYNC_CONTENT_OUTBOX_DDL);
@@ -1011,6 +1013,8 @@ export class SessionStore {
       `);
     }
     this.widenSyncKindCheck('sync_content_outbox', SYNC_CONTENT_OUTBOX_DDL);
+    // Per-kind fair pages must not sort/scan the other kinds' frozen backlog.
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_sync_content_outbox_kind_pending ON sync_content_outbox(kind, deleted DESC, id)');
     this.db.run(`
       CREATE TABLE IF NOT EXISTS sync_dead_letter (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3199,7 +3203,7 @@ export class SessionStore {
 
   appendWorkStateEntry(entry: { project: string; listName: string; fields: WorkStateFields; createdAtEpoch?: number }): number {
     const entryId = appendWorkStateEntryRow(this.db, entry);
-    emitContextInvalidation({ projects: [entry.project] }, 'appendWorkStateEntry');
+    emitContextInvalidation({ projects: [entry.project] }, 'appendWorkStateEntry', 'additive', { kinds: ['work_state'], workStateLists: [entry.listName] });
     return entryId;
   }
 
@@ -3717,6 +3721,16 @@ export class SessionStore {
     return mutation;
   }
 
+  /** Notify only at an owned commit boundary. A caller already inside a
+   * transaction must announce its whole committed operation after it returns;
+   * publishing here could otherwise expose a prompt that later rolls back. */
+  private promptCommitted(reason: string, sessionDbId: number | null): void {
+    if (this.db.inTransaction) return;
+    const session = sessionDbId === null ? null : this.db.prepare('SELECT project FROM sdk_sessions WHERE id = ?')
+      .get(sessionDbId) as { project: string } | null;
+    emitContextInvalidation(session ? { projects: [session.project] } : 'all', reason, 'additive', { kinds: ['prompt'] });
+  }
+
   saveUserPrompt(contentSessionId: string, promptNumber: number, promptText: string, sessionDbId?: number, nativePromptId?: string, nativePromptHash?: string, createdAtEpoch?: number): number {
     const now = new Date(createdAtEpoch ?? Date.now());
     const nowEpoch = now.getTime();
@@ -3730,6 +3744,7 @@ export class SessionStore {
     `);
 
     const result = stmt.run(resolvedSessionDbId, contentSessionId, promptNumber, storedPromptText, now.toISOString(), nowEpoch, nativePromptId ?? null, nativePromptHash ?? null);
+    this.promptCommitted('saveUserPrompt', resolvedSessionDbId);
     return result.lastInsertRowid as number;
   }
 
@@ -3748,7 +3763,7 @@ export class SessionStore {
     // Compare the entire cleaned ask, before storage/HTTP truncation. Equal
     // 4,000-character previews must not hide different bodies on a stale retry.
     const promptHash = createHash('sha256').update(stripMemoryTags(identityPromptText).trim()).digest('hex');
-    return this.db.transaction(() => {
+    const result = this.db.transaction(() => {
       const existing = this.db.prepare(`SELECT id, prompt_number, native_prompt_hash FROM user_prompts
         WHERE session_db_id = ? AND native_prompt_id = ?`).get(sessionDbId, nativePromptId) as
         { id: number; prompt_number: number; native_prompt_hash: string | null } | null;
@@ -3761,6 +3776,8 @@ export class SessionStore {
       const id = this.saveUserPrompt(contentSessionId, promptNumber, text, sessionDbId, nativePromptId, promptHash, options.createdAtEpoch);
       return { id, promptNumber, duplicate: false };
     }).immediate();
+    if (!result.duplicate) this.promptCommitted('saveNativeUserPrompt', sessionDbId);
+    return result;
   }
 
   /**
@@ -5050,6 +5067,7 @@ export class SessionStore {
       prompt.native_prompt_hash ?? null
     );
 
+    this.promptCommitted('importUserPrompt', sessionDbId);
     return { imported: true, id: result.lastInsertRowid as number };
   }
 }

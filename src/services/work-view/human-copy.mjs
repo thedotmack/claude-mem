@@ -11,6 +11,12 @@ function text(value, max) {
 
 function sourceRef(value) {
   if (!value || typeof value !== 'object') return null;
+  // Decorated view models carry origin identities. An explicit null denotes
+  // local-only evidence (for example a raw tool call), which never enters a
+  // fingerprint shared with a replica that does not have that evidence.
+  if (Object.hasOwn(value, 'stableIdentity')) return value.stableIdentity;
+  if (value.sourceIdentity) return value.sourceIdentity;
+  if (value.identity) return value.identity;
   const kind = typeof (value.kind ?? value.source) === 'string' ? value.kind ?? value.source : null;
   const id = value.id ?? value.sourceId;
   if (!kind || !['string', 'number'].includes(typeof id)) return null;
@@ -40,7 +46,7 @@ function itemContent(item, caps) {
 /** Bounded source-only payload: generated/cache labels and clock fields never enter it. */
 export function createHumanCopyInput(request) {
   if (!request || typeof request !== 'object' || !request.original || typeof request.original.text !== 'string') throw new TypeError('A recorded original request is required.');
-  const streams = [...(request.workstreams ?? [])];
+  const streams = (request.workstreams ?? []).map(stream => ({ ...stream, id: stream.stableId ?? stream.id }));
   if (streams.some((stream) => typeof stream?.id !== 'string' || !stream.id) || new Set(streams.map((stream) => stream.id)).size !== streams.length) throw new TypeError('Workstreams require unique nonempty string ids.');
   streams.sort((a, b) => a.id.localeCompare(b.id));
   let itemLimit = 8, observationLimit = 3, detailCap = 240, titleCap = 160, originalCap = 1600, scopeCap = 320, refLimit = 6;
@@ -49,7 +55,7 @@ export function createHumanCopyInput(request) {
     original: { text: text(request.original.text, originalCap), sourceRef: sourceRef(request.original) },
     recordedStage: text(request.stageSourceText, 300),
     requestLifecycle: request.lifecycle?.explicit === true ? { status: text(request.lifecycle.status, 40), field: text(request.lifecycle.field, 40) } : null,
-    scopeUpdates: (request.scopeUpdates ?? []).slice(-6).map((update) => ({ text: text(update.text, scopeCap), sourceRef: sourceRef({ source: 'user-prompt', sourceId: update.sourceId }) })).filter((update) => update.text),
+    scopeUpdates: (request.scopeUpdates ?? []).slice(-6).map((update) => ({ text: text(update.text, scopeCap), sourceRef: sourceRef({ ...update, source: 'user-prompt' }) })).filter((update) => update.text),
     workstreams: streams.map((stream) => ({
       id: stream.id,
       sourceRefs: refsFor(stream).slice(0, refLimit),

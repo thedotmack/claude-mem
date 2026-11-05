@@ -137,9 +137,10 @@ describe('setup extraction', () => {
   it('passes the unchecked preference through after scanning and still completes', async () => {
     let improveProduct: boolean | undefined;
     const scan = await start(fakeRefresh(), null, { state: () => ({ state: 'ok', reason: 'setup-scan', step: null, agent: null, startedAt: null, finishedAt: null, error: null }), async run(_prompts, flag) { improveProduct = flag; } });
-    expect(scan.state().improveProduct).toBe(false);
+    expect(scan.state().improveProduct).toBe(true);
     const changed = await fetch(`${origin}/api/setup/scan/preferences`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin }, body: JSON.stringify({ improveProduct: false }) });
     expect(changed.status).toBe(200);
+    expect(scan.state().improveProduct).toBe(false);
     await postScan();
     await scan.finished();
     await scan.confirmUpload(true);
