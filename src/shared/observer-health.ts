@@ -283,7 +283,15 @@ export function recordObserverFailure(
     writeObserverHealth({
       ...prior,
       consecutiveFailures: prior.consecutiveFailures + 1,
-      failingSinceAt: prior.consecutiveFailures > 0 ? prior.failingSinceAt : now,
+      // Pin the streak start to the first failure *of the current kind*: an
+      // unbroken count across a kind change (a quota pause, then a refused
+      // credential once the worker resumes) would otherwise pair the newest
+      // error kind with the oldest start (#5378). Older ledgers without the
+      // kind field read as unclassified, matching a string-form failure.
+      failingSinceAt:
+        prior.consecutiveFailures > 0 && (prior.lastErrorKind ?? null) === (detail.kind ?? null)
+          ? prior.failingSinceAt
+          : now,
       lastErrorAt: now,
       lastErrorMessage: scrubErrorMessage(detail.message),
       lastErrorProvider: provider,
