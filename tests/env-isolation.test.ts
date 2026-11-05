@@ -781,16 +781,22 @@ describe('plan-19: long-lived CLAUDE_CODE_OAUTH_TOKEN from ~/.claude-mem/.env', 
 
 /**
  * #5400 — the detached worker does not inherit proxy variables that Claude
- * Code only applies from `<CLAUDE_CONFIG_DIR or ~/.claude>/settings.json`
- * `env`. The observer child is spawned with settingSources: [] and would
- * otherwise connect directly. buildIsolatedEnv fills the missing proxy keys
- * from that file and leaves every other key alone.
+ * Code only applies from `<Claude config dir>/settings.json` `env`. The
+ * observer child is spawned with settingSources: [] and would otherwise
+ * connect directly. buildIsolatedEnv fills the missing proxy keys from that
+ * file and leaves every other key alone.
+ *
+ * The config dir is the credential profile buildIsolatedEnv already resolves
+ * (CLAUDE_MEM_CLAUDE_CONFIG_DIR setting > CLAUDE_CONFIG_DIR > ~/.claude).
+ * paths.CLAUDE_CONFIG_DIR is frozen at module load, so these tests pick the
+ * dir through the setting (env override, re-read on every call).
  */
 describe('Issue #5400: observer spawn inherits proxy env from Claude settings', () => {
   const configDir = fs.mkdtempSync(join(tmpdir(), 'claude-mem-proxy-settings-'));
   const settingsPath = join(configDir, 'settings.json');
   const dotenvPath = join(configDir, '.env');
   const originalConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  const originalProfileSetting = process.env.CLAUDE_MEM_CLAUDE_CONFIG_DIR;
   const originalDotenv = process.env.CLAUDE_MEM_ENV_FILE;
   const PROXY_KEYS = [
     'HTTP_PROXY',
@@ -823,15 +829,21 @@ describe('Issue #5400: observer spawn inherits proxy env from Claude settings', 
   }
 
   beforeEach(() => {
-    process.env.CLAUDE_CONFIG_DIR = configDir;
+    process.env.CLAUDE_MEM_CLAUDE_CONFIG_DIR = configDir;
+    delete process.env.CLAUDE_CONFIG_DIR;
     for (const key of PROXY_KEYS) delete process.env[key];
     fs.rmSync(settingsPath, { force: true });
-    fs.rmSync(dotenvPath, { force: true });
+    // An empty credentials file of our own, so a developer's real
+    // ~/.claude-mem/.env (with ANTHROPIC_API_KEY) cannot change the results.
+    fs.writeFileSync(dotenvPath, '', { mode: 0o600 });
+    process.env.CLAUDE_MEM_ENV_FILE = dotenvPath;
   });
 
   afterEach(() => {
     if (originalConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
     else process.env.CLAUDE_CONFIG_DIR = originalConfigDir;
+    if (originalProfileSetting === undefined) delete process.env.CLAUDE_MEM_CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_MEM_CLAUDE_CONFIG_DIR = originalProfileSetting;
     if (originalDotenv === undefined) delete process.env.CLAUDE_MEM_ENV_FILE;
     else process.env.CLAUDE_MEM_ENV_FILE = originalDotenv;
     restoreProxyEnv();
@@ -841,7 +853,7 @@ describe('Issue #5400: observer spawn inherits proxy env from Claude settings', 
     fs.rmSync(configDir, { recursive: true, force: true });
   });
 
-  it('fills missing proxy keys from CLAUDE_CONFIG_DIR/settings.json, and sanitizeEnv keeps them', () => {
+  it('fills missing proxy keys from the profile settings.json, and sanitizeEnv keeps them', () => {
     writeSettings({
       env: {
         HTTP_PROXY: 'http://proxy.example:3128',
@@ -890,6 +902,22 @@ describe('Issue #5400: observer spawn inherits proxy env from Claude settings', 
       expect(buildIsolatedEnv().HTTPS_PROXY).toBe('http://chosen.example:9');
     } finally {
       fs.rmSync(otherDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads the CLAUDE_MEM_CLAUDE_CONFIG_DIR profile, not process.env.CLAUDE_CONFIG_DIR', () => {
+    const shellDir = fs.mkdtempSync(join(tmpdir(), 'claude-mem-proxy-shell-'));
+    try {
+      fs.writeFileSync(
+        join(shellDir, 'settings.json'),
+        JSON.stringify({ env: { HTTPS_PROXY: 'http://shell-profile.example:1' } }),
+      );
+      process.env.CLAUDE_CONFIG_DIR = shellDir;
+      writeSettings({ env: { HTTPS_PROXY: 'http://chosen-profile.example:2' } });
+
+      expect(buildIsolatedEnv().HTTPS_PROXY).toBe('http://chosen-profile.example:2');
+    } finally {
+      fs.rmSync(shellDir, { recursive: true, force: true });
     }
   });
 

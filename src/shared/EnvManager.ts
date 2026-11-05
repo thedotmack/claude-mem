@@ -2,13 +2,11 @@
 import { createHash } from 'crypto';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs';
 import { parseEnv } from 'util';
-import { homedir } from 'os';
 import { basename, join } from 'path';
 import { ENV_PROXY_VARS } from '../supervisor/env-sanitizer.js';
 import { logger } from '../utils/logger.js';
 import { paths } from './paths.js';
 import { readJsonFileWithBom, stripUtf8Bom } from './atomic-json.js';
-import { expandHome } from './expand-home.js';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import type { ClaudeCredential } from './quota-cooldown.js';
 import {
@@ -238,18 +236,11 @@ export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
 }
 
 /**
- * Directory whose `settings.json` Claude Code would apply to an interactive
- * session: `CLAUDE_CONFIG_DIR` when it is set, otherwise `~/.claude`.
- * A leading `~` is expanded; a shell-exported value is already expanded.
- */
-function claudeUserConfigDir(): string {
-  const configured = process.env.CLAUDE_CONFIG_DIR?.trim();
-  return configured ? expandHome(configured) : join(homedir(), '.claude');
-}
-
-/**
  * #5400 — Claude Code applies the `env` block of
- * `<CLAUDE_CONFIG_DIR or ~/.claude>/settings.json` to its own process only.
+ * `<Claude config dir>/settings.json` to its own process only. The dir is the
+ * credential profile buildIsolatedEnv resolves (CLAUDE_MEM_CLAUDE_CONFIG_DIR
+ * setting > CLAUDE_CONFIG_DIR > ~/.claude), so proxies come from the same
+ * profile the observer child runs as.
  * The worker is started detached, so those variables are absent from
  * process.env, and the observer CLI is spawned with `settingSources: []`, so
  * it never reads the file either and connects directly (ECONNREFUSED).
@@ -257,16 +248,22 @@ function claudeUserConfigDir(): string {
  * Copy proxy keys the worker does not already have. An empty string already
  * in the worker env is left alone. Anything else in that block (API keys,
  * CLAUDE_CODE_*) stays out: this is not a general settings-env passthrough.
- * A missing or unreadable file is the common case and changes nothing.
+ * A missing file is the common case and changes nothing; an unparseable one
+ * is logged and changes nothing.
  */
-function applyMissingProxyEnvFromClaudeSettings(isolatedEnv: Record<string, string>): void {
-  const settingsPath = join(claudeUserConfigDir(), 'settings.json');
+function applyMissingProxyEnvFromClaudeSettings(isolatedEnv: Record<string, string>, claudeConfigDir: string): void {
+  const settingsPath = join(claudeConfigDir, 'settings.json');
   if (!existsSync(settingsPath)) return;
 
   let parsed: unknown;
   try {
     parsed = readJsonFileWithBom(settingsPath);
-  } catch {
+  } catch (error: unknown) {
+    // Say so instead of silently spawning the observer without the proxy.
+    logger.warn('ENV', 'Could not parse Claude settings.json; its proxy env is not applied', {
+      path: settingsPath,
+      error: error instanceof Error ? error.message : String(error),
+    });
     return;
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return;
@@ -293,9 +290,6 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
     }
   }
 
-  // After the process.env copy, so a proxy the worker already has wins.
-  applyMissingProxyEnvFromClaudeSettings(isolatedEnv);
-
   isolatedEnv.CLAUDE_CODE_ENTRYPOINT = 'sdk-ts';
 
   isolatedEnv.CLAUDE_MEM_INTERNAL = '1';
@@ -320,6 +314,8 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
   // process.env.CLAUDE_CONFIG_DIR at module load.
   const configDirSettings = SettingsDefaultsManager.loadFromFile(paths.settings());
   const { configDir, explicitConfigDir } = resolveClaudeCredentialProfile(configDirSettings.CLAUDE_MEM_CLAUDE_CONFIG_DIR);
+  // After the process.env copy, so a proxy the worker already has wins.
+  applyMissingProxyEnvFromClaudeSettings(isolatedEnv, configDir);
   if (explicitConfigDir) {
     isolatedEnv.CLAUDE_CONFIG_DIR = configDir;
   } else {
