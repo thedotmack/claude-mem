@@ -244,12 +244,15 @@ export class SessionMessageBuffer {
     while (!signal.aborted) {
       const claimed = this.claimNext(sessionDbId);
       if (claimed) {
-        lastActivityTime = Date.now();
         yield {
           ...claimed.message,
           _persistentId: claimed.id,
           _originalTimestamp: claimed.enqueuedAt
         };
+        // The idle clock starts when the consumer comes back for the next
+        // message, so the time it spends answering this one does not eat
+        // into the idle window.
+        lastActivityTime = Date.now();
         continue;
       }
 

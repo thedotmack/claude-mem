@@ -154,6 +154,34 @@ describe('SessionMessageBuffer (in-RAM observation buffer)', () => {
     expect(Date.now() - start).toBeGreaterThanOrEqual(250);
   });
 
+  test('drain starts the idle clock when the consumer returns, not when a message is claimed (#5376)', async () => {
+    const buffer = new SessionMessageBuffer();
+    buffer.enqueue(102, obs('Read', 'a'));
+    const controller = new AbortController();
+    let idleFiredAt: number | null = null;
+    const iterator = buffer.drain({
+      sessionDbId: 102,
+      signal: controller.signal,
+      idleTimeoutMs: 1500,
+      onIdleTimeout: () => { idleFiredAt = Date.now(); },
+    });
+    const first = await iterator.next();
+    expect(first.done).toBe(false);
+    // Simulate a slow reply: the consumer holds the message for 1.2s before
+    // asking for the next one.
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    const returnedAt = Date.now();
+    const second = await iterator.next();
+    expect(second.done).toBe(true);
+    expect(idleFiredAt).not.toBeNull();
+    // The full 1.5s idle window runs from the consumer's return. Waits are
+    // sliced at 1s, so it fires on the second slice (~2s after the return).
+    // A clock stamped at claim time would already fire on the first slice
+    // (~1s after the return), its 1.2s of processing having counted as idle.
+    expect(idleFiredAt! - returnedAt).toBeGreaterThanOrEqual(1800);
+    controller.abort();
+  }, 10000);
+
   test('peekTypes reflects buffered message types', () => {
     const buffer = new SessionMessageBuffer();
     buffer.enqueue(1, obs('Read', 'a'));
