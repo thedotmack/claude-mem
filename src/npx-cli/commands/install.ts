@@ -660,7 +660,7 @@ async function setupIDEs(selectedIDEs: string[], summary: InstallSummary, dshPro
     installerError(ErrorSeverity.ABORT, {
       component: 'all-ides',
       phase: 'ide-install',
-      cause: new Error(`All ${selectedIDEs.length} selected IDE integrations failed.`),
+      cause: new Error(`All ${selectedIDEs.length} selected agent integrations failed.`),
     }, summary);
   }
 
@@ -734,7 +734,7 @@ async function promptForIDESelection(): Promise<string[]> {
   const detected = detectedIDEs.filter((ide) => ide.detected);
 
   if (detected.length === 0) {
-    log.warn('No supported IDEs detected — pick the one(s) you plan to use.');
+    log.warn('No supported agents detected — pick the one(s) you plan to use.');
   }
 
   const options = detectedIDEs.map((ide) => {
@@ -2889,8 +2889,8 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     const allIDEs = detectInstalledIDEs();
     const match = allIDEs.find((i) => i.id === ideId);
     if (!match) {
-      log.error(`Unknown IDE: ${options.ide}`);
-      log.info(`Available IDEs: ${allIDEs.map((i) => i.id).join(', ')}`);
+      log.error(`Unknown agent for --ide: ${options.ide}`);
+      log.info(`Available --ide values: ${allIDEs.map((i) => i.id).join(', ')}`);
       process.exit(1);
     }
   } else if (process.stdin.isTTY) {
@@ -3272,7 +3272,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   const summaryLines = [
     `Version:     ${styleText('cyan', version)}`,
     `Plugin dir:  ${styleText('cyan', marketplaceDir)}`,
-    `IDEs:        ${styleText('cyan', selectedIDEs.join(', '))}`,
+    `Agents:      ${styleText('cyan', selectedIDEs.join(', '))}`,
   ];
   summaryLines.push(`Account:     ${styleText('cyan', browserAccountStatus ?? accountStatus)}`);
   summaryLines.push(`Cloud sync:  ${styleText('cyan', cloudSyncConfigured ? 'ON (CMEM Pro)' : 'OFF (local)')}`);
@@ -3393,7 +3393,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   const nextSteps = [
     nextStepsHeadline,
     ``,
-    `${styleText('bold', 'Start working.')} Memory builds passively from your first prompt — observations stream in as Claude reads, edits, and runs commands.`,
+    `${styleText('bold', 'Start working.')} Memory builds passively from your first prompt — observations stream in as your agent reads, edits, and runs commands.`,
     `To watch them live, ${firstSuccessOpener}.`,
     ``,
     `Memory injection starts on your second session in a project.`,
@@ -3414,7 +3414,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       p.outro(styleText('red', 'claude-mem installed, but the worker did not start.'));
       process.exitCode = 1;
     } else if (failedIDEs.length > 0) {
-      p.outro(styleText('yellow', 'claude-mem installed with some IDE setup failures.'));
+      p.outro(styleText('yellow', 'claude-mem installed, but setup failed for some agents.'));
     } else {
       p.outro(styleText('green', 'claude-mem installed successfully!'));
     }
@@ -3425,7 +3425,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       console.error('\nclaude-mem installed, but the worker did not start.');
       process.exitCode = 1;
     } else if (failedIDEs.length > 0) {
-      console.log('\nclaude-mem installed with some IDE setup failures.');
+      console.log('\nclaude-mem installed, but setup failed for some agents.');
       process.exitCode = 1;
     } else {
       console.log('\nclaude-mem installed successfully!');
