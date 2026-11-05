@@ -139,6 +139,9 @@ services:
       CLAUDE_MEM_WORKER_PORT: "37877"
       CLAUDE_MEM_DATA_DIR: /data/claude-mem
       CLAUDE_MEM_QUEUE_ENGINE: bullmq
+      # Server and worker must share one BullMQ prefix; the default derives it
+      # from CLAUDE_MEM_WORKER_PORT, which only this service sets.
+      CLAUDE_MEM_QUEUE_REDIS_PREFIX: ${CLAUDE_MEM_QUEUE_REDIS_PREFIX:-claude_mem_37877}
       # #2558 — REDIS_URL fallback: default to the in-stack valkey service so the
       # var is not a brittle hard requirement; override CLAUDE_MEM_REDIS_URL to
       # point at an external Redis.
@@ -191,6 +194,7 @@ services:
       CLAUDE_MEM_RUNTIME: server-beta
       CLAUDE_MEM_DATA_DIR: /data/claude-mem
       CLAUDE_MEM_QUEUE_ENGINE: bullmq
+      CLAUDE_MEM_QUEUE_REDIS_PREFIX: ${CLAUDE_MEM_QUEUE_REDIS_PREFIX:-claude_mem_37877}
       # #2558 — REDIS_URL fallback (see server service above).
       CLAUDE_MEM_REDIS_URL: ${CLAUDE_MEM_REDIS_URL:-redis://valkey:6379}
       CLAUDE_MEM_REDIS_MODE: docker

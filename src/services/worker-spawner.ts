@@ -375,8 +375,8 @@ export async function ensureWorkerStarted(
       spawnedPid = spawnDaemon(workerScriptPath, port);
       if (spawnedPid === undefined) {
         logger.error('SYSTEM', 'Failed to spawn worker daemon');
-        // The launch itself failed (no Bun runtime, Start-Process refused):
-        // as deterministic as a boot crash, so it also starts the cooldown.
+        // The launch itself failed (no Bun runtime, spawn refused): as
+        // deterministic as a boot crash, so it also starts the cooldown.
         lastWorkerBootFailure = getLastWorkerDaemonLaunchError();
         markWorkerBootCrashed(lastWorkerBootFailure ?? 'The worker daemon could not be launched (see the claude-mem log for the spawn error).');
         await recordWorkerBootFailure(port, undefined, lastWorkerBootFailure, 'launch_failed');
