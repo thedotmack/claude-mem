@@ -2,13 +2,22 @@
 //
 // The stream is read in EventSource listeners, which run outside React's error
 // boundaries: a throw there escapes the handler instead of being skipped. Every
-// frame the worker writes is JSON, but a proxy that rewrites the stream, or a
-// future non-JSON producer, can send a body that is not — so a frame that cannot
-// be parsed is dropped rather than thrown. `null` means "ignore this frame".
-export function parseSseFrame(raw: string): unknown | null {
+// frame the worker writes is a JSON object, but a proxy that rewrites the
+// stream, or a future producer, can send something else. Such a frame is
+// skipped with a console warning that names only its event type (the body can
+// hold the user's prompts), matching the viewer's useSSE handling (#5364).
+// `null` means "skip this frame".
+export function parseSseFrame(eventType: string, raw: string): Record<string, unknown> | null {
+  let parsed: unknown
   try {
-    return JSON.parse(raw)
+    parsed = JSON.parse(raw)
   } catch {
+    console.warn(`[work-view] Ignoring a ${eventType} frame that is not JSON`)
     return null
   }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    console.warn(`[work-view] Ignoring a ${eventType} frame that is not a JSON object`)
+    return null
+  }
+  return parsed as Record<string, unknown>
 }

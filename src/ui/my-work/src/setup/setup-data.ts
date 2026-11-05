@@ -210,16 +210,22 @@ export const localSetupSource: SetupSource = {
     }
     onData(data)
     const stream = new EventSource('/api/work-view/events')
-    // A frame that cannot be parsed is dropped, not thrown: these listeners run
-    // outside React's error boundaries (see parseSseFrame).
-    const onFrame = <T>(event: MessageEvent<string>, apply: (frame: T) => void): void => {
-      const frame = parseSseFrame(event.data)
-      if (frame !== null) apply(frame as T)
+    // A frame that is not a JSON object is skipped with a warning, not thrown:
+    // these listeners run outside React's error boundaries (see parseSseFrame).
+    const onFrame = <T>(event: Event, apply: (frame: T) => void, isShaped: (frame: Record<string, unknown>) => boolean = () => true): void => {
+      const frame = parseSseFrame(event.type, (event as MessageEvent<string>).data)
+      if (frame === null) return
+      if (!isShaped(frame)) {
+        console.warn(`[work-view] Ignoring a ${event.type} frame with an unexpected shape`)
+        return
+      }
+      apply(frame as T)
     }
-    stream.addEventListener('setup-scan', (event) => onFrame<WorkerScanState>(event as MessageEvent<string>, applyScan))
-    stream.addEventListener('setup-state', (event) => onFrame<WorkerSetupState>(event as MessageEvent<string>, applyState))
-    stream.addEventListener('setup-import', (event) => onFrame<WorkerHistoryImport>(event as MessageEvent<string>, (frame) => publish({ historyImport: toHistoryImport(frame) })))
-    stream.addEventListener('work-view', (event) => onFrame<SnapshotWithSetup>(event as MessageEvent<string>, applySnapshot))
+    // applyScan reads scan.agents, so a scan frame without that list is skipped.
+    stream.addEventListener('setup-scan', (event) => onFrame<WorkerScanState>(event, applyScan, (frame) => Array.isArray(frame.agents)))
+    stream.addEventListener('setup-state', (event) => onFrame<WorkerSetupState>(event, applyState))
+    stream.addEventListener('setup-import', (event) => onFrame<WorkerHistoryImport>(event, (frame) => publish({ historyImport: toHistoryImport(frame) })))
+    stream.addEventListener('work-view', (event) => onFrame<SnapshotWithSetup>(event, applySnapshot))
     const startScan = async () => {
       const revision = scanRevision
       const started = await postJson<WorkerScanState>('/api/setup/scan', desiredImproveProduct === undefined ? {} : { improveProduct: desiredImproveProduct })
