@@ -38,7 +38,7 @@ import { observationMediaFromMetadata } from '../../media/feed.js';
 import { writeMediaEventResults, writeObservationMediaLinks, type MediaLinkageWriteResult, type ObservationLinkWrite } from '../../media/linkage.js';
 import type { Database } from 'bun:sqlite';
 
-type ObservationFileEvidenceMessage = Pick<PendingMessage, 'type' | 'tool_name' | 'tool_input'>;
+type ObservationFileEvidenceMessage = Pick<PendingMessage, 'type' | 'tool_name' | 'tool_input' | 'tool_response'>;
 
 export interface ObservationFileEvidence {
   files_read: string[];
@@ -65,6 +65,13 @@ export function extractObservationFileEvidence(messages: ReadonlyArray<Observati
       continue;
     }
 
+    // A denied, failed or timed-out call changed nothing, so the paths in its
+    // input are not evidence of a read or an edit. Cursor's postToolUseFailure
+    // reports failures this way (#5371).
+    if (toolResponseIndicatesError(message.tool_response)) {
+      continue;
+    }
+
     if (READ_TOOL_NAMES.has(toolName)) {
       for (const filePath of extractPathsFromToolInput(message.tool_input, 'read')) {
         pushUnique(seenRead, filesRead, filePath);
@@ -88,6 +95,15 @@ export function extractObservationFileEvidence(messages: ReadonlyArray<Observati
     files_read: filesRead,
     files_modified: filesModified,
   };
+}
+
+/** True when a tool response is marked as an error rather than a result. */
+function toolResponseIndicatesError(toolResponse: unknown): boolean {
+  if (!toolResponse || typeof toolResponse !== 'object' || Array.isArray(toolResponse)) {
+    return false;
+  }
+  const record = toolResponse as Record<string, unknown>;
+  return record.is_error === true || record.isError === true;
 }
 
 function pushUnique(seen: Set<string>, output: string[], filePath: string): void {

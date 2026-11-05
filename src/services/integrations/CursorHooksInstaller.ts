@@ -162,6 +162,19 @@ export async function installCursorHooks(target: CursorInstallTarget): Promise<n
       afterFileEdit: [
         { command: makeHookCommand('file-edit') }
       ],
+      // afterFileEdit records writes only. Cursor's generic postToolUse event is
+      // the one that fires for reads, searches and subagent runs, so it is
+      // matched narrowly here: shell, MCP and file-edit calls keep their own
+      // hooks above and are never recorded twice.
+      postToolUse: [
+        { matcher: 'Read|Grep|Task', command: makeHookCommand('observation') }
+      ],
+      // Denied, failed and timed-out calls. Their payload carries error_message
+      // instead of a result; the adapter turns that into an is_error response,
+      // so the worker does not read the attempted paths as completed work.
+      postToolUseFailure: [
+        { command: makeHookCommand('observation') }
+      ],
       stop: [
         { command: makeHookCommand('summarize') }
       ]

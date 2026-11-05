@@ -65,6 +65,19 @@ describe('Cursor hooks.json install/uninstall preserves user hooks', () => {
     expect(config.hooks.beforeSubmitPrompt.filter(isOurs)).toHaveLength(2);
   });
 
+  it('install wires the postToolUse events that record reads, searches and failures', async () => {
+    const { installCursorHooks } = await installer();
+    expect(await installCursorHooks('project')).toBe(0);
+
+    const config = read();
+    const postToolUse = config.hooks.postToolUse.filter(isOurs);
+    expect(postToolUse).toHaveLength(1);
+    expect(postToolUse[0].matcher).toBe('Read|Grep|Task');
+    expect(postToolUse[0].command).toContain('hook cursor observation');
+    expect(config.hooks.postToolUseFailure.filter(isOurs)).toHaveLength(1);
+    expect(config.hooks.postToolUseFailure[0].command).toContain('hook cursor observation');
+  });
+
   it('install refuses to overwrite an unparseable hooks.json', async () => {
     writeFileSync(hooksJsonPath, '{ not json');
     const { installCursorHooks } = await installer();
