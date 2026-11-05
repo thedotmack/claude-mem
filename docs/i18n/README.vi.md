@@ -340,6 +340,7 @@ Các chế độ theo ngôn ngữ cụ thể tuân theo mẫu `code--[lang]` tro
 #### Sau Khi Thay Đổi Chế Độ
 
 Khởi động lại Claude Code để áp dụng cấu hình chế độ mới.
+
 ---
 
 ## Phát Triển
@@ -383,13 +384,9 @@ Xem [Hướng Dẫn Phát Triển](https://docs.claude-mem.ai/development) để
 
 Claude-Mem được cấp phép theo Apache License 2.0.
 
-Chúng tôi chọn Apache-2.0 vì bộ nhớ agentic bền vững nên dễ dàng được tích hợp vào
-các công cụ dành cho nhà phát triển, các agent cục bộ, máy chủ MCP, hệ thống doanh nghiệp,
-các nền tảng robot, và các bộ khung agent sản xuất.
+Chúng tôi chọn Apache-2.0 vì bộ nhớ agentic bền vững nên dễ dàng được tích hợp vào các công cụ dành cho nhà phát triển, các agent cục bộ, máy chủ MCP, hệ thống doanh nghiệp, các nền tảng robot, và các bộ khung agent sản xuất.
 
-Xem tệp [LICENSE](../../LICENSE) để biết đầy đủ chi tiết. Xem [docs/license.md](../license.md)
-và [docs/ip-boundary.md](../ip-boundary.md) để biết phạm vi cấp phép và ranh giới
-mở/thương mại.
+Xem tệp [LICENSE](../../LICENSE) để biết đầy đủ chi tiết. Xem [docs/license.md](../license.md) và [docs/ip-boundary.md](../ip-boundary.md) để biết phạm vi cấp phép và ranh giới mở/thương mại.
 
 
 ---
