@@ -678,13 +678,13 @@ export class WorkViewRoutes extends BaseRouteHandler {
       }
       const fingerprint = req.query.fingerprint as string | undefined;
       const revision = req.query.revision as string | undefined;
-      if (!id || id.length > 2048 || (fingerprint && !/^[a-f0-9]{64}$/.test(fingerprint))) {
+      if (!id || id.length > 2048 || (fingerprint && !/^(?:[a-f0-9]{24}|[a-f0-9]{64})$/.test(fingerprint))) {
         this.badRequest(res, 'Invalid request identity or fingerprint.'); return;
       }
       const snapshot = await this.snapshot(0, 'request-detail');
       const detail = workViewRequestDetail(snapshot, id);
       if (!detail) { this.notFound(res, 'That request is no longer available.'); return; }
-      if ((fingerprint && detail.request.contentFingerprint !== fingerprint) || (revision && detail.revision !== revision)) {
+      if ((fingerprint && detail.request.detailRevision !== fingerprint && detail.request.contentFingerprint !== fingerprint) || (revision && detail.revision !== revision)) {
         res.status(409).json({ error: 'That request changed. Read its current version.', overview: workViewOverview(snapshot) }); return;
       }
       res.json(detail);

@@ -79,6 +79,9 @@ describe('policy', () => {
     expect(isAllowed('GET', '/api/logs')).toBe(false);
     expect(isAllowed('GET', '/api/setup/state')).toBe(false);
     expect(isAllowed('GET', '/restart')).toBe(false);
+    for (const path of ['inventory', 'jobs', 'jobs/some-job', 'conflicts']) {
+      expect(isAllowed('GET', `/api/sync/recovery/${path}`)).toBe(false);
+    }
     expect(isAllowed('POST', '/api/work-view/review')).toBe(true);
     expect(isAllowed('POST', '/api/work-view/suggestions')).toBe(true);
     expect(isAllowed('POST', '/api/work-view/focus')).toBe(true);

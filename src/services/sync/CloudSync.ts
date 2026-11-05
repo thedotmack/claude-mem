@@ -860,8 +860,11 @@ export class CloudSync {
           // work has yielded. The next sweep always gives every live lane a turn.
           if (!progressed && !this.blockedMutation && !backfillPageSelected) {
             backfillPageSelected = true;
-            progressed = this.snapshotBackfillPage();
-            backfillMadeProgress = progressed;
+            const page = this.snapshotBackfillPage();
+            progressed = page.selected > 0;
+            // A page of changed items sends nothing but frees the items behind
+            // it, so it still arms the continuation below.
+            backfillMadeProgress = progressed || page.settled > 0;
           }
         } while (progressed && !this.stopped);
       } while (this.flushAgainRequested && !this.stopped);
@@ -1516,17 +1519,18 @@ export class CloudSync {
     return true;
   }
 
-  private snapshotBackfillPage(): boolean {
+  private snapshotBackfillPage(): { selected: number; settled: number } {
     const selections = this.selectBackfillPage?.(this.contentBatchSize) ?? this.recovery.selectPage(this.contentBatchSize);
     if (selections.length > this.contentBatchSize) throw new Error('backfill page exceeds scheduler budget');
     let selected = 0;
+    let settled = this.recovery.itemsSettledByLastPage;
     for (const selection of selections) {
       const kind = KINDS.find(item => item.kind === selection.kind);
       if (!kind || !this.hubAcceptsKind(kind.kind)) continue;
       this.db.transaction(() => {
         const row = this.db.prepare(kind.selectOneSql).get(assertCanonicalDecimal(selection.originLocalId)) as LocalRow | undefined;
         if (!row) {
-          if ('revision' in selection) this.recovery.recordSelectionChanged(selection as RecoveryItem, true);
+          if ('revision' in selection) { this.recovery.recordSelectionChanged(selection as RecoveryItem, true); settled++; }
           return;
         }
         if (kind.kind === 'work_state' && !this.sharedWorkWritesEnabled
@@ -1537,9 +1541,9 @@ export class CloudSync {
             const current = buildContentOperation({ kind: kind.kind, originDeviceId: this.deviceId,
               originLocalId: expected.originLocalId, entityRev: assertCanonicalDecimal(row.sync_rev, { positive: true }), payload: kind.toBody(row) });
             if (row.sync_rev !== expected.revision || current.operation_sha256 !== expected.operationSha256) {
-              this.recovery.recordSelectionChanged(expected, false); return;
+              this.recovery.recordSelectionChanged(expected, false); settled++; return;
             }
-          } catch { this.recovery.recordSelectionFailure(expected); return; }
+          } catch { this.recovery.recordSelectionFailure(expected); settled++; return; }
         }
         // Enqueue and manifest receipt are one commit. A crash cannot leave
         // admitted bytes without the selected revision's durable linkage.
@@ -1549,11 +1553,12 @@ export class CloudSync {
           selected++;
         } else if ('revision' in selection) {
           this.recovery.recordSelectionFailure(selection as RecoveryItem);
+          settled++;
         }
       }).immediate();
     }
     this.backfillSelected += selected;
-    return selected > 0;
+    return { selected, settled };
   }
 
   private snapshotContentRow(kind: KindSpec, row: LocalRow): { revision: string; hash: string } | null {

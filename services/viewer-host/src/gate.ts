@@ -23,8 +23,12 @@ import { anonymousDistinctId, anonCookie, hostedUsageEvent, requestHostname, sen
 export const SESSION_COOKIE = 'cmem_viewer_session';
 const SESSION_SECONDS = 7 * 24 * 60 * 60;
 
-/** Read routes that would show the cloud machine's own configuration. */
-const BLOCKED_READ_PREFIXES = ['/api/settings', '/api/logs', '/api/admin', '/api/backup', '/api/setup', '/restart'];
+/**
+ * Read routes that would show the cloud machine's own configuration. Recovery
+ * reads are local-only on the worker, but this gate makes every request look
+ * local, so the worker's own check cannot stop them here.
+ */
+const BLOCKED_READ_PREFIXES = ['/api/settings', '/api/logs', '/api/admin', '/api/backup', '/api/setup', '/api/sync/recovery', '/restart'];
 
 /** Narrow owner actions. Persistence scope is determined by the worker and its writer setting. */
 const ALLOWED_WRITES = new Set([

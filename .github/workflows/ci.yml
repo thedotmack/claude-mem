@@ -277,6 +277,12 @@ jobs:
         working-directory: services/viewer-host
         run: bun install --frozen-lockfile && bun test test
 
+      # The matrix's browser pages compile the real My Work source, whose
+      # dependencies live in that app's own package.
+      - name: Install My Work dependencies
+        working-directory: src/ui/my-work
+        run: npm ci --no-audit --no-fund
+
       - name: protocol-v2 matrix e2e against local sync-api
         run: bun scripts/sync-matrix-e2e.ts
 

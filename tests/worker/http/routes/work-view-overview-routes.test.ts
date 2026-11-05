@@ -78,6 +78,9 @@ describe('work view overview and detail', () => {
     expect(detail.request.detailLoaded).toBe(true);
     expect(detail.request.contentFingerprint).toBe(card.contentFingerprint);
     expect(detail.request.prompts.length).toBeGreaterThan(0);
+    // The drawer sends the card's revision and refuses a detail that answers with another one.
+    expect(detail.request.detailRevision).toBe(card.detailRevision);
+    expect((await fetch(`${origin}/api/work-view/requests/${encodeURIComponent(card.id)}?fingerprint=${card.detailRevision}`)).status).toBe(200);
     const legacy = await (await fetch(`${origin}/api/work-view`)).json();
     expect(legacy.humanRequests[0].contentFingerprint).toBe(card.contentFingerprint);
     expect(legacy.humanRequests[0].items.length).toBeGreaterThan(0);

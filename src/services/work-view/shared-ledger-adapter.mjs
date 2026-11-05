@@ -216,17 +216,62 @@ export class SharedLedgerAdapter {
     if (!stage) return { materialization: 'complete' };
     const { name, value, updates } = stage;
     try {
-      // A later writer may have replaced this intent after our commit. Never
-      // overwrite that newer intent with the earlier compatibility bytes.
-      if (this.state(name).pending_json !== JSON.stringify(value)) return { materialization: 'pending' };
-      rawWrite(join(this.directory, name), value);
-      this.remember(name, value, updates, this.shared(), false);
-      return { materialization: 'complete' };
+      return { materialization: this.completePending(name, value, updates) ? 'complete' : 'pending' };
     } catch {
       // The canonical action is already durable. Keep pending_json for the
       // normal reconciler and report a saved action, not a failed intention.
       return { materialization: 'pending' };
     }
+  }
+
+  /**
+   * Replace the file and clear the receipt only if `value` is still the pending
+   * intent. The write lock is held throughout, so a writer on another connection
+   * commits fully before this check or after this commit, never in between.
+   */
+  completePending(name, value, updates, shared) {
+    return this.db.transaction(() => {
+      // A later writer replaced this intent. Never overwrite it with older bytes.
+      if (this.state(name).pending_json !== JSON.stringify(redactJsonStrings(value))) return false;
+      if (value === null) { try { unlinkSync(join(this.directory, name)); } catch (error) { if (error.code !== 'ENOENT') throw error; } }
+      else rawWrite(join(this.directory, name), value);
+      this.remember(name, value, updates, shared ?? this.shared(), false);
+      return true;
+    }).immediate();
+  }
+
+  /**
+   * Record the intent to materialize a projection. Skips when a writer on another
+   * connection owns the file or has changed its records since `shared` was read;
+   * that writer's newer value wins and the next reconcile projects from it.
+   */
+  stageProjection(name, value, updates, shared, pendingDelete = false) {
+    const recordHashes = source => {
+      const kinds = fileKinds(name);
+      return JSON.stringify([...source.records].filter(([, record]) => kinds.includes(record.kind)).map(([key, record]) => [key, record.hash]).sort());
+    };
+    return this.db.transaction(() => {
+      if (this.state(name).pending_json !== null || recordHashes(this.shared()) !== recordHashes(shared)) return false;
+      this.remember(name, value, updates, shared, true, pendingDelete);
+      return true;
+    }).immediate();
+  }
+
+  /** Finish an interrupted write. Runs under the write lock so it always finishes the newest intent. */
+  finishPendingFile(name) {
+    return this.db.transaction(() => {
+      const prior = this.state(name);
+      const current = load(join(this.directory, name));
+      if (prior.pending_json === null) return current;
+      const originallyPending = JSON.parse(prior.pending_json);
+      const pending = redactJsonStrings(originallyPending);
+      if (current !== undefined && digest(current) !== prior.observed_hash && digest(current) !== digest(originallyPending)
+        && digest(current) !== digest(pending)) throw new Error('Local file changed during an unfinished shared write');
+      if (prior.pending_delete) { try { unlinkSync(join(this.directory, name)); } catch (error) { if (error.code !== 'ENOENT') throw error; } }
+      else rawWrite(join(this.directory, name), pending);
+      this.remember(name, pending, this.updatesForFile(name, pending), this.shared(), false);
+      return pending;
+    }).immediate();
   }
 
   /** Called before an external writer replaces its file; finalization follows rename. */
@@ -270,19 +315,7 @@ export class SharedLedgerAdapter {
     catch (error) { if (error.code !== 'ENOENT') throw error; }
     for (const name of names) {
       try {
-        const prior = this.state(name);
-        let current = load(join(this.directory, name));
-        if (prior.pending_json !== null) {
-          const originallyPending = JSON.parse(prior.pending_json);
-          const pending = redactJsonStrings(originallyPending);
-          if (current !== undefined && digest(current) !== prior.observed_hash && digest(current) !== digest(originallyPending)
-            && digest(current) !== digest(pending)) throw new Error('Local file changed during an unfinished shared write');
-          if (prior.pending_delete) { try { unlinkSync(join(this.directory, name)); } catch (error) { if (error.code !== 'ENOENT') throw error; } }
-          else rawWrite(join(this.directory, name), pending);
-          const updates = this.updatesForFile(name, pending);
-          this.remember(name, pending, updates, this.shared(), false);
-          current = pending;
-        }
+        let current = this.state(name).pending_json !== null ? this.finishPendingFile(name) : load(join(this.directory, name));
         if ((current !== undefined || this.state(name).observed_hash !== null) && digest(current) !== this.state(name).observed_hash) {
           const finish = this.beforeWrite(name, current ?? null);
           if (finish && Object.hasOwn(finish, 'value') && digest(current) !== digest(finish.value)) {
@@ -294,6 +327,7 @@ export class SharedLedgerAdapter {
       } catch (error) { this.errors.push({ file: name, message: String(error.message) }); }
     }
     const shared = this.shared();
+    let projectionSuperseded = false;
     let ledger = this.localLedger();
     const applied = applySharedProjection(this.db, shared, { ledger, deviceId: this.deviceId });
     ledger = applied.ledger;
@@ -312,9 +346,8 @@ export class SharedLedgerAdapter {
         continue;
       }
       const updates = this.updatesForFile(name, value);
-      this.db.transaction(() => this.remember(name, value, updates, shared, true))();
-      rawWrite(join(this.directory, name), value);
-      this.remember(name, value, updates, shared, false);
+      if (this.stageProjection(name, value, updates, shared)) this.completePending(name, value, updates, shared);
+      else projectionSuperseded = true;
     }
     for (const record of shared.records.values()) {
       if (!record.deleted) continue;
@@ -325,9 +358,8 @@ export class SharedLedgerAdapter {
         if (this.state(name).bases[sharedRecordKey(record.kind, record.key)] !== record.hash) this.remember(name, null, [], shared, false);
         continue;
       }
-      this.db.transaction(() => this.remember(name, null, [], shared, true, true))();
-      try { unlinkSync(join(this.directory, name)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-      this.remember(name, null, [], shared, false);
+      if (this.stageProjection(name, null, [], shared, true)) this.completePending(name, null, [], shared);
+      else projectionSuperseded = true;
     }
     // Never materialize a remote refresh's PID/ownership into refresh.json.
     const activity = captureActivity ? activitySignature(this.db) : null;
@@ -359,7 +391,9 @@ export class SharedLedgerAdapter {
       this.storyHash = storyHash;
       this.sharedRevision = final.revision;
     }
-    this.lastSignature = this.signature(captureActivity);
+    // A skipped projection still has newer records to write, even though this
+    // signature already includes them; the next reconcile must not return early.
+    this.lastSignature = projectionSuperseded ? null : this.signature(captureActivity);
     const diagnostics = applySharedProjection(this.db, final, { ledger, deviceId: this.deviceId }).diagnostics;
     this.lastDiagnostic = { ...diagnostics, files: this.errors };
     return this.lastDiagnostic;

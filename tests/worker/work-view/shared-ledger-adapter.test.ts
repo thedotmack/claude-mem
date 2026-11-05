@@ -1,10 +1,11 @@
 import { afterEach, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, posix, win32 } from 'node:path';
+import { Database } from 'bun:sqlite';
 import { tmpdir } from 'node:os';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { SharedLedgerAdapter } from '../../../src/services/work-view/shared-ledger-adapter.mjs';
-import { registerSharedFileWriter } from '../../../src/services/work-view/shared-file-hooks.mjs';
+import { ledgerRelativeName, registerSharedFileWriter } from '../../../src/services/work-view/shared-file-hooks.mjs';
 import { groupIdFor, readLedger, writeJsonAtomic } from '../../../src/services/work-view/request-groups.mjs';
 import { readSharedRecords, publishSharedRecords } from '../../../src/services/work-view/shared-record-store.mjs';
 import { sharedRecordKey } from '../../../src/services/work-view/shared-records.mjs';
@@ -203,6 +204,74 @@ test('materialization preserves an independently arriving remote group and never
   const next = structuredClone(ledger.groups); next.groups[groupIdFor(key('a'))].title = 'A changed';
   f.adapter.saveFile('request-groups.json', next);
   expect(state(f).records.get(sharedRecordKey('group', groupIdFor(key('b'))))?.writer).toBe('device-z');
+});
+
+test('a pending write never replaces a newer intent from another connection', () => {
+  const f = fixture(); const path = join(f.directory, 'request-groups.json');
+  const otherDatabase = new Database(f.databasePath); disposals.push(() => otherDatabase.close());
+  otherDatabase.exec('PRAGMA busy_timeout = 1000');
+  const other = new SharedLedgerAdapter(otherDatabase, { directory: f.directory, deviceId: f.deviceId });
+  const older = f.adapter.stageFile('request-groups.json', groups('a'));
+  const newer = other.stageFile('request-groups.json', groups('a', 'b'));
+  expect(f.adapter.materializeFile(older).materialization).toBe('pending');
+  expect(existsSync(path)).toBe(false);
+  expect(f.adapter.pendingMaterialization()).toBe(1);
+  expect(other.materializeFile(newer).materialization).toBe('complete');
+  expect(Object.keys(readLedger(f.directory).groups.groups)).toHaveLength(2);
+  expect(f.adapter.pendingMaterialization()).toBe(0);
+});
+
+test('reconcile finishes an interrupted write while holding the write lock', () => {
+  const f = fixture();
+  const otherDatabase = new Database(f.databasePath); disposals.push(() => otherDatabase.close());
+  otherDatabase.exec('PRAGMA busy_timeout = 0');
+  f.adapter.stageFile('request-groups.json', groups('a'));
+  const updatesForFile = f.adapter.updatesForFile.bind(f.adapter);
+  let writeDuringFinish: unknown = null;
+  f.adapter.updatesForFile = (name: string, value: unknown) => {
+    try { otherDatabase.exec("INSERT INTO sync_state(k, v) VALUES ('concurrent-writer', '1')"); }
+    catch (error) { writeDuringFinish = error; }
+    return updatesForFile(name, value);
+  };
+  f.adapter.reconcile({ captureActivity: false });
+  expect(String(writeDuringFinish)).toMatch(/locked|busy/i);
+  expect(f.adapter.pendingMaterialization()).toBe(0);
+  expect(readLedger(f.directory).groups.groups[groupIdFor(key('a'))].title).toBe('Request a');
+});
+
+test('a projection read before a newer record is not written over it; the next reconcile uses the newer record', () => {
+  const f = fixture(); f.adapter.saveFile('request-groups.json', groups('a'));
+  const id = groupIdFor(key('a')); const recordKey = sharedRecordKey('group', id);
+  const remoteGroup = { ...groups('a').groups[id], title: 'Older projection' };
+  applyRemote(f, [{ kind: 'group', key: id, value: { group: remoteGroup, members: [key('a')], suggestions: {} } }]);
+  const updatesForFile = f.adapter.updatesForFile.bind(f.adapter);
+  let raced = false;
+  f.adapter.updatesForFile = (name: string, value: unknown) => {
+    if (!raced && name === 'request-groups.json') {
+      raced = true;
+      publishSharedRecords(f.store.db, { deviceId: f.deviceId, project: 'shared', validateValue: isSharedProjectionValue, updates: [{ kind: 'group', key: id,
+        value: { group: { ...remoteGroup, title: 'Newer record' }, members: [key('a')], suggestions: {} }, expectedHash: state(f).records.get(recordKey)?.hash ?? null }] });
+    }
+    return updatesForFile(name, value);
+  };
+  f.adapter.reconcile({ captureActivity: false });
+  expect(raced).toBe(true);
+  expect(readLedger(f.directory).groups.groups[id].title).toBe('Request a');
+  f.adapter.reconcile({ captureActivity: false });
+  expect(readLedger(f.directory).groups.groups[id].title).toBe('Newer record');
+  expect(f.adapter.pendingMaterialization()).toBe(0);
+});
+
+test('ledger file names use forward slashes on every platform and stop at the ledger root', () => {
+  const root = 'C:\\data\\work-view';
+  expect(ledgerRelativeName(root, `${root}\\progress\\g_0123456789ab.json`, win32)).toBe('progress/g_0123456789ab.json');
+  expect(ledgerRelativeName(root, `${root}\\story.json`, win32)).toBe('story.json');
+  expect(ledgerRelativeName(root, `${root}\\..notes.json`, win32)).toBe('..notes.json');
+  expect(ledgerRelativeName(root, 'C:\\data\\other.json', win32)).toBeNull();
+  expect(ledgerRelativeName(root, 'D:\\data\\work-view\\story.json', win32)).toBeNull();
+  expect(ledgerRelativeName(root, root, win32)).toBeNull();
+  expect(ledgerRelativeName('/data/work-view', '/data/work-view/progress/g_0123456789ab.json', posix)).toBe('progress/g_0123456789ab.json');
+  expect(ledgerRelativeName('/data/work-view', '/data/other.json', posix)).toBeNull();
 });
 
 test('a local external change concurrent with remote canonical change is retained and diagnosed', () => {

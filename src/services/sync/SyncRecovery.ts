@@ -43,6 +43,8 @@ export function ensureSyncRecoverySchema(db: Database): void {
 /** Native source selection is bounded before canonical bodies cross SQLite's FFI. */
 export class SyncRecovery {
   readonly available: boolean;
+  /** Items the last selectPage finished without returning them. Each one is progress, and more may follow them. */
+  itemsSettledByLastPage = 0;
   constructor(private readonly db: Database, readonly deviceId: string, private readonly source: RecoverySource) {
     this.available = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sync_recovery_jobs'").get();
   }
@@ -197,6 +199,7 @@ export class SyncRecovery {
       const jobs = this.db.prepare("SELECT id, epoch FROM sync_recovery_jobs WHERE device_id = ? AND status = 'running' ORDER BY created_at_epoch LIMIT ?").all(this.deviceId, RECOVERY_MAX_ACTIVE_JOBS) as { id: string; epoch: string | null }[];
       const selections: RecoveryItem[] = [];
       const flags = this.source.flags();
+      this.itemsSettledByLastPage = 0;
       for (const job of jobs) {
         if (job.epoch !== this.epoch()) {
           this.db.prepare("UPDATE sync_recovery_jobs SET status = 'paused', pause_reason = 'epoch_changed', updated_at_epoch = ? WHERE id = ?").run(Date.now(), job.id); continue;
@@ -209,10 +212,10 @@ export class SyncRecovery {
         for (const row of rows) {
           let snapshot: ReturnType<RecoverySource['snapshotNative']>;
           try { snapshot = this.source.snapshotNative(row.kind, row.origin_local_id); }
-          catch { this.finishItem(row, 'failed', 'invalid_native_content'); continue; }
-          if (!snapshot) { this.finishItem(row, 'deleted', 'native_missing'); continue; }
+          catch { this.finishItem(row, 'failed', 'invalid_native_content'); this.itemsSettledByLastPage++; continue; }
+          if (!snapshot) { this.finishItem(row, 'deleted', 'native_missing'); this.itemsSettledByLastPage++; continue; }
           if (snapshot.revision !== row.selected_rev || snapshot.operation.operation_sha256 !== row.selected_sha256) {
-            this.finishItem(row, 'superseded', 'native_revision_changed'); continue;
+            this.finishItem(row, 'superseded', 'native_revision_changed'); this.itemsSettledByLastPage++; continue;
           }
           selections.push({ kind: row.kind, originLocalId: row.origin_local_id, entityId: row.entity_id, revision: row.selected_rev, operationSha256: row.selected_sha256, bytes: row.estimated_bytes });
         }

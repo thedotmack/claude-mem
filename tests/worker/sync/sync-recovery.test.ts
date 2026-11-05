@@ -83,6 +83,26 @@ describe('selected historical recovery', () => {
     await sync.flush(); expect(pages.length).toBe(0); expect(state(job.id).items[0].status).toBe('superseded');
     recovery.selectPage = select; await sync.flush(); expect(JSON.parse(pages[0][0].body).entity_rev).toBe('2');
   });
+  it('arms the next pass when a whole page is skipped and selected items remain', async () => {
+    const first = historical(); const second = historical(); const third = historical();
+    const job = create(); resume(String(job.id));
+    db.prepare("UPDATE observations SET title = 'newer', sync_rev = '2', synced_at = ? WHERE id IN (?, ?)").run(NOW, first, second);
+    const armedDelays: number[] = []; (sync as any).armFlushTimer = (delayMs: number) => { armedDelays.push(delayMs); };
+    await sync.flush();
+    expect(pages.flat().map((op: any) => JSON.parse(op.body).origin_local_id)).not.toContain(third);
+    expect(state(String(job.id)).status).toBe('running');
+    expect(armedDelays).toContain(1000);
+    await sync.flush();
+    expect(pages.flat().map((op: any) => JSON.parse(op.body).origin_local_id)).toContain(third);
+    expect(state(String(job.id)).status).toBe('complete');
+  });
+  it('does not arm a pass when nothing selected can move', async () => {
+    historical(); const job = create(); resume(String(job.id));
+    (sync as any).hubAcceptsKind = () => false;
+    const armedDelays: number[] = []; (sync as any).armFlushTimer = (delayMs: number) => { armedDelays.push(delayMs); };
+    await sync.flush();
+    expect(pages.length).toBe(0); expect(state(String(job.id)).status).toBe('running'); expect(armedDelays).not.toContain(1000);
+  });
   it('reports malformed selected content as a safe terminal failure without uploading it', async () => {
     const id = historical(); const job = create(); resume(job.id);
     db.prepare("UPDATE observations SET facts = 'private malformed details' WHERE id = ?").run(id);

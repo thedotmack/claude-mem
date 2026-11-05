@@ -9,13 +9,12 @@ import type { OwnerRule, RuleQuote, RuleRecord } from '../data-rules.ts'
 import type { AutoRefresh, BuildStory } from './work-data-source.ts'
 import { measuredEstimate } from './measured-estimate.ts'
 import { repeatsOwnerWords } from './prompt-echo.ts'
+import { SOLO_REQUESTER } from './work-view-overview.ts'
 import type { WorkViewAgent, WorkViewBuildStory, WorkViewGoalItem, WorkViewGoalList, WorkViewHumanRequest, WorkViewProgress, WorkViewRefresh, WorkViewRule, WorkViewSnapshot, WorkViewWorkProduct } from './work-view-api-types.ts'
 
 export const THIS_COMPUTER: Device = { id: 'this-computer', name: 'This computer', syncedMinutesAgo: 0, online: true }
 /** Stands in when a request names no agent the snapshot knows: the card then names the machine (§13.2). */
 const UNRECORDED_AGENT: Agent = { id: 'agent-not-recorded', tool: 'other', name: 'Agent not recorded', role: 'Recorded work', deviceId: THIS_COMPUTER.id }
-/** In solo mode every human request comes from the owner's own prompts. */
-const SOLO_REQUESTER = 'You'
 const NEXT_STEP_NOT_RECORDED = 'Next step not recorded'
 /** A request is built from its prompts; until an agent records work it has only asks. */
 const NO_WORK_YET = 'No agent work recorded yet'

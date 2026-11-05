@@ -27,6 +27,35 @@ function largeSnapshot() {
 }
 
 describe('compact work view transport', () => {
+  it('leaves default owner and focus fields off the wire and restores them for the UI', () => {
+    const snapshot = fixture(); const id = snapshot.humanRequests[0].id;
+    (snapshot.humanRequests[0] as any).requestedBy = null; (snapshot.humanRequests[0] as any).anchorConversationKey = null;
+    const overview = workViewOverview(snapshot);
+    const wire = overview.model.requests.find(request => request.id === id)!;
+    expect(wire).not.toHaveProperty('askedBy'); expect(wire).not.toHaveProperty('canMoveFocus');
+    const restored = expandWorkViewOverview(overview).requests.find(request => request.id === id)!;
+    expect(restored.askedBy).toBe('You'); expect(restored.canMoveFocus).toBe(false);
+    (snapshot.humanRequests[0] as any).requestedBy = 'Sam'; (snapshot.humanRequests[0] as any).anchorConversationKey = 'conversation';
+    const named = workViewOverview(snapshot).model.requests.find(request => request.id === id)!;
+    expect(named.askedBy).toBe('Sam'); expect(named.canMoveFocus).toBe(true);
+  });
+  it('versions detail separately: generated text moves the revision, the clock and review fingerprint do not', () => {
+    const snapshot = fixture(); const seed = snapshot.humanRequests[0] as any;
+    const revision = (source: WorkViewSnapshot, now: number) => workViewOverview(source, now).model.requests.find(request => request.id === seed.id)!.detailRevision;
+    const original = revision(snapshot, Date.parse('2026-07-01T00:00:00Z'));
+    expect(original).toMatch(/^[a-f0-9]{24}$/);
+    // The drawer compares the overview's revision with the detail it reads later.
+    expect(revision(snapshot, Date.parse('2026-07-09T12:00:00Z'))).toBe(original);
+    expect(workViewRequestDetail(snapshot, seed.id, Date.parse('2026-07-09T12:00:00Z'))?.request.detailRevision).toBe(original);
+    const narrative = structuredClone(snapshot) as any;
+    narrative.humanRequests[0].progress = { ...(seed.progress ?? {}), narrative: 'A newly written story.' };
+    const copy = structuredClone(snapshot) as any;
+    copy.humanRequests[0].humanCopy = { ...(seed.humanCopy ?? {}), workstreams: [{ id: 'stream', title: 'A newly generated title' }] };
+    for (const changed of [narrative, copy]) {
+      expect(revision(changed, Date.parse('2026-07-01T00:00:00Z'))).not.toBe(original);
+      expect(workViewOverview(changed).model.requests.find(request => request.id === seed.id)!.contentFingerprint).toBe(seed.contentFingerprint);
+    }
+  });
   it('keeps card state and exact fingerprints while moving full evidence to detail', () => {
     const snapshot = fixture();
     snapshot.revision = '7:review:copy';
