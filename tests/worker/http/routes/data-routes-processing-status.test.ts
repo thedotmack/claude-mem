@@ -1,9 +1,29 @@
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
 import type { Request, Response } from 'express';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { logger } from '../../../../src/utils/logger.js';
 import { DataRoutes } from '../../../../src/services/worker/http/routes/DataRoutes.js';
 import { getProcessRegistry, waitForSlot } from '../../../../src/supervisor/process-registry.js';
+import { readObserverHealth, recordObserverSuccess } from '../../../../src/shared/observer-health.js';
 import { guardSharedProcessRegistrySingleton } from '../../../supervisor/process-registry-singleton-guard.js';
+
+/**
+ * Redirect the observer health ledger to an empty temp dir so the field
+ * assertions here are deterministic regardless of the host's real
+ * ~/.claude-mem state. Returns a restore function.
+ */
+function redirectHealthDir(): () => void {
+  const saved = process.env.CLAUDE_MEM_DATA_DIR;
+  const dir = mkdtempSync(join(tmpdir(), 'cm-status-health-'));
+  process.env.CLAUDE_MEM_DATA_DIR = dir;
+  return () => {
+    if (saved === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+    else process.env.CLAUDE_MEM_DATA_DIR = saved;
+    rmSync(dir, { recursive: true, force: true });
+  };
+}
 
 /**
  * #2756/(c) — GET /api/processing-status must additively expose
@@ -73,27 +93,70 @@ describe('DataRoutes GET /api/processing-status — parkedSessions (#2756)', () 
   });
 
   it('reports parkedSessions: 0 alongside the existing fields when nothing is parked', async () => {
-    const mockSessionManager = {
-      isAnySessionProcessing: mock(() => Promise.resolve(false)),
-      getTotalActiveWork: mock(() => Promise.resolve(0)),
-    };
+    const restore = redirectHealthDir();
+    try {
+      const mockSessionManager = {
+        isAnySessionProcessing: mock(() => Promise.resolve(false)),
+        getTotalActiveWork: mock(() => Promise.resolve(0)),
+      };
 
-    const routes = new DataRoutes(
-      {} as any,
-      {} as any,
-      mockSessionManager as any,
-      {} as any,
-      {} as any,
-      Date.now(),
-    );
+      const routes = new DataRoutes(
+        {} as any,
+        {} as any,
+        mockSessionManager as any,
+        {} as any,
+        {} as any,
+        Date.now(),
+      );
 
-    const { req, res, waitForJson } = createMockReqRes();
-    (routes as any).handleGetProcessingStatus(req as Request, res as Response);
+      const { req, res, waitForJson } = createMockReqRes();
+      (routes as any).handleGetProcessingStatus(req as Request, res as Response);
 
-    expect(await waitForJson()).toEqual({ isProcessing: false, queueDepth: 0, parkedSessions: 0 });
+      expect(await waitForJson()).toEqual({ isProcessing: false, queueDepth: 0, parkedSessions: 0, lastSuccessfulStoreAt: null });
+    } finally {
+      restore();
+    }
   });
 
   it('reports a positive parkedSessions count while a session is parked in waitForSlot, without touching isProcessing/queueDepth', async () => {
+    const restore = redirectHealthDir();
+    try {
+      await runParkedSessionCase();
+    } finally {
+      restore();
+    }
+  });
+
+  it("exposes the observer's last successful store time from the health ledger (#5374)", async () => {
+    const restore = redirectHealthDir();
+    try {
+      recordObserverSuccess();
+      const expected = readObserverHealth()!.lastSuccessAt;
+
+      const mockSessionManager = {
+        isAnySessionProcessing: mock(() => Promise.resolve(false)),
+        getTotalActiveWork: mock(() => Promise.resolve(0)),
+      };
+
+      const routes = new DataRoutes(
+        {} as any,
+        {} as any,
+        mockSessionManager as any,
+        {} as any,
+        {} as any,
+        Date.now(),
+      );
+
+      const { req, res, waitForJson } = createMockReqRes();
+      (routes as any).handleGetProcessingStatus(req as Request, res as Response);
+
+      expect(await waitForJson()).toEqual({ isProcessing: false, queueDepth: 0, parkedSessions: 0, lastSuccessfulStoreAt: expected });
+    } finally {
+      restore();
+    }
+  });
+
+  async function runParkedSessionCase(): Promise<void> {
     const registry = getProcessRegistry();
     const occupantId = `sdk:processing-status-test:${Math.random().toString(36).slice(2)}`;
     registry.register(occupantId, {
@@ -123,7 +186,7 @@ describe('DataRoutes GET /api/processing-status — parkedSessions (#2756)', () 
       const { req, res, waitForJson } = createMockReqRes();
       (routes as any).handleGetProcessingStatus(req as Request, res as Response);
 
-      expect(await waitForJson()).toEqual({ isProcessing: true, queueDepth: 5, parkedSessions: 1 });
+      expect(await waitForJson()).toEqual({ isProcessing: true, queueDepth: 5, parkedSessions: 1, lastSuccessfulStoreAt: null });
     } finally {
       // Free the slot so parkedPromise settles, then clean up the occupant —
       // never leak a parked waiter or a fake 'sdk' entry into later test files.
@@ -139,5 +202,5 @@ describe('DataRoutes GET /api/processing-status — parkedSessions (#2756)', () 
       const reservation = await parkedPromise;
       reservation.release();
     }
-  });
+  }
 });
