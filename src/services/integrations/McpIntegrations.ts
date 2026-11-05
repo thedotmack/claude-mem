@@ -5,7 +5,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { getMcpServerAbsolutePath, getNodeAbsolutePath } from './install-paths.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
-import { stripUtf8Bom } from '../../shared/atomic-json.js';
+import { stripUtf8Bom, writeJsonFileAtomic } from '../../shared/atomic-json.js';
 import { injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
 
 export const PLACEHOLDER_CONTEXT = `# claude-mem: Cross-Session Memory
@@ -37,7 +37,10 @@ export function writeMcpJsonConfig(
 
   existingConfig[serversKeyName]['claude-mem'] = buildMcpServerEntry(mcpServerPath);
 
-  writeFileSync(configFilePath, JSON.stringify(existingConfig, null, 2) + '\n');
+  // Other MCP servers live in this file too, so replace it rather than truncate
+  // it: an interrupted write must not leave a config every MCP host then fails
+  // to parse. writeJsonFileAtomic writes the same bytes via a temp file + rename.
+  writeJsonFileAtomic(configFilePath, existingConfig);
 }
 
 interface McpInstallerConfig {
@@ -130,7 +133,7 @@ export function uninstallCopilotCliMcpIntegration(): number {
   const config = readJsonSafe<Record<string, any>>(configPath, {});
   if (!config.mcpServers?.['claude-mem']) return 1;
   delete config.mcpServers['claude-mem'];
-  writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
+  writeJsonFileAtomic(configPath, config);
   console.log(`  Removed claude-mem from the Copilot CLI MCP servers in: ${configPath}`);
   return 0;
 }
