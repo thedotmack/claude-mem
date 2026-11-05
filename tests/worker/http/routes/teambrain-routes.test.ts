@@ -202,3 +202,39 @@ describe('POST /api/teambrain/search', () => {
     expect(upstream.requests).toHaveLength(0);
   });
 });
+
+describe('TeamBrain routes refuse other localhost pages', () => {
+  const teamId = '11111111-1111-4111-8111-111111111111';
+  const foreign = { Origin: 'http://localhost:3000' };
+
+  it('rejects status, board and brief from a different localhost origin without contacting cloud', async () => {
+    upstream.state.brief = { body: { team: MOCK_TEAM, items: [] } };
+    for (const path of ['/api/teambrain/status', `/api/teambrain/board?team_id=${teamId}`, '/api/teambrain/brief?project=shared-project']) {
+      const response = await fetch(`${workerUrl}${path}`, { headers: foreign });
+      expect({ path, status: response.status }).toEqual({ path, status: 403 });
+    }
+    expect(upstream.requests).toHaveLength(0);
+  });
+
+  it('rejects cross-site fetch metadata even without an Origin header', async () => {
+    const response = await fetch(`${workerUrl}/api/teambrain/brief?project=shared-project`, { headers: { 'Sec-Fetch-Site': 'cross-site' } });
+    expect(response.status).toBe(403);
+    expect(upstream.requests).toHaveLength(0);
+  });
+
+  it('answers a foreign search with 403 before validating its body', async () => {
+    const response = await fetch(`${workerUrl}/api/teambrain/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...foreign },
+      body: JSON.stringify({}),
+    });
+    expect(response.status).toBe(403);
+    expect(upstream.requests).toHaveLength(0);
+  });
+
+  it('still serves the viewer page on the worker\'s own origin', async () => {
+    const response = await fetch(`${workerUrl}/api/teambrain/status`, { headers: { Origin: workerUrl } });
+    expect(response.status).toBe(200);
+    expect((await response.json()).configured).toBe(true);
+  });
+});

@@ -1,4 +1,4 @@
-import express, { Request, Response } from 'express';
+import express, { NextFunction, Request, Response } from 'express';
 import { z } from 'zod';
 import { logger } from '../../../../utils/logger.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
@@ -19,6 +19,21 @@ import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 
 /** An agent's tool call can wait longer than SessionStart's 2 s, but not indefinitely. */
 export const TEAMBRAIN_PROXY_TIMEOUT_MS = 10_000;
+
+/**
+ * Every TeamBrain route signs an upstream call with this install's cloud sync
+ * token and returns team data. Worker CORS lets any localhost page read the
+ * response, so a browser request must come from this worker's own page (the
+ * viewer). Origin-less callers (the team_search / team_brief MCP tools, curl)
+ * keep the loopback-trust model. Same check as the work view's share reads.
+ */
+export function requireTeamBrainOrigin(req: Request, res: Response, next: NextFunction): void {
+  if (req.get('sec-fetch-site') === 'cross-site' || isForeignLoopbackBrowserWrite(req)) {
+    res.status(403).json({ error: 'TeamBrain is available only from the local viewer, the MCP tools or the CLI.' });
+    return;
+  }
+  next();
+}
 
 const teamSearchSchema = z.object({
   query: z.string().trim().min(1).max(500),
@@ -41,10 +56,11 @@ export class TeamBrainRoutes extends BaseRouteHandler {
   }
 
   setupRoutes(app: express.Application): void {
-    app.get('/api/teambrain/status', workViewLoopbackOnly, this.handleStatus.bind(this));
-    app.get('/api/teambrain/board', workViewLoopbackOnly, this.handleBoard.bind(this));
-    app.get('/api/teambrain/brief', this.handleBrief.bind(this));
-    app.post('/api/teambrain/search', validateBody(teamSearchSchema), this.handleSearch.bind(this));
+    app.get('/api/teambrain/status', requireTeamBrainOrigin, workViewLoopbackOnly, this.handleStatus.bind(this));
+    app.get('/api/teambrain/board', requireTeamBrainOrigin, workViewLoopbackOnly, this.handleBoard.bind(this));
+    app.get('/api/teambrain/brief', requireTeamBrainOrigin, this.handleBrief.bind(this));
+    // The origin check runs before validation, so a foreign page gets 403, not 400.
+    app.post('/api/teambrain/search', requireTeamBrainOrigin, validateBody(teamSearchSchema), this.handleSearch.bind(this));
   }
 
   private handleStatus = this.wrapHandler(async (_req: Request, res: Response): Promise<void> => {
@@ -89,14 +105,6 @@ export class TeamBrainRoutes extends BaseRouteHandler {
   });
 
   private handleSearch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    // A search spends this install's cloud sync token on an upstream call and
-    // hands the answer back, so another localhost page must not drive it. This
-    // is the same guard every other mutating POST route carries; Origin-less
-    // callers (the team_search MCP tool, curl) keep the loopback-trust model.
-    if (isForeignLoopbackBrowserWrite(req)) {
-      res.status(403).json({ error: 'TeamBrain searches from a different localhost origin are not allowed' });
-      return;
-    }
     const { query, limit } = req.body as z.infer<typeof teamSearchSchema>;
     const connection = this.connectionOrRefuse(res);
     if (!connection) return;
