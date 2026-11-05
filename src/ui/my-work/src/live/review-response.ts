@@ -3,19 +3,28 @@
 // local-source.ts; this reads the worker's answer.
 import type { WorkModel } from './work-data-source.ts'
 
+/** A durable local receipt; queued means replication still has work to do. */
+export interface SaveReceipt { scope: 'local' | 'shared'; state: 'saved' | 'queued' | 'unchanged'; localMaterialization?: 'pending' }
+
+export function readSaveReceipt(body: unknown): SaveReceipt | undefined {
+  const save = (body as { save?: Partial<SaveReceipt> } | null)?.save
+  return save && ['local', 'shared'].includes(save.scope ?? '') && ['saved', 'queued', 'unchanged'].includes(save.state ?? '')
+    ? { scope: save.scope!, state: save.state!, ...(save.localMaterialization === 'pending' ? { localMaterialization: 'pending' } : {}) } : undefined
+}
+
 /** What the review POST answered. Anything else throws: a failed save is never silent. */
 export type ReviewResponse =
-  | { kind: 'saved'; snapshot: unknown }
+  | { kind: 'saved'; snapshot: unknown; save?: SaveReceipt }
   /** 409: the fingerprint is stale, or the request is not reported complete. The latest model tells which. */
-  | { kind: 'conflict'; serverMessage: string }
+  | { kind: 'conflict'; serverMessage: string; snapshot?: unknown }
   /** 503: the worker can't read local work or its review storage right now. */
   | { kind: 'unavailable'; serverMessage: string }
 
 /** What the person is told after pressing Check or Undo. */
 export type ReviewResult =
-  | { outcome: 'saved'; model: WorkModel }
+  | { outcome: 'saved'; model: WorkModel; save?: SaveReceipt }
   /** The version on screen is not the latest one; the latest is shown now and nothing was saved. */
-  | { outcome: 'changed-while-reading'; model: WorkModel }
+  | { outcome: 'changed-while-reading'; model: WorkModel; serverMessage?: string }
   /** The latest version was refused as it is (409 "not reported complete"); nothing was saved. */
   | { outcome: 'refused'; serverMessage: string; model: WorkModel }
   | { outcome: 'unavailable'; serverMessage: string }
@@ -33,9 +42,13 @@ const serverErrorText = (body: unknown): string | null => {
 export function readReviewResponse(status: number, body: unknown): ReviewResponse {
   if (status === 200) {
     if (!body || typeof body !== 'object') throw new Error('The local review was saved, but the worker sent no work snapshot back. Reload to see it.')
-    return { kind: 'saved', snapshot: body }
+    const save = readSaveReceipt(body)
+    return { kind: 'saved', snapshot: body, ...(save ? { save } : {}) }
   }
-  if (status === 409) return { kind: 'conflict', serverMessage: serverErrorText(body) ?? 'This work changed. Read the latest result before checking it.' }
+  if (status === 409) {
+    const snapshot = (body as { snapshot?: unknown } | null)?.snapshot
+    return { kind: 'conflict', serverMessage: serverErrorText(body) ?? 'This work changed. Read the latest result before checking it.', ...(snapshot ? { snapshot } : {}) }
+  }
   if (status === 503) return { kind: 'unavailable', serverMessage: serverErrorText(body) ?? 'Local work is unavailable right now (503).' }
   throw new Error(`The local review could not be saved (${status}): ${serverErrorText(body) ?? 'the worker gave no reason'}`)
 }

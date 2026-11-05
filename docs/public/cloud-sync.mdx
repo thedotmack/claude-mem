@@ -5,8 +5,8 @@ description: "Two-lane multi-device sync of your memory database — durable HTT
 
 # Cloud Sync (cmem.ai Pro)
 
-Cloud sync replicates your local memory database across your devices through a
-**per-user sync hub** — an ordered log of everything your devices write. It is
+Cloud sync replicates eligible memory records across your devices through a
+**per-user sync hub** — an ordered log of synchronized writes. It is
 built into the worker: **there is no daemon — the worker syncs on write**. The
 same process that records every observation also uploads it, and pulls the
 other devices' writes back down.
@@ -21,7 +21,7 @@ or wrong with **zero data loss**; the HTTP cursor is always the truth.
 
 ## What syncs
 
-Three kinds of rows are replicated between your devices:
+The core memory rows replicated between your devices are:
 
 - **Observations** — the compressed memories claude-mem generates from your sessions.
 - **Session summaries** — the per-session overview records.
@@ -57,10 +57,11 @@ not treated as a cloud migration corpus.
 - **Debounced:** write bursts coalesce; the flusher runs ~1.5&nbsp;s after the
   last write (250&nbsp;ms while the speed layer is connected), and only one
   flush runs at a time.
-- **Batched:** ops drain in requests of up to 500 ops / 4,000,000 encoded
-  bytes. Each individual canonical body is capped at 256,000 encoded bytes.
-- **Timeboxed:** every request has a 30&nbsp;s timeout — a dead network can
-  never hang the worker.
+- **Batched:** content pages contain 40 ops by default, adjustable
+  up to 500 ops / 4,000,000 encoded bytes per request. Each individual canonical body
+  is capped at 256,000 encoded bytes.
+- **Timeboxed:** content pushes have a 90&nbsp;s timeout by default. Pulls and
+  status probes also have deadlines, so a dead network cannot hang the worker.
 - **Retrying:** a failed upload leaves rows `NULL` and retries on the next
   write plus a capped exponential backoff (30&nbsp;s → 10&nbsp;min). The write
   path is never blocked — sync failures cost nothing but delay.
@@ -75,12 +76,19 @@ starts from zero) catches up the same way an active one stays current:
 
 - **Session start:** the worker pulls immediately before injecting context
   (bounded to 1.5&nbsp;s, so a dead network can't stall your session), which
-  means memory written on another machine is there the moment you start
-  working.
-- **Steady state:** a short poll every 30&nbsp;s while a session is active,
+  makes recent remote memory available before context is assembled when the
+  bounded pull can finish. A larger backlog continues catching up afterwards.
+- **Steady state:** a short poll every 30&nbsp;s while a session or visible
+  local viewer is active,
   every 5&nbsp;min when idle, suspended entirely after an hour of no activity.
   Every push response also reports the log head, so an active device learns
   about remote writes without waiting out the timer.
+- **Viewer activity:** a visible local viewer renews an expiring activity lease
+  every 20&nbsp;s. Hidden and closed tabs release it; a failed release expires
+  after 45&nbsp;s. This keeps downloads awake without bypassing network backoff
+  or an authentication pause. A hosted viewer with
+  `CLAUDE_MEM_CLOUD_SYNC_KEEP_PULLING=true` keeps polling every 30&nbsp;s,
+  even with no browser tabs or agent sessions, and does not enter idle suspension.
 - **Applied like native writes:** pulled rows keep their original timestamps,
   carry their origin device, index into full-text and vector search through
   the same paths native writes use, and are stamped so they can never be
@@ -88,16 +96,21 @@ starts from zero) catches up the same way an active one stays current:
 
 ## Live updates (optional)
 
-When enabled (the default), the worker also subscribes to a private Realtime
-channel for your account. When another device pushes, the server broadcasts a
-tiny "the log moved forward" signal and this device pulls right away —
-multi-device convergence in about a second instead of a poll interval. The
+When enabled (the default) **and supported by the sync server**, the worker
+subscribes to a private Realtime channel for your account. When another device
+pushes, the server broadcasts a tiny "the log moved forward" signal and this
+device pulls right away, ahead of the regular poll interval. The
 channel is strictly **advisory**: it never carries your data, and any anomaly
 (a dropped connection, a missed heartbeat, a malformed signal) simply closes it
 and falls back to an HTTP pull, which is always correct. Set
 `CLAUDE_MEM_CLOUD_SYNC_WS` to `false` to turn live updates off — sync stays
 fully correct at poll latency. If the sync server does not offer live updates,
-the worker stays on polling and checks again hourly.
+the worker stays on polling and checks again hourly. The status display names
+the actual mode; `CLAUDE_MEM_CLOUD_SYNC_WS=true` alone does not establish a live
+channel. The client requests `/v1/sync/realtime-token`; the included sync-api
+service does not provide that grant endpoint, so it uses HTTP polling unless
+the deployment supplies a compatible grant service. The older `/v1/sync/ws`
+endpoint is not interchangeable with this protocol.
 
 ## Requirements and setup
 
@@ -126,8 +139,8 @@ session transcript. For CI or a remote box, see
 | `CLAUDE_MEM_CLOUD_SYNC_TOKEN` | `''` | Your cmem.ai sync token (from **cmem.ai → Connect**). Sent as `Authorization: Bearer`. |
 | `CLAUDE_MEM_CLOUD_SYNC_USER_ID` | `''` | Your cmem.ai user id (from **cmem.ai → Connect**). All your devices share it — it names your hub log. |
 | `CLAUDE_MEM_CLOUD_SYNC_HUB_URL` | `''` | Sync hub base URL. **Empty = sync off.** |
-| `CLAUDE_MEM_CLOUD_SYNC_WS` | `'true'` | Live updates over Realtime. `'false'` disables live updates (HTTP polling only); sync stays fully correct at poll latency. |
-| `CLAUDE_MEM_CLOUD_SYNC_KEEP_PULLING` | `'false'` | `'true'` keeps pulling when no session has run for an hour, instead of pausing until the next one. For a machine that only shows synced memory and runs no sessions, such as the cloud viewer. |
+| `CLAUDE_MEM_CLOUD_SYNC_WS` | `'true'` | Try live updates when the server supports the current Realtime grant protocol. `'false'` uses HTTP polling only; sync correctness does not depend on Realtime. |
+| `CLAUDE_MEM_CLOUD_SYNC_KEEP_PULLING` | `'false'` | `'true'` polls every 30 seconds even with no sessions or browser tabs, and disables idle suspension. Intended for replicas such as the hosted viewer. With the default `'false'`, ordinary idle polling is every 5 minutes and suspends after an hour without activity. |
 | `CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID` | `''` | Stable identity of this machine. A fresh UUID is minted and persisted on first start. Don't edit it: every row is attributed to its origin device. |
 | `CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME` | machine hostname | Human-readable label for this device. |
 | `CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE` | `'40'` | Ops per content flush page. 200-op pages timed out at 30s under hub `projection_busy`. Max 500. |
@@ -170,21 +183,82 @@ Configured:
 }
 ```
 
-Every configured status request makes an authenticated, read-only
-`GET /v1/sync/status` directly to SyncHub, including when all pending counts
-are zero. The probe does not append an operation or advance a pull cursor.
-`hub.reachable: false` and `hub.error` therefore expose a bad token, wrong Hub
-URL, malformed response, timeout, or network failure
-that an empty queue would otherwise hide.
+Configured status requests perform a bounded, observational
+`GET /v1/sync/status` probe, including when the outgoing queue is empty.
+Concurrent requests share the probe. The viewer receives cached status through
+its event stream; its one-second display clock does not make a hub request.
+Reading status never uploads records, advances the pull cursor, or resumes an
+authentication-paused upload. The worker's normal retry/lifecycle path owns
+recovery.
 
-- `pending` — rows (and queued mutation ops) still waiting to upload. Counts
-  near 0 mean the hub's log has everything this device wrote.
+Alongside the existing fields, `sync` reports the download and projection
+evidence used by the viewer:
+
+```json
+{
+  "sync": {
+    "configured": true,
+    "state": "catching-up",
+    "mode": "polling",
+    "observedAt": 1783981042800,
+    "checkedAt": 1783981042800,
+    "message": "Cloud updates are being synchronized.",
+    "upload": { "pending": 2, "lastSuccessAt": 1783981042731, "error": null },
+    "download": {
+      "started": true, "inFlight": false, "suspended": false,
+      "authPaused": false, "lastAttemptAt": 1783981042500,
+      "lastSuccessAt": 1783981042600, "lastError": null,
+      "nextRetryAt": null, "epoch": "1783981042000", "cursor": "40",
+      "mode": "polling", "realtimeAvailable": false,
+      "socketLive": false, "caughtUp": false
+    },
+    "projection": {
+      "epoch": "1783981042000", "headSeq": "42",
+      "projectedSeq": "42", "remaining": "2"
+    },
+    "completeness": {
+      "pushQuarantine": 0, "pullQuarantine": 0,
+      "excludedNative": 0, "scope": "eligible"
+    }
+  }
+}
+```
+
+The feed connection and synchronization status are separate. A connected feed
+proves that this browser is receiving updates from its viewer worker. It does
+not prove that the worker has downloaded every remote change. `current` requires
+a completed download and recent matching hub evidence, matching epochs, no known lag or
+pending uploads, and no unresolved scope/conflict gap. Old evidence becomes
+`stale` even if browser heartbeats continue. Unknown or mismatched epochs report
+unknown lag rather than zero. Sequence values stay decimal strings.
+
+- `pending` — eligible rows and queued operations still waiting to upload.
+  Zero does not prove that incoming changes have arrived or that excluded
+  historical rows were ever uploaded.
 - `lastFlushAt` — epoch ms of the last successful flush, `null` before the first.
 - `lastError` — message from the most recent failed flush, `null` when healthy.
   It never contains the token.
 - `hub` — the most recent authenticated SyncHub probe. Treat
   `hub.reachable: true` as the connectivity check; `lastError: null` alone is
   not enough. Sequence and epoch fields remain decimal strings.
+- `sync.download` — last download attempt/success, cursor, retry/pause state,
+  and actual polling or realtime mode. An upload can be healthy while this
+  direction is unavailable.
+- `sync.completeness` — quarantined operations and historical scope. An old
+  conflict is distinct from a current network failure. Pre-launch native rows
+  remain local-only unless explicitly selected for a supported migration;
+  their exclusion is not repaired by resetting the cursor or reloading a page.
+
+Cloud sync does not mean a byte-for-byte copy of every local file. Compatible
+readers can share My Work grouping, progress, story, reviews, decisions and
+published output links when `CLAUDE_MEM_WORK_VIEW_SHARED_STATE=true` and the hub
+supports `work_state`. The setting defaults to `false` for a consumer-first
+rollout: update participating local and hosted readers before enabling writers.
+Local paths, review sidecars and arbitrary deliverable files stay on their
+origin device; the shared state carries bounded semantic records and published
+links. A scope or incomplete-generation warning is distinct from a stopped
+download lane, and neither an empty upload queue nor a connected feed proves
+full parity.
 
 Not configured:
 

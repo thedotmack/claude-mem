@@ -270,6 +270,7 @@ const QUERIES: Record<string, string> = {
 
   zig: `
 (function_declaration name: (identifier) @name) @func
+(variable_declaration (identifier) @name [(struct_declaration) (enum_declaration) (union_declaration) (opaque_declaration)]) @cls
 (test_declaration (string) @name) @func
 (test_declaration (identifier) @name) @doctest
 (test_declaration . (block)) @func

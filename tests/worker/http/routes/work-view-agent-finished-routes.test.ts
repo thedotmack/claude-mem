@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Server } from 'node:http';
 import { WorkViewRoutes } from '../../../../src/services/worker/http/routes/WorkViewRoutes.js';
+import { holdEnrichedOverview } from './work-view-test-utils.js';
 
 // A coordinator session with an async subagent that finished before the
 // SubagentStop hook existed: nothing recorded its stop, so only the owner can.
@@ -63,6 +64,19 @@ const markFinished = (body: unknown, headers: Record<string, string> = { 'Conten
   fetch(`${origin}/api/work-view/agents/mark-finished`, { method: 'POST', headers, body: JSON.stringify(body) });
 
 describe('Mark finished', () => {
+  it('does not reuse a pending overview after an owner stop commits', async () => {
+    const before = subagent(await snapshot());
+    const held = holdEnrichedOverview(routes);
+    const old = fetch(`${origin}/api/work-view/overview`).then(response => response.json());
+    await held.ready;
+    try {
+      expect((await markFinished({ agentGroupId: before.id })).status).toBe(200);
+      const current = await (await fetch(`${origin}/api/work-view/overview`)).json();
+      expect(current.model.agents.find((agent: any) => agent.id === before.id).status).toBe('finished');
+    } finally { held.release(); }
+    expect((await old).model.agents.find((agent: any) => agent.id === before.id).status).not.toBe('finished');
+  });
+
   it('records the owner stop for a subagent no evidence covers, and the view shows it finished', async () => {
     const before = subagent(await snapshot());
     expect(before.presence.status).not.toBe('finished');

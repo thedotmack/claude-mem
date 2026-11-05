@@ -6,7 +6,7 @@ import type { ConnectionStatus } from '../live/connection-status.ts'
 import type { ReviewResult } from '../live/review-response.ts'
 import type { RuleDecision, SavedRuleDecision } from '../live/rule-actions.ts'
 import type { UsageReport } from '../live/usage.ts'
-import type { RuleSaveResult, WorkDataSource, WorkModel } from '../live/work-data-source.ts'
+import type { RuleSaveResult, SuggestionSaveResult, WorkDataSource, WorkModel } from '../live/work-data-source.ts'
 
 // ---------- Work: the active source's model ----------
 
@@ -32,10 +32,13 @@ export interface WorkSlice {
   startWorkSource: (source: WorkDataSource) => () => void
   /** Reads the active source again: the Retry after a failed first read. */
   retryWorkRead: () => Promise<void>
+  /** Loads one compact request's complete detail; old/full sources return the supplied request. */
+  loadRequestDetail: (request: Request, options?: { signal?: AbortSignal }) => Promise<Request>
   receiveWorkModel: (model: WorkModel) => void
   receiveConnection: (connection: ConnectionStatus) => void
   /** Checks (or undoes the check of) the version of a request that was on screen. */
-  setRequestChecked: (requestId: string, checked: boolean, expectedFingerprint: string | undefined) => Promise<ReviewResult>
+  setRequestChecked: (requestId: string, checked: boolean, expectedFingerprint: string | undefined, expectedReviewHash?: string | null) => Promise<ReviewResult>
+  answerRequestSuggestion: (suggestion: NonNullable<Request['suggestion']>, action: 'join' | 'not-this') => Promise<SuggestionSaveResult>
   /** Saves one rule change. Answers with the model the save returned, which is the receipt even if the screen has moved on. */
   saveRuleChange: (change: RuleChange) => Promise<RuleSaveResult>
   saveFocusChange: (change: FocusChange) => Promise<WorkModel>

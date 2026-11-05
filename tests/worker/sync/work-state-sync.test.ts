@@ -25,6 +25,7 @@ import { SyncApply, type SyncOp } from '../../../src/services/sync/SyncApply.js'
 import { SyncClient, decodeChanges } from '../../../src/services/sync/SyncClient.js';
 import { buildContentOperation, parseCanonicalOperation, stableDocumentId } from '../../../src/services/sync/CanonicalContent.js';
 import { renderWorkStateLines } from '../../../src/services/context/sections/WorkStateRenderer.js';
+import { onContextInvalidation } from '../../../src/shared/context-invalidation.js';
 
 const SELF = 'device-fixture';
 const REMOTE = 'device-a';
@@ -173,6 +174,21 @@ describe('work_state cloud sync', () => {
   afterEach(() => {
     db.close();
     rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('announces committed work-state kinds and lists without triggering unrelated rule rebuilds', () => {
+    const observed: unknown[] = [];
+    const stop = onContextInvalidation(event => {
+      if (event.reason !== 'SyncApply.applyOps') return;
+      expect(db.inTransaction).toBe(false);
+      expect(db.query('SELECT COUNT(*) AS n FROM work_state_entries').get()).toEqual({ n: 1 });
+      observed.push(event.changes);
+    });
+    try {
+      const apply = new SyncApply(db, { deviceId: SELF, now: () => FIXED_NOW });
+      expect(apply.applyOps([workStateOp('rule', { task: 'Rule: one', then: 'Keep source evidence.' }, { listName: 'my-rules' })]).applied).toBe(1);
+      expect(observed).toEqual([{ kinds: ['work_state'], workStateLists: ['my-rules'] }]);
+    } finally { stop(); }
   });
 
   it('gives the table its sync columns (v66) and replays rows by write clock, not rowid', () => {

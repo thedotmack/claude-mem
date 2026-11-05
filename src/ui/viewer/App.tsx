@@ -7,7 +7,7 @@ import { SessionDetailPage } from './components/SessionDetailPage';
 import { ContextSettingsModal } from './components/ContextSettingsModal';
 import { LogsDrawer } from './components/LogsModal';
 import { WelcomeCard, getStoredWelcomeDismissed, setStoredWelcomeDismissed } from './components/WelcomeCard';
-import { useSSE } from './hooks/useSSE';
+import { useSSE, type MemoryChange } from './hooks/useSSE';
 import { useSettings } from './hooks/useSettings';
 import { usePagination } from './hooks/usePagination';
 import { useSessionCatalog } from './hooks/useSessionCatalog';
@@ -60,11 +60,28 @@ export function App() {
   const [paginatedSummaries, setPaginatedSummaries] = useState<Summary[]>([]);
   const [paginatedPrompts, setPaginatedPrompts] = useState<UserPrompt[]>([]);
   const [feedLoadError, setFeedLoadError] = useState<string | null>(null);
+  const [showLatestRefresh, setShowLatestRefresh] = useState(false);
+  const [feedRefreshNotice, setFeedRefreshNotice] = useState<string | null>(null);
   const handledDeletionsRef = useRef(new Set<string>());
   // A page started before a session was deleted must not restore its old rows,
   // even if a live row has since re-created that same session identity.
   const deletionVersionRef = useRef(0);
   const sessionDeletionVersionsRef = useRef(new Map<string, number>());
+  const itemDeletionVersionsRef = useRef(new Map<string, number>());
+  const contentGenerationRef = useRef(0);
+  const initialReadStartedRef = useRef(false);
+  const loadedVisitRef = useRef(-1);
+  const resyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resyncBusyRef = useRef(false);
+  const resyncPausedRef = useRef(false);
+  const resyncInterruptionsRef = useRef(0);
+  const pendingResyncRef = useRef(new Set<FeedItemType>());
+  const activeResyncKindsRef = useRef<FeedItemType[]>([]);
+  const failedResyncRef = useRef(new Set<FeedItemType>());
+  const refreshLatestRef = useRef(false);
+  const runResyncRef = useRef<() => Promise<void>>(async () => {});
+  const disposedRef = useRef(false);
+  const [connectionWaitExpired, setConnectionWaitExpired] = useState(false);
   const [route, setRoute] = useState<ViewRoute>(() => parseViewRoute(window.location.hash));
   // The Sessions list keeps the last timeline/session scope, so switching back
   // does not reload pages that are still correct.
@@ -81,13 +98,15 @@ export function App() {
   const feedVersion = feedVisit.version;
 
   const catalog = useSessionCatalog();
-  const { observations, summaries, prompts, projects, isProcessing, queueDepth, removeLiveItem, removeLiveSession } = useSSE({
+  const { observations, summaries, prompts, projects, isProcessing, queueDepth, isConnected, syncStatus, removeLiveItem, removeLiveSession,
+    captureLiveVersion, clearLiveThrough, refreshProjects } = useSSE({
     onItemDeleted: removeDeletedItem,
     onSessionDeleted: removeDeletedSession,
     onLiveItem: item => {
       handledDeletionsRef.current.delete(`session:${sessionKey(item.session)}`);
       catalog.touch(item);
     },
+    onDataChanged: queueDataRefresh,
   });
   const {
     settings, saveSettings, isSaving, saveStatus,
@@ -95,6 +114,128 @@ export function App() {
   } = useSettings();
   const { preference, setThemePreference } = useTheme();
   const pagination = usePagination(feedScope.project, feedScope.session);
+
+  useEffect(() => {
+    disposedRef.current = false;
+    const timeout = setTimeout(() => setConnectionWaitExpired(true), 250);
+    return () => {
+      disposedRef.current = true;
+      clearTimeout(timeout);
+      if (resyncTimerRef.current) clearTimeout(resyncTimerRef.current);
+    };
+  }, []);
+
+  function scheduleDataRefresh(): void {
+    if (disposedRef.current || resyncPausedRef.current || resyncBusyRef.current || resyncTimerRef.current) return;
+    resyncTimerRef.current = setTimeout(() => {
+      resyncTimerRef.current = null;
+      void runResyncRef.current();
+    }, 250);
+  }
+
+  function queueDataRefresh(change: MemoryChange): void {
+    // The initial baseline starts after stream admission. If HTTP already
+    // started via the outage fallback, this first connection must catch up.
+    if (!initialReadStartedRef.current) return;
+    if (resyncPausedRef.current) return;
+    if (change.kinds && !change.kinds.some(kind => ['observation', 'summary', 'prompt', 'mutation'].includes(kind))) return;
+    // These three lists share one displayed visit/generation. Cancelling an
+    // older read must also refresh its siblings, even if only one kind changed.
+    const kinds = ['observation', 'summary', 'prompt'] as const;
+    contentGenerationRef.current++;
+    for (const kind of kinds) pendingResyncRef.current.add(kind);
+    for (const kind of activeResyncKindsRef.current) pendingResyncRef.current.add(kind);
+    // Scope hints are advisory: aliases and linked-session repairs can affect
+    // a filtered view even when its spelling is absent from the event.
+    pagination.observations.invalidate();
+    pagination.summaries.invalidate();
+    pagination.prompts.invalidate();
+    catalog.invalidate();
+    if (resyncBusyRef.current && ++resyncInterruptionsRef.current >= 3) {
+      // A live database can keep invalidating every in-flight read. Stop the
+      // automatic loop after a bounded number of retries, keeping shown rows.
+      resyncPausedRef.current = true;
+      pendingResyncRef.current.clear();
+      for (const kind of kinds) failedResyncRef.current.add(kind);
+      setFeedLoadError('Memories are changing faster than this view can refresh. Retry, or refresh the latest memories.');
+      setShowLatestRefresh(true);
+      return;
+    }
+    scheduleDataRefresh();
+  }
+
+  async function runDataRefresh(): Promise<void> {
+    if (disposedRef.current || resyncBusyRef.current || !pendingResyncRef.current.size) return;
+    resyncBusyRef.current = true;
+    const kinds = [...pendingResyncRef.current];
+    activeResyncKindsRef.current = kinds;
+    pendingResyncRef.current.clear();
+    const generation = contentGenerationRef.current;
+    const visit = activeFeedScopeRef.current.version;
+    const liveVersion = captureLiveVersion();
+    const latest = refreshLatestRef.current;
+    refreshLatestRef.current = false;
+    const deletedBeforeRead = deletionVersionRef.current;
+    const current = () => !disposedRef.current && contentGenerationRef.current === generation && activeFeedScopeRef.current.version === visit;
+    const errors: string[] = [];
+    const retain = <T extends SessionScopedRow & { id: number }>(rows: T[], kind: FeedItemType) => rows.filter(row => {
+      const key = `${kind}:${row.id}`;
+      if ((itemDeletionVersionsRef.current.get(key) ?? 0) > deletedBeforeRead) return false;
+      const session = sessionRefOf(row);
+      if (session && (sessionDeletionVersionsRef.current.get(sessionKey(session)) ?? 0) > deletedBeforeRead) return false;
+      // This request began after older deletes: its returned rows can include
+      // a valid recreation, so old tombstones must not hide it forever.
+      handledDeletionsRef.current.delete(key);
+      if (session) handledDeletionsRef.current.delete(`session:${sessionKey(session)}`);
+      return true;
+    });
+    try {
+      await Promise.all(kinds.map(async kind => {
+        try {
+          if (kind === 'observation') {
+            const rows = await (latest ? pagination.observations.refreshLatest() : pagination.observations.refresh());
+            if (!current()) return;
+            const kept = retain(rows, kind); pagination.observations.noteRemoved(rows.length - kept.length);
+            setPaginatedObservations(kept);
+          } else if (kind === 'summary') {
+            const rows = await (latest ? pagination.summaries.refreshLatest() : pagination.summaries.refresh());
+            if (!current()) return;
+            const kept = retain(rows, kind); pagination.summaries.noteRemoved(rows.length - kept.length);
+            setPaginatedSummaries(kept);
+          } else {
+            const rows = await (latest ? pagination.prompts.refreshLatest() : pagination.prompts.refresh());
+            if (!current()) return;
+            const kept = retain(rows, kind); pagination.prompts.noteRemoved(rows.length - kept.length);
+            setPaginatedPrompts(kept);
+          }
+          clearLiveThrough(kind, liveVersion);
+          failedResyncRef.current.delete(kind);
+          for (const [key, version] of itemDeletionVersionsRef.current) {
+            if (key.startsWith(`${kind}:`) && version <= deletedBeforeRead) {
+              itemDeletionVersionsRef.current.delete(key); handledDeletionsRef.current.delete(key);
+            }
+          }
+        } catch (error) {
+          if (!current()) return;
+          failedResyncRef.current.add(kind);
+          errors.push(error instanceof Error ? error.message : 'Could not refresh saved memories.');
+        }
+      }));
+      if (current()) {
+        setFeedLoadError(previous => errors.length ? `Could not refresh saved memories. ${errors.join(' ')}` : failedResyncRef.current.size ? previous : null);
+        setShowLatestRefresh(failedResyncRef.current.size > 0);
+        if (latest && !errors.length) setFeedRefreshNotice('Showing the newest memories. Load more to browse older history.');
+        resyncInterruptionsRef.current = 0;
+        void refreshProjects();
+        void catalog.refreshLoaded(route.view === 'session' ? '' : currentFilter);
+      }
+    } finally {
+      resyncBusyRef.current = false;
+      activeResyncKindsRef.current = [];
+      if (pendingResyncRef.current.size) scheduleDataRefresh();
+    }
+  }
+  useLayoutEffect(() => { runResyncRef.current = runDataRefresh; });
 
   useEffect(() => {
     const onHashChange = () => setRoute(parseViewRoute(window.location.hash));
@@ -163,9 +304,18 @@ export function App() {
   const handleLoadMore = useCallback(async () => {
     // A second visit to the same scope has a new owner, even if its key matches.
     if (activeFeedScopeRef.current.version !== feedVersion) return;
+    if (!isConnected && !connectionWaitExpired) return;
+    if (failedResyncRef.current.size) {
+      resyncPausedRef.current = false;
+      resyncInterruptionsRef.current = 0;
+      queueDataRefresh({ kinds: [...failedResyncRef.current] });
+      return;
+    }
+    initialReadStartedRef.current = true;
     const requestFeedVersion = feedVersion;
+    const contentGeneration = contentGenerationRef.current;
     const deletionVersion = deletionVersionRef.current;
-    const isCurrentVisit = () => activeFeedScopeRef.current.version === requestFeedVersion;
+    const isCurrentVisit = () => activeFeedScopeRef.current.version === requestFeedVersion && contentGenerationRef.current === contentGeneration;
     setFeedLoadError(null);
     const retainPageRows = <T extends SessionScopedRow & { id: number }>(rows: T[], itemType: FeedItemType): T[] => {
       return rows.filter(row => {
@@ -210,7 +360,7 @@ export function App() {
         setFeedLoadError(error instanceof Error ? error.message : 'Failed to load more data');
       }
     }
-  }, [feedVersion, pagination.observations, pagination.summaries, pagination.prompts]);
+  }, [feedVersion, isConnected, connectionWaitExpired, pagination.observations, pagination.summaries, pagination.prompts]);
 
   // One removal path for a deleted row, whether this tab deleted it or another
   // tab did (item_deleted SSE, which also reaches this tab): drop it from the
@@ -223,6 +373,7 @@ export function App() {
     const key = `${itemType}:${id}`;
     if (handledDeletionsRef.current.has(key)) return;
     handledDeletionsRef.current.add(key);
+    itemDeletionVersionsRef.current.set(key, ++deletionVersionRef.current);
 
     const liveRows = { observation: observations, summary: summaries, prompt: prompts };
     const deletedRow = liveRows[itemType].find(row => row.id === id)
@@ -284,14 +435,26 @@ export function App() {
   }
 
   useEffect(() => {
+    if (!isConnected && !connectionWaitExpired) return;
+    // Run once per committed visit, not again when an outage reconnects.
+    if (initialReadStartedRef.current && loadedVisitRef.current === feedVersion) return;
+    loadedVisitRef.current = feedVersion;
+    contentGenerationRef.current++;
+    pendingResyncRef.current.clear(); failedResyncRef.current.clear();
+    refreshLatestRef.current = false;
+    resyncPausedRef.current = false; resyncInterruptionsRef.current = 0;
+    setShowLatestRefresh(false); setFeedRefreshNotice(null);
+    if (resyncTimerRef.current) clearTimeout(resyncTimerRef.current);
+    resyncTimerRef.current = null;
     setPaginatedObservations([]);
     setPaginatedSummaries([]);
     setPaginatedPrompts([]);
     handleLoadMore();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [feedScopeKey(feedScope)]);
+  }, [feedScopeKey(feedScope), isConnected, connectionWaitExpired]);
 
-  const isLoading = pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading;
+  const isLoading = (!initialReadStartedRef.current && !isConnected && !connectionWaitExpired)
+    || pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading;
   const hasMore = pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore;
   const activeTab: ViewTab = route.view === 'timeline' ? 'timeline' : 'sessions';
   const tabs = (
@@ -305,6 +468,13 @@ export function App() {
             : route.view === 'sessions'
               ? 'Open a session to revisit what happened and what was learned.'
               : 'Review the context captured during this session.'}</p>
+          {showLatestRefresh && <button type="button" onClick={() => {
+            resyncPausedRef.current = false;
+            resyncInterruptionsRef.current = 0;
+            refreshLatestRef.current = true;
+            queueDataRefresh({});
+          }}>Refresh latest memories</button>}
+          {feedRefreshNotice && <p role="status">{feedRefreshNotice}</p>}
         </div>
         <ViewTabs
           active={activeTab}
@@ -326,6 +496,7 @@ export function App() {
         onOpen={session => navigate(sessionHash(session))}
         onDelete={handleDeleteSession}
         onLoadMore={catalog.loadMore}
+        onRefreshLatest={catalog.refreshFailed ? () => { void catalog.refresh(currentFilter); } : undefined}
       />
     );
   } else if (route.view === 'session') {
@@ -366,6 +537,8 @@ export function App() {
         onFilterChange={setCurrentFilter}
         isProcessing={isProcessing}
         queueDepth={queueDepth}
+        isConnected={isConnected}
+        syncStatus={syncStatus}
         themePreference={preference}
         onThemeChange={setThemePreference}
         onContextPreviewToggle={toggleContextPreview}
