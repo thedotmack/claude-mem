@@ -278,6 +278,10 @@ export async function translateReadme(
   await fs.mkdir(outDir, { recursive: true });
 
   const sourceHash = hashContent(content);
+  // Point relative links at the output directory before translating, not after: with
+  // --use-existing the reference translation already has corrected links, and rewriting the
+  // output would rewrite those a second time.
+  const contentForOutput = rewriteRelativeLinks(content, path.dirname(sourcePath), outDir);
   const cachePath = path.join(outDir, ".translation-cache.json");
   const cache = await readCache(cachePath);
   const isHashMatch = cache?.sourceHash === sourceHash;
@@ -315,7 +319,7 @@ export async function translateReadme(
       const existingTranslation = useExisting
         ? await fs.readFile(outputPath, "utf-8").catch(() => undefined)
         : undefined;
-      const { translation, costUsd } = await translateToLanguage(content, lang, {
+      const { translation, costUsd } = await translateToLanguage(contentForOutput, lang, {
         preserveCode,
         model,
         verbose: verbose && parallel === 1, // Only show progress spinner for sequential
@@ -323,7 +327,7 @@ export async function translateReadme(
         existingTranslation,
       });
 
-      await fs.writeFile(outputPath, rewriteRelativeLinks(translation, path.dirname(sourcePath), outDir), "utf-8");
+      await fs.writeFile(outputPath, translation, "utf-8");
 
       if (verbose) {
         console.log(`   ✅ Saved to ${outputFilename} ($${costUsd.toFixed(4)})`);
