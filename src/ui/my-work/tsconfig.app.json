@@ -23,6 +23,7 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true,
     "paths": {
+      "yaml": ["./node_modules/yaml"],
       "@/*": [
         "./src/*"
       ]

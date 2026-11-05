@@ -52,7 +52,7 @@ export interface WorkSlice {
 
 /** `setup` is the install funnel (`?setup=1`): a full page outside the nav that becomes My Work when it completes. */
 export type Page = 'setup' | 'app'
-export type NavPage = 'work' | 'rules'
+export type NavPage = 'work' | 'rules' | 'skills'
 /** What the main column shows: a page, or one of the focus views the rail opens. */
 export type Section = NavPage | 'suggested' | 'past-focus'
 export type WorkListView = 'cards' | 'list' | 'agents' | 'team'

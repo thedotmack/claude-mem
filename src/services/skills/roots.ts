@@ -10,8 +10,8 @@ import { CLAUDE_CONFIG_DIR, USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { isAgentScratchFolder, repoRootOf } from '../work-view/session-project.mjs';
 import { sha256 } from './files.js';
 
-export type SkillAgent = 'claude' | 'codex' | 'custom';
-export type SkillScope = 'personal' | 'project' | 'configured';
+import type { SkillAgent, SkillScope, ScanIssue } from '../../shared/skill-document.js';
+export type { SkillAgent, SkillScope, ScanIssue } from '../../shared/skill-document.js';
 export interface SkillRoot {
   path: string;
   agent: SkillAgent;
@@ -28,7 +28,6 @@ export interface SkillCatalogOptions {
   databasePath?: string;
   excludedProjects?: string;
 }
-export interface ScanIssue { source: string; message: string; }
 
 const runGit = promisify(execFile);
 const AGENTS = [['claude', '.claude'], ['codex', '.agents']] as const;

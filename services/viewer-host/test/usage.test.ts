@@ -32,6 +32,8 @@ describe('hosted viewer usage', () => {
       },
     });
     expect(hostedUsageEvent({ event: 'opened', view: 'work' }, 'work.cmem.ai', page)?.event).toBe('work_view_opened');
+    expect(hostedUsageEvent({ event: 'opened', view: 'skills' }, 'work.cmem.ai', page)?.properties.view).toBe('skills');
+    expect(hostedUsageEvent({ event: 'opened', view: 'skills', skillId: 'private-id' }, 'work.cmem.ai', page)).toBeNull();
     expect(hostedUsageEvent({ event: 'switched', view: 'rules', previousView: 'work' }, 'work.cmem.ai', page)?.properties.previous_view).toBe('work');
     expect(hostedUsageEvent({ event: 'opened', view: 'timeline' }, 'work.cmem.ai', page)).toBeNull();
     expect(hostedUsageEvent({ event: 'opened', view: 'work', title: 'secret' }, 'work.cmem.ai', page)).toBeNull();

@@ -4,7 +4,7 @@
 // disable`, CLAUDE_MEM_TELEMETRY=0 or DO_NOT_TRACK). Only the page id travels: never a request, prompt,
 // observation, file path or search text. The page itself loads no analytics SDK.
 /** The viewer's closed page ids: setup plus App.tsx `View`. A focus area is My Work filtered to it, so it is `work`, never its name. */
-export type UsageView = 'setup' | 'work' | 'rules' | 'suggested' | 'past-focus'
+export type UsageView = 'setup' | 'work' | 'rules' | 'skills' | 'suggested' | 'past-focus'
 export type UsageReport = { event: 'opened'; view: UsageView } | { event: 'switched'; view: UsageView; previousView: UsageView }
 
 const WORK_VIEW_USAGE_URL = '/api/work-view/usage'

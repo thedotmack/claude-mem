@@ -82,6 +82,12 @@ describe('My Work usage telemetry', () => {
     ]);
   });
 
+  it('counts opening My Skills and rejects document details in the same event', async () => {
+    expect((await report({ event: 'opened', view: 'skills' })).status).toBe(204);
+    expect((await report({ event: 'opened', view: 'skills', skillId: 'private-id' })).status).toBe(400);
+    expect(captured().map(call => call.properties.view)).toEqual(['skills']);
+  });
+
   it('refuses another origin, an unknown page, a switch without the page it left, and any extra field', async () => {
     expect((await report({ event: 'opened', view: 'work' }, { 'Content-Type': 'application/json', Origin: 'https://evil.example' })).status).toBe(403);
     expect((await report({ event: 'opened', view: 'timeline' })).status).toBe(400);

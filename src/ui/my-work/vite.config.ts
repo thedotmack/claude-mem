@@ -10,7 +10,7 @@ export default defineConfig({
   base: '/work-view/',
   build: { outDir: '../../../plugin/ui/work-view', emptyOutDir: true },
   plugins: [react(), tailwindcss()],
-  resolve: { alias: { '@': path.resolve(__dirname, './src') } },
+  resolve: { alias: { '@': path.resolve(__dirname, './src') }, dedupe: ['yaml'] },
   server: {
     proxy: {
       // The worker's /api/work-view routes are loopback-only and reject forwarded headers, so no xfwd.

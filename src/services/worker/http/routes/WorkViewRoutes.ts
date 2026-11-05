@@ -271,7 +271,7 @@ const suggestionBody = z.object({
 
 // The viewer's page ids (src/ui/my-work/src/live/usage.ts `UsageView`: setup plus App.tsx `View`): a closed list, so a
 // usage report can carry nothing else. A focus area is My Work filtered to that area, so it counts as `work`, never by name.
-const WORK_VIEW_PAGES = ['setup', 'work', 'rules', 'suggested', 'past-focus'] as const;
+const WORK_VIEW_PAGES = ['setup', 'work', 'rules', 'skills', 'suggested', 'past-focus'] as const;
 const usageBody = z.discriminatedUnion('event', [
   z.object({ event: z.literal('opened'), view: z.enum(WORK_VIEW_PAGES) }).strict(),
   z.object({ event: z.literal('switched'), view: z.enum(WORK_VIEW_PAGES), previousView: z.enum(WORK_VIEW_PAGES) }).strict(),

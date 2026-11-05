@@ -5,6 +5,7 @@ import { describe, it } from 'node:test'
 import { SaveRefusedError } from '../data.ts'
 import type { OwnerRule } from '../data-rules.ts'
 import type { ConnectionStatus } from '../live/connection-status.ts'
+import { registerSkillLeaveGuard } from '../live/skill-navigation.ts'
 import { sampleSource } from '../live/sample-source.ts'
 import type { UsageReport } from '../live/usage.ts'
 import type { RuleSaveResult, WorkDataSource, WorkModel } from '../live/work-data-source.ts'
@@ -209,6 +210,44 @@ describe('usage counts', () => {
 })
 
 describe('where the person is', () => {
+  it('opens My Skills from its URL, and keeps it out of the team workspace on navigation and Back', () => {
+    const { store, urls, usage, setHref } = testStore({ href: 'http://localhost/?source=sample&view=skills' })
+    const state = () => store.getState()
+    state().reportOpen()
+    assert.equal(state().view.section, 'skills')
+    assert.deepEqual(usage, [{ event: 'opened', view: 'skills' }])
+    state().setWorkspace({ team: true })
+    assert.equal(state().view.section, 'work')
+    assert.equal(urls.at(-1)?.href, 'http://localhost/?source=sample')
+    state().goToPage('skills')
+    assert.equal(state().view.section, 'work')
+    setHref('http://localhost/?source=sample&view=skills')
+    state().showUrl()
+    assert.equal(state().view.section, 'work')
+    assert.deepEqual(urls.at(-1), { href: 'http://localhost/?source=sample', replace: true })
+    state().setWorkspace({ team: false })
+    state().goToPage('skills')
+    assert.equal(state().view.section, 'skills')
+  })
+
+  it('keeps a dirty skill open when leaving through the sidebar, Back, or the team switch is declined', () => {
+    const { store, urls, usage, setHref } = testStore({ href: 'http://localhost/?view=skills' })
+    const state = () => store.getState()
+    const unregister = registerSkillLeaveGuard(() => false)
+    try {
+      state().goToPage('rules')
+      state().setWorkspace({ team: true })
+      setHref('http://localhost/?view=rules')
+      state().showUrl()
+      assert.equal(state().view.section, 'skills')
+      assert.equal(state().view.workspace.team, false)
+      assert.equal(urls.at(-1)?.href, 'http://localhost/?view=skills')
+      assert.deepEqual(usage, [])
+    } finally { unregister() }
+    state().goToPage('rules')
+    assert.equal(state().view.section, 'rules')
+  })
+
   it('reads its place from the URL and writes each move to it', () => {
     const { store, urls, usage } = testStore({ href: 'http://localhost/?source=sample&view=rules' })
     assert.equal(store.getState().view.section, 'rules')

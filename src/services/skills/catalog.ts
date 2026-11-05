@@ -1,26 +1,12 @@
 import { lstat, opendir, realpath } from 'node:fs/promises';
 import path from 'node:path';
-import { parseDocument } from 'yaml';
+import { skillMetadata, type SkillEntry, type SkillListing } from '../../shared/skill-document.js';
+export { skillMetadata, type SkillEntry, type SkillListing } from '../../shared/skill-document.js';
 import { containsPath, readSkillFile, sha256, SkillCatalogError } from './files.js';
 import { excludedPath, skillRoots, type ScanIssue, type SkillCatalogOptions, type SkillRoot } from './roots.js';
 
 export { MAX_SKILL_BYTES, SkillCatalogError, sha256 } from './files.js';
 export type { ScanIssue, SkillCatalogOptions, SkillRoot } from './roots.js';
-
-export interface SkillEntry {
-  id: string;
-  name: string;
-  description: string;
-  scope: SkillRoot['scope'];
-  agent: SkillRoot['agent'];
-  source: string;
-  location: string;
-  relativePath: string;
-  portableRoot: string | null;
-  editable: boolean;
-  problem: string | null;
-}
-export interface SkillListing { skills: SkillEntry[]; issues: ScanIssue[]; }
 
 const MAX_ENTRIES_PER_ROOT = 4000;
 const MAX_ENTRIES_PER_SCAN = 24000;
@@ -32,27 +18,6 @@ function entryFor(file: string, root: SkillRoot): SkillEntry {
     scope: root.scope, agent: root.agent, source: root.label, location: file, editable: false, problem: null,
     portableRoot: root.portableRoot, relativePath: path.relative(root.path, file).split(path.sep).join('/'),
   };
-}
-
-/** Read the two fields needed in the list. A malformed header can still be repaired in the source editor. */
-export function skillMetadata(text: string, fallbackName: string, agent: SkillRoot['agent']) {
-  const source = text.replace(/^\uFEFF/, '');
-  const fallback = { name: fallbackName, description: '', problem: null as string | null };
-  if (!/^---[ \t]*(?:\r?\n|$)/.test(source)) {
-    return { ...fallback, problem: agent === 'codex' ? 'Codex skills require name and description in front matter.' : null };
-  }
-  const header = /^---[ \t]*\r?\n([\s\S]*?)^---[ \t]*\r?$/m.exec(source);
-  if (!header) return { ...fallback, problem: 'Close the YAML front matter with a --- line.' };
-  try {
-    const document = parseDocument(header[1], { prettyErrors: false });
-    if (document.errors.length) throw new Error();
-    const fields = document.toJS({ maxAliasCount: 40 }) ?? {};
-    if (typeof fields !== 'object' || Array.isArray(fields)) throw new Error();
-    const name = typeof fields.name === 'string' ? fields.name.trim() : '';
-    const description = typeof fields.description === 'string' ? fields.description.trim() : '';
-    return { name: name || fallbackName, description,
-      problem: agent === 'codex' && (!name || !description) ? 'Codex skills require name and description in front matter.' : null };
-  } catch { return { ...fallback, problem: 'The YAML front matter could not be read. Open Edit to repair it.' }; }
 }
 
 interface Binding { entry: SkillEntry; root: string; originalRoot: string; }

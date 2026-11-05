@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, type ReactNode } from 'react'
 import { MotionConfig } from 'motion/react'
-import { InboxIcon, ListChecksIcon, UsersIcon } from 'lucide-react'
+import { BookOpenIcon, InboxIcon, ListChecksIcon, UsersIcon } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card'
@@ -31,6 +31,7 @@ import { useFocusSharesLoader } from '@/live/focus-shares'
 const PAGES: { id: NavPage; label: string; icon: typeof InboxIcon; section: string }[] = [
   { id: 'work', label: 'My Work', icon: InboxIcon, section: 'Monitor' },
   { id: 'rules', label: 'My Rules', icon: ListChecksIcon, section: 'Steer' },
+  { id: 'skills', label: 'My Skills', icon: BookOpenIcon, section: 'Steer' },
 ]
 const NAV_SECTIONS = [...new Set(PAGES.map((entry) => entry.section))]
 
@@ -80,6 +81,7 @@ function TeamSwitch({ team, onChange }: { team: boolean; onChange: (team: boolea
 }
 
 const SetupPage = lazy(() => import('@/setup/setup-page'))
+const MySkills = lazy(() => import('@/pages/my-skills').then(({ MySkills }) => ({ default: MySkills })))
 export default function App() {
   // Only the explicit installer handoff opens setup. Missing state on an
   // existing installation must never lock My Work behind checkout.
@@ -126,6 +128,7 @@ function LoadedApp() {
   const openRequest = useStore((state) => state.view.openRequest)
   const showSpec = useStore((state) => state.view.showSpec)
   const workspace = useWorkspace()
+  const pages = workspace.team ? PAGES.filter(({ id }) => id !== 'skills') : PAGES
   const dark = useDarkMode()
   const { goToPage, goToFocus, selectFocus, openRequestDrawer, closeRequestDrawer, setWorkspace, setShowSpec, setDark, playSampleDemo } = useStore.getState()
   const focusAreaId = shownFocusAreaId({ section: 'work', focusChoice }, focusAreas)
@@ -194,7 +197,7 @@ function LoadedApp() {
                     {NAV_SECTIONS.map((section) => (
                       <div key={section} className="space-y-0.5">
                         <p className="section-label hidden px-2 pb-1 lg:block">{section}</p>
-                        {PAGES.filter((entry) => entry.section === section).map(({ id, label, icon }) => (
+                        {pages.filter((entry) => entry.section === section).map(({ id, label, icon }) => (
                           <button key={id} type="button" onClick={() => goToPage(id)} aria-current={pageActive(id) ? 'page' : undefined} title={label} className={cn('relative flex h-10 w-full items-center gap-2.5 rounded-[10px] px-1.5 text-left text-[0.9rem] transition-colors', pageActive(id) ? 'font-medium text-accent-foreground' : 'text-foreground/85 hover:bg-card/70')}>
                             {pageActive(id) && <ActivePill layoutId={SIDE_NAV_PILL} />}
                             <NavTile icon={icon} active={pageActive(id)} />
@@ -209,11 +212,16 @@ function LoadedApp() {
                 </Req>
 
                 <main className="min-w-0 space-y-4 md:space-y-5">
-                  <FocusChipRow selected={selected} onSelect={selectFocus} />
+                  {view !== 'skills' && <FocusChipRow selected={selected} onSelect={selectFocus} />}
                   {view === 'work' && <MyWork focusAreaId={focusAreaId} onOpen={openRequestDrawer} onOpenFocus={goToFocus} onOpenRules={() => goToPage('rules')} />}
                   {view === 'suggested' && <SuggestedAreas onOpenFocus={goToFocus} />}
                   {view === 'past-focus' && <PastFocus onOpenFocus={goToFocus} />}
                   {view === 'rules' && <MyRules />}
+                  {view === 'skills' && !workspace.team && (
+                    <Suspense fallback={<div role="status" className="flex items-center gap-2 py-6 text-sm text-muted-foreground"><Spinner />Opening My Skills…</div>}>
+                      <MySkills />
+                    </Suspense>
+                  )}
                 </main>
               </div>
 
@@ -226,7 +234,7 @@ function LoadedApp() {
                     offset={12}
                     className="rounded-2xl border-border/70 bg-card/95 shadow-panel ring-border/60"
                     itemClassName="relative h-[60px] min-w-24 flex-col justify-center gap-1 rounded-xl px-3 text-[11px] text-muted-foreground hover:bg-accent/40 hover:text-foreground"
-                    items={PAGES.map(({ id, label, icon }) => ({
+                    items={pages.map(({ id, label, icon }) => ({
                       id,
                       currentPage: pageActive(id),
                       options: [{ id, label }],

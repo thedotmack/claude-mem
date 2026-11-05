@@ -2,11 +2,12 @@
 // (persisted: index.ts names the fields).
 import { OTHER_FOCUS_AREA_ID } from '../../data.ts'
 import { resolveFocusAreaId } from '../../live/to-focus-model.ts'
+import { canLeaveSkills } from '../../live/skill-navigation.ts'
 import { usageReport } from '../../live/usage.ts'
 import type { SliceCreator } from '../create-store.ts'
 import type { OpenRequest, Page, Section, StoreEnvironment, ViewSlice, ViewState } from '../store-types.ts'
 
-const SECTIONS: readonly Section[] = ['work', 'rules', 'suggested', 'past-focus']
+const SECTIONS: readonly Section[] = ['work', 'rules', 'skills', 'suggested', 'past-focus']
 
 interface Route { page: Page; section: Section; focusChoice: string | null; requestId: string | null; theme: boolean | null }
 
@@ -18,7 +19,7 @@ export function readRoute(url: URL): Route {
     page: url.searchParams.get('setup') === '1' ? 'setup' : 'app',
     section,
     focusChoice: section === 'work' ? url.searchParams.get('focus') || null : null,
-    requestId: url.searchParams.get('request') || null,
+    requestId: section === 'skills' ? null : url.searchParams.get('request') || null,
     // `?theme=dark|light` starts the wireframe's theme switch; without it, the system preference does.
     theme: url.searchParams.get('theme') === 'dark' ? true : url.searchParams.get('theme') === 'light' ? false : null,
   }
@@ -41,12 +42,14 @@ export const createViewSlice = (environment: StoreEnvironment): SliceCreator<Vie
   /** Shows the next place and records it in the URL. Showing another section is counted with the section it left. */
   const navigate = (change: Partial<Pick<ViewState, 'section' | 'focusChoice' | 'openRequest'>>, replace = false) => {
     const previous = get().view.section
+    if (change.section && change.section !== previous && previous === 'skills' && !canLeaveSkills()) return false
     set((state) => { Object.assign(state.view, change) })
     const next = get().view.section
     if (environment.reportsUsage && next !== previous) environment.sendUsage(usageReport(next, previous))
     const current = new URL(environment.href())
     const url = writeRoute(current, get().view)
     if (url.href !== current.href) environment.writeUrl(url, replace)
+    return true
   }
 
   const requestInFeed = (id: string) => {
@@ -68,7 +71,10 @@ export const createViewSlice = (environment: StoreEnvironment): SliceCreator<Vie
       sort: 'attention',
     },
 
-    goToPage: (page) => navigate({ section: page, focusChoice: null }),
+    goToPage: (page) => {
+      if (page === 'skills' && get().view.workspace.team) return
+      navigate({ section: page, focusChoice: null, ...(page === 'skills' ? { openRequest: null } : {}) })
+    },
     goToFocus: (focusAreaId) => navigate({ section: 'work', focusChoice: focusAreaId, openRequest: null }),
     selectFocus: (selection) => {
       if (!selection) get().goToPage('work')
@@ -94,9 +100,18 @@ export const createViewSlice = (environment: StoreEnvironment): SliceCreator<Vie
     },
 
     showUrl: () => {
-      const next = readRoute(new URL(environment.href()))
+      const currentUrl = new URL(environment.href())
+      const next = readRoute(currentUrl)
       const open = get().view.openRequest
       const previous = get().view.section
+      if (previous === 'skills' && next.section !== previous && !canLeaveSkills()) {
+        environment.writeUrl(writeRoute(currentUrl, get().view), false)
+        return
+      }
+      if (next.section === 'skills' && get().view.workspace.team) {
+        next.section = 'work'
+        environment.writeUrl(writeRoute(currentUrl, { section: 'work', focusChoice: null, openRequest: null }), true)
+      }
       set((state) => {
         state.view.section = next.section
         state.view.focusChoice = next.focusChoice
@@ -126,7 +141,10 @@ export const createViewSlice = (environment: StoreEnvironment): SliceCreator<Vie
       environment.sendUsage(usageReport(page === 'setup' ? 'setup' : section, null))
     },
 
-    setWorkspace: (change) => set((state) => { Object.assign(state.view.workspace, change) }),
+    setWorkspace: (change) => {
+      if (change.team && get().view.section === 'skills' && !navigate({ section: 'work', focusChoice: null, openRequest: null })) return
+      set((state) => { Object.assign(state.view.workspace, change) })
+    },
     setShowSpec: (showSpec) => set((state) => { state.view.showSpec = showSpec }),
     setDark: (dark) => set((state) => { state.view.dark = dark }),
     setListView: (listView) => set((state) => { state.view.listView = listView }),

@@ -14,7 +14,7 @@ export const VIEWER_ANON_COOKIE = 'cmem_viewer_anon';
 /** Same publishable token as src/services/telemetry/common.ts TELEMETRY_PUBLIC_KEY. */
 export const FALLBACK_POSTHOG_KEY = 'phc_BKJAeNbpj932N9qEiU6qhutZEiu6LLfRpXfTbLM9MLaG';
 const DEFAULT_POSTHOG_HOST = 'https://us.i.posthog.com';
-const VIEWS = new Set(['setup', 'work', 'rules', 'suggested', 'past-focus']);
+const VIEWS = new Set(['setup', 'work', 'rules', 'skills', 'suggested', 'past-focus']);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface PostHogCapture {
