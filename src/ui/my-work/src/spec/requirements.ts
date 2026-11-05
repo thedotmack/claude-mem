@@ -149,6 +149,9 @@ export const REQUIREMENTS: Requirement[] = [
   { id: 'R17.3', section: '17', kind: 'ui', text: 'When shared, it keeps updating and adding what belongs to the area, but nothing new and unrelated that the people it is shared with would not want to see (situational awareness): only requests placed in that area, never other areas or Other.' },
   { id: 'R17.4', section: '17', kind: 'ui', text: 'Stop sharing at any time; the link stops working for everyone, and sharing again makes a new link.' },
   { id: 'R17.5', section: '17', kind: 'backend', text: 'The shared page carries display text only: no prompts, quotes, transcripts, evidence links, files or machine names.', wireframe: 'to-shared-focus.ts builds the page; cmem.ai keeps only the shared shape (claude-mem-pro src/lib/focus-share/snapshot.ts).' },
+
+  // 18. Account (added 2026-11-05, append only): the cloud viewer is where viewer accounts land, so billing is reachable from it.
+  { id: 'R18.1', section: '18', kind: 'ui', text: 'On the cloud viewer only, the bottom of the rail links "Account & billing" to cmem.ai/account. My Work served from this computer shows no such link.' },
 ]
 
 export const REQUIREMENTS_BY_ID = new Map(REQUIREMENTS.map((requirement) => [requirement.id, requirement]))
