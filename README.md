@@ -148,8 +148,6 @@ npx claude-mem install
 
 The installer sets everything up first, then asks you to sign in to claude-mem in your browser (email magic link — no card required). Signing in provisions a memory key for your account and unlocks the **claude-mem observer** with a **30 Day Free Trial**: memory runs off-plan, so you get up to 100% more usage from your plan. When the free trial ends, memory automatically falls back to your Anthropic plan unless you subscribe. After sign-in you pick your memory provider — the claude-mem observer, your own OpenRouter or Gemini key, or your Anthropic plan.
 
-The observer makes background model requests to turn captured tool events and session endings into memory. Those requests consume the selected provider's allowance; selecting Claude—or falling back to Claude after a hosted allowance ends—uses your Anthropic plan. To stop new observation and session-summary model calls while keeping existing memories and search available, turn off **Memory capture** in Settings or set `"CLAUDE_MEM_OBSERVER_ENABLED": "false"` in `~/.claude-mem/settings.json`.
-
 Prefer to skip the sign-in? Pass an explicit `--provider` flag, set `CLAUDE_MEM_ONLINE_OPTIN=false`, or run in CI/non-interactive shells — the installer completes without any account interaction.
 
 Or install for OpenCode:

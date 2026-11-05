@@ -106,7 +106,9 @@ export async function hookCommand(rawPlatform: string, event: string, options: H
   let hookDisabled: boolean;
   try {
     hookDisabled = isToolHookDisabledByEnv(event)
-      || (event === 'observation' && !isObserverCaptureEnabled(loadFromFileOnce()));
+      // Codex still needs the pipeline with capture off: its PostToolUse is how a
+      // compacted thread gets its memory timeline back. The handler skips the write.
+      || (event === 'observation' && platform !== 'codex' && !isObserverCaptureEnabled(loadFromFileOnce()));
   } catch (error) {
     stderrBuffer.restore();
     throw error;
