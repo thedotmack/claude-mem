@@ -644,7 +644,9 @@ export function observerProviderCheck(options: ObserverProviderCheckOptions): Ch
       return {
         name,
         status: 'warn',
-        detail: `codex configured, but CLAUDE_MEM_CODEX_PATH "${options.configuredCodexPath}" does not exist; observation generation will be paused until installed`,
+        detail: options.configuredCodexPath!.startsWith('~')
+          ? `codex configured, but CLAUDE_MEM_CODEX_PATH "${options.configuredCodexPath}" starts with ~, which the worker does not expand; use an absolute path`
+          : `codex configured, but CLAUDE_MEM_CODEX_PATH "${options.configuredCodexPath}" is missing or not executable; observation generation will be paused until installed`,
         required: false,
       };
     }

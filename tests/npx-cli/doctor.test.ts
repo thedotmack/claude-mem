@@ -390,7 +390,16 @@ describe('npx doctor observerProviderCheck (#5359)', () => {
       configuredCodexPath: '/nonexistent/codex',
     });
     expect(missing.status).toBe('warn');
-    expect(missing.detail).toContain('CLAUDE_MEM_CODEX_PATH "/nonexistent/codex" does not exist');
+    expect(missing.detail).toContain('CLAUDE_MEM_CODEX_PATH "/nonexistent/codex" is missing or not executable');
+
+    const tilde = observerProviderCheck({
+      provider: 'codex',
+      claudeDetected: false,
+      codexDetected: false,
+      configuredCodexPath: '~/bin/codex',
+    });
+    expect(tilde.status).toBe('warn');
+    expect(tilde.detail).toContain('starts with ~, which the worker does not expand');
   });
 
   it('warns when configured for codex and Codex CLI is missing completely', () => {

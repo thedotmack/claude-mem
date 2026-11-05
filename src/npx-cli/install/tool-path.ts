@@ -4,7 +4,7 @@
  * free of heavy imports (no settings, no worker helpers, no bun:sqlite) so it
  * bundles into a script that runs under plain `node`.
  */
-import { existsSync } from 'fs';
+import { accessSync, constants, existsSync, statSync } from 'fs';
 import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'child_process';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -66,11 +66,14 @@ export function findBunExecutablePath(): string | null {
   return getToolPath('bun', bunCommonPaths());
 }
 
-function expandHome(path: string): string {
-  if (path === '~' || path.startsWith('~/') || path.startsWith('~\\')) {
-    return path.replace(/^~(?=$|[/\\])/, homedir());
+function isExecutableFile(path: string): boolean {
+  try {
+    if (!statSync(path).isFile()) return false;
+    if (!IS_WINDOWS) accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
   }
-  return path;
 }
 
 /** Returns true when the Codex CLI is directly runnable from PATH. */
@@ -101,16 +104,18 @@ export function codexCommonPaths(): string[] {
 }
 
 /**
- * PATH first (proven by `codex --version`), then explicit configured path if valid,
- * then well-known install locations.
+ * The explicit configured path when it is set, otherwise PATH (proven by
+ * `codex --version`), then well-known install locations. A configured path is
+ * judged the way CodexProvider will spawn it: `~` is not expanded there, so a
+ * `~` path is never reported as available, and a file must be executable.
  */
 export function findCodexExecutablePath(configuredPath?: string): string | null {
   const explicit = (configuredPath?.trim() || process.env.CLAUDE_MEM_CODEX_PATH?.trim());
   if (explicit && explicit !== 'codex') {
-    const candidate = expandHome(explicit);
-    const resolved = IS_WINDOWS ? (lookupWindowsCommand(candidate) ?? candidate) : candidate;
+    if (explicit.startsWith('~')) return null;
+    const resolved = IS_WINDOWS ? (lookupWindowsCommand(explicit) ?? explicit) : explicit;
+    if (isExecutableFile(resolved)) return resolved;
     try {
-      if (existsSync(resolved)) return resolved;
       const result = spawnVersionProbe(resolved, ['--version']);
       if (result.status === 0) return resolved;
     } catch {

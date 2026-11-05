@@ -3,8 +3,8 @@
  * exec-form hooks need.
  */
 
-import { homedir } from 'os';
 import { spawnSync } from 'child_process';
+import { expandHome } from '../../shared/expand-home.js';
 import { buildSpawnSyncInvocation, lookupWindowsCommand } from '../../shared/spawn.js';
 
 /**
@@ -15,13 +15,6 @@ import { buildSpawnSyncInvocation, lookupWindowsCommand } from '../../shared/spa
  * nothing is captured and the user is not told.
  */
 export const MINIMUM_CLAUDE_CODE_VERSION_FOR_EXEC_FORM_HOOKS = '2.1.139';
-
-function expandHome(path: string): string {
-  if (path === '~' || path.startsWith('~/') || path.startsWith('~\\')) {
-    return path.replace(/^~(?=$|[/\\])/, homedir());
-  }
-  return path;
-}
 
 /**
  * Claude Code CLI version, best effort. Hook/plugin behavior differs across
