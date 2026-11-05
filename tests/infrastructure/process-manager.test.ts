@@ -31,7 +31,7 @@ const {
   getLastWorkerDaemonLaunchError,
   probeWorkerBootFailure,
   shouldRetryWorkerBootProbe,
-  buildWindowsDaemonStartCommand,
+  buildDetachedWorkerDaemonSpawn,
   daemonWorkingDirectory,
   pinDaemonWorkingDirectory,
   resolveWorkerRuntimePath,
@@ -804,61 +804,6 @@ describe('ProcessManager', () => {
         try { process.kill(result, 'SIGKILL'); } catch { /* already exited */ }
       }
     });
-
-    it('Windows 0 PID success sentinel must NOT be detected via falsy check', () => {
-      const windowsSuccessSentinel: number | undefined = 0;
-      const failureSentinel: number | undefined = undefined;
-
-      expect(windowsSuccessSentinel === undefined).toBe(false);
-      expect(failureSentinel === undefined).toBe(true);
-
-      expect(!windowsSuccessSentinel).toBe(true); 
-      expect(!failureSentinel).toBe(true);
-
-      const isFailure = (pid: number | undefined) => pid === undefined;
-      expect(isFailure(windowsSuccessSentinel)).toBe(false);
-      expect(isFailure(failureSentinel)).toBe(true);
-    });
-  });
-
-  describe('buildWindowsDaemonStartCommand (#3195)', () => {
-    // Windows PowerShell 5.1 (powershell.exe, which spawnDaemon invokes via
-    // -EncodedCommand) builds the native command line for Start-Process by
-    // joining -ArgumentList elements with spaces WITHOUT quoting them. The
-    // single quotes in the PS source only delimit the PS string literal; they
-    // never reach the child. So the script path must carry its own embedded
-    // double quotes or a spaced %USERPROFILE% splits it into multiple argv
-    // entries and bun dies with "Module not found".
-    it('embeds double quotes around a script path containing spaces', () => {
-      const runtimePath = String.raw`C:\Users\Test User\.bun\bin\bun.exe`;
-      const scriptPath = String.raw`C:\Users\Test User\.claude\plugins\marketplaces\thedotmack\plugin\scripts\worker-service.cjs`;
-
-      const command = buildWindowsDaemonStartCommand(runtimePath, scriptPath, String.raw`C:\daemon-home`);
-
-      expect(command).toBe(
-        `Start-Process -FilePath '${runtimePath}' -ArgumentList @('"${scriptPath}"','--daemon') -WorkingDirectory 'C:\\daemon-home' -WindowStyle Hidden`
-      );
-    });
-
-    it('keeps --daemon as its own ArgumentList element', () => {
-      const command = buildWindowsDaemonStartCommand(
-        String.raw`C:\bun\bun.exe`,
-        String.raw`C:\plugin\worker-service.cjs`
-      );
-
-      expect(command).toContain(`,'--daemon')`);
-    });
-
-    it('still doubles single quotes for PowerShell string escaping', () => {
-      const command = buildWindowsDaemonStartCommand(
-        String.raw`C:\Users\O'Brien\.bun\bin\bun.exe`,
-        String.raw`C:\Users\O'Brien\plugin\scripts\worker-service.cjs`
-      );
-
-      expect(command).toBe(
-        `Start-Process -FilePath 'C:\\Users\\O''Brien\\.bun\\bin\\bun.exe' -ArgumentList @('"C:\\Users\\O''Brien\\plugin\\scripts\\worker-service.cjs"','--daemon') -WorkingDirectory '${DATA_DIR.replace(/'/g, "''")}' -WindowStyle Hidden`
-      );
-    });
   });
 
   describe('probeWorkerBootFailure', () => {
@@ -953,24 +898,16 @@ describe('ProcessManager', () => {
   // outlives the session that spawned it -- so a hook-spawned daemon inheriting the
   // project folder left it permanently locked (#3706).
   describe('daemon working directory (#3706)', () => {
-    it('pins the daemon to a directory the user is not working in', () => {
-      const command = buildWindowsDaemonStartCommand(
-        String.raw`C:\bun\bun.exe`,
-        String.raw`C:\plugin\worker-service.cjs`
-      );
-
-      expect(command).toContain('-WorkingDirectory');
-      expect(command).toContain(`-WorkingDirectory '${DATA_DIR.replace(/'/g, "''")}'`);
-    });
-
-    it('escapes a single quote in the working directory', () => {
-      const command = buildWindowsDaemonStartCommand(
+    it('hands the daemon the data directory, never the caller cwd', () => {
+      const plan = buildDetachedWorkerDaemonSpawn(
         String.raw`C:\bun\bun.exe`,
         String.raw`C:\plugin\worker-service.cjs`,
-        String.raw`C:\Users\O'Brien\.claude-mem`
+        {},
+        'win32',
       );
 
-      expect(command).toContain(String.raw`-WorkingDirectory 'C:\Users\O''Brien\.claude-mem'`);
+      expect(plan.options.cwd).toBe(DATA_DIR);
+      expect(plan.options.cwd).not.toBe(process.cwd());
     });
 
     it('defaults to the claude-mem data directory, never the caller cwd', () => {
@@ -979,9 +916,9 @@ describe('ProcessManager', () => {
     });
 
     // Passing a cwd that does not exist is worse than passing none: spawn fails with
-    // ENOENT and Start-Process refuses outright, so this fix would turn a first run on
-    // a fresh install into a launch failure. paths.ts resolves DATA_DIR but never
-    // creates it — today some earlier caller happens to, which is not a guarantee.
+    // ENOENT, so this fix would turn a first run on a fresh install into a launch
+    // failure. paths.ts resolves DATA_DIR but never creates it — today some earlier
+    // caller happens to, which is not a guarantee.
     it('creates the directory it hands out, so a fresh install can spawn', () => {
       rmSync(DATA_DIR, { recursive: true, force: true });
       expect(existsSync(DATA_DIR)).toBe(false);
@@ -1043,10 +980,9 @@ describe('ProcessManager', () => {
 });
 
 describe('spawnDetachedWorkerDaemon launch error', () => {
-  it.skipIf(process.platform === 'win32')('records why the Windows PowerShell launch failed', () => {
-    const missingSystemRoot = path.join(TEST_DATA_DIR, 'no-windows');
-    expect(spawnDetachedWorkerDaemon('bun.exe', 'worker-service.cjs', { SystemRoot: missingSystemRoot }, 'win32', 1000)).toBeUndefined();
-    expect(getLastWorkerDaemonLaunchError()).toContain(`${missingSystemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe could not launch the worker: `);
-    expect(getLastWorkerDaemonLaunchError()).toContain('ENOENT');
+  it('records why the daemon launch failed', () => {
+    const missingRuntime = path.join(TEST_DATA_DIR, 'no-such-runtime', 'bun.exe');
+    expect(spawnDetachedWorkerDaemon(missingRuntime, 'worker-service.cjs', {}, 'win32')).toBeUndefined();
+    expect(getLastWorkerDaemonLaunchError()).toContain(missingRuntime);
   });
 });
