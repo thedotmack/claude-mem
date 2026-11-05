@@ -59,7 +59,7 @@ const RECENT_PROMPTS = [
 
 function sampleData(newInstall: boolean, usage: SampleUsage, waitingForAgent: boolean): SetupData {
   return {
-    scan: { agents: [], percent: 0, phase: 'reading', done: false, error: null, improveProduct: false, uploadedAgents: null },
+    scan: { agents: [], percent: 0, phase: 'reading', done: false, error: null, improveProduct: true, uploadedAgents: null },
     reveal: { goals: null, work: null, rules: null },
     extraction: waitingForAgent ? { state: 'waiting-for-agent', step: null } : null,
     recentPrompts: RECENT_PROMPTS,
