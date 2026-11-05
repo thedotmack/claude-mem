@@ -398,6 +398,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_PRO_MEMORY_BASE_URL: string;
   CLAUDE_MEM_PRO_MEMORY_MODEL: string;
   CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH: string;
+  CLAUDE_MEM_WORK_VIEW_SHARED_STATE: string;
   CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: string;
   CLAUDE_MEM_WORK_VIEW_COPY_MODEL: string;
   CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL: string;
@@ -697,6 +698,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_PRO_MEMORY_BASE_URL: '',  // Backend-supplied endpoint paired with CLAUDE_MEM_PRO_MEMORY_KEY
     CLAUDE_MEM_PRO_MEMORY_MODEL: '',     // Backend-supplied model paired with CLAUDE_MEM_PRO_MEMORY_KEY
     CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH: 'true', // 'false' = My Work never runs owner-goals / request-progress on its own (refresh.json in ~/.claude-mem/work-view)
+    CLAUDE_MEM_WORK_VIEW_SHARED_STATE: 'false', // Enable only after all local/cloud readers understand reserved My Work records.
     CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: '', // '' uses OpenRouter only when it is the primary provider; openrouter/openai-compatible explicitly select that provider; off disables generated My Work copy
     CLAUDE_MEM_WORK_VIEW_COPY_MODEL: '', // Optional model override for generated My Work copy; empty uses the selected provider's configured model
     CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL: '', // #5164 — model for every My Work refresh step on Claude Code (an alias like 'haiku'); empty keeps haiku/sonnet per step

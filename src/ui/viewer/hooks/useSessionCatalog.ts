@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import type { SessionCatalogEntry } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
 import {
@@ -35,16 +35,30 @@ export function useSessionCatalog() {
   const offsetRef = useRef(0);
   // Retrying a failed refresh must replace from offset zero, including after a
   // project switch; only a failed older-page fetch should append.
-  const failedModeRef = useRef<'replace' | 'append'>('replace');
+  const failedModeRef = useRef<'replace' | 'append' | 'refresh'>('replace');
+  const [refreshFailed, setRefreshFailed] = useState(false);
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
   // Live changes made while a page request is in flight, re-applied to its
   // response so a refresh never hides a new session or restores a deleted one.
   const journalRef = useRef<CatalogJournal>(emptyCatalogJournal());
+  const controllerRef = useRef<AbortController | null>(null);
+  useEffect(() => () => { requestSeqRef.current++; controllerRef.current?.abort(); }, []);
 
-  const fetchPage = useCallback(async (project: string, mode: 'replace' | 'append') => {
+  const fetchPage = useCallback(async (project: string, mode: 'replace' | 'append' | 'refresh') => {
+    const sameProject = projectRef.current === project;
+    const boundary = mode === 'refresh' && sameProject
+      ? sessionsRef.current.reduce<SessionCatalogEntry | null>((oldest, row) => !oldest || row.started_at_epoch <= oldest.started_at_epoch ? row : oldest, null)
+      : null;
+    const desiredCount = mode === 'refresh' && sameProject ? Math.max(SESSION_CATALOG_PAGE_SIZE, offsetRef.current) : SESSION_CATALOG_PAGE_SIZE;
+    const pageBudget = Math.min(512, Math.ceil(desiredCount / SESSION_CATALOG_PAGE_SIZE) + 20);
+    let pagesRead = 0;
     const requestSeq = ++requestSeqRef.current;
-    const offset = mode === 'replace' ? 0 : offsetRef.current;
+    controllerRef.current?.abort();
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    const timeout = setTimeout(() => controller.abort(), 10_000);
+    const offset = mode === 'append' ? offsetRef.current : 0;
     // A superseded request may already have live events in its journal.
     // Keep those until the newest request for this same scope settles.
     if (!inFlightRef.current || projectRef.current !== project) {
@@ -54,13 +68,40 @@ export function useSessionCatalog() {
     inFlightRef.current = true;
     setIsLoading(true);
     setLoadError(null);
+    setRefreshFailed(false);
     const params = new URLSearchParams({ offset: String(offset), limit: String(SESSION_CATALOG_PAGE_SIZE) });
     if (project) params.append('project', project);
     try {
       for (;;) {
-        const response = await fetch(`${API_ENDPOINTS.SESSIONS}?${params}`);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const data = await response.json() as { sessions: SessionCatalogEntry[]; hasMore?: boolean };
+        let sessions: SessionCatalogEntry[] = [];
+        let hasMore = false;
+        let pageOffset = offset;
+        for (;;) {
+          if (++pagesRead > pageBudget) throw new Error('Session history changed too much to refresh. Retry or refresh the latest sessions.');
+          params.set('offset', String(pageOffset));
+          const response = await fetch(`${API_ENDPOINTS.SESSIONS}?${params}`, { cache: 'no-store', signal: controller.signal });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const page = await response.json() as { sessions: SessionCatalogEntry[]; hasMore?: boolean };
+          if (requestSeq !== requestSeqRef.current) return;
+          if (!Array.isArray(page.sessions)) throw new Error('Invalid session page');
+          const pageStart = sessions.length;
+          sessions.push(...page.sessions);
+          hasMore = page.hasMore === true;
+          if (mode !== 'refresh') break;
+          if (boundary) {
+            const index = sessions.findIndex(row => sameSession(catalogEntryRef(row), catalogEntryRef(boundary)));
+            const olderIndex = sessions.findIndex(row => row.started_at_epoch < boundary.started_at_epoch);
+            const stop = index >= 0 ? index + 1 : olderIndex >= 0 ? olderIndex : -1;
+            if (stop >= 0) {
+              hasMore ||= stop < sessions.length;
+              sessions = sessions.slice(0, stop);
+              break;
+            }
+          } else if (sessions.length >= desiredCount) break;
+          if (!hasMore || !page.sessions.length) break;
+          pageOffset += sessions.length - pageStart;
+        }
+        const data = { sessions, hasMore };
         if (requestSeq !== requestSeqRef.current) return;
         const journal = journalRef.current;
         // A session deleted mid-request that the page still contains moved the
@@ -68,10 +109,10 @@ export function useSessionCatalog() {
         // mid-request have moved offsetRef back themselves, so append adds to it.
         const deletedFromPage = data.sessions.filter(entry => journal.removed.has(sessionKey(catalogEntryRef(entry)))).length;
         const pageAdvance = data.sessions.length - deletedFromPage;
-        offsetRef.current = mode === 'replace' ? pageAdvance : offsetRef.current + pageAdvance;
+        offsetRef.current = mode === 'append' ? offsetRef.current + pageAdvance : pageAdvance;
         setHasMore(data.hasMore === true);
-        setSessions(prev => mergeCatalogPage(prev, data.sessions, journal, mode));
-        if (mode !== 'replace' || (journal.decreased.size === 0 && journal.recreated.size === 0)) break;
+        setSessions(prev => mergeCatalogPage(prev, data.sessions, journal, mode === 'append' ? 'append' : 'replace'));
+        if (mode === 'append' || (journal.decreased.size === 0 && journal.recreated.size === 0)) break;
         // Counts cannot identify deletion or recreation freshness. Confirm
         // once after all overlapping deletions, keeping this request loading.
         // Another deletion or recreation during confirmation needs a new fetch.
@@ -86,9 +127,12 @@ export function useSessionCatalog() {
     } catch (error) {
       if (requestSeq === requestSeqRef.current) {
         failedModeRef.current = mode;
+        setRefreshFailed(mode === 'refresh');
         setLoadError(`Could not load sessions: ${error instanceof Error ? error.message : String(error)}`);
       }
     } finally {
+      clearTimeout(timeout);
+      if (controllerRef.current === controller) controllerRef.current = null;
       if (requestSeq === requestSeqRef.current) {
         journalRef.current = emptyCatalogJournal();
         inFlightRef.current = false;
@@ -98,6 +142,15 @@ export function useSessionCatalog() {
   }, []);
 
   const refresh = useCallback((project: string) => fetchPage(project, 'replace'), [fetchPage]);
+  const refreshLoaded = useCallback((project: string) => fetchPage(project, 'refresh'), [fetchPage]);
+  /** A committed remote change invalidates any older catalog read in flight. */
+  const invalidate = useCallback(() => {
+    requestSeqRef.current++;
+    controllerRef.current?.abort();
+    controllerRef.current = null;
+    inFlightRef.current = false;
+    setIsLoading(false);
+  }, []);
 
   /** The next (older) page for the project the list was last loaded for. */
   const loadMore = useCallback(async () => {
@@ -156,5 +209,5 @@ export function useSessionCatalog() {
     setSessions(prev => prev.filter(entry => !sameSession(catalogEntryRef(entry), session)));
   }, []);
 
-  return { sessions, isLoading, hasMore, loadError, refresh, loadMore, touch, noteItemRemoved, remove };
+  return { sessions, isLoading, hasMore, loadError, refreshFailed, refresh, refreshLoaded, invalidate, loadMore, touch, noteItemRemoved, remove };
 }

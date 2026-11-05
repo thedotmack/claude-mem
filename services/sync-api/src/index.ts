@@ -28,6 +28,7 @@ import {
 	INVALID_OPS_PREFIX,
 	PROJECTION_ERROR_PREFIX,
 	type PushOp,
+	type RepairRequest,
 } from "./store";
 import { CLIENT_CLOSED_REQUEST_ERROR, SYNC_HUB_BUSY_ERROR } from "./user-queue";
 
@@ -219,6 +220,31 @@ async function handlePushOps(
 	} catch (e) {
 		return mapHubError(e);
 	}
+}
+
+/** Narrow origin repair protocol. Preview reads never touch cursors/devices. */
+async function handleOriginRepair(request: Request, app: { env: SyncApiEnv; store: HubStore },
+	userId: string, deviceId: string, deviceName: string | null, preview: boolean): Promise<Response> {
+	const raw = await request.text();
+	if (encoder.encode(raw).length > 520_000) return errorResponse(413, "repair request too large");
+	let body: Record<string, unknown>;
+	try { body = JSON.parse(raw); } catch { return errorResponse(400, "invalid repair JSON"); }
+	if (!body || typeof body !== "object" || Array.isArray(body)) return errorResponse(400, "invalid repair request");
+	try {
+		if (preview) {
+			if (!exactKeys(body, ["entity_id"]) || typeof body.entity_id !== "string") return errorResponse(400, "expected entity_id");
+			return json(200, await app.store.getRepairHead(userId, deviceId, body.entity_id));
+		}
+		if (!exactKeys(body, ["expected_epoch", "expected_head", "op", "repair_id"])) return errorResponse(400, "invalid repair fields");
+		const result = await app.store.repairContent(userId, deviceId, body as unknown as RepairRequest, deviceName, request.signal);
+		if ("refused" in result) return errorResponse(result.error.includes("repair_origin_required") ? 403 : 409, result.error);
+		const projection = await drainProjection(app.env, app.store, userId, result.head_seq);
+		if (projection.ok) {
+			const state = await app.store.getRepairHead(userId, deviceId, JSON.parse((body.op as { body: string }).body).id);
+			return json(200, { protocol_version: 1, capability: "origin-repair-v1", epoch: state.epoch, ...result, projected_seq: projection.projectedSeq });
+		}
+		return json(projection.httpStatus, { error: projection.error, durable: true, retryable: projection.retryable });
+	} catch (error) { return mapHubError(error); }
 }
 
 async function handleGetChanges(
@@ -462,6 +488,8 @@ export async function startSyncApi(
 				pathname !== "/v1/sync/ops" &&
 				pathname !== "/v1/sync/changes" &&
 				pathname !== "/v1/sync/status" &&
+				pathname !== "/v1/sync/repair/head" &&
+				pathname !== "/v1/sync/repair" &&
 				pathname !== "/v1/sync/ws"
 			) {
 				return errorResponse(404, "not found");
@@ -469,6 +497,11 @@ export async function startSyncApi(
 
 			const auth = await authenticateRequest(request, env, authDependencies);
 			if (!auth.ok) return auth.response;
+			if (pathname === "/v1/sync/repair/head" || pathname === "/v1/sync/repair") {
+				if (request.method !== "POST") return errorResponse(405, "use POST");
+				if (!auth.deviceId) return errorResponse(400, "missing X-Device-Id header");
+				return handleOriginRepair(request, ctx, auth.userId, auth.deviceId, auth.deviceName, pathname.endsWith("/head"));
+			}
 
 			if (pathname === "/v1/sync/ws") {
 				if (request.method !== "GET") return errorResponse(405, "use GET");
