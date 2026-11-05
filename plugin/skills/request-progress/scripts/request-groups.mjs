@@ -264,30 +264,30 @@ function withoutStaleRootCopies(document) {
 function cloneDocument(document) {
   return JSON.parse(JSON.stringify(document));
 }
-function loadDocument(path3) {
-  if (!existsSync3(path3)) return { exists: false };
+function loadDocument(path4) {
+  if (!existsSync3(path4)) return { exists: false };
   try {
-    const parsed = readJsonFileWithBom(path3);
+    const parsed = readJsonFileWithBom(path4);
     if (!isRecord(parsed)) return { exists: true, error: new Error("settings.json must contain a JSON object") };
     return { exists: true, document: parsed };
   } catch (error) {
     return { exists: true, error };
   }
 }
-function unusedQuarantinePath(path3) {
-  const base = `${path3}.corrupt-${Date.now()}`;
+function unusedQuarantinePath(path4) {
+  const base = `${path4}.corrupt-${Date.now()}`;
   let candidate = base;
   for (let suffix = 1; existsSync3(candidate); suffix++) candidate = `${base}-${suffix}`;
   return candidate;
 }
-function updateSettingsDocument(path3, updates, seed = {}, mutate, options = {}) {
-  let loaded = loadDocument(path3);
+function updateSettingsDocument(path4, updates, seed = {}, mutate, options = {}) {
+  let loaded = loadDocument(path4);
   let quarantinedTo;
   if (loaded.error) {
     if (!options.quarantineCorrupt) return { status: "refused", error: loaded.error };
-    quarantinedTo = unusedQuarantinePath(path3);
+    quarantinedTo = unusedQuarantinePath(path4);
     try {
-      renameSync2(path3, quarantinedTo);
+      renameSync2(path4, quarantinedTo);
     } catch (error) {
       return { status: "refused", error };
     }
@@ -303,17 +303,17 @@ function updateSettingsDocument(path3, updates, seed = {}, mutate, options = {})
     return { status: "unchanged", document };
   }
   try {
-    writeJsonFileAtomic(path3, document, { mode: SETTINGS_FILE_MODE });
+    writeJsonFileAtomic(path4, document, { mode: SETTINGS_FILE_MODE });
     return { status: loaded.exists ? "updated" : "created", document, quarantinedTo };
   } catch (error) {
-    if (quarantinedTo && restoreQuarantined(quarantinedTo, path3)) quarantinedTo = void 0;
+    if (quarantinedTo && restoreQuarantined(quarantinedTo, path4)) quarantinedTo = void 0;
     return { status: "refused", document: loaded.document, error, quarantinedTo };
   }
 }
-function restoreQuarantined(quarantinedTo, path3) {
-  if (existsSync3(path3)) return false;
+function restoreQuarantined(quarantinedTo, path4) {
+  if (existsSync3(path4)) return false;
   try {
-    renameSync2(quarantinedTo, path3);
+    renameSync2(quarantinedTo, path4);
     return true;
   } catch {
     return false;
@@ -486,20 +486,20 @@ var init_logger = __esm({
        * once a day avoids the per-line open. The stat of the path detects an
        * external rename, delete or replace, and the next line re-opens the file.
        */
-      appendLine(path3, text5) {
+      appendLine(path4, text5) {
         if (this.logFd !== null) {
           let current = false;
           try {
             const open = fstatSync(this.logFd);
-            const onDisk = statSync2(path3);
+            const onDisk = statSync2(path4);
             current = open.ino === onDisk.ino && open.dev === onDisk.dev;
           } catch {
           }
           if (!current) this.closeLogFd();
         }
         if (this.logFd === null) {
-          mkdirSync3(dirname3(path3), { recursive: true });
-          this.logFd = openSync2(path3, "a");
+          mkdirSync3(dirname3(path4), { recursive: true });
+          this.logFd = openSync2(path4, "a");
         }
         try {
           let bytes2 = Buffer.from(text5, "utf8");
@@ -786,8 +786,8 @@ function resolveOpenRouterChatCompletionsUrl(baseUrl) {
     return normalized.toLowerCase().endsWith(CHAT_COMPLETIONS_PATH) ? normalized : `${normalized}${CHAT_COMPLETIONS_PATH}`;
   }
   const url = new URL(trimmed);
-  const path3 = url.pathname.replace(TRAILING_SLASHES, "");
-  url.pathname = path3.toLowerCase().endsWith(CHAT_COMPLETIONS_PATH) ? path3 : `${path3}${CHAT_COMPLETIONS_PATH}`;
+  const path4 = url.pathname.replace(TRAILING_SLASHES, "");
+  url.pathname = path4.toLowerCase().endsWith(CHAT_COMPLETIONS_PATH) ? path4 : `${path4}${CHAT_COMPLETIONS_PATH}`;
   return url.href;
 }
 function isOpenRouterApiUrl(apiUrl) {
@@ -1554,8 +1554,8 @@ function safeWebUrl(value) {
 function isLocalPath(value, isAbsolutePath = isAbsolute) {
   return typeof value === "string" && isAbsolutePath(value) && !value.includes("\0") && !value.split(/[\\/]/).includes("..");
 }
-function fileKind(path3) {
-  return isLocalPath(path3) ? FILE_KINDS[extname(path3).toLowerCase()] ?? null : null;
+function fileKind(path4) {
+  return isLocalPath(path4) ? FILE_KINDS[extname(path4).toLowerCase()] ?? null : null;
 }
 function kindForUrl(url, fallback) {
   const { hostname: hostname2, pathname } = new URL(url);
@@ -1704,10 +1704,10 @@ function productsFromToolUse(call) {
 function productsFromObservation(observation) {
   const files = parse(observation.files_modified);
   if (!Array.isArray(files)) return [];
-  return files.flatMap((path3, index) => {
-    const kind = fileKind(path3);
-    const title = /^index\.\w+$/i.test(basename4(path3)) ? basename4(path3.slice(0, -basename4(path3).length - 1)) || basename4(path3) : basename4(path3);
-    return kind ? [{ kind, title, path: path3, atEpoch: observation.created_at_epoch ?? null, sourceRef: { kind: "observation", id: observation.id, index } }] : [];
+  return files.flatMap((path4, index) => {
+    const kind = fileKind(path4);
+    const title = /^index\.\w+$/i.test(basename4(path4)) ? basename4(path4.slice(0, -basename4(path4).length - 1)) || basename4(path4) : basename4(path4);
+    return kind ? [{ kind, title, path: path4, atEpoch: observation.created_at_epoch ?? null, sourceRef: { kind: "observation", id: observation.id, index } }] : [];
   });
 }
 function isWorkProductField(field) {
@@ -1723,11 +1723,11 @@ function productsFromFields(fields, { atEpoch = null, sourceRef: sourceRef2 = nu
     for (const value2 of values2) {
       const entry = value2 && typeof value2 === "object" && !Array.isArray(value2) ? value2 : { url: value2 };
       const url = safeWebUrl(entry.url ?? entry.link);
-      const path3 = isLocalPath(entry.path) ? entry.path : isLocalPath(entry.url) ? entry.url : null;
+      const path4 = isLocalPath(entry.path) ? entry.path : isLocalPath(entry.url) ? entry.url : null;
       const kind = short(entry.kind), title = short(entry.title ?? entry.name);
       const ref = sourceRef2 && { ...sourceRef2, index: index++ };
       if (url) products.push({ kind: kind ?? kindForUrl(url, LEGACY_KINDS[field] ?? "link"), title: title ?? new URL(url).hostname, url, field, atEpoch, sourceRef: ref });
-      else if (path3 && (kind || fileKind(path3))) products.push({ kind: kind ?? fileKind(path3), title: title ?? basename4(path3), path: path3, field, atEpoch, sourceRef: ref });
+      else if (path4 && (kind || fileKind(path4))) products.push({ kind: kind ?? fileKind(path4), title: title ?? basename4(path4), path: path4, field, atEpoch, sourceRef: ref });
     }
   }
   return products;
@@ -2139,8 +2139,8 @@ function realpathOrSelf2(dir) {
   }
 }
 function isWithin(child, parent) {
-  const relative2 = path2.relative(parent, child);
-  return relative2 === "" || !relative2.startsWith("..") && !path2.isAbsolute(relative2);
+  const relative = path2.relative(parent, child);
+  return relative === "" || !relative.startsWith("..") && !path2.isAbsolute(relative);
 }
 function markerWalkStops() {
   return [homedir5(), tmpdir(), CLAUDE_CONFIG_DIR].flatMap((dir) => {
@@ -2278,9 +2278,9 @@ function buildWorktreeProjectKey(parentProjectName, worktreeName) {
 }
 function submoduleLeaf(info, repoRoot) {
   if (!info.isSubmodule || !info.parentRepoPath) return null;
-  const relative2 = path2.relative(info.parentRepoPath, repoRoot);
-  if (!relative2 || relative2 === ".." || relative2.startsWith(`..${path2.sep}`) || path2.isAbsolute(relative2)) return null;
-  return relative2.split(path2.sep).join("/");
+  const relative = path2.relative(info.parentRepoPath, repoRoot);
+  if (!relative || relative === ".." || relative.startsWith(`..${path2.sep}`) || path2.isAbsolute(relative)) return null;
+  return relative.split(path2.sep).join("/");
 }
 function getProjectContext(cwd, platform = process.platform) {
   if (!cwd || cwd.trim() === "") {
@@ -2384,9 +2384,9 @@ function isAgentScratchFolder(folder) {
   const absolute = resolve2(folder);
   return TEMP_FOLDERS.some((temp) => absolute === temp || absolute.startsWith(`${temp}/`));
 }
-function repoRootOf(path3) {
+function repoRootOf(path4) {
   const visited = [];
-  let current = resolve2(path3), found = null;
+  let current = resolve2(path4), found = null;
   for (; ; ) {
     if (repoRootCache.has(current)) {
       found = repoRootCache.get(current);
@@ -2423,8 +2423,8 @@ function pathsIn(toolInput, platform = process.platform) {
   const paths2 = [];
   for (const text5 of strings) for (const match of text5.matchAll(PATH_START)) {
     const raw = match[1].trim();
-    const path3 = raw.startsWith("~/") || platform === "win32" && raw.startsWith("~\\") ? join7(HOME, raw.slice(2)) : raw;
-    if (path3.length > 1 && isAbsoluteOn(path3, platform) && !isAgentHome(path3)) paths2.push(path3);
+    const path4 = raw.startsWith("~/") || platform === "win32" && raw.startsWith("~\\") ? join7(HOME, raw.slice(2)) : raw;
+    if (path4.length > 1 && isAbsoluteOn(path4, platform) && !isAgentHome(path4)) paths2.push(path4);
   }
   return paths2;
 }
@@ -2435,8 +2435,8 @@ function folderNeedsProject(folder, storedProject) {
 }
 function projectFromToolPaths(toolInputs) {
   const byRoot = /* @__PURE__ */ new Map(), nameOf = /* @__PURE__ */ new Map();
-  for (const input of toolInputs) for (const path3 of pathsIn(input)) {
-    const checkout = checkoutForPath(path3);
+  for (const input of toolInputs) for (const path4 of pathsIn(input)) {
+    const checkout = checkoutForPath(path4);
     if (!checkout) continue;
     if (!nameOf.has(checkout)) nameOf.set(checkout, getProjectContext(checkout).primary);
     const project = nameOf.get(checkout);
@@ -2511,11 +2511,11 @@ var init_session_project = __esm({
     "use strict";
     init_project_name();
     NO_PROJECT = "";
-    realpathOrSelf3 = (path3) => {
+    realpathOrSelf3 = (path4) => {
       try {
-        return realpathSync4(path3);
+        return realpathSync4(path4);
       } catch {
-        return path3;
+        return path4;
       }
     };
     TEMP_FOLDERS = [.../* @__PURE__ */ new Set([resolve2(tmpdir2()), realpathOrSelf3(resolve2(tmpdir2())), "/tmp", "/private/tmp"])];
@@ -2525,10 +2525,10 @@ var init_session_project = __esm({
     repoRootCache = /* @__PURE__ */ new Map();
     PATH_START = /(?:^|[\s"'`=:(])((?:~[/\\]|\/|[A-Za-z]:[/\\])[^\n\r"'`;|&<>()]*)/g;
     AGENT_HOMES = [".claude", ".codex", ".gemini", ".claude-mem", ".cursor"].map((name) => join7(HOME, name));
-    isAgentHome = (path3) => AGENT_HOMES.some((home) => path3 === home || path3.startsWith(`${home}/`) || path3.startsWith(`${home}\\`));
-    isAbsoluteOn = (path3, platform) => path3.startsWith("/") && !path3.startsWith("//") || platform === "win32" && /^[A-Za-z]:[/\\]/.test(path3);
-    checkoutForPath = (path3) => {
-      let current = path3;
+    isAgentHome = (path4) => AGENT_HOMES.some((home) => path4 === home || path4.startsWith(`${home}/`) || path4.startsWith(`${home}\\`));
+    isAbsoluteOn = (path4, platform) => path4.startsWith("/") && !path4.startsWith("//") || platform === "win32" && /^[A-Za-z]:[/\\]/.test(path4);
+    checkoutForPath = (path4) => {
+      let current = path4;
       while (current !== dirname5(current) && !existsSync9(current)) current = dirname5(current);
       return repoRootOf(current);
     };
@@ -3740,7 +3740,7 @@ function buildFocusAreas(state, { localDeviceId: localDeviceId2 = null } = {}) {
     };
   }).sort((a, b) => (a.ownerRank ?? Infinity) - (b.ownerRank ?? Infinity) || (a.priorityRank ?? Infinity) - (b.priorityRank ?? Infinity) || a.name.localeCompare(b.name));
   const byId = new Map(focusAreas.map((area) => [area.focusAreaId, area]));
-  const resolve4 = (focusAreaId) => {
+  const resolve3 = (focusAreaId) => {
     if (focusAreaId === OTHER_FOCUS_AREA_ID) return OTHER_FOCUS_AREA_ID;
     const seen = /* @__PURE__ */ new Set();
     let area = byId.get(focusAreaId);
@@ -3754,11 +3754,11 @@ function buildFocusAreas(state, { localDeviceId: localDeviceId2 = null } = {}) {
   const placementsByAnchor = /* @__PURE__ */ new Map();
   const side = (written) => written && { focusAreaId: text2(written.fields.focus_area_id), basis: text2(written.fields.basis) || null, evidence: text2(written.fields.evidence) || null, device: written.device };
   for (const [anchor, { owner, router }] of placements) {
-    const focusAreaId = owner && resolve4(text2(owner.fields.focus_area_id)) || router && resolve4(text2(router.fields.focus_area_id));
+    const focusAreaId = owner && resolve3(text2(owner.fields.focus_area_id)) || router && resolve3(text2(router.fields.focus_area_id));
     if (focusAreaId) focusAreaIdByAnchor.set(anchor, focusAreaId);
     placementsByAnchor.set(anchor, { owner: side(owner), router: side(router) });
   }
-  return { focusAreas, focusAreaIdByAnchor, placementsByAnchor, resolveFocusAreaId: resolve4, otherPassHash: otherPassHash2 };
+  return { focusAreas, focusAreaIdByAnchor, placementsByAnchor, resolveFocusAreaId: resolve3, otherPassHash: otherPassHash2 };
 }
 function readFocus(database, { localDeviceId: localDeviceId2 } = {}) {
   if (typeof localDeviceId2 !== "string") throw new TypeError(`readFocus needs the worker's sync device id ("" when cloud sync never started).`);
@@ -3802,19 +3802,24 @@ var init_my_focus = __esm({
 });
 
 // src/services/work-view/shared-file-hooks.mjs
-import { resolve as resolve3, relative } from "node:path";
+import path3 from "node:path";
 function registerSharedFileWriter(directory, beforeWrite) {
-  const root = resolve3(directory);
+  const root = path3.resolve(directory);
   if (writers.has(root)) throw new Error("Shared My Work writer already registered");
   writers.set(root, beforeWrite);
   return () => {
     if (writers.get(root) === beforeWrite) writers.delete(root);
   };
 }
-function beforeSharedFileWrite(path3, value) {
+function ledgerRelativeName(root, filePath, paths2 = path3) {
+  const name = paths2.relative(root, paths2.resolve(filePath));
+  if (!name || name === ".." || name.startsWith(`..${paths2.sep}`) || paths2.isAbsolute(name)) return null;
+  return name.split(paths2.sep).join("/");
+}
+function beforeSharedFileWrite(filePath, value) {
   for (const [root, writer] of writers) {
-    const name = relative(root, resolve3(path3));
-    if (name && !name.startsWith("..") && !name.startsWith("/")) return writer(name, value);
+    const name = ledgerRelativeName(root, filePath);
+    if (name) return writer(name, value);
   }
   return null;
 }
@@ -4469,22 +4474,22 @@ function readGoals(database) {
   })).sort((a, b) => GOAL_KINDS.indexOf(a.kind) - GOAL_KINDS.indexOf(b.kind) || (a.rank ?? Infinity) - (b.rank ?? Infinity));
   return { summary: listState.human_summary ?? null, generatedAt: listState.generated_at ?? null, mapPath: listState.map_path ?? null, goals };
 }
-function readJson(path3, fallback) {
+function readJson(path4, fallback) {
   try {
-    return JSON.parse(readFileSync9(path3, "utf8"));
+    return JSON.parse(readFileSync9(path4, "utf8"));
   } catch (error) {
     if (error.code === "ENOENT") return fallback;
     throw error;
   }
 }
-function writeJsonAtomic(path3, value) {
-  const finish = beforeSharedFileWrite(path3, value);
-  mkdirSync5(join9(path3, ".."), { recursive: true });
-  const temp = `${path3}.tmp`;
+function writeJsonAtomic(path4, value) {
+  const finish = beforeSharedFileWrite(path4, value);
+  mkdirSync5(join9(path4, ".."), { recursive: true });
+  const temp = `${path4}.tmp`;
   const stored = finish && Object.hasOwn(finish, "value") ? finish.value : value;
   writeFileSync3(temp, `${JSON.stringify(stored, null, 2)}
 `, { mode: 384 });
-  renameSync3(temp, path3);
+  renameSync3(temp, path4);
   finish?.();
 }
 function applyGroupDecisions(stored, decisions, now = Date.now(), { projectOf = /* @__PURE__ */ new Map() } = {}) {
@@ -4957,9 +4962,9 @@ function option(args, name, fallback) {
   return value;
 }
 function openDatabase() {
-  const path3 = process.env.CLAUDE_MEM_DB ?? join9(DATA_DIR2, "claude-mem.db");
-  statSync6(path3);
-  const database = new Database(path3, { readonly: true, create: false });
+  const path4 = process.env.CLAUDE_MEM_DB ?? join9(DATA_DIR2, "claude-mem.db");
+  statSync6(path4);
+  const database = new Database(path4, { readonly: true, create: false });
   database.exec("PRAGMA busy_timeout = 1500");
   return database;
 }
@@ -6034,13 +6039,13 @@ function sharedPublishedUrl(value) {
   const url = new URL(normalized);
   const host = url.hostname.replace(/^\[|\]$/g, "").replace(/\.$/, "").toLowerCase();
   if (isIP(host) || !host.includes(".") || /(?:^|\.)(?:localhost|local|lan|internal|home|test|invalid)$/.test(host)) return null;
-  let path3;
+  let path4;
   try {
-    path3 = decodeURIComponent(url.pathname);
+    path4 = decodeURIComponent(url.pathname);
   } catch {
     return null;
   }
-  if (/(?:^|\/)(?:api\/(?:media|work-view|deliverables)|private)(?:\/|$)/i.test(path3) || /\/storage\/v1\/object\/(?:sign|authenticated)(?:\/|$)/i.test(path3)) return null;
+  if (/(?:^|\/)(?:api\/(?:media|work-view|deliverables)|private)(?:\/|$)/i.test(path4) || /\/storage\/v1\/object\/(?:sign|authenticated)(?:\/|$)/i.test(path4)) return null;
   const credentialName = (name) => {
     const words = name.replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2").replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().replace(/[^a-z0-9]+/g, "_");
     const compact = words.replace(/_/g, "");
@@ -6736,9 +6741,9 @@ var digest = (value) => createHash6("sha256").update(canonicalJson(value ?? null
 var MAX_FILE_BYTES = 8 * 1024 * 1024;
 var fixedFiles = ["request-groups.json", "story.json", "refresh.json", "agent-written-prompts.json"];
 var fileKinds = (name) => name === "request-groups.json" ? ["group", "ignored"] : name === "story.json" ? ["story"] : name === "refresh.json" ? ["refresh"] : name === "agent-written-prompts.json" ? ["exclusion"] : /^progress\/g_[a-f0-9]{12}\.json$/.test(name) ? ["progress"] : [];
-function load(path3) {
+function load(path4) {
   try {
-    const raw = readFileSync10(path3);
+    const raw = readFileSync10(path4);
     if (raw.byteLength > MAX_FILE_BYTES) throw new RangeError("Shared My Work file is over the local import limit");
     return JSON.parse(raw.toString("utf8"));
   } catch (error) {
@@ -6746,13 +6751,13 @@ function load(path3) {
     throw error;
   }
 }
-function rawWrite(path3, value) {
-  mkdirSync6(join10(path3, ".."), { recursive: true });
-  const temp = `${path3}.${process.pid}.shared.tmp`;
+function rawWrite(path4, value) {
+  mkdirSync6(join10(path4, ".."), { recursive: true });
+  const temp = `${path4}.${process.pid}.shared.tmp`;
   try {
     writeFileSync4(temp, `${JSON.stringify(value, null, 2)}
 `, { mode: 384 });
-    renameSync4(temp, path3);
+    renameSync4(temp, path4);
   } finally {
     try {
       unlinkSync2(temp);
@@ -6939,13 +6944,65 @@ var SharedLedgerAdapter = class {
     if (!stage) return { materialization: "complete" };
     const { name, value, updates } = stage;
     try {
-      if (this.state(name).pending_json !== JSON.stringify(value)) return { materialization: "pending" };
-      rawWrite(join10(this.directory, name), value);
-      this.remember(name, value, updates, this.shared(), false);
-      return { materialization: "complete" };
+      return { materialization: this.completePending(name, value, updates) ? "complete" : "pending" };
     } catch {
       return { materialization: "pending" };
     }
+  }
+  /**
+   * Replace the file and clear the receipt only if `value` is still the pending
+   * intent. The write lock is held throughout, so a writer on another connection
+   * commits fully before this check or after this commit, never in between.
+   */
+  completePending(name, value, updates, shared) {
+    return this.db.transaction(() => {
+      if (this.state(name).pending_json !== JSON.stringify(redactJsonStrings(value))) return false;
+      if (value === null) {
+        try {
+          unlinkSync2(join10(this.directory, name));
+        } catch (error) {
+          if (error.code !== "ENOENT") throw error;
+        }
+      } else rawWrite(join10(this.directory, name), value);
+      this.remember(name, value, updates, shared ?? this.shared(), false);
+      return true;
+    }).immediate();
+  }
+  /**
+   * Record the intent to materialize a projection. Skips when a writer on another
+   * connection owns the file or has changed its records since `shared` was read;
+   * that writer's newer value wins and the next reconcile projects from it.
+   */
+  stageProjection(name, value, updates, shared, pendingDelete = false) {
+    const recordHashes = (source) => {
+      const kinds = fileKinds(name);
+      return JSON.stringify([...source.records].filter(([, record]) => kinds.includes(record.kind)).map(([key, record]) => [key, record.hash]).sort());
+    };
+    return this.db.transaction(() => {
+      if (this.state(name).pending_json !== null || recordHashes(this.shared()) !== recordHashes(shared)) return false;
+      this.remember(name, value, updates, shared, true, pendingDelete);
+      return true;
+    }).immediate();
+  }
+  /** Finish an interrupted write. Runs under the write lock so it always finishes the newest intent. */
+  finishPendingFile(name) {
+    return this.db.transaction(() => {
+      const prior = this.state(name);
+      const current = load(join10(this.directory, name));
+      if (prior.pending_json === null) return current;
+      const originallyPending = JSON.parse(prior.pending_json);
+      const pending = redactJsonStrings(originallyPending);
+      if (current !== void 0 && digest(current) !== prior.observed_hash && digest(current) !== digest(originallyPending) && digest(current) !== digest(pending)) throw new Error("Local file changed during an unfinished shared write");
+      if (prior.pending_delete) {
+        try {
+          unlinkSync2(join10(this.directory, name));
+        } catch (error) {
+          if (error.code !== "ENOENT") throw error;
+        }
+      } else rawWrite(join10(this.directory, name), pending);
+      this.remember(name, pending, this.updatesForFile(name, pending), this.shared(), false);
+      return pending;
+    }).immediate();
   }
   /** Called before an external writer replaces its file; finalization follows rename. */
   beforeWrite(name, value, options) {
@@ -6988,23 +7045,7 @@ var SharedLedgerAdapter = class {
     }
     for (const name of names) {
       try {
-        const prior = this.state(name);
-        let current = load(join10(this.directory, name));
-        if (prior.pending_json !== null) {
-          const originallyPending = JSON.parse(prior.pending_json);
-          const pending = redactJsonStrings(originallyPending);
-          if (current !== void 0 && digest(current) !== prior.observed_hash && digest(current) !== digest(originallyPending) && digest(current) !== digest(pending)) throw new Error("Local file changed during an unfinished shared write");
-          if (prior.pending_delete) {
-            try {
-              unlinkSync2(join10(this.directory, name));
-            } catch (error) {
-              if (error.code !== "ENOENT") throw error;
-            }
-          } else rawWrite(join10(this.directory, name), pending);
-          const updates = this.updatesForFile(name, pending);
-          this.remember(name, pending, updates, this.shared(), false);
-          current = pending;
-        }
+        let current = this.state(name).pending_json !== null ? this.finishPendingFile(name) : load(join10(this.directory, name));
         if ((current !== void 0 || this.state(name).observed_hash !== null) && digest(current) !== this.state(name).observed_hash) {
           const finish = this.beforeWrite(name, current ?? null);
           if (finish && Object.hasOwn(finish, "value") && digest(current) !== digest(finish.value)) {
@@ -7018,6 +7059,7 @@ var SharedLedgerAdapter = class {
       }
     }
     const shared = this.shared();
+    let projectionSuperseded = false;
     let ledger = this.localLedger();
     const applied = applySharedProjection(this.db, shared, { ledger, deviceId: this.deviceId });
     ledger = applied.ledger;
@@ -7039,9 +7081,8 @@ var SharedLedgerAdapter = class {
         continue;
       }
       const updates = this.updatesForFile(name, value);
-      this.db.transaction(() => this.remember(name, value, updates, shared, true))();
-      rawWrite(join10(this.directory, name), value);
-      this.remember(name, value, updates, shared, false);
+      if (this.stageProjection(name, value, updates, shared)) this.completePending(name, value, updates, shared);
+      else projectionSuperseded = true;
     }
     for (const record of shared.records.values()) {
       if (!record.deleted) continue;
@@ -7051,13 +7092,8 @@ var SharedLedgerAdapter = class {
         if (this.state(name).bases[sharedRecordKey(record.kind, record.key)] !== record.hash) this.remember(name, null, [], shared, false);
         continue;
       }
-      this.db.transaction(() => this.remember(name, null, [], shared, true, true))();
-      try {
-        unlinkSync2(join10(this.directory, name));
-      } catch (error) {
-        if (error.code !== "ENOENT") throw error;
-      }
-      this.remember(name, null, [], shared, false);
+      if (this.stageProjection(name, null, [], shared, true)) this.completePending(name, null, [], shared);
+      else projectionSuperseded = true;
     }
     const activity = captureActivity ? activitySignature(this.db) : null;
     let copies = {}, copyHash = null;
@@ -7091,7 +7127,7 @@ var SharedLedgerAdapter = class {
       this.storyHash = storyHash;
       this.sharedRevision = final.revision;
     }
-    this.lastSignature = this.signature(captureActivity);
+    this.lastSignature = projectionSuperseded ? null : this.signature(captureActivity);
     const diagnostics = applySharedProjection(this.db, final, { ledger, deviceId: this.deviceId }).diagnostics;
     this.lastDiagnostic = { ...diagnostics, files: this.errors };
     return this.lastDiagnostic;
@@ -7178,4 +7214,4 @@ try {
   stopSharedWriter?.();
   sharedDatabase?.close();
 }
-if (output) await new Promise((resolve4, reject) => process.stdout.write(output, (error) => error ? reject(error) : resolve4()));
+if (output) await new Promise((resolve3, reject) => process.stdout.write(output, (error) => error ? reject(error) : resolve3()));
