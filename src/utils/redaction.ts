@@ -198,6 +198,12 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   // print. Neither prefix is claimed by openai_key, so they stayed in the text.
   { name: 'groq_key',        regex: /\bgsk_[A-Za-z0-9]{52}(?!\w)/g },
   { name: 'xai_key',         regex: /\bxai-[A-Za-z0-9_]{80}(?!\w)/g },
+  // Perplexity API keys (`pplx-` + 48 alphanumerics): an LLM provider key
+  // that `.env` files, `export PERPLEXITY_API_KEY=…` lines and `curl -H
+  // "Authorization: Bearer …"` commands print. The prefix is not claimed by
+  // openai_key, and Perplexity model ids share it (`pplx-embed-v1-4b`), so
+  // the fixed 48-char alphanumeric body keeps the model ids out.
+  { name: 'perplexity_key',  regex: /\bpplx-[A-Za-z0-9]{48}(?!\w)/g },
   // Supabase personal access tokens (`sbp_` + 40 hex, what `supabase login`
   // stores and SUPABASE_ACCESS_TOKEN holds) and Sentry auth tokens: personal
   // ones (`sntryu_` + 64 hex) and organization ones (`sntrys_` + a base64
