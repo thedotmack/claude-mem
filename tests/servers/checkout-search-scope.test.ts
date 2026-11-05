@@ -10,8 +10,8 @@ const checkout = { primary: 'acme/api', allProjects: ['api', 'acme/api'] };
 describe('withCheckoutProjects (gate P2-5)', () => {
   it('extends a search for the checkout\'s own key to every key it reads', () => {
     expect(withCheckoutProjects({ query: 'retry', project: 'acme/api' }, checkout))
-      .toEqual({ query: 'retry', project: 'acme/api', projects: 'api,acme/api' });
-    expect(withCheckoutProjects({ project: 'ACME/API' }, checkout)).toMatchObject({ projects: 'api,acme/api' });
+      .toEqual({ query: 'retry', project: 'acme/api', projects: ['api', 'acme/api'] });
+    expect(withCheckoutProjects({ project: 'ACME/API' }, checkout)).toMatchObject({ projects: ['api', 'acme/api'] });
   });
 
   it('searches any other project exactly as asked', () => {

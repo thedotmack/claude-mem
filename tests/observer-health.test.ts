@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from 'bun:test';
+import { describe, expect, it, beforeEach, afterEach, mock, setSystemTime, spyOn } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -6,6 +6,7 @@ import {
   readObserverHealth,
   recordObserverFailure,
   recordObserverSuccess,
+  observerAuthScope,
   recordObserverQuotaCooldown,
   clearObserverQuotaCooldown,
   isObserverUnhealthy,
@@ -41,6 +42,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  mock.restore();
   rmSync(dataDir, { recursive: true, force: true });
 });
 
@@ -87,6 +89,132 @@ describe('observer-health ledger', () => {
     expect(second.consecutiveFailures).toBe(2);
     expect(second.failingSinceAt).toBe(first.failingSinceAt);
     expect(second.lastErrorMessage).toBe('boom two');
+  });
+
+  it('keeps credential-scoped success proofs independent of unrelated stores', () => {
+    const primary = observerAuthScope('claude', 'account-a', 'subscription')!;
+    const alternate = observerAuthScope('claude', 'account-a', 'api-key')!;
+    const clock = spyOn(Date, 'now').mockReturnValue(100_000);
+    try {
+      recordObserverSuccess(healthPath, primary);
+      clock.mockReturnValue(200_000);
+      recordObserverSuccess(healthPath, alternate);
+      recordObserverSuccess(healthPath);
+      expect(readObserverHealth(healthPath)?.authRecoverySuccesses).toEqual({
+        [primary]: 100_000, [alternate]: 200_000,
+      });
+      expect(observerAuthScope('openrouter', 'account-a', 'subscription')).toBeNull();
+      expect(observerAuthScope('claude', undefined, 'subscription')).toBeNull();
+      expect(observerAuthScope('claude', 'account-a', undefined)).toBeNull();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('restarts failingSinceAt when the failure kind changes (#5378)', () => {
+    const clock = spyOn(Date, 'now').mockReturnValue(1000);
+    // The reported scenario: a quota pause records a failure, the worker goes down,
+    // and auth refusals follow a day later. The auth warning must not carry the
+    // quota era's start time.
+    recordObserverFailure('claude', {
+      message: 'quota pause recorded',
+      kind: 'quota_guard',
+    }, healthPath);
+    const quota = readObserverHealth(healthPath)!;
+    const quotaSince = quota.failingSinceAt;
+
+    clock.mockReturnValue(2000);
+    recordObserverFailure('claude', {
+      message: 'Failed to authenticate',
+      kind: 'auth_invalid',
+    }, healthPath);
+    const auth = readObserverHealth(healthPath)!;
+    expect(auth.consecutiveFailures).toBe(2);          // streak continues across the kind change
+    expect(auth.lastErrorKind).toBe('auth_invalid');
+    expect(auth.failingSinceAt).toBe(auth.lastErrorAt); // but the clock restarts with the new kind
+    expect(auth.failingSinceAt).not.toBe(quotaSince);
+    expect(auth.failingSinceAt).toBe(2000);
+  });
+
+  it('keeps failingSinceAt across consecutive failures of the same kind', () => {
+    const clock = spyOn(Date, 'now').mockReturnValue(1000);
+    recordObserverFailure('claude', {
+      message: 'Failed to authenticate',
+      kind: 'auth_invalid',
+    }, healthPath);
+    const first = readObserverHealth(healthPath)!;
+
+    clock.mockReturnValue(2000);
+    recordObserverFailure('claude', {
+      message: 'Failed to authenticate again',
+      kind: 'auth_invalid',
+    }, healthPath);
+    const second = readObserverHealth(healthPath)!;
+    expect(second.consecutiveFailures).toBe(2);
+    expect(second.failingSinceAt).toBe(first.failingSinceAt);
+    expect(second.failingSinceAt).toBe(1000);
+    expect(second.lastErrorAt).toBe(2000);
+  });
+
+  it('preserves an unclassified outage from a ledger without lastErrorKind', () => {
+    spyOn(Date, 'now').mockReturnValue(2000);
+    writeFileSync(healthPath, JSON.stringify(unhealthyState({
+      failingSinceAt: 1000,
+      lastErrorAt: 1500,
+      lastErrorKind: undefined,
+    })));
+
+    recordObserverFailure('openrouter', 'unclassified failure again', healthPath);
+
+    const state = readObserverHealth(healthPath)!;
+    expect(state.failingSinceAt).toBe(1000);
+    expect(state.lastErrorAt).toBe(2000);
+    expect(state.lastErrorKind).toBeNull();
+    expect(state.consecutiveFailures).toBe(OBSERVER_UNHEALTHY_FAILURE_THRESHOLD + 1);
+  });
+
+  // #5378: a quota pause that later became a refused credential was announced
+  // as an auth outage three days old. The banner paired the newest kind with
+  // the oldest start; the log's first refusal was 22 hours old at the time.
+  it('dates the warning from the failure it names, not from a pause of another kind', () => {
+    const refusalAt = Date.now();
+    const secondRefusalAt = refusalAt + 5 * 60_000;
+    const pauseAt = refusalAt - 44 * 60 * 60_000;
+    try {
+      setSystemTime(new Date(pauseAt));
+      recordObserverFailure('claude', {
+        kind: 'quota_guard',
+        message: 'Memory capture paused: weekly Claude usage is 95.0%, at or above the 95% pause threshold.',
+      }, healthPath);
+
+      setSystemTime(new Date(refusalAt));
+      recordObserverFailure('claude', {
+        kind: 'auth_invalid',
+        message: 'Failed to authenticate. API Error: 401 {"type":"error","error":{"type":"authentication_error"}}',
+      }, healthPath);
+      const refused = readObserverHealth(healthPath)!;
+      // The streak still counts the pause: nothing succeeded in between.
+      expect(refused.consecutiveFailures).toBe(2);
+      expect(refused.failingSinceAt).toBe(refusalAt);
+
+      // Same kind again, later: the streak grows but the outage still started
+      // at the first refusal, so a rule that re-dated every failure fails here.
+      setSystemTime(new Date(secondRefusalAt));
+      recordObserverFailure('claude', {
+        kind: 'auth_invalid',
+        message: 'Failed to authenticate. API Error: 401',
+      }, healthPath);
+      const stillRefused = readObserverHealth(healthPath)!;
+      expect(stillRefused.consecutiveFailures).toBe(3);
+      expect(stillRefused.failingSinceAt).toBe(refusalAt);
+
+      const warning = renderObserverHealthWarning(stillRefused, secondRefusalAt + 22 * 60 * 60_000);
+      expect(warning).toContain('credentials have been refused by claude for about 22 hours');
+      expect(warning).toContain(new Date(refusalAt).toISOString());
+      expect(warning).not.toContain('about 3 days');
+    } finally {
+      setSystemTime();
+    }
   });
 
   it('success resets the streak but keeps last error details for diagnostics', () => {
@@ -838,6 +966,31 @@ describe('renderObserverQuotaCooldownNotice', () => {
     expect(notice).toContain('Restarting will NOT help');
     expect(notice).toContain('Do NOT restart the worker');
     expect(notice).not.toContain(workerRestartUrl());
+  });
+});
+
+describe('auth warning for a verdict read from an exit', () => {
+  const authState = (lastErrorCode: string | null) => unhealthyState({
+    lastErrorProvider: 'codex',
+    lastErrorKind: 'auth_invalid',
+    lastErrorCode,
+  });
+
+  it('does not claim the provider refused the credentials', () => {
+    const warning = renderObserverHealthWarning(authState('codex_auth_from_exit_text'));
+    expect(warning).toContain('looks like a refused login');
+    expect(warning).toContain('may be wrong');
+    expect(warning).toContain('codex login status');
+    expect(warning).toContain('the next captured event or an operator retry can trigger another attempt after the cooldown ends');
+    expect(warning).not.toContain('retries by itself');
+    expect(warning).not.toContain('credentials have been refused');
+    expect(warning).not.toContain('the provider refused the credentials');
+  });
+
+  it('keeps the plain refusal when the provider said so', () => {
+    const warning = renderObserverHealthWarning(authState(null));
+    expect(warning).toContain('credentials have been refused by codex');
+    expect(warning).toContain('Restarting will NOT help here: the provider refused the credentials');
   });
 });
 

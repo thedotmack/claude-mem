@@ -70,6 +70,9 @@ export function buildDevinHooks(bunPath: string, workerPath: string): DevinHooks
   });
   return {
     SessionStart: [rule('start', 60), rule('hook devin context', 60)],
+    // Devin's SessionStart fires only on startup and resume. After compaction
+    // it fires PostCompaction instead, so the timeline is re-injected there.
+    PostCompaction: [rule('hook devin context', 60)],
     UserPromptSubmit: [rule('hook devin session-init', 15)],
     PostToolUse: [rule('hook devin observation', 120)],
     Stop: [rule('hook devin summarize', 120)],

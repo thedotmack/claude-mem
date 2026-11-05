@@ -159,6 +159,8 @@ export async function startGeneratorWithProvider(
   // too, its exit records a fresh reason. Without this, one auth pause would
   // keep the session out of every automatic sweep for good.
   session.pausedReason = null;
+  session.pausedAtMs = null;
+  session.pausedAuthScope = null;
   session.providerSwitchPending = false;
 
   if (session.abortController.signal.aborted) {
@@ -197,6 +199,8 @@ export async function startGeneratorWithProvider(
   });
 
   session.currentProvider = provider;
+  session.observerProfile = undefined;
+  session.observerAuth = undefined;
   session.lastGeneratorActivity = Date.now();
   // Providers refine this per-prompt ('init'|'ingest'|'summarize'); this is
   // the fallback when a generator dies before dispatching its first prompt.
@@ -656,7 +660,7 @@ function bookClassifiedFailure(
       }
       const plan = error.retryAfterMs !== undefined ? planRateLimitResume(session) : null;
       if (plan?.resume && error.retryAfterMs !== undefined
-        && planUnattendedGatewayResume(session, 'rate-limit', canCmemGatewayServe()).resume) {
+        && planUnattendedGatewayResume(session, 'rate-limit', canCmemGatewayServe(session.platformSource)).resume) {
         resume = {
           afterMs: Math.min(Math.max(error.retryAfterMs, 0), QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS),
           source: 'rate-limit',

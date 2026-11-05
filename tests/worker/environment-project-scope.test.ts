@@ -141,7 +141,7 @@ describe('explicit environment inheritance (#4782)', () => {
     const context = getProjectContext(childA);
     expect(context.primary).toBe('business-a');
     expect(context.allProjects).toEqual(['shared', 'business-a']);
-    expect(withCheckoutProjects({ project: 'business-a' }, context).projects).toBe('shared,business-a');
+    expect(withCheckoutProjects({ project: 'business-a' }, context).projects).toEqual(['shared', 'business-a']);
     expect(getProjectContext(childB).allProjects).toEqual(['Workspace', 'acme/workspace']);
   });
 

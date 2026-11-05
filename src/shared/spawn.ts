@@ -16,10 +16,10 @@ export function spawnHidden(
   args?: readonly string[],
   options?: SpawnOptions
 ): ChildProcess {
-  // windowsHide MUST win over caller options. Node's `detached: true` on
-  // Windows still allocates a console for the child (#3521); callers that
-  // need a background daemon on win32 must use Start-Process -WindowStyle
-  // Hidden (see ProcessManager.spawnDetachedWorkerDaemon), not detached.
+  // windowsHide MUST win over caller options: it is what keeps a background
+  // daemon child from flashing a console. `detached: true` is safe with it —
+  // on win32 the child gets no console window and outlives the launcher (see
+  // ProcessManager.spawnDetachedWorkerDaemon, #5240).
   return spawn(command, args ?? [], { ...options, windowsHide: true });
 }
 

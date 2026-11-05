@@ -23,7 +23,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 PLATFORM_SOURCE = "hermes"
 _PREFIXES = ("CLAUDE_MEM_",)
@@ -36,7 +36,37 @@ BREAKER_OPEN_S = 30.0
 # (<memory-context>), and agent-internal blocks. Matches the worker's own list.
 _TAGS = ("private", "memory-context", "claude-mem-context", "system_instruction",
          "system-instruction", "persisted-output", "system-reminder")
-_TAG = re.compile(r"<(/?)(%s)\b[^>]*>" % "|".join(re.escape(t) for t in _TAGS), re.IGNORECASE)
+# Only the opening of a tag; its end is found with `str.find` below. A
+# `<name\b[^>]*>` tail would rescan the rest of the text for every unfinished
+# `<name` candidate, which is quadratic on adversarial input (issue #5146).
+_TAG_START = re.compile(r"<(/?)(%s)\b" % "|".join(re.escape(t) for t in _TAGS), re.IGNORECASE)
+
+
+def _iter_tags(text: str) -> Iterator[Tuple[int, int, bool, str]]:
+    """Yields `(start, end, closing, name)` for each tag in `text`, in order.
+
+    A tag ends at the first ``>`` after its name, exactly the range the old
+    ``<name[^>]*>`` matched, but the tail is searched once per tag instead of
+    once per ``<name`` candidate. A missing ``>`` means none follows any later
+    candidate either, so the scan stops there."""
+    scan_from = 0
+    while True:
+        found = _TAG_START.search(text, scan_from)
+        if found is None:
+            return
+        end = text.find(">", found.end())
+        if end < 0:
+            return
+        end += 1
+        yield found.start(), end, found.group(1) == "/", found.group(2).lower()
+        scan_from = end
+
+
+def _has_tag(text: str) -> bool:
+    """Whether `text` holds a complete tag, checked with the linear scanner."""
+    for _ in _iter_tags(text):
+        return True
+    return False
 
 
 def _strip_text(text: str) -> str:
@@ -46,12 +76,11 @@ def _strip_text(text: str) -> str:
     out: List[str] = []
     position = 0
     open_tags: Dict[str, int] = {}
-    for tag in _TAG.finditer(text):
-        closing, name = tag.group(1), tag.group(2).lower()
+    for start, end, closing, name in _iter_tags(text):
         if not open_tags:
             if closing:
                 continue
-            out.append(text[position:tag.start()])
+            out.append(text[position:start])
             open_tags = {name: 1}
             continue
         if closing:
@@ -62,7 +91,7 @@ def _strip_text(text: str) -> str:
         else:
             open_tags[name] = open_tags.get(name, 0) + 1
         if not open_tags:
-            position = tag.end()
+            position = end
     if not open_tags:
         out.append(text[position:])
     return "".join(out)
@@ -72,7 +101,7 @@ def strip_tags(value: Any) -> Any:
     """The value with those sections removed from every string in it, at any
     depth; strings without one are returned unchanged."""
     if isinstance(value, str):
-        return _strip_text(value) if _TAG.search(value) else value
+        return _strip_text(value) if _has_tag(value) else value
     if isinstance(value, list):
         return [strip_tags(item) for item in value]
     if isinstance(value, dict):
