@@ -57,6 +57,7 @@ import { captureEvent } from '../telemetry/telemetry.js';
 import { clearDependencyStatus, recordClaudeCliSetupRequired, OBSERVER_DIR_UNUSABLE_CODE } from '../../shared/dependency-health.js';
 import { clearClaudeCliSelfHealAttempts } from './stale-spawn-recovery.js';
 import { paidSendBudgetForClaimedBatch } from './paid-send-budget.js';
+import { isObserverCaptureEnabled } from '../../shared/observer-capture.js';
 
 /**
  * Module-scoped guard so the "effort parameter" hint only fires once per
@@ -135,6 +136,18 @@ function isSpawnFailure(error: unknown): boolean {
  *     Windows .cmd/.bat shim the SDK cannot launch without a shell
  *   - Anthropic-specific message strings ("Invalid API key", "Prompt is too long")
  */
+const CLAUDE_MODEL_REFUSAL_STATUS_LINE = /^There's an issue with the selected model \([^)\n]*\)\. It may not exist or you may not have access to it\.(?: Run --model to pick a different model\.)?$/;
+
+/** model_unavailable is the code the session-start warning reads to say a restart will not help. */
+function claudeModelRefused(message: string, cause: unknown): ClassifiedProviderError {
+  return new ClassifiedProviderError(message, {
+    kind: 'unrecoverable',
+    code: 'model_unavailable',
+    action: 'Set CLAUDE_MEM_MODEL in ~/.claude-mem/settings.json to a model this account or gateway serves. The worker also inherits ANTHROPIC_MODEL and ANTHROPIC_DEFAULT_*_MODEL from the environment it started in, so check those too.',
+    cause,
+  });
+}
+
 export function classifyClaudeError(err: unknown): ClassifiedProviderError {
   const message = err instanceof Error ? err.message : String(err);
   const errAny = err as { name?: string; status?: number; error?: { type?: string }; body?: unknown };
@@ -254,6 +267,15 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
       /\binvalid_request_error\b/i.test(message))
   ) {
     return new ClassifiedProviderError(message, { kind: 'unrecoverable', cause: err });
+  }
+
+  // The same refusal as a thrown error: the SDK raises "Claude Code returned an
+  // error result: There's an issue with the selected model (...)".
+  if (
+    typeof errAny.status !== 'number' &&
+    (/\bunrecognized_model\b/i.test(message) || /\bthere's an issue with the selected model\b/i.test(message))
+  ) {
+    return claudeModelRefused(message, err);
   }
 
   // Server errors → transient.
@@ -540,6 +562,11 @@ export class ClaudeProvider {
         });
       };
 
+      // Whether the provider answered the current turn's request: set by its
+      // first assistant frame, cleared when the turn's result arrives. The
+      // quota guard reads it to tell a refusal from a served request that
+      // carries a rejected overage bucket (#5182).
+      let turnServed = false;
       for await (const message of queryResult) {
         // A stall already handed the claimed batch back to pending; a frame
         // processed now would be stored twice once the batch is re-sent (#4066).
@@ -577,7 +604,11 @@ export class ClaudeProvider {
               observed_billing: session.observedBilling,
             });
           }
-          const decision = shouldAbortForQuota(authMethod, globalRateLimitStore, Date.now(), observerProfile);
+          // A rejection on an overage bucket that arrives with a served
+          // response is not a refusal of this request (#5182).
+          const decision = shouldAbortForQuota(authMethod, globalRateLimitStore, Date.now(), observerProfile, {
+            requestServed: turnServed,
+          });
           if (decision.abort) {
             logger.warn('SDK', `Aborting session for quota guard: ${decision.reason}`, {
               sessionDbId: session.sessionDbId,
@@ -627,6 +658,7 @@ export class ClaudeProvider {
         }
 
         if (message.type === 'assistant') {
+          turnServed = true;
           const content = message.message.content;
           // A turn can arrive as several assistant messages, and a frame that
           // holds only thinking or tool_use blocks carries no text at all.
@@ -675,7 +707,7 @@ export class ClaudeProvider {
             turnEmptyOutputReason = emptyOutputReason;
             logger.debug('SDK', 'Assistant frame carried no text block, leaving queued batch intact', {
               sessionId: session.sessionDbId,
-              promptNumber: session.lastPromptNumber,
+              promptNumber: activeResponseContext.current?.promptNumber ?? session.lastPromptNumber,
               blockTypes: Array.isArray(content)
                 ? [...new Set(content.map((c: any) => String(c?.type)))].join(',')
                 : typeof content,
@@ -693,7 +725,7 @@ export class ClaudeProvider {
               : textContent;
             logger.dataOut('SDK', `Response received (${responseSize} chars)`, {
               sessionId: session.sessionDbId,
-              promptNumber: session.lastPromptNumber
+              promptNumber: activeResponseContext.current?.promptNumber ?? session.lastPromptNumber
             }, truncatedResponse);
           }
 
@@ -703,6 +735,14 @@ export class ClaudeProvider {
             /^Invalid API key(?: · (?:Fix external API key|Please run \/login))?$/.test(textContent.trim())
           ) {
             throw new Error('Invalid API key: check your API key configuration in ~/.claude-mem/settings.json or ~/.claude-mem/.env');
+          }
+
+          // The CLI's own model refusal (#5315). Without this it reaches the
+          // parser as prose and the batch is dropped with restart advice that
+          // cannot help. An observation may quote the phrase (#4253), so only
+          // the structured error or the whole status line counts.
+          if (message.error === 'model_not_found' || CLAUDE_MODEL_REFUSAL_STATUS_LINE.test(textContent.trim())) {
+            throw claudeModelRefused(textContent.trim(), null);
           }
 
           // The frame names the model that served the turn (an alias such as
@@ -730,6 +770,8 @@ export class ClaudeProvider {
             );
             if (stored) {
               turnInsertedObservationIds.push(...(stored.insertedObservationIds ?? []));
+              // A summary a repeated Stop reused is tracked too: the result's
+              // usage can only raise it, because updateDiscoveryTokens keeps the maximum.
               turnSummaryId = stored.summaryId ?? turnSummaryId;
             }
           } catch (processingError) {
@@ -745,6 +787,7 @@ export class ClaudeProvider {
         }
 
         if (message.type === 'result') {
+          turnServed = false;
           // The result message carries the turn's finalized usage (per-turn,
           // not cumulative — verified empirically against the SDK) plus a
           // CUMULATIVE total_cost_usd; per-compression cost is the delta
@@ -823,6 +866,21 @@ export class ClaudeProvider {
 
           const resultSubtype = (message as any).subtype as string | undefined;
           const resultIsError = (message as any).is_error === true || resultSubtype !== 'success';
+
+          // the result frame is authoritative for this turn's usage. keep the
+          // fields flat so the info logger prints every count, and skip the
+          // synthetic init prompt because it is not an observer response.
+          if (resultUsage && session.lastGeneratorSource !== 'init') {
+            logger.info('SDK', 'Observer turn usage', {
+              sessionId: session.sessionDbId,
+              promptNumber: activeResponseContext.current?.promptNumber ?? session.lastPromptNumber,
+              inputTokens: resultUsage.input_tokens ?? 0,
+              cacheCreationInputTokens: resultUsage.cache_creation_input_tokens ?? 0,
+              cacheReadInputTokens: resultUsage.cache_read_input_tokens ?? 0,
+              fullContextTokens: computeFullContextTokens(resultUsage),
+              outputTokens: resultUsage.output_tokens ?? 0,
+            });
+          }
 
           // The turn is over and the model never emitted text. Only a
           // successful turn means the model read the batch — forward its empty
@@ -1124,6 +1182,9 @@ export class ClaudeProvider {
     claudePath: string,
     signal: AbortSignal,
   ): Promise<CompressedField | null> {
+    if (!isObserverCaptureEnabled(SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH))) {
+      return null;
+    }
     // The CLI reports no finish reason, so a reply it returns counts as whole.
     const condensed = await this.runStandaloneObserverPrompt(
       buildFieldCompressionPrompt(text, budgetChars),
@@ -1171,6 +1232,15 @@ export class ClaudeProvider {
     pacer: ObserverResponsePacer = new ObserverResponsePacer(),
   ): AsyncIterableIterator<SDKUserMessage> {
     const mode = ModeManager.getInstance().getActiveMode();
+    const stopIfCaptureDisabled = async (): Promise<boolean> => {
+      if (isObserverCaptureEnabled(SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH))) return false;
+      const discarded = await this.sessionManager.clearPendingForSession(session.sessionDbId);
+      logger.info('SESSION', 'Observer capture disabled before provider send; discarding buffered work', {
+        sessionId: session.sessionDbId,
+        discarded,
+      });
+      return true;
+    };
 
     // Prompt 0 means no user_prompts row was ever written for this session
     // (a transcript-ingested turn with no anchor). Treat it, like the genuine
@@ -1218,6 +1288,7 @@ export class ClaudeProvider {
 
     let answeredBeforeSend: number;
     if (observeBarePrompt) {
+      if (await stopIfCaptureDisabled()) return;
       session.lastPromptSentAt = Date.now();
       session.lastGeneratorSource = 'init';
       answeredBeforeSend = pacer.mark();
@@ -1246,6 +1317,7 @@ export class ClaudeProvider {
       }
 
       if (message.type === 'observation') {
+        if (await stopIfCaptureDisabled()) return;
         // Retire a full generation BEFORE yielding. The SDK holds the real
         // conversation server-side, but conversationHistory tracks every prompt
         // fed into it, so its size is the proxy for how close that conversation
@@ -1282,6 +1354,11 @@ export class ClaudeProvider {
             )
           : { toolInput: message.tool_input, toolOutput: message.tool_response };
 
+        // Field compression is itself a provider request. If capture was
+        // disabled while it was in flight, do not follow it with the paid
+        // observation request.
+        if (await stopIfCaptureDisabled()) return;
+
         const obsPrompt = buildObservationPrompt({
           id: 0, // Not used in prompt
           tool_name: message.tool_name!,
@@ -1309,6 +1386,7 @@ export class ClaudeProvider {
         };
         if (!(await this.awaitObserverAnswer(session, pacer, answeredBeforeSend))) return;
       } else if (message.type === 'summarize') {
+        if (await stopIfCaptureDisabled()) return;
         const summaryPrompt = buildSummaryPrompt({
           id: session.sessionDbId,
           memory_session_id: session.memorySessionId,

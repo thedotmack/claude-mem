@@ -55,16 +55,37 @@ jobs:
       # checks the viewer responds. This gives every PR real server-runtime
       # coverage. The full pg+redis e2e is the docker-gated job below.
       #
-      # Scoped to tests/ because workers/sync-hub/test is a vitest-pool-workers
+      # Scoped to tests/ because services/sync-hub/test is a vitest-pool-workers
       # suite (imports cloudflare:test — unresolvable under bun test); it runs
       # in the dedicated sync-hub job below.
-      - name: Test
-        run: bun test tests
+      # The root suite runs as two lanes (scripts/test-lanes.ts): the fast unit
+      # lane is `npm test`; the integration lane holds real Chrome, tree-sitter
+      # grammar builds and end-to-end installs. Together they cover every file
+      # `bun test tests` finds, which the lane check proves on every PR.
+      - name: Test lanes cover every test file
+        run: bun scripts/test-lanes.ts check
+
+      - name: Test (fast lane)
+        run: bun scripts/test-lanes.ts fast
+
+      - name: Test (integration lane)
+        if: ${{ !cancelled() }}
+        run: bun scripts/test-lanes.ts integration
 
       # openclaw's suite lives outside tests/ (openclaw/src/index.test.ts), so
       # the scoped step above no longer reaches it — run it explicitly.
       - name: Test (openclaw)
         run: bun test openclaw
+
+      # The My Work app's pure-logic tests live with the app (src/ui/my-work), outside tests/.
+      - name: Test (My Work viewer)
+        run: bun test src/ui/my-work/src/live src/ui/my-work/src/setup src/ui/my-work/src/store
+
+      # The cowork plugin's suite lives outside tests/ (cowork/test), so the
+      # scoped lane check above never reaches it — run it explicitly, the same
+      # way openclaw's out-of-tree suite is run.
+      - name: Test (cowork)
+        run: bun test cowork/test
 
       - name: Test (Hermes provider, Python)
         run: python3 -B -m unittest discover -s tests/hermes -v
@@ -163,7 +184,7 @@ jobs:
       - uses: actions/checkout@v4
 
       # Dumb-grep guard for the Durable Object source (plan Phase 4 / Phase 0.4):
-      # complements the ESLint rules in workers/sync-hub/eslint.config.mjs and
+      # complements the ESLint rules in services/sync-hub/eslint.config.mjs and
       # catches the `globalThis.setTimeout` evasion ESLint misses. The DO's
       # hibernation WebSocket upgrade handler is necessarily a method named
       # `fetch`, so exactly its definition line (`async fetch(request`) is
@@ -172,8 +193,8 @@ jobs:
       - name: Durable Object anti-pattern grep
         run: |
           set -u
-          hits=$(grep -rn "setTimeout\|setInterval\|\.accept()\|connect(\|globalThis\.\(setTimeout\|setInterval\)" workers/sync-hub/src/do/ || true)
-          fetch_hits=$(grep -rn "fetch(" workers/sync-hub/src/do/ | grep -v "async fetch(request" || true)
+          hits=$(grep -rn "setTimeout\|setInterval\|\.accept()\|connect(\|globalThis\.\(setTimeout\|setInterval\)" services/sync-hub/src/do/ || true)
+          fetch_hits=$(grep -rn "fetch(" services/sync-hub/src/do/ | grep -v "async fetch(request" || true)
           if [ -n "$hits$fetch_hits" ]; then
             echo "Durable Object anti-pattern hits (timers pin the DO awake; outbound I/O and legacy accept defeat hibernation):"
             echo "$hits"
@@ -188,18 +209,18 @@ jobs:
           bun-version: latest
 
       - name: Install sync-hub dependencies
-        working-directory: workers/sync-hub
+        working-directory: services/sync-hub
         run: bun install --frozen-lockfile
 
       - name: sync-hub tests (main suite)
-        working-directory: workers/sync-hub
+        working-directory: services/sync-hub
         run: bun run test
 
       # The WS + DO tests need their own invocation with --maxWorkers=1
       # --no-isolate (documented @cloudflare/vitest-pool-workers limitation),
       # which is exactly what the test:ws script pins.
       - name: sync-hub tests (WebSocket suite)
-        working-directory: workers/sync-hub
+        working-directory: services/sync-hub
         run: bun run test:ws
 
   sync-api:
@@ -252,8 +273,66 @@ jobs:
         working-directory: services/sync-api
         run: bun test test
 
+      - name: viewer-host gate tests
+        working-directory: services/viewer-host
+        run: bun install --frozen-lockfile && bun test test
+
       - name: protocol-v2 matrix e2e against local sync-api
         run: bun scripts/sync-matrix-e2e.ts
+
+  # bm25 keyword ranking needs pg_textsearch (and search by meaning needs
+  # pgvector), which the postgres:16 service above lacks; there these tests
+  # skip. This job builds docker/postgres, the image docker-compose.yml runs,
+  # so the search tests run against the same Postgres self-hosters get.
+  server-search-pgvector:
+    name: server search (pgvector · pg_textsearch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CLAUDE_MEM_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/server_search_test
+      # Fail, rather than skip, a search-by-meaning test that finds no pgvector.
+      CLAUDE_MEM_TEST_PGVECTOR: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and start Postgres from docker/postgres
+        run: |
+          docker build -t claude-mem-postgres:17 docker/postgres
+          docker run -d --name search-postgres -p 5432:5432 \
+            -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=server_search_test \
+            claude-mem-postgres:17
+          # Over TCP, so the image's socket-only init server does not count as ready.
+          for attempt in $(seq 60); do
+            docker exec search-postgres pg_isready -h 127.0.0.1 -U postgres -d server_search_test && exit 0
+            sleep 1
+          done
+          docker logs search-postgres
+          exit 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install repository dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: bm25 and hybrid search, vector writes and backfill
+        env:
+          CLAUDE_MEM_DATA_DIR: ${{ runner.temp }}/claude-mem-search-data
+        run: >-
+          bun test
+          tests/storage/postgres/postgres-storage.test.ts
+          tests/storage/postgres/observation-embeddings.test.ts
+          tests/server/embedding-parts-contract.test.ts
+          tests/server/runtime/memories-vector-write.test.ts
+          tests/server/generation/process-generated-response-vectors.test.ts
+          tests/services/vector/local-embedder-encode.test.ts
+          tests/server/semantic-context-route.test.ts
 
   clean-room-deps:
     name: clean-room dependency closure smoke

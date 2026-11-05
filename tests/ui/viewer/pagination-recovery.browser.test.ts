@@ -1,32 +1,15 @@
 import { expect, it } from 'bun:test';
-import { execFileSync } from 'node:child_process';
-import { createRequire } from 'node:module';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import {
+  FIXTURE_PAGE_HTML, UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, compileBrowserFixture, failOnCiWithoutChrome,
+  htmlResponse, launchChrome, scriptResponse, withTimeout, type OwnedChrome,
+} from '../../helpers/chrome-devtools';
 
-const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
-  ?? (existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
-    ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : null);
-
-if (process.env.CI && !chrome) {
-  throw new Error('CI requires Chrome or Chromium for the pagination browser regressions.');
-}
+failOnCiWithoutChrome('CI requires Chrome or Chromium for the pagination browser regressions.');
 
 // Real App, React state/effects, HTTP and SSE; no mocked hook dispatcher.
 for (const scenario of ['partial', 'empty-timeline', 'empty-session']) {
-  (chrome ? it : it.skip)(`recovers ${scenario} page failures without dropping successful rows`, async () => {
-    // The one-shot compiler exits before Chrome starts, keeping the browser
-    // phase free of shared esbuild service handles.
-    const esbuildBinary = createRequire(import.meta.url).resolve(
-      `@esbuild/${process.platform}-${process.arch}/${process.platform === 'win32' ? 'esbuild.exe' : 'bin/esbuild'}`
-    );
-    const bundle = execFileSync(esbuildBinary, [
-      '--bundle', '--loader=tsx', '--platform=browser', '--format=iife',
-      '--define:process.env.NODE_ENV="production"', '--log-level=error',
-    ], {
-      cwd: resolve(import.meta.dir, '../../..'),
-      input: `
+  (chromeExecutablePath ? it : it.skip)(`recovers ${scenario} page failures without dropping successful rows`, async () => {
+    const bundle = compileBrowserFixture(`
         import React from 'react';
         import { createRoot } from 'react-dom/client';
         import { App } from './src/ui/viewer/App';
@@ -76,9 +59,7 @@ for (const scenario of ['partial', 'empty-timeline', 'empty-session']) {
             await fetch('/result', { method: 'POST', body: JSON.stringify(report) });
           } catch (error) { await fetch('/result', { method: 'POST', body: JSON.stringify({ failure: String(error) }) }); }
         })();
-      `,
-      encoding: 'utf8', timeout: 20000, maxBuffer: 8 * 1024 * 1024,
-    });
+      `);
     let markReady!: () => void;
     const ready = new Promise<void>(resolve => { markReady = resolve; });
     const attempts = new Map<string, number>();
@@ -88,8 +69,8 @@ for (const scenario of ['partial', 'empty-timeline', 'empty-session']) {
       platform_source: 'claude', created_at_epoch: Date.now(), created_at: new Date().toISOString() };
     const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
       const url = new URL(request.url);
-      if (url.pathname === '/') return new Response('<div id="root"></div><script src="/fixture.js"></script>', { headers: { 'Content-Type': 'text/html' } });
-      if (url.pathname === '/fixture.js') return new Response(bundle, { headers: { 'Content-Type': 'application/javascript' } });
+      if (url.pathname === '/') return htmlResponse(FIXTURE_PAGE_HTML);
+      if (url.pathname === '/fixture.js') return scriptResponse(bundle);
       if (url.pathname === '/ready') { markReady(); return new Response('ready'); }
       if (url.pathname === '/stream') return new Response(new ReadableStream({ start(controller) {
         controller.enqueue(new TextEncoder().encode('data: {"type":"initial_load","projects":["owned-project"]}\n\n'));
@@ -105,20 +86,15 @@ for (const scenario of ['partial', 'empty-timeline', 'empty-session']) {
       if (url.pathname === '/result') { report(await request.json()); return new Response('received'); }
       return Response.json({});
     } });
-    const profile = mkdtempSync(join(tmpdir(), 'claude-mem-pagination-browser-'));
-    const child = Bun.spawn([chrome!, '--headless', '--no-sandbox', '--disable-gpu', '--disable-background-networking', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--no-first-run', `--user-data-dir=${profile}`, server.url.href], { stdout: 'ignore', stderr: 'ignore' });
-    let timeout: ReturnType<typeof setTimeout>;
+    let chrome: OwnedChrome | undefined;
     try {
+      chrome = launchChrome(server.url.href, { profilePrefix: 'claude-mem-pagination-browser-', extraFlags: UNTHROTTLED_TIMER_FLAGS });
       // Separate Chrome startup from the two rendered-page settlement phases.
-      await Promise.race([ready, new Promise<never>((_, reject) => {
-        timeout = setTimeout(() => reject(new Error('Owned pagination browser did not become ready')), 30000);
-      })]);
-      clearTimeout(timeout!);
-      const reported = await Promise.race([result, new Promise(resolve => { timeout = setTimeout(() => resolve({ failure: 'Browser fixture timed out' }), 25000); })]);
+      await withTimeout(ready, 30000, 'Owned pagination browser did not become ready');
+      const reported = await withTimeout(result, 25000, 'Browser fixture timed out');
       expect(reported).toEqual({ retainedObservation: scenario === 'partial', retainedSummary: scenario === 'partial', loading: false, retry: true, recovered: true, sessionView: scenario === 'empty-session' });
     } finally {
-      clearTimeout(timeout!); child.kill(); await child.exited; server.stop(true);
-      rmSync(profile, { recursive: true, force: true });
+      await chrome?.close(); server.stop(true);
     }
   }, 80000);
 }

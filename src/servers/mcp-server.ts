@@ -14,6 +14,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+  RootsListChangedNotificationSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { getWorkerPort, workerHttpRequest, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { ensureWorkerStarted } from '../services/worker-spawner.js';
@@ -23,6 +24,7 @@ import { treeSitterCliUnavailableMessage } from '../services/smart-file-read/tre
 import { resolveWithinWorkspace } from '../services/smart-file-read/workspace-path.js';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { marketplaceDirectoryCandidates } from '../shared/known-marketplace-location.js';
 import { dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -53,16 +55,29 @@ import { teamBrainConnection } from '../shared/teambrain.js';
 import { isWorkStateEnabled } from '../shared/work-state-setting.js';
 import { getProjectContext, type ProjectContext } from '../utils/project-name.js';
 import { withCheckoutProjects } from './checkout-search-scope.js';
+import { parseProjectList, projectsQueryValues } from '../shared/project-list.js';
 import { postCorpusRequestOverSse } from './corpus-worker-stream.js';
 import { withWorkerRestartOnRefusedConnection } from './worker-restart.js';
 import { ProgressiveSearchError, progressiveSearchToolError } from '../shared/progressive-search.js';
 import { formatMcpPayload, formatWorkerMcpResponse, mcpTextResult, workerFailureText, serverFailureText, type McpTextPurpose } from './mcp-text-format.js';
+import { getRequestCwd, runWithCwd } from './request-context.js';
+import { parseHttpArgs, startMcpHttpServer, type CwdResolver, type McpHttpOptions } from './mcp-http.js';
+import { createStdioCwdResolver } from './mcp-project-cwd.js';
+import { buildWorkerOriginPolicy } from '../services/worker/http/origin-policy.js';
 
-/** This server's checkout (Claude Code starts it in the workspace), resolved once. */
-let workspaceCheckout: ProjectContext | null = null;
+/**
+ * The checkout of the running tool call, resolved once per directory. Over stdio that is
+ * the workspace Claude Code started this process in; over HTTP it is the session's cwd.
+ */
+const checkoutByCwd = new Map<string, ProjectContext>();
 function currentCheckout(): ProjectContext {
-  workspaceCheckout ??= getProjectContext(process.cwd());
-  return workspaceCheckout;
+  const cwd = getRequestCwd();
+  let checkout = checkoutByCwd.get(cwd);
+  if (!checkout) {
+    checkout = getProjectContext(cwd);
+    checkoutByCwd.set(cwd, checkout);
+  }
+  return checkout;
 }
 
 let mcpServerDirResolutionFailed = false;
@@ -82,6 +97,7 @@ const mcpServerDir = (() => {
 // would otherwise auto-spawn a stale worker. The own-dir resolution stays as
 // the fallback for installs without a marketplace copy.
 const WORKER_SCRIPT_PATH = resolveWorkerScriptPath() ?? resolve(mcpServerDir, 'worker-service.cjs');
+const MCP_PLUGIN_ROOT = resolve(mcpServerDir, '..');
 
 function errorIfWorkerScriptMissing(): void {
   if (!mcpServerDirResolutionFailed) return;
@@ -149,7 +165,9 @@ async function requestWorker(endpoint: string, opts: WorkerCallOptions): Promise
     const searchParams = new URLSearchParams();
     for (const [key, value] of Object.entries(opts.query ?? {})) {
       if (value !== undefined && value !== null) {
-        searchParams.append(key, String(value));
+        for (const entry of Array.isArray(value) ? value : [value]) {
+          searchParams.append(key, String(entry));
+        }
       }
     }
     response = await workerHttpRequest(`${endpoint}?${searchParams}`);
@@ -403,19 +421,11 @@ interface SessionStartContextArgs {
 }
 
 function normalizeProjectsArg(args: SessionStartContextArgs): string[] {
-  if (Array.isArray(args.projects)) {
-    return args.projects
-      .map(project => typeof project === 'string' ? project.trim() : '')
-      .filter(Boolean);
-  }
-  if (typeof args.projects === 'string') {
-    return args.projects
-      .split(',')
-      .map(project => project.trim())
-      .filter(Boolean);
+  if (args.projects !== undefined) {
+    return parseProjectList(args.projects);
   }
   if (typeof args.project === 'string' && args.project.trim().length > 0) {
-    return [args.project.trim()];
+    return [args.project];
   }
   return [];
 }
@@ -436,7 +446,7 @@ async function handleSessionStartContext(
 
   return callWorker('/api/context/inject', {
     query: {
-      projects: projects.join(','),
+      projects: projectsQueryValues(projects),
       ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
       ...(args.full !== undefined ? { full: args.full } : {}),
       ...(args.colors !== undefined ? { colors: args.colors } : {}),
@@ -492,7 +502,15 @@ async function ensureWorkerConnection(): Promise<boolean> {
 // query_corpus, which appends to the corpus session) keep prompting.
 const READ_ONLY_TOOL_ANNOTATIONS = { readOnlyHint: true } as const;
 
-const tools = [
+interface McpToolDefinition {
+  name: string;
+  description: string;
+  inputSchema: any;
+  annotations?: any;
+  handler: (args: any) => any;
+}
+
+const tools: McpToolDefinition[] = [
   {
     name: 'dumb_search',
     description: 'Dumb search (optional): Doesn’t reason about the results. Fast, but shallow. Use Smart for reliable recall. This one-call lookup picks records by title word overlap, adds nearby context, and returns up to maxDetails records. Smart search is the default mem-search workflow: search → timeline → selected get_observations.',
@@ -666,14 +684,15 @@ Optional Dumb search: \`dumb_search({query, project})\`. Doesn’t reason about 
   },
   {
     name: 'get_observations',
-    description: 'Step 3: Fetch selected useful details for the IDs chosen after reviewing the index and timeline. Any shortening is marked. Params: ids (required), orderBy, limit, project (worker) or projectId (server)',
+    description: 'Step 3: Fetch selected useful details for the IDs chosen after reviewing the index and timeline. Any shortening is marked. Params: ids (required), orderBy, limit, project (worker) or projectId (server). At most 100 ids per call; split larger selections across several calls.',
     inputSchema: {
       type: 'object',
       properties: {
         ids: {
           type: 'array',
+          maxItems: 100,
           items: { type: ['number', 'string'] },
-          description: 'Array of selected observation IDs to fetch (string IDs in server runtime)'
+          description: 'Array of selected observation IDs to fetch (at most 100; split larger selections). String IDs in server runtime.'
         },
         projectId: { type: 'string', description: 'Server project ID; defaults to the configured server project' }
       },
@@ -693,16 +712,17 @@ Optional Dumb search: \`dumb_search({query, project})\`. Doesn’t reason about 
   },
   {
     name: 'get_tool_uses',
-    description: 'Exceptional follow-up (raw tool I/O, rarely needed): fetch the ORIGINAL tool_input/tool_response for tool calls you already identified. Requires ids — run search/timeline/get_observations first and pass only the ids you actually need; these payloads are large and unsummarized. ids accept numeric tool_uses ids or tool_use_id strings. Params: ids (required), limit, project, contentSessionId.',
+    description: 'Exceptional follow-up (raw tool I/O, rarely needed): fetch the ORIGINAL tool_input/tool_response for tool calls you already identified. Requires ids — run search/timeline/get_observations first and pass only the ids you actually need; these payloads are large and unsummarized. ids accept numeric tool_uses ids or tool_use_id strings. Params: ids (required), limit, project, contentSessionId. At most 100 ids per call; split larger selections.',
     inputSchema: {
       type: 'object',
       properties: {
         ids: {
           type: 'array',
+          maxItems: 100,
           items: { type: ['number', 'string'] },
-          description: 'Tool-use ids to fetch (required). Numeric tool_uses.id or opaque tool_use_id strings.'
+          description: 'Tool-use ids to fetch (required, at most 100; split larger selections). Numeric tool_uses.id or opaque tool_use_id strings.'
         },
-        limit: { type: 'number', description: 'Max rows to return' },
+        limit: { type: 'number', description: 'Max rows to return (default 100, max 200)' },
         project: { type: 'string', description: 'Filter by project name' },
         contentSessionId: { type: 'string', description: 'Filter to one content session' }
       },
@@ -732,7 +752,7 @@ Optional Dumb search: \`dumb_search({query, project})\`. Doesn’t reason about 
       additionalProperties: false,
     },
     handler: async (args: any) => callWorker('/api/work-state/entries', {
-      body: { cwd: process.cwd(), list: args?.list, fields: args?.fields },
+      body: { cwd: getRequestCwd(), list: args?.list, fields: args?.fields },
       text: true,
     }),
   },
@@ -749,7 +769,7 @@ Optional Dumb search: \`dumb_search({query, project})\`. Doesn’t reason about 
     },
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => callWorker('/api/work-state', {
-      query: { cwd: process.cwd(), list: args?.list, includeClosed: args?.includeClosed },
+      query: { cwd: getRequestCwd(), list: args?.list, includeClosed: args?.includeClosed },
       text: true,
     }),
   },
@@ -852,7 +872,7 @@ Optional Dumb search: \`dumb_search({query, project})\`. Doesn’t reason about 
   },
   {
     name: 'observation_search',
-    description: 'Full-text search across generated observations using the server\'s GIN tsvector index (Phase 1). Calls /v1/search. Server runtime only. Params: query (required), projectId (optional), platformSource, limit (default 20, max 100).',
+    description: 'Search generated observations by keyword (Postgres full-text) and, when the server has search by meaning (pgvector, CLAUDE_MEM_SERVER_VECTOR_SEARCH), by meaning (embedding similarity), fused by reciprocal rank. A natural-language question works. Search by meaning has no relevance cutoff, so it always returns the nearest matches; keyword-only search returns only observations containing a query term. Calls /v1/search. Server runtime only. Params: query (required), projectId (optional), platformSource, limit (default 20, max 100).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -924,7 +944,7 @@ Optional Dumb search: \`dumb_search({query, project})\`. Doesn’t reason about 
     },
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
-      const rootDir = await resolveWithinWorkspace(args.path || process.cwd());
+      const rootDir = await resolveWithinWorkspace(args.path || getRequestCwd(), getRequestCwd());
       // Check the CLI before any parsing (#4758): with a broken install,
       // symbol extraction stalls on build/query timeouts, so skip it up
       // front while keeping path matches, which need no tree-sitter.
@@ -964,7 +984,7 @@ Optional Dumb search: \`dumb_search({query, project})\`. Doesn’t reason about 
     },
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
-      const filePath = await resolveWithinWorkspace(args.file_path);
+      const filePath = await resolveWithinWorkspace(args.file_path, getRequestCwd());
       const content = await readFile(filePath, 'utf-8');
       const unavailableCli = treeSitterCliUnavailableMessage();
       if (unavailableCli) {
@@ -1011,7 +1031,7 @@ Optional Dumb search: \`dumb_search({query, project})\`. Doesn’t reason about 
     },
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
-      const filePath = await resolveWithinWorkspace(args.file_path);
+      const filePath = await resolveWithinWorkspace(args.file_path, getRequestCwd());
       const content = await readFile(filePath, 'utf-8');
       const unavailableCli = treeSitterCliUnavailableMessage();
       if (unavailableCli) {
@@ -1142,18 +1162,6 @@ Optional Dumb search: \`dumb_search({query, project})\`. Doesn’t reason about 
   }
 ];
 
-const server = new Server(
-  {
-    name: 'claude-mem',
-    version: packageVersion,
-  },
-  {
-    capabilities: {
-      tools: {},  // Exposes tools capability (handled by ListToolsRequestSchema and CallToolRequestSchema)
-    },
-  }
-);
-
 function workStateEnabled(): boolean {
   return isWorkStateEnabled(loadFromFileOnce().CLAUDE_MEM_WORK_STATE_ENABLED);
 }
@@ -1162,64 +1170,90 @@ function teamBrainJoined(): boolean {
   return teamBrainConnection(loadFromFileOnce()) !== null;
 }
 
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  const advertisedTools = withoutUnjoinedTeamBrainTools(
-    withoutDisabledWorkStateTools(getAdvertisedMcpToolsForRuntime(tools, selectRuntime()), workStateEnabled()),
-    teamBrainJoined(),
+/**
+ * One MCP Server. Over stdio there is exactly one; over HTTP every session gets its own.
+ * `getCwd` returns the HTTP request's project directory. Stdio asks the client roots/list,
+ * then uses the process launch directory or a verified PWD fallback from the plugin root.
+ */
+function createMcpServer(getCwd?: CwdResolver): Server {
+  const server = new Server(
+    {
+      name: 'claude-mem',
+      version: packageVersion,
+    },
+    {
+      capabilities: {
+        tools: {},  // Exposes tools capability (handled by ListToolsRequestSchema and CallToolRequestSchema)
+      },
+    }
   );
-  return {
-    tools: advertisedTools.map(tool => ({
-      name: tool.name,
-      description: tool.description,
-      inputSchema: tool.inputSchema,
-      annotations: tool.annotations
-    }))
-  };
-});
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const tool = tools.find(t => t.name === request.params.name);
+  const stdioCwd = getCwd ? null : createStdioCwdResolver({ peer: server, pluginRoot: MCP_PLUGIN_ROOT });
+  if (stdioCwd) server.setNotificationHandler(RootsListChangedNotificationSchema, async () => stdioCwd.markRootsStale());
 
-  if (!tool) {
-    throw new Error(`Unknown tool: ${request.params.name}`);
-  }
-
-  if ((WORK_STATE_TOOL_NAMES as readonly string[]).includes(tool.name) && !workStateEnabled()) {
-    const result = {
-      content: [{ type: 'text' as const, text: 'Work state is turned off (CLAUDE_MEM_WORK_STATE_ENABLED=false).' }],
-      isError: true
-    };
-    spoolWorkStateMcpResult(tool.name, result);
-    return result;
-  }
-
-  if ((TEAMBRAIN_TOOL_NAMES as readonly string[]).includes(tool.name) && !teamBrainJoined()) {
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    const advertisedTools = withoutUnjoinedTeamBrainTools(
+      withoutDisabledWorkStateTools(getAdvertisedMcpToolsForRuntime(tools, selectRuntime()), workStateEnabled()),
+      teamBrainJoined(),
+    );
     return {
-      content: [{
-        type: 'text' as const,
-        text: 'TeamBrain is not set up on this install. Join a team with `npx claude-mem teambrain join <invite-link>`, or start one with `npx claude-mem teambrain start`.',
-      }],
-      isError: true
+      tools: advertisedTools.map(tool => ({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+        annotations: tool.annotations
+      }))
     };
-  }
+  });
 
-  try {
-    const result = await tool.handler(request.params.arguments || {});
-    spoolWorkStateMcpResult(tool.name, result);
-    return result;
-  } catch (error: unknown) {
-    logger.error('SYSTEM', 'Tool execution failed', { tool: request.params.name }, error instanceof Error ? error : new Error(String(error)));
-    const result = {
-      content: [{
-        type: 'text' as const,
-        text: `Tool execution failed: ${error instanceof Error ? error.message : String(error)}`
-      }],
-      isError: true
-    };
-    spoolWorkStateMcpResult(tool.name, result);
-    return result;
-  }
-});
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+    const tool = tools.find(t => t.name === request.params.name);
+
+    if (!tool) {
+      throw new Error(`Unknown tool: ${request.params.name}`);
+    }
+
+    if ((WORK_STATE_TOOL_NAMES as readonly string[]).includes(tool.name) && !workStateEnabled()) {
+      const result = {
+        content: [{ type: 'text' as const, text: 'Work state is turned off (CLAUDE_MEM_WORK_STATE_ENABLED=false).' }],
+        isError: true
+      };
+      spoolWorkStateMcpResult(tool.name, result);
+      return result;
+    }
+
+    if ((TEAMBRAIN_TOOL_NAMES as readonly string[]).includes(tool.name) && !teamBrainJoined()) {
+      return {
+        content: [{
+          type: 'text' as const,
+          text: 'TeamBrain is not set up on this install. Join a team with `npx claude-mem teambrain join <invite-link>`, or start one with `npx claude-mem teambrain start`.',
+        }],
+        isError: true
+      };
+    }
+
+    try {
+      const args = request.params.arguments || {};
+      const cwd = getCwd ? getCwd(extra) : await stdioCwd!.resolve();
+      const result = await runWithCwd(cwd, () => tool.handler(args));
+      spoolWorkStateMcpResult(tool.name, result);
+      return result;
+    } catch (error: unknown) {
+      logger.error('SYSTEM', 'Tool execution failed', { tool: request.params.name }, error instanceof Error ? error : new Error(String(error)));
+      const result = {
+        content: [{
+          type: 'text' as const,
+          text: `Tool execution failed: ${error instanceof Error ? error.message : String(error)}`
+        }],
+        isError: true
+      };
+      spoolWorkStateMcpResult(tool.name, result);
+      return result;
+    }
+  });
+
+  return server;
+}
 
 const HEARTBEAT_INTERVAL_MS = 30_000;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -1280,10 +1314,9 @@ process.on('SIGINT', cleanup);
 
 function detectMissingMarketplaceMarker(): void {
   const home = homedir();
-  const marketplaceCandidates = [
-    resolve(home, '.claude', 'plugins', 'marketplaces', 'thedotmack'),
-    resolve(home, '.config', 'claude', 'plugins', 'marketplaces', 'thedotmack'),
-  ];
+  // Includes the installLocation Claude Code records for a marketplace added
+  // from a local folder (`/plugin marketplace add <path>`).
+  const marketplaceCandidates = marketplaceDirectoryCandidates(home);
   const present = marketplaceCandidates.some(p => p && existsSync(p));
   const cacheCandidates = [
     resolve(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem'),
@@ -1295,7 +1328,7 @@ function detectMissingMarketplaceMarker(): void {
   if (!present && cachePresent) {
     logger.error(
       'SYSTEM',
-      'claude-mem MCP started but no marketplace directory was found at ~/.claude/plugins/marketplaces/thedotmack or the XDG equivalent. The IDE plugin loader needs that directory to fire claude-mem hooks (SessionStart, PostToolUse, Stop, etc.). Without it, MCP search will work but no new memories will be captured. To self-heal, run: node ~/.claude/plugins/cache/thedotmack/claude-mem/*/scripts/smart-install.js (or reinstall the plugin from the marketplace).',
+      'claude-mem MCP started but no marketplace directory was found at ~/.claude/plugins/marketplaces/thedotmack, the XDG equivalent, or the thedotmack installLocation in known_marketplaces.json. The IDE plugin loader needs that directory to fire claude-mem hooks (SessionStart, PostToolUse, Stop, etc.). Without it, MCP search will work but no new memories will be captured. To self-heal, reinstall the plugin from the marketplace (/plugin marketplace add thedotmack/claude-mem, then /plugin install claude-mem@thedotmack).',
       { marketplaceCandidates, cacheRoot }
     );
   }
@@ -1309,16 +1342,7 @@ function checkMarketplaceMarker(): void {
   }
 }
 
-async function main() {
-  const transport = new StdioServerTransport();
-  attachStdioLifecycle();
-  await server.connect(transport);
-  logger.info('SYSTEM', 'Claude-mem search server started');
-
-  checkMarketplaceMarker();
-
-  startParentHeartbeat();
-
+function scheduleWorkerAutostart(): void {
   setTimeout(async () => {
     // Phase 8 — when CLAUDE_MEM_RUNTIME=server (or legacy `server-beta`,
     // normalized to `'server'` by selectRuntime), MCP must NOT auto-start
@@ -1341,7 +1365,56 @@ async function main() {
   }, 0);
 }
 
-main().catch((error) => {
+async function main() {
+  // Built here, not at module load, so HTTP mode never creates this unused stdio server.
+  const server = createMcpServer();
+  const transport = new StdioServerTransport();
+  attachStdioLifecycle();
+  await server.connect(transport);
+  logger.info('SYSTEM', 'Claude-mem search server started');
+
+  checkMarketplaceMarker();
+
+  startParentHeartbeat();
+
+  scheduleWorkerAutostart();
+}
+
+/**
+ * HTTP mode (`--http`): one long-lived process serves many MCP clients. No stdin lifecycle
+ * and no parent heartbeat, since no single client owns this process.
+ */
+async function mainHttp(options: McpHttpOptions) {
+  const handle = await startMcpHttpServer({
+    ...options,
+    pluginRoot: options.pluginRoot ?? MCP_PLUGIN_ROOT,
+    originPolicy: buildWorkerOriginPolicy(loadFromFileOnce()),
+    createServer: createMcpServer,
+  });
+  logger.info('SYSTEM', 'Claude-mem MCP HTTP server started', { host: options.host, port: handle.port });
+
+  checkMarketplaceMarker();
+
+  scheduleWorkerAutostart();
+}
+
+// stdio keeps its historical exit code 0 on a fatal error. HTTP mode, including a
+// refused --host or --port, exits 1 so a process manager reports the failure.
+let fatalExitCode = 0;
+async function start(): Promise<void> {
+  let httpOptions: McpHttpOptions | null;
+  try {
+    httpOptions = parseHttpArgs(process.argv.slice(2), process.env);
+  } catch (error) {
+    fatalExitCode = 1; // parseHttpArgs only throws when HTTP mode was requested.
+    throw error;
+  }
+  if (!httpOptions) return main();
+  fatalExitCode = 1;
+  return mainHttp(httpOptions);
+}
+
+start().catch((error) => {
   logger.error('SYSTEM', 'Fatal error', undefined, error);
-  process.exit(0);
+  process.exit(fatalExitCode);
 });

@@ -17,7 +17,7 @@ import { reclaimOrphanChromaDataDirWriters } from '../../shared/port-reclaim.js'
 import { stripForeignPythonEnv } from '../../shared/uvx-env.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
-import { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, isPidAlive, normalizeProcessName } from '../../supervisor/process-registry.js';
+import { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, isSameProcessStartToken, isPidAlive, normalizeProcessName } from '../../supervisor/process-registry.js';
 import { clearDependencyStatus, recordChromaVectorSearchUnavailable, recordUvxVectorSearchUnavailable } from '../../shared/dependency-health.js';
 import { ChromaUnavailableError } from '../worker/search/errors.js';
 import type { ChromaCollectionDrop } from './ChromaSync.js';
@@ -296,6 +296,8 @@ export class ChromaMcpManager {
   private chromaCrashCount = 0;
   private chromaLastExit: ChromaCrashState['lastExit'] = null;
   private static uvxAvailabilityProbe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null = null;
+  private static exitObserveTimeoutMs = CHROMA_EXIT_OBSERVE_TIMEOUT_MS;
+  private static prewarmReapTimeoutMs = CHROMA_PREWARM_REAP_TIMEOUT_MS;
 
   private constructor() {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
@@ -900,7 +902,11 @@ export class ChromaMcpManager {
       return isSameProcessName(currentName, normalizeProcessName(process.execPath)) || CHROMA_WRITER_RUNTIMES.has(currentName);
     }
     const currentStartToken = captureProcessStartToken(lock.pid);
-    return currentStartToken === null || currentStartToken === lock.startToken;
+    // isSameProcessStartToken, not ===: a lock written before the UTC pin
+    // (#5311) holds a local-time token the pinned read can never reproduce.
+    // It stays live only when the two differ by a possible UTC offset; any
+    // other mismatch is a reused PID, and that lock is stale.
+    return isSameProcessStartToken(currentStartToken, lock.startToken);
   }
 
   private static readChromaStoreRecord(
@@ -1754,7 +1760,7 @@ export class ChromaMcpManager {
     // able to reach them. So win32 always escalates; taskkill against an
     // already-dead pid is the tolerated not-found case, not an error.
     const exitedCleanly = chromaProcess
-      ? await ChromaMcpManager.waitForChildExit(chromaProcess, CHROMA_EXIT_OBSERVE_TIMEOUT_MS)
+      ? await ChromaMcpManager.waitForChildExit(chromaProcess, ChromaMcpManager.exitObserveTimeoutMs)
       : true;
     const mustEscalate = process.platform === 'win32' || !exitedCleanly;
 
@@ -1914,7 +1920,7 @@ export class ChromaMcpManager {
       // Already dead.
     }
 
-    await ChromaMcpManager.waitForChildClose(prewarmChild, CHROMA_PREWARM_REAP_TIMEOUT_MS);
+    await ChromaMcpManager.waitForChildClose(prewarmChild, ChromaMcpManager.prewarmReapTimeoutMs);
   }
 
   private static async waitForChildClose(child: ChildProcess, timeoutMs: number): Promise<void> {
@@ -2173,6 +2179,16 @@ export class ChromaMcpManager {
     probe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null,
   ): void {
     ChromaMcpManager.uvxAvailabilityProbe = probe;
+  }
+
+  /**
+   * Bounds on how long teardown waits to see a child exit: the chroma-mcp
+   * child after close() before tree-killing it, and a killed prewarm child.
+   * null restores the defaults.
+   */
+  static setChildExitWaitTimeoutsForTesting(timeoutMs: number | null): void {
+    ChromaMcpManager.exitObserveTimeoutMs = timeoutMs ?? CHROMA_EXIT_OBSERVE_TIMEOUT_MS;
+    ChromaMcpManager.prewarmReapTimeoutMs = timeoutMs ?? CHROMA_PREWARM_REAP_TIMEOUT_MS;
   }
 
   private static ensureUvOnPath(env: Record<string, string>): void {

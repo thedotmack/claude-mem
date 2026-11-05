@@ -390,7 +390,6 @@ Se filen [LICENSE](LICENSE) for fulde detaljer. Se [docs/license.md](docs/licens
 og [docs/ip-boundary.md](docs/ip-boundary.md) for licensomfang og
 grænsen mellem open source og kommercielt.
 
-**Bemærkning om Ragtime**: Mappen `ragtime/` er licenseret under **Apache License 2.0**. Se [ragtime/LICENSE](ragtime/LICENSE) for detaljer.
 
 ---
 

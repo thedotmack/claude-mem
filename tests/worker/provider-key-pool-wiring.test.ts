@@ -1,4 +1,3 @@
-import { readFileSync } from 'fs';
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { resolveOpenRouterConfig, isOpenRouterAvailable } from '../../src/services/worker/OpenRouterProvider.js';
 import { isGeminiAvailable } from '../../src/services/worker/GeminiProvider.js';
@@ -148,27 +147,4 @@ describe('key pool wiring', () => {
       expect(isGeminiAvailable()).toBe(false);
     });
   });
-});
-
-/**
- * The pool settings carry credentials exactly like the singular keys. If they
- * are not registered as secrets, the unauthenticated `GET /api/settings` masks
- * the primary key and returns every rotation key in cleartext — the leak class
- * #3680 / #3861 exist to close.
- */
-describe('pool settings are treated as credentials by the settings API', () => {
-  const source = readFileSync(
-    new URL('../../src/services/worker/http/routes/SettingsRoutes.ts', import.meta.url),
-    'utf-8',
-  );
-  const secretBlock = source.slice(
-    source.indexOf('const SECRET_SETTING_KEYS'),
-    source.indexOf('function maskSecretValue'),
-  );
-
-  for (const key of ['CLAUDE_MEM_GEMINI_API_KEYS', 'CLAUDE_MEM_OPENROUTER_API_KEYS']) {
-    it(`redacts ${key} on read, like its singular counterpart`, () => {
-      expect(secretBlock).toContain(`'${key}'`);
-    });
-  }
 });

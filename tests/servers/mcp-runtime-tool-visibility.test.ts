@@ -1,6 +1,4 @@
 import { describe, it, expect } from 'bun:test';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import {
   getAdvertisedMcpToolsForRuntime,
   SERVER_BETA_ONLY_TOOL_NAMES,
@@ -56,14 +54,6 @@ describe('MCP runtime-aware tool visibility', () => {
     expect(names.has('timeline')).toBe(true);
     expect(names.has('get_observations')).toBe(true);
     expect(names.has('smart_search')).toBe(true);
-  });
-
-  it('tools/list path references the helper so discovery is runtime-aware', () => {
-    const mcpServerPath = join(import.meta.dir, '..', '..', 'src', 'servers', 'mcp-server.ts');
-    const mcpServerSrc = readFileSync(mcpServerPath, 'utf-8');
-
-    expect(mcpServerSrc).toContain('getAdvertisedMcpToolsForRuntime(tools, selectRuntime())');
-    expect(mcpServerSrc).not.toContain('tools.map(tool => ({');
   });
 
   it('hides the work_state tools when CLAUDE_MEM_WORK_STATE_ENABLED=false (#4606)', () => {

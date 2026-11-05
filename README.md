@@ -59,7 +59,7 @@
     <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/version-15.0.1-green.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-15.9.0-green.svg" alt="Version">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg" alt="Node">
@@ -70,13 +70,9 @@
 </p>
 
 <p align="center">
-  <a href="https://trendshift.io/repositories/15496" target="_blank">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/trendshift-badge-dark.svg">
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/trendshift-badge.svg">
-      <img src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/trendshift-badge.svg" alt="thedotmack/claude-mem | Trendshift" width="250" height="55"/>
-    </picture>
-  </a>
+ <a href="https://www.star-history.com/thedotmack/claude-mem">
+  <picture><source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/badge?repo=thedotmack/claude-mem&type=rank&theme=dark" /><source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/badge?repo=thedotmack/claude-mem&type=rank" /><img alt="Star History Rank" src="https://api.star-history.com/badge?repo=thedotmack/claude-mem&type=rank" /></picture> <picture><source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/badge?repo=thedotmack/claude-mem&type=trending&theme=dark" /><source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/badge?repo=thedotmack/claude-mem&type=trending" /><img alt="GitHub Trending Repository of the Day" src="https://api.star-history.com/badge?repo=thedotmack/claude-mem&type=trending" /></picture>
+ </a>
 </p>
 
 <br>
@@ -222,6 +218,7 @@ The installer handles dependencies, plugin setup, AI provider configuration, wor
 - 👥 **TeamBrain** - An optional shared workspace beside My Work, with real team work lists, member attribution and linked findings. Each person chooses what to share; personal requests and review notes stay separate. [Set up a team](https://cmem.ai/teambrain/start).
 - 💻 **Claude Desktop Skill** - Search memory from Claude Desktop conversations
 - 🔒 **Privacy Control** - Use `<private>` tags to exclude sensitive content from storage
+- 🖼️ **Screenshots (opt-in, off by default)** - Keep converted copies of tool screenshots under `~/.claude-mem/media-v1/`, upload them to cmem.ai only when Cloud Sync is on, and send them to the observer model only when image inference is separately enabled ([details](https://docs.claude-mem.ai/configuration#screenshots-and-images-opt-in))
 - ⚙️ **Context Configuration** - Fine-grained control over what context gets injected
 - 🤖 **Automatic Operation** - No manual intervention required
 - 🔗 **Citations** - Reference past observations with IDs through the worker API or view all in the web viewer
@@ -376,16 +373,19 @@ ls ~/.claude/plugins/marketplaces/thedotmack/plugin/modes/
 | Mode | Description |
 |------------|-------------------------|
 | `code` | Default English mode |
-| `code--zh` | Simplified Chinese mode |
-| `code--ja` | Japanese mode |
+| `code--chill` | Records fewer observations, keeping only what would be painful to rediscover |
+| `code--[lang]` | Same as `code`, with observations and summaries written in another language |
 
-Language-specific modes follow the pattern `code--[lang]` where `[lang]` is the ISO 639-1 language code (e.g., `zh` for Chinese, `ja` for Japanese, `es` for Spanish).
+Built-in language codes: `ar`, `bn`, `cs`, `da`, `de`, `el`, `es`, `fi`, `fr`, `he`, `hi`, `hu`, `id`, `it`, `ja`, `ko`, `nl`, `no`, `pl`, `pt-br`, `ro`, `ru`, `sv`, `th`, `tr`, `uk`, `ur`, `vi`, `zh`. For example, `code--ko` writes memories in Korean.
 
-> Note: `code--zh` (Simplified Chinese) is already built-in — no additional installation or plugin update is required.
+See [Modes](https://docs.claude-mem.ai/modes) for each language's name, the email investigation mode, and custom modes.
+
+> Note: All of these modes are built in. No additional installation or plugin update is required.
 
 #### After Changing Mode
 
 Restart Claude Code to apply the new mode configuration.
+
 ---
 
 ## Development
@@ -439,7 +439,6 @@ See the [LICENSE](LICENSE) file for full details. See [docs/license.md](docs/lic
 and [docs/ip-boundary.md](docs/ip-boundary.md) for licensing scope and the
 open/commercial boundary.
 
-**Note on Ragtime**: The `ragtime/` directory is licensed under the **Apache License 2.0**. See [ragtime/LICENSE](ragtime/LICENSE) for details.
 
 ---
 

@@ -75,6 +75,15 @@ export function formatTime(dateInput: string | number): string {
   );
 }
 
+/**
+ * Shorten a formatTime() clock ("3:05 PM" -> "3:05p"). ICU 72+ (Node 20+,
+ * recent Bun) puts U+202F NARROW NO-BREAK SPACE before the meridiem, so the
+ * separator is matched as any whitespace rather than a literal space.
+ */
+export function compactTime(time: string): string {
+  return time.toLowerCase().replace(/\s+([ap])m\b/g, '$1');
+}
+
 export function formatDate(dateInput: string | number): string {
   const date = new Date(dateInput);
   return safeFormat(
@@ -109,7 +118,7 @@ export function formatHeaderDateTime(now: Date = new Date()): string {
         hour: 'numeric',
         minute: '2-digit',
         hour12: true
-      }).toLowerCase().replace(' ', '');
+      }).toLowerCase().replace(/\s+/g, '');
       const tz = now.toLocaleTimeString('en-US', { timeZoneName: 'short' }).split(' ').pop();
       return `${date} ${time} ${tz}`;
     },

@@ -169,6 +169,26 @@ describe('DataRoutes tool_uses (progressive disclosure layer 4)', () => {
       expect(jsonSpy).toHaveBeenCalledWith([]);
       expect(mockGetToolUsesByIds).not.toHaveBeenCalled();
     });
+
+    // `limit` only trims what comes back; it does not bound the number of ids
+    // the query looks up. Cap the array as well.
+    it('rejects more than 100 ids', () => {
+      const ids = Array.from({ length: 101 }, (_, i) => i + 1);
+      const { req, res, statusSpy } = createMockReqRes({ ids });
+      handler(req as Request, res as Response);
+
+      expect(statusSpy).toHaveBeenCalledWith(400);
+      expect(mockGetToolUsesByIds).not.toHaveBeenCalled();
+    });
+
+    it('accepts exactly 100 ids', () => {
+      const ids = Array.from({ length: 100 }, (_, i) => i + 1);
+      const { req, res, jsonSpy } = createMockReqRes({ ids });
+      handler(req as Request, res as Response);
+
+      expect(mockGetToolUsesByIds).toHaveBeenCalledWith(ids, expect.anything());
+      expect(jsonSpy).toHaveBeenCalled();
+    });
   });
 
   describe('GET /api/tool-uses', () => {

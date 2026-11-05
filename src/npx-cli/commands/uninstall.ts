@@ -434,6 +434,10 @@ export async function runUninstallCommand(): Promise<void> {
       const { uninstallGooseMcpIntegration } = await import('../../services/integrations/McpIntegrations.js');
       return uninstallGooseMcpIntegration();
     }},
+    { label: 'Copilot CLI MCP server', fn: async () => {
+      const { uninstallCopilotCliMcpIntegration } = await import('../../services/integrations/McpIntegrations.js');
+      return uninstallCopilotCliMcpIntegration();
+    }},
     { label: 'OpenCode plugin', fn: async () => {
       const { uninstallOpenCodePlugin } = await import('../../services/integrations/OpenCodeInstaller.js');
       return uninstallOpenCodePlugin();
@@ -453,6 +457,10 @@ export async function runUninstallCommand(): Promise<void> {
     { label: 'Kimi Code hooks + MCP', fn: async () => {
       const { uninstallKimiHooks } = await import('../../services/integrations/KimiHooksInstaller.js');
       return uninstallKimiHooks();
+    }},
+    { label: 'Devin hooks + MCP', fn: async () => {
+      const { uninstallDevinHooks } = await import('../../services/integrations/DevinHooksInstaller.js');
+      return uninstallDevinHooks();
     }},
     { label: 'OMP hooks', fn: async () => {
       const { uninstallOmpHooks } = await import('../../services/integrations/OmpHooksInstaller.js');

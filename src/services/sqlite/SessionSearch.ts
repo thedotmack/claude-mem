@@ -980,10 +980,13 @@ export class SessionSearch {
    * them.
    */
   private static filePathPatterns(filePath: string, isFolder: boolean): string[] {
+    // A dot names the relative root, not a character required in its filenames.
+    // Let the direct-child predicate select root files (including Makefile and
+    // LICENSE) before pagination, just as it does for other folder candidates.
+    if (isFolder && normalizePath(filePath) === '.') return ['%'];
+
     const escape = (value: string) => value.replace(/[\\%_]/g, '\\$&');
-    const variants = isFolder
-      ? [filePath, normalizePath(filePath), normalizePath(filePath).replaceAll('/', '\\')]
-      : [filePath];
+    const variants = [filePath, normalizePath(filePath), normalizePath(filePath).replaceAll('/', '\\')];
     const patterns = [...new Set(variants)].map(value => `%${escape(value)}%`);
     if (!isFolder || !/^([A-Za-z]:)?[\\/]/.test(filePath)) {
       return patterns;
@@ -993,9 +996,7 @@ export class SessionSearch {
     for (let start = firstRelativeSegment; start < segments.length; start += 1) {
       const trailing = segments.slice(start);
       patterns.push(`${escape(trailing.join('/') + '/')}%`);
-      if (filePath.includes('\\')) {
-        patterns.push(`${escape(trailing.join('\\') + '\\')}%`);
-      }
+      patterns.push(`${escape(trailing.join('\\') + '\\')}%`);
     }
     return patterns;
   }

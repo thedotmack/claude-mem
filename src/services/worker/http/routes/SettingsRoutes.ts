@@ -17,6 +17,8 @@ import { ensureSettingsDocument, updateSettingsDocument } from '../../../../shar
 import { isHttpUrl } from '../../../../shared/openrouter-base-url.js';
 import { parseContextCountValue } from '../../../../shared/context-count.js';
 import { OPENROUTER_REASONING_EFFORTS, parseOpenRouterReasoningEffort } from '../../OpenRouterProvider.js';
+import { parseOpenAICompatReasoning } from '../../reasoning-budget.js';
+import { parseProviderBySource } from '../../../../shared/provider-by-source.js';
 import { CODEX_REASONING_EFFORTS, isCodexReasoningEffort } from '../../CodexProvider.js';
 import { emitContextInvalidation, noteUserSettingsSaved } from '../../../../shared/context-invalidation.js';
 
@@ -54,6 +56,7 @@ const SECRET_SETTING_KEYS = new Set([
   // or query tokens). Both are file/env only — never on the POST whitelist.
   'CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET',
   'CLAUDE_MEM_GROK_BOT_WEBHOOK_URL',
+  'CLAUDE_MEM_NOTION_TOKEN',
 ]);
 
 function maskSecretString(value: string): string {
@@ -245,6 +248,8 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_WORKER_PORT',
       'CLAUDE_MEM_WORKER_HOST',
       'CLAUDE_MEM_PROVIDER',
+      'CLAUDE_MEM_PROVIDER_BY_SOURCE',
+      'CLAUDE_MEM_OBSERVER_ENABLED',
       'CLAUDE_MEM_CODEX_MODEL',
       'CLAUDE_MEM_CODEX_REASONING_EFFORT',
       'CLAUDE_MEM_CLAUDE_AUTH_METHOD',
@@ -263,12 +268,18 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_OPENAI_COMPAT_PRESET',
       'CLAUDE_MEM_OPENAI_COMPAT_BASE_URL',
       'CLAUDE_MEM_OPENAI_COMPAT_MODEL',
+      'CLAUDE_MEM_OPENAI_COMPAT_REASONING',
       'CLAUDE_MEM_OPENROUTER_REASONING_EFFORT',
       'CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW',
       'CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS',
       'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER',
       'CLAUDE_MEM_QUOTA_FALLBACK_MODEL',
       'CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD',
+      'CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER',
+      'CLAUDE_MEM_WORK_VIEW_COPY_MODEL',
+      'CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL',
+      'CLAUDE_MEM_WORK_VIEW_CODEX_MODEL',
+      'CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL',
       'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
@@ -288,6 +299,9 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_FILE_READ_GATE_ENABLED',
       'CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY',
       'CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED',
+      'CLAUDE_MEM_BACKUP_ENABLED',
+      'CLAUDE_MEM_BACKUP_INTERVAL_HOURS',
+      'CLAUDE_MEM_BACKUP_RETAIN_COUNT',
     ];
 
     // Every rule runs inside the settings-document boundary's mutate callback,
@@ -350,6 +364,13 @@ export class SettingsRoutes extends BaseRouteHandler {
   });
 
   private validateSettings(settings: any): { valid: boolean; error?: string } {
+    if (
+      settings.CLAUDE_MEM_OBSERVER_ENABLED !== undefined
+      && !['true', 'false'].includes(settings.CLAUDE_MEM_OBSERVER_ENABLED)
+    ) {
+      return { valid: false, error: 'CLAUDE_MEM_OBSERVER_ENABLED must be "true" or "false"' };
+    }
+
     for (const key of ['CLAUDE_MEM_CODEX_MODEL', 'CLAUDE_MEM_CODEX_REASONING_EFFORT'] as const) {
       if (settings[key] !== undefined && typeof settings[key] !== 'string') {
         return { valid: false, error: `${key} must be a string` };
@@ -365,6 +386,11 @@ export class SettingsRoutes extends BaseRouteHandler {
         valid: false,
         error: `CLAUDE_MEM_CODEX_REASONING_EFFORT must be empty (Codex's default) or one of: ${CODEX_REASONING_EFFORTS.join(', ')}`,
       };
+    }
+
+    if (settings.CLAUDE_MEM_PROVIDER_BY_SOURCE !== undefined) {
+      const bySource = parseProviderBySource(settings.CLAUDE_MEM_PROVIDER_BY_SOURCE);
+      if (!bySource.ok) return { valid: false, error: bySource.error };
     }
 
     if (settings.CLAUDE_MEM_PROVIDER) {
@@ -501,6 +527,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
       'CLAUDE_MEM_FILE_READ_GATE_ENABLED',
       'CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY',
+      'CLAUDE_MEM_BACKUP_ENABLED',
     ];
 
     for (const key of booleanSettings) {
@@ -523,6 +550,24 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
+    // Backup bounds. Each snapshot is a full VACUUM INTO copy of the database:
+    // a 1-hour floor caps that I/O at 24 full copies a day, and a 168-hour
+    // (one week) ceiling keeps doctor's two-interval staleness warning
+    // meaningful. The 100-snapshot cap bounds disk use at 100 database copies.
+    if (settings.CLAUDE_MEM_BACKUP_INTERVAL_HOURS) {
+      const hours = parseFloat(settings.CLAUDE_MEM_BACKUP_INTERVAL_HOURS);
+      if (isNaN(hours) || hours < 1 || hours > 168) {
+        return { valid: false, error: 'CLAUDE_MEM_BACKUP_INTERVAL_HOURS must be between 1 and 168' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_BACKUP_RETAIN_COUNT) {
+      const count = parseInt(settings.CLAUDE_MEM_BACKUP_RETAIN_COUNT, 10);
+      if (isNaN(count) || count < 1 || count > 100) {
+        return { valid: false, error: 'CLAUDE_MEM_BACKUP_RETAIN_COUNT must be between 1 and 100' };
+      }
+    }
+
     if (settings.CLAUDE_MEM_CONTEXT_FULL_FIELD) {
       if (!['narrative', 'facts'].includes(settings.CLAUDE_MEM_CONTEXT_FULL_FIELD)) {
         return { valid: false, error: 'CLAUDE_MEM_CONTEXT_FULL_FIELD must be "narrative" or "facts"' };
@@ -532,6 +577,25 @@ export class SettingsRoutes extends BaseRouteHandler {
     if (settings.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT
       && !parseOpenRouterReasoningEffort(settings.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT)) {
       return { valid: false, error: `CLAUDE_MEM_OPENROUTER_REASONING_EFFORT must be empty or one of: ${OPENROUTER_REASONING_EFFORTS.join(', ')}` };
+    }
+
+    if (settings.CLAUDE_MEM_OPENAI_COMPAT_REASONING !== undefined
+      && parseOpenAICompatReasoning(settings.CLAUDE_MEM_OPENAI_COMPAT_REASONING) === undefined) {
+      return { valid: false, error: 'CLAUDE_MEM_OPENAI_COMPAT_REASONING must be "off" (default) or "on"' };
+    }
+
+    if (settings.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER !== undefined
+      && !['', 'openrouter', 'openai-compatible', 'off'].includes(settings.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER)) {
+      return { valid: false, error: 'CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER must be empty (follow the primary provider), "openrouter", "openai-compatible", or "off"' };
+    }
+    if (settings.CLAUDE_MEM_WORK_VIEW_COPY_MODEL !== undefined
+      && (typeof settings.CLAUDE_MEM_WORK_VIEW_COPY_MODEL !== 'string' || settings.CLAUDE_MEM_WORK_VIEW_COPY_MODEL.length > 200)) {
+      return { valid: false, error: 'CLAUDE_MEM_WORK_VIEW_COPY_MODEL must be a string of at most 200 characters' };
+    }
+    for (const key of ['CLAUDE_MEM_WORK_VIEW_CLAUDE_MODEL', 'CLAUDE_MEM_WORK_VIEW_CODEX_MODEL', 'CLAUDE_MEM_WORK_VIEW_GEMINI_MODEL'] as const) {
+      if (settings[key] !== undefined && (typeof settings[key] !== 'string' || settings[key].length > 200)) {
+        return { valid: false, error: `${key} must be a string of at most 200 characters` };
+      }
     }
 
     if (settings.CLAUDE_MEM_OPENROUTER_SITE_URL) {

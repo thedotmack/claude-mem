@@ -18,6 +18,7 @@ import {
 } from '../../types/database.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
 import { computeObservationContentHash, hasStorableTitle } from './observations/store.js';
+import { parseFileList, replaceObservationFileIndex } from './observations/files.js';
 import { seedReinforcement, reinforceObservation } from '../reinforcement/persist.js';
 import {
   createToolUsesSchema,
@@ -30,6 +31,13 @@ import {
   type UpsertToolUseInput,
   type ToolUseQueryFilters,
 } from './tool-uses.js';
+import {
+  createDeliverablesSchema,
+  recordDeliverable as recordDeliverableRow,
+  getDeliverable as getDeliverableRow,
+  type DeliverableRow,
+  type RecordDeliverableInput,
+} from './deliverables.js';
 import {
   createWorkStateSchema,
   appendWorkStateEntry as appendWorkStateEntryRow,
@@ -51,6 +59,7 @@ import { normalizeStoredPromptText, MEDIA_PROMPT_PLACEHOLDER } from './prompt-st
 import { stripMemoryTags } from '../../utils/tag-stripping.js';
 import { applySqliteConnectionPragmas, assertSchemaWriterCompatible, claimSchemaWriter, LATEST_SCHEMA_VERSION } from './connection.js';
 import { streamRows } from './stream-rows.js';
+import { ensureMediaSchema } from './media.js';
 import { OBSERVATIONS_FTS_TRIGGERS_SQL, SESSION_SUMMARIES_FTS_TRIGGERS_SQL } from './SessionSearch.js';
 import {
   assertCanonicalDecimal,
@@ -309,10 +318,52 @@ export class SessionStore {
     this.ensureSessionProjectKeySourceColumn();
     this.requeuePromptsDeadLetteredForSize();
     this.ensureWorkStateTable();
+    this.ensureDeliverablesTable();
     this.ensureHookSpoolConsumedTable();
     this.ensureProjectRecencyIndexes();
     this.ensureMergedIntoProjectCoveringIndexes();
     this.ensureNativePromptIdentity();
+    this.ensureObservationFileIndex();
+    ensureMediaSchema(this.db);
+  }
+
+  /**
+   * v68: file-context looks observations up by file path. json_each over
+   * files_read/files_modified scanned the whole table on the one shared
+   * connection, so concurrent lookups queued past the hook budget. Index each
+   * path instead and answer the lookup from it.
+   */
+  private ensureObservationFileIndex(): void {
+    this.db.transaction(() => {
+      if (this.db.query('SELECT version FROM schema_versions WHERE version = 68').get()) return;
+      this.db.run(`CREATE TABLE IF NOT EXISTS observation_files (
+        path TEXT NOT NULL,
+        observation_id INTEGER NOT NULL REFERENCES observations(id) ON DELETE CASCADE,
+        PRIMARY KEY (path, observation_id)
+      )`);
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_observation_files_observation ON observation_files(observation_id)');
+      // One statement, in SQL: expanding 90k rows in JS would reread every body.
+      const expand = (column: string): string =>
+        `SELECT o.id, je.value FROM observations o, json_each(o.${column}) je
+         WHERE json_valid(o.${column}) AND json_type(o.${column}) = 'array' AND je.type = 'text'`;
+      this.db.run(`INSERT OR IGNORE INTO observation_files(observation_id, path)
+        ${expand('files_read')} UNION ${expand('files_modified')}`);
+      this.db.prepare('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)')
+        .run(68, new Date().toISOString());
+    }).immediate();
+  }
+
+  /** Record the file paths an observation touches so by-file lookup is an index seek. */
+  private indexObservationFiles(observationId: number, filesRead: readonly string[], filesModified: readonly string[]): void {
+    const paths = new Set<string>();
+    for (const filePath of [...filesRead, ...filesModified]) {
+      if (typeof filePath === 'string' && filePath.length > 0) paths.add(filePath);
+    }
+    if (paths.size === 0) return;
+    const insert = this.db.prepare(
+      'INSERT OR IGNORE INTO observation_files(path, observation_id) VALUES (?, ?)',
+    );
+    for (const filePath of paths) insert.run(filePath, observationId);
   }
 
   /** Local host retry identity. Runs after every legacy user_prompts rebuild. */
@@ -2047,6 +2098,19 @@ export class SessionStore {
 
   // v61 — the agent's to-do lists and working state (./work-state.ts). Idempotent
   // DDL like v51, so fresh and migrating databases converge.
+  /** The deliverables bucket's records (deliverables.ts): CREATE IF NOT EXISTS, no version row, so an older worker sharing the database is unaffected. */
+  private ensureDeliverablesTable(): void {
+    createDeliverablesSchema(this.db);
+  }
+
+  recordDeliverable(input: RecordDeliverableInput): { id: number; inserted: boolean } {
+    return recordDeliverableRow(this.db, input);
+  }
+
+  getDeliverable(id: number): DeliverableRow | null {
+    return getDeliverableRow(this.db, id);
+  }
+
   private ensureWorkStateTable(): void {
     createWorkStateSchema(this.db);
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(61, new Date().toISOString());
@@ -3653,8 +3717,8 @@ export class SessionStore {
     return mutation;
   }
 
-  saveUserPrompt(contentSessionId: string, promptNumber: number, promptText: string, sessionDbId?: number, nativePromptId?: string, nativePromptHash?: string): number {
-    const now = new Date();
+  saveUserPrompt(contentSessionId: string, promptNumber: number, promptText: string, sessionDbId?: number, nativePromptId?: string, nativePromptHash?: string, createdAtEpoch?: number): number {
+    const now = new Date(createdAtEpoch ?? Date.now());
     const nowEpoch = now.getTime();
     const storedPromptText = normalizeStoredPromptText(promptText);
     const resolvedSessionDbId = this.resolvePromptSessionDbId(contentSessionId, sessionDbId);
@@ -3673,7 +3737,8 @@ export class SessionStore {
    * Equal text with a different key is a new real turn. No time window applies.
    * It is scoped by the DB session (platform_source + content_session_id).
    */
-  saveNativeUserPrompt(contentSessionId: string, sessionDbId: number, nativePromptId: string, promptText: string, identityPromptText = promptText): {
+  saveNativeUserPrompt(contentSessionId: string, sessionDbId: number, nativePromptId: string, promptText: string, identityPromptText = promptText,
+    options: { createdAtEpoch?: number; reopenSession?: boolean } = {}): {
     id: number; promptNumber: number; duplicate: boolean;
   } {
     if (!nativePromptId || nativePromptId.length > 256 || /[\s\x00-\x1f\x7f]/.test(nativePromptId)) {
@@ -3692,10 +3757,87 @@ export class SessionStore {
         return { id: existing.id, promptNumber: existing.prompt_number, duplicate: true };
       }
       const promptNumber = this.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId) + 1;
-      this.reopenCompletedSession(sessionDbId);
-      const id = this.saveUserPrompt(contentSessionId, promptNumber, text, sessionDbId, nativePromptId, promptHash);
+      if (options.reopenSession !== false) this.reopenCompletedSession(sessionDbId);
+      const id = this.saveUserPrompt(contentSessionId, promptNumber, text, sessionDbId, nativePromptId, promptHash, options.createdAtEpoch);
       return { id, promptNumber, duplicate: false };
     }).immediate();
+  }
+
+  /**
+   * A prompt read back from an agent's own transcript (setup prompt import).
+   * It joins the session claude-mem's hooks recorded for the same conversation,
+   * keeps the transcript's time, and never reopens a finished session.
+   *
+   * Two copies of one prompt count once:
+   * - a re-scan finds the transcript's native key (`transcript:` prefix + the
+   *   agent's message id, compared with its SHA-256 by saveNativeUserPrompt);
+   * - a hook-recorded row carries no native key, so it is matched by session,
+   *   stored text (or one of `hookTextVariants`, e.g. a slash command's short
+   *   form) and the nearest time within `hookMatchWindowMs`. Each hook row is
+   *   claimed by one transcript prompt at most (`claimedHookRowIds`), so a
+   *   prompt typed twice is still two prompts.
+   * A prompt that is entirely private stores nothing.
+   */
+  importTranscriptUserPrompt(prompt: {
+    platformSource: string; contentSessionId: string; project: string;
+    nativePromptId: string; promptText: string; createdAtEpoch: number;
+    hookTextVariants?: string[]; hookMatchWindowMs: number; claimedHookRowIds: Set<number>;
+  }): { reason: 'new' | 'already-imported' | 'recorded-by-hook' | 'private'; hookRowId?: number } {
+    const text = normalizeStoredPromptText(prompt.promptText);
+    if (!text) return { reason: 'private' };
+    const platformSource = normalizePlatformSource(prompt.platformSource);
+    const session = this.db.prepare(`SELECT id FROM sdk_sessions
+      WHERE COALESCE(NULLIF(platform_source, ''), ?) = ? AND content_session_id = ?`)
+      .get(DEFAULT_PLATFORM_SOURCE, platformSource, prompt.contentSessionId) as { id: number } | null;
+    let sessionDbId = session?.id;
+    if (sessionDbId !== undefined) {
+      const texts = [text, ...(prompt.hookTextVariants ?? []).map(normalizeStoredPromptText).filter(Boolean)];
+      const hookRows = this.db.prepare(`SELECT id, created_at_epoch FROM user_prompts
+        WHERE session_db_id = ? AND native_prompt_id IS NULL
+          AND prompt_text IN (${texts.map(() => '?').join(', ')})
+          AND ABS(created_at_epoch - ?) <= ?
+        ORDER BY ABS(created_at_epoch - ?), id`)
+        .all(sessionDbId, ...texts, prompt.createdAtEpoch, prompt.hookMatchWindowMs, prompt.createdAtEpoch) as Array<{ id: number }>;
+      const hookRow = hookRows.find(row => !prompt.claimedHookRowIds.has(row.id));
+      if (hookRow) {
+        prompt.claimedHookRowIds.add(hookRow.id);
+        return { reason: 'recorded-by-hook', hookRowId: hookRow.id };
+      }
+    } else {
+      const at = new Date(prompt.createdAtEpoch).toISOString();
+      const inserted = this.db.prepare(`INSERT INTO sdk_sessions
+        (content_session_id, memory_session_id, project, platform_source, user_prompt, started_at, started_at_epoch, completed_at, completed_at_epoch, status)
+        VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, 'completed')`)
+        .run(prompt.contentSessionId, prompt.project, platformSource, text, at, prompt.createdAtEpoch, at, prompt.createdAtEpoch);
+      sessionDbId = Number(inserted.lastInsertRowid);
+    }
+    const result = this.saveNativeUserPrompt(prompt.contentSessionId, sessionDbId, `transcript:${prompt.nativePromptId}`,
+      prompt.promptText, prompt.promptText, { createdAtEpoch: prompt.createdAtEpoch, reopenSession: false });
+    return { reason: result.duplicate ? 'already-imported' : 'new' };
+  }
+
+  /** Prompts claude-mem's hooks recorded since `sinceEpochMs` (everything the transcript import did not write). */
+  listHookRecordedPrompts(sinceEpochMs: number): Array<{
+    id: number; platformSource: string; contentSessionId: string; project: string; cwd: string | null; promptText: string; createdAtEpoch: number;
+  }> {
+    return this.db.prepare(`SELECT up.id, COALESCE(NULLIF(s.platform_source, ''), ?) AS platformSource,
+        s.content_session_id AS contentSessionId, s.project, s.cwd, up.prompt_text AS promptText, up.created_at_epoch AS createdAtEpoch
+      FROM user_prompts up JOIN sdk_sessions s ON s.id = up.session_db_id
+      WHERE up.created_at_epoch >= ? AND s.project != ?
+        AND (up.native_prompt_id IS NULL OR up.native_prompt_id NOT LIKE 'transcript:%')
+      ORDER BY up.created_at_epoch, up.id`)
+      .all(DEFAULT_PLATFORM_SOURCE, sinceEpochMs, OBSERVER_SESSIONS_PROJECT) as Array<{
+        id: number; platformSource: string; contentSessionId: string; project: string; cwd: string | null; promptText: string; createdAtEpoch: number;
+      }>;
+  }
+
+  /** Every observation's token fields, streamed in id order (setup Token Savings feeds them to calculateTokenEconomics). */
+  streamObservationTokenFields(): Iterable<{
+    title: string | null; subtitle: string | null; narrative: string | null; facts: string | null; discovery_tokens: number | null;
+  }> {
+    return streamRows(this.db.prepare(`SELECT title, subtitle, narrative, facts, discovery_tokens FROM observations ORDER BY id`)) as Iterable<{
+      title: string | null; subtitle: string | null; narrative: string | null; facts: string | null; discovery_tokens: number | null;
+    }>;
   }
 
   getUserPrompt(contentSessionId: string, promptNumber: number, sessionDbId?: number): string | null {
@@ -3946,6 +4088,7 @@ export class SessionStore {
     insertedObservationIds: number[];
     summaryId: number | null;
     createdAtEpoch: number;
+    summaryUpdated?: boolean;
   } {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
@@ -4048,6 +4191,7 @@ export class SessionStore {
 
         if (inserted) {
           if (dedup.enabled) this.maintainDedupOnInsert(project, inserted.id, observation.title, dedup);
+          this.indexObservationFiles(inserted.id, observation.files_read, observation.files_modified);
           observationIds.push(inserted.id);
           mergedIntoExisting.push(false);
           insertedObservationIds.push(inserted.id);
@@ -4068,37 +4212,112 @@ export class SessionStore {
       }
 
       let summaryId: number | null = null;
+      let summaryUpdated = false;
       if (summary) {
         const rolledUp = rollupObservationFileLists(observations);
         const filesRead = summary.files_read ?? rolledUp.files_read;
         const filesEdited = summary.files_edited ?? rolledUp.files_edited;
-        const summaryStmt = this.db.prepare(`
-          INSERT INTO session_summaries
-          (memory_session_id, project, request, investigated, learned, completed,
-           next_steps, files_read, files_edited, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `);
 
-        const result = summaryStmt.run(
-          memorySessionId,
-          project,
-          summary.request,
-          summary.investigated,
-          summary.learned,
-          summary.completed,
-          summary.next_steps,
-          JSON.stringify(filesRead),
-          JSON.stringify(filesEdited),
-          summary.notes,
-          promptNumber || null,
-          discoveryTokens,
-          timestampIso,
-          timestampEpoch
-        );
-        summaryId = Number(result.lastInsertRowid);
+        const existingSummary = promptNumber
+          ? (this.db.prepare(
+              `SELECT id, request, investigated, learned, completed, next_steps,
+                      files_read, files_edited, notes, discovery_tokens, sync_rev
+               FROM session_summaries
+               WHERE memory_session_id = ? AND prompt_number = ? AND origin_device_id IS NULL
+               ORDER BY id DESC LIMIT 1`
+            ).get(memorySessionId, promptNumber) as {
+              id: number;
+              request: string | null;
+              investigated: string | null;
+              learned: string | null;
+              completed: string | null;
+              next_steps: string | null;
+              files_read: string | null;
+              files_edited: string | null;
+              notes: string | null;
+              discovery_tokens: number | null;
+              sync_rev: string | null;
+            } | undefined)
+          : undefined;
+
+        if (existingSummary) {
+          const mergedRequest = (summary.request && summary.request.trim()) ? summary.request : (existingSummary.request ?? '');
+          const mergedInvestigated = (summary.investigated && summary.investigated.trim()) ? summary.investigated : (existingSummary.investigated ?? '');
+          const mergedLearned = (summary.learned && summary.learned.trim()) ? summary.learned : (existingSummary.learned ?? '');
+          const mergedCompleted = (summary.completed && summary.completed.trim()) ? summary.completed : (existingSummary.completed ?? '');
+          // next_steps describes what is left as of this stop, so the latest value wins even when empty.
+          const mergedNextSteps = summary.next_steps ?? '';
+          const mergedNotes = (summary.notes && summary.notes.trim()) ? summary.notes : existingSummary.notes;
+
+          const mergedFilesRead = [...new Set([...parseFileList(existingSummary.files_read), ...filesRead])];
+          const mergedFilesEdited = [...new Set([...parseFileList(existingSummary.files_edited), ...filesEdited])];
+
+          const mergedTokens = Math.max(existingSummary.discovery_tokens ?? 0, discoveryTokens);
+          const nextRev = incrementCanonicalDecimal(existingSummary.sync_rev || '0');
+
+          this.db.prepare(`
+            UPDATE session_summaries SET
+              request = ?, investigated = ?, learned = ?, completed = ?, next_steps = ?,
+              files_read = ?, files_edited = ?, notes = ?, discovery_tokens = ?,
+              created_at = ?, created_at_epoch = ?,
+              sync_rev = ?, synced_at = NULL
+            WHERE id = ?
+          `).run(
+            mergedRequest,
+            mergedInvestigated,
+            mergedLearned,
+            mergedCompleted,
+            mergedNextSteps,
+            JSON.stringify(mergedFilesRead),
+            JSON.stringify(mergedFilesEdited),
+            mergedNotes,
+            mergedTokens,
+            timestampIso,
+            timestampEpoch,
+            nextRev,
+            existingSummary.id
+          );
+
+          summary.request = mergedRequest;
+          summary.investigated = mergedInvestigated;
+          summary.learned = mergedLearned;
+          summary.completed = mergedCompleted;
+          summary.next_steps = mergedNextSteps;
+          summary.notes = mergedNotes;
+          summary.files_read = mergedFilesRead;
+          summary.files_edited = mergedFilesEdited;
+
+          summaryId = existingSummary.id;
+          summaryUpdated = true;
+        } else {
+          const summaryStmt = this.db.prepare(`
+            INSERT INTO session_summaries
+            (memory_session_id, project, request, investigated, learned, completed,
+             next_steps, files_read, files_edited, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `);
+
+          const result = summaryStmt.run(
+            memorySessionId,
+            project,
+            summary.request,
+            summary.investigated,
+            summary.learned,
+            summary.completed,
+            summary.next_steps,
+            JSON.stringify(filesRead),
+            JSON.stringify(filesEdited),
+            summary.notes,
+            promptNumber || null,
+            discoveryTokens,
+            timestampIso,
+            timestampEpoch
+          );
+          summaryId = Number(result.lastInsertRowid);
+        }
       }
 
-      return { observationIds, mergedIntoExisting, insertedObservationIds, summaryId, createdAtEpoch: timestampEpoch };
+      return { observationIds, mergedIntoExisting, insertedObservationIds, summaryId, createdAtEpoch: timestampEpoch, summaryUpdated };
     });
 
     const stored = storeTx();
@@ -4119,7 +4338,7 @@ export class SessionStore {
       const observationStmt = this.db.prepare('UPDATE observations SET discovery_tokens = ? WHERE id = ?');
       for (const id of observationIds) observationStmt.run(discoveryTokens, id);
       if (summaryId !== null) {
-        this.db.prepare('UPDATE session_summaries SET discovery_tokens = ? WHERE id = ?').run(discoveryTokens, summaryId);
+        this.db.prepare('UPDATE session_summaries SET discovery_tokens = MAX(COALESCE(discovery_tokens, 0), ?) WHERE id = ?').run(discoveryTokens, summaryId);
       }
     })();
   }
@@ -4226,6 +4445,57 @@ export class SessionStore {
     const rowMap = new Map(rows.map(r => [r.id, r]));
     const ordered = ids.map(id => rowMap.get(id)).filter((r): r is UserPromptRecord => !!r);
     return limit ? ordered.slice(0, limit) : ordered;
+  }
+
+  /**
+   * The ids of every row a semantic search with this scope can return, for
+   * ChromaSync's narrowed filtered fallback (#5091). Each category uses the
+   * joins, project scope and platform clause of its get*ByIds hydration, so no
+   * row the hydration would keep is missing. Chroma's `sqlite_id` repeats
+   * across doc types, so the categories share one list. Null when more than
+   * `maxIds` rows match.
+   */
+  getSearchScopeRowIds(
+    categories: { observations: boolean; sessions: boolean; prompts: boolean },
+    options: { project?: string; projects?: string[]; platformSource?: string },
+    maxIds: number
+  ): number[] | null {
+    const projects = scopedProjects(options);
+    const platformSource = options.platformSource ? normalizePlatformSource(options.platformSource) : undefined;
+    const sources = [
+      categories.observations && { alias: 'o', includeMerged: true,
+        from: 'SELECT o.id FROM observations o LEFT JOIN sdk_sessions s ON s.memory_session_id = o.memory_session_id' },
+      categories.sessions && { alias: 'ss', includeMerged: true,
+        from: 'SELECT ss.id FROM session_summaries ss LEFT JOIN sdk_sessions s ON s.memory_session_id = ss.memory_session_id' },
+      categories.prompts && { alias: 's', includeMerged: false,
+        from: 'SELECT up.id FROM user_prompts up JOIN sdk_sessions s ON up.session_db_id = s.id' },
+    ].filter((source): source is { alias: string; includeMerged: boolean; from: string } => !!source);
+
+    const ids = new Set<number>();
+    for (const source of sources) {
+      const conditions: string[] = [];
+      const params: Array<string | number> = [];
+      if (projects.length > 0) {
+        const scope = projectScopeSql(source.alias, projects, { includeMerged: source.includeMerged });
+        conditions.push(scope.sql);
+        params.push(...scope.params);
+      }
+      if (platformSource) {
+        conditions.push(`COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') = ?`);
+        params.push(platformSource);
+      }
+      const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+      const statement = this.db.prepare(`${source.from} ${where} LIMIT ?`);
+      let rows: Array<{ id: number }>;
+      try {
+        rows = statement.all(...params, maxIds + 1) as Array<{ id: number }>;
+      } finally {
+        statement.finalize();
+      }
+      for (const row of rows) ids.add(row.id);
+      if (ids.size > maxIds) return null;
+    }
+    return [...ids];
   }
 
   getTimelineAroundTimestamp(
@@ -4667,28 +4937,37 @@ export class SessionStore {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    const result = stmt.run(
-      obs.memory_session_id,
-      obs.project,
-      coerceBindValue(obs.text),
-      obs.type,
-      coerceBindValue(obs.title),
-      coerceBindValue(obs.subtitle),
-      coerceBindValue(obs.facts),
-      coerceBindValue(obs.narrative),
-      coerceBindValue(obs.concepts),
-      coerceBindValue(obs.files_read),
-      coerceBindValue(obs.files_modified),
-      obs.prompt_number,
-      obs.discovery_tokens || 0,
-      obs.agent_type ?? null,
-      obs.agent_id ?? null,
-      obs.created_at,
-      obs.created_at_epoch
-    );
+    // The row and its observation_files mappings commit together: an import
+    // interrupted between the two writes leaves an observation permanently
+    // unsearchable by file — the replay match skips the existing row and the
+    // v68 migration is already stamped, so neither repairs the gap.
+    const importedId = this.db.transaction(() => {
+      const result = stmt.run(
+        obs.memory_session_id,
+        obs.project,
+        coerceBindValue(obs.text),
+        obs.type,
+        coerceBindValue(obs.title),
+        coerceBindValue(obs.subtitle),
+        coerceBindValue(obs.facts),
+        coerceBindValue(obs.narrative),
+        coerceBindValue(obs.concepts),
+        coerceBindValue(obs.files_read),
+        coerceBindValue(obs.files_modified),
+        obs.prompt_number,
+        obs.discovery_tokens || 0,
+        obs.agent_type ?? null,
+        obs.agent_id ?? null,
+        obs.created_at,
+        obs.created_at_epoch
+      );
+      const id = result.lastInsertRowid as number;
+      replaceObservationFileIndex(this.db, id, obs.files_read, obs.files_modified);
+      return id;
+    })();
     emitContextInvalidation({ projects: [obs.project] }, 'importObservation');
 
-    return { imported: true, id: result.lastInsertRowid as number };
+    return { imported: true, id: importedId };
   }
 
   rebuildObservationsFTSIndex(): void {

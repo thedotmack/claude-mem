@@ -32,10 +32,13 @@ But it carries three things that belong to openrouter.ai specifically:
   and irrelevant to an endpoint you configured yourself, but you still share
   the same three settings keys with them.
 
-This provider has its own settings keys and sends a deliberately plain request
-body: `model`, `messages`, `temperature`, `max_tokens`, and nothing else. Strict
-servers (vLLM in particular) reject unknown fields. `max_tokens` is
-`CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS` (4096 by default); a model that only
+This provider has its own settings keys. The request body is `model`,
+`messages`, `temperature`, `max_tokens`, and `reasoning: { enabled: false }`
+by default, so a reasoning model cannot spend the output cap thinking and
+return an empty observation. Set `CLAUDE_MEM_OPENAI_COMPAT_REASONING` to `on`
+to leave reasoning to the endpoint. A strict server (vLLM in particular) that
+rejects the `reasoning` field gets the request once more without it. `max_tokens`
+is `CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS` (4096 by default); a model that only
 accepts `max_completion_tokens` gets the request again with that field.
 
 A claude-mem observer key (`cm_pro_…`) is never sent to these endpoints. Use the
@@ -96,6 +99,7 @@ endpoint or model you pinned yourself.
 | `api-route` | `https://global.api-route.com/v1` | yes |
 | `opper` | `https://api.opper.ai/v3/compat` | yes |
 | `atlascloud` | `https://api.atlascloud.ai/v1` | yes |
+| `runcrate` | `https://api.runcrate.ai/v1` | yes |
 | `deepseek` | `https://api.deepseek.com/v1` | yes |
 | `opencode-go` | `https://opencode.ai/zen/go/v1` | yes |
 | `opencode-zen` | `https://opencode.ai/zen/v1` | yes |
@@ -141,6 +145,8 @@ work.
 | `CLAUDE_MEM_OPENAI_COMPAT_PRESET` | `''` (= `custom`) | Named endpoint preset from the table above |
 | `CLAUDE_MEM_OPENAI_COMPAT_BASE_URL` | preset's | OpenAI-compatible base URL. `/chat/completions` is appended if absent |
 | `CLAUDE_MEM_OPENAI_COMPAT_MODEL` | preset's | Model id, passed verbatim |
+| `CLAUDE_MEM_OPENAI_COMPAT_OBSERVATION_BATCH_SIZE` | `1` | Queued tool events per observer request (1–32); see [Observation batching](#observation-batching) |
+| `CLAUDE_MEM_OPENAI_COMPAT_REASONING` | `''` (= off) | `off` sends `reasoning: { enabled: false }` on every request. `on` leaves reasoning to the endpoint |
 | `CLAUDE_MEM_OPENAI_COMPAT_API_KEY` | `''` | API key. Also read from `OPENAI_COMPAT_API_KEY` in `~/.claude-mem/.env` |
 | `CLAUDE_MEM_OPENAI_COMPAT_API_KEYS` | `''` | Extra keys for rotation — see [multi-key rotation](/usage/multi-key-rotation) |
 
@@ -151,6 +157,40 @@ The viewer's **Settings → Advanced** panel edits the provider, preset, base UR
 and model. The API key is set in `~/.claude-mem/settings.json` or
 `~/.claude-mem/.env` only, never through the viewer.
 
+## Observation batching
+
+If tool events arrive faster than a local observer can process them, opt into
+batching in `~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_OBSERVATION_BATCH_SIZE": "4"
+}
+```
+
+Keep your existing endpoint and model settings. An environment variable with the
+same name overrides the file. The default is `1`; values outside the integer
+range 1–32 use that default. This setting applies only to `openai-compatible`.
+Claude and Codex retain their own batch settings, and Gemini/OpenRouter are
+unchanged.
+
+The observer takes up to that many events already waiting in the session's queue,
+without waiting to fill a batch. A different prompt number, agent ID/type, working
+directory, or a summary request ends the batch. Appended events must fit within
+twice the model's per-field character cap (32,000 characters at most, lower for
+small context windows). A large event that needs condensation waits for its own
+turn. The first event still uses the normal field-condensation path; the batching
+budget does not further truncate it or bound the entire conversation history.
+
+For example, eight small queued events in the same context can use two requests
+with a batch size of four instead of eight requests. The model may combine
+related findings, so batching does not guarantee identical summaries. As with
+Claude/Codex batching, returned observations share the batch's file evidence and
+attribution. The existing invalid-output policy applies to the whole batch: one
+retry, then discard if the reply is still invalid. Transport/quota failures and
+cancellation do not confirm the claimed events as processed.
+
 ## MiniMax
 
 `minimax` is MiniMax's global endpoint and `minimax-cn` the mainland-China one;
@@ -158,11 +198,12 @@ use the preset that matches where your account lives. Both default to
 `MiniMax-M3`. Any model id MiniMax serves is passed verbatim, including legacy
 ids such as `MiniMax-M2.7`.
 
-To use M3.1 Flash instead, set its model id explicitly. The observer uses Chat
-Completions without overriding thinking or reasoning effort, so Flash runs with
-the API's adaptive thinking at its default `max` effort, which spends more
-tokens per observation. Flash may also need a MiniMax Token Plan rather than
-pay-as-you-go. See the [MiniMax OpenAI API reference](https://platform.minimax.io/docs/api-reference/text-openai-api).
+To use M3.1 Flash instead, set its model id explicitly. The observer sends
+`reasoning: { enabled: false }` by default, so Flash does not run its adaptive
+thinking at `max` effort on every observation. Set
+`CLAUDE_MEM_OPENAI_COMPAT_REASONING` to `on` to leave thinking to MiniMax.
+Flash may also need a MiniMax Token Plan rather than pay-as-you-go. See the
+[MiniMax OpenAI API reference](https://platform.minimax.io/docs/api-reference/text-openai-api).
 
 ```json
 {
@@ -300,6 +341,24 @@ at `https://api.atlascloud.ai/v1/models`, and keys come from
   "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "atlascloud",
   "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your Atlas Cloud key>",
   "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek-ai/deepseek-v4-flash"
+}
+```
+
+## Runcrate
+
+[Runcrate](https://www.runcrate.ai) is a GPU cloud that also serves open
+models such as DeepSeek V4.1 Flash, GLM-5.3, Qwen3.8 Flash and gpt-oss 120B
+behind one OpenAI-compatible API key. Model ids are vendor-prefixed, such as `deepseek-ai/DeepSeek-V4.1-Flash` (the preset's default) or
+`zai-org/GLM-5.3`, and are passed verbatim. The model list is public at
+`https://api.runcrate.ai/v1/models`, and keys come from
+[the Runcrate dashboard](https://www.runcrate.ai/dashboard/api-keys).
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "runcrate",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your Runcrate key>",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek-ai/DeepSeek-V4.1-Flash"
 }
 ```
 

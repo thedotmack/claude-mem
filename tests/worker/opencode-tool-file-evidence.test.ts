@@ -9,7 +9,7 @@ for (const kind of ['read', 'write', 'edit', 'patch-update', 'patch-move', 'lega
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       child = Bun.spawn([process.execPath, 'tests/fixtures/opencode/tool-file-evidence.ts', kind], {
-        cwd: process.cwd(), env: { ...process.env, CLAUDE_MEM_DATA_DIR: dataDir, CLAUDE_MEM_WORKER_HOST: '127.0.0.1' }, stdout: 'pipe', stderr: 'pipe',
+        cwd: process.cwd(), env: { ...process.env, CLAUDE_MEM_GROK_BOT_INJECT_ENABLED: 'false', CLAUDE_MEM_DATA_DIR: dataDir, CLAUDE_MEM_WORKER_HOST: '127.0.0.1' }, stdout: 'pipe', stderr: 'pipe',
       });
       const exit = await Promise.race([child.exited, new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error('Owned OpenCode fixture exceeded 8 seconds')), 8000);

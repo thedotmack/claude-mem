@@ -5,11 +5,13 @@
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
-import { parseJsonArray, formatTime, formatDate, formatHeaderDateTime } from '../../shared/timeline-formatting.js';
+import { parseJsonArray, formatTime, formatDate, formatHeaderDateTime, compactTime } from '../../shared/timeline-formatting.js';
 import { closeSync, openSync, readSync, statSync } from 'fs';
+import { homedir } from 'os';
 import path from 'path';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
+import { projectsQueryValues } from '../../shared/project-list.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { detectLanguage } from '../../services/smart-file-read/language-map.js';
 import { checkTreeSitterCliLoadable } from '../../services/smart-file-read/tree-sitter-bin-path.js';
@@ -26,7 +28,7 @@ const FILE_CONTEXT_MIN_BYTES = 1_500;
  * The File Read Gate denies a whole-file Read only from this size up; smaller
  * files get the timeline as context. A deny costs turns: the denied Read and
  * every smart-tool or targeted Read after it, each re-reading the whole
- * context, against the file it keeps out. evals/read-gate asked one question
+ * context, against the file it keeps out. tests/evals/read-gate asked one question
  * with the gate on and off: on a 19 KB file it cost -6% on Sonnet and +20% on
  * Opus, on a 49 KB file -35% and -32%.
  */
@@ -55,9 +57,6 @@ const TYPE_ICONS: Record<string, string> = {
   change: '\u2705',
 };
 
-function compactTime(timeStr: string): string {
-  return timeStr.toLowerCase().replace(' am', 'a').replace(' pm', 'p');
-}
 
 interface ObservationRow {
   id: number;
@@ -161,7 +160,7 @@ function formatFileContextTimeline(history: FileObservationHistory): string {
 }
 
 // The `Full-file Read blocked by claude-mem:` line is the read-gate eval's trace
-// anchor (evals/read-gate) — keep it verbatim.
+// anchor (tests/evals/read-gate) — keep it verbatim.
 function formatFullFileReadDenyReason(history: FileObservationHistory): string {
   const safePath = escapePathForHint(history.filePath);
   const displayedIds = history.displayedObservations.map(obs => obs.id).join(', ');
@@ -433,6 +432,26 @@ export const fileContextHandler: EventHandler = {
   },
 };
 
+/**
+ * The `path` forms the by-file lookup sends, forward-slashed and de-duped: the
+ * absolute path, the cwd-relative path and, for a file under the home
+ * directory, its `~/` form. An observation can store the `~/` form a tool
+ * argument used (agy's `read_file` takes the path the model typed), and a
+ * lookup by the absolute path alone would miss it.
+ */
+export function fileHistoryQueryPaths(
+  absolutePath: string,
+  relativePath: string,
+  homeDirectory: string = homedir(),
+): string[] {
+  const absoluteForward = absolutePath.split(path.sep).join('/');
+  const homeForward = homeDirectory.split(path.sep).join('/');
+  const homeRelative = absoluteForward.startsWith(homeForward + '/')
+    ? '~/' + absoluteForward.slice(homeForward.length + 1)
+    : '';
+  return Array.from(new Set([absoluteForward, relativePath, homeRelative].filter(Boolean)));
+}
+
 async function lookupFileObservationHistory(
   input: NormalizedHookInput,
   filePath: string,
@@ -474,16 +493,15 @@ async function lookupFileObservationHistory(
   // never matched absolute-path storage. Send both candidate forms (forward-
   // slashed, de-duped) as repeated `path` params so the key matches across
   // both events regardless of how the path was stored.
-  const candidateQueryPaths = Array.from(new Set([
-    absolutePath.split(path.sep).join("/"),
-    relativePath,
-  ].filter(Boolean)));
+  const candidateQueryPaths = fileHistoryQueryPaths(absolutePath, relativePath);
   const queryParams = new URLSearchParams();
   for (const candidate of candidateQueryPaths) {
     queryParams.append('path', candidate);
   }
   if (context.allProjects.length > 0) {
-    queryParams.set('projects', context.allProjects.join(','));
+    for (const value of projectsQueryValues(context.allProjects)) {
+      queryParams.append('projects', value);
+    }
   }
   queryParams.set('limit', String(FETCH_LOOKAHEAD_LIMIT));
 

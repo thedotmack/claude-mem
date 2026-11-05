@@ -18,7 +18,7 @@ import { execFile } from 'child_process';
 import { readdirSync, readFileSync } from 'fs';
 import { promisify } from 'util';
 import { logger } from '../utils/logger.js';
-import { captureProcessStartToken, isSameProcess } from './process-identity.js';
+import { captureProcessStartToken, isSameProcess, startTokenProbeEnv, withUtcStartTokenPrefix } from './process-identity.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -41,6 +41,33 @@ const TASKKILL_NOT_FOUND_EXIT = 128;
  */
 const TASKKILL_NOT_FOUND_PATTERN = /not found|no running instance|no tasks/i;
 
+/** Longest graceful-mode wait between SIGTERM and SIGKILL. */
+const GRACEFUL_SETTLE_MS = 500;
+const GRACEFUL_SETTLE_POLL_MS = 10;
+
+/**
+ * Wait up to `maxWaitMs` for every signalled PID to be gone, returning as soon
+ * as they all are. A tree that honours SIGTERM promptly no longer pays the full
+ * settle. Liveness uses signal 0, so a reused or not-yet-reaped PID reads as
+ * alive and simply keeps the full wait — never a shorter one than intended.
+ */
+async function waitForSignalledProcessesToExit(pids: number[], maxWaitMs: number): Promise<void> {
+  const deadline = Date.now() + maxWaitMs;
+  const isAlive = (target: number): boolean => {
+    try {
+      process.kill(target, 0);
+      return true;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === 'EPERM';
+    }
+  };
+  while (pids.some(isAlive)) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) return;
+    await new Promise(resolve => setTimeout(resolve, Math.min(GRACEFUL_SETTLE_POLL_MS, remainingMs)));
+  }
+}
+
 /** Raised when a tree-kill genuinely failed and the process may still be alive. */
 export class ProcessTreeKillError extends Error {
   readonly pid: number;
@@ -53,7 +80,8 @@ export class ProcessTreeKillError extends Error {
 
 export interface KillProcessTreeOptions {
   /**
-   * 'graceful' (default) — POSIX gets SIGTERM, a 500ms settle, then SIGKILL.
+   * 'graceful' (default) — POSIX gets SIGTERM, a settle of up to 500ms (ending early once every
+   * signalled process is gone), then SIGKILL.
    *
    * 'immediate' — POSIX goes straight to SIGKILL with no SIGTERM and no
    * settle. Required by the stale-worker recycle (#3378): that path must run
@@ -101,7 +129,7 @@ export interface KillProcessTreeOptions {
  * Kill a process and all its descendants (tree-kill).
  *
  * POSIX: collects the descendant set with `pgrep -P` walks and signals leaves
- * before their ancestors. In 'graceful' mode that is SIGTERM, a 500ms settle,
+ * before their ancestors. In 'graceful' mode that is SIGTERM, a settle of up to 500ms (ending early once the signalled processes exit),
  * then SIGKILL of the union of the pre- and post-settle descendant sets; in
  * 'immediate' mode it is SIGKILL throughout.
  *
@@ -221,7 +249,10 @@ export async function killProcessTree(
     // mode already sent SIGKILL, so there is nothing to wait for — but it still
     // re-collects below, to catch descendants that re-parented as the tree died.
     if (!immediate) {
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await waitForSignalledProcessesToExit(
+        [pid, ...descendantsBeforeTerm.map(child => child.pid)],
+        GRACEFUL_SETTLE_MS,
+      );
     }
 
     // Re-collect descendants — some layers may have re-parented during the
@@ -371,7 +402,10 @@ function readProcessTableLinux(): ProcessTableRow[] {
  * Its lstart is byte-identical to `ps -p <pid> -o lstart=`, which is what
  * captureProcessStartToken() uses here. LC_ALL/LANG are pinned for the same
  * reason they are pinned there — a locale-formatted date would not compare
- * equal on the revalidation.
+ * equal on the revalidation — and TZ is pinned with them (#5311), because a
+ * token that shifts with the calling process's zone turns every zone change
+ * into a false PID-reuse verdict. The rows carry the same utc: prefix the
+ * single-PID reader stamps, so the byte-identical agreement survives.
  */
 async function readProcessTablePosix(): Promise<ProcessTableRow[]> {
   let stdout: string;
@@ -379,7 +413,7 @@ async function readProcessTablePosix(): Promise<ProcessTableRow[]> {
     const result = await execFileAsync('ps', ['-eo', 'pid=,ppid=,lstart='], {
       timeout: 10_000,
       maxBuffer: 32 * 1024 * 1024,
-      env: { ...process.env, LC_ALL: 'C', LANG: 'C' },
+      env: startTokenProbeEnv(process.env),
     });
     stdout = result.stdout;
   } catch (error) {
@@ -388,7 +422,11 @@ async function readProcessTablePosix(): Promise<ProcessTableRow[]> {
     });
     return [];
   }
+  return parsePosixProcessTable(stdout);
+}
 
+/** Rows from `ps -eo pid=,ppid=,lstart=` output. Pure and exported for tests. */
+export function parsePosixProcessTable(stdout: string): ProcessTableRow[] {
   const rows: ProcessTableRow[] = [];
   for (const line of stdout.split('\n')) {
     const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
@@ -397,7 +435,7 @@ async function readProcessTablePosix(): Promise<ProcessTableRow[]> {
     rows.push({
       pid: Number.parseInt(match[1]!, 10),
       ppid: Number.parseInt(match[2]!, 10),
-      startToken: startToken.length > 0 ? startToken : null,
+      startToken: startToken.length > 0 ? withUtcStartTokenPrefix(startToken) : null,
     });
   }
   return rows;

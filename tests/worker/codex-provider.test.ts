@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
-import { CodexProvider, classifyCodexError } from '../../src/services/worker/CodexProvider.js';
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import { CodexProvider, classifyCodexError, CODEX_EXIT_REPORT_LINES } from '../../src/services/worker/CodexProvider.js';
+import { logger } from '../../src/utils/logger.js';
 import { CODEX_SETUP_REQUIRED_CODE } from '../../src/services/worker/CodexAppServerClient.js';
 import { SessionRoutes } from '../../src/services/worker/http/routes/SessionRoutes.js';
 import { SettingsRoutes } from '../../src/services/worker/http/routes/SettingsRoutes.js';
@@ -553,6 +554,279 @@ describe('Codex provider integration', () => {
       expect(classifyCodexError(error).kind).toBe(kind);
     });
   }
+
+  it('classifies a recycle SIGKILL as transient when the stderr tail quotes a stale 401', () => {
+    const staleAuthStderr = 'failed to connect to websocket: IO error: Connection reset by peer (os error 54), url: wss://chatgpt.com/backend-api/codex/responses\n'
+      + '2026-11-02T07:14:11.006948Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: Connection reset by peer (os error 54)\n'
+      + '2026-11-02T07:14:14.708504Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: authentication failed with 401 unauthorized';
+    const message = `Codex app-server exited with code null signal SIGKILL: ${staleAuthStderr}`;
+    expect(classifyCodexError(new Error(message)).kind).toBe('transient');
+    const withSignal = Object.assign(new Error(message), { exitCode: null, exitSignal: 'SIGKILL' });
+    expect(classifyCodexError(withSignal).kind).toBe('transient');
+  });
+
+  it('classifies SIGTERM exit as transient', () => {
+    const error = Object.assign(
+      new Error('Codex app-server exited with code null signal SIGTERM: graceful shutdown'),
+      { exitCode: null, exitSignal: 'SIGTERM' },
+    );
+    expect(classifyCodexError(error).kind).toBe('transient');
+  });
+
+  it('classifies a 401 on an ordinary exit as auth_invalid', () => {
+    const error = Object.assign(
+      new Error('Codex app-server exited with code 1 signal null: authentication failed with 401 unauthorized'),
+      { exitCode: 1, exitSignal: null },
+    );
+    expect(classifyCodexError(error).kind).toBe('auth_invalid');
+  });
+
+  // #5275 follow-up: an ordinary exit still quotes the lifetime stderr tail.
+  // A 401 that is no longer in the trailing lines did not stop this process.
+  describe('ordinary app-server exits read auth text only from the recent stderr tail', () => {
+    const staleAuthLine = '2026-11-02T07:14:14.708504Z ERROR codex_api::endpoint::responses_websocket: authentication failed with 401 unauthorized';
+    const benign = (index: number) =>
+      `2026-11-02T07:20:${String(index % 60).padStart(2, '0')}Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: Connection reset by peer (os error 54)`;
+
+    function ordinaryExit(lines: string[]): Error {
+      return Object.assign(
+        new Error(`Codex app-server exited with code 1 signal null: ${lines.join('\n')}`),
+        { exitCode: 1, exitSignal: null },
+      );
+    }
+
+    function authHeuristicLogs(warn: ReturnType<typeof spyOn>): Array<unknown[]> {
+      return warn.mock.calls.filter((call: unknown[]) => String(call[1]).includes('text heuristic'));
+    }
+
+    /** Logger arguments, including Error.message, which JSON.stringify skips. */
+    function argumentsContain(value: unknown, token: string, seen = new Set<object>()): boolean {
+      if (typeof value === 'string') return value.includes(token);
+      if (typeof value !== 'object' || value === null || seen.has(value)) return false;
+      seen.add(value);
+      if (value instanceof Error && (value.message.includes(token) || (value.stack?.includes(token) ?? false))) return true;
+      return Object.values(value).some(nested => argumentsContain(nested, token, seen));
+    }
+
+    it('is not auth_invalid when the only 401 is above the recent tail', () => {
+      const lines = [staleAuthLine, ...Array.from({ length: CODEX_EXIT_REPORT_LINES }, (_, i) => benign(i))];
+      const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+      try {
+        expect(classifyCodexError(ordinaryExit(lines)).kind).toBe('transient');
+        expect(authHeuristicLogs(warn)).toHaveLength(0);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('is auth_invalid when a recent stderr line is an auth error, and logs the matched category', () => {
+      const lines = [
+        ...Array.from({ length: CODEX_EXIT_REPORT_LINES + 8 }, (_, i) => benign(i)),
+        'not logged in',
+        benign(0),
+        benign(1),
+      ];
+      const error = ordinaryExit(lines);
+      const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+      try {
+        expect(classifyCodexError(error).kind).toBe('auth_invalid');
+        // The close path classifies once to arm the breaker and again to throw.
+        expect(classifyCodexError(error).kind).toBe('auth_invalid');
+        const logs = authHeuristicLogs(warn);
+        expect(logs).toHaveLength(1);
+        expect(logs[0]?.[2]).toEqual({ match: 'not logged in' });
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('does not log a bearer token adjacent to a 401', () => {
+      const token = 'cm-synthetic-bearer-7f3a9c2e1b';
+      const lines = [
+        ...Array.from({ length: 4 }, (_, i) => benign(i)),
+        `401 Unauthorized Authorization: Bearer ${token}`,
+      ];
+      const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+      try {
+        expect(classifyCodexError(ordinaryExit(lines)).kind).toBe('auth_invalid');
+        const logs = authHeuristicLogs(warn);
+        expect(logs).toHaveLength(1);
+        expect(logs[0]?.[2]).toEqual({ match: '401' });
+        expect(JSON.stringify(warn.mock.calls)).not.toContain(token);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    // The test above pads the token past the 500-character stored slice and
+    // only calls classifyCodexError. A one-line 401 keeps the token inside
+    // that slice, and onFailure stores and logs the classified message.
+    it('does not keep a bearer token from an early auth failure in the message, cooldown, or logs', async () => {
+      const token = 'cm-synthetic-bearer-7f3a9c2e1b';
+      const failure = new Error(`401 Unauthorized Authorization: Bearer ${token}`);
+      expect(failure.message).toContain(token);
+      expect(failure.message.length).toBeLessThan(500);
+      const provider = new CodexProvider(null as any, null as any) as any;
+      const debug = spyOn(logger, 'debug').mockImplementation(() => {});
+      const info = spyOn(logger, 'info').mockImplementation(() => {});
+      const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+      const errorLog = spyOn(logger, 'error').mockImplementation(() => {});
+      try {
+        for (const client of provider.appServer.clients) client.runTurn = async (options: any) => {
+          options.onFailure(failure);
+          throw failure;
+        };
+        const rejected = await provider.query([], config).catch((error: unknown) => error);
+        expect(rejected).toBeInstanceOf(ClassifiedProviderError);
+        const classified = rejected as ClassifiedProviderError;
+        expect(classified.kind).toBe('auth_invalid');
+        expect(classified.message).toContain('401');
+        expect(classified.message).not.toContain(token);
+        const cooldown = getQuotaCooldown('codex');
+        expect(cooldown?.cause).toBe('auth');
+        expect(cooldown?.message ?? '').not.toContain(token);
+        expect(JSON.stringify(cooldown)).not.toContain(token);
+        const calls = [debug, info, warn, errorLog].flatMap(spy => spy.mock.calls);
+        expect(calls.some(call => String(call[1]).includes('pausing Codex requests'))).toBe(true);
+        expect(calls.some(call => argumentsContain(call, token))).toBe(false);
+      } finally {
+        debug.mockRestore();
+        info.mockRestore();
+        warn.mockRestore();
+        errorLog.mockRestore();
+        await provider.close();
+      }
+    });
+
+    it('is auth_invalid for a 401 on the last stderr line of an ordinary exit', () => {
+      const lines = [
+        ...Array.from({ length: CODEX_EXIT_REPORT_LINES + 4 }, (_, i) => benign(i)),
+        staleAuthLine,
+      ];
+      expect(classifyCodexError(ordinaryExit(lines)).kind).toBe('auth_invalid');
+    });
+
+    it('stays transient for a signaled exit even when the recent stderr line is a 401', () => {
+      const message = `Codex app-server exited with code null signal SIGKILL: ${[...Array.from({ length: 4 }, (_, i) => benign(i)), staleAuthLine].join('\n')}`;
+      const error = Object.assign(new Error(message), { exitCode: null, exitSignal: 'SIGKILL' });
+      const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+      try {
+        expect(classifyCodexError(error).kind).toBe('transient');
+        expect(authHeuristicLogs(warn)).toHaveLength(0);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('prefers a structured HTTP 403 over an ordinary exit with no recent auth line', () => {
+      const error = Object.assign(ordinaryExit(Array.from({ length: 4 }, (_, i) => benign(i))), {
+        codexErrorInfo: { responseStreamConnectionFailed: { httpStatusCode: 403 } },
+      });
+      const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+      try {
+        expect(classifyCodexError(error).kind).toBe('auth_invalid');
+        expect(authHeuristicLogs(warn)).toHaveLength(0);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('still reads auth text anywhere in a non-exit error', () => {
+      const lines = ['HTTP 401 unauthorized', ...Array.from({ length: CODEX_EXIT_REPORT_LINES }, (_, i) => benign(i))];
+      const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+      try {
+        expect(classifyCodexError(new Error(lines.join('\n'))).kind).toBe('auth_invalid');
+        const logs = authHeuristicLogs(warn);
+        expect(logs).toHaveLength(1);
+        expect(logs[0]?.[2]).toEqual({ match: '401' });
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it.each([
+      ['usage limit', 'usage limit reached for this plan'],
+      ['billing', 'billing problem on the account'],
+      ['rate limit', 'HTTP 429 rate limit'],
+      ['context overflow', 'context window exceeded'],
+      ['missing command', 'sh: rg: command not found'],
+      ['ENOENT', 'spawn rg ENOENT'],
+      ['protocol refusal', "error: unexpected argument '--strict-config' found"],
+      ['RPC refusal', 'Codex app-server RPC error -32601: Method not found'],
+    ])('stays transient when the only %s line is above the recent tail', (_name, staleLine) => {
+      const lines = [staleLine, ...Array.from({ length: CODEX_EXIT_REPORT_LINES }, (_, i) => benign(i))];
+      expect(classifyCodexError(ordinaryExit(lines)).kind).toBe('transient');
+    });
+
+    it('does not arm a quota cooldown when an ordinary exit only quotes an old usage limit', async () => {
+      const provider = new CodexProvider(null as any, null as any) as any;
+      const failure = ordinaryExit([
+        'usage limit reached for this plan',
+        ...Array.from({ length: CODEX_EXIT_REPORT_LINES }, (_, i) => benign(i)),
+      ]);
+      for (const client of provider.appServer.clients) client.runTurn = async (options: any) => {
+        options.onFailure(failure);
+        throw failure;
+      };
+      await expect(provider.query([], config)).rejects.toMatchObject({ kind: 'transient' });
+      expect(getQuotaCooldown('codex')).toBeNull();
+    });
+
+    it('still reads a real multi-line refusal, whose error is on its first line', () => {
+      // Printed by codex-cli 0.164.0 for an unknown flag.
+      const refusal = [
+        "error: unexpected argument '--strict-confi' found",
+        '',
+        "  tip: a similar argument exists: '--strict-config'",
+        '',
+        'Usage: codex app-server --strict-config',
+        '',
+        "For more information, try '--help'.",
+      ];
+      expect(refusal).toHaveLength(CODEX_EXIT_REPORT_LINES);
+      expect(classifyCodexError(ordinaryExit([staleAuthLine, ...refusal])).kind).toBe('setup_required');
+    });
+
+    it('lets a recent auth line decide when only an older line is a server fault', () => {
+      const lines = ['Codex app-server RPC error -32603: internal error', ...Array.from({ length: CODEX_EXIT_REPORT_LINES }, (_, i) => benign(i)), 'not logged in'];
+      expect(classifyCodexError(ordinaryExit(lines)).kind).toBe('auth_invalid');
+    });
+
+    it('marks only an exit-text auth verdict as read from the exit', () => {
+      expect(classifyCodexError(ordinaryExit(['not logged in'])).code).toBe('codex_auth_from_exit_text');
+      expect(classifyCodexError(new Error('Codex app-server turn failed: 401 Unauthorized')).code).toBeUndefined();
+      const structured = Object.assign(ordinaryExit(['not logged in']), { codexErrorInfo: 'unauthorized' });
+      expect(classifyCodexError(structured).code).toBeUndefined();
+    });
+
+    it('does not arm an auth cooldown when an ordinary exit only quotes a stale 401', async () => {
+      const provider = new CodexProvider(null as any, null as any) as any;
+      const failure = ordinaryExit([
+        staleAuthLine,
+        ...Array.from({ length: CODEX_EXIT_REPORT_LINES }, (_, i) => benign(i)),
+      ]);
+      for (const client of provider.appServer.clients) client.runTurn = async (options: any) => {
+        options.onFailure(failure);
+        throw failure;
+      };
+      await expect(provider.query([], config)).rejects.toMatchObject({ kind: 'transient' });
+      expect(getQuotaCooldown('codex')).toBeNull();
+    });
+  });
+
+  it('does not arm an auth cooldown when a recycle SIGKILL quotes a stale 401', async () => {
+    const provider = new CodexProvider(null as any, null as any) as any;
+    const failure = Object.assign(
+      new Error('Codex app-server exited with code null signal SIGKILL: authentication failed with 401 unauthorized'),
+      { exitCode: null, exitSignal: 'SIGKILL' },
+    );
+    for (const client of provider.appServer.clients) client.runTurn = async (options: any) => {
+      options.onFailure(failure);
+      throw failure;
+    };
+    await expect(provider.query([], config)).rejects.toMatchObject({ kind: 'transient' });
+    expect(getQuotaCooldown('codex')).toBeNull();
+  });
 
   for (const [info, kind] of [
     ['usageLimitExceeded', 'quota_exhausted'], ['unauthorized', 'auth_invalid'],

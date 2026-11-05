@@ -329,16 +329,19 @@ ls ~/.claude/plugins/marketplaces/thedotmack/plugin/modes/
 | 모드 | 설명 |
 |------------|-------------------------|
 | `code` | 기본 영어 모드 |
-| `code--zh` | 중국어 간체 모드 |
-| `code--ja` | 일본어 모드 |
+| `code--chill` | 관찰을 더 적게 기록합니다. 나중에 다시 알아내기 번거로운 내용만 남깁니다 |
+| `code--[lang]` | `code`와 같지만 관찰과 요약을 다른 언어로 작성합니다 |
 
-언어별 모드는 `code--[lang]` 패턴을 따르며, 여기서 `[lang]`은 ISO 639-1 언어 코드입니다 (예: 중국어는 `zh`, 일본어는 `ja`, 스페인어는 `es`).
+내장 언어 코드: `ar`, `bn`, `cs`, `da`, `de`, `el`, `es`, `fi`, `fr`, `he`, `hi`, `hu`, `id`, `it`, `ja`, `ko`, `nl`, `no`, `pl`, `pt-br`, `ro`, `ru`, `sv`, `th`, `tr`, `uk`, `ur`, `vi`, `zh`. 예를 들어 `code--ko`로 설정하면 메모리가 한국어로 작성됩니다.
 
-> 참고: `code--zh` (중국어 간체)는 이미 내장되어 있습니다 — 추가 설치나 플러그인 업데이트가 필요하지 않습니다.
+언어별 이름, 이메일 조사 모드, 사용자 정의 모드는 [모드 문서](https://docs.claude-mem.ai/modes)를 참고하세요.
+
+> 참고: 위 모드는 모두 내장되어 있습니다. 추가 설치나 플러그인 업데이트가 필요하지 않습니다.
 
 #### 모드 변경 후
 
 새 모드 설정을 적용하려면 Claude Code를 재시작하세요.
+
 ---
 
 ## 개발
@@ -390,7 +393,6 @@ Claude-Mem은 Apache License 2.0에 따라 라이선스가 부여됩니다.
 오픈/상업적 경계에 대해서는 [docs/license.md](docs/license.md)와
 [docs/ip-boundary.md](docs/ip-boundary.md)를 참조하세요.
 
-**Ragtime 관련 참고 사항**: `ragtime/` 디렉토리는 **Apache License 2.0**에 따라 라이선스가 부여됩니다. 자세한 내용은 [ragtime/LICENSE](ragtime/LICENSE)를 참조하세요.
 
 ---
 

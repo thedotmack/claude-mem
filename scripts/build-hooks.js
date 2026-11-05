@@ -97,6 +97,11 @@ const CONTEXT_READ_WORKER = {
   source: 'src/services/context/context-read-worker.ts'
 };
 
+const WORK_VIEW_READ_WORKER = {
+  name: 'work-view-read-worker',
+  source: 'src/services/work-view/work-view-read-worker.ts'
+};
+
 const TRANSCRIPT_WATCHER = {
   name: 'transcript-watcher',
   source: 'src/services/transcripts/transcript-watcher-entry.ts'
@@ -180,9 +185,10 @@ export function shellTemplateManifest(buildShellCommand, buildCodexWindowsComman
     // the installer-prepared copies (#4763).
     requireDependencies: true,
   });
-  const codexHookPair = (tail) => ({
+  const codexHookPair = (tail, entryOptions = {}) => ({
     command: codexHook(tail),
     commandWindows: buildCodexWindowsCommand(tail, { requireDependencies: true }),
+    ...entryOptions,
   });
 
   return {
@@ -220,6 +226,8 @@ export function shellTemplateManifest(buildShellCommand, buildCodexWindowsComman
         // Synchronous so the File Read Gate can deny a whole-file Read.
         'PreToolUse.0.0': claudeExecHook(['hook', 'claude-code', 'file-context'], { timeout: FILE_CONTEXT_HOOK_TIMEOUT_SECONDS }, PRE_TOOL_USE_MATCHER),
         'Stop.0.0': claudeExecHook(['hook', 'claude-code', 'summarize'], { timeout: 120, async: true }),
+        // Records that a subagent finished, so My Work stops showing it as working.
+        'SubagentStop.0.0': claudeExecHook(['hook', 'claude-code', 'subagent-stop'], { timeout: 30, async: true }),
         'SessionEnd.0.0': claudeExecHook(['hook', 'claude-code', 'session-end'], { async: true }),
       },
     },
@@ -229,9 +237,21 @@ export function shellTemplateManifest(buildShellCommand, buildCodexWindowsComman
         'SessionStart.0.0': codexHookPair(['hook', 'codex', 'context']),
         'UserPromptSubmit.0.0': codexHookPair(['hook', 'codex', 'session-init']),
         'PreToolUse.0.0': codexHookPair(['hook', 'codex', 'file-context']),
-        'PostToolUse.0.0': codexHookPair(['hook', 'codex', 'observation']),
+        // Observation capture stays synchronous so a delayed event cannot cross
+        // turn boundaries. Why 5 s: the hook must fit wrapper startup, bundle
+        // load, the 2 s server attempt (SERVER_OBSERVATION_TIMEOUT_MS in
+        // src/cli/handlers/observation.ts) and the local spool write. Measured
+        // on an Apple Silicon Mac (2026-10-25, worker runtime, spool path):
+        // ~0.25-0.29 s warm, ~0.46 s on the first run. So 5 s leaves ~2.5 s of
+        // headroom after the server attempt. Windows (commandWindows) cold
+        // start was not measured. Change both values together.
+        'PostToolUse.0.0': codexHookPair(
+          ['hook', 'codex', 'observation'],
+          { timeout: 5 },
+        ),
         'Stop.0.0': codexHookPair(['hook', 'codex', 'summarize']),
         'PostCompact.0.0': codexHookPair(['hook', 'codex', 'post-compact']),
+        'SubagentStart.0.0': codexHookPair(['hook', 'codex', 'subagent-context']),
       },
     },
     'plugin/.mcp.json': {
@@ -460,6 +480,7 @@ async function buildHooks() {
     console.log('✓ Output directories ready');
 
     console.log('\n📦 Generating plugin package.json...');
+    const onnxruntimeNode = '1.23.2';
     const pluginPackageJson = {
       name: 'claude-mem-plugin',
       version: version,
@@ -467,6 +488,9 @@ async function buildHooks() {
       description: 'Runtime dependencies for claude-mem bundled hooks',
       type: 'module',
       dependencies: {
+        // Native decoder must remain external and be installed for each host.
+        // https://sharp.pixelplumbing.com/install/#bundlers
+        'sharp': packageJson.dependencies.sharp,
         'zod': '^4.4.3',
         // Exact, not a range: the worker only installs a tree-sitter executable
         // whose SHA-256 is pinned for this version
@@ -499,8 +523,45 @@ async function buildHooks() {
         '@tree-sitter-grammars/tree-sitter-markdown': '^0.3.2',
         'shell-quote': '1.9.0',
       },
+      // The server's embedder, about 300 MB, which only server mode runs. The
+      // plugin install omits optional dependencies (installPluginDependencies),
+      // and `npx claude-mem server start` installs them before it starts a
+      // server; the Docker image's npm install includes them. LocalEmbedder
+      // reaches these through a request-time
+      // `await import('@huggingface/transformers')`, and they are kept EXTERNAL
+      // from the bundles below — so a server needs them in the plugin's own
+      // runtime closure or the lazy path dies with "Cannot find module
+      // 'onnxruntime-node'".
+      // sharp is declared above as a direct dependency (the media decoder);
+      // @huggingface/transformers depends on it too and shares the hoisted copy
+      // in plugin/node_modules when their ranges overlap. sharp 0.35
+      // ships no install/preinstall/postinstall script, so it passes
+      // scripts/check-postinstall-allowlist.js. It is still marked external in
+      // the bundles below so it resolves at runtime, never at build time.
+      optionalDependencies: {
+        '@huggingface/transformers': '^4.2.0',
+      },
       overrides: {
-        'tree-sitter': '^0.25.0'
+        'tree-sitter': '^0.25.0',
+        // MUST live here, not only in the root package.json. npm/bun apply
+        // `overrides` ONLY in the project being installed, so the root override is
+        // invisible to users; plugin/ is its own install root (own package.json +
+        // own bun.lock, installed by setup-runtime.ts), so this one DOES apply.
+        // Without it, @huggingface/transformers' EXACT transitive pin wins
+        // ("onnxruntime-node": "1.30.0" in transformers 4.3.1), and ONNX Runtime
+        // ships no macOS x86_64 binary from 1.24 on (v1.24.1 release notes), so
+        // every Intel Mac would lose search by meaning, as in #3199. 1.23.2 is
+        // the last release with all six targets, {linux,darwin,win32} x
+        // {x64,arm64}, and the version uv resolves Chroma's `onnxruntime>=1.20`
+        // to on an Intel Mac. Its vectors are bit-identical to 1.21.0's.
+        'onnxruntime-node': onnxruntimeNode,
+        // A workaround, not a real package: transformers lists onnxruntime-web
+        // (a 141 MB nightly) as a hard dependency, but its Node build runs on
+        // onnxruntime-node and never loads it. This points the name at
+        // onnxruntime-common, which onnxruntime-node already installs, so it
+        // downloads nothing. Remove it once transformers.js stops requiring
+        // onnxruntime-web under Node.
+        'onnxruntime-web': `npm:onnxruntime-common@${onnxruntimeNode}`
       },
       trustedDependencies: [
         'tree-sitter-cli'
@@ -551,6 +612,7 @@ async function buildHooks() {
       ...SOURCEMAP_OPTS,
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
       external: [
+        'sharp',
         'bun:sqlite',
         // bun:ffi backs Windows listen-socket HANDLE_FLAG_INHERIT clearing (#3300).
         'bun:ffi',
@@ -633,6 +695,30 @@ async function buildHooks() {
     });
     assertBundleIntegrity(`${hooksDir}/${CONTEXT_READ_WORKER.name}.cjs`);
 
+    await build({
+      entryPoints: [WORK_VIEW_READ_WORKER.source],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      format: 'cjs',
+      outfile: `${hooksDir}/${WORK_VIEW_READ_WORKER.name}.cjs`,
+      minify: true,
+      ...SOURCEMAP_OPTS,
+      logLevel: 'error',
+      external: ['bun:sqlite'],
+      define: {
+        ...DIRNAME_DEFINE,
+        'import.meta.url': '__IMPORT_META_URL__'
+      },
+      banner: {
+        js: [
+          ...DIRNAME_BANNER,
+          'var __IMPORT_META_URL__ = require("node:url").pathToFileURL(__CM_FILENAME__).href;'
+        ].join('\n')
+      }
+    });
+    assertBundleIntegrity(`${hooksDir}/${WORK_VIEW_READ_WORKER.name}.cjs`);
+
     // Advisory only — a sudden jump usually means a heavy server-only dependency
     // (better-auth, kysely, a database driver) leaked into the worker bundle via a
     // transitive import (#2584). Never blocks the build.
@@ -694,6 +780,21 @@ async function buildHooks() {
       console.log(`✓ ${mod.out} built (${(fs.statSync(mod.out).size / 1024).toFixed(2)} KB)`);
     }
 
+    // The request-progress skill runs this with bun to group conversations
+    // into overall requests and record progress reviews for My Work.
+    const REQUEST_GROUPS_CLI = 'plugin/skills/request-progress/scripts/request-groups.mjs';
+    await build({
+      entryPoints: ['src/services/work-view/request-groups-cli.mjs'],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      format: 'esm',
+      outfile: REQUEST_GROUPS_CLI,
+      logLevel: 'error',
+      external: ['bun:sqlite'],
+    });
+    console.log(`✓ ${REQUEST_GROUPS_CLI} built (${(fs.statSync(REQUEST_GROUPS_CLI).size / 1024).toFixed(2)} KB)`);
+
     console.log(`\n🔧 Building server beta service...`);
     await build({
       entryPoints: [SERVER_SERVICE.source],
@@ -710,6 +811,17 @@ async function buildHooks() {
         // bun:ffi backs Windows listen-socket HANDLE_FLAG_INHERIT clearing (#3300).
         'bun:ffi',
         'zod',
+        // @huggingface/transformers is reached ONLY through LocalEmbedder's
+        // request-time `await import('@huggingface/transformers')`. Bundling it
+        // inlines the ONNX runtime glue while onnxruntime-node / sharp stay
+        // external, so the lazy path dies on a real install with
+        // "Cannot find module 'onnxruntime-node'". Keeping the whole trio external
+        // makes the dynamic import resolve against plugin/node_modules, where
+        // plugin/package.json ships them (and pins onnxruntime-node; see its
+        // overrides above).
+        'onnxruntime-node',
+        '@huggingface/transformers',
+        'sharp',
       ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
@@ -850,7 +962,9 @@ async function buildHooks() {
       // plugin/node_modules instead of being inlined (keeps the bundle slim). The
       // worker and MCP server inline zod because a Codex or Claude Desktop copy of
       // the plugin may have no node_modules.
-      external: ['bun:sqlite', 'zod', ...POSTHOG_OPTIONAL_IMPORTS],
+      // processor.ts reaches ingestObservation's lazy media converter; keep
+      // the native decoder external exactly as the worker bundle does.
+      external: ['sharp', 'bun:sqlite', 'zod', ...POSTHOG_OPTIONAL_IMPORTS],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
         ...DIRNAME_DEFINE
@@ -1047,6 +1161,7 @@ async function buildHooks() {
       'PostToolUse',
       'Stop',
       'PostCompact',
+      'SubagentStart',
     ]);
     const requiredDistributionFiles = [
       'plugin/skills/mem-search/SKILL.md',
@@ -1063,6 +1178,8 @@ async function buildHooks() {
       'plugin/scripts/bun-runner.js',
       'plugin/scripts/context-read-worker.cjs',
       'plugin/scripts/context-read-worker.cjs.map',
+      'plugin/scripts/work-view-read-worker.cjs',
+      'plugin/scripts/work-view-read-worker.cjs.map',
       'plugin/sqlite/SessionStore.js',
       'plugin/sqlite/observations/files.js',
       'plugin/.claude-plugin/plugin.json',

@@ -10,7 +10,7 @@ import {
   type CodexAppServerTurnResult,
 } from './CodexAppServerClient.js';
 import { CodexAppServerPool, boundedInteger } from './CodexAppServerPool.js';
-import { ClassifiedProviderError, CODEX_COOLDOWN_REFUSAL_CODE, isClassified } from './provider-errors.js';
+import { ClassifiedProviderError, CODEX_AUTH_FROM_EXIT_TEXT_CODE, CODEX_COOLDOWN_REFUSAL_CODE, isClassified } from './provider-errors.js';
 import type { PaidSendBudget } from './paid-send-budget.js';
 import { resolveLlmTimeoutMs, withRetry } from './retry.js';
 import {
@@ -88,6 +88,50 @@ const CODEX_PROTOCOL_REFUSAL = /RPC error -3260[0-2]\b|unexpected argument|unrec
  */
 const CODEX_SERVER_FAULT = /RPC error -(?:32603|32700)\b/;
 
+/**
+ * The close handler's own prefix when the child was stopped by a signal.
+ * `signal null` is an ordinary exit. Text on that exit is read only from the
+ * recent stderr lines (CODEX_EXIT_REPORT_LINES), not the whole tail.
+ * The worker's version-mismatch recycle SIGKILLs this child.
+ */
+const CODEX_SIGNALED_EXIT = /^Codex app-server exited with code \S+ signal (?!null\b)\S+/;
+
+function isCodexSignaledExit(cause: unknown, message: string): boolean {
+  const exitSignal = (cause as { exitSignal?: unknown } | null)?.exitSignal;
+  if (typeof exitSignal === 'string' && exitSignal.length > 0 && exitSignal !== 'null') return true;
+  return CODEX_SIGNALED_EXIT.test(message);
+}
+
+const CODEX_AUTH_TEXT = /not logged in|codex login|unauthorized|authentication|ChatGPT auth|requires Codex CLI|\b40[13]\b/i;
+
+/**
+ * Trailing stderr lines of an app-server exit that can describe that exit. The
+ * close error quotes the retained tail, up to 64 KiB, so an older line must not
+ * decide the verdict. Measured on codex-cli 0.164.0: its longest refusal is an
+ * unknown flag with a tip, 7 lines with the error itself on the first, so the
+ * final line alone would miss it.
+ */
+export const CODEX_EXIT_REPORT_LINES = 7;
+
+const CODEX_APP_SERVER_EXIT = /^Codex app-server exited with code \S+ signal \S+/;
+
+/** Causes already logged for a text-heuristic auth verdict (classify runs twice per failure). */
+const loggedCodexAuthTextCauses = new WeakSet<object>();
+
+/** The text the classifier may read: an exit's recent stderr, or any other error whole. */
+function codexDecidingText(message: string): string {
+  if (!CODEX_APP_SERVER_EXIT.test(message)) return message;
+  return message.split(/\r?\n/).slice(-CODEX_EXIT_REPORT_LINES).join('\n');
+}
+
+function logCodexAuthTextHit(cause: unknown, match: string): void {
+  if (typeof cause === 'object' && cause !== null) {
+    if (loggedCodexAuthTextCauses.has(cause)) return;
+    loggedCodexAuthTextCauses.add(cause);
+  }
+  logger.warn('SDK', 'Codex auth_invalid classified from text heuristic', { match });
+}
+
 /** Sessions whose run of app-server faults is tracked at once (oldest dropped). */
 const MAX_TRACKED_FAULT_SESSIONS = 256;
 
@@ -98,6 +142,17 @@ const CODEX_REQUEST_REMEDY =
 const CODEX_ISOLATION_REMEDY =
   'Codex loaded instructions or MCP servers that the memory observer cannot switch off. Remove them from '
   + 'your Codex configuration, update the Codex CLI, or choose another observer provider.';
+
+/**
+ * The stored message is the first 500 characters, and that slice is what the
+ * cooldown and the failure log keep. A one-line `401 Unauthorized
+ * Authorization: Bearer <token>` sits entirely inside it. Drop the credential
+ * the way observer-health's scrubber does, and keep the status.
+ */
+function codexStoredMessage(message: string): string {
+  const scrubbed = message.replace(/\b(Bearer|Basic)\s+[^\s"']+/gi, '$1 …');
+  return `Codex: ${scrubbed.slice(0, 500)}`;
+}
 
 /** Maps the app-server's structured CodexErrorInfo, which is more stable than its display text. */
 function classifyCodexErrorInfo(info: unknown): CodexErrorKind | typeof CODEX_REFUSED_REQUEST | null {
@@ -119,11 +174,13 @@ export function classifyCodexError(cause: unknown): ClassifiedProviderError {
   const structuredKind = classifyCodexErrorInfo((cause as { codexErrorInfo?: unknown } | null)?.codexErrorInfo);
   let kind: CodexErrorKind = 'transient';
   let action: string | undefined;
+  let verdictCode: string | undefined;
+  const decidingText = codexDecidingText(message);
   if (code === CODEX_NO_AGENT_MESSAGE_CODE || code === CODEX_MALFORMED_OUTPUT_CODE) {
     // A completed, billed turn whose output was missing or malformed: an
     // output failure, never resent. Decided by code, so its diagnostic counts
     // are never read as an HTTP status.
-    return new ClassifiedProviderError(`Codex: ${message.slice(0, 500)}`, {
+    return new ClassifiedProviderError(codexStoredMessage(message), {
       kind: 'unrecoverable', paidSendOutcome: 'output_failure', cause, code,
     });
   } else if (code === CODEX_ISOLATION_UNATTESTED_CODE) {
@@ -131,30 +188,50 @@ export function classifyCodexError(cause: unknown): ClassifiedProviderError {
     action = CODEX_ISOLATION_REMEDY;
   } else if (structuredKind && structuredKind !== CODEX_REFUSED_REQUEST) {
     kind = structuredKind;
-  } else if (CODEX_SERVER_FAULT.test(message)) {
+  } else if (isCodexSignaledExit(cause, message)) {
+    // A signal stops the child (a version-mismatch recycle is SIGKILL). The
+    // close error quotes the lifetime stderr tail, so an earlier 401 line in
+    // that tail must not arm the auth cooldown. The replacement worker retries.
+    kind = 'transient';
+  } else if (CODEX_SERVER_FAULT.test(decidingText)) {
     // Whatever its text quotes (a usage limit, a login, a parser), a fault of
     // the app-server neither arms the account breaker nor holds capture
     // behind the setup gate.
     kind = 'transient';
-  } else if (code === CODEX_SETUP_REQUIRED_CODE || code === 'ENOENT' || /executable not found|command not found|ENOENT/i.test(message)) {
+  } else if (code === CODEX_SETUP_REQUIRED_CODE || code === 'ENOENT' || /executable not found|command not found|ENOENT/i.test(decidingText)) {
     // Fixed on this machine (install the CLI, `codex login`), never by retrying.
     kind = 'setup_required';
-  } else if (/not logged in|codex login|unauthorized|authentication|ChatGPT auth|requires Codex CLI|\b40[13]\b/i.test(message)) {
-    kind = 'auth_invalid';
-  } else if (/usage limit|quota|insufficient credits|plan limit|billing/i.test(message)) {
-    kind = 'quota_exhausted';
-  } else if (/rate limit|\b429\b/i.test(message)) {
-    kind = 'rate_limit';
-  } else if (/context (length|window)|prompt (is )?too long/i.test(message)) {
-    kind = 'context_overflow';
-  } else if (structuredKind === CODEX_REFUSED_REQUEST || CODEX_PROTOCOL_REFUSAL.test(message)) {
-    // Refused the same way until the settings or the CLI change: a setup
-    // failure, held behind the codex_cli gate and shown at SessionStart,
-    // never a transport blip resumed forever.
-    kind = 'setup_required';
-    action = CODEX_REQUEST_REMEDY;
+  } else {
+    // Only the matched category is kept. The surrounding stderr is arbitrary
+    // and can carry a credential (a Bearer token next to "401 Unauthorized").
+    const authMatch = decidingText.match(CODEX_AUTH_TEXT)?.[0];
+    if (authMatch) {
+      kind = 'auth_invalid';
+      // The stored message keeps only the first 500 characters, which is the
+      // oldest part of a long stderr tail, and a bearer token in that window
+      // is removed before it is stored. The matched category is what a false
+      // auth cooldown has to be checked against.
+      logCodexAuthTextHit(cause, authMatch);
+      // An exit's stderr is our reading, not the provider's reply: the
+      // session-start warning must not state it as a refusal.
+      if (CODEX_APP_SERVER_EXIT.test(message)) verdictCode = CODEX_AUTH_FROM_EXIT_TEXT_CODE;
+    } else if (/usage limit|quota|insufficient credits|plan limit|billing/i.test(decidingText)) {
+      kind = 'quota_exhausted';
+    } else if (/rate limit|\b429\b/i.test(decidingText)) {
+      kind = 'rate_limit';
+    } else if (/context (length|window)|prompt (is )?too long/i.test(decidingText)) {
+      kind = 'context_overflow';
+    } else if (structuredKind === CODEX_REFUSED_REQUEST || CODEX_PROTOCOL_REFUSAL.test(decidingText)) {
+      // Refused the same way until the settings or the CLI change: a setup
+      // failure, held behind the codex_cli gate and shown at SessionStart,
+      // never a transport blip resumed forever.
+      kind = 'setup_required';
+      action = CODEX_REQUEST_REMEDY;
+    }
   }
-  return new ClassifiedProviderError(`Codex: ${message.slice(0, 500)}`, { kind, cause, ...(action ? { action } : {}) });
+  return new ClassifiedProviderError(codexStoredMessage(message), {
+    kind, cause, ...(action ? { action } : {}), ...(verdictCode ? { code: verdictCode } : {}),
+  });
 }
 
 /**

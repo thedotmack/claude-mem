@@ -33,6 +33,11 @@ export const ENV_PRESERVE = new Set([
   // back to /tmp, so the child hit that directory and exited 1 on every spawn
   // — the user's only documented escape did nothing.
   'CLAUDE_CODE_TMPDIR',
+  // Documented Claude Code gateway compatibility switch. The Observer must
+  // inherit an explicit beta opt-out because settingSources: [] prevents the
+  // SDK child from recovering it from user settings. Keep this as a single
+  // named exception: arbitrary CLAUDE_CODE_* host settings remain stripped.
+  'CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS',
   // claude-mem's own setting, not a CLI knob (the CLI never reads it): the
   // path to the claude binary, documented as settable from the file OR the
   // env. Every daemon spawn passes through sanitizeEnv, and the worker reads

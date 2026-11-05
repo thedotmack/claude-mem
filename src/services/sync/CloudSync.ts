@@ -4,7 +4,7 @@
 // migration v36/v39). Write sites nudge `notify()` after each local write; a
 // trailing debounce coalesces bursts into one `flush()`, which drains
 // `WHERE synced_at IS NULL AND origin_device_id IS NULL` in batches, POSTs to
-// the per-user sync hub (workers/sync-hub), and stamps rows on ack. That
+// the per-user sync hub (services/sync-hub), and stamps rows on ack. That
 // single mechanism handles post-launch live sync, offline catch-up, and retry
 // — no historical/pre-launch backfill, second process, or cursor files.
 // Mutation ops (custom title, prompt→session
@@ -58,6 +58,7 @@ import {
   type CanonicalWireOp,
   type ContentKind,
 } from './CanonicalContent.js';
+import { SYNC_CAPABILITIES, SYNC_CAPABILITIES_HEADER } from './sync-capabilities.js';
 import { PROMPT_TEXT_COLUMNS_SQL, clampPromptTextForSync } from './prompt-text-clamp.js';
 import {
   classifySyncAuthFailure,
@@ -72,7 +73,7 @@ import {
 // projection page (PROJECTION_PAGE_MAX_OPS = 100).
 export const DEFAULT_CONTENT_BATCH_SIZE = 40;
 // Hub projection fetch aborts at 45s and holds a 90s lease
-// (workers/sync-hub PROJECTION_FETCH_TIMEOUT_MS / PROJECTION_LEASE_MS).
+// (services/sync-hub PROJECTION_FETCH_TIMEOUT_MS / PROJECTION_LEASE_MS).
 // The previous 30s client timeout was shorter than both, so the client
 // aborted mid-lease and retried into projection_busy. Default matches the lease.
 export const DEFAULT_REQUEST_TIMEOUT_MS = 90_000;
@@ -564,6 +565,16 @@ export interface CloudSyncStatus {
   };
 }
 
+/**
+ * Cloud sync is active iff token, user id and Hub URL are all non-empty. The
+ * one shared predicate (CloudSync, DatabaseManager and the media cloud plane).
+ */
+export function isCloudSyncConfigured(settings: Pick<SettingsDefaults, 'CLAUDE_MEM_CLOUD_SYNC_TOKEN' | 'CLAUDE_MEM_CLOUD_SYNC_USER_ID' | 'CLAUDE_MEM_CLOUD_SYNC_HUB_URL'>): boolean {
+  return (settings.CLAUDE_MEM_CLOUD_SYNC_TOKEN ?? '') !== ''
+    && (settings.CLAUDE_MEM_CLOUD_SYNC_USER_ID ?? '') !== ''
+    && (settings.CLAUDE_MEM_CLOUD_SYNC_HUB_URL ?? '').trim() !== '';
+}
+
 export class CloudSync {
   private readonly db: Database;
   private readonly token: string;
@@ -1026,6 +1037,7 @@ export class CloudSync {
           'X-User-Id': this.userId,
           'X-Device-Id': this.deviceId,
           ...(this.deviceName ? { 'X-Device-Name': this.deviceName } : {}),
+          [SYNC_CAPABILITIES_HEADER]: SYNC_CAPABILITIES,
         },
         signal,
       });
@@ -1679,6 +1691,7 @@ export class CloudSync {
         'X-User-Id': this.userId,
         'X-Device-Id': this.deviceId,
         ...(this.deviceName ? { 'X-Device-Name': this.deviceName } : {}),
+        [SYNC_CAPABILITIES_HEADER]: SYNC_CAPABILITIES,
       },
       body: requestBody,
       signal: AbortSignal.timeout(this.requestTimeoutMs),

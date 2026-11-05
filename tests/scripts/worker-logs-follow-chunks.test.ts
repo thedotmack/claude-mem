@@ -1,10 +1,17 @@
 import { expect, it } from 'bun:test';
-import { spawn } from 'node:child_process';
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { appendFileSync, closeSync, constants, mkdirSync, mkdtempSync, openSync, readSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 
-for (const pollDelay of [0, 650]) it(`follows a burst with bounded native reads and byte-exact UTF-8 output (${pollDelay ? 'delayed snapshot delivery' : 'native delivery'})`, async () => {
+// The follower's stdout goes to a FIFO this test reads only when it chooses to,
+// so "paused" is real kernel backpressure. Bun's child_process stdout.pause()
+// (and an unread Bun.spawn pipe) keeps draining the pipe into memory, which
+// would let the follower read the whole burst without ever blocking.
+const supportsFifo = process.platform !== 'win32';
+
+for (const pollDelay of [0, 650]) it.skipIf(!supportsFifo)(`follows a burst with bounded native reads and byte-exact UTF-8 output (${pollDelay ? 'delayed snapshot delivery' : 'native delivery'})`, async () => {
   const home=mkdtempSync(join(tmpdir(),'claude-mem-follow-chunks-'));
   const stamp=new Date().toISOString().slice(0,10);
   const log=join(home,'.claude-mem','logs',`claude-mem-${stamp}.log`);
@@ -31,17 +38,35 @@ for (const pollDelay of [0, 650]) it(`follows a burst with bounded native reads 
     fs.readSync=function(fd,buffer,offset,length,position){if(owned.has(fd))process.stderr.write('READ_LENGTH:'+length+'\\n');return read.call(this,fd,buffer,offset,length,position);};
     fs.closeSync=function(fd){owned.delete(fd);return close.call(this,fd);};
   `);
+  const stdoutFifo=join(home,'stdout.fifo');
+  execFileSync('mkfifo',[stdoutFifo],{timeout:5000});
+  // Open the read end first (non-blocking) so opening the write end does not block.
+  const stdoutReadFd=openSync(stdoutFifo,constants.O_RDONLY|constants.O_NONBLOCK);
+  const stdoutWriteFd=openSync(stdoutFifo,constants.O_WRONLY);
   const child=spawn('node',['--require',preload,join(import.meta.dir,'../../scripts/worker-logs.cjs'),'--follow'],{
     env:{...process.env,HOME:home,USERPROFILE:home,CLAUDE_MEM_DATA_DIR:'',TZ:'UTC',OWNED_LOG_PATH:log,OWNED_POLL_DELAY_MS:String(pollDelay),OWNED_FIRST_BURST_SIZE:String(Buffer.byteLength('before\n'+'€ captured\n'.repeat(200000)))},
+    stdio:['ignore',stdoutWriteFd,'pipe'],
   });
-  child.stdout.setEncoding('utf8');child.stderr.setEncoding('utf8');
-  let output='',trace='';child.stdout.on('data',chunk=>{output+=chunk});child.stderr.on('data',chunk=>{trace+=chunk});
-  const wait=async(predicate:()=>boolean)=>{const end=Date.now()+10000;while(!predicate()){
-    if(Date.now()>end)throw Error('Owned follower did not produce expected output: '+trace);await Bun.sleep(10);}};
+  closeSync(stdoutWriteFd);
+  child.stderr!.setEncoding('utf8');
+  let output='',trace='',stdoutPaused=false;child.stderr!.on('data',chunk=>{trace+=chunk});
+  const stdoutDecoder=new StringDecoder('utf8');const readBuffer=Buffer.alloc(64*1024);
+  const readAvailableStdout=()=>{
+    if(stdoutPaused)return;
+    for(;;){
+      let bytes:number;
+      try{bytes=readSync(stdoutReadFd,readBuffer,0,readBuffer.length,null);}
+      catch(error){if((error as NodeJS.ErrnoException).code==='EAGAIN')return;throw error;}
+      if(bytes===0)return;
+      output+=stdoutDecoder.write(readBuffer.subarray(0,bytes));
+    }
+  };
+  const wait=async(predicate:()=>boolean)=>{const end=Date.now()+10000;readAvailableStdout();while(!predicate()){
+    if(Date.now()>end)throw Error('Owned follower did not produce expected output: '+trace);await Bun.sleep(10);readAvailableStdout();}};
   try{
     await wait(()=>output==='before\n');
     const burst='€ captured\n'.repeat(200000);
-    child.stdout.pause();
+    stdoutPaused=true;
     if(pollDelay){
       const firstHalf=burst.slice(0,burst.length/2);
       appendFileSync(log,firstHalf);
@@ -70,7 +95,7 @@ for (const pollDelay of [0, 650]) it(`follows a burst with bounded native reads 
     expect(laterPollSizes).toContain(secondBurstSize);
     const laterReadLengths=[...trace.matchAll(/READ_LENGTH:(\d+)/g)].map(match=>Number(match[1]));
     expect(laterReadLengths).toEqual(pausedReadLengths);
-    child.stdout.resume();
+    stdoutPaused=false;
     await wait(()=>output.length==='before\n'.length+burst.length+duringBackpressure.length);
     expect(output).toBe('before\n'+burst+duringBackpressure);
     const lengths=[...trace.matchAll(/READ_LENGTH:(\d+)/g)].map(match=>Number(match[1]));
@@ -78,6 +103,7 @@ for (const pollDelay of [0, 650]) it(`follows a burst with bounded native reads 
     expect(Math.max(...lengths)).toBeLessThanOrEqual(64*1024);
   }finally{
     const exited=child.exitCode!==null?Promise.resolve():new Promise<void>(resolve=>child.once('exit',()=>resolve()));child.kill();await exited;
+    closeSync(stdoutReadFd);
     rmSync(home,{recursive:true,force:true});
   }
 },40000);

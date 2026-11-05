@@ -390,7 +390,6 @@ A teljes részletekért lásd a [LICENSE](LICENSE) fájlt. Lásd a [docs/license
 és a [docs/ip-boundary.md](docs/ip-boundary.md) fájlokat a licencelési hatókörért és a
 nyílt/kereskedelmi határvonalért.
 
-**Megjegyzés a Ragtime-ról**: A `ragtime/` mappa az **Apache License 2.0** licenc alatt áll. Részletekért lásd a [ragtime/LICENSE](ragtime/LICENSE) fájlt.
 
 ---
 

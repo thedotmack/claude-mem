@@ -3,6 +3,7 @@
 import type { Application, Request, RequestHandler, Response } from 'express';
 import { z, type ZodTypeAny } from 'zod';
 import type { RouteHandler } from '../../../services/server/Server.js';
+import { AppError } from '../../../services/server/ErrorHandler.js';
 import { CreateAgentEventSchema } from '../../../core/schemas/agent-event.js';
 import type { PostgresPool } from '../../../storage/postgres/pool.js';
 import {
@@ -17,8 +18,18 @@ import {
 } from '../../../storage/postgres/generation-jobs.js';
 import { PostgresAuthRepository } from '../../../storage/postgres/auth.js';
 import { PostgresObservationRepository } from '../../../storage/postgres/observations.js';
+import {
+  embedObservationRows,
+  embedSearchQuery,
+} from '../../services/ObservationEmbeddingService.js';
+import { PostgresObservationEmbeddingsRepository } from '../../../storage/postgres/observation-embeddings.js';
 import { PostgresProjectsRepository } from '../../../storage/postgres/projects.js';
 import { logger } from '../../../utils/logger.js';
+import {
+  SEMANTIC_CONTEXT_MAX_LIMIT,
+  SEMANTIC_CONTEXT_MIN_QUERY_CHARS,
+  renderSemanticContext,
+} from '../../../shared/semantic-context.js';
 import { requirePostgresServerAuth } from '../../middleware/postgres-auth.js';
 import { PostgresDataDeletionRepository } from '../../../storage/postgres/data-deletion.js';
 import { requestIdMiddleware } from '../../middleware/request-id.js';
@@ -29,7 +40,8 @@ import { createRecallMcpServer, type RecallBackend } from '../../mcp/recall-mcp-
 import { requireRateLimit, requireMonthlyQuota } from '../../middleware/rate-limit.js';
 import { meterRequests } from '../../middleware/usage-metering.js';
 import { PostgresUsageRepository } from '../../../storage/postgres/usage.js';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { apiKeyPrefix, hashApiKey } from '../../auth/api-key-hash.js';
 import { PostgresServerSessionsRepository } from '../../../storage/postgres/server-sessions.js';
 import { IngestEventsService, type EnqueueOutcome } from '../../services/IngestEventsService.js';
 import { EndSessionService } from '../../services/EndSessionService.js';
@@ -207,12 +219,14 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         const teamId = this.requireTeamId(req, res);
         if (!teamId) return;
         const raw = `cm_${randomBytes(24).toString('hex')}`;
-        const keyHash = createHash('sha256').update(raw).digest('hex');
+        const keyHash = hashApiKey(raw);
+        const keyPrefix = apiKeyPrefix(raw);
         const expiresAt = body.expiresInDays
           ? new Date(Date.now() + body.expiresInDays * 86_400_000)
           : null;
         const key = await new PostgresAuthRepository(this.options.pool).createApiKey({
           keyHash,
+          keyPrefix,
           teamId,
           projectId: req.authContext?.projectId ?? null,
           actorId: req.authContext?.apiKeyId ?? 'api',
@@ -923,8 +937,22 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         };
         try {
           const repo = new PostgresObservationRepository(this.options.pool);
+          const embedded = await embedObservationRows(this.options.pool, [createInput]);
           const observation = await repo.create(createInput);
           if (observation.id === createInput.id) {
+            if (embedded) {
+              // The memory is saved; its vectors are best-effort. A failed write
+              // is logged and left to the backfill, rather than answering 500
+              // for a memory that exists, which a retry would duplicate.
+              await new PostgresObservationEmbeddingsRepository(this.options.pool)
+                .upsert({ observationId: observation.id, ...embedded[0]! })
+                .catch((error: unknown) => {
+                  logger.warn('SYSTEM', 'memory saved without vectors; the backfill embeds it at the next start', {
+                    observationId: observation.id,
+                    error: error instanceof Error ? error.message : String(error),
+                  });
+                });
+            }
             await this.auditWrite(req, 'memory.write', observation.id, observation.projectId);
             res.status(201).json({ memory: serializeObservation(observation) });
             return;
@@ -974,6 +1002,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
             query: body.query,
             limit: body.limit ?? 20,
             platformSource,
+            queryEmbedding: await embedSearchQuery(this.options.pool, body.query),
           });
         } catch (error) {
           const err = error instanceof Error ? error : new Error(String(error));
@@ -1078,6 +1107,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
             platformSource,
             folderProjects: body.folderProjects ?? null,
             excludeSubagents: body.excludeSubagents === true,
+            queryEmbedding: await embedSearchQuery(this.options.pool, body.query),
           };
           if (body.summaryLimit === undefined) {
             results = await repo.search(searchInput);
@@ -1122,6 +1152,78 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       },
     ));
 
+    // Per-prompt injection: observations near a user prompt in meaning,
+    // rendered as the worker's /api/context/semantic renders them, so the
+    // session-init hook can treat either runtime's answer alike. Prompts under
+    // SEMANTIC_CONTEXT_MIN_QUERY_CHARS, and databases without vectors, get an
+    // empty answer, and limit is clamped as the worker clamps it: a
+    // keyword match on a whole prompt is not what this injection is for.
+    app.post('/v1/context/semantic', readAuth, this.handleCreate(
+      z.object({
+        projectId: z.string().min(1),
+        query: z.string(),
+        limit: z.number().int().positive().optional(),
+        platformSource: z.string().min(1).nullable().optional(),
+        folderProjects: z.array(z.string().min(1)).min(1).max(20).optional(),
+      }),
+      async (req, res, body) => {
+        const teamId = this.requireTeamId(req, res);
+        if (!teamId) return;
+        if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
+        const platformSource = normalizePlatformSourceOrNull(body.platformSource);
+        const limit = Math.min(body.limit ?? 5, SEMANTIC_CONTEXT_MAX_LIMIT);
+        const queryEmbedding = body.query.length >= SEMANTIC_CONTEXT_MIN_QUERY_CHARS
+          ? await embedSearchQuery(this.options.pool, body.query)
+          : null;
+        if (!queryEmbedding) {
+          res.status(200).json({ observations: [], context: '', count: 0 });
+          return;
+        }
+        let results;
+        try {
+          const repo = new PostgresObservationRepository(this.options.pool);
+          results = await repo.search({
+            projectId: body.projectId,
+            teamId,
+            query: body.query,
+            limit,
+            platformSource,
+            folderProjects: body.folderProjects ?? null,
+            queryEmbedding,
+          });
+        } catch (error) {
+          const err = error instanceof Error ? error : new Error(String(error));
+          logger.warn('SYSTEM', 'observation.semantic_context failed', { requestId: req.requestId ?? null }, err);
+          this.handleDbError(err, res, 'observation.semantic_context');
+          return;
+        }
+        // Always the worker's 'narrative' format. Its 'index' format lists ids
+        // for get_observations to expand, and that tool reads the worker by
+        // numeric id; a server id is a UUID nothing here can expand.
+        // Summaries and manual memories have no title or narrative; their text
+        // is the content, which renders in the narrative's place.
+        const text = (value: unknown) => (typeof value === 'string' && value.trim() ? value : null);
+        const context = renderSemanticContext(results.map(observation => ({
+          title: text(observation.metadata.title) ?? (observation.kind === 'summary' ? 'Session summary' : null),
+          narrative: text(observation.metadata.narrative) ?? text(observation.content),
+          date: new Date(observation.createdAtEpoch).toISOString().slice(0, 10),
+        })));
+        await this.auditWrite(req, 'observation.read', null, body.projectId, {
+          mode: 'semantic_context',
+          limit,
+          platformSource,
+          folderProjects: body.folderProjects ?? null,
+          resultCount: results.length,
+          observationIds: results.map(o => o.id),
+        });
+        res.status(200).json({
+          observations: results.map(serializeObservation),
+          context,
+          count: results.length,
+        });
+      },
+    ));
+
     // Remote authenticated MCP endpoint. The "secure MCP link" a user pastes
     // into Claude Code (or any MCP client) to recall their cloud memory:
     //   claude mcp add --transport http claude-mem <base>/v1/mcp \
@@ -1142,7 +1244,8 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       const backend: RecallBackend = {
         search: async ({ projectId, query, limit }) => {
           assertProjectAllowed(projectId);
-          const rows = await repo.search({ projectId, teamId, query, limit });
+          const queryEmbedding = await embedSearchQuery(this.options.pool, query);
+          const rows = await repo.search({ projectId, teamId, query, limit, queryEmbedding });
           // Audit the read, same as POST /v1/search — the MCP path is no exception.
           await this.auditWrite(req, 'observation.read', null, projectId, {
             mode: 'search', via: 'mcp', query, limit,
@@ -1168,7 +1271,8 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         },
         context: async ({ projectId, query, limit }) => {
           assertProjectAllowed(projectId);
-          const rows = await repo.search({ projectId, teamId, query, limit });
+          const queryEmbedding = await embedSearchQuery(this.options.pool, query);
+          const rows = await repo.search({ projectId, teamId, query, limit, queryEmbedding });
           await this.auditWrite(req, 'observation.read', null, projectId, {
             mode: 'context', via: 'mcp', query, limit,
             resultCount: rows.length, observationIds: rows.map(o => o.id),
@@ -1926,7 +2030,21 @@ interface JobListRow {
 
 const SOURCE_TYPE_VALUES = new Set(['agent_event', 'session_summary', 'observation_reindex']);
 
-function parseGenericJobListingQuery(req: Request): {
+export const JOB_LIST_STATUS_VALUES = new Set(['queued', 'processing', 'completed', 'failed', 'cancelled']);
+export const JOB_LIST_DEFAULT_LIMIT = 50;
+export const JOB_LIST_MAX_LIMIT = 200;
+/**
+ * Upper bound on the listing `offset`, as abuse protection: it caps how many
+ * rows one request can make Postgres read and discard. 10,000 rows is 50 pages
+ * at JOB_LIST_MAX_LIMIT. The cost of OFFSET stops at the end of the caller's
+ * matching rows, so this is a per-request cap and not a fix for an unbounded
+ * scan. A request above it answers 400 rather than a page it did not ask for.
+ * Rows past this point are unreachable on these routes unless a filter narrows
+ * the listing; reaching them would take a keyset cursor, which does not exist.
+ */
+export const JOB_LIST_MAX_OFFSET = 10_000;
+
+export function parseGenericJobListingQuery(req: Request): {
   status: string | null;
   sourceType: string | null;
   limit: number;
@@ -1938,7 +2056,7 @@ function parseGenericJobListingQuery(req: Request): {
   const sourceTypeRaw = typeof req.query.source_type === 'string' ? req.query.source_type.trim() : '';
   const sourceType = sourceTypeRaw && SOURCE_TYPE_VALUES.has(sourceTypeRaw) ? sourceTypeRaw : null;
   const limit = clampInt(req.query.limit, JOB_LIST_DEFAULT_LIMIT, 1, JOB_LIST_MAX_LIMIT);
-  const offset = clampInt(req.query.offset, 0, 0, Number.MAX_SAFE_INTEGER);
+  const offset = parseJobListOffset(req.query.offset);
   const sinceRaw = typeof req.query.since === 'string' ? req.query.since.trim() : '';
   let since: Date | null = null;
   if (sinceRaw) {
@@ -1957,11 +2075,7 @@ function extractRetriedCount(payload: Record<string, unknown> | null | undefined
   return 0;
 }
 
-const JOB_LIST_STATUS_VALUES = new Set(['queued', 'processing', 'completed', 'failed', 'cancelled']);
-const JOB_LIST_DEFAULT_LIMIT = 50;
-const JOB_LIST_MAX_LIMIT = 200;
-
-function parseJobListingQuery(req: Request): {
+export function parseJobListingQuery(req: Request): {
   status: string | null;
   limit: number;
   offset: number;
@@ -1969,8 +2083,20 @@ function parseJobListingQuery(req: Request): {
   const statusRaw = typeof req.query.status === 'string' ? req.query.status.trim() : '';
   const status = statusRaw && JOB_LIST_STATUS_VALUES.has(statusRaw) ? statusRaw : null;
   const limit = clampInt(req.query.limit, JOB_LIST_DEFAULT_LIMIT, 1, JOB_LIST_MAX_LIMIT);
-  const offset = clampInt(req.query.offset, 0, 0, Number.MAX_SAFE_INTEGER);
+  const offset = parseJobListOffset(req.query.offset);
   return { status, limit, offset };
+}
+
+function parseJobListOffset(value: unknown): number {
+  const offset = clampInt(value, 0, 0, Number.MAX_SAFE_INTEGER);
+  if (offset > JOB_LIST_MAX_OFFSET) {
+    throw new AppError(
+      `offset must be at most ${JOB_LIST_MAX_OFFSET}; narrow the listing with filters to reach older rows`,
+      400,
+      'INVALID_PAGINATION',
+    );
+  }
+  return offset;
 }
 
 function clampInt(value: unknown, fallback: number, min: number, max: number): number {

@@ -609,6 +609,57 @@ describe('work preservation — ordering and durable state', () => {
     }
   });
 
+  // #5182: an account without extra usage (or with the overage-included bucket
+  // spent) gets a rejected overage bucket on responses the provider serves. The
+  // CLI emits that rate_limit_event after the turn's text frame.
+  it('keeps capturing when a rejected overage bucket arrives with a served response (#5182)', async () => {
+    const h = createHarness(2);
+    liveSessions.push(h.session);
+    const { run } = await claimFirstObservation(h);
+
+    try {
+      sdk().textFrame(SKIP_REPLY);
+      sdk().frame({
+        type: 'rate_limit_event',
+        rate_limit_info: { rateLimitType: 'overage', status: 'rejected', overageStatus: 'rejected', isUsingOverage: false },
+      });
+      sdk().frame({
+        type: 'rate_limit_event',
+        rate_limit_info: { rateLimitType: 'seven_day_overage_included', status: 'rejected', resetsAt: Date.now() + 86_400_000 },
+      });
+      sdk().result();
+      await sdk().until(() => sdk().prompts.length >= 3, 'next observation after a served turn');
+
+      expect(h.session.abortReason ?? null).toBeNull();
+      expect(h.session.abortController.signal.aborted).toBe(false);
+
+      h.session.abortController.abort();
+      await withTimeout(run, 'startSession after abort');
+    } finally {
+      globalRateLimitStore.set({ rateLimitType: 'overage', status: 'allowed', overageStatus: 'allowed' });
+      globalRateLimitStore.set({ rateLimitType: 'seven_day_overage_included', status: 'allowed' });
+    }
+  });
+
+  it('still pauses on a rejected overage bucket when the request went unanswered (#5182)', async () => {
+    const h = createHarness(1);
+    liveSessions.push(h.session);
+    const { run } = await claimFirstObservation(h);
+
+    try {
+      sdk().frame({
+        type: 'rate_limit_event',
+        rate_limit_info: { rateLimitType: 'overage', status: 'rejected', overageStatus: 'rejected', isUsingOverage: false },
+      });
+      await withTimeout(run, 'startSession after quota guard');
+
+      expect(h.session.abortReason).toBe('quota:overage:quota_exhausted');
+      expect(h.pending()).toBe(1);
+    } finally {
+      globalRateLimitStore.set({ rateLimitType: 'overage', status: 'allowed', overageStatus: 'allowed' });
+    }
+  });
+
   it('starts a recycled generation without nulling durable observation and summary rows', async () => {
     const store = new SessionStore(':memory:');
     try {
@@ -798,6 +849,87 @@ describe('work preservation — a generator that throws, seen from the runner', 
       expect(sessionManager.getSession(session.sessionDbId)).toBeUndefined();
     } finally {
       recordFailure.mockRestore();
+    }
+  });
+
+  it('a model refusal is booked as a model outage, not dropped as prose (#5315)', async () => {
+    const booked: unknown[][] = [];
+    const { routes, session } = await buildRoutesWithRealProvider(6191);
+    liveSessions.push(session);
+    const recordFailure = spyOn(observerHealth, 'recordObserverFailure').mockImplementation((...args: unknown[]) => {
+      booked.push(args);
+    });
+    const healthDir = mkdtempSync(join(tmpdir(), 'claude-mem-model-refusal-'));
+    try {
+      await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+      await sdkStarted();
+      await sdk().until(() => sdk().prompts.length >= 1, 'init prompt');
+      sdk().answer(SKIP_REPLY);
+      await sdk().until(() => sdk().prompts.length >= 2, 'first observation');
+
+      // The frame Claude Code 2.1.318 sends for ANTHROPIC_DEFAULT_HAIKU_MODEL=auto.
+      sdk().frame({
+        type: 'assistant',
+        error: 'model_not_found',
+        message: {
+          model: '<synthetic>',
+          content: [{ type: 'text', text: "There's an issue with the selected model (auto). It may not exist or you may not have access to it. Run --model to pick a different model." }],
+          usage: {},
+        },
+      });
+      await withTimeout(session.generatorPromise ?? Promise.resolve(), 'generator chain after model refusal');
+      await settle(5);
+
+      expect(booked).toHaveLength(1);
+      expect(booked[0][0]).toBe('claude');
+      const detail = booked[0][1] as { kind: string; code: string; action: string; message: string };
+      expect(detail.kind).toBe('unrecoverable');
+      expect(detail.code).toBe('model_unavailable');
+      expect(detail.message).not.toContain('prose');
+
+      recordFailure.mockRestore();
+      const healthPath = join(healthDir, 'observer-health.json');
+      observerHealth.recordObserverFailure('claude', detail, healthPath);
+      const warning = observerHealth.renderObserverHealthWarning(observerHealth.readObserverHealth(healthPath)!);
+      expect(warning).toContain('Latest error: There\'s an issue with the selected model (auto)');
+      expect(warning).toContain('What to do: Set CLAUDE_MEM_MODEL in ~/.claude-mem/settings.json');
+      expect(warning).toContain('Restarting will NOT help here');
+      expect(warning).not.toContain('Click to restart');
+    } finally {
+      recordFailure.mockRestore();
+      rmSync(healthDir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves a queued batch and records the Anthropic verification remedy (#5251)', async () => {
+    const cleanUp = useCredentialFallback('api-key');
+    const booked: unknown[][] = [];
+    const { routes, session, sessionManager, finalizeCalls } = await buildRoutesWithRealProvider(6110);
+    liveSessions.push(session);
+    const recordFailure = spyOn(observerHealth, 'recordObserverFailure').mockImplementation((...args: unknown[]) => {
+      booked.push(args);
+    });
+    try {
+      await startAndClaim(routes, session);
+      const claimedId = session.claimedMessageIds[0];
+      expect(claimedId).toBeDefined();
+
+      sdk().answer("API Error: Your account can't receive replies from Claude right now. You can find the next step in the Anthropic Verification Portal: https://portal.anthropic.com/verify?org=private-org-id");
+      await withTimeout(session.generatorPromise ?? Promise.resolve(), 'generator after verification hold');
+      await settle(5);
+
+      expect(sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId)).toBe(1);
+      expect(sessionManager.getSession(session.sessionDbId)).toBe(session);
+      expect(finalizeCalls()).toBe(0);
+      expect(session.abortReason).toBeNull();
+      expect(booked).toHaveLength(1);
+      expect(booked[0][0]).toBe('claude');
+      expect(booked[0][1]).toMatchObject({ kind: 'auth_invalid' });
+      expect(booked[0][1]).toMatchObject({ action: expect.stringContaining('Verification Portal') });
+      expect(JSON.stringify(booked)).not.toContain('private-org-id');
+    } finally {
+      recordFailure.mockRestore();
+      cleanUp();
     }
   });
 

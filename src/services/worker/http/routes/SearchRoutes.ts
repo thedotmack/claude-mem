@@ -12,6 +12,11 @@ import { scopedProjects } from '../../../sqlite/project-read-keys.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
 import { groupByDate } from '../../../../shared/timeline-formatting.js';
+import {
+  SEMANTIC_CONTEXT_MAX_LIMIT,
+  SEMANTIC_CONTEXT_MIN_QUERY_CHARS,
+  renderSemanticContext,
+} from '../../../../shared/semantic-context.js';
 import { countObservationsByProjects } from '../../../context/ObservationCompiler.js';
 import { observerHealthWarning, withObserverHealthWarning } from '../../../context/ContextBuilder.js';
 import type { ContextInjectStats } from '../../../context/ContextBuilder.js';
@@ -47,6 +52,7 @@ import { proTrialLine } from '../../../../shared/pro-promo.js';
 import { teamBriefReserveChars } from '../../../../shared/teambrain.js';
 import { ProgressiveMemorySearch } from '../../ProgressiveMemorySearch.js';
 import { progressiveSearchToolResult, progressiveSearchToolError, type ProgressiveSearchInput } from '../../../../shared/progressive-search.js';
+import { parseProjectList } from '../../../../shared/project-list.js';
 
 const ONBOARDING_EXPLAINER_PATH: string = path.resolve(__dirname, '../skills/how-it-works/onboarding-explainer.md');
 
@@ -380,7 +386,7 @@ export class SearchRoutes extends BaseRouteHandler {
   });
 
   private handleContextInject = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    let projectsParam = (req.query.projects as string) || (req.query.project as string);
+    let projectsParam: unknown = req.query.projects || req.query.project;
     const hostCwd = typeof req.query.cwd === 'string' ? req.query.cwd : '';
     // "Include last message" picks the prior session's reply by excluding the
     // session that asks, so only then is its id used, and that answer stays live.
@@ -403,7 +409,7 @@ export class SearchRoutes extends BaseRouteHandler {
       const resolvedProjects = this.contextReader
         ? await this.contextReader.projectsForCwd(hostCwd)
         : getProjectContext(hostCwd).allProjects;
-      projectsParam = resolvedProjects.join(',');
+      projectsParam = resolvedProjects.length > 0 ? resolvedProjects : undefined;
     }
     const forHuman = req.query.colors === 'true';
     const full = req.query.full === 'true';
@@ -414,7 +420,7 @@ export class SearchRoutes extends BaseRouteHandler {
       return;
     }
 
-    const projects = projectsParam.split(',').map(p => p.trim()).filter(Boolean);
+    const projects = parseProjectList(projectsParam);
 
     if (projects.length === 0) {
       this.badRequest(res, 'At least one project is required');
@@ -605,10 +611,10 @@ export class SearchRoutes extends BaseRouteHandler {
     const query = SearchRoutes.firstString(req.body?.q) ?? SearchRoutes.firstString(req.query.q) ?? '';
     let project = SearchRoutes.firstString(req.body?.project) ?? SearchRoutes.firstString(req.query.project);
     let projects = SearchRoutes.parseProjectsParam(req.body?.projects ?? req.query.projects);
-    const limit = Math.min(Math.max(parseInt(String(req.body?.limit || req.query.limit || '5'), 10) || 5, 1), 20);
+    const limit = Math.min(Math.max(parseInt(String(req.body?.limit || req.query.limit || '5'), 10) || 5, 1), SEMANTIC_CONTEXT_MAX_LIMIT);
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
-    if (!query || query.length < 20) {
+    if (!query || query.length < SEMANTIC_CONTEXT_MIN_QUERY_CHARS) {
       res.json({ context: '', count: 0 });
       return;
     }
@@ -668,15 +674,13 @@ export class SearchRoutes extends BaseRouteHandler {
       return;
     }
 
-    const lines: string[] = ['## Relevant Past Work (semantic match)\n'];
-    for (const obs of observations.slice(0, limit)) {
-      const date = obs.created_at?.slice(0, 10) || '';
-      lines.push(`### ${obs.title || 'Observation'} (${date})`);
-      if (obs.narrative) lines.push(obs.narrative);
-      lines.push('');
-    }
+    const context = renderSemanticContext(observations.slice(0, limit).map((obs: any) => ({
+      title: obs.title,
+      narrative: obs.narrative,
+      date: obs.created_at?.slice(0, 10) || '',
+    })));
 
-    res.json({ context: lines.join('\n'), count: observations.length });
+    res.json({ context, count: observations.length });
   });
 
   /**
@@ -764,7 +768,7 @@ export class SearchRoutes extends BaseRouteHandler {
         'INVALID_PROJECTS'
       );
     }
-    return scopedProjects({ projects: entries.flatMap(entry => entry.split(',')) });
+    return scopedProjects({ projects: parseProjectList(entries) });
   }
 
   private handleOnboardingExplainer = this.wrapHandler((_req: Request, res: Response): void => {

@@ -159,6 +159,8 @@ export async function startGeneratorWithProvider(
   // too, its exit records a fresh reason. Without this, one auth pause would
   // keep the session out of every automatic sweep for good.
   session.pausedReason = null;
+  session.pausedAtMs = null;
+  session.pausedAuthScope = null;
   session.providerSwitchPending = false;
 
   if (session.abortController.signal.aborted) {
@@ -197,6 +199,8 @@ export async function startGeneratorWithProvider(
   });
 
   session.currentProvider = provider;
+  session.observerProfile = undefined;
+  session.observerAuth = undefined;
   session.lastGeneratorActivity = Date.now();
   // Providers refine this per-prompt ('init'|'ingest'|'summarize'); this is
   // the fallback when a generator dies before dispatching its first prompt.
@@ -445,12 +449,21 @@ export async function startGeneratorWithProvider(
       // cmem gateway's key_invalid is the trial-expiry fallback, not an outage.
       // It is booked as the refused credential it is (auth_invalid), so the
       // SessionStart banner shows at once with the /login remedy rather than
-      // waiting out the failure threshold and then offering a restart.
+      // waiting out the failure threshold and then offering a restart. The same
+      // prose appears when the worker cannot read a credential that exists
+      // (#5250), so the notice names that as the next check after /login.
       if (reason === 'auth:observer_text' && provider === 'claude' && !failureBooked) {
         recordObserverFailure(provider, {
-          message: 'Claude Code reported the observer as signed out',
+          message: 'Claude Code could not authenticate the observer',
           kind: 'auth_invalid',
-          action: 'Run /login in Claude Code (or `claude auth login` in a terminal) to refresh the observer credentials',
+          action: 'Run /login in Claude Code (or `claude auth login` in a terminal) to refresh the observer credentials. If you are already signed in, check the worker log for OAUTH credential-store lookup errors',
+        });
+      }
+      if (reason === 'auth:observer_verification_hold' && provider === 'claude' && !failureBooked) {
+        recordObserverFailure(provider, {
+          message: 'Claude Code cannot receive replies until the account verification hold is resolved',
+          kind: 'auth_invalid',
+          action: 'Complete the account check in Anthropic’s Verification Portal, then retry the preserved work',
         });
       }
       // A Claude fallback run, or a run on the quota-fallback credential,
@@ -459,11 +472,11 @@ export async function startGeneratorWithProvider(
       // thrown auth refusal already does (bookClassifiedFailure). Otherwise each
       // captured event would start the same signed-out fallback again while
       // the primary is held. A Claude primary keeps retrying on the next event.
-      const claudeStandInSignedOut = provider === 'claude' && !failureBooked
+      const claudeStandInAuthBlocked = provider === 'claude' && !failureBooked
         && (session.fallbackFrom != null || session.claudeAuthOverride != null)
-        && (reason === 'auth:observer_text' || reason === 'auth:observer_org_policy');
-      if (claudeStandInSignedOut) {
-        recordAuthCooldown('claude', 'Claude Code reported the fallback observer as signed out', session.observerProfile);
+        && (reason === 'auth:observer_text' || reason === 'auth:observer_org_policy' || reason === 'auth:observer_verification_hold');
+      if (claudeStandInAuthBlocked) {
+        recordAuthCooldown('claude', 'Claude Code refused the fallback observer', session.observerProfile);
       }
       // The org-policy refusal (#4677) goes down the same preserved auth path,
       // but logging in again cannot lift it, so it carries the notice's own
@@ -647,7 +660,7 @@ function bookClassifiedFailure(
       }
       const plan = error.retryAfterMs !== undefined ? planRateLimitResume(session) : null;
       if (plan?.resume && error.retryAfterMs !== undefined
-        && planUnattendedGatewayResume(session, 'rate-limit', canCmemGatewayServe()).resume) {
+        && planUnattendedGatewayResume(session, 'rate-limit', canCmemGatewayServe(session.platformSource)).resume) {
         resume = {
           afterMs: Math.min(Math.max(error.retryAfterMs, 0), QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS),
           source: 'rate-limit',
