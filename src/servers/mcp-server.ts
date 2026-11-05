@@ -689,14 +689,15 @@ Optional Dumb search: \`dumb_search({query, project})\`. Doesn’t reason about 
   },
   {
     name: 'get_observations',
-    description: 'Step 3: Fetch selected useful details for the IDs chosen after reviewing the index and timeline. Any shortening is marked. Params: ids (required), orderBy, limit, project (worker) or projectId (server)',
+    description: 'Step 3: Fetch selected useful details for the IDs chosen after reviewing the index and timeline. Any shortening is marked. Params: ids (required), orderBy, limit, project (worker) or projectId (server). At most 100 ids per call; split larger selections across several calls.',
     inputSchema: {
       type: 'object',
       properties: {
         ids: {
           type: 'array',
+          maxItems: 100,
           items: { type: ['number', 'string'] },
-          description: 'Array of selected observation IDs to fetch (string IDs in server runtime)'
+          description: 'Array of selected observation IDs to fetch (at most 100; split larger selections). String IDs in server runtime.'
         },
         projectId: { type: 'string', description: 'Server project ID; defaults to the configured server project' }
       },
