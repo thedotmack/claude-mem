@@ -13,6 +13,7 @@ import {
   waitForSlot,
   getParkedSlotWaiterCount,
   isSessionParkedForSlot,
+  getReservedSlotCount,
   setRegistryDegradedReporter,
   type SlotReservation,
 } from '../../src/supervisor/process-registry.js';
@@ -706,42 +707,50 @@ describe('waitForSlot / parked waiters (#2756)', () => {
     expect(getParkedSlotWaiterCount()).toBe(0);
   });
 
-  it('parks at the hard cap instead of rejecting, and resolves when a process exits (#5376)', async () => {
-    const ids: string[] = [];
-    for (let i = 0; i < 10; i++) {
-      ids.push(registerFakeSdk(`hardcap-${i}`));
+  it('rejects immediately when the registry is already over the hard cap, without parking', async () => {
+    for (let i = 0; i < 11; i++) {
+      registerFakeSdk(`hardcap-${i}`);
     }
 
-    // At the cap the caller must park like it does at the configured
-    // limit: rejecting here fails the generator start, and the session
-    // discards its buffered messages (#5376) — even though the entries
-    // filling the registry may already be exiting.
-    const parkedPromise = waitForSlot(10, undefined, 'sess-hardcap');
-    expect(isSessionParkedForSlot('sess-hardcap')).toBe(true);
-    expect(getParkedSlotWaiterCount()).toBe(1);
-
-    registry.unregister(ids[0]);
-
-    grantedReservations.push(await parkedPromise);
+    await expect(waitForSlot(1, undefined, 'sess-hardcap')).rejects.toThrow(/Hard cap exceeded/);
     expect(isSessionParkedForSlot('sess-hardcap')).toBe(false);
     expect(getParkedSlotWaiterCount()).toBe(0);
   });
 
-  it('hard cap still bounds grants when the configured limit is above it (#5376)', async () => {
-    const ids: string[] = [];
+  // #5376: with CLAUDE_MEM_MAX_CONCURRENT_AGENTS=10 a full pool reached the
+  // hard cap, so starts threw and the session discarded its queued messages.
+  it('parks (does not throw) when a limit of 10 fills the pool to the hard cap', async () => {
+    const occupants: string[] = [];
     for (let i = 0; i < 10; i++) {
-      ids.push(registerFakeSdk(`cap-ceiling-${i}`));
+      occupants.push(registerFakeSdk(`full-${i}`));
     }
 
-    // A configured limit of 20 must not admit an 11th process: the cap
-    // binds the grant, so this caller parks until the count drops below it.
-    const parkedPromise = waitForSlot(20, undefined, 'sess-cap-ceiling');
-    expect(isSessionParkedForSlot('sess-cap-ceiling')).toBe(true);
+    const parked = waitForSlot(10, undefined, 'sess-full-pool');
+    expect(isSessionParkedForSlot('sess-full-pool')).toBe(true);
+    expect(getParkedSlotWaiterCount()).toBe(1);
 
-    registry.unregister(ids[0]);
+    registry.unregister(occupants[0]);
+    grantedReservations.push(await parked);
+    expect(isSessionParkedForSlot('sess-full-pool')).toBe(false);
+    expect(getReservedSlotCount()).toBe(1);
+  });
 
-    grantedReservations.push(await parkedPromise);
-    expect(isSessionParkedForSlot('sess-cap-ceiling')).toBe(false);
+  it('treats a limit above the hard cap as the hard cap', async () => {
+    for (let i = 0; i < 9; i++) {
+      registerFakeSdk(`over-${i}`);
+    }
+
+    // 9 in use, limit 15: one slot left under the cap of 10.
+    grantedReservations.push(await waitForSlot(15, undefined, 'sess-ninth'));
+    expect(isSessionParkedForSlot('sess-ninth')).toBe(false);
+
+    // Now 10 (9 + 1 reservation): the next caller waits instead of spawning an 11th.
+    const parked = waitForSlot(15, undefined, 'sess-eleventh');
+    expect(isSessionParkedForSlot('sess-eleventh')).toBe(true);
+
+    grantedReservations.pop()!.release();
+    grantedReservations.push(await parked);
+    expect(getReservedSlotCount()).toBe(1);
   });
 
   it('resolves immediately (no parking) when the active count is already under the limit', async () => {

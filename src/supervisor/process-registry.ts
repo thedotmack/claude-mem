@@ -643,11 +643,6 @@ export async function ensureSdkProcessExit(
   await Promise.race([sigkillExit, sigkillTimeout]);
 }
 
-// Absolute ceiling on concurrent SDK processes, independent of the
-// configured CLAUDE_MEM_MAX_CONCURRENT_AGENTS: a last-resort guard against
-// runaway spawning. It binds grants in waitForSlot() (callers park at the
-// cap); it must never reject a start — a rejection fails the generator and
-// the session discards its buffered messages (#5376).
 const TOTAL_PROCESS_HARD_CAP = 10;
 const SLOT_RECHECK_INTERVAL_MS = 5_000;
 
@@ -750,25 +745,25 @@ export async function waitForSlot(
   signal?: AbortSignal,
   sessionId?: number | string
 ): Promise<SlotReservation> {
-  const getMax = typeof maxConcurrent === 'function' ? maxConcurrent : () => maxConcurrent;
-  // The effective limit is the configured limit bounded by the hard cap.
-  // At the cap a caller parks exactly like it does at the configured
-  // limit (#5376): entries filling the registry may already be exiting
-  // (idle abort, up to 5 s before SIGKILL), so a slot frees within
-  // seconds — rejecting the start instead would fail the generator and
-  // discard the session's buffered messages.
-  const limit = () => Math.min(getMax(), TOTAL_PROCESS_HARD_CAP);
+  const getConfiguredMax = typeof maxConcurrent === 'function' ? maxConcurrent : () => maxConcurrent;
+  // #5376: a limit at or above the hard cap behaves like a limit AT the cap.
+  // A full pool parks the session; only a registry already OVER the cap
+  // (processes that never went through this gate) is refused.
+  const getMax = () => Math.min(getConfiguredMax(), TOTAL_PROCESS_HARD_CAP);
 
   getProcessRegistry().pruneDeadEntries();
   const activeCount = getActiveSdkCount();
+  if (activeCount > TOTAL_PROCESS_HARD_CAP) {
+    throw new Error(`Hard cap exceeded: ${activeCount} processes in registry (cap=${TOTAL_PROCESS_HARD_CAP}). Refusing to spawn more.`);
+  }
 
-  if (activeCount < limit()) return takeSlotReservation();
+  if (activeCount < getMax()) return takeSlotReservation();
 
   if (signal?.aborted) {
     throw new Error('waitForSlot aborted before queuing');
   }
 
-  logger.info('PROCESS', `Pool limit reached (${activeCount}/${limit()}), waiting for slot...`);
+  logger.info('PROCESS', `Pool limit reached (${activeCount}/${getMax()}), waiting for slot...`);
 
   return new Promise<SlotReservation>((resolve, reject) => {
     let recheckTimer: ReturnType<typeof setInterval> | null = null;
@@ -789,11 +784,14 @@ export async function waitForSlot(
       // Re-read getMax() here (not a frozen value) so a settings raise
       // reaches an already-parked waiter the next time it's poked — either
       // by this recheck timer or by another slot freeing up via unregister().
-      // The hard cap binds the grant through limit(): a waiter whose turn
-      // comes while the count is still at the cap re-parks instead of
-      // being rejected (#5376).
       const count = getActiveSdkCount();
-      if (count < limit()) {
+      if (count > TOTAL_PROCESS_HARD_CAP) {
+        cleanup();
+        reject(new Error(`Hard cap exceeded: ${count} processes in registry (cap=${TOTAL_PROCESS_HARD_CAP}). Refusing to spawn more.`));
+        return;
+      }
+
+      if (count < getMax()) {
         cleanup();
         resolve(takeSlotReservation());
       } else {

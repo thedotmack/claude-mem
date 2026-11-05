@@ -194,6 +194,27 @@ describe('DataRoutes Type Coercion', () => {
 
       expect(jsonSpy).toHaveBeenCalledWith([]);
     });
+
+    // Every id comes back as a full row (narrative, facts, concepts, file
+    // lists), so an unbounded array is a way to page the whole table in one
+    // request. 100 is the ceiling the adapters already advertise.
+    it('should reject more than 100 ids', () => {
+      const ids = Array.from({ length: 101 }, (_, i) => i + 1);
+      const { req, res, statusSpy } = createMockReqRes({ ids });
+      handler(req as Request, res as Response);
+
+      expect(statusSpy).toHaveBeenCalledWith(400);
+      expect(mockGetObservationsByIds).not.toHaveBeenCalled();
+    });
+
+    it('should accept exactly 100 ids', () => {
+      const ids = Array.from({ length: 100 }, (_, i) => i + 1);
+      const { req, res, jsonSpy } = createMockReqRes({ ids });
+      handler(req as Request, res as Response);
+
+      expect(mockGetObservationsByIds).toHaveBeenCalledWith(ids, expect.anything());
+      expect(jsonSpy).toHaveBeenCalled();
+    });
   });
 
   describe('handleGetSdkSessionsByIds — memorySessionIds coercion', () => {
