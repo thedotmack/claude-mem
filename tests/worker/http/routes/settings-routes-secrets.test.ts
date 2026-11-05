@@ -56,6 +56,7 @@ const SECRET_ENV_KEYS = [
   'CLAUDE_MEM_REDIS_URL',
   'CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET',
   'CLAUDE_MEM_GROK_BOT_WEBHOOK_URL',
+  'CLAUDE_MEM_NOTION_TOKEN',
 ];
 
 describe('SettingsRoutes — credential redaction and host bind (#3861)', () => {
@@ -104,6 +105,7 @@ describe('SettingsRoutes — credential redaction and host bind (#3861)', () => 
       CLAUDE_MEM_PRO_MEMORY_KEY: 'pro-memory-key-aaaa',
       CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET: 'brainbeat-secret-bbbb',
       CLAUDE_MEM_GROK_BOT_WEBHOOK_URL: 'https://bot.example/hook?token=cccc',
+      CLAUDE_MEM_NOTION_TOKEN: 'ntn_secret_dddd',
     };
     writeFileSync(settingsPath, JSON.stringify({
       ...secrets,

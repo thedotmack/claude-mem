@@ -19,6 +19,7 @@ import { logger } from '../../../../utils/logger.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { resolveDateBound } from '../../../../shared/date-bounds.js';
 import { buildProjectWhereFilter, projectReadKeysFor } from '../project-where-filter.js';
+import { scopeRowIdsFor } from '../scope-row-ids.js';
 
 export class ChromaSearchStrategy {
   constructor(
@@ -119,10 +120,15 @@ export class ChromaSearchStrategy {
       projects: options.projects,
       platformSource: options.platformSource,
     };
+    const fallbackRowIds = scopeRowIdsFor(this.sessionStore, {
+      observations: options.searchObservations,
+      sessions: options.searchSessions,
+      prompts: options.searchPrompts,
+    }, sqlOptions);
 
     while (true) {
       const progress: ChromaQueryProgress = {};
-      const chromaResults = await this.chromaSync.queryChroma(query, candidateLimit, whereFilter, progress);
+      const chromaResults = await this.chromaSync.queryChroma(query, candidateLimit, whereFilter, progress, fallbackRowIds);
       const recentItems = this.filterByRecency(chromaResults, options.dateRange, options.ignoreDefaultRecencyWindow);
       const categorized = this.categorizeByDocType(recentItems, options);
       results = {

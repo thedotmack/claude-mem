@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import express from 'express';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Server } from 'node:http';
-import { WorkViewRoutes } from '../../../../src/services/worker/http/routes/WorkViewRoutes.js';
+import { isReportedReadyForCheck, WorkViewRoutes } from '../../../../src/services/worker/http/routes/WorkViewRoutes.js';
 import { contentFingerprint } from '../../../../src/services/work-view/review-store.js';
 import { reduceWorkState } from '../../../../src/services/work-view/data-source.mjs';
 import { HumanCopyWorker } from '../../../../src/services/work-view/human-copy-worker.mjs';
@@ -26,10 +26,11 @@ function append(fields: Record<string, unknown>) {
 }
 
 async function start(humanCopy: HumanCopyWorker | null = null) {
-  routes = new WorkViewRoutes({ databasePath, reviewPath, pollIntervalMs: 20, humanCopy });
+  routes = new WorkViewRoutes({ databasePath, reviewPath, pollIntervalMs: 20, humanCopy, ledgerDir: null, setupStatePath: join(directory, 'setup-state.json') });
   const app = express();
   app.use(express.json());
   routes.setupRoutes(app);
+  app.get('/probe', (_req, res) => { res.json({ ok: true }); }); // Touches no database: answers only if the event loop is free.
   await new Promise<void>(resolve => { server = app.listen(0, '127.0.0.1', resolve); });
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('No test port');
@@ -105,6 +106,131 @@ function seedLinkedEvidence(promptText = 'Build a local work viewer') {
 }
 
 describe('local work view', () => {
+  /** A database in rollback-journal mode, where another connection's lock really blocks a reader (WAL readers never wait). */
+  async function restartOnLockableDatabase() {
+    await stop();
+    source.close();
+    databasePath = join(directory, 'lockable.db');
+    source = new Database(databasePath);
+    source.exec('CREATE TABLE work_state_entries (id INTEGER PRIMARY KEY, project TEXT, list_name TEXT, fields TEXT, created_at_epoch INTEGER)');
+    nextId = 1;
+    append({ task: 'Build the local viewer', status: 'done', request_id: 'viewer-request', human_request: 'Build a local work viewer' });
+    await start();
+    await snapshot(); // Starts the worker, so the next read reaches a lock at once rather than while it loads.
+    return new Database(databasePath);
+  }
+
+  it('answers another request while a real read is held open in the worker thread', async () => {
+    const lock = await restartOnLockableDatabase();
+    (routes as any).source.read = () => { throw new Error('snapshot read ran on the HTTP thread'); };
+    lock.exec('BEGIN EXCLUSIVE');
+    try {
+      let readFinished = false;
+      const held = snapshot().then(view => { readFinished = true; return view; });
+      await Bun.sleep(100);
+      expect((await fetch(`${origin}/probe`, { signal: AbortSignal.timeout(1000) })).status).toBe(200);
+      expect(readFinished).toBe(false);
+      lock.exec('ROLLBACK');
+      const view = await held;
+      expect(view.source.connected).toBe(true);
+      expect(view.humanRequests).toHaveLength(1);
+    } finally {
+      if (lock.inTransaction) lock.exec('ROLLBACK');
+      lock.close();
+    }
+  });
+
+  it('the reader answers in the order it was asked', async () => {
+    const reader = (routes as any).sourceReader;
+    const order: string[] = [];
+    await Promise.all([
+      // The first answer takes more steps to reach its consumer, and still has to arrive first.
+      reader.read(0, '').then(async () => { for (let step = 0; step < 10; step++) await null; order.push('first'); }),
+      reader.read(0, '').then(() => { order.push('second'); }),
+      reader.read(120_000, '').then(() => { order.push('third'); }),
+    ]);
+    expect(order).toEqual(['first', 'second', 'third']);
+  });
+
+  it('never sends an older view after a newer one, with a write landing while a read is held', async () => {
+    const lock = await restartOnLockableDatabase();
+    const controller = new AbortController(); controllers.push(controller);
+    const reader = (await fetch(`${origin}/api/work-view/events`, { signal: controller.signal })).body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    const views = () => buffer.split('\n\n').slice(0, -1).filter(block => block.startsWith('event: work-view\n'));
+    const collect = (async () => { for (;;) { const part = await reader.read(); if (part.done) return; buffer += decoder.decode(part.value, { stream: true }); } })().catch(() => undefined);
+    while (!views().length) await Bun.sleep(5);
+    lock.exec('BEGIN EXCLUSIVE');
+    try {
+      await Bun.sleep(60); // Ticks every 20 ms, so a background read is now held at the lock.
+      (routes as any).publish();
+      lock.exec('ROLLBACK');
+      append({ task: 'Keep the newest view', status: 'done', request_id: 'newest-request', human_request: 'Keep the newest view' });
+    } finally {
+      if (lock.inTransaction) lock.exec('ROLLBACK');
+      lock.close();
+    }
+    while (!views().some(view => view.includes('Keep the newest view'))) await Bun.sleep(5);
+    await Bun.sleep(200); // Ten more ticks.
+    const all = views();
+    const firstWithRow = all.findIndex(view => view.includes('Keep the newest view'));
+    expect(all.slice(firstWithRow).every(view => view.includes('Keep the newest view'))).toBe(true);
+    controller.abort();
+    await collect;
+  });
+
+  it('collapses reads while one is held, however often a publish or tick asks', async () => {
+    const lock = await restartOnLockableDatabase();
+    const controller = new AbortController(); controllers.push(controller);
+    const stream = (await fetch(`${origin}/api/work-view/events`, { signal: controller.signal })).body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (!buffer.includes('event: work-view\n')) buffer += decoder.decode((await stream.read()).value, { stream: true });
+    const sourceReader = (routes as any).sourceReader;
+    const realRead = sourceReader.read.bind(sourceReader);
+    let reads = 0;
+    sourceReader.read = (...args: [number, string]) => { reads++; return realRead(...args); };
+    lock.exec('BEGIN EXCLUSIVE');
+    try {
+      for (let ask = 0; ask < 20; ask++) { (routes as any).publish(); await Bun.sleep(5); }
+      expect(reads).toBeLessThanOrEqual(2); // One tick's read and one publish's read, with 20 ticks and 20 asks waiting on them.
+    } finally {
+      lock.exec('ROLLBACK');
+      lock.close();
+    }
+  });
+
+  it('ends a new event stream when its first read fails, so the page reconnects', async () => {
+    (routes as any).sourceReader.read = () => Promise.reject(new Error('reader is down'));
+    const controller = new AbortController(); controllers.push(controller);
+    const reader = (await fetch(`${origin}/api/work-view/events`, { signal: controller.signal })).body!.getReader();
+    while (!(await reader.read()).done) { /* retry line only */ }
+    expect(routes.getClientCount()).toBe(0);
+  });
+
+  it('serves a work-product file only through the work-state entry that attached it', async () => {
+    const image = join(directory, 'hero.png');
+    writeFileSync(image, 'png-bytes');
+    append({ task: 'Make the hero image', status: 'done', request_id: 'viewer-request', human_request: 'Build a local work viewer', work_product: [{ title: 'Hero', path: image }, 'https://claude.ai/artifact/abc'] });
+    const view = await (await fetch(`${origin}/api/work-view`)).json();
+    const products = view.humanRequests[0].workProduct;
+    expect(products.map((product: { title: string }) => product.title)).toEqual(['Hero', 'claude.ai']);
+    expect(products[0].fileUrl).toBe('/api/work-view/file/work-state/2/0');
+    expect(products[0].available).toBe(true);
+    const file = await fetch(`${origin}${products[0].fileUrl}`);
+    expect(file.status).toBe(200);
+    expect(file.headers.get('content-type')).toContain('image/png');
+    expect(file.headers.get('content-security-policy')).toBe('sandbox allow-scripts');
+    expect(await file.text()).toBe('png-bytes');
+    // Another local page cannot read the file through worker CORS.
+    const foreign = await fetch(`${origin}${products[0].fileUrl}`, { headers: { Origin: 'http://localhost:1' } });
+    expect(foreign.status).toBe(403);
+    expect((await fetch(`${origin}${products[0].fileUrl}`, { headers: { Origin: origin } })).status).toBe(200);
+    expect((await fetch(`${origin}/api/work-view/file/work-state/2/1`)).status).toBe(404);
+    expect((await fetch(`${origin}/api/work-view/file/work-state/1/0`)).status).toBe(404);
+  });
+
   it('projects explicit completion and evidence without inventing presence or altering source', async () => {
     const before = source.prepare('SELECT * FROM work_state_entries').all();
     const view = await snapshot();
@@ -154,6 +280,26 @@ describe('local work view', () => {
     append({ task: 'Build the local viewer', request_complete: false });
     const request = (await snapshot()).humanRequests[0];
     expect((await review(request)).status).toBe(409);
+    expect((await snapshot()).humanRequests[0].review.checked).toBe(false);
+  });
+
+  it('a memory review at 100% makes a request checkable, unless an explicit status came after it', () => {
+    const at = Date.parse('2026-10-22T12:00:00Z');
+    const doing = { explicit: true, status: 'in-progress', complete: null, atEpoch: at - 60000 };
+    expect(isReportedReadyForCheck({ lifecycle: null, progress: { percent: 100, checkedAt: '2026-10-22T12:00:00Z' } })).toBe(true);
+    expect(isReportedReadyForCheck({ lifecycle: doing, progress: { percent: 100, checkedAt: '2026-10-22T12:00:00Z' } })).toBe(true);
+    // Reopened after the review: the older 100% no longer counts.
+    expect(isReportedReadyForCheck({ lifecycle: { ...doing, atEpoch: at + 60000 }, progress: { percent: 100, checkedAt: '2026-10-22T12:00:00Z' } })).toBe(false);
+    expect(isReportedReadyForCheck({ lifecycle: null, progress: { percent: 90, checkedAt: '2026-10-22T12:00:00Z' } })).toBe(false);
+  });
+
+  it('lets a request waiting for review be checked and unchecked', async () => {
+    append({ task: 'Build the local viewer', request_status: 'needs_review' });
+    const request = (await snapshot()).humanRequests[0];
+    expect(request.lifecycle.status).toBe('needs_review');
+    expect((await review(request)).status).toBe(200);
+    expect((await snapshot()).humanRequests[0].review.checked).toBe(true);
+    expect((await review(request, false)).status).toBe(200);
     expect((await snapshot()).humanRequests[0].review.checked).toBe(false);
   });
 
@@ -341,6 +487,30 @@ describe('local work view', () => {
     // afterEach may safely close an already closed handle.
   });
 
+  it('coalesces background activity without accepting stale evidence reviews', async () => {
+    seedLinkedEvidence();
+    const request = (await snapshot()).humanRequests[0];
+    const controller = new AbortController(); controllers.push(controller);
+    const response = await fetch(`${origin}/api/work-view/events`, { signal: controller.signal });
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let initial = '';
+    while (!initial.includes('event: work-view')) {
+      const part = await reader.read();
+      if (part.done) throw new Error('event stream ended before its initial work view');
+      initial += decoder.decode(part.value, { stream: true });
+    }
+    const liveSource = (routes as any).source;
+    const initialRevision = liveSource.agentRevision;
+    source.prepare('UPDATE observations SET narrative=? WHERE id=1').run('Corrected full evidence.');
+    // Several real 20 ms polls must not rebuild for this activity-only commit.
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(liveSource.agentRevision).toBe(initialRevision);
+    expect((await review(request)).status).toBe(409);
+    expect(liveSource.agentRevision).toBeGreaterThan(initialRevision);
+    controller.abort();
+  });
+
   it('streams genuine external source changes and releases disconnected clients', async () => {
     const controller = new AbortController(); controllers.push(controller);
     const response = await fetch(`${origin}/api/work-view/events`, { signal: controller.signal });
@@ -407,5 +577,43 @@ describe('review content versions', () => {
     expect(request.humanCopy.state).toBe('current');
     expect(request.humanCopy.summary).toBe('The viewer is ready to use.');
     expect(request.contentFingerprint).toBe(before.contentFingerprint);
+  });
+
+  it('does not spend user tokens on display copy during hosted setup, then resumes after completion', async () => {
+    await stop();
+    let calls = 0;
+    const humanCopy = new HumanCopyWorker({ cachePath: null, quietMs: 0, minIntervalMs: 0, provider: async (input: any) => {
+      calls++;
+      return { output: { title: 'Build a local work viewer', summary: 'The viewer is ready.', next: '',
+        workstreams: input.workstreams.map((stream: { id: string }) => ({ id: stream.id, title: 'Viewer', summary: 'Ready.' })) } };
+    } });
+    const setupPath = join(directory, 'setup-state.json');
+    writeFileSync(setupPath, JSON.stringify({ status: 'pending' }));
+    writeFileSync(join(directory, 'setup-session.json'), JSON.stringify({ pid: process.pid }));
+    await start(humanCopy);
+    await snapshot();
+    expect(calls).toBe(0);
+    expect(humanCopy.status().queued).toBe(0);
+    writeFileSync(setupPath, JSON.stringify({ status: 'complete' }));
+    await snapshot();
+    expect(calls).toBe(1);
+  });
+
+  it('resumes display copy with saved pending setup when the installer has exited', async () => {
+    await stop();
+    let calls = 0;
+    const humanCopy = new HumanCopyWorker({ cachePath: null, quietMs: 0, minIntervalMs: 0, provider: async (input: any) => {
+      calls++;
+      return { output: { title: 'Build a local work viewer', summary: 'The viewer is ready.', next: '',
+        workstreams: input.workstreams.map((stream: { id: string }) => ({ id: stream.id, title: 'Viewer', summary: 'Ready.' })) } };
+    } });
+    const setupPath = join(directory, 'setup-state.json');
+    const saved = { status: 'pending', choice: { branch: 'home', memoryBilling: 'existing', chosenAt: 'earlier' } };
+    writeFileSync(setupPath, JSON.stringify(saved));
+    writeFileSync(join(directory, 'setup-session.json'), JSON.stringify({ pid: 2 ** 22 + 12345 }));
+    await start(humanCopy);
+    await snapshot();
+    expect(calls).toBe(1);
+    expect(JSON.parse(readFileSync(setupPath, 'utf8'))).toEqual(saved);
   });
 });

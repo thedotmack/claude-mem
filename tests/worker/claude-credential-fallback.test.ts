@@ -12,7 +12,7 @@ import {
   resetQuotaCooldownsForTesting,
 } from '../../src/shared/quota-cooldown.js';
 import { resetDependencyStatusesForTesting } from '../../src/shared/dependency-health.js';
-import { claudeQuotaStandIn, setClaudeFallbackReadinessForTesting } from '../../src/shared/claude-fallback-readiness.js';
+import { claudeQuotaStandIn, hasClaudeSubscriptionLogin, setClaudeFallbackReadinessForTesting } from '../../src/shared/claude-fallback-readiness.js';
 import { SessionManager } from '../../src/services/worker/SessionManager.js';
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import { ClassifiedProviderError } from '../../src/services/worker/provider-errors.js';
@@ -256,6 +256,7 @@ describe('Claude credential fallback: order and booking', () => {
   it.each([
     ['subscription', 'auth:observer_text'],
     ['subscription', 'auth:observer_org_policy'],
+    ['subscription', 'auth:observer_verification_hold'],
     ['api-key', 'auth:auth_invalid'],
   ] as const)('automatically retries the primary after a refused %s fallback (%s)', async (target, reason) => {
     process.env.CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD = target;
@@ -359,6 +360,19 @@ describe('Claude credential fallback: readiness', () => {
     process.env.CLAUDE_CODE_OAUTH_TOKEN = 'oauth-from-env';
     recordQuotaExhausted('claude', SPENT_KEY, undefined, undefined, undefined, 'api-key');
     expect(claudeQuotaStandIn()).toBe('subscription');
+  });
+
+  it('counts a long-lived CLAUDE_CODE_OAUTH_TOKEN in ~/.claude-mem/.env (no login files) as a subscription login', () => {
+    expect(hasClaudeSubscriptionLogin()).toBe(false);
+    writeFileSync(join(tempDir, '.env'), 'CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-long-lived\n', { mode: 0o600 });
+    expect(hasClaudeSubscriptionLogin()).toBe(true);
+  });
+
+  it('does not count a CLAUDE_CODE_OAUTH_TOKEN JWT in ~/.claude-mem/.env that is past its exp claim', () => {
+    const part = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url');
+    const expiredJwt = `${part({ alg: 'none' })}.${part({ exp: Math.floor(Date.now() / 1000) - 60 })}.sig`;
+    writeFileSync(join(tempDir, '.env'), `CLAUDE_CODE_OAUTH_TOKEN=${expiredJwt}\n`, { mode: 0o600 });
+    expect(hasClaudeSubscriptionLogin()).toBe(false);
   });
 });
 

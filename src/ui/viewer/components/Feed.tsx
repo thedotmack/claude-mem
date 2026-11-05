@@ -57,7 +57,7 @@ export function Feed({ items, header, onLoadMore, onDeleted, isLoading, hasMore,
   }, [hasMore, isLoading, loadError]);
 
   return (
-    <div className="feed" ref={feedRef}>
+    <main className="feed" ref={feedRef} aria-label="Memory timeline">
       <ScrollToTop targetRef={feedRef} />
       <div className="feed-content">
         {header}
@@ -71,9 +71,10 @@ export function Feed({ items, header, onLoadMore, onDeleted, isLoading, hasMore,
             return <PromptCard key={key} prompt={item} />;
           }
         })}
-        {items.length === 0 && !isLoading && (
-          <div style={{ textAlign: 'center', padding: '40px', color: 'var(--color-text-muted)' }}>
-            No items to display
+        {items.length === 0 && !isLoading && !loadError && (
+          <div className="memory-empty-state">
+            <h3>No memories to show</h3>
+            <p>Memories appear here as you work. If a filter is selected, try another project or category.</p>
           </div>
         )}
         {isLoading && (
@@ -97,6 +98,6 @@ export function Feed({ items, header, onLoadMore, onDeleted, isLoading, hasMore,
           </div>
         )}
       </div>
-    </div>
+    </main>
   );
 }

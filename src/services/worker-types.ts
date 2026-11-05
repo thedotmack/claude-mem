@@ -1,7 +1,9 @@
+import type { MediaManifest } from '../shared/media-contract.js';
 
 import type { Response } from 'express';
 import type { PaidSendBudget } from './worker/paid-send-budget.js';
 import type { ClaudeCredential } from '../shared/quota-cooldown.js';
+import type { MediaAttachmentRef, MediaFailureDescriptor } from '../shared/media-contract.js';
 
 export interface ConversationMessage {
   role: 'user' | 'assistant';
@@ -147,12 +149,28 @@ export interface ActiveSession {
   idleTimedOut?: boolean;  
   lastGeneratorActivity: number;
   modelOverride?: string;
+  /**
+   * Set when tier routing put this generator on CLAUDE_MEM_TIER_SIMPLE_MODEL.
+   * The model is fixed for the generator's lifetime, so it ends at the next
+   * message that is not a simple-tool observation and a fresh one picks the
+   * tier again (#4963).
+   */
+  simpleTierRun?: boolean;
   lastSummaryStored?: boolean;
   pendingAgentId?: string | null;
   pendingAgentType?: string | null;
   abortReason?: 'idle' | 'shutdown' | 'overflow' | 'restart-guard' | 'quota' | 'provider_switch' | string | null;
   /** Why buffered work was last parked after a generator exit. */
   pausedReason?: string | null;
+  /**
+   * When buffered work was last parked (the pausedReason moment, server
+   * clock). The resume sweep uses it as the before-side of a recovery proof:
+   * an observer store that succeeded after this moment proves an auth pause's
+   * cause is gone (#5377). Cleared together with pausedReason.
+   */
+  pausedAtMs?: number | null;
+  /** The provider, account and credential type captured before an auth pause; null when unknown. */
+  pausedAuthScope?: string | null;
   /**
    * Set when dispatch selects a provider other than the one the running
    * generator uses (the primary is back after a fallback, or settings
@@ -227,6 +245,9 @@ export interface ActiveSession {
 }
 
 export interface PendingMessage {
+  mediaRefs?: MediaAttachmentRef[];
+  mediaEventKey?: string;
+  mediaFailures?: MediaFailureDescriptor[];
   type: 'observation' | 'summarize';
   tool_name?: string;
   tool_input?: any;
@@ -245,6 +266,9 @@ export interface PendingMessageWithId extends PendingMessage {
 }
 
 export interface ObservationData {
+  mediaRefs?: MediaAttachmentRef[];
+  mediaEventKey?: string;
+  mediaFailures?: MediaFailureDescriptor[];
   tool_name: string;
   tool_input: any;
   tool_response: any;
@@ -295,6 +319,8 @@ export interface Observation {
   prompt_number: number;
   created_at: string;
   created_at_epoch: number;
+  /** Validated `metadata.cmem_media_v1` refs; absent for image-free rows (see media/feed.ts). */
+  media?: MediaManifest;
 }
 
 export interface Summary {

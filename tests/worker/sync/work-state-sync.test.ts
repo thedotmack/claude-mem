@@ -182,9 +182,11 @@ describe('work_state cloud sync', () => {
 
     // A row pulled later from another device carries an earlier write clock.
     store.appendWorkStateEntry({ project: 'proj-x', listName: 'release', fields: { task: 'publish', status: 'doing' }, createdAtEpoch: 2_000 });
+    // Plain 1000 in the SQL: digit separators need SQLite 3.46+, and Bun on
+    // macOS uses the system SQLite (3.43 on macOS 15).
     db.prepare(`
       INSERT INTO work_state_entries (project, list_name, fields, created_at, created_at_epoch, synced_at, origin_device_id, origin_local_id)
-      VALUES ('proj-x', 'release', '{"task":"publish","status":"todo"}', ?, 1_000, 5, ?, '9')
+      VALUES ('proj-x', 'release', '{"task":"publish","status":"todo"}', ?, 1000, 5, ?, '9')
     `).run(new Date(1_000).toISOString(), REMOTE);
     const entries = store.getWorkStateEntries(['proj-x']);
     expect(entries.map(entry => entry.created_at_epoch)).toEqual([1_000, 2_000]);
@@ -503,7 +505,18 @@ function rollBackWorkStateSyncSteps(db: Database): void {
   db.run('DROP INDEX idx_work_state_entries_unsynced');
   db.run('DROP INDEX ux_work_state_entries_origin');
   for (const column of WORK_STATE_SYNC_COLUMNS) db.run(`ALTER TABLE work_state_entries DROP COLUMN ${column}`);
-  db.run('DELETE FROM schema_versions WHERE version IN (66, 67)');
+  // Roll back everything after v65, not just the work-state steps: v68's
+  // observation_files row and the v69-v71 media schema would otherwise remain
+  // the newest applied versions and the fixture would no longer be a database
+  // main left at v65.
+  db.run('DROP TABLE IF EXISTS observation_files');
+  db.run('DROP TRIGGER IF EXISTS media_observation_delete');
+  db.run('DROP TRIGGER IF EXISTS media_session_delete');
+  for (const table of ['media_event_refs', 'observation_media_links', 'media_event_results', 'media_cleanup_jobs',
+    'media_cloud_deletions', 'media_attachments', 'media_events']) {
+    db.run(`DROP TABLE IF EXISTS ${table}`);
+  }
+  db.run('DELETE FROM schema_versions WHERE version IN (66, 67, 68, 69, 70, 71)');
 }
 
 /** Counts every attempt to write the v65 row, kept or ignored: a BEFORE trigger fires either way. */

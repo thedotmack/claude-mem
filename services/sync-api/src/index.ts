@@ -1,9 +1,15 @@
 /**
  * sync-api — protocol-v2 hub on a long-running HTTP + WebSocket process.
- * Routes and shapes match workers/sync-hub. Storage is Postgres.
+ * Routes and shapes match services/sync-hub. Storage is Postgres.
  */
 import postgres from "postgres";
-import { authenticateRequest, errorResponse, json } from "./auth";
+import {
+	authenticateRequest,
+	defaultAuthDependencies,
+	errorResponse,
+	json,
+	type AuthDependencies,
+} from "./auth";
 import type { SyncApiEnv } from "./env";
 import { formatHostForUrl, loadEnv } from "./env";
 import { startForwardProxy } from "./forward";
@@ -14,7 +20,7 @@ import {
 	REPAIR_DRAIN_MAX_PAGES,
 } from "./projection";
 import { applyMigrations } from "./schema";
-import { SocketRegistry, type RegisteredSocket } from "./sockets";
+import { AUTH_EXPIRED_CLOSE_CODE, SocketRegistry, type RegisteredSocket } from "./sockets";
 import {
 	DEFAULT_USER_TURN_MAX_WAIT_MS,
 	DEVICE_LIMIT_ERROR,
@@ -145,7 +151,10 @@ export interface SyncApiApp {
 interface SocketData {
 	userId: string;
 	deviceId: string;
+	/** Expiry of the verdict that authorized the upgrade (epoch ms). */
+	authExpiresAtMs: number;
 	registered: RegisteredSocket | null;
+	timer: ReturnType<typeof setTimeout> | null;
 }
 
 async function handlePushOps(
@@ -381,6 +390,9 @@ async function handleRepairDrain(request: Request, app: { env: SyncApiEnv; store
 export async function startSyncApi(
 	env: SyncApiEnv = loadEnv(),
 	timeouts: SyncApiTimeouts = DEFAULT_SYNC_API_TIMEOUTS,
+	// Tests inject verdicts with a near expiry so a socket's deadline timer can
+	// be observed without waiting a real cache TTL.
+	authDependencies: AuthDependencies = defaultAuthDependencies(env),
 ): Promise<SyncApiApp> {
 	if (env.FORWARD_ORIGIN) {
 		throw new Error("FORWARD_ORIGIN is set: start the forward proxy (startForwardProxy), not the hub");
@@ -455,7 +467,7 @@ export async function startSyncApi(
 				return errorResponse(404, "not found");
 			}
 
-			const auth = await authenticateRequest(request, env);
+			const auth = await authenticateRequest(request, env, authDependencies);
 			if (!auth.ok) return auth.response;
 
 			if (pathname === "/v1/sync/ws") {
@@ -475,7 +487,13 @@ export async function startSyncApi(
 					return retryableStoreUnavailable("websocket upgrade", error);
 				}
 				const upgraded = server.upgrade(request, {
-					data: { userId: auth.userId, deviceId: auth.deviceId, registered: null },
+					data: {
+						userId: auth.userId,
+						deviceId: auth.deviceId,
+						authExpiresAtMs: auth.authExpiresAtMs,
+						registered: null,
+						timer: null,
+					},
 				});
 				if (!upgraded) return errorResponse(426, "expected Upgrade: websocket");
 				return undefined as unknown as Response;
@@ -499,11 +517,18 @@ export async function startSyncApi(
 				const registered: RegisteredSocket = {
 					userId: ws.data.userId,
 					deviceId: ws.data.deviceId,
+					authExpiresAtMs: ws.data.authExpiresAtMs,
 					send: (data) => { ws.send(data); },
 					close: (code, reason) => { ws.close(code, reason); },
 				};
 				ws.data.registered = registered;
 				sockets.add(registered);
+				// A quiet socket would otherwise never notice that the verdict
+				// behind it lapsed. Liveness gates every send, and this timer closes
+				// the socket (4401) at the deadline so a revoked token stops reading.
+				ws.data.timer = setTimeout(() => {
+					try { ws.close(AUTH_EXPIRED_CLOSE_CODE, "auth expired"); } catch { /* closed */ }
+				}, Math.max(0, ws.data.authExpiresAtMs - Date.now()));
 			},
 			message(ws, message) {
 				const text = typeof message === "string" ? message : new TextDecoder().decode(message);
@@ -512,6 +537,10 @@ export async function startSyncApi(
 				}
 			},
 			close(ws) {
+				if (ws.data.timer !== null) {
+					clearTimeout(ws.data.timer);
+					ws.data.timer = null;
+				}
 				if (ws.data.registered) sockets.remove(ws.data.registered);
 			},
 		},

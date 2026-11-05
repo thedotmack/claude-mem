@@ -126,6 +126,15 @@ Get a chronological view of observations around a specific point or query.
 - `depth_before` - Number of observations before anchor (default: 3)
 - `depth_after` - Number of observations after anchor (default: 3)
 - `project` - Filter by project name
+- `projects` - Explicit project scope (array or comma-separated names, worker runtime)
+
+In the worker runtime, when no project scope is supplied, an observation or
+session-summary anchor limits the surrounding observations, summaries, and prompts
+to the anchor's project, including its merged aliases. Query mode uses the project
+of the matched observation. An explicit scope takes precedence, including a
+checkout scope supplied by the MCP server; pass `projects` to request context
+across specific projects. A timestamp-only anchor cannot identify a project, so
+it remains unscoped unless you supply one.
 
 **Returns:** Chronological list showing what happened before/during/after
 

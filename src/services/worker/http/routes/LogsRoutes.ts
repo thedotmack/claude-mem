@@ -5,6 +5,7 @@ import { join } from 'path';
 import { logger } from '../../../../utils/logger.js';
 import { paths } from '../../../../shared/paths.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
+import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 
 export function readLastLines(filePath: string, lineCount: number): { lines: string; totalEstimate: number } {
   const fd = openSync(filePath, 'r');
@@ -35,7 +36,10 @@ export function readLastLines(filePath: string, lineCount: number): { lines: str
         if (content[i] === '\n') newlineCount++;
       }
 
-      if (newlineCount >= lineCount || startPosition === 0 || readSize === MAX_READ_SIZE) {
+      // A trailing newline terminates the last line; it is not the boundary
+      // before the first requested line when the chunk starts mid-line.
+      const requiredNewlines = lineCount + (content.endsWith('\n') ? 1 : 0);
+      if (newlineCount >= requiredNewlines || startPosition === 0 || readSize === MAX_READ_SIZE) {
         break;
       }
 
@@ -114,6 +118,13 @@ export class LogsRoutes extends BaseRouteHandler {
   });
 
   private handleClearLogs = this.wrapHandler((req: Request, res: Response): void => {
+    // Clearing logs is a destructive local action, so other localhost pages
+    // may not trigger it (same rule as memory/save and the DELETE guard).
+    // Origin-less clients (CLI, curl, the viewer's own origin) keep working.
+    if (isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({ error: 'Log clears from a different localhost origin are not allowed' });
+      return;
+    }
     const logFilePath = this.getLogFilePath();
 
     if (!existsSync(logFilePath)) {

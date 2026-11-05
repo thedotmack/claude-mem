@@ -225,7 +225,10 @@ function compactEditOutput(fields: { toolInput: unknown; toolOutput: unknown }, 
         || typeof input.old_string !== 'string' || !input.old_string || typeof input.new_string !== 'string'
         || output.filePath !== input.file_path || output.oldString !== input.old_string || output.newString !== input.new_string
         || (output.originalFile !== null && typeof output.originalFile !== 'string')
-        || Object.keys(output).some(k => !['filePath', 'oldString', 'newString', 'originalFile', 'structuredPatch', 'userModified', 'replaceAll'].includes(k))
+        // Unknown scalar flags (Claude Code's contentNotInModelContext, staleRecovered) cannot carry source and stay
+        // in the view as-is; an unknown string, array or object still keeps the normal path (#5023).
+        || Object.entries(output).some(([k, v]) => !['filePath', 'oldString', 'newString', 'originalFile', 'structuredPatch', 'userModified', 'replaceAll'].includes(k)
+          && v !== null && typeof v !== 'boolean' && typeof v !== 'number')
         || (input.replace_all !== undefined && typeof input.replace_all !== 'boolean')
         || (output.replaceAll !== undefined && output.replaceAll !== (input.replace_all ?? false))
         || !Array.isArray(output.structuredPatch) || !output.structuredPatch.length) return fields.toolOutput;
@@ -248,7 +251,9 @@ function compactEditOutput(fields: { toolInput: unknown; toolOutput: unknown }, 
       originalFile: output.originalFile === null ? null : `[omitted ${output.originalFile.length} source characters]`,
       structuredPatch: output.structuredPatch.map(({ lines, ...h }: any) => ({ ...h, omitted_lines: lines.length })),
       observer_note: 'Redundant full-source and patch lines omitted; exact native oldString/newString and hunk locations retained. Raw tool payload unchanged.' };
-    return JSON.stringify(view, null, 2).length <= maxChars ? view : fields.toolOutput;
+    // A view still over budget (large oldString/newString) goes on to optimizeField, which condenses or
+    // truncates it; that is cheaper than sending the raw payload with the whole file along (#5023).
+    return view;
   } catch {
     return fields.toolOutput; // Unknown/non-JSON shapes retain the existing bounded model/fallback path.
   }

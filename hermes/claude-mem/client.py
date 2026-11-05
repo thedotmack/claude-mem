@@ -23,7 +23,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 PLATFORM_SOURCE = "hermes"
 _PREFIXES = ("CLAUDE_MEM_",)
@@ -36,7 +36,37 @@ BREAKER_OPEN_S = 30.0
 # (<memory-context>), and agent-internal blocks. Matches the worker's own list.
 _TAGS = ("private", "memory-context", "claude-mem-context", "system_instruction",
          "system-instruction", "persisted-output", "system-reminder")
-_TAG = re.compile(r"<(/?)(%s)\b[^>]*>" % "|".join(re.escape(t) for t in _TAGS), re.IGNORECASE)
+# Only the opening of a tag; its end is found with `str.find` below. A
+# `<name\b[^>]*>` tail would rescan the rest of the text for every unfinished
+# `<name` candidate, which is quadratic on adversarial input (issue #5146).
+_TAG_START = re.compile(r"<(/?)(%s)\b" % "|".join(re.escape(t) for t in _TAGS), re.IGNORECASE)
+
+
+def _iter_tags(text: str) -> Iterator[Tuple[int, int, bool, str]]:
+    """Yields `(start, end, closing, name)` for each tag in `text`, in order.
+
+    A tag ends at the first ``>`` after its name, exactly the range the old
+    ``<name[^>]*>`` matched, but the tail is searched once per tag instead of
+    once per ``<name`` candidate. A missing ``>`` means none follows any later
+    candidate either, so the scan stops there."""
+    scan_from = 0
+    while True:
+        found = _TAG_START.search(text, scan_from)
+        if found is None:
+            return
+        end = text.find(">", found.end())
+        if end < 0:
+            return
+        end += 1
+        yield found.start(), end, found.group(1) == "/", found.group(2).lower()
+        scan_from = end
+
+
+def _has_tag(text: str) -> bool:
+    """Whether `text` holds a complete tag, checked with the linear scanner."""
+    for _ in _iter_tags(text):
+        return True
+    return False
 
 
 def _strip_text(text: str) -> str:
@@ -46,12 +76,11 @@ def _strip_text(text: str) -> str:
     out: List[str] = []
     position = 0
     open_tags: Dict[str, int] = {}
-    for tag in _TAG.finditer(text):
-        closing, name = tag.group(1), tag.group(2).lower()
+    for start, end, closing, name in _iter_tags(text):
         if not open_tags:
             if closing:
                 continue
-            out.append(text[position:tag.start()])
+            out.append(text[position:start])
             open_tags = {name: 1}
             continue
         if closing:
@@ -62,7 +91,7 @@ def _strip_text(text: str) -> str:
         else:
             open_tags[name] = open_tags.get(name, 0) + 1
         if not open_tags:
-            position = tag.end()
+            position = end
     if not open_tags:
         out.append(text[position:])
     return "".join(out)
@@ -72,7 +101,7 @@ def strip_tags(value: Any) -> Any:
     """The value with those sections removed from every string in it, at any
     depth; strings without one are returned unchanged."""
     if isinstance(value, str):
-        return _strip_text(value) if _TAG.search(value) else value
+        return _strip_text(value) if _has_tag(value) else value
     if isinstance(value, list):
         return [strip_tags(item) for item in value]
     if isinstance(value, dict):
@@ -150,19 +179,34 @@ def is_project_excluded(cwd: str, patterns: str) -> bool:
     return False
 
 
-_PROJECT_KEYS: Dict[str, str] = {}
+# Bounded cache lifetime for the derived checkout key. A checkout whose git
+# structure changes while keeping the same cwd path (a nested git init, or a
+# clone converted into a linked worktree) must not be served a stale project
+# key for the rest of the Hermes process lifetime.
+# Why 300 s: deriving the key costs one `git rev-parse` (measured 20 ms median,
+# 25 ms max over 50 runs on macOS in a linked worktree), paid at most once per cwd
+# per interval on the turn path. A changed git structure is accepted as stale for
+# up to five minutes, which is short enough for a rare event like a nested `git init`.
+_PROJECT_KEY_TTL_S = 300.0
+_PROJECT_KEYS: Dict[str, tuple[str, float]] = {}
 
 
 def checkout_project(cwd: str) -> str:
     """The project key the Claude Code hooks give this checkout in their
     default (path) mode: the git root's folder name, or `<repo>/<worktree>` for
     a linked worktree; the folder name outside git. Only hosted mode needs it:
-    the local worker resolves the key itself from the cwd."""
+    the local worker resolves the key itself from the cwd.
+
+    The derived key is cached per cwd for ``_PROJECT_KEY_TTL_S`` seconds; an
+    expired entry is recomputed so a changed git structure is picked up."""
     if not cwd:
         return ""
+    now = time.monotonic()
     cached = _PROJECT_KEYS.get(cwd)
     if cached is not None:
-        return cached
+        key, expires_at = cached
+        if expires_at > now:
+            return key
     key = os.path.basename(os.path.normpath(cwd))
     try:
         import subprocess
@@ -180,7 +224,7 @@ def checkout_project(cwd: str) -> str:
                 key = parent if key == parent else parent + "/" + key
     except Exception:  # noqa: BLE001 - no git (or no answer) means the folder name
         pass
-    _PROJECT_KEYS[cwd] = key
+    _PROJECT_KEYS[cwd] = (key, now + _PROJECT_KEY_TTL_S)
     return key
 
 
@@ -516,6 +560,11 @@ class ClaudeMemClient:
         self._sessions.pop(session.id, None)
         if not session.anchored or session.excluded or self._excluded(cwd):
             return
+        # Same gate as _record_tool: when the last prompt was wholly private the
+        # turn was never recorded, so its closing assistant message is dropped
+        # too — session.anchored is historical and does not cover the last turn.
+        # The session itself still ends: its earlier public turns were recorded.
+        last_turn_private = bool(session.prompts_sent and not session.last_prompt_recorded)
         try:
             if self.config.server:
                 reply = as_json(self.transport.server("POST", "/v1/sessions/start", {
@@ -528,22 +577,25 @@ class ClaudeMemClient:
                 server_id = started.get("id") if isinstance(started, dict) else None
                 if not isinstance(server_id, str) or not server_id:
                     return
-                self.transport.server("POST", "/v1/events", {
-                    "projectId": self.config.project_id,
-                    "serverSessionId": server_id,
-                    "contentSessionId": session.id,
-                    "platformSource": PLATFORM_SOURCE,
-                    "sourceType": "hook",
-                    "eventType": "assistant_message",
-                    "occurredAtEpoch": int(time.time() * 1000),
-                    "payload": {"last_assistant_message": strip_tags(last_assistant_message),
-                                "platformSource": PLATFORM_SOURCE},
-                })
+                if not last_turn_private:
+                    self.transport.server("POST", "/v1/events", {
+                        "projectId": self.config.project_id,
+                        "serverSessionId": server_id,
+                        "contentSessionId": session.id,
+                        "platformSource": PLATFORM_SOURCE,
+                        "sourceType": "hook",
+                        "eventType": "assistant_message",
+                        "occurredAtEpoch": int(time.time() * 1000),
+                        "payload": {"last_assistant_message": strip_tags(last_assistant_message),
+                                    "platformSource": PLATFORM_SOURCE},
+                    })
                 self.transport.server("POST", "/v1/sessions/" + urllib.parse.quote(server_id, safe="") + "/end", {})
-            else:
+            elif not last_turn_private:
+                # The worker also skips summarize for a private last prompt;
+                # not sending the message at all keeps it off the wire.
                 self.transport.worker("POST", "/api/sessions/summarize", {
                     "contentSessionId": session.id,
-                    "last_assistant_message": last_assistant_message,
+                    "last_assistant_message": strip_tags(last_assistant_message),
                     "platformSource": PLATFORM_SOURCE,
                     "cwd": cwd,
                 })

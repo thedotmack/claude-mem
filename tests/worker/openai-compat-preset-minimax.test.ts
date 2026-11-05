@@ -161,7 +161,8 @@ describe('MiniMax presets', () => {
       expect((init.headers as Record<string, string>).Authorization).toBe('Bearer fixture-minimax-key');
       const body = JSON.parse(String(init.body));
       expect(body.model).toBe('MiniMax-M3');
-      expect(Object.keys(body).sort()).toEqual(['max_tokens', 'messages', 'model', 'stream', 'stream_options', 'temperature']);
+      expect(Object.keys(body).sort()).toEqual(['max_tokens', 'messages', 'model', 'reasoning', 'stream', 'stream_options', 'temperature']);
+      expect(body.reasoning).toEqual({ enabled: false });
     } finally {
       fetchSpy.mockRestore();
     }

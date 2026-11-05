@@ -2,6 +2,7 @@ import { query, type SDKMessage, type SDKResultMessage } from "@anthropic-ai/cla
 import * as fs from "fs/promises";
 import * as path from "path";
 import { createHash } from "crypto";
+import { rewriteRelativeLinks } from "./links";
 
 interface TranslationCache {
   sourceHash: string;
@@ -178,6 +179,17 @@ You translate README files while preserving Markdown formatting and technical ac
 Always output only the translated content without any surrounding explanation.`,
       permissionMode: "bypassPermissions",
       allowDangerouslySkipPermissions: true,
+      // The README is interpolated into the prompt verbatim — with
+      // bypassPermissions a hostile document could drive arbitrary tool use.
+      // Translation needs no tools. `tools: []` is the true disable
+      // (`allowedTools` only auto-approves; see src/sdk/hardened-options.ts),
+      // with the deny-list as suspenders.
+      tools: [],
+      allowedTools: [],
+      disallowedTools: [
+        "Bash", "Read", "Write", "Edit", "Grep", "Glob", "WebFetch", "WebSearch",
+        "Task", "NotebookEdit", "AskUserQuestion", "TodoWrite", "SendMessage", "ListAgents",
+      ],
       includePartialMessages: true, // Enable streaming events
     },
   });
@@ -266,6 +278,10 @@ export async function translateReadme(
   await fs.mkdir(outDir, { recursive: true });
 
   const sourceHash = hashContent(content);
+  // Point relative links at the output directory before translating, not after: with
+  // --use-existing the reference translation already has corrected links, and rewriting the
+  // output would rewrite those a second time.
+  const contentForOutput = rewriteRelativeLinks(content, path.dirname(sourcePath), outDir);
   const cachePath = path.join(outDir, ".translation-cache.json");
   const cache = await readCache(cachePath);
   const isHashMatch = cache?.sourceHash === sourceHash;
@@ -303,7 +319,7 @@ export async function translateReadme(
       const existingTranslation = useExisting
         ? await fs.readFile(outputPath, "utf-8").catch(() => undefined)
         : undefined;
-      const { translation, costUsd } = await translateToLanguage(content, lang, {
+      const { translation, costUsd } = await translateToLanguage(contentForOutput, lang, {
         preserveCode,
         model,
         verbose: verbose && parallel === 1, // Only show progress spinner for sequential

@@ -6,11 +6,17 @@ import {
   envFilePath,
   buildIsolatedEnv,
   buildIsolatedEnvWithFreshOAuth,
+  loadClaudeMemEnv,
+  saveClaudeMemEnv,
+  getAuthMethodDescription,
+  hasConfiguredClaudeOAuthToken,
+  resolveConfigDirProfileKey,
 } from '../src/shared/EnvManager.js';
 import { sanitizeEnv } from '../src/supervisor/env-sanitizer.js';
 import * as oauthToken from '../src/shared/oauth-token.js';
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
 import { paths, CLAUDE_CONFIG_DIR, DEFAULT_CLAUDE_CONFIG_DIR, MARKETPLACE_ROOT } from '../src/shared/paths.js';
+import { logger } from '../src/utils/logger.js';
 // CJS interop: the check is a .cjs module exporting findViolations.
 import { createRequire } from 'module';
 const requireCjs = createRequire(import.meta.url);
@@ -375,6 +381,30 @@ describe('Issue #2357: CLAUDE_CODE_EFFORT_* env-var isolation', () => {
   });
 });
 
+describe('Issue #5346: Observer beta opt-out propagation', () => {
+  const ORIGINAL_BETA_OPT_OUT = process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS;
+  const ORIGINAL_UNRELATED = process.env.CLAUDE_CODE_RANDOM_OTHER;
+
+  afterEach(() => {
+    if (ORIGINAL_BETA_OPT_OUT === undefined) delete process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS;
+    else process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS = ORIGINAL_BETA_OPT_OUT;
+    if (ORIGINAL_UNRELATED === undefined) delete process.env.CLAUDE_CODE_RANDOM_OTHER;
+    else process.env.CLAUDE_CODE_RANDOM_OTHER = ORIGINAL_UNRELATED;
+  });
+
+  it('carries the documented opt-out through the isolated Observer env without widening CLAUDE_CODE_* access', () => {
+    process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS = '1';
+    process.env.CLAUDE_CODE_RANDOM_OTHER = 'must-not-reach-observer';
+
+    const result = sanitizeEnv(buildIsolatedEnv(false));
+
+    expect(result.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe('1');
+    expect(result.CLAUDE_CODE_RANDOM_OTHER).toBeUndefined();
+    expect(result.CLAUDE_CODE_ENTRYPOINT).toBeUndefined();
+    expect(result.CLAUDE_MEM_INTERNAL).toBe('1');
+  });
+});
+
 /**
  * Spawn-env discipline (plan 06 Phase 7): every env-bearing subprocess spawn in
  * src/ must sanitize process.env before handing it to the child. This test runs
@@ -564,5 +594,187 @@ describe('#2753: buildIsolatedEnv resolves CLAUDE_CONFIG_DIR for the SDK subproc
     const result = buildIsolatedEnv();
 
     expect(result.CLAUDE_CONFIG_DIR).toBe('/tmp/from-setting-with-slash');
+  });
+});
+
+/**
+ * plan-19 (#3607) item 4: a long-lived token from `claude setup-token`, put in
+ * ~/.claude-mem/.env as CLAUDE_CODE_OAUTH_TOKEN, is an explicit auth source.
+ * It is injected on the Claude OAuth path ahead of the credential store, so no
+ * spawned child has to refresh an expiring stored login (#5307), while a token
+ * inherited from the parent process stays blocked (#2215) and a third-party
+ * gateway never receives it (#2375).
+ */
+describe('plan-19: long-lived CLAUDE_CODE_OAUTH_TOKEN from ~/.claude-mem/.env', () => {
+  const LONG_LIVED = 'sk-ant-oat01-long-lived-test-token';
+  const storeToken: oauthToken.OAuthTokenResult = { kind: 'present', token: 'store-token', source: 'keychain' };
+  const expiredStore: oauthToken.OAuthTokenResult = { kind: 'expired', reason: 'stored login expired', expiresAt: 1 };
+
+  function jwtExpiringAt(expMs: number): string {
+    const part = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url');
+    return `${part({ alg: 'none' })}.${part({ exp: Math.floor(expMs / 1000) })}.sig`;
+  }
+
+  beforeAll(() => {
+    fs.mkdirSync(TEST_DATA_DIR, { recursive: true, mode: 0o700 });
+    process.env.CLAUDE_MEM_ENV_FILE = TEST_ENV_FILE;
+  });
+
+  afterAll(() => {
+    if (ORIGINAL_ENV_FILE === undefined) delete process.env.CLAUDE_MEM_ENV_FILE;
+    else process.env.CLAUDE_MEM_ENV_FILE = ORIGINAL_ENV_FILE;
+  });
+
+  beforeEach(() => {
+    clearEnvFile();
+    clearAnthropicEnv();
+  });
+
+  afterEach(() => {
+    clearEnvFile();
+    restoreOriginalEnv();
+  });
+
+  it('loads the token from .env and keeps it through a save of another key', () => {
+    fs.writeFileSync(TEST_ENV_FILE, `CLAUDE_CODE_OAUTH_TOKEN=${LONG_LIVED}\n`, { mode: 0o600 });
+    expect(loadClaudeMemEnv().CLAUDE_CODE_OAUTH_TOKEN).toBe(LONG_LIVED);
+    expect(hasConfiguredClaudeOAuthToken()).toBe(true);
+
+    saveClaudeMemEnv({ GEMINI_API_KEY: 'gemini-key' });
+    expect(loadClaudeMemEnv()).toMatchObject({ CLAUDE_CODE_OAUTH_TOKEN: LONG_LIVED, GEMINI_API_KEY: 'gemini-key' });
+  });
+
+  it('can be saved and cleared like the other credential keys', () => {
+    saveClaudeMemEnv({ CLAUDE_CODE_OAUTH_TOKEN: LONG_LIVED });
+    expect(loadClaudeMemEnv().CLAUDE_CODE_OAUTH_TOKEN).toBe(LONG_LIVED);
+    saveClaudeMemEnv({ CLAUDE_CODE_OAUTH_TOKEN: '' });
+    expect(loadClaudeMemEnv().CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    expect(hasConfiguredClaudeOAuthToken()).toBe(false);
+  });
+
+  it('is never copied by the sync buildIsolatedEnv (only the OAuth path injects it)', () => {
+    fs.writeFileSync(TEST_ENV_FILE, `CLAUDE_CODE_OAUTH_TOKEN=${LONG_LIVED}\n`, { mode: 0o600 });
+    expect(buildIsolatedEnv().CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+  });
+
+  it('is injected ahead of an expired stored login, so the child never has to refresh it', async () => {
+    fs.writeFileSync(TEST_ENV_FILE, `CLAUDE_CODE_OAUTH_TOKEN=${LONG_LIVED}\n`, { mode: 0o600 });
+    const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken').mockResolvedValue(expiredStore);
+    try {
+      const result = await buildIsolatedEnvWithFreshOAuth();
+      expect(result.CLAUDE_CODE_OAUTH_TOKEN).toBe(LONG_LIVED);
+    } finally {
+      oauthSpy.mockRestore();
+    }
+  });
+
+  it('wins over a present stored login too (an explicit source beats a discovered one)', async () => {
+    fs.writeFileSync(TEST_ENV_FILE, `CLAUDE_CODE_OAUTH_TOKEN=${LONG_LIVED}\n`, { mode: 0o600 });
+    const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken').mockResolvedValue(storeToken);
+    try {
+      expect((await buildIsolatedEnvWithFreshOAuth()).CLAUDE_CODE_OAUTH_TOKEN).toBe(LONG_LIVED);
+    } finally {
+      oauthSpy.mockRestore();
+    }
+  });
+
+  it('#2215: a token inherited from the parent process is still not injected', async () => {
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = 'stale-parent-token';
+    const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken').mockResolvedValue({ kind: 'absent', reason: 'none' });
+    try {
+      expect((await buildIsolatedEnvWithFreshOAuth()).CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    } finally {
+      oauthSpy.mockRestore();
+    }
+  });
+
+  it('#2375: is never sent to a third-party gateway configured in .env', async () => {
+    fs.writeFileSync(TEST_ENV_FILE, `ANTHROPIC_BASE_URL=https://gateway.example\nCLAUDE_CODE_OAUTH_TOKEN=${LONG_LIVED}\n`, { mode: 0o600 });
+    const result = await buildIsolatedEnvWithFreshOAuth();
+    expect(result.ANTHROPIC_BASE_URL).toBe('https://gateway.example');
+    expect(result.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+  });
+
+  it('an .env API key still takes precedence unless a subscription stand-in is requested', async () => {
+    fs.writeFileSync(TEST_ENV_FILE, `ANTHROPIC_API_KEY=sk-ant-key\nCLAUDE_CODE_OAUTH_TOKEN=${LONG_LIVED}\n`, { mode: 0o600 });
+    const primary = await buildIsolatedEnvWithFreshOAuth();
+    expect(primary.ANTHROPIC_API_KEY).toBe('sk-ant-key');
+    expect(primary.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+
+    const standIn = await buildIsolatedEnvWithFreshOAuth(true, { standIn: 'subscription' });
+    expect(standIn.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(standIn.CLAUDE_CODE_OAUTH_TOKEN).toBe(LONG_LIVED);
+  });
+
+  it('a JWT token past its exp claim falls back to the credential store', async () => {
+    fs.writeFileSync(TEST_ENV_FILE, `CLAUDE_CODE_OAUTH_TOKEN=${jwtExpiringAt(Date.now() - 60_000)}\n`, { mode: 0o600 });
+    const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken').mockResolvedValue(storeToken);
+    try {
+      expect((await buildIsolatedEnvWithFreshOAuth()).CLAUDE_CODE_OAUTH_TOKEN).toBe('store-token');
+    } finally {
+      oauthSpy.mockRestore();
+    }
+  });
+
+  it('a JWT token past its exp claim does not count as configured, so readiness checks match the spawn', () => {
+    fs.writeFileSync(TEST_ENV_FILE, `CLAUDE_CODE_OAUTH_TOKEN=${jwtExpiringAt(Date.now() - 60_000)}\n`, { mode: 0o600 });
+    expect(hasConfiguredClaudeOAuthToken()).toBe(false);
+    expect(getAuthMethodDescription()).not.toContain('Long-lived CLAUDE_CODE_OAUTH_TOKEN');
+  });
+
+  it('a JWT token still inside its exp claim is used', async () => {
+    const live = jwtExpiringAt(Date.now() + 3_600_000);
+    fs.writeFileSync(TEST_ENV_FILE, `CLAUDE_CODE_OAUTH_TOKEN=${live}\n`, { mode: 0o600 });
+    expect(hasConfiguredClaudeOAuthToken()).toBe(true);
+    const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken').mockResolvedValue(storeToken);
+    try {
+      expect((await buildIsolatedEnvWithFreshOAuth()).CLAUDE_CODE_OAUTH_TOKEN).toBe(live);
+    } finally {
+      oauthSpy.mockRestore();
+    }
+  });
+
+  it('overrides the stored login of a configured profile, which keeps labelling the run', async () => {
+    fs.writeFileSync(TEST_ENV_FILE, `CLAUDE_CODE_OAUTH_TOKEN=${LONG_LIVED}\n`, { mode: 0o600 });
+    const settingsSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(
+      () => ({ ...SettingsDefaultsManager.getAllDefaults(), CLAUDE_MEM_CLAUDE_CONFIG_DIR: '/tmp/work-profile' }) as any,
+    );
+    const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken').mockResolvedValue(storeToken);
+    try {
+      const result = await buildIsolatedEnvWithFreshOAuth();
+      expect(result.CLAUDE_CODE_OAUTH_TOKEN).toBe(LONG_LIVED);
+      expect(result.CLAUDE_CONFIG_DIR).toBe('/tmp/work-profile');
+      expect(oauthSpy).not.toHaveBeenCalled();
+      expect(resolveConfigDirProfileKey()).toContain('work-profile');
+    } finally {
+      oauthSpy.mockRestore();
+      settingsSpy.mockRestore();
+    }
+  });
+
+  it('never writes the token to the log, whether it is injected or skipped as expired', async () => {
+    const expired = jwtExpiringAt(Date.now() - 60_000);
+    const logSpies = (['debug', 'info', 'warn', 'error'] as const).map(level => spyOn(logger, level));
+    const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken').mockResolvedValue(storeToken);
+    try {
+      for (const token of [LONG_LIVED, expired]) {
+        fs.writeFileSync(TEST_ENV_FILE, `CLAUDE_CODE_OAUTH_TOKEN=${token}\n`, { mode: 0o600 });
+        await buildIsolatedEnvWithFreshOAuth();
+        const logged = JSON.stringify(logSpies.flatMap(spy => spy.mock.calls));
+        expect(logged).toContain('CLAUDE_CODE_OAUTH_TOKEN');
+        expect(logged).not.toContain(token);
+      }
+    } finally {
+      oauthSpy.mockRestore();
+      logSpies.forEach(spy => spy.mockRestore());
+    }
+  });
+
+  it('the auth-method description names the .env token without printing it', () => {
+    fs.writeFileSync(TEST_ENV_FILE, `CLAUDE_CODE_OAUTH_TOKEN=${LONG_LIVED}\n`, { mode: 0o600 });
+    const description = getAuthMethodDescription();
+    expect(description).toContain('~/.claude-mem/.env');
+    expect(description).toContain('CLAUDE_CODE_OAUTH_TOKEN');
+    expect(description).not.toContain(LONG_LIVED);
   });
 });

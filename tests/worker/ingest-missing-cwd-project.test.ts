@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:te
 import { Database } from 'bun:sqlite';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
-import { ingestAdvisorCalls, ingestObservation, setIngestContext } from '../../src/services/worker/http/shared.js';
+import { ingestAdvisorCalls, ingestObservation, ingestSummarize, setIngestContext } from '../../src/services/worker/http/shared.js';
 import { logger } from '../../src/utils/logger.js';
 
 let store: SessionStore;
@@ -187,5 +187,83 @@ describe('ingest without a cwd registers the project as unknown (#4772)', () => 
     store.createSDKSession('unknown-with-cwd', '/different/project', '');
 
     expect(projectOf('unknown-with-cwd')).toBe('unknown');
+  });
+});
+
+describe('observer capture hard disable (#4965)', () => {
+  beforeEach(() => {
+    settingsSpies[0].mockImplementation(() => ({
+      ...SettingsDefaultsManager.getAllDefaults(),
+      CLAUDE_MEM_OBSERVER_ENABLED: 'false',
+    }));
+  });
+
+  it('skips observation ingest before creating a session, queueing work, or starting a provider', async () => {
+    const result = await ingestObservation({
+      contentSessionId: 'disabled-observation',
+      platformSource: 'claude',
+      toolName: 'Bash',
+      toolInput: { command: 'ls' },
+      toolResponse: { stdout: 'x' },
+      toolUseId: 'toolu_disabled',
+    });
+
+    expect(result).toEqual({ ok: true, status: 'skipped', reason: 'observer_disabled' });
+    expect(projectOf('disabled-observation')).toBeUndefined();
+    expect(sessionManager.queueObservation).not.toHaveBeenCalled();
+    expect(ensureGeneratorRunning).not.toHaveBeenCalled();
+  });
+
+  it('skips summaries before queueing work or starting a provider', async () => {
+    store.createSDKSession('disabled-summary', '/project', 'prompt', undefined, 'claude');
+
+    const result = await ingestSummarize({
+      contentSessionId: 'disabled-summary',
+      platformSource: 'claude',
+      lastAssistantMessage: 'answer',
+    });
+
+    expect(result).toEqual({ status: 'skipped', reason: 'observer_disabled' });
+    expect(sessionManager.queueSummarize).not.toHaveBeenCalled();
+    expect(ensureGeneratorRunning).not.toHaveBeenCalled();
+  });
+});
+
+describe('missing-cwd log level depends on whether the session has a project', () => {
+  function missingCwdCalls(spy: ReturnType<typeof spyOn>): unknown[][] {
+    return spy.mock.calls.filter(call => String(call[1]).includes('Missing cwd'));
+  }
+
+  it('a host with no checkout whose session init set the project logs at debug, not error', async () => {
+    // ODS and other HTTP hosts have no checkout: init names the project and
+    // every observation arrives without a cwd. That is expected, not a fault.
+    store.createSDKSession('ods-no-checkout', 'ods/abc123', 'first prompt', undefined, 'ods');
+
+    const result = await ingestObservation({
+      contentSessionId: 'ods-no-checkout',
+      platformSource: 'ods',
+      toolName: 'ODSConversation',
+      toolInput: { request: 'x' },
+      toolResponse: { answer: 'y' },
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    expect(sessionManager.queueObservation).toHaveBeenCalledTimes(1);
+    expect(missingCwdCalls(loggerSpies[3])).toHaveLength(0);
+    expect(missingCwdCalls(loggerSpies[0])).toHaveLength(1);
+    expect(projectOf('ods-no-checkout')).toBe('ods/abc123');
+  });
+
+  it('a missing cwd with no project from init still logs an error', async () => {
+    const result = await ingestObservation({
+      contentSessionId: 'no-cwd-no-project',
+      platformSource: 'claude',
+      toolName: 'Bash',
+      toolInput: { command: 'ls' },
+      toolResponse: { stdout: 'x' },
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    expect(missingCwdCalls(loggerSpies[3])).toHaveLength(1);
   });
 });

@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
+import { homedir, tmpdir } from 'os';
 import path from 'path';
-import { mergeGooseYamlConfig, uninstallGooseMcpIntegration } from '../../src/services/integrations/McpIntegrations.js';
+import { getGooseConfigPath, mergeGooseYamlConfig, uninstallGooseMcpIntegration } from '../../src/services/integrations/McpIntegrations.js';
 
 // Goose starts MCP servers only from the top-level `extensions` mapping of
 // ~/.config/goose/config.yaml (stdio entries with `cmd` and `args`); a
@@ -242,5 +242,20 @@ describe('Goose uninstall removes the claude-mem extension', () => {
     expect(uninstallGooseMcpIntegration(configPath)).toBe(1);
     expect(uninstallGooseMcpIntegration(path.join(tmp, 'missing.yaml'))).toBe(1);
     expect(readFileSync(configPath, 'utf-8')).toBe(original);
+  });
+});
+
+// Goose takes its config directory from etcetera's app strategy for
+// Block/goose (crates/goose/src/config/paths.rs).
+describe('getGooseConfigPath', () => {
+  it('uses ~/.config/goose on macOS and Linux', () => {
+    const expected = path.join(homedir(), '.config', 'goose', 'config.yaml');
+    expect(getGooseConfigPath('darwin', {})).toBe(expected);
+    expect(getGooseConfigPath('linux', {})).toBe(expected);
+  });
+
+  it('uses %APPDATA%\\Block\\goose\\config on Windows', () => {
+    expect(getGooseConfigPath('win32', { APPDATA: 'C:\\Users\\a\\AppData\\Roaming' }))
+      .toBe('C:\\Users\\a\\AppData\\Roaming\\Block\\goose\\config\\config.yaml');
   });
 });

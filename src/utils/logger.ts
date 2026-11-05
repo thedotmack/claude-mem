@@ -1,6 +1,6 @@
 
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, statSync, writeSync } from 'fs';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { paths } from '../shared/paths.js';
 import { emitDiagnostic } from '../shared/hook-io.js';
 import { readJsonFileWithBom } from '../shared/atomic-json.js';
@@ -17,6 +17,7 @@ export enum LogLevel {
 export type Component =
   | 'AGENTS_MD'
   | 'AWARENESS'
+  | 'BACKUP'
   | 'BRANCH'
   | 'CHROMA'
   | 'CHROMA_MCP'
@@ -37,6 +38,7 @@ export type Component =
   | 'HTTP'
   | 'IMPORT'
   | 'INGEST'
+  | 'NOTION'
   | 'OAUTH'
   | 'OMP'
   | 'OPENCLAW'
@@ -79,6 +81,36 @@ interface LogContext {
  */
 export type ErrorSink = (err: unknown, ctx?: Record<string, unknown>) => void;
 let errorSink: ErrorSink | null = null;
+
+/**
+ * Escape raw line breaks in a value that goes into one log record.
+ *
+ * A log record is one physical line: the viewer (LogsModal.parseLogLine) starts
+ * a new entry at every `[timestamp] [LEVEL] [COMPONENT]` prefix, and
+ * `readLastLines` counts lines, not records. Tool input is model-controlled text
+ * (a `Bash` command, a file path, a URL), so a `\n` inside it used to split the
+ * record and let the remainder pose as a genuine entry with its own level and
+ * timestamp (CWE-117 log forging). Escaping keeps the value readable and inside
+ * the record it belongs to.
+ *
+ * Only the structural breaks the logger itself emits stay raw: the frames of a
+ * stack trace (escapeStackText) and a DEBUG payload dump, whose JSON already
+ * escapes line breaks inside its strings.
+ */
+function escapeLineBreaks(value: string): string {
+  return value.replace(/\r/g, '\\r').replace(/\n/g, '\\n');
+}
+
+/**
+ * Keep a stack's frames on their own lines, and nothing else. Its first line
+ * repeats the error message, which is data and can carry tool text, so any line
+ * that is not a frame stays inside the line before it. The leading indent means
+ * no line of the stack can start with the `[timestamp]` of a record, even when
+ * the stack starts with the message itself.
+ */
+function escapeStackText(stack: string): string {
+  return '  ' + stack.replace(/\r/g, '\\r').replace(/\n(?![ \t]+at )/g, '\\n');
+}
 
 
 class Logger {
@@ -158,6 +190,9 @@ class Logger {
       if (!current) this.closeLogFd();
     }
     if (this.logFd === null) {
+      // The stat above re-opens after an external delete; recreate the logs
+      // directory too, or every later line fails until the next UTC day.
+      mkdirSync(dirname(path), { recursive: true });
       this.logFd = openSync(path, 'a');
     }
     try {
@@ -362,17 +397,21 @@ class Logger {
 
     let correlationStr = '';
     if (context?.correlationId) {
-      correlationStr = `[${context.correlationId}] `;
+      correlationStr = `[${escapeLineBreaks(String(context.correlationId))}] `;
     } else if (context?.sessionId) {
-      correlationStr = `[session-${context.sessionId}] `;
+      correlationStr = `[session-${escapeLineBreaks(String(context.sessionId))}] `;
     }
 
     let dataStr = '';
     if (data !== undefined && data !== null) {
       if (data instanceof Error) {
-        dataStr = this.getLevel() === LogLevel.DEBUG
-          ? `\n${data.message}\n${data.stack}`
-          : ` ${data.message}`;
+        // The message stays on the record's own line at every level: on a line of
+        // its own, a message that merely starts with a `[timestamp] [LEVEL]
+        // [COMPONENT]` prefix would be a record, with no line break to escape.
+        dataStr = ` ${escapeLineBreaks(data.message)}`;
+        if (this.getLevel() === LogLevel.DEBUG && data.stack) {
+          dataStr += `\n${escapeStackText(data.stack)}`;
+        }
       } else if (this.getLevel() === LogLevel.DEBUG && typeof data === 'object') {
         // Depth-guarded: a deeply nested or self-referential payload would make
         // a plain JSON.stringify overflow the stack (RangeError), crashing the
@@ -380,7 +419,7 @@ class Logger {
         // handles cycles/BigInt, so debug logging can never blow up here.
         dataStr = '\n' + this.safeStringify(data, 2);
       } else {
-        dataStr = ' ' + this.formatData(data);
+        dataStr = ' ' + escapeLineBreaks(this.formatData(data));
       }
     }
 
@@ -389,15 +428,17 @@ class Logger {
       const { sessionId, memorySessionId, correlationId, ...rest } = context;
       if (Object.keys(rest).length > 0) {
         const pairs = Object.entries(rest).map(([k, v]) => {
-          if (typeof v !== 'object' || v === null || v instanceof Error || v instanceof Date) return `${k}=${v}`;
+          if (typeof v !== 'object' || v === null || v instanceof Error || v instanceof Date) {
+            return `${escapeLineBreaks(k)}=${escapeLineBreaks(String(v))}`;
+          }
           // safeStringify never throws: cycles, BigInt and deep nesting render as markers.
-          return `${k}=${Array.isArray(v) ? this.safeStringify(v) : this.formatData(v)}`;
+          return `${escapeLineBreaks(k)}=${escapeLineBreaks(Array.isArray(v) ? this.safeStringify(v) : this.formatData(v))}`;
         });
         contextStr = ` {${pairs.join(', ')}}`;
       }
     }
 
-    const logLine = `[${timestamp}] [${levelStr}] [${componentStr}] ${correlationStr}${message}${contextStr}${dataStr}`;
+    const logLine = `[${timestamp}] [${levelStr}] [${componentStr}] ${correlationStr}${escapeLineBreaks(message)}${contextStr}${dataStr}`;
 
     if (this.logFilePath) {
       try {

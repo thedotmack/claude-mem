@@ -28,27 +28,50 @@ Add to `~/.claude-mem/settings.json`:
 }
 ```
 
-That is all you need for the 11 built-in patterns to kick in. Add `"CLAUDE_MEM_REDACT_GENERIC_ENABLED": "true"` to also turn on the 3 [generic patterns](#generic-patterns).
+That is all you need for the 34 built-in patterns to kick in. Add `"CLAUDE_MEM_REDACT_GENERIC_ENABLED": "true"` to also turn on the 4 [generic patterns](#generic-patterns).
 
 ## Built-in patterns
 
 | Name | Catches |
 |---|---|
-| `aws_access_key` | `AKIA…` (16 trailing alphanumerics) |
-| `aws_secret_key` | 40-char base64 anchored to `AWS_SECRET_ACCESS_KEY=…` (shell / yaml style — see [limitations](#limits)) |
+| `aws_access_key` | `AKIA…` and temporary `ASIA…` key IDs (16 trailing alphanumerics) |
+| `aws_secret_key` | 40-char base64 anchored to `AWS_SECRET_ACCESS_KEY=…` in any letter case, as in `~/.aws/credentials`, or JSON `"SecretAccessKey": "…"` (`aws sts` output) |
+| `aws_session_token` | 100+ char base64 anchored to `AWS_SESSION_TOKEN=…`, `aws_session_token = …` or JSON `"SessionToken": "…"` (temporary STS/SSO credentials) |
 | `github_pat` | `ghp_…`, `gho_…`, `ghu_…`, `ghs_…`, `ghr_…`, `github_pat_…` |
 | `openai_key` | `sk-…` (≥20 chars) |
 | `anthropic_key` | `sk-ant-…` (≥20 chars) |
-| `slack_token` | `xoxb-…`, `xoxp-…`, `xoxa-…`, `xoxr-…`, `xoxs-…` |
+| `slack_token` | `xoxb-…`, `xoxp-…`, `xoxa-…`, `xoxr-…`, `xoxs-…`, `xoxe-…` (refresh), `xapp-…` (app-level) |
 | `jwt` | `eyJ…[.]eyJ…[.]…` three-segment tokens |
-| `private_key_pem` | `-----BEGIN [RSA\|DSA\|EC\|OPENSSH\|PGP\|]PRIVATE KEY-----` blocks |
-| `stripe_key` | `sk_live_…`, `pk_live_…`, `rk_test_…` |
+| `private_key_pem` | `-----BEGIN [RSA\|DSA\|EC\|OPENSSH\|PGP\|ENCRYPTED\|]PRIVATE KEY[ BLOCK]-----` blocks |
+| `stripe_key` | `sk_live_…`, `pk_live_…`, `rk_test_…`, `whsec_…` |
 | `google_api_key` | `AIza…` (35 trailing chars) |
+| `google_oauth_token` | `ya29.…` Google OAuth access tokens, including the `ya29.c.…` metadata-server form (≥20 trailing chars) |
+| `gitlab_token` | `glpat-…`, `gldt-…` and `glrt-…` GitLab personal, project, group, deploy and runner access tokens (≥20 chars, routable `.`-segments included) |
+| `huggingface_token` | `hf_…` Hugging Face access tokens |
+| `npm_token` | `npm_…` npm access tokens (36 trailing alphanumerics) |
+| `docker_pat` | `dckr_pat_…` Docker Hub personal access tokens (≥27 trailing chars) |
+| `linear_key` | `lin_api_…` Linear personal API keys (40 trailing alphanumerics) |
+| `notion_token` | `ntn_…` Notion integration tokens (46 trailing alphanumerics) and the older `secret_…` form (43) |
+| `sendgrid_key` | `SG.…` SendGrid API keys (`SG.` + 22 + `.` + 43 chars) |
+| `digitalocean_token` | `dop_v1_…`, `doo_v1_…`, `dor_v1_…` DigitalOcean personal access, OAuth and refresh tokens (64 hex chars) |
+| `shopify_token` | `shpat_…`, `shpca_…`, `shppa_…`, `shpss_…` Shopify access tokens and shared secrets (32 hex chars) |
+| `pypi_token` | `pypi-AgE…` PyPI API tokens (≥50 trailing chars) |
+| `databricks_token` | `dapi…` Databricks personal access tokens (32 hex chars, optional `-<digit>` suffix) |
+| `vault_token` | `hvs.…` HashiCorp Vault service tokens (90-120 trailing chars) and `hvb.…` batch tokens (138-300 trailing chars) |
+| `nvidia_nim_key` | `nvapi-…` NVIDIA NIM keys from build.nvidia.com (≥32 trailing chars) |
+| `runcrate_key` | `rc_live_…` Runcrate keys (≥24 trailing chars) |
+| `groq_key` | `gsk_…` Groq API keys (52 trailing alphanumerics) |
+| `xai_key` | `xai-…` xAI API keys (80 trailing chars) |
+| `supabase_token` | `sbp_…` Supabase personal access tokens (40 hex chars) |
+| `sentry_token` | `sntryu_…` Sentry personal auth tokens (64 hex chars) and `sntrys_…` organization auth tokens |
+| `slack_webhook` | the secret of Slack incoming webhook URLs (`hooks.slack.com/services/T…/B…/…`, workflow and trigger URLs); the host and ids are kept |
+| `discord_webhook` | the token of Discord webhook URLs (`discord.com/api/webhooks/<id>/<token>`, `discordapp.com` too); the host and id are kept |
 | `claude_mem_key` | claude-mem's own server API keys (`cmem_…`) and cmem.ai Pro memory keys (`cm_pro_…`) |
+| `url_credentials` | the password in `scheme://user:password@host` URLs (database URLs, `git remote -v`); the scheme, user and host are kept |
 
 ## Generic patterns
 
-Credentials without a vendor prefix (a database password, an internal token) need a lower-confidence match on the key name. These three patterns are off until you opt in:
+Credentials without a vendor prefix (a database password, an internal token) need a lower-confidence match on the key name. These four patterns are off until you opt in:
 
 ```json
 {
@@ -60,10 +83,11 @@ Credentials without a vendor prefix (a database password, an internal token) nee
 | Name | Catches |
 |---|---|
 | `generic_password` | values assigned to a `password` / `passwd` key or a `*_PWD` key (`DB_PASSWORD=…`, `MYSQL_PWD=…`), in shell, yaml or JSON style |
-| `generic_token` | values assigned to a `*_TOKEN` / `*_SECRET` / `*_API_KEY` key (e.g. `AUTH_TOKEN=…`, `"client_secret": "…"`) |
-| `bearer_token` | the value after `Authorization: Bearer …` |
+| `generic_token` | values assigned to a `*_TOKEN` / `*_SECRET` / `*_API_KEY` key (e.g. `AUTH_TOKEN=…`, `"client_secret": "…"`), and to a bare `token` / `secret` / `api_key` key in config-style positions only: a quoted JSON key (`"secret": "…"`), an env or query assignment (`api_key=…`, `?token=…`), a CLI flag, prefixed ones included (`--token=…`, `--api-key …`, `--auth-token …`, `--client-secret=…`) or a yaml line (`token: …`). Source code such as `const token = getToken();` is left alone |
+| `bearer_token` | the value after `Authorization: Bearer …` or `Proxy-Authorization: Bearer …` |
+| `basic_auth` | the credentials after `Authorization: Basic …` or `Proxy-Authorization: Basic …` (base64 of `user:password`) |
 
-They run **after** every vendor pattern, so a vendor-shaped value (a `sk-…` key, a JWT, …) keeps its specific marker. To keep false positives away they only fire when the value is 8+ characters, contains at least one letter, and consists solely of secret-typical characters — so `max_tokens=4096`, short PINs, purely numeric values and the `PWD` / `OLDPWD` working-directory variables are left alone. In server-runtime event bodies, a string value under a credential-named key (`client_secret`, `db_password`, `token`, …) is redacted whole. Like every built-in, each can be disabled by name.
+They run **after** every vendor pattern, so a vendor-shaped value (a `sk-…` key, a JWT, …) keeps its specific marker. To keep false positives away they only fire when the value is 8+ characters, contains at least one letter, and consists solely of secret-typical characters — so `max_tokens=4096`, short PINs, purely numeric values and the `PWD` / `OLDPWD` working-directory variables are left alone. In server-runtime event bodies, a string value under a credential-named key (`client_secret`, `db_password`, `MYSQL_PWD`, `token`, …) is redacted whole. Like every built-in, each can be disabled by name.
 
 ## Disable a single built-in
 
@@ -102,7 +126,6 @@ Writes a `pattern,count` line per invocation to the worker log. The original mat
 ## Limits
 
 - **Fails closed on huge fields**: a single field over about 1M characters (UTF-16 code units) is replaced whole by `<redacted type='oversize'/>` rather than stored unscanned, and a warning is logged. There is no cap on the number of matches: every match is redacted.
-- **`aws_secret_key` shape**: the lookbehind only anchors `KEY=val` (shell) and `KEY: val` (yaml) styles. JSON-style `"AWS_SECRET_ACCESS_KEY": "value"` is **not** matched because the lookbehind expects `=` or `:` directly after the key name. If you commonly handle JSON config, write a custom pattern for it. (The generic built-ins do anchor JSON-style keys, but only the `password`/`*_TOKEN`/`*_SECRET`/`*_API_KEY` families.)
 - **Coverage gap**: Built-ins do not cover Azure / GCP service-account JSON / IBM Cloud / private IDC tokens — use custom patterns for those.
 - **Unreadable settings.json**: if the file stops parsing (for example after a bad hand edit) while redaction is on, claude-mem keeps redacting, with the last configuration that loaded or the built-in patterns, and logs a warning. It does not fall back to the default (off). Repair the file to change the configuration, or set `CLAUDE_MEM_REDACT_ENABLED=false` in the environment to turn redaction off.
 - **Server-beta scope**: in multi-tenant `server-beta` deployments, the redaction config is currently read from the worker's local `~/.claude-mem/settings.json` rather than from tenant-scoped settings. For team deployments, configure redaction at the worker level. A future change will source tenant-scoped redaction config.

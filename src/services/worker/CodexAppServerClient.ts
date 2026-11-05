@@ -754,7 +754,9 @@ export class CodexAppServerClient {
       });
       child.on('error', error => this.onChildExit(child, error));
       child.on('close', (code, childSignal) => {
-        this.onChildExit(child, new Error(`Codex app-server exited with code ${String(code)} signal ${String(childSignal)}: ${this.stderrTail.trim()}`));
+        const error = new Error(`Codex app-server exited with code ${String(code)} signal ${String(childSignal)}: ${this.stderrTail.trim()}`);
+        Object.assign(error, { exitCode: code, exitSignal: childSignal });
+        this.onChildExit(child, error);
       });
 
       if (child.pid) {

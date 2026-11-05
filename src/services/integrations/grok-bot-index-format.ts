@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import path from 'path';
-import { formatTime } from '../../shared/timeline-formatting.js';
+import { formatTime, compactTime } from '../../shared/timeline-formatting.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { fencedLine, sanitizeUntrustedText, stripUnsafeChars, truncateCodePoints } from './grok-bot-untrusted-text.mjs';
 
@@ -66,9 +66,6 @@ export function collapseWhitespace(value: string): string {
   return stripUnsafeChars(value).replace(/\s+/g, ' ').trim();
 }
 
-function compactTime(time: string): string {
-  return time.toLowerCase().replace(' am', 'a').replace(' pm', 'p');
-}
 
 const FALLBACK_TYPE_ICONS: Record<string, string> = {
   bugfix: '🔴',

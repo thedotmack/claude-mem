@@ -9,6 +9,7 @@ import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { proTrialLine } from '../../shared/pro-promo.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
+import { projectsQueryString } from '../../shared/project-list.js';
 import { getProjectContext } from '../../utils/project-name.js';
 
 export const userMessageHandler: EventHandler = {
@@ -25,14 +26,14 @@ export const userMessageHandler: EventHandler = {
     // Use the same project-key resolution as SessionStart/capture (#2663, #3194).
     // Raw basename(cwd) fragments non-git subdir launches away from parent memory.
     const context = getProjectContext(cwd);
-    const projectsParam = context.allProjects.join(',');
+    const projectsQuery = projectsQueryString(context.allProjects);
     const colorsParam = input.platform === 'claude-code' ? '&colors=true' : '';
     const platformSourceParam = input.platform
       ? `&platformSource=${encodeURIComponent(normalizePlatformSource(input.platform))}`
       : '';
 
     const result = await executeWithWorkerFallback<string>(
-      `/api/context/inject?projects=${encodeURIComponent(projectsParam)}${colorsParam}${platformSourceParam}`,
+      `/api/context/inject?${projectsQuery}${colorsParam}${platformSourceParam}`,
       'GET',
     );
 

@@ -256,7 +256,7 @@ describe('SearchRoutes Welcome Hint', () => {
     expect(res.send).toHaveBeenCalledWith(`${EMPTY_WORK_STATE_SECTION}\n\nCONTEXT_FROM_GENERATOR`);
   });
 
-  it('queries both projects in a worktree (multi-project) request', async () => {
+  it('trims hand-typed spacing in a comma-separated project list', async () => {
     const routes = new SearchRoutes(mockSearchManager);
     const handler = captureContextInjectHandler(routes);
 
@@ -272,6 +272,27 @@ describe('SearchRoutes Welcome Hint', () => {
       '/path/worktree',
       '/path/parent',
       '/path/worktree',
+      null,
+      null,
+    );
+  });
+
+  it('keeps exact keys when the project list repeats the query key', async () => {
+    const routes = new SearchRoutes(mockSearchManager);
+    const handler = captureContextInjectHandler(routes);
+
+    const res = createMockRes();
+    const req = { query: { projects: ['/path/parent', ' /path/worktree'] } } as unknown as Request;
+
+    handler(req, res as unknown as Response);
+    await new Promise(resolve => setImmediate(resolve));
+
+    expect(res.send).toHaveBeenCalledTimes(1);
+    expect(countQueryStub).toHaveBeenCalledWith(
+      '/path/parent',
+      ' /path/worktree',
+      '/path/parent',
+      ' /path/worktree',
       null,
       null,
     );
@@ -430,6 +451,10 @@ describe('SearchRoutes Welcome Hint', () => {
       { id: 1, project: '/path/parent', list_name: 'release', fields: { version: '13.25.3', status: 'active' }, created_at_epoch: Date.now() },
       { id: 2, project: '/path/worktree', list_name: 'release', fields: { task: 'publish', status: 'todo' }, created_at_epoch: Date.now() },
     ];
+    // These tests measure the work-state budget, so the memory-use block is off;
+    // its own reserve is checked in the TeamBrain and #5180 tests below.
+    beforeEach(() => { process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED = 'false'; });
+    afterEach(() => { delete process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED; });
 
     it('leads the context with what is still open and takes its length off the memory budget', async () => {
       countQueryStub = mock(() => ({ count: 7 }));
@@ -505,6 +530,7 @@ describe('SearchRoutes Welcome Hint', () => {
         await new Promise(resolve => setImmediate(resolve));
       };
       try {
+        delete process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED;
         process.env.CLAUDE_MEM_TEAMBRAIN_URL = 'https://cmem.ai';
         await render();
         expect(generateContextStub).toHaveBeenCalledWith(
@@ -520,6 +546,27 @@ describe('SearchRoutes Welcome Hint', () => {
         delete process.env.CLAUDE_MEM_TEAMBRAIN_URL;
         delete process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED;
       }
+    });
+
+    // #5180: the hook appends the memory-use block with or without a team.
+    it('leaves room for the memory instructions without a team too', async () => {
+      process.env.CLAUDE_MEM_WORK_STATE_ENABLED = 'false';
+      countQueryStub = mock(() => ({ count: 7 }));
+      prepareStub = mock(() => ({ get: countQueryStub, finalize: () => {} }));
+      mockSessionStore = { db: { prepare: prepareStub }, getWorkStateEntries: workStateEntriesStub };
+      const reserved = async () => {
+        generateContextStub.mockClear();
+        const handler = captureContextInjectHandler(new SearchRoutes({ getSessionStore: () => mockSessionStore } as any));
+        handler({ query: { projects: '/path/to/active-project' } } as unknown as Request, createMockRes() as unknown as Response);
+        await new Promise(resolve => setImmediate(resolve));
+        return (generateContextStub.mock.calls[0] as unknown[])[0] as { reserveChars: number };
+      };
+      delete process.env.CLAUDE_MEM_TEAMBRAIN_URL;
+      delete process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED;
+      expect((await reserved()).reserveChars).toBe(MEMORY_PLUGIN_INSTRUCTIONS.length + 2);
+
+      process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED = 'false';
+      expect((await reserved()).reserveChars).toBe(0);
     });
 
     it('leaves the work state out of the welcome hint when CLAUDE_MEM_WORK_STATE_ENABLED=false', async () => {

@@ -1,0 +1,6 @@
+{"sessionId":"gem-1","projectHash":"abc","startTime":"2026-10-03T10:00:00.000Z","lastUpdated":"2026-10-03T10:00:00.000Z","kind":"main"}
+{"id":"g-hook","timestamp":"2026-10-03T10:00:01.000Z","type":"user","content":[{"text":"<hook_context># recent context"}]}
+{"id":"g-u1","timestamp":"2026-10-03T10:01:00.000Z","type":"user","content":[{"text":"add dark mode to gamma"}]}
+{"$set":{"lastUpdated":"2026-10-03T10:01:00.000Z"}}
+{"id":"g-a1","timestamp":"2026-10-03T10:01:30.000Z","type":"gemini","content":"Dark mode added.","toolCalls":[{"name":"write_file","args":{"file_path":"theme.css"}}]}
+{"$set":{"messages":[{"id":"g-u1","timestamp":"2026-10-03T10:01:00.000Z","type":"user","content":[{"text":"add dark mode to gamma"}]},{"id":"g-continue","timestamp":"2026-10-03T10:02:00.000Z","type":"user","content":[{"text":"System: Please continue."}],"displayContent":[{"functionResponse":{"name":"run_shell_command","response":{"output":"ok"}}}]},{"id":"g-display","timestamp":"2026-10-03T10:03:00.000Z","type":"user","content":[{"text":"from the plan file"}],"displayContent":[{"text":"/make-plan from the plan file"}]},{"id":"g-files","timestamp":"2026-10-03T10:04:00.000Z","type":"user","content":[{"text":"look at this @img.png"},{"text":"\n--- Content from referenced files ---"},{"inlineData":{"data":"AAAA","mimeType":"image/png"}}]}]}}

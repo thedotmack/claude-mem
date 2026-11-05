@@ -110,6 +110,7 @@ for (const scenario of cases) {
         CLAUDE_MEM_DATA_DIR: join(home, '.claude-mem'), CLAUDE_MEM_WORKER_PORT: String(workerPort),
         CMEM_API_BASE: `http://127.0.0.1:${cloudPort}`, CMEM_API_KEY: 'owned-fixture-key',
         CMEM_USER_ID: 'owned-fixture-user', CMEM_SYNC_HUB_URL: `http://127.0.0.1:${cloudPort}`,
+        CLAUDE_CODE_CCR_SURFACE: '',
       };
       // bun-runner.js parses settings without stripping a BOM, so it can't see
       // that opt-out; the hook follows src/shared/plugin-state.ts, which can.

@@ -4,6 +4,13 @@ import { logger } from '../../utils/logger.js';
 
 export const IDLE_TIMEOUT_MS = 3 * 60 * 1000;
 
+/**
+ * While a drain is idle it waits in slices of at most this length, so a
+ * shouldReleaseIdleSlot check (see DrainOptions) is re-evaluated at this
+ * cadence instead of only after the full idle timeout (#5376).
+ */
+const IDLE_WAIT_SLICE_MS = 1_000;
+
 interface BufferedMessage {
   id: number;
   message: PendingMessage;
@@ -25,6 +32,14 @@ export interface DrainOptions {
   signal: AbortSignal;
   onIdleTimeout?: () => void;
   idleTimeoutMs?: number;
+  /**
+   * Checked each time an idle drain finishes a wait slice: return true to
+   * end the drain early through the onIdleTimeout path. The production
+   * caller passes "another session is parked waiting for a concurrency
+   * slot" — an idle generator otherwise holds its slot for the full
+   * IDLE_TIMEOUT_MS while parked sessions starve (#5376).
+   */
+  shouldReleaseIdleSlot?: () => boolean;
 }
 
 /**
@@ -149,6 +164,35 @@ export class SessionMessageBuffer {
     return cleared;
   }
 
+  /**
+   * Drop work that has not been handed to a provider yet, preserving messages
+   * claimed by the request currently in flight so its response can still join
+   * file evidence and other source metadata.
+   */
+  clearUnclaimed(sessionDbId: number): number {
+    const list = this.buffers.get(sessionDbId);
+    if (!list) return 0;
+    const kept = list.filter(message => message.claimed);
+    const removed = list.filter(message => !message.claimed);
+    const cleared = removed.length;
+    if (cleared === 0) return 0;
+
+    if (kept.length === 0) {
+      this.buffers.delete(sessionDbId);
+    } else {
+      this.buffers.set(sessionDbId, kept);
+    }
+    // Let discarded work re-enter through transcript replay without forgetting
+    // IDs already confirmed earlier in this process.
+    const seen = this.seenToolUseIds.get(sessionDbId);
+    for (const message of removed) {
+      if (message.message.toolUseId) seen?.delete(message.message.toolUseId);
+    }
+    if (seen?.size === 0) this.seenToolUseIds.delete(sessionDbId);
+    this.onMutate?.();
+    return cleared;
+  }
+
   /** Forget a session entirely (buffer, dedup set, event emitter). */
   dispose(sessionDbId: number): void {
     this.buffers.delete(sessionDbId);
@@ -160,6 +204,20 @@ export class SessionMessageBuffer {
   /** Messages still to be sent: parked ones are excluded, nothing will send them. */
   getPendingCount(sessionDbId: number): number {
     return (this.buffers.get(sessionDbId) ?? []).filter(m => !m.parked).length;
+  }
+
+  /** The id the last enqueued message got; every later message gets a higher one. */
+  getLastAssignedId(): number {
+    return this.nextId - 1;
+  }
+
+  /** The lowest id of the session's messages still to be stored, or null when none are. */
+  getOldestPendingId(sessionDbId: number): number | null {
+    let oldest: number | null = null;
+    for (const m of this.buffers.get(sessionDbId) ?? []) {
+      if (!m.parked && (oldest === null || m.id < oldest)) oldest = m.id;
+    }
+    return oldest;
   }
 
   getTotalDepth(): number {
@@ -215,20 +273,32 @@ export class SessionMessageBuffer {
     while (!signal.aborted) {
       const claimed = this.claimNext(sessionDbId);
       if (claimed) {
-        lastActivityTime = Date.now();
         yield {
           ...claimed.message,
           _persistentId: claimed.id,
           _originalTimestamp: claimed.enqueuedAt
         };
+        // The idle clock starts when the consumer comes back for the next
+        // message, so the time it spends answering this one does not eat
+        // into the idle window.
+        lastActivityTime = Date.now();
         continue;
       }
 
-      const received = await this.waitForMessage(sessionDbId, signal, idleTimeoutMs);
+      const received = await this.waitForMessage(sessionDbId, signal, Math.min(idleTimeoutMs, IDLE_WAIT_SLICE_MS));
       if (!received && !signal.aborted) {
         const idleDuration = Date.now() - lastActivityTime;
         if (idleDuration >= idleTimeoutMs) {
           logger.info('SESSION', 'Idle timeout reached, triggering abort to kill subprocess', {
+            sessionDbId,
+            idleDurationMs: idleDuration,
+            thresholdMs: idleTimeoutMs
+          });
+          onIdleTimeout?.();
+          return;
+        }
+        if (options.shouldReleaseIdleSlot?.()) {
+          logger.info('SESSION', 'Releasing idle slot early: other sessions are waiting for a slot', {
             sessionDbId,
             idleDurationMs: idleDuration,
             thresholdMs: idleTimeoutMs

@@ -33,7 +33,7 @@ function driver(steps: string, beforeImport = ''): string {
   return `
     ${beforeImport}
     const { join } = await import('path');
-    const { writeFileSync, renameSync } = await import('fs');
+    const { writeFileSync, renameSync, rmSync } = await import('fs');
     ${FAKE_CLOCK}
     const { logger } = await import(${JSON.stringify(loggerUrl)});
     await sleep(30);
@@ -125,6 +125,24 @@ describe('logger on a slow filesystem', () => {
       expect(readFileSync(path, 'utf8')).toContain('after rotation');
       expect(readFileSync(path + '.rotated', 'utf8')).toContain('before rotation');
       expect(readFileSync(path + '.rotated', 'utf8')).not.toContain('after rotation');
+    } finally {
+      run.cleanup();
+    }
+  });
+
+  it('recreates the logs directory when it is deleted while running', () => {
+    const run = runWithSlowFs({
+      openDelayMs: 1,
+      body: driver(`
+        logger.info('SYSTEM', 'before delete');
+        rmSync(join(dataDir, 'logs'), { recursive: true, force: true });
+        logger.info('SYSTEM', 'after delete');
+        return logPath();
+      `),
+    });
+    try {
+      const path = run.result as string;
+      expect(readFileSync(path, 'utf8')).toContain('after delete');
     } finally {
       run.cleanup();
     }

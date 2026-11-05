@@ -125,6 +125,7 @@ describe("forward mode: proxy", () => {
 				"X-User-Id": "user-1",
 				"X-Device-Id": "device-1",
 				"X-Device-Name": "laptop",
+				"X-Sync-Capabilities": "quarantine-unknown-kinds",
 				Accept: "application/json",
 				Cookie: "must-not-forward=1",
 				"X-Random-Header": "must-not-forward",
@@ -146,6 +147,7 @@ describe("forward mode: proxy", () => {
 		expect(seen.headers.get("X-User-Id")).toBe("user-1");
 		expect(seen.headers.get("X-Device-Id")).toBe("device-1");
 		expect(seen.headers.get("X-Device-Name")).toBe("laptop");
+		expect(seen.headers.get("X-Sync-Capabilities")).toBe("quarantine-unknown-kinds");
 		expect(seen.headers.get("Accept")).toBe("application/json");
 		expect(seen.headers.get("Cookie")).toBeNull();
 		expect(seen.headers.get("X-Random-Header")).toBeNull();

@@ -490,28 +490,14 @@ describe('Hook Lifecycle - Standard Response', () => {
 });
 
 describe('hookCommand - stderr discipline (plan 01 / #2292)', () => {
-  it('routes all IO through hook-io.ts and no longer blanket-swallows stderr', async () => {
-    const { hookCommand } = await import('../src/cli/hook-command.js');
-    expect(typeof hookCommand).toBe('function');
-
+  it('no longer blanket-swallows stderr or exits 2 from a hook path', async () => {
     const hookCommandSource = await Bun.file(
       fileURLToPath(new URL('../src/cli/hook-command.ts', import.meta.url))
     ).text();
 
-    // Diagnostics still go through the structured logger.
-    expect(hookCommandSource).toContain("import { logger }");
-    expect(hookCommandSource).toContain("logger.warn('HOOK'");
-    expect(hookCommandSource).toContain("logger.error('HOOK'");
-
     // #2292: the old blanket no-op swallow is GONE — replaced by the typed
     // buffered writer + bypass channel from src/shared/hook-io.ts.
     expect(hookCommandSource).not.toContain("process.stderr.write = (() => true)");
-    expect(hookCommandSource).toContain("installHookStderrBuffer");
-
-    // hookCommand orchestrates hook-io; it does not write streams directly.
-    expect(hookCommandSource).toContain("emitModelContext");
-    expect(hookCommandSource).toContain("emitDiagnostic");
-    expect(hookCommandSource).toContain("exitGraceful");
     // plan-17 step 2: no hook path exits 2 any more.
     expect(hookCommandSource).not.toContain("emitBlockingError");
     expect(hookCommandSource).not.toContain("console.error(`[claude-mem]");

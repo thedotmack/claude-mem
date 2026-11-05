@@ -144,6 +144,23 @@
         ]
       }
     ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "claude-mem",
+            "args": [
+              "hook",
+              "claude-code",
+              "subagent-stop"
+            ],
+            "timeout": 30,
+            "async": true
+          }
+        ]
+      }
+    ],
     "SessionEnd": [
       {
         "hooks": [
