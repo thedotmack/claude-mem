@@ -57,24 +57,27 @@ describe("uninstall: pasting the hint's command removes only the data directory"
   }
 
   it.skipIf(process.platform !== 'win32')('in PowerShell on Windows', () => {
-    const { parent, dataDirectory, sibling } = scratchDataDirectory(hostileName);
-    try {
-      const { removeCommand } = preservedDataDirectoryHint(dataDirectory, 'win32');
-      // A script file is parsed exactly like a pasted line. The BOM makes
-      // Windows PowerShell 5.1 read it as UTF-8.
-      const script = join(parent, 'paste.ps1');
-      writeFileSync(script, `\uFEFF${removeCommand}\r\n`);
-      const run = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script], {
-        encoding: 'utf-8',
-        timeout: 30_000,
-      });
-      expect(run.status, run.stderr).toBe(0);
-      expect(existsSync(dataDirectory)).toBe(false);
-      expect(existsSync(sibling)).toBe(true);
-    } finally {
-      rmSync(parent, { recursive: true, force: true });
+    for (const name of ['$archive', hostileName]) {
+      const { parent, dataDirectory, sibling } = scratchDataDirectory(name);
+      try {
+        const { removeCommand } = preservedDataDirectoryHint(dataDirectory, 'win32');
+        // A script file is parsed exactly like a pasted line. The BOM makes
+        // Windows PowerShell 5.1 read it as UTF-8.
+        const script = join(tmpdir(), `claude-mem-uninstall-hint-${process.pid}.ps1`);
+        writeFileSync(script, `\uFEFF${removeCommand}\r\n`);
+        const run = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script], {
+          encoding: 'utf-8',
+          timeout: 30_000,
+        });
+        rmSync(script, { force: true });
+        expect(run.status, run.stderr).toBe(0);
+        expect(existsSync(sibling), `${name}: the parent directory was removed`).toBe(true);
+        expect(existsSync(dataDirectory), `${name}: still there`).toBe(false);
+      } finally {
+        rmSync(parent, { recursive: true, force: true });
+      }
     }
-  }, 30_000);
+  }, 60_000);
 
   it.skipIf(process.platform === 'win32')('in sh on macOS and Linux, a relative name starting with - included', () => {
     for (const name of [hostileName, "-memory $HOME it's"]) {
