@@ -31,7 +31,7 @@ import {
 	PROJECTION_PAGE_MAX_OPS,
 	ProjectionPageByteCounter,
 } from "./projection-protocol";
-import type { SocketRegistry } from "./sockets";
+import { AUTH_EXPIRED_CLOSE_CODE, type SocketRegistry } from "./sockets";
 import { CLIENT_CLOSED_REQUEST_ERROR, UserQueue } from "./user-queue";
 
 const MAX_PAGE = 500;
@@ -345,7 +345,14 @@ export class HubStore {
 					frame = JSON.stringify({ type: "advance", epoch, head_seq: head });
 				}
 			}
+			const now = Date.now();
 			for (const socket of sockets) {
+				if (socket.authExpiresAtMs <= now) {
+					// Never feed committed content to a socket whose verdict has
+					// lapsed: close it so the client re-handshakes and re-authenticates.
+					try { socket.close(AUTH_EXPIRED_CLOSE_CODE, "auth expired"); } catch { /* drop */ }
+					continue;
+				}
 				if (socket.deviceId === originDeviceId) continue;
 				try { socket.send(frame); } catch { /* drop */ }
 			}
