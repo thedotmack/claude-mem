@@ -56,21 +56,26 @@ export interface WorkViewLifecycle {
 
 export interface WorkViewPrompt { text: string; atEpoch?: number; url?: string }
 
-export interface WorkViewReview { checked: boolean; checkedAtEpoch: number | null; available: boolean }
+export interface WorkViewReview {
+  actor?: 'local-user' | 'shared-user' | null
+  checked: boolean; checkedAtEpoch: number | null; available: boolean
+  mode?: 'local' | 'shared'; hash?: string | null; version?: number; conflict?: boolean
+  legacy?: boolean; pending?: boolean; message?: string
+}
 
 /** A request-progress memory review of one overall request (request-groups.mjs `record-progress`). */
 export interface WorkViewProgress {
   state: 'shipped' | 'in-progress' | 'stalled' | 'abandoned' | 'unknown'
   percent: number
-  summary: string
-  narrative: string
-  milestones: { at: string | null; text: string }[]
+  summary?: string
+  narrative?: string
+  milestones?: { at: string | null; text: string }[]
   /** ISO time the review was recorded. */
-  checkedAt: string
+  checkedAt?: string
   /** ISO time the work shipped; set only when state is shipped. */
   shippedAt?: string | null
-  /** Every review's percent, oldest first; files from before readings existed carry one. */
-  readings: { at: string; percent: number }[]
+  /** Recorded history, oldest first; valid older or minimal shared records may omit it. */
+  readings?: { at: string; percent: number }[]
 }
 
 /** One thing a request produced (work-product.mjs). Git kinds carry the sha or branch; `url` is absent when there is
@@ -81,6 +86,8 @@ export interface WorkViewWorkProduct {
   url?: string
   fileUrl?: string | null
   available?: boolean
+  /** Metadata for an origin-local file; never an implied hosted download. */
+  availability?: 'origin-only'
   sha?: string
   branch?: string | null
   /** A copy the Stop hook put in the project's deliverables bucket (~/.claude-mem/deliverables/<project>/); `url` opens it. Older workers leave it out. */
@@ -94,6 +101,8 @@ export interface WorkViewBuildStory { narrative: string; writtenAt: string | nul
 /** The judge's "Looks like part of <request>" for one conversation (request-judge.mjs), waiting for the owner's
  * Join / Not this (POST /api/work-view/suggestions `{ conversationKey, action: 'join' | 'not-this' }`). */
 export interface WorkViewRequestSuggestion {
+  expectedSuggestionHash?: string | null
+  sharedConflict?: boolean
   conversationKey: string
   /** The suggested request's group id and title. */
   requestId: string
@@ -155,6 +164,8 @@ export interface WorkViewSource {
   connected: boolean
   error: string | null
   lastCheckedAt: string | null
+  /** Last actual activity inspection; lightweight cache checks do not renew it. */
+  activityCheckedAt?: string | null
 }
 
 /** What one owner-goals item is (owner-goals.mjs GOAL_KINDS). Rows saved as priorities or open asks are read as these. */
@@ -260,6 +271,8 @@ export interface WorkViewSnapshot {
   unlinkedWork: unknown[]
   source: WorkViewSource
   revision: string
+  sync?: import('../../../viewer/utils/sync-presentation.js').SyncStatusForDisplay
+  sharedState?: WorkViewSharedState
   /** The current owner-goals run; null until the owner-goals skill has run. Older workers leave it out. */
   goals?: WorkViewGoalList | null
   /** Saved past months, newest first. */
@@ -277,6 +290,17 @@ export interface WorkViewSnapshot {
   refresh?: WorkViewRefresh | null
   /** Every open judge suggestion; each is also on its conversation's request as `suggestion`. Older workers leave it out. */
   suggestions?: WorkViewRequestSuggestion[]
+}
+
+/** Shared display facts are readable before this installation enables new writes. */
+export interface WorkViewSharedState {
+  enabled: boolean
+  pending?: number
+  invalid?: number
+  unsupported?: number
+  conflicts?: unknown[]
+  files?: Array<{ file: string; message: string }>
+  error?: string
 }
 
 /** refresh.json, written by the worker's automatic refresh (auto-refresh-worker.mjs). */

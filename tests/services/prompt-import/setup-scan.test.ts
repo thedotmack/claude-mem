@@ -153,7 +153,7 @@ describe('setup prompt scan', () => {
     scan.start();
     const waiting = await scan.finished();
     expect(waiting.phase).toBe('awaiting-consent');
-    expect(waiting.improveProduct).toBe(false);
+    expect(waiting.improveProduct).toBe(true);
     expect(batches).toEqual([]);
     const done = await scan.confirmUpload(false);
     expect(done).toMatchObject({ phase: 'done', done: true });

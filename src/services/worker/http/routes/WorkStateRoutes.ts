@@ -14,6 +14,7 @@ import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { isMyFocusList } from '../../../work-view/my-focus.mjs';
 import { GOAL_KINDS, isOwnerGoalsList } from '../../../work-view/owner-goals.mjs';
 import { MAX_WORK_STATE_FIELDS_JSON_CHARS } from '../../../work-view/work-state-limits.mjs';
+import { isSharedWorkList } from '../../../work-view/shared-records.mjs';
 import {
   fitWorkStateLines,
   renderWorkStateLines,
@@ -37,7 +38,7 @@ const workStateFieldsSchema = z.custom<WorkStateFields>(value =>
 
 const workStateWriteSchema = z.object({
   cwd: z.string().trim().min(1),
-  list: z.string().trim().min(1).max(200),
+  list: z.string().trim().min(1).max(200).refine(list => !isSharedWorkList(list), 'This list is reserved for shared My Work records'),
   fields: workStateFieldsSchema
     .refine(fields => Object.keys(fields).length > 0, 'fields must set at least one key')
     .refine(

@@ -1,5 +1,6 @@
 // Work-state rows replayed into lists, tasks and events. Shared by the data source (data-source.mjs) and My Focus
 // (my-focus.mjs), which must not import each other.
+import { isSharedWorkList } from './shared-records.mjs';
 const CLOSED = new Set(['done', 'dropped']);
 const normalizedKey = (value) => String(value).replace(/[A-Z]/g, (letter) => letter.toLowerCase());
 const iso = (epoch) => epoch == null ? null : new Date(epoch).toISOString();
@@ -11,6 +12,7 @@ const taskId = (parentId, name) => JSON.stringify([parentId, name]);
 // Entries are patches, not full records. This is the same append/merge behavior
 // as claude-mem's WorkStateRenderer: state and named tasks are separate maps.
 export function reduceWorkState(entries, { currentProject, currentProjectScope = [], eventLimit = Infinity, localDeviceId = '' } = {}) {
+  entries = entries.filter(entry => !isSharedWorkList(entry.list_name));
   const scope = new Set(currentProjectScope.map(normalizedKey));
   const listsById = new Map();
   const events = [];

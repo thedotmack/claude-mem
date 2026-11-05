@@ -9,6 +9,7 @@ import { isReportedReadyForCheck, WorkViewRoutes } from '../../../../src/service
 import { contentFingerprint } from '../../../../src/services/work-view/review-store.js';
 import { reduceWorkState } from '../../../../src/services/work-view/data-source.mjs';
 import { HumanCopyWorker } from '../../../../src/services/work-view/human-copy-worker.mjs';
+import { boundedDurationMs } from '../../../../src/services/work-view/WorkViewReadProtocol.js';
 
 let directory: string;
 let source: Database;
@@ -134,6 +135,93 @@ describe('local work view', () => {
       const view = await held;
       expect(view.source.connected).toBe(true);
       expect(view.humanRequests).toHaveLength(1);
+      const diagnostic = (routes as any).sourceReader.getDiagnostics().lastRead;
+      expect(diagnostic.purpose).toBe('http');
+      expect(diagnostic.readMs).toBeGreaterThan(50);
+      expect(diagnostic.roundTripMs).toBeGreaterThanOrEqual(diagnostic.readMs);
+    } finally {
+      if (lock.inTransaction) lock.exec('ROLLBACK');
+      lock.close();
+    }
+  });
+
+  it('reports bounded numeric diagnostics without reading or retaining source content', async () => {
+    const before = await fetch(`${origin}/api/work-view/diagnostics`);
+    expect(before.headers.get('cache-control')).toBe('no-store');
+    expect((await before.json()).reader.completedReads).toBe(0);
+    const response = await fetch(`${origin}/api/work-view`);
+    const body = await response.text();
+    const statsResponse = await fetch(`${origin}/api/work-view/diagnostics`);
+    const diagnostic = await statsResponse.json();
+    expect(Object.keys(diagnostic).sort()).toEqual(['reader', 'response', 'snapshot']);
+    expect(diagnostic.reader).toMatchObject({ pendingCount: 0, maxPendingCount: 1, completedReads: 1, failedReads: 0 });
+    expect(diagnostic.reader.lastRead).toMatchObject({ purpose: 'http', pendingAtEnqueue: 0, started: true, ok: true });
+    for (const field of ['queueWaitMs', 'readMs', 'roundTripMs']) {
+      expect(Number.isFinite(diagnostic.reader.lastRead[field])).toBe(true);
+      expect(diagnostic.reader.lastRead[field]).toBeGreaterThanOrEqual(0);
+    }
+    expect(diagnostic.reader.lastRead.queueWaitMs).toBeLessThanOrEqual(diagnostic.reader.lastRead.roundTripMs);
+    expect(diagnostic.reader.lastRead.readMs).toBeLessThanOrEqual(diagnostic.reader.lastRead.roundTripMs);
+    expect(diagnostic.snapshot).toMatchObject({ purpose: 'http' });
+    expect(diagnostic.response).toMatchObject({ transport: 'http', bytes: Buffer.byteLength(body) });
+    expect(JSON.stringify(diagnostic)).not.toContain('Build the local viewer');
+    expect(JSON.stringify(diagnostic)).not.toContain(directory);
+    expect((await (await fetch(`${origin}/api/work-view/diagnostics`)).json()).reader.completedReads).toBe(1);
+  });
+
+  it('measures a queued read separately from a lock-held read', async () => {
+    const lock = await restartOnLockableDatabase();
+    const reader = (routes as any).sourceReader;
+    lock.exec('BEGIN EXCLUSIVE');
+    try {
+      const held = reader.read(0, '', 'http');
+      await Bun.sleep(30);
+      const queued = reader.read(0, 'private-device', 'private request text');
+      await Bun.sleep(80);
+      expect(reader.getDiagnostics().pendingCount).toBe(2);
+      expect((await fetch(`${origin}/probe`, { signal: AbortSignal.timeout(1000) })).status).toBe(200);
+      lock.exec('ROLLBACK');
+      await Promise.all([held, queued]);
+      const diagnostic = reader.getDiagnostics();
+      expect(diagnostic.pendingCount).toBe(0);
+      expect(diagnostic.maxPendingCount).toBe(2);
+      expect(diagnostic.lastRead).toMatchObject({ purpose: 'snapshot', pendingAtEnqueue: 1, ok: true });
+      expect(diagnostic.lastRead.queueWaitMs).toBeGreaterThan(50);
+      expect(diagnostic.lastRead.readMs).toBeLessThan(diagnostic.lastRead.queueWaitMs);
+      expect(JSON.stringify(diagnostic)).not.toContain('private');
+      diagnostic.lastRead.purpose = 'changed';
+      expect(reader.getDiagnostics().lastRead.purpose).toBe('snapshot');
+    } finally {
+      if (lock.inTransaction) lock.exec('ROLLBACK');
+      lock.close();
+    }
+  });
+
+  it('bounds invalid duration values', () => {
+    expect([NaN, Infinity, -Infinity, -10].map(boundedDurationMs)).toEqual([0, 0, 0, 0]);
+    expect(boundedDurationMs(Number.MAX_VALUE)).toBe(86_400_000);
+  });
+
+  it('counts a disconnected source as a failed read without retaining its error', async () => {
+    source.exec('DROP TABLE work_state_entries');
+    const reader = (routes as any).sourceReader;
+    const result = await reader.read(0, '');
+    expect(result.agentView.source.connected).toBe(false);
+    expect(reader.getDiagnostics()).toMatchObject({ pendingCount: 0, completedReads: 1, failedReads: 1, lastRead: { ok: false } });
+    expect(JSON.stringify(reader.getDiagnostics())).not.toContain('work_state_entries');
+  });
+
+  it('clears pending diagnostics when the reader closes', async () => {
+    const lock = await restartOnLockableDatabase();
+    const reader = (routes as any).sourceReader;
+    lock.exec('BEGIN EXCLUSIVE');
+    try {
+      const outcome = reader.read(0, '').then(() => null, (error: Error) => error);
+      const closing = reader.close();
+      lock.exec('ROLLBACK');
+      await closing;
+      expect((await outcome)?.message).toBe('Work view reader closed');
+      expect(reader.getDiagnostics()).toMatchObject({ pendingCount: 0, completedReads: 2, failedReads: 1, lastRead: { ok: false } });
     } finally {
       if (lock.inTransaction) lock.exec('ROLLBACK');
       lock.close();

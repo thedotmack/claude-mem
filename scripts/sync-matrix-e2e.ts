@@ -5,7 +5,7 @@
  * Safety is structural: a Bun loopback sidecar owns token verification and
  * projection, while services/sync-api starts the protocol-v2 hub on an
  * ephemeral loopback port against local Postgres. Every client fetch is
- * guarded as loopback-only. Exactly two real client stacks (SessionStore +
+ * guarded as loopback-only. Three real client stacks, including a hosted-viewer replica, (SessionStore +
  * CloudSync + SyncApply + SyncClient) exercise the authoritative HTTP lane.
  * services/sync-api has no Supabase Realtime (POST /v1/sync/realtime-token
  * answers 404), so the clients — live updates left enabled as in production —
@@ -28,6 +28,12 @@ import {
 import { SyncApply } from '../src/services/sync/SyncApply.js';
 import { SyncClient } from '../src/services/sync/SyncClient.js';
 import { emitRemapProject } from '../src/services/sync/remap-outbox.js';
+import { openMatrixViewer, runViewerBrowsers, type MatrixViewer } from './sync-matrix-viewer.js';
+import { groupIdFor } from '../src/services/work-view/request-groups.mjs';
+import { focusAreaRowFields, placementRowFields } from '../src/services/work-view/my-focus.mjs';
+import { upsertToolUse } from '../src/services/sqlite/tool-uses.js';
+import { SyncConflictRecovery, initializeConflictRecoverySchema } from '../src/services/sync/SyncConflictRecovery.js';
+
 
 const SYNC_API_DIR = resolve(import.meta.dir, '../services/sync-api');
 const SYNC_API_ENTRY = resolve(SYNC_API_DIR, 'src/index.ts');
@@ -36,7 +42,10 @@ const TOKEN = `matrix-token-${crypto.randomUUID()}`;
 const PROJECTOR_SECRET = 'matrix-projector-secret-32-characters-minimum';
 const DATABASE_URL = process.env.DATABASE_URL
   ?? 'postgres://postgres:postgres@127.0.0.1:5432/sync_api_test';
-const DEVICE_IDS = { a: 'matrix-device-a', b: 'matrix-device-b' } as const;
+if (!['127.0.0.1', 'localhost', '[::1]'].includes(new URL(DATABASE_URL).hostname)) {
+  throw new Error('sync matrix refuses non-loopback PostgreSQL');
+}
+const DEVICE_IDS = { a: 'matrix-device-a', b: 'matrix-device-b', c: 'matrix-device-c' } as const;
 const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
 const CHILD_ENV_ALLOWLIST = ['PATH', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL'] as const;
 
@@ -250,7 +259,7 @@ async function readLines(
   if (buffered.trim()) onLine(buffered.trim());
 }
 
-async function startHub(sidecarUrl: string): Promise<void> {
+async function startHub(sidecarUrl: string, port = '0'): Promise<void> {
   loopbackUrl(sidecarUrl, 'Hub sidecar binding');
   let resolveReady!: (url: string) => void;
   let rejectReady!: (error: unknown) => void;
@@ -269,7 +278,7 @@ async function startHub(sidecarUrl: string): Promise<void> {
     env: childEnvironment({
       DATABASE_URL,
       HOST: '127.0.0.1',
-      PORT: '0',
+      PORT: port,
       INTERNAL_PROJECTOR_URL: `${sidecarUrl}/project`,
       TOKEN_VERIFY_URL: `${sidecarUrl}/verify`,
       CMEM_INTERNAL_PROJECTOR_SECRET: PROJECTOR_SECRET,
@@ -345,12 +354,14 @@ async function getHubStatus(): Promise<HubStatus> {
 
 interface NetworkGate {
   pushesOnline: boolean;
+  pullsOnline: boolean;
   pushAttempts: number;
   pullRequests: number;
 }
 
 interface Device {
   name: keyof typeof DEVICE_IDS;
+  deviceId: string;
   dir: string;
   dbPath: string;
   store: SessionStore;
@@ -367,8 +378,11 @@ function guardedFetch(gate: NetworkGate): typeof fetch {
       gate.pushAttempts++;
       if (!gate.pushesOnline) throw new Error('simulated offline push transport');
     }
-    if (url.pathname === '/v1/sync/changes') gate.pullRequests++;
-    return fetch(input, init);
+    if (url.pathname === '/v1/sync/changes') {
+      gate.pullRequests++;
+      if (!gate.pullsOnline) throw new Error('simulated offline pull transport');
+    }
+    return fetch(input, { ...init, redirect: 'error' });
   }) as typeof fetch;
 }
 
@@ -380,8 +394,8 @@ function createClient(device: Device, wsEnabled: boolean): SyncClient {
     deviceId: DEVICE_IDS[device.name],
     deviceName: `Matrix ${device.name.toUpperCase()}`,
     fetchImpl: guardedFetch(device.gate),
-    activePollMs: 60_000,
-    idlePollMs: 60_000,
+    activePollMs: device.name === 'c' ? 30_000 : 60_000,
+    idlePollMs: device.name === 'c' ? 30_000 : 60_000,
     suspendAfterMs: 600_000,
     pageLimit: 2,
     maxPagesPerCycle: 100,
@@ -405,24 +419,26 @@ function openDevice(
   const dir = existingDir ?? mkdtempSync(join(tmpdir(), `claude-mem-matrix-${name}-`));
   const dbPath = join(dir, 'claude-mem.db');
   const store = new SessionStore(dbPath);
-  const gate: NetworkGate = { pushesOnline: true, pushAttempts: 0, pullRequests: 0 };
+  const gate: NetworkGate = { pushesOnline: true, pullsOnline: true, pushAttempts: 0, pullRequests: 0 };
   const cloudSync = new CloudSync(store.db, {
     CLAUDE_MEM_CLOUD_SYNC_TOKEN: TOKEN,
     CLAUDE_MEM_CLOUD_SYNC_USER_ID: USER_ID,
     CLAUDE_MEM_CLOUD_SYNC_HUB_URL: hubUrl,
     CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: DEVICE_IDS[name],
     CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: `Matrix ${name.toUpperCase()}`,
+    CLAUDE_MEM_WORK_VIEW_SHARED_STATE: 'true',
   }, {
     fetchImpl: guardedFetch(gate),
     settingsPath: join(dir, 'settings.json'),
     debounceMs: 50,
+    contentBatchSize: 2,
     fastDebounceMs: 10,
     backoffInitialMs: 60_000,
     backoffMaxMs: 60_000,
     requestTimeoutMs: 10_000,
   });
   const apply = new SyncApply(store.db, { deviceId: DEVICE_IDS[name] });
-  const device = { name, dir, dbPath, store, cloudSync, apply, client: null!, gate } satisfies Device;
+  const device = { name, deviceId: DEVICE_IDS[name], dir, dbPath, store, cloudSync, apply, client: null!, gate } satisfies Device;
   device.client = createClient(device, options.wsEnabled ?? true);
   cloudSync.setHeadSeqListener(head => device.client.onHeadSeq(head));
   cloudSync.setSyncModeListener(mode => device.client.onSyncModeHint(mode));
@@ -454,7 +470,7 @@ function count(device: Device, sql: string, ...params: unknown[]): number {
 
 function pending(device: Device): number {
   const value = device.cloudSync.status().pending;
-  return value.observations + value.summaries + value.prompts + value.mutations + value.tombstones;
+  return value.observations + value.summaries + value.prompts + value.workState + value.mutations + value.tombstones;
 }
 
 function observation(title: string, narrative: string): Parameters<SessionStore['storeObservation']>[2] {
@@ -500,7 +516,203 @@ function reviveObservation(device: Device, id: string, memorySessionId: string):
   `).run(id, memorySessionId, new Date().toISOString(), Date.now());
 }
 
-async function runMatrix(sidecar: SidecarState): Promise<void> {
+
+async function waitForAsync(condition: () => Promise<boolean>, label: string, timeoutMs = 15_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await condition()) return;
+    await Bun.sleep(25);
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
+
+async function drainDevice(device: Device): Promise<void> {
+  const deadline = Date.now() + 15_000;
+  do {
+    await device.cloudSync.flush();
+    if (pending(device) === 0) return;
+    await Bun.sleep(25);
+  } while (Date.now() < deadline);
+  throw new Error(`Device ${device.name} retained pending work: ${JSON.stringify(device.cloudSync.status())}`);
+}
+
+async function runViewerMatrix(a: Device, b: Device, c: Device, viewers: MatrixViewer[], sidecar: SidecarState, sidecarUrl: string) {
+  console.log('\nScenario: three replicas, shared My Work and authenticated hosted gate');
+  await pullToHead(c);
+  const local = await openMatrixViewer(a, false, USER_ID); viewers.push(local);
+  const middle = await openMatrixViewer(b, false, USER_ID); viewers.push(middle);
+  const hosted = await openMatrixViewer(c, true, USER_ID); viewers.push(hosted);
+  check((await hosted.malformedGrant())?.status === 403, 'hosted gate rejects a malformed grant');
+  check((await fetch(`${hosted.origin}/api/work-view`)).status === 401, 'hosted viewer refuses anonymous API reads');
+  check((await hosted.request('/api/work-state', {})).status === 403, 'hosted gate refuses generic writes');
+
+  // Native padding makes each replica allocate different numeric ids. Identity
+  // must still follow origin refs through the actual HTTP canonical stream.
+  for (const [device, size] of [[b, 3], [c, 7]] as const) for (let i = 0; i < size; i++) {
+    device.store.appendWorkStateEntry({ project: 'matrix-padding', listName: `padding-${i}`, fields: {} });
+  }
+  const key = (id: string) => JSON.stringify(['conversation', 'claude', id]);
+  const anchor = key('matrix-view-main'), companion = key('matrix-view-companion'), groupId = groupIdFor(anchor);
+  // Copy record-progress's persisted shape, including its bounded reading history.
+  const progressEntry = (percent: number, summary: string) => {
+    const at = new Date().toISOString();
+    return { groupId, state: percent === 100 ? 'shipped' : 'in-progress', percent, summary,
+      checkedAt: at, changedAt: at, startedAt: null, shippedAt: percent === 100 ? at : null,
+      lastActivityAt: at, narrative: '', milestones: [], preferences: [], outcome: null, evidence: [],
+      reviewedThrough: at, reviewedConversations: [anchor, companion], readings: [{ at, percent }] };
+  };
+  const sessions = ['main', 'companion'].map(name => {
+    const content = `matrix-view-${name}`, memory = `matrix-memory-${name}`;
+    const id = a.store.createSDKSession(content, 'matrix-view', name === 'main' ? 'Ship shared viewer' : 'Polish shared viewer', undefined, 'claude');
+    a.store.updateMemorySessionId(id, memory); a.store.saveUserPrompt(content, 1, `Matrix ${name} request`, id);
+    return { id, content, memory };
+  });
+  const fields = { task: 'Build shared viewer', status: 'doing' };
+  const workId = a.store.appendWorkStateEntry({ project: 'matrix-view', listName: 'matrix-work', fields });
+  upsertToolUse(a.store.db, { toolUseId: 'matrix-work-write', contentSessionId: sessions[0].content,
+    sessionDbId: sessions[0].id, memorySessionId: sessions[0].memory, project: 'matrix-view', platformSource: 'claude',
+    toolName: 'work_state_write', toolInput: JSON.stringify({ list: 'matrix-work', fields }), createdAtEpoch: Date.now() });
+  upsertToolUse(a.store.db, { toolUseId: 'matrix-publish', contentSessionId: sessions[0].content,
+    sessionDbId: sessions[0].id, memorySessionId: sessions[0].memory, project: 'matrix-view', platformSource: 'claude',
+    toolName: 'Bash', toolInput: JSON.stringify({ command: 'gh pr create' }),
+    toolResponse: JSON.stringify({ gitOperation: { pr: { url: 'http://github.com/example/repo/pull/42' } } }), createdAtEpoch: Date.now() });
+  local.shared.saveFile('request-groups.json', { version: 1, updatedAt: null,
+    groups: { [groupId]: { title: 'Matrix shared viewer', anchor, projectRoot: 'matrix-view' } },
+    conversations: { [anchor]: groupId, [companion]: groupId }, ignored: {}, suggestions: { [key('content-baseline-a')]: { requestId: groupId, confidence: 0.7, evidence: 'A candidate for owner review.', status: 'open' } } });
+  local.shared.saveFile(`progress/${groupId}.json`, progressEntry(60, 'Shared progress across devices.'));
+  local.shared.saveFile('story.json', { narrative: 'Deliver a consistent viewer.', preferences: [{ preference: 'Show remaining work clearly.', kind: 'directive', supportCount: 2, quotes: [] }] });
+  a.store.appendWorkStateEntry({ project: 'matrix-view', listName: 'my-focus', fields: focusAreaRowFields({
+    focusAreaId: 'matrix-focus', name: 'Viewer reliability', goal: 'Keep devices consistent', status: 'kept', source: 'owner', decidedBy: 'owner' }) });
+  a.store.appendWorkStateEntry({ project: 'matrix-view', listName: 'my-focus', fields: placementRowFields({
+    anchorConversationKey: anchor, focusAreaId: 'matrix-focus', placedBy: 'owner' }) });
+  await local.shared.reconcile();
+  await drainDevice(a); await drainDevice(b); await drainDevice(c);
+  await Promise.all([pullToHead(a), pullToHead(b), pullToHead(c)]);
+  await hosted.shared.reconcile();
+  const find = (snapshot: any) => snapshot.humanRequests.find((request: any) => request.groupId === groupId);
+  await waitForAsync(async () => !!find(await local.snapshot()) && !!find(await hosted.snapshot()), 'grouped request on both viewers').catch(async error => {
+    for (const viewer of [local, hosted]) { const snap = await viewer.snapshot(); console.error('GROUP_DEBUG', JSON.stringify({expected:groupId,source:snap.source,shared:snap.sharedState,requests:snap.humanRequests.map((r:any)=>({id:r.id,groupId:r.groupId,title:r.title,keys:r.conversationKeys})),localShared:viewer.shared.status()})); } throw error; });
+  const av = find(await local.snapshot()), bv = find(await middle.snapshot()), cv = find(await hosted.snapshot());
+  check(av.progress.percent === 60 && cv.progress.percent === 60 && cv.conversationKeys.length === 2,
+    'shared group membership and 60 percent progress converge');
+  check(av.contentFingerprint === cv.contentFingerprint && av.contentFingerprint === bv.contentFingerprint && av.sharedReviewDescriptor.fingerprint === cv.sharedReviewDescriptor.fingerprint,
+    'review fingerprints agree across distinct replica ids');
+  check(cv.workProduct.some((product: any) => product.url === 'http://github.com/example/repo/pull/42'), 'published output provenance reaches hosted projection');
+  check(count(c, 'SELECT COUNT(*) AS n FROM tool_uses') === 0, 'hosted projection requires no raw local tool bodies');
+  const receivedWork = row<{ id: number }>(c, "SELECT id FROM work_state_entries WHERE origin_device_id=? AND origin_local_id=?", DEVICE_IDS.a, String(workId));
+  check(receivedWork && receivedWork.id !== workId, 'shared work retains identity after local SQLite id relocation');
+  check((await hosted.snapshot()).focusAreas.some((area: any) => area.id === 'matrix-focus' || area.focusAreaId === 'matrix-focus'), 'focus areas reach the hosted viewer');
+
+  const premature = await hosted.request('/api/work-view/review', { requestId: cv.id, expectedFingerprint: cv.contentFingerprint,
+    expectedReviewHash: cv.review.hash, checked: true });
+  check(premature.status === 409, 'hosted review refuses work that is not yet reported complete');
+  local.shared.saveFile(`progress/${groupId}.json`, progressEntry(100, 'Ready for an owner check.'));
+  await drainDevice(a); await Promise.all([pullToHead(b), pullToHead(c)]);
+  await waitForAsync(async () => find(await hosted.snapshot())?.progress.percent === 100, 'completion reaches hosted reviewer');
+  const reviewable = find(await hosted.snapshot());
+  const checked = await hosted.request('/api/work-view/review', { requestId: reviewable.id, expectedFingerprint: reviewable.contentFingerprint,
+    expectedReviewHash: reviewable.review.hash, checked: true });
+  check(checked.status === 200, 'owner review crosses hosted gate and real worker route', await checked.clone().json());
+  await drainDevice(c); await Promise.all([pullToHead(a), pullToHead(b)]);
+  await waitForAsync(async () => find(await local.snapshot())?.review.checked === true, 'hosted review reaches local viewer');
+  const checkedLocal = find(await local.snapshot());
+  const unchecked = await local.request('/api/work-view/review', { requestId: checkedLocal.id,
+    expectedFingerprint: checkedLocal.contentFingerprint, expectedReviewHash: checkedLocal.review.hash, checked: false });
+  check(unchecked.status === 200, 'local owner can change the shared review');
+  await drainDevice(a); await pullToHead(c);
+  await waitForAsync(async () => find(await hosted.snapshot())?.review.checked === false, 'local review reaches hosted viewer');
+
+  const suggestedRule = (await hosted.snapshot()).rules.find((rule: any) => rule.status === 'suggested' && rule.then === 'Show remaining work clearly.');
+  check(!!suggestedRule, 'shared story produces the same suggested rule on the hosted viewer');
+  check((await hosted.request('/api/work-view/rules', { action: 'approve', ruleId: suggestedRule.ruleId })).status === 200, 'hosted owner approves the shared rule');
+  check((await hosted.request('/api/work-view/focus', { action: 'rename', focusAreaId: 'matrix-focus', name: 'Shared reliability' })).status === 200, 'hosted owner renames a stable focus area');
+  const suggestion = (await hosted.snapshot()).suggestions.find((entry: any) => entry.conversationKey === key('content-baseline-a'));
+  check(!!suggestion?.expectedSuggestionHash, 'shared grouping suggestion exposes an authoritative decision token');
+  check((await hosted.request('/api/work-view/suggestions', { conversationKey: suggestion.conversationKey, action: 'not-this', expectedSuggestionHash: suggestion.expectedSuggestionHash })).status === 200, 'hosted owner declines the shared grouping suggestion');
+  await drainDevice(c); await Promise.all([pullToHead(a), pullToHead(b)]);
+  await waitForAsync(async () => {
+    const snapshot = await local.snapshot();
+    return snapshot.rules.some((rule: any) => rule.ruleId === suggestedRule.ruleId && rule.status === 'on')
+      && snapshot.focusAreas.some((area: any) => area.focusAreaId === 'matrix-focus' && area.name === 'Shared reliability')
+      && !snapshot.suggestions.some((entry: any) => entry.conversationKey === suggestion.conversationKey);
+  }, 'hosted rule, focus rename and suggestion decision reach local viewer');
+  check(true, 'shared approved rule, stable focus rename and suggestion decision converge');
+
+  console.log('\nScenario: hub process restart retains shared head and generation');
+  const beforeRestart = await getHubStatus(), port = new URL(hubUrl).port;
+  await stopHub(); await startHub(sidecarUrl, port);
+  const afterRestart = await getHubStatus();
+  check(afterRestart.epoch === beforeRestart.epoch && afterRestart.head_seq === beforeRestart.head_seq,
+    'hub restart retains epoch and authoritative log');
+  await Promise.all([pullToHead(a), pullToHead(b), pullToHead(c)]);
+  check(find(await hosted.snapshot()).contentFingerprint === find(await local.snapshot()).contentFingerprint,
+    'shared semantic identity survives hub restart');
+
+  console.log('\nScenario: browser live feed stays live while cloud pull is offline');
+  const feedObservation = a.store.storeObservation(sessions[0].memory, 'matrix-view', observation('MATRIX_FEED_INITIAL', 'Browser convergence marker'), 1, 0);
+  await drainDevice(a); await pullToHead(c); await local.notify(); await hosted.notify();
+  await runViewerBrowsers(local, hosted, async pages => {
+    const browserWait = async (page: any, expression: string, label: string, timeoutMs = 25_000) => waitForAsync(() => page.evaluate(expression), label, timeoutMs).catch(async error => { console.error('BROWSER_DEBUG', label, JSON.stringify(await page.evaluate('({url:location.pathname,errors:window.matrixErrors,metrics:window.matrixMetrics,model:window.matrixModel?.()?.state,text:document.body.textContent.slice(0,1500)})'))); throw error; });
+    await browserWait(pages.local, `document.body.textContent.includes('Matrix shared viewer')`, 'local My Work visible');
+    await browserWait(pages.hosted, `document.body.textContent.includes('Matrix shared viewer')`, 'hosted My Work visible');
+    await browserWait(pages.classic, `document.body.textContent.includes('MATRIX_FEED_INITIAL')`, 'hosted classic feed visible');
+    c.gate.pullRequests = 0; replaceClient(c, false, true);
+    await waitFor(() => c.gate.pullRequests > 0 && !c.client.status().inFlight, 'initial normal hosted poll');
+    await Bun.sleep(1500);
+    a.store.storeObservation(sessions[0].memory, 'matrix-view', observation('MATRIX_NORMAL_POLL', 'Visible through the normal thirty-second polling cadence'), 4, 0);
+    await drainDevice(a);
+    const acceptedAt = performance.now();
+    await browserWait(pages.classic, `document.body.textContent.includes('MATRIX_NORMAL_POLL')`, 'normal thirty-second poll updates visible memory without manual pull or notification', 35_000);
+    const visibleAfterMs = performance.now() - acceptedAt;
+    check(visibleAfterMs <= 30_000, 'healthy polling-only remote write is visible within thirty seconds', { visibleAfterMs: Math.round(visibleAfterMs) });
+    console.log(`  POLLING_VISIBILITY ${JSON.stringify({ cadenceMs: 30_000, acceptedToVisibleMs: Math.round(visibleAfterMs), forcedPull: false, manualNotification: false })}`);
+    for (const page of [pages.local, pages.hosted, pages.classic]) await page.evaluate('window.matrixNavigationSentinel = Math.random()');
+    const sentinel = await pages.hosted.evaluate('window.matrixNavigationSentinel');
+    await browserWait(pages.hosted, `document.querySelector('[data-sync-state]')?.parentElement?.dataset.connectionState === 'live'`, 'hosted SSE live');
+    c.gate.pullsOnline = false;
+    await c.client.pullOnce({ force: true }); await hosted.notify();
+    await browserWait(pages.hosted, `document.querySelector('[data-sync-state="offline"]') !== null`, 'offline cloud status');
+    check(await pages.hosted.evaluate(`document.querySelector('[data-sync-state]')?.parentElement?.dataset.connectionState === 'live'`),
+      'browser distinguishes an open SSE stream from an offline cloud pull');
+    local.shared.saveFile(`progress/${groupId}.json`, progressEntry(80, 'Recovered progress after offline pull.'));
+    const second = a.store.storeObservation(sessions[0].memory, 'matrix-view', observation('MATRIX_FEED_RECOVERED', 'Arrived without reload'), 2, 0);
+    await drainDevice(a); await local.notify();
+    check(!(await pages.classic.evaluate(`document.body.textContent.includes('MATRIX_FEED_RECOVERED')`)), 'offline replica does not pretend remote data arrived');
+    c.gate.pullsOnline = true; await pullToHead(c); await hosted.shared.reconcile(); await hosted.notify();
+    await browserWait(pages.hosted, `window.matrixModel()?.state === 'loaded' && window.matrixModel().model.requests.some(r => r.progress.percent === 80)`, 'shared progress catches up without reload');
+    await browserWait(pages.classic, `document.body.textContent.includes('MATRIX_FEED_RECOVERED')`, 'classic remote memory catches up without reload');
+    check(await pages.hosted.evaluate('window.matrixNavigationSentinel') === sentinel, 'hosted browser recovered without navigation');
+    const timing = await pages.hosted.evaluate('({firstUsefulMs:window.matrixUseful, navigationEntries:performance.getEntriesByType("navigation").length, requests:window.matrixModel().model.requests.length})');
+    check(Number.isFinite(timing.firstUsefulMs), 'browser records first useful My Work display', timing);
+    console.log(`  BROWSER_TIMING ${JSON.stringify(timing)}`);
+    check(second.id !== feedObservation.id, 'browser update uses a distinct memory entity');
+  });
+
+  console.log('\nScenario: selected historical recovery and conditional conflict repair');
+  const old = a.store.storeObservation(sessions[0].memory, 'matrix-history', observation('MATRIX_HISTORICAL', 'Selected old memory'), 3, 0);
+  a.store.db.prepare('UPDATE observations SET created_at_epoch=?,created_at=?,synced_at=1 WHERE id=?')
+    .run(1_600_000_000_000, new Date(1_600_000_000_000).toISOString(), old.id);
+  a.store.db.prepare("INSERT OR REPLACE INTO sync_launch_exclusions(kind,origin_local_id,through_rev) VALUES('observation',?,'1')").run(String(old.id));
+  const beforeHistory = a.cloudSync.recovery.preview({ project: 'matrix-history', from: '2020-01-01', to: '2021-01-01', kinds: ['observation'] });
+  check(beforeHistory.count === 1, 'historical preview selects exactly its explicit date/project scope');
+  const job = a.cloudSync.recovery.create({ scope: beforeHistory.scope, previewToken: beforeHistory.previewToken });
+  a.cloudSync.recovery.transition(job.id, 'resume', a.apply.getEpoch()); await drainDevice(a); await pullToHead(c);
+  check(a.cloudSync.recovery.get(job.id).status === 'complete', 'selected history completes through ordinary uploader acknowledgement');
+  check(count(c, "SELECT COUNT(*) AS n FROM observations WHERE title='MATRIX_HISTORICAL'") === 1, 'selected historical memory reaches hosted replica');
+  initializeConflictRecoverySchema(a.store.db);
+  const repair = new SyncConflictRecovery(a.store.db, { deviceId: DEVICE_IDS.a, userId: USER_ID, authToken: TOKEN,
+    hubUrl, fetch: guardedFetch(a.gate) });
+  const preview = await repair.preview({ kind: 'observation', originLocalId: String(old.id), choice: 'local_current' });
+  const result = await repair.apply({ previewToken: preview.previewToken });
+  check(result.state === 'verified', 'origin-only repair verifies its conditional higher revision against the real hub');
+  await pullToHead(c);
+  const repaired = row<{ sync_rev: string }>(c, 'SELECT sync_rev FROM observations WHERE origin_device_id=? AND origin_local_id=?', DEVICE_IDS.a, String(old.id));
+  check(repaired?.sync_rev === preview.proposedRevision, 'hosted replica applies the repaired canonical revision');
+  await Promise.all([pullToHead(a), pullToHead(b), pullToHead(c)]);
+  check(sidecar.projectionCalls.length > 3 && sidecar.bodies.some(body => body.kind === 'work_state'), 'multi-page canonical projection includes coherent shared records');
+}
+
+async function runMatrix(sidecar: SidecarState, sidecarUrl: string): Promise<void> {
   console.log(`Sync matrix E2E — fresh account ${USER_ID}`);
   const fresh = await getHubStatus();
   check(
@@ -511,7 +723,9 @@ async function runMatrix(sidecar: SidecarState): Promise<void> {
 
   let a = openDevice('a');
   let b = openDevice('b');
-  const tempDirs = new Set([a.dir, b.dir]);
+  const c = openDevice('c');
+  const tempDirs = new Set([a.dir, b.dir, c.dir]);
+  const viewers: MatrixViewer[] = [];
   try {
     await waitFor(() => a.apply.getEpoch() === fresh.epoch && b.apply.getEpoch() === fresh.epoch, 'initial epoch adoption');
     await waitFor(() => a.client.isPollModeOnly() && b.client.isPollModeOnly(), 'both clients fall back to polling (no realtime-token)');
@@ -666,15 +880,16 @@ async function runMatrix(sidecar: SidecarState): Promise<void> {
       'revive revision is strictly greater than the tombstone', { deleteRev, revived: revived?.sync_rev });
 
     await Promise.all([pullToHead(a), pullToHead(b)]);
+    await runViewerMatrix(a, b, c, viewers, sidecar, sidecarUrl);
     const finalStatus = await getHubStatus();
     check(typeof a.apply.getCursor() === 'string' && DECIMAL.test(a.apply.getCursor()), 'A cursor remains a decimal string');
     check(typeof b.apply.getCursor() === 'string' && DECIMAL.test(b.apply.getCursor()), 'B cursor remains a decimal string');
     check(finalStatus.head_seq.length >= 2, 'matrix crosses a multi-digit decimal Hub sequence', finalStatus.head_seq);
-    check(a.apply.getCursor() === finalStatus.head_seq && b.apply.getCursor() === finalStatus.head_seq,
-      'both decimal cursors equal the authoritative head');
+    check([a, b, c].every(device => device.apply.getCursor() === finalStatus.head_seq),
+      'all three decimal cursors equal the authoritative head');
     check(finalStatus.projected_seq === finalStatus.head_seq, 'Hub checkpoint equals head');
     check(sidecar.projectedThrough === finalStatus.head_seq, 'loopback projector checkpoint equals Hub head');
-    check(finalStatus.device_count === 2, 'exactly two real device identities touched the Hub', finalStatus.device_count);
+    check(finalStatus.device_count === 3, 'exactly three real device identities touched the Hub', finalStatus.device_count);
     check(sidecar.errors.length === 0, 'loopback verifier/projector recorded no contract errors', sidecar.errors);
     check(sidecar.verifyCalls > 0 && sidecar.projectionCalls.length > 0, 'real Hub used both loopback sidecar routes');
 
@@ -682,7 +897,7 @@ async function runMatrix(sidecar: SidecarState): Promise<void> {
     const mutations = new Set(sidecar.bodies
       .filter(body => body.kind === 'mutation')
       .map(body => (body.mutation as { op?: unknown } | null)?.op));
-    check(['observation', 'summary', 'prompt', 'mutation'].every(kind => kinds.has(kind as CanonicalContentBody['kind'])),
+    check(['observation', 'summary', 'prompt', 'work_state', 'mutation'].every(kind => kinds.has(kind as CanonicalContentBody['kind'])),
       'projector receives every canonical content kind', [...kinds]);
     check(['set_title', 'set_prompt_session', 'remap_project'].every(op => mutations.has(op)),
       'projector receives all required mutation kinds', [...mutations]);
@@ -690,16 +905,18 @@ async function runMatrix(sidecar: SidecarState): Promise<void> {
     check(lifecycle.some(body => body.deleted) && lifecycle.some(body => !body.deleted && compareCanonicalDecimals(body.entity_rev, deleteRev) > 0),
       'projector observes both tombstone and higher-revision revive');
 
-    const [statusA, statusB] = await Promise.all([
+    const [statusA, statusB, statusC] = await Promise.all([
       a.cloudSync.statusWithHubProbe(),
       b.cloudSync.statusWithHubProbe(),
+      c.cloudSync.statusWithHubProbe(),
     ]);
-    check(statusA.hub.reachable === true && statusB.hub.reachable === true,
-      'both empty-queue status checks authenticate against Hub');
-    check(pending(a) === 0 && pending(b) === 0, 'both clients finish with empty durable queues');
+    check(statusA.hub.reachable === true && statusB.hub.reachable === true && statusC.hub.reachable === true,
+      'all three empty-queue status checks authenticate against Hub');
+    check([a, b, c].every(device => pending(device) === 0), 'all three clients finish with empty durable queues');
     check(String(baseline.id) !== offlineId, 'delete/revive reused only its intended stable local id');
   } finally {
-    for (const device of [a, b]) {
+    for (const viewer of viewers.reverse()) await viewer.close();
+    for (const device of [a, b, c]) {
       try { closeDevice(device, false); } catch { /* cleanup continues */ }
     }
     for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
@@ -711,7 +928,7 @@ async function main(): Promise<void> {
   let failure: unknown = null;
   try {
     await startHub(sidecar.baseUrl);
-    await runMatrix(sidecar.state);
+    await runMatrix(sidecar.state, sidecar.baseUrl);
   } catch (error) {
     failure = error;
   } finally {
@@ -732,5 +949,7 @@ async function main(): Promise<void> {
 
 await main().catch(error => {
   console.error('Matrix harness error:', error);
-  process.exitCode = 1;
+  // A scenario that failed midway leaves its viewers and browsers open, and
+  // they would keep this process alive until the CI job times out.
+  process.exit(1);
 });
