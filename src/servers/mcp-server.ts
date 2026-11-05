@@ -717,16 +717,17 @@ Optional Dumb search: \`dumb_search({query, project})\`. Doesn’t reason about 
   },
   {
     name: 'get_tool_uses',
-    description: 'Exceptional follow-up (raw tool I/O, rarely needed): fetch the ORIGINAL tool_input/tool_response for tool calls you already identified. Requires ids — run search/timeline/get_observations first and pass only the ids you actually need; these payloads are large and unsummarized. ids accept numeric tool_uses ids or tool_use_id strings. Params: ids (required), limit, project, contentSessionId.',
+    description: 'Exceptional follow-up (raw tool I/O, rarely needed): fetch the ORIGINAL tool_input/tool_response for tool calls you already identified. Requires ids — run search/timeline/get_observations first and pass only the ids you actually need; these payloads are large and unsummarized. ids accept numeric tool_uses ids or tool_use_id strings. Params: ids (required), limit, project, contentSessionId. At most 100 ids per call; split larger selections.',
     inputSchema: {
       type: 'object',
       properties: {
         ids: {
           type: 'array',
+          maxItems: 100,
           items: { type: ['number', 'string'] },
-          description: 'Tool-use ids to fetch (required). Numeric tool_uses.id or opaque tool_use_id strings.'
+          description: 'Tool-use ids to fetch (required, at most 100; split larger selections). Numeric tool_uses.id or opaque tool_use_id strings.'
         },
-        limit: { type: 'number', description: 'Max rows to return' },
+        limit: { type: 'number', description: 'Max rows to return (default 100, max 200)' },
         project: { type: 'string', description: 'Filter by project name' },
         contentSessionId: { type: 'string', description: 'Filter to one content session' }
       },
