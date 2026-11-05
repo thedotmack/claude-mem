@@ -3,6 +3,7 @@ import type { Request, Response, NextFunction } from 'express';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { paths } from '../../../../src/shared/paths.js';
 import { recordObserverSuccess } from '../../../../src/shared/observer-health.js';
 import { SessionManager } from '../../../../src/services/worker/SessionManager.js';
 import { SessionRoutes } from '../../../../src/services/worker/http/routes/SessionRoutes.js';
@@ -343,12 +344,14 @@ describe('paused in-memory session recovery', () => {
     const saved = process.env.CLAUDE_MEM_DATA_DIR;
     const dir = mkdtempSync(join(tmpdir(), 'cm-resume-health-'));
     process.env.CLAUDE_MEM_DATA_DIR = dir;
+    spyOn(paths, 'dataDir').mockReturnValue(dir);
     try {
       const session = manager.getSession(1)!;
       session.pausedReason = 'auth';
       session.pausedAtMs = Date.now() - 5_000;
+      session.pausedAuthScope = JSON.stringify(['claude', 'account-a', 'subscription']);
       // A successful store after the pause proves the credential works again.
-      recordObserverSuccess();
+      recordObserverSuccess(undefined, session.pausedAuthScope);
       expect(manager.getResumableSessionIds()).toEqual([1]);
     } finally {
       if (saved === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
@@ -362,14 +365,64 @@ describe('paused in-memory session recovery', () => {
     const saved = process.env.CLAUDE_MEM_DATA_DIR;
     const dir = mkdtempSync(join(tmpdir(), 'cm-resume-health-'));
     process.env.CLAUDE_MEM_DATA_DIR = dir;
+    spyOn(paths, 'dataDir').mockReturnValue(dir);
     try {
       // A success from before the pause proves nothing about the credential now.
-      recordObserverSuccess();
+      const scope = JSON.stringify(['claude', 'account-a', 'subscription']);
+      recordObserverSuccess(undefined, scope);
       const session = manager.getSession(1)!;
       session.pausedReason = 'auth';
       session.pausedAtMs = Date.now() + 60_000;
+      session.pausedAuthScope = scope;
       expect(manager.getResumableSessionIds()).toEqual([]);
       expect(manager.getResumableSessionIds(true)).toEqual([1]);
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+      else process.env.CLAUDE_MEM_DATA_DIR = saved;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  for (const [label, scope] of [
+    ['unscoped legacy success', null],
+    ['another provider', JSON.stringify(['openrouter', 'account-a', 'subscription'])],
+    ['another account', JSON.stringify(['claude', 'account-b', 'subscription'])],
+    ['another credential', JSON.stringify(['claude', 'account-a', 'api-key'])],
+  ] as const) {
+    it(`keeps an auth pause parked after ${label}`, () => {
+      const { manager } = fixture();
+      const saved = process.env.CLAUDE_MEM_DATA_DIR;
+      const dir = mkdtempSync(join(tmpdir(), 'cm-resume-health-'));
+      process.env.CLAUDE_MEM_DATA_DIR = dir;
+      spyOn(paths, 'dataDir').mockReturnValue(dir);
+      try {
+        const session = manager.getSession(1)!;
+        session.pausedReason = 'auth';
+        session.pausedAtMs = Date.now() - 5_000;
+        session.pausedAuthScope = JSON.stringify(['claude', 'account-a', 'subscription']);
+        recordObserverSuccess(undefined, scope);
+        expect(manager.getResumableSessionIds()).toEqual([]);
+        expect(manager.getResumableSessionIds(true)).toEqual([1]);
+      } finally {
+        if (saved === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+        else process.env.CLAUDE_MEM_DATA_DIR = saved;
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it('keeps sessions without a credential identity parked after any success', () => {
+    const { manager } = fixture();
+    const saved = process.env.CLAUDE_MEM_DATA_DIR;
+    const dir = mkdtempSync(join(tmpdir(), 'cm-resume-health-'));
+    process.env.CLAUDE_MEM_DATA_DIR = dir;
+    spyOn(paths, 'dataDir').mockReturnValue(dir);
+    try {
+      const session = manager.getSession(1)!;
+      session.pausedReason = 'auth';
+      session.pausedAtMs = Date.now() - 5_000;
+      recordObserverSuccess(undefined, JSON.stringify(['claude', 'account-a', 'subscription']));
+      expect(manager.getResumableSessionIds()).toEqual([]);
     } finally {
       if (saved === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
       else process.env.CLAUDE_MEM_DATA_DIR = saved;

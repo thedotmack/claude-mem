@@ -160,6 +160,7 @@ export async function startGeneratorWithProvider(
   // keep the session out of every automatic sweep for good.
   session.pausedReason = null;
   session.pausedAtMs = null;
+  session.pausedAuthScope = null;
   session.providerSwitchPending = false;
 
   if (session.abortController.signal.aborted) {
@@ -198,6 +199,8 @@ export async function startGeneratorWithProvider(
   });
 
   session.currentProvider = provider;
+  session.observerProfile = undefined;
+  session.observerAuth = undefined;
   session.lastGeneratorActivity = Date.now();
   // Providers refine this per-prompt ('init'|'ingest'|'summarize'); this is
   // the fallback when a generator dies before dispatching its first prompt.

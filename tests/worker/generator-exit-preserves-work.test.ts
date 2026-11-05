@@ -40,6 +40,8 @@ describe('handleGeneratorExit — reasons that preserve claimed work', () => {
     it(`leaves the session alive for ${reason}`, async () => {
       const { deps, finalizeSession, removeSessionImmediate } = buildDeps();
       const session = buildSession(reason);
+      session.observerProfile = 'account-a';
+      session.observerAuth = 'subscription';
 
       await handleGeneratorExit(session, reason, deps);
 
@@ -49,6 +51,8 @@ describe('handleGeneratorExit — reasons that preserve claimed work', () => {
       // The pause moment is the recovery proof's before-side (#5377): the sweep
       // resumes an auth pause only on a ledger success recorded after it.
       expect(session.pausedAtMs).toBeNumber();
+      expect(session.pausedAuthScope).toBe(reason.startsWith('auth:')
+        ? JSON.stringify(['claude', 'account-a', 'subscription']) : null);
     });
   }
 

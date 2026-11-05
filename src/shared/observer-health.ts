@@ -36,6 +36,8 @@ export interface ObserverHealthState {
   lastErrorProvider: string | null;
   /** Epoch ms of the most recent successful observation/summary store. */
   lastSuccessAt: number | null;
+  /** 按已知 provider、账号和凭据类型保存成功证明。 */
+  authRecoverySuccesses?: Record<string, number>;
   /**
    * Structured detail from a classified provider error (the gateway's taxonomy
    * envelope `{ code, message, action, url, request_id }`), carried so the
@@ -298,14 +300,22 @@ export function recordObserverFailure(
   });
 }
 
-export function recordObserverSuccess(filePath: string = defaultHealthFilePath()): void {
+/** 缺少可靠的凭据身份时，不建立自动恢复证明。 */
+export function observerAuthScope(provider: string | null, profile?: string, auth?: string): string | null {
+  if (provider !== 'claude' || !profile || (auth !== 'api-key' && auth !== 'subscription')) return null;
+  return JSON.stringify([provider, profile, auth]);
+}
+
+export function recordObserverSuccess(filePath: string = defaultHealthFilePath(), authScope?: string | null): void {
   withLedgerLock(filePath, () => {
     const prior = readObserverHealth(filePath) ?? EMPTY_STATE;
+    const now = Date.now();
     writeObserverHealth({
       ...prior,
       consecutiveFailures: 0,
       failingSinceAt: null,
-      lastSuccessAt: Date.now(),
+      lastSuccessAt: now,
+      ...(authScope ? { authRecoverySuccesses: { ...prior.authRecoverySuccesses, [authScope]: now } } : {}),
     }, filePath, prior);
   });
 }

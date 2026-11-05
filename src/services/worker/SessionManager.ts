@@ -802,7 +802,7 @@ export class SessionManager {
    *    the sweep repeated every cooldown, forever.
    *
    * An auth pause is the one timer-less case that can still join the sweep:
-   * a store that succeeded in the observer health ledger after the session
+   * a store under the same captured credential scope after the session
    * paused is proof the credential works again (#5377), so that session is
    * retried within the same pacing as any other — its provider's breaker
    * still gates it.
@@ -823,16 +823,16 @@ export class SessionManager {
 
   /**
    * An auth pause waits for proof the credential works again, not a timer
-   * (#5377): a successful observer store recorded in the health ledger after
-   * this session paused is that proof — the same end-to-end success that
-   * clears the failure streak. No ledger, or a success older than the pause,
+   * (#5377): a successful store for the same provider, account and credential
+   * type after this session paused is that proof. Unknown identities, old
+   * unscoped ledgers, or a success older than the pause,
    * and the session stays parked for its next captured event or an operator
    * retry, exactly as before.
    */
   private authPauseProvenRecovered(session: ActiveSession): boolean {
-    if (session.pausedReason !== 'auth' || !session.pausedAtMs) return false;
+    if (session.pausedReason !== 'auth' || !session.pausedAtMs || !session.pausedAuthScope) return false;
     const health = readObserverHealth();
-    return (health?.lastSuccessAt ?? 0) > session.pausedAtMs;
+    return (health?.authRecoverySuccesses?.[session.pausedAuthScope] ?? 0) > session.pausedAtMs;
   }
 
   getTotalQueueDepth(): number {
