@@ -594,13 +594,30 @@ export async function startGeneratorWithProvider(
       if (reason === 'transport:response_stall' && !nothingLeftAfterParking) {
         const { resume, attempts } = planResponseStallResume(session);
         if (!resume) {
-          session.stallResumesExhaustedAt = Date.now();
-          logger.error('SESSION', `Observer went unanswered ${attempts} times in a row — not resuming until the next captured event`, {
-            sessionId: session.sessionDbId,
-            consecutiveStalls: attempts,
-            maxResumes: MAX_CONSECUTIVE_STALL_RESUMES,
-            pendingCount: sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId),
-          });
+          // The bounded resumes are spent. Holding the buffer for "the next
+          // captured event" stranded it until a worker restart whenever the
+          // content session had already ended (#5405), and a later timer or
+          // event replaying it would be the stale-backlog spend the observer
+          // lifecycle forbids. Discard it now and say how much went; the next
+          // captured event still starts fresh work. A newer generator that a
+          // captured event started while this exit was handled owns the
+          // buffer, so it is left alone.
+          const newerGeneratorRunning = session.generatorPromise != null && session.generatorPromise !== generatorPromise;
+          if (!newerGeneratorRunning) {
+            session.stallResumesExhaustedAt = Date.now();
+            const buffer = sessionManager.getMessageBuffer();
+            const pendingCount = buffer.getPendingCount(session.sessionDbId);
+            const parkedCount = buffer.getParkedMessages(session.sessionDbId).length;
+            const discarded = sessionManager.discardBufferedWork(session.sessionDbId);
+            logger.warn('SESSION', `Observer went unanswered ${attempts} times in a row — discarding its buffered work instead of resuming`, {
+              sessionId: session.sessionDbId,
+              consecutiveStalls: attempts,
+              maxResumes: MAX_CONSECUTIVE_STALL_RESUMES,
+              pendingCount,
+              parkedCount,
+              discarded,
+            });
+          }
         } else {
           // The delayed retry may hit a quota cooldown and return without
           // starting a generator. Keep this pause eligible for the periodic
