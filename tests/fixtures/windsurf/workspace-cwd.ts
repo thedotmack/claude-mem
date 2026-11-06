@@ -78,7 +78,9 @@ try {
     assert.equal(body.platformSource, 'windsurf');
     assert.equal(body.contentSessionId, 'owned-windsurf-session');
     // The worker attributes the handed-off event to the workspace project.
-    const reply = await ingestObservation(body);
+    // Map the wire's snake_case tool fields the way SessionRoutes does.
+    const reply = await ingestObservation({ ...body, toolName: body.tool_name,
+      toolInput: body.tool_input, toolResponse: body.tool_response });
     assert.equal(reply.ok, true);
     const [session] = sessions() as any[];
     assert.equal(session.cwd, workspace);

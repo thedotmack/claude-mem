@@ -58,7 +58,7 @@ it('pairs a pending tool across restart and hands result and summary off live on
     await settleHookSpoolNudges();
     const observer = handoffs.filter(h => h.path === '/api/sessions/observations' || h.path === '/api/sessions/summarize');
     expect(observer.map(h => h.path)).toEqual(['/api/sessions/observations', '/api/sessions/summarize']);
-    expect(observer[0].body).toMatchObject({ contentSessionId: 's', toolName: 'Read', tool_input: { path: 'a' }, tool_response: 'contents' });
+    expect(observer[0].body).toMatchObject({ contentSessionId: 's', tool_name: 'Read', tool_input: { path: 'a' }, tool_response: 'contents' });
     expect(observer[1].body).toMatchObject({ contentSessionId: 's' });
     // A failed handoff is skipped: the cursor moves on and nothing is kept for replay.
     expect(JSON.parse(readFileSync(state, 'utf8')).offsets[file]).toBe(Buffer.byteLength(readFileSync(file)));

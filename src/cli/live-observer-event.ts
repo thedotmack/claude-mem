@@ -36,12 +36,15 @@ async function deliver(entry: HookSpoolEntry): Promise<void> {
     body = { protocolVersion: REMOTE_SPOOL_PROTOCOL_VERSION, entry };
   } else if (entry.kind === 'observation' || entry.kind === 'file_edit') {
     path = '/api/sessions/observations';
-    body = { ...entry.payload, tool_name: entry.payload.toolName,
-      tool_input: entry.payload.toolInput, tool_response: entry.payload.toolResponse,
+    // The route reads only the snake_case tool fields. Sending the camelCase
+    // copies too would double a large result past the worker's 5mb JSON cap.
+    const { toolName, toolInput, toolResponse, ...rest } = entry.payload;
+    body = { ...rest, tool_name: toolName, tool_input: toolInput, tool_response: toolResponse,
       enqueuedAtEpochMs: entry.enqueuedAtEpochMs };
   } else if (entry.kind === 'summarize') {
     path = '/api/sessions/summarize';
-    body = { ...entry.payload, last_assistant_message: entry.payload.lastAssistantMessage,
+    const { lastAssistantMessage, ...rest } = entry.payload;
+    body = { ...rest, last_assistant_message: lastAssistantMessage,
       enqueuedAtEpochMs: entry.enqueuedAtEpochMs };
   } else {
     throw new Error(`Not a live observer event: ${entry.kind}`);

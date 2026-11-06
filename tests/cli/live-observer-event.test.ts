@@ -44,4 +44,23 @@ describe('live observation handoff', () => {
     expect(post).toHaveBeenCalledTimes(1);
     expect(new HookSpool().hasEntries()).toBe(false);
   });
+
+  it('sends each tool field and summary text once, in the shape the worker route reads', async () => {
+    const post = spyOn(worker, 'workerHttpRequest').mockImplementation(async () => new Response('{}'));
+    const toolResponse = 'x'.repeat(3 * 1024 * 1024);
+    spoolHookEvent('observation', { contentSessionId: 's', platformSource: 'claude', toolName: 'Read',
+      toolInput: { path: 'a' }, toolResponse, toolUseId: 't' });
+    spoolHookEvent('summarize', { contentSessionId: 's', platformSource: 'claude', lastAssistantMessage: 'done' });
+    await settleHookSpoolNudges();
+    const [observation, summary] = post.mock.calls.map(call => JSON.parse(String(call[1]?.body)));
+    expect(observation).toMatchObject({ tool_name: 'Read', tool_input: { path: 'a' }, toolUseId: 't' });
+    expect(observation.tool_response.length).toBe(toolResponse.length);
+    expect(Object.keys(observation)).not.toContain('toolName');
+    expect(Object.keys(observation)).not.toContain('toolInput');
+    expect(Object.keys(observation)).not.toContain('toolResponse');
+    // A 3 MiB result stays under the worker's 5mb cap instead of doubling past it.
+    expect(Buffer.byteLength(String(post.mock.calls[0][1]?.body))).toBeLessThan(5 * 1024 * 1024);
+    expect(summary).toMatchObject({ last_assistant_message: 'done' });
+    expect(Object.keys(summary)).not.toContain('lastAssistantMessage');
+  });
 });
