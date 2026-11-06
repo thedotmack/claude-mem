@@ -1,6 +1,6 @@
 // My Work's observation gallery in real Chrome: a live update that removes the open image closes the gallery
 // instead of crashing it, and a failed image load recovers (thumbnail and full image fail separately; Try again
-// asks again). PR #5427 review threads.
+// asks again, keeping keyboard focus in the dialog). PR #5427 review threads.
 import { expect, it } from 'bun:test';
 import {
   FIXTURE_PAGE_HTML, UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, compileBrowserFixture,
@@ -67,11 +67,14 @@ failOnCiWithoutChrome('CI requires Chrome or Chromium for the My Work gallery re
         const frameImg = document.querySelector('.obs-media-galleryframe img');
         frameImg.dispatchEvent(new Event('error'));
         await until(() => document.querySelector('.obs-media-galleryretry'), 'Try again offered');
+        document.querySelector('.obs-media-galleryretry').focus();
         document.querySelector('.obs-media-galleryretry').click();
         await until(() => document.querySelector('.obs-media-galleryframe img'), 'full image back after Try again');
+        // The retry button is gone; focus stayed in the dialog, so Escape and arrows still work.
+        const focusAfterRetry = document.activeElement?.getAttribute('aria-label');
         document.querySelector('.obs-media-galleryclose').click();
         await until(() => thumbState(0) === 'ready', 'thumbnail 1 ready after Try again');
-        await fetch('/result', { method: 'POST', body: JSON.stringify({ fullImageShown, stripAfterShrink, errors }) });
+        await fetch('/result', { method: 'POST', body: JSON.stringify({ fullImageShown, stripAfterShrink, focusAfterRetry, errors }) });
       } catch (error) {
         await fetch('/result', { method: 'POST', body: JSON.stringify({ error: String(error), errors }) });
       }
@@ -89,7 +92,7 @@ failOnCiWithoutChrome('CI requires Chrome or Chromium for the My Work gallery re
   let chrome: OwnedChrome | undefined;
   try {
     chrome = launchChrome(server.url.href, { profilePrefix: 'claude-mem-my-work-gallery-', extraFlags: UNTHROTTLED_TIMER_FLAGS });
-    expect(await withTimeout(result, 30000, 'Gallery browser did not report')).toEqual({ fullImageShown: true, stripAfterShrink: 3, errors: [] });
+    expect(await withTimeout(result, 30000, 'Gallery browser did not report')).toEqual({ fullImageShown: true, stripAfterShrink: 3, focusAfterRetry: 'Close image viewer (Escape)', errors: [] });
   } finally {
     await chrome?.close();
     server.stop(true);

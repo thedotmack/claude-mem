@@ -396,7 +396,17 @@ function MediaGallery({
             <div className="obs-media-gallerystate">
               <p role="status">{STATE_COPY[state]}{state === 'pending' ? ' — the image is still being converted or downloaded.' : state === 'deleted' ? ' — this image was deleted.' : state === 'rejected' ? ' — the image could not be stored (unsupported, out of bounds, or conversion failed).' : state === 'failed' ? ' — the image could not be loaded or verified.' : state === 'unavailable' ? ' — image status could not be resolved.' : ''}</p>
               {state === 'failed' && (
-                <button type="button" className="obs-media-galleryretry" onClick={() => onRetry(ref.id)}>Try again</button>
+                <button
+                  type="button"
+                  className="obs-media-galleryretry"
+                  onClick={() => {
+                    // This button unmounts once the failure clears; keep focus inside the dialog.
+                    closeRef.current?.focus();
+                    onRetry(ref.id);
+                  }}
+                >
+                  Try again
+                </button>
               )}
             </div>
           )}
