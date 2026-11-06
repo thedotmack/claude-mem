@@ -23,6 +23,8 @@ ${styleText('bold', 'claude-mem')} v${version} — persistent memory for AI codi
 ${styleText('bold', 'Install Commands')} (no Bun required):
   ${styleText('cyan', 'npx claude-mem')}                     Interactive install
   ${styleText('cyan', 'npx claude-mem install')}              Interactive install (also puts the claude-mem hook launcher on PATH)
+  Installing for a user? Run npx claude-mem install --runtime worker in a PTY on their computer.
+  Open the printed setup URL in their browser if needed. Keep the installer running while they finish setup.
   ${styleText('cyan', 'npx claude-mem install --ide <id>')}   Install for specific IDE
   ${styleText('cyan', 'npx claude-mem install --ide dsh --dsh-profile <name>')}   Install DeepSeek Harness (default profile: web)
   ${styleText('cyan', 'npx claude-mem install --provider claude|codex|gemini|openrouter|host')}   Set LLM provider (optional non-interactively; a fresh install defaults to claude). codex, gemini and openrouter need a cmem.ai sign-in in a browser, on either runtime; claude and host need no claude-mem account
