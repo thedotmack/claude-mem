@@ -8,10 +8,11 @@ import { logger } from '../utils/logger.js';
 import type { AgentRole, InstructionState, WorkStateOutcome } from './work-state-telemetry.js';
 
 /**
- * Durable hand-off from short-lived write hooks to the worker.
+ * Durable metadata hand-off from short-lived hooks to the worker.
  *
- * A write hook (PostToolUse observation, file edit, Stop summarize + advisor
- * calls, SessionEnd) writes ONE file per event here and exits; it never waits
+ * Only metadata (advisor records, SessionEnd, deliverables, usage) is written
+ * here. Observation/edit/summary shapes remain readable for upgrade cleanup.
+ * Live observer inputs use the non-durable handoff instead. Metadata never waits
  * for the worker. The worker drains the directory in order (boot, a nudge from
  * the hook, an fs.watch of the directory, and a slow safety sweep).
  *
@@ -32,6 +33,8 @@ import type { AgentRole, InstructionState, WorkStateOutcome } from './work-state
 
 export const HOOK_SPOOL_KINDS = ['observation', 'file_edit', 'summarize', 'session_end', 'subagent_stop', 'advisor_calls', 'deliverables', 'work_state_telemetry'] as const;
 export type HookSpoolKind = typeof HOOK_SPOOL_KINDS[number];
+/** Inference kinds are legacy read/wire shapes, not writable spool kinds. */
+export type DurableHookSpoolKind = Exclude<HookSpoolKind, 'observation' | 'file_edit' | 'summarize'>;
 
 export interface SpooledObservationPayload {
   contentSessionId: string;
@@ -344,7 +347,7 @@ export class HookSpool {
    * `requestedAtEpochMs` is for carrying an existing timestamp over (legacy
    * migration, tests); hooks omit it and get a per-process monotonic now.
    */
-  enqueue<K extends HookSpoolKind>(
+  enqueue<K extends DurableHookSpoolKind>(
     kind: K,
     payload: HookSpoolPayloadByKind[K],
     requestedAtEpochMs?: number,
