@@ -77,11 +77,19 @@ export interface ServerViewerRoutesOptions {
   pool?: PostgresPool;
   /** Same value the /v1 routes use. */
   authMode?: string;
+  /** Same loopback bypass the /v1 routes accept in local-dev mode. */
+  allowLocalDevBypass?: boolean;
+  /**
+   * Team a bypassed local-dev request reads as. Without one the request is
+   * bound to no team and every data route answers 403, exactly as /v1 does;
+   * the bypass never reads across teams.
+   */
+  localDevTeamId?: string | null;
 }
 
-/** Team/project a request may read. Null fields mean "not restricted". */
+/** Team, and optionally project, a request may read. */
 interface ViewerScope {
-  teamId: string | null;
+  teamId: string;
   projectId: string | null;
 }
 
@@ -127,6 +135,8 @@ export class ServerViewerRoutes implements RouteHandler {
   private setupDataRoutes(app: Application, pool: PostgresPool): void {
     const read = requirePostgresServerAuth(pool, {
       authMode: this.options.authMode,
+      allowLocalDevBypass: this.options.allowLocalDevBypass,
+      localDevTeamId: this.options.localDevTeamId,
       requiredScopes: ['memories:read'],
     });
 
@@ -216,13 +226,14 @@ export class ServerViewerRoutes implements RouteHandler {
     app.post('/api/logs/clear', read, logUnavailable);
   }
 
-  /** Resolves the read scope, or answers 403 for a key bound to no team. */
+  /**
+   * Resolves the read scope, or answers 403 for a request bound to no team
+   * (the /v1 routes' requireTeamId). A local-dev bypass request carries only
+   * the configured `localDevTeamId`, so it is scoped like any key.
+   */
   private scopeOf(req: Request, res: Response): ViewerScope | null {
     const ctx = req.authContext;
-    if (!ctx || ctx.mode === 'local-dev') {
-      return { teamId: null, projectId: null };
-    }
-    if (!ctx.teamId) {
+    if (!ctx?.teamId) {
       res.status(403).json({ error: 'Forbidden', message: 'API key is not bound to a team' });
       return null;
     }
@@ -274,8 +285,7 @@ function toPage<Row, Item>(rows: Row[], limit: number, map: (row: Row) => Item):
 }
 
 function scopeClause(scope: ViewerScope, params: SqlParams, alias: string): string {
-  let clause = '';
-  if (scope.teamId) clause += ` AND ${alias}.team_id = ${params.add(scope.teamId)}`;
+  let clause = ` AND ${alias}.team_id = ${params.add(scope.teamId)}`;
   if (scope.projectId) clause += ` AND ${alias}.project_id = ${params.add(scope.projectId)}`;
   return clause;
 }

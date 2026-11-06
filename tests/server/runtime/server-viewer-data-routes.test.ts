@@ -6,7 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import pg from 'pg';
 import { Server } from '../../../src/services/server/Server.js';
-import { ServerViewerRoutes } from '../../../src/server/runtime/ServerViewerRoutes.js';
+import { ServerViewerRoutes, type ServerViewerRoutesOptions } from '../../../src/server/runtime/ServerViewerRoutes.js';
 import {
   bootstrapServerPostgresSchema,
   createPostgresStorageRepositories,
@@ -30,11 +30,12 @@ describe('ServerViewerRoutes data endpoints', () => {
   let storage: PostgresStorageRepositories;
   let server: Server | null = null;
   let baseUrl: string;
+  let teamId: string;
   let teamKey: string;
   let projectKey: string;
   let loggerSpies: ReturnType<typeof spyOn>[] = [];
 
-  async function startServer(): Promise<void> {
+  async function startServer(options: Omit<ServerViewerRoutesOptions, 'pool'> = {}): Promise<void> {
     server = new Server({
       getInitializationComplete: () => true,
       getMcpReady: () => true,
@@ -44,7 +45,7 @@ describe('ServerViewerRoutes data endpoints', () => {
       runtime: 'server-beta',
       getAiStatus: () => ({ provider: 'disabled', authMethod: 'api-key', lastInteraction: null }),
     });
-    server.registerRoutes(new ServerViewerRoutes({ pool: pool as never, authMode: 'api-key' }));
+    server.registerRoutes(new ServerViewerRoutes({ pool: pool as never, authMode: 'api-key', ...options }));
     server.finalizeRoutes();
     await server.listen(0, '127.0.0.1');
     const address = server.getHttpServer()?.address();
@@ -81,6 +82,7 @@ describe('ServerViewerRoutes data endpoints', () => {
     storage = createPostgresStorageRepositories(client);
 
     const team = await storage.teams.create({ name: 'team' });
+    teamId = team.id;
     const project = await storage.projects.create({ teamId: team.id, name: 'server-project' });
     const otherProject = await storage.projects.create({ teamId: team.id, name: 'other-project' });
     const otherTeam = await storage.teams.create({ name: 'other-team' });
@@ -175,6 +177,24 @@ describe('ServerViewerRoutes data endpoints', () => {
     const manual = body.items.find(item => item.type === 'manual')!;
     expect(manual.project).toBe('other-project');
     expect(manual.platform_source).toBe('claude');
+  });
+
+  // Same rule as /v1: the local-dev loopback bypass carries only the configured
+  // team, and a request bound to no team is refused rather than read every team.
+  it('scopes local-dev bypass requests to the configured team and refuses them without one', async () => {
+    await startServer({ authMode: 'local-dev', allowLocalDevBypass: true });
+    expect((await get('/api/observations')).status).toBe(403);
+    expect((await get('/api/projects')).status).toBe(403);
+    await server!.close();
+    server = null;
+
+    await startServer({ authMode: 'local-dev', allowLocalDevBypass: true, localDevTeamId: teamId });
+    const res = await get('/api/observations');
+    expect(res.status).toBe(200);
+    const body = await res.json() as { items: Array<{ text: string }> };
+    expect(body.items.map(item => item.text)).toEqual(['A manual note.', 'Fixed login redirect loop.']);
+    const catalog = await (await get('/api/projects')).json() as { projects: string[] };
+    expect(catalog.projects).not.toContain('foreign-project');
   });
 
   it('narrows to the key project for a project-bound key', async () => {
