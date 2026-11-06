@@ -104,6 +104,16 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     hint: 'One Atlas Cloud key for vendor-prefixed model ids such as deepseek-ai/deepseek-v4-flash or zai-org/glm-5.3.',
   },
   {
+    id: 'popnow',
+    label: 'PopNow (popnow.ai)',
+    baseUrl: 'https://api.popnow.ai/v1',
+    // A cheap, fast model for the same reason as NVIDIA's default: extraction
+    // is high volume. Ids end in a task suffix and are passed verbatim.
+    defaultModel: 'deepseek/v4-flash/chat',
+    requiresApiKey: true,
+    hint: 'One PopNow key for chat model ids such as deepseek/v4-flash/chat or moonshot/kimi-k3/chat.',
+  },
+  {
     id: 'runcrate',
     label: 'Runcrate (runcrate.ai)',
     baseUrl: 'https://api.runcrate.ai/v1',
