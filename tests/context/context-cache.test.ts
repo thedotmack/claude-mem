@@ -743,7 +743,14 @@ const childScript = `
     const cachedBefore = cache.readContextCache(keys, FIXED_NOW)?.body;
     const reserved = await live({ projects: projectsParam, platformSource: 'claude', cwd, reserveChars: '3000' });
     const cachedAfter = cache.readContextCache(keys, FIXED_NOW)?.body;
-    budgetResult = { normal, reserved, cachedBefore, cachedAfter };
+    // A different, never-requested source scope starts with no cache file.
+    const coldKeys = cache.contextCacheKeys(projects, undefined, false, cwd);
+    const coldBefore = cache.readContextCache(coldKeys, FIXED_NOW);
+    const coldReserved = await live({ projects: projectsParam, cwd, reserveChars: '3000' });
+    await service.flushPendingRenders();
+    const coldFile = cache.readContextCache(coldKeys, FIXED_NOW);
+    const coldWarmed = coldFile ? cache.fillContextPlaceholders(coldFile.body, FIXED_NOW, coldFile.placeholderNonce) : null;
+    budgetResult = { normal, reserved, cachedBefore, cachedAfter, coldBefore, coldReserved, coldWarmed };
   }
 
   // A write re-renders the block within the debounce.
@@ -754,6 +761,10 @@ const childScript = `
   await new Promise((resolve) => setTimeout(resolve, 200));
   await service.flushPendingRenders();
   const agentAfterWrite = cache.readContextCache(cache.contextCacheKeys(projects, 'claude', false, cwd), FIXED_NOW);
+  if (budgetResult) {
+    const coldAfterWrite = cache.readContextCache(cache.contextCacheKeys(projects, undefined, false, cwd), FIXED_NOW);
+    budgetResult.coldAfterWrite = coldAfterWrite?.body ?? null;
+  }
   service.stop();
   store.close();
 
@@ -799,6 +810,10 @@ describe('precomputed context end to end', () => {
       expect(budgetResult.reserved.length + 3000 + MEMORY_PLUGIN_INSTRUCTIONS.length + 2).toBeLessThanOrEqual(10_000);
       expect(budgetResult.reserved.length).toBeLessThan(budgetResult.normal.length);
       expect(budgetResult.cachedAfter).toBe(budgetResult.cachedBefore);
+      expect(budgetResult.coldBefore).toBeNull();
+      expect(budgetResult.coldWarmed).toContain('RECORD_79_' + 'x'.repeat(350));
+      expect(budgetResult.coldWarmed.length).toBeGreaterThan(budgetResult.coldReserved.length);
+      expect(budgetResult.coldAfterWrite).toContain('SECOND_OBSERVATION');
       expect(budgetResult.reserved).not.toContain('Recent context omitted');
     } finally {
       rmSync(dataDir, { recursive: true, force: true });

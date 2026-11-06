@@ -477,11 +477,13 @@ export const contextHandler: EventHandler = {
 
     const platform = input.platform;
     const teamSection = teamBriefRequest ? teamBriefSection(await teamBriefRequest) : '';
+    // Only the process that atomically claims the marker may deliver the
+    // fallback notice. Waiting until all reads finish keeps failed attempts
+    // retryable. A lost claim merely leaves a little unused render budget.
+    if (showFallbackNotice && !markProFallbackNoticeShown()) notices.shift();
     additionalContext = composeSessionStartContext(
-      additionalContext, noticeText, memoryInstructions, teamSection,
+      additionalContext, notices.join('\n\n'), memoryInstructions, teamSection,
     );
-
-    if (showFallbackNotice) markProFallbackNoticeShown();
 
     // Antigravity CLI (like the former Gemini CLI) is hooks-based, not an
     // MCP-context-fetch platform like Codex — colorApiPath never populates

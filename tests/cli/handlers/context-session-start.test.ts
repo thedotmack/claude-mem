@@ -454,6 +454,18 @@ describe('contextHandler SessionStart path', () => {
       expect(second.hookSpecificOutput?.additionalContext).not.toContain('Memory is using your Anthropic plan');
     });
 
+    it('delivers the gateway notice only once across concurrent session starts', async () => {
+      provider = 'claude';
+      providerBySource = '{"codex":"openrouter"}';
+      openRouterBaseUrl = 'https://cmem.ai/api/inference/v1';
+      proFallbackAt = new Date().toISOString();
+      const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+      const results = await Promise.all(Array.from({ length: 8 }, (_, i) =>
+        contextHandler.execute({ sessionId: 'notice-concurrent-' + i, cwd: '/tmp/repo', platform: 'codex' })));
+      expect(results.filter(result => result.hookSpecificOutput?.additionalContext?.includes('Memory is using your Anthropic plan'))).toHaveLength(1);
+      expect(results.every(result => result.hookSpecificOutput?.additionalContext?.includes('context from worker'))).toBe(true);
+    });
+
     it('does not consume the fallback notice when the worker is unavailable', async () => {
       provider = 'claude';
       providerBySource = '{"codex":"openrouter"}';

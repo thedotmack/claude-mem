@@ -139,6 +139,7 @@ describe('SearchRoutes Welcome Hint', () => {
     const baseline = (await invoke()).reserveChars;
     expect(recordLiveRender).toHaveBeenCalledTimes(1);
     expect((await invoke('251')).reserveChars).toBe(baseline + 251);
+    expect(cache.warmVariant).toHaveBeenCalledTimes(1);
     expect(recordLiveRender).toHaveBeenCalledTimes(1);
     expect((await invoke('-1')).reserveChars).toBe(baseline);
     expect((await invoke('NaN')).reserveChars).toBe(baseline);

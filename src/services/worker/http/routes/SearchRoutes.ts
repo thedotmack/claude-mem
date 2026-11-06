@@ -479,12 +479,13 @@ export class SearchRoutes extends BaseRouteHandler {
     // from here on. `full` is a one-off human request and is never cached. An
     // answer with the prior reply is not persisted either, since the reply was
     // chosen for this session: its variant is warmed instead, without a reply.
-    // A per-session notice reserve must not replace the normal cache variant.
+    // A per-session notice reserve must not replace the normal cache variant,
+    // but still learns and warms that variant for later offline sessions.
     const respondedAtEpochMs = Date.now();
-    if (!full && reserveChars === 0 && this.contextCache) {
+    if (!full && this.contextCache) {
       try {
         const keys = contextCacheKeys(projects, platformSource, forHuman, hostCwd || undefined);
-        if (showLastMessage) {
+        if (showLastMessage || reserveChars > 0) {
           await this.contextCache.warmVariant(keys, rendered.readKeys);
         } else {
           await this.contextCache.recordLiveRender(
