@@ -219,6 +219,18 @@ describe('ServerViewerRoutes data endpoints', () => {
     expect(secondPage.hasMore).toBe(false);
   });
 
+  it('refuses a page size past the ceiling, naming it, instead of clamping', async () => {
+    await startServer();
+    for (const path of ['/api/observations?limit=101', '/api/summaries?limit=101', '/api/sessions?limit=101', '/api/observations?limit=0']) {
+      const res = await get(path, teamKey);
+      expect(res.status).toBe(400);
+      const body = await res.json() as { error: string; message: string };
+      expect(body.error).toBe('BadRequest');
+      expect(body.message).toContain('100');
+    }
+    expect((await get('/api/observations?limit=100', teamKey)).status).toBe(200);
+  });
+
   it('serves summaries, sessions, the project catalog and processing status', async () => {
     await startServer();
     const summaries = await (await get('/api/summaries', teamKey)).json() as { items: Array<Record<string, unknown>> };

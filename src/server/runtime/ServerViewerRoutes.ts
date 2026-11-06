@@ -57,9 +57,19 @@ if (resolvedViewerHtmlPath) {
   });
 }
 
-const DEFAULT_PAGE_SIZE = 50;
-const MAX_FEED_PAGE_SIZE = 200;
-const MAX_SESSION_PAGE_SIZE = 100;
+// Page sizes. The defaults are what the viewer itself asks for, so a call
+// without `limit` pages exactly like the viewer: 50 is PAGINATION_PAGE_SIZE in
+// src/ui/viewer/constants/ui.ts, 100 is SESSION_CATALOG_PAGE_SIZE in
+// src/ui/viewer/hooks/useSessionCatalog.ts. The ceiling is the worker's cap on
+// the same feed routes (parsePaginationParams in
+// src/services/worker/http/routes/DataRoutes.ts). A `limit` past it answers
+// 400 naming the ceiling; it is never clamped silently.
+const FEED_PAGE_SIZE = 50;
+const SESSION_PAGE_SIZE = 100;
+const MAX_PAGE_SIZE = 100;
+// Reverse proxies end an upstream response that stays silent past their read
+// timeout; nginx's proxy_read_timeout defaults to 60 s. A comment every 15 s
+// keeps the stream open through that with three missed keepalives to spare.
 export const STREAM_KEEPALIVE_MS = 15_000;
 
 // The viewer groups by the folder label hooks attach (`metadata.project`), not
@@ -193,7 +203,8 @@ export class ServerViewerRoutes implements RouteHandler {
     app.get('/api/observations', read, this.handle(async (req, res) => {
       const scope = this.scopeOf(req, res);
       if (!scope) return;
-      const page = parsePage(req, MAX_FEED_PAGE_SIZE);
+      const page = parsePage(req, res, FEED_PAGE_SIZE);
+      if (!page) return;
       const rows = await queryFeed(pool, scope, req, page, { summaries: false });
       res.json(toPage(rows, page.limit, toViewerObservation));
     }));
@@ -201,7 +212,8 @@ export class ServerViewerRoutes implements RouteHandler {
     app.get('/api/summaries', read, this.handle(async (req, res) => {
       const scope = this.scopeOf(req, res);
       if (!scope) return;
-      const page = parsePage(req, MAX_FEED_PAGE_SIZE);
+      const page = parsePage(req, res, FEED_PAGE_SIZE);
+      if (!page) return;
       const rows = await queryFeed(pool, scope, req, page, { summaries: true });
       res.json(toPage(rows, page.limit, toViewerSummary));
     }));
@@ -209,7 +221,8 @@ export class ServerViewerRoutes implements RouteHandler {
     app.get('/api/sessions', read, this.handle(async (req, res) => {
       const scope = this.scopeOf(req, res);
       if (!scope) return;
-      const page = parsePage(req, MAX_SESSION_PAGE_SIZE);
+      const page = parsePage(req, res, SESSION_PAGE_SIZE);
+      if (!page) return;
       const rows = await querySessions(pool, scope, req, page);
       const { items, hasMore } = toPage(rows, page.limit, toViewerSession);
       res.json({ sessions: items, hasMore });
@@ -283,10 +296,14 @@ interface Page {
   offset: number;
 }
 
-function parsePage(req: Request, maxLimit: number): Page {
-  const limit = parseNonNegativeInt(req.query.limit) ?? DEFAULT_PAGE_SIZE;
-  const offset = parseNonNegativeInt(req.query.offset) ?? 0;
-  return { limit: Math.min(Math.max(limit, 1), maxLimit), offset };
+/** Reads `limit`/`offset`, or answers 400 and returns null when `limit` is outside 1..MAX_PAGE_SIZE. */
+function parsePage(req: Request, res: Response, defaultLimit: number): Page | null {
+  const limit = req.query.limit === undefined ? defaultLimit : parseNonNegativeInt(req.query.limit);
+  if (limit === null || limit < 1 || limit > MAX_PAGE_SIZE) {
+    res.status(400).json({ error: 'BadRequest', message: `limit must be an integer from 1 to ${MAX_PAGE_SIZE}` });
+    return null;
+  }
+  return { limit, offset: parseNonNegativeInt(req.query.offset) ?? 0 };
 }
 
 function parseNonNegativeInt(value: unknown): number | null {
