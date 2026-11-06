@@ -213,6 +213,72 @@ export function captureOnlyLinkWrites(
 }
 
 /**
+ * docs/media-contract-v1.md, "Capture-only linkage", a turn that attributed
+ * image events and stored no observation: its events' retained images link as
+ * `uninspected` to the most recent observation already stored for the same
+ * session and prompt. With none yet, the events wait (carry_prompt_number) for
+ * the next turn of that session and prompt that stores any. Runs inside the
+ * caller's savepoint, so a failed write leaves nothing waiting.
+ */
+export function skippedTurnCaptureOnlyLinkWrites(
+  db: Database,
+  sessionDbId: number,
+  promptNumber: number,
+  eventKeys: readonly string[],
+): ObservationLinkWrite[] {
+  if (eventKeys.length === 0) return [];
+  // Highest id = last stored. The join resolves the session's registered
+  // memory session id, the one its observation rows carry.
+  const latest = db.prepare(`SELECT o.id FROM observations o
+    JOIN sdk_sessions s ON s.memory_session_id = o.memory_session_id
+    WHERE s.id = ? AND o.prompt_number = ?
+    ORDER BY o.id DESC LIMIT 1`).get(sessionDbId, promptNumber) as { id: number } | null;
+  if (latest) return captureOnlyLinkWrites(db, eventKeys, [latest.id], []);
+  const waitStatement = db.prepare(`UPDATE media_events SET carry_prompt_number = ?
+    WHERE event_key = ? AND session_db_id = ? AND state = 'retained'`);
+  for (const eventKey of new Set(eventKeys)) waitStatement.run(promptNumber, eventKey, sessionDbId);
+  return [];
+}
+
+/**
+ * The storing-turn half of the rule above: events of this session and prompt
+ * that are waiting link to every observation this turn stored, ahead of the
+ * turn's own refs (event order, then label order), and stop waiting. Returns
+ * the turn's writes unchanged when nothing waits. Runs inside the caller's
+ * savepoint, so a failed write leaves the events waiting.
+ */
+export function withWaitingCaptureOnlyLinkWrites(
+  db: Database,
+  sessionDbId: number,
+  promptNumber: number,
+  observationIds: readonly number[],
+  insertedObservationIds: readonly number[],
+  turnWrites: readonly ObservationLinkWrite[],
+): ObservationLinkWrite[] {
+  if (observationIds.length === 0) return [...turnWrites];
+  const waiting = (db.prepare(`SELECT event_key FROM media_events
+    WHERE session_db_id = ? AND carry_prompt_number = ? AND state = 'retained'
+    ORDER BY created_at, rowid`).all(sessionDbId, promptNumber) as Array<{ event_key: string }>).map(row => row.event_key);
+  if (waiting.length === 0) return [...turnWrites];
+  db.prepare('UPDATE media_events SET carry_prompt_number = NULL WHERE session_db_id = ? AND carry_prompt_number = ?')
+    .run(sessionDbId, promptNumber);
+
+  const writes = new Map<number, ObservationLinkWrite>();
+  for (const write of captureOnlyLinkWrites(db, waiting, observationIds, insertedObservationIds)) writes.set(write.observationId, write);
+  for (const write of turnWrites) {
+    const earlier = writes.get(write.observationId);
+    writes.set(write.observationId, earlier ? { ...earlier, refs: [...earlier.refs, ...write.refs] } : write);
+  }
+  return [...writes.values()];
+}
+
+/** True when a session and prompt has image events waiting for its next storing turn. */
+export function hasWaitingCaptureOnlyEvents(db: Database, sessionDbId: number, promptNumber: number): boolean {
+  return db.prepare(`SELECT 1 FROM media_events
+    WHERE session_db_id = ? AND carry_prompt_number = ? AND state = 'retained' LIMIT 1`).get(sessionDbId, promptNumber) !== null;
+}
+
+/**
  * Record each source event's text outcome and its observation rows. A stored
  * result is never downgraded to skipped. Runs in the same transaction as the
  * observation write, before the RAM batch is confirmed.

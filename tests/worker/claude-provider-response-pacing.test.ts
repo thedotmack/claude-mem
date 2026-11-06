@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
 import codeMode from '../../plugin/modes/code.json';
 import type { ActiveSession } from '../../src/services/worker-types.js';
+import { sessionDbWithoutMedia } from '../fixtures/worker/session-db-without-media.js';
 
 // #4066: the Claude feed claimed and yielded a whole backlog before the model
 // answered anything, so the generation budget tripped on unanswered prompts and
@@ -215,7 +216,7 @@ function createHarness(backlog: number, payloadChars = 200) {
   const dbManager = {
     getSessionById: () => ({ project: 'observer-project', memory_session_id: null }),
     getSessionStore: () => ({
-      ensureMemorySessionIdRegistered: (_id: number, memoryId: string) => memoryId,
+      db: sessionDbWithoutMedia(), ensureMemorySessionIdRegistered: (_id: number, memoryId: string) => memoryId,
       updateMemorySessionId: () => {},
       storeObservations: (_memoryId: string, _project: string, observations: unknown[]) => {
         storedObservations.push(observations);

@@ -35,7 +35,7 @@ import { telemetryBuffer } from '../../telemetry/buffer.js';
 import { logChromaWriteFailure } from '../search/errors.js';
 import { linkAttachmentRefs, type ResponseMediaContext } from '../../media/inference.js';
 import { observationMediaFromMetadata } from '../../media/feed.js';
-import { captureOnlyLinkWrites, writeMediaEventResults, writeObservationMediaLinks, type MediaLinkageWriteResult, type ObservationLinkWrite } from '../../media/linkage.js';
+import { captureOnlyLinkWrites, hasWaitingCaptureOnlyEvents, skippedTurnCaptureOnlyLinkWrites, withWaitingCaptureOnlyLinkWrites, writeMediaEventResults, writeObservationMediaLinks, type MediaLinkageWriteResult, type ObservationLinkWrite } from '../../media/linkage.js';
 import type { Database } from 'bun:sqlite';
 
 type ObservationFileEvidenceMessage = Pick<PendingMessage, 'type' | 'tool_name' | 'tool_input'>;
@@ -335,14 +335,28 @@ function errorCode(error: unknown): string {
 
 /**
  * Record a confirmed-without-storage outcome (skip, dropped batch) on the
- * turn's source events before the batch is confirmed. A failure propagates,
- * so the batch is not confirmed with its events still unprocessed (a replay
- * would otherwise re-queue them).
+ * turn's source events before the batch is confirmed, and hand the turn's
+ * images on within its prompt (capture-only linkage, a turn that stored no
+ * observation). A failure of the outcome write propagates, so the batch is not
+ * confirmed with its events still unprocessed (a replay would otherwise
+ * re-queue them); a failed link write only degrades the images to event-level.
  */
-function recordSkippedMediaEvents(dbManager: DatabaseManager, keys: TurnMediaEventKeys): void {
+function recordSkippedMediaEvents(dbManager: DatabaseManager, keys: TurnMediaEventKeys, sessionDbId: number, promptNumber: number): void {
   if (!hasMediaEvents(keys)) return;
   const db = dbManager.getSessionStore().db;
-  db.transaction(() => writeMediaEventResults(db, [...keys.attributed, ...keys.unattributed], 'skipped', []))();
+  const linkResult = db.transaction(() => {
+    writeMediaEventResults(db, [...keys.attributed, ...keys.unattributed], 'skipped', []);
+    if (keys.attributed.length === 0) return null;
+    return writeLinksInSavepoint(db, sessionDbId, () =>
+      skippedTurnCaptureOnlyLinkWrites(db, sessionDbId, promptNumber, keys.attributed));
+  })();
+  if (!linkResult) return;
+  logger.info('DB', 'Observation media linked capture-only (uninspected) from a turn that stored no observation', {
+    sessionId: sessionDbId,
+    changedRows: linkResult.changedNativeRows.length,
+    eventLevelRefs: linkResult.eventLevelRefs,
+  });
+  if (linkResult.changedNativeRows.length > 0) dbManager.getCloudSync()?.notify();
 }
 
 /**
@@ -359,34 +373,52 @@ function commitTurnMediaLinkage(
   media: ResponseMediaContext | undefined,
   keys: TurnMediaEventKeys,
   sessionDbId: number,
+  promptNumber: number,
 ): MediaLinkageWriteResult | null {
   writeMediaEventResults(db, keys.attributed, stored.observationIds.length > 0 ? 'stored' : 'skipped', stored.observationIds);
   writeMediaEventResults(db, keys.unattributed, 'skipped', []);
+  if (stored.observationIds.length === 0) {
+    // Capture-only linkage, a turn that stored no observation: its images go
+    // to the prompt's most recent observation, or wait for its next one.
+    if (keys.attributed.length === 0) return null;
+    return writeLinksInSavepoint(db, sessionDbId, () =>
+      skippedTurnCaptureOnlyLinkWrites(db, sessionDbId, promptNumber, keys.attributed));
+  }
+  const inserted = stored.insertedObservationIds ?? [];
+  return writeLinksInSavepoint(db, sessionDbId, () => withWaitingCaptureOnlyLinkWrites(
+    db, sessionDbId, promptNumber, stored.observationIds, inserted, turnLinkWrites(db, stored, storedLinks, media, keys)));
+}
+
+/** This turn's own links: capture-only when the request carried none of its images, else the model's labels. */
+function turnLinkWrites(
+  db: Database,
+  stored: StorageResult,
+  storedLinks: string[][],
+  media: ResponseMediaContext | undefined,
+  keys: TurnMediaEventKeys,
+): ObservationLinkWrite[] {
   if (!media?.imagesDelivered) {
     // Capture-only linkage (docs/media-contract-v1.md): the request carried
     // none of the turn's images, so every stored observation links every
     // retained image of the attributed events as uninspected.
-    if (keys.attributed.length === 0 || stored.observationIds.length === 0) return null;
-    return writeLinksInSavepoint(db, sessionDbId, () =>
-      captureOnlyLinkWrites(db, keys.attributed, stored.observationIds, stored.insertedObservationIds ?? []));
+    if (keys.attributed.length === 0) return [];
+    return captureOnlyLinkWrites(db, keys.attributed, stored.observationIds, stored.insertedObservationIds ?? []);
   }
-  return writeLinksInSavepoint(db, sessionDbId, () => {
-    const imageByRequestLabel = new Map(media.images.map(image => [image.requestLabel, image]));
-    const inserted = new Set(stored.insertedObservationIds ?? []);
-    const writes = new Map<number, ObservationLinkWrite>();
-    storedLinks.forEach((requestLabels, index) => {
-      const observationId = stored.observationIds[index];
-      if (observationId === undefined || requestLabels.length === 0) return;
-      const write = writes.get(observationId) ?? { observationId, insertedThisTurn: inserted.has(observationId), refs: [] };
-      for (const requestLabel of requestLabels) {
-        const image = imageByRequestLabel.get(requestLabel);
-        if (!image || write.refs.some(ref => ref.id === image.attachmentId)) continue;
-        write.refs.push({ id: image.attachmentId, label: image.eventLabel, inspection: 'inspected', eventKey: image.eventKey });
-      }
-      writes.set(observationId, write);
-    });
-    return [...writes.values()];
+  const imageByRequestLabel = new Map(media.images.map(image => [image.requestLabel, image]));
+  const inserted = new Set(stored.insertedObservationIds ?? []);
+  const writes = new Map<number, ObservationLinkWrite>();
+  storedLinks.forEach((requestLabels, index) => {
+    const observationId = stored.observationIds[index];
+    if (observationId === undefined || requestLabels.length === 0) return;
+    const write = writes.get(observationId) ?? { observationId, insertedThisTurn: inserted.has(observationId), refs: [] };
+    for (const requestLabel of requestLabels) {
+      const image = imageByRequestLabel.get(requestLabel);
+      if (!image || write.refs.some(ref => ref.id === image.attachmentId)) continue;
+      write.refs.push({ id: image.attachmentId, label: image.eventLabel, inspection: 'inspected', eventKey: image.eventKey });
+    }
+    writes.set(observationId, write);
   });
+  return [...writes.values()];
 }
 
 /** The manifest and junction writes in a savepoint of the storage transaction; a failure degrades the images to event-level. */
@@ -396,7 +428,10 @@ function writeLinksInSavepoint(
   buildWrites: () => ObservationLinkWrite[],
 ): MediaLinkageWriteResult | null {
   try {
-    return db.transaction(() => writeObservationMediaLinks(db, buildWrites()))();
+    return db.transaction(() => {
+      const writes = buildWrites();
+      return writes.length === 0 ? null : writeObservationMediaLinks(db, writes);
+    })();
   } catch (error) {
     logger.error('DB', 'Observation media links were not written; images stay event-level and uninspected', {
       sessionId: sessionDbId,
@@ -768,7 +803,7 @@ export async function processAgentResponse(
         ...replyDiagnostics,
       });
       recordObserverFailure(providerName, `The observer answered a queued batch twice without observation XML (${outputClass}); the batch was dropped`);
-      recordSkippedMediaEvents(dbManager, turnMediaEventKeys(context, sessionManager, session.sessionDbId));
+      recordSkippedMediaEvents(dbManager, turnMediaEventKeys(context, sessionManager, session.sessionDbId), session.sessionDbId, context.promptNumber);
     } else {
       logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response to a prompt with no queued batch`, {
         sessionId: session.sessionDbId,
@@ -826,7 +861,7 @@ export async function processAgentResponse(
     // same batch, for the same final answer, until the id appeared.
     if (parsed.summary?.skipped) {
       session.lastSummaryStored = false;
-      recordSkippedMediaEvents(dbManager, turnMediaEventKeys(context, sessionManager, session.sessionDbId));
+      recordSkippedMediaEvents(dbManager, turnMediaEventKeys(context, sessionManager, session.sessionDbId), session.sessionDbId, context.promptNumber);
       await sessionManager.confirmClaimedMessages(session.sessionDbId);
       session.earliestPendingTimestamp = null;
       worker?.broadcastProcessingStatus?.();
@@ -878,7 +913,8 @@ export async function processAgentResponse(
   // skipped row in the middle would shift every later id onto the wrong one.
   // Attachment refs are resolved against the labels frozen when the request
   // was sent, and only when that accepted request carried the pixels. A
-  // text-only turn, skip or fallback links nothing.
+  // text-only turn or fallback gets capture-only links instead, and a turn
+  // that stores nothing hands its images on within its prompt.
   const mediaEventKeys = turnMediaEventKeys(context, sessionManager, session.sessionDbId);
   const attachmentLinkage = context.media?.imagesDelivered
     ? linkAttachmentRefs(sanitizedObservations, context.media.images.map(image => ({ label: image.requestLabel, event: image.eventOrdinal })))
@@ -912,7 +948,12 @@ export async function processAgentResponse(
       originalTimestamp ?? undefined,
       modelId
     );
-    if (!hasMediaEvents(mediaEventKeys)) {
+    // Events a skipped turn of this prompt left waiting link to this turn's
+    // observations even when the turn has no images of its own.
+    const linksMedia = hasMediaEvents(mediaEventKeys)
+      || (labeledObservations.length > 0
+        && hasWaitingCaptureOnlyEvents(sessionStore.db, session.sessionDbId, context.promptNumber));
+    if (!linksMedia) {
       result = storeTurn();
     } else {
       // Observation rows, manifests, junctions and the durable event result
@@ -921,7 +962,7 @@ export async function processAgentResponse(
         const stored = storeTurn();
         mediaLinkResult = commitTurnMediaLinkage(
           sessionStore.db, stored, storableEntries.map(entry => entry.requestLabels),
-          context.media, mediaEventKeys, session.sessionDbId,
+          context.media, mediaEventKeys, session.sessionDbId, context.promptNumber,
         );
         return stored;
       })();
