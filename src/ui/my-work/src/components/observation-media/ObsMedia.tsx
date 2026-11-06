@@ -13,6 +13,9 @@
 //     takes the request's `count` and the strip takes `total` and `onMore`
 //     ("+N" opens the drawer that holds every image).
 //   - "pending" copy says processing, not uploading.
+//   - The open image is tracked by id, so a live update that shrinks the
+//     list closes the gallery instead of crashing it; thumbnail and full-image
+//     load failures are kept apart, and a failed image offers "Try again".
 //   MediaCountBadge  — image count on a rail card (no network).
 //   ObsMediaStrip    — selected-observation face: bounded thumbnail strip
 //                      (THUMBNAIL_LIMIT, then "+N"), per-image state and
@@ -165,18 +168,45 @@ export function ObsMediaStrip({ media, title, total, onMore }: { media?: VMedia;
   const source = useContext(MediaSourceContext);
   const refs = media?.attachments ?? NO_REFS;
   const statuses = useMediaStates(refs);
-  const [brokenIds, setBrokenIds] = useState<Set<string>>(() => new Set());
-  const [openIndex, setOpenIndex] = useState<number | null>(null);
+  // Load failures per variant: a broken thumbnail must not hide a readable full image (and the reverse).
+  const [brokenThumbnails, setBrokenThumbnails] = useState<Set<string>>(() => new Set());
+  const [brokenImages, setBrokenImages] = useState<Set<string>>(() => new Set());
+  // Bumped by Retry so every <img> remounts and asks the worker again.
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  // The open image is tracked by id, not position: a live update can shrink or reorder `refs` while it is open.
+  const [openId, setOpenId] = useState<string | null>(null);
   const lastTrigger = useRef<HTMLElement | null>(null);
   const [portalRoot, setPortalRoot] = useState<Element | null>(null);
 
-  const markBroken = useCallback((id: string) => {
-    setBrokenIds((previous) => (previous.has(id) ? previous : new Set(previous).add(id)));
+  const markThumbnailBroken = useCallback((id: string) => {
+    setBrokenThumbnails((previous) => (previous.has(id) ? previous : new Set(previous).add(id)));
+  }, []);
+  const markImageBroken = useCallback((id: string) => {
+    setBrokenImages((previous) => (previous.has(id) ? previous : new Set(previous).add(id)));
+  }, []);
+  const retry = useCallback((id: string) => {
+    const without = (previous: Set<string>) => {
+      if (!previous.has(id)) return previous;
+      const next = new Set(previous);
+      next.delete(id);
+      return next;
+    };
+    setBrokenThumbnails(without);
+    setBrokenImages(without);
+    setLoadAttempt((attempt) => attempt + 1);
   }, []);
 
+  const openIndex = openId === null ? -1 : refs.findIndex((ref) => ref.id === openId);
+  // The open image left the list (a live update): close the gallery rather than show another image or crash.
+  useEffect(() => {
+    if (openId !== null && openIndex < 0) setOpenId(null);
+  }, [openId, openIndex]);
+
   if (refs.length === 0) return null;
-  const stateOf = (ref: VMediaRef): MediaDisplayState =>
-    displayState(statuses.map.get(ref.id), statuses.failed, brokenIds.has(ref.id));
+  const thumbnailStateOf = (ref: VMediaRef): MediaDisplayState =>
+    displayState(statuses.map.get(ref.id), statuses.failed, brokenThumbnails.has(ref.id));
+  const imageStateOf = (ref: VMediaRef): MediaDisplayState =>
+    displayState(statuses.map.get(ref.id), statuses.failed, brokenImages.has(ref.id));
   const visible = refs.slice(0, THUMBNAIL_LIMIT);
   const count = Math.max(total ?? refs.length, refs.length);
   const partial = count > refs.length;
@@ -191,10 +221,10 @@ export function ObsMediaStrip({ media, title, total, onMore }: { media?: VMedia;
     // and pulls focus back in. Elsewhere it renders at document.body, outside
     // any card that clips.
     setPortalRoot(trigger.closest('[data-slot="sheet-content"]') ?? document.body);
-    setOpenIndex(index);
+    setOpenId(refs[index].id);
   };
   const close = () => {
-    setOpenIndex(null);
+    setOpenId(null);
     // Restore focus to whatever opened the gallery.
     window.requestAnimationFrame(() => lastTrigger.current?.focus());
   };
@@ -210,7 +240,7 @@ export function ObsMediaStrip({ media, title, total, onMore }: { media?: VMedia;
       </div>
       <div className="obs-media-strip">
         {visible.map((ref, index) => {
-          const state = stateOf(ref);
+          const state = thumbnailStateOf(ref);
           return (
             <button
               key={ref.id}
@@ -222,11 +252,12 @@ export function ObsMediaStrip({ media, title, total, onMore }: { media?: VMedia;
             >
               {state === 'ready' ? (
                 <img
+                  key={loadAttempt}
                   src={source.thumbnailUrl(ref.id)}
                   alt={altText(ref, index, refs.length, title)}
                   loading="lazy"
                   decoding="async"
-                  onError={() => markBroken(ref.id)}
+                  onError={() => markThumbnailBroken(ref.id)}
                 />
               ) : (
                 <span className="obs-media-state">{STATE_COPY[state]}</span>
@@ -246,14 +277,16 @@ export function ObsMediaStrip({ media, title, total, onMore }: { media?: VMedia;
           </button>
         )}
       </div>
-      {openIndex !== null && portalRoot && createPortal(
+      {openIndex >= 0 && portalRoot && createPortal(
         <MediaGallery
           refs={refs}
           index={openIndex}
           title={title}
-          stateOf={stateOf}
-          onBroken={markBroken}
-          onIndex={setOpenIndex}
+          stateOf={imageStateOf}
+          loadAttempt={loadAttempt}
+          onBroken={markImageBroken}
+          onRetry={retry}
+          onIndex={(index) => setOpenId(refs[index].id)}
           onClose={close}
         />,
         portalRoot,
@@ -267,7 +300,9 @@ function MediaGallery({
   index,
   title,
   stateOf,
+  loadAttempt,
   onBroken,
+  onRetry,
   onIndex,
   onClose,
 }: {
@@ -275,7 +310,10 @@ function MediaGallery({
   index: number;
   title: string;
   stateOf: (ref: VMediaRef) => MediaDisplayState;
+  loadAttempt: number;
   onBroken: (id: string) => void;
+  /** Clears this image's load failures and asks the worker for its bytes again. */
+  onRetry: (id: string) => void;
   onIndex: (index: number) => void;
   onClose: () => void;
 }) {
@@ -353,9 +391,14 @@ function MediaGallery({
             </button>
           )}
           {state === 'ready' ? (
-            <img key={ref.id} src={source.imageUrl(ref.id)} alt={altText(ref, index, refs.length, title)} onError={() => onBroken(ref.id)} />
+            <img key={`${ref.id}:${loadAttempt}`} src={source.imageUrl(ref.id)} alt={altText(ref, index, refs.length, title)} onError={() => onBroken(ref.id)} />
           ) : (
-            <p className="obs-media-gallerystate" role="status">{STATE_COPY[state]}{state === 'pending' ? ' — the image is still being converted or downloaded.' : state === 'deleted' ? ' — this image was deleted.' : state === 'rejected' ? ' — the image could not be stored (unsupported, out of bounds, or conversion failed).' : state === 'failed' ? ' — the image could not be loaded or verified.' : state === 'unavailable' ? ' — image status could not be resolved.' : ''}</p>
+            <div className="obs-media-gallerystate">
+              <p role="status">{STATE_COPY[state]}{state === 'pending' ? ' — the image is still being converted or downloaded.' : state === 'deleted' ? ' — this image was deleted.' : state === 'rejected' ? ' — the image could not be stored (unsupported, out of bounds, or conversion failed).' : state === 'failed' ? ' — the image could not be loaded or verified.' : state === 'unavailable' ? ' — image status could not be resolved.' : ''}</p>
+              {state === 'failed' && (
+                <button type="button" className="obs-media-galleryretry" onClick={() => onRetry(ref.id)}>Try again</button>
+              )}
+            </div>
           )}
           {refs.length > 1 && (
             <button type="button" className="obs-media-gallerynav is-next" onClick={() => onIndex((index + 1) % refs.length)} aria-label="Next image">

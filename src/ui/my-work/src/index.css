@@ -477,6 +477,17 @@
   display: block;
 }
 .obs-media-gallerystate { margin: 0; padding: 24px; font-size: 13px; color: var(--muted-foreground); text-align: center; }
+.obs-media-gallerystate p { margin: 0; }
+.obs-media-galleryretry {
+  margin-top: 12px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--foreground);
+  font: inherit;
+  cursor: pointer;
+}
 .obs-media-gallerydetails {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
