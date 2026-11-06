@@ -3290,23 +3290,60 @@ var init_media_contract = __esm({
   "src/shared/media-contract.ts"() {
     "use strict";
     MEDIA_LIMITS = Object.freeze({
+      // Abuse protection: caps one event at 4 stored images (about 13 MiB) and one
+      // observer turn at 4 derivatives (maxGatewayImageBytes).
       maxImagesPerEvent: 4,
+      // Provider maximum: Vercel Functions take request bodies up to 4.5 MB; this
+      // plus maxUploadBodyBytes' multipart overhead (3.06 MiB, 3.2 MB) fits.
       maxSourceBytes: 3 * 1024 * 1024,
+      // Same bound for the stored full-size copy: a lossless re-encode of an accepted
+      // source must still fit, and a stored copy is served back in one Vercel
+      // response, also limited to 4.5 MB.
       maxCanonicalBytes: 3 * 1024 * 1024,
+      // Abuse protection (decompression bombs): a decode holds about 4 bytes per
+      // pixel, so at most about 96 MB. A 6016x3384 display (20.4 million px) fits.
       maxPixels: 24e6,
+      // Abuse protection: bounds long thin images that pass maxPixels. An 8K
+      // display (7680 px wide) fits.
       maxDimension: 8192,
+      // Abuse protection: one conversion holds a shared instance's CPU. The upload
+      // route's 59 s maxDuration fits this plus two 20 s Storage writes.
       conversionTimeoutSeconds: 5,
+      // Abuse protection: instances serve concurrent requests, so one decode of up
+      // to about 96 MB runs at a time; others fail fast as conversion_busy and retry.
       maxConcurrentConversions: 1,
+      // Abuse protection on what a model is sent: 4 of these make the 1 MiB
+      // maxGatewayImageBytes.
       maxDerivativeBytes: 256 * 1024,
+      // Provider maximum: Anthropic downscales images whose long edge is above
+      // 1,568 px (standard tier, platform.claude.com/docs/en/build-with-claude/vision),
+      // so pixels beyond that cost tokens and add nothing.
       maxDerivativeDimension: 1536,
+      // One largest source as base64 (3 MiB x 4/3 = 4 MiB), so the local event JSON
+      // stays under its existing 5 MB cap.
       maxInlineEncodedBytes: 4 * 1024 * 1024,
+      // Abuse protection: metadata.cmem_media_v1 syncs to every device; 32 refs of
+      // about 120 bytes each stay inside maxManifestBytes.
       maxObservationRefs: 32,
+      // Abuse protection: labels are generated (event1_image1); 64 leaves room and
+      // keeps a ref small.
       maxLabelChars: 64,
+      // Abuse protection: bounds one manifest; 32 refs need about 4 KiB.
       maxManifestBytes: 8192,
+      // Abuse protection: bounds the private provenance row; its largest part is
+      // the 4096-character locator.
       maxProvenanceBytes: 8192,
+      // Operating-system maximum: PATH_MAX is 4096 on Linux (1024 on macOS).
       maxSourceLocatorChars: 4096,
+      // maxImagesPerEvent x maxDerivativeBytes: the most one observer turn can send.
       maxGatewayImageBytes: 4 * 256 * 1024,
+      // maxSourceBytes plus 64 KiB for the manifest (8 KiB at most) and multipart
+      // headers; still under Vercel's 4.5 MB request body maximum.
       maxUploadBodyBytes: 3 * 1024 * 1024 + 64 * 1024,
+      // Cost and abuse protection: past the Pro plan's 100 GB, Supabase Storage costs
+      // $0.0213 per GB a month (supabase.com/docs/guides/platform/manage-your-usage/
+      // storage-size, read 2026-11-05), so a full owner (0.27 GB) costs about $0.006 a month.
+      // Not a cap the owner set; uploads past it answer 413 quota_exceeded.
       ownerQuotaBytes: 256 * 1024 * 1024
     });
   }
