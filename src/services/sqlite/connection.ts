@@ -1,7 +1,4 @@
 import { Database } from 'bun:sqlite';
-import { copyFileSync, existsSync, mkdtempSync, rmSync } from 'fs';
-import { tmpdir } from 'os';
-import { basename, join } from 'path';
 import { logger } from '../../utils/logger.js';
 
 export const SQLITE_BUSY_TIMEOUT_MS = 5000;
@@ -188,27 +185,20 @@ function probeReaderDatabase(db: Database): Database {
  * Open a database for a reader that must never write to it: the context
  * read worker and context generation (#5429).
  *
- * A read-only open of a WAL database needs the wal-index (-shm file): when
- * it is absent and this process cannot establish it for a read-only
- * handle, every read fails with "unable to open database file" even though
- * the database itself is healthy and the writer in the same process is
- * working. The ladder below keeps the read-only handle on the healthy
- * path and only falls back when that open has already failed:
+ * A read-only handle cannot create the -wal or the wal-index (-shm) of a
+ * WAL database. When they are missing, every read fails with "unable to
+ * open database file" even though the database itself is healthy and the
+ * writer in the same process is working. So:
  *
- * 1. Read-only, exactly as before.
- * 2. A short-lived read-write open can establish (or rebuild) the
- *    wal-index where a read-only one cannot. Hold it while retrying the
- *    read-only open, so the handle the caller reads from is still
- *    read-only; the read-write handle is closed before this returns.
- * 3. When the index cannot be established in place at all (for example
- *    the data directory is not writable by this process), read a snapshot
- *    copy instead. The -wal is copied alongside the database, so opening
- *    the copy replays it and the reader sees committed frames the last
- *    checkpoint has not reached. The copy lives in a temp directory that
- *    the handle's close() removes; writes to it go nowhere.
+ * 1. Open read-only, exactly as before.
+ * 2. If that fails, a short-lived read-write open creates the -wal and the
+ *    wal-index. Hold it while retrying the read-only open, so the handle
+ *    the caller reads from is still read-only; the read-write handle is
+ *    closed before this returns.
  *
- * When every step fails — a missing or corrupt database — the original
- * read-only error is rethrown, so callers see the same failure as before.
+ * When the read-write open cannot help either (a missing or corrupt
+ * database, or a data directory this process cannot write), the original
+ * read-only error is rethrown, so callers fail the way they did before.
  */
 export function openReaderDatabase(dbPath: string): Database {
   let readonlyError: unknown;
@@ -222,35 +212,16 @@ export function openReaderDatabase(dbPath: string): Database {
     const establish = new Database(dbPath, { readwrite: true, create: false });
     try {
       probeReaderDatabase(establish);
-      return probeReaderDatabase(new Database(dbPath, { readonly: true, create: false }));
+      const reader = probeReaderDatabase(new Database(dbPath, { readonly: true, create: false }));
+      logger.warn('DB', 'Read-only open failed until a read-write open created the -wal and wal-index (#5429)', { dbPath },
+        readonlyError instanceof Error ? readonlyError : new Error(String(readonlyError)));
+      return reader;
     } finally {
       establish.close();
     }
-  } catch {
-    // The wal-index cannot be established in place either; try a snapshot.
-  }
-
-  let snapshotDir: string | null = null;
-  try {
-    snapshotDir = mkdtempSync(join(tmpdir(), 'claude-mem-reader-'));
-    const snapshotPath = join(snapshotDir, basename(dbPath));
-    copyFileSync(dbPath, snapshotPath);
-    if (existsSync(`${dbPath}-wal`)) {
-      copyFileSync(`${dbPath}-wal`, `${snapshotPath}-wal`);
-    }
-    const db = probeReaderDatabase(new Database(snapshotPath, { readwrite: true, create: false }));
-    const close = db.close.bind(db);
-    const dir = snapshotDir;
-    db.close = () => {
-      try {
-        close();
-      } finally {
-        rmSync(dir, { recursive: true, force: true });
-      }
-    };
-    return db;
-  } catch {
-    if (snapshotDir) rmSync(snapshotDir, { recursive: true, force: true });
+  } catch (establishError) {
+    logger.warn('DB', 'Read-only open failed and a read-write open could not create the -wal and wal-index (#5429)', { dbPath },
+      establishError instanceof Error ? establishError : new Error(String(establishError)));
     throw readonlyError;
   }
 }
