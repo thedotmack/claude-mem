@@ -2,10 +2,11 @@
 import { createHash } from 'crypto';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs';
 import { parseEnv } from 'util';
-import { basename } from 'path';
+import { basename, join } from 'path';
+import { ENV_PROXY_VARS } from '../supervisor/env-sanitizer.js';
 import { logger } from '../utils/logger.js';
 import { paths } from './paths.js';
-import { stripUtf8Bom } from './atomic-json.js';
+import { readJsonFileWithBom, stripUtf8Bom } from './atomic-json.js';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import type { ClaudeCredential } from './quota-cooldown.js';
 import {
@@ -234,6 +235,53 @@ export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
   }
 }
 
+/**
+ * #5400 — Claude Code applies the `env` block of
+ * `<Claude config dir>/settings.json` to its own process only. The dir is the
+ * credential profile buildIsolatedEnv resolves (CLAUDE_MEM_CLAUDE_CONFIG_DIR
+ * setting > CLAUDE_CONFIG_DIR > ~/.claude), so proxies come from the same
+ * profile the observer child runs as.
+ * The worker is started detached, so those variables are absent from
+ * process.env, and the observer CLI is spawned with `settingSources: []`, so
+ * it never reads the file either and connects directly (ECONNREFUSED).
+ *
+ * Copy proxy keys the worker does not already have. An empty string already
+ * in the worker env is left alone. Anything else in that block (API keys,
+ * CLAUDE_CODE_*) stays out: this is not a general settings-env passthrough.
+ * A missing file is the common case and changes nothing; an unparseable one
+ * is logged and changes nothing.
+ */
+function applyMissingProxyEnvFromClaudeSettings(isolatedEnv: Record<string, string>, claudeConfigDir: string): void {
+  const settingsPath = join(claudeConfigDir, 'settings.json');
+  if (!existsSync(settingsPath)) return;
+
+  let parsed: unknown;
+  try {
+    parsed = readJsonFileWithBom(settingsPath);
+  } catch (error: unknown) {
+    // Say so instead of silently spawning the observer without the proxy.
+    logger.warn('ENV', 'Could not parse Claude settings.json; its proxy env is not applied', {
+      path: settingsPath,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return;
+
+  const settingsEnv = (parsed as { env?: unknown }).env;
+  if (settingsEnv === null || typeof settingsEnv !== 'object' || Array.isArray(settingsEnv)) return;
+
+  const source = settingsEnv as Record<string, unknown>;
+  for (const key of ENV_PROXY_VARS) {
+    if (isolatedEnv[key] !== undefined) continue;
+    const value = source[key];
+    if (typeof value !== 'string') continue;
+    const trimmed = value.trim();
+    if (!trimmed) continue;
+    isolatedEnv[key] = trimmed;
+  }
+}
+
 export function buildIsolatedEnv(includeCredentials: boolean = true): Record<string, string> {
   const isolatedEnv: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
@@ -266,6 +314,8 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
   // process.env.CLAUDE_CONFIG_DIR at module load.
   const configDirSettings = SettingsDefaultsManager.loadFromFile(paths.settings());
   const { configDir, explicitConfigDir } = resolveClaudeCredentialProfile(configDirSettings.CLAUDE_MEM_CLAUDE_CONFIG_DIR);
+  // After the process.env copy, so a proxy the worker already has wins.
+  applyMissingProxyEnvFromClaudeSettings(isolatedEnv, configDir);
   if (explicitConfigDir) {
     isolatedEnv.CLAUDE_CONFIG_DIR = configDir;
   } else {

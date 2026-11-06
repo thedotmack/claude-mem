@@ -23,6 +23,12 @@ export const ENV_PROXY_VARS = new Set([
   'npm_config_proxy',
   'npm_config_https_proxy',
   'npm_config_noproxy',
+  // Node's fetch ignores HTTP(S)_PROXY until this is set (NODE_USE_ENV_PROXY=1).
+  // Claude Code applies it from user settings; the observer child does not
+  // load those settings, so the flag has to travel with the other proxy vars
+  // (#5400). The lowercase spelling matches the http_proxy family.
+  'NODE_USE_ENV_PROXY',
+  'node_use_env_proxy',
 ]);
 
 export const ENV_PRESERVE = new Set([
