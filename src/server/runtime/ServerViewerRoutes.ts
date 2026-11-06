@@ -16,17 +16,19 @@
 //
 // Access: every data endpoint requires an API key with `memories:read` (Bearer
 // or X-Api-Key) and is scoped to that key's team, and to its project when the
-// key is project-bound, exactly like /v1. Clearing the log requires a
-// `memories:write` key.
+// key is project-bound, exactly like /v1.
+//
+// The daily log (`/api/logs`, `POST /api/logs/clear`) is one file for the
+// whole server, not a per-team resource: the worker serves it loopback-only,
+// and here no tenant key may read or wipe it, so both answer 404.
 
 import express, { type Application, type Request, type Response } from 'express';
 import path from 'path';
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import type { RouteHandler } from '../../services/server/Server.js';
 import type { PostgresPool } from '../../storage/postgres/pool.js';
 import { requirePostgresServerAuth } from '../middleware/postgres-auth.js';
-import { getPackageRoot, paths } from '../../shared/paths.js';
-import { readLastLines } from '../../utils/log-tail.js';
+import { getPackageRoot } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 
 const VIEWER_HTML_CANDIDATE_PATHS: readonly string[] = (() => {
@@ -58,8 +60,6 @@ if (resolvedViewerHtmlPath) {
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_FEED_PAGE_SIZE = 200;
 const MAX_SESSION_PAGE_SIZE = 100;
-const DEFAULT_LOG_LINES = 1000;
-const MAX_LOG_LINES = 10_000;
 const STREAM_KEEPALIVE_MS = 15_000;
 
 // The viewer groups by the folder label hooks attach (`metadata.project`), not
@@ -128,10 +128,6 @@ export class ServerViewerRoutes implements RouteHandler {
     const read = requirePostgresServerAuth(pool, {
       authMode: this.options.authMode,
       requiredScopes: ['memories:read'],
-    });
-    const write = requirePostgresServerAuth(pool, {
-      authMode: this.options.authMode,
-      requiredScopes: ['memories:write'],
     });
 
     app.get('/stream', read, this.handle(async (req, res) => {
@@ -207,37 +203,17 @@ export class ServerViewerRoutes implements RouteHandler {
       res.json({ configured: false });
     });
 
-    app.get('/api/logs', read, (req: Request, res: Response) => {
-      const lines = parseLogLineCount(req.query.lines);
-      if (lines === null) {
-        res.status(400).json({ error: 'BadRequest', message: 'lines must be a nonnegative safe integer' });
-        return;
-      }
-      const logFilePath = currentLogFilePath();
-      if (!existsSync(logFilePath)) {
-        res.json({ logs: '', path: logFilePath, exists: false });
-        return;
-      }
-      const { lines: logs, totalEstimate } = readLastLines(logFilePath, Math.min(lines, MAX_LOG_LINES));
-      res.json({
-        logs,
-        path: logFilePath,
-        exists: true,
-        totalLines: totalEstimate,
-        returnedLines: logs === '' ? 0 : logs.split('\n').length,
+    // The log is server-wide, so a tenant key gets neither its content nor a
+    // way to clear it. Answered after auth so the 401 contract matches the
+    // other viewer routes; the viewer's log panel shows the 404 as an error.
+    const logUnavailable = (_req: Request, res: Response) => {
+      res.status(404).json({
+        error: 'NotFound',
+        message: 'The server log is shared across teams and is not served per API key; read it on the host',
       });
-    });
-
-    app.post('/api/logs/clear', write, (_req: Request, res: Response) => {
-      const logFilePath = currentLogFilePath();
-      if (!existsSync(logFilePath)) {
-        res.json({ success: true, message: 'Log file does not exist', path: logFilePath });
-        return;
-      }
-      writeFileSync(logFilePath, '', 'utf-8');
-      logger.info('SYSTEM', 'Log file cleared via viewer (server runtime)', { path: logFilePath });
-      res.json({ success: true, message: 'Log file cleared', path: logFilePath });
-    });
+    };
+    app.get('/api/logs', read, logUnavailable);
+    app.post('/api/logs/clear', read, logUnavailable);
   }
 
   /** Resolves the read scope, or answers 403 for a key bound to no team. */
@@ -287,11 +263,6 @@ function parseNonNegativeInt(value: unknown): number | null {
   return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
-function parseLogLineCount(value: unknown): number | null {
-  if (value === undefined) return DEFAULT_LOG_LINES;
-  return parseNonNegativeInt(value);
-}
-
 function queryString(req: Request, name: string): string | null {
   const value = req.query[name];
   return typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -307,12 +278,6 @@ function scopeClause(scope: ViewerScope, params: SqlParams, alias: string): stri
   if (scope.teamId) clause += ` AND ${alias}.team_id = ${params.add(scope.teamId)}`;
   if (scope.projectId) clause += ` AND ${alias}.project_id = ${params.add(scope.projectId)}`;
   return clause;
-}
-
-// Same log file the logger writes and the worker's LogsRoutes reads.
-function currentLogFilePath(): string {
-  const date = new Date().toISOString().split('T')[0];
-  return path.join(paths.logsDir(), `claude-mem-${date}.log`);
 }
 
 async function fetchProjectCatalog(

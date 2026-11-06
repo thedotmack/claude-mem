@@ -32,7 +32,6 @@ describe('ServerViewerRoutes data endpoints', () => {
   let baseUrl: string;
   let teamKey: string;
   let projectKey: string;
-  let readOnlyKey: string;
   let loggerSpies: ReturnType<typeof spyOn>[] = [];
 
   async function startServer(): Promise<void> {
@@ -134,7 +133,6 @@ describe('ServerViewerRoutes data endpoints', () => {
 
     teamKey = await createKey({ teamId: team.id, projectId: null, scopes: ['memories:read', 'memories:write'] });
     projectKey = await createKey({ teamId: team.id, projectId: project.id, scopes: ['memories:read'] });
-    readOnlyKey = await createKey({ teamId: team.id, projectId: null, scopes: ['memories:read'] });
   });
 
   afterEach(async () => {
@@ -246,10 +244,20 @@ describe('ServerViewerRoutes data endpoints', () => {
     expect(events[1]).toEqual({ type: 'processing_status', isProcessing: false, queueDepth: 0 });
   });
 
-  it('never clears the log without a write-scoped key', async () => {
+  // The daily log is one file for the whole server, not a per-team resource,
+  // so no tenant key may read or wipe it (the worker serves it loopback-only).
+  it('serves no log content and never clears the log, even for a write-scoped team key', async () => {
     await startServer();
     expect((await fetch(`${baseUrl}/api/logs/clear`, { method: 'POST' })).status).toBe(401);
-    const readOnly = await fetch(`${baseUrl}/api/logs/clear`, { method: 'POST', headers: { Authorization: `Bearer ${readOnlyKey}` } });
-    expect(readOnly.status).toBe(403);
+
+    const read = await get('/api/logs', teamKey);
+    expect(read.status).toBe(404);
+    const readBody = await read.json() as Record<string, unknown>;
+    expect(readBody.error).toBe('NotFound');
+    expect('logs' in readBody).toBe(false);
+
+    const clear = await fetch(`${baseUrl}/api/logs/clear`, { method: 'POST', headers: { Authorization: `Bearer ${teamKey}` } });
+    expect(clear.status).toBe(404);
+    expect(((await clear.json()) as Record<string, unknown>).success).toBeUndefined();
   });
 });

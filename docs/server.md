@@ -131,9 +131,10 @@ poison.
 
 The server serves the viewer at `/`. Its read endpoints (`/stream`,
 `/api/projects`, `/api/observations`, `/api/summaries`, `/api/sessions`,
-`/api/processing-status`, `/api/logs`) need a `memories:read` key and return
-only that key's team, or its project for a project-bound key. Clearing the
-log (`POST /api/logs/clear`) needs a `memories:write` key.
+`/api/processing-status`) need a `memories:read` key and return only that
+key's team, or its project for a project-bound key. The daily log is one
+file for the whole server, so `/api/logs` and `POST /api/logs/clear` answer
+404 for every key; read `logs/claude-mem-<date>.log` on the host instead.
 
 ## Compose stack
 
