@@ -209,6 +209,46 @@ describe('redactSensitive built-in patterns', () => {
     expect(redactSensitive(input, cfg).redacted).toBe(input);
   });
 
+  // Perplexity API keys (`pplx-` + 48 alphanumerics); split for push
+  // protection like the fixtures above.
+  const PPLX_BODY = 'aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789' + 'AbCdEfGhIjKl';
+  it.each([
+    ['perplexity_key', 'export PERPLEXITY_API_KEY=' + 'ppl' + 'x-' + PPLX_BODY + ' tail'],
+    ['perplexity_key', 'curl -H "Authorization: Bearer ' + 'ppl' + 'x-' + PPLX_BODY + '" tail'],
+    ['perplexity_key', '{"api_key":"' + 'ppl' + 'x-' + PPLX_BODY + '"} tail'],
+  ])('redacts a %s in %s', (name, input) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain(`<redacted type='${name}'/>`);
+    expect(result.redacted).toMatch(/ tail$/);
+    expect(result.redacted).not.toContain('aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789');
+    expect(Object.keys(result.counts)).toEqual([name]);
+  });
+
+  // The worker scans JSON.stringify(toolResponse), so a newline right before
+  // the key arrives as the two characters `\n`; the `n` is a word character,
+  // so a bare `\b` cannot match there and the key survived redaction.
+  it('redacts a perplexity_key printed right after a newline (worker capture path)', () => {
+    const output = `Deployment ready.\n${'ppl' + 'x-' + PPLX_BODY}`;
+    for (const text of [output, JSON.stringify({ stdout: output })]) {
+      const result = redactSensitive(text, cfg);
+      expect(result.counts.perplexity_key).toBe(1);
+      expect(result.redacted).not.toContain(PPLX_BODY);
+    }
+    const stored = redactSensitive(JSON.stringify({ stdout: output }), cfg).redacted;
+    expect(JSON.parse(stored).stdout).toBe(`Deployment ready.\n<redacted type='perplexity_key'/>`);
+  });
+
+  // Perplexity model ids share the `pplx-` prefix; their `-`/`.` separators
+  // and short bodies keep them out of the 48-alphanumeric key pattern.
+  it.each([
+    'pplx-embed-v1-4b',
+    'pplx-decider-v1.2',
+    'the pplx- prefix',
+    'pplx_' + 'aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789AbCdEfGhIjKl',
+  ])('leaves %s alone', (input) => {
+    expect(redactSensitive(input, cfg).redacted).toBe(input);
+  });
+
   // Supabase and Sentry tokens; split for push protection too.
   const SUPABASE_BODY = '0123456789abcdef0123' + '456789abcdef01234567';
   const SENTRY_USER_BODY = '0123456789abcdef0123456789abcdef' + '0123456789abcdef0123456789abcdef';
