@@ -15,7 +15,9 @@ Hermes turn nothing.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import ntpath
 import os
 import re
 import threading
@@ -228,9 +230,17 @@ def checkout_project(cwd: str) -> str:
     return key
 
 
-def default_worker_port() -> str:
-    uid = os.getuid() if hasattr(os, "getuid") else 77
-    return str(37700 + uid % 100)
+def default_worker_port(data_directory: Optional[str] = None) -> str:
+    getuid = getattr(os, "getuid", None)
+    if callable(getuid):
+        return str(37700 + getuid() % 100)
+    directory = os.path.expanduser(data_directory or data_dir())
+    if os.name == "nt" or ntpath.splitdrive(directory)[0]:
+        directory = ntpath.abspath(directory).lower()
+    else:
+        directory = os.path.abspath(directory)
+    offset = int.from_bytes(hashlib.sha256(directory.encode("utf-8")).digest()[:4], "big") % 100
+    return str(37700 + offset)
 
 
 class Config:
@@ -253,7 +263,7 @@ class Config:
     @classmethod
     def resolve(cls, environ: Optional[Dict[str, str]] = None) -> "Config":
         settings = load_settings(environ)
-        port = setting(settings, "CLAUDE_MEM_WORKER_PORT", default_worker_port(), environ)
+        port = setting(settings, "CLAUDE_MEM_WORKER_PORT", default_worker_port(data_dir(environ)), environ)
         host = setting(settings, "CLAUDE_MEM_WORKER_HOST", "127.0.0.1", environ)
         if ":" in host and not host.startswith("["):
             host = "[" + host + "]"
