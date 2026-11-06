@@ -266,6 +266,7 @@ Linkage rules, applied per accepted response. Fixture: `parser-outcomes.json`.
 - `<skip_summary/>`, an invalid response, a text-only fallback or a request
   that was not accepted marks nothing `inspected`. All of its images stay
   uninspected. Observations a text-only fallback stores get capture-only links
+  (below), and a turn that stores none hands its images on within its prompt
   (below).
 
 Rejections are recorded only as reason codes, never as label text from model
@@ -295,13 +296,46 @@ retained images as `uninspected`.
   was deleted is not linked.
 - The links need no model output. The request does not mention the images,
   and `<attachments>` is not read for them.
-- A turn that stored no observations links nothing.
 - The manifest rules below apply unchanged: union by ID, the 32-ref bound and
   overflow, inspection as the OR of both sides, replica rows left unchanged,
   and the same storage transaction. A later `inspected` link for the same ID
   upgrades the ref.
 
-Fixture: `manifest-merge.json` `capture_only_links_every_retained_image_uninspected`.
+A turn that stored no observation (`<skip_summary/>`, a reply with no storable
+observation, or a batch dropped after an unusable reply) hands its images on
+within its prompt:
+
+When a turn attributed image events and stored no observation, those events'
+retained images link as `uninspected` to the most recent observation already
+stored for the same session and prompt. If there is none yet, they link to the
+observations stored by the next turn of that session and prompt that stores
+any. If the prompt never stores an observation, they stay event-level.
+
+- This applies whether or not the turn's request carried the images: with no
+  stored observation there is no model linkage to keep.
+- The turn's events are its attributed events, chosen as above.
+- The prompt is the one the turn's request was sent for (the prompt number
+  frozen with the response context). The session is the observed session
+  (local: the same `sdk_sessions` row). An observation from another prompt,
+  even in the same session, never receives these images.
+- "Most recent" is the last observation stored for that session and prompt
+  (local: the highest `observations.id`). Only that one observation gets the
+  links. It was stored by an earlier turn, so a native row whose manifest
+  changes gets its `sync_rev` incremented, `synced_at` cleared and sync
+  notified; a replica row is left unchanged and the images stay event-level.
+- With no such observation yet, the events wait durably, surviving a worker
+  restart (local: `media_events.carry_prompt_number`). The next turn of the
+  same session and prompt that stores at least one observation links them to
+  every observation it stored, in the same storage transaction, whether or not
+  that turn has images of its own. Waiting images come first, in event order
+  then label order, followed by the turn's own refs. Once linked, an event no
+  longer waits.
+- An event deleted while it waits links nothing. A prompt that never stores an
+  observation leaves its waiting images event-level for good.
+
+Fixtures: `manifest-merge.json` `capture_only_links_every_retained_image_uninspected`,
+`capture_only_skipped_turn_links_backward_to_most_recent_observation` and
+`capture_only_skipped_turn_links_forward_before_turn_refs`.
 
 ### Capability qualification
 
@@ -344,7 +378,8 @@ deferred:
 
 - The turn is sent as today's text-only request.
 - The event's images stay retained and `uninspected`, and the turn's
-  observations get capture-only links to them.
+  observations get capture-only links to them (a turn that stores none hands
+  them on within its prompt, see "Capture-only linkage").
 - `media_events.result_state` follows the text outcome (`stored` or `skipped`).
 
 v1 never re-calls a model automatically to inspect deferred images.
