@@ -552,6 +552,16 @@ export class SessionManager {
     return this.buffer.clear(sessionDbId);
   }
 
+  /** Discard a session's buffered work for good: unlike clearPendingForSession, nothing in it can be re-enqueued. */
+  discardBufferedWork(sessionDbId: number): number {
+    const session = this.sessions.get(sessionDbId);
+    if (session) {
+      session.claimedMessageIds = [];
+      session.earliestPendingTimestamp = null;
+    }
+    return this.buffer.discardKeepingDedup(sessionDbId);
+  }
+
   async resetProcessingToPending(sessionDbId: number): Promise<number> {
     const session = this.sessions.get(sessionDbId);
     if (session) {
@@ -616,6 +626,16 @@ export class SessionManager {
       if (session.respawnTimer) {
         clearTimeout(session.respawnTimer);
         session.respawnTimer = undefined;
+      }
+
+      if (session.stallResumeTimer) {
+        clearTimeout(session.stallResumeTimer);
+        session.stallResumeTimer = undefined;
+      }
+
+      if (session.scheduledResumeTimer) {
+        clearTimeout(session.scheduledResumeTimer);
+        session.scheduledResumeTimer = undefined;
       }
 
       session.abortReason = 'shutdown';
@@ -710,6 +730,16 @@ export class SessionManager {
     if (session.respawnTimer) {
       clearTimeout(session.respawnTimer);
       session.respawnTimer = undefined;
+    }
+
+    if (session.stallResumeTimer) {
+      clearTimeout(session.stallResumeTimer);
+      session.stallResumeTimer = undefined;
+    }
+
+    if (session.scheduledResumeTimer) {
+      clearTimeout(session.scheduledResumeTimer);
+      session.scheduledResumeTimer = undefined;
     }
 
     if (this.takeRequestedSessionWrapup(session)) {
@@ -849,10 +879,10 @@ export class SessionManager {
    * scheduled, and buffered messages remain. The stall counter alone is not
    * enough: it resets only on an answered turn, so a session restarted after
    * exhaustion that later paused with its own retry timer would still look
-   * abandoned. Such a session waits for its next captured event or an operator retry —
-   * for an ended content session that may never come, which makes the queue
-   * look stuck while every active session is being served. Reporting is all
-   * this does: nothing here resumes or discards them.
+   * abandoned. The stall exit discards the buffer when it stamps the mark, so
+   * a session listed here holds work enqueued afterwards that no generator
+   * start took up. Reporting is all this does: nothing here resumes or
+   * discards them.
    */
   getAbandonedStallSessions(): Array<{ sessionDbId: number; pendingCount: number }> {
     return Array.from(this.sessions.values())

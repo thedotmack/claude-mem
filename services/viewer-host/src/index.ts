@@ -54,6 +54,10 @@ const workerEnv: Record<string, string> = {
   // replica starts no agent and spends nothing unless these are set on purpose.
   CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH: process.env.CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH || 'false',
   CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: process.env.CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER || 'off',
+  // My Work sharing: without it, review checks and Join / Not-this answers made in the cloud
+  // viewer never reach the owner's computer. Set here, not by hand on one deploy, so every
+  // deploy from the repo keeps it on (it was lost twice that way after the Nov 4 launch).
+  CLAUDE_MEM_WORK_VIEW_SHARED_STATE: process.env.CLAUDE_MEM_WORK_VIEW_SHARED_STATE || 'true',
   // A replica is not another install: keep it out of install and usage counts.
   DO_NOT_TRACK: process.env.DO_NOT_TRACK || '1',
 };
