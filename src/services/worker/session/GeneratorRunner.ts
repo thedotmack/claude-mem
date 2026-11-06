@@ -592,7 +592,7 @@ export async function startGeneratorWithProvider(
             const buffer = sessionManager.getMessageBuffer();
             const pendingCount = buffer.getPendingCount(session.sessionDbId);
             const parkedCount = buffer.getParkedMessages(session.sessionDbId).length;
-            const discarded = await sessionManager.clearPendingForSession(session.sessionDbId);
+            const discarded = sessionManager.discardBufferedWork(session.sessionDbId);
             logger.warn('SESSION', `Observer went unanswered ${attempts} times in a row — discarding its buffered work instead of resuming`, {
               sessionId: session.sessionDbId,
               consecutiveStalls: attempts,

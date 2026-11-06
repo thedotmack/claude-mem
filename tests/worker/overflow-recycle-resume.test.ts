@@ -53,7 +53,7 @@ function buildRoutes(session: ActiveSession, startSession: () => Promise<void>) 
   const sessionManager = {
     getSession: () => active,
     getMessageBuffer: () => ({ getPendingCount: () => pendingCount, getParkedMessages: () => [], peekTypes: () => [] }),
-    clearPendingForSession: async () => {
+    discardBufferedWork: () => {
       const cleared = pendingCount;
       pendingCount = 0;
       return cleared;

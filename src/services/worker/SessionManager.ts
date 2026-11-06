@@ -552,6 +552,16 @@ export class SessionManager {
     return this.buffer.clear(sessionDbId);
   }
 
+  /** Discard a session's buffered work for good: unlike clearPendingForSession, nothing in it can be re-enqueued. */
+  discardBufferedWork(sessionDbId: number): number {
+    const session = this.sessions.get(sessionDbId);
+    if (session) {
+      session.claimedMessageIds = [];
+      session.earliestPendingTimestamp = null;
+    }
+    return this.buffer.discardKeepingDedup(sessionDbId);
+  }
+
   async resetProcessingToPending(sessionDbId: number): Promise<number> {
     const session = this.sessions.get(sessionDbId);
     if (session) {
