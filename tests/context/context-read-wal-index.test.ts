@@ -75,6 +75,17 @@ function leaveObservationOnlyInWal(dataDir: string): void {
   if (!existsSync(join(dataDir, 'claude-mem.db-wal'))) throw new Error('seed did not leave a -wal behind');
 }
 
+/** What a plain read-only open (the reader before #5429) gets from this database. */
+function plainReadonlyOpenError(dataDir: string): string | null {
+  return runChild(`
+    import { Database } from 'bun:sqlite';
+    let message = null;
+    const db = new Database(process.env.CLAUDE_MEM_DATA_DIR + '/claude-mem.db', { readonly: true, create: false });
+    try { db.run('PRAGMA schema_version'); } catch (error) { message = error.message; } finally { db.close(); }
+    console.log(JSON.stringify({ message }));
+  `, dataDir).message;
+}
+
 function readThroughWorker(dataDir: string): any {
   return runChild(`
     import { ContextReadWorkerClient } from './src/services/context/ContextReadWorkerClient.ts';
@@ -104,6 +115,9 @@ describe('context reader when the -wal and wal-index are missing (#5429)', () =>
   it('reads a WAL database that has neither a -wal nor a -shm', () => {
     withDataDir('claude-mem-reader-no-wal-', dataDir => {
       seedDatabase(dataDir);
+      // The fixture must reproduce the failure, or the read-write recovery
+      // below would go unexercised.
+      expect(plainReadonlyOpenError(dataDir)).toContain('unable to open database file');
       const result = readThroughWorker(dataDir);
       expect(result.appError).toBeUndefined();
       expect(result.app).toBe(true);
