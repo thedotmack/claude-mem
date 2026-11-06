@@ -492,4 +492,60 @@ describe('paused in-memory session recovery', () => {
     expect(sweep).not.toHaveBeenCalled();
     expect(agent.startSession).not.toHaveBeenCalled();
   });
+
+  it('lists a session the stall pacer abandoned, with the messages it holds (#5405)', () => {
+    // Four unanswered observer prompts spend the bounded retries; with the
+    // content session already ended, nothing resumes this until the operator
+    // does. Reporting it is what makes a stuck-looking queue legible.
+    const { manager } = fixture();
+    const session = manager.getSession(1)!;
+    session.pausedReason = 'transport';
+    session.consecutiveResponseStalls = 4; // MAX_CONSECUTIVE_STALL_RESUMES (3) spent
+    session.stallResumesExhaustedAt = Date.now(); // set by the exhaust branch in GeneratorRunner
+    expect(manager.getAbandonedStallSessions()).toEqual([{ sessionDbId: 1, pendingCount: 1 }]);
+  });
+
+  it('does not count stall pauses inside their retry budget, with a timer pending, or with nothing buffered (#5405)', () => {
+    const { manager } = fixture();
+    const session = manager.getSession(1)!;
+    session.pausedReason = 'response_stall';
+    session.consecutiveResponseStalls = 3; // still resumable: the next plan says resume
+    expect(manager.getAbandonedStallSessions()).toEqual([]);
+
+    session.consecutiveResponseStalls = 4;
+    session.stallResumesExhaustedAt = Date.now();
+    // A pending stall-resume timer owns the session until it fires.
+    session.stallResumeTimer = setTimeout(() => {}, 60_000);
+    try {
+      expect(manager.getAbandonedStallSessions()).toEqual([]);
+    } finally {
+      clearTimeout(session.stallResumeTimer);
+      session.stallResumeTimer = undefined;
+    }
+
+    // Nothing buffered: nothing is stranded, so nothing to report.
+    manager.getMessageBuffer().clear(1);
+    expect(manager.getAbandonedStallSessions()).toEqual([]);
+  });
+
+  it('does not list an exhausted session that restarted and then paused with its own retry scheduled (#5405)', () => {
+    // The stall counter resets only on an answered turn, so after a restart
+    // it stays above the cap. A later exit on a transport backoff or a
+    // rate-limit Retry-After schedules scheduledResumeTimer, not a stall
+    // timer; that session has a retry coming and is not abandoned.
+    const { manager } = fixture();
+    const session = manager.getSession(1)!;
+    session.consecutiveResponseStalls = 4;
+    session.stallResumesExhaustedAt = undefined; // cleared by the generator start
+    session.pausedReason = 'rate_limit';
+    session.scheduledResumeTimer = setTimeout(() => {}, 60_000);
+    try {
+      expect(manager.getAbandonedStallSessions()).toEqual([]);
+    } finally {
+      clearTimeout(session.scheduledResumeTimer);
+      session.scheduledResumeTimer = undefined;
+    }
+    // Still not listed once that timer has fired: only the exhaust branch marks it.
+    expect(manager.getAbandonedStallSessions()).toEqual([]);
+  });
 });

@@ -99,6 +99,13 @@ export interface ActiveSession {
    */
   consecutiveResponseStalls?: number;
   /**
+   * Epoch ms at which the response-stall pacer spent its bounded resumes and
+   * scheduled none (#5405). Cleared when any generator starts, so it marks only
+   * a session that is still waiting on its next captured event or an operator
+   * retry. Reported by /api/processing-status; nothing resumes on it.
+   */
+  stallResumesExhaustedAt?: number;
+  /**
    * Consecutive Claude generations whose SDK stream ended or broke without a
    * result ('transport:sdk_eof' / 'transport:sdk_stream'). Reported in
    * observer health once it reaches MAX_CONSECUTIVE_SDK_STREAM_EXITS; reset

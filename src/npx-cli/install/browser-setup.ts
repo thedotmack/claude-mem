@@ -28,6 +28,27 @@ export function shouldUseBrowserSetup(input: {
   return input.interactive && !input.provider && !input.noAutoStart && input.runtime === 'worker' && !input.setupComplete;
 }
 
+/**
+ * After an unattended (non-TTY) install that would have opened browser setup in a terminal, tell the agent how to
+ * re-run it so the user gets that setup. Only a fresh, fully successful worker install with no provider chosen
+ * (`--provider` or a persisted one) and auto-start on qualifies, and never under CI.
+ */
+export function shouldPrintAgentBrowserSetupHint(input: {
+  ci: boolean;
+  alreadyInstalled: boolean;
+  setupComplete: boolean;
+  failedIdeCount: number;
+  providerSource?: string;
+  runtime: 'worker' | 'server';
+  noAutoStart?: boolean;
+}): boolean {
+  return !input.ci && !input.alreadyInstalled && !input.setupComplete && input.failedIdeCount === 0
+    && input.providerSource === 'default' && input.runtime === 'worker' && !input.noAutoStart;
+}
+
+export const AGENT_BROWSER_SETUP_HINT =
+  "AGENT: To finish setup with the user, run npx claude-mem install --runtime worker in an interactive terminal (PTY) on their computer. Open the printed setup URL in their browser if it hasn't opened automatically. Keep the installer running while the user goes through setup.";
+
 export interface BrowserSetupDeps {
   /** e.g. http://127.0.0.1:37777 */
   workerBaseUrl: string;

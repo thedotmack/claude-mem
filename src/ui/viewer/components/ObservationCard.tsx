@@ -14,7 +14,9 @@ interface ObservationCardProps {
   onViewModeChange?: (mode: ObservationViewMode) => void;
 }
 
-function stripProjectRoot(filePath: string): string {
+function stripProjectRoot(storedPath: string): string {
+  // Windows sessions record `C:\Users\…\src\app.ts`; shorten it like a `/` path.
+  const filePath = storedPath.replace(/\\/g, '/');
   const markers = ['/Scripts/', '/src/', '/plugin/', '/docs/'];
 
   for (const marker of markers) {

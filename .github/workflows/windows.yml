@@ -79,6 +79,14 @@ jobs:
           $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
           & $bun test tests/bun-runner.test.ts tests/scripts/mirror-dir.test.ts tests/scripts/worker-logs.test.ts --timeout 120000
 
+      # Bun's Glob returns backslash paths on Windows. The lane split must still
+      # send tests/integration and smart-file-read files to the integration lane.
+      - name: Test-lane split on Windows paths
+        shell: pwsh
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
+          & $bun test tests/scripts/test-lanes.test.ts
+
       # The installer's refusal boundaries: non-TTY and TTY cases that require
       # exit 1, require --runtime worker, untouched settings (mode included) and
       # zero bootstrap/HTTP/task calls. They only ran on Linux (the test-lanes

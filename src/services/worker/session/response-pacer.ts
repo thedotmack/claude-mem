@@ -19,6 +19,13 @@ import { logger } from '../../../utils/logger.js';
 export type PacerWaitOutcome = 'answered' | 'aborted' | 'closed' | 'stalled';
 
 /**
+ * How long an unanswered prompt may go without SDK activity before the
+ * generation is abandoned (#4066). Kept apart from the drain's idle timeout:
+ * shortening that one to free idle slots must not shorten this deadline too.
+ */
+export const RESPONSE_STALL_MS = 3 * 60 * 1000;
+
+/**
  * Delay before a generation that stalled on an unanswered prompt is restarted.
  * The stall already preserved the claimed batch; without a resume the backlog
  * would wait for the next captured tool call, which may never come.

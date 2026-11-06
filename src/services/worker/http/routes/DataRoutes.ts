@@ -759,7 +759,11 @@ export class DataRoutes extends BaseRouteHandler {
     // /api/health keep reporting green (one installation went 26 h with no
     // saves behind an "ok" health check).
     const lastSuccessfulStoreAt = readObserverHealth()?.lastSuccessAt ?? null;
-    res.json({ isProcessing, queueDepth, parkedSessions, lastSuccessfulStoreAt });
+    // #5405 — additive: sessions the response-stall pacer abandoned, with the
+    // messages they hold, so a stuck-looking queue can be told apart from a
+    // busy one. Reporting only — nothing here resumes or discards them.
+    const abandonedStallSessions = this.sessionManager.getAbandonedStallSessions();
+    res.json({ isProcessing, queueDepth, parkedSessions, lastSuccessfulStoreAt, abandonedStallSessions });
   });
 
   private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string; platformSource?: string; contentSessionId?: string } {
