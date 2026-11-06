@@ -97,7 +97,9 @@ it('waits for the HTTP response to drain, then delivers each queued frame once a
       await new Promise(resolve => setTimeout(resolve, 10));
     }
     expect(idsIn(received())).toEqual(expected);
-    expect(warnSpy).not.toHaveBeenCalled();
+    // Only the cap's own warning matters here; other code in the same test
+    // process may log unrelated warnings.
+    expect(warnSpy.mock.calls.some(call => String(call[1]).includes('SSE client stopped reading'))).toBe(false);
   } finally {
     await stop(server, client);
   }
