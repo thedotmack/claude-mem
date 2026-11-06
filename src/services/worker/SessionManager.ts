@@ -50,6 +50,9 @@ type ReadyTransportResume = {
   state: TransportResumeState;
 };
 
+/** A paused buffer older than this goes back to transcript replay (see reapIdlePausedSessions). */
+export const SESSION_REAP_IDLE_MS = 30 * 60 * 1000;
+
 export class SessionManager {
   private dbManager: DatabaseManager;
   private sessions: Map<number, ActiveSession> = new Map();
@@ -896,6 +899,43 @@ export class SessionManager {
 
   getTotalQueueDepth(): number {
     return this.buffer.getTotalDepth();
+  }
+
+  /**
+   * Reap paused sessions whose oldest buffered fragment is older than
+   * `maxIdleMs`. A paused session's buffer drains only through a generator
+   * pass; when every resume attempt has given up and no captured event has
+   * arrived since, it would otherwise sit in the pending count forever
+   * (sessions of closed worktrees whose content session never sends again).
+   * The transcript is the durable source of truth, so disposal hands their
+   * work back to the next transcript replay, exactly like a worker restart.
+   */
+  reapIdlePausedSessions(maxIdleMs: number = SESSION_REAP_IDLE_MS): number {
+    const now = Date.now();
+    const reaped: number[] = [];
+    for (const [sessionDbId, session] of this.sessions) {
+      if (this.deletingSessions.has(sessionDbId)) continue;
+      // A run in flight owns its claims — never reap under it.
+      if (session.generatorPromise) continue;
+      // A resume timer about to fire keeps the session recoverable on its own.
+      if (session.stallResumeTimer !== undefined || session.scheduledResumeTimer !== undefined) continue;
+      // An overflow pause resumes on its own cooldown; the sweep owns it.
+      if (session.overflowPausedUntilMs !== undefined) continue;
+      // The oldest unconfirmed fragment is the buffer's freshness: confirmed
+      // work drops out of it, new fragments keep it recent, and it clears when
+      // the buffer is confirmed empty.
+      if (session.earliestPendingTimestamp === null) continue;
+      if (now - session.earliestPendingTimestamp < maxIdleMs) continue;
+      this.removeSessionImmediate(sessionDbId);
+      reaped.push(sessionDbId);
+    }
+    if (reaped.length > 0) {
+      logger.info('SESSION', 'Reaped idle paused sessions; their buffered work returns to transcript replay', {
+        reaped,
+        count: reaped.length,
+      });
+    }
+    return reaped.length;
   }
 
   /** See SessionMessageBuffer.getLastAssignedId. */

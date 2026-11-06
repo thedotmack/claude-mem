@@ -122,7 +122,7 @@ import {
 import { notifyGrokBotIndex, watchGrokBotIndexSettings } from './integrations/GrokBotIndexWriter.js';
 
 import { DatabaseManager } from './worker/DatabaseManager.js';
-import { SessionManager } from './worker/SessionManager.js';
+import { SessionManager, SESSION_REAP_IDLE_MS } from './worker/SessionManager.js';
 import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
 import { MemoryFeedInvalidation } from './worker/MemoryFeedInvalidation.js';
 import { ClaudeProvider, classifyClaudeError } from './worker/ClaudeProvider.js';
@@ -543,7 +543,14 @@ export class WorkerService implements WorkerRef {
     if (this.pendingSessionResumeTimer !== null || this.isShuttingDown) return;
     this.pendingSessionResumeTimer = setInterval(() => {
       if (!this.initializationCompleteFlag || this.isShuttingDown) return;
-      sessionRoutes.resumePendingSessions('periodic-resume');
+      const resumed = sessionRoutes.resumePendingSessions('periodic-resume');
+      // Piggyback the reaper on the same tick: a paused session whose resume
+      // budget is spent and whose buffer has gone cold must eventually leave
+      // the pending count (its fragments replay from the transcript).
+      const reaped = this.sessionManager.reapIdlePausedSessions(SESSION_REAP_IDLE_MS);
+      if (resumed > 0 || reaped > 0) {
+        logger.debug('SYSTEM', 'Pending-session sweep', { resumed, reaped });
+      }
     }, 60_000);
     this.pendingSessionResumeTimer.unref?.();
   }
