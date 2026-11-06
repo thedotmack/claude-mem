@@ -59,6 +59,7 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem backup run|status|list')}   Manage local DB snapshots
   ${styleText('cyan', 'npx claude-mem restore <file>')}       Restore the DB from a snapshot
   ${styleText('cyan', 'npx claude-mem transcript watch')}     Start transcript watcher
+  ${styleText('cyan', 'npx claude-mem memory ingest [--source <dir> | --all] [--dry-run] [--require-cwd]')}   Import Claude Code auto-memory notes as observations
   ${styleText('cyan', 'npx claude-mem antigravity-cli install|status|uninstall')}   Manage Antigravity CLI hooks + MCP config
   ${styleText('cyan', 'npx claude-mem kimi install|status|uninstall')}   Manage Kimi Code CLI hooks + MCP config
   ${styleText('cyan', 'npx claude-mem devin install|status|uninstall')}   Manage Devin CLI / Devin Desktop hooks + MCP
@@ -139,10 +140,13 @@ function parseInstallOptions(argv: string[]): InstallOptions {
   };
 }
 
-// Commands that change the install, the worker or stored memory and would otherwise ignore -h/--help
+// Commands that change the install, a host's config, telemetry, the worker, the server or stored memory
+// and would otherwise ignore -h/--help, including after a verb (`kimi uninstall --help`)
 const HELP_AWARE_COMMANDS = new Set([
   '', 'install', 'update', 'upgrade', 'uninstall', 'remove', 'repair', 'prune', 'start', 'stop', 'restart',
   'adopt', 'cleanup',
+  'memory', 'telemetry', 'project', 'backup', 'restore', 'server', 'worker', 'transcript',
+  'kimi', 'devin', 'antigravity-cli', 'pi',
 ]);
 
 async function main(): Promise<void> {

@@ -3,6 +3,7 @@ import type { Request, Response } from 'express';
 import { logger } from '../../../../src/utils/logger.js';
 import { DataRoutes } from '../../../../src/services/worker/http/routes/DataRoutes.js';
 import { getProcessRegistry, waitForSlot } from '../../../../src/supervisor/process-registry.js';
+import * as observerHealth from '../../../../src/shared/observer-health.js';
 import { guardSharedProcessRegistrySingleton } from '../../../supervisor/process-registry-singleton-guard.js';
 
 /**
@@ -20,6 +21,10 @@ import { guardSharedProcessRegistrySingleton } from '../../../supervisor/process
  */
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
+// The observer health ledger lives under DATA_DIR, which is fixed when
+// src/shared/paths.ts loads, so an env redirect can't isolate it and other
+// test files leave a lastSuccessAt behind. Stub the read instead (#5374).
+let readHealthSpy: ReturnType<typeof spyOn>;
 
 /**
  * BaseRouteHandler.wrapHandler returns a fire-and-forget `(req, res): void`
@@ -66,10 +71,12 @@ describe('DataRoutes GET /api/processing-status — parkedSessions (#2756)', () 
       spyOn(logger, 'error').mockImplementation(() => {}),
       spyOn(logger, 'failure').mockImplementation(() => {}),
     ];
+    readHealthSpy = spyOn(observerHealth, 'readObserverHealth').mockReturnValue(null);
   });
 
   afterEach(() => {
     loggerSpies.forEach(spy => spy.mockRestore());
+    readHealthSpy.mockRestore();
   });
 
   it('reports parkedSessions: 0 alongside the existing fields when nothing is parked', async () => {
@@ -91,7 +98,42 @@ describe('DataRoutes GET /api/processing-status — parkedSessions (#2756)', () 
     const { req, res, waitForJson } = createMockReqRes();
     (routes as any).handleGetProcessingStatus(req as Request, res as Response);
 
-    expect(await waitForJson()).toEqual({ isProcessing: false, queueDepth: 0, parkedSessions: 0, abandonedStallSessions: [] });
+    expect(await waitForJson()).toEqual({
+      isProcessing: false, queueDepth: 0, parkedSessions: 0, lastSuccessfulStoreAt: null, abandonedStallSessions: [],
+    });
+  });
+
+  it("exposes the observer's last successful store time from the health ledger (#5374)", async () => {
+    readHealthSpy.mockReturnValue({
+      consecutiveFailures: 0,
+      failingSinceAt: null,
+      lastErrorAt: null,
+      lastErrorMessage: null,
+      lastErrorProvider: null,
+      lastSuccessAt: 1_793_895_791_087,
+      quotaCooldown: null,
+    });
+    const mockSessionManager = {
+      isAnySessionProcessing: mock(() => Promise.resolve(false)),
+      getTotalActiveWork: mock(() => Promise.resolve(0)),
+      getAbandonedStallSessions: mock(() => []),
+    };
+
+    const routes = new DataRoutes(
+      {} as any,
+      {} as any,
+      mockSessionManager as any,
+      {} as any,
+      {} as any,
+      Date.now(),
+    );
+
+    const { req, res, waitForJson } = createMockReqRes();
+    (routes as any).handleGetProcessingStatus(req as Request, res as Response);
+
+    expect(await waitForJson()).toEqual({
+      isProcessing: false, queueDepth: 0, parkedSessions: 0, lastSuccessfulStoreAt: 1_793_895_791_087, abandonedStallSessions: [],
+    });
   });
 
   it('lists the sessions the stall pacer abandoned, with the messages they hold (#5405)', async () => {
@@ -114,7 +156,7 @@ describe('DataRoutes GET /api/processing-status — parkedSessions (#2756)', () 
     (routes as any).handleGetProcessingStatus(req as Request, res as Response);
 
     expect(await waitForJson()).toEqual({
-      isProcessing: true, queueDepth: 666, parkedSessions: 0,
+      isProcessing: true, queueDepth: 666, parkedSessions: 0, lastSuccessfulStoreAt: null,
       abandonedStallSessions: [{ sessionDbId: 7, pendingCount: 666 }],
     });
   });
@@ -150,7 +192,7 @@ describe('DataRoutes GET /api/processing-status — parkedSessions (#2756)', () 
       const { req, res, waitForJson } = createMockReqRes();
       (routes as any).handleGetProcessingStatus(req as Request, res as Response);
 
-      expect(await waitForJson()).toEqual({ isProcessing: true, queueDepth: 5, parkedSessions: 1, abandonedStallSessions: [] });
+      expect(await waitForJson()).toEqual({ isProcessing: true, queueDepth: 5, parkedSessions: 1, lastSuccessfulStoreAt: null, abandonedStallSessions: [] });
     } finally {
       // Free the slot so parkedPromise settles, then clean up the occupant —
       // never leak a parked waiter or a fake 'sdk' entry into later test files.
