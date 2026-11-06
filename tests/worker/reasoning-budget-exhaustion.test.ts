@@ -671,6 +671,7 @@ describe('reasoning budget exhaustion', () => {
   it('does not treat a mandatory or invalid-effort refusal as an unknown reasoning field', async () => {
     expect(isUnknownReasoningParameter("Unknown parameter: 'reasoning'. Extra fields are not permitted.")).toBe(true);
     expect(isUnknownReasoningParameter("Unsupported parameter: 'reasoning'")).toBe(true);
+    expect(isUnknownReasoningParameter("reasoning: cannot be represented by openai-responses; use scoped provider_options when the destination has an equivalent option")).toBe(true);
     expect(isUnknownReasoningParameter("Invalid parameter: reasoning.effort 'none' is unsupported for this model")).toBe(false);
     expect(isUnknownReasoningParameter('This model requires reasoning')).toBe(false);
     const server = await startReasoningServer('reject-mandatory-reasoning');
