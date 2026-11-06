@@ -18,6 +18,7 @@ import threading
 import time
 import types
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -509,6 +510,17 @@ class SettingsTest(unittest.TestCase):
         directory = self.write_settings({})
         config = client_module.Config.resolve({"CLAUDE_MEM_DATA_DIR": directory})
         self.assertEqual(config.worker_base, "http://127.0.0.1:" + client_module.default_worker_port(directory))
+
+    def test_default_port_matches_shared_windows_path_hashes_without_uid(self):
+        cases = [
+            (r"C:\Profiles\Claude", "37746"),
+            (r"D:\AgentData\CMEM", "37791"),
+        ]
+
+        with mock.patch.object(client_module.os, "getuid", None, create=True):
+            for directory, expected_port in cases:
+                with self.subTest(directory=directory):
+                    self.assertEqual(client_module.default_worker_port(directory), expected_port)
 
     def test_server_needs_all_three_settings(self):
         partial = self.write_settings({"CLAUDE_MEM_RUNTIME": "server", "CLAUDE_MEM_SERVER_URL": "https://m.example",

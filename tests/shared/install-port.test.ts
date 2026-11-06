@@ -45,10 +45,29 @@ describe('install port defaults', () => {
       .toBe(getInstallPortOffset('c:\\profiles\\claude', options));
   });
 
+  it('uses fixed Windows path hashes shared with the Hermes provider', () => {
+    const options = { platform: 'win32' as const, uid: null };
+
+    expect(getDefaultWorkerPort('C:\\Profiles\\Claude', options)).toBe(37746);
+    expect(getDefaultWorkerPort('D:\\AgentData\\CMEM', options)).toBe(37791);
+  });
+
   it('preserves the old Windows port offset when 37777 is already saved', () => {
     writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_WORKER_PORT: '37777' }));
 
     expect(getDefaultWorkerPort(dataDir, { platform: 'win32', uid: null })).toBe(37777);
     expect(getDefaultServerPort(dataDir, { platform: 'win32', uid: null })).toBe(37954);
+  });
+
+  it('preserves the legacy Windows server URL after the worker port changes', () => {
+    const options = { platform: 'win32' as const, uid: null };
+    const expectedWorkerPort = getDefaultWorkerPort(dataDir, options);
+    writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({
+      CLAUDE_MEM_WORKER_PORT: '39999',
+      CLAUDE_MEM_SERVER_URL: 'http://127.0.0.1:37954',
+    }));
+
+    expect(getDefaultWorkerPort(dataDir, options)).toBe(expectedWorkerPort);
+    expect(getDefaultServerPort(dataDir, options)).toBe(37954);
   });
 });

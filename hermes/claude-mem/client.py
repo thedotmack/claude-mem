@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import ntpath
 import os
 import re
 import threading
@@ -230,11 +231,14 @@ def checkout_project(cwd: str) -> str:
 
 
 def default_worker_port(data_directory: Optional[str] = None) -> str:
-    if hasattr(os, "getuid"):
-        return str(37700 + os.getuid() % 100)
-    directory = os.path.abspath(os.path.expanduser(data_directory or data_dir()))
-    if os.name == "nt":
-        directory = directory.lower()
+    getuid = getattr(os, "getuid", None)
+    if callable(getuid):
+        return str(37700 + getuid() % 100)
+    directory = os.path.expanduser(data_directory or data_dir())
+    if os.name == "nt" or ntpath.splitdrive(directory)[0]:
+        directory = ntpath.abspath(directory).lower()
+    else:
+        directory = os.path.abspath(directory)
     offset = int.from_bytes(hashlib.sha256(directory.encode("utf-8")).digest()[:4], "big") % 100
     return str(37700 + offset)
 
