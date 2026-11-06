@@ -130,7 +130,7 @@ export function renameWithWindowsRetry(
 }
 
 /**
- * Write JSON to disk with crash-safe atomic-rename semantics.
+ * Write a payload to disk with crash-safe atomic-rename semantics.
  *
  * Sequence: resolve symlinks at the destination, write payload to a uniquely
  * named temp file in the same directory as the resolved target, loop writeSync
@@ -144,9 +144,9 @@ export interface AtomicJsonWriteOptions {
   mode?: number;
 }
 
-export function writeJsonFileAtomic(
+function writeBufferAtomic(
   filepath: string,
-  data: any,
+  payload: Buffer,
   options: AtomicJsonWriteOptions = {}
 ): void {
   const resolved = resolveSymlinkWriteTarget(filepath);
@@ -156,7 +156,6 @@ export function writeJsonFileAtomic(
   const dir = dirname(resolved);
   const base = basename(resolved);
   const tmpPath = join(dir, `.${base}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`);
-  const payload = Buffer.from(JSON.stringify(data, null, 2) + '\n', 'utf-8');
 
   let mode = options.mode;
   if (mode === undefined) {
@@ -209,4 +208,26 @@ export function writeJsonFileAtomic(
     try { unlinkSync(tmpPath); } catch { /* tempfile may not exist */ }
     throw err;
   }
+}
+
+/** Write JSON to disk atomically: pretty-printed, newline-terminated, via writeBufferAtomic. */
+export function writeJsonFileAtomic(
+  filepath: string,
+  data: any,
+  options: AtomicJsonWriteOptions = {}
+): void {
+  writeBufferAtomic(filepath, Buffer.from(JSON.stringify(data, null, 2) + '\n', 'utf-8'), options);
+}
+
+/**
+ * Write a text file (YAML, TOML, plain text) to disk atomically via
+ * writeBufferAtomic, writing exactly the bytes given: no serialization, no
+ * added trailing newline.
+ */
+export function writeTextFileAtomic(
+  filepath: string,
+  text: string,
+  options: AtomicJsonWriteOptions = {}
+): void {
+  writeBufferAtomic(filepath, Buffer.from(text, 'utf-8'), options);
 }
