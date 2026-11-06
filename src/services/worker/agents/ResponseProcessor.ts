@@ -35,7 +35,7 @@ import { telemetryBuffer } from '../../telemetry/buffer.js';
 import { logChromaWriteFailure } from '../search/errors.js';
 import { linkAttachmentRefs, type ResponseMediaContext } from '../../media/inference.js';
 import { observationMediaFromMetadata } from '../../media/feed.js';
-import { writeMediaEventResults, writeObservationMediaLinks, type MediaLinkageWriteResult, type ObservationLinkWrite } from '../../media/linkage.js';
+import { captureOnlyLinkWrites, writeMediaEventResults, writeObservationMediaLinks, type MediaLinkageWriteResult, type ObservationLinkWrite } from '../../media/linkage.js';
 import type { Database } from 'bun:sqlite';
 
 type ObservationFileEvidenceMessage = Pick<PendingMessage, 'type' | 'tool_name' | 'tool_input'>;
@@ -362,25 +362,41 @@ function commitTurnMediaLinkage(
 ): MediaLinkageWriteResult | null {
   writeMediaEventResults(db, keys.attributed, stored.observationIds.length > 0 ? 'stored' : 'skipped', stored.observationIds);
   writeMediaEventResults(db, keys.unattributed, 'skipped', []);
-  if (!media?.imagesDelivered) return null;
+  if (!media?.imagesDelivered) {
+    // Capture-only linkage (docs/media-contract-v1.md): the request carried
+    // none of the turn's images, so every stored observation links every
+    // retained image of the attributed events as uninspected.
+    if (keys.attributed.length === 0 || stored.observationIds.length === 0) return null;
+    return writeLinksInSavepoint(db, sessionDbId, () =>
+      captureOnlyLinkWrites(db, keys.attributed, stored.observationIds, stored.insertedObservationIds ?? []));
+  }
+  return writeLinksInSavepoint(db, sessionDbId, () => {
+    const imageByRequestLabel = new Map(media.images.map(image => [image.requestLabel, image]));
+    const inserted = new Set(stored.insertedObservationIds ?? []);
+    const writes = new Map<number, ObservationLinkWrite>();
+    storedLinks.forEach((requestLabels, index) => {
+      const observationId = stored.observationIds[index];
+      if (observationId === undefined || requestLabels.length === 0) return;
+      const write = writes.get(observationId) ?? { observationId, insertedThisTurn: inserted.has(observationId), refs: [] };
+      for (const requestLabel of requestLabels) {
+        const image = imageByRequestLabel.get(requestLabel);
+        if (!image || write.refs.some(ref => ref.id === image.attachmentId)) continue;
+        write.refs.push({ id: image.attachmentId, label: image.eventLabel, inspection: 'inspected', eventKey: image.eventKey });
+      }
+      writes.set(observationId, write);
+    });
+    return [...writes.values()];
+  });
+}
+
+/** The manifest and junction writes in a savepoint of the storage transaction; a failure degrades the images to event-level. */
+function writeLinksInSavepoint(
+  db: Database,
+  sessionDbId: number,
+  buildWrites: () => ObservationLinkWrite[],
+): MediaLinkageWriteResult | null {
   try {
-    return db.transaction(() => {
-      const imageByRequestLabel = new Map(media.images.map(image => [image.requestLabel, image]));
-      const inserted = new Set(stored.insertedObservationIds ?? []);
-      const writes = new Map<number, ObservationLinkWrite>();
-      storedLinks.forEach((requestLabels, index) => {
-        const observationId = stored.observationIds[index];
-        if (observationId === undefined || requestLabels.length === 0) return;
-        const write = writes.get(observationId) ?? { observationId, insertedThisTurn: inserted.has(observationId), refs: [] };
-        for (const requestLabel of requestLabels) {
-          const image = imageByRequestLabel.get(requestLabel);
-          if (!image || write.refs.some(ref => ref.id === image.attachmentId)) continue;
-          write.refs.push({ id: image.attachmentId, label: image.eventLabel, inspection: 'inspected', eventKey: image.eventKey });
-        }
-        writes.set(observationId, write);
-      });
-      return writeObservationMediaLinks(db, [...writes.values()]);
-    })();
+    return db.transaction(() => writeObservationMediaLinks(db, buildWrites()))();
   } catch (error) {
     logger.error('DB', 'Observation media links were not written; images stay event-level and uninspected', {
       sessionId: sessionDbId,
@@ -934,6 +950,13 @@ export async function processAgentResponse(
       changedRows: linkResult?.changedNativeRows.length ?? 0,
       eventLevelRefs: linkResult?.eventLevelRefs ?? 0,
     });
+  } else if (mediaLinkResult) {
+    const linkResult = mediaLinkResult as MediaLinkageWriteResult;
+    logger.info('DB', 'Observation media linked capture-only (uninspected)', {
+      sessionId: session.sessionDbId,
+      changedRows: linkResult.changedNativeRows.length,
+      eventLevelRefs: linkResult.eventLevelRefs,
+    });
   }
   if ((mediaLinkResult as MediaLinkageWriteResult | null)?.changedNativeRows.length) {
     dbManager.getCloudSync()?.notify();
@@ -1123,6 +1146,7 @@ export async function processAgentResponse(
     worker,
     agentName,
     registeredMemorySessionId,
+    new Set((mediaLinkResult as MediaLinkageWriteResult | null)?.changedNativeRows ?? []),
     projectRoot
   );
 
@@ -1245,6 +1269,8 @@ async function syncAndBroadcastObservations(
   worker: WorkerRef | undefined,
   agentName: string,
   memorySessionId: string,
+  /** Rows whose manifest this turn's linkage changed. */
+  mediaLinkedObservationIds: ReadonlySet<number>,
   projectRoot?: string
 ): Promise<void> {
   if (!memorySessionId) {
@@ -1303,11 +1329,11 @@ async function syncAndBroadcastObservations(
 
     // Media refs come from the committed row, so SSE carries exactly what the
     // paged and by-id feeds serialize. A row can hold a manifest when this
-    // turn delivered pixels (linkage runs only then) or when the turn reused
-    // an earlier stored row, which may already have images; a newly inserted
-    // row of a text-only turn cannot, so it skips the read.
+    // turn delivered pixels, when this turn's capture-only linkage wrote one,
+    // or when the turn reused an earlier stored row, which may already have
+    // images; any other newly inserted row cannot, so it skips the read.
     const reusedStoredRow = result.insertedObservationIds !== undefined && !result.insertedObservationIds.includes(obsId);
-    const media = context.media?.imagesDelivered || reusedStoredRow
+    const media = context.media?.imagesDelivered || mediaLinkedObservationIds.has(obsId) || reusedStoredRow
       ? observationMediaFromMetadata(
           (dbManager.getSessionStore().db.prepare('SELECT metadata FROM observations WHERE id = ?').get(obsId) as { metadata: unknown } | null)?.metadata,
         )

@@ -286,7 +286,8 @@ describe('image request boundary', () => {
     expect(chatBodies[1]).toBe(chatBodies[0]);
     expect(chatBodies[0]).not.toContain('image_url');
     expect(otherCalls).toEqual([]);
-    expect(count('SELECT COUNT(*) n FROM observation_media_links')).toBe(0);
+    // Capture-only linkage: the request carried no pixels, so the image links uninspected.
+    expect(rows('SELECT label, inspection FROM observation_media_links')).toEqual([{ label: 'event1_image1', inspection: 'uninspected' }]);
     expect(rows('SELECT result_state FROM media_events')).toEqual([{ result_state: 'stored' }]);
   });
 
@@ -297,9 +298,10 @@ describe('image request boundary', () => {
     await runTurn(pending(queued[0]), directConfig());
     expect(chatBodies[0]).not.toContain('image_url');
     expect(JSON.parse(chatBodies[0]).messages.every((entry: { content: unknown }) => typeof entry.content === 'string')).toBe(true);
-    expect(count('SELECT COUNT(*) n FROM observation_media_links')).toBe(0);
-    const metadata = rows('SELECT metadata FROM observations')[0].metadata;
-    expect(metadata).toBeNull();
+    // Capture-only linkage: linked, but never claimed as read.
+    expect(rows('SELECT label, inspection FROM observation_media_links')).toEqual([{ label: 'event1_image1', inspection: 'uninspected' }]);
+    const metadata = JSON.parse(rows('SELECT metadata FROM observations')[0].metadata);
+    expect(metadata.cmem_media_v1.attachments.map((ref: { inspection: string }) => ref.inspection)).toEqual(['uninspected']);
     expect(rows('SELECT result_state FROM media_events')).toEqual([{ result_state: 'stored' }]);
     expect(count('SELECT COUNT(*) n FROM media_event_refs')).toBe(1);
   });
@@ -333,9 +335,9 @@ describe('gateway lane', () => {
     expect(chatBodies[0]).toContain('image_url');
     expect(chatBodies[1]).not.toContain('image_url');
     expect(JSON.parse(chatBodies[1]).messages.every((entry: { content: unknown }) => typeof entry.content === 'string')).toBe(true);
-    // Text outcome stored; the image stays uninspected on its event.
-    expect(count('SELECT COUNT(*) n FROM observation_media_links')).toBe(0);
-    expect(rows('SELECT metadata FROM observations')[0].metadata).toBeNull();
+    // Text outcome stored; the text-only resend links the image capture-only, uninspected.
+    expect(rows('SELECT label, inspection FROM observation_media_links')).toEqual([{ label: 'event1_image1', inspection: 'uninspected' }]);
+    expect(JSON.parse(rows('SELECT metadata FROM observations')[0].metadata).cmem_media_v1.attachments[0].inspection).toBe('uninspected');
     expect(rows('SELECT result_state FROM media_events')).toEqual([{ result_state: 'stored' }]);
   });
 
@@ -673,7 +675,7 @@ describe('verification fixes', () => {
     await runTurn(pending(queued[0]), gatewayConfig());
     expect(chatBodies).toHaveLength(1);
     expect(chatBodies[0]).not.toContain('image_url');
-    expect(count('SELECT COUNT(*) n FROM observation_media_links')).toBe(0);
+    expect(rows('SELECT label, inspection FROM observation_media_links')).toEqual([{ label: 'event1_image1', inspection: 'uninspected' }]);
     expect(rows('SELECT result_state FROM media_events')).toEqual([{ result_state: 'stored' }]);
   });
 
@@ -702,7 +704,7 @@ describe('verification fixes', () => {
     expect(chatBodies[0]).toContain('image_url');
     expect(chatBodies[1]).not.toContain('image_url');
     expect(chatBodies.some(body => body.includes('image_url') && body.includes('max_completion_tokens'))).toBe(false);
-    expect(count('SELECT COUNT(*) n FROM observation_media_links')).toBe(0);
+    expect(rows('SELECT label, inspection FROM observation_media_links')).toEqual([{ label: 'event1_image1', inspection: 'uninspected' }]);
   });
 
   it('leftover claimed events get a result but none of this turn\'s observation rows', async () => {
@@ -885,5 +887,138 @@ describe('cmem gateway request correlation (phase 6)', () => {
     expect(first.request_id).not.toBe(second.request_id);
     expect(first.event_keys).toEqual([message.mediaEventKey]);
     expect(second.event_keys).toEqual([message.mediaEventKey]);
+  });
+});
+
+// docs/media-contract-v1.md, "Capture-only linkage": capture on, inference
+// off. The request carries no pixels, yet every stored observation links the
+// turn's retained images as uninspected, so viewers have something to show.
+describe('capture-only linkage', () => {
+  const manifestOf = (observationId: number) => JSON.parse(rows('SELECT metadata FROM observations WHERE id=?', observationId)[0].metadata).cmem_media_v1;
+  // The structure of a real Claude Code Read image result (bytes generated above).
+  const readOfPng = (toolUseId: string, base64: string) => ingestObservation({
+    contentSessionId: 'media-session', toolName: 'Read', toolInput: { file_path: join(dir, 'project', 'shot.png') },
+    toolResponse: { type: 'image', file: { base64, type: 'image/png', originalSize: 4096, dimensions: { originalWidth: 320, originalHeight: 180, displayWidth: 320, displayHeight: 180 } } },
+    cwd: join(dir, 'project'), platformSource: 'claude', toolUseId,
+  } as any);
+
+  beforeEach(() => { settings.CLAUDE_MEM_MEDIA_INFERENCE_ENABLED = 'false'; });
+
+  it('a Read of a PNG links its observation uninspected, in the storage transaction, and broadcasts the manifest', async () => {
+    await readOfPng('toolu_read_png', redPng);
+    const message = pending(queued[0]);
+    expect(message.mediaRefs).toHaveLength(1);
+    const attachmentId = message.mediaRefs![0].id;
+    let linksAtConfirm = -1;
+    confirmHook = () => { linksAtConfirm = count('SELECT COUNT(*) n FROM observation_media_links'); };
+    const events: any[] = [];
+    chatReplies.push(reply('<observation><type>discovery</type><title>Screenshot read</title></observation>'));
+    await (provider(() => [message]) as any).processObservationMessage(
+      makeSession(), message, { sseBroadcaster: { broadcast: (event: any) => events.push(event) } },
+      directConfig(), message._originalTimestamp, join(dir, 'project'));
+
+    // Today's text-only request: no image part, no capability lookup.
+    expect(chatBodies).toHaveLength(1);
+    expect(chatBodies[0]).not.toContain('image_url');
+    expect(otherCalls).toEqual([]);
+
+    const id = rows('SELECT id FROM observations')[0].id as number;
+    expect(rows('SELECT observation_id, attachment_id, event_key, label, inspection FROM observation_media_links')).toEqual([
+      { observation_id: id, attachment_id: attachmentId, event_key: message.mediaEventKey, label: 'event1_image1', inspection: 'uninspected' },
+    ]);
+    const manifest = manifestOf(id);
+    expect(manifest).toEqual({ version: 1, attachments: [{ id: attachmentId, label: 'event1_image1', inspection: 'uninspected' }] });
+    expect(manifest.attachments[0].inspection).toBe('uninspected');
+    expect(linksAtConfirm).toBe(1);
+    expect(confirmed).toBe(1);
+    expect(rows('SELECT result_state FROM media_events')).toEqual([{ result_state: 'stored' }]);
+    // A freshly inserted row keeps its first revision; sync is still notified.
+    expect(rows('SELECT CAST(sync_rev AS TEXT) AS rev FROM observations')[0].rev).toBe('1');
+    expect(cloudNotifies).toBeGreaterThan(0);
+
+    const broadcast = events.filter(event => event.type === 'new_observation').map(event => JSON.parse(JSON.stringify(event.observation)));
+    expect(broadcast.map(row => row.media)).toEqual([manifest]);
+  });
+
+  it('a batch without frozen request media links every image of every claimed event to every observation, in event order', async () => {
+    await ingest('toolu_capture_a', redPng, bluePng);
+    await ingest('toolu_capture_b', bluePng);
+    const messages = [pending(queued[0], 1), pending(queued[1], 2)];
+    const [a1, a2] = messages[0].mediaRefs!;
+    const [b1] = messages[1].mediaRefs!;
+    const session = makeSession();
+    // A provider that never sends images (the Claude SDK path) freezes no media.
+    const context = snapshotResponseContext(session);
+    expect(context.media).toBeUndefined();
+    const xml = '<observation><type>discovery</type><title>Before</title></observation>'
+      + '<observation><type>change</type><title>After</title><attachments><attachment>event1_image1</attachment></attachments></observation>';
+    await processAgentResponse(xml, session, {
+      getSessionStore: () => sessions, getMediaStore: () => media, getChromaSync: () => null, getCloudSync: () => ({ notify: () => {} }),
+    } as any, {
+      getClaimedMessages: () => messages, confirmClaimedMessages: async () => 2, resetProcessingToPending: async () => 0,
+    } as any, undefined, 0, Date.now(), 'Claude', join(dir, 'project'), 'haiku', context);
+
+    const expected = [
+      { id: a1.id, label: 'event1_image1', inspection: 'uninspected' },
+      { id: a2.id, label: 'event1_image2', inspection: 'uninspected' },
+      { id: b1.id, label: 'event1_image1', inspection: 'uninspected' },
+    ];
+    const observations = rows('SELECT id FROM observations ORDER BY id').map(row => row.id as number);
+    expect(observations).toHaveLength(2);
+    // Model-emitted labels are not read for capture-only links.
+    for (const id of observations) expect(manifestOf(id)).toEqual({ version: 1, attachments: expected });
+    expect(count(`SELECT COUNT(*) n FROM observation_media_links WHERE inspection='uninspected'`)).toBe(6);
+    expect(count(`SELECT COUNT(*) n FROM observation_media_links WHERE inspection='inspected'`)).toBe(0);
+    expect(rows('SELECT result_state FROM media_events').map(row => row.result_state)).toEqual(['stored', 'stored']);
+  });
+
+  it('a skip links nothing and records the event as skipped', async () => {
+    await readOfPng('toolu_capture_skip', redPng);
+    chatReplies.push(reply('<skip_summary reason="noise" />'));
+    await runTurn(pending(queued[0]), directConfig());
+    expect(count('SELECT COUNT(*) n FROM observation_media_links')).toBe(0);
+    expect(rows('SELECT result_state FROM media_events')).toEqual([{ result_state: 'skipped' }]);
+  });
+
+  it('a failed conversion is not linked; the text outcome still commits', async () => {
+    await readOfPng('toolu_capture_failed', redPng);
+    db.prepare(`UPDATE media_attachments SET state='failed', failure_code='decode_failed'`).run();
+    chatReplies.push(reply('<observation><type>discovery</type><title>Screenshot read</title></observation>'));
+    await runTurn(pending(queued[0]), directConfig());
+    expect(count('SELECT COUNT(*) n FROM observation_media_links')).toBe(0);
+    expect(rows('SELECT metadata FROM observations')[0].metadata).toBeNull();
+    expect(rows('SELECT result_state FROM media_events')).toEqual([{ result_state: 'stored' }]);
+  });
+
+  it('never mutates a replica row: its capture-only refs stay event-level', async () => {
+    await readOfPng('toolu_capture_replica', redPng);
+    makeSession();
+    sessions.storeObservations('openrouter-media-session-1', 'project', [{
+      type: 'discovery', title: 'Screenshot read', subtitle: null, facts: [], narrative: null, concepts: [], files_read: [], files_modified: [],
+    }], null, 1);
+    const replica = rows('SELECT id FROM observations')[0].id;
+    db.prepare(`UPDATE observations SET origin_device_id='other-device', sync_rev='5', synced_at=1 WHERE id=?`).run(replica);
+    chatReplies.push(reply('<observation><type>discovery</type><title>Screenshot read</title></observation>'));
+    await runTurn(pending(queued[0]), directConfig());
+    expect(rows('SELECT metadata, CAST(sync_rev AS TEXT) AS rev, synced_at FROM observations WHERE id=?', replica)[0]).toEqual({ metadata: null, rev: '5', synced_at: 1 });
+    expect(count('SELECT COUNT(*) n FROM observation_media_links')).toBe(0);
+  });
+
+  it('merging into an already-synced native row appends the uninspected ref and emits a higher revision', async () => {
+    await readOfPng('toolu_capture_merge', redPng);
+    const message = pending(queued[0]);
+    const oldRef = { id: '99999999-9999-4999-8999-999999999999', label: 'event1_image1', inspection: 'inspected' };
+    makeSession();
+    sessions.storeObservations('openrouter-media-session-1', 'project', [{
+      type: 'discovery', title: 'Screenshot read', subtitle: null, facts: [], narrative: null, concepts: [], files_read: [], files_modified: [],
+      metadata: JSON.stringify({ cmem_media_v1: { version: 1, attachments: [oldRef] } }),
+    }], null, 1);
+    const existing = rows('SELECT id FROM observations')[0].id;
+    db.prepare(`UPDATE observations SET sync_rev='7', synced_at=123 WHERE id=?`).run(existing);
+    chatReplies.push(reply('<observation><type>discovery</type><title>Screenshot read</title></observation>'));
+    await runTurn(message, directConfig());
+    const row = rows('SELECT CAST(sync_rev AS TEXT) AS rev, synced_at FROM observations WHERE id=?', existing)[0];
+    expect(row).toEqual({ rev: '8', synced_at: null });
+    expect(manifestOf(existing).attachments).toEqual([oldRef, { id: message.mediaRefs![0].id, label: 'event1_image1', inspection: 'uninspected' }]);
   });
 });

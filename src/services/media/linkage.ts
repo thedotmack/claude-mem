@@ -177,6 +177,42 @@ export function writeObservationMediaLinks(
 }
 
 /**
+ * docs/media-contract-v1.md, "Capture-only linkage": when the accepted request
+ * carried none of the turn's images, every observation stored from the turn
+ * links every retained image of the turn's source events as `uninspected`.
+ * Refs come from the durable event refs (never the RAM buffer), in event order
+ * then label order, one per attachment ID. A failed or deleted conversion is
+ * not linked; a converting one is, so it shows as pending until it is ready.
+ */
+export function captureOnlyLinkWrites(
+  db: Database,
+  eventKeys: readonly string[],
+  observationIds: readonly number[],
+  insertedObservationIds: readonly number[],
+): ObservationLinkWrite[] {
+  const refsStatement = db.prepare(`SELECT r.attachment_id AS id, r.label, r.event_key AS eventKey
+    FROM media_event_refs r
+    JOIN media_events e ON e.event_key = r.event_key
+    JOIN media_attachments a ON a.id = r.attachment_id
+    WHERE r.event_key = ? AND e.state = 'retained' AND a.state IN ('converting', 'ready')
+    ORDER BY r.label`);
+  const refs: Array<MediaAttachmentRef & { eventKey: string }> = [];
+  for (const eventKey of new Set(eventKeys)) {
+    for (const row of refsStatement.all(eventKey) as Array<{ id: string; label: string; eventKey: string }>) {
+      if (refs.some(ref => ref.id === row.id)) continue;
+      refs.push({ id: row.id, label: row.label, inspection: 'uninspected', eventKey: row.eventKey });
+    }
+  }
+  if (refs.length === 0) return [];
+  const inserted = new Set(insertedObservationIds);
+  return [...new Set(observationIds)].map(observationId => ({
+    observationId,
+    insertedThisTurn: inserted.has(observationId),
+    refs: refs.map(ref => ({ ...ref })),
+  }));
+}
+
+/**
  * Record each source event's text outcome and its observation rows. A stored
  * result is never downgraded to skipped. Runs in the same transaction as the
  * observation write, before the RAM batch is confirmed.
