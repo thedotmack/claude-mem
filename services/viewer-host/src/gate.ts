@@ -186,7 +186,7 @@ export function createGate(options: GateOptions): (request: Request) => Promise<
       const pageUrl = `${publicOrigin}/`;
       const parsed = hostedUsageEvent(body, hostname, pageUrl);
       if (!parsed) return json(400, { error: 'Unknown usage report.' });
-      const anon = anonymousDistinctId(request.headers.get('cookie'), (options.mintAnonymousId ?? crypto.randomUUID)());
+      const anon = anonymousDistinctId(request.headers.get('cookie'), options.mintAnonymousId?.() ?? crypto.randomUUID());
       const headers: Record<string, string> = { 'Cache-Control': 'no-store' };
       if (anon.setCookie) headers['Set-Cookie'] = anonCookie(anon.id, secure);
       try {
