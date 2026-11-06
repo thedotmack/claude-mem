@@ -175,6 +175,16 @@ describe('deadline-paused observer resumes without a new hook (#4204)', () => {
       buffer,
       messageId,
       stats: () => ({ starts, processedId, confirmedCount, finalizeCalls }),
+      /** A later captured event buffers new work, as ingest does, without starting anything. */
+      captureFreshWork() {
+        return buffer.enqueue(session.sessionDbId, {
+          type: 'observation',
+          tool_name: 'Read',
+          tool_input: '{"file_path":"later.txt"}',
+          tool_response: 'later content',
+          prompt_number: 2,
+        });
+      },
       async startInitial() {
         // This is the final hook from an ended session; there are no later calls.
         await routes.ensureGeneratorRunning(session.sessionDbId, 'summarize');
@@ -294,7 +304,7 @@ describe('deadline-paused observer resumes without a new hook (#4204)', () => {
       expect(scheduled).toHaveLength(MAX_UNATTENDED_GATEWAY_RESUMES);
       expect(harness.buffer.getPendingCount(harness.session.sessionDbId)).toBe(1);
       // The periodic sweep honours the same spent budget.
-      harness.session.pausedReason = 'quota';
+      harness.session.pausedReason = 'rate_limit';
       expect(harness.sessionManager.getResumableSessionIds()).toEqual([]);
     });
 
@@ -375,28 +385,34 @@ describe('deadline-paused observer resumes without a new hook (#4204)', () => {
       expect(harness.stats().finalizeCalls).toBe(0);
     });
 
-    it('counts the move to the Anthropic plan after a cmem fallback against the same budget', async () => {
+    it('a cmem allowance refusal discards the buffered work; the move to the Anthropic plan sends none of it', async () => {
       process.env.CLAUDE_MEM_PROVIDER = 'openrouter';
       process.env.CLAUDE_MEM_OPENROUTER_BASE_URL = 'https://cmem.ai/api/inference/v1';
       const harness = makeHarness(0);
+      const sessionDbId = harness.session.sessionDbId;
       const allowanceSpent = () => new ClassifiedProviderError('Your memory allowance is used up', {
         kind: 'quota_exhausted',
         code: 'allowance_exhausted',
       });
       try {
-        harness.session.consecutiveUnattendedGatewayResumes = MAX_UNATTENDED_GATEWAY_RESUMES - 1;
-
-        // The last resume the budget allows moves the work to Claude at once...
         await runPausedGeneration(harness, 'quota:quota_exhausted', allowanceSpent());
-        expect(harness.session.scheduledResumeTimer).toBeDefined();
-        cancelScheduledResume(harness.session);
+        expect(harness.buffer.getPendingCount(sessionDbId)).toBe(0);
+        expect(harness.session.pausedReason).toBe('quota');
+        expect(harness.sessionManager.getSession(sessionDbId)).toBe(harness.session);
 
-        // ...and past it the work waits for the next hook, still buffered.
-        await runPausedGeneration(harness, 'quota:quota_exhausted', allowanceSpent());
-        expect(harness.session.scheduledResumeTimer).toBeUndefined();
-        expect(harness.buffer.getPendingCount(harness.session.sessionDbId)).toBe(1);
-        expect(harness.sessionManager.getSession(harness.session.sessionDbId)).toBe(harness.session);
+        // Any unattended resume the fallback scheduled finds nothing to send.
+        await new Promise<void>(resolve => realSetTimeout(resolve, 5));
+        expect(harness.stats().starts).toBe(0);
+        expect(harness.sessionManager.getResumableSessionIds()).toEqual([]);
+
+        // The next captured event starts fresh work normally.
+        const freshId = harness.captureFreshWork();
+        await harness.routes.ensureGeneratorRunning(sessionDbId, 'observation');
+        await harness.session.generatorPromise;
+        expect(harness.stats().starts).toBe(1);
+        expect(harness.stats().processedId).toBe(freshId);
       } finally {
+        cancelScheduledResume(harness.session);
         clearProFallback();
       }
     });
@@ -406,7 +422,8 @@ describe('deadline-paused observer resumes without a new hook (#4204)', () => {
       process.env.CLAUDE_MEM_OPENROUTER_BASE_URL = 'https://cmem.ai/api/inference/v1';
       const harness = makeHarness(0);
       const sessionDbId = harness.session.sessionDbId;
-      harness.session.pausedReason = 'quota';
+      // A rate limit keeps its buffered work for the sweep; quota/auth discard it.
+      harness.session.pausedReason = 'rate_limit';
       expect(harness.sessionManager.getResumableSessionIds()).toEqual([sessionDbId]);
 
       harness.session.consecutiveUnattendedGatewayResumes = MAX_UNATTENDED_GATEWAY_RESUMES;
@@ -453,7 +470,7 @@ describe('deadline-paused observer resumes without a new hook (#4204)', () => {
       const harness = makeHarness(0);
       const sessionDbId = harness.session.sessionDbId;
       harness.session.platformSource = platformSource;
-      harness.session.pausedReason = 'quota';
+      harness.session.pausedReason = 'rate_limit';
       harness.session.consecutiveUnattendedGatewayResumes = MAX_UNATTENDED_GATEWAY_RESUMES;
       const sweep = harness.sessionManager.getResumableSessionIds().includes(sessionDbId);
 
@@ -571,8 +588,13 @@ describe('deadline-paused observer resumes without a new hook (#4204)', () => {
     expect(harness.buffer.getPendingCount(harness.session.sessionDbId)).toBe(0);
   });
 
-  for (const reason of ['quota:rate_limit', 'auth:auth_invalid']) {
-    it('cancels a prior transport timer when a later ' + reason + ' pause takes over', async () => {
+  // Quota and auth exits discard buffered work (observer-lifecycle.md). Fresh
+  // work buffered after them must reach a provider only through a new start's
+  // gates, never through a transport timer left over from before.
+  const DISCARDING_REASONS = ['quota:quota_exhausted', 'auth:auth_invalid'];
+
+  for (const reason of DISCARDING_REASONS) {
+    it('cancels a prior transport timer when a later ' + reason + ' exit discards the work', async () => {
       const harness = makeHarness(1);
       await harness.startInitial();
 
@@ -582,8 +604,10 @@ describe('deadline-paused observer resumes without a new hook (#4204)', () => {
         completionHandler: { finalizeSession: async () => {} } as any,
       });
       expect(harness.sessionManager.getSession(harness.session.sessionDbId)).toBe(harness.session);
-      expect(harness.buffer.getPendingCount(harness.session.sessionDbId)).toBe(1);
+      expect(harness.session.pausedReason).toBe(reason.split(':')[0]);
+      expect(harness.buffer.getPendingCount(harness.session.sessionDbId)).toBe(0);
 
+      harness.captureFreshWork();
       await harness.fireResume(0);
       expect(harness.stats().starts).toBe(1);
       expect(scheduled).toHaveLength(1);
@@ -634,25 +658,27 @@ describe('deadline-paused observer resumes without a new hook (#4204)', () => {
     expect(harness.stats().processedId).toBe(harness.messageId);
   });
 
-  for (const reason of ['quota:rate_limit', 'auth:auth_invalid']) {
-    it('does not restore a ' + reason + ' pause after subprocess teardown fails', async () => {
+  for (const reason of DISCARDING_REASONS) {
+    it('does not restore a transport resume after a ' + reason + ' exit when teardown fails', async () => {
       const harness = makeHarness(1);
       await harness.startInitial();
       await handleGeneratorExit(harness.session, reason, {
         sessionManager: harness.sessionManager,
         completionHandler: { finalizeSession: async () => {} } as any,
       });
+      expect(harness.buffer.getPendingCount(harness.session.sessionDbId)).toBe(0);
+      harness.captureFreshWork();
       const scheduledBeforeDelete = scheduled.length;
 
       await failDeleteDuringSubprocessExit(harness.sessionManager, harness.session.sessionDbId);
 
       expect(harness.sessionManager.isSessionDeleting(harness.session.sessionDbId)).toBe(false);
       expect(harness.session.abortReason).toBeNull();
-      expect(harness.buffer.getPendingCount(harness.session.sessionDbId)).toBe(1);
       expect(scheduled).toHaveLength(scheduledBeforeDelete);
+      expect(harness.stats().starts).toBe(1);
     });
 
-    it('does not restore transport work when ' + reason + ' takes over during failing teardown', async () => {
+    it('does not restore transport work when a ' + reason + ' exit takes over during failing teardown', async () => {
       const harness = makeHarness(1);
       await harness.startInitial();
       expect(scheduled).toHaveLength(1);
@@ -665,11 +691,12 @@ describe('deadline-paused observer resumes without a new hook (#4204)', () => {
           sessionManager: harness.sessionManager,
           completionHandler: { finalizeSession: async () => {} } as any,
         });
+        expect(harness.buffer.getPendingCount(harness.session.sessionDbId)).toBe(0);
+        harness.captureFreshWork();
       });
 
       expect(harness.sessionManager.isSessionDeleting(harness.session.sessionDbId)).toBe(false);
       expect(harness.sessionManager.getSession(harness.session.sessionDbId)).toBe(harness.session);
-      expect(harness.buffer.getPendingCount(harness.session.sessionDbId)).toBe(1);
       expect(scheduled).toHaveLength(1);
       await harness.fireResume(0);
       expect(harness.stats().starts).toBe(1);

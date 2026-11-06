@@ -2,8 +2,10 @@
 // does this cooldown withhold requests from the Claude account selected now?
 // Only admission asked it (#4272). After CLAUDE_MEM_CLAUDE_CONFIG_DIR moved from
 // an exhausted account A to account B, the resume sweep (#4110) held B's
-// backlog behind A's breaker for up to 30 minutes, and SessionStart told B that
-// capture was paused. The first two cases are the Wave 1+2 gate reviewer's repro.
+// paused work behind A's breaker for up to 30 minutes, and SessionStart told B
+// that capture was paused. The first two cases are the Wave 1+2 gate reviewer's
+// repro. Quota and auth exits discard their buffered work (observer-lifecycle.md),
+// so the sweep only ever sees pauses that keep it; a rate limit is one.
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { rmSync } from 'fs';
 import { join } from 'path';
@@ -37,7 +39,8 @@ function fixture() {
   const manager = new SessionManager(db as any);
   manager.initializeSession(1, 'u', 1);
   manager.getMessageBuffer().enqueue(1, { type: 'observation', tool_name: 'Read', tool_input: { path: 'f' } });
-  manager.getSession(1)!.pausedReason = 'quota';
+  // A short rate limit keeps the bounded live buffer; quota/auth would not.
+  manager.getSession(1)!.pausedReason = 'rate_limit';
   const agent = { startSession: mock(() => new Promise<void>(() => {})) };
   const routes = new SessionRoutes(manager, db as any, agent as any, agent as any, agent as any, {} as any, {} as any, {} as any);
   spyOn(routes as any, 'applyTierRouting').mockResolvedValue(undefined);
