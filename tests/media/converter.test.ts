@@ -129,8 +129,80 @@ test('canonical byte ceiling rejects output without silently lowering fidelity',
   await assert.rejects(convertMedia(await noisyJpeg(1200), 'image/jpeg'), rejects('canonical_too_large'));
 });
 
-test('derivative byte ceiling rejects output without silently lowering fidelity', { timeout: 20_000 }, async () => {
-  await assert.rejects(convertMedia(await noisyJpeg(600), 'image/jpeg'), rejects('derivative_too_large'));
+// Low-amplitude noise PNG: its near-lossless derivative is over 256 KiB but it
+// compresses far below that as lossy quality 80, like a dense real screenshot.
+async function dimNoisePng(dimension: number): Promise<Buffer> {
+  const pixels = Buffer.alloc(dimension * dimension * 3);
+  let state = 123456789;
+  for (let i = 0; i < pixels.length; i++) {
+    state ^= state << 13; state ^= state >>> 17; state ^= state << 5;
+    pixels[i] = 100 + ((state & 255) % 32);
+  }
+  return sharp(pixels, { raw: { width: dimension, height: dimension, channels: 3 } }).png().toBuffer();
+}
+
+const derivativeBytes = async (source: Buffer, webp: sharp.WebpOptions) => sharp(source).autoOrient()
+  .resize({ width: MEDIA_LIMITS.maxDerivativeDimension, height: MEDIA_LIMITS.maxDerivativeDimension, fit: 'inside', withoutEnlargement: true })
+  .webp(webp).toBuffer();
+
+test('a screenshot derivative that fits first time is the near-lossless quality 90 encode', async () => {
+  const source = await makePng(1700, 900);
+  const result = await convertMedia(source, 'image/png');
+  assert.deepEqual(result.llm.bytes, await derivativeBytes(source, { nearLossless: true, quality: 90, effort: 4 }));
+});
+
+test('an oversized screenshot derivative is encoded once more as lossy quality 80 and fits', { timeout: 20_000 }, async () => {
+  const source = await dimNoisePng(600);
+  const firstTry = await derivativeBytes(source, { nearLossless: true, quality: 90, effort: 4 });
+  assert.ok(firstTry.length > MEDIA_LIMITS.maxDerivativeBytes, 'fixture must need the retry');
+  const result = await convertMedia(source, 'image/png');
+  assert.equal(result.recipe, 'screenshot-v1');
+  assert.ok(result.llm.byteLength <= MEDIA_LIMITS.maxDerivativeBytes);
+  assert.deepEqual(result.llm.bytes, await derivativeBytes(source, { quality: 80, effort: 4 }));
+  // The canonical copy keeps the lossless recipe.
+  assert.deepEqual(result.viewer.bytes, await sharp(source).autoOrient().webp({ lossless: true, effort: 4 }).toBuffer());
+});
+
+test('a screenshot derivative still over the ceiling at quality 80 is rejected', { timeout: 20_000 }, async () => {
+  const source = await noisyJpeg(800);
+  assert.ok((await derivativeBytes(source, { quality: 80, effort: 4 })).length > MEDIA_LIMITS.maxDerivativeBytes,
+    'fixture must stay too large after the retry');
+  await assert.rejects(convertMedia(source, 'image/jpeg'), rejects('derivative_too_large'));
+});
+
+test('photo-v1 has no derivative retry', { timeout: 20_000 }, async () => {
+  const source = await noisyJpeg(600);
+  assert.ok((await derivativeBytes(source, { quality: 90, effort: 4 })).length > MEDIA_LIMITS.maxDerivativeBytes);
+  await assert.rejects(convertMedia(source, 'image/jpeg', 'photo-v1'), rejects('derivative_too_large'));
+});
+
+test('the application deadline covers the derivative retry encode', { timeout: 20_000 }, async () => {
+  const source = await dimNoisePng(600);
+  // Wrap the real decoder so the quality 80 retry encode never settles until
+  // released; only the application deadline can end the conversion.
+  let retryStarted = false;
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const slowRetryDecoder = Object.assign((input: Buffer, inputOptions: sharp.SharpOptions) => {
+    const instance = sharp(input, inputOptions);
+    const webp = instance.webp.bind(instance);
+    instance.webp = (webpOptions?: sharp.WebpOptions) => {
+      if (webpOptions?.quality === 80 && !webpOptions.nearLossless) {
+        retryStarted = true;
+        const toBuffer = instance.toBuffer.bind(instance) as (options: { resolveWithObject: true }) => Promise<unknown>;
+        (instance as unknown as { toBuffer: unknown }).toBuffer = async (options: { resolveWithObject: true }) => {
+          await held;
+          return toBuffer(options);
+        };
+      }
+      return webp(webpOptions);
+    };
+    return instance;
+  }, sharp) as unknown as typeof sharp;
+  const convert = createMediaConverter({ deadlineMs: 3000, loadDecoder: async () => slowRetryDecoder });
+  await assert.rejects(convert(source, 'image/png'), rejects('conversion_timeout'));
+  assert.equal(retryStarted, true, 'the timeout must come from the retry encode');
+  release();
 });
 
 test('real decode and encode work is included in the application deadline', async () => {

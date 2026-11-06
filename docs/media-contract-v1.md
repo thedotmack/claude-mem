@@ -42,7 +42,7 @@ label; it never includes an arbitrary decoder exception message.
 | Decoded pixels | 24,000,000 |
 | Either source dimension | 8192 |
 | Conversion admission | One active conversion, fail busy immediately |
-| Conversion deadline | 5 seconds total metadata and both encodes |
+| Conversion deadline | 5 seconds total metadata and every encode, including the one derivative retry |
 | LLM derivative | 256 KiB; longest edge 1536; full frame |
 | Local encoded inline image bytes | 4 MiB aggregate; event JSON still below existing 5mb cap |
 | Gateway decoded image bytes | 1 MiB aggregate, at most four derivatives |
@@ -51,13 +51,22 @@ label; it never includes an arbitrary decoder exception message.
 | Manifest / provenance | 8192 UTF-8 bytes each |
 | Owner-only local locator | 4096 characters |
 
-Reject any source or result that cannot meet these bounds. No adaptive quality
-loop, semantic cropping, or automatic content classification is in v1.
+Reject any source or result that cannot meet these bounds. The one retry
+below is the only second encode. No adaptive quality loop, semantic cropping,
+or automatic content classification is in v1.
 Recipes are explicit caller choices: `screenshot-v1` uses lossless canonical
 WebP and a near-lossless quality 90 derivative; `photo-v1` uses quality 90 for
-both variants. Alpha is preserved. Both remove metadata, auto-orient
-and produce retained canonical and inference derivatives. Store recipe and
-actual `sharp.versions` encoder version with every conversion.
+both variants. When the `screenshot-v1` derivative is over 256 KiB, encode it
+once more at the same size as lossy WebP quality 80, and reject with
+`derivative_too_large` only if that is still over 256 KiB. One retry, never a
+loop. The canonical copy, `photo-v1`, the recipe name and the manifest version
+do not change, and which derivative encode was kept is not recorded. Reason:
+on 2026-11-05, 27 real screenshots from a developer's Mac were run through
+these settings; 3 had a near-lossless derivative over 256 KiB, and all 27 fit
+as lossy quality 80 (largest 121 KiB). Alpha is preserved. Both remove
+metadata, auto-orient and produce retained canonical and inference
+derivatives. Store recipe and actual `sharp.versions` encoder version with
+every conversion.
 
 An actual platform tool-use/event ID defines event identity when available.
 The fallback is the tuple `(transcript_id,record_index,record_sha256)` for a

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import type sharp from 'sharp';
+import type { WebpOptions } from 'sharp';
 import { MEDIA_LIMITS, MEDIA_RECIPES, MediaError, type MediaRecipe } from '../../shared/media-contract.js';
 
 type Decoder = typeof sharp;
@@ -39,6 +40,15 @@ function assertStillPng(bytes: Buffer): void {
     offset += length + 12;
   }
 }
+
+/**
+ * The screenshot-v1 derivative is retried once as lossy WebP quality 80 when
+ * its near-lossless quality 90 encode is over MEDIA_LIMITS.maxDerivativeBytes
+ * (docs/media-contract-v1.md, bounds and recipes). Quality 80 is measured, not
+ * picked by feel: on 2026-11-05, 3 of 27 real screenshots had a near-lossless
+ * derivative over 256 KiB, and all 27 fit as lossy quality 80 (largest 121 KiB).
+ */
+const SCREENSHOT_DERIVATIVE_RETRY_WEBP: WebpOptions = { quality: 80, effort: 4 };
 
 declare const __CMEM_MEDIA_STANDALONE__: boolean;
 async function loadDecoder(): Promise<Decoder> {
@@ -112,7 +122,7 @@ export function createMediaConverter(options: {
         if (!width || !height) throw new MediaError('invalid_image');
         if (width > MEDIA_LIMITS.maxDimension || height > MEDIA_LIMITS.maxDimension) throw new MediaError('dimension_limit');
         if (width * height > MEDIA_LIMITS.maxPixels) throw new MediaError('pixel_limit');
-        const encode = async (derivative: boolean): Promise<MediaVariant> => {
+        const encode = async (derivative: boolean, webpOptions: WebpOptions): Promise<MediaVariant> => {
           checkDeadline();
           // autoOrient applies EXIF orientation; default output omits all
           // input EXIF/ICC/XMP/IPTC/GPS. Do not call keepMetadata/withMetadata.
@@ -128,20 +138,22 @@ export function createMediaConverter(options: {
               fit: 'inside', withoutEnlargement: true,
             });
           }
-          const webpOptions = recipe === 'screenshot-v1'
-            ? (derivative ? { nearLossless: true, quality: 90, effort: 4 } : { lossless: true, effort: 4 })
-            : { quality: 90, effort: 4 };
           const { data, info } = await pipeline.webp(webpOptions)
             .timeout({ seconds: MEDIA_LIMITS.conversionTimeoutSeconds })
             .toBuffer({ resolveWithObject: true });
           checkDeadline();
-          const maxBytes = derivative ? MEDIA_LIMITS.maxDerivativeBytes : MEDIA_LIMITS.maxCanonicalBytes;
-          if (data.length > maxBytes) throw new MediaError(derivative ? 'derivative_too_large' : 'canonical_too_large');
           return { bytes: data, sha256: createHash('sha256').update(data).digest('hex'),
             width: info.width, height: info.height, byteLength: data.length, mimeType: 'image/webp' };
         };
-        const viewer = await encode(false);
-        const llm = await encode(true);
+        const screenshot = recipe === 'screenshot-v1';
+        const viewer = await encode(false, screenshot ? { lossless: true, effort: 4 } : { quality: 90, effort: 4 });
+        if (viewer.byteLength > MEDIA_LIMITS.maxCanonicalBytes) throw new MediaError('canonical_too_large');
+        let llm = await encode(true, screenshot ? { nearLossless: true, quality: 90, effort: 4 } : { quality: 90, effort: 4 });
+        // One retry, never a loop; the deadline above still covers it.
+        if (screenshot && llm.byteLength > MEDIA_LIMITS.maxDerivativeBytes) {
+          llm = await encode(true, SCREENSHOT_DERIVATIVE_RETRY_WEBP);
+        }
+        if (llm.byteLength > MEDIA_LIMITS.maxDerivativeBytes) throw new MediaError('derivative_too_large');
         return {
           viewer, llm, source: {
             sha256: createHash('sha256').update(bytes).digest('hex'),
