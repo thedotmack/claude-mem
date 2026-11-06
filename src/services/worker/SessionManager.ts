@@ -842,6 +842,28 @@ export class SessionManager {
     return (health?.authRecoverySuccesses?.[session.pausedAuthScope] ?? 0) > session.pausedAtMs;
   }
 
+  /**
+   * Sessions the response-stall pacer gave up on (#5405): its last exit spent
+   * the bounded stall resumes (stallResumesExhaustedAt, cleared by any
+   * generator start), no generator is running, no resume of any kind is
+   * scheduled, and buffered messages remain. The stall counter alone is not
+   * enough: it resets only on an answered turn, so a session restarted after
+   * exhaustion that later paused with its own retry timer would still look
+   * abandoned. Such a session waits for its next captured event or an operator retry —
+   * for an ended content session that may never come, which makes the queue
+   * look stuck while every active session is being served. Reporting is all
+   * this does: nothing here resumes or discards them.
+   */
+  getAbandonedStallSessions(): Array<{ sessionDbId: number; pendingCount: number }> {
+    return Array.from(this.sessions.values())
+      .filter(session => session.stallResumesExhaustedAt !== undefined
+        && !session.generatorPromise
+        && session.stallResumeTimer === undefined
+        && session.scheduledResumeTimer === undefined
+        && this.buffer.getPendingCount(session.sessionDbId) > 0)
+      .map(session => ({ sessionDbId: session.sessionDbId, pendingCount: this.buffer.getPendingCount(session.sessionDbId) }));
+  }
+
   getTotalQueueDepth(): number {
     return this.buffer.getTotalDepth();
   }
