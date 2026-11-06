@@ -83,7 +83,12 @@ export function readAgentRecords(database, { observationLimit = 300, summaryLimi
   const calls = safeRead(database, `SELECT id, project, platform_source, agent_id, agent_type, session_db_id, memory_session_id, content_session_id, prompt_number, tool_input, created_at_epoch
     FROM tool_uses WHERE tool_name IN (SELECT DISTINCT tool_name FROM tool_uses WHERE tool_name LIKE '%work_state_write%')
     AND created_at_epoch >= ? ORDER BY id DESC LIMIT ?`, [workSinceEpoch, workCallLimit]);
-  const observations = safeRead(database, `SELECT id, project, memory_session_id, content_session_id, agent_id, agent_type, prompt_number, title, subtitle, type, created_at_epoch
+  // No migration adds observations.content_session_id; only databases from older releases have it. Selecting it on a
+  // fresh database would make safeRead return no observations at all, so a database without it reads NULL there, the
+  // same as a row whose column is empty.
+  const observationContentSession = safeRead(database, 'PRAGMA table_info(observations)').some((column) => column.name === 'content_session_id')
+    ? 'content_session_id' : 'NULL AS content_session_id';
+  const observations = safeRead(database, `SELECT id, project, memory_session_id, ${observationContentSession}, agent_id, agent_type, prompt_number, title, subtitle, type, created_at_epoch
     FROM observations ORDER BY created_at_epoch DESC, id DESC LIMIT ?`, [observationLimit]);
   // Image refs come from their own read: safeRead turns a missing column into no rows, so a database without
   // `metadata` then loses only its images, never its observations. Only the validated refs are kept on the row;

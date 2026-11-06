@@ -8,19 +8,23 @@ const NOW = Date.parse('2026-11-05T12:00:00Z');
 const ref = (n: number) => ({ id: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`, label: `image-${n}`, inspection: 'uninspected' });
 const manifest = (...ids: number[]) => JSON.stringify({ cmem_media_v1: { version: 1, attachments: ids.map(ref) } });
 
-/** A real migrated database: one conversation with one ask and four observations from that turn. */
-function databaseWithImages() {
+/**
+ * A real migrated database: one conversation with one ask and four observations from that turn. Databases from older
+ * releases also carry observations.content_session_id; SessionStore's own schema never adds it (`fresh: true` keeps it out).
+ */
+function databaseWithImages({ fresh = false } = {}) {
   const database = new Database(':memory:');
   new SessionStore(database);
-  // Installed databases carry this column (the work view reads it); SessionStore's own schema does not add it.
-  if (!database.prepare('PRAGMA table_info(observations)').all().some((column: any) => column.name === 'content_session_id')) {
-    database.exec('ALTER TABLE observations ADD COLUMN content_session_id TEXT');
-  }
+  const hasContentSession = database.prepare('PRAGMA table_info(observations)').all().some((column: any) => column.name === 'content_session_id');
+  if (!fresh && !hasContentSession) database.exec('ALTER TABLE observations ADD COLUMN content_session_id TEXT');
   database.prepare(`INSERT INTO sdk_sessions (id, content_session_id, memory_session_id, project, platform_source, user_prompt, started_at, started_at_epoch, status)
     VALUES (1, 'content-1', 'memory-1', 'repo', 'claude', 'Build the image gallery', '2026-11-05T11:00:00Z', ?, 'active')`).run(NOW - 3_600_000);
   database.prepare(`INSERT INTO user_prompts (id, session_db_id, content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
     VALUES (10, 1, 'content-1', 1, 'Build the image gallery', '2026-11-05T11:00:00Z', ?)`).run(NOW - 3_600_000);
-  const observation = database.prepare(`INSERT INTO observations (id, memory_session_id, content_session_id, project, prompt_number, type, title, metadata, created_at, created_at_epoch)
+  const observation = database.prepare(fresh
+    ? `INSERT INTO observations (id, memory_session_id, project, prompt_number, type, title, metadata, created_at, created_at_epoch)
+    VALUES (?, 'memory-1', 'repo', 1, 'discovery', ?, ?, '2026-11-05T11:30:00Z', ?)`
+    : `INSERT INTO observations (id, memory_session_id, content_session_id, project, prompt_number, type, title, metadata, created_at, created_at_epoch)
     VALUES (?, 'memory-1', 'content-1', 'repo', 1, 'discovery', ?, ?, '2026-11-05T11:30:00Z', ?)`);
   observation.run(1, 'Read the first screenshot', manifest(1, 2), NOW - 40 * 60_000);
   observation.run(2, 'Planned the layout', null, NOW - 30 * 60_000);
@@ -47,6 +51,15 @@ describe('observation images ride the work view snapshot', () => {
     const wire = JSON.stringify(view);
     expect(wire).not.toContain('"metadata"');
     expect(wire).not.toContain('cmem_media_v1');
+  });
+
+  it('a freshly migrated database (no observations.content_session_id) still shows its observations and images', () => {
+    const database = databaseWithImages({ fresh: true });
+    expect(database.prepare('PRAGMA table_info(observations)').all().some((column: any) => column.name === 'content_session_id')).toBe(false);
+    const state = reduceWorkState([], { currentProject: 'repo', currentProjectScope: ['repo'] });
+    const [request] = buildAgentView(state, readAgentRecords(database, { workState: state, now: NOW }), { now: NOW }).humanRequests;
+    expect(request.activity.filter((entry: any) => entry.kind === 'observation')).toHaveLength(4);
+    expect(request.media).toEqual({ count: 5, preview: [ref(2), ref(3), ref(4), ref(5)] });
   });
 
   it('a database without the metadata column keeps its observations and shows no images', () => {
