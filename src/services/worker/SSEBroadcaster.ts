@@ -3,11 +3,46 @@ import type { Response } from 'express';
 import { logger } from '../../utils/logger.js';
 import type { SSEEvent, SSEClient } from '../worker-types.js';
 
+// SSE is a live feed, not a durable queue. Disconnect a stalled consumer
+// rather than retaining an unbounded history; EventSource can reconnect.
+// Why 1 MiB: the largest frames this broadcaster sends are a single
+// new_observation and initial_load (the project catalog). Measured on a
+// 3 GB database (223,722 observations, 743 projects) on 2026-11-05, the
+// largest observation's text fields total about 48 K characters and the
+// catalog's project names about 41 K, so 1 MiB holds roughly 20 of the largest
+// frames before a consumer that stopped reading is cut off. A frame
+// larger than the whole budget is still written when the client is not
+// blocked; the cap only applies to frames queued behind backpressure.
+const MAX_PENDING_BYTES = 1024 * 1024;
+
+interface ClientQueue {
+  blocked: boolean;
+  frames: Array<{ data: string; bytes: number }>;
+  bytes: number;
+  onDrain: () => void;
+}
+
 export class SSEBroadcaster {
   private sseClients: Set<SSEClient> = new Set();
 
+  private queues = new Map<SSEClient, ClientQueue>();
+
   addClient(res: Response): void {
+    if (this.sseClients.has(res)) return;
     this.sseClients.add(res);
+    const queue: ClientQueue = {
+      blocked: false, frames: [], bytes: 0,
+      onDrain: () => {
+        queue.blocked = false;
+        while (this.queues.get(res) === queue && !queue.blocked && queue.frames.length > 0) {
+          const frame = queue.frames.shift()!;
+          queue.bytes -= frame.bytes;
+          this.writeFrame(res, frame.data);
+        }
+      },
+    };
+    this.queues.set(res, queue);
+    res.on('drain', queue.onDrain);
     logger.debug('WORKER', 'Client connected', { total: this.sseClients.size });
 
     const socket = res.socket;
@@ -29,6 +64,13 @@ export class SSEBroadcaster {
   }
 
   removeClient(res: Response): void {
+    const queue = this.queues.get(res);
+    if (queue) {
+      res.off('drain', queue.onDrain);
+      queue.frames.length = 0;
+      queue.bytes = 0;
+      this.queues.delete(res);
+    }
     this.sseClients.delete(res);
     logger.debug('WORKER', 'Client disconnected', { total: this.sseClients.size });
   }
@@ -58,8 +100,28 @@ export class SSEBroadcaster {
       this.removeClient(res);
       return;
     }
+    const queue = this.queues.get(res);
+    if (!queue) return;
+    if (queue.blocked) {
+      const bytes = Buffer.byteLength(data, 'utf8');
+      if (queue.bytes + bytes > MAX_PENDING_BYTES) {
+        logger.warn('WORKER', 'SSE client stopped reading; disconnecting it and dropping its queued frames (it can reconnect)', {
+          pendingBytes: queue.bytes,
+          pendingFrames: queue.frames.length,
+          nextFrameBytes: bytes,
+          maxPendingBytes: MAX_PENDING_BYTES,
+        });
+        this.disconnectFailedClient(res);
+        return;
+      }
+      queue.frames.push({ data, bytes });
+      queue.bytes += bytes;
+      return;
+    }
     try {
-      res.write(data);
+      // false means this frame was accepted, but no more may be written
+      // until drain. Never enqueue it again or it would be delivered twice.
+      queue.blocked = !res.write(data);
     } catch (error) {
       this.disconnectFailedClient(res);
       logger.debug('WORKER', 'SSE client write failed', undefined, error instanceof Error ? error : undefined);
