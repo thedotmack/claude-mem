@@ -46,7 +46,7 @@ it('a Read of an image file over 3 MiB and over 8192 px is captured and fitted, 
   const metadata = store.getMetadata(result.refs[0]!.id);
   expect(metadata.state).toBe('ready');
   expect(Math.max(metadata.viewer!.width, metadata.viewer!.height)).toBeLessThanOrEqual(MEDIA_LIMITS.maxDimension);
-  expect(metadata.viewer!.byteLength).toBeLessThanOrEqual(MEDIA_LIMITS.maxCanonicalBytes);
+  expect(metadata.viewer!.byteLength).toBeLessThanOrEqual(MEDIA_LIMITS.maxEncodedCanonicalBytes);
   expect(metadata.llm!.byteLength).toBeLessThanOrEqual(MEDIA_LIMITS.maxDerivativeBytes);
 });
 

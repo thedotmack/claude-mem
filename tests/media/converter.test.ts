@@ -78,7 +78,7 @@ test('a source over 3 MiB is kept: the local file bound is 96 MiB', { timeout: 2
   assert.ok(source.length > MEDIA_LIMITS.maxSourceBytes, 'fixture must be over the old 3 MiB bound');
   const result = await convertMedia(source, 'image/png');
   assert.equal(result.source.byteLength, source.length);
-  assert.ok(result.viewer.byteLength <= MEDIA_LIMITS.maxCanonicalBytes);
+  assert.ok(result.viewer.byteLength <= MEDIA_LIMITS.maxEncodedCanonicalBytes);
   assert.equal(LOCAL_MAX_SOURCE_BYTES, 96 * 1024 * 1024);
 });
 
@@ -227,64 +227,52 @@ async function noisyJpeg(dimension: number): Promise<Buffer> {
     .jpeg({ quality: 90 }).toBuffer();
 }
 
-test('a canonical over 3 MiB as lossless is kept as lossy quality 90 at full size', { timeout: 20_000 }, async () => {
-  // Higher input quality reaches the canonical byte limit with fewer pixels.
-  const source = await noisyJpeg(1200);
-  const lossless = await sharp(source).autoOrient().webp({ lossless: true, effort: 4 }).toBuffer();
-  assert.ok(lossless.length > MEDIA_LIMITS.maxCanonicalBytes, 'fixture must be over the canonical ceiling as lossless');
-  const result = await convertMedia(source, 'image/jpeg');
-  assert.equal(result.viewer.width, 1200);
-  assert.deepEqual(result.viewer.bytes, await sharp(source).autoOrient().webp({ quality: 90, effort: 4 }).toBuffer());
-});
-
-test('a canonical still over 3 MiB at quality 90 is shrunk until it fits', { timeout: 30_000 }, async () => {
-  const source = await noisyJpeg(2600);
-  assert.ok((await sharp(source).webp({ quality: 90, effort: 4 }).toBuffer()).length > MEDIA_LIMITS.maxCanonicalBytes,
-    'fixture must stay over the ceiling at quality 90');
-  const result = await convertMedia(source, 'image/jpeg');
-  assert.ok(result.viewer.byteLength <= MEDIA_LIMITS.maxCanonicalBytes);
-  assert.ok(result.viewer.width < 2600 && result.viewer.width === result.viewer.height);
-  assert.ok(result.llm.byteLength <= MEDIA_LIMITS.maxDerivativeBytes);
-});
-
-// Low-amplitude noise PNG: its near-lossless derivative is over 256 KiB but it
-// compresses far below that as lossy quality 80, like a dense real screenshot.
-async function dimNoisePng(dimension: number): Promise<Buffer> {
-  const pixels = Buffer.alloc(dimension * dimension * 3);
-  let state = 123456789;
-  for (let i = 0; i < pixels.length; i++) {
-    state ^= state << 13; state ^= state >>> 17; state ^= state << 5;
-    pixels[i] = 100 + ((state & 255) % 32);
-  }
-  return sharp(pixels, { raw: { width: dimension, height: dimension, channels: 3 } }).png().toBuffer();
-}
+// A lossless WebP has a VP8L bitstream chunk; a lossy one has "VP8 ".
+const isLossyWebp = (bytes: Buffer) => bytes.includes('VP8 ') && !bytes.includes('VP8L');
 
 const derivativeBytes = async (source: Buffer, webp: sharp.WebpOptions) => sharp(source).autoOrient()
   .resize({ width: MEDIA_LIMITS.maxDerivativeDimension, height: MEDIA_LIMITS.maxDerivativeDimension, fit: 'inside', withoutEnlargement: true })
   .webp(webp).toBuffer();
 
-test('a screenshot derivative that fits first time is the near-lossless quality 90 encode', async () => {
+test('every copy of both recipes is lossy WebP: quality 80 for screenshot-v1, 90 for photo-v1', async () => {
   const source = await makePng(1700, 900);
-  const result = await convertMedia(source, 'image/png');
-  assert.deepEqual(result.llm.bytes, await derivativeBytes(source, { nearLossless: true, quality: 90, effort: 4 }));
+  const screenshot = await convertMedia(source, 'image/png');
+  assert.deepEqual(screenshot.viewer.bytes, await sharp(source).autoOrient().webp({ quality: 80, effort: 4 }).toBuffer());
+  assert.deepEqual(screenshot.llm.bytes, await derivativeBytes(source, { quality: 80, effort: 4 }));
+  const photo = await convertMedia(source, 'image/png', 'photo-v1');
+  assert.deepEqual(photo.viewer.bytes, await sharp(source).autoOrient().webp({ quality: 90, effort: 4 }).toBuffer());
+  assert.deepEqual(photo.llm.bytes, await derivativeBytes(source, { quality: 90, effort: 4 }));
+  for (const variant of [screenshot.viewer, screenshot.llm, photo.viewer, photo.llm]) {
+    assert.ok(isLossyWebp(variant.bytes), 'no lossless or near-lossless copy is stored');
+  }
 });
 
-test('an oversized screenshot derivative is encoded once more as lossy quality 80 and fits', { timeout: 20_000 }, async () => {
-  const source = await dimNoisePng(600);
-  const firstTry = await derivativeBytes(source, { nearLossless: true, quality: 90, effort: 4 });
-  assert.ok(firstTry.length > MEDIA_LIMITS.maxDerivativeBytes, 'fixture must need the retry');
-  const result = await convertMedia(source, 'image/png');
-  assert.equal(result.recipe, 'screenshot-v1');
+test('a screenshot canonical over 1 MiB at quality 80 is shrunk at quality 80 until it fits', { timeout: 30_000 }, async () => {
+  assert.equal(MEDIA_LIMITS.maxEncodedCanonicalBytes, 1024 * 1024);
+  const source = await noisyJpeg(1600);
+  assert.ok((await sharp(source).webp({ quality: 80, effort: 4 }).toBuffer()).length > MEDIA_LIMITS.maxEncodedCanonicalBytes,
+    'fixture must be over the encoded canonical ceiling at quality 80');
+  const result = await convertMedia(source, 'image/jpeg');
+  assert.ok(result.viewer.byteLength <= MEDIA_LIMITS.maxEncodedCanonicalBytes);
+  assert.ok(result.viewer.width < 1600 && result.viewer.width === result.viewer.height);
+  assert.deepEqual(result.viewer.bytes, await sharp(source).autoOrient()
+    .resize({ width: result.viewer.width, height: result.viewer.width, fit: 'inside' }).webp({ quality: 80, effort: 4 }).toBuffer());
+  assert.ok(isLossyWebp(result.viewer.bytes));
   assert.ok(result.llm.byteLength <= MEDIA_LIMITS.maxDerivativeBytes);
-  assert.deepEqual(result.llm.bytes, await derivativeBytes(source, { quality: 80, effort: 4 }));
-  // The canonical copy keeps the lossless recipe.
-  assert.deepEqual(result.viewer.bytes, await sharp(source).autoOrient().webp({ lossless: true, effort: 4 }).toBuffer());
 });
 
-test('a screenshot derivative still over the ceiling at quality 80 is shrunk at quality 80 until it fits', { timeout: 20_000 }, async () => {
+test('a photo canonical over 1 MiB at quality 90 is shrunk at quality 90 until it fits', { timeout: 30_000 }, async () => {
+  const source = await noisyJpeg(1200);
+  assert.ok((await sharp(source).webp({ quality: 90, effort: 4 }).toBuffer()).length > MEDIA_LIMITS.maxEncodedCanonicalBytes);
+  const result = await convertMedia(source, 'image/jpeg', 'photo-v1');
+  assert.ok(result.viewer.byteLength <= MEDIA_LIMITS.maxEncodedCanonicalBytes);
+  assert.ok(result.viewer.width < 1200);
+});
+
+test('a screenshot derivative over the ceiling at quality 80 is shrunk at quality 80 until it fits', { timeout: 20_000 }, async () => {
   const source = await noisyJpeg(800);
   assert.ok((await derivativeBytes(source, { quality: 80, effort: 4 })).length > MEDIA_LIMITS.maxDerivativeBytes,
-    'fixture must stay too large after the retry');
+    'fixture must be over the derivative ceiling at quality 80');
   const result = await convertMedia(source, 'image/jpeg');
   assert.ok(result.llm.byteLength <= MEDIA_LIMITS.maxDerivativeBytes);
   assert.ok(result.llm.width < 800);
@@ -292,7 +280,7 @@ test('a screenshot derivative still over the ceiling at quality 80 is shrunk at 
     .resize({ width: result.llm.width, height: result.llm.width, fit: 'inside' }).webp({ quality: 80, effort: 4 }).toBuffer());
 });
 
-test('photo-v1 has no quality retry: its derivative is shrunk at quality 90', { timeout: 20_000 }, async () => {
+test('a photo derivative over the ceiling is shrunk at quality 90', { timeout: 20_000 }, async () => {
   const source = await noisyJpeg(600);
   assert.ok((await derivativeBytes(source, { quality: 90, effort: 4 })).length > MEDIA_LIMITS.maxDerivativeBytes);
   const result = await convertMedia(source, 'image/jpeg', 'photo-v1');
@@ -301,32 +289,32 @@ test('photo-v1 has no quality retry: its derivative is shrunk at quality 90', { 
     .resize({ width: result.llm.width, height: result.llm.width, fit: 'inside' }).webp({ quality: 90, effort: 4 }).toBuffer());
 });
 
-test('the application deadline covers the derivative retry encode', { timeout: 20_000 }, async () => {
-  const source = await dimNoisePng(600);
-  // Wrap the real decoder so the quality 80 retry encode never settles until
-  // released; only the application deadline can end the conversion.
-  let retryStarted = false;
+test('the application deadline covers a shrink round', { timeout: 20_000 }, async () => {
+  const source = await noisyJpeg(800);
+  // Wrap the real decoder so a shrink encode (resized below the 800 px
+  // source) never settles until released; only the deadline can end it.
+  let shrinkStarted = false;
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
-  const slowRetryDecoder = Object.assign((input: Buffer, inputOptions: sharp.SharpOptions) => {
+  const slowShrinkDecoder = Object.assign((input: Buffer, inputOptions: sharp.SharpOptions) => {
     const instance = sharp(input, inputOptions);
-    const webp = instance.webp.bind(instance);
-    instance.webp = (webpOptions?: sharp.WebpOptions) => {
-      if (webpOptions?.quality === 80 && !webpOptions.nearLossless) {
-        retryStarted = true;
+    const resize = instance.resize.bind(instance) as (options: sharp.ResizeOptions) => sharp.Sharp;
+    (instance as unknown as { resize: unknown }).resize = (options: sharp.ResizeOptions) => {
+      if ((options.width ?? Infinity) < 800) {
+        shrinkStarted = true;
         const toBuffer = instance.toBuffer.bind(instance) as (options: { resolveWithObject: true }) => Promise<unknown>;
         (instance as unknown as { toBuffer: unknown }).toBuffer = async (options: { resolveWithObject: true }) => {
           await held;
           return toBuffer(options);
         };
       }
-      return webp(webpOptions);
+      return resize(options);
     };
     return instance;
   }, sharp) as unknown as typeof sharp;
-  const convert = createMediaConverter({ deadlineMs: 3000, loadDecoder: async () => slowRetryDecoder });
-  await assert.rejects(convert(source, 'image/png'), rejects('conversion_timeout'));
-  assert.equal(retryStarted, true, 'the timeout must come from the retry encode');
+  const convert = createMediaConverter({ deadlineMs: 3000, loadDecoder: async () => slowShrinkDecoder });
+  await assert.rejects(convert(source, 'image/jpeg'), rejects('conversion_timeout'));
+  assert.equal(shrinkStarted, true, 'the timeout must come from the shrink encode');
   release();
 });
 

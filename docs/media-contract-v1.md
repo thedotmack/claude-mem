@@ -38,36 +38,66 @@ label; it never includes an arbitrary decoder exception message.
 | Bound | Frozen v1 value |
 | --- | --- |
 | Images per event | 4 |
-| Accepted source and canonical WebP | 3 MiB each. Local worker: a file source up to 96 MiB is accepted, and the canonical is always fitted to 3 MiB (see below) |
+| Accepted source and canonical WebP | 3 MiB each: the bound for an upload Pro accepts and for reading a stored canonical, including one stored before every copy became lossy (lossless, up to 3 MiB). Local worker: a file source up to 96 MiB is accepted (see below) |
+| Encoded canonical WebP | 1 MiB (`maxEncodedCanonicalBytes`). Each converter fits every canonical it encodes into it; see "Recipes" for the measurement |
 | Decoded pixels | 24,000,000. Local worker: decodes up to 268,402,689 (16383 x 16383) and fits the canonical to 24,000,000 |
 | Either source dimension | 8192. Local worker: fits the canonical to 8192 instead of rejecting |
 | Conversion admission | One active conversion. Pro upload route: fail busy immediately. Local worker: wait up to 20 seconds for the slot, first come first served, then fail busy |
-| Conversion deadline | Pro upload route: 5 seconds. Local worker: 20 seconds. Either covers metadata and every encode, including the one derivative retry |
+| Conversion deadline | Pro upload route: 5 seconds. Local worker: 20 seconds. Either covers metadata and every encode, including any shrink round |
 | LLM derivative | 256 KiB; longest edge 1536; full frame |
 | Local encoded inline image bytes | 4 MiB aggregate; event JSON still below existing 5mb cap |
 | Gateway decoded image bytes | 1 MiB aggregate, at most four derivatives |
 | Upload body | 3 MiB source plus at most 64 KiB multipart overhead |
-| Initial owner quota | 25 GiB converted assets, atomically reserved. Reason: abuse protection; it caps one account's stored images at about $0.57 a month (26.8 GB at Supabase Storage's $0.0213 per GB a month, read 2026-11-05). A heavy real user, 100 screenshots a day at the measured median converted pair of 321 KiB, stores about 11.2 GiB a year |
+| Initial owner quota | 25 GiB converted assets, atomically reserved. Reason: abuse protection; it caps one account's stored images at about $0.57 a month (26.8 GB at Supabase Storage's $0.0213 per GB a month, read 2026-11-05). A heavy real user, 100 screenshots a day at the measured median lossy converted pair of 138 KiB (2026-11-06), stores about 4.8 GiB a year |
 | Manifest / provenance | 8192 UTF-8 bytes each |
 | Owner-only local locator | 4096 characters |
 
-Pro rejects any source or result that cannot meet these bounds. The local
-worker fits instead (see "Where the size bounds apply"). No semantic cropping
-or automatic content classification is in v1.
-Recipes are explicit caller choices: `screenshot-v1` uses lossless canonical
-WebP and a near-lossless quality 90 derivative; `photo-v1` uses quality 90 for
-both variants. When the `screenshot-v1` derivative is over 256 KiB, encode it
-once more at the same size as lossy WebP quality 80. That is the one quality
-retry. If it is still over 256 KiB, Pro rejects with `derivative_too_large`
-and the local worker shrinks it (see "Where the size bounds apply"). The
-recipe name and the manifest version do not change, and which encode was kept
-is not recorded. Reason:
-on 2026-11-05, 27 real screenshots from a developer's Mac were run through
-these settings; 3 had a near-lossless derivative over 256 KiB, and all 27 fit
-as lossy quality 80 (largest 121 KiB). Alpha is preserved. Both remove
-metadata, auto-orient and produce retained canonical and inference
-derivatives. Store recipe and actual `sharp.versions` encoder version with
-every conversion.
+Pro rejects any source that cannot meet these bounds. An encode over its byte
+ceiling (1 MiB canonical, 256 KiB derivative) is shrunk to fit on both sides,
+never rejected; the local worker also fits a source over the dimension and
+pixel bounds (see "Where the size bounds apply"). No semantic cropping or
+automatic content classification is in v1.
+
+### Recipes
+
+Every stored copy is lossy WebP. Nothing is encoded lossless or near-lossless.
+Reason: the owner's rule of 2026-11-05/06, "screenshots never need to be
+multiple megabytes" and "never lossless".
+
+Recipes are explicit caller choices: `screenshot-v1` encodes both variants as
+lossy WebP quality 80; `photo-v1` encodes both as quality 90 (unchanged).
+There is no quality retry: a variant over its byte ceiling is shrunk with the
+same setting. The recipe name and the manifest version do not change; a
+canonical stored before this rule may be lossless and up to 3 MiB, and it is
+never re-encoded or deleted for that.
+
+Evidence for quality 80 and the 1 MiB canonical ceiling, 2026-11-06: the 29
+real screenshots from a developer's Mac (62 KiB to 4.0 MiB PNG, 626x333 to
+2880x6716), Sharp 0.35.5, one libvips thread:
+
+| Copy | Before (lossless / near-lossless 90) | Quality 90 | Quality 80 (chosen) |
+| --- | --- | --- | --- |
+| Canonical, median / largest | 170 KiB / 2031 KiB | 113 KiB / 514 KiB | 80 KiB / 406 KiB |
+| Canonical CPU, median / largest | 0.76 s / 5.29 s | 0.21 s / 0.89 s | 0.20 s / 0.85 s |
+| Derivative, median / largest | 153 KiB / 872 KiB | 74 KiB / 172 KiB | 54 KiB / 121 KiB |
+
+- Text stays readable at 1:1 in both copies at quality 80, checked by eye on
+  dark UI, a light terminal and colored monospace text. Quality 90 costs about
+  1.4 times the bytes for no readable difference.
+- The 1 MiB canonical ceiling keeps all 29 at full resolution, with about 2.5
+  times headroom over the largest (406 KiB). A 2800x23880 full-page screenshot,
+  fitted to 8192 px, is 528 KiB. 1 MiB is not "multiple megabytes".
+- Pro re-encodes the uploaded canonical at the same setting. Measured on the
+  same 29, that second quality 80 encode was at most 0.995 times the first, so
+  it fits the same ceiling; if one does not, Pro shrinks it like the local
+  worker.
+- Lossy is larger than lossless for a few small flat screenshots (a 925x927
+  Linux terminal: 35 KiB lossless, 103 KiB at quality 80). Every such case
+  measured stays far under the ceilings.
+
+Alpha is preserved. Both recipes remove metadata, auto-orient and produce
+retained canonical and inference derivatives. Store recipe and actual
+`sharp.versions` encoder version with every conversion.
 
 ### Where the conversion bounds apply
 
@@ -108,7 +138,7 @@ most about one more second.
 On a user's computer no image is thrown away for size when the decoder can read
 it safely. The local worker uploads only its canonical WebP to Pro, so a
 canonical that fits the canonical bounds is what Pro receives. Pro's own
-upload route still rejects a source or result over a bound. Unchanged.
+upload route still rejects a source over a bound.
 
 - File source (a Read of a local image file): up to 96 MiB. Reason: abuse
   protection on worker memory, because the file is read whole. Screenshot PNGs
@@ -126,17 +156,16 @@ upload route still rejects a source or result over a bound. Unchanged.
   seconds and 324 MiB.
 - Canonical over 8192 on a side or over 24,000,000 pixels: resized, full
   frame, to fit both.
-- `screenshot-v1` canonical over 3 MiB as lossless: encoded as lossy WebP
-  quality 90 at the same size (the `photo-v1` canonical setting).
-- Canonical still over 3 MiB, or a derivative still over 256 KiB after its
-  recipe's encodes: the longest edge is shrunk so the pixel count scales by
-  the byte overshoot, aiming 10% under the ceiling, with the last encode
-  settings, until it fits. Every round shrinks the image, and the conversion
-  deadline bounds the rounds.
+- Canonical over 1 MiB, or a derivative over 256 KiB, after its recipe's
+  encode: the longest edge is shrunk so the pixel count scales by the byte
+  overshoot, aiming 10% under the ceiling, with the recipe's setting, until
+  it fits. Every round shrinks the image, and the conversion deadline bounds
+  the rounds. Pro's converter shrinks the same way.
 - Evidence, 2026-11-05: of 29 real screenshots from a developer's Mac, the old
   bounds rejected 2 for source size (3.3 MiB and 4.0 MiB). With the local
-  bounds all 29 convert. Both of those keep full size as lossless canonicals
-  (1363 KiB and 2031 KiB).
+  bounds all 29 convert. On 2026-11-06, at quality 80, those two keep full
+  size as 81 KiB and 202 KiB canonicals (they were 1363 KiB and 2031 KiB
+  lossless).
 
 An actual platform tool-use/event ID defines event identity when available.
 The fallback is the tuple `(transcript_id,record_index,record_sha256)` for a

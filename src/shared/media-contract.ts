@@ -11,6 +11,14 @@ export const MEDIA_LIMITS = Object.freeze({
   maxImagesPerEvent: 4,
   maxSourceBytes: 3 * 1024 * 1024,
   maxCanonicalBytes: 3 * 1024 * 1024,
+  // Owner's rule, 2026-11-05/06: no stored copy is multiple megabytes, and every
+  // copy is lossy WebP. Both converters fit each canonical they encode into this.
+  // maxCanonicalBytes stays the bound for an accepted upload and for reading a
+  // copy stored before this rule (lossless, up to 3 MiB). Measured 2026-11-06 at
+  // quality 80: the largest of 29 real screenshots is 406 KiB, and a 2800x23880
+  // full-page screenshot fitted to 8192 px is 528 KiB, so all keep full
+  // resolution with about 2 times headroom.
+  maxEncodedCanonicalBytes: 1024 * 1024,
   maxPixels: 24_000_000,
   maxDimension: 8192,
   conversionTimeoutSeconds: 5,
@@ -28,7 +36,7 @@ export const MEDIA_LIMITS = Object.freeze({
   // Abuse protection: caps one account's stored images at about $0.57 a month
   // (25 GiB is 26.8 GB; Supabase Storage costs $0.0213 per GB a month, read
   // 2026-11-05). A heavy real user, 100 screenshots a day at the measured median
-  // converted pair of 321 KiB, stores about 11.2 GiB a year.
+  // lossy converted pair of 138 KiB (2026-11-06), stores about 4.8 GiB a year.
   ownerQuotaBytes: 25 * 1024 * 1024 * 1024,
 } as const);
 

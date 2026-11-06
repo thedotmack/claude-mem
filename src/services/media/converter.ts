@@ -42,26 +42,34 @@ function assertStillPng(bytes: Buffer): void {
 }
 
 /**
- * The screenshot-v1 derivative is retried once as lossy WebP quality 80 when
- * its near-lossless quality 90 encode is over MEDIA_LIMITS.maxDerivativeBytes
- * (docs/media-contract-v1.md, bounds and recipes). Quality 80 is measured, not
- * picked by feel: on 2026-11-05, 3 of 27 real screenshots had a near-lossless
- * derivative over 256 KiB, and all 27 fit as lossy quality 80 (largest 121 KiB).
+ * Every stored copy is lossy WebP; nothing is encoded lossless or near-lossless
+ * (owner, 2026-11-05/06: "screenshots never need to be multiple megabytes" and
+ * "never lossless"). docs/media-contract-v1.md, "Recipes", has the evidence.
+ *
+ * screenshot-v1, both copies: quality 80. Measured on 2026-11-06 with the 29
+ * real screenshots of .agent-jobs/files.txt (sharp 0.35.5, one libvips thread):
+ * - Canonical at full size: median 80 KiB, largest 406 KiB (2880x6716); it was
+ *   median 170 KiB, largest 2031 KiB as lossless. CPU per encode: median
+ *   0.20 s, largest 0.85 s (lossless: 0.76 s and 5.29 s).
+ * - Derivative (1536 px): median 54 KiB, largest 121 KiB (near-lossless 90:
+ *   153 KiB and 872 KiB, 3 of 29 over the 256 KiB ceiling).
+ * - Text stays readable at 1:1 in both copies, checked by eye on dark UI, a
+ *   light terminal and colored monospace text. Quality 90 costs 1.4 times the
+ *   bytes (canonical median 113 KiB) for no readable difference.
+ * Quality 80 was already the v1 derivative retry, so no screenshot copy gets a
+ * setting the contract had not used before.
  */
-const SCREENSHOT_DERIVATIVE_RETRY_WEBP: WebpOptions = { quality: 80, effort: 4 };
+const SCREENSHOT_WEBP: WebpOptions = { quality: 80, effort: 4 };
+/** photo-v1, both copies: quality 90, unchanged from v1 (it was already lossy). */
+const PHOTO_WEBP: WebpOptions = { quality: 90, effort: 4 };
 
 /**
  * Local capture keeps every image the decoder can safely read: an image over a
  * canonical bound is fitted into it instead of rejected
  * (docs/media-contract-v1.md, "Where the size bounds apply"). The canonical is
  * the copy uploaded to Pro, so fitting it locally is what makes the upload fit
- * Pro's bounds (3 MiB, 8192 a side, 24 MP). Pro's own route still rejects.
+ * Pro's bounds (8192 a side, 24 MP, MEDIA_LIMITS.maxEncodedCanonicalBytes).
  *
- * Canonical over 3 MiB as lossless (screenshot-v1): encoded as lossy WebP
- * quality 90, the photo-v1 canonical setting already in the contract.
- */
-const CANONICAL_LOSSY_FALLBACK_WEBP: WebpOptions = { quality: 90, effort: 4 };
-/**
  * Still over its byte ceiling: shrink the longest edge so the pixel count
  * scales by the byte overshoot, aiming 10% under the ceiling so one round
  * usually lands (WebP size grows about with pixel count). Rounds repeat until
@@ -239,27 +247,17 @@ export function createMediaConverter(options: {
             const longestEdge = Math.max(variant.width, variant.height);
             const next = Math.min(longestEdge - 1,
               Math.floor(longestEdge * Math.sqrt(ceiling * SHRINK_TARGET_SHARE_OF_CEILING / variant.byteLength)));
-            if (next < 1) throw new MediaError(ceiling === MEDIA_LIMITS.maxCanonicalBytes ? 'canonical_too_large' : 'derivative_too_large');
+            if (next < 1) throw new MediaError(ceiling === MEDIA_LIMITS.maxEncodedCanonicalBytes ? 'canonical_too_large' : 'derivative_too_large');
             variant = await encode(next, webpOptions);
           }
           return variant;
         };
-        const screenshot = recipe === 'screenshot-v1';
-        let viewer = await encode(canonicalLongestEdge, screenshot ? { lossless: true, effort: 4 } : CANONICAL_LOSSY_FALLBACK_WEBP);
-        if (screenshot && viewer.byteLength > MEDIA_LIMITS.maxCanonicalBytes) {
-          viewer = await encode(canonicalLongestEdge, CANONICAL_LOSSY_FALLBACK_WEBP);
-        }
-        viewer = await shrinkUntilFits(viewer, MEDIA_LIMITS.maxCanonicalBytes, CANONICAL_LOSSY_FALLBACK_WEBP);
+        const webp = recipe === 'screenshot-v1' ? SCREENSHOT_WEBP : PHOTO_WEBP;
+        const viewer = await shrinkUntilFits(
+          await encode(canonicalLongestEdge, webp), MEDIA_LIMITS.maxEncodedCanonicalBytes, webp);
         const derivativeLongestEdge = Math.min(sourceLongestEdge, MEDIA_LIMITS.maxDerivativeDimension);
-        const derivativeWebp: WebpOptions = screenshot ? { nearLossless: true, quality: 90, effort: 4 } : { quality: 90, effort: 4 };
-        let llm = await encode(derivativeLongestEdge, derivativeWebp);
-        // One quality retry; the deadline above still covers it.
-        let derivativeFallbackWebp = derivativeWebp;
-        if (screenshot && llm.byteLength > MEDIA_LIMITS.maxDerivativeBytes) {
-          llm = await encode(derivativeLongestEdge, SCREENSHOT_DERIVATIVE_RETRY_WEBP);
-          derivativeFallbackWebp = SCREENSHOT_DERIVATIVE_RETRY_WEBP;
-        }
-        llm = await shrinkUntilFits(llm, MEDIA_LIMITS.maxDerivativeBytes, derivativeFallbackWebp);
+        const llm = await shrinkUntilFits(
+          await encode(derivativeLongestEdge, webp), MEDIA_LIMITS.maxDerivativeBytes, webp);
         return {
           viewer, llm, source: {
             sha256: createHash('sha256').update(bytes).digest('hex'),
