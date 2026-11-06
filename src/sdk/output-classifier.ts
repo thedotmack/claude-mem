@@ -168,6 +168,18 @@ export function isQuotaLimitedObserverOutput(raw: unknown): boolean {
     //   'API Error: 400 {"error":{…,"message":"Your credit balance is too low…"}}'
     /^(?:your )?credit balance is too low\b/.test(text) ||
     /^api error: 400\b.*\bcredit balance is too low\b/.test(text) ||
+    // Claude Code returns a 429 as the assistant reply instead of throwing
+    // (#5428). The status sits in the CLI envelope, or the gateway names the
+    // refusal in the reply itself:
+    //   "API Error: Request rejected (429) · The request was rate limited. …"
+    //   "API Error: 429 Too Many Requests"
+    // The status has to follow an API-error report at the start of the
+    // response. A count in ordinary prose ("You have 429 files to review")
+    // does not. The gateway sentence is matched on its own wording, which is
+    // how the same refusal arrives without a status code in the first 80
+    // characters.
+    /^api error\b.{0,80}\b429\b/.test(text) ||
+    /\bthe request was rate limited\b/.test(text) ||
     /\bsession limit\b/.test(text) ||
     /\bout of (?:usage )?credits\b/.test(text) ||
     /\/usage-credits\b/.test(text) ||

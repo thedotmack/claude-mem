@@ -113,6 +113,44 @@ describe('isQuotaLimitedObserverOutput', () => {
     ).toBe(false);
   });
 
+  it('detects a Claude provider 429 returned as reply text (#5428)', () => {
+    // The CLI prints the rate limit as the assistant response instead of
+    // throwing. That text used to classify as prose, and the second reply
+    // confirmed the queued batch away.
+    expect(
+      isQuotaLimitedObserverOutput(
+        'API Error: Request rejected (429) · The request was rate limited. Its source could not be identified. Retry after the indicated delay.',
+      ),
+    ).toBe(true);
+    expect(isQuotaLimitedObserverOutput('API Error: 429 Too Many Requests')).toBe(true);
+    expect(
+      isQuotaLimitedObserverOutput(
+        'The request was rate limited. Its source could not be identified. Retry after the indicated delay.',
+      ),
+    ).toBe(true);
+    expect(isTransportFailureObserverOutput('API Error: 429 Too Many Requests')).toBe(false);
+    expect(
+      isTransportFailureObserverOutput(
+        'API Error: Request rejected (429) · The request was rate limited. Its source could not be identified. Retry after the indicated delay.',
+      ),
+    ).toBe(false);
+  });
+
+  it('does not treat a 429 in ordinary prose, a file count, or XML as a rate limit', () => {
+    expect(isQuotaLimitedObserverOutput('You have 429 files to review')).toBe(false);
+    expect(isQuotaLimitedObserverOutput('No observations to record.')).toBe(false);
+    expect(
+      isQuotaLimitedObserverOutput(
+        'The retry notes mention status 429, but this batch completed with nothing new to store.',
+      ),
+    ).toBe(false);
+    expect(
+      isQuotaLimitedObserverOutput(
+        '<observation><title>Request rejected (429)</title><narrative>The request was rate limited.</narrative></observation>',
+      ),
+    ).toBe(false);
+  });
+
   it('does not treat XML that mentions a limit as quota prose', () => {
     expect(
       isQuotaLimitedObserverOutput(
