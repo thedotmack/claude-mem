@@ -1,4 +1,7 @@
 import { Database } from 'bun:sqlite';
+import { copyFileSync, existsSync, mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { basename, join } from 'path';
 import { logger } from '../../utils/logger.js';
 
 export const SQLITE_BUSY_TIMEOUT_MS = 5000;
@@ -157,4 +160,97 @@ export function openGuardedSqliteDatabase(dbPath: string): Database {
   assertSchemaWriterCompatible(db, LATEST_SCHEMA_VERSION);
   applySqliteConnectionPragmas(db);
   return db;
+}
+
+/**
+ * Force a fresh handle to prove it can read the schema. A bun:sqlite open
+ * is lazy: a WAL database whose wal-index cannot be established constructs
+ * fine and only fails at the first statement that touches the file, so a
+ * caller that merely constructs the handle cannot tell a healthy open from
+ * a doomed one (#5429). The busy timeout is set first so a held lock waits
+ * the way the caller's own statements would, instead of falling through to
+ * the fallback ladder. run() rather than prepare(): the schema read must
+ * not leave a prepared statement behind on a handle whose callers account
+ * for the statements they prepare.
+ */
+function probeReaderDatabase(db: Database): Database {
+  try {
+    db.run(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
+    db.run('PRAGMA schema_version');
+    return db;
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+}
+
+/**
+ * Open a database for a reader that must never write to it: the context
+ * read worker and context generation (#5429).
+ *
+ * A read-only open of a WAL database needs the wal-index (-shm file): when
+ * it is absent and this process cannot establish it for a read-only
+ * handle, every read fails with "unable to open database file" even though
+ * the database itself is healthy and the writer in the same process is
+ * working. The ladder below keeps the read-only handle on the healthy
+ * path and only falls back when that open has already failed:
+ *
+ * 1. Read-only, exactly as before.
+ * 2. A short-lived read-write open can establish (or rebuild) the
+ *    wal-index where a read-only one cannot. Hold it while retrying the
+ *    read-only open, so the handle the caller reads from is still
+ *    read-only; the read-write handle is closed before this returns.
+ * 3. When the index cannot be established in place at all (for example
+ *    the data directory is not writable by this process), read a snapshot
+ *    copy instead. The -wal is copied alongside the database, so opening
+ *    the copy replays it and the reader sees committed frames the last
+ *    checkpoint has not reached. The copy lives in a temp directory that
+ *    the handle's close() removes; writes to it go nowhere.
+ *
+ * When every step fails — a missing or corrupt database — the original
+ * read-only error is rethrown, so callers see the same failure as before.
+ */
+export function openReaderDatabase(dbPath: string): Database {
+  let readonlyError: unknown;
+  try {
+    return probeReaderDatabase(new Database(dbPath, { readonly: true, create: false }));
+  } catch (error) {
+    readonlyError = error;
+  }
+
+  try {
+    const establish = new Database(dbPath, { readwrite: true, create: false });
+    try {
+      probeReaderDatabase(establish);
+      return probeReaderDatabase(new Database(dbPath, { readonly: true, create: false }));
+    } finally {
+      establish.close();
+    }
+  } catch {
+    // The wal-index cannot be established in place either; try a snapshot.
+  }
+
+  let snapshotDir: string | null = null;
+  try {
+    snapshotDir = mkdtempSync(join(tmpdir(), 'claude-mem-reader-'));
+    const snapshotPath = join(snapshotDir, basename(dbPath));
+    copyFileSync(dbPath, snapshotPath);
+    if (existsSync(`${dbPath}-wal`)) {
+      copyFileSync(`${dbPath}-wal`, `${snapshotPath}-wal`);
+    }
+    const db = probeReaderDatabase(new Database(snapshotPath, { readwrite: true, create: false }));
+    const close = db.close.bind(db);
+    const dir = snapshotDir;
+    db.close = () => {
+      try {
+        close();
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    };
+    return db;
+  } catch {
+    if (snapshotDir) rmSync(snapshotDir, { recursive: true, force: true });
+    throw readonlyError;
+  }
 }
