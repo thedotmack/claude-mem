@@ -41,8 +41,8 @@ label; it never includes an arbitrary decoder exception message.
 | Accepted source and canonical WebP | 3 MiB each |
 | Decoded pixels | 24,000,000 |
 | Either source dimension | 8192 |
-| Conversion admission | One active conversion, fail busy immediately |
-| Conversion deadline | 5 seconds total metadata and every encode, including the one derivative retry |
+| Conversion admission | One active conversion. Pro upload route: fail busy immediately. Local worker: wait up to 20 seconds for the slot, first come first served, then fail busy |
+| Conversion deadline | Pro upload route: 5 seconds. Local worker: 20 seconds. Either covers metadata and every encode, including the one derivative retry |
 | LLM derivative | 256 KiB; longest edge 1536; full frame |
 | Local encoded inline image bytes | 4 MiB aggregate; event JSON still below existing 5mb cap |
 | Gateway decoded image bytes | 1 MiB aggregate, at most four derivatives |
@@ -67,6 +67,40 @@ as lossy quality 80 (largest 121 KiB). Alpha is preserved. Both remove
 metadata, auto-orient and produce retained canonical and inference
 derivatives. Store recipe and actual `sharp.versions` encoder version with
 every conversion.
+
+### Where the conversion bounds apply
+
+Pro's upload route and the local worker convert on different machines, so the
+admission and deadline rows have one value for each. Every other bound is the
+same on both. `MEDIA_LIMITS.conversionTimeoutSeconds` (5) and
+`maxConcurrentConversions` (1) stay as they are in the shared contract file.
+The local values live in the local converter
+(`LOCAL_CONVERSION_DEADLINE_MS`, `LOCAL_ADMISSION_WAIT_MS`).
+
+- Pro upload route: 5 second deadline, one active conversion, fail busy at
+  once. Reason: shared server instances and the route's 59 second budget.
+  Unchanged.
+- Local worker: 20 second deadline, one active conversion, and a caller waits
+  up to 20 seconds for the slot (first come, first served) before it fails
+  `conversion_busy`. The deadline starts when the caller gets the slot.
+  Reason: the local worker converts off the hook path (the PostToolUse hook
+  writes a spool file and returns, and the worker converts while it drains the
+  spool), so no agent waits on it. A conversion runs on about one core. On
+  2026-11-05, 27 real screenshots from a developer's 10-core Mac needed 2.1 to
+  4.3 seconds each when typical, and 5.8 seconds for the slowest (2880x6716).
+  With the 5 second deadline and fail-at-once admission, run back to back as
+  the spool drain runs them, 11 of the 27 converted: the slowest timed out,
+  and the next 15 failed busy while its native work finished. Under load
+  average 30 to 50, 11 of the 27 needed over 5 seconds even alone, and none
+  of the 27 converted. With the local bounds all 27 converted in both cases
+  (slowest 16.4 seconds under load), and all 81 converted when three callers
+  ran the 27 at once. A local conversion row's lease covers the wait, the
+  deadline and two SQLite busy waits, so cleanup never fails a live one.
+
+Both converters hold the slot until native work settles. The local converter
+gives each native step only the deadline time still left, rounded up to whole
+seconds (Sharp's unit), so a conversion that timed out holds the slot for at
+most about one more second.
 
 An actual platform tool-use/event ID defines event identity when available.
 The fallback is the tuple `(transcript_id,record_index,record_sha256)` for a
@@ -107,7 +141,8 @@ Converter APIs copy the documented [Sharp constructor](https://sharp.pixelplumbi
 [auto orientation](https://sharp.pixelplumbing.com/api-operation/) calls:
 `sharp(bytes,{failOn:'warning',limitInputPixels:24000000})`, `metadata()`,
 `autoOrient()`, `resize({width:1536,height:1536,fit:'inside',withoutEnlargement:true})`,
-`webp(options)`, `timeout({seconds:5})`, `toBuffer({resolveWithObject:true})`.
+`webp(options)`, `timeout({seconds:5})` (local worker: the seconds left of its
+20 second deadline), `toBuffer({resolveWithObject:true})`.
 Header metadata is not decoding proof. Output removes EXIF/GPS by default;
 never call `keepMetadata()`/`withMetadata()`. Sharp timeout excludes time in
 the native worker queue, so the application deadline starts before metadata.

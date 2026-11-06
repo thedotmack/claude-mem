@@ -65,36 +65,90 @@ async function loadDecoder(): Promise<Decoder> {
 }
 
 /**
- * No-wait admission keeps the native queue bounded even when a caller times
- * out. Sharp's timeout excludes libuv queue waiting:
+ * Local worker capture bounds (docs/media-contract-v1.md, "Where the
+ * conversion bounds apply"). This converter runs only in the local worker,
+ * off the hook path: the PostToolUse hook writes a spool file and returns, and
+ * the worker converts while it drains the spool. Pro's upload route keeps the
+ * 5 s deadline and fail-at-once admission in MEDIA_LIMITS, which are about its
+ * shared instances and its route's 59 s budget.
+ *
+ * Deadline, 20 s. Measured on 2026-11-05 with 27 real screenshots on a
+ * 10-core Mac (the contract section has the runs): a conversion runs on about
+ * one core (wall time matched CPU time at load 18 to 30), typical Retina
+ * screenshots need 2.1 to 4.3 s, and the slowest accepted one (2880x6716)
+ * needs 5.8 s, which already fails a 5 s deadline with spare cores. Under
+ * load average 30 to 50, 11 of the 27 needed over 5 s and the slowest needed
+ * 16.4 s. 20 s covers all 27 at that load.
+ */
+export const LOCAL_CONVERSION_DEADLINE_MS = 20_000;
+/**
+ * Admission wait, 20 s: one conversion runs at a time, and a second caller
+ * waits its turn instead of failing at once. The callers that convert are the
+ * hook-spool drain and the in-process transcript watcher; each converts one
+ * image at a time, so a waiter normally waits behind at most one conversion,
+ * which the deadline bounds at 20 s. A caller still waiting after that fails
+ * `conversion_busy`, which is logged and kept on the observation's descriptor.
+ */
+export const LOCAL_ADMISSION_WAIT_MS = 20_000;
+
+/**
+ * One conversion at a time keeps native memory and CPU bounded; a caller
+ * waits for the slot for at most admissionWaitMs (0 fails busy at once).
+ * The application deadline starts once a caller holds the slot, before the
+ * decoder loads. Sharp's timeout excludes libuv queue waiting:
  * https://sharp.pixelplumbing.com/api-output/#timeout
- * A timed-out operation retains its slot until the underlying work settles.
- * The lower deadline/load seams let tests prove this without accepting larger
- * production limits or triggering a paid request.
+ * so each native step gets only the deadline time still left, rounded up to
+ * whole seconds (sharp's unit). A timed-out conversion keeps the slot until
+ * its native step settles, which is then at most about a second later.
+ * The lower deadline/wait/load seams let tests prove this without accepting
+ * larger limits or triggering a paid request.
  */
 export function createMediaConverter(options: {
   deadlineMs?: number;
+  admissionWaitMs?: number;
   loadDecoder?: () => Promise<Decoder>;
 } = {}) {
-  const deadlineMs = options.deadlineMs ?? MEDIA_LIMITS.conversionTimeoutSeconds * 1000;
-  if (!Number.isFinite(deadlineMs) || deadlineMs <= 0 || deadlineMs > MEDIA_LIMITS.conversionTimeoutSeconds * 1000) {
+  const deadlineMs = options.deadlineMs ?? LOCAL_CONVERSION_DEADLINE_MS;
+  if (!Number.isFinite(deadlineMs) || deadlineMs <= 0 || deadlineMs > LOCAL_CONVERSION_DEADLINE_MS) {
+    throw new MediaError('invalid_manifest');
+  }
+  const admissionWaitMs = options.admissionWaitMs ?? LOCAL_ADMISSION_WAIT_MS;
+  if (!Number.isFinite(admissionWaitMs) || admissionWaitMs < 0 || admissionWaitMs > LOCAL_ADMISSION_WAIT_MS) {
     throw new MediaError('invalid_manifest');
   }
   let active = 0;
+  const waiting: Array<() => void> = [];
+  const admit = async (): Promise<void> => {
+    if (active < MEDIA_LIMITS.maxConcurrentConversions) { active++; return; }
+    if (admissionWaitMs === 0) throw new MediaError('conversion_busy');
+    await new Promise<void>((resolve, reject) => {
+      const turn = () => { clearTimeout(timer); resolve(); };
+      const timer = setTimeout(() => {
+        waiting.splice(waiting.indexOf(turn), 1);
+        reject(new MediaError('conversion_busy'));
+      }, admissionWaitMs);
+      waiting.push(turn);
+    });
+  };
+  // First come, first served: the slot passes straight to the oldest waiter.
+  const release = () => {
+    const next = waiting.shift();
+    if (next) next(); else active--;
+  };
   return async function convertMedia(
     source: Uint8Array, claimedMime: string, recipe: MediaRecipe = 'screenshot-v1',
   ): Promise<ConvertedMedia> {
     if (source.byteLength === 0) throw new MediaError('invalid_image');
     if (source.byteLength > MEDIA_LIMITS.maxSourceBytes) throw new MediaError('source_too_large');
     if (!MEDIA_RECIPES.includes(recipe)) throw new MediaError('invalid_manifest');
-    if (active >= MEDIA_LIMITS.maxConcurrentConversions) throw new MediaError('conversion_busy');
-    active++;
+    await admit();
     const started = performance.now();
     let expired = false;
     let timer: ReturnType<typeof setTimeout>;
     const checkDeadline = () => {
       if (expired || performance.now() - started >= deadlineMs) throw new MediaError('conversion_timeout');
     };
+    const nativeTimeout = () => ({ seconds: Math.max(1, Math.ceil((deadlineMs - (performance.now() - started)) / 1000)) });
     const work = (async (): Promise<ConvertedMedia> => {
       try {
         const bytes = Buffer.from(source);
@@ -113,7 +167,7 @@ export function createMediaConverter(options: {
           sequentialRead: true,
         };
         const metadata = await decoder(bytes, inputOptions)
-          .timeout({ seconds: MEDIA_LIMITS.conversionTimeoutSeconds }).metadata();
+          .timeout(nativeTimeout()).metadata();
         checkDeadline();
         if ((metadata.pages ?? 1) !== 1) throw new MediaError('animated_image');
         if (!['png', 'jpeg', 'webp'].includes(metadata.format ?? '')) throw new MediaError('unsupported_format');
@@ -139,7 +193,7 @@ export function createMediaConverter(options: {
             });
           }
           const { data, info } = await pipeline.webp(webpOptions)
-            .timeout({ seconds: MEDIA_LIMITS.conversionTimeoutSeconds })
+            .timeout(nativeTimeout())
             .toBuffer({ resolveWithObject: true });
           checkDeadline();
           return { bytes: data, sha256: createHash('sha256').update(data).digest('hex'),
@@ -169,7 +223,7 @@ export function createMediaConverter(options: {
         if (error instanceof Error && /timeout|timed out/i.test(error.message)) throw new MediaError('conversion_timeout');
         throw new MediaError('invalid_image');
       }
-    })().finally(() => { active--; });
+    })().finally(release);
     const deadline = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => { expired = true; reject(new MediaError('conversion_timeout')); }, deadlineMs);
     });

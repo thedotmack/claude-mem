@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import sharp from 'sharp';
-import { convertMedia, createMediaConverter } from '../../src/services/media/converter.js';
+import { convertMedia, createMediaConverter, LOCAL_ADMISSION_WAIT_MS, LOCAL_CONVERSION_DEADLINE_MS } from '../../src/services/media/converter.js';
 import { MEDIA_LIMITS, MediaError } from '../../src/shared/media-contract.js';
 
 const rejects = (code: string) => (error: unknown) => error instanceof MediaError && error.code === code;
@@ -90,10 +90,10 @@ test('animated WebP and APNG controls are rejected instead of extracting frame o
   await assert.rejects(convertMedia(apng, 'image/png'), rejects('animated_image'));
 });
 
-test('application deadline includes queue/load time and holds admission until native work settles', async () => {
+test('with no admission wait, a second caller fails busy and the slot is held until native work settles', async () => {
   let release!: (value: typeof sharp) => void;
   const loader = new Promise<typeof sharp>(resolve => { release = resolve; });
-  const convert = createMediaConverter({ deadlineMs: 15, loadDecoder: () => loader });
+  const convert = createMediaConverter({ deadlineMs: 15, admissionWaitMs: 0, loadDecoder: () => loader });
   const png = await makePng();
   const first = convert(png, 'image/png');
   await assert.rejects(convert(png, 'image/png'), rejects('conversion_busy'));
@@ -112,6 +112,84 @@ test('application deadline includes queue/load time and holds admission until na
   assert.equal((await next(png, 'image/png')).viewer.width, 80);
 });
 
+test('local bounds: 20 s deadline and 20 s admission wait are the most a converter accepts', () => {
+  assert.equal(LOCAL_CONVERSION_DEADLINE_MS, 20_000);
+  assert.equal(LOCAL_ADMISSION_WAIT_MS, 20_000);
+  assert.throws(() => createMediaConverter({ deadlineMs: LOCAL_CONVERSION_DEADLINE_MS + 1 }), rejects('invalid_manifest'));
+  assert.throws(() => createMediaConverter({ admissionWaitMs: LOCAL_ADMISSION_WAIT_MS + 1 }), rejects('invalid_manifest'));
+  assert.throws(() => createMediaConverter({ admissionWaitMs: -1 }), rejects('invalid_manifest'));
+});
+
+test('a second caller waits for the slot, first come first served, and both convert', async () => {
+  let release!: (value: typeof sharp) => void;
+  const loader = new Promise<typeof sharp>(resolve => { release = resolve; });
+  const convert = createMediaConverter({ admissionWaitMs: 5_000, loadDecoder: () => loader });
+  const finished: string[] = [];
+  const first = convert(await makePng(80, 40), 'image/png').then(result => { finished.push('first'); return result; });
+  const second = convert(await makePng(60, 30), 'image/png').then(result => { finished.push('second'); return result; });
+  const third = convert(await makePng(40, 20), 'image/png').then(result => { finished.push('third'); return result; });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.deepEqual(finished, []);
+  release(sharp);
+  const results = await Promise.all([first, second, third]);
+  assert.deepEqual(results.map(result => result.viewer.width), [80, 60, 40]);
+  assert.deepEqual(finished, ['first', 'second', 'third']);
+});
+
+test('a caller that waits longer than the admission wait fails busy, and the queue keeps working', async () => {
+  let release!: (value: typeof sharp) => void;
+  const loader = new Promise<typeof sharp>(resolve => { release = resolve; });
+  const convert = createMediaConverter({ admissionWaitMs: 30, loadDecoder: () => loader });
+  const png = await makePng();
+  const first = convert(png, 'image/png');
+  await assert.rejects(convert(png, 'image/png'), rejects('conversion_busy'));
+  release(sharp);
+  assert.equal((await first).viewer.width, 80);
+  // The waiter that gave up left the queue; the slot was not handed to it.
+  assert.equal((await convert(png, 'image/png')).viewer.width, 80);
+});
+
+test('after a conversion times out, the next caller waits for its native work instead of failing busy', async () => {
+  let release!: (value: typeof sharp) => void;
+  const held = new Promise<typeof sharp>(resolve => { release = resolve; });
+  let loads = 0;
+  const convert = createMediaConverter({
+    deadlineMs: 200, admissionWaitMs: 5_000,
+    loadDecoder: () => (++loads === 1 ? held : Promise.resolve(sharp)),
+  });
+  const png = await makePng();
+  const first = convert(png, 'image/png');
+  const next = convert(png, 'image/png');
+  await assert.rejects(first, rejects('conversion_timeout'));
+  // The timed-out work still holds the slot; the waiter gets it once that
+  // work settles, and its own deadline starts only then.
+  setTimeout(() => release(sharp), 100);
+  assert.equal((await next).viewer.width, 80);
+  assert.equal(loads, 2);
+});
+
+test('each native step gets only the deadline time still left, in whole seconds', { timeout: 20_000 }, async () => {
+  const seconds: number[] = [];
+  const recordingDecoder = Object.assign((input: Buffer, inputOptions: sharp.SharpOptions) => {
+    const instance = sharp(input, inputOptions);
+    const timeout = instance.timeout.bind(instance);
+    instance.timeout = (options: { seconds: number }) => { seconds.push(options.seconds); return timeout(options); };
+    return instance;
+  }, sharp) as unknown as typeof sharp;
+  // The decoder takes 1.2 s to load, so 1.8 s of a 3 s deadline is left.
+  const convert = createMediaConverter({
+    deadlineMs: 3_000,
+    loadDecoder: () => new Promise(resolve => setTimeout(() => resolve(recordingDecoder), 1_200)),
+  });
+  await convert(await makePng(), 'image/png');
+  assert.ok(seconds.length >= 3, 'metadata and both encodes set a native timeout');
+  assert.deepEqual(seconds, seconds.map(() => 2));
+  // With no time used yet, a step gets the whole deadline.
+  seconds.length = 0;
+  await createMediaConverter({ loadDecoder: async () => recordingDecoder })(await makePng(), 'image/png');
+  assert.equal(seconds[0], LOCAL_CONVERSION_DEADLINE_MS / 1000);
+});
+
 async function noisyJpeg(dimension: number): Promise<Buffer> {
   const pixels = Buffer.alloc(dimension * dimension * 3);
   let state = 123456789;
@@ -125,7 +203,7 @@ async function noisyJpeg(dimension: number): Promise<Buffer> {
 
 test('canonical byte ceiling rejects output without silently lowering fidelity', { timeout: 20_000 }, async () => {
   // Higher input quality reaches the canonical byte limit with fewer pixels.
-  // Fixture preparation has its own test allowance; production remains 5s.
+  // Fixture preparation has its own test allowance.
   await assert.rejects(convertMedia(await noisyJpeg(1200), 'image/jpeg'), rejects('canonical_too_large'));
 });
 
@@ -214,5 +292,5 @@ test('real decode and encode work is included in the application deadline', asyn
 test('missing decoder is a safe media failure and larger deadlines cannot bypass policy', async () => {
   const missing = createMediaConverter({ loadDecoder: async () => { throw new MediaError('decoder_unavailable'); } });
   await assert.rejects(missing(await makePng(), 'image/png'), rejects('decoder_unavailable'));
-  assert.throws(() => createMediaConverter({ deadlineMs: 6000 }), rejects('invalid_manifest'));
+  assert.throws(() => createMediaConverter({ deadlineMs: LOCAL_CONVERSION_DEADLINE_MS + 1000 }), rejects('invalid_manifest'));
 });
