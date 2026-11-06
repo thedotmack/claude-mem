@@ -15,7 +15,7 @@ import {
   type SelectableProvider,
 } from '../provider-dispatch.js';
 import { handleGeneratorExit } from './GeneratorExitHandler.js';
-import { normalizeAbortReason, PROVIDER_SWITCH_BOUNDARY_ABORT_REASON } from './abort-reason.js';
+import { normalizeAbortReason, OBSERVER_TEXT_RATE_LIMIT_ABORT_REASON, PROVIDER_SWITCH_BOUNDARY_ABORT_REASON } from './abort-reason.js';
 import {
   MAX_CONSECUTIVE_STALL_RESUMES,
   RESPONSE_STALL_RESUME_DELAY_MS,
@@ -103,6 +103,9 @@ function recordDeadlineExpiry(
 
 /** Quota prose: the observer's own reply said its allowance is spent. */
 export const OBSERVER_TEXT_QUOTA_MESSAGE = 'The observer replied that its usage allowance is exhausted';
+
+/** Rate-limit reply text (#5428): the provider throttled the observer's request. */
+export const OBSERVER_TEXT_RATE_LIMIT_MESSAGE = 'The observer replied that the provider rate limited the request (429)';
 
 /**
  * The pause to book for a quota exit.
@@ -439,6 +442,19 @@ export async function startGeneratorWithProvider(
         // class: the allowance is spent, no observation will ever store, and
         // the user is told nothing.
         recordObserverFailure(provider, pause);
+      }
+      // A 429 the CLI wrote as the reply (#5428) aborts without throwing too,
+      // so it is booked here as the throttle it is, the way bookClassifiedFailure
+      // books a thrown rate_limit that named no Retry-After: move the work to
+      // the fallback when one can serve, otherwise hold the provider for the
+      // short 'rate_limit' window, never the half-hour quota cooldown.
+      if (reason === OBSERVER_TEXT_RATE_LIMIT_ABORT_REASON && !failureBooked) {
+        if (routeAroundUnservableProvider(provider, OBSERVER_TEXT_RATE_LIMIT_MESSAGE, 'rate_limit', session.observerProfile) !== null) {
+          scheduledResume = { afterMs: 0, source: 'provider-fallback' };
+        } else {
+          recordQuotaExhausted(provider, OBSERVER_TEXT_RATE_LIMIT_MESSAGE, 'rate_limit', undefined, session.observerProfile);
+        }
+        recordObserverFailure(provider, { message: OBSERVER_TEXT_RATE_LIMIT_MESSAGE, kind: 'rate_limit' });
       }
       // A signed-out Claude observer answers with the CLI's own prose ("Not
       // logged in · Please run /login"). ResponseProcessor resets the batch to
