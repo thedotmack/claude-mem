@@ -28,6 +28,9 @@ import { ACTIVE_SOURCE, useStore, useWorkModel, useWorkspace, type FocusSelectio
 import { shownFocusAreaId } from '@/store/slices/view-slice'
 import { useFocusSharesLoader } from '@/live/focus-shares'
 import { isServedFromCloud } from '@/live/served-from'
+import { MediaSourceContext } from '@/components/observation-media/ObsMedia'
+import { SAMPLE_MEDIA_SOURCE } from '@/components/observation-media/sample-media'
+import { workerMediaSource } from '@/components/observation-media/worker-media-source'
 /** MY FOCUS sits above these: its areas, Other and Suggested (focus-nav.tsx). Past focus is at the bottom of the rail. */
 const PAGES: { id: NavPage; label: string; icon: typeof InboxIcon; section: string }[] = [
   { id: 'work', label: 'My Work', icon: InboxIcon, section: 'Monitor' },
@@ -157,6 +160,8 @@ function LoadedApp() {
 
   return (
     <MotionConfig reducedMotion="user">
+      {/* Images come from the worker (this machine's, or the hosted one behind work.cmem.ai); sample mode draws fixtures. */}
+      <MediaSourceContext.Provider value={sample ? SAMPLE_MEDIA_SOURCE : workerMediaSource}>
         <TooltipProvider delayDuration={150}>
           <Req ids={['R10.3', 'R10.2']} className="min-h-svh">
             <div className="min-h-svh pb-[calc(6rem+env(safe-area-inset-bottom))] text-foreground md:pb-0">
@@ -266,6 +271,7 @@ function LoadedApp() {
             </div>
           </Req>
         </TooltipProvider>
+      </MediaSourceContext.Provider>
     </MotionConfig>
   )
 }

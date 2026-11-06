@@ -21,6 +21,8 @@ import { AgentIcon, FocusAreaChip, NextMove, ProductLink, ProgressMeter, StateBa
 import { FocusChangeBar, useFocusChanges } from './focus-changes'
 import { OpenFollowUps } from './request-card'
 import { mergeRequestDetail, requestDetailKey } from '@/live/request-detail-state'
+import { ObsMediaStrip } from './observation-media/ObsMedia'
+import { requestImages } from './observation-media/request-images'
 
 const RECENT_RECORDS = 5
 
@@ -56,10 +58,16 @@ function Records({ records }: { records: Request['granular'] }) {
             <QueueItemContent className="text-xs">{record.text}</QueueItemContent>
             <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">{record.kind === 'memory' ? 'memory' : 'work'} · {record.at}</span>
           </div>
+          {record.media && <div className="mt-1.5 pl-6"><ObsMediaStrip media={record.media} title={record.text} /></div>}
         </QueueItem>
       ))}
     </QueueList>
   )
+}
+
+/** The drawer is a Radix modal whose Escape closes it; while the image viewer inside it is open, Escape closes only the viewer. */
+function keepDrawerOpenForGallery(event: KeyboardEvent) {
+  if (event.target instanceof Element && event.target.closest('.obs-media-gallery')) event.preventDefault()
 }
 
 type CheckNotice = { tone: 'saved' | 'problem'; message: string }
@@ -263,9 +271,10 @@ function LoadedRequestDetail({ request, onClose, onOpenFocus }: { request: Reque
   const title = request.title ?? request.resolvesTo?.title ?? 'Untitled request'
   const recent = request.granular.slice(0, RECENT_RECORDS)
   const earlier = request.granular.slice(RECENT_RECORDS)
+  const images = requestImages(request)
   return (
     <Sheet open onOpenChange={(open) => { if (!open) onClose() }}>
-      <SheetContent className="w-full gap-0 overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-xl">
+      <SheetContent onEscapeKeyDown={keepDrawerOpenForGallery} className="w-full gap-0 overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-xl">
         <Req ids={['R3.6', 'R3.2']}>
           <SheetHeader className="gap-3 border-b p-5 md:p-6">
             <div className="flex min-w-0 flex-wrap items-center gap-2 pr-10"><StateBadge state={request.state} /><AgentIcon agentId={request.agentId} withDevice /></div>
@@ -289,6 +298,8 @@ function LoadedRequestDetail({ request, onClose, onOpenFocus }: { request: Reque
               <span>Asked by {request.askedBy} · started {request.startedAt} · {request.runningFor} · {request.stage}</span>
             </div>
           </div>
+
+          {images && <ObsMediaStrip media={images} title={title} />}
 
           <Req ids={['R5.10', 'R5.12']}>
             <Section title="Deliverables">
