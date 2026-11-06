@@ -60,7 +60,7 @@ if (resolvedViewerHtmlPath) {
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_FEED_PAGE_SIZE = 200;
 const MAX_SESSION_PAGE_SIZE = 100;
-const STREAM_KEEPALIVE_MS = 15_000;
+export const STREAM_KEEPALIVE_MS = 15_000;
 
 // The viewer groups by the folder label hooks attach (`metadata.project`), not
 // by the server's project row. Rows written without a label (manual memories,
@@ -143,10 +143,31 @@ export class ServerViewerRoutes implements RouteHandler {
     app.get('/stream', read, this.handle(async (req, res) => {
       const scope = this.scopeOf(req, res);
       if (!scope) return;
+
+      // Registered before the first await: a client that disconnects while
+      // the opening queries run must not leave the keepalive timer behind.
+      // Listening on the response and its socket, as SSEBroadcaster does,
+      // because Bun's node:http reports a streaming client's disconnect on
+      // the socket.
+      let closed = false;
+      let keepalive: ReturnType<typeof setInterval> | null = null;
+      const onClose = () => {
+        closed = true;
+        if (keepalive) clearInterval(keepalive);
+        keepalive = null;
+        res.off('close', onClose);
+        res.off('error', onClose);
+        res.socket?.off('close', onClose);
+      };
+      res.on('close', onClose);
+      res.on('error', onClose);
+      res.socket?.on('close', onClose);
+
       const [catalog, status] = await Promise.all([
         fetchProjectCatalog(pool, scope),
         fetchProcessingStatus(pool, scope),
       ]);
+      if (closed) return;
 
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
@@ -156,11 +177,11 @@ export class ServerViewerRoutes implements RouteHandler {
       send({ type: 'initial_load', ...catalog, timestamp: Date.now() });
       send({ type: 'processing_status', ...status });
 
-      // The server runtime has no in-process event bus to push new rows; the
-      // viewer's own polling refreshes the feed. Keep the stream open so it
-      // does not reconnect in a loop.
-      const keepalive = setInterval(() => res.write(': keepalive\n\n'), STREAM_KEEPALIVE_MS);
-      req.on('close', () => clearInterval(keepalive));
+      // The server runtime has no in-process event bus, so this stream
+      // carries no change events after the two opening ones; see the
+      // "Viewer" section of docs/server.md. Keep it open so the viewer does
+      // not reconnect in a loop.
+      keepalive = setInterval(() => res.write(': keepalive\n\n'), STREAM_KEEPALIVE_MS);
     }));
 
     app.get('/api/projects', read, this.handle(async (req, res) => {

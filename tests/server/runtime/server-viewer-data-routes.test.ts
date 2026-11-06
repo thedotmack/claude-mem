@@ -6,7 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import pg from 'pg';
 import { Server } from '../../../src/services/server/Server.js';
-import { ServerViewerRoutes, type ServerViewerRoutesOptions } from '../../../src/server/runtime/ServerViewerRoutes.js';
+import { ServerViewerRoutes, STREAM_KEEPALIVE_MS, type ServerViewerRoutesOptions } from '../../../src/server/runtime/ServerViewerRoutes.js';
 import {
   bootstrapServerPostgresSchema,
   createPostgresStorageRepositories,
@@ -35,7 +35,7 @@ describe('ServerViewerRoutes data endpoints', () => {
   let projectKey: string;
   let loggerSpies: ReturnType<typeof spyOn>[] = [];
 
-  async function startServer(options: Omit<ServerViewerRoutesOptions, 'pool'> = {}): Promise<void> {
+  async function startServer(options: Omit<ServerViewerRoutesOptions, 'pool'> = {}, routesPool: unknown = pool): Promise<void> {
     server = new Server({
       getInitializationComplete: () => true,
       getMcpReady: () => true,
@@ -45,7 +45,7 @@ describe('ServerViewerRoutes data endpoints', () => {
       runtime: 'server-beta',
       getAiStatus: () => ({ provider: 'disabled', authMethod: 'api-key', lastInteraction: null }),
     });
-    server.registerRoutes(new ServerViewerRoutes({ pool: pool as never, authMode: 'api-key', ...options }));
+    server.registerRoutes(new ServerViewerRoutes({ pool: routesPool as never, authMode: 'api-key', ...options }));
     server.finalizeRoutes();
     await server.listen(0, '127.0.0.1');
     const address = server.getHttpServer()?.address();
@@ -262,6 +262,62 @@ describe('ServerViewerRoutes data endpoints', () => {
     expect(events[0].type).toBe('initial_load');
     expect(events[0].projects.sort()).toEqual(['other-project', 'repo-a']);
     expect(events[1]).toEqual({ type: 'processing_status', isProcessing: false, queueDepth: 0 });
+  });
+
+  it('leaves no keepalive timer behind when the client disconnects during the opening queries', async () => {
+    // Hold the stream's processing-status query until the client has gone,
+    // so the disconnect lands while the handler is still awaiting.
+    let releaseQuery!: () => void;
+    const queryGate = new Promise<void>(resolve => { releaseQuery = resolve; });
+    let markGateReached!: () => void;
+    const gateReached = new Promise<void>(resolve => { markGateReached = resolve; });
+    let markQueryDone!: () => void;
+    const queryDone = new Promise<void>(resolve => { markQueryDone = resolve; });
+    const gatedPool = new Proxy(pool, {
+      get(target, property) {
+        const value = Reflect.get(target, property, target);
+        if (property !== 'query') return typeof value === 'function' ? value.bind(target) : value;
+        return (text: unknown, ...rest: unknown[]) => {
+          const run = () => (value as (...args: unknown[]) => Promise<unknown>).call(target, text, ...rest);
+          if (!String(text).includes('observation_generation_jobs')) return run();
+          markGateReached();
+          return queryGate.then(run).finally(markQueryDone);
+        };
+      },
+    });
+    await startServer({}, gatedPool);
+
+    const intervalSpy = spyOn(globalThis, 'setInterval');
+    const clearSpy = spyOn(globalThis, 'clearInterval');
+    try {
+      const controller = new AbortController();
+      const request = fetch(`${baseUrl}/stream`, { headers: { Authorization: `Bearer ${teamKey}` }, signal: controller.signal })
+        .catch(() => null);
+      await gateReached;
+      controller.abort();
+      await request;
+      releaseQuery();
+      // Let the handler run on past the released query before judging it.
+      await queryDone;
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // The close may reach the server after the queries finish; what matters
+      // is that no keepalive timer outlives the connection.
+      const keepaliveHandles = () => intervalSpy.mock.calls
+        .map((call, index) => ({ delay: call[1], handle: intervalSpy.mock.results[index]?.value }))
+        .filter(entry => entry.delay === STREAM_KEEPALIVE_MS)
+        .map(entry => entry.handle);
+      const allCleared = () => keepaliveHandles().every(handle => clearSpy.mock.calls.some(call => call[0] === handle));
+      const deadline = Date.now() + 2000;
+      while (!allCleared() && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      expect(allCleared()).toBe(true);
+    } finally {
+      for (const handle of intervalSpy.mock.results.map(result => result.value)) clearInterval(handle as never);
+      intervalSpy.mockRestore();
+      clearSpy.mockRestore();
+    }
   });
 
   // The daily log is one file for the whole server, not a per-team resource,
