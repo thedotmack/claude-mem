@@ -193,10 +193,11 @@ export function isQuotaLimitedObserverOutput(raw: unknown): boolean {
  * instead of the quota one, exactly as a thrown 429 already does.
  *
  * Anchored at the start, like the other CLI envelopes: the 429 must be the
- * status the "API Error" envelope reports, and the gateway sentence must open
- * the reply and end where its own wording ends. "You have 429 files to review"
- * and "The request was rate limited during testing; nothing new to record"
- * are ordinary prose and stay unmatched, because a false match pauses the
+ * status the "API Error" envelope reports. Without the envelope, only the
+ * gateway's complete refusal counts, anchored at both ends, so a reply that
+ * merely uses its words ("The request was rate limited. Logged nothing new.")
+ * is not one. "You have 429 files to review" and "The request was rate limited
+ * during testing; nothing new to record" are ordinary prose and stay unmatched, because a false match pauses the
  * generator and requeues a batch the observer has already answered.
  */
 export function isRateLimitedObserverOutput(raw: unknown): boolean {
@@ -212,7 +213,7 @@ export function isRateLimitedObserverOutput(raw: unknown): boolean {
 
   return (
     /^api error:?\s*(?:request rejected\s*)?\(?429\)?(?=$|[\s·:{.,])/.test(text) ||
-    /^the request was rate limited\.(?:\s|$)/.test(text)
+    /^the request was rate limited\. its source could not be identified\. retry after the indicated delay\.?$/.test(text)
   );
 }
 

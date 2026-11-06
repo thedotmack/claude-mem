@@ -163,6 +163,14 @@ describe('isRateLimitedObserverOutput (#5428)', () => {
       isRateLimitedObserverOutput('Fixed the bug where the request was rate limited. Retry after the indicated delay.'),
     ).toBe(false);
     expect(
+      isRateLimitedObserverOutput('The request was rate limited. Logged nothing new for this batch.'),
+    ).toBe(false);
+    expect(
+      isRateLimitedObserverOutput(
+        'The request was rate limited. Its source could not be identified. Retry after the indicated delay. Then we fixed it.',
+      ),
+    ).toBe(false);
+    expect(
       isRateLimitedObserverOutput(
         '<observation><title>Request rejected (429)</title><narrative>The request was rate limited.</narrative></observation>',
       ),
