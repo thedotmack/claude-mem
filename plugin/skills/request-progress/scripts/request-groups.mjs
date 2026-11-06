@@ -91,6 +91,7 @@ var init_hook_io = __esm({
 import {
   closeSync,
   existsSync as existsSync2,
+  fchmodSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -193,6 +194,7 @@ function writeJsonFileAtomic(filepath, data, options = {}) {
   let fd;
   try {
     fd = mode !== void 0 ? openSync(tmpPath, "w", mode) : openSync(tmpPath, "w");
+    if (mode !== void 0 && !IS_WINDOWS_PLATFORM) fchmodSync(fd, mode);
     let written = 0;
     while (written < payload.length) {
       const n = writeSync(fd, payload, written, payload.length - written);
@@ -3157,6 +3159,16 @@ var init_redaction = __esm({
       // print. Neither prefix is claimed by openai_key, so they stayed in the text.
       { name: "groq_key", regex: /\bgsk_[A-Za-z0-9]{52}(?!\w)/g },
       { name: "xai_key", regex: /\bxai-[A-Za-z0-9_]{80}(?!\w)/g },
+      // Perplexity API keys (`pplx-` + 48 alphanumerics): an LLM provider key
+      // that `.env` files, `export PERPLEXITY_API_KEY=…` lines and `curl -H
+      // "Authorization: Bearer …"` commands print. The prefix is not claimed by
+      // openai_key, and Perplexity model ids share it (`pplx-embed-v1-4b`), so
+      // the fixed 48-char alphanumeric body keeps the model ids out. The worker
+      // scans JSON.stringify(toolResponse), where a newline right before the key
+      // arrives as `\n`; the `n` is a word character, so a bare `\b` cannot match
+      // there and the lookbehind also accepts the escaped whitespace pair, like
+      // generic_token's ASSIGNMENT_START.
+      { name: "perplexity_key", regex: new RegExp(String.raw`(?<=\\[nrt]|\b)pplx-[A-Za-z0-9]{48}(?!\w)`, "g") },
       // Supabase personal access tokens (`sbp_` + 40 hex, what `supabase login`
       // stores and SUPABASE_ACCESS_TOKEN holds) and Sentry auth tokens: personal
       // ones (`sntryu_` + 64 hex) and organization ones (`sntrys_` + a base64
@@ -3879,6 +3891,69 @@ var init_api_key_pool = __esm({
   }
 });
 
+// src/supervisor/env-sanitizer.ts
+var ENV_PROXY_VARS, ENV_PRESERVE;
+var init_env_sanitizer = __esm({
+  "src/supervisor/env-sanitizer.ts"() {
+    "use strict";
+    ENV_PROXY_VARS = /* @__PURE__ */ new Set([
+      "HTTP_PROXY",
+      "HTTPS_PROXY",
+      "ALL_PROXY",
+      "NO_PROXY",
+      "http_proxy",
+      "https_proxy",
+      "all_proxy",
+      "no_proxy",
+      "npm_config_proxy",
+      "npm_config_https_proxy",
+      "npm_config_noproxy",
+      // Node's fetch ignores HTTP(S)_PROXY until this is set (NODE_USE_ENV_PROXY=1).
+      // Claude Code applies it from user settings; the observer child does not
+      // load those settings, so the flag has to travel with the other proxy vars
+      // (#5400). The lowercase spelling matches the http_proxy family.
+      "NODE_USE_ENV_PROXY",
+      "node_use_env_proxy"
+    ]);
+    ENV_PRESERVE = /* @__PURE__ */ new Set([
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "CLAUDE_CODE_GIT_BASH_PATH",
+      // The CLI documents CLAUDE_CODE_TMPDIR as the fix for a root-owned per-uid
+      // /tmp/claude-<uid> directory (#4161). Stripping it here sent the SDK child
+      // back to /tmp, so the child hit that directory and exited 1 on every spawn
+      // — the user's only documented escape did nothing.
+      "CLAUDE_CODE_TMPDIR",
+      // Documented Claude Code gateway compatibility switch. The Observer must
+      // inherit an explicit beta opt-out because settingSources: [] prevents the
+      // SDK child from recovering it from user settings. Keep this as a single
+      // named exception: arbitrary CLAUDE_CODE_* host settings remain stripped.
+      "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",
+      // claude-mem's own setting, not a CLI knob (the CLI never reads it): the
+      // path to the claude binary, documented as settable from the file OR the
+      // env. Every daemon spawn passes through sanitizeEnv, and the worker reads
+      // the env override (SettingsDefaultsManager.applyEnvOverrides), so
+      // stripping it silently dropped the env form.
+      "CLAUDE_CODE_PATH",
+      "CLAUDE_CODE_USE_BEDROCK",
+      "CLAUDE_CODE_USE_VERTEX",
+      "CLAUDE_CODE_USE_FOUNDRY",
+      "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
+      "CLAUDE_CODE_SKIP_VERTEX_AUTH",
+      "CLAUDE_CODE_SKIP_FOUNDRY_AUTH",
+      "ANTHROPIC_BEDROCK_BASE_URL",
+      "AWS_REGION",
+      "AWS_PROFILE",
+      "AWS_ACCESS_KEY_ID",
+      "AWS_SECRET_ACCESS_KEY",
+      "AWS_SESSION_TOKEN",
+      "ANTHROPIC_VERTEX_PROJECT_ID",
+      "CLOUD_ML_REGION",
+      "GOOGLE_APPLICATION_CREDENTIALS",
+      ...ENV_PROXY_VARS
+    ]);
+  }
+});
+
 // src/shared/oauth-token.ts
 import { execFile } from "child_process";
 import { promisify } from "util";
@@ -3928,6 +4003,7 @@ var CREDENTIAL_KEYS;
 var init_EnvManager = __esm({
   "src/shared/EnvManager.ts"() {
     "use strict";
+    init_env_sanitizer();
     init_logger();
     init_paths();
     init_atomic_json();

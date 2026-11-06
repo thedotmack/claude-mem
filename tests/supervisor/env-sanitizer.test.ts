@@ -197,6 +197,8 @@ describe('sanitizeEnv', () => {
       npm_config_proxy: 'http://corp-proxy:1234',
       npm_config_https_proxy: 'http://corp-proxy:1234',
       npm_config_noproxy: 'localhost,127.0.0.1',
+      NODE_USE_ENV_PROXY: '1',
+      node_use_env_proxy: '1',
       PATH: '/usr/bin'
     });
 
@@ -211,6 +213,8 @@ describe('sanitizeEnv', () => {
     expect(result.npm_config_proxy).toBe('http://corp-proxy:1234');
     expect(result.npm_config_https_proxy).toBe('http://corp-proxy:1234');
     expect(result.npm_config_noproxy).toBe('localhost,127.0.0.1');
+    expect(result.NODE_USE_ENV_PROXY).toBe('1');
+    expect(result.node_use_env_proxy).toBe('1');
     expect(result.PATH).toBe('/usr/bin');
   });
 

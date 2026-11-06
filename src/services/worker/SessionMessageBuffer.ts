@@ -165,6 +165,18 @@ export class SessionMessageBuffer {
   }
 
   /**
+   * Drop everything buffered for a session but keep its dedup set, so neither
+   * work already stored nor work just discarded can be enqueued and sent
+   * again by a later hook or transcript replay (#5405).
+   */
+  discardKeepingDedup(sessionDbId: number): number {
+    const discarded = this.buffers.get(sessionDbId)?.length ?? 0;
+    this.buffers.delete(sessionDbId);
+    if (discarded > 0) this.onMutate?.();
+    return discarded;
+  }
+
+  /**
    * Drop work that has not been handed to a provider yet, preserving messages
    * claimed by the request currently in flight so its response can still join
    * file evidence and other source metadata.
