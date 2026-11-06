@@ -167,5 +167,5 @@ export function createMediaConverter(options: {
 }
 
 // A lazy import occurs only when this function is called; text startup has no
-// eager native dependency and capture/inference settings remain off by default.
+// eager native dependency; the converter loads on the first captured image.
 export const convertMedia = createMediaConverter();

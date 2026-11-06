@@ -1,6 +1,9 @@
 # Observation media contract v1
 
-Capture and inference are independent and off by default. Phase 1 freezes these
+Capture and inference are independent. In claude-mem, capture
+(`CLAUDE_MEM_MEDIA_CAPTURE_ENABLED`, the viewer's "Keep images" switch) is on by
+default and inference is off by default. Pro's `CMEM_MEDIA_*` operator flags are
+off unless an operator sets them. Phase 1 freezes these
 contracts and builds fixtures; it does not qualify a model or enable a provider.
 The local `src/shared/media-contract.ts` and Pro `src/lib/media/contract.ts`, and
 their golden JSON fixtures, must remain byte-identical.

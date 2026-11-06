@@ -250,6 +250,9 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_PROVIDER',
       'CLAUDE_MEM_PROVIDER_BY_SOURCE',
       'CLAUDE_MEM_OBSERVER_ENABLED',
+      // The viewer's "Keep images" switch. Inference stays file/env only: it
+      // sends images to a paid model and has no switch.
+      'CLAUDE_MEM_MEDIA_CAPTURE_ENABLED',
       'CLAUDE_MEM_CODEX_MODEL',
       'CLAUDE_MEM_CODEX_REASONING_EFFORT',
       'CLAUDE_MEM_CLAUDE_AUTH_METHOD',
@@ -367,11 +370,10 @@ export class SettingsRoutes extends BaseRouteHandler {
   });
 
   private validateSettings(settings: any): { valid: boolean; error?: string } {
-    if (
-      settings.CLAUDE_MEM_OBSERVER_ENABLED !== undefined
-      && !['true', 'false'].includes(settings.CLAUDE_MEM_OBSERVER_ENABLED)
-    ) {
-      return { valid: false, error: 'CLAUDE_MEM_OBSERVER_ENABLED must be "true" or "false"' };
+    for (const key of ['CLAUDE_MEM_OBSERVER_ENABLED', 'CLAUDE_MEM_MEDIA_CAPTURE_ENABLED'] as const) {
+      if (settings[key] !== undefined && !['true', 'false'].includes(settings[key])) {
+        return { valid: false, error: `${key} must be "true" or "false"` };
+      }
     }
 
     for (const key of ['CLAUDE_MEM_CODEX_MODEL', 'CLAUDE_MEM_CODEX_REASONING_EFFORT'] as const) {
