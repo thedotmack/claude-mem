@@ -115,9 +115,13 @@ describe('context reader when the -wal and wal-index are missing (#5429)', () =>
   it('reads a WAL database that has neither a -wal nor a -shm', () => {
     withDataDir('claude-mem-reader-no-wal-', dataDir => {
       seedDatabase(dataDir);
-      // The fixture must reproduce the failure, or the read-write recovery
+      // Whether a plain read-only open fails here depends on the SQLite build:
+      // the macOS system library (the reporter's, SQLite 3.51.0 on macOS 26)
+      // refuses it, while the SQLite Bun embeds on Linux reads it. Where it
+      // fails, the fixture must reproduce that, or the read-write recovery
       // below would go unexercised.
-      expect(plainReadonlyOpenError(dataDir)).toContain('unable to open database file');
+      const plainError = plainReadonlyOpenError(dataDir);
+      if (process.platform === 'darwin') expect(plainError).toContain('unable to open database file');
       const result = readThroughWorker(dataDir);
       expect(result.appError).toBeUndefined();
       expect(result.app).toBe(true);
