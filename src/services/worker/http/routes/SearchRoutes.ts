@@ -49,6 +49,7 @@ import type { ObservationSearchResult, SessionSummarySearchResult } from '../../
 import { captureEvent } from '../../../telemetry/telemetry.js';
 import { telemetryBuffer } from '../../../telemetry/buffer.js';
 import { proTrialLine } from '../../../../shared/pro-promo.js';
+import { CONTEXT_OUTPUT_LIMIT } from '../../../context/ContextBudget.js';
 import { teamBriefReserveChars } from '../../../../shared/teambrain.js';
 import { ProgressiveMemorySearch } from '../../ProgressiveMemorySearch.js';
 import { progressiveSearchToolResult, progressiveSearchToolError, type ProgressiveSearchInput } from '../../../../shared/progressive-search.js';
@@ -413,6 +414,10 @@ export class SearchRoutes extends BaseRouteHandler {
     }
     const forHuman = req.query.colors === 'true';
     const full = req.query.full === 'true';
+    // Per-session hook notices are not part of the reusable cached body.
+    const rawReserve = Number(req.query.reserveChars ?? 0);
+    const reserveChars = Number.isFinite(rawReserve)
+      ? Math.min(CONTEXT_OUTPUT_LIMIT, Math.max(0, Math.floor(rawReserve))) : 0;
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
     if (!projectsParam) {
@@ -441,7 +446,7 @@ export class SearchRoutes extends BaseRouteHandler {
     const renderSequenceAtStart = this.contextCache?.beginRenderSequence?.();
     let rendered: ContextInjectRender;
     try {
-      rendered = await this.renderContextInjectBody({ projects, platformSource, forHuman, full, cwd: hostCwd || undefined, sessionId: hostSessionId, includePriorMessage: showLastMessage });
+      rendered = await this.renderContextInjectBody({ projects, platformSource, forHuman, full, cwd: hostCwd || undefined, sessionId: hostSessionId, includePriorMessage: showLastMessage, reserveChars });
     } catch (error) {
       const normalizedError = error instanceof Error ? error : new Error(String(error));
       // context_injected is HOOK-level (no sessionDbId in scope) → null key,
@@ -474,8 +479,9 @@ export class SearchRoutes extends BaseRouteHandler {
     // from here on. `full` is a one-off human request and is never cached. An
     // answer with the prior reply is not persisted either, since the reply was
     // chosen for this session: its variant is warmed instead, without a reply.
+    // A per-session notice reserve must not replace the normal cache variant.
     const respondedAtEpochMs = Date.now();
-    if (!full && this.contextCache) {
+    if (!full && reserveChars === 0 && this.contextCache) {
       try {
         const keys = contextCacheKeys(projects, platformSource, forHuman, hostCwd || undefined);
         if (showLastMessage) {
@@ -536,6 +542,7 @@ export class SearchRoutes extends BaseRouteHandler {
     sessionId?: string;
     /** "Include last message" for this render; false for any block that may be cached. */
     includePriorMessage: boolean;
+    reserveChars?: number;
   }): Promise<ContextInjectRender> {
     const { projects, platformSource, forHuman, full } = request;
     // Health banners change with time, and a prior reply is chosen for the
@@ -597,7 +604,7 @@ export class SearchRoutes extends BaseRouteHandler {
       // Beside the work-state section: room for what the hook appends after
       // this body once the install is in a team (the TeamBrain brief). Env
       // first, as the hook reads it.
-      reserveChars: (workStateSection ? workStateSection.length + 2 : 0) + teamBriefReserveChars({
+      reserveChars: (request.reserveChars ?? 0) + (workStateSection ? workStateSection.length + 2 : 0) + teamBriefReserveChars({
         CLAUDE_MEM_TEAMBRAIN_URL: process.env.CLAUDE_MEM_TEAMBRAIN_URL ?? settings.CLAUDE_MEM_TEAMBRAIN_URL,
         CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED ?? settings.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED,
       }),
