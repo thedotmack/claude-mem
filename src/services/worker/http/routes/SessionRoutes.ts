@@ -543,9 +543,7 @@ export class SessionRoutes extends BaseRouteHandler {
         // short rate limit may retain the bounded live buffer; spent quota
         // and refused credentials skip it, including legacy paused work.
         if (cooldown?.window !== 'rate_limit') {
-          await this.sessionManager.clearPendingForSession(sessionDbId);
-          session.claimedMessageIds = [];
-          session.earliestPendingTimestamp = null;
+          this.sessionManager.discardBufferedWork(sessionDbId);
           session.pendingAgentId = null;
           session.pendingAgentType = null;
           session.paidSendBudget = undefined;

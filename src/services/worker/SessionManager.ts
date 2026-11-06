@@ -13,7 +13,6 @@ import { planUnattendedGatewayResume, unattendedGatewayResumesSpent } from './se
 import { PROVIDER_SWITCH_BOUNDARY_ABORT_REASON } from './session/abort-reason.js';
 import { isSimpleTierMessage } from './session/tier-routing.js';
 import { claudeStandInStillServes } from '../../shared/claude-fallback-readiness.js';
-import { readObserverHealth } from '../../shared/observer-health.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { isObserverCaptureEnabled } from '../../shared/observer-capture.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
@@ -567,7 +566,10 @@ export class SessionManager {
   async resetProcessingToPending(sessionDbId: number): Promise<number> {
     const session = this.sessions.get(sessionDbId);
     if (session) {
+      // Released claims are unsent again and may expire before a new claim, so
+      // their timestamp must not outlive them; the next claim recomputes it.
       session.claimedMessageIds = [];
+      session.earliestPendingTimestamp = null;
     }
     return this.buffer.resetClaimed(sessionDbId);
   }
@@ -841,12 +843,6 @@ export class SessionManager {
    *  - an observer that spent its overflow recycles (`overflowPausedUntilMs`):
    *    a message that fits no generation aborts again on every retry, which
    *    the sweep repeated every cooldown, forever.
-   *
-   * An auth pause is the one timer-less case that can still join the sweep:
-   * a store under the same captured credential scope after the session
-   * paused is proof the credential works again (#5377), so that session is
-   * retried within the same pacing as any other — its provider's breaker
-   * still gates it.
    */
   getResumableSessionIds(includeOperatorOnly: boolean = false): number[] {
     const automaticallyRetryable = new Set([null, undefined, 'rate_limit', 'overflow', 'provider_switch', 'response_stall']);
@@ -857,22 +853,8 @@ export class SessionManager {
         && (includeOperatorOnly || session.overflowPausedUntilMs === undefined)
         && (includeOperatorOnly || session.scheduledResumeTimer === undefined)
         && (includeOperatorOnly || !(unattendedGatewayResumesSpent(session) && canCmemGatewayServe(session.platformSource)))
-        && (includeOperatorOnly || automaticallyRetryable.has(session.pausedReason)
-          || this.authPauseProvenRecovered(session)))
+        && (includeOperatorOnly || automaticallyRetryable.has(session.pausedReason)))
       .map(session => session.sessionDbId);
-  }
-
-  /**
-   * An auth pause waits for proof the credential works again, not a timer
-   * (#5377): a successful store for the same provider, account and credential
-   * type after this session paused is that proof. With an unknown identity, an
-   * old unscoped ledger, or a success older than the pause, the session stays
-   * parked for its next captured event or an operator retry, exactly as before.
-   */
-  private authPauseProvenRecovered(session: ActiveSession): boolean {
-    if (session.pausedReason !== 'auth' || !session.pausedAtMs || !session.pausedAuthScope) return false;
-    const health = readObserverHealth();
-    return (health?.authRecoverySuccesses?.[session.pausedAuthScope] ?? 0) > session.pausedAtMs;
   }
 
   /**

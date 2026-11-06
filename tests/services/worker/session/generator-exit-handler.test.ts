@@ -59,6 +59,7 @@ function makeDeps() {
     getMessageBuffer: mock(() => messageBuffer),
     removeSessionImmediate: mock(() => {}),
     clearPendingForSession: mock(async () => 2),
+    discardBufferedWork: mock(() => 2),
   };
   const completionHandler = { finalizeSession: mock(() => Promise.resolve()) };
   return { sessionManager, completionHandler, messageBuffer };
@@ -76,8 +77,8 @@ describe('handleGeneratorExit reason branching (#2756)', () => {
 
     expect(session.generatorPromise).toBeNull();
     expect(session.currentProvider).toBeNull();
-    expect(sessionManager.clearPendingForSession).toHaveBeenCalledWith(910001);
-    expect(session.claimedMessageIds).toEqual([]);
+    // discardBufferedWork also resets the claims; its own test covers that.
+    expect(sessionManager.discardBufferedWork).toHaveBeenCalledWith(910001);
     expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
     expect(sessionManager.removeSessionImmediate).not.toHaveBeenCalled();
   });

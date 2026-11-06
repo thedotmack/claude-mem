@@ -30,6 +30,7 @@ function buildDeps() {
   const sessionManager = {
     getMessageBuffer: () => ({ getPendingCount: () => 3 }),
     clearPendingForSession: mock(async () => 3),
+    discardBufferedWork: mock(() => 3),
     removeSessionImmediate,
   } as unknown as SessionManager;
   const completionHandler = { finalizeSession } as unknown as SessionCompletionHandler;
@@ -41,19 +42,12 @@ describe('handleGeneratorExit — reasons that preserve claimed work', () => {
     it(`leaves the session alive for ${reason}`, async () => {
       const { deps, finalizeSession, removeSessionImmediate } = buildDeps();
       const session = buildSession(reason);
-      session.observerProfile = 'account-a';
-      session.observerAuth = 'subscription';
 
       await handleGeneratorExit(session, reason, deps);
 
       expect(finalizeSession).not.toHaveBeenCalled();
       expect(removeSessionImmediate).not.toHaveBeenCalled();
       expect(session.pausedReason).toBe(reason.split(':')[0]);
-      // The pause moment is the recovery proof's before-side (#5377): the sweep
-      // resumes an auth pause only on a ledger success recorded after it.
-      expect(session.pausedAtMs).toBeNumber();
-      expect(session.pausedAuthScope).toBe(reason.startsWith('auth:')
-        ? JSON.stringify(['claude', 'account-a', 'subscription']) : null);
     });
   }
 
@@ -62,7 +56,7 @@ describe('handleGeneratorExit — reasons that preserve claimed work', () => {
       const { deps, finalizeSession, removeSessionImmediate } = buildDeps();
       const session = buildSession(reason);
       await handleGeneratorExit(session, reason, deps);
-      expect(deps.sessionManager.clearPendingForSession).toHaveBeenCalledWith(7);
+      expect(deps.sessionManager.discardBufferedWork).toHaveBeenCalledWith(7);
       expect(finalizeSession).not.toHaveBeenCalled();
       expect(removeSessionImmediate).not.toHaveBeenCalled();
     });

@@ -51,6 +51,8 @@ claims that a user's historical installation was independently reproduced.
 | 5 Oct 2026 | [448872a / PR 4531](https://github.com/thedotmack/claude-mem/commit/448872ae799621a880f30c2709db084a766c234c) | Routed standalone transcript-watcher observations through that spool. |
 | 11–15 Oct 2026 | Timestamp preservation and remote hook spool | Improved delivery bookkeeping while retaining the durable inference handoff. |
 | 26 Oct 2026 | [1fd7c22 / PR 5072](https://github.com/thedotmack/claude-mem/commit/1fd7c220e7be6799f2b4ee796379c883730e4958) | Held transcript cursors while the RAM buffer had unfinished work; did not provide a full observer checkpoint. |
+| 5 Nov 2026 | [1fe4d8e / PR 5383](https://github.com/thedotmack/claude-mem/commit/1fe4d8e78c8d0ea6661236f934a190f50bb84712) | Merged while this contract was still unlanded: auth-paused work auto-resumed once a later store succeeded. Removed with PR 5347, since auth now discards and nothing is left to resume. |
+| 6 Nov 2026 | [f090685 / PR 5414](https://github.com/thedotmack/claude-mem/commit/f09068514365a7b6fa01bf7e3af2a20118f55df7) | Stall exhaustion discards buffered work and keeps deduplication. PR 5347 uses the same `discardBufferedWork` for quota and auth. |
 
 [Community bundle PR 3614](https://github.com/thedotmack/claude-mem/pull/3614)
 was closed without merging. It included a proposed transport-preservation fix,

@@ -32,6 +32,32 @@ describe('live observer has no replay debt', () => {
     expect(completion.finalizeSession).not.toHaveBeenCalled();
   });
 
+  it('keeps dedup when quota or auth discards work, so a hook replay is not paid for again', async () => {
+    const manager = new SessionManager({ getSessionById: (id: number) => ({ content_session_id: `${id}`, project: 'test' }) } as any);
+    const completion = { finalizeSession: mock(async () => {}) };
+    for (const reason of ['quota:observer_text', 'auth:observer_text']) {
+      const id = reason.startsWith('quota') ? 41 : 42;
+      const session = manager.initializeSession(id, 'prompt', 1);
+      expect(manager.getMessageBuffer().enqueue(id, observation('replayed'))).toBeGreaterThan(0);
+      await handleGeneratorExit(session, reason, { sessionManager: manager, completionHandler: completion as any });
+      expect(manager.getMessageBuffer().getPendingCount(id)).toBe(0);
+      // The same tool use arriving again (hook retry, transcript replay) is suppressed.
+      expect(manager.getMessageBuffer().enqueue(id, observation('replayed'))).toBe(0);
+      expect(manager.getMessageBuffer().enqueue(id, observation('fresh'))).toBeGreaterThan(0);
+    }
+  });
+
+  it('forgets the claim timestamp when claims are released, since released work can expire unsent', async () => {
+    const manager = new SessionManager({ getSessionById: (id: number) => ({ content_session_id: `${id}`, project: 'test' }) } as any);
+    const session = manager.initializeSession(51, 'prompt', 1);
+    manager.getMessageBuffer().enqueue(51, observation('claimed'), 1_000);
+    expect(manager.claimNextObservation(51, () => true)).not.toBeNull();
+    expect(session.earliestPendingTimestamp).toBe(1_000);
+    await manager.resetProcessingToPending(51);
+    expect(session.claimedMessageIds).toEqual([]);
+    expect(session.earliestPendingTimestamp).toBeNull();
+  });
+
   it('bounds both a single session and the aggregate pending buffer', () => {
     const buffer = new SessionMessageBuffer();
     for (let i = 0; i < LIVE_OBSERVER_MAX_SESSION_MESSAGES; i++) expect(buffer.enqueue(1, observation(`${i}`))).toBeGreaterThan(0);

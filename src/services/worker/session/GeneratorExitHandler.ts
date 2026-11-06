@@ -2,7 +2,6 @@ import type { ActiveSession } from '../../worker-types.js';
 import type { SessionManager } from '../SessionManager.js';
 import type { SessionCompletionHandler } from './SessionCompletionHandler.js';
 import { logger } from '../../../utils/logger.js';
-import { observerAuthScope } from '../../../shared/observer-health.js';
 import { getSdkProcessForSession, ensureSdkProcessExit } from '../../../supervisor/process-registry.js';
 import { abortCategoryOf, PRESERVED_ABORT_CATEGORIES } from './abort-reason.js';
 
@@ -39,7 +38,6 @@ export async function handleGeneratorExit(
     await ensureSdkProcessExit(tracked, 5000);
   }
 
-  const authScope = observerAuthScope(session.currentProvider, session.observerProfile, session.observerAuth);
   session.generatorPromise = null;
   session.currentProvider = null;
 
@@ -53,9 +51,7 @@ export async function handleGeneratorExit(
     sessionManager.clearTransportResume?.(sessionDbId);
   }
   if (abortCategory === 'quota' || abortCategory === 'auth') {
-    await sessionManager.clearPendingForSession(sessionDbId);
-    session.claimedMessageIds = [];
-    session.earliestPendingTimestamp = null;
+    sessionManager.discardBufferedWork(sessionDbId);
     session.pendingAgentId = null;
     session.pendingAgentType = null;
     session.paidSendBudget = undefined;
@@ -68,8 +64,6 @@ export async function handleGeneratorExit(
   }
   if (PRESERVED_ABORT_CATEGORIES.has(abortCategory)) {
     session.pausedReason = abortCategory;
-    session.pausedAtMs = Date.now();
-    session.pausedAuthScope = abortCategory === 'auth' ? authScope : null;
     logger.warn('SESSION', `Generator paused for ${abortCategory}; preserving buffered work`, {
       sessionId: sessionDbId,
       pendingCount: sessionManager.getMessageBuffer().getPendingCount(sessionDbId),
