@@ -2538,6 +2538,12 @@ var init_session_project = __esm({
 });
 
 // src/services/work-view/request-projection.mjs
+function requestMediaSummary(activity) {
+  const refs = /* @__PURE__ */ new Map();
+  for (const entry of activity) for (const ref of entry.media?.attachments ?? []) if (!refs.has(ref.id)) refs.set(ref.id, ref);
+  if (!refs.size) return null;
+  return { count: refs.size, preview: [...refs.values()].slice(0, REQUEST_MEDIA_PREVIEW_LIMIT) };
+}
 function requestText(value, max = 1200) {
   if (typeof value !== "string") return null;
   const requestSection = value.match(/^\s*#{1,2}\s+My request\s*:\s*(?:\r?\n)?([\s\S]*)$/im);
@@ -2770,6 +2776,8 @@ function buildHumanRequests(view, records2 = {}, { titleCache = {}, ledger = nul
     request.agentIds.sort((a, b) => Number(subagentIds.has(a)) - Number(subagentIds.has(b)));
     for (const stream of request.workstreams) stream.activity = activityFor(stream.items, request.id, 20);
     request.activity = activityFor(request.items, request.id, 40);
+    const media = requestMediaSummary(request.activity);
+    if (media) request.media = media;
     const metadata = (key) => request.items.map((item) => ({ item, record: item[key] })).filter(({ record }) => record).sort((a, b) => (b.record.atEpoch ?? 0) - (a.record.atEpoch ?? 0));
     const lifecycleRecords = request.items.flatMap((item) => [
       ...typeof item.requestStatus === "string" && item.requestStatus.trim() ? [{ status: item.requestStatus.trim(), explicit: true, field: "request_status", sourceId: item.id, url: item.url, atEpoch: item.requestStatusSource?.atEpoch ?? item.lastUpdateEpoch ?? null, sourceOrder: item.requestStatusSource?.sourceOrder ?? null, sourceRef: item.requestStatusSource?.sourceRef ?? null }] : [],
@@ -2806,12 +2814,13 @@ function buildHumanRequests(view, records2 = {}, { titleCache = {}, ledger = nul
   }
   return { humanRequests: [...requests.values()].sort((a, b) => b.updatedAtEpoch - a.updatedAtEpoch), unlinkedWork };
 }
-var ENGLISH_ACTION, IMPERATIVE_OPENING, NOT_A_VERB, ENGLISH_WORDS, isConversationKey;
+var REQUEST_MEDIA_PREVIEW_LIMIT, ENGLISH_ACTION, IMPERATIVE_OPENING, NOT_A_VERB, ENGLISH_WORDS, isConversationKey;
 var init_request_projection = __esm({
   "src/services/work-view/request-projection.mjs"() {
     "use strict";
     init_work_product();
     init_session_project();
+    REQUEST_MEDIA_PREVIEW_LIMIT = 4;
     ENGLISH_ACTION = /\b(?:make|build|create|implement|design|fix|investigate|audit|review|write|rewrite|show|see|find|search|explain|compare|help|convert|add|remove|update|rename|run|test|verify|deploy|analyze|analyse|read|tell|open|generate|ship|merge|commit|push|release|publish|set up|i want|i need|can you|could you|would you|how (?:can|do|does|is)|what (?:is|are|does|did)|why (?:is|are|does|did)|do we|do you|(?:is|are|seems?|looks?) (?:broken|failing|wrong)|doesn'?t work|not working)\b/i;
     IMPERATIVE_OPENING = /^(?:please\s+)?([a-z]{3,})\s+(?:the|this|that|these|those|all|every|each|my|our|your|its|it|them|any|some|a|an)\b/i;
     NOT_A_VERB = /^(?:the|and|for|with|from|now|then|just|not|about|after|before|into|onto|over|under|like|also|here|there|when|where|what|which|who|why|how|but|yet|all|any|some|its|our|your|this|that|these|those|they|she|his|her|one|two|three)$/i;
@@ -3157,6 +3166,16 @@ var init_redaction = __esm({
       // print. Neither prefix is claimed by openai_key, so they stayed in the text.
       { name: "groq_key", regex: /\bgsk_[A-Za-z0-9]{52}(?!\w)/g },
       { name: "xai_key", regex: /\bxai-[A-Za-z0-9_]{80}(?!\w)/g },
+      // Perplexity API keys (`pplx-` + 48 alphanumerics): an LLM provider key
+      // that `.env` files, `export PERPLEXITY_API_KEY=…` lines and `curl -H
+      // "Authorization: Bearer …"` commands print. The prefix is not claimed by
+      // openai_key, and Perplexity model ids share it (`pplx-embed-v1-4b`), so
+      // the fixed 48-char alphanumeric body keeps the model ids out. The worker
+      // scans JSON.stringify(toolResponse), where a newline right before the key
+      // arrives as `\n`; the `n` is a word character, so a bare `\b` cannot match
+      // there and the lookbehind also accepts the escaped whitespace pair, like
+      // generic_token's ASSIGNMENT_START.
+      { name: "perplexity_key", regex: new RegExp(String.raw`(?<=\\[nrt]|\b)pplx-[A-Za-z0-9]{48}(?!\w)`, "g") },
       // Supabase personal access tokens (`sbp_` + 40 hex, what `supabase login`
       // stores and SUPABASE_ACCESS_TOKEN holds) and Sentry auth tokens: personal
       // ones (`sntryu_` + 64 hex) and organization ones (`sntrys_` + a base64
@@ -3259,10 +3278,43 @@ var init_diagnostic_redaction = __esm({
 });
 
 // src/shared/media-contract.ts
-var MEDIA_LIMITS;
+function object(value, keys, code) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new MediaError(code);
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) throw new MediaError(code);
+  const record = value;
+  if (Object.keys(record).some((key) => !keys.includes(key))) throw new MediaError(code);
+  return record;
+}
+function boundedString(value, pattern, max, code) {
+  if (typeof value !== "string" || value.length > max || !pattern.test(value)) throw new MediaError(code);
+  return value;
+}
+function validateMediaManifest(value) {
+  const record = object(value, ["version", "attachments", "overflow"], "invalid_manifest");
+  if (record.version !== MEDIA_MANIFEST_VERSION || !Array.isArray(record.attachments)) throw new MediaError("invalid_manifest");
+  if (record.attachments.length > MEDIA_LIMITS.maxObservationRefs) throw new MediaError("manifest_too_large");
+  if (record.overflow !== void 0 && typeof record.overflow !== "boolean") throw new MediaError("invalid_manifest");
+  const ids = /* @__PURE__ */ new Set();
+  const attachments = Array.from(record.attachments, (value2) => {
+    const ref = object(value2, ["id", "label", "inspection"], "invalid_manifest");
+    const id = boundedString(ref.id, UUID_V4, 36, "invalid_manifest");
+    const label = boundedString(ref.label, LABEL, MEDIA_LIMITS.maxLabelChars, "invalid_manifest");
+    if (ids.has(id) || ref.inspection !== "inspected" && ref.inspection !== "uninspected") throw new MediaError("invalid_manifest");
+    ids.add(id);
+    return { id, label, inspection: ref.inspection };
+  });
+  const result = { version: MEDIA_MANIFEST_VERSION, attachments };
+  if (record.overflow !== void 0) result.overflow = record.overflow;
+  if (new TextEncoder().encode(JSON.stringify(result)).length > MEDIA_LIMITS.maxManifestBytes) throw new MediaError("manifest_too_large");
+  return result;
+}
+var MEDIA_MANIFEST_VERSION, MEDIA_METADATA_NAMESPACE, MEDIA_LIMITS, MediaError, UUID_V4, LABEL;
 var init_media_contract = __esm({
   "src/shared/media-contract.ts"() {
     "use strict";
+    MEDIA_MANIFEST_VERSION = 1;
+    MEDIA_METADATA_NAMESPACE = "cmem_media_v1";
     MEDIA_LIMITS = Object.freeze({
       maxImagesPerEvent: 4,
       maxSourceBytes: 3 * 1024 * 1024,
@@ -3283,6 +3335,16 @@ var init_media_contract = __esm({
       maxUploadBodyBytes: 3 * 1024 * 1024 + 64 * 1024,
       ownerQuotaBytes: 256 * 1024 * 1024
     });
+    MediaError = class extends Error {
+      constructor(code, message = code) {
+        super(message);
+        this.code = code;
+        this.name = "MediaError";
+      }
+      code;
+    };
+    UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    LABEL = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
   }
 });
 
@@ -3879,6 +3941,69 @@ var init_api_key_pool = __esm({
   }
 });
 
+// src/supervisor/env-sanitizer.ts
+var ENV_PROXY_VARS, ENV_PRESERVE;
+var init_env_sanitizer = __esm({
+  "src/supervisor/env-sanitizer.ts"() {
+    "use strict";
+    ENV_PROXY_VARS = /* @__PURE__ */ new Set([
+      "HTTP_PROXY",
+      "HTTPS_PROXY",
+      "ALL_PROXY",
+      "NO_PROXY",
+      "http_proxy",
+      "https_proxy",
+      "all_proxy",
+      "no_proxy",
+      "npm_config_proxy",
+      "npm_config_https_proxy",
+      "npm_config_noproxy",
+      // Node's fetch ignores HTTP(S)_PROXY until this is set (NODE_USE_ENV_PROXY=1).
+      // Claude Code applies it from user settings; the observer child does not
+      // load those settings, so the flag has to travel with the other proxy vars
+      // (#5400). The lowercase spelling matches the http_proxy family.
+      "NODE_USE_ENV_PROXY",
+      "node_use_env_proxy"
+    ]);
+    ENV_PRESERVE = /* @__PURE__ */ new Set([
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "CLAUDE_CODE_GIT_BASH_PATH",
+      // The CLI documents CLAUDE_CODE_TMPDIR as the fix for a root-owned per-uid
+      // /tmp/claude-<uid> directory (#4161). Stripping it here sent the SDK child
+      // back to /tmp, so the child hit that directory and exited 1 on every spawn
+      // — the user's only documented escape did nothing.
+      "CLAUDE_CODE_TMPDIR",
+      // Documented Claude Code gateway compatibility switch. The Observer must
+      // inherit an explicit beta opt-out because settingSources: [] prevents the
+      // SDK child from recovering it from user settings. Keep this as a single
+      // named exception: arbitrary CLAUDE_CODE_* host settings remain stripped.
+      "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",
+      // claude-mem's own setting, not a CLI knob (the CLI never reads it): the
+      // path to the claude binary, documented as settable from the file OR the
+      // env. Every daemon spawn passes through sanitizeEnv, and the worker reads
+      // the env override (SettingsDefaultsManager.applyEnvOverrides), so
+      // stripping it silently dropped the env form.
+      "CLAUDE_CODE_PATH",
+      "CLAUDE_CODE_USE_BEDROCK",
+      "CLAUDE_CODE_USE_VERTEX",
+      "CLAUDE_CODE_USE_FOUNDRY",
+      "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
+      "CLAUDE_CODE_SKIP_VERTEX_AUTH",
+      "CLAUDE_CODE_SKIP_FOUNDRY_AUTH",
+      "ANTHROPIC_BEDROCK_BASE_URL",
+      "AWS_REGION",
+      "AWS_PROFILE",
+      "AWS_ACCESS_KEY_ID",
+      "AWS_SECRET_ACCESS_KEY",
+      "AWS_SESSION_TOKEN",
+      "ANTHROPIC_VERTEX_PROJECT_ID",
+      "CLOUD_ML_REGION",
+      "GOOGLE_APPLICATION_CREDENTIALS",
+      ...ENV_PROXY_VARS
+    ]);
+  }
+});
+
 // src/shared/oauth-token.ts
 import { execFile } from "child_process";
 import { promisify } from "util";
@@ -3928,6 +4053,7 @@ var CREDENTIAL_KEYS;
 var init_EnvManager = __esm({
   "src/shared/EnvManager.ts"() {
     "use strict";
+    init_env_sanitizer();
     init_logger();
     init_paths();
     init_atomic_json();
@@ -5371,6 +5497,33 @@ function agentStopFor(stops, platformSource, contentSessionId, agentId) {
 
 // src/services/work-view/agent-view.mjs
 init_session_project();
+
+// src/services/media/feed.ts
+init_media_contract();
+init_logger();
+function observationMediaFromMetadata(metadataJson) {
+  if (typeof metadataJson !== "string" || metadataJson.length === 0) return void 0;
+  let metadata;
+  try {
+    metadata = JSON.parse(metadataJson);
+  } catch {
+    logger.warn("DB", "Observation metadata unreadable; media refs omitted from feed", { code: "invalid_manifest" });
+    return void 0;
+  }
+  if (metadata === null || typeof metadata !== "object" || Array.isArray(metadata)) return void 0;
+  if (!Object.prototype.hasOwnProperty.call(metadata, MEDIA_METADATA_NAMESPACE)) return void 0;
+  try {
+    const manifest = validateMediaManifest(metadata[MEDIA_METADATA_NAMESPACE]);
+    return manifest.attachments.length > 0 ? manifest : void 0;
+  } catch (error) {
+    logger.warn("DB", "Observation media manifest invalid; media refs omitted from feed", {
+      code: error instanceof MediaError ? error.code : "invalid_manifest"
+    });
+    return void 0;
+  }
+}
+
+// src/services/work-view/agent-view.mjs
 var PROJECT_KEY = (value) => String(value ?? "").replace(/[A-Z]/g, (c) => c.toLowerCase());
 var CLOSED2 = /* @__PURE__ */ new Set(["done", "dropped", "completed", "failed"]);
 var PLATFORMS = { codex: "Codex", claude: "Claude Code", "gemini-cli": "Gemini CLI", "antigravity-cli": "Antigravity CLI", kimi: "Kimi", "hermes-cli": "Hermes", "pi-agent": "Pi" };
@@ -5429,8 +5582,13 @@ function readAgentRecords(database, { observationLimit = 300, summaryLimit = 100
   const calls = safeRead(database, `SELECT id, project, platform_source, agent_id, agent_type, session_db_id, memory_session_id, content_session_id, prompt_number, tool_input, created_at_epoch
     FROM tool_uses WHERE tool_name IN (SELECT DISTINCT tool_name FROM tool_uses WHERE tool_name LIKE '%work_state_write%')
     AND created_at_epoch >= ? ORDER BY id DESC LIMIT ?`, [workSinceEpoch, workCallLimit]);
-  const observations = safeRead(database, `SELECT id, project, memory_session_id, content_session_id, agent_id, agent_type, prompt_number, title, subtitle, type, created_at_epoch
+  const observationContentSession = safeRead(database, "PRAGMA table_info(observations)").some((column) => column.name === "content_session_id") ? "content_session_id" : "NULL AS content_session_id";
+  const observations = safeRead(database, `SELECT id, project, memory_session_id, ${observationContentSession}, agent_id, agent_type, prompt_number, title, subtitle, type, created_at_epoch
     FROM observations ORDER BY created_at_epoch DESC, id DESC LIMIT ?`, [observationLimit]);
+  const withMetadata = observations.length ? safeRead(database, `SELECT id, metadata FROM observations
+    WHERE metadata IS NOT NULL AND id IN (${observations.map(() => "?")})`, observations.map((row) => row.id)) : [];
+  const mediaById = new Map(withMetadata.map((row) => [row.id, observationMediaFromMetadata(row.metadata)]).filter(([, media]) => media));
+  for (const observation of observations) if (mediaById.has(observation.id)) observation.media = mediaById.get(observation.id);
   const summaries = safeRead(database, `SELECT id, project, memory_session_id, prompt_number, request, completed, next_steps, created_at_epoch
     FROM session_summaries ORDER BY created_at_epoch DESC, id DESC LIMIT ?`, [summaryLimit]);
   const { productCalls, productObservations, productDeliverables } = readProductRecords((sql, params) => safeRead(database, sql, params), workSinceEpoch, 2e3, { database });
@@ -5747,7 +5905,8 @@ function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, ac
   for (const observation of observations) {
     const session = sessionsByMemory.get(observation.memory_session_id);
     const group = getGroup({ session, agentId: observation.agent_id, agentType: observation.agent_type, project: observation.project });
-    const observationActivity = { id: `observation:${observation.id}`, kind: "observation", title: compactText(observation.title, 160) ?? "Recorded observation", detail: compactText(observation.subtitle), project: observation.project, at: stamp(observation.created_at_epoch), atEpoch: observation.created_at_epoch, sourceRef: { kind: "observation", id: observation.id }, url: `/api/work-view/evidence/observation/${observation.id}` };
+    const media = observation.media;
+    const observationActivity = { id: `observation:${observation.id}`, kind: "observation", title: compactText(observation.title, 160) ?? "Recorded observation", detail: compactText(observation.subtitle), project: observation.project, at: stamp(observation.created_at_epoch), atEpoch: observation.created_at_epoch, sourceRef: { kind: "observation", id: observation.id }, url: `/api/work-view/evidence/observation/${observation.id}`, ...media ? { media } : {} };
     if (!group.isSubagent) {
       const requestKey = confirmedRequestKey(session, observation.prompt_number);
       observationBucket(group, observation, session, requestFor(session, observation.prompt_number), requestKey, mainKey(group, observation), { withSummary: true });
@@ -5980,8 +6139,8 @@ function humanCopyFingerprint(input) {
   };
   return createHash5("sha256").update(JSON.stringify(meaningful)).digest("hex");
 }
-function exactKeys(object2, keys, label) {
-  if (!object2 || typeof object2 !== "object" || Array.isArray(object2) || Object.keys(object2).length !== keys.length || keys.some((key) => !Object.hasOwn(object2, key))) throw new TypeError(`${label} has an invalid shape.`);
+function exactKeys(object3, keys, label) {
+  if (!object3 || typeof object3 !== "object" || Array.isArray(object3) || Object.keys(object3).length !== keys.length || keys.some((key) => !Object.hasOwn(object3, key))) throw new TypeError(`${label} has an invalid shape.`);
 }
 function copyText(value, limit, label, empty = false) {
   if (typeof value !== "string" || !empty && !value.trim() || value.length > limit) throw new TypeError(`${label} must be ${empty ? "0" : "1"}\u2013${limit} characters.`);
@@ -6023,7 +6182,7 @@ var values = (shared) => [...shared?.records?.values?.() ?? []];
 var binaryOrder = (left, right) => left < right ? -1 : left > right ? 1 : 0;
 var clean2 = (value) => value === void 0 ? null : value;
 var pick = (value, names) => Object.fromEntries(names.filter((key) => value?.[key] !== void 0).map((key) => [key, value[key]]));
-var object = (value) => Boolean(value && typeof value === "object" && !Array.isArray(value));
+var object2 = (value) => Boolean(value && typeof value === "object" && !Array.isArray(value));
 var conversation = (value) => {
   try {
     const key = JSON.parse(value);
@@ -6032,7 +6191,7 @@ var conversation = (value) => {
     return false;
   }
 };
-var originRef = (ref) => object(ref) && Object.hasOwn(TABLES, ref.kind) && typeof ref.device === "string" && ref.device.length > 0 && /^\d+$/.test(ref.row ?? "");
+var originRef = (ref) => object2(ref) && Object.hasOwn(TABLES, ref.kind) && typeof ref.device === "string" && ref.device.length > 0 && /^\d+$/.test(ref.row ?? "");
 function sharedPublishedUrl(value) {
   const normalized = safeWebUrl(value);
   if (!normalized) return null;
@@ -6069,21 +6228,21 @@ var date = (value) => string(value, 40) && Number.isFinite(Date.parse(value));
 var epoch = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0;
 var list = (value, check, max = 512) => Array.isArray(value) && value.length <= max && value.every(check);
 var preferenceKinds = ["directive", "correction", "praise", "frustration"];
-var quote = (value) => object(value) && string(value.quote, 4e3) && optional(value.at, date);
-var preference = (value) => object(value) && string(value.preference, 2e3) && optional(value.kind, (kind) => preferenceKinds.includes(kind)) && optional(value.quotes, (quotes) => list(quotes, quote, 100)) && optional(value.quote, (quote2) => string(quote2, 4e3)) && optional(value.at, date);
+var quote = (value) => object2(value) && string(value.quote, 4e3) && optional(value.at, date);
+var preference = (value) => object2(value) && string(value.preference, 2e3) && optional(value.kind, (kind) => preferenceKinds.includes(kind)) && optional(value.quotes, (quotes) => list(quotes, quote, 100)) && optional(value.quote, (quote2) => string(quote2, 4e3)) && optional(value.at, date);
 function safeTree(value, depth = 0) {
   if (depth > 16) return false;
   if (value == null || typeof value === "boolean" || typeof value === "string") return true;
   if (typeof value === "number") return Number.isFinite(value);
   if (Array.isArray(value)) return value.every((item) => safeTree(item, depth + 1));
-  return object(value) && Object.entries(value).every(([key, item]) => !forbiddenKeys.has(key) && safeTree(item, depth + 1) && (!["url", "fileUrl"].includes(key) || optional(item, (url) => Boolean(sharedPublishedUrl(url)))) && (!["project", "projectRoot"].includes(key) || optional(item, (project) => sharedProjectKey(project) !== null)));
+  return object2(value) && Object.entries(value).every(([key, item]) => !forbiddenKeys.has(key) && safeTree(item, depth + 1) && (!["url", "fileUrl"].includes(key) || optional(item, (url) => Boolean(sharedPublishedUrl(url)))) && (!["project", "projectRoot"].includes(key) || optional(item, (project) => sharedProjectKey(project) !== null)));
 }
-var evidence = (value) => list(value, (item) => typeof item === "string" || object(item), 100);
-var outcome = (value) => object(value) && ["landed", "usage", "value"].every((key) => optional(value[key], (item) => object(item) && string(item.text, 4e3) && optional(item.evidence, evidence))) && ["regressions", "changes"].every((key) => optional(value[key], (items) => list(items, (item) => object(item) && optional(item.text, (text5) => string(text5, 4e3)) && optional(item.what, (text5) => string(text5, 4e3)) && optional(item.why, (text5) => string(text5, 4e3)), 100)));
+var evidence = (value) => list(value, (item) => typeof item === "string" || object2(item), 100);
+var outcome = (value) => object2(value) && ["landed", "usage", "value"].every((key) => optional(value[key], (item) => object2(item) && string(item.text, 4e3) && optional(item.evidence, evidence))) && ["regressions", "changes"].every((key) => optional(value[key], (items) => list(items, (item) => object2(item) && optional(item.text, (text5) => string(text5, 4e3)) && optional(item.what, (text5) => string(text5, 4e3)) && optional(item.why, (text5) => string(text5, 4e3)), 100)));
 var gitSha = (value) => typeof value === "string" && /^[a-f0-9]{7,64}$/i.test(value);
 var gitBranch = (value) => string(value, 1024) && value.length > 0 && !value.startsWith("/") && !/[\s\\\x00-\x1f\x7f~^:?*\[]|\.\.|@\{/.test(value);
 var gitRepo = (value) => string(value, 256) && /^[\w.-]+\/[\w.-]+$/.test(value) && !value.split("/").some((part) => part === "." || part === "..");
-var sharedProduct = (value) => object(value) && string(value.kind, 80) && string(value.title, 2e3) && optional(value.atEpoch, epoch) && optional(value.sha, gitSha) && optional(value.branch, gitBranch) && optional(value.repo, gitRepo) && optional(value.heads, (heads) => list(heads, gitSha, 100)) && (value.availability === "origin-only" ? /^local_[a-f0-9]{64}$/.test(value.productId ?? "") && string(value.originDeviceId, 2e3) && value.originDeviceId.length > 0 && value.url == null && value.fileUrl == null : value.availability == null && Boolean(sharedPublishedUrl(value.url)));
+var sharedProduct = (value) => object2(value) && string(value.kind, 80) && string(value.title, 2e3) && optional(value.atEpoch, epoch) && optional(value.sha, gitSha) && optional(value.branch, gitBranch) && optional(value.repo, gitRepo) && optional(value.heads, (heads) => list(heads, gitSha, 100)) && (value.availability === "origin-only" ? /^local_[a-f0-9]{64}$/.test(value.productId ?? "") && string(value.originDeviceId, 2e3) && value.originDeviceId.length > 0 && value.url == null && value.fileUrl == null : value.availability == null && Boolean(sharedPublishedUrl(value.url)));
 function isSharedProjectionValue(kind, key, value, deleted = false, writer = void 0) {
   if (kind === "review") return isSharedReviewValue(kind, key, value, deleted);
   const groupKey = /^g_[a-f0-9]{12}$/.test(key);
@@ -6102,9 +6261,9 @@ function isSharedProjectionValue(kind, key, value, deleted = false, writer = voi
   if (deleted) return true;
   if (!safeTree(value)) return false;
   if (kind === "ignored") return string(value, 48e3);
-  if (!object(value)) return false;
-  if (kind === "group") return object(value.group) && string(value.group.title, 120) && value.group.title.trim().length > 0 && conversation(value.group.anchor) && list(value.members, conversation) && value.members.length > 0 && new Set(value.members).size === value.members.length && value.members.includes(value.group.anchor) && optional(value.group.projectRoot, (root) => string(root, 2e3)) && optional(value.group.rootNamed, (root) => typeof root === "boolean") && optional(value.group.product, (product) => string(product, 48e3)) && optional(value.group.anchorAsk, (ask) => object(ask) && string(ask.text, 2e3) && optional(ask.atEpoch, epoch)) && optional(value.group.links, (links) => list(links, (link) => object(link) && string(link.kind, 80) && string(link.evidence, 48e3) && list(link.conversations, conversation))) && optional(value.suggestions, (suggestions) => object(suggestions) && Object.entries(suggestions).every(([candidate, suggestion]) => conversation(candidate) && object(suggestion) && suggestion.requestId === key && optional(suggestion.confidence, (score) => typeof score === "number" && score >= 0 && score <= 1) && optional(suggestion.evidence, (evidence2) => string(evidence2, 4e3)) && optional(suggestion.status, (status) => ["open", "joined", "declined", "dismissed"].includes(status))));
-  if (kind === "progress") return value.groupId === key && ["shipped", "in-progress", "stalled", "abandoned", "unknown"].includes(value.state) && Number.isInteger(value.percent) && value.percent >= 0 && value.percent <= 100 && ["summary", "narrative", "title"].every((key2) => optional(value[key2], (text5) => string(text5, 12e3))) && ["startedAt", "shippedAt", "lastActivityAt", "reviewedThrough", "checkedAt", "changedAt"].every((key2) => optional(value[key2], date)) && optional(value.milestones, (milestones) => list(milestones, (item) => object(item) && string(item.text, 4e3) && optional(item.at, date) && optional(item.evidence, evidence), 100)) && optional(value.preferences, (preferences) => list(preferences, preference, 100)) && optional(value.readings, (readings) => list(readings, (item) => object(item) && date(item.at) && Number.isInteger(item.percent) && item.percent >= 0 && item.percent <= 100, 100)) && optional(value.reviewedConversations, (keys) => list(keys, conversation)) && optional(value.coercedFields, (fields) => list(fields, (field) => string(field, 200))) && optional(value.evidence, evidence) && optional(value.outcome, outcome);
+  if (!object2(value)) return false;
+  if (kind === "group") return object2(value.group) && string(value.group.title, 120) && value.group.title.trim().length > 0 && conversation(value.group.anchor) && list(value.members, conversation) && value.members.length > 0 && new Set(value.members).size === value.members.length && value.members.includes(value.group.anchor) && optional(value.group.projectRoot, (root) => string(root, 2e3)) && optional(value.group.rootNamed, (root) => typeof root === "boolean") && optional(value.group.product, (product) => string(product, 48e3)) && optional(value.group.anchorAsk, (ask) => object2(ask) && string(ask.text, 2e3) && optional(ask.atEpoch, epoch)) && optional(value.group.links, (links) => list(links, (link) => object2(link) && string(link.kind, 80) && string(link.evidence, 48e3) && list(link.conversations, conversation))) && optional(value.suggestions, (suggestions) => object2(suggestions) && Object.entries(suggestions).every(([candidate, suggestion]) => conversation(candidate) && object2(suggestion) && suggestion.requestId === key && optional(suggestion.confidence, (score) => typeof score === "number" && score >= 0 && score <= 1) && optional(suggestion.evidence, (evidence2) => string(evidence2, 4e3)) && optional(suggestion.status, (status) => ["open", "joined", "declined", "dismissed"].includes(status))));
+  if (kind === "progress") return value.groupId === key && ["shipped", "in-progress", "stalled", "abandoned", "unknown"].includes(value.state) && Number.isInteger(value.percent) && value.percent >= 0 && value.percent <= 100 && ["summary", "narrative", "title"].every((key2) => optional(value[key2], (text5) => string(text5, 12e3))) && ["startedAt", "shippedAt", "lastActivityAt", "reviewedThrough", "checkedAt", "changedAt"].every((key2) => optional(value[key2], date)) && optional(value.milestones, (milestones) => list(milestones, (item) => object2(item) && string(item.text, 4e3) && optional(item.at, date) && optional(item.evidence, evidence), 100)) && optional(value.preferences, (preferences) => list(preferences, preference, 100)) && optional(value.readings, (readings) => list(readings, (item) => object2(item) && date(item.at) && Number.isInteger(item.percent) && item.percent >= 0 && item.percent <= 100, 100)) && optional(value.reviewedConversations, (keys) => list(keys, conversation)) && optional(value.coercedFields, (fields) => list(fields, (field) => string(field, 200))) && optional(value.evidence, evidence) && optional(value.outcome, outcome);
   if (kind === "story") return optional(value.narrative, (narrative) => string(narrative, 48e3)) && list(value.preferences, preference, 100) && optional(value.writtenAt, date) && optional(value.generatedAt, (at) => date(at) || epoch(at)) && optional(value.source, (source) => string(source, 80));
   if (kind === "refresh") return value.originDeviceId === key && ["idle", "running", "ok", "failed", "waiting-for-agent"].includes(value.state) && ["reason", "agent", "result"].every((key2) => optional(value[key2], (text5) => string(text5, 12e3))) && ["startedAt", "finishedAt", "checkedAt"].every((key2) => optional(value[key2], date));
   if (kind === "exclusion") {
@@ -6116,9 +6275,9 @@ function isSharedProjectionValue(kind, key, value, deleted = false, writer = voi
     }
     return originRef(value.ref) && value.ref.kind === "prompt" && ["kind", "device", "row"].every((field) => identity?.[field] === value.ref[field]) && (value.conversation == null || conversation(value.conversation)) && (value.opening == null || typeof value.opening === "boolean");
   }
-  if (kind === "provenance") return conversationKey(value.session) === key && object(value.session) && ["project", "platform_source", "content_session_id", "memory_session_id", "custom_title", "status"].every((key2) => optional(value.session[key2], (text5) => string(text5, 2e3))) && optional(value.session.user_prompt, (prompt) => string(prompt, 1200)) && ["started_at_epoch", "completed_at_epoch"].every((key2) => optional(value.session[key2], epoch)) && list(value.attributions, (item) => object(item) && originRef(item.work) && item.work.kind === "work-state" && optional(item.agentId, (id) => string(id, 256)) && optional(item.agentType, (type) => string(type, 256)) && optional(item.promptNumber, (number) => Number.isInteger(number) && number >= 0) && optional(item.atEpoch, epoch)) && list(value.products, (item) => sharedProduct(item) && (item.availability !== "origin-only" || writer === void 0 || item.originDeviceId === writer)) && list(value.launches, (item) => object(item) && string(item.agent_id, 256) && optional(item.status, (status) => string(status, 80)) && optional(item.is_async, (flag) => typeof flag === "boolean" || flag === 0 || flag === 1) && optional(item.description, (text5) => string(text5, 160)) && optional(item.created_at_epoch, epoch)) && list(value.activity, (item) => object(item) && optional(item.agent_id, (id) => string(id, 256)) && optional(item.last_epoch, epoch));
+  if (kind === "provenance") return conversationKey(value.session) === key && object2(value.session) && ["project", "platform_source", "content_session_id", "memory_session_id", "custom_title", "status"].every((key2) => optional(value.session[key2], (text5) => string(text5, 2e3))) && optional(value.session.user_prompt, (prompt) => string(prompt, 1200)) && ["started_at_epoch", "completed_at_epoch"].every((key2) => optional(value.session[key2], epoch)) && list(value.attributions, (item) => object2(item) && originRef(item.work) && item.work.kind === "work-state" && optional(item.agentId, (id) => string(id, 256)) && optional(item.agentType, (type) => string(type, 256)) && optional(item.promptNumber, (number) => Number.isInteger(number) && number >= 0) && optional(item.atEpoch, epoch)) && list(value.products, (item) => sharedProduct(item) && (item.availability !== "origin-only" || writer === void 0 || item.originDeviceId === writer)) && list(value.launches, (item) => object2(item) && string(item.agent_id, 256) && optional(item.status, (status) => string(status, 80)) && optional(item.is_async, (flag) => typeof flag === "boolean" || flag === 0 || flag === 1) && optional(item.description, (text5) => string(text5, 160)) && optional(item.created_at_epoch, epoch)) && list(value.activity, (item) => object2(item) && optional(item.agent_id, (id) => string(id, 256)) && optional(item.last_epoch, epoch));
   if (kind === "copy") {
-    if (!/^[a-f0-9]{64}$/.test(value.fingerprint ?? "") || !object(value.copy) || !optional(value.generatedAt, epoch)) return false;
+    if (!/^[a-f0-9]{64}$/.test(value.fingerprint ?? "") || !object2(value.copy) || !optional(value.generatedAt, epoch)) return false;
     try {
       validateHumanCopy(value.copy, { workstreams: value.copy.workstreams });
       return true;
@@ -6331,7 +6490,7 @@ function buildSharedProjectionUpdates(database, { ledger, records: records2 = {}
     const entry = copyEntries instanceof Map ? copyEntries.get(request.id) : copyEntries[request.id];
     if (!entry?.copy) continue;
     try {
-      const legacyValue = (value) => Array.isArray(value) ? value.map(legacyValue) : object(value) ? Object.fromEntries(Object.entries(value).filter(([key]) => !["stableId", "stableIdentity"].includes(key)).map(([key, item]) => [key, legacyValue(item)])) : value;
+      const legacyValue = (value) => Array.isArray(value) ? value.map(legacyValue) : object2(value) ? Object.fromEntries(Object.entries(value).filter(([key]) => !["stableId", "stableIdentity"].includes(key)).map(([key, item]) => [key, legacyValue(item)])) : value;
       const plainRequest = legacyValue(request);
       const plainInput = createHumanCopyInput(plainRequest);
       const stableInput = createHumanCopyInput(request);
@@ -6854,9 +7013,9 @@ var SharedLedgerAdapter = class {
   updatesForFile(name, value) {
     const kinds = fileKinds(name);
     if (!kinds.length) return [];
-    const object2 = (item) => item !== null && typeof item === "object" && !Array.isArray(item);
-    if (value !== null && !object2(value)) throw new TypeError("Shared My Work file must contain an object");
-    if (name === "request-groups.json" && value !== null && (!object2(value.groups) || !object2(value.conversations) || value.ignored !== void 0 && !object2(value.ignored) || value.suggestions !== void 0 && !object2(value.suggestions))) {
+    const object3 = (item) => item !== null && typeof item === "object" && !Array.isArray(item);
+    if (value !== null && !object3(value)) throw new TypeError("Shared My Work file must contain an object");
+    if (name === "request-groups.json" && value !== null && (!object3(value.groups) || !object3(value.conversations) || value.ignored !== void 0 && !object3(value.ignored) || value.suggestions !== void 0 && !object3(value.suggestions))) {
       throw new TypeError("Shared request groups have an invalid shape");
     }
     if (name.startsWith("progress/") && value !== null && value.groupId !== name.slice(9, -5)) throw new TypeError("Shared progress names a different group");
