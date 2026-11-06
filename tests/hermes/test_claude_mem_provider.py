@@ -505,10 +505,10 @@ class SettingsTest(unittest.TestCase):
         config = client_module.Config.resolve({"CLAUDE_MEM_DATA_DIR": directory, "CLAUDE_MEM_WORKER_PORT": "39999"})
         self.assertEqual(config.worker_base, "http://[::1]:39999")
 
-    def test_default_port_follows_the_uid(self):
+    def test_default_port_matches_the_shared_fallback(self):
         directory = self.write_settings({})
         config = client_module.Config.resolve({"CLAUDE_MEM_DATA_DIR": directory})
-        self.assertEqual(config.worker_base, "http://127.0.0.1:" + str(37700 + (os.getuid() if hasattr(os, "getuid") else 77) % 100))
+        self.assertEqual(config.worker_base, "http://127.0.0.1:" + client_module.default_worker_port(directory))
 
     def test_server_needs_all_three_settings(self):
         partial = self.write_settings({"CLAUDE_MEM_RUNTIME": "server", "CLAUDE_MEM_SERVER_URL": "https://m.example",

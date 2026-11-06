@@ -18,6 +18,7 @@ import {
 } from '../../supervisor/process-registry.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { killProcessTree } from '../../shared/kill-process-tree.js';
+import { getDefaultServerPort } from '../../shared/install-port.js';
 import { ServerV1PostgresRoutes } from '../routes/v1/ServerV1PostgresRoutes.js';
 import { SessionsObservationsAdapter } from '../compat/SessionsObservationsAdapter.js';
 import { SessionsSummarizeAdapter } from '../compat/SessionsSummarizeAdapter.js';
@@ -31,7 +32,6 @@ import type { ServerServiceGraph, ServerQueueLaneMetric } from './types.js';
 // back-compat. Plan §1d will handle the literal migration.
 const SERVER_RUNTIME = 'server-beta';
 const DEFAULT_SERVER_HOST = '127.0.0.1';
-const DEFAULT_SERVER_PORT = 37877;
 
 // `server stop` waits at least this long for the daemon to exit. Must exceed
 // runShutdownCascade's own budget (5s SIGTERM grace + 1s SIGKILL grace) so a
@@ -861,10 +861,7 @@ function getServerPort(): number {
   if (Number.isInteger(parsed) && parsed > 0) {
     return parsed;
   }
-  // UID-derived default for multi-account isolation: two users on the same
-  // host get distinct ports without explicit configuration. Containerized
-  // deployments always pass CLAUDE_MEM_SERVER_PORT so this branch is local-only.
-  return DEFAULT_SERVER_PORT + ((process.getuid?.() ?? 77) % 100);
+  return getDefaultServerPort(paths.dataDir());
 }
 
 function spawnServerDaemon(port: number): number | undefined {
