@@ -4,7 +4,7 @@ const options = { codexPath: 'codex', model: '', reasoningEffort: null, timeoutM
 function harness() {
   const started: string[] = [];
   const finish: Array<() => void> = [];
-  let busy = 0, peak = 0, closed = 0;
+  let busy = 0, peak = 0, closed = 0, recycled = 0;
   const pool = new CodexAppServerPool(2, () => ({
     runTurn: async (o) => {
       started.push(o.prompt); busy++; peak = Math.max(peak, busy);
@@ -12,9 +12,9 @@ function harness() {
         finish.push(() => resolve({ content: o.prompt }));
         o.signal?.addEventListener('abort', () => reject(o.signal!.reason), { once: true });
       }); } finally { busy--; }
-    }, close: async () => { closed++; },
+    }, close: async () => { closed++; }, recycle: async () => { recycled++; },
   }));
-  return { pool, started, finish, stats: () => ({ busy, peak, closed }) };
+  return { pool, started, finish, stats: () => ({ busy, peak, closed, recycled }) };
 }
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 describe('Codex pool', () => {
@@ -43,5 +43,34 @@ describe('Codex pool', () => {
   it('rejects unsafe configuration values', () => {
     for (const value of [0, -1, 9, 1.5, '', 'oops']) expect(boundedInteger(value, 2, 8)).toBe(2);
     expect(boundedInteger('8', 2, 8)).toBe(8);
+  });
+  it('recycleIdle recycles idle clients and leaves active ones alone', async () => {
+    const h = harness();
+    // Start one job so one client is active, one is idle
+    const job = h.pool.runTurn({ ...options, prompt: 'active' });
+    await tick();
+    expect(h.started).toEqual(['active']);
+    // Recycle idle clients — only the idle one (not the active one)
+    await h.pool.recycleIdle();
+    expect(h.stats().recycled).toBe(1);
+    // Finish the active job and wait for the client to return to idle
+    h.finish[0]();
+    await job;
+    await tick();
+    // Now both are idle; recycle again
+    await h.pool.recycleIdle();
+    expect(h.stats().recycled).toBe(3);
+    await h.pool.close();
+  });
+  it('recycleIdle is a no-op when all clients are active', async () => {
+    const h = harness();
+    const a = h.pool.runTurn({ ...options, prompt: 'a' });
+    const b = h.pool.runTurn({ ...options, prompt: 'b' });
+    await tick();
+    await h.pool.recycleIdle();
+    expect(h.stats().recycled).toBe(0);
+    h.finish[0](); h.finish[1]();
+    await Promise.all([a, b]);
+    await h.pool.close();
   });
 });
