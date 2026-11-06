@@ -249,6 +249,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_WORKER_HOST',
       'CLAUDE_MEM_PROVIDER',
       'CLAUDE_MEM_PROVIDER_BY_SOURCE',
+      'CLAUDE_MEM_OBSERVER_ENABLED',
       'CLAUDE_MEM_CODEX_MODEL',
       'CLAUDE_MEM_CODEX_REASONING_EFFORT',
       'CLAUDE_MEM_CLAUDE_AUTH_METHOD',
@@ -288,6 +289,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
+      'CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT',
       'CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES',
       'CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS',
       'CLAUDE_MEM_CONTEXT_FULL_COUNT',
@@ -297,6 +299,8 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
       'CLAUDE_MEM_FILE_READ_GATE_ENABLED',
       'CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY',
+      'CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED',
+      'CLAUDE_MEM_WELCOME_HINT_ENABLED',
       'CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED',
       'CLAUDE_MEM_BACKUP_ENABLED',
       'CLAUDE_MEM_BACKUP_INTERVAL_HOURS',
@@ -363,6 +367,13 @@ export class SettingsRoutes extends BaseRouteHandler {
   });
 
   private validateSettings(settings: any): { valid: boolean; error?: string } {
+    if (
+      settings.CLAUDE_MEM_OBSERVER_ENABLED !== undefined
+      && !['true', 'false'].includes(settings.CLAUDE_MEM_OBSERVER_ENABLED)
+    ) {
+      return { valid: false, error: 'CLAUDE_MEM_OBSERVER_ENABLED must be "true" or "false"' };
+    }
+
     for (const key of ['CLAUDE_MEM_CODEX_MODEL', 'CLAUDE_MEM_CODEX_REASONING_EFFORT'] as const) {
       if (settings[key] !== undefined && typeof settings[key] !== 'string') {
         return { valid: false, error: `${key} must be a string` };
@@ -422,8 +433,8 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     if (settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS !== undefined) {
       const obsCount = parseContextCountValue(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS);
-      if (obsCount === undefined || obsCount < 1 || obsCount > 200) {
-        return { valid: false, error: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 1 and 200' };
+      if (obsCount === undefined || obsCount < 0 || obsCount > 200) {
+        return { valid: false, error: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 0 and 200' };
       }
     }
 
@@ -515,15 +526,21 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
+      'CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
+      'CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED',
+      'CLAUDE_MEM_WELCOME_HINT_ENABLED',
       'CLAUDE_MEM_FILE_READ_GATE_ENABLED',
       'CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY',
       'CLAUDE_MEM_BACKUP_ENABLED',
     ];
 
     for (const key of booleanSettings) {
-      if (settings[key] && !['true', 'false'].includes(settings[key])) {
+      // Presence, not truthiness: a falsy value (0, "", null) is still a
+      // posted value, and readers only honor the strings "true"/"false",
+      // so saving one verbatim would report success and change nothing.
+      if (settings[key] !== undefined && !['true', 'false'].includes(settings[key])) {
         return { valid: false, error: `${key} must be "true" or "false"` };
       }
     }
@@ -537,8 +554,8 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     if (settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT !== undefined) {
       const count = parseContextCountValue(settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT);
-      if (count === undefined || count < 1 || count > 50) {
-        return { valid: false, error: 'CLAUDE_MEM_CONTEXT_SESSION_COUNT must be between 1 and 50' };
+      if (count === undefined || count < 0 || count > 50) {
+        return { valid: false, error: 'CLAUDE_MEM_CONTEXT_SESSION_COUNT must be between 0 and 50' };
       }
     }
 

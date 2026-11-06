@@ -25,6 +25,8 @@ import { settleHookSpoolNudges } from './spool-hook-event.js';
 import { canonicalIntegrationId } from '../shared/integration-id.js';
 import { logger } from '../utils/logger.js';
 import { spoolWorkStateInstruction, workStateModelText } from './work-state-telemetry.js';
+import { loadFromFileOnce } from '../shared/hook-settings.js';
+import { isObserverCaptureEnabled } from '../shared/observer-capture.js';
 
 export interface HookCommandOptions {
   skipExit?: boolean;
@@ -94,14 +96,32 @@ export async function hookCommand(rawPlatform: string, event: string, options: H
   // (closed enum enforced inside; non-enum events just omit hook_type).
   setActiveHookType(event);
 
+  // Install before loading settings: creation/migration/read warnings from the
+  // loader must follow the same quiet-on-success discipline as handler output.
+  const stderrBuffer = installHookStderrBuffer();
+
   // #3106: env opt-out for the high-frequency tool hooks. Checked before stdin
   // and handler work, and still emits the no-op envelope so the host gets
   // valid JSON.
-  if (isToolHookDisabledByEnv(event)) {
-    const adapter = getPlatformAdapter(platform);
-    emitModelContext(adapter, buildNoOpResult(event));
-    await exitGraceful(options);
-    return HOOK_EXIT_CODES.SUCCESS;
+  let hookDisabled: boolean;
+  try {
+    hookDisabled = isToolHookDisabledByEnv(event)
+      // Codex still needs the pipeline with capture off: its PostToolUse is how a
+      // compacted thread gets its memory timeline back. The handler skips the write.
+      || (event === 'observation' && platform !== 'codex' && !isObserverCaptureEnabled(loadFromFileOnce()));
+  } catch (error) {
+    stderrBuffer.restore();
+    throw error;
+  }
+  if (hookDisabled) {
+    try {
+      const adapter = getPlatformAdapter(platform);
+      emitModelContext(adapter, buildNoOpResult(event));
+      await exitGraceful(options);
+      return HOOK_EXIT_CODES.SUCCESS;
+    } finally {
+      stderrBuffer.restore();
+    }
   }
 
   // Hook IO Discipline (issue #2292):
@@ -111,8 +131,6 @@ export async function hookCommand(rawPlatform: string, event: string, options: H
   //
   // To bypass the buffer for a specific write, use emitDiagnostic from
   // src/shared/hook-io.ts. Direct process.stderr.write calls are buffered.
-  const stderrBuffer = installHookStderrBuffer();
-
   const adapter = getPlatformAdapter(platform);
   const handler = getEventHandler(event);
 

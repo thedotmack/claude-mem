@@ -1,6 +1,7 @@
 import {
   closeSync,
   existsSync,
+  fchmodSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -169,6 +170,9 @@ export function writeJsonFileAtomic(
   let fd: number | undefined;
   try {
     fd = mode !== undefined ? openSync(tmpPath, 'w', mode) : openSync(tmpPath, 'w');
+    // open(2) masks the mode with the umask (0660 under 022 lands as 0640), so
+    // set it exactly before the first byte: the rename must keep the file's mode.
+    if (mode !== undefined && !IS_WINDOWS_PLATFORM) fchmodSync(fd, mode);
 
     let written = 0;
     while (written < payload.length) {

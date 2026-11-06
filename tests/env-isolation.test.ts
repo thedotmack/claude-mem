@@ -6,11 +6,17 @@ import {
   envFilePath,
   buildIsolatedEnv,
   buildIsolatedEnvWithFreshOAuth,
+  loadClaudeMemEnv,
+  saveClaudeMemEnv,
+  getAuthMethodDescription,
+  hasConfiguredClaudeOAuthToken,
+  resolveConfigDirProfileKey,
 } from '../src/shared/EnvManager.js';
 import { sanitizeEnv } from '../src/supervisor/env-sanitizer.js';
 import * as oauthToken from '../src/shared/oauth-token.js';
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
 import { paths, CLAUDE_CONFIG_DIR, DEFAULT_CLAUDE_CONFIG_DIR, MARKETPLACE_ROOT } from '../src/shared/paths.js';
+import { logger } from '../src/utils/logger.js';
 // CJS interop: the check is a .cjs module exporting findViolations.
 import { createRequire } from 'module';
 const requireCjs = createRequire(import.meta.url);
@@ -588,5 +594,393 @@ describe('#2753: buildIsolatedEnv resolves CLAUDE_CONFIG_DIR for the SDK subproc
     const result = buildIsolatedEnv();
 
     expect(result.CLAUDE_CONFIG_DIR).toBe('/tmp/from-setting-with-slash');
+  });
+});
+
+/**
+ * plan-19 (#3607) item 4: a long-lived token from `claude setup-token`, put in
+ * ~/.claude-mem/.env as CLAUDE_CODE_OAUTH_TOKEN, is an explicit auth source.
+ * It is injected on the Claude OAuth path ahead of the credential store, so no
+ * spawned child has to refresh an expiring stored login (#5307), while a token
+ * inherited from the parent process stays blocked (#2215) and a third-party
+ * gateway never receives it (#2375).
+ */
+describe('plan-19: long-lived CLAUDE_CODE_OAUTH_TOKEN from ~/.claude-mem/.env', () => {
+  const LONG_LIVED = 'sk-ant-oat01-long-lived-test-token';
+  const storeToken: oauthToken.OAuthTokenResult = { kind: 'present', token: 'store-token', source: 'keychain' };
+  const expiredStore: oauthToken.OAuthTokenResult = { kind: 'expired', reason: 'stored login expired', expiresAt: 1 };
+
+  function jwtExpiringAt(expMs: number): string {
+    const part = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url');
+    return `${part({ alg: 'none' })}.${part({ exp: Math.floor(expMs / 1000) })}.sig`;
+  }
+
+  beforeAll(() => {
+    fs.mkdirSync(TEST_DATA_DIR, { recursive: true, mode: 0o700 });
+    process.env.CLAUDE_MEM_ENV_FILE = TEST_ENV_FILE;
+  });
+
+  afterAll(() => {
+    if (ORIGINAL_ENV_FILE === undefined) delete process.env.CLAUDE_MEM_ENV_FILE;
+    else process.env.CLAUDE_MEM_ENV_FILE = ORIGINAL_ENV_FILE;
+  });
+
+  beforeEach(() => {
+    clearEnvFile();
+    clearAnthropicEnv();
+  });
+
+  afterEach(() => {
+    clearEnvFile();
+    restoreOriginalEnv();
+  });
+
+  it('loads the token from .env and keeps it through a save of another key', () => {
+    fs.writeFileSync(TEST_ENV_FILE, `CLAUDE_CODE_OAUTH_TOKEN=${LONG_LIVED}\n`, { mode: 0o600 });
+    expect(loadClaudeMemEnv().CLAUDE_CODE_OAUTH_TOKEN).toBe(LONG_LIVED);
+    expect(hasConfiguredClaudeOAuthToken()).toBe(true);
+
+    saveClaudeMemEnv({ GEMINI_API_KEY: 'gemini-key' });
+    expect(loadClaudeMemEnv()).toMatchObject({ CLAUDE_CODE_OAUTH_TOKEN: LONG_LIVED, GEMINI_API_KEY: 'gemini-key' });
+  });
+
+  it('can be saved and cleared like the other credential keys', () => {
+    saveClaudeMemEnv({ CLAUDE_CODE_OAUTH_TOKEN: LONG_LIVED });
+    expect(loadClaudeMemEnv().CLAUDE_CODE_OAUTH_TOKEN).toBe(LONG_LIVED);
+    saveClaudeMemEnv({ CLAUDE_CODE_OAUTH_TOKEN: '' });
+    expect(loadClaudeMemEnv().CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    expect(hasConfiguredClaudeOAuthToken()).toBe(false);
+  });
+
+  it('is never copied by the sync buildIsolatedEnv (only the OAuth path injects it)', () => {
+    fs.writeFileSync(TEST_ENV_FILE, `CLAUDE_CODE_OAUTH_TOKEN=${LONG_LIVED}\n`, { mode: 0o600 });
+    expect(buildIsolatedEnv().CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+  });
+
+  it('is injected ahead of an expired stored login, so the child never has to refresh it', async () => {
+    fs.writeFileSync(TEST_ENV_FILE, `CLAUDE_CODE_OAUTH_TOKEN=${LONG_LIVED}\n`, { mode: 0o600 });
+    const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken').mockResolvedValue(expiredStore);
+    try {
+      const result = await buildIsolatedEnvWithFreshOAuth();
+      expect(result.CLAUDE_CODE_OAUTH_TOKEN).toBe(LONG_LIVED);
+    } finally {
+      oauthSpy.mockRestore();
+    }
+  });
+
+  it('wins over a present stored login too (an explicit source beats a discovered one)', async () => {
+    fs.writeFileSync(TEST_ENV_FILE, `CLAUDE_CODE_OAUTH_TOKEN=${LONG_LIVED}\n`, { mode: 0o600 });
+    const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken').mockResolvedValue(storeToken);
+    try {
+      expect((await buildIsolatedEnvWithFreshOAuth()).CLAUDE_CODE_OAUTH_TOKEN).toBe(LONG_LIVED);
+    } finally {
+      oauthSpy.mockRestore();
+    }
+  });
+
+  it('#2215: a token inherited from the parent process is still not injected', async () => {
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = 'stale-parent-token';
+    const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken').mockResolvedValue({ kind: 'absent', reason: 'none' });
+    try {
+      expect((await buildIsolatedEnvWithFreshOAuth()).CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    } finally {
+      oauthSpy.mockRestore();
+    }
+  });
+
+  it('#2375: is never sent to a third-party gateway configured in .env', async () => {
+    fs.writeFileSync(TEST_ENV_FILE, `ANTHROPIC_BASE_URL=https://gateway.example\nCLAUDE_CODE_OAUTH_TOKEN=${LONG_LIVED}\n`, { mode: 0o600 });
+    const result = await buildIsolatedEnvWithFreshOAuth();
+    expect(result.ANTHROPIC_BASE_URL).toBe('https://gateway.example');
+    expect(result.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+  });
+
+  it('an .env API key still takes precedence unless a subscription stand-in is requested', async () => {
+    fs.writeFileSync(TEST_ENV_FILE, `ANTHROPIC_API_KEY=sk-ant-key\nCLAUDE_CODE_OAUTH_TOKEN=${LONG_LIVED}\n`, { mode: 0o600 });
+    const primary = await buildIsolatedEnvWithFreshOAuth();
+    expect(primary.ANTHROPIC_API_KEY).toBe('sk-ant-key');
+    expect(primary.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+
+    const standIn = await buildIsolatedEnvWithFreshOAuth(true, { standIn: 'subscription' });
+    expect(standIn.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(standIn.CLAUDE_CODE_OAUTH_TOKEN).toBe(LONG_LIVED);
+  });
+
+  it('a JWT token past its exp claim falls back to the credential store', async () => {
+    fs.writeFileSync(TEST_ENV_FILE, `CLAUDE_CODE_OAUTH_TOKEN=${jwtExpiringAt(Date.now() - 60_000)}\n`, { mode: 0o600 });
+    const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken').mockResolvedValue(storeToken);
+    try {
+      expect((await buildIsolatedEnvWithFreshOAuth()).CLAUDE_CODE_OAUTH_TOKEN).toBe('store-token');
+    } finally {
+      oauthSpy.mockRestore();
+    }
+  });
+
+  it('a JWT token past its exp claim does not count as configured, so readiness checks match the spawn', () => {
+    fs.writeFileSync(TEST_ENV_FILE, `CLAUDE_CODE_OAUTH_TOKEN=${jwtExpiringAt(Date.now() - 60_000)}\n`, { mode: 0o600 });
+    expect(hasConfiguredClaudeOAuthToken()).toBe(false);
+    expect(getAuthMethodDescription()).not.toContain('Long-lived CLAUDE_CODE_OAUTH_TOKEN');
+  });
+
+  it('a JWT token still inside its exp claim is used', async () => {
+    const live = jwtExpiringAt(Date.now() + 3_600_000);
+    fs.writeFileSync(TEST_ENV_FILE, `CLAUDE_CODE_OAUTH_TOKEN=${live}\n`, { mode: 0o600 });
+    expect(hasConfiguredClaudeOAuthToken()).toBe(true);
+    const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken').mockResolvedValue(storeToken);
+    try {
+      expect((await buildIsolatedEnvWithFreshOAuth()).CLAUDE_CODE_OAUTH_TOKEN).toBe(live);
+    } finally {
+      oauthSpy.mockRestore();
+    }
+  });
+
+  it('overrides the stored login of a configured profile, which keeps labelling the run', async () => {
+    fs.writeFileSync(TEST_ENV_FILE, `CLAUDE_CODE_OAUTH_TOKEN=${LONG_LIVED}\n`, { mode: 0o600 });
+    const settingsSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(
+      () => ({ ...SettingsDefaultsManager.getAllDefaults(), CLAUDE_MEM_CLAUDE_CONFIG_DIR: '/tmp/work-profile' }) as any,
+    );
+    const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken').mockResolvedValue(storeToken);
+    try {
+      const result = await buildIsolatedEnvWithFreshOAuth();
+      expect(result.CLAUDE_CODE_OAUTH_TOKEN).toBe(LONG_LIVED);
+      expect(result.CLAUDE_CONFIG_DIR).toBe('/tmp/work-profile');
+      expect(oauthSpy).not.toHaveBeenCalled();
+      expect(resolveConfigDirProfileKey()).toContain('work-profile');
+    } finally {
+      oauthSpy.mockRestore();
+      settingsSpy.mockRestore();
+    }
+  });
+
+  it('never writes the token to the log, whether it is injected or skipped as expired', async () => {
+    const expired = jwtExpiringAt(Date.now() - 60_000);
+    const logSpies = (['debug', 'info', 'warn', 'error'] as const).map(level => spyOn(logger, level));
+    const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken').mockResolvedValue(storeToken);
+    try {
+      for (const token of [LONG_LIVED, expired]) {
+        fs.writeFileSync(TEST_ENV_FILE, `CLAUDE_CODE_OAUTH_TOKEN=${token}\n`, { mode: 0o600 });
+        await buildIsolatedEnvWithFreshOAuth();
+        const logged = JSON.stringify(logSpies.flatMap(spy => spy.mock.calls));
+        expect(logged).toContain('CLAUDE_CODE_OAUTH_TOKEN');
+        expect(logged).not.toContain(token);
+      }
+    } finally {
+      oauthSpy.mockRestore();
+      logSpies.forEach(spy => spy.mockRestore());
+    }
+  });
+
+  it('the auth-method description names the .env token without printing it', () => {
+    fs.writeFileSync(TEST_ENV_FILE, `CLAUDE_CODE_OAUTH_TOKEN=${LONG_LIVED}\n`, { mode: 0o600 });
+    const description = getAuthMethodDescription();
+    expect(description).toContain('~/.claude-mem/.env');
+    expect(description).toContain('CLAUDE_CODE_OAUTH_TOKEN');
+    expect(description).not.toContain(LONG_LIVED);
+  });
+});
+
+/**
+ * #5400 — the detached worker does not inherit proxy variables that Claude
+ * Code only applies from `<Claude config dir>/settings.json` `env`. The
+ * observer child is spawned with settingSources: [] and would otherwise
+ * connect directly. buildIsolatedEnv fills the missing proxy keys from that
+ * file and leaves every other key alone.
+ *
+ * The config dir is the credential profile buildIsolatedEnv already resolves
+ * (CLAUDE_MEM_CLAUDE_CONFIG_DIR setting > CLAUDE_CONFIG_DIR > ~/.claude).
+ * paths.CLAUDE_CONFIG_DIR is frozen at module load, so these tests pick the
+ * dir through the setting (env override, re-read on every call).
+ */
+describe('Issue #5400: observer spawn inherits proxy env from Claude settings', () => {
+  const configDir = fs.mkdtempSync(join(tmpdir(), 'claude-mem-proxy-settings-'));
+  const settingsPath = join(configDir, 'settings.json');
+  const dotenvPath = join(configDir, '.env');
+  const originalConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  const originalProfileSetting = process.env.CLAUDE_MEM_CLAUDE_CONFIG_DIR;
+  const originalDotenv = process.env.CLAUDE_MEM_ENV_FILE;
+  const PROXY_KEYS = [
+    'HTTP_PROXY',
+    'HTTPS_PROXY',
+    'ALL_PROXY',
+    'NO_PROXY',
+    'http_proxy',
+    'https_proxy',
+    'all_proxy',
+    'no_proxy',
+    'npm_config_proxy',
+    'npm_config_https_proxy',
+    'npm_config_noproxy',
+    'NODE_USE_ENV_PROXY',
+    'node_use_env_proxy',
+  ] as const;
+  const originalProxy = new Map<string, string | undefined>(
+    PROXY_KEYS.map(key => [key, process.env[key]]),
+  );
+
+  function writeSettings(body: unknown): void {
+    fs.writeFileSync(settingsPath, typeof body === 'string' ? body : JSON.stringify(body));
+  }
+
+  function restoreProxyEnv(): void {
+    for (const [key, value] of originalProxy) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+
+  beforeEach(() => {
+    process.env.CLAUDE_MEM_CLAUDE_CONFIG_DIR = configDir;
+    delete process.env.CLAUDE_CONFIG_DIR;
+    for (const key of PROXY_KEYS) delete process.env[key];
+    fs.rmSync(settingsPath, { force: true });
+    // An empty credentials file of our own, so a developer's real
+    // ~/.claude-mem/.env (with ANTHROPIC_API_KEY) cannot change the results.
+    fs.writeFileSync(dotenvPath, '', { mode: 0o600 });
+    process.env.CLAUDE_MEM_ENV_FILE = dotenvPath;
+  });
+
+  afterEach(() => {
+    if (originalConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = originalConfigDir;
+    if (originalProfileSetting === undefined) delete process.env.CLAUDE_MEM_CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_MEM_CLAUDE_CONFIG_DIR = originalProfileSetting;
+    if (originalDotenv === undefined) delete process.env.CLAUDE_MEM_ENV_FILE;
+    else process.env.CLAUDE_MEM_ENV_FILE = originalDotenv;
+    restoreProxyEnv();
+  });
+
+  afterAll(() => {
+    fs.rmSync(configDir, { recursive: true, force: true });
+  });
+
+  it('fills missing proxy keys from the profile settings.json, and sanitizeEnv keeps them', () => {
+    writeSettings({
+      env: {
+        HTTP_PROXY: 'http://proxy.example:3128',
+        HTTPS_PROXY: 'http://proxy.example:3128',
+        ALL_PROXY: 'socks5://proxy.example:1080',
+        NO_PROXY: 'localhost,127.0.0.1,::1',
+        http_proxy: 'http://proxy.example:3128',
+        https_proxy: 'http://proxy.example:3128',
+        all_proxy: 'socks5://proxy.example:1080',
+        no_proxy: 'localhost,127.0.0.1,::1',
+        npm_config_https_proxy: 'http://proxy.example:3128',
+        NODE_USE_ENV_PROXY: '1',
+        node_use_env_proxy: '1',
+      },
+    });
+
+    const result = sanitizeEnv(buildIsolatedEnv());
+
+    expect(result.HTTP_PROXY).toBe('http://proxy.example:3128');
+    expect(result.HTTPS_PROXY).toBe('http://proxy.example:3128');
+    expect(result.ALL_PROXY).toBe('socks5://proxy.example:1080');
+    expect(result.NO_PROXY).toBe('localhost,127.0.0.1,::1');
+    expect(result.http_proxy).toBe('http://proxy.example:3128');
+    expect(result.https_proxy).toBe('http://proxy.example:3128');
+    expect(result.all_proxy).toBe('socks5://proxy.example:1080');
+    expect(result.no_proxy).toBe('localhost,127.0.0.1,::1');
+    expect(result.npm_config_https_proxy).toBe('http://proxy.example:3128');
+    expect(result.NODE_USE_ENV_PROXY).toBe('1');
+    expect(result.node_use_env_proxy).toBe('1');
+    expect(result.CLAUDE_CODE_ENTRYPOINT).toBeUndefined();
+    expect(result.CLAUDE_MEM_INTERNAL).toBe('1');
+  });
+
+  it('reads the configured directory, not a different one, including a BOM-prefixed file', () => {
+    const otherDir = fs.mkdtempSync(join(tmpdir(), 'claude-mem-proxy-other-'));
+    try {
+      fs.writeFileSync(
+        join(otherDir, 'settings.json'),
+        JSON.stringify({ env: { HTTPS_PROXY: 'http://other.example:1' } }),
+      );
+      fs.writeFileSync(
+        settingsPath,
+        `\uFEFF${JSON.stringify({ env: { HTTPS_PROXY: '  http://chosen.example:9  ' } })}`,
+      );
+
+      expect(buildIsolatedEnv().HTTPS_PROXY).toBe('http://chosen.example:9');
+    } finally {
+      fs.rmSync(otherDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads the CLAUDE_MEM_CLAUDE_CONFIG_DIR profile, not process.env.CLAUDE_CONFIG_DIR', () => {
+    const shellDir = fs.mkdtempSync(join(tmpdir(), 'claude-mem-proxy-shell-'));
+    try {
+      fs.writeFileSync(
+        join(shellDir, 'settings.json'),
+        JSON.stringify({ env: { HTTPS_PROXY: 'http://shell-profile.example:1' } }),
+      );
+      process.env.CLAUDE_CONFIG_DIR = shellDir;
+      writeSettings({ env: { HTTPS_PROXY: 'http://chosen-profile.example:2' } });
+
+      expect(buildIsolatedEnv().HTTPS_PROXY).toBe('http://chosen-profile.example:2');
+    } finally {
+      fs.rmSync(shellDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not override a proxy the worker already has, including an explicit empty value', () => {
+    process.env.HTTPS_PROXY = 'http://from-worker:1';
+    process.env.NO_PROXY = '';
+    writeSettings({
+      env: {
+        HTTPS_PROXY: 'http://from-settings:2',
+        HTTP_PROXY: 'http://from-settings:2',
+        NO_PROXY: 'localhost',
+        NODE_USE_ENV_PROXY: '1',
+      },
+    });
+
+    const result = buildIsolatedEnv();
+
+    expect(result.HTTPS_PROXY).toBe('http://from-worker:1');
+    expect(result.NO_PROXY).toBe('');
+    expect(result.HTTP_PROXY).toBe('http://from-settings:2');
+    expect(result.NODE_USE_ENV_PROXY).toBe('1');
+  });
+
+  it('copies proxy keys only: secrets, CLAUDE_CODE_*, blanks, and non-strings stay out', () => {
+    writeSettings({
+      env: {
+        HTTPS_PROXY: '   ',
+        HTTP_PROXY: 1,
+        NO_PROXY: 'localhost',
+        ANTHROPIC_API_KEY: 'sk-ant-secret',
+        CLAUDE_CODE_EFFORT_LEVEL: 'max',
+        CLAUDE_CODE_OAUTH_TOKEN: 'should-not-leak',
+        PATH: '/from-settings',
+      },
+    });
+
+    const result = buildIsolatedEnv();
+
+    expect(result.HTTPS_PROXY).toBeUndefined();
+    expect(result.HTTP_PROXY).toBeUndefined();
+    expect(result.NO_PROXY).toBe('localhost');
+    expect(result.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(result.CLAUDE_CODE_EFFORT_LEVEL).toBeUndefined();
+    expect(result.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    expect(result.PATH).not.toBe('/from-settings');
+  });
+
+  it('ignores a missing file, invalid JSON, a non-object env block, and proxy keys in ~/.claude-mem/.env', () => {
+    expect(buildIsolatedEnv().HTTPS_PROXY).toBeUndefined();
+
+    writeSettings('{ not json');
+    expect(buildIsolatedEnv().HTTPS_PROXY).toBeUndefined();
+
+    writeSettings({ env: ['HTTPS_PROXY=http://nope'] });
+    expect(buildIsolatedEnv().HTTPS_PROXY).toBeUndefined();
+
+    writeSettings({ enabledPlugins: { 'claude-mem@thedotmack': true } });
+    expect(buildIsolatedEnv().HTTPS_PROXY).toBeUndefined();
+
+    fs.writeFileSync(dotenvPath, 'HTTPS_PROXY=http://from-dotenv:1\nANTHROPIC_API_KEY=sk-ant-key\n', { mode: 0o600 });
+    process.env.CLAUDE_MEM_ENV_FILE = dotenvPath;
+    const fromDotenv = buildIsolatedEnv();
+    expect(fromDotenv.HTTPS_PROXY).toBeUndefined();
+    expect(fromDotenv.ANTHROPIC_API_KEY).toBe('sk-ant-key');
   });
 });

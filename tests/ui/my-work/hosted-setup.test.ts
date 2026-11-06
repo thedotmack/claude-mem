@@ -11,7 +11,7 @@ const compiled = buildSync({
       import { renderToStaticMarkup } from 'react-dom/server';
       import { ScanScreen } from './src/setup/screens/scan-screen';
       import { RevealScreen } from './src/setup/screens/reveal-screen';
-      export const renderReveal = (agents, reveal, extraction, uploadedAgents = null) => renderToStaticMarkup(<RevealScreen agents={agents} reveal={reveal} extraction={extraction} uploadedAgents={uploadedAgents} recentPrompts={[]} onContinue={() => {}} />);
+      export const renderReveal = (agents, reveal, extraction, uploadedAgents = null, hostedNotice = null) => renderToStaticMarkup(<RevealScreen agents={agents} reveal={reveal} extraction={extraction} uploadedAgents={uploadedAgents} recentPrompts={[]} hostedNotice={hostedNotice} onContinue={() => {}} />);
       export { localSetupSource, EMPTY_SETUP_DATA } from './src/setup/setup-data';
       export { createSampleSetupSource } from './src/setup/setup-sample';
       export const renderScan = (scan, preferenceError = null, retrying = false, retryError = null, consentError = null, consentSending = false) => renderToStaticMarkup(
@@ -63,15 +63,16 @@ function useNetwork(handle: (url: string, init: RequestInit) => Promise<Response
 }
 
 describe('hosted setup scan control', () => {
-  it('renders the optional checkbox unchecked under the progress meter, and locks it only for upload', () => {
+  it('prechecks usage statistics under the progress meter, and locks it only for upload', () => {
     const app = fixture();
     const initial = app.renderScan(app.EMPTY_SETUP_DATA.scan);
     const checkbox = initial.match(/<input[^>]+type="checkbox"[^>]*>/)?.[0] ?? '';
-    expect(checkbox).not.toContain('checked=""');
+    expect(checkbox).toContain('checked=""');
     expect(checkbox).not.toContain('disabled');
-    expect(initial).toContain('Also share my anonymized setup results to help improve claude-mem (optional)');
+    expect(initial).toContain('Share anonymous usage statistics to help improve your Claude-mem experience');
     expect(initial.indexOf('<progress')).toBeLessThan(initial.indexOf(checkbox));
     expect(app.renderScan(scan({ phase: 'reading', improveProduct: true }))).toContain('checked=""');
+    expect(app.renderScan(scan({ phase: 'reading', improveProduct: false }))).not.toContain('checked=""');
     expect(initial).not.toContain('Discover My Work, Rules &amp; Focus');
     const consent = app.renderScan(scan({ phase: 'awaiting-consent' }));
     expect(consent).toContain('Discover My Work, Rules &amp; Focus');
@@ -116,6 +117,31 @@ describe('hosted setup scan control', () => {
     expect(uploadedEmpty).not.toContain('You skipped this step.');
     expect(uploadedEmpty).not.toContain('Nothing was uploaded');
     expect(app.renderReveal(agents, { goals: null, work: null, rules: null }, { state: 'running', step: 'goals' }, ['codex'])).toContain('already knows your work');
+  });
+
+  it('lets people continue after capacity refusal without claiming results or a voluntary skip', () => {
+    const app = fixture();
+    const agents = [{ id: 'codex', label: 'Codex', detected: true, prompts: 3 }];
+    const notice = 'Automatic organization is temporarily unavailable. You can continue setting up Claude-Mem.';
+    for (const uploaded of [[], ['codex']]) {
+      const html = app.renderReveal(agents, { goals: [], work: [], rules: [] }, { state: 'ok', step: null }, uploaded, notice);
+      expect(html).toContain(notice);
+      expect(html).toContain('Continue setup.');
+      expect(html).not.toContain('already knows your work');
+      expect(html).not.toContain('You skipped this step.');
+      expect(html).not.toContain('daily budget');
+    }
+  });
+
+  it('does not credit saved results to messages when this upload was refused', () => {
+    const app = fixture();
+    const agents = [{ id: 'codex', label: 'Codex', detected: true, prompts: 3 }];
+    const notice = 'Automatic organization is temporarily unavailable. You can continue setting up Claude-Mem.';
+    const saved = { goals: null, work: null, rules: [{ id: 'saved', text: 'Test the change.', quote: 'an earlier quote', quotedAt: '2026-10-01T00:00:00.000Z' }] };
+    const html = app.renderReveal(agents, saved, { state: 'ok', step: null }, ['codex'], notice);
+    expect(html).toContain(notice);
+    expect(html).toContain('an earlier quote');
+    expect(html).not.toContain('From 3 messages');
   });
 
   it('credits the results only to the tools that were uploaded', () => {

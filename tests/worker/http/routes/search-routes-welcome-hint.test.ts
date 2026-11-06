@@ -256,7 +256,7 @@ describe('SearchRoutes Welcome Hint', () => {
     expect(res.send).toHaveBeenCalledWith(`${EMPTY_WORK_STATE_SECTION}\n\nCONTEXT_FROM_GENERATOR`);
   });
 
-  it('queries both projects in a worktree (multi-project) request', async () => {
+  it('trims hand-typed spacing in a comma-separated project list', async () => {
     const routes = new SearchRoutes(mockSearchManager);
     const handler = captureContextInjectHandler(routes);
 
@@ -272,6 +272,27 @@ describe('SearchRoutes Welcome Hint', () => {
       '/path/worktree',
       '/path/parent',
       '/path/worktree',
+      null,
+      null,
+    );
+  });
+
+  it('keeps exact keys when the project list repeats the query key', async () => {
+    const routes = new SearchRoutes(mockSearchManager);
+    const handler = captureContextInjectHandler(routes);
+
+    const res = createMockRes();
+    const req = { query: { projects: ['/path/parent', ' /path/worktree'] } } as unknown as Request;
+
+    handler(req, res as unknown as Response);
+    await new Promise(resolve => setImmediate(resolve));
+
+    expect(res.send).toHaveBeenCalledTimes(1);
+    expect(countQueryStub).toHaveBeenCalledWith(
+      '/path/parent',
+      ' /path/worktree',
+      '/path/parent',
+      ' /path/worktree',
       null,
       null,
     );

@@ -34,6 +34,7 @@ import { optimizeObservationFields, buildFieldCompressionPrompt, type Compressed
 import { resolveFieldOptimizeTimeoutMs } from './retry.js';
 import { buildTelegramWrapupPrompt, type TelegramWrapupFormatterInput } from '../integrations/TelegramWrapupNotifier.js';
 import { freezeResponseMedia, type PreparedTurnMedia, type TurnImageRequest } from '../media/inference.js';
+import { isObserverCaptureEnabled } from '../../shared/observer-capture.js';
 
 import {
   processAgentResponse,
@@ -220,6 +221,9 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     deadlineMs?: number,
     label?: ObserverRequestLabel,
   ): Promise<CompressedField | null> {
+    if (!isObserverCaptureEnabled(SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH))) {
+      return null;
+    }
     // The field pass races `deadlineMs` (CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS).
     // Without it the request keeps the LLM per-attempt default, and a longer
     // field knob would never take effect on this path (#4134).
@@ -432,6 +436,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     // generation's opening user turn, and the first observation or summary
     // request carries it (consecutive user turns merge on the wire).
     if (observesBarePrompts()) {
+      if (await this.stopIfCaptureDisabled(session)) return;
       try {
         session.lastPromptSentAt = Date.now();
         session.lastGeneratorSource = 'init';
@@ -493,9 +498,9 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       const originalTimestamp = session.earliestPendingTimestamp;
 
       if (message.type === 'observation') {
-        await this.processObservationMessage(session, message, worker, config, originalTimestamp, lastCwd);
+        if (!(await this.processObservationMessage(session, message, worker, config, originalTimestamp, lastCwd))) return;
       } else if (message.type === 'summarize') {
-        await this.processSummaryMessage(session, message, worker, config, mode, originalTimestamp, lastCwd);
+        if (!(await this.processSummaryMessage(session, message, worker, config, mode, originalTimestamp, lastCwd))) return;
       }
     }
   }
@@ -542,7 +547,8 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     config: TConfig,
     originalTimestamp: number | null,
     lastCwd: string | undefined
-  ): Promise<void> {
+  ): Promise<boolean> {
+    if (await this.stopIfCaptureDisabled(session)) return false;
     if (!session.memorySessionId) {
       throw new Error('Cannot process observations: memorySessionId not yet captured. This session may need to be reinitialized.');
     }
@@ -558,7 +564,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
         'budget',
         describeGenerationUsage(session.conversationHistory, session.lastContextTokens),
       );
-      return;
+      return true;
     }
 
     // An oversized payload is condensed by a bounded model pass before the
@@ -582,6 +588,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       session.observerContextWindowTokens,
       () => this.fieldCompressionMaxOutputTokens(),
     );
+    if (await this.stopIfCaptureDisabled(session)) return false;
 
     const obsPrompt = buildObservationPromptParts({
       id: 0,
@@ -598,6 +605,10 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       responseContext = { ...responseContext, media: freezeResponseMedia(turnMedia, turnMedia.images.length > 0) };
     }
 
+    if (await this.stopIfCaptureDisabled(session)) {
+      if (turnMedia) turnMedia.images.forEach(image => { image.dataUrl = ''; });
+      return false;
+    }
     const turnPrompt = this.observationTurnPrompt(session, message, obsPrompt);
     if (this.rejectAbortedObservation) session.abortController.signal.throwIfAborted();
     session.conversationHistory.push({ role: 'user', content: turnPrompt });
@@ -651,6 +662,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
         sessionId: session.sessionDbId
       });
     }
+    return true;
   }
 
   private async processSummaryMessage(
@@ -661,7 +673,8 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     mode: ModeConfig,
     originalTimestamp: number | null,
     lastCwd: string | undefined
-  ): Promise<void> {
+  ): Promise<boolean> {
+    if (await this.stopIfCaptureDisabled(session)) return false;
     if (!session.memorySessionId) {
       throw new Error('Cannot process summary: memorySessionId not yet captured. This session may need to be reinitialized.');
     }
@@ -708,6 +721,17 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
         sessionId: session.sessionDbId
       });
     }
+    return true;
+  }
+
+  private async stopIfCaptureDisabled(session: ActiveSession): Promise<boolean> {
+    if (isObserverCaptureEnabled(SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH))) return false;
+    const discarded = await this.sessionManager.clearPendingForSession(session.sessionDbId);
+    logger.info('SESSION', 'Observer capture disabled before provider send; discarding buffered work', {
+      sessionId: session.sessionDbId,
+      discarded,
+    });
+    return true;
   }
 
   /**

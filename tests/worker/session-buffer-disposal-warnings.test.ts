@@ -212,3 +212,31 @@ describe('SessionManager pending-buffer disposal warnings', () => {
     expect(manager.getSession(31)).toBeDefined();
   });
 });
+
+describe('SessionManager.discardBufferedWork (#5405)', () => {
+  it('drops the buffer but keeps dedup, so neither stored nor discarded work is enqueued again', async () => {
+    const manager = makeManager();
+    await enqueue(manager, 20, 'tool-stored');
+    const iterator = manager.getMessageIterator(20);
+    try {
+      await iterator.next();
+      expect(await manager.confirmClaimedMessages(20)).toBe(1);
+    } finally {
+      await iterator.return?.();
+    }
+    await enqueue(manager, 20, 'tool-discarded');
+    expect(manager.getMessageBuffer().getPendingCount(20)).toBe(1);
+
+    expect(manager.discardBufferedWork(20)).toBe(1);
+    expect(manager.getMessageBuffer().getPendingCount(20)).toBe(0);
+
+    // A later hook or transcript replay re-sending either tool use is suppressed.
+    await enqueue(manager, 20, 'tool-stored');
+    await enqueue(manager, 20, 'tool-discarded');
+    expect(manager.getMessageBuffer().getPendingCount(20)).toBe(0);
+
+    // New tool uses still flow.
+    await enqueue(manager, 20, 'tool-fresh');
+    expect(manager.getMessageBuffer().getPendingCount(20)).toBe(1);
+  });
+});

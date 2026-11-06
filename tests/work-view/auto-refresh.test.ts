@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AutoRefreshWorker, refreshIntervalMs } from '../../src/services/work-view/auto-refresh-worker.mjs';
-import { buildRefreshTask, FOCUS_ANSWER_SCHEMA, GROUPING_ANSWER_SCHEMA, resolveStepModels, reviewConcurrency, STEP_MODEL_SETTINGS, STEP_MODELS } from '../../src/services/work-view/refresh-task.js';
+import { buildRefreshTask, FOCUS_ANSWER_SCHEMA, GROUPING_ANSWER_SCHEMA, resolvePreferredRefreshAgent, resolveStepModels, reviewConcurrency, STEP_MODEL_SETTINGS, STEP_MODELS } from '../../src/services/work-view/refresh-task.js';
 import { readLedger, runCli } from '../../src/services/work-view/request-groups.mjs';
 import { scratchDir } from '../helpers/scratch-dir.js';
 import { everyRequestInOther, focusInputFrom, focusWriter, isOtherPass } from '../helpers/fake-focus-writer.js';
@@ -1119,5 +1119,54 @@ describe('automatic refresh interval setting', () => {
       const status = worker.status()!;
       expect(Date.parse(status.nextAt!) - Date.parse(status.checkedAt!)).toBe(86400000);
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('My Work refresh agent preference (#5435)', () => {
+  /** Run with a settings file and a clean CLAUDE_MEM_PROVIDER environment, restoring both afterwards. */
+  const withProvider = async <T>(file: Record<string, string> | null, env: Record<string, string>, body: (dir: string) => T | Promise<T>): Promise<T> => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-agent-'));
+    const saved = process.env.CLAUDE_MEM_PROVIDER;
+    try {
+      delete process.env.CLAUDE_MEM_PROVIDER;
+      Object.assign(process.env, env);
+      if (file) writeFileSync(join(dir, 'settings.json'), JSON.stringify(file));
+      return await body(dir);
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_MEM_PROVIDER; else process.env.CLAUDE_MEM_PROVIDER = saved;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it('names the agent CLAUDE_MEM_PROVIDER names', async () => {
+    await withProvider({ CLAUDE_MEM_PROVIDER: 'codex' }, {}, dir => expect(resolvePreferredRefreshAgent(dir)).toBe('codex'));
+    await withProvider({ CLAUDE_MEM_PROVIDER: 'claude' }, {}, dir => expect(resolvePreferredRefreshAgent(dir)).toBe('claude-code'));
+    await withProvider({ CLAUDE_MEM_PROVIDER: 'gemini' }, {}, dir => expect(resolvePreferredRefreshAgent(dir)).toBe('gemini'));
+  });
+
+  it('a provider that names no local agent leaves the detect order in charge', async () => {
+    await withProvider({ CLAUDE_MEM_PROVIDER: 'openrouter' }, {}, dir => expect(resolvePreferredRefreshAgent(dir)).toBeUndefined());
+    await withProvider({ CLAUDE_MEM_PROVIDER: 'openai-compatible' }, {}, dir => expect(resolvePreferredRefreshAgent(dir)).toBeUndefined());
+  });
+
+  it('an unset provider keeps today\'s first choice, Claude Code', async () => {
+    await withProvider(null, {}, dir => expect(resolvePreferredRefreshAgent(dir)).toBe('claude-code'));
+  });
+
+  it('lets the environment override the settings file, like every other setting', async () => {
+    await withProvider({ CLAUDE_MEM_PROVIDER: 'claude' }, { CLAUDE_MEM_PROVIDER: 'codex' }, dir => expect(resolvePreferredRefreshAgent(dir)).toBe('codex'));
+  });
+
+  it('a refresh task built under CLAUDE_MEM_PROVIDER=codex names codex as its preferred agent', async () => {
+    await withProvider({ CLAUDE_MEM_PROVIDER: 'codex' }, {}, dir => {
+      const database = fixtureDatabase();
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 1, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
+      expect(task.preferredAgent).toBe('codex');
+    });
+    await withProvider(null, {}, dir => {
+      const database = fixtureDatabase();
+      const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 1, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: focusWriter(database).save });
+      expect(task.preferredAgent).toBe('claude-code');
+    });
   });
 });

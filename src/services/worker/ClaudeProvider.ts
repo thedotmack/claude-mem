@@ -45,10 +45,9 @@ import {
 } from '../../shared/observer-recycle.js';
 import { resolveContextWindowTokens, observationFieldMaxChars } from './context-window.js';
 import { recycleObserverConversation, loadSessionStartContext, openObserverGeneration, observesBarePrompts } from './session/recycle-conversation.js';
-import { MAX_CONSECUTIVE_SDK_STREAM_EXITS, ObserverResponsePacer } from './session/response-pacer.js';
+import { MAX_CONSECUTIVE_SDK_STREAM_EXITS, RESPONSE_STALL_MS, ObserverResponsePacer } from './session/response-pacer.js';
 import { recordObserverFailure } from '../../shared/observer-health.js';
 import type { ClaudeCredential } from '../../shared/quota-cooldown.js';
-import { IDLE_TIMEOUT_MS } from './SessionMessageBuffer.js';
 import { optimizeObservationFields, buildFieldCompressionPrompt, type CompressedField, type FieldCompressor } from './field-optimizer.js';
 import { resolveFieldOptimizeTimeoutMs } from './retry.js';
 import { buildTelegramWrapupPrompt, type TelegramWrapupFormatterInput } from '../integrations/TelegramWrapupNotifier.js';
@@ -57,6 +56,7 @@ import { captureEvent } from '../telemetry/telemetry.js';
 import { clearDependencyStatus, recordClaudeCliSetupRequired, OBSERVER_DIR_UNUSABLE_CODE } from '../../shared/dependency-health.js';
 import { clearClaudeCliSelfHealAttempts } from './stale-spawn-recovery.js';
 import { paidSendBudgetForClaimedBatch } from './paid-send-budget.js';
+import { isObserverCaptureEnabled } from '../../shared/observer-capture.js';
 
 /**
  * Module-scoped guard so the "effort parameter" hint only fires once per
@@ -338,7 +338,7 @@ export class ClaudeProvider {
 
   /** How long an unanswered prompt may go without SDK activity (#4066). */
   private responseStallMs(): number {
-    return IDLE_TIMEOUT_MS;
+    return RESPONSE_STALL_MS;
   }
 
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
@@ -1181,6 +1181,9 @@ export class ClaudeProvider {
     claudePath: string,
     signal: AbortSignal,
   ): Promise<CompressedField | null> {
+    if (!isObserverCaptureEnabled(SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH))) {
+      return null;
+    }
     // The CLI reports no finish reason, so a reply it returns counts as whole.
     const condensed = await this.runStandaloneObserverPrompt(
       buildFieldCompressionPrompt(text, budgetChars),
@@ -1228,6 +1231,15 @@ export class ClaudeProvider {
     pacer: ObserverResponsePacer = new ObserverResponsePacer(),
   ): AsyncIterableIterator<SDKUserMessage> {
     const mode = ModeManager.getInstance().getActiveMode();
+    const stopIfCaptureDisabled = async (): Promise<boolean> => {
+      if (isObserverCaptureEnabled(SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH))) return false;
+      const discarded = await this.sessionManager.clearPendingForSession(session.sessionDbId);
+      logger.info('SESSION', 'Observer capture disabled before provider send; discarding buffered work', {
+        sessionId: session.sessionDbId,
+        discarded,
+      });
+      return true;
+    };
 
     // Prompt 0 means no user_prompts row was ever written for this session
     // (a transcript-ingested turn with no anchor). Treat it, like the genuine
@@ -1275,6 +1287,7 @@ export class ClaudeProvider {
 
     let answeredBeforeSend: number;
     if (observeBarePrompt) {
+      if (await stopIfCaptureDisabled()) return;
       session.lastPromptSentAt = Date.now();
       session.lastGeneratorSource = 'init';
       answeredBeforeSend = pacer.mark();
@@ -1303,6 +1316,7 @@ export class ClaudeProvider {
       }
 
       if (message.type === 'observation') {
+        if (await stopIfCaptureDisabled()) return;
         // Retire a full generation BEFORE yielding. The SDK holds the real
         // conversation server-side, but conversationHistory tracks every prompt
         // fed into it, so its size is the proxy for how close that conversation
@@ -1339,6 +1353,11 @@ export class ClaudeProvider {
             )
           : { toolInput: message.tool_input, toolOutput: message.tool_response };
 
+        // Field compression is itself a provider request. If capture was
+        // disabled while it was in flight, do not follow it with the paid
+        // observation request.
+        if (await stopIfCaptureDisabled()) return;
+
         const obsPrompt = buildObservationPrompt({
           id: 0, // Not used in prompt
           tool_name: message.tool_name!,
@@ -1366,6 +1385,7 @@ export class ClaudeProvider {
         };
         if (!(await this.awaitObserverAnswer(session, pacer, answeredBeforeSend))) return;
       } else if (message.type === 'summarize') {
+        if (await stopIfCaptureDisabled()) return;
         const summaryPrompt = buildSummaryPrompt({
           id: session.sessionDbId,
           memory_session_id: session.memorySessionId,

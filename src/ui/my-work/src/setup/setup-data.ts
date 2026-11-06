@@ -5,6 +5,7 @@ import type { AgentTool } from '@/data'
 import { toSetupUsage, type SetupScanUsage, type SetupUsage } from './setup-usage'
 import { revealFromSnapshot, type SnapshotWithSetup } from './setup-reveal'
 import { noteFor, searchUrl, toMemoryResults, type MemoryResult, type WorkerSearchResult } from './setup-search'
+import { parseSseFrame } from '../live/parse-sse-frame'
 
 /** Mirrors the worker's SetupScanState (src/services/prompt-import/setup-scan.ts), trimmed to what the screen shows. */
 export interface SetupScanAgent {
@@ -18,6 +19,8 @@ export interface SetupScanAgent {
 export type SetupScanPhase = 'idle' | 'reading' | 'checking' | 'saving' | 'awaiting-consent' | 'uploading' | 'done' | 'failed'
 export interface SetupScanView {
   agents: SetupScanAgent[]; percent: number; phase: SetupScanPhase; done: boolean; error: string | null; improveProduct: boolean
+  /** Why hosted extraction was skipped (budget/rate limit) while setup finished locally. */
+  hostedNotice?: string | null
   /** Which tools' prompts were sent to cmem.ai: null before the person answers, [] when nothing left this machine. */
   uploadedAgents: string[] | null
 }
@@ -90,7 +93,7 @@ export interface SetupSource {
 }
 
 export const EMPTY_SETUP_DATA: SetupData = {
-  scan: { agents: [], percent: 0, phase: 'idle', done: false, error: null, improveProduct: false, uploadedAgents: null },
+  scan: { agents: [], percent: 0, phase: 'idle', done: false, error: null, improveProduct: true, uploadedAgents: null },
   reveal: { goals: null, work: null, rules: null },
   extraction: null,
   recentPrompts: [],
@@ -105,7 +108,8 @@ export const EMPTY_SETUP_DATA: SetupData = {
 }
 
 /** The worker's answers, trimmed to what this file reads. */
-interface WorkerScanState extends Omit<SetupScanView, 'agents' | 'improveProduct' | 'uploadedAgents'> {
+interface WorkerScanState extends Omit<SetupScanView, 'agents' | 'improveProduct' | 'uploadedAgents' | 'hostedNotice'> {
+  hostedNotice?: string | null
   /** Older workers upload without asking and do not send this. */
   uploadedAgents?: string[] | null
   /** Older workers do not send the hosted setup preference. */
@@ -149,8 +153,8 @@ const toScanView = (scan: WorkerScanState): SetupScanView => ({
     // Agent login is irrelevant to hosted setup; the transcript scan only reports which tools were found.
     id, label, detected, prompts, canRunSetup: null, cannotRunReason: null,
   })),
-  percent: scan.percent, phase: scan.phase, done: scan.done, error: scan.error, improveProduct: scan.improveProduct ?? false,
-  uploadedAgents: scan.uploadedAgents ?? null,
+  percent: scan.percent, phase: scan.phase, done: scan.done, error: scan.error, improveProduct: scan.improveProduct ?? true,
+  uploadedAgents: scan.uploadedAgents ?? null, hostedNotice: scan.hostedNotice ?? null,
 })
 
 // Keep rapid checkbox changes in click order; scan and upload never wait on this queue.
@@ -176,7 +180,7 @@ export const localSetupSource: SetupSource = {
     const publish = (changes: Partial<SetupData>) => { if (closed) return; data = { ...data, ...changes }; onData(data) }
     const applyScan = (scan: WorkerScanState) => {
       scanRevision++
-      appliedImproveProduct = scan.improveProduct ?? false
+      appliedImproveProduct = scan.improveProduct ?? true
       publish({
         scan: toScanView(scan),
         usage: scan.usage ? toSetupUsage(scan.usage) : null,
@@ -206,10 +210,22 @@ export const localSetupSource: SetupSource = {
     }
     onData(data)
     const stream = new EventSource('/api/work-view/events')
-    stream.addEventListener('setup-scan', (event) => applyScan(JSON.parse((event as MessageEvent<string>).data) as WorkerScanState))
-    stream.addEventListener('setup-state', (event) => applyState(JSON.parse((event as MessageEvent<string>).data) as WorkerSetupState))
-    stream.addEventListener('setup-import', (event) => publish({ historyImport: toHistoryImport(JSON.parse((event as MessageEvent<string>).data) as WorkerHistoryImport) }))
-    stream.addEventListener('work-view', (event) => applySnapshot(JSON.parse((event as MessageEvent<string>).data) as SnapshotWithSetup))
+    // A frame that is not a JSON object is skipped with a warning, not thrown:
+    // these listeners run outside React's error boundaries (see parseSseFrame).
+    const onFrame = <T>(event: Event, apply: (frame: T) => void, isShaped: (frame: Record<string, unknown>) => boolean = () => true): void => {
+      const frame = parseSseFrame(event.type, (event as MessageEvent<string>).data)
+      if (frame === null) return
+      if (!isShaped(frame)) {
+        console.warn(`[work-view] Ignoring a ${event.type} frame with an unexpected shape`)
+        return
+      }
+      apply(frame as T)
+    }
+    // applyScan reads scan.agents, so a scan frame without that list is skipped.
+    stream.addEventListener('setup-scan', (event) => onFrame<WorkerScanState>(event, applyScan, (frame) => Array.isArray(frame.agents)))
+    stream.addEventListener('setup-state', (event) => onFrame<WorkerSetupState>(event, applyState))
+    stream.addEventListener('setup-import', (event) => onFrame<WorkerHistoryImport>(event, (frame) => publish({ historyImport: toHistoryImport(frame) })))
+    stream.addEventListener('work-view', (event) => onFrame<SnapshotWithSetup>(event, applySnapshot))
     const startScan = async () => {
       const revision = scanRevision
       const started = await postJson<WorkerScanState>('/api/setup/scan', desiredImproveProduct === undefined ? {} : { improveProduct: desiredImproveProduct })

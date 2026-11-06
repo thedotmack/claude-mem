@@ -8,6 +8,7 @@ import {
   isContextOverflowObserverOutput,
   isOrgDisabledSubscriptionObserverOutput,
   isQuotaLimitedObserverOutput,
+  isRateLimitedObserverOutput,
   isTransportFailureObserverOutput,
   previewOutput,
 } from '../../src/sdk/output-classifier.js';
@@ -113,6 +114,71 @@ describe('isQuotaLimitedObserverOutput', () => {
     ).toBe(false);
   });
 
+});
+
+describe('isRateLimitedObserverOutput (#5428)', () => {
+  // The exact reply the reporter's observer received from Claude Code.
+  const REPORTED_429_REPLY =
+    'API Error: Request rejected (429) · The request was rate limited. Its source could not be identified. Retry after the indicated delay.';
+
+  it('detects a Claude provider 429 returned as reply text', () => {
+    // The CLI prints the rate limit as the assistant response instead of
+    // throwing. That text used to classify as prose, and the second reply
+    // confirmed the queued batch away.
+    expect(isRateLimitedObserverOutput(REPORTED_429_REPLY)).toBe(true);
+    expect(isRateLimitedObserverOutput('API Error: 429 Too Many Requests')).toBe(true);
+    expect(
+      isRateLimitedObserverOutput(
+        'API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"Number of request tokens has exceeded your per-minute rate limit"}}',
+      ),
+    ).toBe(true);
+    expect(
+      isRateLimitedObserverOutput(
+        'The request was rate limited. Its source could not be identified. Retry after the indicated delay.',
+      ),
+    ).toBe(true);
+  });
+
+  it('is a throttle, not a spent allowance or a transport failure', () => {
+    // A quota match would book the half-hour quota cooldown for a throttle.
+    expect(isQuotaLimitedObserverOutput(REPORTED_429_REPLY)).toBe(false);
+    expect(isQuotaLimitedObserverOutput('API Error: 429 Too Many Requests')).toBe(false);
+    expect(isTransportFailureObserverOutput(REPORTED_429_REPLY)).toBe(false);
+    expect(isTransportFailureObserverOutput('API Error: 429 Too Many Requests')).toBe(false);
+  });
+
+  it('does not treat a 429 or rate-limit wording in ordinary prose, a file count, or XML as a rate limit', () => {
+    expect(isRateLimitedObserverOutput('You have 429 files to review')).toBe(false);
+    expect(isRateLimitedObserverOutput('No observations to record.')).toBe(false);
+    expect(isRateLimitedObserverOutput('API Error: 4290 records were imported')).toBe(false);
+    expect(
+      isRateLimitedObserverOutput(
+        'The retry notes mention status 429, but this batch completed with nothing new to store.',
+      ),
+    ).toBe(false);
+    expect(
+      isRateLimitedObserverOutput('The request was rate limited during testing; nothing new to record.'),
+    ).toBe(false);
+    expect(
+      isRateLimitedObserverOutput('Fixed the bug where the request was rate limited. Retry after the indicated delay.'),
+    ).toBe(false);
+    expect(
+      isRateLimitedObserverOutput('The request was rate limited. Logged nothing new for this batch.'),
+    ).toBe(false);
+    expect(
+      isRateLimitedObserverOutput(
+        'The request was rate limited. Its source could not be identified. Retry after the indicated delay. Then we fixed it.',
+      ),
+    ).toBe(false);
+    expect(
+      isRateLimitedObserverOutput(
+        '<observation><title>Request rejected (429)</title><narrative>The request was rate limited.</narrative></observation>',
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('isQuotaLimitedObserverOutput (continued)', () => {
   it('does not treat XML that mentions a limit as quota prose', () => {
     expect(
       isQuotaLimitedObserverOutput(
