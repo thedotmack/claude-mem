@@ -213,12 +213,14 @@ export class ServerService {
       authMode: compatAuthMode,
     }));
 
-    // #2552 — mount the Viewer UI static handler so the viewer loads on the
-    // server runtime. Registered AFTER the /v1 and compat API routes so the
-    // viewer's own API calls resolve against those; express.static only
-    // matches existing files and the `/` GET only matches the root, so this
-    // never shadows an API route.
-    server.registerRoutes(new ServerViewerRoutes());
+    // #2552 — mount the Viewer UI and the worker-shaped read endpoints it
+    // calls. Registered AFTER the /v1 and compat API routes; express.static
+    // only matches existing files and the viewer's own paths do not overlap
+    // /v1 or /api/sessions/*, so this never shadows an API route.
+    server.registerRoutes(new ServerViewerRoutes({
+      pool: this.graph.postgres.pool,
+      authMode: compatAuthMode,
+    }));
 
     server.finalizeRoutes();
 
