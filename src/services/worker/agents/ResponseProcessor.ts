@@ -9,6 +9,7 @@ import {
   isContextOverflowObserverOutput,
   isOrgDisabledSubscriptionObserverOutput,
   isQuotaLimitedObserverOutput,
+  isRateLimitedObserverOutput,
   isTransportFailureObserverOutput,
   previewOutput,
 } from '../../../sdk/output-classifier.js';
@@ -23,6 +24,7 @@ import { getWorkerPort } from '../../../shared/worker-utils.js';
 import { observerAuthScope, recordObserverFailure, recordObserverSuccess } from '../../../shared/observer-health.js';
 import { clearQuotaCooldown, routeAroundUnservableProviderIfLoaded } from '../../../shared/quota-cooldown.js';
 import { recycleObserverConversation } from '../session/recycle-conversation.js';
+import { OBSERVER_TEXT_RATE_LIMIT_ABORT_REASON } from '../session/abort-reason.js';
 import { clearRejectedOutput, recordRejectedOutput } from '../session/OutputRecovery.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
@@ -567,6 +569,7 @@ export async function processAgentResponse(
     !!text &&
     (isContextOverflowObserverOutput(text) ||
       isQuotaLimitedObserverOutput(text) ||
+      isRateLimitedObserverOutput(text) ||
       isAnthropicVerificationHoldObserverOutput(text) ||
       isAuthFailureObserverOutput(text) ||
       isTransportFailureObserverOutput(text));
@@ -608,6 +611,28 @@ export async function processAgentResponse(
 
       await sessionManager.resetProcessingToPending(session.sessionDbId);
       session.abortReason = 'quota:observer_text';
+      try {
+        session.abortController.abort();
+      } catch {
+        // best-effort; AbortController.abort() should not throw in normal use.
+      }
+      worker?.broadcastProcessingStatus?.();
+      return null;
+    }
+
+    // A 429 the CLI wrote as the reply (#5428). The provider never ran the
+    // batch, so confirming it would lose the work; it is a throttle, not a
+    // spent allowance, so it pauses under its own 'rate_limit' category and
+    // the runner books the short rate-limit window a thrown 429 gets.
+    if (isRateLimitedObserverOutput(text)) {
+      logger.warn('PARSER', `${agentName} returned a rate-limit reply — pausing generator and preserving queued batch`, {
+        sessionId: session.sessionDbId,
+        outputClass: 'prose',
+        preview: previewOutput(text),
+      });
+
+      await sessionManager.resetProcessingToPending(session.sessionDbId);
+      session.abortReason = OBSERVER_TEXT_RATE_LIMIT_ABORT_REASON;
       try {
         session.abortController.abort();
       } catch {

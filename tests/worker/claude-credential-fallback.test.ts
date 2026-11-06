@@ -6,6 +6,8 @@ import type { ActiveSession } from '../../src/services/worker-types.js';
 import { logger } from '../../src/utils/logger.js';
 import {
   QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+  RATE_LIMIT_RECHECK_COOLDOWN_MS,
+  resolveQuotaCooldownMs,
   clearQuotaCooldown,
   getQuotaCooldown,
   recordQuotaExhausted,
@@ -332,6 +334,34 @@ describe('Claude credential fallback: order and booking', () => {
 
     expect(getQuotaCooldown('claude')?.window).toBe(abortReason.split(':')[1]);
     expect(getQuotaCooldown('claude')?.auth).toBe(expectedAuth);
+  });
+
+  it.each([
+    ['no fallback configured', false],
+    ['a provider fallback that can serve', true],
+  ] as const)('books a 429 reply as the short rate-limit window, not the quota cooldown, with %s (#5428)', async (_label, withFallback) => {
+    if (withFallback) {
+      process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = 'gemini';
+      process.env.CLAUDE_MEM_GEMINI_API_KEY = 'gemini-key';
+    }
+    const session = makeSession();
+    // What ResponseProcessor leaves for a 429 written as the reply: the batch
+    // back in the queue and the run aborted without throwing.
+    const routes = buildRoutes(session, async (s) => {
+      s.abortReason = 'rate_limit:observer_text';
+      s.abortController.abort();
+    });
+
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+    await session.generatorPromise;
+    await nextTick();
+    clearTimeout(session.scheduledResumeTimer);
+
+    expect(getQuotaCooldown('claude')?.window).toBe('rate_limit');
+    expect(resolveQuotaCooldownMs(getQuotaCooldown('claude')?.window)).toBe(RATE_LIMIT_RECHECK_COOLDOWN_MS);
+    // With a fallback that can serve, the work moves there at once (the pause clears).
+    if (!withFallback) expect(session.pausedReason).toBe('rate_limit');
+    expect(readObserverHealth()?.lastErrorKind).toBe('rate_limit');
   });
 
   it.each([

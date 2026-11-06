@@ -168,18 +168,6 @@ export function isQuotaLimitedObserverOutput(raw: unknown): boolean {
     //   'API Error: 400 {"error":{…,"message":"Your credit balance is too low…"}}'
     /^(?:your )?credit balance is too low\b/.test(text) ||
     /^api error: 400\b.*\bcredit balance is too low\b/.test(text) ||
-    // Claude Code returns a 429 as the assistant reply instead of throwing
-    // (#5428). The status sits in the CLI envelope, or the gateway names the
-    // refusal in the reply itself:
-    //   "API Error: Request rejected (429) · The request was rate limited. …"
-    //   "API Error: 429 Too Many Requests"
-    // The status has to follow an API-error report at the start of the
-    // response. A count in ordinary prose ("You have 429 files to review")
-    // does not. The gateway sentence is matched on its own wording, which is
-    // how the same refusal arrives without a status code in the first 80
-    // characters.
-    /^api error\b.{0,80}\b429\b/.test(text) ||
-    /\bthe request was rate limited\b/.test(text) ||
     /\bsession limit\b/.test(text) ||
     /\bout of (?:usage )?credits\b/.test(text) ||
     /\/usage-credits\b/.test(text) ||
@@ -189,6 +177,42 @@ export function isQuotaLimitedObserverOutput(raw: unknown): boolean {
     /\b(reached|exceeded|exhausted)\b.*\bweekly\b.*\b(limit|quota)\b/.test(text) ||
     /\bsubscription\b.*\b(limit|quota)\b.*\b(reached|exceeded|exhausted|reset|resets|try again)\b/.test(text) ||
     /\b(rate limit|quota)\b.*\b(subscription|weekly|claude usage)\b.*\b(reached|exceeded|exhausted|reset|resets|try again)\b/.test(text)
+  );
+}
+
+/**
+ * Detect a provider rate limit (HTTP 429) that Claude Code returned as the
+ * assistant reply instead of throwing (#5428):
+ *   "API Error: Request rejected (429) · The request was rate limited. Its
+ *    source could not be identified. Retry after the indicated delay."
+ *   "API Error: 429 Too Many Requests"
+ *   'API Error: 429 {"type":"error","error":{"type":"rate_limit_error",…}}'
+ *
+ * A throttle is not a spent allowance, so it is kept apart from
+ * isQuotaLimitedObserverOutput: callers pause on the short rate-limit window
+ * instead of the quota one, exactly as a thrown 429 already does.
+ *
+ * Anchored at the start, like the other CLI envelopes: the 429 must be the
+ * status the "API Error" envelope reports, and the gateway sentence must open
+ * the reply and end where its own wording ends. "You have 429 files to review"
+ * and "The request was rate limited during testing; nothing new to record"
+ * are ordinary prose and stay unmatched, because a false match pauses the
+ * generator and requeues a batch the observer has already answered.
+ */
+export function isRateLimitedObserverOutput(raw: unknown): boolean {
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    return false;
+  }
+
+  if (/<(observation|summary)\b/i.test(raw) || /<skip_summary\b/i.test(raw)) {
+    return false;
+  }
+
+  const text = raw.toLowerCase().replace(/\s+/g, ' ').trim();
+
+  return (
+    /^api error:?\s*(?:request rejected\s*)?\(?429\)?(?=$|[\s·:{.,])/.test(text) ||
+    /^the request was rate limited\.(?:\s|$)/.test(text)
   );
 }
 
