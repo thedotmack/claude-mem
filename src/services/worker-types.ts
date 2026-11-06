@@ -99,6 +99,13 @@ export interface ActiveSession {
    */
   consecutiveResponseStalls?: number;
   /**
+   * Epoch ms at which the response-stall pacer spent its bounded resumes and
+   * scheduled none (#5405). Its buffered work is discarded at that moment, so
+   * nothing waits on it; cleared when any generator starts. Reported by
+   * /api/processing-status; nothing resumes on it.
+   */
+  stallResumesExhaustedAt?: number;
+  /**
    * Consecutive Claude generations whose SDK stream ended or broke without a
    * result ('transport:sdk_eof' / 'transport:sdk_stream'). Reported in
    * observer health once it reaches MAX_CONSECUTIVE_SDK_STREAM_EXITS; reset
@@ -136,7 +143,8 @@ export interface ActiveSession {
   paidSendBudget?: PaidSendBudget;
   /**
    * The delayed resume a response stall scheduled. Any generator start cancels
-   * it, so a stale timer never restarts a session a newer generation paused.
+   * it and session teardown clears it, so a stale timer never restarts a
+   * session a newer generation paused, or one that is gone.
    */
   stallResumeTimer?: ReturnType<typeof setTimeout>;
   /**
@@ -162,6 +170,15 @@ export interface ActiveSession {
   abortReason?: 'idle' | 'shutdown' | 'overflow' | 'restart-guard' | 'quota' | 'provider_switch' | string | null;
   /** Why buffered work was last parked after a generator exit. */
   pausedReason?: string | null;
+  /**
+   * When buffered work was last parked (the pausedReason moment, server
+   * clock). The resume sweep uses it as the before-side of a recovery proof:
+   * an observer store that succeeded after this moment proves an auth pause's
+   * cause is gone (#5377). Cleared together with pausedReason.
+   */
+  pausedAtMs?: number | null;
+  /** The provider, account and credential type captured before an auth pause; null when unknown. */
+  pausedAuthScope?: string | null;
   /**
    * Set when dispatch selects a provider other than the one the running
    * generator uses (the primary is back after a fallback, or settings

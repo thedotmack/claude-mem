@@ -25,7 +25,7 @@ export function readLedger(dir?: string): Record<string, any>;
 export function readCandidates(database: LedgerDatabase, options: { sinceEpoch?: number; conversationKeys?: string[] | null; fullAsks?: boolean; excludedPromptIds?: Set<number> | null }): any[];
 export function ledgerSignature(dir?: string): string;
 /** The decisions `apply` takes, merged into `stored` with projects and first asks read from the database; not written. */
-export function applyDecisions(stored: Record<string, any> | null, decisions: unknown, options: { database: LedgerDatabase; now?: number; excludedPromptIds?: Set<number> | null }): Record<string, any>;
+export function applyDecisions(stored: Record<string, any> | null, decisions: unknown, options: { database: LedgerDatabase; now?: number; excludedPromptIds?: Set<number> | null; enrichGroupIds?: string[] | null }): Record<string, any>;
 /** A judge's mid-band pick waiting for the owner's Join / Not this (request-judge.mjs). */
 export interface RequestSuggestion { conversationKey: string; requestId: string; requestTitle: string; confidence: number; evidence: string; judge: string; at: string | null }
 export function openSuggestions(ledger: Record<string, any> | null | undefined): RequestSuggestion[];

@@ -20,6 +20,7 @@ const { SessionRoutes } = await import('../../src/services/worker/http/routes/Se
  */
 const ENV_KEYS = [
   'CLAUDE_MEM_PROVIDER',
+  'CLAUDE_MEM_PROVIDER_BY_SOURCE',
   'CLAUDE_MEM_GEMINI_API_KEY',
   'CLAUDE_MEM_OPENROUTER_API_KEY',
   'CLAUDE_MEM_OPENROUTER_BASE_URL',
@@ -170,6 +171,65 @@ describe('quota fallback in SessionRoutes', () => {
   // The quota breaker is process-global; see overflow-recycle-resume.test.ts.
   afterAll(() => {
     resetQuotaCooldownsForTesting();
+  });
+
+  it('sends a session-less Telegram wrap-up to the provider its input source maps to', async () => {
+    pin({ CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_PROVIDER_BY_SOURCE: '{"codex":"codex"}' });
+    let formatter: ((input: any) => Promise<string>) | undefined;
+    const wrapupInput = { sessionDbId: 1, contentSessionId: 'c', project: 'p', platformSource: 'codex', summaryText: 's' };
+    new SessionRoutes(
+      { getSession: () => undefined, setTelegramWrapupFormatter: (fn: any) => { formatter = fn; } } as any,
+      {} as any,
+      { formatTelegramWrapup: async () => 'claude' } as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      { formatTelegramWrapup: async () => 'codex' } as any,
+    );
+
+    expect(await formatter!(wrapupInput)).toBe('codex');
+    expect(await formatter!({ ...wrapupInput, platformSource: 'claude' })).toBe('claude');
+  });
+
+  it('paces the sweep per session on the provider its source maps to', async () => {
+    pin({
+      CLAUDE_MEM_PROVIDER: 'gemini',
+      CLAUDE_MEM_GEMINI_API_KEY: 'gemini-test-key',
+      CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: 'off',
+      CLAUDE_MEM_PROVIDER_BY_SOURCE: '{"claude":"claude"}',
+    });
+    const session = makeSession();
+    session.pausedReason = 'quota';
+    let claudeStarts = 0;
+    const { routes } = buildRoutes(session, {
+      gemini: async () => {},
+      claude: async () => { claudeStarts += 1; await hang(); },
+    });
+
+    // The global provider is held, but this session's own provider is healthy.
+    recordQuotaExhausted('gemini', 'Daily limit reached');
+    expect(await sweep(routes)).toBe(1);
+    expect(claudeStarts).toBe(1);
+  });
+
+  it('holds the sweep when the mapped provider is held, though the global one is healthy', async () => {
+    pin({
+      CLAUDE_MEM_PROVIDER: 'gemini',
+      CLAUDE_MEM_GEMINI_API_KEY: 'gemini-test-key',
+      CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: 'off',
+      CLAUDE_MEM_PROVIDER_BY_SOURCE: '{"claude":"claude"}',
+    });
+    const session = makeSession();
+    session.pausedReason = 'quota';
+    const { routes } = buildRoutes(session, {
+      gemini: async () => {},
+      claude: async () => { await hang(); },
+    });
+
+    recordQuotaExhausted('claude', 'Weekly limit reached', 'seven_day');
+    await expectNoResume(routes);
   });
 
   it('resumes work paused by a quota exit onto the fallback on the next sweep, with no further hook event', async () => {

@@ -6,13 +6,15 @@ import type { ActiveSession } from '../../src/services/worker-types.js';
 import { logger } from '../../src/utils/logger.js';
 import {
   QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+  RATE_LIMIT_RECHECK_COOLDOWN_MS,
+  resolveQuotaCooldownMs,
   clearQuotaCooldown,
   getQuotaCooldown,
   recordQuotaExhausted,
   resetQuotaCooldownsForTesting,
 } from '../../src/shared/quota-cooldown.js';
 import { resetDependencyStatusesForTesting } from '../../src/shared/dependency-health.js';
-import { claudeQuotaStandIn, setClaudeFallbackReadinessForTesting } from '../../src/shared/claude-fallback-readiness.js';
+import { claudeQuotaStandIn, hasClaudeSubscriptionLogin, setClaudeFallbackReadinessForTesting } from '../../src/shared/claude-fallback-readiness.js';
 import { SessionManager } from '../../src/services/worker/SessionManager.js';
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import { ClassifiedProviderError } from '../../src/services/worker/provider-errors.js';
@@ -335,6 +337,34 @@ describe('Claude credential fallback: order and booking', () => {
   });
 
   it.each([
+    ['no fallback configured', false],
+    ['a provider fallback that can serve', true],
+  ] as const)('books a 429 reply as the short rate-limit window, not the quota cooldown, with %s (#5428)', async (_label, withFallback) => {
+    if (withFallback) {
+      process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = 'gemini';
+      process.env.CLAUDE_MEM_GEMINI_API_KEY = 'gemini-key';
+    }
+    const session = makeSession();
+    // What ResponseProcessor leaves for a 429 written as the reply: the batch
+    // back in the queue and the run aborted without throwing.
+    const routes = buildRoutes(session, async (s) => {
+      s.abortReason = 'rate_limit:observer_text';
+      s.abortController.abort();
+    });
+
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+    await session.generatorPromise;
+    await nextTick();
+    clearTimeout(session.scheduledResumeTimer);
+
+    expect(getQuotaCooldown('claude')?.window).toBe('rate_limit');
+    expect(resolveQuotaCooldownMs(getQuotaCooldown('claude')?.window)).toBe(RATE_LIMIT_RECHECK_COOLDOWN_MS);
+    // With a fallback that can serve, the work moves there at once (the pause clears).
+    if (!withFallback) expect(session.pausedReason).toBe('rate_limit');
+    expect(readObserverHealth()?.lastErrorKind).toBe('rate_limit');
+  });
+
+  it.each([
     ['subscription', 'api-key', () => signIn(), 'memory is running on your Claude Code subscription login'],
     ['api-key', 'subscription', () => setFallbackKey(), 'memory is running on your fallback API key (ANTHROPIC_FALLBACK_API_KEY)'],
   ] as const)('tells the session start which credential memory runs on (%s), until both are spent', (target, held, arrange, notice) => {
@@ -360,6 +390,19 @@ describe('Claude credential fallback: readiness', () => {
     process.env.CLAUDE_CODE_OAUTH_TOKEN = 'oauth-from-env';
     recordQuotaExhausted('claude', SPENT_KEY, undefined, undefined, undefined, 'api-key');
     expect(claudeQuotaStandIn()).toBe('subscription');
+  });
+
+  it('counts a long-lived CLAUDE_CODE_OAUTH_TOKEN in ~/.claude-mem/.env (no login files) as a subscription login', () => {
+    expect(hasClaudeSubscriptionLogin()).toBe(false);
+    writeFileSync(join(tempDir, '.env'), 'CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-long-lived\n', { mode: 0o600 });
+    expect(hasClaudeSubscriptionLogin()).toBe(true);
+  });
+
+  it('does not count a CLAUDE_CODE_OAUTH_TOKEN JWT in ~/.claude-mem/.env that is past its exp claim', () => {
+    const part = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url');
+    const expiredJwt = `${part({ alg: 'none' })}.${part({ exp: Math.floor(Date.now() / 1000) - 60 })}.sig`;
+    writeFileSync(join(tempDir, '.env'), `CLAUDE_CODE_OAUTH_TOKEN=${expiredJwt}\n`, { mode: 0o600 });
+    expect(hasClaudeSubscriptionLogin()).toBe(false);
   });
 });
 

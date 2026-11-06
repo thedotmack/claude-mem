@@ -21,6 +21,7 @@ import { isProjectExcluded } from '../../utils/project-filter.js';
 import { readStaleMarker } from '../../shared/oauth-token.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { proTrialLine } from '../../shared/pro-promo.js';
+import { providersMappedBySource } from '../../shared/provider-by-source.js';
 import { memoryInstructionsForRuntime } from '../../shared/memory-instructions.js';
 import {
   cmemGatewayRole,
@@ -34,6 +35,7 @@ import type { ContextInput } from '../../services/context/types.js';
 import { serverSessionStartBudgetMs } from '../../shared/host-hook-limits.js';
 import { contextCacheKeys, fillContextPlaceholders, readContextCache } from '../../shared/context-cache.js';
 import { clearTimelinePending } from '../../shared/codex-compaction-gate.js';
+import { projectsQueryString } from '../../shared/project-list.js';
 import { CONTEXT_OUTPUT_LIMIT } from '../../services/context/ContextBudget.js';
 import {
   fetchTeamBrief,
@@ -217,9 +219,12 @@ export async function resolveSessionStartProjects(
 
 export const contextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
+    // Devin runs this on PostCompaction too, and drops a reply whose
+    // hookEventName is not the event that fired.
+    const hookEventName = input.hookEventName === 'PostCompaction' ? 'PostCompaction' : 'SessionStart';
     const emptyResult: HookResult = {
       workStateTelemetry: 'measure',
-      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+      hookSpecificOutput: { hookEventName, additionalContext: '' },
       exitCode: HOOK_EXIT_CODES.SUCCESS,
     };
 
@@ -276,7 +281,7 @@ export const contextHandler: EventHandler = {
     const serverRuntime = runtime.runtime === 'server' ? runtime : null;
 
     const scopeProjects = await resolveSessionStartProjects(settings, context.allProjects, runtime.runtime);
-    const projectsParam = scopeProjects.join(',');
+    const projectsQuery = projectsQueryString(scopeProjects);
     const normalizedPlatformSource = input.platform
       ? normalizePlatformSource(input.platform)
       : undefined;
@@ -289,7 +294,7 @@ export const contextHandler: EventHandler = {
     // one, so the worker gets the session id and SessionStart is answered live.
     const showLastMessage = settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE === 'true';
     const sessionParam = showLastMessage && input.sessionId ? `&sessionId=${encodeURIComponent(input.sessionId)}` : '';
-    const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}${platformSourceParam}&cwd=${encodeURIComponent(cwd)}${sessionParam}`;
+    const apiPath = `/api/context/inject?${projectsQuery}${platformSourceParam}&cwd=${encodeURIComponent(cwd)}${sessionParam}`;
     const colorApiPath = input.platform === 'claude-code' ? `${apiPath}&colors=true` : apiPath;
 
     const serverRender = serverRuntime
@@ -367,10 +372,17 @@ export const contextHandler: EventHandler = {
     // a previous worker spawn detected an expired keychain entry.
     // Other observer providers do not use Claude credentials. Keep the hint
     // for a configured Claude route, including the gateway's active fallback.
-    const gatewayRole = cmemGatewayRole(settings);
+    // Any source can be mapped to its own provider, so a mapped route counts
+    // like the global one: a mapped gateway is memory's provider for its
+    // sessions, and its expiry notice below must still reach the user.
+    const mappedProviders = providersMappedBySource(settings.CLAUDE_MEM_PROVIDER_BY_SOURCE);
+    const gatewayRole = cmemGatewayRole(
+      mappedProviders.includes('openrouter') ? { ...settings, CLAUDE_MEM_PROVIDER: 'openrouter' } : settings,
+    );
     // Empty is the default fallback, the Anthropic plan (provider-dispatch's readQuotaFallbackProvider).
     const fallbackSetting = String(settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER ?? '').trim();
     const usesClaudeCredentials = (settings.CLAUDE_MEM_PROVIDER || 'claude') === 'claude'
+      || mappedProviders.includes('claude')
       || fallbackSetting === 'claude' || fallbackSetting === ''
       || (gatewayRole === 'primary' && Boolean(settings.CLAUDE_MEM_PRO_FALLBACK_AT));
     const staleReason = usesClaudeCredentials ? readStaleMarker() : null;
@@ -469,7 +481,7 @@ export const contextHandler: EventHandler = {
     return {
       workStateTelemetry: 'measure',
       hookSpecificOutput: {
-        hookEventName: 'SessionStart',
+        hookEventName,
         additionalContext
       },
       systemMessage

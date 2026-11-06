@@ -27,10 +27,11 @@ import { pageMatchingRows } from './stream-rows.js';
 /**
  * Code-point ranges of the scripts FTS5's unicode61 tokenizer cannot segment: Thai and Lao,
  * Myanmar, Khmer, Hiragana/Katakana, Bopomofo and Hangul compatibility jamo, the CJK
- * ideograph blocks, and Hangul syllables. See {@link SessionSearch.UNSEGMENTED_SCRIPT}.
+ * ideographs (including supplementary planes), Katakana extensions and halfwidth
+ * Katakana, and Hangul syllables. See {@link SessionSearch.UNSEGMENTED_SCRIPT}.
  */
 const UNSEGMENTED_SCRIPT_RANGES =
-  '\\u0E00-\\u0EFF\\u1000-\\u109F\\u1780-\\u17FF\\u3040-\\u30FF\\u3100-\\u318F\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uAC00-\\uD7AF\\uF900-\\uFAFF';
+  '\\p{Script=Han}\\u31F0-\\u31FF\\uFF66-\\uFF9F\\u0E00-\\u0EFF\\u1000-\\u109F\\u1780-\\u17FF\\u3040-\\u30FF\\u3100-\\u318F\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uAC00-\\uD7AF\\uF900-\\uFAFF';
 
 /**
  * The sync triggers each external-content index depends on. SQLite drops a
@@ -412,7 +413,7 @@ export class SessionSearch {
    * Thai, Lao, Myanmar and Khmer write words without spaces too, so a run of them folds
    * into one token the same way (`ภาษาไทย` inside a longer Thai run -> 0 rows).
    */
-  private static readonly UNSEGMENTED_SCRIPT = new RegExp(`[${UNSEGMENTED_SCRIPT_RANGES}]`);
+  private static readonly UNSEGMENTED_SCRIPT = new RegExp(`[${UNSEGMENTED_SCRIPT_RANGES}]`, 'u');
 
   /**
    * Split the query into the runs the index cannot segment and the runs it can, so a
@@ -421,7 +422,7 @@ export class SessionSearch {
    * adjacent, which is why mixed queries returned almost nothing (#3801 / #3982).
    */
   private static readonly UNSEGMENTED_RUN =
-    new RegExp(`[${UNSEGMENTED_SCRIPT_RANGES}]+|[^\\s${UNSEGMENTED_SCRIPT_RANGES}]+`, 'g');
+    new RegExp(`[${UNSEGMENTED_SCRIPT_RANGES}]+|[^\\s${UNSEGMENTED_SCRIPT_RANGES}]+`, 'gu');
 
   /**
    * The most distinct terms the substring predicate requires. It adds one LIKE group per
@@ -980,6 +981,11 @@ export class SessionSearch {
    * them.
    */
   private static filePathPatterns(filePath: string, isFolder: boolean): string[] {
+    // A dot names the relative root, not a character required in its filenames.
+    // Let the direct-child predicate select root files (including Makefile and
+    // LICENSE) before pagination, just as it does for other folder candidates.
+    if (isFolder && normalizePath(filePath) === '.') return ['%'];
+
     const escape = (value: string) => value.replace(/[\\%_]/g, '\\$&');
     const variants = [filePath, normalizePath(filePath), normalizePath(filePath).replaceAll('/', '\\')];
     const patterns = [...new Set(variants)].map(value => `%${escape(value)}%`);
@@ -991,9 +997,7 @@ export class SessionSearch {
     for (let start = firstRelativeSegment; start < segments.length; start += 1) {
       const trailing = segments.slice(start);
       patterns.push(`${escape(trailing.join('/') + '/')}%`);
-      if (filePath.includes('\\')) {
-        patterns.push(`${escape(trailing.join('\\') + '\\')}%`);
-      }
+      patterns.push(`${escape(trailing.join('\\') + '\\')}%`);
     }
     return patterns;
   }

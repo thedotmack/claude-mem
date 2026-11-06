@@ -213,6 +213,11 @@ describe('built local MCP Dumb search stdio integration', () => {
         expect(denied.isError).toBe(true);
       }
       expect(localReads).toBe(0);
+      // The server runtime no longer advertises dumb_search (covered by
+      // tests/servers/mcp-runtime-tool-visibility.test.ts against the source).
+      // This suite drives the committed plugin/scripts/mcp-server.cjs, which is
+      // rebuilt at release, so the listing is not asserted here. A direct call
+      // still explains why the tool is unavailable.
       const unavailable = await client.callTool({ name: 'dumb_search', arguments: { query: 'decision' } }) as CallToolResult;
       expect(unavailable.isError).toBe(true);
       expect(modelText(unavailable)).toContain('hosted claude-mem MCP');

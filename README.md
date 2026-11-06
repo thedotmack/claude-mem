@@ -59,7 +59,7 @@
     <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/version-15.9.0-green.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-15.10.1-green.svg" alt="Version">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg" alt="Node">
@@ -129,6 +129,8 @@
 ---
 
 ## Quick Start
+
+**Installing for someone as an AI agent?** Run `npx claude-mem install --runtime worker` on their computer in an interactive terminal (enable PTY in your shell tool). It first asks in the terminal which agents to set up and, for Claude Code, whether to disable native auto-memory (and whether to overwrite an existing install). Relay each question to the user and type their answer, or pass `--ide <id>` to skip the first one. Keep the installer running. When it prints **Continue setup in your browser**, open that URL in the user's browser if the installer hasn't already opened it. Let the user go through setup and make their own choices, including the usage-analytics question the installer may ask at the end. If you can't run an interactive terminal on their computer, give them the command to run locally.
 
 Install claude-mem for Grok Bot:
 
@@ -373,16 +375,19 @@ ls ~/.claude/plugins/marketplaces/thedotmack/plugin/modes/
 | Mode | Description |
 |------------|-------------------------|
 | `code` | Default English mode |
-| `code--zh` | Simplified Chinese mode |
-| `code--ja` | Japanese mode |
+| `code--chill` | Records fewer observations, keeping only what would be painful to rediscover |
+| `code--[lang]` | Same as `code`, with observations and summaries written in another language |
 
-Language-specific modes follow the pattern `code--[lang]` where `[lang]` is the ISO 639-1 language code (e.g., `zh` for Chinese, `ja` for Japanese, `es` for Spanish).
+Built-in language codes: `ar`, `bn`, `cs`, `da`, `de`, `el`, `es`, `fi`, `fr`, `he`, `hi`, `hu`, `id`, `it`, `ja`, `ko`, `nl`, `no`, `pl`, `pt-br`, `ro`, `ru`, `sv`, `th`, `tr`, `uk`, `ur`, `vi`, `zh`. For example, `code--ko` writes memories in Korean.
 
-> Note: `code--zh` (Simplified Chinese) is already built-in — no additional installation or plugin update is required.
+See [Modes](https://docs.claude-mem.ai/modes) for each language's name, the email investigation mode, and custom modes.
+
+> Note: All of these modes are built in. No additional installation or plugin update is required.
 
 #### After Changing Mode
 
 Restart Claude Code to apply the new mode configuration.
+
 ---
 
 ## Development

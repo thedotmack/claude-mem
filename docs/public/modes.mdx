@@ -127,6 +127,8 @@ Inherits all behavior from Code Mode but instructs Claude to generate **all** me
 | **Ukrainian** | `code--uk` | Українська |
 | **Vietnamese** | `code--vi` | Tiếng Việt |
 
+To use Chill in another language, chain both IDs: `code--chill--ko` records only what Chill keeps and writes it in Korean. See [Mode Inheritance](#mode-inheritance).
+
 ### Email Investigation Mode
 A specialized mode for analyzing email dumps (e.g., FOIA releases, corporate archives). Focuses on identifying entities, relationships, timeline events, and key topics.
 
@@ -148,3 +150,10 @@ The system supports inheritance using the `--` separator. For example, `code--es
 3.  Merge Child into Parent (Child overrides).
 
 This allows for lightweight "remix" modes that only change specific aspects (like the language prompt) while keeping the core definitions intact.
+
+A mode ID can chain several overrides. Each segment after the parent names one `parent--segment` file, merged in order from left to right. For example, `code--chill--ko` means:
+1.  Load `code` (Parent) configuration.
+2.  Merge `code--chill` into it.
+3.  Merge `code--ko` into the result.
+
+When two overrides set the same key, the one further right wins. Chill and the language modes change different prompts, so `code--chill--ko` and `code--ko--chill` behave the same. Your own overrides chain the same way, for example `code--chill--architecture-practice`. If any file in the chain is missing, Claude-Mem logs it and falls back to `code`.

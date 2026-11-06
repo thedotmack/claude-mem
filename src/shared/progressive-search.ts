@@ -94,10 +94,10 @@ function queryOptions(input: ProgressiveSearchInput): SearchOptions {
   }
   let project: string | undefined;
   if (input.project !== undefined) {
-    if (typeof input.project !== "string" || !input.project.trim() || utf8Length(input.project.trim()) > 256) {
+    if (typeof input.project !== "string" || !input.project.trim() || utf8Length(input.project) > 256) {
       fail("invalid_input", "project must be nonempty and at most 256 UTF-8 bytes.");
     }
-    project = input.project.trim();
+    project = input.project;
   }
   return {
     query, ...(project === undefined ? {} : { project }),
@@ -136,6 +136,12 @@ function relevance(row: MemoryIndexRow, words: string[]): number {
   const tokens = title.match(/[\p{L}\p{N}]+/gu) ?? [];
   return words.reduce((score, word) => score + (tokens.some(token => token === word || (word.length >= 5 && token.length >= 5 && token.slice(0, 5) === word.slice(0, 5))) ? 1 : 0), 0);
 }
+/** Whether title ranking can select this row for a detail fetch. */
+export function isMemoryDetailCandidate(row: MemoryIndexRow, query: string): boolean {
+  const candidate = indexRows([row], 1)[0];
+  return candidate !== undefined && candidate.kind !== "prompt" && relevance(candidate, terms(query)) > 0;
+}
+
 function ranked(rows: MemoryIndexRow[], query: string, maximum: number): MemoryIndexRow[] {
   const words = terms(query);
   return rows.map((row, position) => ({ row, position, score: relevance(row, words) }))

@@ -7,6 +7,7 @@ import { SessionStore } from '../../../../src/services/sqlite/SessionStore.js';
 import { SessionRoutes } from '../../../../src/services/worker/http/routes/SessionRoutes.js';
 import { SessionManager } from '../../../../src/services/worker/SessionManager.js';
 import { setIngestContext } from '../../../../src/services/worker/http/shared.js';
+import { onContextInvalidation } from '../../../../src/shared/context-invalidation.js';
 
 async function createRealSessionFixture() {
   const dir = mkdtempSync(join(tmpdir(), 'cmem-native-http-'));
@@ -69,6 +70,13 @@ async function createRealSessionFixture() {
 describe('native prompt init HTTP contract', () => {
   it('acknowledges native retries, preserves repeated equal turns, and validates IDs and conflicting bodies', async () => {
     const store = new SessionStore(':memory:', { syncOpsEnabled: false });
+    const promptWrites: string[] = [];
+    const unsubscribe = onContextInvalidation(event => {
+      if (event.changes?.kinds.includes('prompt')) {
+        expect(store.db.inTransaction).toBe(false);
+        promptWrites.push(event.reason);
+      }
+    });
     const active = new Map<number, any>();
     const manager = {
       getSession: (id: number) => active.get(id),
@@ -101,6 +109,7 @@ describe('native prompt init HTTP contract', () => {
       const base = { contentSessionId: 'real-session', project: 'fixture', prompt: 'repeat me', platformSource: 'hermes' };
       const first = await init({ ...base, nativePromptId: 'native-1' });
       const second = await init({ ...base, nativePromptId: 'native-2' });
+      expect(promptWrites).toEqual(['saveNativeUserPrompt', 'saveNativeUserPrompt']);
       expect(first.body.nativePromptId).toBe('native-1');
       expect(first.body.nativePromptCurrent).toBe(true);
       expect(second.body.nativePromptCurrent).toBe(true);
@@ -112,6 +121,7 @@ describe('native prompt init HTTP contract', () => {
         expect((await init({ ...base, nativePromptId })).status).toBe(400);
       }
       const other = await init({ ...base, contentSessionId: 'another-session', nativePromptId: 'native-1' });
+      expect(promptWrites).toHaveLength(3);
       expect(other.body.skipped).toBe(false);
       expect(other.body.sessionDbId).not.toBe(first.body.sessionDbId);
       const privateTurn = await init({ ...base, prompt: '<private>hidden</private>', nativePromptId: 'private-turn' });
@@ -124,7 +134,9 @@ describe('native prompt init HTTP contract', () => {
       const legacyRetry = await init({ ...base, prompt: 'legacy text' });
       expect(legacyRetry.body.reason).toBe('duplicate');
       expect(legacyRetry.body.promptNumber).toBe(legacy.body.promptNumber);
+      expect(promptWrites).toEqual(['saveNativeUserPrompt', 'saveNativeUserPrompt', 'saveNativeUserPrompt', 'saveNativeUserPrompt', 'saveUserPrompt']);
     } finally {
+      unsubscribe();
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
       store.close();
     }

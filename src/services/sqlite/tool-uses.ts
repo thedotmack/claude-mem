@@ -305,11 +305,25 @@ function mapPlatformFilter(platformSource: string | undefined): { clause: string
 }
 
 /**
+ * Default row ceiling for `getToolUsesByIds` when the caller omits `limit`.
+ *
+ * The route caps the id array, but `tool_use_id` is only unique per
+ * `(content_session_id, tool_use_id)` — `upsertToolUse` stores the same id under
+ * a new session as a distinct row — so the id cap alone does not bound the row
+ * count. An omitted `limit` must not mean "every matching row", or a single
+ * accepted id can still page hundreds of raw payloads.
+ */
+export const TOOL_USES_BATCH_DEFAULT_ROWS = 100;
+
+/**
  * Layer-4 fetch: full tool bodies for an explicitly filtered set of ids.
  *
  * Accepts BOTH numeric `tool_uses.id` (what `queryToolUses` / the search index
  * hand back) and string `tool_use_id` (what a transcript or an observation ref
  * carries), because callers legitimately hold either one.
+ *
+ * The result is always bounded: an explicit `limit` wins, and an omitted `limit`
+ * falls back to `TOOL_USES_BATCH_DEFAULT_ROWS` rather than returning every row.
  */
 export function getToolUsesByIds(
   db: Database,
@@ -361,13 +375,13 @@ export function getToolUsesByIds(
     params.push(platform.param);
   }
 
-  const limitClause = options.limit && options.limit > 0 ? `LIMIT ${Math.floor(options.limit)}` : '';
+  const rowLimit = options.limit && options.limit > 0 ? Math.floor(options.limit) : TOOL_USES_BATCH_DEFAULT_ROWS;
 
   return db.prepare(`
     SELECT * FROM tool_uses
     WHERE ${conditions.join(' AND ')}
     ORDER BY created_at_epoch DESC
-    ${limitClause}
+    LIMIT ${rowLimit}
   `).all(...params) as ToolUseRow[];
 }
 

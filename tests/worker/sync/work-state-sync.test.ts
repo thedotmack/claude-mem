@@ -25,6 +25,7 @@ import { SyncApply, type SyncOp } from '../../../src/services/sync/SyncApply.js'
 import { SyncClient, decodeChanges } from '../../../src/services/sync/SyncClient.js';
 import { buildContentOperation, parseCanonicalOperation, stableDocumentId } from '../../../src/services/sync/CanonicalContent.js';
 import { renderWorkStateLines } from '../../../src/services/context/sections/WorkStateRenderer.js';
+import { onContextInvalidation } from '../../../src/shared/context-invalidation.js';
 
 const SELF = 'device-fixture';
 const REMOTE = 'device-a';
@@ -175,6 +176,21 @@ describe('work_state cloud sync', () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
+  it('announces committed work-state kinds and lists without triggering unrelated rule rebuilds', () => {
+    const observed: unknown[] = [];
+    const stop = onContextInvalidation(event => {
+      if (event.reason !== 'SyncApply.applyOps') return;
+      expect(db.inTransaction).toBe(false);
+      expect(db.query('SELECT COUNT(*) AS n FROM work_state_entries').get()).toEqual({ n: 1 });
+      observed.push(event.changes);
+    });
+    try {
+      const apply = new SyncApply(db, { deviceId: SELF, now: () => FIXED_NOW });
+      expect(apply.applyOps([workStateOp('rule', { task: 'Rule: one', then: 'Keep source evidence.' }, { listName: 'my-rules' })]).applied).toBe(1);
+      expect(observed).toEqual([{ kinds: ['work_state'], workStateLists: ['my-rules'] }]);
+    } finally { stop(); }
+  });
+
   it('gives the table its sync columns (v66) and replays rows by write clock, not rowid', () => {
     const columns = (db.query('PRAGMA table_info(work_state_entries)').all() as Array<{ name: string }>).map(column => column.name);
     expect(columns).toEqual(expect.arrayContaining(['synced_at', 'origin_device_id', 'origin_local_id', 'sync_rev']));
@@ -182,9 +198,11 @@ describe('work_state cloud sync', () => {
 
     // A row pulled later from another device carries an earlier write clock.
     store.appendWorkStateEntry({ project: 'proj-x', listName: 'release', fields: { task: 'publish', status: 'doing' }, createdAtEpoch: 2_000 });
+    // Plain 1000 in the SQL: digit separators need SQLite 3.46+, and Bun on
+    // macOS uses the system SQLite (3.43 on macOS 15).
     db.prepare(`
       INSERT INTO work_state_entries (project, list_name, fields, created_at, created_at_epoch, synced_at, origin_device_id, origin_local_id)
-      VALUES ('proj-x', 'release', '{"task":"publish","status":"todo"}', ?, 1_000, 5, ?, '9')
+      VALUES ('proj-x', 'release', '{"task":"publish","status":"todo"}', ?, 1000, 5, ?, '9')
     `).run(new Date(1_000).toISOString(), REMOTE);
     const entries = store.getWorkStateEntries(['proj-x']);
     expect(entries.map(entry => entry.created_at_epoch)).toEqual([1_000, 2_000]);

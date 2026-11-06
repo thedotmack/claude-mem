@@ -7,13 +7,65 @@ import { CONTEXT_PLACEHOLDER_NONCE } from '../../shared/context-cache.js';
 
 const MAX_PENDING_READS = 64;
 
-type PendingRead = { resolve(value: unknown): void; reject(error: Error): void };
+/**
+ * A read with no reply by this deadline is a hung context reader (#5374).
+ * The number is a margin over a measurement, not a provider limit: the slowest
+ * read measured on a large database is a cold timeline query at 42 s (#4938).
+ * The reader answers one message at a time and this clock starts when a read
+ * is queued, so 120 s covers this read plus one as slow ahead of it, with margin.
+ * SQLite's busy wait (SQLITE_BUSY_TIMEOUT_MS, 5 s) fits well inside it.
+ */
+export const CONTEXT_READ_REQUEST_TIMEOUT_MS = 120_000;
+
+/**
+ * close() and hung-reader retirement stop waiting for terminate() after this.
+ * A healthy reader closed in 15 ms at most (measured: 20 open-read-close cycles
+ * on Bun 1.4.4), while one stuck in native SQLite code may never finish (#5374).
+ * Shutdown runs this before closing the database, all inside the 10 s base
+ * WORKER_GRACEFUL_SHUTDOWN_DEADLINE_BASE_MS, so a stuck reader takes at most a
+ * fifth of that deadline.
+ */
+export const CONTEXT_READ_TERMINATE_TIMEOUT_MS = 2_000;
+
+type PendingRead = {
+  resolve(value: unknown): void;
+  reject(error: Error): void;
+  timer: ReturnType<typeof setTimeout>;
+};
+
+interface ContextReadWorkerHandle {
+  postMessage(message: ContextReadRequest): void;
+  on(event: 'message', listener: (reply: ContextReadReply) => void): void;
+  on(event: 'error', listener: (error: Error) => void): void;
+  on(event: 'exit', listener: (code: number) => void): void;
+  ref(): void;
+  unref(): void;
+  terminate(): Promise<number>;
+}
+
+function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
+  const unref = (timer as { unref?: () => void }).unref;
+  if (typeof unref === 'function') unref.call(timer);
+}
 
 export class ContextReadWorkerClient {
-  private worker: Worker | null = null;
+  private worker: ContextReadWorkerHandle | null = null;
   private readonly pending = new Map<number, PendingRead>();
   private nextId = 0;
   private closed = false;
+  private readonly requestTimeoutMs: number;
+  private readonly terminateTimeoutMs: number;
+  private readonly openWorker: () => ContextReadWorkerHandle;
+
+  constructor(options: {
+    requestTimeoutMs?: number;
+    terminateTimeoutMs?: number;
+    createWorker?: () => ContextReadWorkerHandle;
+  } = {}) {
+    this.requestTimeoutMs = options.requestTimeoutMs ?? CONTEXT_READ_REQUEST_TIMEOUT_MS;
+    this.terminateTimeoutMs = options.terminateTimeoutMs ?? CONTEXT_READ_TERMINATE_TIMEOUT_MS;
+    this.openWorker = options.createWorker ?? (() => this.spawnWorker());
+  }
 
   async render(request: ContextRenderRequest): Promise<ContextReadResult> {
     return this.request('render', request);
@@ -52,23 +104,21 @@ export class ContextReadWorkerClient {
     const worker = this.worker;
     this.worker = null;
     this.rejectPending(new Error('Context reader closed'));
-    if (worker) await worker.terminate();
+    if (!worker) return;
+    worker.unref();
+    await this.boundedTerminate(worker);
   }
 
-  private getWorker(): Worker {
+  private getWorker(): ContextReadWorkerHandle {
     if (this.closed) throw new Error('Context reader closed');
     if (this.worker) return this.worker;
-    const candidates = ['context-read-worker.ts', 'context-read-worker.cjs']
-      .map(name => new URL(name, import.meta.url));
-    // Standalone builds embed this entrypoint under its emitted JavaScript name.
-    const entry = candidates.find(candidate => existsSync(candidate))
-      ?? new URL('./context-read-worker.js', import.meta.url);
-    const worker = new Worker(entry, { workerData: { contextPlaceholderNonce: CONTEXT_PLACEHOLDER_NONCE } });
+    const worker = this.openWorker();
     this.worker = worker;
     worker.on('message', (reply: ContextReadReply) => {
       const request = this.pending.get(reply.id);
       if (!request) return;
       this.pending.delete(reply.id);
+      clearTimeout(request.timer);
       if (reply.ok) request.resolve(reply.result);
       else request.reject(Object.assign(new Error(reply.error.message), { name: reply.error.name }));
       if (this.pending.size === 0) worker.unref();
@@ -80,6 +130,15 @@ export class ContextReadWorkerClient {
     return worker;
   }
 
+  private spawnWorker(): ContextReadWorkerHandle {
+    const candidates = ['context-read-worker.ts', 'context-read-worker.cjs']
+      .map(name => new URL(name, import.meta.url));
+    // Standalone builds embed this entrypoint under its emitted JavaScript name.
+    const entry = candidates.find(candidate => existsSync(candidate))
+      ?? new URL('./context-read-worker.js', import.meta.url);
+    return new Worker(entry, { workerData: { contextPlaceholderNonce: CONTEXT_PLACEHOLDER_NONCE } });
+  }
+
   private request<Method extends keyof ContextReadMethods>(
     method: Method,
     input: ContextReadMethods[Method]['input'],
@@ -88,27 +147,70 @@ export class ContextReadWorkerClient {
     const worker = this.getWorker();
     const id = ++this.nextId;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve: value => resolve(value as ContextReadMethods[Method]['result']), reject });
+      const pending: PendingRead = {
+        resolve: value => resolve(value as ContextReadMethods[Method]['result']),
+        reject,
+        timer: setTimeout(() => {
+          if (this.pending.get(id) !== pending) return;
+          this.retireWorker(worker, new Error(`Context reader timed out after ${this.requestTimeoutMs}ms`));
+        }, this.requestTimeoutMs),
+      };
+      unrefTimer(pending.timer);
+      this.pending.set(id, pending);
       worker.ref();
       try {
         worker.postMessage({ id, method, input } as ContextReadRequest);
       } catch (error) {
         this.pending.delete(id);
+        clearTimeout(pending.timer);
         if (this.pending.size === 0) worker.unref();
-        reject(error);
+        reject(error instanceof Error ? error : new Error(String(error)));
       }
     });
   }
 
-  private failWorker(worker: Worker, error: Error): void {
-    if (this.worker !== worker) return;
+  private failWorker(worker: ContextReadWorkerHandle, error: Error): void {
+    this.detachWorker(worker, error);
+  }
+
+  private retireWorker(worker: ContextReadWorkerHandle, error: Error): void {
+    if (!this.detachWorker(worker, error)) return;
+    worker.unref();
+    void this.boundedTerminate(worker);
+  }
+
+  /** Drop this thread from the client. A later read opens a replacement. */
+  private detachWorker(worker: ContextReadWorkerHandle, error: Error): boolean {
+    if (this.worker !== worker) return false;
     this.worker = null;
     this.rejectPending(error);
+    return true;
   }
 
   private rejectPending(error: Error): void {
-    for (const request of this.pending.values()) request.reject(error);
+    const pending = [...this.pending.values()];
     this.pending.clear();
+    for (const request of pending) {
+      clearTimeout(request.timer);
+      request.reject(error);
+    }
+  }
+
+  private boundedTerminate(worker: ContextReadWorkerHandle): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<void>(resolve => {
+      timer = setTimeout(resolve, this.terminateTimeoutMs);
+      unrefTimer(timer);
+    });
+    let terminated: Promise<void>;
+    try {
+      terminated = Promise.resolve(worker.terminate()).then(() => undefined, () => undefined);
+    } catch {
+      terminated = Promise.resolve();
+    }
+    return Promise.race([terminated, timeout]).finally(() => {
+      if (timer !== undefined) clearTimeout(timer);
+    });
   }
 }
 

@@ -277,6 +277,17 @@ jobs:
         working-directory: services/viewer-host
         run: bun install --frozen-lockfile && bun test test
 
+      # The matrix's browser pages compile the real My Work source, whose
+      # dependencies live in that app's own package.
+      - name: Install My Work dependencies
+        working-directory: src/ui/my-work
+        run: npm ci --no-audit --no-fund
+
+      # The matrix allows a browser 10 s to start. This is the runner's first
+      # Chrome launch, so run one first and record how long it takes.
+      - name: Warm Chrome
+        run: time google-chrome --headless --no-sandbox --disable-gpu --dump-dom about:blank
+
       - name: protocol-v2 matrix e2e against local sync-api
         run: bun scripts/sync-matrix-e2e.ts
 

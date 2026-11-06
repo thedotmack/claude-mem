@@ -23,6 +23,8 @@ ${styleText('bold', 'claude-mem')} v${version} — persistent memory for AI codi
 ${styleText('bold', 'Install Commands')} (no Bun required):
   ${styleText('cyan', 'npx claude-mem')}                     Interactive install
   ${styleText('cyan', 'npx claude-mem install')}              Interactive install (also puts the claude-mem hook launcher on PATH)
+  Installing for a user? Run npx claude-mem install --runtime worker in a PTY on their computer.
+  Open the printed setup URL in their browser if needed. Keep the installer running while they finish setup.
   ${styleText('cyan', 'npx claude-mem install --ide <id>')}   Install for specific IDE
   ${styleText('cyan', 'npx claude-mem install --ide dsh --dsh-profile <name>')}   Install DeepSeek Harness (default profile: web)
   ${styleText('cyan', 'npx claude-mem install --provider claude|codex|gemini|openrouter|host')}   Set LLM provider (optional non-interactively; a fresh install defaults to claude). codex, gemini and openrouter need a cmem.ai sign-in in a browser, on either runtime; claude and host need no claude-mem account
@@ -59,6 +61,7 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem backup run|status|list')}   Manage local DB snapshots
   ${styleText('cyan', 'npx claude-mem restore <file>')}       Restore the DB from a snapshot
   ${styleText('cyan', 'npx claude-mem transcript watch')}     Start transcript watcher
+  ${styleText('cyan', 'npx claude-mem memory ingest [--source <dir> | --all] [--dry-run] [--require-cwd]')}   Import Claude Code auto-memory notes as observations
   ${styleText('cyan', 'npx claude-mem antigravity-cli install|status|uninstall')}   Manage Antigravity CLI hooks + MCP config
   ${styleText('cyan', 'npx claude-mem kimi install|status|uninstall')}   Manage Kimi Code CLI hooks + MCP config
   ${styleText('cyan', 'npx claude-mem devin install|status|uninstall')}   Manage Devin CLI / Devin Desktop hooks + MCP
@@ -139,10 +142,13 @@ function parseInstallOptions(argv: string[]): InstallOptions {
   };
 }
 
-// Commands that change the install, the worker or stored memory and would otherwise ignore -h/--help
+// Commands that change the install, a host's config, telemetry, the worker, the server or stored memory
+// and would otherwise ignore -h/--help, including after a verb (`kimi uninstall --help`)
 const HELP_AWARE_COMMANDS = new Set([
   '', 'install', 'update', 'upgrade', 'uninstall', 'remove', 'repair', 'prune', 'start', 'stop', 'restart',
   'adopt', 'cleanup',
+  'memory', 'telemetry', 'project', 'backup', 'restore', 'server', 'worker', 'transcript',
+  'kimi', 'devin', 'antigravity-cli', 'pi',
 ]);
 
 async function main(): Promise<void> {

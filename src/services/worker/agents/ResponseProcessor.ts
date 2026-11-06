@@ -9,6 +9,7 @@ import {
   isContextOverflowObserverOutput,
   isOrgDisabledSubscriptionObserverOutput,
   isQuotaLimitedObserverOutput,
+  isRateLimitedObserverOutput,
   isTransportFailureObserverOutput,
   previewOutput,
 } from '../../../sdk/output-classifier.js';
@@ -20,9 +21,10 @@ import { notifyGrokBotBrainbeat } from '../../integrations/GrokBotBrainbeat.js';
 import { notifyGrokBotIndex } from '../../integrations/GrokBotIndexWriter.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
-import { recordObserverFailure, recordObserverSuccess } from '../../../shared/observer-health.js';
+import { observerAuthScope, recordObserverFailure, recordObserverSuccess } from '../../../shared/observer-health.js';
 import { clearQuotaCooldown, routeAroundUnservableProviderIfLoaded } from '../../../shared/quota-cooldown.js';
 import { recycleObserverConversation } from '../session/recycle-conversation.js';
+import { OBSERVER_TEXT_RATE_LIMIT_ABORT_REASON } from '../session/abort-reason.js';
 import { clearRejectedOutput, recordRejectedOutput } from '../session/OutputRecovery.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
@@ -38,7 +40,7 @@ import { observationMediaFromMetadata } from '../../media/feed.js';
 import { writeMediaEventResults, writeObservationMediaLinks, type MediaLinkageWriteResult, type ObservationLinkWrite } from '../../media/linkage.js';
 import type { Database } from 'bun:sqlite';
 
-type ObservationFileEvidenceMessage = Pick<PendingMessage, 'type' | 'tool_name' | 'tool_input'>;
+type ObservationFileEvidenceMessage = Pick<PendingMessage, 'type' | 'tool_name' | 'tool_input' | 'tool_response'>;
 
 export interface ObservationFileEvidence {
   files_read: string[];
@@ -65,6 +67,13 @@ export function extractObservationFileEvidence(messages: ReadonlyArray<Observati
       continue;
     }
 
+    // A denied, failed or timed-out call changed nothing, so the paths in its
+    // input are not evidence of a read or an edit. Cursor's postToolUseFailure
+    // reports failures this way (#5371).
+    if (toolResponseIndicatesError(message.tool_response)) {
+      continue;
+    }
+
     if (READ_TOOL_NAMES.has(toolName)) {
       for (const filePath of extractPathsFromToolInput(message.tool_input, 'read')) {
         pushUnique(seenRead, filesRead, filePath);
@@ -88,6 +97,16 @@ export function extractObservationFileEvidence(messages: ReadonlyArray<Observati
     files_read: filesRead,
     files_modified: filesModified,
   };
+}
+
+/**
+ * True when a tool response is marked as an error rather than a result.
+ * Pending messages store tool_response as text (ingest JSON.stringify()s it),
+ * so a JSON-string response is parsed the same way tool_input is.
+ */
+function toolResponseIndicatesError(toolResponse: unknown): boolean {
+  const record = maybeParseObject(toolResponse);
+  return record !== null && (record.is_error === true || record.isError === true);
 }
 
 function pushUnique(seen: Set<string>, output: string[], filePath: string): void {
@@ -550,6 +569,7 @@ export async function processAgentResponse(
     !!text &&
     (isContextOverflowObserverOutput(text) ||
       isQuotaLimitedObserverOutput(text) ||
+      isRateLimitedObserverOutput(text) ||
       isAnthropicVerificationHoldObserverOutput(text) ||
       isAuthFailureObserverOutput(text) ||
       isTransportFailureObserverOutput(text));
@@ -591,6 +611,28 @@ export async function processAgentResponse(
 
       await sessionManager.resetProcessingToPending(session.sessionDbId);
       session.abortReason = 'quota:observer_text';
+      try {
+        session.abortController.abort();
+      } catch {
+        // best-effort; AbortController.abort() should not throw in normal use.
+      }
+      worker?.broadcastProcessingStatus?.();
+      return null;
+    }
+
+    // A 429 the CLI wrote as the reply (#5428). The provider never ran the
+    // batch, so confirming it would lose the work; it is a throttle, not a
+    // spent allowance, so it pauses under its own 'rate_limit' category and
+    // the runner books the short rate-limit window a thrown 429 gets.
+    if (isRateLimitedObserverOutput(text)) {
+      logger.warn('PARSER', `${agentName} returned a rate-limit reply — pausing generator and preserving queued batch`, {
+        sessionId: session.sessionDbId,
+        outputClass: 'prose',
+        preview: previewOutput(text),
+      });
+
+      await sessionManager.resetProcessingToPending(session.sessionDbId);
+      session.abortReason = OBSERVER_TEXT_RATE_LIMIT_ABORT_REASON;
       try {
         session.abortController.abort();
       } catch {
@@ -999,7 +1041,7 @@ export async function processAgentResponse(
   // in query using the admitted cooldown identity: storing an earlier response
   // here must not erase a newer failure from a concurrent pool slot.
   if (result.observationIds.length > 0 || result.summaryId !== null) {
-    recordObserverSuccess();
+    recordObserverSuccess(undefined, observerAuthScope(session.currentProvider, session.observerProfile, session.observerAuth));
     // A quota-fallback run proves its own credential works, not the spent primary one.
     if (session.currentProvider && session.currentProvider !== 'codex' && !session.claudeAuthOverride) {
       clearQuotaCooldown(session.currentProvider);

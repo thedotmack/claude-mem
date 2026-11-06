@@ -113,13 +113,14 @@ const CARD_DELIVERABLES = 3
  */
 export function Deliverables({ request, onOpen }: { request: Request; onOpen: () => void }) {
   const products = request.workProduct.filter(isCardDeliverable)
-  if (products.length === 0) return null
+  const count = request.detailLoaded === false ? request.detailCounts?.workProduct ?? products.length : products.length
+  if (count === 0) return null
   const shown = products.slice(0, CARD_DELIVERABLES)
-  const hidden = products.length - shown.length
+  const hidden = Math.max(0, count - shown.length)
   return (
     <Req ids={['R5.12', 'R5.10']}>
       <div className="space-y-1">
-        <p className="section-label">Deliverables · {products.length}</p>
+        <p className="section-label">Deliverables · {count}</p>
         <ul className="flex flex-wrap gap-1.5">
           {shown.map((product, index) => {
             const Icon = PRODUCT_ICON[product.kind]
