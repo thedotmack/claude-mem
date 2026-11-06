@@ -975,10 +975,17 @@ describe('capture-only linkage', () => {
   it('a skip with no earlier observation in its prompt links nothing yet; the event waits for the prompt', async () => {
     await readOfPng('toolu_capture_skip', redPng);
     chatReplies.push(reply('<skip_summary reason="noise" />'));
-    await runTurn(pending(queued[0]), directConfig());
-    expect(count('SELECT COUNT(*) n FROM observation_media_links')).toBe(0);
     // The turn's prompt is the claimed message's prompt number.
-    expect(rows('SELECT result_state, carry_prompt_number FROM media_events')).toEqual([{ result_state: 'skipped', carry_prompt_number: queued[0].prompt_number ?? 1 }]);
+    await runTurn({ ...pending(queued[0]), prompt_number: 3 } as PendingMessageWithId, directConfig());
+    expect(count('SELECT COUNT(*) n FROM observation_media_links')).toBe(0);
+    expect(rows('SELECT result_state, carry_prompt_number FROM media_events')).toEqual([{ result_state: 'skipped', carry_prompt_number: 3 }]);
+  });
+
+  it('a skipped turn with no prompt number hands nothing on', async () => {
+    await readOfPng('toolu_capture_no_prompt', redPng);
+    chatReplies.push(reply('<skip_summary reason="noise" />'));
+    await runTurn({ ...pending(queued[0]), prompt_number: 0 } as PendingMessageWithId, directConfig());
+    expect(rows('SELECT result_state, carry_prompt_number FROM media_events')).toEqual([{ result_state: 'skipped', carry_prompt_number: null }]);
   });
 
   it('a failed conversion is not linked; the text outcome still commits', async () => {
@@ -1140,6 +1147,25 @@ describe('capture-only linkage, a turn that stored no observation', () => {
     // The images stay retained on their event.
     expect(count(`SELECT COUNT(*) n FROM media_event_refs r JOIN media_attachments a ON a.id = r.attachment_id WHERE a.state IN ('converting','ready')`)).toBe(2);
     expect(rows('SELECT result_state FROM media_events')).toEqual([{ result_state: 'skipped' }]);
+  });
+
+  it('a stored row reused from another prompt never receives waiting images; they keep waiting for a row of their prompt', async () => {
+    await ingest('toolu_dup_text');
+    await ingest('toolu_dup_image', redPng);
+    const [textMessage, imageMessage] = [pending(queued[0], 1), pending(queued[1], 2)];
+    await turn(observation('Same finding'), 1, [textMessage]);
+    const [promptOneRow] = observationIds();
+    await turn(SKIP, 2, [imageMessage]);
+    // Same session, title and narrative: storage returns prompt 1's row.
+    await turn(observation('Same finding'), 2, [textMessage]);
+    expect(observationIds()).toEqual([promptOneRow]);
+    expect(links()).toEqual([]);
+    expect(rows('SELECT carry_prompt_number FROM media_events')).toEqual([{ carry_prompt_number: 2 }]);
+
+    await turn(observation('New finding'), 2, [textMessage]);
+    const promptTwoRow = observationIds()[1];
+    expect(links().map(link => link.observation_id)).toEqual([promptTwoRow]);
+    expect(rows('SELECT carry_prompt_number FROM media_events')).toEqual([{ carry_prompt_number: null }]);
   });
 
   it('an event deleted while it waits links nothing', async () => {

@@ -317,7 +317,8 @@ any. If the prompt never stores an observation, they stay event-level.
 - The prompt is the one the turn's request was sent for (the prompt number
   frozen with the response context). The session is the observed session
   (local: the same `sdk_sessions` row). An observation from another prompt,
-  even in the same session, never receives these images.
+  even in the same session, never receives these images. A turn with no
+  prompt number (local: stored as a NULL `prompt_number`) hands nothing on.
 - "Most recent" is the last observation stored for that session and prompt
   (local: the highest `observations.id`). Only that one observation gets the
   links. It was stored by an earlier turn, so a native row whose manifest
@@ -327,7 +328,10 @@ any. If the prompt never stores an observation, they stay event-level.
   restart (local: `media_events.carry_prompt_number`). The next turn of the
   same session and prompt that stores at least one observation links them to
   every observation it stored, in the same storage transaction, whether or not
-  that turn has images of its own. Waiting images come first, in event order
+  that turn has images of its own. Storage can return an existing row (an
+  exact duplicate or a title match) that belongs to another prompt or session;
+  that row gets none of them, and if no stored row belongs to the prompt, the
+  events keep waiting. Waiting images come first, in event order
   then label order, followed by the turn's own refs. Once linked, an event no
   longer waits.
 - An event deleted while it waits links nothing. A prompt that never stores an
