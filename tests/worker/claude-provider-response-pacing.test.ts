@@ -175,6 +175,7 @@ const { SessionManager } = await import('../../src/services/worker/SessionManage
 const {
   ObserverResponsePacer,
   MAX_CONSECUTIVE_STALL_RESUMES,
+  RESPONSE_STALL_MS,
   planResponseStallResume,
 } = await import('../../src/services/worker/session/response-pacer.js');
 const { MAX_CONSECUTIVE_RECYCLES } = await import('../../src/services/worker/session/recycle-conversation.js');
@@ -718,6 +719,14 @@ describe('ObserverResponsePacer', () => {
     expect(outcome).toBeNull();
     pacer.answer();
     expect(await withTimeout(waiting, 'answer after retry')).toBe('answered');
+  });
+});
+
+describe('response-stall deadline', () => {
+  it('is its own 3 minute constant, not the drain idle timeout', () => {
+    // Tuning IDLE_TIMEOUT_MS (a drain concern) must not move this deadline.
+    expect(RESPONSE_STALL_MS).toBe(180_000);
+    expect((createHarness(0).provider as any).responseStallMs()).toBe(RESPONSE_STALL_MS);
   });
 });
 
