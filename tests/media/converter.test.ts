@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import sharp from 'sharp';
-import { convertMedia, createMediaConverter, LOCAL_ADMISSION_WAIT_MS, LOCAL_CONVERSION_DEADLINE_MS } from '../../src/services/media/converter.js';
+import { convertMedia, createMediaConverter, LOCAL_ADMISSION_WAIT_MS, LOCAL_CONVERSION_DEADLINE_MS, LOCAL_MAX_INPUT_PIXELS, LOCAL_MAX_SOURCE_BYTES } from '../../src/services/media/converter.js';
 import { MEDIA_LIMITS, MediaError } from '../../src/shared/media-contract.js';
 
 const rejects = (code: string) => (error: unknown) => error instanceof MediaError && error.code === code;
@@ -66,12 +66,38 @@ test('WebP input, no enlargement, MIME spoof, empty, truncated and unsupported i
   await assert.rejects(convertMedia(Buffer.alloc(0), 'image/png'), rejects('invalid_image'));
   await assert.rejects(convertMedia(png.subarray(0, 45), 'image/png'), rejects('invalid_image'));
   await assert.rejects(convertMedia(Buffer.from('<svg/>'), 'image/svg+xml'), rejects('unsupported_format'));
-  await assert.rejects(convertMedia(Buffer.alloc(MEDIA_LIMITS.maxSourceBytes + 1), 'image/png'), rejects('source_too_large'));
+  await assert.rejects(convertMedia(Buffer.alloc(LOCAL_MAX_SOURCE_BYTES + 1), 'image/png'), rejects('source_too_large'));
 });
 
-test('oversized dimensions and decoded pixel counts fail using the real decoder', async () => {
-  await assert.rejects(convertMedia(await makePng(8193, 1), 'image/png'), rejects('dimension_limit'));
-  await assert.rejects(convertMedia(await makePng(6000, 4001), 'image/png'), rejects('pixel_limit'));
+test('a source over 3 MiB is kept: the local file bound is 96 MiB', { timeout: 20_000 }, async () => {
+  // Noise PNG, about 3.4 MiB: rejected as source_too_large before LA5.
+  const pixels = Buffer.alloc(1100 * 1100 * 3);
+  let state = 987654321;
+  for (let i = 0; i < pixels.length; i++) { state ^= state << 13; state ^= state >>> 17; state ^= state << 5; pixels[i] = state & 255; }
+  const source = await sharp(pixels, { raw: { width: 1100, height: 1100, channels: 3 } }).png().toBuffer();
+  assert.ok(source.length > MEDIA_LIMITS.maxSourceBytes, 'fixture must be over the old 3 MiB bound');
+  const result = await convertMedia(source, 'image/png');
+  assert.equal(result.source.byteLength, source.length);
+  assert.ok(result.viewer.byteLength <= MEDIA_LIMITS.maxCanonicalBytes);
+  assert.equal(LOCAL_MAX_SOURCE_BYTES, 96 * 1024 * 1024);
+});
+
+test('a source over the canonical dimension or pixel bound is fitted into it, not rejected', { timeout: 20_000 }, async () => {
+  const tall = await convertMedia(await makePng(200, 9000), 'image/png');
+  assert.equal(tall.source.height, 9000);
+  assert.equal(Math.max(tall.viewer.width, tall.viewer.height), MEDIA_LIMITS.maxDimension);
+  const wide = await convertMedia(await makePng(6000, 4001), 'image/png');
+  assert.ok(wide.viewer.width * wide.viewer.height <= MEDIA_LIMITS.maxPixels);
+  assert.ok(wide.viewer.width * wide.viewer.height > MEDIA_LIMITS.maxPixels * 0.99, 'fitted, not shrunk further');
+  for (const result of [tall, wide]) assert.ok(Math.max(result.llm.width, result.llm.height) <= MEDIA_LIMITS.maxDerivativeDimension);
+});
+
+test('the decoder still refuses input over sharp\'s own default pixel limit', async () => {
+  assert.equal(LOCAL_MAX_INPUT_PIXELS, 16383 * 16383);
+  // A 16384x16384 PNG header over a tiny body: a decompression bomb.
+  const bomb = await sharp({ create: { width: 16384, height: 16384, channels: 3, background: '#fff' }, limitInputPixels: false })
+    .png().toBuffer();
+  await assert.rejects(convertMedia(bomb, 'image/png'), rejects('pixel_limit'));
 });
 
 test('animated WebP and APNG controls are rejected instead of extracting frame one', async () => {
@@ -201,10 +227,24 @@ async function noisyJpeg(dimension: number): Promise<Buffer> {
     .jpeg({ quality: 90 }).toBuffer();
 }
 
-test('canonical byte ceiling rejects output without silently lowering fidelity', { timeout: 20_000 }, async () => {
+test('a canonical over 3 MiB as lossless is kept as lossy quality 90 at full size', { timeout: 20_000 }, async () => {
   // Higher input quality reaches the canonical byte limit with fewer pixels.
-  // Fixture preparation has its own test allowance.
-  await assert.rejects(convertMedia(await noisyJpeg(1200), 'image/jpeg'), rejects('canonical_too_large'));
+  const source = await noisyJpeg(1200);
+  const lossless = await sharp(source).autoOrient().webp({ lossless: true, effort: 4 }).toBuffer();
+  assert.ok(lossless.length > MEDIA_LIMITS.maxCanonicalBytes, 'fixture must be over the canonical ceiling as lossless');
+  const result = await convertMedia(source, 'image/jpeg');
+  assert.equal(result.viewer.width, 1200);
+  assert.deepEqual(result.viewer.bytes, await sharp(source).autoOrient().webp({ quality: 90, effort: 4 }).toBuffer());
+});
+
+test('a canonical still over 3 MiB at quality 90 is shrunk until it fits', { timeout: 30_000 }, async () => {
+  const source = await noisyJpeg(2600);
+  assert.ok((await sharp(source).webp({ quality: 90, effort: 4 }).toBuffer()).length > MEDIA_LIMITS.maxCanonicalBytes,
+    'fixture must stay over the ceiling at quality 90');
+  const result = await convertMedia(source, 'image/jpeg');
+  assert.ok(result.viewer.byteLength <= MEDIA_LIMITS.maxCanonicalBytes);
+  assert.ok(result.viewer.width < 2600 && result.viewer.width === result.viewer.height);
+  assert.ok(result.llm.byteLength <= MEDIA_LIMITS.maxDerivativeBytes);
 });
 
 // Low-amplitude noise PNG: its near-lossless derivative is over 256 KiB but it
@@ -241,17 +281,24 @@ test('an oversized screenshot derivative is encoded once more as lossy quality 8
   assert.deepEqual(result.viewer.bytes, await sharp(source).autoOrient().webp({ lossless: true, effort: 4 }).toBuffer());
 });
 
-test('a screenshot derivative still over the ceiling at quality 80 is rejected', { timeout: 20_000 }, async () => {
+test('a screenshot derivative still over the ceiling at quality 80 is shrunk at quality 80 until it fits', { timeout: 20_000 }, async () => {
   const source = await noisyJpeg(800);
   assert.ok((await derivativeBytes(source, { quality: 80, effort: 4 })).length > MEDIA_LIMITS.maxDerivativeBytes,
     'fixture must stay too large after the retry');
-  await assert.rejects(convertMedia(source, 'image/jpeg'), rejects('derivative_too_large'));
+  const result = await convertMedia(source, 'image/jpeg');
+  assert.ok(result.llm.byteLength <= MEDIA_LIMITS.maxDerivativeBytes);
+  assert.ok(result.llm.width < 800);
+  assert.deepEqual(result.llm.bytes, await sharp(source).autoOrient()
+    .resize({ width: result.llm.width, height: result.llm.width, fit: 'inside' }).webp({ quality: 80, effort: 4 }).toBuffer());
 });
 
-test('photo-v1 has no derivative retry', { timeout: 20_000 }, async () => {
+test('photo-v1 has no quality retry: its derivative is shrunk at quality 90', { timeout: 20_000 }, async () => {
   const source = await noisyJpeg(600);
   assert.ok((await derivativeBytes(source, { quality: 90, effort: 4 })).length > MEDIA_LIMITS.maxDerivativeBytes);
-  await assert.rejects(convertMedia(source, 'image/jpeg', 'photo-v1'), rejects('derivative_too_large'));
+  const result = await convertMedia(source, 'image/jpeg', 'photo-v1');
+  assert.ok(result.llm.byteLength <= MEDIA_LIMITS.maxDerivativeBytes);
+  assert.deepEqual(result.llm.bytes, await sharp(source).autoOrient()
+    .resize({ width: result.llm.width, height: result.llm.width, fit: 'inside' }).webp({ quality: 90, effort: 4 }).toBuffer());
 });
 
 test('the application deadline covers the derivative retry encode', { timeout: 20_000 }, async () => {

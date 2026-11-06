@@ -50,6 +50,43 @@ function assertStillPng(bytes: Buffer): void {
  */
 const SCREENSHOT_DERIVATIVE_RETRY_WEBP: WebpOptions = { quality: 80, effort: 4 };
 
+/**
+ * Local capture keeps every image the decoder can safely read: an image over a
+ * canonical bound is fitted into it instead of rejected
+ * (docs/media-contract-v1.md, "Where the size bounds apply"). The canonical is
+ * the copy uploaded to Pro, so fitting it locally is what makes the upload fit
+ * Pro's bounds (3 MiB, 8192 a side, 24 MP). Pro's own route still rejects.
+ *
+ * Canonical over 3 MiB as lossless (screenshot-v1): encoded as lossy WebP
+ * quality 90, the photo-v1 canonical setting already in the contract.
+ */
+const CANONICAL_LOSSY_FALLBACK_WEBP: WebpOptions = { quality: 90, effort: 4 };
+/**
+ * Still over its byte ceiling: shrink the longest edge so the pixel count
+ * scales by the byte overshoot, aiming 10% under the ceiling so one round
+ * usually lands (WebP size grows about with pixel count). Rounds repeat until
+ * it fits; every round shrinks the image, and the conversion deadline bounds
+ * them.
+ */
+const SHRINK_TARGET_SHARE_OF_CEILING = 0.9;
+/**
+ * Decoder input bound for local capture: sharp's own default limitInputPixels
+ * (16383 x 16383, also WebP's largest side), its decompression-bomb guard:
+ * https://sharp.pixelplumbing.com/api-constructor/
+ * Measured 2026-11-05: fitting a 16383x16383 PNG took 0.9 s and peaked at 512
+ * MiB of memory; a 2800x23880 full-page screenshot (66.9 MP) took 4.5 s and
+ * 324 MiB. One conversion runs at a time.
+ */
+export const LOCAL_MAX_INPUT_PIXELS = 16383 * 16383;
+/**
+ * File source bound for local capture (abuse protection on worker memory; the
+ * file is read whole). Measured 2026-11-05: screenshot PNGs take about 0.32
+ * bytes per pixel (the 66.9 MP full-page screenshot was 20.4 MiB), so a
+ * screenshot at LOCAL_MAX_INPUT_PIXELS is about 82 MiB. Inline images stay
+ * bounded by the 5 MB event JSON cap (MEDIA_LIMITS.maxInlineEncodedBytes).
+ */
+export const LOCAL_MAX_SOURCE_BYTES = 96 * 1024 * 1024;
+
 declare const __CMEM_MEDIA_STANDALONE__: boolean;
 async function loadDecoder(): Promise<Decoder> {
   try {
@@ -139,7 +176,7 @@ export function createMediaConverter(options: {
     source: Uint8Array, claimedMime: string, recipe: MediaRecipe = 'screenshot-v1',
   ): Promise<ConvertedMedia> {
     if (source.byteLength === 0) throw new MediaError('invalid_image');
-    if (source.byteLength > MEDIA_LIMITS.maxSourceBytes) throw new MediaError('source_too_large');
+    if (source.byteLength > LOCAL_MAX_SOURCE_BYTES) throw new MediaError('source_too_large');
     if (!MEDIA_RECIPES.includes(recipe)) throw new MediaError('invalid_manifest');
     await admit();
     const started = performance.now();
@@ -162,7 +199,7 @@ export function createMediaConverter(options: {
         // https://sharp.pixelplumbing.com/api-constructor/
         const inputOptions = {
           failOn: 'warning' as const,
-          limitInputPixels: MEDIA_LIMITS.maxPixels,
+          limitInputPixels: LOCAL_MAX_INPUT_PIXELS,
           pages: 1,
           sequentialRead: true,
         };
@@ -174,23 +211,21 @@ export function createMediaConverter(options: {
         const width = metadata.width ?? 0;
         const height = metadata.height ?? 0;
         if (!width || !height) throw new MediaError('invalid_image');
-        if (width > MEDIA_LIMITS.maxDimension || height > MEDIA_LIMITS.maxDimension) throw new MediaError('dimension_limit');
-        if (width * height > MEDIA_LIMITS.maxPixels) throw new MediaError('pixel_limit');
-        const encode = async (derivative: boolean, webpOptions: WebpOptions): Promise<MediaVariant> => {
+        const sourceLongestEdge = Math.max(width, height);
+        // Longest edge that fits the canonical dimension and pixel bounds.
+        const canonicalLongestEdge = Math.min(sourceLongestEdge, Math.floor(sourceLongestEdge * Math.min(
+          MEDIA_LIMITS.maxDimension / sourceLongestEdge, Math.sqrt(MEDIA_LIMITS.maxPixels / (width * height)))));
+        const encode = async (longestEdge: number, webpOptions: WebpOptions): Promise<MediaVariant> => {
           checkDeadline();
           // autoOrient applies EXIF orientation; default output omits all
           // input EXIF/ICC/XMP/IPTC/GPS. Do not call keepMetadata/withMetadata.
           // https://sharp.pixelplumbing.com/api-operation/#autoorient
           // https://sharp.pixelplumbing.com/api-output/#webp
           let pipeline = decoder(bytes, inputOptions).autoOrient();
-          if (derivative) {
+          if (longestEdge < sourceLongestEdge) {
             // Full-frame fit, with no upscaling or semantic cropping.
             // https://sharp.pixelplumbing.com/api-resize/#resize
-            pipeline = pipeline.resize({
-              width: MEDIA_LIMITS.maxDerivativeDimension,
-              height: MEDIA_LIMITS.maxDerivativeDimension,
-              fit: 'inside', withoutEnlargement: true,
-            });
+            pipeline = pipeline.resize({ width: longestEdge, height: longestEdge, fit: 'inside', withoutEnlargement: true });
           }
           const { data, info } = await pipeline.webp(webpOptions)
             .timeout(nativeTimeout())
@@ -199,15 +234,32 @@ export function createMediaConverter(options: {
           return { bytes: data, sha256: createHash('sha256').update(data).digest('hex'),
             width: info.width, height: info.height, byteLength: data.length, mimeType: 'image/webp' };
         };
+        const shrinkUntilFits = async (variant: MediaVariant, ceiling: number, webpOptions: WebpOptions): Promise<MediaVariant> => {
+          while (variant.byteLength > ceiling) {
+            const longestEdge = Math.max(variant.width, variant.height);
+            const next = Math.min(longestEdge - 1,
+              Math.floor(longestEdge * Math.sqrt(ceiling * SHRINK_TARGET_SHARE_OF_CEILING / variant.byteLength)));
+            if (next < 1) throw new MediaError(ceiling === MEDIA_LIMITS.maxCanonicalBytes ? 'canonical_too_large' : 'derivative_too_large');
+            variant = await encode(next, webpOptions);
+          }
+          return variant;
+        };
         const screenshot = recipe === 'screenshot-v1';
-        const viewer = await encode(false, screenshot ? { lossless: true, effort: 4 } : { quality: 90, effort: 4 });
-        if (viewer.byteLength > MEDIA_LIMITS.maxCanonicalBytes) throw new MediaError('canonical_too_large');
-        let llm = await encode(true, screenshot ? { nearLossless: true, quality: 90, effort: 4 } : { quality: 90, effort: 4 });
-        // One retry, never a loop; the deadline above still covers it.
-        if (screenshot && llm.byteLength > MEDIA_LIMITS.maxDerivativeBytes) {
-          llm = await encode(true, SCREENSHOT_DERIVATIVE_RETRY_WEBP);
+        let viewer = await encode(canonicalLongestEdge, screenshot ? { lossless: true, effort: 4 } : CANONICAL_LOSSY_FALLBACK_WEBP);
+        if (screenshot && viewer.byteLength > MEDIA_LIMITS.maxCanonicalBytes) {
+          viewer = await encode(canonicalLongestEdge, CANONICAL_LOSSY_FALLBACK_WEBP);
         }
-        if (llm.byteLength > MEDIA_LIMITS.maxDerivativeBytes) throw new MediaError('derivative_too_large');
+        viewer = await shrinkUntilFits(viewer, MEDIA_LIMITS.maxCanonicalBytes, CANONICAL_LOSSY_FALLBACK_WEBP);
+        const derivativeLongestEdge = Math.min(sourceLongestEdge, MEDIA_LIMITS.maxDerivativeDimension);
+        const derivativeWebp: WebpOptions = screenshot ? { nearLossless: true, quality: 90, effort: 4 } : { quality: 90, effort: 4 };
+        let llm = await encode(derivativeLongestEdge, derivativeWebp);
+        // One quality retry; the deadline above still covers it.
+        let derivativeFallbackWebp = derivativeWebp;
+        if (screenshot && llm.byteLength > MEDIA_LIMITS.maxDerivativeBytes) {
+          llm = await encode(derivativeLongestEdge, SCREENSHOT_DERIVATIVE_RETRY_WEBP);
+          derivativeFallbackWebp = SCREENSHOT_DERIVATIVE_RETRY_WEBP;
+        }
+        llm = await shrinkUntilFits(llm, MEDIA_LIMITS.maxDerivativeBytes, derivativeFallbackWebp);
         return {
           viewer, llm, source: {
             sha256: createHash('sha256').update(bytes).digest('hex'),

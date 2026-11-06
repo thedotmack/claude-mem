@@ -3293,7 +3293,11 @@ var init_media_contract = __esm({
       maxSourceLocatorChars: 4096,
       maxGatewayImageBytes: 4 * 256 * 1024,
       maxUploadBodyBytes: 3 * 1024 * 1024 + 64 * 1024,
-      ownerQuotaBytes: 256 * 1024 * 1024
+      // Abuse protection: caps one account's stored images at about $0.57 a month
+      // (25 GiB is 26.8 GB; Supabase Storage costs $0.0213 per GB a month, read
+      // 2026-11-05). A heavy real user, 100 screenshots a day at the measured median
+      // converted pair of 321 KiB, stores about 11.2 GiB a year.
+      ownerQuotaBytes: 25 * 1024 * 1024 * 1024
     });
   }
 });

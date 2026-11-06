@@ -15,6 +15,7 @@ import { logger } from '../../utils/logger.js';
 import { stripMemoryTags } from '../../utils/tag-stripping.js';
 import { readContainedFile } from './files.js';
 import { MediaStore, mediaEventKey } from './store.js';
+import { LOCAL_MAX_SOURCE_BYTES } from './converter.js';
 
 interface CaptureInput {
   enabled: boolean;
@@ -118,7 +119,7 @@ function readTrustedFileCandidate(candidate: MediaCandidate, input: CaptureInput
   const projectRoot = realpathSync(input.cwd);
   const targetPath = resolve(projectRoot, candidate.filePath!);
   if (resolve(projectRoot, toolInput.file_path) !== targetPath) throw new MediaError('unsupported_source');
-  return readContainedFile(projectRoot, targetPath, MEDIA_LIMITS.maxSourceBytes);
+  return readContainedFile(projectRoot, targetPath, LOCAL_MAX_SOURCE_BYTES);
 }
 
 function decodeInlineCandidate(candidate: MediaCandidate): Buffer {

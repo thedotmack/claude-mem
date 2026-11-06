@@ -38,29 +38,30 @@ label; it never includes an arbitrary decoder exception message.
 | Bound | Frozen v1 value |
 | --- | --- |
 | Images per event | 4 |
-| Accepted source and canonical WebP | 3 MiB each |
-| Decoded pixels | 24,000,000 |
-| Either source dimension | 8192 |
+| Accepted source and canonical WebP | 3 MiB each. Local worker: a file source up to 96 MiB is accepted, and the canonical is always fitted to 3 MiB (see below) |
+| Decoded pixels | 24,000,000. Local worker: decodes up to 268,402,689 (16383 x 16383) and fits the canonical to 24,000,000 |
+| Either source dimension | 8192. Local worker: fits the canonical to 8192 instead of rejecting |
 | Conversion admission | One active conversion. Pro upload route: fail busy immediately. Local worker: wait up to 20 seconds for the slot, first come first served, then fail busy |
 | Conversion deadline | Pro upload route: 5 seconds. Local worker: 20 seconds. Either covers metadata and every encode, including the one derivative retry |
 | LLM derivative | 256 KiB; longest edge 1536; full frame |
 | Local encoded inline image bytes | 4 MiB aggregate; event JSON still below existing 5mb cap |
 | Gateway decoded image bytes | 1 MiB aggregate, at most four derivatives |
 | Upload body | 3 MiB source plus at most 64 KiB multipart overhead |
-| Initial owner quota | 256 MiB converted assets, atomically reserved |
+| Initial owner quota | 25 GiB converted assets, atomically reserved. Reason: abuse protection; it caps one account's stored images at about $0.57 a month (26.8 GB at Supabase Storage's $0.0213 per GB a month, read 2026-11-05). A heavy real user, 100 screenshots a day at the measured median converted pair of 321 KiB, stores about 11.2 GiB a year |
 | Manifest / provenance | 8192 UTF-8 bytes each |
 | Owner-only local locator | 4096 characters |
 
-Reject any source or result that cannot meet these bounds. The one retry
-below is the only second encode. No adaptive quality loop, semantic cropping,
+Pro rejects any source or result that cannot meet these bounds. The local
+worker fits instead (see "Where the size bounds apply"). No semantic cropping
 or automatic content classification is in v1.
 Recipes are explicit caller choices: `screenshot-v1` uses lossless canonical
 WebP and a near-lossless quality 90 derivative; `photo-v1` uses quality 90 for
 both variants. When the `screenshot-v1` derivative is over 256 KiB, encode it
-once more at the same size as lossy WebP quality 80, and reject with
-`derivative_too_large` only if that is still over 256 KiB. One retry, never a
-loop. The canonical copy, `photo-v1`, the recipe name and the manifest version
-do not change, and which derivative encode was kept is not recorded. Reason:
+once more at the same size as lossy WebP quality 80. That is the one quality
+retry. If it is still over 256 KiB, Pro rejects with `derivative_too_large`
+and the local worker shrinks it (see "Where the size bounds apply"). The
+recipe name and the manifest version do not change, and which encode was kept
+is not recorded. Reason:
 on 2026-11-05, 27 real screenshots from a developer's Mac were run through
 these settings; 3 had a near-lossless derivative over 256 KiB, and all 27 fit
 as lossy quality 80 (largest 121 KiB). Alpha is preserved. Both remove
@@ -101,6 +102,41 @@ Both converters hold the slot until native work settles. The local converter
 gives each native step only the deadline time still left, rounded up to whole
 seconds (Sharp's unit), so a conversion that timed out holds the slot for at
 most about one more second.
+
+### Where the size bounds apply
+
+On a user's computer no image is thrown away for size when the decoder can read
+it safely. The local worker uploads only its canonical WebP to Pro, so a
+canonical that fits the canonical bounds is what Pro receives. Pro's own
+upload route still rejects a source or result over a bound. Unchanged.
+
+- File source (a Read of a local image file): up to 96 MiB. Reason: abuse
+  protection on worker memory, because the file is read whole. Screenshot PNGs
+  measured about 0.32 bytes per pixel (a 2800x23880 full-page screenshot was
+  20.4 MiB), so a screenshot at the decoder bound below is about 82 MiB.
+- Inline source (image bytes inside the tool response): still at most 4 MiB
+  of base64 for the event, because the event JSON must stay under the
+  existing 5 MB cap (the worker's JSON body limit). An inline image over that
+  is replaced by a `source_too_large` descriptor at the hook. Not changed in
+  this step.
+- Decoder: up to 268,402,689 pixels (16383 x 16383), Sharp's own default
+  `limitInputPixels`, its decompression-bomb guard. Over that the image fails
+  `pixel_limit`. Measured: fitting a 16383x16383 PNG took 0.9 seconds and
+  512 MiB of memory; a 66.9 million pixel full-page screenshot took 4.5
+  seconds and 324 MiB.
+- Canonical over 8192 on a side or over 24,000,000 pixels: resized, full
+  frame, to fit both.
+- `screenshot-v1` canonical over 3 MiB as lossless: encoded as lossy WebP
+  quality 90 at the same size (the `photo-v1` canonical setting).
+- Canonical still over 3 MiB, or a derivative still over 256 KiB after its
+  recipe's encodes: the longest edge is shrunk so the pixel count scales by
+  the byte overshoot, aiming 10% under the ceiling, with the last encode
+  settings, until it fits. Every round shrinks the image, and the conversion
+  deadline bounds the rounds.
+- Evidence, 2026-11-05: of 29 real screenshots from a developer's Mac, the old
+  bounds rejected 2 for source size (3.3 MiB and 4.0 MiB). With the local
+  bounds all 29 convert. Both of those keep full size as lossless canonicals
+  (1363 KiB and 2031 KiB).
 
 An actual platform tool-use/event ID defines event identity when available.
 The fallback is the tuple `(transcript_id,record_index,record_sha256)` for a
