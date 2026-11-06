@@ -100,18 +100,11 @@ export interface ActiveSession {
   consecutiveResponseStalls?: number;
   /**
    * Epoch ms at which the response-stall pacer spent its bounded resumes and
-   * scheduled none (#5405). Cleared when any generator starts, so it marks only
-   * a session that is still waiting on its next captured event or an operator
-   * retry. Reported by /api/processing-status; nothing resumes on it.
+   * scheduled none (#5405). Its buffered work is discarded at that moment, so
+   * nothing waits on it; cleared when any generator starts. Reported by
+   * /api/processing-status; nothing resumes on it.
    */
   stallResumesExhaustedAt?: number;
-  /**
-   * Consecutive backoff resumes scheduled after the fixed-delay stall
-   * resumes ran out (#5405). Bounds the timer-driven retries before the
-   * session parks for its next captured event; reset when a queued-work
-   * turn is answered, with consecutiveResponseStalls.
-   */
-  consecutiveStallBackoffResumes?: number;
   /**
    * Consecutive Claude generations whose SDK stream ended or broke without a
    * result ('transport:sdk_eof' / 'transport:sdk_stream'). Reported in
@@ -149,10 +142,9 @@ export interface ActiveSession {
    */
   paidSendBudget?: PaidSendBudget;
   /**
-   * The delayed resume a response stall scheduled — the fixed-delay retry,
-   * or a backoff retry once those are spent (#5405). Any generator start
-   * cancels it and session teardown clears it, so a stale timer never
-   * restarts a session a newer generation paused, or one that is gone.
+   * The delayed resume a response stall scheduled. Any generator start cancels
+   * it and session teardown clears it, so a stale timer never restarts a
+   * session a newer generation paused, or one that is gone.
    */
   stallResumeTimer?: ReturnType<typeof setTimeout>;
   /**

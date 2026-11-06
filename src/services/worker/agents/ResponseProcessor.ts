@@ -509,7 +509,6 @@ function clearDebtForAnsweredWork(session: ActiveSession): void {
   if (session.lastGeneratorSource === 'init') return;
   session.consecutiveContextOverflows = 0;
   session.consecutiveResponseStalls = 0;
-  session.consecutiveStallBackoffResumes = 0;
   session.consecutiveSdkStreamExits = 0;
   session.consecutiveRateLimitResumes = 0;
   session.consecutiveUnattendedGatewayResumes = 0;

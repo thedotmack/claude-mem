@@ -17,11 +17,9 @@ import {
 import { handleGeneratorExit } from './GeneratorExitHandler.js';
 import { normalizeAbortReason, PROVIDER_SWITCH_BOUNDARY_ABORT_REASON } from './abort-reason.js';
 import {
-  MAX_CONSECUTIVE_STALL_BACKOFF_RESUMES,
   MAX_CONSECUTIVE_STALL_RESUMES,
   RESPONSE_STALL_RESUME_DELAY_MS,
   planRateLimitResume,
-  planResponseStallBackoffResume,
   planResponseStallResume,
   planUnattendedGatewayResume,
 } from './response-pacer.js';
@@ -579,48 +577,48 @@ export async function startGeneratorWithProvider(
         && sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId) === 0;
       if (reason === 'transport:response_stall' && !nothingLeftAfterParking) {
         const { resume, attempts } = planResponseStallResume(session);
-        if (resume) {
+        if (!resume) {
+          // The bounded resumes are spent. Holding the buffer for "the next
+          // captured event" stranded it until a worker restart whenever the
+          // content session had already ended (#5405), and a later timer or
+          // event replaying it would be the stale-backlog spend the observer
+          // lifecycle forbids. Discard it now and say how much went; the next
+          // captured event still starts fresh work. A newer generator that a
+          // captured event started while this exit was handled owns the
+          // buffer, so it is left alone.
+          const newerGeneratorRunning = session.generatorPromise != null && session.generatorPromise !== generatorPromise;
+          if (!newerGeneratorRunning) {
+            session.stallResumesExhaustedAt = Date.now();
+            const buffer = sessionManager.getMessageBuffer();
+            const pendingCount = buffer.getPendingCount(session.sessionDbId);
+            const parkedCount = buffer.getParkedMessages(session.sessionDbId).length;
+            const discarded = await sessionManager.clearPendingForSession(session.sessionDbId);
+            logger.warn('SESSION', `Observer went unanswered ${attempts} times in a row — discarding its buffered work instead of resuming`, {
+              sessionId: session.sessionDbId,
+              consecutiveStalls: attempts,
+              maxResumes: MAX_CONSECUTIVE_STALL_RESUMES,
+              pendingCount,
+              parkedCount,
+              discarded,
+            });
+          }
+        } else {
           // The delayed retry may hit a quota cooldown and return without
           // starting a generator. Keep this pause eligible for the periodic
           // sweep after the timer fires; ordinary transport pauses still
           // require an explicit retry, and exhausted stalls keep their cap.
           session.pausedReason = 'response_stall';
-          scheduleStallResumeTimer(session, RESPONSE_STALL_RESUME_DELAY_MS, 'response-stall', ensureGeneratorRunning);
-        } else {
-          // The fixed-delay resumes are spent. Parking here would wait for a
-          // captured event, but the content session may already have ended,
-          // so none ever comes and the preserved backlog would sit in memory
-          // until the worker restarts (#5405). Retry on a growing backoff
-          // timer instead, a bounded number of times; once the backoff is
-          // spent too, the session parks for its next captured event exactly
-          // as before, with no timer pending.
-          const backoff = planResponseStallBackoffResume(session);
-          if (backoff.resume) {
-            session.pausedReason = 'response_stall';
-            logger.warn('SESSION', `Observer went unanswered ${attempts} times in a row — resuming on a backoff timer`, {
-              sessionId: session.sessionDbId,
-              consecutiveStalls: attempts,
-              backoffAttempts: backoff.attempts,
-              maxBackoffResumes: MAX_CONSECUTIVE_STALL_BACKOFF_RESUMES,
-              delayMs: backoff.delayMs,
-              pendingCount: sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId),
-            });
-            scheduleStallResumeTimer(session, backoff.delayMs, 'response-stall-backoff', ensureGeneratorRunning);
-          } else {
-            // Both budgets are spent and no timer is scheduled: this is the
-            // terminal park, so mark the session exhausted for
-            // /api/processing-status (#5409). A mid-backoff session keeps a
-            // timer pending and is never stamped here.
-            session.stallResumesExhaustedAt = Date.now();
-            logger.error('SESSION', `Observer went unanswered ${attempts} times in a row — not resuming until the next captured event`, {
-              sessionId: session.sessionDbId,
-              consecutiveStalls: attempts,
-              maxResumes: MAX_CONSECUTIVE_STALL_RESUMES,
-              backoffAttempts: backoff.attempts,
-              maxBackoffResumes: MAX_CONSECUTIVE_STALL_BACKOFF_RESUMES,
-              pendingCount: sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId),
-            });
-          }
+          const resume = setTimeout(() => {
+            session.stallResumeTimer = undefined;
+            void ensureGeneratorRunning(session.sessionDbId, 'response-stall')
+              .catch(error => {
+                logger.error('SESSION', 'Failed to resume the observer after a response stall', {
+                  sessionId: session.sessionDbId,
+                }, error instanceof Error ? error : new Error(String(error)));
+              });
+          }, RESPONSE_STALL_RESUME_DELAY_MS);
+          resume.unref?.();
+          session.stallResumeTimer = resume;
         }
       }
     });
@@ -703,33 +701,6 @@ function bookClassifiedFailure(
     requestId: error.requestId,
   });
   return resume;
-}
-
-/**
- * Schedule the delayed resume a response stall promised itself, on the
- * session's stall timer: the fixed-delay retry while those last, then a
- * backoff retry once they are spent (#5405). Kept on the session so the
- * periodic sweep leaves the session to it while it is pending, any generator
- * start cancels it, and session teardown clears it.
- */
-function scheduleStallResumeTimer(
-  session: ActiveSession,
-  delayMs: number,
-  source: string,
-  ensureGeneratorRunning: GeneratorRunnerDependencies['ensureGeneratorRunning'],
-): void {
-  const resume = setTimeout(() => {
-    session.stallResumeTimer = undefined;
-    void ensureGeneratorRunning(session.sessionDbId, source)
-      .catch(error => {
-        logger.error('SESSION', 'Failed to resume the observer after a response stall', {
-          sessionId: session.sessionDbId,
-          source,
-        }, error instanceof Error ? error : new Error(String(error)));
-      });
-  }, delayMs);
-  resume.unref?.();
-  session.stallResumeTimer = resume;
 }
 
 /**

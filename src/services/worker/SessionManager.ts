@@ -869,10 +869,10 @@ export class SessionManager {
    * scheduled, and buffered messages remain. The stall counter alone is not
    * enough: it resets only on an answered turn, so a session restarted after
    * exhaustion that later paused with its own retry timer would still look
-   * abandoned. Such a session waits for its next captured event or an operator retry —
-   * for an ended content session that may never come, which makes the queue
-   * look stuck while every active session is being served. Reporting is all
-   * this does: nothing here resumes or discards them.
+   * abandoned. The stall exit discards the buffer when it stamps the mark, so
+   * a session listed here holds work enqueued afterwards that no generator
+   * start took up. Reporting is all this does: nothing here resumes or
+   * discards them.
    */
   getAbandonedStallSessions(): Array<{ sessionDbId: number; pendingCount: number }> {
     return Array.from(this.sessions.values())

@@ -35,25 +35,11 @@ export const RESPONSE_STALL_RESUME_DELAY_MS = 30_000;
 /**
  * Consecutive stall resumes allowed before the observer stops restarting on its
  * own. An answered queued-work turn resets the count, so this only trips when
- * the provider keeps going silent. The next hook event can still start one.
+ * the provider keeps going silent. Once it trips, the session's buffered work
+ * is discarded rather than held for an event that may never come (#5405); the
+ * next hook event can still start fresh work.
  */
 export const MAX_CONSECUTIVE_STALL_RESUMES = 3;
-
-/**
- * Backoff resumes allowed once the fixed-delay stall resumes above are spent
- * (#5405). Parking at that cap waits for a captured event, but an ended
- * content session sends none, so the preserved backlog would sit in memory
- * until the worker restarts. The backoff timer retries it anyway, on a
- * growing delay; once these are spent too, the session parks for its next
- * captured event exactly as before. An answered queued-work turn resets the
- * count, with the fixed-delay one.
- */
-export const MAX_CONSECUTIVE_STALL_BACKOFF_RESUMES = 3;
-
-/** Delay before the n-th backoff resume: the fixed stall delay doubled per attempt (60s, 120s, 240s). */
-export function responseStallBackoffDelayMs(backoffAttempts: number): number {
-  return RESPONSE_STALL_RESUME_DELAY_MS * 2 ** Math.max(1, backoffAttempts);
-}
 
 /**
  * Consecutive Claude SDK stream exits without a result before observer health
@@ -75,15 +61,6 @@ export const MAX_CONSECUTIVE_RATE_LIMIT_RESUMES = 3;
  */
 export function planResponseStallResume(session: ActiveSession): { resume: boolean; attempts: number } {
   return planBoundedResume(session, 'consecutiveResponseStalls', MAX_CONSECUTIVE_STALL_RESUMES);
-}
-
-/**
- * Count one backoff resume after the fixed-delay stall resumes ran out, and
- * decide whether it may run, with the delay it waits first (#5405).
- */
-export function planResponseStallBackoffResume(session: ActiveSession): { resume: boolean; attempts: number; delayMs: number } {
-  const plan = planBoundedResume(session, 'consecutiveStallBackoffResumes', MAX_CONSECUTIVE_STALL_BACKOFF_RESUMES);
-  return { ...plan, delayMs: responseStallBackoffDelayMs(plan.attempts) };
 }
 
 /** Count one rate-limit pause that named a Retry-After and decide whether to resume after it. */
@@ -133,7 +110,7 @@ export function unattendedGatewayResumesSpent(session: ActiveSession): boolean {
 
 function planBoundedResume(
   session: ActiveSession,
-  counter: 'consecutiveResponseStalls' | 'consecutiveStallBackoffResumes' | 'consecutiveRateLimitResumes' | 'consecutiveUnattendedGatewayResumes',
+  counter: 'consecutiveResponseStalls' | 'consecutiveRateLimitResumes' | 'consecutiveUnattendedGatewayResumes',
   maxResumes: number,
 ): { resume: boolean; attempts: number } {
   const attempts = (session[counter] ?? 0) + 1;
