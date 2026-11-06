@@ -189,6 +189,7 @@ const QUERIES: Record<string, string> = {
 (function_declarator declarator: (identifier) @function_name)
 (type_definition type: (_) @aliased_type declarator: (type_identifier) @name) @tdef
 (struct_specifier name: (type_identifier) @name body: (field_declaration_list)) @struct_def
+(union_specifier name: (type_identifier) @name body: (field_declaration_list)) @struct_def
 (enum_specifier name: (type_identifier) @name body: (enumerator_list)) @enm
 (preproc_include) @imp
 `,
@@ -199,6 +200,7 @@ const QUERIES: Record<string, string> = {
 (type_definition type: (_) @aliased_type declarator: (type_identifier) @name) @tdef
 (class_specifier name: (type_identifier) @name body: (field_declaration_list)) @cls
 (struct_specifier name: (type_identifier) @name body: (field_declaration_list)) @struct_def
+(union_specifier name: (type_identifier) @name body: (field_declaration_list)) @struct_def
 (enum_specifier name: (type_identifier) @name body: (enumerator_list)) @enm
 (namespace_definition name: (_) @name) @namespace_def
 (preproc_include) @imp
