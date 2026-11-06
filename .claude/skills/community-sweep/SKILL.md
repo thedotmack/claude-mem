@@ -1,6 +1,6 @@
 ---
 name: community-sweep
-description: Land community pull requests as the contributor and answer community issues on thedotmack/claude-mem. Takes stock of every open PR (the owner's own included; their new features wait for approval) and community issue, triages each against the owner's merge philosophy and the cmem.ai hosted-service boundary, finishes somewhat-aligned PRs on the contributor's own branch, squash-merges so the contributor stays the commit author on main, thanks them by name, closes fixed issues with credit to reporter and fixer, keeps the private ledger and contributor roster current, and reports what needs the owner. Use when asked to "go through the PRs", "merge contributor PRs", "help contributors with their PRs", "land the new community PRs", "triage new issues and PRs", "run the community sweep", "keep the momentum", or "grow the community".
+description: Land community pull requests as the contributor and answer community issues on thedotmack/claude-mem. Takes stock of every open PR (the owner's own included; their new features wait for approval, and experimental ones stay out until they graduate) and community issue, triages each against the owner's merge philosophy and the cmem.ai hosted-service boundary, finishes somewhat-aligned PRs on the contributor's own branch, squash-merges so the contributor stays the commit author on main, thanks them by name, closes fixed issues with credit to reporter and fixer, keeps the private ledger and contributor roster current, and reports what needs the owner. Use when asked to "go through the PRs", "merge contributor PRs", "help contributors with their PRs", "land the new community PRs", "triage new issues and PRs", "run the community sweep", "keep the momentum", or "grow the community".
 ---
 
 # Community Sweep
@@ -42,7 +42,7 @@ To append a ledger row (tab-separated; PR and issue numbers share one namespace)
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" <number> "$RUN_ID" <action> <merge_sha|-> <author> <coauthors|-> "<one-line note>" >> "$STATE/ledger.tsv"
 ```
 
-- **Actions for PRs:** `merged`, `closed`, `held`, `blocked`, `skipped`.
+- **Actions for PRs:** `merged`, `closed`, `held`, `blocked`, `skipped`; for the owner's held features, also `approved` and `experimental`.
 - **Actions for issues:** `issue-closed`, `issue-answered`, `issue-routed`, `issue-held`.
 - **New ledger:** if `ledger.tsv` doesn't exist, create it with the header `ts pr phase action merge_sha pr_author coauthors note` (tab-separated).
 
@@ -53,11 +53,13 @@ gh pr list --repo thedotmack/claude-mem --state open --limit 500 --json number,t
 gh issue list --repo thedotmack/claude-mem --state open --limit 500 --json number,title,author,createdAt,updatedAt,labels,comments > "$RUN/open-issues.json"
 ```
 
-Put every open PR in exactly one bucket, using its last ledger row:
+Put every open PR in exactly one bucket, using its last ledger row. Use the first bucket that matches:
 
 | Bucket | Rule | What to do |
 |---|---|---|
-| Maintainer | author is `thedotmack` | Triage it (step 2) under the maintainer rules below. |
+| Approved | the owner's PR, last row is `approved` | Re-triage on a fresh head and land it (step 2, the owner's own PRs). |
+| Experimental | the owner's PR, last row is `experimental` | Leave it alone. Report any new activity. |
+| Maintainer | the owner's PR with no row, or the owner pushed after its last `held` row | Triage it (step 2) under the owner's rules. |
 | Held | last row is `held` | Never comment, push, close or approve CI. Report any new activity to the owner. |
 | Blocked | last row is `blocked` | Re-triage only if the author pushed or replied after that row. |
 | Done | last row is `merged` or `closed` | It shouldn't be open, so find out why. |
@@ -107,14 +109,19 @@ Read main's code with `git show origin/main:<path>`. Leave generated bundles out
 | `CONSOLIDATE→#M` | Overlaps #M | Prefer landing the additive piece as its own trimmed PR. Otherwise fold it into #M with credit (step 4). |
 | `SUPERSEDED` | `main` already fixes it | Cite the commit or `file:line`. Close with precise credit. |
 | `HOLD` | Crosses the hosted-service boundary, or needs a product call | Leave it untouched for the owner to decide. |
-| `DECLINE` | Wrong direction, harmful, or not worth finishing | Close with thanks and the reason. |
+| `DECLINE` | Wrong direction, harmful, not worth finishing, or does nothing (a no-op change) | Close with thanks and the reason yourself. Never hand the owner a decision to not merge something useless. |
 | `SPAM` / `EMPTY` | Unrelated to claude-mem, or no code. This includes rewrites of SECURITY.md, README or LICENSE with someone else's details, and CLAUDE.md or AGENTS.md replaced with a tool's generated output | Close with one neutral line. |
 
 ### The owner's own PRs (author `thedotmack`)
 
 The owner's PRs go through the same triage and landing as everyone's, with these differences:
 
-- **A new feature needs the owner's approval.** If the PR adds a capability that didn't exist (a new command, skill, setting, hook, host or provider integration, provider, plugin, sync or backup path, or UI surface), use `HOLD` with the line `new feature: needs owner approval`. Don't push, comment or merge. When it's unclear whether the PR is a fix or a feature, treat it as a feature.
+- **A new feature needs the owner's approval.** If the PR adds a capability that didn't exist (a new command, skill, setting, hook, host or provider integration, provider, plugin, sync or backup path, or UI surface), use `HOLD` with the line `new feature: needs owner approval`. Until it has an `approved` row, don't push, comment or merge. When it's unclear whether the PR is a fix or a feature, treat it as a feature.
+- **A PR the owner is still pushing to is in progress.** If the owner pushed to it during or since the last run, triage it but don't push, and report what's left. Pushing alongside them would race their work.
+- **Approved features land, experimental ones stay out.** The owner sorts held features into two groups, recorded in the ledger:
+  - `approved`: quality-of-life features the product should already have. Re-triage from scratch on a fresh head against current main and the plan masters (approval doesn't wave through a branch that main has moved past), then land it like any other owner PR. If main went another direction, ledger it `held` with the evidence and report it.
+  - `experimental`: stays held until the owner graduates it with an `approved` row. Don't push, merge or refresh it. Each run, list any new activity on it.
+  - A held feature with neither row goes in the report's decisions with a suggested group.
 - **Everything else lands:** bug fixes, docs, tests, refactors, removing dead code, performance work, and fixes or follow-ups to features that already shipped. Merge main into the branch, resolve conflicts, finish gaps with our own commits, and merge.
 - **Plans, research, specs and notes** (a PR that is mostly `plans/`, or only docs for work that isn't built yet) are `HOLD` with `plan-only PR: owner's call`. The owner's rule is that these don't go in PRs.
 - **Never close the owner's PRs.** For `SUPERSEDED`, `DECLINE` or `CONSOLIDATE`, record the verdict and the evidence in the report and leave the PR open.
@@ -134,7 +141,15 @@ claude-mem is open source. cmem.ai is the hosted service: cloud sync, plus the i
 6. Changes cloud-sync semantics: data loss, a weaker ack contract, or sync without entitlement (`src/services/sync/`, `services/sync-api/`).
 7. Adds a new default-on path that spends model tokens, such as extra observer calls, backfills or new ingestion. The same feature as an opt-in that defaults off is fine.
 
-These are not conflicts, so judge them on merit: opt-in bring-your-own providers, hosts and knobs that leave the gateway path first; token-spend optimizations; correct fixes to our own sync client; IDE and host integrations; and fixes to the self-hosted server runtime. A new provider preset never goes above cmem.ai and never edits the installer, sign-in or cost files. If you're unsure, use `HOLD` with one line saying why. Don't guess.
+These are not conflicts, so judge them on merit: opt-in bring-your-own providers, hosts and knobs that leave the gateway path first; token-spend optimizations; correct fixes to our own sync client; IDE and host integrations; and fixes to the self-hosted server runtime. Supporting a new IDE or host is never a product call: the goal is to support every IDE, so a new adapter or `install --ide <host>` gets judged on merit, and an issue asking for one gets a go-ahead, not `OWNER`. A new provider preset never goes above cmem.ai and never edits the installer, sign-in or cost files. If you're unsure, use `HOLD` with one line saying why. Don't guess.
+
+### The live-only observer rule (never `MERGE` as-is)
+
+The local observer is live-only. The owner set this on 2026-11-03, and `AGENTS.md` and `docs/architecture/observer-lifecycle.md` on main hold the full contract. Read both before triaging any PR that touches capture, the hook spool, `SessionMessageBuffer`, `GeneratorExitHandler`, `getResumableSessionIds`, abort categories, resume timers or provider cooldowns.
+
+- A PR that keeps, persists, re-queues or automatically resumes observer inference work after quota, auth, a stall, an outage or a restart breaks the rule. That includes resuming on "proof of recovery", such as a later successful store, a login or a quota reset. Verdict `REWORK` to discard the work through `discardBufferedWork`, or `DECLINE` when nothing else is left. Never `MERGE` it as-is, however good its tests are.
+- Tests that prove a queue drains don't count. The PR must show an outage can't cause later inference spend nobody asked for.
+- Main's code is not the authority when it contradicts `AGENTS.md`. Preserve-and-resume code still on main is a bug waiting for removal. It is not a reason to hold the owner's PR that removes it. #5383 was merged against this rule on 2026-11-05, and on 2026-11-06 the owner's fix #5347 was wrongly held as "overtaken" by it.
 
 ## 3. Land as the contributor
 
@@ -147,19 +162,19 @@ gh pr checkout <N> --repo thedotmack/claude-mem --branch pr-<N>  # sets the push
 git merge --no-edit origin/main                                   # a merge commit; never rebase their commits
 ```
 
-**Generated bundles never land from a PR**; they're rebuilt at release. The generated set is:
-- `plugin/scripts/{worker-service,server-service,mcp-server,context-generator,transcript-watcher}.cjs` and their `.map` files;
+**Generated bundles never land from a PR**; they're rebuilt at release. The generated set is what `scripts/build-hooks.js` and `scripts/build-viewer.js` write. If the list below looks stale, re-read those two scripts:
+- `plugin/scripts/{worker-service,server-service,mcp-server,context-generator,context-read-worker,work-view-read-worker,transcript-watcher,claude-mem-launcher,ensure-launcher}.cjs` and their `.map` files;
 - `plugin/sqlite/**`;
-- `plugin/ui/viewer-bundle.js`;
+- `plugin/ui/viewer-bundle.js`, `plugin/ui/viewer.html`, `plugin/ui/tv.html`, `plugin/ui/work-view/**` (the Vite build of `src/ui/my-work`), and the fonts and icons copied into `plugin/ui/`;
 - `plugin/package.json`.
 
-If the PR changed any of them, restore them with `git checkout origin/main -- <paths>` (or `git rm` any the PR added) and commit `chore: drop generated bundles (rebuilt at release)`. Hand-written files under `plugin/` stay: `plugin/scripts/{bun-runner.js,statusline-counts.js,version-check.js,worker-wrapper.cjs}`, hooks, skills, modes, manifests and UI assets.
+If the PR changed any of them, restore them with `git checkout origin/main -- <paths>` (or `git rm` any the PR added) and commit `chore: drop generated bundles (rebuilt at release)`. If the PR edited only a copy (say `plugin/ui/viewer.html`), move the edit to its source under `src/`. Hand-written files under `plugin/` stay: `plugin/scripts/{bun-runner.js,statusline-counts.js,version-check.js,worker-wrapper.cjs,qoder-hook-launcher.cjs}`, hooks, skills, modes and manifests.
 
 **Apply the verdict.** `MERGE` needs nothing more. For `REWORK` and `TRIM`, follow the gap list (step 4). Our commits use conventional messages and end with the attribution trailers your session specifies.
 
 **Verify on the exact head you will merge:**
 1. Run `npm run typecheck`.
-2. Commit everything first. Then run `npm run build` (the bundle-size guardrail) and `git checkout -- plugin/`, so build output is never committed.
+2. Commit everything first. Then run `npm run build` (the bundle-size guardrail), `git checkout -- plugin/` and `git clean -fd -- plugin/`, so build output is never committed. The checkout alone leaves untracked output behind, such as `plugin/scripts/work-view-read-worker.cjs` and `plugin/ui/work-view/assets/*`. Stage files by name, not with `git add -A`.
 3. Run the PR's targeted tests.
 4. For any non-trivial change, run `env -u CLAUDE_MEM_LLM_TIMEOUT_MS bun test tests` and compare it with `$RUN/baseline-failures.txt`. For a failure that isn't in the baseline, re-run that file alone first. If it passes alone and in CI, it was load from parallel suites. If it still fails, it's the PR's to fix.
 5. If `openclaw/` is touched, run `bun test openclaw`.
@@ -231,7 +246,7 @@ git log origin/main --oneline --grep="#<N>\b"
 | `CONFIRMED` | A real bug on main with no PR. | Reply with the root cause (`file:line` on main) and invite a PR ("happy to help land it"). Alternatively, fix it in our own PR that credits the reporter. |
 | `NEEDS-INFO` | Can't be reproduced or located from the report. | Ask once for exactly what's missing: version, OS, the log lines. |
 | `DUPLICATE→#M` | The same defect as #M. | Comment "Duplicate of #M", then close it as not planned. |
-| `OWNER` | Billing, cmem.ai, the roadmap, or a product call. | No comment. List it for the owner. |
+| `OWNER` | Billing, cmem.ai, the roadmap, or a product call. A new IDE or host integration is not one (step 2's boundary section). | No comment. List it for the owner. |
 | `SPAM` | Unrelated to claude-mem. | Close with one neutral line. |
 
 Before posting, reconcile the claims. If a PR's triage and an issue's triage disagree about what fixes an issue (for example `project=` versus `projects=`), read main yourself. Never credit the wrong person.
@@ -258,14 +273,14 @@ Make them warm, specific and short: name the person, and say what changed for us
 2. **Roster.** Add new merged human authors to `$STATE/ROSTER.md`: login, public name (the squash commit's author), PRs and short SHAs. Add co-author-only credits from `Co-authored-by` trailers, then recount the totals. One person can have two git identities; map them to one login.
 3. **Gate.** After the run's last merge, verify in a fresh `origin/main` worktree:
    - typecheck, build, and the full suite against the baseline;
-   - `git diff <run-start>..origin/main --stat -- 'plugin/scripts/*.cjs' plugin/sqlite plugin/ui/viewer-bundle.js CHANGELOG.md` is empty;
+   - `git log <run-start>..origin/main --format='%h %an %s' -- 'plugin/scripts/*.cjs' plugin/sqlite plugin/ui CHANGELOG.md` lists no contributor PR. A hand-written `.cjs` like `worker-wrapper.cjs` is fine, and so are the owner's own UI builds.
    - `git log <run-start>..origin/main --format='%an' | sort | uniq -c` shows contributors, not only the maintainer.
 
    Fix any regression forward in our own PR, test-first.
 4. **Report.** Write `$RUN/REPORT.md`, then post a short version in chat:
    - a table of outcomes `| # | author | verdict | outcome | merge SHA | author on main | note |`;
    - the issue actions;
-   - **decisions for the owner:** every `HOLD`/`OWNER` item with one line on why, plus new activity on held PRs;
+   - **decisions for the owner:** every `HOLD`/`OWNER` item with one line on why; each held feature of the owner's that has neither an `approved` nor an `experimental` row, with a suggested group; and new activity on held and experimental PRs;
    - post-plans owed, follow-ups, incidents;
    - the roster delta (new authors, new PRs, totals).
 
@@ -289,7 +304,7 @@ Make them warm, specific and short: name the person, and say what changed for us
 
 ## Never
 
-- Land a new feature from a maintainer (`thedotmack`) PR without the owner's approval, or close a maintainer PR.
+- Land a new feature from a maintainer (`thedotmack`) PR without the owner's approval (an `approved` ledger row), land an `experimental` one, or close a maintainer PR.
 - Comment on, push to, close, or approve CI for a held PR.
 - Force-push, rebase, or rewrite a contributor's commits.
 - Override the squash author or body: no `--admin`, `--body` or `--author-email`.
