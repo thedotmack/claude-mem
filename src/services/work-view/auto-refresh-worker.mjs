@@ -1,4 +1,4 @@
-// Keeps My Work current without anyone running a skill: every ten minutes it
+// Keeps My Work current without anyone running a skill: every ten minutes (CLAUDE_MEM_WORK_VIEW_REFRESH_INTERVAL_MIN) it
 // asks refreshNeeds() whether anything is due (ungrouped conversations, due
 // reviews, stale goals, requests not placed in a focus area) and, if so, runs one agent job.
 // Owner rule (Oct 22): AI magic, not speed. No minimum interval, no day
@@ -12,6 +12,23 @@ import { join } from 'node:path';
 import { refreshNeeds, writeJsonAtomic } from './request-groups.mjs';
 
 const TEN_MINUTES_MS = 10 * 60000;
+// setInterval stores its delay in a 32-bit signed integer and fires at once for anything larger.
+const MAX_CHECK_MS = 2 ** 31 - 1;
+
+/**
+ * How often the scheduled check runs, from CLAUDE_MEM_WORK_VIEW_REFRESH_INTERVAL_MIN (minutes).
+ * Each check is a cheap read-only look at the database; an agent runs only when something is due.
+ * Empty, non-numeric or non-positive values keep the ten-minute default, anything under one minute
+ * is raised to one minute, and the result never exceeds what setInterval can hold (about 24 days).
+ * The worker reads this once at start, so a change applies after the worker restarts.
+ * @param {string | number | null | undefined} minutes
+ * @returns {number} milliseconds
+ */
+export function refreshIntervalMs(minutes) {
+  const value = typeof minutes === 'string' ? Number(minutes.trim() === '' ? NaN : minutes) : Number(minutes);
+  if (!Number.isFinite(value) || value <= 0) return TEN_MINUTES_MS;
+  return Math.min(MAX_CHECK_MS, Math.max(60000, Math.round(value * 60000)));
+}
 // After a failed run the next scheduled one waits twice as long each time, up to four hours, and a run
 // that works resets it. Oct 25: a run that failed on the same due groups was restarted every ten minutes
 // all afternoon, each time re-asking every agent from the start.
