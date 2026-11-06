@@ -870,7 +870,7 @@ function migratedCloudSyncHubUrl(raw) {
   }
   return null;
 }
-var LEGACY_TELEGRAM_TRIGGER_TYPES, LEGACY_CLOUD_SYNC_HUB_HOST, DIRECT_SUPABASE_CLOUD_SYNC_HUB_HOST, CANONICAL_CLOUD_SYNC_HUB_URL, RETIRED_OPENROUTER_DEFAULT_MODELS, PINNED_SHIPPED_HAIKU_MODELS, DEFAULT_LLM_TIMEOUT_MS, RAISED_DEADLINE_DEFAULTS, raisedDefaultFailuresReported, SettingsDefaultsManager;
+var LEGACY_TELEGRAM_TRIGGER_TYPES, LEGACY_CLOUD_SYNC_HUB_HOST, DIRECT_SUPABASE_CLOUD_SYNC_HUB_HOST, CANONICAL_CLOUD_SYNC_HUB_URL, RETIRED_OPENROUTER_DEFAULT_MODELS, PINNED_SHIPPED_HAIKU_MODELS, DEFAULT_LLM_TIMEOUT_MS, CHANGED_SHIPPED_DEFAULTS, raisedDefaultFailuresReported, SettingsDefaultsManager;
 var init_SettingsDefaultsManager = __esm({
   "src/shared/SettingsDefaultsManager.ts"() {
     "use strict";
@@ -891,11 +891,17 @@ var init_SettingsDefaultsManager = __esm({
       "claude-haiku-4-5"
     ]);
     DEFAULT_LLM_TIMEOUT_MS = 18e4;
-    RAISED_DEADLINE_DEFAULTS = [
+    CHANGED_SHIPPED_DEFAULTS = [
       // Seeded from #4125 (13.25.2) until #4278.
-      { key: "CLAUDE_MEM_LLM_TIMEOUT_MS", legacy: "30000", markerTag: "llm-timeout-migrated-v1" },
+      { key: "CLAUDE_MEM_LLM_TIMEOUT_MS", legacy: "30000", markerTag: "llm-timeout-migrated-v1", unit: "ms", applyOnlyWhenSaved: false },
       // Seeded from #4136 until the field pass got the same deadline.
-      { key: "CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS", legacy: "30000", markerTag: "field-optimize-timeout-migrated-v1" }
+      { key: "CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS", legacy: "30000", markerTag: "field-optimize-timeout-migrated-v1", unit: "ms", applyOnlyWhenSaved: false },
+      // Seeded 'false' from #4341 (image capture, off) until capture became on by
+      // default. No viewer switch existed before then, so a saved 'false' is almost
+      // always the seeded value. A 'false' typed by hand reads the same and moves
+      // too; typing it changed nothing while 'false' was the default. After this
+      // one move, a 'false' saved by the "Keep images" switch or by hand stays.
+      { key: "CLAUDE_MEM_MEDIA_CAPTURE_ENABLED", legacy: "false", markerTag: "media-capture-default-on-v1", unit: "", applyOnlyWhenSaved: true }
     ];
     raisedDefaultFailuresReported = /* @__PURE__ */ new Set();
     SettingsDefaultsManager = class {
@@ -954,7 +960,14 @@ var init_SettingsDefaultsManager = __esm({
         CLAUDE_MEM_PROVIDER_BY_SOURCE: "",
         CLAUDE_MEM_OBSERVER_ENABLED: "true",
         // 'false' disables new observation and session-summary capture calls
-        CLAUDE_MEM_MEDIA_CAPTURE_ENABLED: "false",
+        // Image capture is on: the viewer's "Keep images" switch turns it off.
+        // No total local cap, by the owner's call (2026-11-05): each image is
+        // bounded (MEDIA_LIMITS in media-contract.ts: 3 MiB canonical, 256 KiB
+        // model copy), an event keeps at most 4, and the local database and
+        // transcripts have no total cap either. Images stay until their event is
+        // deleted. Installs seeded with 'false' move once (CHANGED_SHIPPED_DEFAULTS).
+        CLAUDE_MEM_MEDIA_CAPTURE_ENABLED: "true",
+        // Stays off: sending images to the observer model is separate and paid.
         CLAUDE_MEM_MEDIA_INFERENCE_ENABLED: "false",
         CLAUDE_MEM_CODEX_MODEL: "",
         // Empty uses the Codex default model.
@@ -1381,7 +1394,7 @@ var init_SettingsDefaultsManager = __esm({
             if (!options.readOnly) {
               try {
                 writeJsonFileAtomic(settingsPath, defaults, { mode: 384 });
-                for (const raised of RAISED_DEADLINE_DEFAULTS) markRaisedDefaultDone(settingsPath, raised);
+                for (const raised of CHANGED_SHIPPED_DEFAULTS) markRaisedDefaultDone(settingsPath, raised);
                 console.warn("[SETTINGS] Created settings file with defaults:", settingsPath);
               } catch (error) {
                 console.warn("[SETTINGS] Failed to create settings file, using in-memory defaults:", settingsPath, error instanceof Error ? error.message : String(error));
@@ -1486,12 +1499,14 @@ var init_SettingsDefaultsManager = __esm({
               }
             }
           }
-          for (const raised of RAISED_DEADLINE_DEFAULTS) {
+          for (const raised of CHANGED_SHIPPED_DEFAULTS) {
             if (existsSync6(raisedDefaultMarkerPath(settingsPath, raised))) continue;
             if (flatSettings[raised.key] !== raised.legacy) {
               if (!options.readOnly) markRaisedDefaultDone(settingsPath, raised);
               continue;
             }
+            if (options.readOnly && raised.applyOnlyWhenSaved) continue;
+            const beforeMove = flatSettings;
             flatSettings = {
               ...flatSettings,
               [raised.key]: this.DEFAULTS[raised.key]
@@ -1505,15 +1520,16 @@ var init_SettingsDefaultsManager = __esm({
                 );
                 markRaisedDefaultDone(settingsPath, raised);
                 console.warn(
-                  `[SETTINGS] Migrated ${raised.key} off the old ${raised.legacy}ms default to ${this.DEFAULTS[raised.key]}ms:`,
+                  `[SETTINGS] Migrated ${raised.key} off the old ${raised.legacy}${raised.unit} default to ${this.DEFAULTS[raised.key]}${raised.unit}:`,
                   settingsPath
                 );
               } catch (error) {
+                if (raised.applyOnlyWhenSaved) flatSettings = beforeMove;
                 const reported = `${raised.key}\0${settingsPath}`;
                 if (!raisedDefaultFailuresReported.has(reported)) {
                   raisedDefaultFailuresReported.add(reported);
                   console.warn(
-                    `[SETTINGS] Failed to migrate ${raised.key}; using the new default in memory (reported once per process):`,
+                    raised.applyOnlyWhenSaved ? `[SETTINGS] Failed to migrate ${raised.key}; keeping the saved ${raised.legacy} (reported once per process):` : `[SETTINGS] Failed to migrate ${raised.key}; using the new default in memory (reported once per process):`,
                     settingsPath,
                     error instanceof Error ? error.message : String(error)
                   );
@@ -3157,6 +3173,16 @@ var init_redaction = __esm({
       // print. Neither prefix is claimed by openai_key, so they stayed in the text.
       { name: "groq_key", regex: /\bgsk_[A-Za-z0-9]{52}(?!\w)/g },
       { name: "xai_key", regex: /\bxai-[A-Za-z0-9_]{80}(?!\w)/g },
+      // Perplexity API keys (`pplx-` + 48 alphanumerics): an LLM provider key
+      // that `.env` files, `export PERPLEXITY_API_KEY=…` lines and `curl -H
+      // "Authorization: Bearer …"` commands print. The prefix is not claimed by
+      // openai_key, and Perplexity model ids share it (`pplx-embed-v1-4b`), so
+      // the fixed 48-char alphanumeric body keeps the model ids out. The worker
+      // scans JSON.stringify(toolResponse), where a newline right before the key
+      // arrives as `\n`; the `n` is a word character, so a bare `\b` cannot match
+      // there and the lookbehind also accepts the escaped whitespace pair, like
+      // generic_token's ASSIGNMENT_START.
+      { name: "perplexity_key", regex: new RegExp(String.raw`(?<=\\[nrt]|\b)pplx-[A-Za-z0-9]{48}(?!\w)`, "g") },
       // Supabase personal access tokens (`sbp_` + 40 hex, what `supabase login`
       // stores and SUPABASE_ACCESS_TOKEN holds) and Sentry auth tokens: personal
       // ones (`sntryu_` + 64 hex) and organization ones (`sntrys_` + a base64
@@ -3879,6 +3905,69 @@ var init_api_key_pool = __esm({
   }
 });
 
+// src/supervisor/env-sanitizer.ts
+var ENV_PROXY_VARS, ENV_PRESERVE;
+var init_env_sanitizer = __esm({
+  "src/supervisor/env-sanitizer.ts"() {
+    "use strict";
+    ENV_PROXY_VARS = /* @__PURE__ */ new Set([
+      "HTTP_PROXY",
+      "HTTPS_PROXY",
+      "ALL_PROXY",
+      "NO_PROXY",
+      "http_proxy",
+      "https_proxy",
+      "all_proxy",
+      "no_proxy",
+      "npm_config_proxy",
+      "npm_config_https_proxy",
+      "npm_config_noproxy",
+      // Node's fetch ignores HTTP(S)_PROXY until this is set (NODE_USE_ENV_PROXY=1).
+      // Claude Code applies it from user settings; the observer child does not
+      // load those settings, so the flag has to travel with the other proxy vars
+      // (#5400). The lowercase spelling matches the http_proxy family.
+      "NODE_USE_ENV_PROXY",
+      "node_use_env_proxy"
+    ]);
+    ENV_PRESERVE = /* @__PURE__ */ new Set([
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "CLAUDE_CODE_GIT_BASH_PATH",
+      // The CLI documents CLAUDE_CODE_TMPDIR as the fix for a root-owned per-uid
+      // /tmp/claude-<uid> directory (#4161). Stripping it here sent the SDK child
+      // back to /tmp, so the child hit that directory and exited 1 on every spawn
+      // — the user's only documented escape did nothing.
+      "CLAUDE_CODE_TMPDIR",
+      // Documented Claude Code gateway compatibility switch. The Observer must
+      // inherit an explicit beta opt-out because settingSources: [] prevents the
+      // SDK child from recovering it from user settings. Keep this as a single
+      // named exception: arbitrary CLAUDE_CODE_* host settings remain stripped.
+      "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",
+      // claude-mem's own setting, not a CLI knob (the CLI never reads it): the
+      // path to the claude binary, documented as settable from the file OR the
+      // env. Every daemon spawn passes through sanitizeEnv, and the worker reads
+      // the env override (SettingsDefaultsManager.applyEnvOverrides), so
+      // stripping it silently dropped the env form.
+      "CLAUDE_CODE_PATH",
+      "CLAUDE_CODE_USE_BEDROCK",
+      "CLAUDE_CODE_USE_VERTEX",
+      "CLAUDE_CODE_USE_FOUNDRY",
+      "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
+      "CLAUDE_CODE_SKIP_VERTEX_AUTH",
+      "CLAUDE_CODE_SKIP_FOUNDRY_AUTH",
+      "ANTHROPIC_BEDROCK_BASE_URL",
+      "AWS_REGION",
+      "AWS_PROFILE",
+      "AWS_ACCESS_KEY_ID",
+      "AWS_SECRET_ACCESS_KEY",
+      "AWS_SESSION_TOKEN",
+      "ANTHROPIC_VERTEX_PROJECT_ID",
+      "CLOUD_ML_REGION",
+      "GOOGLE_APPLICATION_CREDENTIALS",
+      ...ENV_PROXY_VARS
+    ]);
+  }
+});
+
 // src/shared/oauth-token.ts
 import { execFile } from "child_process";
 import { promisify } from "util";
@@ -3928,6 +4017,7 @@ var CREDENTIAL_KEYS;
 var init_EnvManager = __esm({
   "src/shared/EnvManager.ts"() {
     "use strict";
+    init_env_sanitizer();
     init_logger();
     init_paths();
     init_atomic_json();
