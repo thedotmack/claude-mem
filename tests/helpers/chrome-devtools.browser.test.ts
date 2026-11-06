@@ -64,6 +64,9 @@ const MAX_EXIT_DELAY_AFTER_CLOSE_MS = 2000;
     await navigation;
     await withTimeout((async () => { while (!(await page.evaluate(predicate))) await Bun.sleep(10); })(), 5_000, 'Streamed body did not arrive');
     expect(await page.evaluate(predicate)).toBe(true);
+    const error = await page.evaluate("(() => { throw new Error('matrix diagnostic detail'); })()").then(() => null, error => error);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toContain('matrix diagnostic detail');
   } finally {
     releaseBody(); page?.close(); await browser.close(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
   }
