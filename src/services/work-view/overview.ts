@@ -4,10 +4,16 @@ import { toWorkModel } from '../../ui/my-work/src/live/to-work-model.js';
 import { isCardDeliverable } from '../../ui/my-work/src/lib/deliverables.js';
 import type { Request as WorkRequest } from '../../ui/my-work/src/data.js';
 import { SOLO_REQUESTER, type WorkViewOverview, type WorkViewOverviewRequest, type WorkViewRequestDetail } from '../../ui/my-work/src/live/work-view-overview.js';
-import type { WorkViewSnapshot as ApiSnapshot } from '../../ui/my-work/src/live/work-view-api-types.js';
+import type { WorkViewMediaManifest, WorkViewSnapshot as ApiSnapshot } from '../../ui/my-work/src/live/work-view-api-types.js';
+import type { MediaManifest } from '../../shared/media-contract.js';
 import type { WorkViewSnapshot } from './data-source.mjs';
 
 type RawRequest = ApiSnapshot['humanRequests'][number];
+
+/** My Work restates the media contract's manifest type (its tsconfig cannot load media-contract.ts). This line fails
+ * the root typecheck when the two drift apart. */
+const MEDIA_TYPES_AGREE: [MediaManifest, WorkViewMediaManifest] extends [WorkViewMediaManifest, MediaManifest] ? true : never = true;
+void MEDIA_TYPES_AGREE;
 
 /**
  * 96 bits, which is plenty for telling apart the versions of one request. It

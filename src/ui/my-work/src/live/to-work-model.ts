@@ -207,6 +207,7 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
       kind: activity.kind === 'observation' ? 'memory' as const : 'work' as const,
       text: cleanText(activity.detail ? `${activity.title}: ${activity.detail}` : activity.title, 200),
       at: formatRecordTime(activity.atEpoch, now),
+      ...(activity.media ? { media: activity.media } : {}),
     })).filter((record) => record.text),
     conversations: raw.conversationKeys.map((key) => {
       const [, platform, sessionId] = parseRecordKey(key)
@@ -221,6 +222,7 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
       .map((prompt) => ({ at: prompt.atEpoch ? formatPromptStamp(prompt.atEpoch) : 'Time not recorded', quote: cleanText(prompt.text, 400) }))
       .filter((prompt) => prompt.quote),
     workProduct: mapWorkProduct(raw.workProduct),
+    ...(raw.media ? { media: raw.media } : {}),
     followUps: [],
     story: review ? storySteps(review, now) : [],
     storyNarrative: review?.narrative?.trim() || undefined,

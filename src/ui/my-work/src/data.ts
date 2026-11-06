@@ -1,5 +1,6 @@
 // Request types, the sample fixtures (SAMPLE_*) and pure request rules. The model every page reads is in the store (store/).
 import type { WorkModel } from './live/work-data-source.ts'
+import type { WorkViewMediaManifest, WorkViewRequestMedia } from './live/work-view-api-types.ts'
 
 export interface Device { id: string; name: string; syncedMinutesAgo: number; online: boolean }
 /** 'other' is any platform without its own mark (a neutral mark is shown). */
@@ -31,6 +32,8 @@ export interface Request {
   detailRevision?: string
   /** Exact card counts when the overview carries only a bounded preview. */
   detailCounts?: { workProduct: number }
+  /** The images its listed records link: the count and the newest four. Rides the compact overview; absent when it has none. */
+  media?: WorkViewRequestMedia
   title: string | null
   /** True when the title repeats the request's own prompts in full text (prompt-echo.ts); a shared page hides it. */
   titleRepeatsPrompt?: boolean
@@ -64,7 +67,8 @@ export interface Request {
   terminal: string[]
   activityWord: string
   workstreams: { title: string; tasks: { name: string; done: boolean }[] }[]
-  granular: { kind: 'work' | 'memory'; text: string; at: string }[]
+  /** `media`: the record's image refs (ids and labels only); absent when it has none. */
+  granular: { kind: 'work' | 'memory'; text: string; at: string; media?: WorkViewMediaManifest }[]
   conversations: { tool: string; at: string; title: string }[]
   prompts: Quote[]
   /** `href` is a real published page, PR or commit; '#' means a sample link with nothing behind it; absent means a
