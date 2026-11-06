@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { createSetupTelemetry } from '../../src/services/setup/telemetry.js';
 import { readSetupTelemetryContext, setupSessionPath, startSetupSession } from '../../src/shared/setup-state.js';
 import { parseSetupEvent, type SetupEvent } from '../../src/shared/setup-funnel.js';
+import { createSetupTracker } from '../../src/ui/my-work/src/setup/setup-telemetry.ts';
 
 const scratch = join(import.meta.dir, '..', '..', '.scratch', 'test-runs');
 mkdirSync(scratch, { recursive: true });
@@ -79,5 +80,29 @@ describe('setup episode collection', () => {
     rmSync(setupSessionPath(statePath));
     finish();
     expect(sent.map(item => item.event)).toEqual(['setup_step_transitioned', 'setup_completed']);
+  });
+  it('replays the complete pending visit chain if completion overtakes a blocked POST', async () => {
+    const { collector, context, statePath, sent } = fixture();
+    let unblock!: () => void;
+    const blocked = new Promise<void>(resolve => { unblock = resolve; });
+    const tracker = createSetupTracker(async event => { await blocked; collector.receive(event); });
+    tracker.start(context);
+    tracker.view('scan', { branch: 'go', branch_confirmed: false });
+    tracker.view('workspace', { branch: 'home', branch_confirmed: true });
+    await Promise.resolve();
+    expect(sent).toHaveLength(0);
+    const batch = tracker.completionEvents();
+    expect(batch).toHaveLength(5);
+    const completeAfterWrite = collector.prepareCompletion(batch);
+    rmSync(setupSessionPath(statePath));
+    completeAfterWrite();
+    completeAfterWrite();
+    tracker.complete();
+    unblock();
+    await tracker.flush();
+    expect(sent).toHaveLength(5);
+    const workspace = sent.filter(event => event.step === 'workspace');
+    expect(workspace.map(event => event.event)).toEqual(['setup_step_viewed', 'setup_step_transitioned', 'setup_completed']);
+    expect(new Set(workspace.map(event => event.visit_id)).size).toBe(1);
   });
 });

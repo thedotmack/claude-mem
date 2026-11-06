@@ -15,10 +15,10 @@ export function createSetupTelemetry(statePath: string, options: {
   let flowId: string | null = null;
   const received = new Set<string>();
   const exitedVisits = new Set<string>();
-  const matching = (value: unknown, context: SetupTelemetryContext | null): SetupEvent | null => {
+  const matching = (value: unknown, context: SetupTelemetryContext | null, queued = false): SetupEvent | null => {
     const event = parseSetupEvent(value);
     return event && context && event.setup_flow_id === context.setup_flow_id && event.already_pro === context.already_pro
-      && Math.abs(now() - event.occurred_at) <= 5 * 60_000 ? event : null;
+      && event.occurred_at <= now() + 5 * 60_000 && (queued || event.occurred_at >= now() - 5 * 60_000) ? event : null;
   };
   const accept = (event: SetupEvent): boolean => {
     if (!consent()) return false;
@@ -42,12 +42,14 @@ export function createSetupTelemetry(statePath: string, options: {
     /** Validate while the installer marker exists; invoke only after its completion write succeeds. */
     prepareCompletion(value: unknown): () => void {
       const context = consent() ? readSetupTelemetryContext(statePath) : null;
-      if (!Array.isArray(value) || value.length !== 2) return () => {};
-      const events = value.map(item => matching(item, context));
-      const [transition, complete] = events;
+      if (!Array.isArray(value) || value.length < 2 || value.length > 202) return () => {};
+      const events = value.map(item => matching(item, context, true));
+      if (events.some(event => !event)) return () => {};
+      const [transition, complete] = events.slice(-2);
       if (!transition || !complete || transition.event !== 'setup_step_transitioned' || transition.to_step !== 'complete'
         || complete.event !== 'setup_completed' || transition.visit_id !== complete.visit_id) return () => {};
-      return () => { accept(transition); accept(complete); };
+      if (events.slice(0, -2).some(event => event!.event === 'setup_completed' || event!.to_step === 'complete')) return () => {};
+      return () => { for (const event of events) accept(event!); };
     },
   };
 }

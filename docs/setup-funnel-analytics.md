@@ -57,6 +57,11 @@ The worker accepts events only from its same-origin local UI and validates
 every property. Structural events bypass daily aggregation so visit joins
 remain possible. Completion travels with the successful completion request,
 before the installer can remove its session or restart the worker.
+Unacknowledged events (up to 200) accompany completion as one validated batch,
+so a slow local telemetry request cannot leave a recorded completion without
+its screen visits. Event IDs deduplicate that batch against concurrent sends.
+Temporary context-read failures retry without delaying setup; an explicit
+disabled/no-session response stops the retry loop.
 
 Tests: `bun test tests/telemetry/setup-funnel.test.ts
 tests/worker/http/routes/setup-telemetry-routes.test.ts

@@ -16,7 +16,7 @@ import { SavingsScreen } from './screens/savings-screen'
 import { ScanScreen } from './screens/scan-screen'
 import { prefersReducedMotion } from './format'
 import { WorkspaceScreen } from './screens/workspace-screen'
-import { createSetupTracker, readSetupTelemetryContext, sendSetupEvent } from './setup-telemetry'
+import { connectSetupTelemetry, createSetupTracker, sendSetupEvent } from './setup-telemetry'
 import type { SetupError } from '../../../../shared/setup-funnel.ts'
 import './setup.css'
 
@@ -59,13 +59,12 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
   const [branchConfirmed, setBranchConfirmed] = useState(false)
   useEffect(() => {
     if (source?.kind !== 'local') return
-    let mounted = true
-    void readSetupTelemetryContext().then(context => { if (mounted) telemetry.start(context) })
+    const disconnect = connectSetupTelemetry(context => telemetry.start(context))
     const visibility = () => telemetry.visibility(document.visibilityState !== 'hidden')
     const leaving = () => telemetry.visibility(false)
     document.addEventListener('visibilitychange', visibility)
     window.addEventListener('pagehide', leaving)
-    return () => { mounted = false; document.removeEventListener('visibilitychange', visibility); window.removeEventListener('pagehide', leaving) }
+    return () => { disconnect(); document.removeEventListener('visibilitychange', visibility); window.removeEventListener('pagehide', leaving) }
   }, [source, telemetry])
   const [data, setData] = useState<SetupData>(EMPTY_SETUP_DATA)
   useEffect(() => source?.subscribe(setData), [source])

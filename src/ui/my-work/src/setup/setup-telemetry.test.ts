@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { createSetupTracker } from './setup-telemetry.ts'
+import { connectSetupTelemetry, createSetupTracker, readSetupTelemetryContext, sendSetupEvent } from './setup-telemetry.ts'
 import { parseSetupEvent, type SetupEvent } from '../../../../shared/setup-funnel.ts'
 
 const flow = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -85,6 +85,7 @@ describe('actual setup screen telemetry', () => {
     tracker.action('choice_committed', home)
     tracker.view('finish-setup', home)
     tracker.view('workspace', home)
+    await tracker.flush()
     const completion = tracker.completionEvents()
     assert.deepEqual(completion.map(event => event.event), ['setup_step_transitioned', 'setup_completed'])
     assert.equal(completion[0].to_step, 'complete')
@@ -119,5 +120,61 @@ describe('actual setup screen telemetry', () => {
     await tracker.flush()
     assert.equal(sent.at(-1)?.step, 'scan')
     assert.equal(sent.at(-1)?.visit_id, sent[0].visit_id)
+  })
+  it('keeps failed deliveries in the completion batch until they are acknowledged', async () => {
+    const tracker = createSetupTracker(async () => { throw new Error('offline') })
+    tracker.start({ setup_flow_id: flow, already_pro: false })
+    tracker.view('scan', unknown)
+    tracker.view('workspace', home)
+    await tracker.flush()
+    const batch = tracker.completionEvents()
+    assert.deepEqual(batch.map(event => event.event), ['setup_step_viewed', 'setup_step_transitioned', 'setup_step_viewed', 'setup_step_transitioned', 'setup_completed'])
+    assert.equal(batch[2].visit_id, batch[3].visit_id)
+    assert.equal(batch[3].visit_id, batch[4].visit_id)
+  })
+  it('retries a temporary context failure while preserving explicit opt-out', async () => {
+    let attempts = 0
+    let stop = () => {}
+    const recovered = await new Promise<unknown>(resolve => {
+      stop = connectSetupTelemetry(resolve, async () => {
+        if (++attempts === 1) throw new Error('temporary worker failure')
+        return { setup_flow_id: flow, already_pro: false }
+      }, 1)
+    })
+    stop()
+    assert.deepEqual(recovered, { setup_flow_id: flow, already_pro: false })
+    assert.equal(attempts, 2)
+    attempts = 0
+    const disabled = await new Promise(resolve => {
+      stop = connectSetupTelemetry(resolve, async () => { attempts++; return null }, 1)
+    })
+    await new Promise(resolve => setTimeout(resolve, 5))
+    stop()
+    assert.equal(disabled, null)
+    assert.equal(attempts, 1)
+  })
+  it('cancels a pending context retry on unmount', async () => {
+    let attempts = 0
+    const stop = connectSetupTelemetry(() => { throw new Error('must not publish') }, async () => { attempts++; throw new Error('offline') }, 20)
+    await new Promise(resolve => setTimeout(resolve, 2))
+    stop()
+    await new Promise(resolve => setTimeout(resolve, 25))
+    assert.equal(attempts, 1)
+  })
+  it('does not treat non-2xx responses as consent or delivery acknowledgement', async () => {
+    const saved = globalThis.fetch
+    const { tracker } = fixture()
+    tracker.start({ setup_flow_id: flow, already_pro: false })
+    tracker.view('workspace', home)
+    const event = tracker.completionEvents().at(-1)!
+    try {
+      globalThis.fetch = async () => new Response('', { status: 503 })
+      await assert.rejects(readSetupTelemetryContext)
+      await assert.rejects(() => sendSetupEvent(event))
+      globalThis.fetch = async () => Response.json({ context: null })
+      assert.equal(await readSetupTelemetryContext(), null)
+      globalThis.fetch = async () => Response.json({})
+      await assert.rejects(readSetupTelemetryContext)
+    } finally { globalThis.fetch = saved }
   })
 })
