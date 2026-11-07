@@ -1015,7 +1015,8 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
 
       const pieces = raw.split(/\s+/);
       const maybeLimit = pieces[pieces.length - 1];
-      const hasTrailingLimit = /^\d+$/.test(maybeLimit);
+      // A lone number is the query (a PR number, port or year), not a limit, as in /claude-mem-timeline.
+      const hasTrailingLimit = pieces.length >= 2 && /^\d+$/.test(maybeLimit);
       const limit = hasTrailingLimit ? parseLimit(maybeLimit, 10) : 10;
       const query = hasTrailingLimit ? pieces.slice(0, -1).join(" ") : raw;
 
