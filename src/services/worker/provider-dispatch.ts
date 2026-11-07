@@ -442,6 +442,7 @@ const quotaNoticeResolution: QuotaFallbackResolver = (held, nowMs, activeHolds) 
     .filter(hold => cooldownAppliesToCurrentAccount(hold) && (hold.provider === main || hold.provider === backup || hold.provider === routed))
     .map(hold => ({
       provider: hold.provider,
+      ...(hold.profile ? { profile: hold.profile } : {}),
       displayName: displayName(hold.provider, hold.auth ?? mainAuth),
       retryName: retryName(hold.provider, hold.auth ?? mainAuth),
       role: hold.provider === main && !(main === 'claude' && hold.auth && hold.auth !== mainAuth) ? 'main' : 'backup',

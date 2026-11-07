@@ -260,11 +260,20 @@ export function observerHealthWarning(forHuman: boolean = false): string {
   // is saving, so it supersedes the failure that armed that hold, including
   // when the notice is silent. Unrelated failures still get their own banner.
   // A Claude hold only applies to the account it was armed under.
-  const cooldown = health?.quotaCooldown;
+  //
+  // The notice was mirrored under whichever account was selected then, so a
+  // Claude hold is dropped here unless it pauses the account selected now. A
+  // hold mirrored before holds carried their own account uses the ledger's.
+  const mirrored = health?.quotaCooldown;
+  const cooldown = mirrored?.notice
+    ? { ...mirrored, notice: { ...mirrored.notice, holds: mirrored.notice.holds.filter(hold =>
+      cooldownAppliesToCurrentAccount({ provider: hold.provider, profile: hold.profile ?? mirrored.profile })) } }
+    : mirrored;
   let notice: string | null = null;
-  if (isObserverQuotaCooldownActive(health) && cooldown && (cooldown.notice || cooldownAppliesToCurrentAccount(cooldown))
+  if (health && isObserverQuotaCooldownActive(health) && cooldown
+    && (cooldown.notice ? cooldown.notice.holds.length > 0 : cooldownAppliesToCurrentAccount(cooldown))
     && (!isObserverUnhealthy(health) || (cooldown.notice && (isQuotaFailure(health) || isQuotaGuardPause(health))))) {
-    notice = renderObserverQuotaCooldownNotice(health);
+    notice = renderObserverQuotaCooldownNotice({ ...health, quotaCooldown: cooldown });
   } else if (isObserverUnhealthy(health)) {
     notice = renderObserverHealthWarning(health);
   }

@@ -117,6 +117,8 @@ export type ObserverQuotaReason =
 
 export interface ObserverQuotaNoticeHold {
   provider: string;
+  /** 'claude' only: the account the hold pauses (cooldownAppliesToCurrentAccount). */
+  profile?: string;
   displayName: string;
   retryName: string;
   role: 'main' | 'backup';
