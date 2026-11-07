@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
-import { CodexProvider, classifyCodexError } from '../../src/services/worker/CodexProvider.js';
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import { CodexProvider, classifyCodexError, CODEX_EXIT_REPORT_LINES } from '../../src/services/worker/CodexProvider.js';
+import { logger } from '../../src/utils/logger.js';
 import { CODEX_SETUP_REQUIRED_CODE } from '../../src/services/worker/CodexAppServerClient.js';
 import { SessionRoutes } from '../../src/services/worker/http/routes/SessionRoutes.js';
 import { SettingsRoutes } from '../../src/services/worker/http/routes/SettingsRoutes.js';
@@ -50,8 +51,11 @@ function stubCompletedAppServerTurns(provider: any, contents: Array<string | nul
   return methods;
 }
 let savedProvider: string | undefined;
+let savedMaxConcurrentAgents: string | undefined;
 beforeEach(() => {
   savedProvider = process.env.CLAUDE_MEM_PROVIDER;
+  savedMaxConcurrentAgents = process.env.CLAUDE_MEM_CODEX_MAX_CONCURRENT_AGENTS;
+  process.env.CLAUDE_MEM_CODEX_MAX_CONCURRENT_AGENTS = '2';
   process.env.CLAUDE_MEM_PROVIDER = 'codex';
   resetQuotaCooldownsForTesting();
   clearDependencyStatus('codex_cli');
@@ -61,6 +65,8 @@ afterEach(() => {
   clearDependencyStatus('codex_cli');
   if (savedProvider === undefined) delete process.env.CLAUDE_MEM_PROVIDER;
   else process.env.CLAUDE_MEM_PROVIDER = savedProvider;
+  if (savedMaxConcurrentAgents === undefined) delete process.env.CLAUDE_MEM_CODEX_MAX_CONCURRENT_AGENTS;
+  else process.env.CLAUDE_MEM_CODEX_MAX_CONCURRENT_AGENTS = savedMaxConcurrentAgents;
 });
 
 let nextSessionId = 710;
@@ -86,15 +92,16 @@ function harness(startSession: (s: ActiveSession) => Promise<void>) {
   const other = mock(async () => {});
   const finalize = mock(async () => {});
   const scheduleTransportResume = mock(() => {});
+  const discard = mock(() => 1);
   const codex = mock(startSession);
-  const manager = { getSession: () => s, resetProcessingToPending: reset,
+  const manager = { getSession: () => s, resetProcessingToPending: reset, discardBufferedWork: discard,
     getMessageBuffer: () => ({ getPendingCount: () => 1, peekTypes: () => [] }),
     clearTransportResume: mock(() => {}), scheduleTransportResume,
     removeSessionImmediate: mock(() => {}) };
   const routes = new SessionRoutes(manager as any, {} as any, { startSession: other } as any,
     { startSession: other } as any, { startSession: other } as any, {} as any, {} as any,
     { finalizeSession: finalize } as any, { startSession: codex } as any);
-  return { s, routes, codex, other, reset, finalize, scheduleTransportResume };
+  return { s, routes, codex, other, reset, finalize, scheduleTransportResume, discard };
 }
 
 /** A generator that fails the way the real provider does: through its handleSessionError. */
@@ -127,12 +134,19 @@ describe('Codex provider integration', () => {
     it(`preserves concurrent quota refusal through valid observation storage (failure before success: ${failureBeforeSuccess})`, async () => {
       const provider = new CodexProvider(null as any, null as any) as any;
       const pending: Array<{ options: any; resolve: (value: any) => void; reject: (error: unknown) => void }> = [];
-      provider.appServer.runTurn = (options: any) => {
+      let expectedAdmissions = 2;
+      let admitted!: () => void;
+      let ready = new Promise<void>(resolve => { admitted = resolve; });
+      for (const client of provider.appServer.clients) client.runTurn = (options: any) => {
         options.beforeSend();
-        return new Promise((resolve, reject) => { pending.push({ options, resolve, reject }); });
+        return new Promise((resolve, reject) => {
+          pending.push({ options, resolve, reject });
+          if (pending.length === expectedAdmissions) admitted();
+        });
       };
       const earlier = provider.query([], config);
       const later = provider.query([], config).catch((error: unknown) => error);
+      await ready;
       expect(pending).toHaveLength(2);
       const fail = async () => {
         const error = new Error('usage limit reached');
@@ -156,7 +170,10 @@ describe('Codex provider integration', () => {
 
       // Once the window has elapsed, the recovery probe clears the pause and stores its reply.
       recordQuotaExhausted('codex', 'usage limit reached', undefined, Date.now() - QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS - 1);
+      expectedAdmissions = 3;
+      ready = new Promise<void>(resolve => { admitted = resolve; });
       const recovery = provider.query([], config);
+      await ready;
       pending[2].resolve({ content: observation });
       await h.process((await recovery).content, { ...session(), currentProvider: 'codex' });
       expect(h.store).toHaveBeenCalledTimes(2);
@@ -195,15 +212,19 @@ describe('Codex provider integration', () => {
       const failure = new Error(message);
       let rejectOld!: (error: unknown) => void;
       let sends = 0;
-      provider.appServer.runTurn = (options: any) => {
+      let admitted!: () => void;
+      const ready = new Promise<void>(resolve => { admitted = resolve; });
+      for (const client of provider.appServer.clients) client.runTurn = (options: any) => {
         options.beforeSend();
         if (++sends === 1) {
           options.onFailure(failure);
+          admitted();
           return new Promise((_, reject) => { rejectOld = reject; });
         }
         return Promise.resolve({ content: 'Recovered' });
       };
       const old = provider.query([], config).catch((error: unknown) => error);
+      await ready;
       const published = armed();
       expect(published).not.toBeNull();
       age();
@@ -217,7 +238,7 @@ describe('Codex provider integration', () => {
       await provider.query([], config);
       expect(sends).toBe(3);
       // A new failure arms a fresh window.
-      provider.appServer.runTurn = async (options: any) => { options.onFailure(failure); throw failure; };
+      for (const client of provider.appServer.clients) client.runTurn = async (options: any) => { options.onFailure(failure); throw failure; };
       await expect(provider.query([], config)).rejects.toMatchObject({ kind });
       expect(armed()).not.toBeNull();
       expect(armed()).not.toBe(published);
@@ -232,7 +253,7 @@ describe('Codex provider integration', () => {
   it('does not resend after an ambiguous transient attempt', async () => {
     const provider = new CodexProvider(null as any, null as any) as any;
     let sends = 0;
-    provider.appServer.runTurn = async (options: any) => {
+    for (const client of provider.appServer.clients) client.runTurn = async (options: any) => {
       const failure = new Error(++sends === 1 ? 'connection closed' : 'usage limit reached');
       options.onFailure(failure);
       throw failure;
@@ -286,7 +307,7 @@ describe('Codex provider integration', () => {
     let started!: () => void;
     let nativeSignal: AbortSignal | undefined;
     const ready = new Promise<void>(resolve => { started = resolve; });
-    provider.appServer.runTurn = (options: any) => new Promise((_, reject) => {
+    for (const client of provider.appServer.clients) client.runTurn = (options: any) => new Promise((_, reject) => {
       nativeSignal = options.signal;
       options.signal.addEventListener('abort', () => reject(new Error('compression aborted')), { once: true });
       started();
@@ -311,7 +332,7 @@ describe('Codex provider integration', () => {
   for (const [kind, pause] of [
     ['quota_exhausted', 'quota'], ['auth_invalid', 'auth'], ['rate_limit', 'rate_limit'], ['transient', 'transport'],
   ] as const) {
-    it(`pauses on ${kind}, keeps Codex selected and preserves buffered work`, async () => {
+    it(`pauses on ${kind}, keeps Codex selected and ${kind === 'quota_exhausted' || kind === 'auth_invalid' ? 'discards' : 'preserves'} buffered work`, async () => {
       const h = harness(failingLikeCodex(new ClassifiedProviderError('fixture failure', { kind, cause: null })));
       await h.routes.ensureGeneratorRunning(h.s.sessionDbId, 'test');
       await h.s.generatorPromise;
@@ -319,6 +340,9 @@ describe('Codex provider integration', () => {
       expect(h.other).not.toHaveBeenCalled();
       expect(h.finalize).not.toHaveBeenCalled();
       expect(h.s.pausedReason).toBe(pause);
+      // Quota and auth discard pending inputs; other pauses keep the bounded live buffer.
+      if (pause === 'quota' || pause === 'auth') expect(h.discard).toHaveBeenCalledWith(h.s.sessionDbId);
+      else expect(h.discard).not.toHaveBeenCalled();
       expect(getSelectedProvider()).toBe('codex');
       expect(selectProviderForGenerator().provider).toBe('codex');
       expect(h.s.generatorPromise).toBeNull();
@@ -340,6 +364,9 @@ describe('Codex provider integration', () => {
     recordQuotaExhausted('codex', 'fixture');
     await h.routes.ensureGeneratorRunning(h.s.sessionDbId, 'test');
     expect(h.codex).not.toHaveBeenCalled();
+    // The withheld start skips the work it found rather than holding it for the reset.
+    expect(h.discard).toHaveBeenCalledTimes(1);
+    expect(h.s.pausedReason).toBe('quota');
     recordQuotaExhausted('codex', 'fixture', undefined, Date.now() - QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS - 1);
     await h.routes.ensureGeneratorRunning(h.s.sessionDbId, 'test');
     await h.s.generatorPromise;
@@ -417,7 +444,7 @@ describe('Codex provider integration', () => {
     recordCodexCliSetupRequired('fixture');
     ageCodexSetupStatus();
     const provider = new CodexProvider(null as any, null as any) as any;
-    provider.appServer.runTurn = mock(async (options: any) => { options.beforeSend(); return { content: '' }; });
+    for (const client of provider.appServer.clients) client.runTurn = mock(async (options: any) => { options.beforeSend(); return { content: '' }; });
     await provider.query([{ role: 'user', content: 'probe' }], config);
     expect(getQuotaCooldown('codex')).toBeNull();
     expect(getDependencyStatus('codex_cli')).toBeNull();
@@ -433,7 +460,7 @@ describe('Codex provider integration', () => {
       let release!: () => void;
       const queued = new Promise<void>(resolve => { release = resolve; });
       let sends = 0;
-      provider.appServer.runTurn = async (options: any) => {
+      for (const client of provider.appServer.clients) client.runTurn = async (options: any) => {
         await queued;
         try {
           options.beforeSend();
@@ -459,7 +486,7 @@ describe('Codex provider integration', () => {
     recordQuotaExhausted('codex', 'fixture', undefined, Date.now() - QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS - 1);
     const provider = new CodexProvider(null as any, null as any) as any;
     const sends = mock(async (options: any) => { options.beforeSend(); return { content: '<observation/>' }; });
-    provider.appServer.runTurn = sends;
+    for (const client of provider.appServer.clients) client.runTurn = sends;
     await provider.query([{ role: 'user', content: 'input' }], config);
     expect(sends).toHaveBeenCalledTimes(1);
     expect(getQuotaCooldown('codex')).toBeNull();
@@ -468,7 +495,7 @@ describe('Codex provider integration', () => {
   it('forwards all conversation text and accepts successful quota-related prose', async () => {
     const provider = new CodexProvider(null as any, null as any) as any;
     const turn = mock(async () => ({ content: 'The application session limit is configurable.', inputTokens: 10, outputTokens: 4 }));
-    provider.appServer.runTurn = turn;
+    for (const client of provider.appServer.clients) client.runTurn = turn;
     const history = [{ role: 'user', content: 'observation input' }, { role: 'assistant', content: 'prior observation' }, { role: 'user', content: 'summary request' }];
     const result = await provider.query(history, config);
     for (const message of history) expect((turn.mock.calls[0] as any)[0].prompt).toContain(message.content);
@@ -484,7 +511,7 @@ describe('Codex provider integration', () => {
   it('uses the shared LLM deadline, or the caller\'s own (the field pass)', async () => {
     const provider = new CodexProvider(null as any, null as any) as any;
     const turn = mock(async () => ({ content: 'ok' }));
-    provider.appServer.runTurn = turn;
+    for (const client of provider.appServer.clients) client.runTurn = turn;
     const savedTimeout = process.env.CLAUDE_MEM_LLM_TIMEOUT_MS;
     process.env.CLAUDE_MEM_LLM_TIMEOUT_MS = '45000';
     try {
@@ -508,7 +535,7 @@ describe('Codex provider integration', () => {
       let started!: () => void;
       let nativeSignal: AbortSignal | undefined;
       const ready = new Promise<void>(resolve => { started = resolve; });
-      provider.appServer.runTurn = (options: any) => new Promise((_, reject) => {
+      for (const client of provider.appServer.clients) client.runTurn = (options: any) => new Promise((_, reject) => {
         nativeSignal = options.signal;
         options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
         started();
@@ -535,6 +562,279 @@ describe('Codex provider integration', () => {
     });
   }
 
+  it('classifies a recycle SIGKILL as transient when the stderr tail quotes a stale 401', () => {
+    const staleAuthStderr = 'failed to connect to websocket: IO error: Connection reset by peer (os error 54), url: wss://chatgpt.com/backend-api/codex/responses\n'
+      + '2026-11-02T07:14:11.006948Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: Connection reset by peer (os error 54)\n'
+      + '2026-11-02T07:14:14.708504Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: authentication failed with 401 unauthorized';
+    const message = `Codex app-server exited with code null signal SIGKILL: ${staleAuthStderr}`;
+    expect(classifyCodexError(new Error(message)).kind).toBe('transient');
+    const withSignal = Object.assign(new Error(message), { exitCode: null, exitSignal: 'SIGKILL' });
+    expect(classifyCodexError(withSignal).kind).toBe('transient');
+  });
+
+  it('classifies SIGTERM exit as transient', () => {
+    const error = Object.assign(
+      new Error('Codex app-server exited with code null signal SIGTERM: graceful shutdown'),
+      { exitCode: null, exitSignal: 'SIGTERM' },
+    );
+    expect(classifyCodexError(error).kind).toBe('transient');
+  });
+
+  it('classifies a 401 on an ordinary exit as auth_invalid', () => {
+    const error = Object.assign(
+      new Error('Codex app-server exited with code 1 signal null: authentication failed with 401 unauthorized'),
+      { exitCode: 1, exitSignal: null },
+    );
+    expect(classifyCodexError(error).kind).toBe('auth_invalid');
+  });
+
+  // #5275 follow-up: an ordinary exit still quotes the lifetime stderr tail.
+  // A 401 that is no longer in the trailing lines did not stop this process.
+  describe('ordinary app-server exits read auth text only from the recent stderr tail', () => {
+    const staleAuthLine = '2026-11-02T07:14:14.708504Z ERROR codex_api::endpoint::responses_websocket: authentication failed with 401 unauthorized';
+    const benign = (index: number) =>
+      `2026-11-02T07:20:${String(index % 60).padStart(2, '0')}Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: Connection reset by peer (os error 54)`;
+
+    function ordinaryExit(lines: string[]): Error {
+      return Object.assign(
+        new Error(`Codex app-server exited with code 1 signal null: ${lines.join('\n')}`),
+        { exitCode: 1, exitSignal: null },
+      );
+    }
+
+    function authHeuristicLogs(warn: ReturnType<typeof spyOn>): Array<unknown[]> {
+      return warn.mock.calls.filter((call: unknown[]) => String(call[1]).includes('text heuristic'));
+    }
+
+    /** Logger arguments, including Error.message, which JSON.stringify skips. */
+    function argumentsContain(value: unknown, token: string, seen = new Set<object>()): boolean {
+      if (typeof value === 'string') return value.includes(token);
+      if (typeof value !== 'object' || value === null || seen.has(value)) return false;
+      seen.add(value);
+      if (value instanceof Error && (value.message.includes(token) || (value.stack?.includes(token) ?? false))) return true;
+      return Object.values(value).some(nested => argumentsContain(nested, token, seen));
+    }
+
+    it('is not auth_invalid when the only 401 is above the recent tail', () => {
+      const lines = [staleAuthLine, ...Array.from({ length: CODEX_EXIT_REPORT_LINES }, (_, i) => benign(i))];
+      const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+      try {
+        expect(classifyCodexError(ordinaryExit(lines)).kind).toBe('transient');
+        expect(authHeuristicLogs(warn)).toHaveLength(0);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('is auth_invalid when a recent stderr line is an auth error, and logs the matched category', () => {
+      const lines = [
+        ...Array.from({ length: CODEX_EXIT_REPORT_LINES + 8 }, (_, i) => benign(i)),
+        'not logged in',
+        benign(0),
+        benign(1),
+      ];
+      const error = ordinaryExit(lines);
+      const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+      try {
+        expect(classifyCodexError(error).kind).toBe('auth_invalid');
+        // The close path classifies once to arm the breaker and again to throw.
+        expect(classifyCodexError(error).kind).toBe('auth_invalid');
+        const logs = authHeuristicLogs(warn);
+        expect(logs).toHaveLength(1);
+        expect(logs[0]?.[2]).toEqual({ match: 'not logged in' });
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('does not log a bearer token adjacent to a 401', () => {
+      const token = 'cm-synthetic-bearer-7f3a9c2e1b';
+      const lines = [
+        ...Array.from({ length: 4 }, (_, i) => benign(i)),
+        `401 Unauthorized Authorization: Bearer ${token}`,
+      ];
+      const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+      try {
+        expect(classifyCodexError(ordinaryExit(lines)).kind).toBe('auth_invalid');
+        const logs = authHeuristicLogs(warn);
+        expect(logs).toHaveLength(1);
+        expect(logs[0]?.[2]).toEqual({ match: '401' });
+        expect(JSON.stringify(warn.mock.calls)).not.toContain(token);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    // The test above pads the token past the 500-character stored slice and
+    // only calls classifyCodexError. A one-line 401 keeps the token inside
+    // that slice, and onFailure stores and logs the classified message.
+    it('does not keep a bearer token from an early auth failure in the message, cooldown, or logs', async () => {
+      const token = 'cm-synthetic-bearer-7f3a9c2e1b';
+      const failure = new Error(`401 Unauthorized Authorization: Bearer ${token}`);
+      expect(failure.message).toContain(token);
+      expect(failure.message.length).toBeLessThan(500);
+      const provider = new CodexProvider(null as any, null as any) as any;
+      const debug = spyOn(logger, 'debug').mockImplementation(() => {});
+      const info = spyOn(logger, 'info').mockImplementation(() => {});
+      const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+      const errorLog = spyOn(logger, 'error').mockImplementation(() => {});
+      try {
+        for (const client of provider.appServer.clients) client.runTurn = async (options: any) => {
+          options.onFailure(failure);
+          throw failure;
+        };
+        const rejected = await provider.query([], config).catch((error: unknown) => error);
+        expect(rejected).toBeInstanceOf(ClassifiedProviderError);
+        const classified = rejected as ClassifiedProviderError;
+        expect(classified.kind).toBe('auth_invalid');
+        expect(classified.message).toContain('401');
+        expect(classified.message).not.toContain(token);
+        const cooldown = getQuotaCooldown('codex');
+        expect(cooldown?.cause).toBe('auth');
+        expect(cooldown?.message ?? '').not.toContain(token);
+        expect(JSON.stringify(cooldown)).not.toContain(token);
+        const calls = [debug, info, warn, errorLog].flatMap(spy => spy.mock.calls);
+        expect(calls.some(call => String(call[1]).includes('pausing Codex requests'))).toBe(true);
+        expect(calls.some(call => argumentsContain(call, token))).toBe(false);
+      } finally {
+        debug.mockRestore();
+        info.mockRestore();
+        warn.mockRestore();
+        errorLog.mockRestore();
+        await provider.close();
+      }
+    });
+
+    it('is auth_invalid for a 401 on the last stderr line of an ordinary exit', () => {
+      const lines = [
+        ...Array.from({ length: CODEX_EXIT_REPORT_LINES + 4 }, (_, i) => benign(i)),
+        staleAuthLine,
+      ];
+      expect(classifyCodexError(ordinaryExit(lines)).kind).toBe('auth_invalid');
+    });
+
+    it('stays transient for a signaled exit even when the recent stderr line is a 401', () => {
+      const message = `Codex app-server exited with code null signal SIGKILL: ${[...Array.from({ length: 4 }, (_, i) => benign(i)), staleAuthLine].join('\n')}`;
+      const error = Object.assign(new Error(message), { exitCode: null, exitSignal: 'SIGKILL' });
+      const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+      try {
+        expect(classifyCodexError(error).kind).toBe('transient');
+        expect(authHeuristicLogs(warn)).toHaveLength(0);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('prefers a structured HTTP 403 over an ordinary exit with no recent auth line', () => {
+      const error = Object.assign(ordinaryExit(Array.from({ length: 4 }, (_, i) => benign(i))), {
+        codexErrorInfo: { responseStreamConnectionFailed: { httpStatusCode: 403 } },
+      });
+      const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+      try {
+        expect(classifyCodexError(error).kind).toBe('auth_invalid');
+        expect(authHeuristicLogs(warn)).toHaveLength(0);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('still reads auth text anywhere in a non-exit error', () => {
+      const lines = ['HTTP 401 unauthorized', ...Array.from({ length: CODEX_EXIT_REPORT_LINES }, (_, i) => benign(i))];
+      const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+      try {
+        expect(classifyCodexError(new Error(lines.join('\n'))).kind).toBe('auth_invalid');
+        const logs = authHeuristicLogs(warn);
+        expect(logs).toHaveLength(1);
+        expect(logs[0]?.[2]).toEqual({ match: '401' });
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it.each([
+      ['usage limit', 'usage limit reached for this plan'],
+      ['billing', 'billing problem on the account'],
+      ['rate limit', 'HTTP 429 rate limit'],
+      ['context overflow', 'context window exceeded'],
+      ['missing command', 'sh: rg: command not found'],
+      ['ENOENT', 'spawn rg ENOENT'],
+      ['protocol refusal', "error: unexpected argument '--strict-config' found"],
+      ['RPC refusal', 'Codex app-server RPC error -32601: Method not found'],
+    ])('stays transient when the only %s line is above the recent tail', (_name, staleLine) => {
+      const lines = [staleLine, ...Array.from({ length: CODEX_EXIT_REPORT_LINES }, (_, i) => benign(i))];
+      expect(classifyCodexError(ordinaryExit(lines)).kind).toBe('transient');
+    });
+
+    it('does not arm a quota cooldown when an ordinary exit only quotes an old usage limit', async () => {
+      const provider = new CodexProvider(null as any, null as any) as any;
+      const failure = ordinaryExit([
+        'usage limit reached for this plan',
+        ...Array.from({ length: CODEX_EXIT_REPORT_LINES }, (_, i) => benign(i)),
+      ]);
+      for (const client of provider.appServer.clients) client.runTurn = async (options: any) => {
+        options.onFailure(failure);
+        throw failure;
+      };
+      await expect(provider.query([], config)).rejects.toMatchObject({ kind: 'transient' });
+      expect(getQuotaCooldown('codex')).toBeNull();
+    });
+
+    it('still reads a real multi-line refusal, whose error is on its first line', () => {
+      // Printed by codex-cli 0.164.0 for an unknown flag.
+      const refusal = [
+        "error: unexpected argument '--strict-confi' found",
+        '',
+        "  tip: a similar argument exists: '--strict-config'",
+        '',
+        'Usage: codex app-server --strict-config',
+        '',
+        "For more information, try '--help'.",
+      ];
+      expect(refusal).toHaveLength(CODEX_EXIT_REPORT_LINES);
+      expect(classifyCodexError(ordinaryExit([staleAuthLine, ...refusal])).kind).toBe('setup_required');
+    });
+
+    it('lets a recent auth line decide when only an older line is a server fault', () => {
+      const lines = ['Codex app-server RPC error -32603: internal error', ...Array.from({ length: CODEX_EXIT_REPORT_LINES }, (_, i) => benign(i)), 'not logged in'];
+      expect(classifyCodexError(ordinaryExit(lines)).kind).toBe('auth_invalid');
+    });
+
+    it('marks only an exit-text auth verdict as read from the exit', () => {
+      expect(classifyCodexError(ordinaryExit(['not logged in'])).code).toBe('codex_auth_from_exit_text');
+      expect(classifyCodexError(new Error('Codex app-server turn failed: 401 Unauthorized')).code).toBeUndefined();
+      const structured = Object.assign(ordinaryExit(['not logged in']), { codexErrorInfo: 'unauthorized' });
+      expect(classifyCodexError(structured).code).toBeUndefined();
+    });
+
+    it('does not arm an auth cooldown when an ordinary exit only quotes a stale 401', async () => {
+      const provider = new CodexProvider(null as any, null as any) as any;
+      const failure = ordinaryExit([
+        staleAuthLine,
+        ...Array.from({ length: CODEX_EXIT_REPORT_LINES }, (_, i) => benign(i)),
+      ]);
+      for (const client of provider.appServer.clients) client.runTurn = async (options: any) => {
+        options.onFailure(failure);
+        throw failure;
+      };
+      await expect(provider.query([], config)).rejects.toMatchObject({ kind: 'transient' });
+      expect(getQuotaCooldown('codex')).toBeNull();
+    });
+  });
+
+  it('does not arm an auth cooldown when a recycle SIGKILL quotes a stale 401', async () => {
+    const provider = new CodexProvider(null as any, null as any) as any;
+    const failure = Object.assign(
+      new Error('Codex app-server exited with code null signal SIGKILL: authentication failed with 401 unauthorized'),
+      { exitCode: null, exitSignal: 'SIGKILL' },
+    );
+    for (const client of provider.appServer.clients) client.runTurn = async (options: any) => {
+      options.onFailure(failure);
+      throw failure;
+    };
+    await expect(provider.query([], config)).rejects.toMatchObject({ kind: 'transient' });
+    expect(getQuotaCooldown('codex')).toBeNull();
+  });
+
   for (const [info, kind] of [
     ['usageLimitExceeded', 'quota_exhausted'], ['unauthorized', 'auth_invalid'],
     ['rateLimitExceeded', 'rate_limit'], ['contextWindowExceeded', 'context_overflow'],
@@ -559,7 +859,7 @@ describe('Codex provider integration', () => {
         options.onFailure(error);
         throw error;
       });
-      provider.appServer.runTurn = sends;
+      for (const client of provider.appServer.clients) client.runTurn = sends;
       try {
         await expect(provider.query([{ role: 'user', content: 'input' }], { ...config })).rejects.toBeInstanceOf(ClassifiedProviderError);
         expect(sends).toHaveBeenCalledTimes(1);

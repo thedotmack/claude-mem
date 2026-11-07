@@ -69,6 +69,28 @@ describe('extractAdvisorCallsFromJsonl', () => {
     expect(calls[0].occurredAtEpoch).toBe(Date.parse('2026-07-06T05:00:01.000Z'));
   });
 
+  it('starts a new image-only turn without replaying earlier advice or its prompt text', () => {
+    const jsonl = [
+      userLine('old question'), advisorCallLine('old'), advisorResultLine('old', 'old advice'),
+      JSON.stringify({ type: 'user', message: { role: 'user', content: [
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AA==' } },
+      ] } }), advisorCallLine('new'), advisorResultLine('new', 'image advice'),
+    ].join('\n');
+    expect(extractAdvisorCallsFromJsonl(jsonl, { currentTurnOnly: true }).map(call =>
+      [call.toolUseId, call.lastUserMessage])).toEqual([['new', null]]);
+    expect(extractAdvisorCallsFromJsonl(jsonl)).toHaveLength(2);
+  });
+
+  it('starts a document-only turn but does not treat tool results as a new prompt', () => {
+    const jsonl = [userLine('old question'), advisorCallLine('old'), advisorResultLine('old', 'old advice'),
+      JSON.stringify({ type: 'user', message: { content: [{ type: 'document', source: { type: 'text', data: 'doc' } }] } }),
+      advisorCallLine('new'), JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tool', content: 'result' }] } }),
+      advisorResultLine('new', 'document advice')].join('\n');
+    const calls = extractAdvisorCallsFromJsonl(jsonl, { currentTurnOnly: true });
+    expect(calls.map(call => call.toolUseId)).toEqual(['new']);
+    expect(calls[0].lastUserMessage).toBeNull();
+  });
+
   it('skips error results and calls with no result', () => {
     const jsonl = [
       userLine('help'),

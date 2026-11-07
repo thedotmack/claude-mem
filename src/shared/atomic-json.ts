@@ -1,6 +1,7 @@
 import {
   closeSync,
   existsSync,
+  fchmodSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -38,7 +39,98 @@ export function ensureDirectoryExists(directoryPath: string): void {
 }
 
 /**
- * Write JSON to disk with crash-safe atomic-rename semantics.
+ * The realpath of `filePath`, or, when it doesn't exist yet, the realpath of
+ * its deepest existing ancestor with the missing tail appended. Relative link
+ * targets must resolve against this physical location, not the logical path
+ * the link was reached through.
+ */
+function physicalPathOf(filePath: string): string {
+  try {
+    return realpathSync(filePath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    const parent = dirname(filePath);
+    if (parent === filePath) return filePath;
+    return join(physicalPathOf(parent), basename(filePath));
+  }
+}
+
+/**
+ * Where an atomic write to `filePath` must land so a symlink at that path
+ * stays a symlink: the final target of the link chain, also when that target
+ * doesn't exist yet. Renaming a temp file over the link itself would replace
+ * it with a regular file and orphan the file it pointed to.
+ *
+ * A loop throws ELOOP, and any resolution failure other than a missing target
+ * is thrown: those must never turn a link into a regular file.
+ */
+export function resolveSymlinkWriteTarget(filePath: string): string {
+  let resolved = filePath;
+  const followed = new Set<string>();
+  try {
+    while (lstatSync(resolved).isSymbolicLink()) {
+      const absolute = resolve(resolved);
+      if (followed.has(absolute)) {
+        throw Object.assign(new Error(`Symlink loop at ${resolved}`), { code: 'ELOOP' });
+      }
+      followed.add(absolute);
+      try {
+        return realpathSync(resolved);
+      } catch (realpathErr) {
+        // A missing final target can be created. Loops, permission errors and
+        // other resolution failures must never turn a link into a regular file.
+        if ((realpathErr as NodeJS.ErrnoException).code !== 'ENOENT') throw realpathErr;
+        const realpathError = realpathErr instanceof Error ? realpathErr : new Error(String(realpathErr));
+        emitDiagnostic(`claude-mem: realpathSync failed for ${resolved}, resolving symlink manually: ${realpathError.message}\n`);
+        const linkTarget = readlinkSync(resolved);
+        resolved = resolve(physicalPathOf(dirname(resolve(resolved))), linkTarget);
+      }
+    }
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT') {
+      throw err;
+    }
+  }
+  return resolved;
+}
+
+const WINDOWS_RENAME_RETRY_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
+/** About 0.6 s in total, the same order as graceful-fs's Windows rename retry. */
+const WINDOWS_RENAME_RETRY_DELAYS_MS = [10, 20, 40, 80, 160, 320];
+
+export function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Rename `from` over `to`. On Windows, a rename over a file that antivirus,
+ * the search indexer or a sync client holds open for a moment fails with
+ * EPERM, EBUSY or EACCES, so retry those with a short bounded backoff.
+ */
+export function renameWithWindowsRetry(
+  from: string,
+  to: string,
+  rename: (from: string, to: string) => void = renameSync,
+  onWindows: boolean = IS_WINDOWS_PLATFORM
+): void {
+  if (!onWindows) return rename(from, to);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      rename(from, to);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code ?? '';
+      if (attempt >= WINDOWS_RENAME_RETRY_DELAYS_MS.length || !WINDOWS_RENAME_RETRY_CODES.has(code)) {
+        throw err;
+      }
+      sleepSync(WINDOWS_RENAME_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+}
+
+/**
+ * Write a payload to disk with crash-safe atomic-rename semantics.
  *
  * Sequence: resolve symlinks at the destination, write payload to a uniquely
  * named temp file in the same directory as the resolved target, loop writeSync
@@ -52,36 +144,18 @@ export interface AtomicJsonWriteOptions {
   mode?: number;
 }
 
-export function writeJsonFileAtomic(
+function writeBufferAtomic(
   filepath: string,
-  data: any,
+  payload: Buffer,
   options: AtomicJsonWriteOptions = {}
 ): void {
-  let resolved = filepath;
-  try {
-    if (lstatSync(filepath).isSymbolicLink()) {
-      try {
-        resolved = realpathSync(filepath);
-      } catch (realpathErr) {
-        const realpathError = realpathErr instanceof Error ? realpathErr : new Error(String(realpathErr));
-        emitDiagnostic(`claude-mem: realpathSync failed for ${filepath}, resolving symlink manually: ${realpathError.message}\n`);
-        const linkTarget = readlinkSync(filepath);
-        resolved = resolve(dirname(filepath), linkTarget);
-      }
-    }
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code !== 'ENOENT' && code !== 'ENOTDIR') {
-      throw err;
-    }
-  }
+  const resolved = resolveSymlinkWriteTarget(filepath);
 
   ensureDirectoryExists(dirname(resolved));
 
   const dir = dirname(resolved);
   const base = basename(resolved);
   const tmpPath = join(dir, `.${base}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`);
-  const payload = Buffer.from(JSON.stringify(data, null, 2) + '\n', 'utf-8');
 
   let mode = options.mode;
   if (mode === undefined) {
@@ -95,6 +169,9 @@ export function writeJsonFileAtomic(
   let fd: number | undefined;
   try {
     fd = mode !== undefined ? openSync(tmpPath, 'w', mode) : openSync(tmpPath, 'w');
+    // open(2) masks the mode with the umask (0660 under 022 lands as 0640), so
+    // set it exactly before the first byte: the rename must keep the file's mode.
+    if (mode !== undefined && !IS_WINDOWS_PLATFORM) fchmodSync(fd, mode);
 
     let written = 0;
     while (written < payload.length) {
@@ -108,7 +185,7 @@ export function writeJsonFileAtomic(
     fsyncSync(fd);
     closeSync(fd);
     fd = undefined;
-    renameSync(tmpPath, resolved);
+    renameWithWindowsRetry(tmpPath, resolved);
 
     if (!IS_WINDOWS_PLATFORM) {
       let dirFd: number | undefined;
@@ -131,4 +208,26 @@ export function writeJsonFileAtomic(
     try { unlinkSync(tmpPath); } catch { /* tempfile may not exist */ }
     throw err;
   }
+}
+
+/** Write JSON to disk atomically: pretty-printed, newline-terminated, via writeBufferAtomic. */
+export function writeJsonFileAtomic(
+  filepath: string,
+  data: any,
+  options: AtomicJsonWriteOptions = {}
+): void {
+  writeBufferAtomic(filepath, Buffer.from(JSON.stringify(data, null, 2) + '\n', 'utf-8'), options);
+}
+
+/**
+ * Write a text file (YAML, TOML, plain text) to disk atomically via
+ * writeBufferAtomic, writing exactly the bytes given: no serialization, no
+ * added trailing newline.
+ */
+export function writeTextFileAtomic(
+  filepath: string,
+  text: string,
+  options: AtomicJsonWriteOptions = {}
+): void {
+  writeBufferAtomic(filepath, Buffer.from(text, 'utf-8'), options);
 }

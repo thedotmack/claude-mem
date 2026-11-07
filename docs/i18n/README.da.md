@@ -215,7 +215,6 @@ Installationsprogrammet håndterer afhængigheder, plugin-opsætning, konfigurat
 
 - **[Konfiguration](https://docs.claude-mem.ai/configuration)** - Miljøvariabler & indstillinger
 - **[Udvikling](https://docs.claude-mem.ai/development)** - Bygning, testning, bidrag
-- **[Release-grene](https://docs.claude-mem.ai/branches)** - Flowet for stable, core-dev og community-edge-grene
 - **[Fejlfinding](https://docs.claude-mem.ai/troubleshooting)** - Almindelige problemer & løsninger
 
 ---
@@ -271,15 +270,6 @@ get_observations(ids=[123, 456])
 ```
 
 Se [Søgeværktøjsguide](https://docs.claude-mem.ai/usage/search-tools) for detaljerede eksempler.
-
----
-
-## Release-grene
-
-Stable releases udsendes fra `main` og publiceres til npm. `core-dev` og
-`community-edge` er kildekørte grene til tidlige pålidelighedsrettelser og
-community-integrationer. Se **[Release-grene](https://docs.claude-mem.ai/branches)**
-for grenflowet og instruktioner til kørsel af ikke-stabile versioner.
 
 ---
 
@@ -384,11 +374,6 @@ Bidrag er velkomne! Venligst:
 4. Opdater dokumentation
 5. Indsend en Pull Request
 
-Claude-Mem udsendes fra tre grene: `main` (stable), `core-dev` og
-`community-edge`. Kun `main` publiceres til npm; de andre køres fra
-kildekode. Se [Release-grene](https://docs.claude-mem.ai/branches) for
-strategien og instruktioner til lokal kørsel.
-
 Se [Udviklingsguide](https://docs.claude-mem.ai/development) for bidragsworkflow.
 
 ---
@@ -405,7 +390,6 @@ Se filen [LICENSE](LICENSE) for fulde detaljer. Se [docs/license.md](docs/licens
 og [docs/ip-boundary.md](docs/ip-boundary.md) for licensomfang og
 grænsen mellem open source og kommercielt.
 
-**Bemærkning om Ragtime**: Mappen `ragtime/` er licenseret under **Apache License 2.0**. Se [ragtime/LICENSE](ragtime/LICENSE) for detaljer.
 
 ---
 

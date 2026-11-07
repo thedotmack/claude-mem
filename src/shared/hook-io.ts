@@ -117,6 +117,17 @@ export class HookStdoutError extends Error {
 }
 
 /**
+ * True when stdout was closed because the session that started the hook is
+ * already gone (EPIPE). Nobody is left to read the output, so this is not a
+ * fatal error.
+ */
+export function isHookStdoutClosed(error: unknown): boolean {
+  if (!(error instanceof HookStdoutError)) return false;
+  const cause = error.cause as { code?: unknown } | undefined;
+  return cause?.code === 'EPIPE';
+}
+
+/**
  * Emit the model-bound payload to stdout. Calls adapter.formatOutput once, then
  * writes either the raw string it returned or a JSON-stringified object. Throws
  * if called twice in the same emitter lifetime (guards against double-emit
@@ -126,13 +137,13 @@ export class HookStdoutError extends Error {
  * Track the write callback so exitGraceful can wait for piped stdout to flush;
  * console.log followed by process.exit can otherwise truncate the payload.
  */
-export function emitModelContext(adapter: PlatformAdapter, result: HookResult): void {
+export function emitModelContext(adapter: PlatformAdapter, result: HookResult): unknown {
   if (moduleHasEmitted) {
     throw new Error('emitModelContext called twice');
   }
   const output = adapter.formatOutput(result);
   if (output === '') {
-    return;
+    return output;
   }
   moduleHasEmitted = true;
   const line = typeof output === 'string' ? output : JSON.stringify(output);
@@ -158,10 +169,14 @@ export function emitModelContext(adapter: PlatformAdapter, result: HookResult): 
       fail(error);
     }
   });
+  return output;
 }
 
 let moduleHasEmitted = false;
 let pendingModelContext: Promise<void> = Promise.resolve();
+
+/** Wait for the already formatted payload to reach stdout before measuring a handoff. */
+export function waitForModelContext(): Promise<void> { return pendingModelContext; }
 
 export interface ExitOptions {
   skipExit?: boolean;

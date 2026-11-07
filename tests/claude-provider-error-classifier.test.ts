@@ -219,3 +219,40 @@ describe('classifyClaudeError — observer working directory', () => {
     expect(classifyClaudeError(err).kind).toBe('transient');
   });
 });
+
+/**
+ * A spent Anthropic API key: the CLI wraps the billing notice in a 400
+ * invalid_request_error. It is a spent allowance, so it books a quota pause
+ * (and the quota fallback), not a permanent bad request.
+ */
+describe('classifyClaudeError — spent API key credit balance', () => {
+  const WRAPPED =
+    'API Error: 400 {"error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API."}}';
+
+  it('classifies the status-less wrapped 400 as quota_exhausted', () => {
+    expect(classifyClaudeError(new Error(WRAPPED)).kind).toBe('quota_exhausted');
+  });
+
+  it('classifies the statused wrapped 400 as quota_exhausted', () => {
+    const sdkErr = Object.assign(new Error(WRAPPED), { status: 400 });
+    expect(classifyClaudeError(sdkErr).kind).toBe('quota_exhausted');
+  });
+
+  it('classifies a statused 400 that carries the notice only in its body as quota_exhausted', () => {
+    const sdkErr = Object.assign(new Error('Bad request'), {
+      status: 400,
+      body: { error: { type: 'invalid_request_error', message: 'Your credit balance is too low to access the Anthropic API.' } },
+    });
+    expect(classifyClaudeError(sdkErr).kind).toBe('quota_exhausted');
+  });
+
+  it('classifies the CLI error result wording as quota_exhausted', () => {
+    const err = new Error('Claude Code returned an error result: Credit balance is too low');
+    expect(classifyClaudeError(err).kind).toBe('quota_exhausted');
+  });
+
+  it('keeps other invalid_request_error 400s unrecoverable', () => {
+    const err = new Error('API Error: 400 {"error":{"type":"invalid_request_error","message":"max_tokens: too large"}}');
+    expect(classifyClaudeError(err).kind).toBe('unrecoverable');
+  });
+});

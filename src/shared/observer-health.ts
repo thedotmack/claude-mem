@@ -21,11 +21,18 @@ import { viewerBaseUrl } from './viewer-url.js';
 import { relayedLine, relayedLink } from './relayed-text.js';
 import { logger } from '../utils/logger.js';
 import { emitContextInvalidation } from './context-invalidation.js';
+import { sleepSync } from './atomic-json.js';
 
 export interface ObserverHealthState {
   /** Failures since the last successful store. */
   consecutiveFailures: number;
-  /** Epoch ms of the first failure in the current streak. */
+  /**
+   * Epoch ms of the first failure since the kind last changed — the outage the
+   * warning names. It is not "the first failure in the streak": a quota pause that
+   * later becomes a refused credential is two outages, and dating the refusal
+   * from the pause told one reader the credentials had been refused for three
+   * days when the log showed an auth failure 21 hours old (#5378).
+   */
   failingSinceAt: number | null;
   /** Epoch ms of the most recent failure. */
   lastErrorAt: number | null;
@@ -93,6 +100,8 @@ export interface ObserverQuotaCooldown {
    * else can serve; the notice then says capture is paused.
    */
   servingProvider?: string;
+  /** 'claude' only: the credential that is held ('api-key' | 'subscription'), when one is. */
+  auth?: string;
 }
 
 /**
@@ -204,10 +213,6 @@ const LEDGER_LOCK_STALE_MS = 5_000;
 const LEDGER_LOCK_MAX_WAIT_MS = 2_000;
 const LEDGER_LOCK_RETRY_MS = 10;
 
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
 /**
  * Serialize the ledger's read-modify-write across processes. Every worker and
  * hook process shares one file, and lost increments would hold
@@ -278,20 +283,28 @@ export function recordObserverFailure(
   filePath: string = defaultHealthFilePath(),
 ): void {
   const detail: ObserverFailureDetail = typeof error === 'string' ? { message: error } : error;
+  const nextKind = detail.kind ?? null;
   withLedgerLock(filePath, () => {
     const prior = readObserverHealth(filePath) ?? EMPTY_STATE;
     const now = Date.now();
     writeObserverHealth({
       ...prior,
       consecutiveFailures: prior.consecutiveFailures + 1,
-      failingSinceAt: prior.consecutiveFailures > 0 ? prior.failingSinceAt : now,
+      // The streak's start belongs to the current failure kind (#5378): a quota pause
+      // followed by auth refusals must not describe the auth warning with the quota
+      // era's timestamp. A kind change (classified → unclassified included) restarts
+      // the clock; only the streak itself waits for a success.
+      failingSinceAt:
+        prior.consecutiveFailures > 0 && (prior.lastErrorKind ?? null) === nextKind
+          ? prior.failingSinceAt
+          : now,
       lastErrorAt: now,
       lastErrorMessage: scrubErrorMessage(detail.message),
       lastErrorProvider: provider,
       // Always overwrite (never inherit from `prior`): a string-form failure
       // after a classified one must not keep the stale action/link/request id.
       lastErrorCode: detail.code ?? null,
-      lastErrorKind: detail.kind ?? null,
+      lastErrorKind: nextKind,
       lastErrorAction: detail.action ? scrubErrorMessage(detail.action) : null,
       lastErrorUrl: detail.url ?? null,
       lastErrorRequestId: detail.requestId ?? null,
@@ -332,6 +345,7 @@ export function recordObserverQuotaCooldown(
         ...(cooldown.window ? { window: cooldown.window } : {}),
         ...(cooldown.message ? { message: scrubErrorMessage(cooldown.message) } : {}),
         ...(cooldown.servingProvider ? { servingProvider: cooldown.servingProvider } : {}),
+        ...(cooldown.auth ? { auth: cooldown.auth } : {}),
       },
     }, filePath, prior);
   });
@@ -405,6 +419,29 @@ export function isQuotaFailure(state: ObserverHealthState): boolean {
   return state.lastErrorKind === 'quota_exhausted';
 }
 
+/**
+ * True when the current record is claude-mem's own precautionary stop
+ * (RateLimitStore's `quota_guard`): usage crossed a reserve threshold or the
+ * reset buffer while the provider was still accepting requests. Nothing is
+ * exhausted that we know of, so the banner says "paused", not "used up".
+ */
+export function isQuotaGuardPause(state: ObserverHealthState): boolean {
+  return state.lastErrorKind === 'quota_guard';
+}
+
+/**
+ * The one message every quota abort used to be booked under, guard and
+ * refusal alike. Legacy ledger records, and quota aborts that carry no kind,
+ * still use it. Such a record cannot say whether anything was exhausted, so
+ * the banner must not claim it was.
+ */
+export const AMBIGUOUS_QUOTA_MESSAGE = 'Provider reported the inference allowance exhausted';
+
+/** True when the record is a quota failure booked without the guard's decision. */
+export function isAmbiguousQuotaRecord(state: ObserverHealthState): boolean {
+  return isQuotaFailure(state) && state.lastErrorMessage === AMBIGUOUS_QUOTA_MESSAGE;
+}
+
 /** True when the current outage is the provider refusing the observer's credential. */
 export function isAuthFailure(state: ObserverHealthState): boolean {
   return state.lastErrorKind === 'auth_invalid';
@@ -454,15 +491,16 @@ function hasOutlivedRecheckWindow(state: ObserverHealthState, nowMs: number): bo
  * allowance reset (#4083: a 63-hour-old error rendered as a live outage while
  * the worker stored observations four minutes later in the same session).
  *
- * Only failures that clear on their own age out: this one and a deadline
- * expiry (isDeadlineFailureStale). A bad key or a missing base URL stays true
- * until someone fixes it, so its banner should keep saying so.
+ * Only failures that clear on their own age out: this one, the guard's
+ * precautionary pause (isQuotaGuardPause, released by the same recheck window)
+ * and a deadline expiry (isDeadlineFailureStale). A bad key or a missing base
+ * URL stays true until someone fixes it, so its banner should keep saying so.
  */
 export function isQuotaFailureStale(
   state: ObserverHealthState,
   nowMs: number = Date.now(),
 ): boolean {
-  return isQuotaFailure(state) && hasOutlivedRecheckWindow(state, nowMs);
+  return (isQuotaFailure(state) || isQuotaGuardPause(state)) && hasOutlivedRecheckWindow(state, nowMs);
 }
 
 /**
@@ -521,24 +559,45 @@ export function renderObserverQuotaCooldownNotice(
   // below applies — least of all "do not restart", advice about a problem
   // that is not happening. No primary/fallback wording: the held provider can
   // be either one.
+  if (cooldown?.servingProvider === 'claude' && provider === 'claude') {
+    // CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD: same provider, the other credential.
+    return cooldown.auth === 'subscription'
+      ? `ℹ️ claude-mem's Claude Code subscription login is paused for quota${windowText}; memory is running on your fallback API key (ANTHROPIC_FALLBACK_API_KEY) meanwhile, and switches back to the login after ${untilText}.`
+      : `ℹ️ claude-mem's Claude API key is in a quota cooldown${windowText}; memory is running on your Claude Code subscription login meanwhile, and switches back to the key after ${untilText}.`;
+  }
+  if (cooldown?.servingProvider === 'claude') {
+    // The default fallback: say plainly that memory is on the Anthropic plan.
+    const why = cooldown.window === 'unavailable' ? 'is unavailable'
+      : cooldown.window === 'rate_limit' ? 'is rate limited or over capacity'
+        : `is in a quota cooldown${windowText}`;
+    return `ℹ️ claude-mem's ${provider} provider ${why}; memory is running on your Anthropic plan (Claude) meanwhile, and switches back after ${untilText}.`;
+  }
   if (cooldown?.servingProvider) {
     return `ℹ️ claude-mem's ${provider} provider is in a quota cooldown${windowText}; memory capture continues on ${cooldown.servingProvider} until it clears at ${untilText}.`;
   }
 
   const message = relayedProviderText(cooldown?.message) || null;
+  // The runner books the pause right after arming the cooldown, so the ledger's
+  // kind says whether claude-mem's own reserve guard stopped capture (the
+  // provider was still accepting requests) or the provider refused.
+  const guard = isQuotaGuardPause(state);
 
   return [
     '⚠️ Heads up: claude-mem is paused while a provider quota cooldown is active.',
     '',
-    `The memory observer is waiting out a quota cooldown on ${provider}${windowText} until ${untilText}.`,
+    guard
+      ? `Memory capture is paused on ${provider}${windowText} to preserve your Claude allowance, until ${untilText}.`
+      : `The memory observer is waiting out a quota cooldown on ${provider}${windowText} until ${untilText}.`,
     '',
-    ...(message ? [`Latest signal: ${message}`, ''] : []),
-    'This is not a failure. Incoming observations stay queued and will be written',
-    'when the cooldown clears — the worker is intentionally not starting the',
-    'generator so it does not keep spending a spent allowance.',
+    ...(message ? [`${guard ? 'Reason' : 'Latest signal'}: ${message}`, ''] : []),
+    'This is not a failure. Incoming observations stay queued in memory and are written',
+    'when the cooldown clears — the worker is intentionally not starting the generator',
+    guard
+      ? 'so interactive work keeps the remaining allowance.'
+      : 'so it does not keep sending requests the provider is refusing.',
     '',
-    'Restarting will NOT help here, and it clears the backoff that is currently keeping',
-    'claude-mem from hammering the provider — so please leave the worker alone.',
+    'Restarting will NOT help here: it does not replenish the allowance or clear the',
+    'persisted cooldown — so please leave the worker alone.',
     '',
     '(Assistant: tell the user that memory capture is paused for a quota cooldown',
     'at the very start of your first reply. Do NOT restart the worker and do NOT',
@@ -612,11 +671,20 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
   const action = relayedProviderText(state.lastErrorAction) || null;
 
   if (isQuotaFailureStale(state, nowMs)) {
-    return renderLastKnownFailureNote(state, nowMs, action, {
-      failedWith: 'a spent allowance',
-      remedyLabel: 'If it is still spent',
-      recovery: 'Allowances reset on their own',
-    });
+    // A guard pause, or a record that cannot tell the guard from a refusal,
+    // is not evidence that anything was spent.
+    const precautionary = isQuotaGuardPause(state) || isAmbiguousQuotaRecord(state);
+    return renderLastKnownFailureNote(state, nowMs, action, precautionary
+      ? {
+        failedWith: 'a usage-related pause',
+        remedyLabel: 'If it is still paused',
+        recovery: 'Usage pauses release on their own',
+      }
+      : {
+        failedWith: 'a spent allowance',
+        remedyLabel: 'If it is still spent',
+        recovery: 'Allowances reset on their own',
+      });
   }
   if (isDeadlineFailureStale(state, nowMs)) {
     return renderLastKnownFailureNote(state, nowMs, action, {
@@ -626,12 +694,43 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
     });
   }
 
-  // A spent allowance is the one outage a restart cannot clear. Worse, the
-  // restart link is the code path that clears the quota breaker (the process
-  // serving /api/admin/restart is the process holding the cooldown), so
-  // offering it here talks the user into re-opening the per-observation
-  // request storm the breaker exists to stop. Nothing is wedged; the account
-  // is out of allowance. Say that, and relay the provider's own remedy.
+  // claude-mem's own reserve guard stopped capture while the provider was
+  // still accepting requests, or the record was booked without the guard's
+  // decision and cannot tell the two apart. Either way nothing is known to be
+  // exhausted: say "paused", relay the guard's own reason, point at the
+  // provider's usage page, and offer no restart (a restart replenishes
+  // nothing and the breaker it would release is the pause itself).
+  if (isQuotaGuardPause(state) || isAmbiguousQuotaRecord(state)) {
+    const guard = isQuotaGuardPause(state);
+    return [
+      '⚠️ Heads up: claude-mem memory capture is paused.',
+      '',
+      guard
+        ? `Memory capture is paused to preserve your Claude allowance (${sinceText}).`
+        : `The memory observer has a usage-related pause on ${provider} (${sinceText}).`,
+      '',
+      guard
+        ? `Reason: ${relayedProviderText(state.lastErrorMessage) || 'Precautionary usage guard'}`
+        : 'This record cannot tell a precautionary pause from a provider rejection.',
+      '',
+      'Existing memories remain available; new memory generation is paused.',
+      `After the ${OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS / 60_000}-minute cooldown, the next activity can trigger one retry.`,
+      'Capture resumes when usage is below the guard thresholds and the provider accepts requests.',
+      provider === 'claude'
+        ? 'Check Claude Settings → Usage for the current usage and reset time.'
+        : `Check ${provider} usage settings for the current allowance and reset time.`,
+      '',
+      'Restarting does not replenish allowance or clear the persisted cooldown.',
+      '',
+      '(Assistant: tell the user about this pause at the start of your first reply.',
+      'Relay the reason accurately; do not call a precautionary pause provider exhaustion.',
+      'Do NOT restart the worker or change providers to bypass the pause.)',
+    ].join('\n');
+  }
+
+  // A spent allowance is the one outage a restart cannot clear. Nothing is
+  // wedged; the account is out of allowance. Say that, and relay the
+  // provider's own remedy.
   if (isQuotaFailure(state)) {
     return [
       "⚠️ Heads up: claude-mem can't save memories right now.",
@@ -643,10 +742,11 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
       "Until the allowance resets or you add capacity, nothing from this session — or any",
       'other — will be remembered.',
       '',
-      // Deliberately no restart link: nothing is broken to restart, and doing
-      // it disarms the breaker that is currently protecting the account.
-      'Restarting will NOT help here, and it clears the backoff that is currently keeping',
-      'claude-mem from hammering the provider — so please leave the worker alone.',
+      // Deliberately no restart link: nothing is broken to restart, and the
+      // quota breaker is persisted, so a restart revives it rather than
+      // clearing it.
+      'Restarting will NOT help here: it does not replenish the allowance or clear the',
+      'persisted cooldown — so please leave the worker alone.',
       ...(action ? [] : [
         'Switch the observer to another provider in ~/.claude-mem/settings.json if you need',
         'memory capture before the allowance resets.',
@@ -682,17 +782,27 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
   // rejected the key (or the account), and nothing is wedged. Relay the
   // provider's remedy instead of offering a restart that changes nothing.
   if (isAuthFailure(state)) {
+    // provider-errors' CODEX_AUTH_FROM_EXIT_TEXT_CODE: our reading of an exited
+    // process's stderr, which can be wrong, not a refusal the provider sent.
+    const readFromExitText = state.lastErrorCode === 'codex_auth_from_exit_text';
     return [
       "⚠️ Heads up: claude-mem can't save memories right now.",
       '',
-      `The memory observer's credentials have been refused by ${provider} ${sinceText}.`,
+      readFromExitText
+        ? `The memory observer has been paused ${sinceText}: the ${provider} process exited with output that looks like a refused login.`
+        : `The memory observer's credentials have been refused by ${provider} ${sinceText}.`,
       '',
       ...renderFailureDetailLines(state, action),
       '',
       "Until that's fixed, nothing from this session — or any other — will be remembered.",
       '',
-      'Restarting will NOT help here: the provider refused the credentials, so nothing is broken to restart.',
-      ...(action ? [] : [
+      ...(readFromExitText ? [
+        'This comes from the exited process\'s output, not a reply from the provider, so it may be wrong.',
+        'Run `codex login status` to check. If the login is fine, the next captured event or an operator retry can trigger another attempt after the cooldown ends.',
+      ] : [
+        'Restarting will NOT help here: the provider refused the credentials, so nothing is broken to restart.',
+      ]),
+      ...(action || readFromExitText ? [] : [
         "Check the observer provider's API key in ~/.claude-mem/settings.json, or switch the",
         'observer to another provider there.',
       ]),

@@ -8,7 +8,7 @@ import type {
 } from '../types.js';
 import { ModeManager } from '../../domain/ModeManager.js';
 import { formatObservationTokenDisplay } from '../TokenCalculator.js';
-import { formatHeaderDateTime } from '../../../shared/timeline-formatting.js';
+import { formatHeaderDateTime, compactTime } from '../../../shared/timeline-formatting.js';
 import { formatContextReferenceId } from './id-display.js';
 
 function formatActiveMode(): string {
@@ -54,11 +54,12 @@ export function renderAgentContextEconomics(
     `${economics.totalDiscoveryTokens.toLocaleString()}t work`
   ];
 
-  if (economics.totalDiscoveryTokens > 0 && (config.showSavingsAmount || config.showSavingsPercent)) {
+  if (economics.totalDiscoveryTokens > 0) {
+    if (config.showSavingsAmount) {
+      parts.push(`${economics.savings.toLocaleString()}t saved`);
+    }
     if (config.showSavingsPercent) {
       parts.push(`${economics.savingsPercent}% savings`);
-    } else if (config.showSavingsAmount) {
-      parts.push(`${economics.savings.toLocaleString()}t saved`);
     }
   }
 
@@ -74,9 +75,6 @@ export function renderAgentDayHeader(day: string): string[] {
   ];
 }
 
-function compactTime(time: string): string {
-  return time.toLowerCase().replace(' am', 'a').replace(' pm', 'p');
-}
 
 export function renderAgentTableRow(
   obs: Observation,

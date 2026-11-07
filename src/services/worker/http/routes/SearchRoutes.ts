@@ -7,10 +7,16 @@ import { SearchManager } from '../../SearchManager.js';
 import type { SearchTelemetryEnvelope } from '../../SearchManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { AppError } from '../../../server/ErrorHandler.js';
+import { resolveDateBound } from '../../../../shared/date-bounds.js';
 import { scopedProjects } from '../../../sqlite/project-read-keys.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
 import { groupByDate } from '../../../../shared/timeline-formatting.js';
+import {
+  SEMANTIC_CONTEXT_MAX_LIMIT,
+  SEMANTIC_CONTEXT_MIN_QUERY_CHARS,
+  renderSemanticContext,
+} from '../../../../shared/semantic-context.js';
 import { countObservationsByProjects } from '../../../context/ObservationCompiler.js';
 import { observerHealthWarning, withObserverHealthWarning } from '../../../context/ContextBuilder.js';
 import type { ContextInjectStats } from '../../../context/ContextBuilder.js';
@@ -21,14 +27,18 @@ import {
   type ContextCacheKeys,
 } from '../../../../shared/context-cache.js';
 import type { ContextCacheService, ContextVariantRender } from '../../ContextCacheService.js';
+import type { ContextReadWorkerClient } from '../../../context/ContextReadWorkerClient.js';
+import type { WorkStateEntry } from '../../../sqlite/work-state.js';
 
 interface ContextInjectRender {
   /** The block with its time placeholders. */
   body: string;
   stats: ContextInjectStats | null;
   cacheable: boolean;
+  readKeys?: string[];
 }
 import { buildWorkStateContextSection } from '../../../context/sections/WorkStateRenderer.js';
+import { isWorkStateEnabled } from '../../../../shared/work-state-setting.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { getViewerBaseUrl } from '../../../../shared/worker-utils.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
@@ -39,6 +49,11 @@ import type { ObservationSearchResult, SessionSummarySearchResult } from '../../
 import { captureEvent } from '../../../telemetry/telemetry.js';
 import { telemetryBuffer } from '../../../telemetry/buffer.js';
 import { proTrialLine } from '../../../../shared/pro-promo.js';
+import { CONTEXT_OUTPUT_LIMIT } from '../../../context/ContextBudget.js';
+import { teamBriefReserveChars } from '../../../../shared/teambrain.js';
+import { ProgressiveMemorySearch } from '../../ProgressiveMemorySearch.js';
+import { progressiveSearchToolResult, progressiveSearchToolError, type ProgressiveSearchInput } from '../../../../shared/progressive-search.js';
+import { parseProjectList } from '../../../../shared/project-list.js';
 
 const ONBOARDING_EXPLAINER_PATH: string = path.resolve(__dirname, '../skills/how-it-works/onboarding-explainer.md');
 
@@ -77,11 +92,10 @@ function getOnboardingExplainer(): string | null {
 const SETTINGS_CACHE_TTL_MS = 5000;
 
 /** Bound on the session-start pull when sync's Realtime channel is not live. */
-const SESSION_START_SYNC_PULL_TIMEOUT_MS = 1500;
 
 const WELCOME_HINT_TEMPLATE = `# claude-mem status
 
-This project has no memory yet. The current session will seed it; subsequent sessions will receive auto-injected context for relevant past work.
+This project has no memory yet. This session will seed it.
 
 Memory injection starts on your second session in a project.
 
@@ -100,26 +114,31 @@ const semanticContextSchema = z.object({
   // Every key the checkout reads (gate P2-5); a list, or comma-separated.
   projects: z.union([z.array(z.string()), z.string()]).optional(),
   limit: z.union([z.string(), z.number()]).optional(),
+  format: z.string().optional(),
   platformSource: z.string().optional(),
   platform_source: z.string().optional(),
+  cwd: z.string().optional(),
 }).passthrough();
 
 export class SearchRoutes extends BaseRouteHandler {
+  private progressiveSearch?: ProgressiveMemorySearch;
   private cachedSettings: ReturnType<typeof SettingsDefaultsManager.loadFromFile> | null = null;
   private cachedSettingsAt = 0;
   private cachedSettingsSaveCount = -1;
   // Scope this cache to the route instance so separate server/test instances do
   // not inherit each other's positive observation state through shared modules.
   private readonly projectsKnownNonEmpty = new Set<string>();
+  private projectsKnownNonEmptyGeneration: number | undefined;
 
   constructor(
     private searchManager: SearchManager,
     // Records each live SessionStart render so the hook can read it from disk
     // next time (liveness plan, Phase 6). Null in tests and tools that only
     // need the route.
-    private contextCache: Pick<ContextCacheService, 'recordLiveRender' | 'removalGenerationNow'> | null = null,
+    private contextCache: (Pick<ContextCacheService, 'recordLiveRender' | 'removalGenerationNow' | 'warmVariant'> & Partial<Pick<ContextCacheService, 'invalidationGenerationNow' | 'beginRenderSequence'>>) | null = null,
     // Cloud sync's pull loop (null when sync is off). Structural so tests can stub it.
     private syncClient: { pullOnce(options?: { timeoutMs?: number }): Promise<void>; isSocketLive(): boolean } | null = null,
+    private contextReader: ContextReadWorkerClient | null = null,
   ) {
     super();
   }
@@ -139,21 +158,48 @@ export class SearchRoutes extends BaseRouteHandler {
     return this.cachedSettings;
   }
 
-  private projectsHaveObservations(
+  /**
+   * "Include last message", env first like every setting (applyEnvOverrides):
+   * the hook and the renderer both read it that way, so a file-only read here
+   * missed an env-only setting and the asking session was not excluded.
+   */
+  private showLastMessageEnabled(): boolean {
+    return (process.env.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE
+      ?? this.getCachedSettings().CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE) === 'true';
+  }
+
+  private async projectsHaveObservations(
     sessionStore: ReturnType<SearchManager['getSessionStore']>,
     projects: string[],
     platformSource?: string,
-  ): boolean {
+  ): Promise<boolean> {
+    const removalGeneration = this.contextCache?.removalGenerationNow();
+    if (removalGeneration !== this.projectsKnownNonEmptyGeneration) {
+      this.projectsKnownNonEmpty.clear();
+      this.projectsKnownNonEmptyGeneration = removalGeneration;
+    }
     const cacheKey = platformSource ? `${platformSource}\0${projects.join('\0')}` : projects.join('\0');
-    if (this.projectsKnownNonEmpty.has(cacheKey)) {
+    if (removalGeneration !== undefined && this.projectsKnownNonEmpty.has(cacheKey)) {
       return true;
     }
-    const observationCount = countObservationsByProjects(sessionStore, projects, platformSource);
-    if (observationCount > 0) {
-      this.projectsKnownNonEmpty.add(cacheKey);
+    const hasObservations = this.contextReader
+      ? await this.contextReader.hasObservations(projects, platformSource)
+      : countObservationsByProjects(sessionStore, projects, platformSource) > 0;
+    if (hasObservations) {
+      // The read awaited the context reader: a delete that landed meanwhile
+      // makes this positive stale, so only remember it for the same generation.
+      if (removalGeneration !== undefined && removalGeneration === this.contextCache?.removalGenerationNow()) {
+        this.projectsKnownNonEmpty.add(cacheKey);
+      }
       return true;
     }
     return false;
+  }
+
+  private async readWorkStateEntries(projects: string[]): Promise<WorkStateEntry[]> {
+    const store = this.searchManager.getSessionStore();
+    if (this.contextReader) return this.contextReader.workState(projects, store.getLocalSyncDeviceId());
+    return store.getWorkStateEntries(projects);
   }
 
   setupRoutes(app: express.Application): void {
@@ -187,6 +233,7 @@ export class SearchRoutes extends BaseRouteHandler {
     // carry the depth/economics stats computed during generation.
 
     app.get('/api/search', this.handleUnifiedSearch.bind(this));
+    app.post('/api/dumb-search', this.handleDumbSearch.bind(this));
     app.get('/api/timeline', this.handleUnifiedTimeline.bind(this));
 
     app.get('/api/search/observations', this.handleSearchObservations.bind(this));
@@ -212,6 +259,17 @@ export class SearchRoutes extends BaseRouteHandler {
     res.json(result);
   });
 
+  private handleDumbSearch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    this.progressiveSearch ??= new ProgressiveMemorySearch(this.searchManager, this.searchManager.getSessionStore());
+    const { projects, ...input } = req.body ?? {};
+    try {
+      res.json(progressiveSearchToolResult(await this.progressiveSearch.run(input as ProgressiveSearchInput, projects)));
+    } catch (error) {
+      logger.warn('HTTP', 'Progressive memory search failed', { projectCount: Array.isArray(projects) ? projects.length : projects ? 1 : 0 }, error instanceof Error ? error : new Error(String(error)));
+      res.json(progressiveSearchToolError(error));
+    }
+  });
+
   private handleUnifiedTimeline = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const result = await this.searchManager.timeline(this.searchArgsFromRequest(req));
     res.json(result);
@@ -229,7 +287,7 @@ export class SearchRoutes extends BaseRouteHandler {
     const rawFilePath = query.filePath ?? query.files;
     const filePath = Array.isArray(rawFilePath)
       ? rawFilePath[0]
-      : (typeof rawFilePath === 'string' && rawFilePath.includes(','))
+      : (query.filePath === undefined && typeof rawFilePath === 'string' && rawFilePath.includes(','))
         ? rawFilePath.split(',')[0].trim()
         : rawFilePath;
 
@@ -320,7 +378,8 @@ export class SearchRoutes extends BaseRouteHandler {
         projects: [projectName],
         ...(platformSource ? { platformSource } : {})
       },
-      true  
+      true,
+      { execution: this.contextReader ? 'worker' : 'inline', reader: this.contextReader ?? undefined }
     );
 
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -328,11 +387,15 @@ export class SearchRoutes extends BaseRouteHandler {
   });
 
   private handleContextInject = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    let projectsParam = (req.query.projects as string) || (req.query.project as string);
+    let projectsParam: unknown = req.query.projects || req.query.project;
     const hostCwd = typeof req.query.cwd === 'string' ? req.query.cwd : '';
-    // A host that cannot run the project resolver itself (the OMP hook) sends
-    // its cwd instead: read the keys the CLI context hook sends for that checkout.
-    if (!projectsParam && hostCwd.trim()) {
+    // "Include last message" picks the prior session's reply by excluding the
+    // session that asks, so only then is its id used, and that answer stays live.
+    const showLastMessage = this.showLastMessageEnabled();
+    const hostSessionId = showLastMessage && typeof req.query.sessionId === 'string' ? req.query.sessionId : undefined;
+    // An excluded checkout receives no context, whether the host names its
+    // projects itself (a DSH project override) or leaves them to the worker.
+    if (hostCwd.trim()) {
       const excludedProjects = process.env.CLAUDE_MEM_EXCLUDED_PROJECTS
         ?? this.getCachedSettings().CLAUDE_MEM_EXCLUDED_PROJECTS;
       if (isProjectExcluded(hostCwd, excludedProjects)) {
@@ -340,10 +403,21 @@ export class SearchRoutes extends BaseRouteHandler {
         res.send('');
         return;
       }
-      projectsParam = getProjectContext(hostCwd).allProjects.join(',');
+    }
+    // A host that cannot run the project resolver itself (the OMP hook) sends
+    // its cwd instead: read the keys the CLI context hook sends for that checkout.
+    if (!projectsParam && hostCwd.trim()) {
+      const resolvedProjects = this.contextReader
+        ? await this.contextReader.projectsForCwd(hostCwd)
+        : getProjectContext(hostCwd).allProjects;
+      projectsParam = resolvedProjects.length > 0 ? resolvedProjects : undefined;
     }
     const forHuman = req.query.colors === 'true';
     const full = req.query.full === 'true';
+    // Per-session hook notices are not part of the reusable cached body.
+    const rawReserve = Number(req.query.reserveChars ?? 0);
+    const reserveChars = Number.isFinite(rawReserve)
+      ? Math.min(CONTEXT_OUTPUT_LIMIT, Math.max(0, Math.floor(rawReserve))) : 0;
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
     if (!projectsParam) {
@@ -351,7 +425,7 @@ export class SearchRoutes extends BaseRouteHandler {
       return;
     }
 
-    const projects = projectsParam.split(',').map(p => p.trim()).filter(Boolean);
+    const projects = parseProjectList(projectsParam);
 
     if (projects.length === 0) {
       this.badRequest(res, 'At least one project is required');
@@ -359,18 +433,20 @@ export class SearchRoutes extends BaseRouteHandler {
     }
 
     const injectStartedAt = Date.now();
-    // Session-start freshness: with Realtime joined, other devices' ops are
-    // already applied as they happen. Without it (dropped, never joined,
-    // disabled), pull once, bounded — pullOnce never throws, so a dead network
-    // costs at most this wait and the render proceeds on local memory.
+    // Local-first: render from the local db now, never wait on the network.
+    // The pull is only a nudge (wakes a suspended sync loop, catches up for the
+    // next session); ops it applies invalidate the cached files as usual.
     if (this.syncClient && !this.syncClient.isSocketLive()) {
-      await this.syncClient.pullOnce({ timeoutMs: SESSION_START_SYNC_PULL_TIMEOUT_MS });
+      void this.syncClient.pullOnce();
     }
     // A delete that lands while this renders must not see its row written back to the cache.
     const removalGenerationAtRenderStart = this.contextCache?.removalGenerationNow();
+    const invalidationGenerationAtStart = this.contextCache?.invalidationGenerationNow?.();
+    // A queued re-render that starts after this one must win, even if it finishes first.
+    const renderSequenceAtStart = this.contextCache?.beginRenderSequence?.();
     let rendered: ContextInjectRender;
     try {
-      rendered = await this.renderContextInjectBody({ projects, platformSource, forHuman, full });
+      rendered = await this.renderContextInjectBody({ projects, platformSource, forHuman, full, cwd: hostCwd || undefined, sessionId: hostSessionId, includePriorMessage: showLastMessage, reserveChars });
     } catch (error) {
       const normalizedError = error instanceof Error ? error : new Error(String(error));
       // context_injected is HOOK-level (no sessionDbId in scope) → null key,
@@ -400,15 +476,35 @@ export class SearchRoutes extends BaseRouteHandler {
 
     // Precomputed SessionStart context (liveness plan, Phase 6): this render is
     // what the hook reads from disk next time, and the variant is kept fresh
-    // from here on. `full` is a one-off human request and is never cached.
+    // from here on. `full` is a one-off human request and is never cached. An
+    // answer with the prior reply is not persisted either, since the reply was
+    // chosen for this session: its variant is warmed instead, without a reply.
+    // A per-session notice reserve must not replace the normal cache variant,
+    // but still learns and warms that variant for later offline sessions.
     const respondedAtEpochMs = Date.now();
     if (!full && this.contextCache) {
-      this.contextCache.recordLiveRender(
-        contextCacheKeys(projects, platformSource, forHuman),
-        { body: rendered.body, cacheable: rendered.cacheable },
-        respondedAtEpochMs,
-        removalGenerationAtRenderStart,
-      );
+      try {
+        const keys = contextCacheKeys(projects, platformSource, forHuman, hostCwd || undefined);
+        if (showLastMessage || reserveChars > 0) {
+          await this.contextCache.warmVariant(keys, rendered.readKeys);
+        } else {
+          await this.contextCache.recordLiveRender(
+            keys,
+            {
+              body: rendered.body, cacheable: rendered.cacheable,
+              ...(rendered.readKeys ? { readKeys: rendered.readKeys } : {}),
+              ...(invalidationGenerationAtStart !== undefined ? { invalidationGenerationAtStart } : {}),
+            },
+            respondedAtEpochMs,
+            removalGenerationAtRenderStart,
+            renderSequenceAtStart,
+          );
+        }
+      } catch (error) {
+        logger.warn('CONTEXT_CACHE', 'Could not cache rendered context; serving the live result', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
 
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -417,16 +513,19 @@ export class SearchRoutes extends BaseRouteHandler {
 
   /**
    * Re-render one cached variant (ContextCacheService). Same body the live
-   * route sends, before its placeholders are filled.
+   * route sends with "Include last message" off, before its placeholders are
+   * filled: any session may read it, so it never carries a prior reply.
    */
   async renderContextVariant(keys: ContextCacheKeys): Promise<ContextVariantRender> {
     const rendered = await this.renderContextInjectBody({
       projects: keys.projects,
+      cwd: keys.cwd,
       platformSource: keys.platformSource === ALL_PLATFORM_SOURCES_CACHE_KEY ? undefined : keys.platformSource,
       forHuman: keys.colors,
       full: false,
+      includePriorMessage: false,
     });
-    return { body: rendered.body, cacheable: rendered.cacheable };
+    return { body: rendered.body, cacheable: rendered.cacheable, ...(rendered.readKeys ? { readKeys: rendered.readKeys } : {}) };
   }
 
   /**
@@ -439,23 +538,33 @@ export class SearchRoutes extends BaseRouteHandler {
     platformSource: string | undefined;
     forHuman: boolean;
     full: boolean;
+    cwd?: string;
+    /** The asking host session, excluded when the prior reply is chosen. */
+    sessionId?: string;
+    /** "Include last message" for this render; false for any block that may be cached. */
+    includePriorMessage: boolean;
+    reserveChars?: number;
   }): Promise<ContextInjectRender> {
     const { projects, platformSource, forHuman, full } = request;
-    // The health banner is time-dependent (its durations, its expiry), so a
-    // block that carries one is served live only.
-    const cacheable = observerHealthWarning(false) === '';
+    // Health banners change with time, and a prior reply is chosen for the
+    // session that asked: a block that may carry either is served live only.
+    const cacheable = !request.includePriorMessage && observerHealthWarning(false) === '';
 
     // The agent's open to-do lists and working state lead every answer this
     // route gives a session, the welcome hint included; memory is fitted to
     // what that leaves of the 10K delivery limit. The terminal preview is for
-    // the human and goes without it.
-    const workStateSection = forHuman
+    // the human and goes without it, and so does a session whose host turned
+    // work state off (CLAUDE_MEM_WORK_STATE_ENABLED=false, #4606).
+    const settings = this.getCachedSettings();
+    const workStateEnabled = isWorkStateEnabled(
+      process.env.CLAUDE_MEM_WORK_STATE_ENABLED ?? settings.CLAUDE_MEM_WORK_STATE_ENABLED,
+    );
+    const workStateSection = forHuman || !workStateEnabled
       ? ''
-      : buildWorkStateContextSection(this.searchManager.getSessionStore().getWorkStateEntries(projects), 'placeholders');
+      : buildWorkStateContextSection(await this.readWorkStateEntries(projects), 'placeholders');
     const withWorkState = (text: string): string =>
       workStateSection && text ? `${workStateSection}\n\n${text}` : workStateSection || text;
 
-    const settings = this.getCachedSettings();
     // Env always wins over cached settings (mirrors SettingsDefaultsManager
     // applyEnvOverrides semantics). Reading process.env is free, so honoring it
     // here keeps the welcome-hint toggle responsive without waiting out the
@@ -466,7 +575,7 @@ export class SearchRoutes extends BaseRouteHandler {
       const sessionStore = this.searchManager.getSessionStore();
       // Memoized: skips the COUNT(*) query once any project in the set has
       // observations. Hot-path: PostToolUse fires after every Read/Edit.
-      if (!this.projectsHaveObservations(sessionStore, projects, platformSource)) {
+      if (!await this.projectsHaveObservations(sessionStore, projects, platformSource)) {
         const port = process.env.CLAUDE_MEM_WORKER_PORT ?? settings.CLAUDE_MEM_WORKER_PORT;
         const viewerUrl = getViewerBaseUrl(port);
         const hintBody = WELCOME_HINT_TEMPLATE
@@ -485,30 +594,53 @@ export class SearchRoutes extends BaseRouteHandler {
     // path); a cached re-render needs none: ContextCacheService only keeps
     // files servable while Realtime delivers ops as they happen.
     const primaryProject = projects[projects.length - 1];
-    const cwd = `/context/${primaryProject}`;
+    const cwd = request.cwd ?? `/context/${primaryProject}`;
 
     const contextResult = await generateContextWithStats({
-      session_id: 'context-inject-' + Date.now(),
+      session_id: request.sessionId ?? 'context-inject-' + Date.now(),
       cwd: cwd,
       projects: projects,
       ...(platformSource ? { platformSource } : {}),
       full,
-      reserveChars: workStateSection ? workStateSection.length + 2 : 0,
+      // Beside the work-state section: room for what the hook appends after
+      // this body once the install is in a team (the TeamBrain brief). Env
+      // first, as the hook reads it.
+      reserveChars: (request.reserveChars ?? 0) + (workStateSection ? workStateSection.length + 2 : 0) + teamBriefReserveChars({
+        CLAUDE_MEM_TEAMBRAIN_URL: process.env.CLAUDE_MEM_TEAMBRAIN_URL ?? settings.CLAUDE_MEM_TEAMBRAIN_URL,
+        CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED ?? settings.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED,
+      }),
       timePlaceholders: true,
-    }, forHuman);
-    return { body: withWorkState(contextResult.text), stats: contextResult.stats, cacheable };
+      includePriorMessage: request.includePriorMessage,
+    }, forHuman, { execution: this.contextReader ? 'worker' : 'inline', reader: this.contextReader ?? undefined });
+    return { body: withWorkState(contextResult.text), stats: contextResult.stats, cacheable, ...(contextResult.readKeys ? { readKeys: contextResult.readKeys } : {}) };
   }
 
   private handleSemanticContext = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const query = SearchRoutes.firstString(req.body?.q) ?? SearchRoutes.firstString(req.query.q) ?? '';
-    const project = SearchRoutes.firstString(req.body?.project) ?? SearchRoutes.firstString(req.query.project);
-    const projects = SearchRoutes.parseProjectsParam(req.body?.projects ?? req.query.projects);
-    const limit = Math.min(Math.max(parseInt(String(req.body?.limit || req.query.limit || '5'), 10) || 5, 1), 20);
+    let project = SearchRoutes.firstString(req.body?.project) ?? SearchRoutes.firstString(req.query.project);
+    let projects = SearchRoutes.parseProjectsParam(req.body?.projects ?? req.query.projects);
+    const limit = Math.min(Math.max(parseInt(String(req.body?.limit || req.query.limit || '5'), 10) || 5, 1), SEMANTIC_CONTEXT_MAX_LIMIT);
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
-    if (!query || query.length < 20) {
+    if (!query || query.length < SEMANTIC_CONTEXT_MIN_QUERY_CHARS) {
       res.json({ context: '', count: 0 });
       return;
+    }
+
+    // Resolve the same checkout keys as /api/context/inject when none were named.
+    const hostCwd = typeof req.body?.cwd === 'string' ? req.body.cwd.trim() : '';
+    if (hostCwd) {
+      const excludedProjects = process.env.CLAUDE_MEM_EXCLUDED_PROJECTS
+        ?? this.getCachedSettings().CLAUDE_MEM_EXCLUDED_PROJECTS;
+      if (isProjectExcluded(hostCwd, excludedProjects)) {
+        res.json({ context: '', count: 0 });
+        return;
+      }
+      if (!project && projects.length === 0) {
+        const checkout = getProjectContext(hostCwd);
+        project = checkout.primary;
+        projects = checkout.allProjects;
+      }
     }
 
     let result: any;
@@ -535,15 +667,28 @@ export class SearchRoutes extends BaseRouteHandler {
       return;
     }
 
-    const lines: string[] = ['## Relevant Past Work (semantic match)\n'];
-    for (const obs of observations.slice(0, limit)) {
-      const date = obs.created_at?.slice(0, 10) || '';
-      lines.push(`### ${obs.title || 'Observation'} (${date})`);
-      if (obs.narrative) lines.push(obs.narrative);
-      lines.push('');
+    const format = SearchRoutes.firstString(req.body?.format) ?? SearchRoutes.firstString(req.query.format);
+    if (format === 'index') {
+      // Progressive disclosure: one line per match, expanded on demand. Costs a
+      // fraction of a narrative per match, but a match only becomes content if
+      // the model calls get_observations, which is why narrative is the default.
+      const lines: string[] = ['## Relevant Past Work (semantic match)\n'];
+      for (const obs of observations.slice(0, limit)) {
+        const date = obs.created_at?.slice(0, 10) || '';
+        lines.push(`- #${obs.id} ${obs.title || 'Observation'}${obs.subtitle ? ` — ${obs.subtitle}` : ''} (${date})`);
+      }
+      lines.push('', 'Call get_observations with the ids above to read the full details of any that bear on this prompt.');
+      res.json({ context: lines.join('\n'), count: observations.length });
+      return;
     }
 
-    res.json({ context: lines.join('\n'), count: observations.length });
+    const context = renderSemanticContext(observations.slice(0, limit).map((obs: any) => ({
+      title: obs.title,
+      narrative: obs.narrative,
+      date: obs.created_at?.slice(0, 10) || '',
+    })));
+
+    res.json({ context, count: observations.length });
   });
 
   /**
@@ -552,6 +697,7 @@ export class SearchRoutes extends BaseRouteHandler {
    */
   private searchArgsFromRequest(req: Request): Record<string, any> {
     const searchArgs: Record<string, any> = { ...(req.query as Record<string, any>) };
+    SearchRoutes.assertValidDateBounds(searchArgs);
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
     if (platformSource) {
       searchArgs.platformSource = platformSource;
@@ -562,7 +708,54 @@ export class SearchRoutes extends BaseRouteHandler {
     } else {
       delete searchArgs.projects;
     }
+    SearchRoutes.assertValidPagination(searchArgs);
     return searchArgs;
+  }
+
+  /**
+   * Reject an unparseable date bound up front. Left alone it reaches the search
+   * strategies, where it matches nothing on the SQLite path and filters nothing
+   * on the Chroma path, and the strategies' own error handling would swallow it.
+   */
+  private static assertValidDateBounds(searchArgs: Record<string, any>): void {
+    for (const [keys, boundary] of [
+      [['dateStart', 'date_start', 'date_from'], 'start'],
+      [['dateEnd', 'date_end', 'date_to'], 'end'],
+    ] as const) {
+      for (const key of keys) {
+        const value = searchArgs[key];
+        if (value === undefined || value === '') continue;
+        if (typeof value !== 'string') {
+          throw new AppError(`${key} must be a single date string`, 400, 'INVALID_DATE');
+        }
+        resolveDateBound(value, boundary);
+      }
+    }
+  }
+
+  /**
+   * `limit` and `offset` come straight from the query string and reach SQLite's
+   * LIMIT/OFFSET: `limit=-1` returned every row and `limit=abc` became NaN
+   * (no results). Accept only digits, with `limit >= 1`, like /api/logs does
+   * for `lines`; an empty value counts as absent.
+   */
+  private static assertValidPagination(searchArgs: Record<string, any>): void {
+    for (const [key, minimum] of [['limit', 1], ['offset', 0]] as const) {
+      const value = searchArgs[key];
+      if (value === undefined || value === '') {
+        delete searchArgs[key];
+        continue;
+      }
+      const parsed = typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : NaN;
+      if (!Number.isSafeInteger(parsed) || parsed < minimum) {
+        throw new AppError(
+          `${key} must be ${minimum === 1 ? 'a positive' : 'a non-negative'} integer`,
+          400,
+          'INVALID_PAGINATION'
+        );
+      }
+      searchArgs[key] = String(parsed);
+    }
   }
 
   /**
@@ -583,7 +776,7 @@ export class SearchRoutes extends BaseRouteHandler {
         'INVALID_PROJECTS'
       );
     }
-    return scopedProjects({ projects: entries.flatMap(entry => entry.split(',')) });
+    return scopedProjects({ projects: parseProjectList(entries) });
   }
 
   private handleOnboardingExplainer = this.wrapHandler((_req: Request, res: Response): void => {

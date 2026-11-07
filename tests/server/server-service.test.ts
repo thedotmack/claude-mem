@@ -121,7 +121,8 @@ describe('ServerService', () => {
         // No active queue manager: enqueue must report queued_only.
         expect(body.generationJob.transport).toBe('queued_only');
       } finally {
-        await pool.end();
+        // Once the service has the pool, afterEach's service.stop() ends it.
+        if (!service) await pool.end();
       }
     });
 
@@ -185,7 +186,8 @@ describe('ServerService', () => {
         );
         expect((result.rows[0] as { count: number }).count).toBe(0);
       } finally {
-        await pool.end();
+        // Once the service has the pool, afterEach's service.stop() ends it.
+        if (!service) await pool.end();
       }
     });
 
@@ -252,7 +254,8 @@ describe('ServerService', () => {
         );
         expect((eventCount.rows[0] as { count: number }).count).toBe(0);
       } finally {
-        await pool.end();
+        // Once the service has the pool, afterEach's service.stop() ends it.
+        if (!service) await pool.end();
       }
     });
   } else {

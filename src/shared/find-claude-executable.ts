@@ -26,10 +26,11 @@ import { execSync, execFileSync } from 'child_process';
 import { existsSync, realpathSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
-import { isWindowsNativeExecutable } from './spawn.js';
+import { isCurrentDirectoryCandidate, isWindowsNativeExecutable, windowsWhereExecutablePath } from './spawn.js';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, expandTilde } from './paths.js';
 import { logger, type Component } from '../utils/logger.js';
+import { withNpmClaudeExe } from './windows-npm-claude.js';
 
 /**
  * How long to wait for a probe (`--version` / capability) before giving up (ms).
@@ -287,14 +288,43 @@ function discoverCandidates(): string[] {
     // after dedupe below.
     for (const name of ['claude', 'claude.cmd']) {
       try {
-        const output = _internals.execFileSync('where.exe', [name], {
+        // where.exe itself must come from System32, and its results exclude
+        // the current directory — hooks run with the user's project as cwd,
+        // where a planted claude.exe would otherwise be found and spawned.
+        const output = _internals.execFileSync(windowsWhereExecutablePath(), [name], {
           encoding: 'utf8',
           windowsHide: true,
           stdio: ['ignore', 'pipe', 'ignore'],
         });
-        candidates.push(...output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
+        // where.exe writes the console's active code page (cp949 on ko-KR) but
+        // the `encoding: 'utf8'` above decodes the bytes as UTF-8, so a
+        // non-ASCII profile folder name arrives as U+FFFD and the reported
+        // path does not exist (#4694, #3865). Keep only lines that resolve on
+        // disk — a garbled candidate would only die at the probe with ENOENT.
+        candidates.push(
+          ...output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+            .filter((line) => !isCurrentDirectoryCandidate(line))
+            .filter((line) => _internals.existsSync(line)),
+        );
       } catch {
         // Not found via this lookup — try the next discovery source.
+      }
+    }
+    // A global npm install's PATH hits are shims the SDK can't spawn: swap in
+    // the package's own claude.exe and drop the extension-less sh script.
+    candidates.splice(0, candidates.length, ...withNpmClaudeExe(candidates, (path) => _internals.existsSync(path)));
+    // The native installer puts the CLI at ~/.local/bin/claude.exe (and the
+    // legacy local install at ~/.claude/local/claude.exe), which may not be on
+    // the worker's PATH at all — or where.exe may only report garbled lines
+    // (#4694). Without these, a perfectly installed CLI wedges the worker in
+    // setup_required. The .exe suffix matters: Windows has no shebang, so an
+    // extension-less file is not spawnable here.
+    for (const knownPath of [
+      join(_internals.homedir(), '.local', 'bin', 'claude.exe'),
+      join(_internals.homedir(), '.claude', 'local', 'claude.exe'),
+    ]) {
+      if (_internals.existsSync(knownPath)) {
+        candidates.push(knownPath);
       }
     }
   } else {

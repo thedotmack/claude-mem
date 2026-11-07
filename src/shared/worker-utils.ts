@@ -1,6 +1,7 @@
 import path from "path";
 import { randomUUID } from "crypto";
-import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync, readdirSync, statSync, unlinkSync } from "fs";
+import { fileURLToPath } from "url";
+import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync, readdirSync, realpathSync, statSync, unlinkSync } from "fs";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, defaultSessionInitRequestTimeoutMs, getTimeout, maxSessionInitRequestTimeoutMs } from "./hook-constants.js";
 import { readSseEvents } from "./sse-reader.js";
@@ -9,7 +10,9 @@ import { MARKETPLACE_ROOT, DATA_DIR, resolveDataDir } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { isWorkerAutostartDisabled } from "./worker-autostart.js";
 import { viewerBaseUrl } from "./viewer-url.js";
-import { validateWorkerPidFile, readOwnedWorkerPidInfo } from "../supervisor/index.js";
+import { formatHostForUrl, InvalidWorkerUrlError, normalizeWorkerBaseUrl } from "./worker-url.js";
+import { WorkerRequestTimeoutError } from "./worker-request-timeout-error.js";
+import { readOwnedWorkerPidInfo } from "../supervisor/index.js";
 import { emitDiagnostic } from "./hook-io.js";
 import { captureCliEvent } from "../services/telemetry/cli-telemetry.js";
 import { checkVersionMatch, isPortInUse } from "../services/infrastructure/index.js";
@@ -152,7 +155,7 @@ export async function fetchWithTimeout(url: string, init: RequestInit = {}, time
     // callers match on (hook-command.ts, server-beta-client.ts) — the
     // DOMException text is runtime-dependent, so normalize it here.
     if (err instanceof DOMException && err.name === 'TimeoutError') {
-      throw new Error(`Request timed out after ${timeoutMs}ms`);
+      throw new WorkerRequestTimeoutError(timeoutMs);
     }
     throw err;
   }
@@ -321,7 +324,12 @@ function getWorkerSettingsPath(): string {
   return path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
 }
 
-function getWorkerSettings(): SettingsDefaults {
+function getWorkerSettings(options: { readOnly?: boolean } = {}): SettingsDefaults {
+  // Doctor reports state without seeding settings.json or running migrations.
+  // Do not reuse a cached mutating read for a diagnostic request.
+  if (options.readOnly) {
+    return SettingsDefaultsManager.loadFromFile(getWorkerSettingsPath(), true, options);
+  }
   if (cachedSettings !== null) {
     return cachedSettings;
   }
@@ -371,24 +379,24 @@ function readSettingsBackedTimeout(
   return defaultValue;
 }
 
-export function getWorkerPort(): number {
-  if (cachedPort !== null) {
+export function getWorkerPort(options: { readOnly?: boolean } = {}): number {
+  if (!options.readOnly && cachedPort !== null) {
     return cachedPort;
   }
 
-  const settings = getWorkerSettings();
-  cachedPort = parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
-  return cachedPort;
+  const port = parseInt(getWorkerSettings(options).CLAUDE_MEM_WORKER_PORT, 10);
+  if (!options.readOnly) cachedPort = port;
+  return port;
 }
 
-export function getWorkerHost(): string {
-  if (cachedHost !== null) {
+export function getWorkerHost(options: { readOnly?: boolean } = {}): string {
+  if (!options.readOnly && cachedHost !== null) {
     return cachedHost;
   }
 
-  const settings = getWorkerSettings();
-  cachedHost = settings.CLAUDE_MEM_WORKER_HOST;
-  return cachedHost;
+  const host = getWorkerSettings(options).CLAUDE_MEM_WORKER_HOST;
+  if (!options.readOnly) cachedHost = host;
+  return host;
 }
 
 /**
@@ -466,13 +474,18 @@ function boundedByBudget(stepTimeoutMs: number, deadlineAt: number | null): numb
   return remainingMs === null ? stepTimeoutMs : Math.max(1, Math.min(stepTimeoutMs, remainingMs));
 }
 
-export function formatHostForUrl(host: string): string {
-  if (host.startsWith('[') && host.endsWith(']')) return host;
-  return host.includes(':') ? `[${host}]` : host;
+// The bracket rule lives in the import-free worker-url.ts so the OpenCode
+// plugin bundle can share it; re-exported here for existing callers.
+export { formatHostForUrl } from "./worker-url.js";
+
+/** Where this client reaches the worker. Throws InvalidWorkerUrlError rather than falling back to host and port. */
+export function getWorkerBaseUrl(options: { readOnly?: boolean } = {}): string {
+  return normalizeWorkerBaseUrl(getWorkerSettings(options).CLAUDE_MEM_WORKER_URL)
+    || `http://${formatHostForUrl(getWorkerHost(options))}:${getWorkerPort(options)}`;
 }
 
 export function buildWorkerUrl(apiPath: string): string {
-  return `http://${formatHostForUrl(getWorkerHost())}:${getWorkerPort()}${apiPath}`;
+  return `${getWorkerBaseUrl()}${apiPath.startsWith('/') ? apiPath : `/${apiPath}`}`;
 }
 
 export function workerHttpRequest(
@@ -612,6 +625,8 @@ export interface WorkerScriptSearchRoots {
   cacheRoot: string;
   marketplaceRoot: string;
   cwd: string;
+  /** The file treated as the running code for the cwd trust check; defaults to this module. */
+  runningModuleFile?: string;
 }
 
 function defaultWorkerScriptSearchRoots(): WorkerScriptSearchRoots {
@@ -620,6 +635,50 @@ function defaultWorkerScriptSearchRoots(): WorkerScriptSearchRoots {
     marketplaceRoot: MARKETPLACE_ROOT,
     cwd: process.cwd(),
   };
+}
+
+/**
+ * The file this code is running from. `__filename` exists in the CJS bundles
+ * and under Bun; the npx-cli bundle is ESM, where only import.meta.url does.
+ */
+function runningModuleFile(): string {
+  return typeof __filename !== 'undefined' ? __filename : fileURLToPath(import.meta.url);
+}
+
+/** The checkout's own code directories: the built plugin, the sources, the CLI build. */
+const DEV_CHECKOUT_CODE_DIRS = ['plugin', 'src', 'dist'] as const;
+
+/**
+ * Trust check for the cwd worker-script candidate. A hook runs inside whatever
+ * project the user opened, so "the checkout's own plugin/scripts/worker-service.cjs
+ * plus its package.json version" is only safe when the running code is that
+ * checkout's own: this module must sit under <cwd>/plugin, <cwd>/src or
+ * <cwd>/dist. "Anywhere under cwd" is not enough — claude-mem installed in a
+ * project's node_modules would then trust the surrounding project, which can
+ * ship its own worker-service.cjs with a version like 99.0.0.
+ */
+function isTrustedWorkerScriptCwd(cwd: string, moduleFile: string = runningModuleFile()): boolean {
+  let moduleDir: string;
+  let resolvedCwd: string;
+  try {
+    moduleDir = path.dirname(realpathSync(moduleFile));
+    resolvedCwd = realpathSync(cwd);
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'Ignoring the cwd worker script: could not resolve the running module or cwd', {
+      cwd, moduleFile, code: (error as NodeJS.ErrnoException).code,
+    });
+    return false;
+  }
+  const trusted = DEV_CHECKOUT_CODE_DIRS.some((codeDir) => {
+    const rel = path.relative(path.join(resolvedCwd, codeDir), moduleDir);
+    return !rel.startsWith('..') && !path.isAbsolute(rel);
+  });
+  if (!trusted) {
+    logger.debug('SYSTEM', 'Ignoring the cwd worker script: the running module is not this checkout\'s own code', {
+      cwd: resolvedCwd, moduleDir,
+    });
+  }
+  return trusted;
 }
 
 /**
@@ -654,10 +713,16 @@ export function resolveWorkerScript(
       scriptPath: candidateWorkerScriptPath(path.join(roots.marketplaceRoot, 'plugin')),
       version: readPackageVersion(path.join(roots.marketplaceRoot, 'package.json')),
     },
-    {
-      scriptPath: path.join(roots.cwd, 'plugin', 'scripts', 'worker-service.cjs'),
-      version: readPackageVersion(path.join(roots.cwd, 'package.json')),
-    },
+    // Untrusted-cwd guard: only when this module lives under the cwd root (the
+    // claude-mem repo is the project being worked on) may its versioned script
+    // compete. Otherwise an arbitrary checkout's plugin/scripts/worker-service.cjs
+    // could outrank the installed worker and execute under hook privileges.
+    ...(isTrustedWorkerScriptCwd(roots.cwd, roots.runningModuleFile)
+      ? [{
+          scriptPath: path.join(roots.cwd, 'plugin', 'scripts', 'worker-service.cjs'),
+          version: readPackageVersion(path.join(roots.cwd, 'package.json')),
+        }]
+      : []),
   ];
 
   return selectWorkerScript(candidates);
@@ -786,6 +851,7 @@ async function readWorkerReadyStream(budgetMs: number): Promise<ReadyStreamRead>
       absoluteCapMs: Math.max(1, budgetMs),
     });
   } catch (error: unknown) {
+    if (error instanceof InvalidWorkerUrlError) throw error;
     if (isIdleTimeoutError(error)) return { outcome: 'unresponsive', detail: 'no response headers within the idle window' };
     if (isAbsoluteCapTimeoutError(error)) return { outcome: 'still_booting', detail: 'budget spent before response headers' };
     logger.debug('SYSTEM', 'Worker /api/ready connection failed', {
@@ -1153,25 +1219,13 @@ async function isWorkerPortAlive(deadline: number = Number.POSITIVE_INFINITY): P
   try {
     healthy = await isWorkerHealthy(Math.min(HEALTH_CHECK_TIMEOUT_MS, remainingMs));
   } catch (error: unknown) {
+    if (error instanceof InvalidWorkerUrlError) throw error;
     logger.debug('SYSTEM', 'Worker health check threw', {
       error: error instanceof Error ? error.message : String(error),
     });
     return false;
   }
-  if (!healthy) return false;
-
-  // I-4 (bwrap --unshare-pid): health was already proven above, so a
-  // 'stale' verdict here means the pid is invisible from this namespace,
-  // not that the worker is dead. removeStale:false keeps this call from
-  // deleting the host worker's pid file out from under it.
-  const pidStatus = validateWorkerPidFile({ logAlive: false, removeStale: false });
-  if (pidStatus === 'missing') return true;
-  if (pidStatus === 'alive') return true;
-  if (pidStatus === 'stale') {
-    logger.debug('SYSTEM', 'pid not visible (likely pid namespace); keeping pid file');
-    return true;
-  }
-  return false;
+  return healthy;
 }
 
 /**
@@ -1415,7 +1469,7 @@ export async function ensureWorkerRunning(timeoutMs?: number): Promise<boolean> 
       // A stale worker we just killed already proved its port closed
       // (waitForWorkerPortReleased); every other spawn must first prove the port
       // free (#3171).
-      if (!recycledStaleWorker && !(await preSpawnPortIsFree(preSpawnDeadline, deadlineAt))) return false;
+      if (!recycledStaleWorker && !(await preSpawnPortIsFree(preSpawnDeadline, deadlineAt, scriptPath))) return false;
       const runtimePath = resolveWorkerRuntimePath();
       if (!runtimePath) {
         logger.warn('SYSTEM', 'Cannot lazy-spawn worker: Bun runtime not found (PATH, BUN / BUN_PATH / BUN_INSTALL, or ~/.bun/bin)');
@@ -1428,16 +1482,14 @@ export async function ensureWorkerRunning(timeoutMs?: number): Promise<boolean> 
       logger.info('SYSTEM', 'Worker not running — lazy-spawning', { runtimePath, scriptPath });
 
       try {
-        // Windows: Start-Process -WindowStyle Hidden (never Node detached —
-        // detached allocates its own console on win32, #3521). POSIX: setsid /
-        // detached. Either way the daemon's cwd is claude-mem's data dir, not
-        // the user's project that this hook inherited: a daemon holds its cwd
-        // open for its whole life, and on Windows that locks the folder against
-        // rename or move long after the session ends (#3706). The helper also
-        // listens for the async spawn 'error' (a dangling runtime shim), which
-        // would otherwise escape as an uncaught exception (#4039).
-        // A budgeted hook caps the Windows launch (a synchronous PowerShell
-        // Start-Process) at what is left of its deadline.
+        // One detached spawnHidden launch on every platform, so the daemon's
+        // cwd is claude-mem's data dir, not the user's project that this hook
+        // inherited: a daemon holds its cwd open for its whole life, and on
+        // Windows that locks the folder against rename or move long after the
+        // session ends (#3706). The helper also listens for the async spawn
+        // 'error' (a dangling runtime shim), which would otherwise escape as
+        // an uncaught exception (#4039). No PowerShell on Windows: the encoded
+        // Start-Process command line is a behavioural-AV fingerprint (#5240).
         const spawned = spawnDetachedWorkerDaemon(
           runtimePath,
           scriptPath,
@@ -1446,7 +1498,6 @@ export async function ensureWorkerRunning(timeoutMs?: number): Promise<boolean> 
             CLAUDE_MEM_WORKER_PORT: String(getWorkerPort()),
           }),
           process.platform,
-          remainingBudgetMs(deadlineAt) ?? undefined,
         );
         if (spawned === undefined) {
           return false;
@@ -1554,7 +1605,11 @@ let unbindablePortDiagnosis: number | null = null;
  * - indeterminate (the bind neither succeeded nor hit EADDRINUSE in time) →
  *   no spawn: never start another worker onto a port in an unknown state.
  */
-async function preSpawnPortIsFree(deadline: number, hookDeadlineAt: number | null): Promise<boolean> {
+async function preSpawnPortIsFree(
+  deadline: number,
+  hookDeadlineAt: number | null,
+  scriptPath: string | null,
+): Promise<boolean> {
   const port = getWorkerPort();
   const remainingMs = deadline - Date.now();
   if (remainingMs <= 0) return false;
@@ -1585,6 +1640,9 @@ async function preSpawnPortIsFree(deadline: number, hookDeadlineAt: number | nul
     logger.info('SYSTEM', 'Reclaimed the worker port before lazy-spawn', { port, killedPids: reclaim.killedPids });
     return true;
   }
+  if (reclaim.reason === 'out-of-budget' && hookDeadlineAt !== null) {
+    handOffReclaimToDaemon(port, scriptPath);
+  }
   if (readOwnedWorkerPidInfo() === null) {
     orphanedPortDiagnosis = port;
   }
@@ -1594,6 +1652,151 @@ async function preSpawnPortIsFree(deadline: number, hookDeadlineAt: number | nul
     ...(orphanedPortDiagnosis === port ? { fix: ORPHANED_PORT_REMEDIATION } : {}),
   });
   return false;
+}
+
+/**
+ * Minimum spacing between two reclaim handoffs. A daemon that declines (the
+ * worker answered, or is still booting) exits fast, and without this every
+ * hook event of a long silence would launch another one.
+ */
+const RECLAIM_HANDOFF_MIN_SPACING_MS = 30_000;
+
+/**
+ * Upper bound on one handoff while its daemon is alive (or its pid is unknown:
+ * a launch that never yielded a pid). The unbudgeted reclaim's slowest path is
+ * on Windows: a health wait, two health probes (4 s), the listener read (up to
+ * 15 s), the process-table read for the identity check (up to 30 s), the
+ * tree-kill (5.5 s) and a second listener read (15 s), about 75 s. A daemon
+ * that wins the port becomes the worker and stays alive, so the bound also
+ * keeps a later wedge of that worker from being blocked forever by its own
+ * handoff.
+ */
+const RECLAIM_HANDOFF_MAX_IN_FLIGHT_MS = 120_000;
+
+interface ReclaimHandoffMarker {
+  /** The detached daemon's pid, or null before the launch returns or when the launch gives none. */
+  daemonPid: number | null;
+}
+
+function reclaimHandoffMarkerPath(): string {
+  return path.join(resolveDataDir(), 'reclaim-handoff.json');
+}
+
+function writeReclaimHandoffMarker(port: number, daemonPid: number | null): void {
+  // Atomic: a write that fails partway (a full disk) must never leave a
+  // truncated marker in place of a good one.
+  writeJsonFileAtomic(reclaimHandoffMarkerPath(), { hookPid: process.pid, daemonPid, port, at: new Date().toISOString() });
+}
+
+function clearReclaimHandoffMarker(): void {
+  try {
+    unlinkSync(reclaimHandoffMarkerPath());
+  } catch {
+    // Already gone.
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: unknown) {
+    return (error as NodeJS.ErrnoException)?.code === 'EPERM';
+  }
+}
+
+/**
+ * A handoff is in flight inside the minimum spacing, and after it, up to the
+ * upper bound, while its daemon is alive or its pid is unknown. Age comes from
+ * the marker's mtime, never from a clock value in its content.
+ */
+function reclaimHandoffInFlight(): boolean {
+  const markerPath = reclaimHandoffMarkerPath();
+  let ageMs: number;
+  try {
+    ageMs = Date.now() - statSync(markerPath).mtimeMs;
+  } catch {
+    return false;
+  }
+  // Contents that cannot be read (however that happened) are judged by age
+  // alone, like a marker with no pid.
+  let marker: ReclaimHandoffMarker = { daemonPid: null };
+  try {
+    const parsed = JSON.parse(readFileSync(markerPath, 'utf-8')) as { daemonPid?: unknown };
+    const pid = parsed?.daemonPid;
+    if (typeof pid === 'number' && Number.isInteger(pid) && pid > 0) marker = { daemonPid: pid };
+  } catch {
+    // Keep daemonPid null.
+  }
+  if (ageMs < RECLAIM_HANDOFF_MIN_SPACING_MS) return true;
+  if (ageMs >= RECLAIM_HANDOFF_MAX_IN_FLIGHT_MS) return false;
+  return marker.daemonPid === null || isProcessAlive(marker.daemonPid);
+}
+
+/**
+ * #4809: a hook reaches the reclaim with about 7 s of its budget left, and the
+ * reclaim needs 9.5 s, so it declines with 'out-of-budget' on every hook
+ * event and a wedged worker stays down until some launcher without a deadline
+ * comes along (16 minutes in the report). Instead, launch a detached worker
+ * daemon and return: the daemon's duplicate gate (worker-service.ts, the
+ * `--daemon` branch) runs the same reclaim with no deadline, under the same
+ * evidence rules, then binds the port or exits 0. The caller holds the spawn
+ * lock, so at most one hook launches it, and the in-flight marker keeps the
+ * next hook events from launching another while it runs.
+ */
+function handOffReclaimToDaemon(port: number, scriptPath: string | null): void {
+  if (reclaimHandoffInFlight()) {
+    logger.debug('SYSTEM', 'A detached reclaim is already in flight; not launching another', { port });
+    return;
+  }
+  const runtimePath = resolveWorkerRuntimePath();
+  if (!runtimePath || !scriptPath) {
+    logger.warn('SYSTEM', 'Cannot hand the port reclaim to a detached daemon: Bun runtime or worker script not found', {
+      port,
+      hasRuntime: Boolean(runtimePath),
+      hasScript: Boolean(scriptPath),
+    });
+    return;
+  }
+  try {
+    writeReclaimHandoffMarker(port, null);
+  } catch (error: unknown) {
+    // Without the marker every hook event could launch a daemon; skip rather
+    // than risk a pile-up, and leave the reclaim to an unbudgeted launcher.
+    logger.warn('SYSTEM', 'Could not record the reclaim handoff; not launching it', {
+      port,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
+  try {
+    const spawned = spawnDetachedWorkerDaemon(
+      runtimePath,
+      scriptPath,
+      sanitizeEnv({ ...process.env, CLAUDE_MEM_WORKER_PORT: String(port) }),
+      process.platform,
+    );
+    if (spawned === undefined) {
+      // No daemon started: let the next hook event try again.
+      clearReclaimHandoffMarker();
+      return;
+    }
+    if (spawned > 0) {
+      try {
+        writeReclaimHandoffMarker(port, spawned);
+      } catch {
+        // The pid-less marker stays, and counts as in flight up to the bound.
+      }
+    }
+    logger.info('SYSTEM', 'Handed the port reclaim to a detached worker daemon; this hook event returns its fallback', {
+      port,
+      daemonPid: spawned > 0 ? spawned : null,
+    });
+  } catch (error: unknown) {
+    clearReclaimHandoffMarker();
+    logger.error('SYSTEM', 'Could not launch the detached reclaim daemon', { port, runtimePath, scriptPath },
+      error instanceof Error ? error : new Error(String(error)));
+  }
 }
 
 let aliveCache: boolean | null = null;
@@ -1654,9 +1857,8 @@ async function ensureWorkerReadyWithin(timeoutMs: number): Promise<boolean> {
   const spawnLockHeld = acquireSpawnLock();
   try {
     if (spawnLockHeld) {
-      // Same launch as ensureWorkerRunning: hidden on Windows (#3521) and
-      // with the daemon's cwd pinned to the data dir, not the caller's project
-      // (#3706).
+      // One detached spawnHidden launch on every platform, with the daemon's
+      // cwd pinned to the data dir, not the caller's project (#3521, #3706).
       const spawned = spawnDetachedWorkerDaemon(
         runtimePath,
         scriptPath,
@@ -1665,7 +1867,6 @@ async function ensureWorkerReadyWithin(timeoutMs: number): Promise<boolean> {
           CLAUDE_MEM_WORKER_PORT: String(getWorkerPort()),
         }),
         process.platform,
-        Math.max(1, remainingMs()),
       );
       if (spawned === undefined) return false;
     }
@@ -1805,8 +2006,7 @@ function releaseHookFailureLock(token: string): void {
   }
 }
 
-function parseHookFailureState(raw: string): HookFailureState {
-  const parsed = JSON.parse(raw) as Partial<HookFailureState>;
+function parseHookFailureState(parsed: Partial<HookFailureState>): HookFailureState {
   return {
     consecutiveFailures: typeof parsed.consecutiveFailures === 'number' && Number.isFinite(parsed.consecutiveFailures)
       ? Math.max(0, Math.floor(parsed.consecutiveFailures))
@@ -1827,14 +2027,25 @@ function parseHookFailureState(raw: string): HookFailureState {
 }
 
 function readHookFailureState(): HookFailureState {
+  return readHookFailureStateWithWriter().state;
+}
+
+/**
+ * preLatchWriter: the file has no thresholdTripped field, so a claude-mem
+ * version older than the latch wrote it last. Its count can span an outage
+ * that started on that older version.
+ */
+function readHookFailureStateWithWriter(): { state: HookFailureState; preLatchWriter: boolean } {
   try {
-    return parseHookFailureState(readFileSync(getHookFailuresPath(), 'utf-8'));
+    const parsed = JSON.parse(readFileSync(getHookFailuresPath(), 'utf-8')) as Partial<HookFailureState>;
+    const state = parseHookFailureState(parsed);
+    return { state, preLatchWriter: state.consecutiveFailures > 0 && parsed.thresholdTripped === undefined };
   } catch {
     // [ANTI-PATTERN IGNORED]: the failure-counter state file is optional and
     // absent (ENOENT) on every hook run until the first worker failure, so
     // logging here would fire on effectively every healthy invocation; the
     // recovery is the zeroed default state below.
-    return { consecutiveFailures: 0, lastFailureAt: 0, thresholdTripped: false };
+    return { state: { consecutiveFailures: 0, lastFailureAt: 0, thresholdTripped: false }, preLatchWriter: false };
   }
 }
 
@@ -1989,8 +2200,10 @@ export async function recordWorkerUnreachable(): Promise<number> {
 
   let next: HookFailureState;
   let shouldEscalate = false;
+  let preLatchState = false;
   try {
-    const state = readHookFailureState();
+    const { state, preLatchWriter } = readHookFailureStateWithWriter();
+    preLatchState = preLatchWriter;
     next = {
       consecutiveFailures: state.consecutiveFailures + 1,
       lastFailureAt: Date.now(),
@@ -2020,6 +2233,7 @@ export async function recordWorkerUnreachable(): Promise<number> {
       error_mode: 'worker_unavailable',
       consecutive_failures: next.consecutiveFailures,
       threshold_tripped: true,
+      pre_latch_state: preLatchState,
     });
     // DIAGNOSTIC only (stderr, bypassing the hook's stderr buffer). This used
     // to be emitBlockingError, whose exit 2 blocked the user's prompt on

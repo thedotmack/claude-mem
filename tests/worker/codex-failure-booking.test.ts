@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import codeMode from '../../plugin/modes/code.json';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
@@ -39,7 +40,7 @@ import type { SessionCompletionHandler } from '../../src/services/worker/session
 
 const mockMode = {
   name: 'code',
-  prompts: { init: 'init prompt', observation: 'obs prompt', summary: 'summary prompt' },
+  prompts: codeMode.prompts,
   observation_types: [{ id: 'discovery' }],
   observation_concepts: [],
 };
@@ -136,10 +137,12 @@ function readLedgerText(): string | null {
 async function runCodex(error: unknown) {
   const session = makeSession();
   const finalizeSession = mock(() => Promise.resolve());
+  const discardBufferedWork = mock(() => 1);
   const routes = new SessionRoutes(
     {
       getSession: () => session,
       getMessageBuffer: () => ({ getPendingCount: () => 1 }),
+      discardBufferedWork,
       removeSessionImmediate: mock(() => {}),
       clearTransportResume: mock(() => {}),
       scheduleTransportResume: mock(() => {}),
@@ -157,7 +160,7 @@ async function runCodex(error: unknown) {
     startGeneratorWithProvider(s: ActiveSession, p: string, src: string, q: null, g: null): Promise<void>;
   }).startGeneratorWithProvider(session, 'codex', 'observation', null, null);
   await session.generatorPromise;
-  return { session, finalizeSession };
+  return { session, finalizeSession, discardBufferedWork };
 }
 
 describe('a Codex setup failure reaches observer-health', () => {
@@ -208,7 +211,7 @@ describe('a request the armed gate withheld is not booked again', () => {
       const armed = arm();
       const ledger = readLedgerText();
 
-      const { finalizeSession } = await runCodex(new ClassifiedProviderError(armed.message, {
+      const { session, finalizeSession, discardBufferedWork } = await runCodex(new ClassifiedProviderError(armed.message, {
         kind, cause: null, code: CODEX_COOLDOWN_REFUSAL_CODE,
       }));
 
@@ -217,6 +220,9 @@ describe('a request the armed gate withheld is not booked again', () => {
       expect(getQuotaCooldown('codex')).toBe(armed);
       expect(readLedgerText()).toBe(ledger);
       expect(finalizeSession).not.toHaveBeenCalled();
+      // Quota/auth discard the pending inputs; nothing is kept for a later resume.
+      expect(discardBufferedWork).toHaveBeenCalledWith(session.sessionDbId);
+      expect(session.pausedReason).toBe(label);
     });
   }
 });

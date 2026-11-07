@@ -1,4 +1,5 @@
 import { describe, expect, it, mock, beforeEach, afterEach, spyOn } from 'bun:test';
+import codeMode from '../../plugin/modes/code.json';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
@@ -35,7 +36,7 @@ import type { SessionCompletionHandler } from '../../src/services/worker/session
 
 const mockMode = {
   name: 'code',
-  prompts: { init: 'init prompt', observation: 'obs prompt', summary: 'summary prompt' },
+  prompts: codeMode.prompts,
   observation_types: [{ id: 'discovery' }],
   observation_concepts: [],
 };
@@ -269,6 +270,8 @@ describe('the reason actually reaches handleGeneratorExit (#3700)', () => {
       deps: {
         sessionManager: {
           getMessageBuffer: () => ({ getPendingCount: () => 4 }),
+          clearPendingForSession: mock(async () => 4),
+          discardBufferedWork: mock(() => 4),
           removeSessionImmediate,
         } as unknown as SessionManager,
         completionHandler: { finalizeSession } as unknown as SessionCompletionHandler,
@@ -278,7 +281,7 @@ describe('the reason actually reaches handleGeneratorExit (#3700)', () => {
     };
   }
 
-  it('preserves buffered work for a reactive quota exit', async () => {
+  it('discards buffered work for a reactive quota exit', async () => {
     const session = makeSession();
     await runAndCatch(
       new ClassifiedProviderError('Gemini quota exhausted (status 429)', {
@@ -290,6 +293,8 @@ describe('the reason actually reaches handleGeneratorExit (#3700)', () => {
 
     const { deps, finalizeSession, removeSessionImmediate } = buildDeps();
     await handleGeneratorExit(session, session.abortReason, deps);
+
+    expect(deps.sessionManager.discardBufferedWork).toHaveBeenCalledWith(session.sessionDbId);
 
     expect(finalizeSession).not.toHaveBeenCalled();
     expect(removeSessionImmediate).not.toHaveBeenCalled();

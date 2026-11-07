@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from 'bun:test';
+import { describe, expect, it, beforeEach, afterEach, mock, setSystemTime, spyOn } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -15,6 +15,9 @@ import {
   renderObserverQuotaCooldownNotice,
   isQuotaFailureStale,
   isDeadlineFailureStale,
+  isQuotaGuardPause,
+  isAmbiguousQuotaRecord,
+  AMBIGUOUS_QUOTA_MESSAGE,
   OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS,
   describeDuration,
   scrubErrorMessage,
@@ -38,6 +41,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  mock.restore();
   rmSync(dataDir, { recursive: true, force: true });
 });
 
@@ -84,6 +88,112 @@ describe('observer-health ledger', () => {
     expect(second.consecutiveFailures).toBe(2);
     expect(second.failingSinceAt).toBe(first.failingSinceAt);
     expect(second.lastErrorMessage).toBe('boom two');
+  });
+
+  it('restarts failingSinceAt when the failure kind changes (#5378)', () => {
+    const clock = spyOn(Date, 'now').mockReturnValue(1000);
+    // The reported scenario: a quota pause records a failure, the worker goes down,
+    // and auth refusals follow a day later. The auth warning must not carry the
+    // quota era's start time.
+    recordObserverFailure('claude', {
+      message: 'quota pause recorded',
+      kind: 'quota_guard',
+    }, healthPath);
+    const quota = readObserverHealth(healthPath)!;
+    const quotaSince = quota.failingSinceAt;
+
+    clock.mockReturnValue(2000);
+    recordObserverFailure('claude', {
+      message: 'Failed to authenticate',
+      kind: 'auth_invalid',
+    }, healthPath);
+    const auth = readObserverHealth(healthPath)!;
+    expect(auth.consecutiveFailures).toBe(2);          // streak continues across the kind change
+    expect(auth.lastErrorKind).toBe('auth_invalid');
+    expect(auth.failingSinceAt).toBe(auth.lastErrorAt); // but the clock restarts with the new kind
+    expect(auth.failingSinceAt).not.toBe(quotaSince);
+    expect(auth.failingSinceAt).toBe(2000);
+  });
+
+  it('keeps failingSinceAt across consecutive failures of the same kind', () => {
+    const clock = spyOn(Date, 'now').mockReturnValue(1000);
+    recordObserverFailure('claude', {
+      message: 'Failed to authenticate',
+      kind: 'auth_invalid',
+    }, healthPath);
+    const first = readObserverHealth(healthPath)!;
+
+    clock.mockReturnValue(2000);
+    recordObserverFailure('claude', {
+      message: 'Failed to authenticate again',
+      kind: 'auth_invalid',
+    }, healthPath);
+    const second = readObserverHealth(healthPath)!;
+    expect(second.consecutiveFailures).toBe(2);
+    expect(second.failingSinceAt).toBe(first.failingSinceAt);
+    expect(second.failingSinceAt).toBe(1000);
+    expect(second.lastErrorAt).toBe(2000);
+  });
+
+  it('preserves an unclassified outage from a ledger without lastErrorKind', () => {
+    spyOn(Date, 'now').mockReturnValue(2000);
+    writeFileSync(healthPath, JSON.stringify(unhealthyState({
+      failingSinceAt: 1000,
+      lastErrorAt: 1500,
+      lastErrorKind: undefined,
+    })));
+
+    recordObserverFailure('openrouter', 'unclassified failure again', healthPath);
+
+    const state = readObserverHealth(healthPath)!;
+    expect(state.failingSinceAt).toBe(1000);
+    expect(state.lastErrorAt).toBe(2000);
+    expect(state.lastErrorKind).toBeNull();
+    expect(state.consecutiveFailures).toBe(OBSERVER_UNHEALTHY_FAILURE_THRESHOLD + 1);
+  });
+
+  // #5378: a quota pause that later became a refused credential was announced
+  // as an auth outage three days old. The banner paired the newest kind with
+  // the oldest start; the log's first refusal was 22 hours old at the time.
+  it('dates the warning from the failure it names, not from a pause of another kind', () => {
+    const refusalAt = Date.now();
+    const secondRefusalAt = refusalAt + 5 * 60_000;
+    const pauseAt = refusalAt - 44 * 60 * 60_000;
+    try {
+      setSystemTime(new Date(pauseAt));
+      recordObserverFailure('claude', {
+        kind: 'quota_guard',
+        message: 'Memory capture paused: weekly Claude usage is 95.0%, at or above the 95% pause threshold.',
+      }, healthPath);
+
+      setSystemTime(new Date(refusalAt));
+      recordObserverFailure('claude', {
+        kind: 'auth_invalid',
+        message: 'Failed to authenticate. API Error: 401 {"type":"error","error":{"type":"authentication_error"}}',
+      }, healthPath);
+      const refused = readObserverHealth(healthPath)!;
+      // The streak still counts the pause: nothing succeeded in between.
+      expect(refused.consecutiveFailures).toBe(2);
+      expect(refused.failingSinceAt).toBe(refusalAt);
+
+      // Same kind again, later: the streak grows but the outage still started
+      // at the first refusal, so a rule that re-dated every failure fails here.
+      setSystemTime(new Date(secondRefusalAt));
+      recordObserverFailure('claude', {
+        kind: 'auth_invalid',
+        message: 'Failed to authenticate. API Error: 401',
+      }, healthPath);
+      const stillRefused = readObserverHealth(healthPath)!;
+      expect(stillRefused.consecutiveFailures).toBe(3);
+      expect(stillRefused.failingSinceAt).toBe(refusalAt);
+
+      const warning = renderObserverHealthWarning(stillRefused, secondRefusalAt + 22 * 60 * 60_000);
+      expect(warning).toContain('credentials have been refused by claude for about 22 hours');
+      expect(warning).toContain(new Date(refusalAt).toISOString());
+      expect(warning).not.toContain('about 3 days');
+    } finally {
+      setSystemTime();
+    }
   });
 
   it('success resets the streak but keeps last error details for diagnostics', () => {
@@ -258,7 +368,7 @@ describe('observer-health ledger', () => {
 
   it('serializes concurrent failure writes so the warning threshold is never lost', async () => {
     const gatePath = join(dataDir, 'writers.gate');
-    const writers = Array.from({ length: 3 }, () => Bun.spawn(['bun', '-e', `
+    const writers = Array.from({ length: 3 }, () => Bun.spawn([process.execPath, '-e', `
       import { existsSync } from 'fs';
       import { recordObserverFailure } from ${JSON.stringify(join(repoRoot, 'src/shared/observer-health.ts'))};
       while (!existsSync(${JSON.stringify(gatePath)})) Bun.sleepSync(1);
@@ -354,7 +464,11 @@ describe('a quota banner that has gone stale (#4083)', () => {
     return unhealthyState({
       lastErrorKind: 'quota_exhausted',
       lastErrorProvider: 'claude',
-      lastErrorMessage: 'Provider reported the inference allowance exhausted',
+      // A confirmed refusal. The generic "Provider reported the inference
+      // allowance exhausted" record is ambiguous (it is what a guard pause
+      // used to be booked as) and renders as a pause, not an outage; see the
+      // precautionary-pause block below.
+      lastErrorMessage: 'Weekly usage allowance exhausted: the provider rejected the request',
       lastErrorAt: ERROR_AT,
       ...overrides,
     });
@@ -433,6 +547,90 @@ describe('a quota banner that has gone stale (#4083)', () => {
     // observer-health, so the other direction would be a cycle). This is what
     // stops the copy drifting.
     expect(OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS).toBe(QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS);
+  });
+});
+
+// A pause is not an outage. RateLimitStore's guard stops capture
+// at a reserve threshold while the provider still accepts requests and books
+// it as `quota_guard`; the generic record older workers and the
+// assistant-prose path write cannot tell that pause from a refusal. Neither
+// may be rendered as a spent allowance, and neither gets a restart link: a
+// restart replenishes nothing and the breaker it would release is the pause.
+describe('a precautionary pause and the ambiguous quota record', () => {
+  const ERROR_AT = 1_754_700_100_000;
+  const FRESH = ERROR_AT + 60_000;
+
+  it('renders a persisted reserve-threshold pause without claiming the provider allowance is exhausted', () => {
+    recordObserverFailure('claude', {
+      kind: 'quota_guard',
+      message: 'Memory capture paused: weekly Claude usage is 95.0%, at or above the 95% pause threshold.',
+    }, healthPath);
+    const warning = renderObserverHealthWarning(readObserverHealth(healthPath)!);
+    expect(warning).toContain('Memory capture is paused to preserve your Claude allowance');
+    expect(warning).toContain('weekly Claude usage is 95.0%');
+    expect(warning).toContain('95% pause threshold');
+    expect(warning).toContain('30-minute cooldown');
+    expect(warning).not.toContain('allowance on claude is used up');
+    expect(warning).not.toContain('nothing from this session');
+    expect(warning).not.toContain('npx claude-mem restart');
+    expect(warning).not.toContain('clears the backoff');
+  });
+
+  it('does not present an ambiguous legacy quota record as a confirmed provider rejection', () => {
+    const warning = renderObserverHealthWarning(unhealthyState({
+      lastErrorProvider: 'claude',
+      lastErrorKind: 'quota_exhausted',
+      lastErrorMessage: AMBIGUOUS_QUOTA_MESSAGE,
+      lastErrorAt: ERROR_AT,
+    }), FRESH);
+    expect(warning).toContain('usage-related pause');
+    expect(warning).toContain('Claude Settings');
+    expect(warning).not.toContain('allowance on claude is used up');
+    expect(warning).not.toContain('npx claude-mem restart');
+  });
+
+  it('keeps confirmed provider exhaustion distinct from the reserve guard', () => {
+    const warning = renderObserverHealthWarning(unhealthyState({
+      lastErrorKind: 'quota_exhausted',
+      lastErrorMessage: 'Monthly allowance exhausted (status 402)',
+      lastErrorAt: ERROR_AT,
+    }), FRESH);
+    expect(warning).toContain('allowance on openrouter is used up');
+    expect(warning).not.toContain('clears the backoff');
+    expect(warning).not.toContain('npx claude-mem restart');
+  });
+
+  it('directs legacy quota pauses on other providers to their own usage settings', () => {
+    const warning = renderObserverHealthWarning(unhealthyState({
+      lastErrorProvider: 'openrouter',
+      lastErrorKind: 'quota_exhausted',
+      lastErrorMessage: AMBIGUOUS_QUOTA_MESSAGE,
+      lastErrorAt: ERROR_AT,
+    }), FRESH);
+    expect(warning).toContain('openrouter usage settings');
+    expect(warning).not.toContain('Claude Settings');
+  });
+
+  it('the generic record survives the scrubber, so a stored ledger still reads as ambiguous', () => {
+    recordObserverFailure('claude', { kind: 'quota_exhausted', message: AMBIGUOUS_QUOTA_MESSAGE }, healthPath);
+    const state = readObserverHealth(healthPath)!;
+    expect(isAmbiguousQuotaRecord(state)).toBe(true);
+    expect(isQuotaGuardPause(state)).toBe(false);
+  });
+
+  it('a guard pause ages out on the recheck window like a refusal, and the stale note still calls it a pause', () => {
+    const state = unhealthyState({
+      lastErrorProvider: 'claude',
+      lastErrorKind: 'quota_guard',
+      lastErrorMessage: 'Memory capture paused: weekly Claude usage is 95.0%, at or above the 95% pause threshold.',
+      lastErrorAt: ERROR_AT,
+    });
+    expect(isQuotaFailureStale(state, ERROR_AT + OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS - 1)).toBe(false);
+    expect(isQuotaFailureStale(state, ERROR_AT + OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS)).toBe(true);
+    const note = renderObserverHealthWarning(state, ERROR_AT + 63 * 60 * 60_000);
+    expect(note).toContain('last failed with a usage-related pause');
+    expect(note).not.toContain('spent allowance');
+    expect(note).not.toContain('at the very start of your first reply');
   });
 });
 
@@ -675,6 +873,33 @@ function expectRelayedSafely(text: string): void {
 }
 
 describe('renderObserverQuotaCooldownNotice', () => {
+  // The first guard pause leaves one failure, under the unhealthy threshold,
+  // so this notice (not the health banner) is what SessionStart shows.
+  it('calls a first reserve-guard pause a preservation pause, never a spent allowance', () => {
+    const armedAt = 1_754_700_000_000;
+    const notice = renderObserverQuotaCooldownNotice(unhealthyState({
+      consecutiveFailures: 1,
+      lastErrorKind: 'quota_guard',
+      lastErrorProvider: 'claude',
+      quotaCooldown: activeCooldown({ message: 'Memory capture paused: weekly Claude usage is 95.0%, at or above the 95% pause threshold.' }),
+    }), armedAt + 5 * 60_000);
+    expect(notice).toContain('to preserve your Claude allowance');
+    expect(notice).toContain('Reason: Memory capture paused: weekly Claude usage is 95.0%');
+    expect(notice).not.toContain('spent allowance');
+    expect(notice).not.toContain('clears the backoff');
+  });
+
+  it('never says a restart clears the persisted backoff', () => {
+    const armedAt = 1_754_700_000_000;
+    const notice = renderObserverQuotaCooldownNotice(unhealthyState({
+      consecutiveFailures: 1,
+      quotaCooldown: activeCooldown(),
+    }), armedAt + 5 * 60_000);
+    expect(notice).not.toContain('spent allowance');
+    expect(notice).not.toContain('clears the backoff');
+    expect(notice).toContain('persisted cooldown');
+  });
+
   it('says capture continues on the serving provider, and nothing about pausing or restarting', () => {
     const armedAt = 1_754_700_000_000;
     const notice = renderObserverQuotaCooldownNotice(unhealthyState({
@@ -682,8 +907,26 @@ describe('renderObserverQuotaCooldownNotice', () => {
       quotaCooldown: activeCooldown({ provider: 'gemini', window: undefined, servingProvider: 'claude' }),
     }), armedAt + 5 * 60_000);
     expect(notice).toContain("claude-mem's gemini provider is in a quota cooldown");
-    expect(notice).toContain('memory capture continues on claude');
+    expect(notice).toContain('memory is running on your Anthropic plan (Claude)');
     expect(notice).not.toMatch(/paused|restart/i);
+  });
+
+  it('names a non-Claude serving provider as before', () => {
+    const armedAt = 1_754_700_000_000;
+    const notice = renderObserverQuotaCooldownNotice(unhealthyState({
+      consecutiveFailures: 0,
+      quotaCooldown: activeCooldown({ provider: 'claude', window: undefined, servingProvider: 'gemini' }),
+    }), armedAt + 5 * 60_000);
+    expect(notice).toContain('memory capture continues on gemini');
+  });
+
+  it('says the provider is unavailable when it is held for an outage', () => {
+    const armedAt = 1_754_700_000_000;
+    const notice = renderObserverQuotaCooldownNotice(unhealthyState({
+      consecutiveFailures: 0,
+      quotaCooldown: activeCooldown({ provider: 'openrouter', window: 'unavailable', servingProvider: 'claude' }),
+    }), armedAt + 5 * 60_000);
+    expect(notice).toContain("claude-mem's openrouter provider is unavailable; memory is running on your Anthropic plan (Claude)");
   });
 
   it('names the pause, the provider, the until timestamp, and tells the user it is not a failure', () => {
@@ -705,6 +948,31 @@ describe('renderObserverQuotaCooldownNotice', () => {
   });
 });
 
+describe('auth warning for a verdict read from an exit', () => {
+  const authState = (lastErrorCode: string | null) => unhealthyState({
+    lastErrorProvider: 'codex',
+    lastErrorKind: 'auth_invalid',
+    lastErrorCode,
+  });
+
+  it('does not claim the provider refused the credentials', () => {
+    const warning = renderObserverHealthWarning(authState('codex_auth_from_exit_text'));
+    expect(warning).toContain('looks like a refused login');
+    expect(warning).toContain('may be wrong');
+    expect(warning).toContain('codex login status');
+    expect(warning).toContain('the next captured event or an operator retry can trigger another attempt after the cooldown ends');
+    expect(warning).not.toContain('retries by itself');
+    expect(warning).not.toContain('credentials have been refused');
+    expect(warning).not.toContain('the provider refused the credentials');
+  });
+
+  it('keeps the plain refusal when the provider said so', () => {
+    const warning = renderObserverHealthWarning(authState(null));
+    expect(warning).toContain('credentials have been refused by codex');
+    expect(warning).toContain('Restarting will NOT help here: the provider refused the credentials');
+  });
+});
+
 describe('describeDuration', () => {
   it('renders minutes, hours, and days at human granularity', () => {
     expect(describeDuration(30_000)).toBe('1 minute');
@@ -722,7 +990,7 @@ describe('ContextBuilder observer-health injection', () => {
   }
 
   function runContextChild(childDataDir: string): ChildRender {
-    const result = Bun.spawnSync(['bun', '-e', `
+    const result = Bun.spawnSync([process.execPath, '-e', `
       import { generateContext, withObserverHealthWarning } from './src/services/context/ContextBuilder.ts';
       import { ModeManager } from './src/services/domain/ModeManager.ts';
       ModeManager.getInstance().loadMode('code');

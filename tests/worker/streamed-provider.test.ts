@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import { OpenRouterProvider } from '../../src/services/worker/OpenRouterProvider.js';
-import { OpenAICompatProvider } from '../../src/services/worker/OpenAICompatProvider.js';
+import { OpenAICompatProvider, classifyOpenAICompatError } from '../../src/services/worker/OpenAICompatProvider.js';
 import type { ProviderQueryResult } from '../../src/services/worker/OpenAICompatibleProvider.js';
 import { isClassified, paidSendOutcomeOf } from '../../src/services/worker/provider-errors.js';
 import { PaidSendBudget } from '../../src/services/worker/paid-send-budget.js';
-import { STREAM_INTERRUPTED_CODE, resetStreamingEndpointMemoryForTests } from '../../src/services/worker/streamed-chat-completion.js';
+import { STREAM_INTERRUPTED_CODE, resetStreamingEndpointMemoryForTests, sendChatCompletion } from '../../src/services/worker/streamed-chat-completion.js';
 import { logger } from '../../src/utils/logger.js';
 import type { ConversationMessage } from '../../src/services/worker-types.js';
 import {
@@ -52,6 +52,18 @@ class TestOpenRouterProvider extends OpenRouterProvider {
   }
 }
 
+// The test hook (streamIdleTimeoutMs) stays untouched, so the idle window is
+// whatever CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS resolves to per request —
+// the path every production send takes (#4737).
+class LiveConfigOpenRouterProvider extends OpenRouterProvider {
+  constructor() {
+    super({} as never, {} as never);
+  }
+  runQuery(paidSendBudget?: PaidSendBudget): Promise<ProviderQueryResult> {
+    return this.query(HISTORY, OPENROUTER_CONFIG as never, undefined, undefined, paidSendBudget);
+  }
+}
+
 class TestOpenAICompatProvider extends OpenAICompatProvider {
   constructor() {
     super({} as never, {} as never);
@@ -84,6 +96,7 @@ const sentBody = (mock: ReturnType<typeof createStreamFetchMock>, index = 0) =>
 
 let timers: LiveTimerTracker | null = null;
 const priorLlmTimeout = process.env.CLAUDE_MEM_LLM_TIMEOUT_MS;
+const priorStreamIdleTimeout = process.env.CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS;
 
 afterEach(() => {
   resetStreamingEndpointMemoryForTests();
@@ -92,6 +105,8 @@ afterEach(() => {
   (globalThis.fetch as unknown as { mockRestore?: () => void }).mockRestore?.();
   if (priorLlmTimeout === undefined) delete process.env.CLAUDE_MEM_LLM_TIMEOUT_MS;
   else process.env.CLAUDE_MEM_LLM_TIMEOUT_MS = priorLlmTimeout;
+  if (priorStreamIdleTimeout === undefined) delete process.env.CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS;
+  else process.env.CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS = priorStreamIdleTimeout;
 });
 
 describe('OpenRouter secret stream', () => {
@@ -181,12 +196,38 @@ describe('OpenRouter secret stream', () => {
     }
   });
 
+  // #4737: a self-hosted backend spends its queue wait silent, so the queue
+  // wait reads as idle and the fixed window fired before the deadline the
+  // user raised. With the test hook unset, the window must come from
+  // CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS — here its 500ms floor, tripping
+  // during a 600ms silent stretch that the shipped 90s default sails through.
+  it('takes the idle window from CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS when the test hook is unset', async () => {
+    process.env.CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS = '500';
+    timers = trackLiveTimers();
+    const mock = installFetch(streamScript([{ ...delta('<observation/>'), delayMs: 600 }]));
+    const budget = new PaidSendBudget(1);
+    budget.recordPaidSend(); // a spent budget keeps the aborted send from being resent
+    const error = await new LiveConfigOpenRouterProvider().runQuery(budget).catch((caught: unknown) => caught);
+    expect(mock.calls).toHaveLength(1);
+    expect(String((error as Error).message)).toContain('timed out after 500ms idle');
+    expect(timers.liveCount()).toBe(0);
+  });
+
   it('a network failure before the first delta is resent only once', async () => {
     const mock = installFetch({ failBeforeHeaders: new TypeError('fetch failed') });
     const error = await new TestOpenRouterProvider().runQuery().catch((caught: unknown) => caught);
     expect(mock.calls).toHaveLength(2);
     expect(paidSendOutcomeOf(error)).toBe('ambiguous');
     expect(isClassified(error) && error.failedBeforeOutput).toBe(true);
+  });
+
+  it('a chunk that cannot be read before any output is resent only once', async () => {
+    const mock = installFetch(streamScript([{ chunk: 'data: {not json\n\n' }]));
+    const error = await new TestOpenRouterProvider().runQuery().catch((caught: unknown) => caught);
+    expect(mock.calls).toHaveLength(2);
+    expect(paidSendOutcomeOf(error)).toBe('ambiguous');
+    expect(isClassified(error) && error.failedBeforeOutput).toBe(true);
+    expect(isClassified(error) && error.code).toBe(STREAM_INTERRUPTED_CODE);
   });
 
   it('a failure before the first delta is not resent when the batch budget is spent', async () => {
@@ -225,6 +266,17 @@ describe('OpenRouter secret stream', () => {
     expect(mock.calls).toHaveLength(1);
     expect(paidSendOutcomeOf(error)).toBe('output_failure');
     expect(String((error as Error).message)).toContain('Provider disconnected');
+  });
+
+  it('a chunk that cannot be read after output started is an output failure, never resent', async () => {
+    const mock = installFetch(streamScript([
+      delta('<observation>'),
+      { chunk: 'data: {not json\n\n' },
+    ]));
+    const error = await new TestOpenRouterProvider().runQuery().catch((caught: unknown) => caught);
+    expect(mock.calls).toHaveLength(1);
+    expect(paidSendOutcomeOf(error)).toBe('output_failure');
+    expect(isClassified(error) && error.code).toBe(STREAM_INTERRUPTED_CODE);
   });
 
   it('reads one JSON body from a backend that ignores stream: true', async () => {
@@ -345,5 +397,36 @@ describe('openai-compatible secret stream', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+describe('non-streamed sends (liveness null: the cmem gateway, endpoints that refused streaming)', () => {
+  it('releases the response body when a JSON reply breaks off mid-read', async () => {
+    const mock = createStreamFetchMock({
+      headers: { 'content-type': 'application/json' },
+      body: [{ chunk: '{"choices":[' }, { fail: new TypeError('connection reset') }],
+    });
+    const responses: Response[] = [];
+    spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const response = await mock.fetch(input, init);
+      responses.push(response);
+      return response;
+    });
+    const label = COMPAT_CONFIG.preset.label;
+    const error = await sendChatCompletion({
+      url: COMPAT_CONFIG.apiUrl,
+      headers: { 'Content-Type': 'application/json' },
+      body: { model: COMPAT_CONFIG.model, messages: [] },
+      maxOutputTokens: 64,
+      signal: new AbortController().signal,
+      liveness: null,
+      label,
+      classify: (input) => classifyOpenAICompatError({ ...input, endpointLabel: label, requestUrl: COMPAT_CONFIG.apiUrl }),
+    }).catch((caught: unknown) => caught);
+    expect(mock.calls).toHaveLength(1);
+    expect(paidSendOutcomeOf(error)).toBe('output_failure');
+    expect(String((error as Error).message)).toContain('connection reset');
+    // Cancelling an errored body rejects with its error; the reader lock is released anyway.
+    expect(responses[0].body?.locked).toBe(false);
   });
 });

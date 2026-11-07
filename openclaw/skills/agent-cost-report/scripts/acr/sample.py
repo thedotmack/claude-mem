@@ -15,9 +15,9 @@ TILE_GROUPS = [("P1_invented_gates", ["P1_invented_gates"]), ("P6+P7 made it up 
 
 
 def write(report_path, out_path, per_metric=20, seed=7):
-    with open(report_path) as fh: d = json.load(fh)
+    with open(report_path, encoding="utf-8") as fh: d = json.load(fh)
     bp = os.path.join(os.path.dirname(os.path.abspath(report_path)), "behavior.json")
-    with open(bp) as fh: b = json.load(fh)
+    with open(bp, encoding="utf-8") as fh: b = json.load(fh)
     rnd = random.Random(seed); L = [f"# Behavior spot-check · {d['window'].get('start_pt')} → {d['window'].get('end_exclusive_pt')} · seed {seed}", "",
                                     "Mark each line `true`, `false` or `unsure` in the first column. Excerpts are scrubbed and cut to 160 chars.", ""]
     turns = b.get("user_turns", [])
@@ -41,5 +41,5 @@ def write(report_path, out_path, per_metric=20, seed=7):
     L += [f"## Unflagged sessions ({len(pick)} of {len(unflagged)}) — look for obvious misses", "", "| missed? | session | tag | turns | tool errors | last message excerpt |", "|---|---|---|---|---|---|"]
     L += [f"| | `{s['session'][:12]}` | {s['tag']} | {s['turns']} | {s['tool_errors']} | {(s.get('last_text') or '').replace('|', '/')} |" for s in pick]
     L += ["", "## Precision (fill in)", "", "| pattern | true | false | unsure | precision |", "|---|---|---|---|---|"] + [f"| {name} | | | | |" for name, _ in TILE_GROUPS] + [""]
-    with open(out_path, "w") as fh: fh.write("\n".join(L))
+    with open(out_path, "w", encoding="utf-8") as fh: fh.write("\n".join(L))
     return out_path, dict(human=sum(1 for t in turns if t["author"] == "human"), bot=sum(1 for t in turns if t["author"] == "bot"), flags=len(flags), episodes=len(eps), unflagged=len(unflagged))

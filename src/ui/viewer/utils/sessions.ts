@@ -31,6 +31,19 @@ export interface SessionScopedRow {
   platform_source?: string | null;
 }
 
+/**
+ * A feed row belongs to a project filter when it was captured there or was
+ * merged into it (worktree adoption, `project merge`). The worker's
+ * `?project=` pagination returns both, so the client filter must keep both.
+ */
+export function rowInProject(row: { project: string; merged_into_project?: string | null }, project: string): boolean {
+  // Same rule as the worker's `COLLATE NOCASE` project match, which folds ASCII letters only.
+  const foldAscii = (value: string) => value.replace(/[A-Z]/g, char => char.toLowerCase());
+  const wanted = foldAscii(project);
+  return foldAscii(row.project) === wanted
+    || (row.merged_into_project != null && foldAscii(row.merged_into_project) === wanted);
+}
+
 /** The session a feed row belongs to, or null when the row does not say. */
 export function sessionRefOf(row: SessionScopedRow): SessionRef | null {
   const contentSessionId = row.content_session_id ?? row.session_id;
@@ -119,12 +132,18 @@ export function removeSessionRows<T extends SessionScopedRow>(rows: T[], ref: Se
 export interface CatalogJournal {
   /** Sessions first seen live (SSE) during the request. */
   added: SessionCatalogEntry[];
+  /** Sessions whose item count changed live during the request. */
+  touched: Set<string>;
+  /** Sessions with a live item deletion during the request. */
+  decreased: Set<string>;
+  /** Sessions deleted and then recreated while this page was in flight. */
+  recreated: Set<string>;
   /** sessionKey of every session deleted during the request. */
   removed: Set<string>;
 }
 
 export function emptyCatalogJournal(): CatalogJournal {
-  return { added: [], removed: new Set() };
+  return { added: [], touched: new Set(), decreased: new Set(), recreated: new Set(), removed: new Set() };
 }
 
 /**
@@ -140,12 +159,33 @@ export function mergeCatalogPage(
   mode: 'replace' | 'append',
 ): SessionCatalogEntry[] {
   const keyOf = (entry: SessionCatalogEntry) => sessionKey(catalogEntryRef(entry));
+  const currentByKey = new Map(current.map(entry => [keyOf(entry), entry]));
+  const preserveLiveCount = (entry: SessionCatalogEntry): SessionCatalogEntry => {
+    const key = keyOf(entry);
+    const live = journal.touched.has(key) ? currentByKey.get(key) : undefined;
+    // This page may describe the deleted incarnation, including its title.
+    // Keep the recreated row provisional until the hook confirms it.
+    if (live && journal.recreated.has(key)) return live;
+    // A page may already include the live rows: use the larger count rather
+    // than adding a delta twice. Keep authoritative page metadata (titles).
+    // Counts have no revision: keep a deletion provisional until the hook
+    // confirms it with a request started after that deletion.
+    return live && (journal.decreased.has(key) || live.item_count > entry.item_count)
+      ? { ...entry, item_count: live.item_count }
+      : entry;
+  };
   let combined: SessionCatalogEntry[];
   if (mode === 'replace') {
     // The page's row carries the real title and count; a live placeholder only
     // survives for a session the page does not have yet.
     const pageKeys = new Set(page.map(keyOf));
-    combined = [...journal.added.filter(entry => !pageKeys.has(keyOf(entry))), ...page];
+    combined = [
+      // An introduced session outside a full page keeps its latest live
+      // entry. If the page includes it, its fresh server row wins below.
+      ...journal.added.filter(entry => !pageKeys.has(keyOf(entry)))
+        .map(entry => currentByKey.get(keyOf(entry)) ?? entry).map(preserveLiveCount),
+      ...page.map(preserveLiveCount),
+    ];
   } else {
     combined = [...current, ...page];
   }

@@ -10,17 +10,34 @@ import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { shouldSkipAgentObservation } from '../../shared/should-skip-agent-observation.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
+import { isToolSkipped } from '../../shared/is-tool-skipped.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { resolveRuntimeContext, logServerFallback } from '../../services/hooks/runtime-selector.js';
 import { isServerClientError, type ServerRecordEventRequest } from '../../services/hooks/server-client.js';
+import { isRecursiveMemoryTool, isExplicitMemoryWrite } from '../../shared/memory-retrieval-tools.js';
+import { workStatePlatform } from '../../shared/work-state-telemetry.js';
+import { boundObservationDispatch, scanMediaFields } from '../../shared/media-ingress.js';
+
+// Derived from the Codex PostToolUse wire timeout of 5 s (`timeout: 5` on
+// 'PostToolUse.0.0' in scripts/build-hooks.js). Measured hook startup plus
+// spool write is ~0.3 s warm and ~0.5 s on a first run (Apple Silicon Mac,
+// 2026-10-25); Windows cold start was not measured. 5 s minus that cost
+// leaves ~4.5 s; 2 s for the server attempt keeps more than half of that
+// as margin for slow starts, so a stalled server still falls back to the
+// local spool before Codex kills the hook. Change both values together.
+const SERVER_OBSERVATION_TIMEOUT_MS = 2_000;
 
 function spoolObservation(input: NormalizedHookInput, platformSource: string): HookResult {
+  // Same pre-dispatch bound as the server path: image bodies survive for
+  // worker-side capture unless they would push the event past the JSON cap.
+  const bounded = boundObservationDispatch({ tool_input: input.toolInput, tool_response: input.toolResponse });
   spoolHookEvent('observation', {
     contentSessionId: input.sessionId,
     platformSource,
+    telemetryPlatformSource: workStatePlatform(input.platform),
     toolName: input.toolName!,
-    toolInput: input.toolInput,
-    toolResponse: input.toolResponse,
+    toolInput: bounded.tool_input,
+    toolResponse: bounded.tool_response,
     cwd: input.cwd,
     agentId: input.agentId,
     agentType: input.agentType,
@@ -38,8 +55,12 @@ export const observationHandler: EventHandler = {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
+    if (isRecursiveMemoryTool(toolName)) {
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
     // A Bash command line or URL can carry a secret; logs get the redacted form.
-    const toolStr = redactForLog(logger.formatTool(toolName, toolInput));
+    const toolStr = redactForLog(logger.formatTool(toolName, scanMediaFields(toolInput, undefined, 'disabled').toolInput));
 
     logger.dataIn('HOOK', `PostToolUse: ${toolStr}`, {});
 
@@ -66,11 +87,23 @@ export const observationHandler: EventHandler = {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
+    // Save echoes go through the worker spool so ingest can retain a write
+    // receipt, without generating a second observation of the explicit note.
+    if (isExplicitMemoryWrite(toolName)) {
+      return spoolObservation(input, platformSource);
+    }
+
     const runtime = resolveRuntimeContext();
     // Phase 1a (cmem-sdk rename): `runtime.runtime` is the canonical `'server'`
     // value. `runtime-selector.selectRuntime()` continues to accept the legacy
     // `'server-beta'` literal in settings.json and normalizes it to `'server'`.
     if (runtime.runtime === 'server') {
+      // Server events never pass through worker ingest, which is where
+      // CLAUDE_MEM_SKIP_TOOLS applies in worker runtime, so apply it here.
+      if (isToolSkipped(toolName, loadFromFileOnce().CLAUDE_MEM_SKIP_TOOLS)) {
+        logger.debug('HOOK', 'Server runtime: tool excluded by CLAUDE_MEM_SKIP_TOOLS', { toolName });
+        return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+      }
       const event: ServerRecordEventRequest = {
         projectId: runtime.projectId,
         contentSessionId: sessionId,
@@ -78,7 +111,7 @@ export const observationHandler: EventHandler = {
         sourceType: 'hook',
         eventType: 'tool_use',
         occurredAtEpoch: Date.now(),
-        payload: {
+        payload: boundObservationDispatch({
           tool_name: toolName,
           tool_input: toolInput,
           tool_response: toolResponse,
@@ -87,10 +120,13 @@ export const observationHandler: EventHandler = {
           agentType: input.agentType,
           platformSource,
           tool_use_id: input.toolUseId,
-        },
+        }),
       };
       try {
-        await runtime.client.recordEvent(event);
+        await runtime.client.recordEvent(
+          event,
+          input.platform === 'codex' ? { timeoutMs: SERVER_OBSERVATION_TIMEOUT_MS } : undefined,
+        );
         logger.debug('HOOK', 'Observation sent successfully via server', { toolName });
         return { continue: true, suppressOutput: true };
       } catch (error: unknown) {

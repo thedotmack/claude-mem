@@ -51,7 +51,7 @@ def collect_claude(s, e, session=None, pattern=CLAUDE_GLOB):
              if s is None or dt.datetime.fromtimestamp(os.path.getmtime(f), PT) >= s]
     for f in files:
         proj = _project_dir(f, pattern)
-        with open(f, errors="ignore") as fh:
+        with open(f, encoding="utf-8", errors="ignore") as fh:
             # copied from parse_transcripts.py:21-38, with the extensions marked (+)
             for line in fh:
                 if '"usage"' not in line: continue
@@ -93,7 +93,7 @@ def collect_codex(s, e, session=None, pattern=CODEX_GLOB):
         if session is not None and os.path.basename(f) != session: continue  # (+) --session filter
         files_seen += 1
         prev = dict(input_tokens=0, cached_input_tokens=0, output_tokens=0); model = None
-        with open(f, errors="ignore") as fh:
+        with open(f, encoding="utf-8", errors="ignore") as fh:
             for line in fh:
                 try: d = json.loads(line)
                 except Exception: continue

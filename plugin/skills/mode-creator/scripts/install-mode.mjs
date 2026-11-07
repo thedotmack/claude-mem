@@ -14,7 +14,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const MODE_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*(?:--[a-z0-9]+(?:-[a-z0-9]+)*)?$/;
-const ITEM_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+// Bundled security types use underscores (security_alert and security_note).
+const ITEM_ID_PATTERN = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/;
 const REQUIRED_PROMPTS = [
   'system_identity',
   'spatial_awareness',
@@ -139,7 +140,7 @@ function validateItems(items, label, requiredFields) {
   for (const [index, item] of items.entries()) {
     if (!item || typeof item !== 'object' || Array.isArray(item)) fail(`${label}[${index}] must be an object`);
     for (const field of requiredFields) requireString(item[field], `${label}[${index}].${field}`);
-    if (!ITEM_ID_PATTERN.test(item.id)) fail(`${label}[${index}].id must be lowercase kebab-case`);
+    if (!ITEM_ID_PATTERN.test(item.id)) fail(`${label}[${index}].id must be lowercase words separated by hyphens or underscores`);
     if (seen.has(item.id)) fail(`${label} contains duplicate id: ${item.id}`);
     seen.add(item.id);
   }
@@ -155,7 +156,8 @@ function validateMergedMode(mode) {
   if (!mode.prompts || typeof mode.prompts !== 'object' || Array.isArray(mode.prompts)) {
     fail('prompts must be an object');
   }
-  for (const prompt of REQUIRED_PROMPTS) requireString(mode.prompts[prompt], `prompts.${prompt}`, prompt === 'format_examples');
+  // The meme-tokens mode deliberately has no file placeholder.
+  for (const prompt of REQUIRED_PROMPTS) requireString(mode.prompts[prompt], `prompts.${prompt}`, prompt === 'format_examples' || prompt === 'xml_file_placeholder');
   for (const type of mode.observation_types) {
     if (!mode.prompts.type_guidance.includes(type.id)) fail(`prompts.type_guidance does not mention type: ${type.id}`);
   }
@@ -201,8 +203,8 @@ const inheritanceParts = modeId.split('--');
 if (inheritanceParts.length === 2) {
   const parentId = inheritanceParts[0];
   const parentCandidates = [
-    path.join(userModesDir, `${parentId}.json`),
     path.join(bundledModesDir, `${parentId}.json`),
+    path.join(userModesDir, `${parentId}.json`),
   ];
   const parentPath = parentCandidates.find(candidate => existsSync(candidate));
   if (!parentPath) fail(`parent mode not found: ${parentId}`);

@@ -18,7 +18,7 @@ export function CategoryFilter({
   totalCount,
   totalIsPartial,
 }: CategoryFilterProps) {
-  const presentCategories = CATEGORY_ORDER.filter(category => (categoryCounts[category] ?? 0) > 0);
+  const presentCategories = CATEGORY_ORDER.filter(category => (categoryCounts[category] ?? 0) > 0 || activeCategories.has(category));
 
   if (presentCategories.length === 0) {
     return null;
@@ -33,8 +33,9 @@ export function CategoryFilter({
             className={`console-filter-chip ${activeCategories.has(category) ? 'active' : ''}`}
             onClick={() => onToggle(category)}
             title={`Filter to ${labelForCategory(category)}`}
+            aria-pressed={activeCategories.has(category)}
           >
-            {labelForCategory(category)} ({categoryCounts[category]})
+            {labelForCategory(category)} ({categoryCounts[category] ?? 0})
           </button>
         ))}
       </div>

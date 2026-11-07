@@ -23,16 +23,42 @@
  * per-attempt deadline.
  */
 
-import { readSseEvents } from '../../shared/sse-reader.js';
+import { iterateByteStream, readSseEvents } from '../../shared/sse-reader.js';
 import { fetchStreamWithIdleTimeout } from '../../shared/worker-utils.js';
 import { isCmemGatewayUrl } from '../../shared/cmem-gateway.js';
 import { isMaxCompletionTokensCompatibilityError } from '../../shared/openrouter-token-compatibility.js';
 import { ClassifiedProviderError, MAX_ERROR_BODY_BYTES } from './provider-errors.js';
-import { MAX_LLM_TIMEOUT_MS } from './retry.js';
+import { MAX_LLM_TIMEOUT_MS, parseTimeoutMs } from './retry.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 
 /** Silence after which a streamed LLM request is given up (no token, no ping). */
 export const DEFAULT_LLM_STREAM_IDLE_TIMEOUT_MS = 90_000;
+
+/**
+ * The streamed request's idle window, resolved like every other CLAUDE_MEM_*
+ * setting — CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS in the environment first,
+ * then ~/.claude-mem/settings.json, then the default — and on every call, so a
+ * settings change takes effect without a restart (#4737).
+ *
+ * Before this the window was frozen in the shipped bundle ("An instance field
+ * so a test can shorten it; there is no setting for it"), and on a self-hosted
+ * backend that queues requests behind a load balancer the whole queue wait is
+ * silent: the fixed window fired while requests the server completed in well
+ * under 90s were still waiting, spending the batch's paid-send budget on
+ * ambiguous failures and parking batches permanently. The bounds are the
+ * sibling deadlines' (retry.ts), so the window stays a liveness check — it can
+ * be raised past a queue wait, but not switched off.
+ */
+export function resolveStreamIdleTimeoutMs(
+  env: NodeJS.ProcessEnv = process.env,
+  settingsPath: string = USER_SETTINGS_PATH,
+): number {
+  const raw = env.CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS
+    ?? SettingsDefaultsManager.loadFromFile(settingsPath, false).CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS;
+  return parseTimeoutMs(raw, 'CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS', DEFAULT_LLM_STREAM_IDLE_TIMEOUT_MS);
+}
 
 /** `code` on a streamed reply that broke off after output had started. */
 export const STREAM_INTERRUPTED_CODE = 'stream_interrupted';
@@ -60,6 +86,11 @@ export function isStreamingFieldRefusal(status: number, bodyText: string): boole
 export function resetStreamingEndpointMemoryForTests(): void {
   endpointsThatRefuseStreaming.clear();
   endpointsWarnedForMissingStreamUsage.clear();
+}
+
+/** Test hook: the next request to this URL is the non-streamed path. */
+export function markEndpointRefusesStreamingForTests(url: string): void {
+  endpointsThatRefuseStreaming.add(url);
 }
 
 /**
@@ -116,6 +147,11 @@ export interface ChatCompletionRequest {
   liveness: StreamLiveness | null;
   /** Names the provider in error messages. */
   label: string;
+  /**
+   * False: no `max_completion_tokens` resend (#4003). An image request is
+   * never resent that way; its refusal reaches `classify` instead.
+   */
+  allowMaxCompletionTokensRetry?: boolean;
   /** The provider's classifier, for HTTP errors, network errors and in-stream error objects. */
   classify: (input: ChatCompletionClassifyInput) => ClassifiedProviderError;
 }
@@ -195,18 +231,7 @@ function outputFailure(message: string, cause: unknown, code?: string): Classifi
 
 async function* responseChunks(response: Response): AsyncGenerator<Uint8Array> {
   if (!response.body) return;
-  const reader = response.body.getReader();
-  let finished = false;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) { finished = true; return; }
-      yield value;
-    }
-  } finally {
-    if (!finished) await reader.cancel();
-    reader.releaseLock();
-  }
+  yield* iterateByteStream(response.body);
 }
 
 /**
@@ -269,7 +294,9 @@ export async function sendChatCompletion(request: ChatCompletionRequest): Promis
   const { max_tokens: _ignoredCap, ...bodyWithoutCap } = request.body;
   const bodies = [
     { ...bodyWithoutCap, max_tokens: request.maxOutputTokens },
-    { ...bodyWithoutCap, max_completion_tokens: request.maxOutputTokens },
+    ...(request.allowMaxCompletionTokensRetry === false
+      ? []
+      : [{ ...bodyWithoutCap, max_completion_tokens: request.maxOutputTokens }]),
   ];
   // Re-read per send: another query may have learned the endpoint refuses streaming.
   let streamThisSend = request.liveness !== null && streamsChatCompletion(request.url);
@@ -355,7 +382,18 @@ async function assembleStream(opened: OpenedExchange, request: ChatCompletionReq
       try {
         chunk = JSON.parse(event.data) as StreamChunk;
       } catch (parseError: unknown) {
-        throw outputFailure(`${request.label} stream chunk could not be read: ${asError(parseError).message}`, parseError, STREAM_INTERRUPTED_CODE);
+        // Same rule as a stream that broke off: before any output the send is
+        // ambiguous and may be resent once; after output started it was billed.
+        const error = asError(parseError);
+        if (outputStarted) {
+          throw outputFailure(`${request.label} stream chunk could not be read: ${error.message}`, error, STREAM_INTERRUPTED_CODE);
+        }
+        throw new ClassifiedProviderError(`${request.label} stream chunk could not be read: ${error.message}`, {
+          kind: 'transient',
+          failedBeforeOutput: true,
+          code: STREAM_INTERRUPTED_CODE,
+          cause: error,
+        });
       }
       if (chunk === null || typeof chunk !== 'object') continue;
 

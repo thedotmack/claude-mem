@@ -9,14 +9,13 @@
  * `restart` must prove the NEW worker is up (different pid than the old
  * worker, and self-reporting the same baked version as the CLI process that
  * initiated the restart) or exit non-zero — a restart that silently leaves
- * the old worker serving is worse than a failed one
- * (plans/2026-06-10-worker-restart-single-source-of-truth.md).
+ * the old worker serving is worse than a failed one.
  * Verification reads only the `pid` and `version` fields of GET /api/health
  * (src/services/server/Server.ts), which the worker reports from its own
  * baked __DEFAULT_PACKAGE_VERSION__ constant.
  */
 
-import { getWorkerHost, fetchWithTimeout } from '../shared/worker-utils.js';
+import { formatHostForUrl, getWorkerHost, fetchWithTimeout } from '../shared/worker-utils.js';
 import { logger } from '../utils/logger.js';
 
 interface HealthSnapshot {
@@ -46,7 +45,7 @@ export type RestartVerifyResult =
     };
 
 async function fetchHealthSnapshot(port: number, timeoutMs: number): Promise<HealthSnapshot> {
-  const url = `http://${getWorkerHost()}:${port}/api/health`;
+  const url = `http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`;
   const response = await fetchWithTimeout(url, {}, timeoutMs);
   // /api/health answers 503 when the queue is degraded but still includes
   // pid/version — a degraded-but-booted worker still proves the restart.

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync, spawn } from 'child_process';
-import { existsSync, readFileSync, mkdirSync, appendFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, mkdirSync, chmodSync, appendFileSync, writeFileSync } from 'fs';
 import { join, dirname, resolve } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
@@ -21,48 +21,6 @@ function fixBrokenScriptPath(argPath) {
 }
 
 function findBun() {
-  const pathCheck = IS_WINDOWS
-    ? spawnSync('where', ['bun'], {
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-        windowsHide: true
-      })
-    : spawnSync('which', ['bun'], {
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe']
-      });
-
-  if (pathCheck.status === 0 && pathCheck.stdout.trim()) {
-    if (IS_WINDOWS) {
-      const bunPaths = pathCheck.stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-      const firstBunPath = bunPaths.find(line => {
-        const lowerPath = line.toLowerCase();
-        return lowerPath.endsWith('bun.exe') || lowerPath.endsWith('bun.cmd');
-      });
-      const firstBunDir = firstBunPath ? dirname(firstBunPath).toLowerCase() : null;
-      const firstInstallPaths = firstBunDir
-        ? bunPaths.filter(line => dirname(line).toLowerCase() === firstBunDir)
-        : [];
-      const bunExePath = firstInstallPaths.find(line => line.toLowerCase().endsWith('bun.exe'));
-      if (bunExePath) {
-        return bunExePath;
-      }
-      const bunCmdPath = firstInstallPaths.find(line => line.toLowerCase().endsWith('bun.cmd'));
-      if (bunCmdPath) {
-        return bunCmdPath;
-      }
-      // The official installer ships bun.exe only (no bun.cmd shim). Return
-      // the resolved absolute path instead of falling through to the bare
-      // name: resolving a bare `bun` later relies on the child's PATH, which
-      // cmd.exe drops entirely when it exceeds ~8191 chars (issue #3196).
-      const firstWherePath = pathCheck.stdout.split(/\r?\n/).map(line => line.trim()).find(Boolean);
-      if (firstWherePath) {
-        return firstWherePath;
-      }
-    }
-    return 'bun';
-  }
-
   const bunInstall = typeof process.env.BUN_INSTALL === 'string' ? process.env.BUN_INSTALL.trim() : '';
   const bunEnv = typeof process.env.BUN === 'string' ? process.env.BUN.trim() : '';
   const bunPathEnv = typeof process.env.BUN_PATH === 'string' ? process.env.BUN_PATH.trim() : '';
@@ -88,6 +46,86 @@ function findBun() {
         '/opt/homebrew/bin/bun',
         '/home/linuxbrew/.linuxbrew/bin/bun'
       ];
+
+  // Windows: an explicit or well-known Bun wins over PATH, so the usual
+  // ~/.bun install never pays a synchronous `where bun`, which can stall for
+  // seconds over a long PATH and blow the hook timeout (#4934). This matches
+  // the compiled launcher (src/launcher/bun-runtime.ts).
+  if (IS_WINDOWS) {
+    for (const bunPath of bunPaths) {
+      if (bunPath && existsSync(bunPath)) {
+        return bunPath;
+      }
+    }
+  }
+
+  // `where` must be the System32 binary — a bare spawn can run a planted
+  // where.exe from the current directory — and where.exe's own results include
+  // that directory, which hooks run inside as the user's project: a planted
+  // bun.exe there must never win.
+  const whereExe = join(
+    process.env.SystemRoot || process.env.SYSTEMROOT || process.env.windir || process.env.WINDIR || 'C:\\Windows',
+    'System32',
+    'where.exe'
+  );
+  const normalizeForCwdCompare = p => p.replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase();
+  const cwdNorm = normalizeForCwdCompare(process.cwd());
+  const notInCwd = line => normalizeForCwdCompare(dirname(line)) !== cwdNorm;
+
+  const pathCheck = IS_WINDOWS
+    ? spawnSync(whereExe, ['bun'], {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true
+      })
+    : spawnSync('which', ['bun'], {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
+
+  if (pathCheck.status === 0 && pathCheck.stdout.trim()) {
+    if (IS_WINDOWS) {
+      // where.exe writes the console's active code page (e.g. cp949 on ko-KR,
+      // cp932 on ja-JP) but the `encoding: 'utf-8'` above decodes those bytes
+      // as UTF-8, so a non-ASCII profile folder name arrives as U+FFFD and the
+      // reported path does not exist (#4694, #3865). Keep only the lines that
+      // resolve on disk and thread this filtered list through EVERY return
+      // below — re-reading the raw stdout would hand the garbled path back
+      // even after the list was filtered.
+      const bunPaths = pathCheck.stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+        .filter(notInCwd)
+        .filter(line => existsSync(line));
+      const firstBunPath = bunPaths.find(line => {
+        const lowerPath = line.toLowerCase();
+        return lowerPath.endsWith('bun.exe') || lowerPath.endsWith('bun.cmd');
+      });
+      const firstBunDir = firstBunPath ? dirname(firstBunPath).toLowerCase() : null;
+      const firstInstallPaths = firstBunDir
+        ? bunPaths.filter(line => dirname(line).toLowerCase() === firstBunDir)
+        : [];
+      const bunExePath = firstInstallPaths.find(line => line.toLowerCase().endsWith('bun.exe'));
+      if (bunExePath) {
+        return bunExePath;
+      }
+      const bunCmdPath = firstInstallPaths.find(line => line.toLowerCase().endsWith('bun.cmd'));
+      if (bunCmdPath) {
+        return bunCmdPath;
+      }
+      // The official installer ships bun.exe only (no bun.cmd shim). Return
+      // the resolved absolute path instead of falling through to the bare
+      // name: resolving a bare `bun` later relies on the child's PATH, which
+      // cmd.exe drops entirely when it exceeds ~8191 chars (issue #3196).
+      const firstWherePath = bunPaths.find(Boolean);
+      if (firstWherePath) {
+        return firstWherePath;
+      }
+      // Every where hit was garbled or stale (#4694): fall through to the
+      // explicit overrides and well-known install homes below instead of
+      // returning a path that can only fail with ENOENT.
+    } else {
+      return 'bun';
+    }
+  }
 
   for (const bunPath of bunPaths) {
     if (bunPath && existsSync(bunPath)) {
@@ -118,7 +156,9 @@ function isPluginDisabledInClaudeSettings() {
   }
 }
 
-if (isPluginDisabledInClaudeSettings()) {
+// Claude Code's plugin toggle is host-local. Qoder can remain enabled while
+// the Claude plugin is disabled, so a Qoder hook must not inherit that opt-out.
+if (process.env.CLAUDE_MEM_QODER_HOOK !== '1' && isPluginDisabledInClaudeSettings()) {
   process.exit(0);
 }
 
@@ -130,6 +170,8 @@ if (args.length === 0) {
 }
 
 args[0] = fixBrokenScriptPath(args[0]);
+// Resolve a relative script path against the launch directory before the child starts in the neutral run dir (#4628)
+args[0] = resolve(process.cwd(), args[0]);
 
 const bunPath = findBun();
 
@@ -139,36 +181,85 @@ if (!bunPath) {
   process.exit(1);
 }
 
-function collectStdin() {
+function collectStdin(input = process.stdin, options = {}) {
   return new Promise((resolve) => {
-    if (process.stdin.isTTY) {
+    if (input.isTTY) {
       resolve(null);
       return;
     }
 
     const chunks = [];
-    process.stdin.on('data', (chunk) => chunks.push(chunk));
-    process.stdin.on('end', () => {
-      resolve(chunks.length > 0 ? Buffer.concat(chunks) : null);
-    });
-    process.stdin.on('error', () => {
-      resolve(null);
-    });
-
-    setTimeout(() => {
-      process.stdin.removeAllListeners();
-      process.stdin.pause();
-      resolve(chunks.length > 0 ? Buffer.concat(chunks) : null);
-    }, 5000);
+    let done = false;
+    const finish = (value) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      input.removeListener('data', onData);
+      input.removeListener('end', onEnd);
+      input.removeListener('error', onError);
+      input.pause();
+      resolve(value);
+    };
+    const buffered = () => chunks.length > 0 ? Buffer.concat(chunks) : null;
+    const onData = (chunk) => {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      // Codex can keep stdin open after delivering the complete hook object.
+      // Other commands retain their EOF framing.
+      if (options.json) {
+        const data = buffered();
+        try {
+          const value = JSON.parse(data.toString('utf8').trim());
+          if (value && typeof value === 'object' && !Array.isArray(value)) finish(data);
+        } catch {}
+      }
+    };
+    const onEnd = () => finish(buffered());
+    const onError = () => finish(null);
+    const timer = setTimeout(() => finish(buffered()), options.timeoutMs === undefined ? 5000 : options.timeoutMs);
+    input.on('data', onData);
+    input.on('end', onEnd);
+    input.on('error', onError);
   });
 }
 
-const stdinData = await collectStdin();
+const stdinData = await collectStdin(process.stdin, { json: args[1] === 'hook' });
 
+// Bun reads tsconfig.json from its working directory and prints any warnings
+// about it to stderr, which hosts show as hook errors (#4628). Start it in a
+// neutral directory and hand it the launch directory; the hook entry point
+// (src/cli/hook-original-cwd.ts) moves back there before adapters run.
+// The neutral dir must be owner-controlled, not tmpdir(): Bun also auto-loads
+// bunfig.toml from cwd, and on a shared /tmp another local user could plant a
+// `preload` there.
+// Same rules as src/shared/expand-home.ts (this file cannot import): a
+// `~/x` CLAUDE_MEM_DATA_DIR must land under home, not as a literal `~`
+// directory inside the user's project.
+function expandHome(filePath) {
+  if (filePath === '~') return homedir();
+  if (filePath.startsWith('~/') || (IS_WINDOWS && filePath.startsWith('~\\'))) {
+    return join(homedir(), filePath.slice(2));
+  }
+  return filePath;
+}
+function neutralBunSpawnCwd() {
+  const dataDir = process.env.CLAUDE_MEM_DATA_DIR
+    ? expandHome(process.env.CLAUDE_MEM_DATA_DIR)
+    : join(homedir(), '.claude-mem');
+  const runDir = join(dataDir, 'run');
+  try {
+    mkdirSync(runDir, { recursive: true, mode: 0o700 });
+    if (!IS_WINDOWS) chmodSync(runDir, 0o700);
+    return runDir;
+  } catch (error) {
+    console.error(`[bun-runner] could not prepare ${runDir} (${error && error.message ? error.message : error}); starting Bun from the home directory`);
+    return homedir();
+  }
+}
 const spawnOptions = {
   stdio: ['pipe', 'inherit', 'inherit'],
   windowsHide: true,
-  env: process.env
+  env: Object.assign({}, process.env, { CLAUDE_MEM_HOOK_ORIGINAL_CWD: process.cwd() }),
+  cwd: neutralBunSpawnCwd()
 };
 
 let spawnCmd = bunPath;

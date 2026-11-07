@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { closeSync, existsSync, fstatSync, openSync, readSync } from 'fs';
-import { SYSTEM_REMINDER_REGEX } from '../utils/tag-stripping.js';
+import { stripSystemReminderBlocks } from '../utils/tag-stripping.js';
 
 /**
  * Extraction of `advisor` tool calls from a Claude Code transcript.
@@ -71,7 +71,7 @@ function parseEpoch(timestamp: unknown): number | null {
 export interface ExtractAdvisorCallsOptions {
   /**
    * Only return calls made during the transcript's final turn (after the last
-   * user message with text content). The Stop hook runs once per turn, so
+   * user prompt (text or media)). The Stop hook runs once per turn, so
    * scanning just the turn that ended captures each call exactly once;
    * storage-level dedup on toolUseId is the backstop for re-fired hooks.
    */
@@ -82,9 +82,10 @@ export interface ExtractAdvisorCallsOptions {
 
 /**
  * The last `maxBytes` of a file, starting at a line boundary, and the byte
- * offset where that text starts in the file.
+ * offset where that text starts in the file. Shared with the deliverables
+ * scan (deliverables-transcript.ts), which reads the same tail.
  */
-function readTail(transcriptPath: string, maxBytes: number): { text: string; startOffset: number } {
+export function readTranscriptTail(transcriptPath: string, maxBytes: number): { text: string; startOffset: number } {
   const fd = openSync(transcriptPath, 'r');
   try {
     const size = fstatSync(fd).size;
@@ -93,6 +94,11 @@ function readTail(transcriptPath: string, maxBytes: number): { text: string; sta
     readSync(fd, buffer, 0, buffer.length, start);
     if (start === 0) {
       return { text: buffer.toString('utf-8'), startOffset: 0 };
+    }
+    // At an exact line boundary the first entry is complete and must survive.
+    const precedingByte = Buffer.alloc(1);
+    if (readSync(fd, precedingByte, 0, 1, start - 1) === 1 && precedingByte[0] === 0x0a) {
+      return { text: buffer.toString('utf-8'), startOffset: start };
     }
     // Drop the partial first line: the scan starts at the next whole entry.
     const firstNewline = buffer.indexOf(0x0a);
@@ -115,7 +121,7 @@ export function extractAdvisorCalls(
   if (!transcriptPath || !existsSync(transcriptPath)) {
     return [];
   }
-  const { text, startOffset } = readTail(transcriptPath, options.maxTailBytes ?? ADVISOR_SCAN_TAIL_BYTES);
+  const { text, startOffset } = readTranscriptTail(transcriptPath, options.maxTailBytes ?? ADVISOR_SCAN_TAIL_BYTES);
   if (!text.trim()) {
     return [];
   }
@@ -159,12 +165,16 @@ export function extractAdvisorCallsFromJsonl(
     const msgContent = entry?.message?.content;
 
     if (entryType === 'user') {
-      const text = textFromContent(msgContent)
-        .replace(SYSTEM_REMINDER_REGEX, '')
+      const text = stripSystemReminderBlocks(textFromContent(msgContent))
         .replace(/\n{3,}/g, '\n\n')
         .trim();
-      if (text) {
-        lastUserMessage = text;
+      // Tool results are user-role records too, but do not start a turn.
+      // An image/document-only prompt does: it must clear the previous
+      // prompt's text and keep currentTurnOnly from replaying old advice.
+      const hasMedia = Array.isArray(msgContent) && msgContent.some(block =>
+        block && typeof block === 'object' && (block.type === 'image' || block.type === 'document'));
+      if (text || hasMedia) {
+        lastUserMessage = text || null;
         lastUserLine = i + 1;
       }
       continue;

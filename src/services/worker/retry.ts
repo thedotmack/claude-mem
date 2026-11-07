@@ -38,8 +38,9 @@ import { FIELD_OPTIMIZE_TIMEOUT_MS } from './field-optimizer.js';
 export function parseRetryAfterMs(value: string | null): number | undefined {
   if (!value) return undefined;
   const seconds = Number(value);
-  if (!Number.isNaN(seconds) && seconds >= 0) {
-    return Math.floor(seconds * 1000);
+  const milliseconds = seconds * 1000;
+  if (Number.isFinite(milliseconds) && seconds >= 0) {
+    return Math.floor(milliseconds);
   }
   const dateMs = Date.parse(value);
   if (!Number.isNaN(dateMs)) {
@@ -115,8 +116,12 @@ const LLM_TIMEOUT_BOUNDS = { min: 500, max: MAX_LLM_TIMEOUT_MS } as const;
  *
  * `fallbackMs` is the caller's own default, so each resolver keeps its default
  * where the value lives instead of every caller inheriting one constant.
+ *
+ * Exported for the resolvers that live next to their constant elsewhere
+ * (streamed-chat-completion.ts's idle window), so every CLAUDE_MEM_*_TIMEOUT_MS
+ * value goes through the same validation.
  */
-function parseTimeoutMs(raw: unknown, keyName: string, fallbackMs: number): number {
+export function parseTimeoutMs(raw: unknown, keyName: string, fallbackMs: number): number {
   if (!raw) return fallbackMs;
   const trimmed = typeof raw === 'string' || typeof raw === 'number' ? String(raw).trim() : '';
   const parsed = /^\d+$/.test(trimmed) ? Number(trimmed) : Number.NaN;

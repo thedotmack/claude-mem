@@ -11,24 +11,29 @@
  * banner's own durations and expiry are time-dependent, so its file is removed
  * and the hook takes the live path until the banner clears.
  *
+ * No cached block carries the prior session's reply ("Include last message"):
+ * that reply is chosen by excluding the session that asks, and any session may
+ * read a cached block. With the setting on, the live route answers with the
+ * reply and only warms the variant (warmVariant); the hook falls back on the
+ * cached block, rendered without it, while the worker is down.
+ *
  * A 'removal' invalidation (delete, merge, import, pulled tombstone or remap)
  * removes the matched files synchronously, before the writer's emit returns,
  * so the hook never serves deleted memory while the re-render is pending. A
  * render that was already in flight when a removal landed is discarded (and
  * re-queued) instead of writing pre-removal content back.
  *
- * With cloud sync on, a cached block is only as fresh as the last op this
- * device applied, and the hook reading it never asks the hub. So the files are
- * servable only while sync is off, or its Realtime channel is joined (ops arrive
- * as they happen) AND the join's catch-up pull has applied the ops published
- * while it was down. While sync is on and Realtime is down (or never joined),
- * setServable(false) removes every file and none is written: the hook takes the
- * live path, which pulls before rendering. setServable(true) re-renders all.
+ * Local-first: the files are servable with or without cloud sync. The local db
+ * is the source of truth; sync applies other devices' ops in the background and
+ * every applied op invalidates the files. setServable(false) removes every file
+ * and none is written (the hook takes the live path); setServable(true)
+ * re-renders all.
  */
 import { existsSync, readFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import {
   contextCacheDir,
+  readContextCache,
   contextCacheVariantId,
   listContextCacheFiles,
   removeContextCache,
@@ -47,17 +52,19 @@ const CONTEXT_CACHE_INDEX_FILENAME = 'variants.json';
 export interface ContextVariantRender {
   /** The block with its time placeholders, exactly as the live route fills and sends it. */
   body: string;
-  /** False when the block must not be served from disk (health banner showing). */
+  /** False when the block must stay live (health banner, or a reply chosen for the asking session). */
   cacheable: boolean;
+  readKeys?: string[];
+  invalidationGenerationAtStart?: number;
 }
 
 export interface ContextCacheServiceOptions {
   renderVariant: (keys: ContextCacheKeys) => Promise<ContextVariantRender>;
   /** Every stored key a read of `projects` matches (projectReadKeys). */
-  expandProjectReadKeys: (projects: string[]) => string[];
+  expandProjectReadKeys: (projects: string[]) => string[] | Promise<string[]>;
   debounceMs?: number;
   maxVariants?: number;
-  /** False when cloud sync is on: files stay unservable until Realtime joins and catches up (setServable). Default true. */
+  /** False keeps the files unservable until setServable(true). Default true. */
   initiallyServable?: boolean;
   now?: () => number;
 }
@@ -67,6 +74,12 @@ interface KnownVariant {
   learnedAtEpochMs: number;
   /** Lower-cased projectReadKeys of keys.projects, refreshed on every render. */
   readKeys: Set<string>;
+  /**
+   * beginRenderSequence() of the last render whose result reached this
+   * variant's file. A render that started earlier (lower sequence) finishing
+   * later is dropped, so an older body never replaces a newer one.
+   */
+  lastPersistedRenderSequence: number;
 }
 
 interface PersistedVariantIndex {
@@ -76,12 +89,21 @@ interface PersistedVariantIndex {
 export class ContextCacheService {
   private readonly variants = new Map<string, KnownVariant>();
   private readonly pendingVariantIds = new Set<string>();
+  private readonly activeVariantIds = new Set<string>();
   private renderTimer: ReturnType<typeof setTimeout> | null = null;
   private renderChain: Promise<void> = Promise.resolve();
   private unsubscribe: (() => void) | null = null;
   private stopped = false;
   /** Bumped by every 'removal' invalidation; a render that saw it change mid-flight is not persisted. */
   private removalGeneration = 0;
+  private invalidationGeneration = 0;
+  /**
+   * Monotonic render-start ticket. Ordering by start rather than by completion
+   * is what makes the two races symmetric: a removal that lands mid-render is
+   * caught by removalGeneration, and a render that another render overtook is
+   * caught here.
+   */
+  private renderSequence = 0;
   private servable: boolean;
   private readonly debounceMs: number;
   private readonly maxVariants: number;
@@ -101,6 +123,7 @@ export class ContextCacheService {
         keys: entry.keys,
         learnedAtEpochMs: entry.learnedAtEpochMs,
         readKeys: new Set(),
+        lastPersistedRenderSequence: 0,
       });
     }
     this.removeOrphanedFiles();
@@ -122,7 +145,7 @@ export class ContextCacheService {
     // A pending variant's file predates a write (possibly a delete) it will now
     // never re-render for; served until the next worker boots, it could show
     // deleted memory. Remove it so the hook takes the live path instead.
-    for (const variantId of this.pendingVariantIds) {
+    for (const variantId of new Set([...this.pendingVariantIds, ...this.activeVariantIds])) {
       const variant = this.variants.get(variantId);
       if (variant) this.removeFile(variant.keys);
     }
@@ -139,26 +162,79 @@ export class ContextCacheService {
     renderedAtEpochMs: number,
     /** removalGenerationNow() taken before the render began; omitted = no removal check. */
     removalGenerationAtRenderStart?: number,
-  ): void {
+    /** beginRenderSequence() taken before the render began; omitted = no ordering check. */
+    renderSequenceAtStart?: number,
+  ): void | Promise<void> {
+    if (this.stopped) return;
     const variantId = contextCacheVariantId(keys);
     if (!this.variants.has(variantId)) {
-      this.variants.set(variantId, { keys, learnedAtEpochMs: this.now(), readKeys: new Set() });
+      this.variants.set(variantId, { keys, learnedAtEpochMs: this.now(), readKeys: new Set(), lastPersistedRenderSequence: 0 });
       this.evictOldestVariants();
       this.writeIndex();
       logger.debug('CONTEXT_CACHE', 'Learned a SessionStart context variant', { variantId, keys });
     }
-    this.refreshReadKeys(variantId);
-    if (removalGenerationAtRenderStart !== undefined && removalGenerationAtRenderStart !== this.removalGeneration) {
-      // A delete landed while this render ran: its body may show what is gone.
-      this.requeueAfterRemoval(variantId);
+    const variant = this.variants.get(variantId);
+    if (!variant) return;
+    const complete = () => {
+      if (this.stopped || this.variants.get(variantId) !== variant) return;
+      if (removalGenerationAtRenderStart !== undefined && removalGenerationAtRenderStart !== this.removalGeneration) {
+        this.requeueAfterRemoval(variantId);
+        return;
+      }
+      // A render a newer one overtook needs no heal: that newer render started
+      // after this one, and any write since it started queued its own render.
+      if (!this.persistRender(variant, keys, render, renderedAtEpochMs, renderSequenceAtStart)) return;
+      if (render.invalidationGenerationAtStart !== undefined && render.invalidationGenerationAtStart !== this.invalidationGeneration) {
+        this.pendingVariantIds.add(variantId);
+        this.scheduleRender();
+      }
+    };
+    const refreshed = this.refreshReadKeys(variantId, render.readKeys);
+    if (refreshed) return refreshed.then(complete);
+    complete();
+  }
+
+  /**
+   * The live route answered `keys` with a block it must not persist (it carries
+   * the asking session's prior reply or uses a session-specific notice budget).
+   * Learn the variant anyway and, when no
+   * fresh file is on disk, render its cached block (which has no reply) through
+   * the render queue, so the hook has it to fall back on while the worker is down.
+   */
+  warmVariant(keys: ContextCacheKeys, readKeys?: string[]): void | Promise<void> {
+    if (this.stopped) return;
+    const variantId = contextCacheVariantId(keys);
+    const complete = () => {
+      if (this.stopped || !this.variants.has(variantId) || readContextCache(keys, this.now())) return;
+      this.pendingVariantIds.add(variantId);
+      this.scheduleRender();
+    };
+    if (this.variants.has(variantId)) {
+      if (readKeys) this.refreshReadKeys(variantId, readKeys);
+      complete();
       return;
     }
-    this.persistRender(keys, render, renderedAtEpochMs);
+    const learned = this.recordLiveRender(keys, { body: '', cacheable: false, readKeys }, this.now());
+    if (learned) return learned.then(complete);
+    complete();
   }
 
   /** Pass to recordLiveRender to discard a render that a removal overtook. */
   removalGenerationNow(): number {
     return this.removalGeneration;
+  }
+
+  invalidationGenerationNow(): number {
+    return this.invalidationGeneration;
+  }
+
+  /**
+   * Take the next render-start ticket. The live route calls this before it
+   * renders and passes the ticket back to recordLiveRender, so a render that
+   * started earlier cannot overwrite the file a later render already wrote.
+   */
+  beginRenderSequence(): number {
+    return ++this.renderSequence;
   }
 
   /** Render everything pending now (tests, shutdown). */
@@ -196,11 +272,13 @@ export class ContextCacheService {
   }
 
   private handleInvalidation(invalidation: ContextInvalidation): void {
+    this.invalidationGeneration++;
     const removal = invalidation.kind === 'removal';
     if (removal) this.removalGeneration++;
     let matched = 0;
     for (const [variantId, variant] of this.variants) {
-      if (invalidation.scope === 'all' || invalidation.scope.projects.some(project => variant.readKeys.has(project.toLowerCase()))) {
+      const unresolvedRemoval = removal && (variant.readKeys.size === 0 || this.activeVariantIds.has(variantId));
+      if (unresolvedRemoval || invalidation.scope === 'all' || invalidation.scope.projects.some(project => variant.readKeys.has(project.toLowerCase()))) {
         this.pendingVariantIds.add(variantId);
         // Synchronous: the writer's HTTP route responds only after this returns.
         if (removal) this.removeFile(variant.keys);
@@ -251,27 +329,47 @@ export class ContextCacheService {
       }
       const renderedAtEpochMs = this.now();
       const removalGenerationAtStart = this.removalGeneration;
+      const renderSequenceAtStart = this.beginRenderSequence();
+      this.activeVariantIds.add(variantId);
       try {
-        this.refreshReadKeys(variantId);
+        await this.refreshReadKeys(variantId);
+        if (this.stopped || this.variants.get(variantId) !== variant) continue;
         const render = await this.options.renderVariant(variant.keys);
+        // A queued render owns this exact registry entry. Teardown or eviction
+        // can remove it while the renderer awaits, and a later live request
+        // may already have learned a replacement with the same cache key.
+        if (this.stopped || this.variants.get(variantId) !== variant) continue;
         if (removalGenerationAtStart !== this.removalGeneration) {
           this.requeueAfterRemoval(variantId);
           continue;
         }
-        this.persistRender(variant.keys, render, renderedAtEpochMs);
+        this.persistRender(variant, variant.keys, render, renderedAtEpochMs, renderSequenceAtStart);
       } catch (error) {
         // The old file would now be wrong; remove it so the hook takes the live path.
         logger.error('CONTEXT_CACHE', 'Context re-render failed; removing the cached block', { variantId, keys: variant.keys },
           error instanceof Error ? error : new Error(String(error)));
-        this.removeFile(variant.keys);
+        // A newer render may already have written a good file; the failed one
+        // removes it only when nothing that started later reached the file.
+        if (this.variants.get(variantId) === variant && this.claimRenderSequence(variant, renderSequenceAtStart)) {
+          this.removeFile(variant.keys);
+        }
+      } finally {
+        this.activeVariantIds.delete(variantId);
       }
     }
   }
 
-  private persistRender(keys: ContextCacheKeys, render: ContextVariantRender, renderedAtEpochMs: number): void {
+  private persistRender(
+    variant: KnownVariant,
+    keys: ContextCacheKeys,
+    render: ContextVariantRender,
+    renderedAtEpochMs: number,
+    renderSequenceAtStart?: number,
+  ): boolean {
+    if (!this.claimRenderSequence(variant, renderSequenceAtStart)) return false;
     if (!render.cacheable || !this.servable) {
       this.removeFile(keys);
-      return;
+      return true;
     }
     try {
       writeContextCache(keys, render.body, renderedAtEpochMs);
@@ -280,6 +378,29 @@ export class ContextCacheService {
         error instanceof Error ? error : new Error(String(error)));
       this.removeFile(keys);
     }
+    return true;
+  }
+
+  /**
+   * Order render results by render start, not completion: a render that began
+   * before the one already on disk carries an older body, so neither its write
+   * nor its removal may land. Returns false for such a render; otherwise records
+   * its ticket as the variant's latest. An untickted render (undefined) is not
+   * ordered. Authoritative removals (an invalidation, eviction, teardown,
+   * setServable(false)) call removeFile directly and are not gated.
+   */
+  private claimRenderSequence(variant: KnownVariant, renderSequenceAtStart: number | undefined): boolean {
+    if (renderSequenceAtStart === undefined) return true;
+    if (renderSequenceAtStart < variant.lastPersistedRenderSequence) {
+      logger.debug('CONTEXT_CACHE', 'Dropped a render a newer render overtook', {
+        variantId: contextCacheVariantId(variant.keys),
+        renderSequenceAtStart,
+        lastPersistedRenderSequence: variant.lastPersistedRenderSequence,
+      });
+      return false;
+    }
+    variant.lastPersistedRenderSequence = renderSequenceAtStart;
+    return true;
   }
 
   private removeFile(keys: ContextCacheKeys): void {
@@ -291,13 +412,19 @@ export class ContextCacheService {
     }
   }
 
-  private refreshReadKeys(variantId: string): void {
+  private refreshReadKeys(variantId: string, provided?: string[]): void | Promise<void> {
     const variant = this.variants.get(variantId);
     if (!variant) return;
-    variant.readKeys = new Set(
-      [...variant.keys.projects, ...this.options.expandProjectReadKeys(variant.keys.projects)]
-        .map(project => project.toLowerCase())
-    );
+    const expanded = provided ?? this.options.expandProjectReadKeys(variant.keys.projects);
+    const apply = (readKeys: string[]) => {
+      if (this.stopped || this.variants.get(variantId) !== variant) return;
+      variant.readKeys = new Set([...variant.keys.projects, ...readKeys].map(project => project.toLowerCase()));
+    };
+    if (Array.isArray(expanded)) {
+      apply(expanded);
+      return;
+    }
+    return expanded.then(apply);
   }
 
   private evictOldestVariants(): void {
@@ -345,7 +472,8 @@ export class ContextCacheService {
       return {
         variants: variants.filter(entry =>
           entry && Array.isArray(entry.keys?.projects) && typeof entry.keys.platformSource === 'string'
-          && typeof entry.keys.colors === 'boolean' && typeof entry.learnedAtEpochMs === 'number'),
+          && typeof entry.keys.colors === 'boolean' && typeof entry.learnedAtEpochMs === 'number'
+          && (entry.keys.cwd === undefined || typeof entry.keys.cwd === 'string')),
       };
     } catch (error) {
       // Variants are re-learned from the next live requests; orphaned files are removed in start().
